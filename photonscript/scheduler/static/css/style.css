@@ -1,0 +1,372 @@
+/* PhotonScript Dashboard — Dark theme for night-time use */
+
+:root {
+    --bg-primary: #0a0e17;
+    --bg-secondary: #111827;
+    --bg-card: #1a2332;
+    --bg-hover: #243044;
+    --text-primary: #e5e7eb;
+    --text-secondary: #9ca3af;
+    --text-dim: #6b7280;
+    --accent-blue: #3b82f6;
+    --accent-green: #10b981;
+    --accent-red: #ef4444;
+    --accent-amber: #f59e0b;
+    --accent-purple: #8b5cf6;
+    --border: #1f2937;
+    --tier-best: #10b981;
+    --tier-better: #3b82f6;
+    --tier-good: #6b7280;
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+    font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    line-height: 1.6;
+    min-height: 100vh;
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem 2rem;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+}
+
+.header-content {
+    display: flex;
+    align-items: baseline;
+    gap: 1rem;
+}
+
+header h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent-blue);
+}
+
+.subtitle {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.observatory-badge {
+    background: var(--bg-card);
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+}
+
+.connection-status {
+    padding: 0.25rem 0.75rem;
+    border-radius: 12px;
+    font-size: 0.75rem;
+    background: var(--accent-amber);
+    color: #000;
+}
+
+.connection-status.connected {
+    background: var(--accent-green);
+}
+
+.connection-status.disconnected {
+    background: var(--accent-red);
+    color: #fff;
+}
+
+main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 1.5rem;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 1.5rem;
+}
+
+.panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1.5rem;
+}
+
+.panel h2 {
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* Telescope Status */
+.telescope-status {
+    grid-column: span 2;
+}
+
+.status-grid {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 1rem;
+}
+
+.status-card {
+    background: var(--bg-card);
+    padding: 1rem;
+    border-radius: 8px;
+    text-align: center;
+}
+
+.status-card label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.5rem;
+}
+
+.status-card .value {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+.state-idle { color: var(--text-dim); }
+.state-imaging { color: var(--accent-green); }
+.state-slewing, .state-sequencing { color: var(--accent-blue); }
+.state-error { color: var(--accent-red); }
+.state-paused { color: var(--accent-amber); }
+
+/* Progress Bars */
+.progress-bar {
+    width: 100%;
+    height: 6px;
+    background: var(--bg-primary);
+    border-radius: 3px;
+    overflow: hidden;
+    margin: 0.5rem 0;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--accent-blue), var(--accent-green));
+    border-radius: 3px;
+    transition: width 0.5s ease;
+}
+
+/* Target Cards */
+.target-card {
+    background: var(--bg-card);
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+    border-left: 3px solid var(--tier-good);
+    transition: background 0.2s;
+}
+
+.target-card:hover { background: var(--bg-hover); }
+.target-card.tier-best { border-left-color: var(--tier-best); }
+.target-card.tier-better { border-left-color: var(--tier-better); }
+
+.target-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.target-name { font-weight: 600; }
+
+.target-tier {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    font-weight: 600;
+}
+
+.tier-best .target-tier { background: var(--tier-best); color: #000; }
+.tier-better .target-tier { background: var(--tier-better); color: #fff; }
+.tier-good .target-tier { background: var(--tier-good); color: #fff; }
+
+.target-details {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+/* Projects */
+.project-card {
+    background: var(--bg-card);
+    padding: 1rem;
+    border-radius: 8px;
+    margin-bottom: 0.75rem;
+}
+
+.project-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 0.5rem;
+}
+
+.project-name { font-weight: 600; }
+
+.project-priority {
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.project-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.filter-progress {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-top: 0.5rem;
+}
+
+.filter-badge {
+    font-size: 0.7rem;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    background: var(--bg-primary);
+}
+
+.filter-L { border-left: 2px solid #fff; }
+.filter-R { border-left: 2px solid #ef4444; }
+.filter-G { border-left: 2px solid #10b981; }
+.filter-B { border-left: 2px solid #3b82f6; }
+.filter-Ha { border-left: 2px solid #ef4444; }
+.filter-OIII { border-left: 2px solid #06b6d4; }
+.filter-SII { border-left: 2px solid #f59e0b; }
+
+/* Buttons */
+.actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.btn {
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    text-decoration: none;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.btn-primary {
+    background: var(--accent-blue);
+    color: #fff;
+}
+
+.btn-primary:hover { background: #2563eb; }
+
+.btn-secondary {
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+}
+
+.btn-secondary:hover { background: var(--bg-hover); }
+
+/* Twilight Info */
+.twilight-info {
+    display: flex;
+    gap: 2rem;
+}
+
+.twilight-info div {
+    flex: 1;
+    background: var(--bg-card);
+    padding: 1rem;
+    border-radius: 8px;
+    text-align: center;
+}
+
+.twilight-info label {
+    display: block;
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    margin-bottom: 0.5rem;
+}
+
+/* Month Selector */
+.month-selector {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.month-btn {
+    padding: 0.4rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    text-decoration: none;
+    color: var(--text-secondary);
+    background: var(--bg-card);
+    transition: background 0.2s;
+}
+
+.month-btn:hover { background: var(--bg-hover); }
+.month-btn.active { background: var(--accent-blue); color: #fff; }
+
+/* Activity Log */
+.log-entries {
+    max-height: 300px;
+    overflow-y: auto;
+    font-size: 0.8rem;
+}
+
+.log-entry {
+    padding: 0.5rem;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 1rem;
+}
+
+.log-time { color: var(--text-dim); white-space: nowrap; }
+
+.empty-state {
+    color: var(--text-dim);
+    text-align: center;
+    padding: 2rem;
+    font-style: italic;
+}
+
+/* Footer */
+footer {
+    display: flex;
+    justify-content: space-between;
+    padding: 1rem 2rem;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+}
+
+/* Responsive */
+@media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    .telescope-status { grid-column: span 1; }
+    .status-grid { grid-template-columns: repeat(3, 1fr); }
+    header { flex-direction: column; gap: 0.5rem; }
+}
+
+@media (max-width: 600px) {
+    .status-grid { grid-template-columns: repeat(2, 1fr); }
+    .header-content { flex-direction: column; gap: 0.25rem; }
+}

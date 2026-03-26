@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonScript - Remote Telescope Dashboard</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">Remote Telescope Orchestration</span>
+            <span class="observatory-badge">{{ observatory.name }} &bull; {{ month }}</span>
+        </div>
+        <div class="connection-status" id="connectionStatus">Connecting...</div>
+    </header>
+
+    <main>
+        <!-- Telescope Status Panel -->
+        <section class="panel telescope-status">
+            <h2>Telescope Status</h2>
+            <div class="status-grid">
+                <div class="status-card">
+                    <label>State</label>
+                    <span class="value state-{{ telescope_state.session_state.value }}" id="sessionState">
+                        {{ telescope_state.session_state.value | upper }}
+                    </span>
+                </div>
+                <div class="status-card">
+                    <label>Current Target</label>
+                    <span class="value" id="currentTarget">{{ telescope_state.current_target or "—" }}</span>
+                </div>
+                <div class="status-card">
+                    <label>Filter</label>
+                    <span class="value" id="currentFilter">{{ telescope_state.current_filter or "—" }}</span>
+                </div>
+                <div class="status-card">
+                    <label>Guiding RMS</label>
+                    <span class="value" id="guidingRms">{{ "%.2f"|format(telescope_state.guiding.rms_total_arcsec) }}"</span>
+                </div>
+                <div class="status-card">
+                    <label>Camera Temp</label>
+                    <span class="value" id="cameraTemp">{{ telescope_state.camera_temp_c or "—" }}&deg;C</span>
+                </div>
+                <div class="status-card">
+                    <label>Images Tonight</label>
+                    <span class="value" id="imagesTonight">{{ telescope_state.images_captured_tonight }}</span>
+                </div>
+            </div>
+
+            <!-- Exposure Progress Bar -->
+            <div class="exposure-progress" id="exposureProgress" style="display: none;">
+                <label>Exposure Progress</label>
+                <div class="progress-bar">
+                    <div class="progress-fill" id="exposureFill" style="width: 0%"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tonight's Darkness Window -->
+        <section class="panel darkness-window">
+            <h2>Tonight's Window</h2>
+            <div class="twilight-info">
+                <div>
+                    <label>Astro Dark Start</label>
+                    <span>{{ twilight.astro_dark_start.strftime('%I:%M %p') if twilight.astro_dark_start else 'N/A' }}</span>
+                </div>
+                <div>
+                    <label>Astro Dark End</label>
+                    <span>{{ twilight.astro_dark_end.strftime('%I:%M %p') if twilight.astro_dark_end else 'N/A' }}</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tonight's Target Plan -->
+        <section class="panel target-plan">
+            <h2>Tonight's Targets</h2>
+            <div class="target-list" id="targetList">
+                {% for r in tonight_targets %}
+                <div class="target-card tier-{{ r.tier.value if r.tier else 'good' }}">
+                    <div class="target-header">
+                        <span class="target-name">{{ r.target.name }}</span>
+                        <span class="target-tier">{{ r.tier.value | upper if r.tier else 'GOOD' }}</span>
+                    </div>
+                    <div class="target-details">
+                        <span>{{ r.target.catalog_id }}</span>
+                        <span>{{ r.target.object_type }}</span>
+                        <span>{{ r.visibility.hours }}h visible</span>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            <div class="actions">
+                <a href="/api/tonight/sequence.xml" class="btn btn-primary" download>Download NINA Sequence</a>
+                <a href="/api/tonight" class="btn btn-secondary">View Plan JSON</a>
+            </div>
+        </section>
+
+        <!-- Active Projects -->
+        <section class="panel projects">
+            <h2>Imaging Projects</h2>
+            <div class="project-list" id="projectList">
+                {% for project in projects %}
+                <div class="project-card">
+                    <div class="project-header">
+                        <span class="project-name">{{ project.target.name }}</span>
+                        <span class="project-priority">P{{ project.priority }}</span>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ project.completion_pct }}%"></div>
+                    </div>
+                    <div class="project-stats">
+                        <span>{{ project.completion_pct }}% complete</span>
+                        <span>{{ project.total_integration_hours }}h planned</span>
+                    </div>
+                    <div class="filter-progress">
+                        {% for ep in project.exposure_plans %}
+                        <span class="filter-badge filter-{{ ep.filter_type.value }}">
+                            {{ ep.filter_type.value }}: {{ ep.acquired }}/{{ ep.count }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                </div>
+                {% endfor %}
+                {% if not projects %}
+                <p class="empty-state">No active projects. Tonight's targets will be auto-selected from the seasonal catalog.</p>
+                {% endif %}
+            </div>
+        </section>
+
+        <!-- Seasonal Targets Browser -->
+        <section class="panel seasonal">
+            <h2>Seasonal Catalog ({{ month }})</h2>
+            <div class="month-selector">
+                {% for m in range(1, 13) %}
+                <a href="/api/seasonal/{{ m }}" class="month-btn {% if m == twilight.astro_dark_start.month if twilight.astro_dark_start else 0 %}active{% endif %}">
+                    {{ ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1] }}
+                </a>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- Recent Activity Log -->
+        <section class="panel activity">
+            <h2>Activity Log</h2>
+            <div class="log-entries" id="activityLog">
+                <p class="empty-state">Waiting for telescope activity...</p>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <span>PhotonScript v0.1.0</span>
+        <span>Observatory: {{ observatory.name }} ({{ observatory.latitude }}&deg;N, {{ observatory.longitude }}&deg;W)</span>
+    </footer>
+
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>
