@@ -32,6 +32,7 @@ from photonscript.scheduler.target_planner import (
     plan_night_sequence, create_project_from_target, suggest_exposure_plan,
 )
 from photonscript.scheduler.nina_sequence import generate_nina_xml, build_sequence_for_night
+from photonscript.scheduler.nina_sequence_json import generate_nina_json
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +270,37 @@ async def api_tonight_sequence_xml():
         content=xml_content,
         media_type="application/xml",
         headers={"Content-Disposition": f"attachment; filename={sequence.name}.xml"},
+    )
+
+
+@app.get("/api/tonight/sequence.json")
+async def api_tonight_sequence_json():
+    """Generate and download the NINA Advanced Sequencer JSON for tonight.
+
+    This is the preferred format for NINA's Advanced Sequencer, using
+    .NET $type annotations that NINA can load directly.
+    """
+    config = get_config()
+    now = datetime.utcnow()
+
+    if _projects:
+        projects = list(_projects.values())
+    else:
+        obs = config.get_observatory()
+        seasonal = get_seasonal_targets(now.month)
+        ranked = rank_targets_for_night(seasonal, obs, now)
+        projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
+
+    targets = plan_night_sequence(projects, config, now)
+    sequence = build_sequence_for_night(
+        name=f"PhotonScript_{now.strftime('%Y%m%d')}",
+        targets=targets,
+    )
+    json_content = generate_nina_json(sequence)
+    return HTMLResponse(
+        content=json_content,
+        media_type="application/json",
+        headers={"Content-Disposition": f"attachment; filename={sequence.name}.json"},
     )
 
 
