@@ -348,3 +348,113 @@ async def api_telescope_command(request: Request):
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
+
+
+# ---------------------------------------------------------------------------
+# System page: preflight + web config editor
+# ---------------------------------------------------------------------------
+
+# Curated editable config fields: (attr, env var, label, group, type, secret, needs_restart)
+_CONFIG_FIELDS = [
+    ("observatory_name", "PS_OBSERVATORY_NAME", "Observatory name", "Observatory", "str", False, False),
+    ("observatory_lat", "PS_OBSERVATORY_LAT", "Latitude (deg N)", "Observatory", "float", False, False),
+    ("observatory_lon", "PS_OBSERVATORY_LON", "Longitude (deg E)", "Observatory", "float", False, False),
+    ("observatory_elev", "PS_OBSERVATORY_ELEV", "Elevation (m)", "Observatory", "float", False, False),
+    ("observatory_tz", "PS_OBSERVATORY_TZ", "Timezone", "Observatory", "str", False, True),
+    ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
+    ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
+    ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),
+    ("phd2_port", "PS_PHD2_PORT", "PHD2 port", "PHD2", "int", False, True),
+    ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
+    ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
+    ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
+    ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
+    ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
+    ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
+    ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
+    ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
+    ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
+    ("pushover_api_token", "PS_PUSHOVER_API_TOKEN", "Pushover API token", "Nanny / Alerts", "str", True, False),
+    ("consecutive_reject_limit", "PS_CONSECUTIVE_REJECT_LIMIT", "Consecutive rejects before severe alert", "Nanny / Alerts", "int", False, False),
+    ("auto_abort_on_severe", "PS_AUTO_ABORT_ON_SEVERE", "Auto-abort on severe (enable only once trusted)", "Nanny / Alerts", "bool", False, False),
+    ("heartbeat_minutes", "PS_HEARTBEAT_MINUTES", "Heartbeat interval (min)", "Nanny / Alerts", "int", False, False),
+    ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
+    ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
+    ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
+]
+
+_MASK = "••••••••"
+
+
+def _mask_secret(value: str) -> str:
+    value = str(value or "")
+    return (_MASK + value[-4:]) if len(value) > 4 else (_MASK if value else "")
+
+
+@app.get("/system", response_class=HTMLResponse)
+async def system_page(request: Request):
+    return templates.TemplateResponse(request, "system.html", {
+        "observatory": get_config().get_observatory(),
+    })
+
+
+@app.post("/api/preflight")
+async def api_preflight():
+    from photonscript.scheduler.preflight import run_preflight
+    return await run_preflight(get_config())
+
+
+@app.get("/api/config")
+async def api_get_config():
+    config = get_config()
+    groups: dict[str, list] = {}
+    for attr, env_var, label, group, ftype, secret, restart in _CONFIG_FIELDS:
+        raw = getattr(config, attr, "")
+        value = _mask_secret(raw) if secret else str(raw)
+        groups.setdefault(group, []).append({
+            "env": env_var, "label": label, "type": ftype,
+            "secret": secret, "restart": restart, "value": value,
+        })
+    return [{"group": g, "fields": f} for g, f in groups.items()]
+
+
+@app.post("/api/config")
+async def api_update_config(request: Request):
+    from photonscript.shared.envfile import env_path, update_env
+
+    body = await request.json()
+    config = get_config()
+    by_env = {f[1]: f for f in _CONFIG_FIELDS}
+    casts = {"int": int, "float": float,
+             "bool": lambda v: str(v).lower() in ("1", "true", "yes", "on")}
+
+    updates: dict[str, str] = {}
+    restart_recommended = False
+    for env_var, raw in body.items():
+        field = by_env.get(env_var)
+        if field is None:
+            continue
+        attr, _, _, _, ftype, secret, restart = field
+        raw = str(raw).strip()
+        if secret and (raw == "" or raw.startswith(_MASK[:2])):
+            continue  # masked/blank secret = keep current value
+        current = str(getattr(config, attr, ""))
+        if raw == current:
+            continue
+        try:
+            typed = casts.get(ftype, str)(raw)
+        except ValueError:
+            return JSONResponse(status_code=400, content={
+                "detail": f"{env_var}: '{raw}' is not a valid {ftype}"})
+        updates[env_var] = raw
+        setattr(config, attr, typed)  # live-apply where components re-read config
+        restart_recommended = restart_recommended or restart
+
+    if updates:
+        update_env(env_path(), updates)
+        logger.info("Config updated via web UI: %s",
+                    ", ".join(k for k in updates
+                              if not by_env[k][5]) or "(secrets)")
+    return {"updated": len(updates), "restart_recommended": restart_recommended}

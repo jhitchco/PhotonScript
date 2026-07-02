@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonScript - System</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .sys-nav { margin: 1rem 2rem 0; }
+        .sys-nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        .check-row { display: flex; align-items: baseline; gap: 1rem;
+                     padding: .6rem .9rem; border-radius: 6px; margin-bottom: .4rem;
+                     background: rgba(255,255,255,.03); }
+        .check-name { min-width: 220px; font-weight: 600; }
+        .check-detail { opacity: .8; font-size: .9rem; }
+        .badge { padding: .15rem .55rem; border-radius: 4px; font-size: .75rem;
+                 font-weight: 700; min-width: 46px; text-align: center; }
+        .badge-pass { background: #14532d; color: #86efac; }
+        .badge-warn { background: #713f12; color: #fde047; }
+        .badge-fail { background: #7f1d1d; color: #fca5a5; }
+        .go-banner { padding: .9rem 1.2rem; border-radius: 8px; font-weight: 700;
+                     margin-bottom: 1rem; }
+        .go-yes { background: #14532d; color: #86efac; }
+        .go-no  { background: #7f1d1d; color: #fca5a5; }
+        .cfg-group { margin-bottom: 1.6rem; }
+        .cfg-group h3 { margin-bottom: .6rem; color: #7dd3fc; font-size: .95rem;
+                        text-transform: uppercase; letter-spacing: .05em; }
+        .cfg-row { display: flex; align-items: center; gap: 1rem; margin-bottom: .45rem; }
+        .cfg-row label { min-width: 260px; font-size: .9rem; }
+        .cfg-row input, .cfg-row select {
+            flex: 1; max-width: 420px; background: #0b1220; color: #e2e8f0;
+            border: 1px solid #334155; border-radius: 5px; padding: .4rem .6rem;
+            font-family: inherit; }
+        .cfg-hint { font-size: .75rem; opacity: .55; }
+        #cfgStatus { margin-left: 1rem; font-size: .9rem; }
+        button[disabled] { opacity: .5; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">System &amp; Configuration</span>
+            <span class="observatory-badge">{{ observatory.name }}</span>
+        </div>
+    </header>
+    <nav class="sys-nav">
+        <a href="/">&larr; Dashboard</a>
+    </nav>
+
+    <main>
+        <section class="panel">
+            <h2>Preflight Check</h2>
+            <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system
+            test: config, directories (auto-created), NINA API, camera, mount,
+            safety monitor, PHD2, sequence generation + lint, star extraction,
+            Pushover, disk space. Safe to run any time — nothing moves.</p>
+            <button class="btn btn-primary" id="runPreflight">Run Preflight</button>
+            <span id="pfStatus"></span>
+            <div id="pfResults" style="margin-top:1rem;"></div>
+        </section>
+
+        <section class="panel" style="margin-top:1.5rem;">
+            <h2>Configuration</h2>
+            <p style="opacity:.7; margin-bottom:1rem;">Edits are written to
+            <code>.env</code> and applied immediately where possible. Values marked
+            &#9860; need a restart of PhotonScript to fully take effect. Secrets
+            display masked; leave masked to keep the current value.</p>
+            <form id="cfgForm"><div id="cfgFields">Loading…</div>
+                <button class="btn btn-primary" type="submit">Save Changes</button>
+                <span id="cfgStatus"></span>
+            </form>
+        </section>
+    </main>
+
+    <script>
+    async function runPreflight() {
+        const btn = document.getElementById('runPreflight');
+        const st = document.getElementById('pfStatus');
+        btn.disabled = true; st.textContent = ' Running…';
+        try {
+            const r = await fetch('/api/preflight', {method: 'POST'});
+            const data = await r.json();
+            const box = document.getElementById('pfResults');
+            const go = data.go
+                ? '<div class="go-banner go-yes">GO — no failures. ' +
+                  data.summary.warn + ' warning(s).</div>'
+                : '<div class="go-banner go-no">NO-GO — ' + data.summary.fail +
+                  ' failure(s) need attention before tonight.</div>';
+            box.innerHTML = go + data.checks.map(c =>
+                '<div class="check-row"><span class="badge badge-' + c.status + '">' +
+                c.status.toUpperCase() + '</span><span class="check-name">' + c.name +
+                '</span><span class="check-detail">' + c.detail + '</span></div>'
+            ).join('');
+        } catch (e) {
+            document.getElementById('pfResults').innerHTML =
+                '<div class="go-banner go-no">Preflight request failed: ' + e + '</div>';
+        }
+        btn.disabled = false; st.textContent = '';
+    }
+    document.getElementById('runPreflight').addEventListener('click', runPreflight);
+
+    async function loadConfig() {
+        const r = await fetch('/api/config');
+        const groups = await r.json();
+        const box = document.getElementById('cfgFields');
+        box.innerHTML = groups.map(g =>
+            '<div class="cfg-group"><h3>' + g.group + '</h3>' + g.fields.map(f => {
+                let input;
+                if (f.type === 'bool') {
+                    input = '<select name="' + f.env + '">' +
+                        '<option value="true"' + (f.value === 'True' || f.value === 'true' ? ' selected' : '') + '>true</option>' +
+                        '<option value="false"' + (f.value === 'False' || f.value === 'false' ? ' selected' : '') + '>false</option></select>';
+                } else {
+                    input = '<input name="' + f.env + '" value="' + (f.value ?? '') +
+                            '" ' + (f.secret ? 'autocomplete="off"' : '') + '>';
+                }
+                return '<div class="cfg-row"><label>' + f.label +
+                       (f.restart ? ' &#9860;' : '') + '<div class="cfg-hint">' +
+                       f.env + '</div></label>' + input + '</div>';
+            }).join('') + '</div>'
+        ).join('');
+    }
+    loadConfig();
+
+    document.getElementById('cfgForm').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const st = document.getElementById('cfgStatus');
+        st.textContent = 'Saving…';
+        const data = Object.fromEntries(new FormData(e.target).entries());
+        const r = await fetch('/api/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data),
+        });
+        const res = await r.json();
+        st.textContent = r.ok ? ('Saved ' + res.updated + ' value(s).' +
+            (res.restart_recommended ? ' Restart PhotonScript to apply everything.' : ''))
+            : ('Error: ' + (res.detail || r.status));
+        loadConfig();
+    });
+    </script>
+</body>
+</html>

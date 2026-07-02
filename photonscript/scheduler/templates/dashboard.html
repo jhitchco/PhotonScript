@@ -13,7 +13,10 @@
             <span class="subtitle">Remote Telescope Orchestration</span>
             <span class="observatory-badge">{{ observatory.name }} &bull; {{ month }}</span>
         </div>
-        <div class="connection-status" id="connectionStatus">Connecting...</div>
+        <div style="display:flex;align-items:center;gap:1.2rem;">
+            <a href="/system" style="color:#7dd3fc;text-decoration:none;font-size:.9rem;">System &amp; Config</a>
+            <div class="connection-status" id="connectionStatus">Connecting...</div>
+        </div>
     </header>
 
     <main>

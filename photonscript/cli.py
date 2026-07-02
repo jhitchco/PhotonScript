@@ -225,6 +225,24 @@ def report(
 
 
 @app.command()
+def preflight():
+    """Run the full daytime system test (config, dirs, NINA, PHD2, lint, Pushover)."""
+    import asyncio
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.preflight import run_preflight
+
+    result = asyncio.run(run_preflight(PhotonScriptConfig()))
+    colors = {"pass": "green", "warn": "yellow", "fail": "red"}
+    for c in result["checks"]:
+        console.print(f"[{colors[c['status']]}]{c['status'].upper():5s}[/] "
+                      f"[bold]{c['name']:28s}[/] {c['detail']}")
+    verdict = "[bold green]GO[/]" if result["go"] else "[bold red]NO-GO[/]"
+    s = result["summary"]
+    console.print(f"\n{verdict} — {s['pass']} pass, {s['warn']} warn, {s['fail']} fail")
+    raise typer.Exit(0 if result["go"] else 1)
+
+
+@app.command()
 def status():
     """Show current system status (connects to running scheduler)."""
     import httpx
