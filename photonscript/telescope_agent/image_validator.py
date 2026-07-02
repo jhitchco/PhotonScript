@@ -59,7 +59,10 @@ def _estimate_background_and_noise(data: np.ndarray) -> tuple[float, float]:
 def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: float = 5.0) -> list[dict]:
     """Star detection via sep (Source Extractor), scipy fallback."""
     try:
-        import sep
+        try:
+            import sep
+        except ImportError:
+            import sep_pjw as sep  # maintained fork, ships Windows wheels
 
         data_c = np.ascontiguousarray(data, dtype=np.float32)
         bkg = sep.Background(data_c)
