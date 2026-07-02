@@ -151,8 +151,7 @@ async def dashboard(request: Request):
     seasonal = get_seasonal_targets(month)
     ranked = rank_targets_for_night(seasonal, obs, now)
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {
         "observatory": obs,
         "telescope_state": _telescope_state,
         "projects": list(_projects.values()),
