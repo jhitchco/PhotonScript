@@ -114,7 +114,8 @@ class TestNinaJsonGeneration:
             ra_hours=5.0,
             dec_degrees=30.0,
             exposures=[ExposurePlan(filter_type=FilterType.HA, count=10)],
-            dither_every_n=3,
+            start_guiding=True,  # dither only applies to guided runs
+            dither_every_n=5,
             auto_focus_interval_minutes=60,
             meridian_flip=True,
         )

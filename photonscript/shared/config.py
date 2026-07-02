@@ -23,10 +23,10 @@ class PhotonScriptConfig(BaseSettings):
     log_level: str = "INFO"
 
     # --- Observatory ---
-    observatory_name: str = "New Mexico Remote"
-    observatory_lat: float = 32.9
-    observatory_lon: float = -105.5
-    observatory_elev: float = 2200.0
+    observatory_name: str = "AARO Pier 3 (Rodeo, NM)"
+    observatory_lat: float = 31.906944
+    observatory_lon: float = -109.021367
+    observatory_elev: float = 1250.0
     observatory_tz: str = "America/Denver"
     observatory_bortle: int = 2
 
@@ -35,13 +35,30 @@ class PhotonScriptConfig(BaseSettings):
     scheduler_port: int = 8100
 
     # --- Telescope Agent ---
-    nina_base_url: str = "http://localhost:1888/api"  # NINA Advanced API
+    nina_base_url: str = "http://localhost:1888/v2/api"  # NINA Advanced API (ninaAPI plugin)
     phd2_host: str = "localhost"
     phd2_port: int = 4400
-    image_watch_dir: str = "C:\\Astrophotography\\Tonight"  # NINA output dir
+    image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
+    nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
+    pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
     quality_fwhm_max: float = 4.0  # arcsec
     quality_eccentricity_max: float = 0.6
-    quality_tracking_rms_max: float = 2.0  # arcsec
+    quality_tracking_rms_max: float = 1.5  # arcsec (0.24"/px scale)
+    quality_corner_spread_max: float = 0.35  # corner FWHM spread vs median (collimation watch)
+
+    # --- Imaging defaults (AARO) ---
+    default_gain: int = 200
+    default_offset: int = 50
+    camera_setpoint_c: float = -10.0
+    cooling_tolerance_c: float = 1.0
+    guided_default: bool = False  # CEM70G absolute encoders: unguided is the default
+
+    # --- Supervisor escalation ---
+    pushover_user_key: str = ""
+    pushover_api_token: str = ""
+    consecutive_reject_limit: int = 3  # rejects in a row before severe alert
+    auto_abort_on_severe: bool = False  # enable only after trusting the nanny
+    heartbeat_minutes: int = 30
 
     # --- Librarian ---
     remote_image_dir: str = "C:\\Astrophotography"

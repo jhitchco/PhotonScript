@@ -244,10 +244,45 @@ Frames that fail QA are marked as rejected and not transferred, saving bandwidth
 
 The planner auto-selects exposure strategies based on target type:
 
-- **Emission nebulae / supernova remnants:** Narrowband (Ha 300s x40, OIII 300s x30, SII 300s x30) at gain 139
-- **Galaxies / clusters:** Broadband LRGB (L 180s x60, RGB 120s x20 each) at gain 100
+- **Emission nebulae / supernova remnants:** Narrowband (Ha 300s x40, OIII 300s x30, SII 300s x30) at gain 200 / offset 50
+- **Galaxies / clusters:** Broadband LRGB (L 180s x60, RGB 180s x20 each) at gain 200 / offset 50
+
+**Guiding:** unguided is the default — the iOptron CEM70G's absolute encoders track
+at sub-arcsecond precision without PHD2. Pass `--guided` for very long subs; the
+first guided target forces a fresh PHD2 calibration and dithers every 5 frames.
 
 These defaults can be overridden per project via the API or when creating projects.
+
+## AARO Deployment (single telescope PC)
+
+Everything can run on the scope PC (Tailscale 100.94.189.77):
+
+```
+git clone <this repo> C:\astro\PhotonScript
+cd C:\astro\PhotonScript
+pip install -e ".[dev]"
+copy config\example.env .env     # pre-filled with AARO values; add Pushover keys
+photonscript start --mode full   # scheduler + telescope agent + librarian
+```
+
+Prerequisites on the scope PC: Python 3.11+, NINA 3.x with the **Advanced API
+plugin** (enable API, note the port, keep localhost-bound), GroundStation plugin
+(Pushover), and PHD2 with **Tools -> Enable Server** if you ever run guided.
+Reach the dashboard from home via Tailscale: `http://100.94.189.77:8100`.
+
+## The Nanny (telescope agent escalation)
+
+The telescope agent watches every sub and escalates when something systemic
+goes wrong — Pushover warning first, and (only if `PS_AUTO_ABORT_ON_SEVERE=true`)
+a sequence stop. NINA's own Safety Monitor remains the hard weather backstop.
+
+| Watch | Trigger | Severity |
+| --- | --- | --- |
+| Consecutive rejects | 3 rejected subs in a row (clouds, dew, focus, tracking) | severe |
+| Cooling | cooler on but sensor >1C off the -10C setpoint | warn |
+| Guide RMS | above threshold (guided runs), re-alerts hourly max | warn |
+| Collimation/tilt | corner FWHM spread >0.35 vs frame median (RC16 watch) | warn (daily max) |
+| Heartbeat | "still alive" ping every 30 min at low priority | info |
 
 ## Development
 

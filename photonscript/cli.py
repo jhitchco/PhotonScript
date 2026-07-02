@@ -4,7 +4,9 @@ Usage:
     photonscript start [--mode scheduler|telescope|librarian|full]
     photonscript plan [--month 3] [--date 2024-03-15]
     photonscript targets [--month 3]
-    photonscript sequence [--output tonight.xml]
+    photonscript sequence [--output tonight.json] [--guided]
+    photonscript lint <sequence.json>
+    photonscript report [--date 2026-07-01]
     photonscript status
 """
 
@@ -146,10 +148,12 @@ def plan(
 
 @app.command()
 def sequence(
-    output: str = typer.Option("", help="Output XML file path"),
+    output: str = typer.Option("", help="Output file path"),
     month: int = typer.Option(0, help="Month (1-12), 0 = current"),
+    fmt: str = typer.Option("json", "--format", help="json (Advanced Sequencer) or xml"),
+    guided: bool = typer.Option(False, help="Guided run (default: unguided, CEM70G encoders)"),
 ):
-    """Generate a NINA sequence XML file for tonight."""
+    """Generate a NINA sequence file for tonight (lint-gated for JSON)."""
     from photonscript.shared.astronomy import get_seasonal_targets
     from photonscript.shared.config import PhotonScriptConfig
     from photonscript.scheduler.target_planner import (
@@ -165,18 +169,59 @@ def sequence(
     seasonal = get_seasonal_targets(month)
     projects = [create_project_from_target(t) for t in seasonal]
     targets = plan_night_sequence(projects, config, now)
+    for t in targets:
+        t.start_guiding = guided
     seq = build_sequence_for_night(f"PhotonScript_{now.strftime('%Y%m%d')}", targets)
-    xml = generate_nina_xml(seq)
 
-    if output:
-        Path(output).write_text(xml)
-        console.print(f"[green]Sequence saved to {output}[/green]")
-    else:
+    if fmt == "xml":
+        content = generate_nina_xml(seq)
         default_path = f"PhotonScript_{now.strftime('%Y%m%d')}.xml"
-        Path(default_path).write_text(xml)
-        console.print(f"[green]Sequence saved to {default_path}[/green]")
+    else:
+        from photonscript.scheduler.nina_sequence_json import generate_nina_json
+        from photonscript.scheduler.sequence_lint import lint as lint_seq, format_result
 
+        content = generate_nina_json(seq)
+        default_path = f"PhotonScript_{now.strftime('%Y%m%d')}.json"
+
+        # Lint gate — refuse to write a sequence that would fail at 3 AM
+        result = lint_seq(json.loads(content), guided=guided)
+        console.print(format_result(result))
+        if not result.ok:
+            console.print("[red]REFUSING to write sequence: lint failed.[/red]")
+            raise typer.Exit(1)
+
+    path = Path(output) if output else Path(default_path)
+    path.write_text(content)
+    console.print(f"[green]Sequence saved to {path}[/green]")
     console.print(f"[dim]{len(targets)} targets, ready for NINA import[/dim]")
+
+
+@app.command()
+def lint(
+    file: str = typer.Argument(..., help="Sequence JSON file to validate"),
+    guided: bool = typer.Option(None, help="Expected mode (default: auto-detect)"),
+):
+    """Validate a NINA Advanced Sequencer JSON against AARO operational rules."""
+    from photonscript.scheduler.sequence_lint import lint_file, format_result
+
+    result = lint_file(file, guided=guided)
+    console.print(format_result(result))
+    raise typer.Exit(0 if result.ok else 1)
+
+
+@app.command()
+def report(
+    date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),
+):
+    """Daily report: sky utilization + photon efficiency for a night."""
+    from datetime import timedelta
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.daily_report import build_daily_report
+
+    config = PhotonScriptConfig()
+    d = date or (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    rpt = build_daily_report(config, d)
+    console.print(Panel(rpt.to_text(), title="PhotonScript daily", border_style="blue"))
 
 
 @app.command()

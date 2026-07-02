@@ -4,7 +4,10 @@ NINA's Advanced Sequencer uses a JSON format with .NET $type annotations
 for serialization. This module generates files that NINA can load directly
 via File -> Open in the Advanced Sequencer.
 
-Reference: https://github.com/adamfenn28/nina-sequences
+Encodes the AARO acquisition order: tracking -> slew & center -> first
+capture filter -> autofocus -> plate solve & center -> [guiding] -> expose.
+Safety monitor condition on every target; unguided (CEM70G encoders) is
+the default mode.
 """
 
 from __future__ import annotations
@@ -63,11 +66,46 @@ def _build_slew_and_center(target: NinaSequenceTarget) -> dict:
     )
 
 
-def _build_start_guiding() -> dict:
+def _build_start_guiding(force_calibration: bool = False) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.Guider.StartGuiding, NINA.Sequencer",
         Inherited=True,
-        ForceCalibration=False,
+        ForceCalibration=force_calibration,
+    )
+
+
+def _build_stop_guiding() -> dict:
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Guider.StopGuiding, NINA.Sequencer",
+        Inherited=True,
+    )
+
+
+def _build_set_tracking(mode: int) -> dict:
+    """Tracking mode: 0 = sidereal (imaging), 5 = stopped (park/shutdown)."""
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Telescope.SetTracking, NINA.Sequencer",
+        TrackingMode=mode,
+    )
+
+
+def _build_center(target: NinaSequenceTarget) -> dict:
+    """Plate Solve & Center — re-center after autofocus, before imaging."""
+    coords = {**_decompose_ra(target.ra_hours), **_decompose_dec(target.dec_degrees)}
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Platesolving.Center, NINA.Sequencer",
+        Inherited=True,
+        Coordinates=_make_typed(
+            "NINA.Astrometry.InputCoordinates, NINA.Astrometry",
+            **coords,
+        ),
+    )
+
+
+def _build_safety_condition() -> dict:
+    """Abort imaging when the observatory safety monitor reports Unsafe."""
+    return _make_typed(
+        "NINA.Sequencer.Conditions.SafetyMonitorCondition, NINA.Sequencer",
     )
 
 
@@ -114,7 +152,7 @@ def _build_switch_filter(filter_type: FilterType) -> dict:
     )
 
 
-def _build_dither_trigger(every_n: int = 3) -> dict:
+def _build_dither_trigger(every_n: int = 5) -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.Guider.DitherAfterExposures, NINA.Sequencer",
         AfterExposures=every_n,
@@ -142,7 +180,7 @@ def _build_altitude_condition(min_alt: float) -> dict:
     )
 
 
-def _build_cool_camera(temp_c: float = -10.0, duration_minutes: int = 10) -> dict:
+def _build_cool_camera(temp_c: float = -10.0, duration_minutes: int = 2) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.Camera.CoolCamera, NINA.Sequencer",
         Temperature=temp_c,
@@ -169,30 +207,51 @@ def _build_unpark_scope() -> dict:
     )
 
 
-def _build_target_container(target: NinaSequenceTarget, min_altitude: float) -> dict:
-    """Build a DeepSkyObjectContainer for one target."""
+def _build_target_container(
+    target: NinaSequenceTarget,
+    min_altitude: float,
+    force_calibration: bool = False,
+) -> dict:
+    """Build a DeepSkyObjectContainer for one target.
+
+    AARO acquisition order (encoded, do not reorder):
+      set tracking -> slew & center -> switch to first capture filter ->
+      autofocus -> plate solve & center -> defensive tracking re-set ->
+      [start guiding if guided] -> exposures
+    """
     coords = {**_decompose_ra(target.ra_hours), **_decompose_dec(target.dec_degrees)}
 
+    active_exposures = [e for e in target.exposures if e.count - e.acquired > 0]
+
     # Build instruction list
-    instructions = []
+    instructions = [_build_set_tracking(0)]
 
     # Slew & center
     if target.slew_and_center:
         instructions.append(_build_slew_and_center(target))
 
-    # Start guiding
-    if target.start_guiding:
-        instructions.append(_build_start_guiding())
+    # Switch to the FIRST capture filter BEFORE autofocus — AF must run
+    # through the filter it will shoot through, not whatever was left in the wheel.
+    if active_exposures:
+        instructions.append(_build_switch_filter(active_exposures[0].filter_type))
 
     # Autofocus on start
     if target.auto_focus_on_start:
         instructions.append(_build_run_autofocus())
 
+    # Plate solve & center after AF, before imaging — never skip
+    instructions.append(_build_center(target))
+
+    # Defensive tracking re-set just before guiding/imaging
+    instructions.append(_build_set_tracking(0))
+
+    # Start guiding (guided runs only; unguided is the AARO default —
+    # the CEM70G absolute encoders carry the load)
+    if target.start_guiding:
+        instructions.append(_build_start_guiding(force_calibration))
+
     # Exposure sets (with filter switches)
-    for exp in target.exposures:
-        remaining = exp.count - exp.acquired
-        if remaining <= 0:
-            continue
+    for exp in active_exposures:
         instructions.append(_build_switch_filter(exp.filter_type))
         exposure_item = _build_take_exposures(exp)
         if exposure_item:
@@ -204,11 +263,11 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float) -> 
         triggers.append(_build_meridian_flip_trigger())
     if target.auto_focus_interval_minutes > 0:
         triggers.append(_build_autofocus_trigger(target.auto_focus_interval_minutes))
-    if target.dither_every_n > 0:
+    if target.start_guiding and target.dither_every_n > 0:
         triggers.append(_build_dither_trigger(target.dither_every_n))
 
-    # Build conditions
-    conditions = [_build_altitude_condition(min_altitude)]
+    # Build conditions — safety monitor on EVERY target (weather abort)
+    conditions = [_build_safety_condition(), _build_altitude_condition(min_altitude)]
 
     return _make_typed(
         "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
@@ -251,20 +310,31 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     # Start area items
     start_items = [_build_unpark_scope()]
     if sequence.targets and sequence.targets[0].cool_camera:
-        start_items.append(_build_cool_camera(sequence.targets[0].camera_temp_c))
+        # 2-minute cool to -10.0°C — verify Temperature field is NEVER 0
+        # (a misread 0 setpoint once cost a whole night of warm-sensor subs)
+        start_items.append(_build_cool_camera(sequence.targets[0].camera_temp_c, 2))
 
-    # Target containers
-    target_containers = [
-        _build_target_container(t, sequence.wait_for_altitude)
-        for t in sequence.targets
-    ]
+    # Target containers — force guider recalibration on the FIRST guided target
+    # (stale PHD2 calibration is a top cause of runaway guide errors)
+    target_containers = []
+    first_guided = True
+    for t in sequence.targets:
+        force_cal = first_guided and t.start_guiding
+        if t.start_guiding:
+            first_guided = False
+        target_containers.append(
+            _build_target_container(t, sequence.wait_for_altitude, force_cal)
+        )
 
-    # End area items
+    # End area items: stop guiding (if any), warm, park, stop tracking
     end_items = []
+    if any(t.start_guiding for t in sequence.targets):
+        end_items.append(_build_stop_guiding())
     if sequence.warm_camera_on_finish:
         end_items.append(_build_warm_camera())
     if sequence.park_on_finish:
         end_items.append(_build_park_scope())
+    end_items.append(_build_set_tracking(5))
 
     root = _make_typed(
         "NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",

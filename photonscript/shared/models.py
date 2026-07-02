@@ -151,6 +151,7 @@ class ImageQualityMetrics(BaseModel):
     noise_adu: Optional[float] = None
     snr: Optional[float] = None
     tracking_rms_arcsec: Optional[float] = None
+    corner_spread: Optional[float] = None  # corner FWHM spread vs median (collimation/tilt watch)
     passed_qa: bool = True
     rejection_reason: str = ""
 
@@ -254,8 +255,8 @@ class NinaSequenceTarget(BaseModel):
     auto_focus_on_start: bool = True
     auto_focus_interval_minutes: int = 60
     meridian_flip: bool = True
-    dither_every_n: int = 3
-    start_guiding: bool = True
+    dither_every_n: int = 5
+    start_guiding: bool = False  # CEM70G encoders: unguided default
     cool_camera: bool = True
     camera_temp_c: float = -10.0
 

@@ -26,17 +26,17 @@ logger = logging.getLogger(__name__)
 
 # Default narrowband exposure plan for emission nebulae
 NARROWBAND_PLAN = [
-    ExposurePlan(filter_type=FilterType.HA, exposure_seconds=300, count=40, gain=139, offset=30),
-    ExposurePlan(filter_type=FilterType.OIII, exposure_seconds=300, count=30, gain=139, offset=30),
-    ExposurePlan(filter_type=FilterType.SII, exposure_seconds=300, count=30, gain=139, offset=30),
+    ExposurePlan(filter_type=FilterType.HA, exposure_seconds=300, count=40, gain=200, offset=50),
+    ExposurePlan(filter_type=FilterType.OIII, exposure_seconds=300, count=30, gain=200, offset=50),
+    ExposurePlan(filter_type=FilterType.SII, exposure_seconds=300, count=30, gain=200, offset=50),
 ]
 
 # Default broadband exposure plan for galaxies / clusters
 BROADBAND_PLAN = [
-    ExposurePlan(filter_type=FilterType.LUMINANCE, exposure_seconds=180, count=60, gain=100, offset=50),
-    ExposurePlan(filter_type=FilterType.RED, exposure_seconds=120, count=20, gain=100, offset=50),
-    ExposurePlan(filter_type=FilterType.GREEN, exposure_seconds=120, count=20, gain=100, offset=50),
-    ExposurePlan(filter_type=FilterType.BLUE, exposure_seconds=120, count=20, gain=100, offset=50),
+    ExposurePlan(filter_type=FilterType.LUMINANCE, exposure_seconds=180, count=60, gain=200, offset=50),
+    ExposurePlan(filter_type=FilterType.RED, exposure_seconds=180, count=20, gain=200, offset=50),
+    ExposurePlan(filter_type=FilterType.GREEN, exposure_seconds=180, count=20, gain=200, offset=50),
+    ExposurePlan(filter_type=FilterType.BLUE, exposure_seconds=180, count=20, gain=200, offset=50),
 ]
 
 

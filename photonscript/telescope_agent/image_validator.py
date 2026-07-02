@@ -44,7 +44,6 @@ def _load_image_data(file_path: str) -> Optional[np.ndarray]:
 
 def _estimate_background_and_noise(data: np.ndarray) -> tuple[float, float]:
     """Estimate background level and noise using sigma-clipped statistics."""
-    # Simple iterative sigma clipping
     clipped = data.flatten()
     for _ in range(3):
         mean = np.mean(clipped)
@@ -58,15 +57,10 @@ def _estimate_background_and_noise(data: np.ndarray) -> tuple[float, float]:
 
 
 def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: float = 5.0) -> list[dict]:
-    """Simple star detection using threshold above background.
-
-    For production use, this would integrate with sep (Source Extractor as Python)
-    for much better star detection and measurement.
-    """
+    """Star detection via sep (Source Extractor), scipy fallback."""
     try:
         import sep
 
-        # sep requires C-contiguous float32
         data_c = np.ascontiguousarray(data, dtype=np.float32)
         bkg = sep.Background(data_c)
         data_sub = data_c - bkg
@@ -74,7 +68,6 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
         objects = sep.extract(data_sub, threshold, err=bkg.globalrms)
         stars = []
         for obj in objects:
-            # Compute HFR (half-flux radius)
             flux_radius, _ = sep.flux_radius(
                 data_sub, [obj["x"]], [obj["y"]], [6.0 * obj["a"]], 0.5
             )
@@ -92,11 +85,9 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
         return stars
 
     except ImportError:
-        # Fallback: simple threshold detection without sep
         logger.info("sep not available, using simple threshold detection")
         detect_level = background + threshold * noise
         binary = data > detect_level
-        # Very basic connected component counting
         from scipy import ndimage
         labeled, num_features = ndimage.label(binary)
 
@@ -120,18 +111,38 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
         return stars
 
 
+def _corner_spread(stars: list[dict], shape: tuple[int, int],
+                   median_fwhm: float) -> Optional[float]:
+    """Corner FWHM spread relative to the frame median.
+
+    The RC16's collimation and sensor tilt show up as asymmetric corner
+    degradation long before the center goes soft. Computed passively on
+    every sub — no sky time cost.
+    """
+    if not stars or median_fwhm <= 0:
+        return None
+    h, w = shape
+    corner_medians = []
+    for (x0, x1, y0, y1) in [(0, w / 3, 0, h / 3), (2 * w / 3, w, 0, h / 3),
+                             (0, w / 3, 2 * h / 3, h), (2 * w / 3, w, 2 * h / 3, h)]:
+        vals = [s["fwhm"] for s in stars
+                if x0 <= s["x"] < x1 and y0 <= s["y"] < y1 and s["fwhm"] > 0]
+        if len(vals) >= 3:
+            corner_medians.append(float(np.median(vals)))
+    if len(corner_medians) < 3:
+        return None
+    return float((max(corner_medians) - min(corner_medians)) / median_fwhm)
+
+
 def validate_image(
     file_path: str,
     config: PhotonScriptConfig,
-    pixel_scale: float = 1.0,  # arcsec/pixel
+    pixel_scale: Optional[float] = None,  # arcsec/pixel; defaults to config value
 ) -> ImageQualityMetrics:
-    """Analyze an image and return quality metrics.
+    """Analyze an image and return quality metrics."""
+    if pixel_scale is None:
+        pixel_scale = getattr(config, "pixel_scale_arcsec", 1.0)
 
-    Args:
-        file_path: Path to the image file (FITS, TIFF, etc.)
-        config: Application configuration with quality thresholds
-        pixel_scale: Plate scale in arcsec/pixel for the imaging setup
-    """
     data = _load_image_data(file_path)
     if data is None:
         return ImageQualityMetrics(
@@ -162,6 +173,7 @@ def validate_image(
     median_hfr_px = float(np.median(hfr_values)) if hfr_values else 0
     median_ecc = float(np.median(ecc_values)) if ecc_values else 0
     fwhm_arcsec = median_fwhm_px * pixel_scale
+    corner_spread = _corner_spread(stars, data.shape, median_fwhm_px)
 
     # Quality assessment
     passed = True
@@ -183,6 +195,7 @@ def validate_image(
         background_adu=round(background, 1),
         noise_adu=round(noise, 2),
         snr=round(snr, 1),
+        corner_spread=round(corner_spread, 3) if corner_spread is not None else None,
         passed_qa=passed,
         rejection_reason="; ".join(reasons),
     )

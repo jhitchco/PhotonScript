@@ -1,10 +1,9 @@
 """Telescope Agent — runs on the Windows telescope PC.
 
 Monitors NINA and PHD2, validates captured images, and reports status
-back to the scheduler via the message bus.
-
-This agent is designed to run on the Windows computer that controls
-the telescope mount, camera, and guiding equipment.
+back to the scheduler via the message bus. Includes the nanny escalation
+ladder: Pushover warn -> (optional) abort-to-safe. NINA's own Safety
+Monitor remains the hard weather backstop.
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from photonscript.shared.models import (
     ImageStatus, SessionState, TelescopeState,
 )
 from photonscript.shared.messagebus import get_message_bus
+from photonscript.shared.pushover import notify
 from photonscript.telescope_agent.nina_client import NinaClient
 from photonscript.telescope_agent.phd2_client import PHD2Client
 from photonscript.telescope_agent.image_validator import validate_image
@@ -41,6 +41,7 @@ class TelescopeAgent:
     - Connect to NINA and PHD2 on the local Windows machine
     - Watch the image output directory for new captures
     - Validate each captured image for quality (FWHM, tracking, eccentricity)
+    - Escalate systemic problems (consecutive rejects, cooling, collimation)
     - Report state and image events to the scheduler via message bus
     """
 
@@ -52,6 +53,9 @@ class TelescopeAgent:
         self.state = TelescopeState()
         self._running = False
         self._watch_dir = Path(config.image_watch_dir)
+        # Nanny / escalation state
+        self._consecutive_rejects = 0
+        self._alerted: set[str] = set()  # de-duped alert keys
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -68,6 +72,7 @@ class TelescopeAgent:
             asyncio.create_task(self._phd2_monitor()),
             asyncio.create_task(self._file_watch_loop()),
             asyncio.create_task(self._state_broadcast_loop()),
+            asyncio.create_task(self._heartbeat_loop()),
         ]
 
         # Listen for commands from scheduler
@@ -84,6 +89,43 @@ class TelescopeAgent:
     async def stop(self):
         self._running = False
 
+    # ------------------------------------------------------------------
+    # Nanny escalation
+    # ------------------------------------------------------------------
+
+    async def _escalate(self, key: str, message: str, severe: bool = False):
+        """Escalation ladder: Pushover warn -> (optional) abort-to-safe.
+
+        Alerts are de-duplicated by key. NINA's own Safety Monitor remains
+        the hard weather backstop — this layer is quality control on top.
+        """
+        if key in self._alerted:
+            return
+        self._alerted.add(key)
+        logger.warning("NANNY ALERT [%s] %s", key, message)
+        await notify(self.config, message, title="PhotonScript NANNY",
+                     priority=1 if severe else 0)
+        if severe and self.config.auto_abort_on_severe:
+            logger.warning("auto_abort_on_severe enabled — stopping sequence")
+            await self.nina.stop_sequence()
+            await notify(self.config, "Sequence stopped by nanny.", priority=1)
+
+    async def _heartbeat_loop(self):
+        """Low-priority 'still alive' ping so a dead agent is noticed."""
+        while self._running:
+            await asyncio.sleep(self.config.heartbeat_minutes * 60)
+            await notify(
+                self.config,
+                f"Nanny alive. {self.state.images_captured_tonight} subs tonight, "
+                f"state={self.state.session_state.value}",
+                title="PhotonScript heartbeat",
+                priority=-1,
+            )
+
+    # ------------------------------------------------------------------
+    # Monitoring loops
+    # ------------------------------------------------------------------
+
     async def _nina_poll_loop(self):
         """Poll NINA for equipment state every few seconds."""
         while self._running:
@@ -92,6 +134,17 @@ class TelescopeAgent:
                 camera = await self.nina.get_camera_info()
                 self.state.camera_temp_c = camera.get("Temperature")
                 self.state.camera_cooling_on = camera.get("CoolerOn", False)
+
+                # Cooling watch: cooler on but sensor off-setpoint (the 0°C incident)
+                if (self.state.camera_cooling_on
+                        and self.state.camera_temp_c is not None
+                        and abs(self.state.camera_temp_c - self.config.camera_setpoint_c)
+                        > self.config.cooling_tolerance_c):
+                    await self._escalate(
+                        "cooling",
+                        f"Sensor at {self.state.camera_temp_c:.1f}C with cooler on — "
+                        f"setpoint is {self.config.camera_setpoint_c:.1f}C",
+                    )
 
                 # Get mount info
                 mount = await self.nina.get_mount_info()
@@ -148,6 +201,11 @@ class TelescopeAgent:
                 metrics.rms_total_arcsec,
                 self.config.quality_tracking_rms_max,
             )
+            await self._escalate(
+                f"rms-{datetime.utcnow():%Y%m%d%H}",  # re-alert at most hourly
+                f"Guide RMS {metrics.rms_total_arcsec:.2f}\" over threshold "
+                f"{self.config.quality_tracking_rms_max:.2f}\"",
+            )
 
     async def _file_watch_loop(self):
         """Watch the image output directory for new FITS/TIFF files.
@@ -196,7 +254,7 @@ class TelescopeAgent:
         logger.info("New image detected: %s", file_path.name)
 
         # Parse filename for metadata (NINA naming convention)
-        # Example: M31_Ha_300s_Gain139_001.fits
+        # Example: M31_Ha_300s_Gain200_001.fits
         parts = file_path.stem.split("_")
         target_name = parts[0] if len(parts) > 0 else "Unknown"
         filter_str = parts[1] if len(parts) > 1 else "L"
@@ -244,6 +302,29 @@ class TelescopeAgent:
         self.state.images_captured_tonight += 1
         self.state.last_image = image
         self.state.current_filter = filter_type
+
+        # Nanny: consecutive rejects mean something systemic (clouds, dew,
+        # focus loss, tracking) — a single bad sub is just a bad sub.
+        if quality.passed_qa:
+            self._consecutive_rejects = 0
+        else:
+            self._consecutive_rejects += 1
+            if self._consecutive_rejects >= self.config.consecutive_reject_limit:
+                await self._escalate(
+                    f"rejects-{datetime.utcnow():%Y%m%d%H}",
+                    f"{self._consecutive_rejects} consecutive rejected subs "
+                    f"(last: {quality.rejection_reason})",
+                    severe=True,
+                )
+
+        # Collimation/tilt watch (RC16): corner FWHM spread trending high
+        if (quality.corner_spread is not None
+                and quality.corner_spread > self.config.quality_corner_spread_max):
+            await self._escalate(
+                f"corners-{datetime.utcnow():%Y%m%d}",  # at most daily
+                f"Corner FWHM spread {quality.corner_spread:.2f} exceeds "
+                f"{self.config.quality_corner_spread_max:.2f} — check collimation/tilt",
+            )
 
         # Report to scheduler
         await self.bus.publish(AgentMessage(
