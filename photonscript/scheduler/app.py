@@ -458,3 +458,21 @@ async def api_update_config(request: Request):
                     ", ".join(k for k in updates
                               if not by_env[k][5]) or "(secrets)")
     return {"updated": len(updates), "restart_recommended": restart_recommended}
+
+
+@app.post("/api/pushover/test")
+async def api_pushover_test():
+    from photonscript.shared.pushover import notify
+
+    config = get_config()
+    if not config.pushover_user_key or not config.pushover_api_token:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "detail": "Pushover keys not set — enter them above and Save first."})
+    ok = await notify(config,
+                      "Test notification from the PhotonScript web UI. "
+                      "If you can read this, nanny alerts will reach you.",
+                      title="PhotonScript test")
+    return {"ok": ok,
+            "detail": "Sent — check your phone." if ok
+            else "Pushover API rejected the request — check both keys."}

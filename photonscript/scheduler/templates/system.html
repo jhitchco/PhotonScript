@@ -118,8 +118,24 @@
                 return '<div class="cfg-row"><label>' + f.label +
                        (f.restart ? ' &#9860;' : '') + '<div class="cfg-hint">' +
                        f.env + '</div></label>' + input + '</div>';
-            }).join('') + '</div>'
+            }).join('') +
+            (g.group === 'Nanny / Alerts'
+                ? '<div class="cfg-row"><label></label>' +
+                  '<button type="button" class="btn btn-secondary" id="pushoverTest">' +
+                  'Send test notification</button>' +
+                  '<span id="pushoverTestStatus"></span></div>'
+                : '') + '</div>'
         ).join('');
+        document.getElementById('pushoverTest')?.addEventListener('click', async () => {
+            const st = document.getElementById('pushoverTestStatus');
+            st.textContent = 'Sending…';
+            try {
+                const r = await fetch('/api/pushover/test', {method: 'POST'});
+                const d = await r.json();
+                st.textContent = d.detail;
+                st.style.color = d.ok ? '#86efac' : '#fca5a5';
+            } catch (e) { st.textContent = 'Request failed: ' + e; }
+        });
     }
     loadConfig();
 
