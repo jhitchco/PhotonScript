@@ -30,8 +30,8 @@ def test_generated_sequence_uses_nina_filter_names():
                                                    exposure_seconds=300, count=5)])
     content = generate_nina_json(build_sequence_for_night("T", [t]))
     # NINA profile names the Ha filter 'H' — the JSON must say 'H', not 'Ha'
-    assert '"Name": "H"' in content
-    assert '"FilterName": "H"' in content
+    assert '"_name": "H"' in content
+    assert '"_name": "Ha"' not in content
 
 
 def test_dst_offset_changes_with_season():

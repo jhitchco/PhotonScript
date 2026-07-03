@@ -1,13 +1,18 @@
 """Generate NINA Advanced Sequencer JSON files.
 
-NINA's Advanced Sequencer uses a JSON format with .NET $type annotations
-for serialization. This module generates files that NINA can load directly
-via File -> Open in the Advanced Sequencer.
+Schema is modeled on a sequence exported from the AARO scope PC's own NINA
+3.2 install (the 'M42 2026-02-27-runtime' reference), so every $type below is
+known-good against the exact deserializer that will load it. Key learnings
+baked in from that reference:
 
-Encodes the AARO acquisition order: tracking -> slew & center -> first
-capture filter -> autofocus -> plate solve & center -> [guiding] -> expose.
-Safety monitor condition on every target; unguided (CEM70G encoders) is
-the default mode.
+  - SlewScopeToRaDec + Platesolving.Center (SlewScopeAndCenter does NOT exist)
+  - CoolCamera/WarmCamera Duration is in MINUTES (2.0, not 120)
+  - WaitForTime uses a DuskProvider so NINA recomputes dusk itself nightly
+  - AltitudeCondition needs the full WaitLoopData (coordinates + offset)
+  - FilterInfo is NINA.Core.Model.Equipment.FilterInfo with _name/_position
+  - SmartExposure = LoopCondition(iterations) + SwitchFilter + TakeExposure
+  - Equipment must be explicitly connected in the start area (cold start)
+  - GroundStation Pushover items narrate every phase for remote monitoring
 """
 
 from __future__ import annotations
@@ -20,9 +25,18 @@ from photonscript.shared.models import (
 )
 from photonscript.scheduler.nina_sequence import FILTER_POSITIONS
 
+OBS_COLLECTION_ITEMS = ("System.Collections.ObjectModel.ObservableCollection`1"
+                        "[[NINA.Sequencer.SequenceItem.ISequenceItem, NINA.Sequencer]],"
+                        " System.ObjectModel")
+OBS_COLLECTION_CONDITIONS = ("System.Collections.ObjectModel.ObservableCollection`1"
+                             "[[NINA.Sequencer.Conditions.ISequenceCondition, NINA.Sequencer]],"
+                             " System.ObjectModel")
+OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`1"
+                           "[[NINA.Sequencer.Trigger.ISequenceTrigger, NINA.Sequencer]],"
+                           " System.ObjectModel")
+
 
 def _decompose_ra(ra_hours: float) -> dict:
-    """Decompose RA decimal hours into H/M/S components."""
     h = int(ra_hours)
     remainder = (ra_hours - h) * 60
     m = int(remainder)
@@ -31,123 +45,163 @@ def _decompose_ra(ra_hours: float) -> dict:
 
 
 def _decompose_dec(dec_degrees: float) -> dict:
-    """Decompose Dec decimal degrees into D/M/S components."""
     sign = 1 if dec_degrees >= 0 else -1
     d_abs = abs(dec_degrees)
     d = int(d_abs)
     remainder = (d_abs - d) * 60
     m = int(remainder)
     s = (remainder - m) * 60
-    return {
-        "DecDegrees": sign * d,
-        "DecMinutes": m,
-        "DecSeconds": round(s, 2),
-        "NegativeDec": dec_degrees < 0,
-    }
+    return {"NegativeDec": dec_degrees < 0, "DecDegrees": sign * d,
+            "DecMinutes": m, "DecSeconds": round(s, 2)}
+
+
+def _coords(target) -> dict:
+    return {"$type": "NINA.Astrometry.InputCoordinates, NINA.Astrometry",
+            **_decompose_ra(target.ra_hours), **_decompose_dec(target.dec_degrees)}
 
 
 def _make_typed(type_name: str, **kwargs) -> dict:
-    """Create a NINA $type-annotated object."""
     obj = {"$type": type_name}
     obj.update(kwargs)
     return obj
 
 
-def _build_slew_and_center(target: NinaSequenceTarget) -> dict:
-    """Build a SlewScopeAndCenter instruction."""
-    coords = {**_decompose_ra(target.ra_hours), **_decompose_dec(target.dec_degrees)}
+def _items(values):  # ObservableCollection wrappers
+    return {"$type": OBS_COLLECTION_ITEMS, "$values": values}
+
+
+def _conditions(values):
+    return {"$type": OBS_COLLECTION_CONDITIONS, "$values": values}
+
+
+def _triggers(values):
+    return {"$type": OBS_COLLECTION_TRIGGERS, "$values": values}
+
+
+def _seq_container(name: str, items: list, conditions: list = None,
+                   triggers: list = None,
+                   container_type="NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer",
+                   **extra) -> dict:
     return _make_typed(
-        "NINA.Sequencer.SequenceItem.Telescope.SlewScopeAndCenter, NINA.Sequencer",
-        Inherited=True,
-        Coordinates=_make_typed(
-            "NINA.Astrometry.InputCoordinates, NINA.Astrometry",
-            **coords,
-        ),
+        container_type,
+        Strategy=_make_typed("NINA.Sequencer.Container.ExecutionStrategy."
+                             "SequentialStrategy, NINA.Sequencer"),
+        Name=name,
+        Conditions=_conditions(conditions or []),
+        IsExpanded=True,
+        Items=_items(items),
+        Triggers=_triggers(triggers or []),
+        ErrorBehavior=0,
+        Attempts=1,
+        **extra,
     )
 
 
-def _build_start_guiding(force_calibration: bool = False) -> dict:
+def _trigger_runner(items: list = None) -> dict:
+    return _seq_container(None, items or [])
+
+
+# --- Instructions -----------------------------------------------------------
+
+def _pushover(title: str, message: str, sound: int = 1) -> dict:
+    """GroundStation Pushover — Jeremy's remote narration channel."""
     return _make_typed(
-        "NINA.Sequencer.SequenceItem.Guider.StartGuiding, NINA.Sequencer",
-        Inherited=True,
-        ForceCalibration=force_calibration,
-    )
+        "DaleGhent.NINA.GroundStation.SendToPushover.SendToPushover, "
+        "DaleGhent.NINA.GroundStation",
+        Title=title, Message=message, Priority=0, NotificationSound=sound,
+        ErrorBehavior=0, Attempts=1)
 
 
-def _build_stop_guiding() -> dict:
+def _connect(device: str) -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Connect.ConnectEquipment, "
+                       "NINA.Sequencer", SelectedDevice=device,
+                       ErrorBehavior=0, Attempts=1)
+
+
+def _dew_heater(on: bool = True) -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Camera.DewHeater, "
+                       "NINA.Sequencer", OnOff=on, ErrorBehavior=0, Attempts=1)
+
+
+def _cool_camera(temp_c: float, duration_min: float = 2.0) -> dict:
+    # Duration is MINUTES (reference file uses 2.0)
+    return _make_typed("NINA.Sequencer.SequenceItem.Camera.CoolCamera, "
+                       "NINA.Sequencer", Temperature=temp_c,
+                       Duration=duration_min, ErrorBehavior=0, Attempts=1)
+
+
+def _warm_camera(duration_min: float = 3.0) -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Camera.WarmCamera, "
+                       "NINA.Sequencer", Duration=duration_min,
+                       ErrorBehavior=0, Attempts=1)
+
+
+def _wait_for_dusk(minutes_offset: int = 0) -> dict:
+    """WaitForTime bound to NINA's own DuskProvider — recomputed nightly."""
     return _make_typed(
-        "NINA.Sequencer.SequenceItem.Guider.StopGuiding, NINA.Sequencer",
-        Inherited=True,
-    )
+        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
+        Hours=0, Minutes=0, MinutesOffset=minutes_offset, Seconds=0,
+        SelectedProvider=_make_typed(
+            "NINA.Sequencer.Utility.DateTimeProvider.DuskProvider, NINA.Sequencer"),
+        ErrorBehavior=0, Attempts=1)
 
 
-def _build_set_tracking(mode: int) -> dict:
-    """Tracking mode: 0 = sidereal (imaging), 5 = stopped (park/shutdown)."""
+def _unpark() -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Telescope.UnparkScope, "
+                       "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
+
+
+def _park() -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Telescope.ParkScope, "
+                       "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
+
+
+def _set_tracking(mode: int) -> dict:
+    """0 = sidereal, 5 = stopped."""
+    return _make_typed("NINA.Sequencer.SequenceItem.Telescope.SetTracking, "
+                       "NINA.Sequencer", TrackingMode=mode,
+                       ErrorBehavior=0, Attempts=2)
+
+
+def _slew(target) -> dict:
+    """SlewScopeToRaDec — SlewScopeAndCenter does not exist in NINA 3.2."""
     return _make_typed(
-        "NINA.Sequencer.SequenceItem.Telescope.SetTracking, NINA.Sequencer",
-        TrackingMode=mode,
-    )
+        "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToRaDec, NINA.Sequencer",
+        Inherited=True, Coordinates=_coords(target), ErrorBehavior=0, Attempts=2)
 
 
-def _build_center(target: NinaSequenceTarget) -> dict:
-    """Plate Solve & Center — re-center after autofocus, before imaging."""
-    coords = {**_decompose_ra(target.ra_hours), **_decompose_dec(target.dec_degrees)}
+def _center(target) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.Platesolving.Center, NINA.Sequencer",
-        Inherited=True,
-        Coordinates=_make_typed(
-            "NINA.Astrometry.InputCoordinates, NINA.Astrometry",
-            **coords,
-        ),
-    )
+        Inherited=True, Coordinates=_coords(target), ErrorBehavior=0, Attempts=2)
 
 
-def _build_safety_condition() -> dict:
-    """Abort imaging when the observatory safety monitor reports Unsafe."""
-    return _make_typed(
-        "NINA.Sequencer.Conditions.SafetyMonitorCondition, NINA.Sequencer",
-    )
+def _autofocus() -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, "
+                       "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
 
 
-def _build_run_autofocus() -> dict:
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, NINA.Sequencer",
-        Inherited=True,
-    )
+def _start_guiding(force_calibration: bool = False) -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Guider.StartGuiding, "
+                       "NINA.Sequencer", ForceCalibration=force_calibration,
+                       ErrorBehavior=0, Attempts=1)
 
 
-def _build_take_exposures(exp: ExposurePlan) -> dict:
-    """Build a TakeSubframeExposure or TakeManyExposures block."""
-    remaining = exp.count - exp.acquired
-    if remaining <= 0:
-        return None
+def _stop_guiding() -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Guider.StopGuiding, "
+                       "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
 
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Imaging.TakeManyExposures, NINA.Sequencer",
-        Inherited=True,
-        ExposureTime=exp.exposure_seconds,
-        ExposureCount=remaining,
-        Gain=exp.gain,
-        Offset=exp.offset,
-        Binning=_make_typed(
-            "NINA.Equipment.Equipment.BinningMode, NINA.Equipment",
-            X=exp.binning,
-            Y=exp.binning,
-        ),
-        ImageType="LIGHT",
-        FilterName=_nina_filter_name(exp.filter_type),
-    )
+
+def _disconnect_all() -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Connect."
+                       "DisconnectAllEquipment, NINA.Sequencer",
+                       ErrorBehavior=0, Attempts=1)
 
 
 _filter_names_cache: dict | None = None
 
 
 def _nina_filter_name(filter_type: FilterType) -> str:
-    """Translate our filter class to the NINA profile's filter name.
-
-    The AARO wheel names filters R,G,B,S,H,O,L — NINA matches by name, so a
-    SwitchFilter asking for 'Ha' when the profile says 'H' would fail.
-    """
     global _filter_names_cache
     if _filter_names_cache is None:
         from photonscript.shared.config import PhotonScriptConfig
@@ -155,200 +209,186 @@ def _nina_filter_name(filter_type: FilterType) -> str:
     return _filter_names_cache.get(filter_type.value, filter_type.value)
 
 
-def _build_switch_filter(filter_type: FilterType) -> dict:
-    position = FILTER_POSITIONS.get(filter_type, 0)
+def _filter_info(filter_type: FilterType) -> dict:
+    """NINA.Core FilterInfo shape (underscore fields), per the reference file."""
+    return _make_typed(
+        "NINA.Core.Model.Equipment.FilterInfo, NINA.Core",
+        _name=_nina_filter_name(filter_type),
+        _focusOffset=0,
+        _position=FILTER_POSITIONS.get(filter_type, 0),
+        _autoFocusExposureTime=-1.0,
+        _autoFocusFilter=False,
+        _autoFocusBinning=_make_typed(
+            "NINA.Core.Model.Equipment.BinningMode, NINA.Core", X=1, Y=1),
+        _autoFocusGain=-1,
+        _autoFocusOffset=-1)
+
+
+def _switch_filter(filter_type: FilterType) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer",
-        Inherited=True,
-        Filter=_make_typed(
-            "NINA.Equipment.Filter.FilterInfo, NINA.Equipment",
-            Name=_nina_filter_name(filter_type),
-            Position=position,
-        ),
-    )
+        Filter=_filter_info(filter_type), ErrorBehavior=0, Attempts=1)
 
 
-def _build_dither_trigger(every_n: int = 5) -> dict:
+def _dither_trigger(after_exposures: int) -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.Guider.DitherAfterExposures, NINA.Sequencer",
-        AfterExposures=every_n,
+        AfterExposures=after_exposures,
+        TriggerRunner=_trigger_runner([_make_typed(
+            "NINA.Sequencer.SequenceItem.Guider.Dither, NINA.Sequencer",
+            ErrorBehavior=0, Attempts=1)]))
+
+
+def _smart_exposure(exp: ExposurePlan, guided: bool,
+                    dither_every_n: int) -> dict:
+    """SmartExposure: LoopCondition(count) wrapping SwitchFilter+TakeExposure."""
+    remaining = exp.count - exp.acquired
+    triggers = []
+    if guided and dither_every_n > 0:
+        triggers.append(_dither_trigger(dither_every_n))
+    smart = _seq_container(
+        "Smart Exposure",
+        [
+            _switch_filter(exp.filter_type),
+            _make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
+                ExposureTime=exp.exposure_seconds,
+                Gain=exp.gain, Offset=exp.offset,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                    X=exp.binning, Y=exp.binning),
+                ImageType="LIGHT", ExposureCount=0,
+                ErrorBehavior=0, Attempts=1),
+        ],
+        conditions=[_make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=remaining)],
+        triggers=triggers,
+        container_type="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, "
+                       "NINA.Sequencer",
     )
+    smart["IsExpanded"] = False
+    return smart
 
 
-def _build_autofocus_trigger(interval_minutes: int = 60) -> dict:
+def _autofocus_time_trigger(interval_minutes: int) -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterTimeTrigger, NINA.Sequencer",
         Amount=interval_minutes,
-    )
+        TriggerRunner=_trigger_runner([_autofocus()]))
 
 
-def _build_meridian_flip_trigger() -> dict:
+def _autofocus_temp_trigger(amount_c: float = 1.0) -> dict:
+    return _make_typed(
+        "NINA.Sequencer.Trigger.Autofocus."
+        "AutofocusAfterTemperatureChangeTrigger, NINA.Sequencer",
+        Amount=amount_c, TriggerRunner=_trigger_runner([_autofocus()]))
+
+
+def _meridian_flip_trigger() -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.MeridianFlip.MeridianFlipTrigger, NINA.Sequencer",
-        Inherited=True,
-    )
+        TriggerRunner=_trigger_runner())
 
 
-def _build_altitude_condition(min_alt: float) -> dict:
+def _reconnect_trigger() -> dict:
+    return _make_typed(
+        "NINA.Sequencer.Trigger.Connect.ReconnectOnDownloadFailure, NINA.Sequencer",
+        TriggerRunner=_trigger_runner())
+
+
+def _safety_condition() -> dict:
+    return _make_typed(
+        "NINA.Sequencer.Conditions.SafetyMonitorCondition, NINA.Sequencer")
+
+
+def _altitude_condition(target, min_alt: float) -> dict:
+    """Full WaitLoopData shape — bare MinimumAltitude loads with empty coords."""
     return _make_typed(
         "NINA.Sequencer.Conditions.AltitudeCondition, NINA.Sequencer",
-        MinimumAltitude=min_alt,
-    )
+        HasDsoParent=True,
+        Data=_make_typed(
+            "NINA.Sequencer.SequenceItem.Utility.WaitLoopData, NINA.Sequencer",
+            Coordinates=_coords(target), Offset=min_alt, Comparator=1))
 
 
-def _build_cool_camera(temp_c: float = -10.0, duration_minutes: int = 2) -> dict:
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Camera.CoolCamera, NINA.Sequencer",
-        Temperature=temp_c,
-        Duration=duration_minutes * 60,
-    )
+# --- Containers ---------------------------------------------------------------
 
+def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
+                            force_calibration: bool = False) -> dict:
+    """AARO acquisition order: tracking -> slew -> first filter -> AF ->
+    plate solve center -> tracking (defensive) -> [guiding] -> exposures."""
+    active = [e for e in target.exposures if e.count - e.acquired > 0]
 
-def _build_wait_for_time(hhmmss: str) -> dict:
-    """Hold the sequence until a local clock time (e.g. astro dusk).
-
-    Lets the sequence be dispatched and started in the afternoon: equipment
-    connects and cools immediately, imaging waits for dark.
-    """
-    h, m, s = (int(x) for x in hhmmss.split(":"))
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
-        Hours=h, Minutes=m, Seconds=s,
-    )
-
-
-def _build_warm_camera() -> dict:
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer",
-        Duration=600,
-    )
-
-
-def _build_park_scope() -> dict:
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Telescope.ParkScope, NINA.Sequencer",
-    )
-
-
-def _build_unpark_scope() -> dict:
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Telescope.UnparkScope, NINA.Sequencer",
-    )
-
-
-def _build_target_container(
-    target: NinaSequenceTarget,
-    min_altitude: float,
-    force_calibration: bool = False,
-) -> dict:
-    """Build a DeepSkyObjectContainer for one target.
-
-    AARO acquisition order (encoded, do not reorder):
-      set tracking -> slew & center -> switch to first capture filter ->
-      autofocus -> plate solve & center -> defensive tracking re-set ->
-      [start guiding if guided] -> exposures
-    """
-    coords = {**_decompose_ra(target.ra_hours), **_decompose_dec(target.dec_degrees)}
-
-    active_exposures = [e for e in target.exposures if e.count - e.acquired > 0]
-
-    # Build instruction list
-    instructions = [_build_set_tracking(0)]
-
-    # Slew & center
-    if target.slew_and_center:
-        instructions.append(_build_slew_and_center(target))
-
-    # Switch to the FIRST capture filter BEFORE autofocus — AF must run
-    # through the filter it will shoot through, not whatever was left in the wheel.
-    if active_exposures:
-        instructions.append(_build_switch_filter(active_exposures[0].filter_type))
-
-    # Autofocus on start
+    items = [
+        _pushover("Imaging", f"{target.name}: slewing"),
+        _set_tracking(0),
+        _slew(target),
+    ]
+    if active:
+        items.append(_switch_filter(active[0].filter_type))
     if target.auto_focus_on_start:
-        instructions.append(_build_run_autofocus())
-
-    # Plate solve & center after AF, before imaging — never skip
-    instructions.append(_build_center(target))
-
-    # Defensive tracking re-set just before guiding/imaging
-    instructions.append(_build_set_tracking(0))
-
-    # Start guiding (guided runs only; unguided is the AARO default —
-    # the CEM70G absolute encoders carry the load)
+        items.append(_autofocus())
+    items.append(_center(target))
+    items.append(_set_tracking(0))
     if target.start_guiding:
-        instructions.append(_build_start_guiding(force_calibration))
+        items.append(_start_guiding(force_calibration))
+        items.append(_pushover("Imaging", f"{target.name}: guiding, capturing"))
+    else:
+        items.append(_pushover("Imaging",
+                               f"{target.name}: encoders engaged, capturing"))
+    for exp in active:
+        items.append(_smart_exposure(exp, target.start_guiding,
+                                     target.dither_every_n))
+    items.append(_pushover("Imaging", f"{target.name}: block complete"))
 
-    # Exposure sets (with filter switches)
-    for exp in active_exposures:
-        instructions.append(_build_switch_filter(exp.filter_type))
-        exposure_item = _build_take_exposures(exp)
-        if exposure_item:
-            instructions.append(exposure_item)
-
-    # Build triggers
-    triggers = []
-    if target.meridian_flip:
-        triggers.append(_build_meridian_flip_trigger())
+    triggers = [_meridian_flip_trigger(), _reconnect_trigger()]
     if target.auto_focus_interval_minutes > 0:
-        triggers.append(_build_autofocus_trigger(target.auto_focus_interval_minutes))
-    if target.start_guiding and target.dither_every_n > 0:
-        triggers.append(_build_dither_trigger(target.dither_every_n))
+        triggers.append(_autofocus_time_trigger(target.auto_focus_interval_minutes))
+    triggers.append(_autofocus_temp_trigger(1.0))
 
-    # Build conditions — safety monitor on EVERY target (weather abort)
-    conditions = [_build_safety_condition(), _build_altitude_condition(min_altitude)]
-
-    return _make_typed(
-        "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
-        Strategy=_make_typed(
-            "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer",
-        ),
+    container = _seq_container(
+        target.name, items,
+        conditions=[_safety_condition(),
+                    _altitude_condition(target, min_altitude)],
+        triggers=triggers,
+        container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
+                       "NINA.Sequencer",
         Target=_make_typed(
             "NINA.Astrometry.InputTarget, NINA.Astrometry",
-            TargetName=target.name,
-            InputCoordinates=_make_typed(
-                "NINA.Astrometry.InputCoordinates, NINA.Astrometry",
-                **coords,
-            ),
+            Expanded=True, TargetName=target.name,
             PositionAngle=target.rotation,
-        ),
-        Items={
-            "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                     "[[NINA.Sequencer.ISequenceItem, NINA.Sequencer]], System",
-            "$values": instructions,
-        },
-        Triggers={
-            "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                     "[[NINA.Sequencer.ISequenceTrigger, NINA.Sequencer]], System",
-            "$values": triggers,
-        },
-        Conditions={
-            "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                     "[[NINA.Sequencer.ISequenceCondition, NINA.Sequencer]], System",
-            "$values": conditions,
-        },
+            InputCoordinates=_coords(target)),
     )
+    return container
 
 
 def generate_nina_json(sequence: NinaSequenceFile) -> str:
-    """Generate a NINA Advanced Sequencer compatible JSON file.
+    """Generate an Advanced Sequencer JSON matching the proven AARO schema."""
+    guided = any(t.start_guiding for t in sequence.targets)
+    temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
 
-    This produces the .json format used by NINA's Advanced Sequencer,
-    complete with $type annotations matching NINA's .NET serialization.
-    """
-    # Start area items
-    start_items = [_build_unpark_scope()]
-    if sequence.targets and sequence.targets[0].cool_camera:
-        # 2-minute cool to -10.0°C — verify Temperature field is NEVER 0
-        # (a misread 0 setpoint once cost a whole night of warm-sensor subs)
-        start_items.append(_build_cool_camera(sequence.targets[0].camera_temp_c, 2))
+    # Start area: full cold-start — connect everything, cool during twilight,
+    # hold at the dusk gate (NINA's own DuskProvider, recomputed nightly)
+    start_items = [
+        _pushover("Startup", "AARO equipment standby — entered the loop", 22),
+        _connect("Camera"),
+        _dew_heater(True),
+        _cool_camera(temp, 2.0),
+        _connect("Filter Wheel"),
+        _connect("Focuser"),
+        _connect("Mount"),
+        _unpark(),
+        _set_tracking(5),
+        _connect("Safety Monitor"),
+        _connect("Guider"),
+        _connect("Weather"),
+        _pushover("Startup", "AARO equipment standby done", 22),
+    ]
+    if sequence.wait_until_local is not None:
+        start_items.append(_wait_for_dusk(0))
+        start_items.append(_pushover("Startup", "astro dusk — imaging", 22))
 
-    # Dusk gate: cool during twilight, image when dark
-    if sequence.wait_until_local:
-        start_items.append(_build_wait_for_time(sequence.wait_until_local))
-
-    # Target containers — force guider recalibration on the FIRST guided target
-    # (stale PHD2 calibration is a top cause of runaway guide errors)
     target_containers = []
     first_guided = True
     for t in sequence.targets:
@@ -356,67 +396,35 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         if t.start_guiding:
             first_guided = False
         target_containers.append(
-            _build_target_container(t, sequence.wait_for_altitude, force_cal)
-        )
+            _build_target_container(t, sequence.wait_for_altitude, force_cal))
 
-    # End area items: stop guiding (if any), warm, park, stop tracking
-    end_items = []
-    if any(t.start_guiding for t in sequence.targets):
-        end_items.append(_build_stop_guiding())
-    if sequence.warm_camera_on_finish:
-        end_items.append(_build_warm_camera())
+    end_items = [_pushover("Shutdown", "starting shutdown")]
+    if guided:
+        end_items.append(_stop_guiding())
     if sequence.park_on_finish:
-        end_items.append(_build_park_scope())
-    end_items.append(_build_set_tracking(5))
+        end_items.append(_park())
+    if sequence.warm_camera_on_finish:
+        end_items.append(_warm_camera(3.0))
+    end_items.append(_pushover("Shutdown", "shutdown complete — parked & warm"))
 
-    root = _make_typed(
-        "NINA.Sequencer.Container.SequenceRootContainer, NINA.Sequencer",
-        Strategy=_make_typed(
-            "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer",
-        ),
-        Name=sequence.name,
-        Items={
-            "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                     "[[NINA.Sequencer.ISequenceItem, NINA.Sequencer]], System",
-            "$values": [
-                # Start area
-                _make_typed(
-                    "NINA.Sequencer.Container.StartAreaContainer, NINA.Sequencer",
-                    Strategy=_make_typed(
-                        "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer",
-                    ),
-                    Items={
-                        "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                                 "[[NINA.Sequencer.ISequenceItem, NINA.Sequencer]], System",
-                        "$values": start_items,
-                    },
-                ),
-                # Target area
-                _make_typed(
-                    "NINA.Sequencer.Container.TargetAreaContainer, NINA.Sequencer",
-                    Strategy=_make_typed(
-                        "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer",
-                    ),
-                    Items={
-                        "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                                 "[[NINA.Sequencer.ISequenceItem, NINA.Sequencer]], System",
-                        "$values": target_containers,
-                    },
-                ),
-                # End area
-                _make_typed(
-                    "NINA.Sequencer.Container.EndAreaContainer, NINA.Sequencer",
-                    Strategy=_make_typed(
-                        "NINA.Sequencer.Container.ExecutionStrategy.SequentialStrategy, NINA.Sequencer",
-                    ),
-                    Items={
-                        "$type": "System.Collections.ObjectModel.ObservableCollection`1"
-                                 "[[NINA.Sequencer.ISequenceItem, NINA.Sequencer]], System",
-                        "$values": end_items,
-                    },
-                ),
-            ],
-        },
+    root = _seq_container(
+        sequence.name,
+        [
+            _seq_container("Start", [
+                _seq_container("AARO startup", start_items),
+                *target_containers,
+            ], container_type="NINA.Sequencer.Container.StartAreaContainer, "
+                              "NINA.Sequencer"),
+            _seq_container("Targets", [],
+                           container_type="NINA.Sequencer.Container."
+                                          "TargetAreaContainer, NINA.Sequencer"),
+            _seq_container("End", [
+                _seq_container("AARO shutdown", end_items),
+            ], container_type="NINA.Sequencer.Container.EndAreaContainer, "
+                              "NINA.Sequencer"),
+        ],
+        container_type="NINA.Sequencer.Container.SequenceRootContainer, "
+                       "NINA.Sequencer",
     )
-
+    root["Parent"] = None
     return json.dumps(root, indent=2)
