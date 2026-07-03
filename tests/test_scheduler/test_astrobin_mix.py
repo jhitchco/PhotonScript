@@ -57,3 +57,21 @@ def test_aggregate_mix_empty():
     result = aggregate_mix([{"title": "nothing"}])
     assert result["mix"] == {}
     assert result["images_with_data"] == 0
+
+
+def test_curated_mix_lookup():
+    from photonscript.scheduler.astrobin_client import curated_mix
+    r = curated_mix("Crescent Nebula", "NGC 6888")
+    assert r is not None
+    assert r["mix"]["OIII"] == 45     # the OIII envelope is the picture
+    assert r["source"] == "curated"
+    # normalization: "NGC6888" without space
+    assert curated_mix("", "NGC6888") is not None
+    # unknown target -> None
+    assert curated_mix("Made Up Object", "XYZ 1") is None
+
+
+def test_curated_mixes_sum_to_100():
+    from photonscript.scheduler.astrobin_client import CURATED_MIXES
+    for key, entry in CURATED_MIXES.items():
+        assert abs(sum(entry["mix"].values()) - 100) < 0.5, key

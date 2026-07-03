@@ -334,9 +334,10 @@
             const inp = document.querySelector('input[data-mix="' + id + '"][data-filter="' + f + '"]');
             if (inp) inp.value = Math.round(pct);
         });
-        st.textContent = 'Community avg from ' + d.images_with_data + '/' +
-            d.images_sampled + ' images (' + d.total_community_hours +
-            'h total) — review and Apply mix';
+        st.textContent = d.source === 'curated'
+            ? 'Curated community practice: ' + d.note + ' — review and Apply mix'
+            : 'Community avg from ' + d.images_with_data + '/' + d.images_sampled +
+              ' images (' + d.total_community_hours + 'h total) — review and Apply mix';
     }
     async function applyMix(id) {
         const mix = {};

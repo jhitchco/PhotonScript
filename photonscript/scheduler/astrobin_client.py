@@ -221,9 +221,12 @@ class AstroBinMixSuggester:
             return {**self.cache[key], "cached": True}
 
         if not self.config.astrobin_api_key:
-            return {"error": "AstroBin API key not set — request one at "
-                             "astrobin.com/api/request-key and add it in "
-                             "System & Config."}
+            cur = curated_mix(target_name, catalog_id)
+            if cur:
+                return cur
+            return {"error": "No AstroBin API key (requests currently closed) "
+                             "and no curated entry for this target — using "
+                             "type defaults is reasonable."}
 
         client = AstroBinClient(self.config.astrobin_api_key,
                                 self.config.astrobin_api_secret)
@@ -244,6 +247,9 @@ class AstroBinMixSuggester:
 
         result = aggregate_mix(images)
         if not result["mix"]:
+            cur = curated_mix(target_name, catalog_id)
+            if cur:
+                return cur
             result["error"] = (f"Found {len(images)} images but none exposed "
                                "acquisition details via the API.")
         else:
@@ -252,3 +258,83 @@ class AstroBinMixSuggester:
             self.cache_path.write_text(_json.dumps(self.cache, indent=1),
                                        encoding="utf-8")
         return result
+
+
+# ---------------------------------------------------------------------------
+# Curated community mixes — fallback while AstroBin API keys are unavailable
+# ---------------------------------------------------------------------------
+# Sources: documented community practice (Cloudy Nights SHO threads, Starizona
+# narrowband guides, published acquisition notes). Percentages are Ha/OIII/SII
+# of total narrowband time. Key insight per target class:
+#   - SNRs & planetaries are OIII-bright (Veil, Crescent shell, M27, M57)
+#   - HII regions are Ha-dominant (California, Elephant's Trunk, Cave)
+#   - Classic SHO showpieces balance with SII emphasis (Heart, Soul)
+
+CURATED_MIXES: dict[str, dict] = {
+    "ngc 6888": {"mix": {"Ha": 45, "OIII": 45, "SII": 10},
+                 "note": "Crescent: the OIII envelope is the picture — HOO-leaning"},
+    "ngc 6960": {"mix": {"Ha": 40, "OIII": 50, "SII": 10},
+                 "note": "Western Veil: OIII-bright SNR"},
+    "ngc 6992": {"mix": {"Ha": 40, "OIII": 50, "SII": 10},
+                 "note": "Eastern Veil: OIII-bright SNR"},
+    "m 27": {"mix": {"Ha": 40, "OIII": 50, "SII": 10},
+             "note": "Dumbbell: planetary, OIII dominant"},
+    "m 57": {"mix": {"Ha": 40, "OIII": 50, "SII": 10},
+             "note": "Ring: planetary, OIII dominant"},
+    "m 97": {"mix": {"Ha": 40, "OIII": 50, "SII": 10},
+             "note": "Owl: planetary, OIII dominant"},
+    "ngc 2237": {"mix": {"Ha": 34, "OIII": 33, "SII": 33},
+                 "note": "Rosette: strong in all three lines — balanced SHO"},
+    "ngc 1499": {"mix": {"Ha": 60, "OIII": 25, "SII": 15},
+                 "note": "California: Ha-dominant HII region"},
+    "ic 1396": {"mix": {"Ha": 50, "OIII": 25, "SII": 25},
+                "note": "Elephant's Trunk: Ha-dominant"},
+    "sh2-155": {"mix": {"Ha": 50, "OIII": 25, "SII": 25},
+                "note": "Cave: Ha-dominant, faint OIII"},
+    "ic 1805": {"mix": {"Ha": 40, "OIII": 25, "SII": 35},
+                "note": "Heart: classic SHO, SII rewards the time"},
+    "ic 1848": {"mix": {"Ha": 40, "OIII": 25, "SII": 35},
+                "note": "Soul: classic SHO, SII rewards the time"},
+    "ngc 7000": {"mix": {"Ha": 45, "OIII": 30, "SII": 25},
+                 "note": "North America: Ha-strong"},
+    "ngc 281": {"mix": {"Ha": 40, "OIII": 30, "SII": 30},
+                "note": "Pacman: standard SHO"},
+    "ngc 7635": {"mix": {"Ha": 40, "OIII": 35, "SII": 25},
+                 "note": "Bubble: OIII shell worth extra"},
+    "m 16": {"mix": {"Ha": 40, "OIII": 30, "SII": 30},
+             "note": "Eagle/Pillars: standard SHO"},
+    "m 17": {"mix": {"Ha": 40, "OIII": 30, "SII": 30},
+             "note": "Swan: standard SHO"},
+    "m 8": {"mix": {"Ha": 45, "OIII": 30, "SII": 25},
+            "note": "Lagoon: Ha-strong"},
+    "m 20": {"mix": {"Ha": 40, "OIII": 35, "SII": 25},
+             "note": "Trifid: has reflection component — consider adding RGB"},
+    "m 1": {"mix": {"Ha": 40, "OIII": 40, "SII": 20},
+            "note": "Crab: OIII filaments matter"},
+    "ic 2177": {"mix": {"Ha": 50, "OIII": 25, "SII": 25},
+                "note": "Seagull: Ha-dominant"},
+}
+
+
+def curated_mix(target_name: str, catalog_id: str = "") -> dict | None:
+    """Look up the curated table by catalog id or name."""
+    for key in (catalog_id, catalog_id.replace(" ", ""), target_name):
+        k = (key or "").strip().lower()
+        if not k:
+            continue
+        if k in CURATED_MIXES:
+            entry = CURATED_MIXES[k]
+            return {"mix": dict(entry["mix"]), "source": "curated",
+                    "note": entry["note"],
+                    "images_sampled": 0, "images_with_data": 0,
+                    "total_community_hours": 0}
+        # normalize "NGC6888" -> "ngc 6888"
+        import re
+        m = re.match(r"^([a-z]+)\s*[- ]?\s*(\d.*)$", k)
+        if m and f"{m.group(1)} {m.group(2)}" in CURATED_MIXES:
+            entry = CURATED_MIXES[f"{m.group(1)} {m.group(2)}"]
+            return {"mix": dict(entry["mix"]), "source": "curated",
+                    "note": entry["note"],
+                    "images_sampled": 0, "images_with_data": 0,
+                    "total_community_hours": 0}
+    return None
