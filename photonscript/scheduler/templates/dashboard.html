@@ -285,7 +285,10 @@
                     'color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:.1rem .25rem;' +
                     'text-align:center;">').join('') +
                 '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
-                'onclick="applyMix(\'' + p.id + '\')">Apply mix</button></div>' +
+                'onclick="applyMix(\'' + p.id + '\')">Apply mix</button>' +
+                '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
+                '<span id="abmix-' + p.id + '" style="font-size:.72rem;opacity:.65;"></span></div>' +
                 '<div style="display:flex;align-items:center;gap:1rem;font-size:.82rem;">' +
                 '<span>Priority <b>' + p.priority + '</b> ' +
                 btn(p.id, "{\"priority_delta\":10}", '▲') + btn(p.id, "{\"priority_delta\":-10}", '▼') +
@@ -319,6 +322,21 @@
     function btn(id, patch, label) {
         return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
                'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';
+    }
+    async function astrobinMix(id) {
+        const st = document.getElementById('abmix-' + id);
+        st.textContent = 'Asking AstroBin…';
+        const r = await fetch('/api/projects2/' + id + '/astrobin_mix');
+        const d = await r.json();
+        if (d.error) { st.textContent = d.error; return; }
+        // Fill the mix inputs with the community average (review, then Apply)
+        Object.entries(d.mix).forEach(([f, pct]) => {
+            const inp = document.querySelector('input[data-mix="' + id + '"][data-filter="' + f + '"]');
+            if (inp) inp.value = Math.round(pct);
+        });
+        st.textContent = 'Community avg from ' + d.images_with_data + '/' +
+            d.images_sampled + ' images (' + d.total_community_hours +
+            'h total) — review and Apply mix';
     }
     async function applyMix(id) {
         const mix = {};

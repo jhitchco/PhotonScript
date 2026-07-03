@@ -375,6 +375,8 @@ _CONFIG_FIELDS = [
     ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
     ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
     ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
+    ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
+    ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
     ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
     ("pushover_api_token", "PS_PUSHOVER_API_TOKEN", "Pushover API token", "Nanny / Alerts", "str", True, False),
     ("consecutive_reject_limit", "PS_CONSECUTIVE_REJECT_LIMIT", "Consecutive rejects before severe alert", "Nanny / Alerts", "int", False, False),
@@ -739,3 +741,16 @@ async def api_thumbnail(name: str = "", catalog: str = ""):
     if result["url"]:
         _save_thumb_cache()  # persist successes to disk across restarts
     return result
+
+
+@app.get("/api/projects2/{project_id}/astrobin_mix")
+async def api_astrobin_mix(project_id: str):
+    """Community-average filter mix for this project's target (cached)."""
+    from photonscript.scheduler.astrobin_client import AstroBinMixSuggester
+
+    store = get_store()
+    proj = store.projects.get(project_id)
+    if proj is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    suggester = AstroBinMixSuggester(get_config())
+    return await suggester.suggest(proj.target.name, proj.target.catalog_id)
