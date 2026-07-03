@@ -76,6 +76,16 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")
 
+    # Night-loop safety architecture (Jerry Macon pattern)
+    if not _has_type(seq, "WaitUntilSafe"):
+        r.error("night-loop", "No WaitUntilSafe — unsafe weather would end the "
+                              "night instead of pausing it")
+    dawn_conditions = [d for d in _find_type(seq, "TimeCondition")
+                       if "Dawn" in json.dumps(d.get("SelectedProvider", {}))]
+    if not dawn_conditions:
+        r.warn("night-loop", "No dawn-bounded TimeCondition — night loop will "
+                             "not know when to stop")
+
     tracking_modes = [t.get("TrackingMode") for t in _find_type(seq, "SetTracking")]
     if 0 not in tracking_modes:
         r.error("tracking", "No SetTracking sidereal (mode 0) instruction")

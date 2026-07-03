@@ -117,3 +117,64 @@ class TestNinaJsonGeneration:
         from photonscript.scheduler.sequence_lint import lint
         result = lint(_gen(), guided=False)
         assert result.ok, [f"{f.rule}: {f.detail}" for f in result.findings]
+
+
+class TestNightLoopArchitecture:
+    """The Jerry Macon / Patriot Astro safety-loop pattern (all core NINA)."""
+
+    def test_night_loop_structure(self):
+        data = _gen()
+        names = [d.get("Name") for d in _walk(data) if isinstance(d, dict)]
+        for expected in ("LOOP_ALL_NIGHT", "SAFE_LOOP", "UNSAFE",
+                         "TARGETS_CONTAINER", "RESET_EQUIPMENT_ONCE_SAFE"):
+            assert expected in names
+
+    def test_wait_until_safe_present(self):
+        types = _types(_gen())
+        assert any("WaitUntilSafe" in t for t in types)
+
+    def test_dawn_bounded(self):
+        conds = [d for d in _walk(_gen()) if isinstance(d, dict)
+                 and "TimeCondition" in d.get("$type", "")]
+        assert any("DawnProvider" in json.dumps(c.get("SelectedProvider", {}))
+                   for c in conds)
+
+    def test_unsafe_branch_parks_then_waits(self):
+        data = _gen()
+        unsafe = next(d for d in _walk(data) if isinstance(d, dict)
+                      and d.get("Name") == "UNSAFE")
+        seq_types = [i["$type"] for i in unsafe["Items"]["$values"]]
+        park_idx = next(i for i, t in enumerate(seq_types) if "ParkScope" in t)
+        wait_idx = next(i for i, t in enumerate(seq_types) if "WaitUntilSafe" in t)
+        assert park_idx < wait_idx   # park FIRST, then wait for weather
+
+    def test_blank_script_escape_hatch(self):
+        scripts = [d for d in _walk(_gen()) if isinstance(d, dict)
+                   and "ExternalScript" in d.get("$type", "")]
+        assert scripts and scripts[0]["Script"] is None
+        assert scripts[0]["ErrorBehavior"] == 3
+
+    def test_safety_monitor_connects_before_wait_until_safe(self):
+        data = _gen()
+        startup = next(d for d in _walk(data) if isinstance(d, dict)
+                       and d.get("Name") == "AARO startup")
+        types_order = []
+        for item in startup["Items"]["$values"]:
+            t = item.get("$type", "")
+            if "ConnectEquipment" in t:
+                types_order.append(f"connect:{item['SelectedDevice']}")
+            elif "WaitUntilSafe" in t:
+                types_order.append("wait_safe")
+        assert types_order.index("connect:Safety Monitor") \
+            < types_order.index("wait_safe")
+
+    def test_twilight_autofocus_before_astro_dusk_gate(self):
+        data = _gen()
+        startup = next(d for d in _walk(data) if isinstance(d, dict)
+                       and d.get("Name") == "AARO startup")
+        seq = [i.get("$type", "") for i in startup["Items"]["$values"]]
+        af = next(i for i, t in enumerate(seq) if "RunAutofocus" in t)
+        # the astro-dusk (DuskProvider) gate must come after the twilight AF
+        waits = [i for i, t in enumerate(seq) if "WaitForTime," in t]
+        astro_gate = max(waits)
+        assert af < astro_gate

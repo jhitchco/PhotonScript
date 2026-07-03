@@ -312,6 +312,60 @@ def _altitude_condition(target, min_alt: float) -> dict:
             Coordinates=_coords(target), Offset=min_alt, Comparator=1))
 
 
+def _annotation(text: str) -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Utility.Annotation, "
+                       "NINA.Sequencer", Text=text, ErrorBehavior=0, Attempts=1)
+
+
+def _wait_until_safe() -> dict:
+    """Core NINA instruction: blocks until the safety monitor reports Safe."""
+    return _make_typed("NINA.Sequencer.SequenceItem.SafetyMonitor.WaitUntilSafe, "
+                       "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
+
+
+def _wait_for_timespan(seconds: int) -> dict:
+    return _make_typed("NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan, "
+                       "NINA.Sequencer", Time=seconds, ErrorBehavior=0, Attempts=1)
+
+
+def _wait_for_provider(provider: str, minutes_offset: int = 0) -> dict:
+    """WaitForTime bound to a NINA date provider (recomputed nightly)."""
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
+        Hours=0, Minutes=0, MinutesOffset=minutes_offset, Seconds=0,
+        SelectedProvider=_make_typed(
+            f"NINA.Sequencer.Utility.DateTimeProvider.{provider}, NINA.Sequencer"),
+        ErrorBehavior=0, Attempts=1)
+
+
+def _time_condition(provider: str, minutes_offset: int = 0) -> dict:
+    """Loop condition: run until a provider time (e.g. dawn)."""
+    return _make_typed(
+        "NINA.Sequencer.Conditions.TimeCondition, NINA.Sequencer",
+        Hours=0, Minutes=0, MinutesOffset=minutes_offset, Seconds=0,
+        SelectedProvider=_make_typed(
+            f"NINA.Sequencer.Utility.DateTimeProvider.{provider}, NINA.Sequencer"))
+
+
+def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer",
+        Coordinates=_make_typed(
+            "NINA.Astrometry.InputTopocentricCoordinates, NINA.Astrometry",
+            AzDegrees=az_deg, AzMinutes=0, AzSeconds=0,
+            AltDegrees=alt_deg, AltMinutes=0, AltSeconds=0),
+        ErrorBehavior=0, Attempts=1)
+
+
+def _external_script_blank() -> dict:
+    """Patriot/Jerry Macon trick: a blank script that fails on purpose after
+    the last target, so the UNSAFE branch is skipped and the sequence
+    proceeds to the End area instead of waiting for weather forever."""
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Utility.ExternalScript, NINA.Sequencer",
+        Script=None, ErrorBehavior=3, Attempts=1)
+
+
 # --- Containers ---------------------------------------------------------------
 
 def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
@@ -364,31 +418,63 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
 
 
 def generate_nina_json(sequence: NinaSequenceFile) -> str:
-    """Generate an Advanced Sequencer JSON matching the proven AARO schema."""
+    """Generate an Advanced Sequencer JSON with the full night-loop safety
+    architecture (Jerry Macon / Patriot Astro pattern, all core NINA types):
+
+    Start:   connect safety monitor -> WaitUntilSafe -> connect everything,
+             cool during twilight, twilight autofocus, hold for astro dusk
+    Targets: LOOP_ALL_NIGHT (until dawn)
+               SAFE_LOOP (while safe): re-arm equipment, run targets
+               UNSAFE: park, WaitUntilSafe, loop resumes automatically
+    End:     stop guiding, park, warm, disconnect — always runs at dawn
+    """
     guided = any(t.start_guiding for t in sequence.targets)
     temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
+    gate_dark = sequence.wait_until_local is not None
 
-    # Start area: full cold-start — connect everything, cool during twilight,
-    # hold at the dusk gate (NINA's own DuskProvider, recomputed nightly)
+    # ---- Start area: cold start + twilight prep --------------------------
     start_items = [
-        _pushover("Startup", "AARO equipment standby — entered the loop", 22),
+        _pushover("Startup", "AARO standby — entered the loop", 22),
+    ]
+    if gate_dark:
+        start_items.append(_wait_for_provider("NauticalDuskProvider", -30))
+    start_items += [
+        _connect("Safety Monitor"),
+        _wait_until_safe(),
+        _pushover("Startup", "safe — connecting equipment", 22),
         _connect("Camera"),
         _dew_heater(True),
         _cool_camera(temp, 2.0),
         _connect("Filter Wheel"),
         _connect("Focuser"),
         _connect("Mount"),
-        _unpark(),
-        _set_tracking(5),
-        _connect("Safety Monitor"),
         _connect("Guider"),
         _connect("Weather"),
-        _pushover("Startup", "AARO equipment standby done", 22),
+        _unpark(),
+        _set_tracking(5),
+        _pushover("Startup", "equipment connected, cooling", 22),
     ]
-    if sequence.wait_until_local is not None:
-        start_items.append(_wait_for_dusk(0))
-        start_items.append(_pushover("Startup", "astro dusk — imaging", 22))
+    if gate_dark and sequence.targets:
+        # Twilight autofocus: spend twilight, not dark time, on first focus
+        first_filter = next((e.filter_type for t in sequence.targets
+                             for e in t.exposures), None)
+        start_items += [
+            _wait_for_provider("NauticalDuskProvider", 0),
+            _wait_until_safe(),
+            _slew_alt_az(70, 180),
+            _set_tracking(0),
+        ]
+        if first_filter is not None:
+            start_items.append(_switch_filter(first_filter))
+        start_items += [
+            _wait_for_timespan(60),
+            _autofocus(),
+            _pushover("Startup", "twilight autofocus done", 22),
+            _wait_for_provider("DuskProvider", 0),
+            _pushover("Startup", "astro dusk — imaging", 22),
+        ]
 
+    # ---- Targets area: the night loop -------------------------------------
     target_containers = []
     first_guided = True
     for t in sequence.targets:
@@ -398,6 +484,36 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         target_containers.append(
             _build_target_container(t, sequence.wait_for_altitude, force_cal))
 
+    unsafe_items = [
+        _pushover("Safety", "UNSAFE — stopped, parking, waiting for safe", 8),
+    ]
+    if guided:
+        unsafe_items.append(_stop_guiding())
+    unsafe_items += [
+        _park(),
+        _wait_until_safe(),
+        _pushover("Safety", "safe again — night loop resuming", 8),
+    ]
+
+    safe_loop = _seq_container("SAFE_LOOP", [
+        _seq_container("RESET_EQUIPMENT_ONCE_SAFE", [
+            _annotation("Runs on every safe (re)entry; harmless on first pass."),
+            _wait_for_timespan(120),
+            _unpark(),
+            _set_tracking(0),
+        ]),
+        _seq_container("TARGETS_CONTAINER", target_containers),
+        _annotation("Blank script below fails on purpose after the last "
+                    "target so UNSAFE is skipped and we proceed to End."),
+        _external_script_blank(),
+    ], conditions=[_safety_condition()])
+
+    night_loop = _seq_container("LOOP_ALL_NIGHT", [
+        safe_loop,
+        _seq_container("UNSAFE", unsafe_items),
+    ], conditions=[_time_condition("DawnProvider", 0)])
+
+    # ---- End area -----------------------------------------------------------
     end_items = [_pushover("Shutdown", "starting shutdown")]
     if guided:
         end_items.append(_stop_guiding())
@@ -405,6 +521,7 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         end_items.append(_park())
     if sequence.warm_camera_on_finish:
         end_items.append(_warm_camera(3.0))
+    end_items.append(_disconnect_all())
     end_items.append(_pushover("Shutdown", "shutdown complete — parked & warm"))
 
     root = _seq_container(
@@ -412,10 +529,9 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         [
             _seq_container("Start", [
                 _seq_container("AARO startup", start_items),
-                *target_containers,
             ], container_type="NINA.Sequencer.Container.StartAreaContainer, "
                               "NINA.Sequencer"),
-            _seq_container("Targets", [],
+            _seq_container("Targets", [night_loop],
                            container_type="NINA.Sequencer.Container."
                                           "TargetAreaContainer, NINA.Sequencer"),
             _seq_container("End", [

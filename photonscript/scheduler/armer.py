@@ -296,31 +296,30 @@ class Armer:
                 return
             safe = await self._is_safe()
             if safe is False:
-                await self._nina("sequence_stop")
+                # The sequence's own night loop parks and holds via
+                # WaitUntilSafe — we observe and notify, we don't interfere.
                 self._set_state("PAUSED_UNSAFE",
-                                f"Unsafe at {now:%H:%M}Z — sequence stopped")
+                                f"Unsafe at {now:%H:%M}Z — NINA night loop "
+                                "parked, waiting for safe")
                 await notify(self.config,
-                             "PAUSED: safety monitor unsafe — sequence stopped. "
-                             "Will auto-resume with remaining subs if safe "
-                             "again tonight.",
+                             "PAUSED: unsafe — NINA's night loop parked the "
+                             "scope and is waiting. Auto-resumes when safe.",
                              title="PhotonScript paused", priority=1)
 
         elif self.state == "PAUSED_UNSAFE":
-            remaining = (self._dawn() - now).total_seconds() / 60
-            if remaining < RESUME_MIN_REMAINING_MIN:
-                report = await self.make_safe()
-                self._set_state("COMPLETE", f"Dawn while paused; {report}")
+            if now >= self._dawn() + timedelta(minutes=30):
+                self._set_state("COMPLETE", "Dawn while paused — night loop "
+                                "exited; End area handled shutdown")
                 await notify(self.config,
-                             f"Dawn reached while paused. {report}",
-                             title="PhotonScript: made safe", priority=1)
+                             "Night ended while paused. NINA's End area "
+                             "handled park & warm.",
+                             title="PhotonScript complete")
                 return
             safe = await self._is_safe()
             if safe is True:
-                # Smart resume: regenerate with tonight's acquired subs
-                # subtracted — only the remainder is re-dispatched.
-                if await self._dispatch_and_start():
-                    self._set_state("RUNNING", "Resumed with remaining subs")
-                    await notify(self.config,
-                                 f"RESUMED: safe again, {remaining / 60:.1f}h "
-                                 "of dark left. Remainder re-dispatched.",
-                                 title="PhotonScript resumed")
+                remaining = (self._dawn() - now).total_seconds() / 3600
+                self._set_state("RUNNING", "Safe again — night loop resuming")
+                await notify(self.config,
+                             f"RESUMED: safe again, {remaining:.1f}h of dark "
+                             "left. NINA night loop re-entering targets.",
+                             title="PhotonScript resumed")
