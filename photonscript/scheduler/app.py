@@ -275,29 +275,44 @@ async def api_tonight_sequence_xml():
 
 
 @app.get("/api/tonight/sequence.json")
-async def api_tonight_sequence_json():
-    """Generate and download the NINA Advanced Sequencer JSON for tonight.
+async def api_tonight_sequence_json(now_mode: bool = False):
+    """Generate and download tonight's Advanced Sequencer JSON (lint-gated).
 
-    This is the preferred format for NINA's Advanced Sequencer, using
-    .NET $type annotations that NINA can load directly.
+    Safe to load and START at any time of day: the start area holds at
+    nautical dusk -30 and WaitUntilSafe before touching hardware. Pass
+    ?now_mode=true for an ungated daytime-test version.
     """
+    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
+
     config = get_config()
     now = datetime.utcnow()
 
     if _projects:
-        projects = list(_projects.values())
+        projects = [p for p in _projects.values() if p.active]
     else:
+        projects = []
+    if not projects:
         obs = config.get_observatory()
         seasonal = get_seasonal_targets(now.month)
         ranked = rank_targets_for_night(seasonal, obs, now)
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     targets = plan_night_sequence(projects, config, now)
+    for t in targets:
+        t.start_guiding = config.guided_default
     sequence = build_sequence_for_night(
         name=f"PhotonScript_{now.strftime('%Y%m%d')}",
         targets=targets,
     )
+    # Dusk/safety gating ON unless explicitly generating a daytime test
+    sequence.wait_until_local = None if now_mode else "00:00:00"
     json_content = generate_nina_json(sequence)
+
+    result = _lint(json.loads(json_content), guided=config.guided_default)
+    if not result.ok:
+        return JSONResponse(status_code=500, content={
+            "detail": "Lint FAILED — refusing to serve sequence",
+            "findings": format_result(result)})
     return HTMLResponse(
         content=json_content,
         media_type="application/json",
