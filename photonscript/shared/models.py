@@ -123,6 +123,7 @@ class ImagingProject(BaseModel):
     exposure_plans: list[ExposurePlan] = Field(default_factory=list)
     priority: int = 50  # 0-100, higher = more important
     budget_hours: float = 8.0  # total imaging time to dedicate; drives filter allocation
+    filter_mix: Optional[dict] = None  # custom {filter: percent} split; None = type default
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     total_integration_hours: float = 0.0

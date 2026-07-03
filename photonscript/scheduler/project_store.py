@@ -4,10 +4,15 @@ Projects live in <data_dir>/projects.json and survive restarts. Each project
 carries a priority (0-100) and an hour budget; PhotonScript allocates the
 budget across filters automatically based on the target type:
 
-  narrowband (nebulae/remnants):  Ha 40% / OIII 30% / SII 30%  @ 300s
+  narrowband (nebulae/remnants):  Ha 35% / OIII 30% / SII 35%  @ 300s
   broadband (galaxies/clusters):  L 50% / R 16.7% / G 16.7% / B 16.7% @ 180s
 
-Changing the budget re-allocates counts while preserving acquired subs.
+Community best practice (Cloudy Nights / Starizona consensus): L carries
+detail so ~50% when time-limited; SII is the faintest narrowband line and
+deserves MORE time, not less — and the right SHO split is target-dependent,
+which is why every project can carry its own filter_mix percentages.
+
+Changing the budget or the mix re-allocates counts, preserving acquired subs.
 """
 
 from __future__ import annotations
@@ -21,8 +26,8 @@ from photonscript.shared.models import (CelestialTarget, ExposurePlan,
 
 logger = logging.getLogger(__name__)
 
-NARROWBAND_MIX = [(FilterType.HA, 0.40, 300), (FilterType.OIII, 0.30, 300),
-                  (FilterType.SII, 0.30, 300)]
+NARROWBAND_MIX = [(FilterType.HA, 0.35, 300), (FilterType.OIII, 0.30, 300),
+                  (FilterType.SII, 0.35, 300)]
 BROADBAND_MIX = [(FilterType.LUMINANCE, 0.50, 180), (FilterType.RED, 1 / 6, 180),
                  (FilterType.GREEN, 1 / 6, 180), (FilterType.BLUE, 1 / 6, 180)]
 
@@ -34,10 +39,27 @@ def target_kind(target: CelestialTarget) -> str:
     return "broadband"
 
 
-def allocate_exposures(kind: str, budget_hours: float, config,
-                       acquired: dict | None = None) -> list[ExposurePlan]:
-    """Split an hour budget across filters. Preserves acquired counts."""
+def default_mix(kind: str) -> dict[str, float]:
+    """Type-default split as {filter: percent}."""
     mix = NARROWBAND_MIX if kind == "narrowband" else BROADBAND_MIX
+    return {f.value: round(frac * 100, 1) for f, frac, _ in mix}
+
+
+def allocate_exposures(kind: str, budget_hours: float, config,
+                       acquired: dict | None = None,
+                       custom_mix: dict | None = None) -> list[ExposurePlan]:
+    """Split an hour budget across filters. Preserves acquired counts.
+
+    custom_mix: {filter_value: percent} — normalized; overrides type default.
+    """
+    base = NARROWBAND_MIX if kind == "narrowband" else BROADBAND_MIX
+    if custom_mix:
+        total = sum(v for v in custom_mix.values() if v and v > 0) or 1
+        exp_by_filter = {f.value: e for f, _, e in base}
+        mix = [(FilterType(fv), pct / total, exp_by_filter.get(fv, 300))
+               for fv, pct in custom_mix.items() if pct and pct > 0]
+    else:
+        mix = base
     acquired = acquired or {}
     plans = []
     for ftype, frac, exp_s in mix:
@@ -89,7 +111,8 @@ class ProjectStore:
 
     def update(self, project_id: str, priority: int | None = None,
                budget_hours: float | None = None,
-               active: bool | None = None) -> ImagingProject | None:
+               active: bool | None = None,
+               filter_mix: dict | None = None) -> ImagingProject | None:
         proj = self.projects.get(project_id)
         if proj is None:
             return None
@@ -97,13 +120,20 @@ class ProjectStore:
             proj.priority = max(0, min(100, priority))
         if active is not None:
             proj.active = active
+        if filter_mix is not None:
+            total = sum(v for v in filter_mix.values() if v and v > 0)
+            if total > 0:  # normalize to 100
+                proj.filter_mix = {k: round(v / total * 100, 1)
+                                   for k, v in filter_mix.items()
+                                   if v and v > 0}
         if budget_hours is not None and budget_hours > 0:
             proj.budget_hours = round(budget_hours, 1)
+        if (budget_hours is not None and budget_hours > 0) or filter_mix is not None:
             acquired = {p.filter_type.value: p.acquired
                         for p in proj.exposure_plans}
             proj.exposure_plans = allocate_exposures(
                 target_kind(proj.target), proj.budget_hours, self.config,
-                acquired)
+                acquired, custom_mix=proj.filter_mix)
             proj.total_integration_hours = proj.budget_hours
         proj.compute_completion() if hasattr(proj, "compute_completion") else None
         self.save()

@@ -14,9 +14,9 @@ def _config(tmp_path):
 def test_allocation_narrowband_budget_math(tmp_path):
     plans = allocate_exposures("narrowband", 10.0, _config(tmp_path))
     by = {p.filter_type.value: p for p in plans}
-    assert by["Ha"].count == 48        # 10h * 40% / 300s
+    assert by["Ha"].count == 42        # 10h * 35% / 300s
     assert by["OIII"].count == 36
-    assert by["SII"].count == 36
+    assert by["SII"].count == 42       # SII gets equal-or-more (faintest line)
     total_h = sum(p.exposure_seconds * p.count for p in plans) / 3600
     assert abs(total_h - 10.0) < 0.2
 
@@ -55,3 +55,35 @@ def test_target_kind():
                           object_type="galaxy")
     assert target_kind(neb) == "narrowband"
     assert target_kind(gal) == "broadband"
+
+
+def test_custom_mix_reallocates(tmp_path):
+    """SII-heavy custom mix (e.g. 25/25/50) changes counts within same budget."""
+    config = _config(tmp_path)
+    store = ProjectStore(config)
+    t = CelestialTarget(name="Soul Nebula", catalog_id="IC 1848",
+                        ra_hours=2.85, dec_degrees=60.4,
+                        object_type="emission nebula")
+    proj = store.add_from_target(t, budget_hours=10.0)
+    updated = store.update(proj.id, filter_mix={"Ha": 25, "OIII": 25, "SII": 50})
+    by = {p.filter_type.value: p.count for p in updated.exposure_plans}
+    assert by["SII"] == 60          # 10h * 50% / 300s
+    assert by["Ha"] == by["OIII"] == 30
+    assert updated.filter_mix == {"Ha": 25.0, "OIII": 25.0, "SII": 50.0}
+
+
+def test_mix_normalizes_to_100(tmp_path):
+    config = _config(tmp_path)
+    store = ProjectStore(config)
+    t = CelestialTarget(name="x", catalog_id="", ra_hours=1, dec_degrees=1,
+                        object_type="galaxy")
+    proj = store.add_from_target(t, budget_hours=6.0)
+    updated = store.update(proj.id, filter_mix={"L": 6, "R": 2, "G": 2, "B": 2})
+    assert updated.filter_mix == {"L": 50.0, "R": 16.7, "G": 16.7, "B": 16.7}
+
+
+def test_default_narrowband_mix_favors_sii_equally():
+    """Best practice: SII is faintest — never allocate it less than Ha."""
+    from photonscript.scheduler.project_store import default_mix
+    mix = default_mix("narrowband")
+    assert mix["SII"] >= mix["Ha"] - 0.1

@@ -277,6 +277,15 @@
                 '<span style="margin-left:auto;font-size:.78rem;opacity:.7;">' +
                 p.completion_pct + '% done</span></div>' +
                 '<div style="margin:.35rem 0;">' + chips + '</div>' +
+                '<div style="display:flex;align-items:center;gap:.45rem;font-size:.78rem;margin:.3rem 0;">' +
+                'Mix % ' + Object.entries(p.mix).map(([f, pct]) =>
+                    '<span style="color:' + (FILTER_COLORS[f] || '#94a3b8') + ';">' + f +
+                    '</span><input data-mix="' + p.id + '" data-filter="' + f +
+                    '" value="' + Math.round(pct) + '" style="width:44px;background:#0b1220;' +
+                    'color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:.1rem .25rem;' +
+                    'text-align:center;">').join('') +
+                '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                'onclick="applyMix(\'' + p.id + '\')">Apply mix</button></div>' +
                 '<div style="display:flex;align-items:center;gap:1rem;font-size:.82rem;">' +
                 '<span>Priority <b>' + p.priority + '</b> ' +
                 btn(p.id, "{\"priority_delta\":10}", '▲') + btn(p.id, "{\"priority_delta\":-10}", '▼') +
@@ -310,6 +319,13 @@
     function btn(id, patch, label) {
         return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
                'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';
+    }
+    async function applyMix(id) {
+        const mix = {};
+        document.querySelectorAll('input[data-mix="' + id + '"]').forEach(inp => {
+            mix[inp.dataset.filter] = parseFloat(inp.value) || 0;
+        });
+        await patchProject(id, {filter_mix: mix});
     }
     async function patchProject(id, body) {
         await fetch('/api/projects2/' + id, {method:'PATCH',

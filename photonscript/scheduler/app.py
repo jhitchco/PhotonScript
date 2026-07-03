@@ -530,6 +530,31 @@ async def api_arm(request: Request):
 
 _store = None
 _thumb_cache: dict[str, dict] = {}
+_thumb_cache_loaded = False
+_alt_cache: dict[tuple, dict] = {}
+
+
+def _thumb_cache_path():
+    return Path(get_config().data_dir) / "thumb_cache.json"
+
+
+def _load_thumb_cache():
+    global _thumb_cache_loaded
+    if _thumb_cache_loaded:
+        return
+    _thumb_cache_loaded = True
+    p = _thumb_cache_path()
+    if p.exists():
+        try:
+            _thumb_cache.update(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _save_thumb_cache():
+    p = _thumb_cache_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(_thumb_cache, indent=1), encoding="utf-8")
 
 
 def get_store():
@@ -542,9 +567,10 @@ def get_store():
 
 
 def _project_json(p) -> dict:
-    from photonscript.scheduler.project_store import target_kind
+    from photonscript.scheduler.project_store import default_mix, target_kind
     d = p.model_dump(mode="json")
     d["kind"] = target_kind(p.target)
+    d["mix"] = p.filter_mix or default_mix(d["kind"])
     total = sum(e.count for e in p.exposure_plans) or 1
     done = sum(e.acquired for e in p.exposure_plans)
     d["completion_pct"] = round(done / total * 100)
@@ -584,7 +610,8 @@ async def api_project_update(project_id: str, request: Request):
     budget = proj.budget_hours + float(body["budget_delta"]) \
         if "budget_delta" in body else body.get("budget_hours")
     updated = store.update(project_id, priority=priority,
-                           budget_hours=budget, active=body.get("active"))
+                           budget_hours=budget, active=body.get("active"),
+                           filter_mix=body.get("filter_mix"))
     _projects[project_id] = updated
     return _project_json(updated)
 
@@ -612,6 +639,12 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
     off = config.utc_offset_hours
     now = datetime.utcnow()
 
+    cache_key = (round(ra_hours, 3), round(dec_degrees, 3),
+                 (now + timedelta(hours=off)).strftime("%Y-%m-%d"))
+    if cache_key in _alt_cache:
+        cached = dict(_alt_cache[cache_key])
+        return cached
+
     # local noon (UTC) today
     noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
         - timedelta(hours=off) + timedelta(hours=12)
@@ -633,7 +666,8 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
         return max(0.0, min(1.0, (dt - noon_utc).total_seconds() / 86400))
 
     peak = int(np.argmax(alts))
-    return {
+    _alt_cache.clear() if len(_alt_cache) > 200 else None
+    _alt_cache[cache_key] = result = {
         "name": name,
         "alts": [round(float(a), 1) for a in alts],
         "labels_every_hours": 3,
@@ -645,6 +679,7 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
         "transit_alt": round(float(alts[peak]), 0),
         "min_altitude": 30,
     }
+    return result
 
 
 @app.get("/api/thumbnail")
@@ -652,8 +687,9 @@ async def api_thumbnail(name: str = "", catalog: str = ""):
     """Wikipedia thumbnail for a target (cached)."""
     import httpx
 
+    _load_thumb_cache()
     key = (name or catalog).lower()
-    if key in _thumb_cache:
+    if key in _thumb_cache and _thumb_cache[key].get("url"):
         return _thumb_cache[key]
 
     candidates = [c for c in (name, catalog, name.replace(" Nebula", "_Nebula"))
@@ -700,4 +736,6 @@ async def api_thumbnail(name: str = "", catalog: str = ""):
             except Exception:  # noqa: BLE001
                 continue
     _thumb_cache[key] = result
+    if result["url"]:
+        _save_thumb_cache()  # persist successes to disk across restarts
     return result
