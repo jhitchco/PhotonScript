@@ -16,7 +16,7 @@ API = "https://api.pushover.net/1/messages.json"
 
 
 async def notify(config, message: str, title: str = "PhotonScript",
-                 priority: int = 0) -> bool:
+                 priority: int = 0, sound: str = "none") -> bool:
     """Send a Pushover notification. No-op (logged) if keys unset."""
     if not config.pushover_user_key or not config.pushover_api_token:
         logger.info("[pushover disabled] %s: %s", title, message)
@@ -29,6 +29,7 @@ async def notify(config, message: str, title: str = "PhotonScript",
                 "title": title,
                 "message": message,
                 "priority": priority,
+                "sound": sound,
             })
         return r.status_code == 200
     except Exception as e:  # noqa: BLE001

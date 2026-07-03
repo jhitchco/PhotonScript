@@ -103,12 +103,16 @@ def _trigger_runner(items: list = None) -> dict:
 
 # --- Instructions -----------------------------------------------------------
 
-def _pushover(title: str, message: str, sound: int = 1) -> dict:
-    """GroundStation Pushover — Jeremy's remote narration channel."""
+SOUND_NONE = 22  # GroundStation NotificationSound enum: silent
+
+
+def _pushover(title: str, message: str, sound: int = SOUND_NONE) -> dict:
+    """GroundStation Pushover — remote narration, always silent."""
     return _make_typed(
         "DaleGhent.NINA.GroundStation.SendToPushover.SendToPushover, "
         "DaleGhent.NINA.GroundStation",
-        Title=title, Message=message, Priority=0, NotificationSound=sound,
+        Title=title, Message=message, Priority=0,
+        NotificationSound=SOUND_NONE,
         ErrorBehavior=0, Attempts=1)
 
 
@@ -374,8 +378,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     plate solve center -> tracking (defensive) -> [guiding] -> exposures."""
     active = [e for e in target.exposures if e.count - e.acquired > 0]
 
+    plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
+                          f"@{e.exposure_seconds:.0f}s" for e in active)
+    total_h = sum(e.exposure_seconds * (e.count - e.acquired)
+                  for e in active) / 3600
     items = [
-        _pushover("Imaging", f"{target.name}: slewing"),
+        _pushover("Imaging", f"{target.name}: slewing "
+                  f"(RA {target.ra_hours:.2f}h Dec {target.dec_degrees:+.1f}°) "
+                  f"— plan {plan_desc} (~{total_h:.1f}h)"),
         _set_tracking(0),
         _slew(target),
     ]
@@ -387,14 +397,18 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     items.append(_set_tracking(0))
     if target.start_guiding:
         items.append(_start_guiding(force_calibration))
-        items.append(_pushover("Imaging", f"{target.name}: guiding, capturing"))
+        items.append(_pushover("Imaging",
+                               f"{target.name}: focused, centered, guiding — "
+                               "capturing"))
     else:
         items.append(_pushover("Imaging",
-                               f"{target.name}: encoders engaged, capturing"))
+                               f"{target.name}: focused, centered, unguided "
+                               "on encoders — capturing"))
     for exp in active:
         items.append(_smart_exposure(exp, target.start_guiding,
                                      target.dither_every_n))
-    items.append(_pushover("Imaging", f"{target.name}: block complete"))
+    items.append(_pushover("Imaging", f"{target.name}: block complete "
+                           f"({plan_desc} attempted)"))
 
     triggers = [_meridian_flip_trigger(), _reconnect_trigger()]
     if target.auto_focus_interval_minutes > 0:
@@ -434,14 +448,17 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
 
     # ---- Start area: cold start + twilight prep --------------------------
     start_items = [
-        _pushover("Startup", "AARO standby — entered the loop", 22),
+        _pushover("Startup", f"{sequence.name}: standby — "
+                  f"{len(sequence.targets)} target(s) queued, cooling to "
+                  f"{temp:.0f}°C at nautical dusk -30m"),
     ]
     if gate_dark:
         start_items.append(_wait_for_provider("NauticalDuskProvider", -30))
     start_items += [
         _connect("Safety Monitor"),
         _wait_until_safe(),
-        _pushover("Startup", "safe — connecting equipment", 22),
+        _pushover("Startup", "safety monitor SAFE — connecting camera, FW, "
+                  "focuser, mount, guider, weather"),
         _connect("Camera"),
         _dew_heater(True),
         _cool_camera(temp, 2.0),
@@ -452,7 +469,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         _connect("Weather"),
         _unpark(),
         _set_tracking(5),
-        _pushover("Startup", "equipment connected, cooling", 22),
+        _pushover("Startup", f"all equipment connected; cooling to "
+                  f"{temp:.0f}°C; holding until nautical dusk"),
     ]
     if gate_dark and sequence.targets:
         # Twilight autofocus: spend twilight, not dark time, on first focus
@@ -469,9 +487,11 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         start_items += [
             _wait_for_timespan(60),
             _autofocus(),
-            _pushover("Startup", "twilight autofocus done", 22),
+            _pushover("Startup", "twilight autofocus complete — holding "
+                      "for astro dusk"),
             _wait_for_provider("DuskProvider", 0),
-            _pushover("Startup", "astro dusk — imaging", 22),
+            _pushover("Startup", "astro dusk — night loop begins (runs "
+                      "until dawn; parks itself if unsafe)"),
         ]
 
     # ---- Targets area: the night loop -------------------------------------
@@ -485,14 +505,16 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             _build_target_container(t, sequence.wait_for_altitude, force_cal))
 
     unsafe_items = [
-        _pushover("Safety", "UNSAFE — stopped, parking, waiting for safe", 8),
+        _pushover("Safety", "UNSAFE — imaging stopped, parking scope; will "
+                  "wait and auto-resume when safe"),
     ]
     if guided:
         unsafe_items.append(_stop_guiding())
     unsafe_items += [
         _park(),
         _wait_until_safe(),
-        _pushover("Safety", "safe again — night loop resuming", 8),
+        _pushover("Safety", "SAFE again — waiting 2 min of confirmed-safe, "
+                  "then unparking and resuming targets"),
     ]
 
     safe_loop = _seq_container("SAFE_LOOP", [
@@ -514,7 +536,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     ], conditions=[_time_condition("DawnProvider", 0)])
 
     # ---- End area -----------------------------------------------------------
-    end_items = [_pushover("Shutdown", "starting shutdown")]
+    end_items = [_pushover("Shutdown", "dawn — starting shutdown: park, "
+                           "warm camera, disconnect")]
     if guided:
         end_items.append(_stop_guiding())
     if sequence.park_on_finish:

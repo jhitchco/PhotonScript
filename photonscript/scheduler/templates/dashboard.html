@@ -198,18 +198,75 @@
         btn.textContent = active ? 'Disarm' : 'Arm';
         btn.dataset.armed = active ? '1' : '0';
     }
+    function twCard(label, value, hi) {
+        return '<div style="text-align:center;min-width:96px;">' +
+            '<div style="font-size:.62rem;letter-spacing:.08em;opacity:.5;text-transform:uppercase;">' +
+            label + '</div><div style="font-weight:700;font-size:1.02rem;color:' +
+            (hi ? '#7dd3fc' : '#e2e8f0') + ';">' + (value || '—') + '</div></div>';
+    }
+    function statCard(value, label, color) {
+        return '<div style="flex:1;text-align:center;padding:.9rem .5rem;border-radius:10px;' +
+            'background:rgba(255,255,255,.03);">' +
+            '<div style="font-size:1.5rem;font-weight:700;color:' + color + ';">' + value + '</div>' +
+            '<div style="font-size:.62rem;letter-spacing:.08em;opacity:.5;text-transform:uppercase;">' +
+            label + '</div></div>';
+    }
     async function loadTimeline() {
         const r = await fetch('/api/nightplan');
         const d = await r.json();
-        if (d.error) { document.getElementById('nightTimeline').textContent = d.error; return; }
-        document.getElementById('nightTimeline').innerHTML =
-            '<div style="font-size:.8rem;opacity:.6;margin-bottom:.4rem;">Night of ' +
-            d.night_of + ' — ' + d.dark_hours + 'h dark</div>' +
-            d.events.map(e =>
-            '<div style="display:flex;gap:1rem;padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,.05);">' +
-            '<span style="min-width:84px;color:#7dd3fc;font-weight:600;">' + e.time.local + '</span>' +
-            '<span style="min-width:200px;font-weight:600;">' + e.event + '</span>' +
-            '<span style="opacity:.7;font-size:.85rem;">' + e.detail + '</span></div>').join('');
+        const box = document.getElementById('nightTimeline');
+        if (d.error) { box.textContent = d.error; return; }
+        const tw = d.twilight || {};
+        let html =
+            '<div style="font-size:.8rem;opacity:.6;margin-bottom:.6rem;">Night of ' +
+            d.night_of + '</div>' +
+            '<div style="display:flex;gap:.6rem;justify-content:space-between;flex-wrap:wrap;' +
+            'padding:.8rem;border-radius:10px;background:rgba(255,255,255,.03);margin-bottom:.8rem;">' +
+            twCard('Sunset', tw.sunset) + twCard('Naut. Dusk', tw.naut_dusk) +
+            twCard('Astro Dusk', tw.astro_dusk, true) + twCard('Astro Dawn', tw.astro_dawn, true) +
+            twCard('Naut. Dawn', tw.naut_dawn) + twCard('Sunrise', tw.sunrise) + '</div>';
+        const st = d.stats || {};
+        html += '<div style="display:flex;gap:.7rem;margin-bottom:1rem;">' +
+            statCard(st.dark_hours + 'h', 'Dark Hours', '#7dd3fc') +
+            statCard(st.targets, 'Targets', '#4ade80') +
+            statCard(st.planned_subs, 'Planned Subs', '#eab308') +
+            statCard(st.est_integration_h + 'h', 'Est. Integration', '#c084fc') + '</div>';
+        html += '<div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;' +
+            'text-transform:uppercase;margin-bottom:.5rem;">Imaging Schedule</div>';
+        html += (d.schedule || []).map((t, i) => {
+            const chips = t.filters.map(f =>
+                '<span style="border:1px solid ' + (FILTER_COLORS[f.f] || '#64748b') +
+                ';color:' + (FILTER_COLORS[f.f] || '#64748b') +
+                ';border-radius:4px;padding:.1rem .45rem;font-size:.74rem;margin-right:.35rem;">' +
+                '● ' + f.f + ' ' + f.exp + 's <span style="opacity:.6;">×' + f.n +
+                '</span></span>').join('');
+            return '<div style="border-radius:10px;background:rgba(255,255,255,.03);' +
+                'padding:.85rem 1rem;margin-bottom:.7rem;">' +
+                '<div style="display:flex;align-items:baseline;gap:.6rem;margin-bottom:.55rem;">' +
+                '<b style="font-size:1.05rem;">' + t.name + '</b>' +
+                '<span style="opacity:.5;font-size:.78rem;">' + t.kind + '</span></div>' +
+                '<div style="display:flex;gap:2rem;flex-wrap:wrap;font-size:.85rem;margin-bottom:.55rem;">' +
+                '<span><span style="font-size:.62rem;opacity:.5;text-transform:uppercase;display:block;">Window</span>' +
+                t.window_start + ' – ' + t.window_end + '</span>' +
+                '<span><span style="font-size:.62rem;opacity:.5;text-transform:uppercase;display:block;">Transit</span>' +
+                (t.transit_local || '—') + ' at ' + t.transit_alt + '°</span>' +
+                '<span><span style="font-size:.62rem;opacity:.5;text-transform:uppercase;display:block;">Coordinates</span>' +
+                t.coords + '</span></div>' +
+                '<div style="margin-bottom:.5rem;">' + chips + '</div>' +
+                '<div id="runalt-' + i + '"></div></div>';
+        }).join('');
+        box.innerHTML = html;
+        // Noon-to-noon altitude charts per scheduled target
+        (d.schedule || []).forEach((t, i) => {
+            fetch('/api/target/altitude?name=' + encodeURIComponent(t.name) +
+                  '&ra_hours=' + t.ra_hours + '&dec_degrees=' + t.dec_degrees)
+                .then(r => r.json()).then(alt => {
+                    const el = document.getElementById('runalt-' + i);
+                    if (el) el.innerHTML = altChartSVG(alt) +
+                        '<div style="font-size:.66rem;opacity:.45;">noon → noon · ' +
+                        'shaded = astro dark · dashed = 30°</div>';
+                });
+        });
     }
     document.getElementById('makeSafeBtn').addEventListener('click', async () => {
         if (!confirm('Stop the sequence, warm the camera, and park the mount?')) return;
