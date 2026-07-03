@@ -31,6 +31,7 @@
             <h2>Tonight's Run</h2>
             <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem;">
                 <button class="btn btn-primary" id="armBtn">Arm</button>
+                <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;"></span>
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
@@ -210,6 +211,13 @@
             '<span style="min-width:200px;font-weight:600;">' + e.event + '</span>' +
             '<span style="opacity:.7;font-size:.85rem;">' + e.detail + '</span></div>').join('');
     }
+    document.getElementById('makeSafeBtn').addEventListener('click', async () => {
+        if (!confirm('Stop the sequence, warm the camera, and park the mount?')) return;
+        const r = await fetch('/api/makesafe', {method: 'POST'});
+        const d = await r.json();
+        alert(d.report);
+        refreshArm();
+    });
     document.getElementById('armBtn').addEventListener('click', async (ev) => {
         const arming = ev.target.dataset.armed !== '1';
         if (!arming && !confirm('Disarm? If a sequence is running it will be stopped.')) return;

@@ -111,15 +111,17 @@ async def on_agent_message(msg: AgentMessage):
         await broadcast_state()
 
     elif msg.msg_type == "image_captured":
-        # Update project progress
-        project_id = msg.payload.get("project_id")
-        filter_type = msg.payload.get("filter_type")
-        if project_id in _projects and filter_type:
-            for plan in _projects[project_id].exposure_plans:
-                if plan.filter_type.value == filter_type:
-                    plan.acquired += 1
-                    break
-            _projects[project_id].compute_completion()
+        # Count ONLY QA-passed subs toward project goals, matched by target
+        # name (the agent never knows project ids)
+        quality = msg.payload.get("quality") or {}
+        if quality.get("passed_qa") or msg.payload.get("status") == "validated":
+            matched = get_store().record_accepted_sub(
+                msg.payload.get("target_name", ""),
+                msg.payload.get("filter_type", ""))
+            if matched:
+                logger.info("Progress: %s %s +1 accepted",
+                            msg.payload.get("target_name"),
+                            msg.payload.get("filter_type"))
         await broadcast_state()
 
     elif msg.msg_type == "image_quality_report":
@@ -345,6 +347,12 @@ async def api_telescope_command(request: Request):
 
 
 @app.on_event("startup")
+async def _restore_armer():
+    """Reattach to a night in progress if PhotonScript restarted mid-run."""
+    get_armer().restore()
+
+
+@app.on_event("startup")
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
@@ -364,6 +372,7 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("nina_filter_names", "PS_NINA_FILTER_NAMES", "Filter names (class:NINA name)", "NINA", "str", False, False),
     ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),
     ("phd2_port", "PS_PHD2_PORT", "PHD2 port", "PHD2", "int", False, True),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
@@ -401,6 +410,16 @@ async def system_page(request: Request):
     return templates.TemplateResponse(request, "system.html", {
         "observatory": get_config().get_observatory(),
     })
+
+
+@app.post("/api/makesafe")
+async def api_makesafe():
+    """Emergency: stop sequence, warm camera, park mount."""
+    report = await get_armer().make_safe()
+    from photonscript.shared.pushover import notify as _notify
+    await _notify(get_config(), f"Manual make-safe: {report}",
+                  title="PhotonScript make-safe", priority=1)
+    return {"report": report}
 
 
 @app.post("/api/preflight")
@@ -636,10 +655,12 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
     from photonscript.shared.astronomy import (get_earth_location,
                                                get_twilight_times)
 
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+
     config = get_config()
     obs = config.get_observatory()
-    off = config.utc_offset_hours
     now = datetime.utcnow()
+    off = _tz_off(config, now)
 
     cache_key = (round(ra_hours, 3), round(dec_degrees, 3),
                  (now + timedelta(hours=off)).strftime("%Y-%m-%d"))

@@ -110,14 +110,50 @@ class TelescopeAgent:
             await self.nina.stop_sequence()
             await notify(self.config, "Sequence stopped by nanny.", priority=1)
 
+    async def _next_milestone(self) -> str:
+        """Hours until the armer does its next thing (best-effort)."""
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=5) as client:
+                r = await client.get(
+                    f"http://localhost:{self.config.scheduler_port}/api/arm")
+                d = r.json()
+        except Exception:  # noqa: BLE001
+            return ""
+        now = datetime.utcnow()
+
+        def hrs(iso):
+            if not iso:
+                return None
+            delta = (datetime.fromisoformat(iso.rstrip("Z")) - now
+                     ).total_seconds() / 3600
+            return round(delta, 1) if delta > 0 else None
+
+        state = d.get("state", "DISARMED")
+        if state == "ARMED":
+            h = hrs(d.get("preconfig_utc"))
+            return f" Next: pre-config in {h}h." if h else ""
+        if state == "RUNNING":
+            hd = hrs(d.get("dusk_utc"))
+            if hd:
+                return f" Next: imaging starts in {hd}h."
+            h = hrs(d.get("dawn_utc"))
+            return f" {h}h of dark remaining until shutdown." if h else ""
+        if state == "PAUSED_UNSAFE":
+            h = hrs(d.get("dawn_utc"))
+            return (f" Paused (unsafe); {h}h of dark left — resumes if safe, "
+                    "makes safe at dawn." if h else "")
+        return ""
+
     async def _heartbeat_loop(self):
-        """Low-priority 'still alive' ping so a dead agent is noticed."""
+        """Low-priority 'still alive' ping with time-to-next-milestone."""
         while self._running:
             await asyncio.sleep(self.config.heartbeat_minutes * 60)
+            milestone = await self._next_milestone()
             await notify(
                 self.config,
                 f"Nanny alive. {self.state.images_captured_tonight} subs tonight, "
-                f"state={self.state.session_state.value}",
+                f"state={self.state.session_state.value}.{milestone}",
                 title="PhotonScript heartbeat",
                 priority=-1,
             )
@@ -260,6 +296,8 @@ class TelescopeAgent:
         filter_str = parts[1] if len(parts) > 1 else "L"
         exposure_str = parts[2] if len(parts) > 2 else "300s"
 
+        # Filenames carry the NINA profile filter name (e.g. 'H'); translate
+        filter_str = self.config.reverse_filter_map().get(filter_str, filter_str)
         try:
             filter_type = FilterType(filter_str)
         except ValueError:

@@ -6,9 +6,18 @@ States:
   RUNNING        sequence dispatched & started (NINA cools, waits for dark,
                  images; its own SafetyMonitor conditions are the backstop)
   PAUSED_UNSAFE  safety monitor went unsafe mid-night; sequence stopped;
-                 waiting for safe-again (resume) or dawn (shutdown)
-  COMPLETE       past dawn; sequence end-area handled warm/park
+                 waiting for safe-again (smart resume) or dawn (make safe)
+  COMPLETE       night over
   ERROR          dispatch or lint failure — human needed
+
+Resilience:
+  - State persists to <data_dir>/armer_state.json on every transition and is
+    restored on startup, so a PhotonScript restart mid-night reattaches.
+  - Resume after a weather pause RE-DISPATCHES: the planner subtracts subs
+    already accepted tonight, so only the remainder is re-run (no repeated
+    slews through completed work).
+  - make_safe(): stop -> warm camera -> park mount via ninaAPI, used by every
+    abort path and exposed as a dashboard button.
 
 Transitions send Pushover notifications. Re-arm daily is manual (v1).
 """
@@ -29,6 +38,18 @@ logger = logging.getLogger(__name__)
 
 TICK_SECONDS = 30
 RESUME_MIN_REMAINING_MIN = 40  # don't resume with < this much dark left
+ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+
+# ninaAPI endpoint candidates (paths vary slightly across plugin versions;
+# we try in order until one doesn't 404)
+NINA_PATHS = {
+    "sequence_load": ["/sequence/load"],
+    "sequence_start": ["/sequence/start"],
+    "sequence_stop": ["/sequence/stop"],
+    "safety": ["/equipment/safetymonitor/info"],
+    "mount_park": ["/equipment/mount/park"],
+    "camera_warm": ["/equipment/camera/warm", "/equipment/camera/warm-up"],
+}
 
 
 class Armer:
@@ -40,7 +61,55 @@ class Armer:
         self.sequence_path: Path | None = None
         self._task: asyncio.Task | None = None
 
-    # -- public API ---------------------------------------------------------
+    # -- persistence ----------------------------------------------------------
+
+    @property
+    def _state_path(self) -> Path:
+        return Path(self.config.data_dir) / "armer_state.json"
+
+    def _persist(self):
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(json.dumps({
+                "state": self.state, "detail": self.detail, "plan": self.plan,
+                "sequence_path": str(self.sequence_path) if self.sequence_path else None,
+            }, indent=1), encoding="utf-8")
+        except OSError as e:
+            logger.error("Could not persist armer state: %s", e)
+
+    def restore(self) -> bool:
+        """Reattach to a night in progress after a restart. Returns True if resumed."""
+        if not self._state_path.exists():
+            return False
+        try:
+            saved = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return False
+        if saved.get("state") not in ACTIVE_STATES:
+            return False
+        dawn = saved.get("plan", {}).get("dawn_utc")
+        if dawn and datetime.fromisoformat(dawn.rstrip("Z")) < datetime.utcnow():
+            return False  # that night is over
+        self.state = saved["state"]
+        self.detail = saved.get("detail", "") + " (restored after restart)"
+        self.plan = saved.get("plan", {})
+        self.sequence_path = (Path(saved["sequence_path"])
+                              if saved.get("sequence_path") else None)
+        self._task = asyncio.create_task(self._run())
+        logger.info("Armer restored: %s for %s", self.state,
+                    self.plan.get("night_of"))
+        asyncio.create_task(notify(
+            self.config, f"PhotonScript restarted mid-night — reattached in "
+            f"state {self.state}.", title="PhotonScript restored"))
+        return True
+
+    def _set_state(self, state: str, detail: str = ""):
+        self.state = state
+        if detail:
+            self.detail = detail
+        self._persist()
+
+    # -- public API ------------------------------------------------------------
 
     def status(self) -> dict:
         return {"state": self.state, "detail": self.detail,
@@ -53,12 +122,12 @@ class Armer:
         from photonscript.scheduler.night_plan import build_night_plan
         self.plan = build_night_plan(self.config)
         if "error" in self.plan:
-            self.state, self.detail = "ERROR", self.plan["error"]
+            self._set_state("ERROR", self.plan["error"])
             return self.status()
-        self.state = "ARMED"
-        self.detail = (f"Pre-config at {self.plan['preconfig_utc']}, "
-                       f"{len(self.plan['targets'])} targets, "
-                       f"{self.plan['dark_hours']}h dark")
+        self._set_state("ARMED",
+                        f"Pre-config at {self.plan['preconfig_utc']}, "
+                        f"{len(self.plan['targets'])} targets, "
+                        f"{self.plan['dark_hours']}h dark")
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
         await notify(self.config,
@@ -70,32 +139,44 @@ class Armer:
 
     async def disarm(self) -> dict:
         prev = self.state
-        self.state, self.detail = "DISARMED", ""
+        self._set_state("DISARMED", "")
         if self._task and not self._task.done():
             self._task.cancel()
         if prev in ("RUNNING", "PAUSED_UNSAFE"):
-            await self._nina("sequence_stop")
-            await notify(self.config, "Disarmed — sequence stopped. "
-                         "Check scope state (may not be parked).",
+            report = await self.make_safe()
+            await notify(self.config, f"Disarmed — {report}",
                          title="PhotonScript disarmed", priority=1)
         return self.status()
 
-    # -- helpers -------------------------------------------------------------
+    async def make_safe(self) -> str:
+        """Stop the sequence, warm the camera, park the mount. Returns report."""
+        steps = []
+        for label, key in (("stop", "sequence_stop"),
+                           ("warm", "camera_warm"),
+                           ("park", "mount_park")):
+            ok = await self._nina(key) is not None
+            steps.append(f"{label}:{'ok' if ok else 'FAILED'}")
+        report = "make-safe " + " ".join(steps)
+        logger.warning(report)
+        return report
+
+    # -- ninaAPI helpers ---------------------------------------------------------
 
     async def _nina(self, key: str, **params):
         base = self.config.nina_base_url.rstrip("/")
-        paths = {"sequence_load": "/sequence/load",
-                 "sequence_start": "/sequence/start",
-                 "sequence_stop": "/sequence/stop",
-                 "safety": "/equipment/safetymonitor/info"}
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                r = await client.get(base + paths[key], params=params or None)
-                r.raise_for_status()
-                return r.json()
-        except Exception as e:  # noqa: BLE001
-            logger.error("ninaAPI %s failed: %s", key, e)
-            return None
+        for path in NINA_PATHS[key]:
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    r = await client.get(base + path, params=params or None)
+                    if r.status_code == 404:
+                        continue  # try next candidate path
+                    r.raise_for_status()
+                    return r.json()
+            except Exception as e:  # noqa: BLE001
+                logger.error("ninaAPI %s (%s) failed: %s", key, path, e)
+                return None
+        logger.error("ninaAPI %s: no endpoint candidate worked", key)
+        return None
 
     async def _is_safe(self) -> bool | None:
         data = await self._nina("safety")
@@ -109,9 +190,16 @@ class Armer:
     def _dawn(self) -> datetime:
         return datetime.fromisoformat(self.plan["dawn_utc"].rstrip("Z"))
 
+    # -- dispatch -----------------------------------------------------------------
+
     def _dispatch(self) -> bool:
-        """Generate, lint, write tonight's sequence. Returns lint-ok."""
+        """Generate, lint, write tonight's sequence (remainder-aware).
+
+        The planner reads each project's acquired counts, so a re-dispatch
+        after a pause only schedules what's still missing.
+        """
         from photonscript.shared.astronomy import get_seasonal_targets
+        from photonscript.shared.localtime import to_local
         from photonscript.scheduler.target_planner import (
             create_project_from_target, plan_night_sequence)
         from photonscript.scheduler.nina_sequence import build_sequence_for_night
@@ -119,18 +207,30 @@ class Armer:
         from photonscript.scheduler.sequence_lint import lint
 
         now = datetime.utcnow()
-        seasonal = get_seasonal_targets(now.month)
-        projects = [create_project_from_target(t) for t in seasonal]
+
+        # Prefer stored projects (priority + budgets); fall back to seasonal
+        try:
+            from photonscript.scheduler.app import get_store
+            projects = [p for p in get_store().projects.values() if p.active]
+        except Exception:  # noqa: BLE001
+            projects = []
+        if not projects:
+            projects = [create_project_from_target(t)
+                        for t in get_seasonal_targets(now.month)]
+
         targets = plan_night_sequence(projects, self.config, now)
+        if not targets:
+            self.detail = "No targets with remaining subs visible tonight"
+            return False
         for t in targets:
             t.start_guiding = self.config.guided_default
         seq = build_sequence_for_night(
             f"PhotonScript_{self.plan['night_of'].replace('-', '')}", targets)
 
-        # Dusk gate in local time
+        # Dusk gate in local time (DST-aware); skip if dusk already past
         dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
-        local_dusk = dusk + timedelta(hours=self.config.utc_offset_hours)
-        seq.wait_until_local = local_dusk.strftime("%H:%M:%S")
+        if now < dusk:
+            seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
         content = generate_nina_json(seq)
         result = lint(json.loads(content), guided=self.config.guided_default)
@@ -138,17 +238,35 @@ class Armer:
             self.detail = "; ".join(f.detail for f in result.findings
                                     if f.level == "ERROR")
             return False
-        out = Path.cwd() / "sequences" / f"PhotonScript_{self.plan['night_of']}.json"
+        out = (Path.cwd() / "sequences"
+               / f"PhotonScript_{self.plan['night_of']}_{now:%H%M}.json")
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(content)
         self.sequence_path = out
+        self._persist()
         return True
 
-    # -- state machine loop ---------------------------------------------------
+    async def _dispatch_and_start(self) -> bool:
+        if not self._dispatch():
+            self._set_state("ERROR")
+            await notify(self.config, f"Dispatch FAILED: {self.detail}",
+                         title="PhotonScript ERROR", priority=1)
+            return False
+        loaded = await self._nina("sequence_load",
+                                  sequencePath=str(self.sequence_path))
+        started = await self._nina("sequence_start")
+        if loaded is None or started is None:
+            self._set_state("ERROR", "ninaAPI load/start failed")
+            await notify(self.config, "Dispatch failed: ninaAPI load/start "
+                         "error.", title="PhotonScript ERROR", priority=1)
+            return False
+        return True
+
+    # -- state machine loop ----------------------------------------------------
 
     async def _run(self):
         try:
-            while self.state not in ("DISARMED", "COMPLETE", "ERROR"):
+            while self.state in ACTIVE_STATES:
                 await self._tick()
                 await asyncio.sleep(TICK_SECONDS)
         except asyncio.CancelledError:
@@ -158,33 +276,20 @@ class Armer:
         now = datetime.utcnow()
 
         if self.state == "ARMED":
-            preconfig = datetime.fromisoformat(self.plan["preconfig_utc"].rstrip("Z"))
+            preconfig = datetime.fromisoformat(
+                self.plan["preconfig_utc"].rstrip("Z"))
             if now >= preconfig:
-                if not self._dispatch():
-                    self.state = "ERROR"
-                    await notify(self.config, f"Dispatch FAILED lint: {self.detail}",
-                                 title="PhotonScript ERROR", priority=1)
-                    return
-                loaded = await self._nina("sequence_load",
-                                          sequencePath=str(self.sequence_path))
-                started = await self._nina("sequence_start")
-                if loaded is None or started is None:
-                    self.state = "ERROR"
-                    self.detail = "ninaAPI load/start failed"
-                    await notify(self.config, "Dispatch failed: ninaAPI "
-                                 "load/start error.", title="PhotonScript ERROR",
-                                 priority=1)
-                    return
-                self.state = "RUNNING"
-                self.detail = "Sequence started — cooling, imaging at dark"
-                await notify(self.config,
-                             "Sequence dispatched and started. Cooling now; "
-                             "imaging begins at astro dark.",
-                             title="PhotonScript running")
+                if await self._dispatch_and_start():
+                    self._set_state("RUNNING",
+                                    "Sequence started — cooling, imaging at dark")
+                    await notify(self.config,
+                                 "Sequence dispatched and started. Cooling now; "
+                                 "imaging begins at astro dark.",
+                                 title="PhotonScript running")
 
         elif self.state == "RUNNING":
             if now >= self._dawn() + timedelta(minutes=30):
-                self.state = "COMPLETE"
+                self._set_state("COMPLETE")
                 await notify(self.config, "Night complete — sequence end-area "
                              "handled warm & park. Morning report at 9.",
                              title="PhotonScript complete")
@@ -192,30 +297,30 @@ class Armer:
             safe = await self._is_safe()
             if safe is False:
                 await self._nina("sequence_stop")
-                self.state = "PAUSED_UNSAFE"
-                self.detail = f"Unsafe at {now:%H:%M}Z — sequence stopped"
+                self._set_state("PAUSED_UNSAFE",
+                                f"Unsafe at {now:%H:%M}Z — sequence stopped")
                 await notify(self.config,
                              "PAUSED: safety monitor unsafe — sequence stopped. "
-                             "Will auto-resume if safe again tonight.",
+                             "Will auto-resume with remaining subs if safe "
+                             "again tonight.",
                              title="PhotonScript paused", priority=1)
 
         elif self.state == "PAUSED_UNSAFE":
             remaining = (self._dawn() - now).total_seconds() / 60
             if remaining < RESUME_MIN_REMAINING_MIN:
-                self.state = "COMPLETE"
+                report = await self.make_safe()
+                self._set_state("COMPLETE", f"Dawn while paused; {report}")
                 await notify(self.config,
-                             "Dawn reached while paused. Sequence was stopped "
-                             "mid-run — VERIFY the scope is warm and parked "
-                             "(end-area did not run).",
-                             title="PhotonScript: verify scope", priority=1)
+                             f"Dawn reached while paused. {report}",
+                             title="PhotonScript: made safe", priority=1)
                 return
             safe = await self._is_safe()
             if safe is True:
-                await self._nina("sequence_load",
-                                 sequencePath=str(self.sequence_path))
-                await self._nina("sequence_start")
-                self.state = "RUNNING"
-                await notify(self.config,
-                             f"RESUMED: safe again, {remaining / 60:.1f}h of "
-                             "dark remaining. Sequence restarted.",
-                             title="PhotonScript resumed")
+                # Smart resume: regenerate with tonight's acquired subs
+                # subtracted — only the remainder is re-dispatched.
+                if await self._dispatch_and_start():
+                    self._set_state("RUNNING", "Resumed with remaining subs")
+                    await notify(self.config,
+                                 f"RESUMED: safe again, {remaining / 60:.1f}h "
+                                 "of dark left. Remainder re-dispatched.",
+                                 title="PhotonScript resumed")

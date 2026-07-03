@@ -135,8 +135,24 @@ def _build_take_exposures(exp: ExposurePlan) -> dict:
             Y=exp.binning,
         ),
         ImageType="LIGHT",
-        FilterName=exp.filter_type.value,
+        FilterName=_nina_filter_name(exp.filter_type),
     )
+
+
+_filter_names_cache: dict | None = None
+
+
+def _nina_filter_name(filter_type: FilterType) -> str:
+    """Translate our filter class to the NINA profile's filter name.
+
+    The AARO wheel names filters R,G,B,S,H,O,L — NINA matches by name, so a
+    SwitchFilter asking for 'Ha' when the profile says 'H' would fail.
+    """
+    global _filter_names_cache
+    if _filter_names_cache is None:
+        from photonscript.shared.config import PhotonScriptConfig
+        _filter_names_cache = PhotonScriptConfig().filter_name_map()
+    return _filter_names_cache.get(filter_type.value, filter_type.value)
 
 
 def _build_switch_filter(filter_type: FilterType) -> dict:
@@ -146,7 +162,7 @@ def _build_switch_filter(filter_type: FilterType) -> dict:
         Inherited=True,
         Filter=_make_typed(
             "NINA.Equipment.Filter.FilterInfo, NINA.Equipment",
-            Name=filter_type.value,
+            Name=_nina_filter_name(filter_type),
             Position=position,
         ),
     )

@@ -60,6 +60,9 @@ class PhotonScriptConfig(BaseSettings):
     auto_abort_on_severe: bool = False  # enable only after trusting the nanny
     heartbeat_minutes: int = 30
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
+    # Filter names as they appear in the NINA profile, mapped from our classes.
+    # AARO wheel names its filters with single letters.
+    nina_filter_names: str = "Ha:H,OIII:O,SII:S,L:L,R:R,G:G,B:B"
     utc_offset_hours: float = -6.0    # local display offset (MDT)
 
     # --- Librarian ---
@@ -81,6 +84,19 @@ class PhotonScriptConfig(BaseSettings):
     # --- AstroBin ---
     astrobin_api_key: str = ""
     astrobin_api_secret: str = ""
+
+    def filter_name_map(self) -> dict:
+        """Our filter class -> NINA profile filter name."""
+        out = {}
+        for pair in self.nina_filter_names.split(","):
+            if ":" in pair:
+                cls, name = pair.split(":", 1)
+                out[cls.strip()] = name.strip()
+        return out
+
+    def reverse_filter_map(self) -> dict:
+        """NINA profile filter name -> our filter class."""
+        return {v: k for k, v in self.filter_name_map().items()}
 
     def get_observatory(self) -> ObservatoryLocation:
         return ObservatoryLocation(

@@ -45,7 +45,8 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     projects = [create_project_from_target(t) for t in seasonal]
     targets = plan_night_sequence(projects, config, now)
 
-    utc_off = getattr(config, "utc_offset_hours", -6)  # America/Denver (MDT)
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+    utc_off = _tz_off(config, dusk)  # DST-aware (MDT -6 / MST -7)
 
     def _fmt(dt):
         return {"utc": dt.isoformat() + "Z",

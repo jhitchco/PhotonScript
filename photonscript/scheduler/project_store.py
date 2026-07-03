@@ -139,6 +139,20 @@ class ProjectStore:
         self.save()
         return proj
 
+    def record_accepted_sub(self, target_name: str, filter_class: str) -> bool:
+        """Increment acquired for a QA-passed sub. Returns True if matched."""
+        tn = (target_name or "").strip().lower()
+        for proj in self.projects.values():
+            names = {proj.target.name.lower(), proj.target.catalog_id.lower(),
+                     proj.target.catalog_id.replace(" ", "").lower()}
+            if tn in names or any(tn and tn in n for n in names if n):
+                for plan in proj.exposure_plans:
+                    if plan.filter_type.value == filter_class:
+                        plan.acquired += 1
+                        self.save()
+                        return True
+        return False
+
     def delete(self, project_id: str) -> bool:
         if project_id in self.projects:
             del self.projects[project_id]
