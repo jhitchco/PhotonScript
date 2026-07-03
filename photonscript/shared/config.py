@@ -59,6 +59,8 @@ class PhotonScriptConfig(BaseSettings):
     consecutive_reject_limit: int = 3  # rejects in a row before severe alert
     auto_abort_on_severe: bool = False  # enable only after trusting the nanny
     heartbeat_minutes: int = 30
+    arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
+    utc_offset_hours: float = -6.0    # local display offset (MDT)
 
     # --- Librarian ---
     remote_image_dir: str = "C:\\Astrophotography"

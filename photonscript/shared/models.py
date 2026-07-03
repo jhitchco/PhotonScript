@@ -266,6 +266,7 @@ class NinaSequenceFile(BaseModel):
     name: str
     targets: list[NinaSequenceTarget] = Field(default_factory=list)
     wait_for_altitude: float = 30.0  # minimum altitude degrees
+    wait_until_local: Optional[str] = None  # "HH:MM:SS" — WaitForTime gate before imaging
     park_on_finish: bool = True
     warm_camera_on_finish: bool = True
 

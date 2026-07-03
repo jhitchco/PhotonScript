@@ -188,6 +188,19 @@ def _build_cool_camera(temp_c: float = -10.0, duration_minutes: int = 2) -> dict
     )
 
 
+def _build_wait_for_time(hhmmss: str) -> dict:
+    """Hold the sequence until a local clock time (e.g. astro dusk).
+
+    Lets the sequence be dispatched and started in the afternoon: equipment
+    connects and cools immediately, imaging waits for dark.
+    """
+    h, m, s = (int(x) for x in hhmmss.split(":"))
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
+        Hours=h, Minutes=m, Seconds=s,
+    )
+
+
 def _build_warm_camera() -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.Camera.WarmCamera, NINA.Sequencer",
@@ -313,6 +326,10 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         # 2-minute cool to -10.0°C — verify Temperature field is NEVER 0
         # (a misread 0 setpoint once cost a whole night of warm-sensor subs)
         start_items.append(_build_cool_camera(sequence.targets[0].camera_temp_c, 2))
+
+    # Dusk gate: cool during twilight, image when dark
+    if sequence.wait_until_local:
+        start_items.append(_build_wait_for_time(sequence.wait_until_local))
 
     # Target containers — force guider recalibration on the FIRST guided target
     # (stale PHD2 calibration is a top cause of runaway guide errors)

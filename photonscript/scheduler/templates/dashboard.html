@@ -20,6 +20,23 @@
     </header>
 
     <main>
+        <!-- 7-Night Outlook + ARM -->
+        <section class="panel" id="outlookPanel">
+            <h2>7-Night Outlook</h2>
+            <div id="outlookStrip" style="display:flex;gap:.6rem;flex-wrap:wrap;">Loading forecast…</div>
+            <div style="margin-top:.5rem;font-size:.75rem;opacity:.55;" id="outlookLinks"></div>
+        </section>
+
+        <section class="panel" id="armPanel">
+            <h2>Tonight's Run</h2>
+            <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem;">
+                <button class="btn btn-primary" id="armBtn">Arm</button>
+                <span id="armState" style="font-weight:700;"></span>
+                <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
+            </div>
+            <div id="nightTimeline"></div>
+        </section>
+
         <!-- Telescope Status Panel -->
         <section class="panel telescope-status">
             <h2>Telescope Status</h2>
@@ -159,5 +176,70 @@
     </footer>
 
     <script src="/static/js/dashboard.js"></script>
+
+    <script>
+    const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
+    async function loadOutlook() {
+        try {
+            const r = await fetch('/api/forecast');
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail);
+            document.getElementById('outlookStrip').innerHTML = d.nights.map(n =>
+                '<div style="text-align:center;padding:.55rem .8rem;border-radius:8px;' +
+                'border:2px solid ' + RATING_COLORS[n.rating] + ';min-width:86px;">' +
+                '<div style="font-size:.7rem;opacity:.7;">' + n.date.slice(5) + '</div>' +
+                '<div style="font-size:1.25rem;font-weight:700;color:' + RATING_COLORS[n.rating] + ';">' +
+                n.usable_pct + '%</div>' +
+                '<div style="font-size:.72rem;opacity:.75;">' + n.usable_hours + 'h / ' +
+                n.dark_hours + 'h</div>' +
+                (n.avg_cloud_pct !== null ? '<div style="font-size:.68rem;opacity:.5;">☁ ' +
+                n.avg_cloud_pct + '%</div>' : '') + '</div>').join('');
+            document.getElementById('outlookLinks').innerHTML =
+                'Source: Open-Meteo · Cross-check: <a style="color:#7dd3fc" href="' +
+                d.cross_check.clear_outside + '" target="_blank">Clear Outside</a> · ' +
+                '<a style="color:#7dd3fc" href="' + d.cross_check.aaro_status +
+                '" target="_blank">AARO Status</a>';
+        } catch (e) {
+            document.getElementById('outlookStrip').textContent = 'Forecast unavailable: ' + e.message;
+        }
+    }
+
+    const ARM_COLORS = {DISARMED:'#64748b', ARMED:'#eab308', RUNNING:'#22c55e',
+                        PAUSED_UNSAFE:'#f97316', COMPLETE:'#7dd3fc', ERROR:'#ef4444'};
+    async function refreshArm() {
+        const r = await fetch('/api/arm');
+        const d = await r.json();
+        const el = document.getElementById('armState');
+        el.textContent = d.state;
+        el.style.color = ARM_COLORS[d.state] || '#e2e8f0';
+        document.getElementById('armDetail').textContent = d.detail || '';
+        const btn = document.getElementById('armBtn');
+        const active = ['ARMED','RUNNING','PAUSED_UNSAFE'].includes(d.state);
+        btn.textContent = active ? 'Disarm' : 'Arm';
+        btn.dataset.armed = active ? '1' : '0';
+    }
+    async function loadTimeline() {
+        const r = await fetch('/api/nightplan');
+        const d = await r.json();
+        if (d.error) { document.getElementById('nightTimeline').textContent = d.error; return; }
+        document.getElementById('nightTimeline').innerHTML =
+            '<div style="font-size:.8rem;opacity:.6;margin-bottom:.4rem;">Night of ' +
+            d.night_of + ' — ' + d.dark_hours + 'h dark</div>' +
+            d.events.map(e =>
+            '<div style="display:flex;gap:1rem;padding:.35rem 0;border-bottom:1px solid rgba(255,255,255,.05);">' +
+            '<span style="min-width:84px;color:#7dd3fc;font-weight:600;">' + e.time.local + '</span>' +
+            '<span style="min-width:200px;font-weight:600;">' + e.event + '</span>' +
+            '<span style="opacity:.7;font-size:.85rem;">' + e.detail + '</span></div>').join('');
+    }
+    document.getElementById('armBtn').addEventListener('click', async (ev) => {
+        const arming = ev.target.dataset.armed !== '1';
+        if (!arming && !confirm('Disarm? If a sequence is running it will be stopped.')) return;
+        await fetch('/api/arm', {method:'POST', headers:{'Content-Type':'application/json'},
+                                 body: JSON.stringify({armed: arming})});
+        refreshArm();
+    });
+    loadOutlook(); loadTimeline(); refreshArm();
+    setInterval(refreshArm, 30000);
+    </script>
 </body>
 </html>

@@ -380,6 +380,7 @@ _CONFIG_FIELDS = [
     ("consecutive_reject_limit", "PS_CONSECUTIVE_REJECT_LIMIT", "Consecutive rejects before severe alert", "Nanny / Alerts", "int", False, False),
     ("auto_abort_on_severe", "PS_AUTO_ABORT_ON_SEVERE", "Auto-abort on severe (enable only once trusted)", "Nanny / Alerts", "bool", False, False),
     ("heartbeat_minutes", "PS_HEARTBEAT_MINUTES", "Heartbeat interval (min)", "Nanny / Alerts", "int", False, False),
+    ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
@@ -476,3 +477,48 @@ async def api_pushover_test():
     return {"ok": ok,
             "detail": "Sent — check your phone." if ok
             else "Pushover API rejected the request — check both keys."}
+
+
+# ---------------------------------------------------------------------------
+# Forecast, night plan, and ARM control
+# ---------------------------------------------------------------------------
+
+_armer = None
+
+
+def get_armer():
+    global _armer
+    if _armer is None:
+        from photonscript.scheduler.armer import Armer
+        _armer = Armer(get_config())
+    return _armer
+
+
+@app.get("/api/forecast")
+async def api_forecast():
+    from photonscript.scheduler.forecast import get_forecast
+    try:
+        return await get_forecast(get_config())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502, content={
+            "detail": f"Forecast fetch failed: {e}"})
+
+
+@app.get("/api/nightplan")
+async def api_nightplan():
+    from photonscript.scheduler.night_plan import build_night_plan
+    return build_night_plan(get_config())
+
+
+@app.get("/api/arm")
+async def api_arm_status():
+    return get_armer().status()
+
+
+@app.post("/api/arm")
+async def api_arm(request: Request):
+    body = await request.json()
+    armer = get_armer()
+    if body.get("armed"):
+        return await armer.arm()
+    return await armer.disarm()
