@@ -361,15 +361,6 @@ def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
         ErrorBehavior=0, Attempts=1)
 
 
-def _external_script_blank() -> dict:
-    """Patriot/Jerry Macon trick: a blank script that fails on purpose after
-    the last target, so the UNSAFE branch is skipped and the sequence
-    proceeds to the End area instead of waiting for weather forever."""
-    return _make_typed(
-        "NINA.Sequencer.SequenceItem.Utility.ExternalScript, NINA.Sequencer",
-        Script=None, ErrorBehavior=3, Attempts=1)
-
-
 # --- Containers ---------------------------------------------------------------
 
 def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
@@ -525,9 +516,11 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             _set_tracking(0),
         ]),
         _seq_container("TARGETS_CONTAINER", target_containers),
-        _annotation("Blank script below fails on purpose after the last "
-                    "target so UNSAFE is skipped and we proceed to End."),
-        _external_script_blank(),
+        _annotation("All targets done: park and hold (interruptible) until "
+                    "dawn ends LOOP_ALL_NIGHT and the End area runs."),
+        _pushover("Imaging", "all targets complete — parked, holding until dawn"),
+        _park(),
+        _wait_for_provider("DawnProvider", 0),
     ], conditions=[_safety_condition()])
 
     night_loop = _seq_container("LOOP_ALL_NIGHT", [

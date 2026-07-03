@@ -148,11 +148,22 @@ class TestNightLoopArchitecture:
         wait_idx = next(i for i, t in enumerate(seq_types) if "WaitUntilSafe" in t)
         assert park_idx < wait_idx   # park FIRST, then wait for weather
 
-    def test_blank_script_escape_hatch(self):
-        scripts = [d for d in _walk(_gen()) if isinstance(d, dict)
-                   and "ExternalScript" in d.get("$type", "")]
-        assert scripts and scripts[0]["Script"] is None
-        assert scripts[0]["ErrorBehavior"] == 3
+    def test_no_external_script(self):
+        """The blank-script hack blocked sequence start on NINA 3.2 —
+        replaced with park-and-hold-until-dawn after the last target."""
+        types = _types(_gen())
+        assert not any("ExternalScript" in t for t in types)
+
+    def test_targets_done_parks_and_holds_until_dawn(self):
+        data = _gen()
+        safe_loop = next(d for d in _walk(data) if isinstance(d, dict)
+                         and d.get("Name") == "SAFE_LOOP")
+        seq_types = [i.get("$type", "") for i in safe_loop["Items"]["$values"]]
+        park_idx = next(i for i, x in enumerate(seq_types) if "ParkScope" in x)
+        wait_idx = next(i for i, x in enumerate(seq_types) if "WaitForTime," in x)
+        assert park_idx < wait_idx
+        wait = safe_loop["Items"]["$values"][wait_idx]
+        assert "DawnProvider" in wait["SelectedProvider"]["$type"]
 
     def test_safety_monitor_connects_before_wait_until_safe(self):
         data = _gen()

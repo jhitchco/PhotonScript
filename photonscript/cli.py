@@ -152,6 +152,8 @@ def sequence(
     month: int = typer.Option(0, help="Month (1-12), 0 = current"),
     fmt: str = typer.Option("json", "--format", help="json (Advanced Sequencer) or xml"),
     guided: bool = typer.Option(False, help="Guided run (default: unguided, CEM70G encoders)"),
+    now: bool = typer.Option(False, "--now",
+                             help="No dusk gate — starts immediately (daytime testing)"),
 ):
     """Generate a NINA sequence file for tonight (lint-gated for JSON)."""
     from photonscript.shared.astronomy import get_seasonal_targets
@@ -162,26 +164,27 @@ def sequence(
     from photonscript.scheduler.nina_sequence import generate_nina_xml, build_sequence_for_night
 
     config = PhotonScriptConfig()
-    now = datetime.utcnow()
+    now_dt = datetime.utcnow()
     if month == 0:
-        month = now.month
+        month = now_dt.month
 
     seasonal = get_seasonal_targets(month)
     projects = [create_project_from_target(t) for t in seasonal]
-    targets = plan_night_sequence(projects, config, now)
+    targets = plan_night_sequence(projects, config, now_dt)
     for t in targets:
         t.start_guiding = guided
-    seq = build_sequence_for_night(f"PhotonScript_{now.strftime('%Y%m%d')}", targets)
+    seq = build_sequence_for_night(f"PhotonScript_{now_dt.strftime('%Y%m%d')}", targets)
+    seq.wait_until_local = None if now else "00:00:00"  # flag: gate on dusk providers
 
     if fmt == "xml":
         content = generate_nina_xml(seq)
-        default_path = f"PhotonScript_{now.strftime('%Y%m%d')}.xml"
+        default_path = f"PhotonScript_{now_dt.strftime('%Y%m%d')}.xml"
     else:
         from photonscript.scheduler.nina_sequence_json import generate_nina_json
         from photonscript.scheduler.sequence_lint import lint as lint_seq, format_result
 
         content = generate_nina_json(seq)
-        default_path = f"PhotonScript_{now.strftime('%Y%m%d')}.json"
+        default_path = f"PhotonScript_{now_dt.strftime('%Y%m%d')}.json"
 
         # Lint gate — refuse to write a sequence that would fail at 3 AM
         result = lint_seq(json.loads(content), guided=guided)
