@@ -383,6 +383,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if active:
         items.append(_switch_filter(active[0].filter_type))
     if target.auto_focus_on_start:
+        items.append(_pushover("Imaging",
+                               f"{target.name}: slew done — autofocusing "
+                               f"through {active[0].filter_type.value if active else 'L'}, "
+                               "then plate solve & center"))
         items.append(_autofocus())
     items.append(_center(target))
     items.append(_set_tracking(0))
@@ -395,11 +399,23 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         items.append(_pushover("Imaging",
                                f"{target.name}: focused, centered, unguided "
                                "on encoders — capturing"))
-    for exp in active:
+    n_blocks = len(active)
+    for bi, exp in enumerate(active, 1):
+        n = exp.count - exp.acquired
+        block_h = exp.exposure_seconds * n / 3600
+        items.append(_pushover(
+            "Imaging",
+            f"{target.name} [{bi}/{n_blocks}]: starting "
+            f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
+            f"(~{block_h:.1f}h) gain {exp.gain}"))
         items.append(_smart_exposure(exp, target.start_guiding,
                                      target.dither_every_n))
-    items.append(_pushover("Imaging", f"{target.name}: block complete "
-                           f"({plan_desc} attempted)"))
+        items.append(_pushover(
+            "Imaging",
+            f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
+            f"done ({n}×{exp.exposure_seconds:.0f}s attempted)"))
+    items.append(_pushover("Imaging", f"{target.name}: ALL blocks complete "
+                           f"({plan_desc}) — moving on"))
 
     triggers = [_meridian_flip_trigger(), _reconnect_trigger()]
     if target.auto_focus_interval_minutes > 0:
@@ -470,6 +486,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         start_items += [
             _wait_for_provider("NauticalDuskProvider", 0),
             _wait_until_safe(),
+            _pushover("Startup", "nautical dusk — twilight autofocus: "
+                      "slewing to alt 70° az 180°"),
             _slew_alt_az(70, 180),
             _set_tracking(0),
         ]
@@ -511,9 +529,12 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     safe_loop = _seq_container("SAFE_LOOP", [
         _seq_container("RESET_EQUIPMENT_ONCE_SAFE", [
             _annotation("Runs on every safe (re)entry; harmless on first pass."),
+            _pushover("Safety", "SAFE_LOOP entry — holding 2 min of "
+                      "confirmed-safe, then unpark + track"),
             _wait_for_timespan(120),
             _unpark(),
             _set_tracking(0),
+            _pushover("Safety", "equipment re-armed — proceeding to targets"),
         ]),
         _seq_container("TARGETS_CONTAINER", target_containers),
         _annotation("All targets done: park and hold (interruptible) until "
