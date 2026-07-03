@@ -120,10 +120,9 @@ def plan_night_sequence(
             if vis["visible"] and vis["hours"] >= 0.5:
                 visible_projects.append({"project": proj, "visibility": vis})
 
-    # Sort by transit time to minimize slewing
-    visible_projects.sort(
-        key=lambda vp: vp["visibility"].get("transit_time") or datetime.max
-    )
+    # Select by PRIORITY (highest wins scarce dark time); the chosen set is
+    # transit-ordered at the end to minimize slewing.
+    visible_projects.sort(key=lambda vp: -vp["project"].priority)
 
     # Build sequence targets
     sequence_targets = []
@@ -162,10 +161,16 @@ def plan_night_sequence(
             ra_hours=proj.target.ra_hours,
             dec_degrees=proj.target.dec_degrees,
             exposures=remaining_exposures,
-            dither_every_n=3,
+            dither_every_n=5,
             auto_focus_interval_minutes=60,
+            camera_temp_c=config.camera_setpoint_c,
         )
-        sequence_targets.append(seq_target)
+        sequence_targets.append(
+            (vp["visibility"].get("transit_time") or datetime.max, seq_target))
+
+    # Transit-order the selected targets (west-to-east through the night)
+    sequence_targets = [t for _, t in sorted(sequence_targets,
+                                             key=lambda x: x[0])]
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",

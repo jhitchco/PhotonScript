@@ -35,9 +35,9 @@ class TestSequenceLint:
         result = lint(data, guided=True)
         assert result.ok, [f"{f.rule}: {f.detail}" for f in result.findings]
 
-    def test_catches_zero_cooling(self):
+    def test_catches_warm_cooling_setpoint(self):
         data = json.loads(generate_nina_json(_make_seq()))
-        blob = json.dumps(data).replace('"Temperature": -10.0', '"Temperature": 0')
+        blob = json.dumps(data).replace('"Temperature": -10.0', '"Temperature": 5')
         result = lint(json.loads(blob))
         assert not result.ok
         assert any(f.rule == "cooling" for f in result.findings)

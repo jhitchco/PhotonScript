@@ -120,33 +120,12 @@
         <!-- Active Projects -->
         <section class="panel projects">
             <h2>Imaging Projects</h2>
-            <div class="project-list" id="projectList">
-                {% for project in projects %}
-                <div class="project-card">
-                    <div class="project-header">
-                        <span class="project-name">{{ project.target.name }}</span>
-                        <span class="project-priority">P{{ project.priority }}</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: {{ project.completion_pct }}%"></div>
-                    </div>
-                    <div class="project-stats">
-                        <span>{{ project.completion_pct }}% complete</span>
-                        <span>{{ project.total_integration_hours }}h planned</span>
-                    </div>
-                    <div class="filter-progress">
-                        {% for ep in project.exposure_plans %}
-                        <span class="filter-badge filter-{{ ep.filter_type.value }}">
-                            {{ ep.filter_type.value }}: {{ ep.acquired }}/{{ ep.count }}
-                        </span>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endfor %}
-                {% if not projects %}
-                <p class="empty-state">No active projects. Tonight's targets will be auto-selected from the seasonal catalog.</p>
-                {% endif %}
+            <div style="display:flex;gap:.6rem;margin-bottom:.8rem;">
+                <input id="addTargetName" placeholder="Target name (e.g. Crescent Nebula)"
+                       style="flex:1;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.4rem .6rem;">
+                <button class="btn btn-secondary" id="addTargetBtn">Add</button>
             </div>
+            <div id="projectManager"><p class="empty-state">Loading projects…</p></div>
         </section>
 
         <!-- Seasonal Targets Browser -->
@@ -240,6 +219,119 @@
     });
     loadOutlook(); loadTimeline(); refreshArm();
     setInterval(refreshArm, 30000);
+    </script>
+
+    <script>
+    // ---- Imaging project manager -----------------------------------------
+    const FILTER_COLORS = {Ha:'#ef4444', OIII:'#22d3ee', SII:'#f59e0b',
+                           L:'#e2e8f0', R:'#f87171', G:'#4ade80', B:'#60a5fa'};
+
+    function altChartSVG(d) {
+        const W = 260, H = 64, n = d.alts.length;
+        const x = i => i / (n - 1) * W;
+        const y = a => H - Math.max(0, Math.min(90, a)) / 90 * H;
+        let svg = '<svg width="' + W + '" height="' + H + '" style="background:#0b1220;border-radius:6px;">';
+        if (d.dark_start_frac !== null && d.dark_end_frac !== null)
+            svg += '<rect x="' + d.dark_start_frac * W + '" y="0" width="' +
+                   (d.dark_end_frac - d.dark_start_frac) * W + '" height="' + H +
+                   '" fill="rgba(15,23,42,.9)"/>';
+        svg += '<line x1="0" y1="' + y(d.min_altitude) + '" x2="' + W + '" y2="' +
+               y(d.min_altitude) + '" stroke="#475569" stroke-dasharray="3,3"/>';
+        svg += '<polyline fill="none" stroke="#7dd3fc" stroke-width="1.5" points="' +
+               d.alts.map((a, i) => x(i) + ',' + y(a)).join(' ') + '"/>';
+        if (d.now_frac !== null)
+            svg += '<line x1="' + d.now_frac * W + '" y1="0" x2="' + d.now_frac * W +
+                   '" y2="' + H + '" stroke="#e2e8f0" stroke-dasharray="2,3" opacity=".7"/>';
+        svg += '<circle cx="' + d.transit_frac * W + '" cy="' + y(d.transit_alt) +
+               '" r="2.5" fill="#e2e8f0"/>';
+        svg += '</svg>';
+        return svg;
+    }
+
+    async function loadProjects() {
+        const r = await fetch('/api/projects2');
+        const projects = await r.json();
+        const box = document.getElementById('projectManager');
+        if (!projects.length) {
+            box.innerHTML = '<p class="empty-state">No projects yet — add a target above, ' +
+                'or tonight will auto-select from the seasonal catalog.</p>';
+            return;
+        }
+        box.innerHTML = projects.map(p => {
+            const chips = p.exposure_plans.map(e =>
+                '<span style="border:1px solid ' + (FILTER_COLORS[e.filter_type] || '#64748b') +
+                ';color:' + (FILTER_COLORS[e.filter_type] || '#64748b') +
+                ';border-radius:4px;padding:.1rem .4rem;font-size:.72rem;margin-right:.3rem;">' +
+                e.filter_type + ' ' + e.acquired + '/' + e.count + '×' +
+                Math.round(e.exposure_seconds) + 's</span>').join('');
+            return '<div style="display:flex;gap:.9rem;padding:.7rem;border-radius:8px;' +
+                'background:rgba(255,255,255,.03);margin-bottom:.6rem;align-items:flex-start;' +
+                (p.active ? '' : 'opacity:.45;') + '">' +
+                '<img data-thumb="' + p.target.name + '" data-cat="' + p.target.catalog_id +
+                '" style="width:64px;height:64px;object-fit:cover;border-radius:6px;background:#0b1220;">' +
+                '<div style="flex:1;">' +
+                '<div style="display:flex;align-items:center;gap:.6rem;">' +
+                '<b>' + p.target.name + '</b>' +
+                '<span style="opacity:.5;font-size:.78rem;">' + p.target.catalog_id + ' · ' +
+                p.kind + '</span>' +
+                '<span style="margin-left:auto;font-size:.78rem;opacity:.7;">' +
+                p.completion_pct + '% done</span></div>' +
+                '<div style="margin:.35rem 0;">' + chips + '</div>' +
+                '<div style="display:flex;align-items:center;gap:1rem;font-size:.82rem;">' +
+                '<span>Priority <b>' + p.priority + '</b> ' +
+                btn(p.id, "{\"priority_delta\":10}", '▲') + btn(p.id, "{\"priority_delta\":-10}", '▼') +
+                '</span><span>Budget <b>' + p.budget_hours + 'h</b> ' +
+                btn(p.id, "{\"budget_delta\":1}", '+1h') + btn(p.id, "{\"budget_delta\":-1}", '−1h') +
+                '</span>' +
+                '<span style="cursor:pointer;opacity:.6;" onclick="patchProject(\'' + p.id +
+                '\', {active: ' + !p.active + '})">' + (p.active ? 'disable' : 'enable') + '</span>' +
+                '<span style="cursor:pointer;color:#f87171;opacity:.6;" onclick="deleteProject(\'' +
+                p.id + '\')">remove</span></div>' +
+                '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
+                '</div></div>';
+        }).join('');
+
+        // thumbnails + altitude charts, lazily
+        for (const p of projects) {
+            fetch('/api/thumbnail?name=' + encodeURIComponent(p.target.name) +
+                  '&catalog=' + encodeURIComponent(p.target.catalog_id))
+                .then(r => r.json()).then(t => {
+                    if (t.url) document.querySelector('img[data-thumb="' + p.target.name + '"]').src = t.url;
+                });
+            fetch('/api/target/altitude?name=' + encodeURIComponent(p.target.name) +
+                  '&ra_hours=' + p.target.ra_hours + '&dec_degrees=' + p.target.dec_degrees)
+                .then(r => r.json()).then(d => {
+                    document.getElementById('alt-' + p.id).innerHTML = altChartSVG(d) +
+                    '<div style="font-size:.68rem;opacity:.5;">noon → noon · shaded = astro dark · ' +
+                    'dashed = 30° · transit ' + d.transit_alt + '°</div>';
+                });
+        }
+    }
+    function btn(id, patch, label) {
+        return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
+               'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';
+    }
+    async function patchProject(id, body) {
+        await fetch('/api/projects2/' + id, {method:'PATCH',
+            headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        loadProjects();
+    }
+    async function deleteProject(id) {
+        if (!confirm('Remove this project?')) return;
+        await fetch('/api/projects2/' + id, {method:'DELETE'});
+        loadProjects();
+    }
+    document.getElementById('addTargetBtn').addEventListener('click', async () => {
+        const name = document.getElementById('addTargetName').value.trim();
+        if (!name) return;
+        const r = await fetch('/api/projects2/from_catalog', {method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({name: name, budget_hours: 8})});
+        if (!r.ok) { alert((await r.json()).detail); return; }
+        document.getElementById('addTargetName').value = '';
+        loadProjects();
+    });
+    loadProjects();
     </script>
 </body>
 </html>

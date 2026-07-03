@@ -49,7 +49,7 @@ class PhotonScriptConfig(BaseSettings):
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200
     default_offset: int = 50
-    camera_setpoint_c: float = -10.0
+    camera_setpoint_c: float = 0.0
     cooling_tolerance_c: float = 1.0
     guided_default: bool = False  # CEM70G absolute encoders: unguided is the default
 

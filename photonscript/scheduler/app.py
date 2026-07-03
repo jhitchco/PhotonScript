@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -522,3 +522,182 @@ async def api_arm(request: Request):
     if body.get("armed"):
         return await armer.arm()
     return await armer.disarm()
+
+
+# ---------------------------------------------------------------------------
+# Target management: persistent projects, altitude charts, thumbnails
+# ---------------------------------------------------------------------------
+
+_store = None
+_thumb_cache: dict[str, dict] = {}
+
+
+def get_store():
+    global _store
+    if _store is None:
+        from photonscript.scheduler.project_store import ProjectStore
+        _store = ProjectStore(get_config())
+        _projects.update(_store.projects)  # planner + ws updates see stored projects
+    return _store
+
+
+def _project_json(p) -> dict:
+    from photonscript.scheduler.project_store import target_kind
+    d = p.model_dump(mode="json")
+    d["kind"] = target_kind(p.target)
+    total = sum(e.count for e in p.exposure_plans) or 1
+    done = sum(e.acquired for e in p.exposure_plans)
+    d["completion_pct"] = round(done / total * 100)
+    return d
+
+
+@app.get("/api/projects2")
+async def api_projects2():
+    store = get_store()
+    return sorted((_project_json(p) for p in store.projects.values()),
+                  key=lambda d: -d["priority"])
+
+
+@app.post("/api/projects2/from_catalog")
+async def api_project_from_catalog(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    store = get_store()
+    for month in range(1, 13):
+        for t in get_seasonal_targets(month):
+            if t.name.lower() == name.lower() or t.catalog_id.lower() == name.lower():
+                proj = store.add_from_target(t, float(body.get("budget_hours", 8.0)))
+                _projects[proj.id] = proj
+                return _project_json(proj)
+    return JSONResponse(status_code=404, content={"detail": f"'{name}' not in catalog"})
+
+
+@app.patch("/api/projects2/{project_id}")
+async def api_project_update(project_id: str, request: Request):
+    body = await request.json()
+    store = get_store()
+    proj = store.projects.get(project_id)
+    if proj is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    priority = proj.priority + int(body["priority_delta"]) \
+        if "priority_delta" in body else body.get("priority")
+    budget = proj.budget_hours + float(body["budget_delta"]) \
+        if "budget_delta" in body else body.get("budget_hours")
+    updated = store.update(project_id, priority=priority,
+                           budget_hours=budget, active=body.get("active"))
+    _projects[project_id] = updated
+    return _project_json(updated)
+
+
+@app.delete("/api/projects2/{project_id}")
+async def api_project_delete(project_id: str):
+    get_store().delete(project_id)
+    _projects.pop(project_id, None)
+    return {"ok": True}
+
+
+@app.get("/api/target/altitude")
+async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
+                              dec_degrees: float = 0.0):
+    """Altitude curve for tonight: local noon -> noon, 15-min grid."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, SkyCoord
+    from astropy.time import Time
+    from photonscript.shared.astronomy import (get_earth_location,
+                                               get_twilight_times)
+
+    config = get_config()
+    obs = config.get_observatory()
+    off = config.utc_offset_hours
+    now = datetime.utcnow()
+
+    # local noon (UTC) today
+    noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+        - timedelta(hours=off) + timedelta(hours=12)
+    if noon_utc > now:
+        noon_utc -= timedelta(days=1)
+
+    times = Time(noon_utc) + np.arange(0, 24.01, 0.25) * u.hour
+    frame = AltAz(obstime=times, location=get_earth_location(obs))
+    coord = SkyCoord(ra=ra_hours * u.hourangle, dec=dec_degrees * u.deg)
+    alts = coord.transform_to(frame).alt.deg
+
+    # Darkness window for the SAME night as the noon->noon axis
+    tw = get_twilight_times(obs, noon_utc.replace(hour=0, minute=0, second=0,
+                                                  microsecond=0))
+
+    def _frac(dt):  # position 0..1 along the 24h axis
+        if not dt:
+            return None
+        return max(0.0, min(1.0, (dt - noon_utc).total_seconds() / 86400))
+
+    peak = int(np.argmax(alts))
+    return {
+        "name": name,
+        "alts": [round(float(a), 1) for a in alts],
+        "labels_every_hours": 3,
+        "start_local_hour": 12,
+        "dark_start_frac": _frac(tw.get("astro_dark_start")),
+        "dark_end_frac": _frac(tw.get("astro_dark_end")),
+        "now_frac": _frac(now),
+        "transit_frac": peak / (len(alts) - 1),
+        "transit_alt": round(float(alts[peak]), 0),
+        "min_altitude": 30,
+    }
+
+
+@app.get("/api/thumbnail")
+async def api_thumbnail(name: str = "", catalog: str = ""):
+    """Wikipedia thumbnail for a target (cached)."""
+    import httpx
+
+    key = (name or catalog).lower()
+    if key in _thumb_cache:
+        return _thumb_cache[key]
+
+    candidates = [c for c in (name, catalog, name.replace(" Nebula", "_Nebula"))
+                  if c]
+    result = {"url": None, "page": None}
+    headers = {"User-Agent": "PhotonScriptBot/0.1 (AARO observatory; astro imaging)",
+               "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True,
+                                 headers=headers) as client:
+        for cand in candidates:
+            title = cand.replace(" ", "_")
+            # Primary: REST summary
+            try:
+                r = await client.get(
+                    "https://en.wikipedia.org/api/rest_v1/page/summary/" + title)
+                if r.status_code == 200:
+                    data = r.json()
+                    thumb = data.get("thumbnail", {}).get("source")
+                    if thumb:
+                        result = {"url": thumb,
+                                  "page": data.get("content_urls", {})
+                                  .get("desktop", {}).get("page")}
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            # Fallback: classic MediaWiki pageimages API
+            try:
+                r = await client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={"action": "query", "titles": cand,
+                            "prop": "pageimages", "format": "json",
+                            "pithumbsize": 256, "redirects": 1})
+                if r.status_code == 200:
+                    pages = r.json().get("query", {}).get("pages", {})
+                    for p in pages.values():
+                        thumb = p.get("thumbnail", {}).get("source")
+                        if thumb:
+                            result = {"url": thumb,
+                                      "page": "https://en.wikipedia.org/wiki/"
+                                              + p.get("title", cand).replace(" ", "_")}
+                            break
+                if result["url"]:
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    _thumb_cache[key] = result
+    return result

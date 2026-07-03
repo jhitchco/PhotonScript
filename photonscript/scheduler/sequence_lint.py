@@ -69,9 +69,9 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
         r.warn("cooling", "No CoolCamera instruction found")
     for c in cools:
         temp = c.get("Temperature")
-        if temp is None or temp > -5.0:
-            r.error("cooling", f"CoolCamera Temperature is {temp!r} — must be the "
-                               "-10.0 setpoint (the 0°C incident)")
+        if temp is None or temp > 0.0:
+            r.error("cooling", f"CoolCamera Temperature is {temp!r} — must be at "
+                               "or below the 0.0°C setpoint (never a warm sensor)")
 
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")
