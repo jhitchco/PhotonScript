@@ -91,6 +91,8 @@ async def run_full(config: PhotonScriptConfig):
     logger.info("  Location:     %.1f°N, %.1f°W, %dm", config.observatory_lat, abs(config.observatory_lon), config.observatory_elev)
     logger.info("  Dashboard:    http://%s:%d", config.scheduler_host, config.scheduler_port)
     logger.info("  Mode:         full (all agents)")
+    from photonscript.shared.version import repo_version
+    logger.info("  Version:      %s", repo_version())
     logger.info("=" * 60)
 
     await asyncio.gather(
