@@ -1011,10 +1011,26 @@ async def api_sync():
             r = await cl.get(url.rstrip("/") + "/rest/db/completion",
                              params={"folder": folder, "device": device})
             d = r.json()
+            folder_path = None
+            try:
+                rf = await cl.get(url.rstrip("/") + "/rest/config/folders")
+                for f in rf.json():
+                    if f.get("id") == folder:
+                        folder_path = str(Path(f.get("path", "")).expanduser()
+                                          .resolve())
+            except Exception:  # noqa: BLE001
+                pass
+        from photonscript.scheduler.runs import library_root
+        lib = str(library_root(get_config()).expanduser().resolve())
+        library_synced = bool(folder_path) and \
+            lib.lower().startswith(folder_path.lower())
         return {"configured": True,
                 "completion_pct": round(float(d.get("completion", 0)), 1),
                 "need_items": d.get("needItems", 0),
-                "need_bytes": d.get("needBytes", 0)}
+                "need_bytes": d.get("needBytes", 0),
+                "folder_path": folder_path,
+                "library_path": lib,
+                "library_synced": library_synced}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "error": str(e)}
 

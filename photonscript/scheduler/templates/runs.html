@@ -167,10 +167,20 @@
             try {
                 const r = await fetch('/api/library/rebuild', {method: 'POST'});
                 const res = await r.json();
+                let syncMsg = '';
+                try {
+                    const sy = await (await fetch('/api/sync')).json();
+                    syncMsg = !sy.configured ? '\n\nSyncthing not configured — files stay on the scope PC.'
+                        : sy.library_synced
+                          ? '\n\nLibrary is inside the Syncthing share — it will copy to your desktop automatically.'
+                          : '\n\n⚠ Library (' + sy.library_path + ') is OUTSIDE the Syncthing share (' +
+                            sy.folder_path + ').\nSet PS_LIBRARY_DIR to a folder inside the share ' +
+                            '(System & Config) and rebuild, or nothing will transfer.';
+                } catch (e) {}
                 alert('Library: ' + res.library + '\n' + res.linked +
                       ' new files linked · ' + res.already_there +
                       ' already there · ' + res.rejected_excluded +
-                      ' rejects excluded');
+                      ' rejects excluded' + syncMsg);
             } finally { btn.disabled = false; btn.textContent = 'Rebuild library'; }
         };
         const r = await fetch('/api/runs/' + date);
