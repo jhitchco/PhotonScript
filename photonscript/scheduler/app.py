@@ -398,6 +398,7 @@ _CONFIG_FIELDS = [
     ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
     ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
     ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
+    ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
@@ -948,7 +949,22 @@ async def api_runs():
 @app.get("/api/runs/{date}")
 def api_run_detail(date: str, backfill: bool = True):
     from photonscript.scheduler.runs import night_detail
-    return night_detail(get_config(), date, backfill=backfill)
+    d = night_detail(get_config(), date, backfill=backfill)
+    try:  # goal context: campaign totals per target+filter
+        rev = get_config().reverse_filter_map()
+        by = {}
+        for p in get_store().projects.values():
+            for e in p.exposure_plans:
+                by[(p.target.name.strip().lower(),
+                    e.filter_type.value)] = e
+        for row in d["table"]:
+            fclass = rev.get(row["filter"], row["filter"])
+            e = by.get((str(row["target"]).strip().lower(), fclass))
+            row["goal_total"] = e.count if e else None
+            row["done_total"] = e.acquired if e else None
+    except Exception:  # noqa: BLE001
+        pass
+    return d
 
 
 @app.post("/api/runs/{date}/regrade")
@@ -1125,6 +1141,13 @@ def api_library_rebuild(date: str = ""):
     in a worker thread; hardlinking a whole archive takes a few seconds."""
     from photonscript.scheduler.runs import build_library
     return build_library(get_config(), date or None)
+
+
+@app.post("/api/runs/{date}/approve")
+async def api_run_approve(date: str):
+    """Approve all QA-passing subs for a night -> library -> Syncthing."""
+    from photonscript.scheduler.runs import approve_night
+    return approve_night(get_config(), date)
 
 
 @app.post("/api/runs/{date}/qa")

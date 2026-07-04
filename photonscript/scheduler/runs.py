@@ -414,6 +414,23 @@ def flag_hfr_outliers(config, date: str, factor: float = 1.4) -> int:
     return n
 
 
+def approve_night(config, date: str) -> dict:
+    """Mark every QA-passing sub as reviewed, then update the library so
+    they queue for transfer. The human gate between capture and sync."""
+    subs = _load_subs(config, date)
+    n = 0
+    for s_ in subs:
+        if s_.get("passed_qa") and not s_.get("reviewed"):
+            s_["reviewed"] = True
+            n += 1
+    if n:
+        _rewrite_subs(config, date, subs)
+    res = build_library(config, date)
+    logger.info("Night %s approved: %d subs -> library (%s new links)",
+                date, n, res.get("linked"))
+    return {"approved": n, **res}
+
+
 def set_manual_qa(config, date: str, rel_file: str,
                   passed: bool) -> dict | None:
     """Human override for one sub; wins over every automatic pass."""
@@ -423,6 +440,8 @@ def set_manual_qa(config, date: str, rel_file: str,
         if s_.get("file") == rel_file:
             s_["passed_qa"] = passed
             s_["manual_qa"] = True
+            if passed:
+                s_["reviewed"] = True  # a manual pass IS the review
             s_["reason"] = "" if passed else "rejected manually"
             hit = s_
     if hit is None:
@@ -663,12 +682,16 @@ def build_library(config, date: str | None = None) -> dict:
     else:
         dates = sorted({f.name.split("_")[0]
                         for f in runs_dir(config).glob("*_subs.jsonl")})
-    linked = skipped = missing = rejected = 0
+    review_gate = bool(getattr(config, "review_gate", True))
+    linked = skipped = missing = rejected = pending_review = 0
     for d in dates:
         plan_names = _plan_target_names(config, d)
         for s_ in _load_subs(config, d):
             if not s_.get("passed_qa"):
                 rejected += 1
+                continue
+            if review_gate and not s_.get("reviewed"):
+                pending_review += 1
                 continue
             src = Path(s_.get("abs_path") or "")
             if not src.exists():
@@ -706,7 +729,7 @@ def build_library(config, date: str | None = None) -> dict:
                 linked += 1
     result = {"library": str(lib), "nights": len(dates), "linked": linked,
               "already_there": skipped, "rejected_excluded": rejected,
-              "missing_files": missing}
+              "pending_review": pending_review, "missing_files": missing}
     logger.info("Library update: %s", result)
     return result
 

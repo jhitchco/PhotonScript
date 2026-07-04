@@ -94,6 +94,10 @@
             <h2 style="margin-top:1.2rem;">Subs
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
+            <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
+                <span class="bd" id="reviewCounts"></span>
+                <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
+            </div>
             <div id="filterChips"></div>
             <div class="bd" id="thumbCount"></div>
             <div class="thumbs" id="thumbStrip"></div>
@@ -221,11 +225,16 @@
             rep.integrating_hours.toFixed(1) + 'h<br>utilization ' +
             rep.sky_utilization_pct + '% · efficiency ' + rep.photon_efficiency_pct + '%';
         document.getElementById('pvaTable').innerHTML =
-            '<tr><th>Target</th><th>Filter</th><th>Planned</th><th>Attempted</th>' +
-            '<th>Accepted</th><th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
+            '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
+            '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +
+            '<th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
             d.table.map(t => '<tr><td>' + t.target + '</td><td>' + t.filter +
-                '</td><td>' + t.planned + '</td><td>' + t.attempted + '</td><td class="' +
+                '</td><td>' + (t.planned || '–') + '</td><td>' + t.attempted + '</td><td class="' +
                 (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
+                '</td><td>' + (t.goal_total ?? '–') + '</td><td>' +
+                (t.done_total != null && t.goal_total
+                 ? t.done_total + ' (' + Math.round(t.done_total / t.goal_total * 100) + '%)'
+                 : '–') +
                 '</td><td>' + (t.median_hfr ?? '–') + '</td><td>' + (t.median_ecc ?? '–') +
                 '</td><td>' + (t.median_background ?? '–') + '</td></tr>').join('');
         // Calibration frames
@@ -248,6 +257,32 @@
               ).join(' · ')
             : 'no phase data found in NINA log';
         renderSubs();
+        renderReviewBar(d);
+    }
+    function renderReviewBar(d) {
+        const subs = d.subs;
+        const rej = subs.filter(s => !s.passed_qa).length;
+        const appr = subs.filter(s => s.passed_qa && s.reviewed).length;
+        const rev = subs.filter(s => s.passed_qa && !s.reviewed).length;
+        document.getElementById('reviewCounts').innerHTML =
+            '<span style="color:#eab308">' + rev + ' awaiting review</span> · ' +
+            '<span style="color:#4ade80">' + appr + ' accepted (in transfer queue)</span> · ' +
+            '<span style="color:#f87171">' + rej + ' rejected</span>';
+        const btn = document.getElementById('approveBtn');
+        btn.hidden = rev === 0;
+        btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
+        btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+                const r = await (await fetch('/api/runs/' + d.date + '/approve',
+                                             {method: 'POST'})).json();
+                alert(r.approved + ' subs approved.\n' + r.linked +
+                      ' new files entered the library' +
+                      (r.pending_review ? '\n(' + r.pending_review +
+                       ' subs on other nights still await review)' : '') +
+                      '\nSyncthing will carry them to the desktop.');
+            } finally { btn.disabled = false; loadDetail(d.date); }
+        };
     }
     function renderSubs() {
         const d = currentDetail;
@@ -295,10 +330,12 @@
                 s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
                 's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
-                '</td><td class="' + (s.passed_qa ? 'ok' : 'rej') + '" ' +
-                'style="cursor:pointer;" title="click to flip pass/reject (manual override)" ' +
+                '</td><td style="cursor:pointer;color:' +
+                (!s.passed_qa ? '#f87171' : s.reviewed ? '#4ade80' : '#eab308') +
+                ';" title="click to flip pass/reject (manual override)" ' +
                 'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\', ' + !s.passed_qa + ')">' +
-                (s.passed_qa ? 'pass' : (s.reason || 'reject')) +
+                (!s.passed_qa ? (s.reason || 'reject')
+                              : s.reviewed ? 'accepted' : 'review') +
                 (s.manual_qa ? ' ✋' : '') + '</td></tr>').join('');
     }
     function fmtEta(s) {
