@@ -34,9 +34,11 @@
                 <button class="btn btn-primary" id="armBtn">Arm</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;"></span>
+                <span id="scopeChip" style="font-size:.85rem;">🔭 checking scope…</span>
+            </div>
+            <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
-            <div id="scopeChip" style="margin-bottom:.6rem;font-size:.9rem;"></div>
             <div id="sunCard" style="margin-bottom:1rem;"></div>
             <div id="nightTimeline"></div>
         </section>
@@ -272,7 +274,7 @@
                     (h ? h + 'h ' : '') + m + 'm</b>' +
                     (d.crossings.astro_dusk ? ' (' + d.crossings.astro_dusk.local + ')' : '');
             } else {
-                status = 'rising — next dark is tomorrow night';
+                status = 'next dark is tomorrow night';
             }
             document.getElementById('sunCard').innerHTML =
                 '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:.4rem;">' +
@@ -289,15 +291,18 @@
     }
     const SCOPE_COLORS = {green:'#4ade80', yellow:'#eab308', blue:'#7dd3fc', gray:'#64748b'};
     async function loadScope() {
+        const el = document.getElementById('scopeChip');
         try {
             const d = await (await fetch('/api/scope')).json();
-            document.getElementById('scopeChip').innerHTML =
+            el.innerHTML =
                 '<span style="border:1px solid ' + SCOPE_COLORS[d.color] + ';color:' +
                 SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;">' +
                 '🔭 ' + d.status + '</span>' +
                 (d.camera_temp !== null && d.camera_temp !== undefined
                     ? ' <span style="opacity:.6;">sensor ' + d.camera_temp + '°C</span>' : '');
-        } catch (e) {}
+        } catch (e) {
+            el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
+        }
     }
     loadScope();
     setInterval(loadScope, 30 * 1000);
