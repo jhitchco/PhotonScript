@@ -15,9 +15,11 @@ Night score (0-100):
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -73,46 +75,163 @@ def _load_subs(config, date: str) -> list[dict]:
     return out
 
 
-def _fast_grade(path: Path, config) -> dict:
-    """Quick per-sub metrics for backfill: 2x2-binned star detection.
+# One full-frame FITS operation at a time: the scope PC is RAM-tight and
+# concurrent regrade + thumbnail requests were failing with MemoryError.
+_HEAVY = threading.Lock()
 
-    ~10x faster than the full validator on 26 MP frames; good enough for
-    plan-vs-actual review. HFR/FWHM reported in native pixels.
+# Calibration frames live in these folders (NINA default layout)
+_CAL_DIRS = {"FLAT", "FLATS", "DARK", "DARKS", "BIAS", "BIASES", "SNAPSHOT"}
+
+
+def _is_calibration(parts) -> bool:
+    return any(p.upper() in _CAL_DIRS for p in parts)
+
+
+def _light_files(root: Path) -> list[Path]:
+    return [f for f in sorted(root.rglob("*.fits"))
+            if not _is_calibration(f.relative_to(root).parts)]
+
+
+def _load_binned(path: Path):
+    """Header + 2x2-binned float32 frame, built without a full-res float copy.
+
+    Peak memory ~65 MB for a 26 MP frame vs ~210 MB for a naive
+    data.astype(float64) — the scope PC was hitting MemoryError.
     """
     import numpy as np
     from astropy.io import fits as _fits
-    from scipy import ndimage
 
-    with _fits.open(path) as hdul:
-        hdr = hdul[0].header
-        data = hdul[0].data.astype(np.float32)
-    binned = (data[::2, ::2] + data[1::2, ::2]
-              + data[::2, 1::2] + data[1::2, 1::2]) / 4
+    # do_not_scale_image_data: BZERO-scaled uint16 (NINA's format) refuses
+    # memmap otherwise. Scaling is linear so we apply it after binning.
+    with _fits.open(path, memmap=True,
+                    do_not_scale_image_data=True) as hdul:
+        hdr = hdul[0].header.copy()
+        raw = hdul[0].data
+        h2, w2 = raw.shape[0] // 2 * 2, raw.shape[1] // 2 * 2
+        binned = raw[0:h2:2, 0:w2:2].astype(np.float32)
+        binned += raw[1:h2:2, 0:w2:2]
+        binned += raw[0:h2:2, 1:w2:2]
+        binned += raw[1:h2:2, 1:w2:2]
+        binned *= 0.25 * float(hdr.get("BSCALE", 1))
+        binned += float(hdr.get("BZERO", 0))
+    return hdr, binned
+
+
+def _sep_module():
+    try:
+        import sep
+        return sep
+    except ImportError:
+        try:
+            import sep_pjw as sep
+            return sep
+        except ImportError:
+            return None
+
+
+def _measure(binned, config) -> dict:
+    """Star metrics on a 2x2-binned frame. sep gives real HFR/eccentricity;
+    without sep we only report a star count (no fabricated HFR)."""
+    import numpy as np
+
+    sep = _sep_module()
+    if sep is not None:
+        data = np.ascontiguousarray(binned, dtype=np.float32)
+        bkg = sep.Background(data)
+        data_sub = data - bkg
+        try:
+            objs = sep.extract(data_sub, 5.0, err=bkg.globalrms)
+        except Exception:  # noqa: BLE001  (sep raises on pathological frames)
+            objs = np.empty(0)
+        hfr = ecc = None
+        if len(objs):
+            # Brightest 500 for the radial measurement
+            top = np.argsort(objs["flux"])[::-1][:500]
+            o = objs[top]
+            try:
+                r, _ = sep.flux_radius(data_sub, o["x"], o["y"],
+                                       6.0 * o["a"], 0.5)
+                r = r[np.isfinite(r) & (r > 0)]
+                if len(r):
+                    hfr = round(float(np.median(r)) * 2, 2)  # binned->native px
+            except Exception:  # noqa: BLE001
+                pass
+            with np.errstate(divide="ignore", invalid="ignore"):
+                e = 1.0 - o["b"] / o["a"]
+            e = e[np.isfinite(e)]
+            if len(e):
+                ecc = round(float(np.median(e)), 3)
+        del data_sub, data
+        return {"stars": int(len(objs)), "hfr": hfr, "ecc": ecc,
+                "background": round(float(bkg.globalback), 1),
+                "noise": round(float(bkg.globalrms), 2),
+                "graded_by": "sep-binned"}
+
+    # Honest fallback: count stars, don't invent an HFR (the old area-based
+    # estimate quantized to 3.91 px for every frame).
+    from scipy import ndimage
     sample = binned[::4, ::4]
     background = float(np.median(sample))
     noise = float(np.median(np.abs(sample - background))) * 1.4826 or 1.0
     mask = binned > background + 6 * noise
     labeled, n = ndimage.label(mask)
-    sizes = ndimage.sum(mask, labeled, range(1, min(n, 2000) + 1)) if n else []
-    stars = [s for s in np.atleast_1d(sizes) if s >= 3]
-    hfr = None
-    if stars:
-        med_area = float(np.median(stars))
-        hfr = round(2 * (med_area / 3.14159) ** 0.5 * 2, 2)  # binned->native px
-    passed = len(stars) >= 5
+    nstars = 0
+    if n:
+        sizes = ndimage.sum(mask, labeled, range(1, min(n, 2000) + 1))
+        nstars = int((np.atleast_1d(sizes) >= 3).sum())
+    return {"stars": nstars, "hfr": None, "ecc": None,
+            "background": round(background, 1), "noise": round(noise, 2),
+            "graded_by": "no-sep (install sep-pjw for HFR/ecc)"}
+
+
+def _plan_target_names(config, date: str) -> list[str]:
+    p = runs_dir(config) / f"{date}_plan.json"
+    if not p.exists():
+        return []
+    try:
+        return [t["name"] for t in
+                json.loads(p.read_text(encoding="utf-8"))["targets"]]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _resolve_target(raw, filename: str, plan_names: list[str]) -> str:
+    """OBJECT header, else filename match, else the plan's only target."""
+    t = str(raw or "").strip()
+    if t and t != "?":
+        return t
+    fn = filename.lower()
+    for name in plan_names:
+        if name.lower().replace(" ", "_") in fn or name.lower() in fn:
+            return name
+    if len(plan_names) == 1:
+        return plan_names[0]
+    return "?"
+
+
+def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict:
+    """Per-sub metrics for backfill: sep on a 2x2-binned frame."""
+    with _HEAVY:
+        hdr, binned = _load_binned(path)
+        m = _measure(binned, config)
+        del binned
+    gc.collect()
+    passed = m["stars"] >= 5
+    hfr = m["hfr"]
     return {
         "time": hdr.get("DATE-OBS", ""),
-        "target": hdr.get("OBJECT", "?"),
+        "target": _resolve_target(hdr.get("OBJECT"), path.name,
+                                  plan_names or []),
         "filter": hdr.get("FILTER", "?"),
         "exp_s": float(hdr.get("EXPTIME", 0)),
         "ccd_temp": hdr.get("CCD-TEMP"),
         "hfr": hfr,
         "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
-        "stars": len(stars), "ecc": None,
-        "background": round(background, 1),
+        "stars": m["stars"], "ecc": m["ecc"],
+        "background": m["background"],
         "passed_qa": passed,
-        "reason": "" if passed else f"only {len(stars)} stars",
-        "graded_by": "backfill-fast",
+        "reason": "" if passed else f"only {m['stars']} stars",
+        "graded_by": m["graded_by"],
     }
 
 
@@ -121,7 +240,7 @@ _backfill_state: dict[str, dict] = {}
 
 def backfill_status(config, date: str) -> dict:
     root = Path(config.image_watch_dir) / date
-    total = len(list(root.rglob("*.fits"))) if root.exists() else 0
+    total = len(_light_files(root)) if root.exists() else 0
     logged = len(_load_subs(config, date))
     st = _backfill_state.get(date, {})
     return {"running": st.get("running", False),
@@ -144,12 +263,13 @@ def start_backfill(config, date: str) -> None:
             if not root.exists():
                 return
             existing = {r.get("file") for r in _load_subs(config, date)}
-            for f in sorted(root.rglob("*.fits")):
+            plan_names = _plan_target_names(config, date)
+            for f in _light_files(root):
                 rel = str(f.relative_to(root))
                 if rel in existing:
                     continue
                 try:
-                    record = _fast_grade(f, config)
+                    record = _fast_grade(f, config, plan_names)
                     record["file"] = rel
                     record["abs_path"] = str(f)
                     append_sub_record(config, date, record)
@@ -251,6 +371,12 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         status = backfill_status(config, date)
     subs = _load_subs(config, date)
 
+    # Fix up subs recorded before target attribution existed
+    plan_names = _plan_target_names(config, date)
+    for s_ in subs:
+        s_["target"] = _resolve_target(s_.get("target"),
+                                       s_.get("file", ""), plan_names)
+
     # Plan vs actual per target/filter
     planned: dict[tuple, int] = {}
     if plan:
@@ -314,19 +440,81 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         },
         "table": table,
         "subs": subs,
+        "calibration": calibration_inventory(config, date),
         "phases": _phase_stats(config, date),
         "score": score,
         "backfill": status,
     }
 
 
+# --- Calibration frames --------------------------------------------------------
+
+def calibration_inventory(config, date: str) -> dict:
+    """Count BIAS/DARK/FLAT frames for the night and flag missing coverage.
+
+    Header-only reads — cheap even for hundreds of frames.
+    """
+    from astropy.io import fits as _fits
+
+    root = Path(config.image_watch_dir) / date
+    frames: dict[str, dict] = {}
+    light_filters: set[str] = set()
+    light_exps: set[float] = set()
+    if root.exists():
+        for f in sorted(root.rglob("*.fits")):
+            parts = f.relative_to(root).parts
+            try:
+                hdr = _fits.getheader(f)
+            except Exception:  # noqa: BLE001
+                continue
+            filt = str(hdr.get("FILTER", "?"))
+            exp = float(hdr.get("EXPTIME", 0))
+            if not _is_calibration(parts):
+                light_filters.add(filt)
+                light_exps.add(exp)
+                continue
+            typ = str(hdr.get("IMAGETYP", "")).strip().upper() or next(
+                (p.upper().rstrip("S") for p in parts
+                 if p.upper() in _CAL_DIRS), "CAL")
+            typ = typ.replace(" FRAME", "").replace("LIGHT", "CAL")
+            g = frames.setdefault(typ, {"count": 0, "filters": {},
+                                        "exposures": {}})
+            g["count"] += 1
+            g["filters"][filt] = g["filters"].get(filt, 0) + 1
+            key = f"{exp:g}s"
+            g["exposures"][key] = g["exposures"].get(key, 0) + 1
+
+    advice = []
+    if light_filters:
+        flat_filters = set(frames.get("FLAT", {}).get("filters", {}))
+        missing_flats = sorted(light_filters - flat_filters - {"?"})
+        if missing_flats:
+            advice.append("no flats for: " + ", ".join(missing_flats))
+        dark_exps = {float(k.rstrip("s")) for k in
+                     frames.get("DARK", {}).get("exposures", {})}
+        missing_darks = sorted(e for e in light_exps
+                               if e > 0 and e not in dark_exps)
+        if missing_darks:
+            advice.append("no darks matching light exposures: "
+                          + ", ".join(f"{e:g}s" for e in missing_darks))
+        if "BIAS" not in frames:
+            advice.append("no bias frames this night (fine if you use a "
+                          "master bias / dark library)")
+    return {"frames": frames, "advice": advice,
+            "lights_ok": bool(light_filters)}
+
+
 # --- Thumbnails ---------------------------------------------------------------
 
 def thumbnail(config, date: str, rel_file: str, width: int = 360,
               annotate: bool = False) -> Path | None:
-    """Stretched PNG thumbnail; optionally with star-detection circles."""
+    """Stretched PNG thumbnail; optionally with star-detection circles.
+
+    Cached on disk per (file, width, annotate) — repeat remote views never
+    reopen the FITS. Frame is loaded binned + decimated (a few MB), never
+    at full resolution: full-res loads were exhausting the scope PC's RAM.
+    """
     import numpy as np
-    from astropy.io import fits as _fits
     from PIL import Image, ImageDraw
 
     src = Path(config.image_watch_dir) / date / rel_file
@@ -335,28 +523,39 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
     out_dir = Path(config.data_dir) / "thumbs" / date
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = rel_file.replace("\\", "_").replace("/", "_")
-    out = out_dir / (stem + (".ann.png" if annotate else ".png"))
+    out = out_dir / f"{stem}.w{width}{'.ann' if annotate else ''}.png"
     if out.exists():
         return out
     try:
-        with _fits.open(src) as hdul:
-            data = hdul[0].data.astype(np.float32)
-        lo, hi = np.percentile(data, (0.5, 99.7))
-        stretched = np.clip((data - lo) / max(hi - lo, 1e-3), 0, 1)
-        stretched = np.sqrt(stretched)
+        with _HEAVY:
+            _, binned = _load_binned(src)
+            step = max(1, binned.shape[1] // 1400)
+            small = np.ascontiguousarray(binned[::step, ::step])
+            del binned
+            stars = []
+            if annotate:
+                stars_m = _measure(small, config)
+                sep = _sep_module()
+                if sep is not None:
+                    bkg = sep.Background(small)
+                    try:
+                        objs = sep.extract(small - bkg, 5.0,
+                                           err=bkg.globalrms)
+                        stars = [(float(o["x"]), float(o["y"]),
+                                  float(o["a"])) for o in objs[:300]]
+                    except Exception:  # noqa: BLE001
+                        pass
+        gc.collect()
+        lo, hi = np.percentile(small, (0.5, 99.7))
+        stretched = np.sqrt(np.clip((small - lo) / max(hi - lo, 1e-3), 0, 1))
         img = Image.fromarray((stretched * 255).astype(np.uint8),
                               mode="L").convert("RGB")
-        if annotate:
-            from photonscript.telescope_agent.image_validator import \
-                _detect_stars, _estimate_background_and_noise
-            bg, noise = _estimate_background_and_noise(data[::2, ::2])
-            stars = _detect_stars(data.astype(np.float64), bg, noise)
+        if stars:
             draw = ImageDraw.Draw(img)
-            for s in stars[:200]:
-                x, y = s["x"], s["y"]
-                r0 = max(6, s.get("hfr", 4) * 2)
+            for x, y, a in stars:
+                r0 = max(4, a * 3)
                 draw.ellipse([x - r0, y - r0, x + r0, y + r0],
-                             outline=(248, 113, 113), width=3)
+                             outline=(248, 113, 113), width=2)
         h = int(img.height * width / img.width)
         img.resize((width, h)).save(out)
         return out

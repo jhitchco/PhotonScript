@@ -919,6 +919,11 @@ async def api_run_regrade(date: str):
     p = runs_dir(get_config()) / f"{date}_subs.jsonl"
     if p.exists():
         p.unlink()
+    # Annotated thumbnails embed star detections — invalidate them too
+    thumbs = Path(get_config().data_dir) / "thumbs" / date
+    if thumbs.exists():
+        for f in thumbs.glob("*.ann.png"):
+            f.unlink(missing_ok=True)
     start_backfill(get_config(), date)
     return {"ok": True}
 
@@ -932,7 +937,8 @@ async def api_run_thumb(date: str, file: str, w: int = 360,
                   annotate=annotate)
     if p is None:
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
-    return FileResponse(p, media_type="image/png")
+    return FileResponse(p, media_type="image/png", headers={
+        "Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/api/runs/{date}/bundle")
