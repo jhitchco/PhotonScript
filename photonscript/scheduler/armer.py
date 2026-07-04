@@ -279,6 +279,21 @@ class Armer:
             logger.warning("Plan snapshot failed: %s", e)
         return True
 
+    async def dispatch_raw(self, seq: dict, label: str) -> bool:
+        """Load + start an arbitrary sequence (calibration). Refused while a
+        night is active."""
+        if self.state in ("RUNNING", "PAUSED_UNSAFE"):
+            self.detail = f"armer is {self.state} — not interrupting"
+            return False
+        await self._nina("sequence_stop")
+        loaded = await self._nina("sequence_load", method="POST",
+                                  json_body=seq)
+        started = await self._nina("sequence_start", skipValidation="true")
+        ok = loaded is not None and started is not None
+        logger.info("dispatch_raw %s: %s", label, "started" if ok
+                    else f"FAILED ({self.detail})")
+        return ok
+
     async def _dispatch_and_start(self) -> bool:
         if not self._dispatch():
             self._set_state("ERROR")

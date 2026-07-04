@@ -155,6 +155,14 @@
                 <p class="empty-state">Waiting for telescope activity...</p>
             </div>
         </section>
+        <section class="panel" style="margin-top:1.2rem;" id="calPanel">
+            <h2>Calibration Health</h2>
+            <div id="calHealth" class="bd">loading…</div>
+            <div style="margin-top:.6rem;">
+                <button class="btn btn-secondary" id="calCapture">Capture darks + bias</button>
+                <span class="bd" id="calStatus"></span>
+            </div>
+        </section>
     </main>
 
     <footer>
@@ -290,6 +298,42 @@
             document.getElementById('sunCard').textContent = 'Sun data unavailable: ' + e;
         }
     }
+    async function loadCalibration() {
+        const el = document.getElementById('calHealth');
+        try {
+            const d = await (await fetch('/api/calibration/health')).json();
+            el.innerHTML = ['BIAS', 'DARK', 'FLAT'].map(t => {
+                const c = d[t];
+                const age = c.latest
+                    ? c.latest + ' (' + c.age_days + 'd ago, ' +
+                      c.count_latest + ' frames' +
+                      (Object.keys(c.detail || {}).length ? ': ' +
+                        Object.entries(c.detail).map(([k, v]) => k + '×' + v)
+                            .join(', ') : '') + ')'
+                    : 'none on disk';
+                const mark = c.stale
+                    ? '<span style="color:#eab308">⚠ stale</span>'
+                    : '<span style="color:#4ade80">✓</span>';
+                return '<b>' + t + '</b>: ' + age + ' ' + mark;
+            }).join('<br>') +
+            '<br><span style="opacity:.55">flats stale after 45d · darks 90d · bias 180d · ' +
+            'darks/bias need the roof CLOSED (no shutter on the RC16)</span>';
+        } catch (e) { el.textContent = 'calibration data unavailable'; }
+    }
+    document.getElementById('calCapture').onclick = async () => {
+        if (!confirm('Capture darks (300s×20 + 600s×20) and 50 bias now?\n\n' +
+            'The ROOF MUST BE CLOSED and the sky dark — the RC16 has no ' +
+            'shutter, so any light ruins darks.\n\n~3.5 hours total.')) return;
+        const st = document.getElementById('calStatus');
+        st.textContent = 'dispatching…';
+        const r = await fetch('/api/calibration/capture', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: '{}'});
+        const d = await r.json();
+        st.textContent = r.ok
+            ? 'running — ~' + d.estimated_minutes + ' min (' + d.sequence + ')'
+            : (d.detail || 'failed');
+    };
+    loadCalibration();
     const SCOPE_COLORS = {green:'#4ade80', yellow:'#eab308', blue:'#7dd3fc', gray:'#64748b'};
     async function loadScope() {
         const el = document.getElementById('scopeChip');

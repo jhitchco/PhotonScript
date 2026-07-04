@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -956,6 +956,35 @@ async def api_run_regrade(date: str):
             f.unlink(missing_ok=True)
     start_backfill(get_config(), date)
     return {"ok": True}
+
+
+@app.get("/api/calibration/health")
+def api_calibration_health():
+    from photonscript.scheduler.calibration import calibration_health
+    return calibration_health(get_config())
+
+
+@app.post("/api/calibration/capture")
+async def api_calibration_capture(payload: dict = Body(default={})):
+    """Generate + dispatch a darks/bias run. Roof must be closed & dark."""
+    from photonscript.scheduler.calibration import generate_darks_json
+    config = get_config()
+    darks = [(float(e), int(c)) for e, c in
+             payload.get("darks", [[300, 20], [600, 20]])]
+    bias = int(payload.get("bias", 50))
+    seq_text, minutes = generate_darks_json(config, darks, bias)
+    seq_dir = Path.cwd() / "sequences"
+    seq_dir.mkdir(exist_ok=True)
+    path = seq_dir / f"calibration_{datetime.now():%Y%m%d_%H%M}.json"
+    path.write_text(seq_text, encoding="utf-8")
+    ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                        f"calibration {path.name}")
+    if not ok:
+        return JSONResponse(status_code=409, content={
+            "detail": f"dispatch refused/failed: {get_armer().detail}"})
+    logger.info("Calibration dispatched: %s (~%.0f min)", path.name, minutes)
+    return {"ok": True, "sequence": path.name,
+            "estimated_minutes": round(minutes)}
 
 
 @app.get("/api/update/check")
