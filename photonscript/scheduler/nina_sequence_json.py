@@ -106,6 +106,17 @@ def _trigger_runner(items: list = None) -> dict:
 SOUND_NONE = 22  # GroundStation NotificationSound enum: silent
 
 
+_gen_cfg_cache = None
+
+
+def _gen_cfg():
+    global _gen_cfg_cache
+    if _gen_cfg_cache is None:
+        from photonscript.shared.config import PhotonScriptConfig
+        _gen_cfg_cache = PhotonScriptConfig()
+    return _gen_cfg_cache
+
+
 def _pushover(title: str, message: str, sound: int = SOUND_NONE) -> dict:
     """GroundStation Pushover — remote narration, always silent."""
     return _make_typed(
@@ -583,8 +594,32 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     ]
     if guided:
         unsafe_items.append(_stop_guiding())
+    unsafe_items.append(_park())
+    if getattr(_gen_cfg(), "unsafe_darks_enabled", True):
+        dark_exp = float(getattr(_gen_cfg(), "nb_exposure_s", 600.0))
+        darks = _seq_container(
+            "DARKS_WHILE_UNSAFE",
+            [_make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                "NINA.Sequencer",
+                ExposureTime=dark_exp,
+                Gain=_gen_cfg().default_gain, Offset=_gen_cfg().default_offset,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                    X=1, Y=1),
+                ImageType="DARK", ExposureCount=0,
+                ErrorBehavior=0, Attempts=1)],
+            # Core NINA condition (type from Jeremy's export): loops only
+            # while the safety monitor reports UNSAFE, so we exit within
+            # one sub of conditions clearing. Roof closed = dark chamber.
+            conditions=[_make_typed(
+                "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")])
+        unsafe_items += [
+            _pushover("Safety", f"roof closed — turning downtime into "
+                      f"{dark_exp:.0f}s darks until conditions clear"),
+            darks,
+        ]
     unsafe_items += [
-        _park(),
         _wait_until_safe(),
         _pushover("Safety", "SAFE again — waiting 2 min of confirmed-safe, "
                   "then unparking and resuming targets"),

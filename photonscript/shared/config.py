@@ -41,6 +41,7 @@ class PhotonScriptConfig(BaseSettings):
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
     library_dir: str = ""  # accepted-lights library (Syncthing this); "" = <data_dir>/Library
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
+    unsafe_darks_enabled: bool = True  # shoot darks while parked during unsafe pauses
     flat_count: int = 15  # sky flats per filter at dawn
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native

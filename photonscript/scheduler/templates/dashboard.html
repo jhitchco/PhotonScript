@@ -23,6 +23,13 @@
 
     <main>
         <!-- 7-Night Outlook + ARM -->
+        <section class="panel" id="allskyPanel" style="margin-bottom:1.2rem;">
+            <h2>All-Sky Camera <span class="bd">(live from AARO, refreshes every 60 s)</span></h2>
+            <a href="https://allsky.astronomyacres.com/" target="_blank">
+                <img id="allskyImg" src="https://allsky.astronomyacres.com/image.jpg"
+                     style="width:100%;border-radius:8px;display:block;"
+                     alt="AARO all-sky camera"></a>
+        </section>
         <section class="panel" id="outlookPanel">
             <h2>7-Night Outlook</h2>
             <div id="outlookStrip" style="display:flex;gap:.6rem;flex-wrap:wrap;">Loading forecast…</div>
@@ -358,6 +365,10 @@
             : (d.detail || 'failed');
     };
     loadCalibration();
+    setInterval(() => {
+        const img = document.getElementById('allskyImg');
+        if (img) img.src = 'https://allsky.astronomyacres.com/image.jpg?t=' + Date.now();
+    }, 60000);
     const SCOPE_COLORS = {green:'#4ade80', yellow:'#eab308', blue:'#7dd3fc', gray:'#64748b'};
     async function loadScope() {
         const el = document.getElementById('scopeChip');

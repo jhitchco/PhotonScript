@@ -277,3 +277,13 @@ class TestDawnSkyFlats:
         from photonscript.scheduler.sequence_lint import lint as lint_seq
         txt, _, _ = self._night_json()
         assert lint_seq(_json.loads(txt), guided=False).ok
+
+    def test_unsafe_branch_takes_darks_while_unsafe(self):
+        txt, _, _ = self._night_json()
+        assert "NINA.Sequencer.Conditions.LoopWhileUnsafe" in txt
+        i = txt.index("DARKS_WHILE_UNSAFE")
+        blk = txt[i:i + 3000]
+        assert '"ImageType": "DARK"' in blk
+        # darks come before the WaitUntilSafe hold
+        assert txt.index("DARKS_WHILE_UNSAFE") < txt.index(
+            "SafetyMonitor.WaitUntilSafe", i)
