@@ -269,7 +269,9 @@ class Armer:
         content = json.loads(self.sequence_path.read_text(encoding="utf-8"))
         loaded = await self._nina("sequence_load", method="POST",
                                   json_body=content)
-        started = await self._nina("sequence_start")
+        # skipValidation: our sequence connects equipment in its start area,
+        # so pre-start validation ('camera not connected') is expected noise
+        started = await self._nina("sequence_start", skipValidation="true")
         if loaded is None or started is None:
             self._set_state("ERROR", f"ninaAPI load/start failed "
                             f"({self.detail})")

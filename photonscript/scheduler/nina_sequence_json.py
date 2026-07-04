@@ -275,10 +275,19 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     return smart
 
 
-def _autofocus_time_trigger(interval_minutes: int) -> dict:
+def _autofocus_filter_trigger() -> dict:
     return _make_typed(
-        "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterTimeTrigger, NINA.Sequencer",
-        Amount=interval_minutes,
+        "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterFilterChange, "
+        "NINA.Sequencer",
+        TriggerRunner=_trigger_runner([_autofocus()]))
+
+
+def _autofocus_hfr_trigger(amount_pct: float = 10.0,
+                           sample_size: int = 4) -> dict:
+    return _make_typed(
+        "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger, "
+        "NINA.Sequencer",
+        Amount=amount_pct, SampleSize=sample_size,
         TriggerRunner=_trigger_runner([_autofocus()]))
 
 
@@ -417,10 +426,13 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     items.append(_pushover("Imaging", f"{target.name}: ALL blocks complete "
                            f"({plan_desc}) — moving on"))
 
-    triggers = [_meridian_flip_trigger(), _reconnect_trigger()]
-    if target.auto_focus_interval_minutes > 0:
-        triggers.append(_autofocus_time_trigger(target.auto_focus_interval_minutes))
-    triggers.append(_autofocus_temp_trigger(1.0))
+    # AF triggers: temp drift + filter change + HFR creep — the proven trio
+    # from the known-good AARO sequence (the time-based trigger validated
+    # badly against disconnected equipment at load)
+    triggers = [_meridian_flip_trigger(), _reconnect_trigger(),
+                _autofocus_temp_trigger(1.0),
+                _autofocus_filter_trigger(),
+                _autofocus_hfr_trigger(10.0, 4)]
 
     container = _seq_container(
         target.name, items,
