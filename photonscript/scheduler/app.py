@@ -962,6 +962,23 @@ async def api_run_regrade(date: str):
     return {"ok": True}
 
 
+@app.get("/api/activity")
+async def api_activity(limit: int = 8):
+    """Newest graded subs for the current night (local evening date)."""
+    from photonscript.shared.localtime import utc_offset_hours
+    from photonscript.scheduler.runs import _load_subs
+    config = get_config()
+    now_local = datetime.utcnow() + timedelta(
+        hours=utc_offset_hours(config, datetime.utcnow()))
+    # before local noon, we are still "last night"
+    night = (now_local - timedelta(hours=12)).strftime("%Y-%m-%d")
+    subs = _load_subs(config, night)
+    keep = ("time", "filter", "exp_s", "hfr", "stars", "background",
+            "passed_qa", "target")
+    return {"night": night,
+            "subs": [{k: s.get(k) for k in keep} for s in subs[-limit:]][::-1]}
+
+
 @app.get("/api/sync")
 async def api_sync():
     """Desktop transfer status via the Syncthing REST API (optional)."""

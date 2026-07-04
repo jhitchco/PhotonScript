@@ -5,6 +5,23 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PhotonScript - Remote Telescope Dashboard</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        #allskyPanel { grid-column: 1; grid-row: 1; }
+        #outlookPanel { grid-column: 1; grid-row: 2; }
+        #activityPanel { grid-column: 1; grid-row: 3; }
+        #armPanel { grid-column: 2; grid-row: 1 / span 3; }
+        @media (max-width: 1000px) {
+            #allskyPanel, #outlookPanel, #activityPanel, #armPanel {
+                grid-column: auto; grid-row: auto; }
+        }
+        .goals-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+        @media (max-width: 1300px) { .goals-grid { grid-template-columns: 1fr; } }
+        .fbar { height: 7px; border-radius: 4px; background: rgba(255,255,255,.07);
+                overflow: hidden; flex: 1; min-width: 60px; }
+        .fbar > div { height: 100%; }
+        .sub-row { display: flex; gap: .7rem; font-size: .78rem; padding: .25rem 0;
+                   border-bottom: 1px solid rgba(255,255,255,.05); }
+    </style>
 </head>
 <body>
     <header>
@@ -23,7 +40,7 @@
 
     <main>
         <!-- 7-Night Outlook + ARM -->
-        <section class="panel" id="allskyPanel" style="margin-bottom:1.2rem;">
+        <section class="panel" id="allskyPanel">
             <h2>All-Sky Camera <span class="bd">(live from AARO, refreshes every 60 s)</span></h2>
             <a href="https://allsky.astronomyacres.com/" target="_blank">
                 <img id="allskyImg" src="https://allsky.astronomyacres.com/image.jpg"
@@ -92,6 +109,15 @@
             </div>
         </section>
 
+        <!-- Recent Activity: last subs + telescope events -->
+        <section class="panel" id="activityPanel">
+            <h2>Activity <span class="bd">(latest subs first)</span></h2>
+            <div id="recentSubs" class="bd">no subs yet tonight</div>
+            <div class="log-entries" id="activityLog" style="margin-top:.5rem;max-height:140px;overflow-y:auto;">
+                <p class="empty-state">Waiting for telescope activity...</p>
+            </div>
+        </section>
+
         <!-- Target Goals -->
         <section class="panel projects" style="grid-column:1 / -1;">
             <h2 style="display:flex;align-items:center;gap:1rem;">Target Goals
@@ -113,56 +139,6 @@
                 <a href="/api/tonight/sequence.json?now_mode=true" class="btn btn-secondary" download title="No dusk gate — for daytime testing only">Daytime test version</a>
                 <a href="/api/tonight" class="btn btn-secondary">View Plan JSON</a>
             </div>
-        </section>
-
-        <!-- Seasonal Targets Browser -->
-        <section class="panel seasonal">
-            <h2>Seasonal Catalog ({{ month }})</h2>
-            <div class="month-selector">
-                {% for m in range(1, 13) %}
-                <a href="/api/seasonal/{{ m }}" class="month-btn {% if twilight.astro_dark_start and m == twilight.astro_dark_start.month %}active{% endif %}">
-                    {{ ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1] }}
-                </a>
-                {% endfor %}
-            </div>
-        </section>
-
-        <!-- Recent Activity Log -->
-        <section class="panel activity">
-            <h2>Activity Log</h2>
-            <div class="log-entries" id="activityLog">
-                <p class="empty-state">Waiting for telescope activity...</p>
-            </div>
-        </section>
-        <section class="panel" style="margin-top:1.2rem;" id="calPanel">
-            <h2>Calibration Health</h2>
-            <div id="calHealth" class="bd">loading…</div>
-            <div style="margin-top:.6rem;">
-                <button class="btn btn-secondary" id="calCapture">Capture darks + bias</button>
-                <span class="bd" id="calStatus"></span>
-            </div>
-            <details style="margin-top:.7rem;font-size:.8rem;opacity:.8;">
-                <summary style="cursor:pointer;">How to capture each type</summary>
-                <div style="margin:.5rem 0 0 .4rem;line-height:1.55;">
-                <b>DARKS &amp; BIAS</b> — the button above. Prereq: roof CLOSED,
-                night time (no shutter on the RC16 — any light ruins them).
-                Cloudy/unsafe nights are ideal. ~3.5 h for 300s×20 + 600s×20 + 50 bias
-                at the configured imaging gain / offset / 0°C. Refresh darks ~every 90 days.<br><br>
-                <b>FLATS (sky flats)</b> — NINA Flat Wizard, run at dusk while the
-                sun is −3° to −8° (roughly the 20 min after sunset):
-                Wizard mode <i>Sky flats</i> → <i>Multi Mode</i> with all filters ON →
-                <i>Slew to zenith</i> (East) → histogram mean 50%, tolerance 10% →
-                10–15 flats per filter. Re-shoot after any dust event, camera
-                rotation, or focuser/optics change — and at least every 45 days.
-                PhotonScript sees them automatically on the next health refresh.<br><br>
-                <b>Automating flats later:</b> the Flat Wizard itself can't be
-                scripted, but the Advanced Sequencer has a <i>Flats</i> instruction
-                category (Sky Flat / Auto Exposure Flat / Trained Flat Exposure).
-                Build a dummy advanced sequence containing those three, save it as
-                JSON, and share the file — then dusk sky flats can be added to the
-                scheduler automatically.
-                </div>
-            </details>
         </section>
     </main>
 
@@ -299,44 +275,6 @@
             document.getElementById('sunCard').textContent = 'Sun data unavailable: ' + e;
         }
     }
-    async function loadCalibration() {
-        const el = document.getElementById('calHealth');
-        try {
-            const d = await (await fetch('/api/calibration/health')).json();
-            el.innerHTML = ['BIAS', 'DARK', 'FLAT'].map(t => {
-                const c = d[t];
-                const age = c.latest
-                    ? c.latest + ' (' + c.age_days + 'd ago, ' +
-                      c.count_latest + ' frames' +
-                      (Object.keys(c.detail || {}).length ? ': ' +
-                        Object.entries(c.detail).map(([k, v]) => k + '×' + v)
-                            .join(', ') : '') + ')' +
-                      (c.location ? '<br><span style="opacity:.5;margin-left:1.2rem;">' +
-                        c.location + '</span>' : '')
-                    : 'none on disk';
-                const mark = c.stale
-                    ? '<span style="color:#eab308">⚠ stale</span>'
-                    : '<span style="color:#4ade80">✓</span>';
-                return '<b>' + t + '</b>: ' + age + ' ' + mark;
-            }).join('<br>') +
-            '<br><span style="opacity:.55">flats stale after 45d · darks 90d · bias 180d · ' +
-            'darks/bias need the roof CLOSED (no shutter on the RC16)</span>';
-        } catch (e) { el.textContent = 'calibration data unavailable'; }
-    }
-    document.getElementById('calCapture').onclick = async () => {
-        if (!confirm('Capture darks (300s×20 + 600s×20) and 50 bias now?\n\n' +
-            'The ROOF MUST BE CLOSED and the sky dark — the RC16 has no ' +
-            'shutter, so any light ruins darks.\n\n~3.5 hours total.')) return;
-        const st = document.getElementById('calStatus');
-        st.textContent = 'dispatching…';
-        const r = await fetch('/api/calibration/capture', {method: 'POST',
-            headers: {'Content-Type': 'application/json'}, body: '{}'});
-        const d = await r.json();
-        st.textContent = r.ok
-            ? 'running — ~' + d.estimated_minutes + ' min (' + d.sequence + ')'
-            : (d.detail || 'failed');
-    };
-    loadCalibration();
     setInterval(() => {
         const img = document.getElementById('allskyImg');
         if (img) img.src = 'https://allsky.astronomyacres.com/image.jpg?t=' + Date.now();
@@ -532,24 +470,30 @@
         }
         box.innerHTML = projects.map(p => {
             const hoursPct = Math.min(100, Math.round(p.hours_done / p.budget_hours * 100));
-            const filterRows = p.exposure_plans.map(e => {
-                const col = FILTER_COLORS[e.filter_type] || '#94a3b8';
-                const pct = e.count ? Math.min(100, Math.round(e.acquired / e.count * 100)) : 0;
-                const mixPct = Math.round((p.mix[e.filter_type] ?? 0));
+            const ALL_FILTERS = ['Ha', 'OIII', 'SII', 'L', 'R', 'G', 'B'];
+            const plansBy = {};
+            p.exposure_plans.forEach(e => { plansBy[e.filter_type] = e; });
+            const filterRows = ALL_FILTERS.map(f => {
+                const e = plansBy[f];
+                const col = FILTER_COLORS[f] || '#94a3b8';
+                const active = !!e;
+                const pct = (e && e.count) ? Math.min(100, Math.round(e.acquired / e.count * 100)) : 0;
+                const mixPct = Math.round((p.mix[f] ?? 0));
                 return '<div style="display:flex;align-items:center;gap:.5rem;font-size:.78rem;' +
-                    'margin:.25rem 0;">' +
-                    '<span style="color:' + col + ';width:2.4rem;font-weight:600;">' +
-                    e.filter_type + '</span>' +
-                    '<input data-mix="' + p.id + '" data-filter="' + e.filter_type +
-                    '" value="' + mixPct + '" title="percent of goal for this filter" ' +
+                    'margin:.25rem 0;' + (active ? '' : 'opacity:.4;') + '">' +
+                    '<span style="color:' + col + ';width:2.4rem;font-weight:600;">' + f + '</span>' +
+                    '<input data-mix="' + p.id + '" data-filter="' + f +
+                    '" value="' + mixPct + '" title="percent of goal — set >0 to enable" ' +
                     'style="width:40px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
                     'border-radius:4px;padding:.05rem .2rem;text-align:center;">%' +
-                    '<span style="opacity:.7;width:7.5rem;">' + Math.round(e.exposure_seconds) +
-                    's × ' + e.count + ' planned</span>' +
-                    '<span style="width:5.2rem;">' + e.acquired + ' accepted</span>' +
+                    '<span style="opacity:.7;width:7.5rem;">' +
+                    (active ? Math.round(e.exposure_seconds) + 's × ' + e.count + ' planned'
+                            : 'off — set % to use') + '</span>' +
+                    '<span style="width:5.2rem;">' + (active ? e.acquired + ' accepted' : '') + '</span>' +
                     '<div class="fbar"><div style="width:' + pct + '%;background:' + col +
                     ';"></div></div>' +
-                    '<span style="width:2.6rem;text-align:right;opacity:.8;">' + pct + '%</span>' +
+                    '<span style="width:2.6rem;text-align:right;opacity:.8;">' +
+                    (active ? pct + '%' : '—') + '</span>' +
                     '</div>';
             }).join('');
             return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
@@ -604,8 +548,9 @@
             fetch('/api/thumbnail?name=' + encodeURIComponent(p.target.name) +
                   '&catalog=' + encodeURIComponent(p.target.catalog_id))
                 .then(r => r.json()).then(t => {
-                    if (t.url) document.querySelector('img[data-thumb="' + p.target.name + '"]').src = t.url;
-                });
+                    const img = document.querySelector('img[data-thumb="' + p.target.name + '"]');
+                    if (t.url && img) { img.src = t.url; img.onerror = () => { img.style.display = 'none'; }; }
+                }).catch(() => {});
             fetch('/api/target/altitude?name=' + encodeURIComponent(p.target.name) +
                   '&ra_hours=' + p.target.ra_hours + '&dec_degrees=' + p.target.dec_degrees)
                 .then(r => r.json()).then(d => {
@@ -616,6 +561,27 @@
         }
     }
     loadSync();
+    async function loadRecentSubs() {
+        try {
+            const d = await (await fetch('/api/activity')).json();
+            const el = document.getElementById('recentSubs');
+            if (!d.subs.length) { el.textContent = 'no subs yet tonight (' + d.night + ')'; return; }
+            el.innerHTML = d.subs.map(s =>
+                '<div class="sub-row">' +
+                '<span style="opacity:.6;width:3.6rem;">' + (s.time || '').slice(11, 16) + '</span>' +
+                '<span style="color:' + (FILTER_COLORS[s.filter] || '#94a3b8') +
+                ';width:2.6rem;font-weight:600;">' + s.filter + '</span>' +
+                '<span style="width:3.2rem;">' + Math.round(s.exp_s) + 's</span>' +
+                '<span style="width:5.4rem;">HFR ' + (s.hfr ?? '–') + '</span>' +
+                '<span style="width:4.6rem;">★' + (s.stars ?? '–') + '</span>' +
+                '<span style="width:5.4rem;">bkg ' + (s.background ?? '–') + '</span>' +
+                '<span class="' + (s.passed_qa ? '' : 'rej') + '" style="color:' +
+                (s.passed_qa ? '#4ade80' : '#f87171') + ';">' +
+                (s.passed_qa ? 'pass' : 'reject') + '</span></div>').join('');
+        } catch (e) { /* endpoint not up yet */ }
+    }
+    loadRecentSubs();
+    setInterval(loadRecentSubs, 15000);
     function btn(id, patch, label) {
         return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
                'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';

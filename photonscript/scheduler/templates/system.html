@@ -57,7 +57,41 @@
             <button class="btn btn-primary" id="updGo">Pull latest &amp; restart</button>
             <div class="bd" id="updStatus" style="margin-top:.4rem;"></div>
         </section>
-        <section class="panel">
+
+
+
+        <section class="panel" id="calPanel">
+            <h2>Calibration Health</h2>
+            <div id="calHealth" class="bd">loading…</div>
+            <div style="margin-top:.6rem;">
+                <button class="btn btn-secondary" id="calCapture">Capture darks + bias</button>
+                <span class="bd" id="calStatus"></span>
+            </div>
+            <details style="margin-top:.7rem;font-size:.8rem;opacity:.8;">
+                <summary style="cursor:pointer;">How to capture each type</summary>
+                <div style="margin:.5rem 0 0 .4rem;line-height:1.55;">
+                <b>DARKS &amp; BIAS</b> — the button above. Prereq: roof CLOSED,
+                night time (no shutter on the RC16 — any light ruins them).
+                Cloudy/unsafe nights are ideal. ~3.5 h for 300s×20 + 600s×20 + 50 bias
+                at the configured imaging gain / offset / 0°C. Refresh darks ~every 90 days.<br><br>
+                <b>FLATS (sky flats)</b> — NINA Flat Wizard, run at dusk while the
+                sun is −3° to −8° (roughly the 20 min after sunset):
+                Wizard mode <i>Sky flats</i> → <i>Multi Mode</i> with all filters ON →
+                <i>Slew to zenith</i> (East) → histogram mean 50%, tolerance 10% →
+                10–15 flats per filter. Re-shoot after any dust event, camera
+                rotation, or focuser/optics change — and at least every 45 days.
+                PhotonScript sees them automatically on the next health refresh.<br><br>
+                <b>Automating flats later:</b> the Flat Wizard itself can't be
+                scripted, but the Advanced Sequencer has a <i>Flats</i> instruction
+                category (Sky Flat / Auto Exposure Flat / Trained Flat Exposure).
+                Build a dummy advanced sequence containing those three, save it as
+                JSON, and share the file — then dusk sky flats can be added to the
+                scheduler automatically.
+                </div>
+            </details>
+        </section>
+
+        <section class="panel" style="margin-top:1.5rem;">
             <h2>Preflight Check</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system
             test: config, directories (auto-created), NINA API, camera, mount,
@@ -82,6 +116,45 @@
     </main>
 
     <script>
+    async function loadCalibration() {
+        const el = document.getElementById('calHealth');
+        try {
+            const d = await (await fetch('/api/calibration/health')).json();
+            el.innerHTML = ['BIAS', 'DARK', 'FLAT'].map(t => {
+                const c = d[t];
+                const age = c.latest
+                    ? c.latest + ' (' + c.age_days + 'd ago, ' +
+                      c.count_latest + ' frames' +
+                      (Object.keys(c.detail || {}).length ? ': ' +
+                        Object.entries(c.detail).map(([k, v]) => k + '×' + v)
+                            .join(', ') : '') + ')' +
+                      (c.location ? '<br><span style="opacity:.5;margin-left:1.2rem;">' +
+                        c.location + '</span>' : '')
+                    : 'none on disk';
+                const mark = c.stale
+                    ? '<span style="color:#eab308">⚠ stale</span>'
+                    : '<span style="color:#4ade80">✓</span>';
+                return '<b>' + t + '</b>: ' + age + ' ' + mark;
+            }).join('<br>') +
+            '<br><span style="opacity:.55">flats stale after 45d · darks 90d · bias 180d · ' +
+            'darks/bias need the roof CLOSED (no shutter on the RC16)</span>';
+        } catch (e) { el.textContent = 'calibration data unavailable'; }
+    }
+    document.getElementById('calCapture').onclick = async () => {
+        if (!confirm('Capture darks (300s×20 + 600s×20) and 50 bias now?\n\n' +
+            'The ROOF MUST BE CLOSED and the sky dark — the RC16 has no ' +
+            'shutter, so any light ruins darks.\n\n~3.5 hours total.')) return;
+        const st = document.getElementById('calStatus');
+        st.textContent = 'dispatching…';
+        const r = await fetch('/api/calibration/capture', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: '{}'});
+        const d = await r.json();
+        st.textContent = r.ok
+            ? 'running — ~' + d.estimated_minutes + ' min (' + d.sequence + ')'
+            : (d.detail || 'failed');
+    };
+    loadCalibration();
+
     document.getElementById('updCheck').onclick = async () => {
         const el = document.getElementById('updInfo');
         el.textContent = 'checking…';
