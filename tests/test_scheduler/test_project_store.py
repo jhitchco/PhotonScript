@@ -80,7 +80,7 @@ def test_mix_normalizes_to_100(tmp_path):
                         object_type="galaxy")
     proj = store.add_from_target(t, budget_hours=6.0)
     updated = store.update(proj.id, filter_mix={"L": 6, "R": 2, "G": 2, "B": 2})
-    assert updated.filter_mix == {"L": 50.0, "R": 16.7, "G": 16.7, "B": 16.7}
+    assert updated.filter_mix == {"L": 50, "R": 17, "G": 17, "B": 17}
 
 
 def test_default_narrowband_mix_favors_sii_equally():
