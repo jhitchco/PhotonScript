@@ -51,7 +51,8 @@ class PhotonScriptConfig(BaseSettings):
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200
-    default_offset: int = 50
+    default_offset: int = 256  # bias floor ~= offset in ADU16; 50 was clipping
+                                # the noise floor (bkg 51, sigma 15 -> left tail at 0)
     camera_setpoint_c: float = 0.0
     cooling_tolerance_c: float = 1.0
     guided_default: bool = False  # CEM70G absolute encoders: unguided is the default
