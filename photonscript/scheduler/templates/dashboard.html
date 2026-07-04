@@ -272,9 +272,9 @@
                       m = d.minutes_to_astro_dark % 60;
                 status = 'astro dark in <b style="color:#7dd3fc;">' +
                     (h ? h + 'h ' : '') + m + 'm</b>' +
-                    (d.crossings.astro_dusk ? ' (' + d.crossings.astro_dusk.local + ')' : '');
+                    (d.dark_at_local ? ' (' + d.dark_at_local + ')' : '');
             } else {
-                status = 'next dark is tomorrow night';
+                status = 'sun data incomplete';
             }
             document.getElementById('sunCard').innerHTML =
                 '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:.4rem;">' +

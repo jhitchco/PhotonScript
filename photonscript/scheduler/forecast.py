@@ -22,12 +22,27 @@ import httpx
 
 OPEN_METEO = ("https://api.open-meteo.com/v1/forecast"
               "?latitude={lat}&longitude={lon}"
-              "&hourly=cloud_cover,wind_speed_10m,relative_humidity_2m,"
+              "&hourly=cloud_cover,cloud_cover_low,cloud_cover_mid,"
+              "cloud_cover_high,wind_speed_10m,relative_humidity_2m,"
               "precipitation_probability"
               "&forecast_days=8&timezone=auto")
 
-CLOUD_GOOD, CLOUD_OK = 25, 60
+CLOUD_GOOD, CLOUD_OK = 30, 55
 WIND_MAX_KMH, PRECIP_MAX_PCT, HUMIDITY_MAX_PCT = 35, 30, 90
+
+# Layer weights for "effective" cloud: thin high cirrus barely hurts
+# narrowband imaging, but total cloud_cover counts it at face value —
+# that made monsoon-season nights look far worse than they play out.
+_LAYER_W = {"low": 1.0, "mid": 0.65, "high": 0.35}
+
+
+def effective_cloud(total, low=None, mid=None, high=None):
+    """Opacity-weighted cloud percentage. Falls back to total cover."""
+    if low is None and mid is None and high is None:
+        return total
+    eff = (_LAYER_W["low"] * (low or 0) + _LAYER_W["mid"] * (mid or 0)
+           + _LAYER_W["high"] * (high or 0))
+    return min(100.0, eff)
 
 
 def _score_hour(cloud, wind, humidity, precip) -> float:
@@ -42,7 +57,9 @@ def _score_hour(cloud, wind, humidity, precip) -> float:
     if cloud <= CLOUD_GOOD:
         return 1.0
     if cloud <= CLOUD_OK:
-        return 0.5
+        return 0.75          # workable — keep the roof open, watch it
+    if cloud <= 75:
+        return 0.35          # marginal windows between cells
     return 0.0
 
 
@@ -60,6 +77,9 @@ def score_nights(hourly: dict, dark_windows: list[dict],
     times = hourly["time"]  # local ISO strings
     by_time = {t: i for i, t in enumerate(times)}
     cloud = hourly.get("cloud_cover", [])
+    c_low = hourly.get("cloud_cover_low", [])
+    c_mid = hourly.get("cloud_cover_mid", [])
+    c_high = hourly.get("cloud_cover_high", [])
     wind = hourly.get("wind_speed_10m", [])
     hum = hourly.get("relative_humidity_2m", [])
     precip = hourly.get("precipitation_probability", [])
@@ -78,7 +98,12 @@ def score_nights(hourly: dict, dark_windows: list[dict],
             step = min(1.0, (end_utc - t).total_seconds() / 3600)
             dark_hours += step
             if idx is not None:
-                c = cloud[idx] if idx < len(cloud) else None
+                c_tot = cloud[idx] if idx < len(cloud) else None
+                c = effective_cloud(
+                    c_tot,
+                    c_low[idx] if idx < len(c_low) else None,
+                    c_mid[idx] if idx < len(c_mid) else None,
+                    c_high[idx] if idx < len(c_high) else None)
                 usable += step * _score_hour(
                     c,
                     wind[idx] if idx < len(wind) else None,

@@ -838,16 +838,19 @@ async def api_sun():
             - timedelta(hours=off) + timedelta(hours=12)
         if noon_utc > now:
             noon_utc -= timedelta(days=1)
-        times = Time(noon_utc) + np.arange(0, 24.01, 1 / 6) * u.hour  # 10-min grid
+        # 48 h so the next-dusk countdown works in the morning, when
+        # tonight's dusk falls outside the chart's noon->noon window
+        times = Time(noon_utc) + np.arange(0, 48.01, 1 / 6) * u.hour  # 10-min grid
         frame = AltAz(obstime=times, location=get_earth_location(obs))
         alts = get_sun(times).transform_to(frame).alt.deg
         _sun_cache.clear()
         _sun_cache[cache_key] = {
             "noon_utc": noon_utc,
-            "alts": [round(float(a), 1) for a in alts],
+            "alts_full": [round(float(a), 1) for a in alts],
         }
     cached = _sun_cache[cache_key]
-    noon_utc, alts = cached["noon_utc"], cached["alts"]
+    noon_utc, alts_full = cached["noon_utc"], cached["alts_full"]
+    alts = alts_full[:145]  # chart stays noon -> noon
 
     # Current sun altitude via interpolation on the grid
     frac_now = (now - noon_utc).total_seconds() / 86400
@@ -856,12 +859,15 @@ async def api_sun():
     alt_now = round(alts[idx] + (alts[idx + 1] - alts[idx]) * sub, 1)
     setting = alts[idx + 1] < alts[idx]
 
-    # Next -18 crossing (descending = astro dusk; ascending = dawn already known)
+    # Next -18 crossing (descending = astro dusk), searched over the full
+    # 48 h grid so it is found even before local noon
     minutes_to_dark = None
-    for i in range(idx, len(alts) - 1):
-        if alts[i] > -18 >= alts[i + 1]:
+    dark_at_local = None
+    for i in range(idx, len(alts_full) - 1):
+        if alts_full[i] > -18 >= alts_full[i + 1]:
             t_cross = noon_utc + timedelta(hours=(i + 1) / 6)
             minutes_to_dark = max(0, round((t_cross - now).total_seconds() / 60))
+            dark_at_local = (t_cross + timedelta(hours=off)).strftime("%I:%M %p")
             break
 
     def _local(frac):
@@ -884,6 +890,7 @@ async def api_sun():
         "alt_now": alt_now,
         "setting": setting,
         "minutes_to_astro_dark": minutes_to_dark,
+        "dark_at_local": dark_at_local,
         "now_frac": max(0.0, min(1.0, frac_now)),
         "alts": alts,
         "crossings": crossings,

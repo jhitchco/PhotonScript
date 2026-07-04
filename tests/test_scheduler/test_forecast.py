@@ -7,7 +7,8 @@ from photonscript.scheduler.forecast import score_nights, _score_hour, _rate
 
 def test_hour_scoring_gates():
     assert _score_hour(10, 5, 40, 0) == 1.0     # clear
-    assert _score_hour(45, 5, 40, 0) == 0.5     # partly cloudy
+    assert _score_hour(45, 5, 40, 0) == 0.75    # partly cloudy, workable
+    assert _score_hour(70, 5, 40, 0) == 0.35    # marginal gaps
     assert _score_hour(90, 5, 40, 0) == 0.0     # overcast
     assert _score_hour(10, 50, 40, 0) == 0.0    # too windy
     assert _score_hour(10, 5, 95, 0) == 0.0     # dew risk
