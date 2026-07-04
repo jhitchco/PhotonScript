@@ -10,7 +10,7 @@ def repo_version() -> str:
     try:
         root = Path(__file__).resolve().parents[2]
         out = subprocess.run(
-            ["git", "log", "-1", "--format=%h · %cd",
+            ["git", "log", "-1", "--format=%h (%cd)",
              "--date=format:%b %d %H:%M"],
             cwd=root, capture_output=True, text=True, timeout=5)
         return out.stdout.strip() or "version unknown"
