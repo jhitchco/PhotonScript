@@ -7,6 +7,8 @@
     <link rel="stylesheet" href="/static/css/style.css">
     <style>
         .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        main { max-width: 1200px; margin: 0 auto; }
+        #subTable { display:block; max-height: 420px; overflow-y:auto; }
         .night-chip { display:inline-block; padding:.4rem .8rem; border-radius:8px;
                       background:rgba(255,255,255,.05); margin:0 .4rem .4rem 0;
                       cursor:pointer; }
@@ -17,10 +19,11 @@
         table.runs th:first-child, table.runs td:first-child { text-align:left; }
         .score-ring { font-size:2.6rem; font-weight:800; }
         .bd { font-size:.78rem; opacity:.75; }
-        .thumbs { display:flex; gap:.5rem; overflow-x:auto; padding:.4rem 0; }
-        .thumbs figure { margin:0; text-align:center; }
-        .thumbs img { border-radius:6px; display:block; }
-        .thumbs figcaption { font-size:.62rem; opacity:.6; margin-top:.15rem; }
+        .thumbs { display:flex; gap:.45rem; flex-wrap:wrap; padding:.4rem 0; }
+        .thumbs figure { margin:0; text-align:center; width:132px; }
+        .thumbs img { border-radius:6px; display:block; width:132px; }
+        .thumbs figcaption { font-size:.6rem; opacity:.65; margin-top:.15rem;
+                             line-height:1.25; }
         .rej { color:#f87171; }
         .ok { color:#4ade80; }
     </style>
@@ -54,6 +57,7 @@
             </div>
             <div style="margin-top:.8rem;">
                 <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
+                <button class="btn btn-secondary" id="regradeBtn">Re-grade night</button>
             </div>
             <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
             <table class="runs" id="pvaTable"></table>
@@ -87,6 +91,11 @@
         panel.hidden = false;
         document.getElementById('scoreTotal').textContent = '…';
         document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
+        document.getElementById('regradeBtn').onclick = async () => {
+            if (!confirm('Delete grades for ' + date + ' and re-grade all subs?')) return;
+            await fetch('/api/runs/' + date + '/regrade', {method: 'POST'});
+            loadDetail(date);
+        };
         const r = await fetch('/api/runs/' + date);
         const d = await r.json();
         if (d.backfill && (d.backfill.running || d.backfill.pending > 0)) {
@@ -129,10 +138,12 @@
         const step = Math.max(1, Math.ceil(subs.length / 24));
         document.getElementById('thumbStrip').innerHTML = subs
             .filter((s, i) => i % step === 0)
-            .map(s => '<figure><img loading="lazy" width="180" src="/api/runs/' + date +
-                '/thumb?file=' + encodeURIComponent(s.file) + '">' +
-                '<figcaption>' + s.filter + ' ' + Math.round(s.exp_s) + 's · HFR ' +
-                (s.hfr ?? '–') + (s.passed_qa ? '' : ' ✗') + '</figcaption></figure>')
+            .map(s => '<figure><img loading="lazy" src="/api/runs/' + date +
+                '/thumb?file=' + encodeURIComponent(s.file) + '&w=264">' +
+                '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
+                Math.round(s.exp_s) + 's' + (s.passed_qa ? '' : ' <span class="rej">✗</span>') +
+                '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
+                ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
             .join('');
         document.getElementById('subTable').innerHTML =
             '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +

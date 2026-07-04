@@ -90,8 +90,8 @@ def _fast_grade(path: Path, config) -> dict:
               + data[::2, 1::2] + data[1::2, 1::2]) / 4
     sample = binned[::4, ::4]
     background = float(np.median(sample))
-    noise = float(np.std(sample)) or 1.0
-    mask = binned > background + 5 * noise
+    noise = float(np.median(np.abs(sample - background))) * 1.4826 or 1.0
+    mask = binned > background + 6 * noise
     labeled, n = ndimage.label(mask)
     sizes = ndimage.sum(mask, labeled, range(1, min(n, 2000) + 1)) if n else []
     stars = [s for s in np.atleast_1d(sizes) if s >= 3]
@@ -166,7 +166,8 @@ _PHASE_PATTERNS = {
     "autofocus": re.compile(r"autofocus", re.IGNORECASE),
     "platesolve": re.compile(r"plate\s*sol", re.IGNORECASE),
     "meridian": re.compile(r"meridian\s*flip", re.IGNORECASE),
-    "error": re.compile(r"\|ERROR\|"),
+    "flip_errors": re.compile(r"\|ERROR\|MeridianFlip"),
+    "solve_failures": re.compile(r"plate\s*sol.*fail", re.IGNORECASE),
 }
 _TS = re.compile(r"^(\d{4}-\d{2}-\d{2}T[\d:.]+)")
 
@@ -180,11 +181,16 @@ def _phase_stats(config, date: str) -> dict:
         return {}
     stats: dict[str, dict] = {k: {"events": 0, "first": None, "last": None}
                               for k in _PHASE_PATTERNS}
+    lo, hi = f"{date}T12:00:00", None
+    from datetime import timedelta as _td
+    hi = (datetime.fromisoformat(date) + _td(days=1)).strftime("%Y-%m-%dT12:00:00")
     try:
         with open(logs[-1], encoding="utf-8", errors="replace") as f:
             for line in f:
                 m = _TS.match(line)
                 ts = m.group(1)[:19] if m else None
+                if ts and not (lo <= ts <= hi):
+                    continue
                 for key, pat in _PHASE_PATTERNS.items():
                     if pat.search(line):
                         s = stats[key]

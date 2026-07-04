@@ -89,27 +89,39 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
 
     except ImportError:
         logger.info("sep not available, using simple threshold detection")
-        detect_level = background + threshold * noise
-        binary = data > detect_level
         from scipy import ndimage
-        labeled, num_features = ndimage.label(binary)
 
+        # Robust noise via MAD — std is inflated by stars/hot pixels, which
+        # made the threshold miss everything on real frames
+        sample = data[::4, ::4]
+        med = float(np.median(sample))
+        mad = float(np.median(np.abs(sample - med))) * 1.4826 or 1.0
+        detect_level = med + threshold * mad
+        binary = data > detect_level
+        labeled, num_features = ndimage.label(binary)
+        if num_features == 0:
+            return []
+        # Vectorized region sizes: the old per-label loop capped at the FIRST
+        # 500 labels, which are top-of-frame noise specks — real stars were
+        # never reached (the "0 stars on a 97-star frame" bug)
+        sizes = ndimage.sum(binary, labeled, np.arange(1, num_features + 1))
+        star_labels = np.nonzero(sizes >= 6)[0] + 1
+        if len(star_labels) == 0:
+            return []
+        # Largest 300 regions get centroids (enough for all metrics)
+        order = np.argsort(sizes[star_labels - 1])[::-1][:300]
+        star_labels = star_labels[order]
+        centroids = ndimage.center_of_mass(binary, labeled, star_labels)
         stars = []
-        for i in range(1, min(num_features + 1, 500)):  # cap at 500 stars
-            region = np.where(labeled == i)
-            if len(region[0]) < 4:  # too small
-                continue
-            y_center = float(np.mean(region[0]))
-            x_center = float(np.mean(region[1]))
-            flux = float(np.sum(data[region] - background))
-            size = float(np.sqrt(len(region[0]) / np.pi))
+        for (y_c, x_c), lbl in zip(centroids, star_labels):
+            area = float(sizes[lbl - 1])
+            size = float(np.sqrt(area / np.pi))
             stars.append({
-                "x": x_center,
-                "y": y_center,
-                "flux": flux,
+                "x": float(x_c), "y": float(y_c),
+                "flux": area,
                 "fwhm": size * 2.355,
                 "hfr": size,
-                "eccentricity": 0.0,  # can't measure without moments
+                "eccentricity": 0.0,  # no moments in fallback
             })
         return stars
 

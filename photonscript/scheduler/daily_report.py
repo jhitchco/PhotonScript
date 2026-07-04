@@ -67,8 +67,9 @@ def _latest_log(logs_dir: str, date_str: str) -> str | None:
     return logs[-1] if logs else None
 
 
-def _safe_hours(log_path: str) -> float:
-    """Sum hours spent in the 'Safe' state from SafetyMonitor transitions."""
+def _safe_hours(log_path: str, window: tuple | None = None) -> float:
+    """Sum hours spent in the 'Safe' state from SafetyMonitor transitions,
+    bounded to the night window (NINA logs can span several days)."""
     events: list[tuple[datetime, bool]] = []
     with open(log_path, encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -76,6 +77,8 @@ def _safe_hours(log_path: str) -> float:
             if m:
                 try:
                     ts = datetime.fromisoformat(m.group("ts").strip()[:19])
+                    if window and not (window[0] <= ts <= window[1]):
+                        continue
                     events.append((ts, m.group("state").lower() == "safe"))
                 except ValueError:
                     continue
@@ -130,6 +133,15 @@ def build_daily_report(config, date_str: str) -> DailyReport:
 
     log = _latest_log(config.nina_logs_dir, date_str)
     if log:
-        report.safe_hours = _safe_hours(log)
+        # Night window: local noon of the night date to local noon next day,
+        # in the log's local timestamps
+        base = datetime.fromisoformat(date_str)
+        window = (base.replace(hour=12), base.replace(hour=12)
+                  + timedelta(days=1))
+        report.safe_hours = _safe_hours(log, window)
+        # A safety monitor that never transitions still counts: if no events
+        # in window but we integrated, assume safe >= shutter time
+        if report.safe_hours == 0 and report.shutter_hours > 0:
+            report.safe_hours = report.shutter_hours
 
     return report

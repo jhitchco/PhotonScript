@@ -95,7 +95,8 @@ async def websocket_endpoint(ws: WebSocket):
             # Handle client commands if needed
     except WebSocketDisconnect:
         if ws in _ws_clients:
-            _ws_clients.remove(ws)
+            if ws in _ws_clients:
+                _ws_clients.remove(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -891,11 +892,23 @@ async def api_run_detail(date: str, backfill: bool = True):
     return night_detail(get_config(), date, backfill=backfill)
 
 
+@app.post("/api/runs/{date}/regrade")
+async def api_run_regrade(date: str):
+    """Delete the night's grades and re-run backfill (e.g. after a grading
+    algorithm fix or installing sep)."""
+    from photonscript.scheduler.runs import runs_dir, start_backfill
+    p = runs_dir(get_config()) / f"{date}_subs.jsonl"
+    if p.exists():
+        p.unlink()
+    start_backfill(get_config(), date)
+    return {"ok": True}
+
+
 @app.get("/api/runs/{date}/thumb")
-async def api_run_thumb(date: str, file: str):
+async def api_run_thumb(date: str, file: str, w: int = 360):
     from fastapi.responses import FileResponse
     from photonscript.scheduler.runs import thumbnail
-    p = thumbnail(get_config(), date, file)
+    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 800))
     if p is None:
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
     return FileResponse(p, media_type="image/png")
