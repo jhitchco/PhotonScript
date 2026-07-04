@@ -128,7 +128,7 @@ class ProjectStore:
         if filter_mix is not None:
             total = sum(v for v in filter_mix.values() if v and v > 0)
             if total > 0:  # normalize to 100
-                proj.filter_mix = {k: round(v / total * 100, 1)
+                proj.filter_mix = {k: round(v / total * 100)
                                    for k, v in filter_mix.items()
                                    if v and v > 0}
         if budget_hours is not None and budget_hours > 0:
