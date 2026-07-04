@@ -189,3 +189,43 @@ class TestNightLoopArchitecture:
         waits = [i for i, t in enumerate(seq) if "WaitForTime," in t]
         astro_gate = max(waits)
         assert af < astro_gate
+
+
+def _imaging_gate(data):
+    """The final WaitForTime inside the AARO startup container."""
+    startup = next(d for d in _walk(data) if isinstance(d, dict)
+                   and d.get("Name") == "AARO startup")
+    waits = [i for i in startup["Items"]["$values"]
+             if "WaitForTime," in i.get("$type", "")]
+    return waits[-1]
+
+
+class TestFilterAwareGating:
+    def test_narrowband_first_gates_at_nautical_dusk(self):
+        data = _gen()   # Ha-only target
+        gate = _imaging_gate(data)
+        assert "NauticalDuskProvider" in gate["SelectedProvider"]["$type"]
+        assert gate["MinutesOffset"] == 10
+        # all-narrowband night also extends to nautical dawn
+        loops = [d for d in _walk(data) if isinstance(d, dict)
+                 and d.get("Name") == "LOOP_ALL_NIGHT"]
+        cond = loops[0]["Conditions"]["$values"][0]
+        assert "NauticalDawnProvider" in cond["SelectedProvider"]["$type"]
+
+    def test_broadband_first_gates_at_astro_dusk(self):
+        target = NinaSequenceTarget(
+            name="M 51", ra_hours=13.5, dec_degrees=47.2,
+            exposures=[ExposurePlan(filter_type=FilterType.LUMINANCE,
+                                    exposure_seconds=180, count=30)])
+        seq = build_sequence_for_night("T", [target])
+        seq.wait_until_local = "00:00:00"
+        data = json.loads(generate_nina_json(seq))
+        gate = _imaging_gate(data)
+        prov = gate["SelectedProvider"]["$type"]
+        assert "DuskProvider" in prov and "Nautical" not in prov
+        # broadband night loop ends at astro dawn
+        loops = [d for d in _walk(data) if isinstance(d, dict)
+                 and d.get("Name") == "LOOP_ALL_NIGHT"]
+        cond = loops[0]["Conditions"]["$values"][0]
+        dawn_prov = cond["SelectedProvider"]["$type"]
+        assert "DawnProvider" in dawn_prov and "Nautical" not in dawn_prov

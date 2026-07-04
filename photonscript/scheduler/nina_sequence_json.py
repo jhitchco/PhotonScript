@@ -453,6 +453,27 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
     gate_dark = sequence.wait_until_local is not None
 
+    # Filter-aware imaging gate: narrowband rejects twilight glow, so an
+    # Ha/SII-first night can start ~35 min earlier (sun ~-13/-14 deg) and,
+    # if ALL targets are narrowband, run ~35 min later into morning twilight.
+    NB = ("Ha", "SII", "OIII")
+    first_exposures = [e for t in sequence.targets for e in t.exposures
+                       if e.count - e.acquired > 0]
+    first_is_nb = bool(first_exposures) and         first_exposures[0].filter_type.value in NB
+    all_nb = bool(first_exposures) and all(
+        e.filter_type.value in NB for e in first_exposures)
+    if first_is_nb:
+        gate_provider, gate_offset = "NauticalDuskProvider", 10
+        gate_msg = ("nautical dusk +10 — narrowband can start in twilight; "
+                    "night loop begins")
+    else:
+        gate_provider, gate_offset = "DuskProvider", 0
+        gate_msg = "astro dusk — night loop begins (runs until dawn)"
+    if all_nb:
+        dawn_provider, dawn_offset = "NauticalDawnProvider", -10
+    else:
+        dawn_provider, dawn_offset = "DawnProvider", 0
+
     # ---- Start area: cold start + twilight prep --------------------------
     start_items = [
         _pushover("Startup", f"{sequence.name}: standby — "
@@ -497,10 +518,9 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             _wait_for_timespan(60),
             _autofocus(),
             _pushover("Startup", "twilight autofocus complete — holding "
-                      "for astro dusk"),
-            _wait_for_provider("DuskProvider", 0),
-            _pushover("Startup", "astro dusk — night loop begins (runs "
-                      "until dawn; parks itself if unsafe)"),
+                      "for the imaging gate"),
+            _wait_for_provider(gate_provider, gate_offset),
+            _pushover("Startup", gate_msg),
         ]
 
     # ---- Targets area: the night loop -------------------------------------
@@ -547,7 +567,7 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     night_loop = _seq_container("LOOP_ALL_NIGHT", [
         safe_loop,
         _seq_container("UNSAFE", unsafe_items),
-    ], conditions=[_time_condition("DawnProvider", 0)])
+    ], conditions=[_time_condition(dawn_provider, dawn_offset)])
 
     # ---- End area -----------------------------------------------------------
     end_items = [_pushover("Shutdown", "dawn — starting shutdown: park, "
