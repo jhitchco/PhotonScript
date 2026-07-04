@@ -707,6 +707,22 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
         return max(0.0, min(1.0, (dt - noon_utc).total_seconds() / 86400))
 
     peak = int(np.argmax(alts))
+
+    # 30-degree crossings (rise above / dip below), with local times
+    cross30 = []
+    for i in range(len(alts) - 1):
+        a0, a1 = float(alts[i]), float(alts[i + 1])
+        if (a0 < 30 <= a1) or (a0 >= 30 > a1):
+            # linear interp for the crossing fraction
+            t = (30 - a0) / (a1 - a0) if a1 != a0 else 0
+            frac = (i + t) / (len(alts) - 1)
+            dt = noon_utc + timedelta(hours=frac * 24)
+            cross30.append({
+                "frac": round(frac, 4),
+                "dir": "up" if a1 > a0 else "down",
+                "local": (dt + timedelta(hours=off)).strftime("%I:%M %p").lstrip("0"),
+            })
+
     _alt_cache.clear() if len(_alt_cache) > 200 else None
     _alt_cache[cache_key] = result = {
         "name": name,
@@ -719,6 +735,7 @@ async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
         "transit_frac": peak / (len(alts) - 1),
         "transit_alt": round(float(alts[peak]), 0),
         "min_altitude": 30,
+        "cross30": cross30,
     }
     return result
 
