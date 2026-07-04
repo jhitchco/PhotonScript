@@ -394,6 +394,10 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
+    ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
+    ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
+    ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
@@ -623,6 +627,15 @@ def _project_json(p) -> dict:
     total = sum(e.count for e in p.exposure_plans) or 1
     done = sum(e.acquired for e in p.exposure_plans)
     d["completion_pct"] = round(done / total * 100)
+    d["hours_done"] = round(sum(e.acquired * e.exposure_seconds
+                                for e in p.exposure_plans) / 3600, 1)
+    try:
+        from photonscript.scheduler.runs import library_root, _safe_name
+        lib = library_root(get_config()) / _safe_name(p.target.name)
+        d["library_files"] = (sum(1 for _ in lib.rglob("*.fits"))
+                              if lib.exists() else 0)
+    except Exception:  # noqa: BLE001
+        d["library_files"] = 0
     return d
 
 
@@ -947,6 +960,31 @@ async def api_run_regrade(date: str):
             f.unlink(missing_ok=True)
     start_backfill(get_config(), date)
     return {"ok": True}
+
+
+@app.get("/api/sync")
+async def api_sync():
+    """Desktop transfer status via the Syncthing REST API (optional)."""
+    import httpx
+    cfg = get_config()
+    url = getattr(cfg, "syncthing_url", "") or ""
+    key = getattr(cfg, "syncthing_api_key", "") or ""
+    folder = getattr(cfg, "syncthing_folder_id", "") or ""
+    device = getattr(cfg, "syncthing_device_id", "") or ""
+    if not (url and key and folder and device):
+        return {"configured": False}
+    try:
+        async with httpx.AsyncClient(timeout=6,
+                                     headers={"X-API-Key": key}) as cl:
+            r = await cl.get(url.rstrip("/") + "/rest/db/completion",
+                             params={"folder": folder, "device": device})
+            d = r.json()
+        return {"configured": True,
+                "completion_pct": round(float(d.get("completion", 0)), 1),
+                "need_items": d.get("needItems", 0),
+                "need_bytes": d.get("needBytes", 0)}
+    except Exception as e:  # noqa: BLE001
+        return {"configured": True, "error": str(e)}
 
 
 @app.get("/api/calibration/health")

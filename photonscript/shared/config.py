@@ -41,6 +41,10 @@ class PhotonScriptConfig(BaseSettings):
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
     library_dir: str = ""  # accepted-lights library (Syncthing this); "" = <data_dir>/Library
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
+    syncthing_url: str = "http://localhost:8384"  # Syncthing REST on the scope PC
+    syncthing_api_key: str = ""
+    syncthing_folder_id: str = ""   # folder id of the Library share
+    syncthing_device_id: str = ""   # the DESKTOP's device id
     unsafe_darks_enabled: bool = True  # shoot darks while parked during unsafe pauses
     flat_count: int = 15  # sky flats per filter at dawn
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"

@@ -92,55 +92,27 @@
             </div>
         </section>
 
-        <!-- Tonight's Darkness Window -->
-        <section class="panel darkness-window">
-            <h2>Tonight's Window</h2>
-            <div class="twilight-info">
-                <div>
-                    <label>Astro Dark Start</label>
-                    <span>{{ twilight.astro_dark_start.strftime('%I:%M %p') if twilight.astro_dark_start else 'N/A' }}</span>
-                </div>
-                <div>
-                    <label>Astro Dark End</label>
-                    <span>{{ twilight.astro_dark_end.strftime('%I:%M %p') if twilight.astro_dark_end else 'N/A' }}</span>
-                </div>
+        <!-- Target Goals -->
+        <section class="panel projects" style="grid-column:1 / -1;">
+            <h2 style="display:flex;align-items:center;gap:1rem;">Target Goals
+                <span class="bd" id="syncChip" style="font-weight:normal;"></span></h2>
+            <div style="display:flex;gap:.6rem;margin-bottom:.8rem;">
+                <input id="addTargetName" list="catalogList"
+                       placeholder="Add a target — type or pick from tonight's catalog"
+                       style="flex:1;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.4rem .6rem;">
+                <datalist id="catalogList">
+                    {% for r in tonight_targets %}
+                    <option value="{{ r.target.name }}">{{ (r.tier.value if r.tier else 'good') | upper }} · {{ r.target.catalog_id }} · {{ r.visibility.hours }}h visible tonight</option>
+                    {% endfor %}
+                </datalist>
+                <button class="btn btn-secondary" id="addTargetBtn">Add</button>
             </div>
-        </section>
-
-        <!-- Tonight's Target Plan -->
-        <section class="panel target-plan">
-            <h2>Tonight's Targets</h2>
-            <div class="target-list" id="targetList">
-                {% for r in tonight_targets %}
-                <div class="target-card tier-{{ r.tier.value if r.tier else 'good' }}">
-                    <div class="target-header">
-                        <span class="target-name">{{ r.target.name }}</span>
-                        <span class="target-tier">{{ r.tier.value | upper if r.tier else 'GOOD' }}</span>
-                    </div>
-                    <div class="target-details">
-                        <span>{{ r.target.catalog_id }}</span>
-                        <span>{{ r.target.object_type }}</span>
-                        <span>{{ r.visibility.hours }}h visible</span>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            <div class="actions">
+            <div id="projectManager" class="goals-grid"><p class="empty-state">Loading projects…</p></div>
+            <div class="actions" style="margin-top:.9rem;">
                 <a href="/api/tonight/sequence.json" class="btn btn-primary" download>Download NINA Sequence (Advanced Sequencer JSON)</a>
                 <a href="/api/tonight/sequence.json?now_mode=true" class="btn btn-secondary" download title="No dusk gate — for daytime testing only">Daytime test version</a>
                 <a href="/api/tonight" class="btn btn-secondary">View Plan JSON</a>
             </div>
-        </section>
-
-        <!-- Active Projects -->
-        <section class="panel projects">
-            <h2>Imaging Projects</h2>
-            <div style="display:flex;gap:.6rem;margin-bottom:.8rem;">
-                <input id="addTargetName" placeholder="Target name (e.g. Crescent Nebula)"
-                       style="flex:1;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.4rem .6rem;">
-                <button class="btn btn-secondary" id="addTargetBtn">Add</button>
-            </div>
-            <div id="projectManager"><p class="empty-state">Loading projects…</p></div>
         </section>
 
         <!-- Seasonal Targets Browser -->
@@ -531,62 +503,103 @@
         return svg;
     }
 
+    async function loadSync() {
+        const el = document.getElementById('syncChip');
+        try {
+            const d = await (await fetch('/api/sync')).json();
+            if (!d.configured) {
+                el.innerHTML = 'desktop sync: <span style="opacity:.6">not configured ' +
+                    '(Syncthing settings in System &amp; Config)</span>';
+            } else if (d.error) {
+                el.innerHTML = 'desktop sync: <span class="rej" style="color:#f87171">' +
+                    'unreachable</span>';
+            } else if (d.completion_pct >= 100) {
+                el.innerHTML = 'desktop sync: <span style="color:#4ade80">✓ up to date</span>';
+            } else {
+                el.innerHTML = 'desktop sync: <span style="color:#eab308">' +
+                    d.completion_pct + '% · ' + d.need_items + ' files pending</span>';
+            }
+        } catch (e) { el.textContent = ''; }
+    }
     async function loadProjects() {
         const r = await fetch('/api/projects2');
         const projects = await r.json();
         const box = document.getElementById('projectManager');
         if (!projects.length) {
-            box.innerHTML = '<p class="empty-state">No projects yet — add a target above, ' +
-                'or tonight will auto-select from the seasonal catalog.</p>';
+            box.innerHTML = '<p class="empty-state">No goals yet — add a target above; ' +
+                'tonight will auto-select from the seasonal catalog.</p>';
             return;
         }
         box.innerHTML = projects.map(p => {
-            const chips = p.exposure_plans.map(e =>
-                '<span style="border:1px solid ' + (FILTER_COLORS[e.filter_type] || '#64748b') +
-                ';color:' + (FILTER_COLORS[e.filter_type] || '#64748b') +
-                ';border-radius:4px;padding:.1rem .4rem;font-size:.72rem;margin-right:.3rem;">' +
-                e.filter_type + ' ' + e.acquired + '/' + e.count + '×' +
-                Math.round(e.exposure_seconds) + 's</span>').join('');
-            return '<div style="display:flex;gap:.9rem;padding:.7rem;border-radius:8px;' +
-                'background:rgba(255,255,255,.03);margin-bottom:.6rem;align-items:flex-start;' +
+            const hoursPct = Math.min(100, Math.round(p.hours_done / p.budget_hours * 100));
+            const filterRows = p.exposure_plans.map(e => {
+                const col = FILTER_COLORS[e.filter_type] || '#94a3b8';
+                const pct = e.count ? Math.min(100, Math.round(e.acquired / e.count * 100)) : 0;
+                const mixPct = Math.round((p.mix[e.filter_type] ?? 0));
+                return '<div style="display:flex;align-items:center;gap:.5rem;font-size:.78rem;' +
+                    'margin:.25rem 0;">' +
+                    '<span style="color:' + col + ';width:2.4rem;font-weight:600;">' +
+                    e.filter_type + '</span>' +
+                    '<input data-mix="' + p.id + '" data-filter="' + e.filter_type +
+                    '" value="' + mixPct + '" title="percent of goal for this filter" ' +
+                    'style="width:40px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                    'border-radius:4px;padding:.05rem .2rem;text-align:center;">%' +
+                    '<span style="opacity:.7;width:7.5rem;">' + Math.round(e.exposure_seconds) +
+                    's × ' + e.count + ' planned</span>' +
+                    '<span style="width:5.2rem;">' + e.acquired + ' accepted</span>' +
+                    '<div class="fbar"><div style="width:' + pct + '%;background:' + col +
+                    ';"></div></div>' +
+                    '<span style="width:2.6rem;text-align:right;opacity:.8;">' + pct + '%</span>' +
+                    '</div>';
+            }).join('');
+            return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
                 (p.active ? '' : 'opacity:.45;') + '">' +
-                '<img data-thumb="' + p.target.name + '" data-cat="' + p.target.catalog_id +
-                '" style="width:64px;height:64px;object-fit:cover;border-radius:6px;background:#0b1220;">' +
-                '<div style="flex:1;">' +
-                '<div style="display:flex;align-items:center;gap:.6rem;">' +
-                '<b>' + p.target.name + '</b>' +
-                '<span style="opacity:.5;font-size:.78rem;">' + p.target.catalog_id + ' · ' +
-                p.kind + '</span>' +
-                '<span style="margin-left:auto;font-size:.78rem;opacity:.7;">' +
-                p.completion_pct + '% done</span></div>' +
-                '<div style="margin:.35rem 0;">' + chips + '</div>' +
-                '<div style="display:flex;align-items:center;gap:.45rem;font-size:.78rem;margin:.3rem 0;">' +
-                'Mix % ' + Object.entries(p.mix).map(([f, pct]) =>
-                    '<span style="color:' + (FILTER_COLORS[f] || '#94a3b8') + ';">' + f +
-                    '</span><input data-mix="' + p.id + '" data-filter="' + f +
-                    '" value="' + Math.round(pct) + '" style="width:44px;background:#0b1220;' +
-                    'color:#e2e8f0;border:1px solid #334155;border-radius:4px;padding:.1rem .25rem;' +
-                    'text-align:center;">').join('') +
+                '<div style="display:flex;gap:.7rem;align-items:center;">' +
+                '<img data-thumb="' + p.target.name + '" style="width:52px;height:52px;' +
+                'object-fit:cover;border-radius:6px;background:#0b1220;">' +
+                '<div style="flex:1;"><b>' + p.target.name + '</b>' +
+                '<div style="opacity:.5;font-size:.75rem;">' + p.target.catalog_id + ' · ' +
+                p.kind + ' · priority ' + p.priority + ' ' +
+                btn(p.id, "{\"priority_delta\":10}", '▲') +
+                btn(p.id, "{\"priority_delta\":-10}", '▼') + '</div></div>' +
+                '<span style="cursor:pointer;opacity:.55;font-size:.78rem;" onclick="patchProject(\'' +
+                p.id + '\', {active: ' + !p.active + '})">' + (p.active ? 'pause' : 'resume') + '</span>' +
+                '<span style="cursor:pointer;color:#f87171;opacity:.55;font-size:.78rem;" ' +
+                'onclick="deleteProject(\'' + p.id + '\')">remove</span></div>' +
+                // goal line: editable hours + total progress
+                '<div style="display:flex;align-items:center;gap:.6rem;margin:.6rem 0 .3rem;">' +
+                '<span style="font-size:.82rem;">Goal</span>' +
+                btn(p.id, "{\"budget_delta\":-1}", '−') +
+                '<input data-goal="' + p.id + '" value="' + p.budget_hours + '" ' +
+                'style="width:52px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:4px;padding:.15rem .3rem;text-align:center;font-weight:700;">' +
+                btn(p.id, "{\"budget_delta\":1}", '+') +
+                '<span style="font-size:.82rem;">hours</span>' +
+                '<div class="fbar"><div style="width:' + hoursPct + '%;background:#7dd3fc;"></div></div>' +
+                '<span style="font-size:.82rem;"><b>' + p.hours_done + 'h</b> / ' +
+                p.budget_hours + 'h (' + hoursPct + '%)</span></div>' +
+                filterRows +
+                '<div style="display:flex;align-items:center;gap:.6rem;font-size:.75rem;' +
+                'margin-top:.4rem;opacity:.75;">' +
                 '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
                 'onclick="applyMix(\'' + p.id + '\')">Apply mix</button>' +
                 '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
                 'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
-                '<span id="abmix-' + p.id + '" style="font-size:.72rem;opacity:.65;"></span></div>' +
-                '<div style="display:flex;align-items:center;gap:1rem;font-size:.82rem;">' +
-                '<span>Priority <b>' + p.priority + '</b> ' +
-                btn(p.id, "{\"priority_delta\":10}", '▲') + btn(p.id, "{\"priority_delta\":-10}", '▼') +
-                '</span><span>Budget <b>' + p.budget_hours + 'h</b> ' +
-                btn(p.id, "{\"budget_delta\":1}", '+1h') + btn(p.id, "{\"budget_delta\":-1}", '−1h') +
-                '</span>' +
-                '<span style="cursor:pointer;opacity:.6;" onclick="patchProject(\'' + p.id +
-                '\', {active: ' + !p.active + '})">' + (p.active ? 'disable' : 'enable') + '</span>' +
-                '<span style="cursor:pointer;color:#f87171;opacity:.6;" onclick="deleteProject(\'' +
-                p.id + '\')">remove</span></div>' +
+                '<span id="abmix-' + p.id + '"></span>' +
+                '<span style="margin-left:auto;">📁 ' + p.library_files +
+                ' accepted lights in library</span></div>' +
                 '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
-                '</div></div>';
+                '</div>';
         }).join('');
 
-        // thumbnails + altitude charts, lazily
+        // goal input: commit on Enter/blur
+        document.querySelectorAll('input[data-goal]').forEach(inp => {
+            inp.addEventListener('change', () => {
+                const v = parseFloat(inp.value);
+                if (v > 0) patchProject(inp.dataset.goal, {budget_hours: v});
+            });
+        });
+
         for (const p of projects) {
             fetch('/api/thumbnail?name=' + encodeURIComponent(p.target.name) +
                   '&catalog=' + encodeURIComponent(p.target.catalog_id))
@@ -602,6 +615,7 @@
                 });
         }
     }
+    loadSync();
     function btn(id, patch, label) {
         return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
                'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';
