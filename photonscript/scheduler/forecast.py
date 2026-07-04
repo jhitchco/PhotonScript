@@ -101,16 +101,36 @@ def score_nights(hourly: dict, dark_windows: list[dict],
     return nights
 
 
+def _cache_path(config):
+    from pathlib import Path
+    return Path(config.data_dir) / "forecast_cache.json"
+
+
 async def get_forecast(config) -> dict:
-    """Fetch Open-Meteo and score the next 7 nights."""
+    """Fetch Open-Meteo and score the next 7 nights.
+
+    On fetch failure, falls back to the last successful forecast (marked
+    stale) so a transient network blip doesn't blank the outlook.
+    """
+    import json as _json
     from photonscript.shared.astronomy import get_twilight_times
 
     obs = config.get_observatory()
     url = OPEN_METEO.format(lat=obs.latitude, lon=obs.longitude)
-    async with httpx.AsyncClient(timeout=15) as client:
-        r = await client.get(url)
-        r.raise_for_status()
-        data = r.json()
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(url)
+            r.raise_for_status()
+            data = r.json()
+    except Exception as e:  # noqa: BLE001 — degrade to cached forecast
+        cache = _cache_path(config)
+        if cache.exists():
+            stale = _json.loads(cache.read_text(encoding="utf-8"))
+            stale["stale"] = True
+            stale["stale_reason"] = f"{type(e).__name__}: {e}"
+            return stale
+        raise RuntimeError(f"Open-Meteo fetch failed "
+                           f"({type(e).__name__}: {e or 'no detail'})") from e
 
     utc_offset = data.get("utc_offset_seconds", 0) / 3600
     windows = []
@@ -125,7 +145,7 @@ async def get_forecast(config) -> dict:
             "astro_dark_end": tw.get("astro_dark_end"),
         })
 
-    return {
+    result = {
         "fetched_at": now.isoformat() + "Z",
         "source": "open-meteo.com",
         "cross_check": {
@@ -135,3 +155,10 @@ async def get_forecast(config) -> dict:
         },
         "nights": score_nights(data["hourly"], windows, utc_offset),
     }
+    try:
+        cache = _cache_path(config)
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(_json.dumps(result), encoding="utf-8")
+    except OSError:
+        pass
+    return result

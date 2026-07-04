@@ -176,6 +176,11 @@
                 n.dark_hours + 'h</div>' +
                 (n.avg_cloud_pct !== null ? '<div style="font-size:.68rem;opacity:.5;">☁ ' +
                 n.avg_cloud_pct + '%</div>' : '') + '</div>').join('');
+            const staleNote = d.stale
+                ? '<div style="color:#eab308;font-size:.75rem;margin-bottom:.3rem;">⚠ showing cached forecast from ' +
+                  d.fetched_at.slice(0, 16).replace('T', ' ') + 'Z (' + d.stale_reason + ')</div>'
+                : '';
+            document.getElementById('outlookStrip').insertAdjacentHTML('beforebegin', staleNote);
             document.getElementById('outlookLinks').innerHTML =
                 'Source: Open-Meteo · Cross-check: <a style="color:#7dd3fc" href="' +
                 d.cross_check.clear_outside + '" target="_blank">Clear Outside</a> · ' +
