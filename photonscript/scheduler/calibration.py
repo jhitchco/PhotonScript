@@ -54,7 +54,7 @@ def calibration_health(config) -> dict:
     for typ in ("BIAS", "DARK", "FLAT"):
         if typ not in latest:
             out[typ] = {"latest": None, "age_days": None, "total": 0,
-                        "stale": True, "detail": {},
+                        "stale": True, "detail": {}, "location": None,
                         "note": "none on disk"}
             continue
         newest = latest[typ]
@@ -69,7 +69,10 @@ def calibration_health(config) -> dict:
             key = (str(hdr.get("FILTER", "?")) if typ == "FLAT"
                    else f"{float(hdr.get('EXPTIME', 0)):g}s")
             detail[key] = detail.get(key, 0) + 1
+        loc = sorted({str(f.parent) for f in
+                      files_by_type_date.get((typ, newest), [])})
         out[typ] = {"latest": newest, "age_days": age,
+                    "location": loc[0] if loc else None,
                     "count_latest": len(files_by_type_date.get((typ, newest), [])),
                     "total": totals.get(typ, 0),
                     "stale": age > STALE_DAYS[typ],

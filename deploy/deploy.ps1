@@ -11,6 +11,8 @@ $repo = Split-Path $PSScriptRoot -Parent
 git -C $repo add -A
 git -C $repo commit -m $Message
 if ($LASTEXITCODE -ne 0) { Write-Host "Nothing to commit - pushing/updating anyway." }
+git -C $repo pull --rebase --autostash origin main
+if ($LASTEXITCODE -ne 0) { Write-Error "Pull/rebase hit a conflict - resolve it, then rerun."; exit 1 }
 git -C $repo push --set-upstream origin HEAD
 if ($LASTEXITCODE -ne 0) { Write-Error "Push failed - not restarting the scope."; exit 1 }
 try {

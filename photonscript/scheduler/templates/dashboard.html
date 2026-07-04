@@ -162,6 +162,28 @@
                 <button class="btn btn-secondary" id="calCapture">Capture darks + bias</button>
                 <span class="bd" id="calStatus"></span>
             </div>
+            <details style="margin-top:.7rem;font-size:.8rem;opacity:.8;">
+                <summary style="cursor:pointer;">How to capture each type</summary>
+                <div style="margin:.5rem 0 0 .4rem;line-height:1.55;">
+                <b>DARKS &amp; BIAS</b> — the button above. Prereq: roof CLOSED,
+                night time (no shutter on the RC16 — any light ruins them).
+                Cloudy/unsafe nights are ideal. ~3.5 h for 300s×20 + 600s×20 + 50 bias
+                at gain 200 / offset 50 / 0°C. Refresh darks ~every 90 days.<br><br>
+                <b>FLATS (sky flats)</b> — NINA Flat Wizard, run at dusk while the
+                sun is −3° to −8° (roughly the 20 min after sunset):
+                Wizard mode <i>Sky flats</i> → <i>Multi Mode</i> with all filters ON →
+                <i>Slew to zenith</i> (East) → histogram mean 50%, tolerance 10% →
+                10–15 flats per filter. Re-shoot after any dust event, camera
+                rotation, or focuser/optics change — and at least every 45 days.
+                PhotonScript sees them automatically on the next health refresh.<br><br>
+                <b>Automating flats later:</b> the Flat Wizard itself can't be
+                scripted, but the Advanced Sequencer has a <i>Flats</i> instruction
+                category (Sky Flat / Auto Exposure Flat / Trained Flat Exposure).
+                Build a dummy advanced sequence containing those three, save it as
+                JSON, and share the file — then dusk sky flats can be added to the
+                scheduler automatically.
+                </div>
+            </details>
         </section>
     </main>
 
@@ -309,7 +331,9 @@
                       c.count_latest + ' frames' +
                       (Object.keys(c.detail || {}).length ? ': ' +
                         Object.entries(c.detail).map(([k, v]) => k + '×' + v)
-                            .join(', ') : '') + ')'
+                            .join(', ') : '') + ')' +
+                      (c.location ? '<br><span style="opacity:.5;margin-left:1.2rem;">' +
+                        c.location + '</span>' : '')
                     : 'none on disk';
                 const mark = c.stale
                     ? '<span style="color:#eab308">⚠ stale</span>'
