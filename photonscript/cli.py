@@ -246,6 +246,61 @@ def preflight():
 
 
 @app.command()
+def bundle(
+    date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),
+):
+    """Package the night's evidence into one zip for post-mortem analysis.
+
+    Contents: daily report, armer state, projects, dispatched sequences,
+    and the most recent NINA log. Copy the zip to your analysis machine.
+    """
+    import zipfile
+    from datetime import timedelta
+    from pathlib import Path as P
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.daily_report import build_daily_report
+
+    config = PhotonScriptConfig()
+    d = date or (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    out = P(config.data_dir) / f"night_bundle_{d}.zip"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        # 1. Daily report
+        try:
+            z.writestr("report.txt", build_daily_report(config, d).to_text())
+        except Exception as e:  # noqa: BLE001
+            z.writestr("report.txt", f"report failed: {e}")
+        # 2. State files
+        for name in ("armer_state.json", "projects.json"):
+            p = P(config.data_dir) / name
+            if p.exists():
+                z.write(p, name)
+        # 3. Tonight's dispatched sequences
+        seq_dir = P.cwd() / "sequences"
+        if seq_dir.exists():
+            for f in sorted(seq_dir.glob("*.json"))[-3:]:
+                z.write(f, f"sequences/{f.name}")
+        # 4. Most recent NINA log (these can be large; take the newest only)
+        logs = sorted(P(config.nina_logs_dir).glob("*.log"))             if P(config.nina_logs_dir).exists() else []
+        if logs:
+            z.write(logs[-1], f"nina/{logs[-1].name}")
+        # 5. Sub inventory for the night (paths + sizes, not the FITS data)
+        fits_root = P(config.image_watch_dir) / d
+        if fits_root.exists():
+            listing = "\n".join(
+                f"{f.stat().st_size:>12}  {f.relative_to(fits_root)}"
+                for f in sorted(fits_root.rglob("*.fits")))
+            z.writestr("fits_inventory.txt", listing or "(no FITS files)")
+        else:
+            z.writestr("fits_inventory.txt", f"{fits_root} does not exist")
+
+    console.print(f"[green]Bundle written: {out}[/green]")
+    console.print("Copy it to your analysis machine (e.g. the Claude folder) "
+                  "for post-mortem review.")
+
+
+@app.command()
 def status():
     """Show current system status (connects to running scheduler)."""
     import httpx
