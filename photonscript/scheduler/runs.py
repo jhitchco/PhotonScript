@@ -432,10 +432,10 @@ def set_manual_qa(config, date: str, rel_file: str,
         if passed:
             build_library(config, date)
         else:
-            src = Path(hit.get("abs_path") or "")
-            lib = library_root(config)
-            for f in lib.rglob(src.name) if src.name else []:
-                f.unlink(missing_ok=True)
+            name = Path(hit.get("abs_path") or "").name
+            if name:
+                for f in library_root(config).rglob(name):
+                    f.unlink(missing_ok=True)
     except Exception as e:  # noqa: BLE001
         logger.warning("library update after manual QA failed: %s", e)
     return hit
