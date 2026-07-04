@@ -144,7 +144,9 @@
         };
         box.querySelectorAll('.night-chip').forEach(el =>
             el.addEventListener('click', () => loadDetail(el.dataset.date)));
-        if (real.length) loadDetail(real[0].date);
+        const want = new URLSearchParams(location.search).get('night');
+        if (want && nights.some(n => n.date === want)) loadDetail(want);
+        else if (real.length) loadDetail(real[0].date);
     }
     async function loadDetail(date) {
         currentDate = date; subFilter = 'ALL'; showAllThumbs = false;

@@ -542,6 +542,14 @@
                 '<span id="abmix-' + p.id + '"></span>' +
                 '<span style="margin-left:auto;">📁 ' + p.library_files +
                 ' accepted lights in library</span></div>' +
+                (p.nights && p.nights.length
+                 ? '<div style="font-size:.74rem;opacity:.75;margin-top:.35rem;">Nights: ' +
+                   p.nights.map(n => '<a href="/runs?night=' + n.date +
+                       '" style="color:#7dd3fc;text-decoration:none;">' + n.date.slice(2) +
+                       '</a> <span style="opacity:.7">' + n.accepted + '✓' +
+                       (n.attempted > n.accepted ? '/' + n.attempted : '') + '</span>')
+                       .join(' · ') + '</div>'
+                 : '') +
                 '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
                 '</div>';
         }).join('');

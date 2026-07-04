@@ -525,6 +525,26 @@ def list_runs(config) -> list[dict]:
     return out
 
 
+def nights_by_target(config) -> dict:
+    """{target_lower: [{date, accepted, attempted}]} across all graded nights."""
+    out: dict[str, dict[str, dict]] = {}
+    for f in sorted(runs_dir(config).glob("*_subs.jsonl")):
+        date = f.name.split("_")[0]
+        plan_names = _plan_target_names(config, date)
+        for s_ in _load_subs(config, date):
+            t = _resolve_target(s_.get("target"), s_.get("file", ""),
+                                plan_names).strip().lower()
+            if not t or t == "?":
+                continue
+            e = out.setdefault(t, {}).setdefault(
+                date, {"date": date, "accepted": 0, "attempted": 0})
+            e["attempted"] += 1
+            if s_.get("passed_qa"):
+                e["accepted"] += 1
+    return {t: sorted(d.values(), key=lambda x: x["date"], reverse=True)
+            for t, d in out.items()}
+
+
 def night_detail(config, date: str, backfill: bool = True) -> dict:
     """Full plan-vs-actual record for one night."""
     from photonscript.scheduler.daily_report import build_daily_report

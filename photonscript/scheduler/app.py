@@ -641,9 +641,18 @@ def _project_json(p) -> dict:
 
 @app.get("/api/projects2")
 async def api_projects2():
+    from photonscript.scheduler.runs import nights_by_target
     store = get_store()
-    return sorted((_project_json(p) for p in store.projects.values()),
-                  key=lambda d: -d["priority"])
+    out = sorted((_project_json(p) for p in store.projects.values()),
+                 key=lambda d: -d["priority"])
+    try:
+        nbt = nights_by_target(get_config())
+        for d in out:
+            d["nights"] = nbt.get(d["target"]["name"].strip().lower(), [])
+    except Exception:  # noqa: BLE001
+        for d in out:
+            d["nights"] = []
+    return out
 
 
 @app.post("/api/projects2/from_catalog")
