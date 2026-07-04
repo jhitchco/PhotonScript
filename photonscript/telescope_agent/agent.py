@@ -249,12 +249,17 @@ class TelescopeAgent:
         Uses polling on Windows since watchdog may need additional setup.
         """
         seen_files: set[str] = set()
+        exts = (".fits", ".fit", ".tif", ".tiff", ".xisf")
+
+        def _scan():
+            # NINA nests output in date/target/LIGHT subfolders — walk the tree
+            return [f for ext in exts
+                    for f in self._watch_dir.rglob(f"*{ext}")]
 
         # Initialize with existing files
         if self._watch_dir.exists():
-            for f in self._watch_dir.iterdir():
-                if f.suffix.lower() in (".fits", ".fit", ".tif", ".tiff", ".xisf"):
-                    seen_files.add(str(f))
+            for f in _scan():
+                seen_files.add(str(f))
 
         while self._running:
             try:
@@ -262,9 +267,7 @@ class TelescopeAgent:
                     await asyncio.sleep(10)
                     continue
 
-                for f in self._watch_dir.iterdir():
-                    if f.suffix.lower() not in (".fits", ".fit", ".tif", ".tiff", ".xisf"):
-                        continue
+                for f in _scan():
                     fpath = str(f)
                     if fpath in seen_files:
                         continue
