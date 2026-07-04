@@ -275,6 +275,38 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     return smart
 
 
+def _sky_flat(filter_type: FilterType, count: int,
+              gain: int, offset: int) -> dict:
+    """Native NINA sky-flat instruction (verified from a sequencer export):
+    auto-adjusts exposure between Min/MaxExposure to hit the histogram
+    target while the twilight sky brightens. No flat panel involved."""
+    loop = _seq_container(
+        f"{count} flats",
+        [_make_typed(
+            "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+            "NINA.Sequencer",
+            ExposureTime=0.0, Gain=gain, Offset=offset,
+            Binning=_make_typed(
+                "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                X=1, Y=1),
+            ImageType="FLAT", ExposureCount=0,
+            ErrorBehavior=0, Attempts=1)],
+        conditions=[_make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=count)])
+    sf = _seq_container(
+        f"Sky flats {filter_type.value}",
+        [_switch_filter(filter_type), loop],
+        container_type="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, "
+                       "NINA.Sequencer")
+    sf["IsExpanded"] = False
+    sf.update(MinExposure=0.1, MaxExposure=30.0,
+              HistogramTargetPercentage=0.5,
+              HistogramTolerancePercentage=0.1,
+              ShouldDither=False, DitherPixels=3.0, DitherSettleTime=5.0)
+    return sf
+
+
 def _autofocus_filter_trigger() -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterFilterChange, "
@@ -582,8 +614,29 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     ], conditions=[_time_condition(dawn_provider, dawn_offset)])
 
     # ---- End area -----------------------------------------------------------
-    end_items = [_pushover("Shutdown", "dawn — starting shutdown: park, "
-                           "warm camera, disconnect")]
+    end_items = []
+    from photonscript.shared.config import PhotonScriptConfig
+    _cfg = PhotonScriptConfig()
+    flat_filters = []
+    for t in sequence.targets:
+        for e in t.exposures:
+            if e.filter_type not in flat_filters:
+                flat_filters.append(e.filter_type)
+    if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:
+        n = int(getattr(_cfg, "flat_count", 15))
+        end_items += [
+            _pushover("Flats", "imaging done — waiting for sky-flat "
+                      f"window (nautical dawn +5), then {n} sky flats per "
+                      "filter: " + ", ".join(f.value for f in flat_filters)),
+            _wait_for_provider("NauticalDawnProvider", 5),
+            _slew_alt_az(85, 200),
+        ]
+        end_items += [_sky_flat(f, n, _cfg.default_gain,
+                                _cfg.default_offset)
+                      for f in flat_filters]
+        end_items.append(_pushover("Flats", "sky flats complete"))
+    end_items.append(_pushover("Shutdown", "starting shutdown: park, "
+                               "warm camera, disconnect"))
     if guided:
         end_items.append(_stop_guiding())
     if sequence.park_on_finish:

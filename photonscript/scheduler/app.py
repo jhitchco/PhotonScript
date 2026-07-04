@@ -394,6 +394,8 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
+    ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("nina_filter_names", "PS_NINA_FILTER_NAMES", "Filter names (class:NINA name)", "NINA", "str", False, False),
     ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),

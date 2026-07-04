@@ -40,6 +40,8 @@ class PhotonScriptConfig(BaseSettings):
     phd2_port: int = 4400
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
     library_dir: str = ""  # accepted-lights library (Syncthing this); "" = <data_dir>/Library
+    dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
+    flat_count: int = 15  # sky flats per filter at dawn
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
     quality_fwhm_max: float = 4.0  # arcsec

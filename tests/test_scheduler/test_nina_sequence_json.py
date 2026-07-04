@@ -229,3 +229,51 @@ class TestFilterAwareGating:
         cond = loops[0]["Conditions"]["$values"][0]
         dawn_prov = cond["SelectedProvider"]["$type"]
         assert "DawnProvider" in dawn_prov and "Nautical" not in dawn_prov
+
+
+class TestDawnSkyFlats:
+    def _night_json(self):
+        import json as _json
+        from datetime import datetime
+        from photonscript.shared.config import PhotonScriptConfig
+        from photonscript.shared.astronomy import get_seasonal_targets
+        from photonscript.scheduler.target_planner import (
+            create_project_from_target, plan_night_sequence)
+        from photonscript.scheduler.nina_sequence import build_sequence_for_night
+        from photonscript.scheduler.nina_sequence_json import generate_nina_json
+
+        config = PhotonScriptConfig()
+        projects = [create_project_from_target(t)
+                    for t in get_seasonal_targets(7)]
+        targets = plan_night_sequence(projects, config, datetime.utcnow())[:2]
+        for t in targets:
+            t.start_guiding = False
+        seq = build_sequence_for_night("flats_test", targets)
+        txt = generate_nina_json(seq)
+        return txt, _json.loads(txt), targets
+
+    def test_one_skyflat_block_per_filter(self):
+        txt, _, targets = self._night_json()
+        filters = []
+        for t in targets:
+            for e in t.exposures:
+                if e.filter_type.value not in filters:
+                    filters.append(e.filter_type.value)
+        assert txt.count(
+            '"NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat') == len(filters)
+
+    def test_flats_run_before_park_in_end_area(self):
+        txt, _, _ = self._night_json()
+        end = txt[txt.index('"Name": "End"'):]
+        assert end.index("FlatDevice.SkyFlat") < end.index("Park")
+
+    def test_flats_wait_for_nautical_dawn_window(self):
+        txt, _, _ = self._night_json()
+        end = txt[txt.index('"Name": "End"'):]
+        assert "NauticalDawnProvider" in end
+
+    def test_generated_sequence_still_lints(self):
+        import json as _json
+        from photonscript.scheduler.sequence_lint import lint as lint_seq
+        txt, _, _ = self._night_json()
+        assert lint_seq(_json.loads(txt), guided=False).ok
