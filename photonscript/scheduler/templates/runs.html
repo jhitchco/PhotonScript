@@ -35,6 +35,11 @@
         .rej { color:#f87171; }
         .ok { color:#4ade80; }
         .warn { color:#eab308; }
+        #backfillBox { margin-top:.8rem; }
+        .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
+                overflow:hidden; margin:.3rem 0; }
+        .pbar > div { height:100%; background:#1d4ed8; width:0%;
+                      transition:width .5s; }
     </style>
 </head>
 <body>
@@ -67,6 +72,11 @@
             <div style="margin-top:.8rem;">
                 <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
                 <button class="btn btn-secondary" id="regradeBtn">Re-grade night</button>
+                <button class="btn btn-secondary" id="libraryBtn" title="Hardlink QA-accepted lights into the Library folder for Syncthing">Rebuild library</button>
+            </div>
+            <div id="backfillBox" class="bd" hidden>
+                <div id="backfillLabel"></div>
+                <div class="pbar"><div id="backfillBar"></div></div>
             </div>
             <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
             <table class="runs" id="pvaTable"></table>
@@ -107,18 +117,32 @@
         document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
         document.getElementById('regradeBtn').onclick = async () => {
             if (!confirm('Delete grades for ' + date + ' and re-grade all subs?')) return;
+            showBackfill({running: true, graded: 0, total_files: 0,
+                          current: 'starting…'});
             await fetch('/api/runs/' + date + '/regrade', {method: 'POST'});
-            loadDetail(date);
+            pollBackfill(date);
+        };
+        document.getElementById('libraryBtn').onclick = async () => {
+            const btn = document.getElementById('libraryBtn');
+            btn.disabled = true; btn.textContent = 'Building…';
+            try {
+                const r = await fetch('/api/library/rebuild', {method: 'POST'});
+                const res = await r.json();
+                alert('Library: ' + res.library + '\n' + res.linked +
+                      ' new files linked · ' + res.already_there +
+                      ' already there · ' + res.rejected_excluded +
+                      ' rejects excluded');
+            } finally { btn.disabled = false; btn.textContent = 'Rebuild library'; }
         };
         const r = await fetch('/api/runs/' + date);
         const d = await r.json();
         currentDetail = d;
         if (d.backfill && (d.backfill.running || d.backfill.pending > 0)) {
-            document.getElementById('scoreTotal').textContent =
-                d.backfill.graded + '/' + d.backfill.total_files;
-            document.getElementById('scoreBreakdown').innerHTML =
-                'grading subs in the background… page refreshes automatically';
-            setTimeout(() => { if (currentDate === date) loadDetail(date); }, 6000);
+            showBackfill(d.backfill);
+            pollBackfill(date);
+        } else {
+            document.getElementById('backfillBox').hidden = true;
+            document.getElementById('regradeBtn').disabled = false;
         }
         // Title: date + target names
         const names = [...new Set(d.subs.map(s => s.target).filter(t => t && t !== '?'))];
@@ -204,6 +228,41 @@
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
                 '</td><td class="' + (s.passed_qa ? 'ok' : 'rej') + '">' +
                 (s.passed_qa ? 'pass' : (s.reason || 'reject')) + '</td></tr>').join('');
+    }
+    function fmtEta(s) {
+        if (s == null) return '';
+        return s >= 60 ? '~' + Math.floor(s / 60) + 'm ' + (s % 60) + 's left'
+                       : '~' + s + 's left';
+    }
+    function showBackfill(b) {
+        const box = document.getElementById('backfillBox');
+        box.hidden = false;
+        document.getElementById('regradeBtn').disabled = true;
+        const pct = b.total_files ? Math.round(b.graded / b.total_files * 100) : 0;
+        document.getElementById('backfillBar').style.width = pct + '%';
+        document.getElementById('backfillLabel').innerHTML =
+            '<b>Re-grading:</b> ' + b.graded + '/' + (b.total_files || '?') +
+            (b.current ? ' · <span style="opacity:.7">' +
+                b.current.split(/[\\/]/).pop() + '</span>' : '') +
+            (b.rate ? ' · ' + b.rate + '/s · ' + fmtEta(b.eta_s) : '') +
+            (b.last_error ? ' · <span class="rej">last error: ' +
+                b.last_error + '</span>' : '');
+    }
+    let pollTimer = null;
+    function pollBackfill(date) {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(async () => {
+            if (currentDate !== date) return;
+            const r = await fetch('/api/runs/' + date + '/backfill');
+            const b = await r.json();
+            if (b.running || b.pending > 0) {
+                showBackfill(b);
+                pollBackfill(date);
+            } else {
+                document.getElementById('backfillBox').hidden = true;
+                loadDetail(date);   // done: render final numbers
+            }
+        }, 2500);
     }
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);
     loadNights();

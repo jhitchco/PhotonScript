@@ -76,7 +76,8 @@ async def broadcast_state():
         except Exception:
             dead.append(ws)
     for ws in dead:
-        _ws_clients.remove(ws)
+        if ws in _ws_clients:  # concurrent broadcasts can race on removal
+            _ws_clients.remove(ws)
 
 
 @app.websocket("/ws")
@@ -388,6 +389,7 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("nina_filter_names", "PS_NINA_FILTER_NAMES", "Filter names (class:NINA name)", "NINA", "str", False, False),
     ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),
     ("phd2_port", "PS_PHD2_PORT", "PHD2 port", "PHD2", "int", False, True),
@@ -926,6 +928,21 @@ async def api_run_regrade(date: str):
             f.unlink(missing_ok=True)
     start_backfill(get_config(), date)
     return {"ok": True}
+
+
+@app.get("/api/runs/{date}/backfill")
+async def api_run_backfill_status(date: str):
+    """Cheap progress poll for the re-grade bar (no log parsing)."""
+    from photonscript.scheduler.runs import backfill_status
+    return backfill_status(get_config(), date)
+
+
+@app.post("/api/library/rebuild")
+def api_library_rebuild(date: str = ""):
+    """(Re)build the accepted-lights library. Sync endpoint: FastAPI runs it
+    in a worker thread; hardlinking a whole archive takes a few seconds."""
+    from photonscript.scheduler.runs import build_library
+    return build_library(get_config(), date or None)
 
 
 @app.get("/api/runs/{date}/thumb")

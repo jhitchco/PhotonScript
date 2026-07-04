@@ -139,30 +139,47 @@ def _measure(binned, config) -> dict:
         data = np.ascontiguousarray(binned, dtype=np.float32)
         bkg = sep.Background(data)
         data_sub = data - bkg
+        # Local noise map, not the global scalar: on nebula frames the
+        # global rms underestimates noise inside nebulosity, which produced
+        # tens of thousands of false "stars" and sub-pixel HFRs.
+        err = bkg.rms()
         try:
-            objs = sep.extract(data_sub, 5.0, err=bkg.globalrms)
-        except Exception:  # noqa: BLE001  (sep raises on pathological frames)
-            objs = np.empty(0)
-        hfr = ecc = None
-        if len(objs):
-            # Brightest 500 for the radial measurement
-            top = np.argsort(objs["flux"])[::-1][:500]
-            o = objs[top]
+            sep.set_extract_pixstack(1_000_000)
+        except Exception:  # noqa: BLE001
+            pass
+        objs = np.empty(0)
+        for thresh in (5.0, 8.0, 12.0, 20.0):
             try:
-                r, _ = sep.flux_radius(data_sub, o["x"], o["y"],
-                                       6.0 * o["a"], 0.5)
-                r = r[np.isfinite(r) & (r > 0)]
-                if len(r):
-                    hfr = round(float(np.median(r)) * 2, 2)  # binned->native px
-            except Exception:  # noqa: BLE001
-                pass
-            with np.errstate(divide="ignore", invalid="ignore"):
-                e = 1.0 - o["b"] / o["a"]
-            e = e[np.isfinite(e)]
-            if len(e):
-                ecc = round(float(np.median(e)), 3)
-        del data_sub, data
-        return {"stars": int(len(objs)), "hfr": hfr, "ecc": ecc,
+                objs = sep.extract(data_sub, thresh, err=err, minarea=6,
+                                   clean=True)
+            except Exception:  # noqa: BLE001  (pixel buffer overflow etc.)
+                continue
+            if len(objs) <= 4000:  # plausible star count; else escalate
+                break
+        hfr = ecc = None
+        nstars = int(len(objs))
+        if len(objs):
+            # Reject hot pixels / cosmic hits: real stars at this image
+            # scale are at least ~0.6 binned px semi-major axis.
+            good = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
+            nstars = int(len(good))
+            if len(good):
+                top = good[np.argsort(good["flux"])[::-1][:500]]
+                try:
+                    r, _ = sep.flux_radius(data_sub, top["x"], top["y"],
+                                           6.0 * top["a"], 0.5)
+                    r = r[np.isfinite(r) & (r > 0.2) & (r < 15)]
+                    if len(r):
+                        hfr = round(float(np.median(r)) * 2, 2)  # ->native px
+                except Exception:  # noqa: BLE001
+                    pass
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    e = 1.0 - top["b"] / top["a"]
+                e = e[np.isfinite(e)]
+                if len(e):
+                    ecc = round(float(np.median(e)), 3)
+        del data_sub, data, err
+        return {"stars": nstars, "hfr": hfr, "ecc": ecc,
                 "background": round(float(bkg.globalback), 1),
                 "noise": round(float(bkg.globalrms), 2),
                 "graded_by": "sep-binned"}
@@ -243,9 +260,15 @@ def backfill_status(config, date: str) -> dict:
     total = len(_light_files(root)) if root.exists() else 0
     logged = len(_load_subs(config, date))
     st = _backfill_state.get(date, {})
+    pending = max(0, total - logged)
+    rate = st.get("rate")  # frames/s this run
     return {"running": st.get("running", False),
             "graded": logged, "total_files": total,
-            "pending": max(0, total - logged)}
+            "pending": pending,
+            "current": st.get("current"),
+            "rate": rate,
+            "eta_s": round(pending / rate) if (rate and pending) else None,
+            "last_error": st.get("last_error")}
 
 
 def start_backfill(config, date: str) -> None:
@@ -257,7 +280,9 @@ def start_backfill(config, date: str) -> None:
         return
 
     def _work():
-        st["running"] = True
+        import time
+        st.update(running=True, current=None, rate=None, last_error=None)
+        started, done = time.monotonic(), 0
         try:
             root = Path(config.image_watch_dir) / date
             if not root.exists():
@@ -268,15 +293,25 @@ def start_backfill(config, date: str) -> None:
                 rel = str(f.relative_to(root))
                 if rel in existing:
                     continue
+                st["current"] = rel
                 try:
                     record = _fast_grade(f, config, plan_names)
                     record["file"] = rel
                     record["abs_path"] = str(f)
                     append_sub_record(config, date, record)
                 except Exception as e:  # noqa: BLE001
+                    st["last_error"] = f"{rel}: {e}"
                     logger.warning("Backfill grade failed for %s: %s", f, e)
+                done += 1
+                st["rate"] = round(done / max(time.monotonic() - started,
+                                              0.001), 2)
+            try:  # keep the accepted-lights library current
+                build_library(config, date)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Library update failed for %s: %s", date, e)
         finally:
             st["running"] = False
+            st["current"] = None
 
     threading.Thread(target=_work, daemon=True,
                      name=f"backfill-{date}").start()
@@ -445,6 +480,82 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         "score": score,
         "backfill": status,
     }
+
+
+# --- Librarian: integration-ready folder tree ----------------------------------
+
+def _safe_name(name: str) -> str:
+    return re.sub(r'[<>:"/\\|?*]', "_", str(name)).strip() or "Unknown"
+
+
+def library_root(config) -> Path:
+    d = getattr(config, "library_dir", "") or ""
+    return Path(d) if d else Path(config.data_dir) / "Library"
+
+
+def build_library(config, date: str | None = None) -> dict:
+    """Maintain Library/{Target}/{Filter}/ hardlinks of QA-accepted lights,
+    plus Calibration/{TYPE}/ for bias/darks/flats.
+
+    Hardlinks cost no disk and stay in sync with the originals; point
+    Syncthing (or robocopy) at this folder to pull integration-ready data
+    to another machine. Falls back to copy across volumes.
+    """
+    import os
+    import shutil
+
+    lib = library_root(config)
+    if date:
+        dates = [date]
+    else:
+        dates = sorted({f.name.split("_")[0]
+                        for f in runs_dir(config).glob("*_subs.jsonl")})
+    linked = skipped = missing = rejected = 0
+    for d in dates:
+        plan_names = _plan_target_names(config, d)
+        for s_ in _load_subs(config, d):
+            if not s_.get("passed_qa"):
+                rejected += 1
+                continue
+            src = Path(s_.get("abs_path") or "")
+            if not src.exists():
+                missing += 1
+                continue
+            target = _safe_name(_resolve_target(
+                s_.get("target"), s_.get("file", ""), plan_names))
+            dest = lib / target / _safe_name(s_.get("filter", "?")) / src.name
+            if dest.exists():
+                skipped += 1
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(src, dest)
+            except OSError:  # cross-volume or FS without hardlinks
+                shutil.copy2(src, dest)
+            linked += 1
+        root = Path(config.image_watch_dir) / d
+        if root.exists():
+            for f in root.rglob("*.fits"):
+                parts = f.relative_to(root).parts
+                if not _is_calibration(parts):
+                    continue
+                typ = next((p.upper().rstrip("S") for p in parts
+                            if p.upper() in _CAL_DIRS), "CAL")
+                dest = lib / "Calibration" / typ / d / f.name
+                if dest.exists():
+                    skipped += 1
+                    continue
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(f, dest)
+                except OSError:
+                    shutil.copy2(f, dest)
+                linked += 1
+    result = {"library": str(lib), "nights": len(dates), "linked": linked,
+              "already_there": skipped, "rejected_excluded": rejected,
+              "missing_files": missing}
+    logger.info("Library update: %s", result)
+    return result
 
 
 # --- Calibration frames --------------------------------------------------------
