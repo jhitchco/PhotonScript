@@ -37,21 +37,9 @@ from photonscript.scheduler.nina_sequence_json import generate_nina_json
 logger = logging.getLogger(__name__)
 
 
-def _repo_version() -> str:
-    """Short commit + date of the running checkout, for the nav bar."""
-    import subprocess
-    try:
-        root = Path(__file__).resolve().parents[2]
-        out = subprocess.run(
-            ["git", "log", "-1", "--format=%h · %cd",
-             "--date=format:%b %d %H:%M"],
-            cwd=root, capture_output=True, text=True, timeout=5)
-        return out.stdout.strip() or "version unknown"
-    except Exception:  # noqa: BLE001
-        return "version unknown"
+from photonscript.shared.version import repo_version
 
-
-VERSION = _repo_version()
+VERSION = repo_version()
 
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
