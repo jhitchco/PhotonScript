@@ -35,6 +35,7 @@
         .rej { color:#f87171; }
         .ok { color:#4ade80; }
         .warn { color:#eab308; }
+        #lightbox[hidden] { display:none; }
         #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
                     display:flex; flex-direction:column; align-items:center;
                     justify-content:center; z-index:50; gap:.6rem; }
@@ -345,7 +346,9 @@
             '/thumb?file=' + encodeURIComponent(s.file) + '&w=1400' +
             (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
         document.getElementById('lbCaption').innerHTML =
-            '<b>' + (s.time || '').slice(11, 19) + '</b> · ' + s.filter + ' ' +
+            '<b>' + currentDate + '</b> · ' +
+            ((s.target && s.target !== '?') ? s.target + ' · ' : '') +
+            '<b>' + (s.time || '').slice(11, 19) + ' UTC</b> · ' + s.filter + ' ' +
             Math.round(s.exp_s) + 's · HFR ' + (s.hfr ?? '–') + ' · ★' +
             (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
             ' · <span style="color:' + (s.passed_qa ? '#4ade80' : '#f87171') + '">' +
