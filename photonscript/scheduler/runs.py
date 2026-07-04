@@ -143,29 +143,37 @@ def _measure(binned, config) -> dict:
         # global rms underestimates noise inside nebulosity, which produced
         # tens of thousands of false "stars" and sub-pixel HFRs.
         err = np.maximum(bkg.rms(), max(float(bkg.globalrms) * 0.2, 1e-3))
+        # Detect on a 3x3 median-filtered image: single-pixel hot pixels
+        # (thousands on a 300s uncalibrated CMOS frame) vanish, while real
+        # stars — heavily oversampled at this image scale — survive. This
+        # is what produced 9700 "stars" at HFR 0.84 and the minute-long
+        # segmentation of hot-pixel storms.
+        from scipy import ndimage
+        det_img = ndimage.median_filter(data_sub, size=3)
         try:
             sep.set_extract_pixstack(1_000_000)
         except Exception:  # noqa: BLE001
             pass
         objs = np.empty(0)
-        for thresh in (5.0, 8.0, 12.0, 20.0):
+        for thresh in (5.0, 12.0):
             try:
-                objs = sep.extract(data_sub, thresh, err=err, minarea=6,
+                objs = sep.extract(det_img, thresh, err=err, minarea=6,
                                    clean=True)
             except Exception:  # noqa: BLE001  (pixel buffer overflow etc.)
                 continue
-            if len(objs) <= 4000:  # plausible star count; else escalate
+            if len(objs) <= 6000:  # plausible; else escalate once
                 break
+        del det_img
         hfr = ecc = None
         nstars = int(len(objs))
         if len(objs):
-            # Reject hot pixels / cosmic hits: real stars at this image
-            # scale are at least ~0.6 binned px semi-major axis.
             good = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
             nstars = int(len(good))
             if len(good):
                 top = good[np.argsort(good["flux"])[::-1][:500]]
                 try:
+                    # Radii measured on the ORIGINAL image at the positions
+                    # found on the filtered one
                     r, _ = sep.flux_radius(data_sub, top["x"], top["y"],
                                            6.0 * top["a"], 0.5)
                     r = r[np.isfinite(r) & (r > 0.2) & (r < 15)]
@@ -280,16 +288,26 @@ def start_backfill(config, date: str) -> None:
 
     st = _backfill_state.setdefault(date, {})
     if st.get("running"):
+        logger.info("Backfill for %s already running (%s) — not starting "
+                    "another", date, st.get("current") or "between frames")
         return
+    st["running"] = True  # set before the thread spawns: closes the window
+    root = Path(config.image_watch_dir) / date
+    if not root.exists():
+        st["running"] = False
+        logger.warning("Backfill for %s: image folder %s does not exist",
+                       date, root)
+        return
+    n_total = len(_light_files(root))
+    n_done = len(_load_subs(config, date))
+    logger.info("Backfill starting for %s: %d light frames, %d already "
+                "graded, %d to do", date, n_total, n_done, n_total - n_done)
 
     def _work():
         import time
-        st.update(running=True, current=None, rate=None, last_error=None)
+        st.update(current=None, rate=None, last_error=None)
         started, done = time.monotonic(), 0
         try:
-            root = Path(config.image_watch_dir) / date
-            if not root.exists():
-                return
             existing = {r.get("file") for r in _load_subs(config, date)}
             plan_names = _plan_target_names(config, date)
             for f in _light_files(root):
@@ -314,6 +332,8 @@ def start_backfill(config, date: str) -> None:
                 done += 1
                 st["rate"] = round(done / max(time.monotonic() - started,
                                               0.001), 2)
+            logger.info("Backfill finished for %s: %d frames graded in "
+                        "%.0fs", date, done, time.monotonic() - started)
             try:  # keep the accepted-lights library current
                 build_library(config, date)
             except Exception as e:  # noqa: BLE001

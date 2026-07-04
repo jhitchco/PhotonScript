@@ -36,6 +36,23 @@ from photonscript.scheduler.nina_sequence_json import generate_nina_json
 
 logger = logging.getLogger(__name__)
 
+
+def _repo_version() -> str:
+    """Short commit + date of the running checkout, for the nav bar."""
+    import subprocess
+    try:
+        root = Path(__file__).resolve().parents[2]
+        out = subprocess.run(
+            ["git", "log", "-1", "--format=%h · %cd",
+             "--date=format:%b %d %H:%M"],
+            cwd=root, capture_output=True, text=True, timeout=5)
+        return out.stdout.strip() or "version unknown"
+    except Exception:  # noqa: BLE001
+        return "version unknown"
+
+
+VERSION = _repo_version()
+
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -155,7 +172,7 @@ async def dashboard(request: Request):
     seasonal = get_seasonal_targets(month)
     ranked = rank_targets_for_night(seasonal, obs, now)
 
-    return templates.TemplateResponse(request, "dashboard.html", {
+    return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,
         "telescope_state": _telescope_state,
         "projects": list(_projects.values()),
@@ -427,7 +444,7 @@ def _mask_secret(value: str) -> str:
 
 @app.get("/system", response_class=HTMLResponse)
 async def system_page(request: Request):
-    return templates.TemplateResponse(request, "system.html", {
+    return templates.TemplateResponse(request, "system.html", {"version": VERSION, 
         "observatory": get_config().get_observatory(),
     })
 
@@ -905,6 +922,7 @@ async def api_sun():
 async def runs_page(request: Request):
     return templates.TemplateResponse(request, "runs.html", {
         "observatory": get_config().get_observatory(),
+        "version": VERSION,
     })
 
 
@@ -926,6 +944,9 @@ async def api_run_regrade(date: str):
     algorithm fix or installing sep)."""
     from photonscript.scheduler.runs import runs_dir, start_backfill
     p = runs_dir(get_config()) / f"{date}_subs.jsonl"
+    n = len(p.read_text(encoding="utf-8").splitlines()) if p.exists() else 0
+    logger.info("Re-grade requested for %s: deleting %d existing grades",
+                date, n)
     if p.exists():
         p.unlink()
     # Annotated thumbnails embed star detections — invalidate them too
