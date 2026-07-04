@@ -14,9 +14,10 @@ def _config(tmp_path):
 def test_allocation_narrowband_budget_math(tmp_path):
     plans = allocate_exposures("narrowband", 10.0, _config(tmp_path))
     by = {p.filter_type.value: p for p in plans}
-    assert by["Ha"].count == 42        # 10h * 35% / 300s
-    assert by["OIII"].count == 36
-    assert by["SII"].count == 42       # SII gets equal-or-more (faintest line)
+    assert by["Ha"].exposure_seconds == 600   # first-night data: 300s was RN-limited
+    assert by["Ha"].count == 21               # 10h * 35% / 600s
+    assert by["OIII"].count == 18
+    assert by["SII"].count == 21              # SII gets equal-or-more (faintest line)
     total_h = sum(p.exposure_seconds * p.count for p in plans) / 3600
     assert abs(total_h - 10.0) < 0.2
 
@@ -67,8 +68,8 @@ def test_custom_mix_reallocates(tmp_path):
     proj = store.add_from_target(t, budget_hours=10.0)
     updated = store.update(proj.id, filter_mix={"Ha": 25, "OIII": 25, "SII": 50})
     by = {p.filter_type.value: p.count for p in updated.exposure_plans}
-    assert by["SII"] == 60          # 10h * 50% / 300s
-    assert by["Ha"] == by["OIII"] == 30
+    assert by["SII"] == 30          # 10h * 50% / 600s
+    assert by["Ha"] == by["OIII"] == 15
     assert updated.filter_mix == {"Ha": 25.0, "OIII": 25.0, "SII": 50.0}
 
 

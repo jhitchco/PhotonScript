@@ -63,7 +63,9 @@
             <table class="runs" id="pvaTable"></table>
             <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
             <div id="phases" class="bd"></div>
-            <h2 style="margin-top:1.2rem;">Subs</h2>
+            <h2 style="margin-top:1.2rem;">Subs
+                <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
+                <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
             <div class="thumbs" id="thumbStrip"></div>
             <table class="runs" id="subTable"></table>
         </section>
@@ -139,7 +141,8 @@
         document.getElementById('thumbStrip').innerHTML = subs
             .filter((s, i) => i % step === 0)
             .map(s => '<figure><img loading="lazy" src="/api/runs/' + date +
-                '/thumb?file=' + encodeURIComponent(s.file) + '&w=264">' +
+                '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
+                (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
                 '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
                 Math.round(s.exp_s) + 's' + (s.passed_qa ? '' : ' <span class="rej">✗</span>') +
                 '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
@@ -155,6 +158,8 @@
                 '</td><td class="' + (s.passed_qa ? 'ok' : 'rej') + '">' +
                 (s.passed_qa ? 'pass' : (s.reason || 'reject')) + '</td></tr>').join('');
     }
+    document.getElementById('annotateToggle').addEventListener('change',
+        () => { if (currentDate) loadDetail(currentDate); });
     loadNights();
     </script>
 </body>

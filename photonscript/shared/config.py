@@ -52,6 +52,9 @@ class PhotonScriptConfig(BaseSettings):
     camera_setpoint_c: float = 0.0
     cooling_tolerance_c: float = 1.0
     guided_default: bool = False  # CEM70G absolute encoders: unguided is the default
+    nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
+                                  # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
+    bb_exposure_s: float = 180.0  # broadband subs
 
     # --- Supervisor escalation ---
     pushover_user_key: str = ""

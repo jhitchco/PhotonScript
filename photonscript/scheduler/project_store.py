@@ -26,8 +26,10 @@ from photonscript.shared.models import (CelestialTarget, ExposurePlan,
 
 logger = logging.getLogger(__name__)
 
-NARROWBAND_MIX = [(FilterType.HA, 0.35, 300), (FilterType.OIII, 0.30, 300),
-                  (FilterType.SII, 0.35, 300)]
+# Exposure seconds come from config (nb_exposure_s / bb_exposure_s); the
+# numbers here are fallbacks only.
+NARROWBAND_MIX = [(FilterType.HA, 0.35, 600), (FilterType.OIII, 0.30, 600),
+                  (FilterType.SII, 0.35, 600)]
 BROADBAND_MIX = [(FilterType.LUMINANCE, 0.50, 180), (FilterType.RED, 1 / 6, 180),
                  (FilterType.GREEN, 1 / 6, 180), (FilterType.BLUE, 1 / 6, 180)]
 
@@ -55,8 +57,11 @@ def allocate_exposures(kind: str, budget_hours: float, config,
     base = NARROWBAND_MIX if kind == "narrowband" else BROADBAND_MIX
     if custom_mix:
         total = sum(v for v in custom_mix.values() if v and v > 0) or 1
-        exp_by_filter = {f.value: e for f, _, e in base}
-        mix = [(FilterType(fv), pct / total, exp_by_filter.get(fv, 300))
+        nb = {"Ha", "OIII", "SII"}
+        def _exp(fv):
+            return (getattr(config, "nb_exposure_s", 600) if fv in nb
+                    else getattr(config, "bb_exposure_s", 180))
+        mix = [(FilterType(fv), pct / total, _exp(fv))
                for fv, pct in custom_mix.items() if pct and pct > 0]
     else:
         mix = base

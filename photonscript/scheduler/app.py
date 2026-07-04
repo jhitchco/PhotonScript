@@ -396,6 +396,8 @@ _CONFIG_FIELDS = [
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
     ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
+    ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
+    ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
     ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
     ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
     ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
@@ -905,10 +907,12 @@ async def api_run_regrade(date: str):
 
 
 @app.get("/api/runs/{date}/thumb")
-async def api_run_thumb(date: str, file: str, w: int = 360):
+async def api_run_thumb(date: str, file: str, w: int = 360,
+                        annotate: bool = False):
     from fastapi.responses import FileResponse
     from photonscript.scheduler.runs import thumbnail
-    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 800))
+    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 800),
+                  annotate=annotate)
     if p is None:
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
     return FileResponse(p, media_type="image/png")
@@ -922,3 +926,37 @@ async def api_run_bundle(date: str):
     p = build_bundle(get_config(), date)
     return FileResponse(p, media_type="application/zip",
                         filename=f"night_bundle_{date}.zip")
+
+
+@app.get("/api/scope")
+async def api_scope():
+    """Is the scope home safe? Mount park/tracking + camera cooler state."""
+    import httpx
+    base = get_config().nina_base_url.rstrip("/")
+    out = {"mount": None, "camera": None}
+    async with httpx.AsyncClient(timeout=8) as client:
+        for key, path in (("mount", "/equipment/mount/info"),
+                          ("camera", "/equipment/camera/info")):
+            try:
+                r = await client.get(base + path)
+                p = r.json().get("Response", {})
+                out[key] = p
+            except Exception:  # noqa: BLE001
+                pass
+    mount, cam = out["mount"] or {}, out["camera"] or {}
+    parked = mount.get("AtPark", mount.get("AtHome"))
+    tracking = mount.get("TrackingEnabled", mount.get("Tracking"))
+    temp = cam.get("Temperature")
+    cooler = cam.get("CoolerOn")
+    if not mount:
+        status, color = "NINA UNREACHABLE", "gray"
+    elif parked and not cooler:
+        status, color = "PARKED & WARM — home safe", "green"
+    elif parked:
+        status, color = "PARKED (cooler still on)", "yellow"
+    elif tracking:
+        status, color = "TRACKING — scope active", "blue"
+    else:
+        status, color = "UNPARKED, not tracking", "yellow"
+    return {"status": status, "color": color, "parked": parked,
+            "tracking": tracking, "camera_temp": temp, "cooler_on": cooler}

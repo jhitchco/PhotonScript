@@ -322,18 +322,20 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
 
 # --- Thumbnails ---------------------------------------------------------------
 
-def thumbnail(config, date: str, rel_file: str, width: int = 360) -> Path | None:
-    """Stretched PNG thumbnail for a sub, generated once and cached."""
+def thumbnail(config, date: str, rel_file: str, width: int = 360,
+              annotate: bool = False) -> Path | None:
+    """Stretched PNG thumbnail; optionally with star-detection circles."""
     import numpy as np
     from astropy.io import fits as _fits
-    from PIL import Image
+    from PIL import Image, ImageDraw
 
     src = Path(config.image_watch_dir) / date / rel_file
     if not src.exists() or ".." in rel_file:
         return None
     out_dir = Path(config.data_dir) / "thumbs" / date
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / (rel_file.replace("\\", "_").replace("/", "_") + ".png")
+    stem = rel_file.replace("\\", "_").replace("/", "_")
+    out = out_dir / (stem + (".ann.png" if annotate else ".png"))
     if out.exists():
         return out
     try:
@@ -341,8 +343,20 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360) -> Path | None
             data = hdul[0].data.astype(np.float32)
         lo, hi = np.percentile(data, (0.5, 99.7))
         stretched = np.clip((data - lo) / max(hi - lo, 1e-3), 0, 1)
-        stretched = np.sqrt(stretched)  # gentle nonlinear stretch
-        img = Image.fromarray((stretched * 255).astype(np.uint8), mode="L")
+        stretched = np.sqrt(stretched)
+        img = Image.fromarray((stretched * 255).astype(np.uint8),
+                              mode="L").convert("RGB")
+        if annotate:
+            from photonscript.telescope_agent.image_validator import \
+                _detect_stars, _estimate_background_and_noise
+            bg, noise = _estimate_background_and_noise(data[::2, ::2])
+            stars = _detect_stars(data.astype(np.float64), bg, noise)
+            draw = ImageDraw.Draw(img)
+            for s in stars[:200]:
+                x, y = s["x"], s["y"]
+                r0 = max(6, s.get("hfr", 4) * 2)
+                draw.ellipse([x - r0, y - r0, x + r0, y + r0],
+                             outline=(248, 113, 113), width=3)
         h = int(img.height * width / img.width)
         img.resize((width, h)).save(out)
         return out
