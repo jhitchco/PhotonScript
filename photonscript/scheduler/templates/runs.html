@@ -258,8 +258,11 @@
                 s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
                 's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
-                '</td><td class="' + (s.passed_qa ? 'ok' : 'rej') + '">' +
-                (s.passed_qa ? 'pass' : (s.reason || 'reject')) + '</td></tr>').join('');
+                '</td><td class="' + (s.passed_qa ? 'ok' : 'rej') + '" ' +
+                'style="cursor:pointer;" title="click to flip pass/reject (manual override)" ' +
+                'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\', ' + !s.passed_qa + ')">' +
+                (s.passed_qa ? 'pass' : (s.reason || 'reject')) +
+                (s.manual_qa ? ' ✋' : '') + '</td></tr>').join('');
     }
     function fmtEta(s) {
         if (s == null) return '';
@@ -300,6 +303,12 @@
             } catch (e) { /* transient — keep polling */ }
             pollBackfill(date);
         }, 2500);
+    }
+    async function toggleQa(fileEnc, passed) {
+        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file: decodeURIComponent(fileEnc), passed: passed})});
+        loadDetail(currentDate);
     }
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);
     loadNights();

@@ -186,8 +186,27 @@ def _measure(binned, config) -> dict:
                 e = e[np.isfinite(e)]
                 if len(e):
                     ecc = round(float(np.median(e)), 3)
+        # Tracking-jump detector: a mount jump doubles every star — two
+        # ROUND images per star, so ecc/HFR barely move. Signature: many
+        # stars have a nearest neighbor at the SAME offset vector.
+        doubled_frac = 0.0
+        if len(objs) and nstars >= 20:
+            try:
+                from scipy.spatial import cKDTree
+                good_all = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
+                pts = np.column_stack([good_all["x"], good_all["y"]])[:400]
+                dist, idx = cKDTree(pts).query(pts, k=2)
+                vec = pts[idx[:, 1]] - pts
+                close = dist[:, 1] < 25  # binned px
+                if close.sum() >= 10:
+                    v = np.round(np.abs(vec[close]) / 1.5)  # 1.5px bins, sign-folded
+                    _, counts = np.unique(v, axis=0, return_counts=True)
+                    doubled_frac = float(counts.max() / len(pts))
+            except Exception:  # noqa: BLE001
+                pass
         del data_sub, data, err
         return {"stars": nstars, "hfr": hfr, "ecc": ecc,
+                "doubled_frac": round(doubled_frac, 2),
                 "background": round(float(bkg.globalback), 1),
                 "noise": round(float(bkg.globalrms), 2),
                 "graded_by": "sep-binned"}
@@ -241,7 +260,16 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
         m = _measure(binned, config)
         del binned
     gc.collect()
-    passed = m["stars"] >= 5
+    reasons = []
+    if m["stars"] < 5:
+        reasons.append(f"only {m['stars']} stars")
+    ecc_max = float(getattr(config, "quality_eccentricity_max", 0.6))
+    if m["ecc"] is not None and m["ecc"] > ecc_max:
+        reasons.append(f"elongated stars (ecc {m['ecc']} > {ecc_max:g})")
+    if m.get("doubled_frac", 0) >= 0.25:
+        reasons.append(f"tracking jump: {round(m['doubled_frac']*100)}% of "
+                       "stars doubled at a consistent offset")
+    passed = not reasons
     hfr = m["hfr"]
     return {
         "time": hdr.get("DATE-OBS", ""),
@@ -254,8 +282,9 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
         "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
         "stars": m["stars"], "ecc": m["ecc"],
         "background": m["background"],
+        "doubled_frac": m.get("doubled_frac"),
         "passed_qa": passed,
-        "reason": "" if passed else f"only {m['stars']} stars",
+        "reason": "; ".join(reasons),
         "graded_by": m["graded_by"],
     }
 
@@ -334,6 +363,13 @@ def start_backfill(config, date: str) -> None:
                                               0.001), 2)
             logger.info("Backfill finished for %s: %d frames graded in "
                         "%.0fs", date, done, time.monotonic() - started)
+            try:
+                n_out = flag_hfr_outliers(config, date)
+                if n_out:
+                    logger.info("HFR outlier pass for %s: %d subs flagged",
+                                date, n_out)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Outlier pass failed for %s: %s", date, e)
             try:  # keep the accepted-lights library current
                 build_library(config, date)
             except Exception as e:  # noqa: BLE001
@@ -344,6 +380,65 @@ def start_backfill(config, date: str) -> None:
 
     threading.Thread(target=_work, daemon=True,
                      name=f"backfill-{date}").start()
+
+
+def _rewrite_subs(config, date: str, records: list[dict]) -> None:
+    p = runs_dir(config) / f"{date}_subs.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in records),
+                 encoding="utf-8")
+
+
+def flag_hfr_outliers(config, date: str, factor: float = 1.4) -> int:
+    """Post-pass: reject subs whose HFR is far above the night's per-filter
+    median — soft/trailed frames that pass absolute checks. Never
+    un-rejects, never overrides a manual verdict."""
+    subs = _load_subs(config, date)
+    by_filter: dict[str, list[float]] = {}
+    for s_ in subs:
+        if s_.get("hfr"):
+            by_filter.setdefault(s_.get("filter", "?"), []).append(s_["hfr"])
+    med = {f: sorted(v)[len(v) // 2] for f, v in by_filter.items()
+           if len(v) >= 5}
+    n = 0
+    for s_ in subs:
+        if not s_.get("passed_qa") or s_.get("manual_qa"):
+            continue
+        m_ = med.get(s_.get("filter", "?"))
+        if m_ and s_.get("hfr") and s_["hfr"] > m_ * factor:
+            s_["passed_qa"] = False
+            s_["reason"] = (f"HFR outlier: {s_['hfr']} vs night median "
+                            f"{m_} (x{factor:g} limit)")
+            n += 1
+    if n:
+        _rewrite_subs(config, date, subs)
+    return n
+
+
+def set_manual_qa(config, date: str, rel_file: str,
+                  passed: bool) -> dict | None:
+    """Human override for one sub; wins over every automatic pass."""
+    subs = _load_subs(config, date)
+    hit = None
+    for s_ in subs:
+        if s_.get("file") == rel_file:
+            s_["passed_qa"] = passed
+            s_["manual_qa"] = True
+            s_["reason"] = "" if passed else "rejected manually"
+            hit = s_
+    if hit is None:
+        return None
+    _rewrite_subs(config, date, subs)
+    try:  # keep the library consistent with the verdict
+        if passed:
+            build_library(config, date)
+        else:
+            src = Path(hit.get("abs_path") or "")
+            lib = library_root(config)
+            for f in lib.rglob(src.name) if src.name else []:
+                f.unlink(missing_ok=True)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("library update after manual QA failed: %s", e)
+    return hit
 
 
 _PHASE_PATTERNS = {
