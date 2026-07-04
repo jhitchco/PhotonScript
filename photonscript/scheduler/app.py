@@ -1115,12 +1115,72 @@ async def api_run_manual_qa(date: str, payload: dict = Body(...)):
     return hit
 
 
+@app.post("/api/runs/{date}/assign_target")
+async def api_run_assign_target(date: str, payload: dict = Body(...)):
+    """Set the target name on a night's unattributed ('?') subs — for old
+    sessions that predate plan snapshots and OBJECT headers."""
+    from photonscript.scheduler.runs import _load_subs, _rewrite_subs
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"detail": "name required"})
+    config = get_config()
+    subs = _load_subs(config, date)
+    n = 0
+    for s in subs:
+        if s.get("target") in ("?", "", None) or payload.get("force"):
+            s["target"] = name
+            n += 1
+    if n:
+        _rewrite_subs(config, date, subs)
+    logger.info("Assigned target '%s' to %d subs on %s", name, n, date)
+    return {"ok": True, "updated": n}
+
+
+@app.post("/api/projects2/recount")
+async def api_projects_recount():
+    """Rebuild per-filter accepted counts from every night's grading records
+    — pulls old-season history into goal progress."""
+    from photonscript.scheduler.runs import runs_dir, _load_subs
+    config = get_config()
+    store = get_store()
+    rev = config.reverse_filter_map()  # NINA name -> filter class
+    dates = sorted({f.name.split("_")[0]
+                    for f in runs_dir(config).glob("*_subs.jsonl")})
+    counts: dict[tuple, int] = {}
+    for d in dates:
+        for s in _load_subs(config, d):
+            if not s.get("passed_qa"):
+                continue
+            t = str(s.get("target", "")).strip().lower()
+            fclass = rev.get(str(s.get("filter", "")),
+                             str(s.get("filter", "")))
+            if t and t != "?":
+                counts[(t, fclass)] = counts.get((t, fclass), 0) + 1
+    changed = []
+    for p in store.projects.values():
+        tname = p.target.name.strip().lower()
+        touched = False
+        for e in p.exposure_plans:
+            n = counts.get((tname, e.filter_type.value), 0)
+            newv = min(n, e.count)
+            if newv != e.acquired:
+                e.acquired = newv
+                touched = True
+        if touched:
+            changed.append(p.target.name)
+    if changed:
+        store.save()
+    logger.info("Recount from history: %d nights scanned, updated %s",
+                len(dates), changed or "nothing")
+    return {"ok": True, "nights_scanned": len(dates), "updated": changed}
+
+
 @app.get("/api/runs/{date}/thumb")
 def api_run_thumb(date: str, file: str, w: int = 360,
                   annotate: bool = False):
     from fastapi.responses import FileResponse
     from photonscript.scheduler.runs import thumbnail
-    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 800),
+    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 1600),
                   annotate=annotate)
     if p is None:
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})

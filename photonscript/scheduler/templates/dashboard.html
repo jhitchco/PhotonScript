@@ -132,6 +132,7 @@
                     {% endfor %}
                 </datalist>
                 <button class="btn btn-secondary" id="addTargetBtn">Add</button>
+                <button class="btn btn-secondary" id="recountBtn" title="Rebuild accepted counts from every graded night on disk — pulls old-season history into goal progress">Recount from history</button>
             </div>
             <div id="projectManager" class="goals-grid"><p class="empty-state">Loading projects…</p></div>
             <div class="actions" style="margin-top:.9rem;">
@@ -570,6 +571,18 @@
         }
     }
     loadSync();
+    document.getElementById('recountBtn').onclick = async () => {
+        const b = document.getElementById('recountBtn');
+        b.disabled = true; b.textContent = 'Recounting…';
+        try {
+            const r = await (await fetch('/api/projects2/recount', {method: 'POST'})).json();
+            alert('Scanned ' + r.nights_scanned + ' nights.\nUpdated: ' +
+                  (r.updated.length ? r.updated.join(', ') : 'nothing changed') +
+                  '\n\nTip: old nights showing target \'?\' need a target assigned ' +
+                  'on the Imaging Runs page first.');
+        } finally { b.disabled = false; b.textContent = 'Recount from history'; }
+        loadProjects(); loadCampaign();
+    };
     async function loadRecentSubs() {
         try {
             const d = await (await fetch('/api/activity')).json();

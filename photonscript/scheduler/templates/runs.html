@@ -35,6 +35,11 @@
         .rej { color:#f87171; }
         .ok { color:#4ade80; }
         .warn { color:#eab308; }
+        #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
+                    display:flex; flex-direction:column; align-items:center;
+                    justify-content:center; z-index:50; gap:.6rem; }
+        #lightbox img { max-width:92vw; max-height:78vh; border-radius:8px; }
+        #lbBar { display:flex; gap:1rem; align-items:center; font-size:.85rem; }
         #backfillBox { margin-top:.8rem; }
         .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
                 overflow:hidden; margin:.3rem 0; }
@@ -94,6 +99,17 @@
             <table class="runs" id="subTable"></table>
         </section>
     </main>
+    <div id="lightbox" hidden>
+        <img id="lbImg" src="">
+        <div id="lbBar">
+            <button class="btn btn-secondary" onclick="lbNav(-1)">◀ prev</button>
+            <span id="lbCaption"></span>
+            <button class="btn btn-secondary" id="lbQaBtn"></button>
+            <button class="btn btn-secondary" onclick="lbNav(1)">next ▶</button>
+            <button class="btn btn-secondary" onclick="closeLb()">close (Esc)</button>
+        </div>
+        <div class="bd">← → navigate · X reject/accept · originals are never deleted — reject only excludes from the library</div>
+    </div>
     <script>
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
     let showAllThumbs = false;
@@ -169,8 +185,14 @@
         // Title: date + target names
         const names = [...new Set(d.subs.map(s => s.target).filter(t => t && t !== '?'))];
         if (!names.length && d.plan) d.plan.targets.forEach(t => names.push(t.name));
-        document.getElementById('nightTitle').textContent =
-            date + (names.length ? ' — ' + names.join(', ') : '');
+        const hasUnknown = d.subs.some(s => !s.target || s.target === '?');
+        document.getElementById('nightTitle').innerHTML =
+            date + (names.length ? ' — ' + names.join(', ') : '') +
+            (hasUnknown ? ' <input id="assignTarget" placeholder="target name for this night" ' +
+                'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.8rem;">' +
+                '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;" ' +
+                'onclick="assignTarget()">Assign</button>' : '');
         const sc = d.score;
         const el = document.getElementById('scoreTotal');
         el.textContent = sc.total;
@@ -238,8 +260,10 @@
             : (showAllThumbs && subs.length > 24
                ? 'showing all ' + subs.length +
                  ' · <a href="#" id="thumbAll">show fewer</a>' : '');
+        window._shownSubs = shown;
         document.getElementById('thumbStrip').innerHTML = shown
-            .map(s => '<figure><img loading="lazy" src="/api/runs/' + currentDate +
+            .map((s, i) => '<figure><img loading="lazy" style="cursor:zoom-in;" ' +
+                'onclick="openLb(' + i + ')" src="/api/runs/' + currentDate +
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
                 '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
@@ -304,6 +328,56 @@
             pollBackfill(date);
         }, 2500);
     }
+    async function assignTarget() {
+        const name = document.getElementById('assignTarget').value.trim();
+        if (!name) return;
+        await fetch('/api/runs/' + currentDate + '/assign_target', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name})});
+        loadDetail(currentDate);
+    }
+    let lbIdx = 0;
+    function openLb(i) {
+        lbIdx = i;
+        const s = window._shownSubs[i];
+        if (!s) return;
+        document.getElementById('lbImg').src = '/api/runs/' + currentDate +
+            '/thumb?file=' + encodeURIComponent(s.file) + '&w=1400' +
+            (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
+        document.getElementById('lbCaption').innerHTML =
+            '<b>' + (s.time || '').slice(11, 19) + '</b> · ' + s.filter + ' ' +
+            Math.round(s.exp_s) + 's · HFR ' + (s.hfr ?? '–') + ' · ★' +
+            (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
+            ' · <span style="color:' + (s.passed_qa ? '#4ade80' : '#f87171') + '">' +
+            (s.passed_qa ? 'pass' : (s.reason || 'reject')) + '</span>';
+        const btn = document.getElementById('lbQaBtn');
+        btn.textContent = s.passed_qa ? '✗ Reject (X)' : '✓ Accept (X)';
+        btn.onclick = () => lbToggle();
+        document.getElementById('lightbox').hidden = false;
+    }
+    function closeLb() { document.getElementById('lightbox').hidden = true; }
+    function lbNav(d) {
+        const n = window._shownSubs.length;
+        openLb(((lbIdx + d) % n + n) % n);
+    }
+    async function lbToggle() {
+        const s = window._shownSubs[lbIdx];
+        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file: s.file, passed: !s.passed_qa})});
+        s.passed_qa = !s.passed_qa;   // optimistic; full reload on close
+        openLb(lbIdx);
+    }
+    document.addEventListener('keydown', (e) => {
+        if (document.getElementById('lightbox').hidden) return;
+        if (e.key === 'Escape') { closeLb(); loadDetail(currentDate); }
+        if (e.key === 'ArrowLeft') lbNav(-1);
+        if (e.key === 'ArrowRight') lbNav(1);
+        if (e.key.toLowerCase() === 'x') lbToggle();
+    });
+    document.getElementById('lightbox').addEventListener('click', (e) => {
+        if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate); }
+    });
     async function toggleQa(fileEnc, passed) {
         await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
             headers: {'Content-Type': 'application/json'},
