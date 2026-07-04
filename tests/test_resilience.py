@@ -73,3 +73,23 @@ def test_record_accepted_sub_matches_and_saves(tmp_path):
     ha = next(p for p in reloaded.projects[proj.id].exposure_plans
               if p.filter_type.value == "Ha")
     assert ha.acquired == 1
+
+
+def test_night_plan_anchors_to_local_evening(monkeypatch):
+    """9 PM local = next-day UTC; the plan must still be TONIGHT's night."""
+    from datetime import datetime as real_dt
+    import photonscript.scheduler.night_plan as np_mod
+
+    class FakeDT(real_dt):
+        @classmethod
+        def utcnow(cls):
+            # 2026-07-04 03:10 UTC == 2026-07-03 21:10 MDT (evening, pre-dusk)
+            return real_dt(2026, 7, 4, 3, 10, 0)
+
+    monkeypatch.setattr(np_mod, "datetime", FakeDT)
+    plan = np_mod.build_night_plan(PhotonScriptConfig())
+    # Dusk must be within ~2 hours of 'now', i.e. tonight (04:07Z Jul 4),
+    # not tomorrow night (Jul 5)
+    dusk = real_dt.fromisoformat(plan["dusk_utc"].rstrip("Z"))
+    assert (dusk - FakeDT.utcnow()).total_seconds() < 3 * 3600
+    assert plan["night_of"] == "2026-07-04"

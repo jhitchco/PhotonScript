@@ -55,14 +55,18 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     now = datetime.utcnow()
     lead = preconfig_lead_min or getattr(config, "arm_preconfig_lead_min", 30)
 
-    tw = get_twilight_times(obs, now.replace(hour=0, minute=0, second=0,
-                                             microsecond=0))
+    # Anchor to the LOCAL date: after ~6 PM local, UTC has already rolled to
+    # tomorrow, and a UTC-date anchor plans the wrong night entirely.
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+    local_now = now + timedelta(hours=_tz_off(config, now))
+    base = datetime(local_now.year, local_now.month, local_now.day)
+
+    tw = get_twilight_times(obs, base)
     dusk, dawn = tw.get("astro_dark_start"), tw.get("astro_dark_end")
     if not dusk or not dawn:
         return {"error": "Could not compute darkness window"}
     if dawn < now:  # tonight's window already over; plan tomorrow
-        tw = get_twilight_times(obs, (now + timedelta(days=1)).replace(
-            hour=0, minute=0, second=0, microsecond=0))
+        tw = get_twilight_times(obs, base + timedelta(days=1))
         dusk, dawn = tw.get("astro_dark_start"), tw.get("astro_dark_end")
 
     preconfig = dusk - timedelta(minutes=lead)
