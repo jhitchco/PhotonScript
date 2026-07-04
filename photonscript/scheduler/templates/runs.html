@@ -243,7 +243,9 @@
         document.getElementById('backfillLabel').innerHTML =
             '<b>Re-grading:</b> ' + b.graded + '/' + (b.total_files || '?') +
             (b.current ? ' · <span style="opacity:.7">' +
-                b.current.split(/[\\/]/).pop() + '</span>' : '') +
+                b.current.split(/[\\/]/).pop() + '</span>' +
+                (b.current_s != null ? ' <span style="opacity:.5">(' +
+                    b.current_s + 's)</span>' : '') : '') +
             (b.rate ? ' · ' + b.rate + '/s · ' + fmtEta(b.eta_s) : '') +
             (b.last_error ? ' · <span class="rej">last error: ' +
                 b.last_error + '</span>' : '');
@@ -253,15 +255,18 @@
         clearTimeout(pollTimer);
         pollTimer = setTimeout(async () => {
             if (currentDate !== date) return;
-            const r = await fetch('/api/runs/' + date + '/backfill');
-            const b = await r.json();
-            if (b.running || b.pending > 0) {
-                showBackfill(b);
-                pollBackfill(date);
-            } else {
-                document.getElementById('backfillBox').hidden = true;
-                loadDetail(date);   // done: render final numbers
-            }
+            try {
+                const r = await fetch('/api/runs/' + date + '/backfill');
+                const b = await r.json();
+                if (b.running || b.pending > 0) {
+                    showBackfill(b);
+                } else {
+                    document.getElementById('backfillBox').hidden = true;
+                    loadDetail(date);   // done: render final numbers
+                    return;
+                }
+            } catch (e) { /* transient — keep polling */ }
+            pollBackfill(date);
         }, 2500);
     }
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);

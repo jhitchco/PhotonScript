@@ -915,7 +915,7 @@ async def api_runs():
 
 
 @app.get("/api/runs/{date}")
-async def api_run_detail(date: str, backfill: bool = True):
+def api_run_detail(date: str, backfill: bool = True):
     from photonscript.scheduler.runs import night_detail
     return night_detail(get_config(), date, backfill=backfill)
 
@@ -953,8 +953,8 @@ def api_library_rebuild(date: str = ""):
 
 
 @app.get("/api/runs/{date}/thumb")
-async def api_run_thumb(date: str, file: str, w: int = 360,
-                        annotate: bool = False):
+def api_run_thumb(date: str, file: str, w: int = 360,
+                  annotate: bool = False):
     from fastapi.responses import FileResponse
     from photonscript.scheduler.runs import thumbnail
     p = thumbnail(get_config(), date, file, width=min(max(w, 96), 800),
@@ -966,7 +966,7 @@ async def api_run_thumb(date: str, file: str, w: int = 360,
 
 
 @app.get("/api/runs/{date}/bundle")
-async def api_run_bundle(date: str):
+def api_run_bundle(date: str):
     """Download the full night bundle (report, logs, plan, subs, sequences)."""
     from fastapi.responses import FileResponse
     from photonscript.scheduler.runs import build_bundle

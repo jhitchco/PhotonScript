@@ -142,7 +142,7 @@ def _measure(binned, config) -> dict:
         # Local noise map, not the global scalar: on nebula frames the
         # global rms underestimates noise inside nebulosity, which produced
         # tens of thousands of false "stars" and sub-pixel HFRs.
-        err = bkg.rms()
+        err = np.maximum(bkg.rms(), max(float(bkg.globalrms) * 0.2, 1e-3))
         try:
             sep.set_extract_pixstack(1_000_000)
         except Exception:  # noqa: BLE001
@@ -262,10 +262,13 @@ def backfill_status(config, date: str) -> dict:
     st = _backfill_state.get(date, {})
     pending = max(0, total - logged)
     rate = st.get("rate")  # frames/s this run
+    import time
+    since = st.get("current_since")
     return {"running": st.get("running", False),
             "graded": logged, "total_files": total,
             "pending": pending,
             "current": st.get("current"),
+            "current_s": round(time.monotonic() - since) if since else None,
             "rate": rate,
             "eta_s": round(pending / rate) if (rate and pending) else None,
             "last_error": st.get("last_error")}
@@ -294,11 +297,17 @@ def start_backfill(config, date: str) -> None:
                 if rel in existing:
                     continue
                 st["current"] = rel
+                st["current_since"] = time.monotonic()
+                t0 = time.monotonic()
                 try:
                     record = _fast_grade(f, config, plan_names)
                     record["file"] = rel
                     record["abs_path"] = str(f)
                     append_sub_record(config, date, record)
+                    logger.info("Graded %s in %.1fs: HFR %s ecc %s stars %s",
+                                rel, time.monotonic() - t0,
+                                record.get("hfr"), record.get("ecc"),
+                                record.get("stars"))
                 except Exception as e:  # noqa: BLE001
                     st["last_error"] = f"{rel}: {e}"
                     logger.warning("Backfill grade failed for %s: %s", f, e)
