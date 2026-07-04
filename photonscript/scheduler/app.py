@@ -790,3 +790,79 @@ async def api_astrobin_mix(project_id: str):
         return JSONResponse(status_code=404, content={"detail": "not found"})
     suggester = AstroBinMixSuggester(get_config())
     return await suggester.suggest(proj.target.name, proj.target.catalog_id)
+
+
+_sun_cache: dict = {}
+
+
+@app.get("/api/sun")
+async def api_sun():
+    """Sun altitude now + tonight's solar curve with twilight thresholds."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, get_sun
+    from astropy.time import Time
+    from photonscript.shared.astronomy import get_earth_location
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+
+    config = get_config()
+    obs = config.get_observatory()
+    now = datetime.utcnow()
+    off = _tz_off(config, now)
+
+    cache_key = now.strftime("%Y-%m-%d-%H")  # refresh curve hourly
+    if cache_key not in _sun_cache:
+        noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+            - timedelta(hours=off) + timedelta(hours=12)
+        if noon_utc > now:
+            noon_utc -= timedelta(days=1)
+        times = Time(noon_utc) + np.arange(0, 24.01, 1 / 6) * u.hour  # 10-min grid
+        frame = AltAz(obstime=times, location=get_earth_location(obs))
+        alts = get_sun(times).transform_to(frame).alt.deg
+        _sun_cache.clear()
+        _sun_cache[cache_key] = {
+            "noon_utc": noon_utc,
+            "alts": [round(float(a), 1) for a in alts],
+        }
+    cached = _sun_cache[cache_key]
+    noon_utc, alts = cached["noon_utc"], cached["alts"]
+
+    # Current sun altitude via interpolation on the grid
+    frac_now = (now - noon_utc).total_seconds() / 86400
+    idx = min(int(frac_now * (len(alts) - 1)), len(alts) - 2)
+    sub = (frac_now * (len(alts) - 1)) - idx
+    alt_now = round(alts[idx] + (alts[idx + 1] - alts[idx]) * sub, 1)
+    setting = alts[idx + 1] < alts[idx]
+
+    # Next -18 crossing (descending = astro dusk; ascending = dawn already known)
+    minutes_to_dark = None
+    for i in range(idx, len(alts) - 1):
+        if alts[i] > -18 >= alts[i + 1]:
+            t_cross = noon_utc + timedelta(hours=(i + 1) / 6)
+            minutes_to_dark = max(0, round((t_cross - now).total_seconds() / 60))
+            break
+
+    def _local(frac):
+        dt = noon_utc + timedelta(hours=frac * 24)
+        return (dt + timedelta(hours=off)).strftime("%I:%M %p")
+
+    crossings = {}
+    labels = {0: ("sunset", "sunrise"), -6: ("civil_dusk", "civil_dawn"),
+              -12: ("naut_dusk", "naut_dawn"), -18: ("astro_dusk", "astro_dawn")}
+    for i in range(len(alts) - 1):
+        for th, (down, up) in labels.items():
+            if alts[i] > th >= alts[i + 1] and down not in crossings:
+                crossings[down] = {"frac": (i + 1) / (len(alts) - 1),
+                                   "local": _local((i + 1) / (len(alts) - 1))}
+            if alts[i] <= th < alts[i + 1] and up not in crossings:
+                crossings[up] = {"frac": (i + 1) / (len(alts) - 1),
+                                 "local": _local((i + 1) / (len(alts) - 1))}
+
+    return {
+        "alt_now": alt_now,
+        "setting": setting,
+        "minutes_to_astro_dark": minutes_to_dark,
+        "now_frac": max(0.0, min(1.0, frac_now)),
+        "alts": alts,
+        "crossings": crossings,
+    }

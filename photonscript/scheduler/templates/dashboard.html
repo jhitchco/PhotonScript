@@ -35,6 +35,7 @@
                 <span id="armState" style="font-weight:700;"></span>
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <div id="sunCard" style="margin-bottom:1rem;"></div>
             <div id="nightTimeline"></div>
         </section>
 
@@ -199,6 +200,89 @@
         btn.textContent = active ? 'Disarm' : 'Arm';
         btn.dataset.armed = active ? '1' : '0';
     }
+    function sunDiagramSVG(d) {
+        const W = 640, H = 150, PAD = 6;
+        const yMin = -25, yMax = 75;                       // altitude range shown
+        const y = a => PAD + (yMax - Math.max(yMin, Math.min(yMax, a))) /
+                       (yMax - yMin) * (H - 2 * PAD);
+        const x = f => f * W;
+        const n = d.alts.length;
+        // Twilight bands (below horizon)
+        const bands = [
+            [0,  -6,  '#1e293b', 'civil'],
+            [-6, -12, '#16223a', 'nautical'],
+            [-12,-18, '#101a30', 'astro twilight'],
+            [-18, yMin, '#0a1226', 'DARK'],
+        ];
+        let svg = '<svg width="100%" viewBox="0 0 ' + W + ' ' + H +
+                  '" style="background:#0b1220;border-radius:10px;">';
+        // day sky band
+        svg += '<rect x="0" y="0" width="' + W + '" height="' + y(0) +
+               '" fill="#13233f"/>';
+        for (const [top, bot, color, label] of bands) {
+            svg += '<rect x="0" y="' + y(top) + '" width="' + W + '" height="' +
+                   (y(bot) - y(top)) + '" fill="' + color + '"/>';
+            svg += '<text x="6" y="' + (y(top) + 11) + '" fill="#64748b" ' +
+                   'font-size="8">' + label + ' (' + top + '° to ' + bot + '°)</text>';
+        }
+        // threshold lines
+        for (const th of [0, -6, -12, -18])
+            svg += '<line x1="0" y1="' + y(th) + '" x2="' + W + '" y2="' + y(th) +
+                   '" stroke="#334155" stroke-width="' + (th === -18 ? 1.4 : 0.6) +
+                   '" ' + (th === -18 ? 'stroke-dasharray="none"' : 'stroke-dasharray="4,4"') + '/>';
+        // sun path
+        svg += '<polyline fill="none" stroke="#fbbf24" stroke-width="1.8" points="' +
+               d.alts.map((a, i) => x(i / (n - 1)) + ',' + y(a)).join(' ') + '"/>';
+        // crossing markers on the -18 line
+        for (const key of ['astro_dusk', 'astro_dawn']) {
+            const c = d.crossings[key];
+            if (!c) continue;
+            svg += '<circle cx="' + x(c.frac) + '" cy="' + y(-18) + '" r="3" fill="#7dd3fc"/>' +
+                   '<text x="' + x(c.frac) + '" y="' + (y(-18) + 14) +
+                   '" fill="#7dd3fc" font-size="9" text-anchor="middle">' + c.local + '</text>';
+        }
+        // the sun, now
+        const sx = x(d.now_frac), sy = y(d.alt_now);
+        svg += '<circle cx="' + sx + '" cy="' + sy + '" r="7" fill="#fbbf24" opacity=".25"/>' +
+               '<circle cx="' + sx + '" cy="' + sy + '" r="4" fill="#fde047"/>' +
+               '<line x1="' + sx + '" y1="0" x2="' + sx + '" y2="' + H +
+               '" stroke="#e2e8f0" stroke-dasharray="2,4" opacity=".45"/>';
+        svg += '</svg>';
+        return svg;
+    }
+    async function loadSun() {
+        try {
+            const r = await fetch('/api/sun');
+            const d = await r.json();
+            let status;
+            if (d.alt_now <= -18) {
+                status = '<span style="color:#4ade80;font-weight:700;">ASTRONOMICALLY DARK</span>' +
+                    (d.crossings.astro_dawn ? ' — until ' + d.crossings.astro_dawn.local : '');
+            } else if (d.minutes_to_astro_dark !== null) {
+                const h = Math.floor(d.minutes_to_astro_dark / 60),
+                      m = d.minutes_to_astro_dark % 60;
+                status = 'astro dark in <b style="color:#7dd3fc;">' +
+                    (h ? h + 'h ' : '') + m + 'm</b>' +
+                    (d.crossings.astro_dusk ? ' (' + d.crossings.astro_dusk.local + ')' : '');
+            } else {
+                status = 'rising — next dark is tomorrow night';
+            }
+            document.getElementById('sunCard').innerHTML =
+                '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:.4rem;">' +
+                '<span style="font-size:1.35rem;">☀️ <b>' + d.alt_now +
+                '°</b></span><span style="opacity:.6;font-size:.85rem;">' +
+                (d.setting ? 'setting' : 'rising') + '</span>' +
+                '<span style="font-size:.9rem;">' + status + '</span></div>' +
+                sunDiagramSVG(d) +
+                '<div style="font-size:.66rem;opacity:.45;margin-top:.2rem;">sun altitude, ' +
+                'noon → noon · solid line = −18° astronomical twilight</div>';
+        } catch (e) {
+            document.getElementById('sunCard').textContent = 'Sun data unavailable: ' + e;
+        }
+    }
+    loadSun();
+    setInterval(loadSun, 5 * 60 * 1000);   // sun moves ~1.25° per 5 min
+
     function twCard(label, value, hi) {
         return '<div style="text-align:center;min-width:96px;">' +
             '<div style="font-size:.62rem;letter-spacing:.08em;opacity:.5;text-transform:uppercase;">' +
