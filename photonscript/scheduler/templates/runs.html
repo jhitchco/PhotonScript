@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonScript - Imaging Runs</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        .night-chip { display:inline-block; padding:.4rem .8rem; border-radius:8px;
+                      background:rgba(255,255,255,.05); margin:0 .4rem .4rem 0;
+                      cursor:pointer; }
+        .night-chip.active { background:#1d4ed8; }
+        table.runs { width:100%; border-collapse:collapse; font-size:.87rem; }
+        table.runs th, table.runs td { padding:.35rem .6rem; text-align:right;
+            border-bottom:1px solid rgba(255,255,255,.07); }
+        table.runs th:first-child, table.runs td:first-child { text-align:left; }
+        .score-ring { font-size:2.6rem; font-weight:800; }
+        .bd { font-size:.78rem; opacity:.75; }
+        .thumbs { display:flex; gap:.5rem; overflow-x:auto; padding:.4rem 0; }
+        .thumbs figure { margin:0; text-align:center; }
+        .thumbs img { border-radius:6px; display:block; }
+        .thumbs figcaption { font-size:.62rem; opacity:.6; margin-top:.15rem; }
+        .rej { color:#f87171; }
+        .ok { color:#4ade80; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">Imaging Runs — plan vs. reality</span>
+            <span class="observatory-badge">{{ observatory.name }}</span>
+        </div>
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/system">System &amp; Config</a>
+        </div>
+    </header>
+    <main>
+        <section class="panel">
+            <h2>Nights</h2>
+            <div id="nightList">Loading…</div>
+        </section>
+        <section class="panel" style="margin-top:1.2rem;" id="detailPanel"
+                 hidden>
+            <div style="display:flex;gap:2.5rem;align-items:center;flex-wrap:wrap;">
+                <div style="text-align:center;">
+                    <div class="score-ring" id="scoreTotal">–</div>
+                    <div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;">NIGHT SCORE</div>
+                </div>
+                <div id="scoreBreakdown" class="bd"></div>
+                <div id="reportNumbers" class="bd"></div>
+            </div>
+            <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
+            <table class="runs" id="pvaTable"></table>
+            <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
+            <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Subs</h2>
+            <div class="thumbs" id="thumbStrip"></div>
+            <table class="runs" id="subTable"></table>
+        </section>
+    </main>
+    <script>
+    let currentDate = null;
+    async function loadNights() {
+        const r = await fetch('/api/runs');
+        const nights = await r.json();
+        const box = document.getElementById('nightList');
+        if (!nights.length) { box.textContent = 'No recorded nights yet.'; return; }
+        box.innerHTML = nights.map(n =>
+            '<span class="night-chip" data-date="' + n.date + '">' + n.date +
+            ' <span style="opacity:.6;font-size:.75rem;">' + n.subs_logged +
+            ' subs' + (n.has_plan ? ' · plan' : '') + '</span></span>').join('');
+        box.querySelectorAll('.night-chip').forEach(el =>
+            el.addEventListener('click', () => loadDetail(el.dataset.date)));
+        loadDetail(nights[0].date);
+    }
+    async function loadDetail(date) {
+        currentDate = date;
+        document.querySelectorAll('.night-chip').forEach(el =>
+            el.classList.toggle('active', el.dataset.date === date));
+        const panel = document.getElementById('detailPanel');
+        panel.hidden = false;
+        document.getElementById('scoreTotal').textContent = '…';
+        const r = await fetch('/api/runs/' + date);
+        const d = await r.json();
+        const sc = d.score;
+        const el = document.getElementById('scoreTotal');
+        el.textContent = sc.total;
+        el.style.color = sc.total >= 70 ? '#4ade80' : sc.total >= 40 ? '#eab308' : '#f87171';
+        document.getElementById('scoreBreakdown').innerHTML =
+            Object.entries(sc.breakdown).map(([k, v]) =>
+                k.replace(/_/g, ' ') + ': <b>' + v.value + '</b> (×' + v.weight + ')'
+            ).join('<br>');
+        const rep = d.report;
+        document.getElementById('reportNumbers').innerHTML =
+            'safe ' + rep.safe_hours.toFixed(1) + 'h · shutter ' +
+            rep.shutter_hours.toFixed(1) + 'h · integrating ' +
+            rep.integrating_hours.toFixed(1) + 'h<br>utilization ' +
+            rep.sky_utilization_pct + '% · efficiency ' + rep.photon_efficiency_pct + '%';
+        document.getElementById('pvaTable').innerHTML =
+            '<tr><th>Target</th><th>Filter</th><th>Planned</th><th>Attempted</th>' +
+            '<th>Accepted</th><th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
+            d.table.map(t => '<tr><td>' + t.target + '</td><td>' + t.filter +
+                '</td><td>' + t.planned + '</td><td>' + t.attempted + '</td><td class="' +
+                (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
+                '</td><td>' + (t.median_hfr ?? '–') + '</td><td>' + (t.median_ecc ?? '–') +
+                '</td><td>' + (t.median_background ?? '–') + '</td></tr>').join('');
+        document.getElementById('phases').innerHTML = Object.keys(d.phases).length
+            ? Object.entries(d.phases).map(([k, v]) =>
+                '<b>' + k + '</b>: ' + v.events + ' log events (' +
+                (v.first || '?').slice(11, 16) + ' → ' + (v.last || '?').slice(11, 16) + ')'
+              ).join(' · ')
+            : 'no phase data found in NINA log';
+        // Thumbnails: up to 24, evenly sampled
+        const subs = d.subs;
+        const step = Math.max(1, Math.ceil(subs.length / 24));
+        document.getElementById('thumbStrip').innerHTML = subs
+            .filter((s, i) => i % step === 0)
+            .map(s => '<figure><img loading="lazy" width="180" src="/api/runs/' + date +
+                '/thumb?file=' + encodeURIComponent(s.file) + '">' +
+                '<figcaption>' + s.filter + ' ' + Math.round(s.exp_s) + 's · HFR ' +
+                (s.hfr ?? '–') + (s.passed_qa ? '' : ' ✗') + '</figcaption></figure>')
+            .join('');
+        document.getElementById('subTable').innerHTML =
+            '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
+            '<th>HFR</th><th>Ecc</th><th>Stars</th><th>Bkg</th><th>QA</th></tr>' +
+            subs.map(s => '<tr><td>' + (s.time || '').slice(11, 19) + '</td><td>' +
+                s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
+                's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
+                '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
+                '</td><td class="' + (s.passed_qa ? 'ok' : 'rej') + '">' +
+                (s.passed_qa ? 'pass' : (s.reason || 'reject')) + '</td></tr>').join('');
+    }
+    loadNights();
+    </script>
+</body>
+</html>

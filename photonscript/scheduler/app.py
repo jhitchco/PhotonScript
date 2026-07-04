@@ -866,3 +866,36 @@ async def api_sun():
         "alts": alts,
         "crossings": crossings,
     }
+
+
+# ---------------------------------------------------------------------------
+# Imaging Runs: plan vs actual, night score, thumbnails
+# ---------------------------------------------------------------------------
+
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_page(request: Request):
+    return templates.TemplateResponse(request, "runs.html", {
+        "observatory": get_config().get_observatory(),
+    })
+
+
+@app.get("/api/runs")
+async def api_runs():
+    from photonscript.scheduler.runs import list_runs
+    return list_runs(get_config())
+
+
+@app.get("/api/runs/{date}")
+async def api_run_detail(date: str, backfill: bool = True):
+    from photonscript.scheduler.runs import night_detail
+    return night_detail(get_config(), date, backfill=backfill)
+
+
+@app.get("/api/runs/{date}/thumb")
+async def api_run_thumb(date: str, file: str):
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import thumbnail
+    p = thumbnail(get_config(), date, file)
+    if p is None:
+        return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
+    return FileResponse(p, media_type="image/png")

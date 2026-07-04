@@ -255,6 +255,12 @@ class Armer:
         out.write_text(content)
         self.sequence_path = out
         self._persist()
+        try:
+            from photonscript.scheduler.runs import save_plan_snapshot
+            save_plan_snapshot(self.config, self.plan["night_of"],
+                               self.plan, targets)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Plan snapshot failed: %s", e)
         return True
 
     async def _dispatch_and_start(self) -> bool:

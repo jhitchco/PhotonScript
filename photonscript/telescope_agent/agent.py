@@ -344,6 +344,29 @@ class TelescopeAgent:
         self.state.last_image = image
         self.state.current_filter = filter_type
 
+        # Persist per-sub record for the Imaging Runs page (night = local
+        # date folder NINA used, i.e. the parent date directory if present)
+        try:
+            from photonscript.scheduler.runs import append_sub_record
+            watch = Path(self.config.image_watch_dir)
+            rel = file_path.relative_to(watch)
+            night = rel.parts[0] if rel.parts and                 rel.parts[0][:2] == "20" else datetime.utcnow().strftime("%Y-%m-%d")
+            rel_in_night = str(Path(*rel.parts[1:])) if len(rel.parts) > 1                 else file_path.name
+            append_sub_record(self.config, night, {
+                "file": rel_in_night, "abs_path": str(file_path),
+                "time": datetime.utcnow().isoformat() + "Z",
+                "target": target_name, "filter": filter_type.value,
+                "exp_s": exposure_seconds,
+                "ccd_temp": self.state.camera_temp_c,
+                "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,
+                "stars": quality.star_count, "ecc": quality.eccentricity,
+                "background": quality.background_adu,
+                "passed_qa": quality.passed_qa,
+                "reason": quality.rejection_reason,
+            })
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Sub record append failed: %s", e)
+
         # Nanny: consecutive rejects mean something systemic (clouds, dew,
         # focus loss, tracking) — a single bad sub is just a bad sub.
         if quality.passed_qa:
