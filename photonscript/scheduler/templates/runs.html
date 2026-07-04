@@ -89,12 +89,14 @@
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
             <div id="filterChips"></div>
+            <div class="bd" id="thumbCount"></div>
             <div class="thumbs" id="thumbStrip"></div>
             <table class="runs" id="subTable"></table>
         </section>
     </main>
     <script>
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
+    let showAllThumbs = false;
     async function loadNights() {
         const r = await fetch('/api/runs');
         const nights = await r.json();
@@ -109,7 +111,7 @@
         loadDetail(nights[0].date);
     }
     async function loadDetail(date) {
-        currentDate = date; subFilter = 'ALL';
+        currentDate = date; subFilter = 'ALL'; showAllThumbs = false;
         document.querySelectorAll('.night-chip').forEach(el =>
             el.classList.toggle('active', el.dataset.date === date));
         const panel = document.getElementById('detailPanel');
@@ -209,9 +211,15 @@
             el.addEventListener('click', () => { subFilter = el.dataset.f; renderSubs(); }));
         const subs = subFilter === 'ALL' ? all
                      : all.filter(s => s.filter === subFilter);
-        const step = Math.max(1, Math.ceil(subs.length / 24));
-        document.getElementById('thumbStrip').innerHTML = subs
-            .filter((s, i) => i % step === 0)
+        const step = showAllThumbs ? 1 : Math.max(1, Math.ceil(subs.length / 24));
+        const shown = subs.filter((s, i) => i % step === 0);
+        document.getElementById('thumbCount').innerHTML = step > 1
+            ? 'showing ' + shown.length + ' of ' + subs.length +
+              ' · <a href="#" id="thumbAll">show all</a>'
+            : (showAllThumbs && subs.length > 24
+               ? 'showing all ' + subs.length +
+                 ' · <a href="#" id="thumbAll">show fewer</a>' : '');
+        document.getElementById('thumbStrip').innerHTML = shown
             .map(s => '<figure><img loading="lazy" src="/api/runs/' + currentDate +
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
@@ -220,6 +228,10 @@
                 '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
                 ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
             .join('');
+        const allLink = document.getElementById('thumbAll');
+        if (allLink) allLink.onclick = (e) => {
+            e.preventDefault(); showAllThumbs = !showAllThumbs; renderSubs();
+        };
         document.getElementById('subTable').innerHTML =
             '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
             '<th>HFR</th><th>Ecc</th><th>Stars</th><th>Bkg</th><th>QA</th></tr>' +
