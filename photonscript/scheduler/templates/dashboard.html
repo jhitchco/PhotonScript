@@ -140,6 +140,11 @@
                 <a href="/api/tonight" class="btn btn-secondary">View Plan JSON</a>
             </div>
         </section>
+        <section class="panel" style="grid-column:1 / -1;" id="campaignPanel">
+            <h2>Campaign <span class="bd">(14 nights, moon-aware — BB gets moon-free hours first)</span></h2>
+            <div id="campaignNights" style="display:flex;gap:.5rem;flex-wrap:wrap;"></div>
+            <div id="campaignGoals" class="bd" style="margin-top:.7rem;"></div>
+        </section>
     </main>
 
     <footer>
@@ -165,7 +170,11 @@
                 '<div style="font-size:.72rem;opacity:.75;">' + n.usable_hours + 'h / ' +
                 n.dark_hours + 'h</div>' +
                 (n.avg_cloud_pct !== null ? '<div style="font-size:.68rem;opacity:.5;">☁ ' +
-                n.avg_cloud_pct + '%</div>' : '') + '</div>').join('');
+                n.avg_cloud_pct + '%</div>' : '') +
+                (n.moon && n.moon.illum_pct != null
+                 ? '<div style="font-size:.68rem;opacity:.75;">🌙 ' + n.moon.illum_pct +
+                   '% · ' + n.moon.moon_free_h + 'h free · <b>' + n.moon.tag + '</b></div>'
+                 : '') + '</div>').join('');
             const staleNote = d.stale
                 ? '<div style="color:#eab308;font-size:.75rem;margin-bottom:.3rem;">⚠ showing cached forecast from ' +
                   d.fetched_at.slice(0, 16).replace('T', ' ') + 'Z (' + d.stale_reason + ')</div>'
@@ -582,6 +591,33 @@
     }
     loadRecentSubs();
     setInterval(loadRecentSubs, 15000);
+    async function loadCampaign() {
+        try {
+            const d = await (await fetch('/api/campaign')).json();
+            document.getElementById('campaignNights').innerHTML = d.nights.map(n => {
+                const m = n.moon || {};
+                const tagCol = m.tag === 'BB' ? '#4ade80' : m.tag === 'NB+OIII' ? '#7dd3fc' : '#eab308';
+                return '<div style="border:1px solid rgba(255,255,255,.12);border-radius:8px;' +
+                    'padding:.45rem .6rem;min-width:108px;font-size:.72rem;' +
+                    (n.frac_source === 'climatology' ? 'opacity:.65;' : '') + '">' +
+                    '<b>' + n.date.slice(5) + '</b> <span style="color:' + tagCol + ';font-weight:700;">' +
+                    (m.tag || '?') + '</span><br>' +
+                    '🌙 ' + (m.illum_pct ?? '?') + '% · ' + (m.moon_free_h ?? '?') + 'h free<br>' +
+                    '~' + Math.round(n.dark_h * n.usable_frac * 10) / 10 + 'h usable (' +
+                    (n.frac_source === 'forecast' ? 'fcst' : 'clim') + ')<br>' +
+                    n.assigned.map(a => '<span style="opacity:.85;">' + a.goal.split(' ')[0] +
+                        ' ' + a.kind + ' ' + a.hours + 'h</span>').join('<br>') +
+                    '</div>';
+            }).join('');
+            document.getElementById('campaignGoals').innerHTML = d.goals.map(g =>
+                '<b>' + g.name + '</b>: ' + g.hours_done + 'h / ' + g.goal_hours +
+                'h · NB ' + g.nb_remaining_h + 'h + BB ' + g.bb_remaining_h + 'h to go · ' +
+                (g.eta ? 'ETA ~<b>' + g.eta + '</b>' :
+                 '<span style="color:#eab308">not reachable in 14 nights</span>')
+            ).join('<br>') + '<br><span style="opacity:.5;">' + d.note + '</span>';
+        } catch (e) { /* scheduler warming up */ }
+    }
+    loadCampaign();
     function btn(id, patch, label) {
         return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
                'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';

@@ -170,6 +170,20 @@ async def get_forecast(config) -> dict:
             "astro_dark_end": tw.get("astro_dark_end"),
         })
 
+    def _moonize(nights):
+        from photonscript.scheduler.moon import night_moon
+        by_date = {w["date"]: w for w in windows}
+        for n in nights:
+            w = by_date.get(n["date"], {})
+            try:
+                n["moon"] = night_moon(config, n["date"],
+                                       w.get("astro_dark_start"),
+                                       w.get("astro_dark_end"))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("moon calc failed for %s: %s", n["date"], e)
+                n["moon"] = {"illum_pct": None, "moon_free_h": None, "tag": "?"}
+        return nights
+
     result = {
         "fetched_at": now.isoformat() + "Z",
         "source": "open-meteo.com",
@@ -178,7 +192,7 @@ async def get_forecast(config) -> dict:
                              f"{obs.latitude:.2f}/{obs.longitude:.2f}",
             "aaro_status": "https://status.astronomyacres.com/",
         },
-        "nights": score_nights(data["hourly"], windows, utc_offset),
+        "nights": _moonize(score_nights(data["hourly"], windows, utc_offset)),
     }
     try:
         cache = _cache_path(config)

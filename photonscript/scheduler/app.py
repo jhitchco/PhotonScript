@@ -962,6 +962,21 @@ async def api_run_regrade(date: str):
     return {"ok": True}
 
 
+@app.get("/api/campaign")
+async def api_campaign(days: int = 14):
+    """Moon-aware 14-night plan toward goal completion."""
+    from photonscript.scheduler.campaign import build_campaign
+    from photonscript.scheduler.forecast import get_forecast
+    config = get_config()
+    fc = None
+    try:
+        fc = await get_forecast(config)
+    except Exception:  # noqa: BLE001 — climatology-only campaign
+        pass
+    return build_campaign(config, get_store(), forecast=fc,
+                          days=min(max(days, 7), 28))
+
+
 @app.get("/api/activity")
 async def api_activity(limit: int = 8):
     """Newest graded subs for the current night (local evening date)."""
