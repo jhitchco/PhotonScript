@@ -102,13 +102,32 @@
         const nights = await r.json();
         const box = document.getElementById('nightList');
         if (!nights.length) { box.textContent = 'No recorded nights yet.'; return; }
-        box.innerHTML = nights.map(n =>
-            '<span class="night-chip" data-date="' + n.date + '">' + n.date +
-            ' <span style="opacity:.6;font-size:.75rem;">' + n.subs_logged +
-            ' subs</span></span>').join('');
+        const label = n => n.subs_logged ? n.subs_logged + ' subs'
+            : n.lights ? n.lights + ' ungraded'
+            : n.cal_frames ? n.cal_frames + ' cal only'
+            : 'empty';
+        const chip = n => '<span class="night-chip" data-date="' + n.date +
+            '">' + n.date + ' <span style="opacity:.6;font-size:.75rem;">' +
+            label(n) + '</span></span>';
+        const real = nights.filter(n => n.subs_logged || n.lights || n.has_plan);
+        const empty = nights.filter(n => !real.includes(n));
+        box.innerHTML = real.map(chip).join('') +
+            (empty.length ? '<a href="#" id="moreNights" class="bd" ' +
+                'style="display:block;margin-top:.4rem;">show ' + empty.length +
+                ' nights with no lights</a><div id="emptyNights" hidden>' +
+                empty.map(chip).join('') + '</div>' : '');
+        const more = document.getElementById('moreNights');
+        if (more) more.onclick = (e) => {
+            e.preventDefault();
+            const d = document.getElementById('emptyNights');
+            d.hidden = !d.hidden;
+            more.textContent = d.hidden
+                ? 'show ' + empty.length + ' nights with no lights'
+                : 'hide nights with no lights';
+        };
         box.querySelectorAll('.night-chip').forEach(el =>
             el.addEventListener('click', () => loadDetail(el.dataset.date)));
-        loadDetail(nights[0].date);
+        if (real.length) loadDetail(real[0].date);
     }
     async function loadDetail(date) {
         currentDate = date; subFilter = 'ALL'; showAllThumbs = false;

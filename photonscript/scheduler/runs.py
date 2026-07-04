@@ -416,7 +416,16 @@ def list_runs(config) -> list[dict]:
     out = []
     for d in sorted(dates, reverse=True):
         subs = _load_subs(config, d)
+        n_lights = n_cal = 0
+        night_root = fits_root / d
+        if night_root.exists():
+            for f in night_root.rglob("*.fits"):
+                if _is_calibration(f.relative_to(night_root).parts):
+                    n_cal += 1
+                else:
+                    n_lights += 1
         out.append({"date": d, "subs_logged": len(subs),
+                    "lights": n_lights, "cal_frames": n_cal,
                     "has_plan": (runs_dir(config) / f"{d}_plan.json").exists()})
     return out
 
