@@ -289,3 +289,46 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360) -> Path | None
     except Exception as e:  # noqa: BLE001
         logger.warning("Thumbnail failed for %s: %s", src, e)
         return None
+
+
+def build_bundle(config, date: str) -> Path:
+    """Package the night's evidence into one zip (shared by CLI and web)."""
+    import zipfile
+    from photonscript.scheduler.daily_report import build_daily_report
+
+    out = Path(config.data_dir) / f"night_bundle_{date}.zip"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        try:
+            z.writestr("report.txt", build_daily_report(config, date).to_text())
+        except Exception as e:  # noqa: BLE001
+            z.writestr("report.txt", f"report failed: {e}")
+        try:
+            z.writestr("night_detail.json",
+                       json.dumps(night_detail(config, date), indent=1,
+                                  default=str))
+        except Exception as e:  # noqa: BLE001
+            z.writestr("night_detail.json", f'{{"error": "{e}"}}')
+        for name in ("armer_state.json", "projects.json"):
+            p = Path(config.data_dir) / name
+            if p.exists():
+                z.write(p, name)
+        for suffix in ("_plan.json", "_subs.jsonl"):
+            p = runs_dir(config) / f"{date}{suffix}"
+            if p.exists():
+                z.write(p, f"runs/{p.name}")
+        seq_dir = Path.cwd() / "sequences"
+        if seq_dir.exists():
+            for f in sorted(seq_dir.glob("*.json"))[-3:]:
+                z.write(f, f"sequences/{f.name}")
+        import glob as _glob
+        logs = sorted(_glob.glob(str(Path(config.nina_logs_dir) / "*.log")))
+        if logs:
+            z.write(logs[-1], f"nina/{Path(logs[-1]).name}")
+        fits_root = Path(config.image_watch_dir) / date
+        if fits_root.exists():
+            listing = "\n".join(
+                f"{f.stat().st_size:>12}  {f.relative_to(fits_root)}"
+                for f in sorted(fits_root.rglob("*.fits")))
+            z.writestr("fits_inventory.txt", listing or "(no FITS files)")
+    return out

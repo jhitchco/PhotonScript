@@ -52,6 +52,9 @@
                 <div id="scoreBreakdown" class="bd"></div>
                 <div id="reportNumbers" class="bd"></div>
             </div>
+            <div style="margin-top:.8rem;">
+                <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
+            </div>
             <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
             <table class="runs" id="pvaTable"></table>
             <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
@@ -83,6 +86,7 @@
         const panel = document.getElementById('detailPanel');
         panel.hidden = false;
         document.getElementById('scoreTotal').textContent = '…';
+        document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
         const r = await fetch('/api/runs/' + date);
         const d = await r.json();
         const sc = d.score;

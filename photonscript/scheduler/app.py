@@ -899,3 +899,13 @@ async def api_run_thumb(date: str, file: str):
     if p is None:
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
     return FileResponse(p, media_type="image/png")
+
+
+@app.get("/api/runs/{date}/bundle")
+async def api_run_bundle(date: str):
+    """Download the full night bundle (report, logs, plan, subs, sequences)."""
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import build_bundle
+    p = build_bundle(get_config(), date)
+    return FileResponse(p, media_type="application/zip",
+                        filename=f"night_bundle_{date}.zip")
