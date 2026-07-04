@@ -50,6 +50,13 @@
     </nav>
 
     <main>
+        <section class="panel" style="margin-bottom:1.5rem;">
+            <h2>Software Update</h2>
+            <div class="bd" id="updInfo" style="margin:.4rem 0;">running: {{ version }}</div>
+            <button class="btn btn-secondary" id="updCheck">Check for updates</button>
+            <button class="btn btn-primary" id="updGo">Pull latest &amp; restart</button>
+            <div class="bd" id="updStatus" style="margin-top:.4rem;"></div>
+        </section>
         <section class="panel">
             <h2>Preflight Check</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system
@@ -75,6 +82,26 @@
     </main>
 
     <script>
+    document.getElementById('updCheck').onclick = async () => {
+        const el = document.getElementById('updInfo');
+        el.textContent = 'checking…';
+        const d = await (await fetch('/api/update/check')).json();
+        el.innerHTML = 'running: <b>' + d.running + '</b>' +
+            (d.error ? ' · check failed: ' + d.error
+             : d.behind ? ' · <span style="color:#eab308">' + d.behind +
+               ' commit(s) behind — latest: ' + d.remote + '</span>'
+             : ' · <span style="color:#4ade80">up to date</span>');
+    };
+    document.getElementById('updGo').onclick = async () => {
+        if (!confirm('Pull the latest code and restart PhotonScript?')) return;
+        const st = document.getElementById('updStatus');
+        const r = await fetch('/api/update', {method: 'POST'});
+        const d = await r.json();
+        if (!r.ok) { st.textContent = d.detail; return; }
+        st.textContent = 'Restarting… this page will come back in ~20 s.';
+        setTimeout(() => location.reload(), 20000);
+    };
+
     async function runPreflight() {
         const btn = document.getElementById('runPreflight');
         const st = document.getElementById('pfStatus');

@@ -958,6 +958,45 @@ async def api_run_regrade(date: str):
     return {"ok": True}
 
 
+@app.get("/api/update/check")
+def api_update_check():
+    """Is the running checkout behind its upstream? (git fetch + compare)."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    def _git(*args, timeout=10):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                              text=True, timeout=timeout).stdout.strip()
+    try:
+        subprocess.run(["git", "fetch", "--quiet"], cwd=root,
+                       capture_output=True, timeout=25)
+        behind = int(_git("rev-list", "--count", "HEAD..@{u}") or 0)
+        return {"running": VERSION, "behind": behind,
+                "remote": _git("log", "-1", "--format=%h · %s", "@{u}")}
+    except Exception as e:  # noqa: BLE001
+        return {"running": VERSION, "error": str(e)}
+
+
+@app.post("/api/update")
+async def api_update():
+    """Exit with code 42; the run-photonscript.ps1 wrapper pulls + restarts.
+
+    Refused while a sequence is running — never yank the code out from
+    under an imaging night.
+    """
+    st_name = str(get_armer().state or "").upper()
+    if st_name in ("RUNNING", "PAUSED_UNSAFE"):
+        return JSONResponse(status_code=409, content={
+            "detail": f"armer is {st_name} — refusing to restart mid-night. "
+                      "Stop the run first."})
+    logger.warning("Update requested via API — exiting 42 so the wrapper "
+                   "can git pull and restart")
+    import os as _os
+    import threading as _th
+    _th.Timer(0.8, lambda: _os._exit(42)).start()
+    return {"ok": True, "detail": "Restarting. If PhotonScript was not "
+            "started via deploy/run-photonscript.ps1 it will stay down."}
+
+
 @app.get("/api/runs/{date}/backfill")
 async def api_run_backfill_status(date: str):
     """Cheap progress poll for the re-grade bar (no log parsing)."""

@@ -4,6 +4,26 @@ Remote telescope orchestration platform. Four autonomous agents coordinate to pl
 
 Built for a shared Starlink-connected telescope in New Mexico, but configurable for any site.
 
+## One-command deploy
+
+On the **scope PC**, start PhotonScript through the wrapper (instead of `photonscript start`):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File C:\astro\PhotonScript\deploy\run-photonscript.ps1
+```
+
+From the **desktop**, after making changes:
+
+```powershell
+.\deploy\deploy.ps1 "what I changed"
+```
+
+This commits, pushes, and calls `POST /api/update` on the scope PC, which exits
+with code 42; the wrapper then `git pull`s and restarts in the same console.
+The nav-bar version stamp shows the commit each machine is running. Updates are
+refused while a sequence is RUNNING so a night is never interrupted. The System
+page has the same controls (`Check for updates` / `Pull latest & restart`).
+
 ## Architecture
 
 ```
