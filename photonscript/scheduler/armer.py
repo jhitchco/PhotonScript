@@ -48,7 +48,9 @@ NINA_PATHS = {
     "sequence_stop": ["/sequence/stop"],
     "safety": ["/equipment/safetymonitor/info"],
     "mount_park": ["/equipment/mount/park"],
-    "camera_warm": ["/equipment/camera/warm", "/equipment/camera/warm-up"],
+    "camera_warm": ["/equipment/camera/warm"],
+    "mount_connect": ["/equipment/mount/connect"],
+    "camera_connect": ["/equipment/camera/connect"],
 }
 
 
@@ -149,14 +151,28 @@ class Armer:
         return self.status()
 
     async def make_safe(self) -> str:
-        """Stop the sequence, warm the camera, park the mount. Returns report."""
+        """Stop the sequence, warm the camera, park the mount.
+
+        Works from any state: if a device is disconnected, connect it and
+        retry; if it stays disconnected that is benign (nothing to make
+        safe), reported as 'skipped' rather than FAILED.
+        """
         steps = []
-        for label, key in (("stop", "sequence_stop"),
-                           ("warm", "camera_warm"),
-                           ("park", "mount_park")):
+        ok = await self._nina("sequence_stop") is not None
+        steps.append(f"stop:{'ok' if ok else 'FAILED'}")
+        for label, key, connect_key in (
+                ("warm", "camera_warm", "camera_connect"),
+                ("park", "mount_park", "mount_connect")):
             ok = await self._nina(key) is not None
-            steps.append(f"{label}:{'ok' if ok else 'FAILED'}")
-        report = "make-safe " + " ".join(steps)
+            if not ok and "not connected" in (self.detail or "").lower():
+                # Try connecting the device, then retry once
+                if await self._nina(connect_key) is not None:
+                    ok = await self._nina(key) is not None
+                if not ok and "not connected" in (self.detail or "").lower():
+                    steps.append(f"{label}:skipped (not connected)")
+                    continue
+            steps.append(f"{label}:{'ok' if ok else f'FAILED ({self.detail})'}")
+        report = "make-safe " + " · ".join(steps)
         logger.warning(report)
         return report
 
