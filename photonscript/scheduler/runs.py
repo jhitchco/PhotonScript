@@ -73,42 +73,93 @@ def _load_subs(config, date: str) -> list[dict]:
     return out
 
 
-def _grade_missing_subs(config, date: str) -> list[dict]:
-    """Backfill: grade FITS from the night folder for nights before per-sub
-    logging existed (or after a PhotonScript outage). Cached to the jsonl."""
-    from photonscript.telescope_agent.image_validator import validate_image
-    from astropy.io import fits as _fits
+def _fast_grade(path: Path, config) -> dict:
+    """Quick per-sub metrics for backfill: 2x2-binned star detection.
 
+    ~10x faster than the full validator on 26 MP frames; good enough for
+    plan-vs-actual review. HFR/FWHM reported in native pixels.
+    """
+    import numpy as np
+    from astropy.io import fits as _fits
+    from scipy import ndimage
+
+    with _fits.open(path) as hdul:
+        hdr = hdul[0].header
+        data = hdul[0].data.astype(np.float32)
+    binned = (data[::2, ::2] + data[1::2, ::2]
+              + data[::2, 1::2] + data[1::2, 1::2]) / 4
+    sample = binned[::4, ::4]
+    background = float(np.median(sample))
+    noise = float(np.std(sample)) or 1.0
+    mask = binned > background + 5 * noise
+    labeled, n = ndimage.label(mask)
+    sizes = ndimage.sum(mask, labeled, range(1, min(n, 2000) + 1)) if n else []
+    stars = [s for s in np.atleast_1d(sizes) if s >= 3]
+    hfr = None
+    if stars:
+        med_area = float(np.median(stars))
+        hfr = round(2 * (med_area / 3.14159) ** 0.5 * 2, 2)  # binned->native px
+    passed = len(stars) >= 5
+    return {
+        "time": hdr.get("DATE-OBS", ""),
+        "target": hdr.get("OBJECT", "?"),
+        "filter": hdr.get("FILTER", "?"),
+        "exp_s": float(hdr.get("EXPTIME", 0)),
+        "ccd_temp": hdr.get("CCD-TEMP"),
+        "hfr": hfr,
+        "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
+        "stars": len(stars), "ecc": None,
+        "background": round(background, 1),
+        "passed_qa": passed,
+        "reason": "" if passed else f"only {len(stars)} stars",
+        "graded_by": "backfill-fast",
+    }
+
+
+_backfill_state: dict[str, dict] = {}
+
+
+def backfill_status(config, date: str) -> dict:
     root = Path(config.image_watch_dir) / date
-    if not root.exists():
-        return []
-    existing = {r.get("file") for r in _load_subs(config, date)}
-    added = []
-    for f in sorted(root.rglob("*.fits")):
-        rel = str(f.relative_to(root))
-        if rel in existing:
-            continue
+    total = len(list(root.rglob("*.fits"))) if root.exists() else 0
+    logged = len(_load_subs(config, date))
+    st = _backfill_state.get(date, {})
+    return {"running": st.get("running", False),
+            "graded": logged, "total_files": total,
+            "pending": max(0, total - logged)}
+
+
+def start_backfill(config, date: str) -> None:
+    """Grade missing FITS in a background thread, appending incrementally."""
+    import threading
+
+    st = _backfill_state.setdefault(date, {})
+    if st.get("running"):
+        return
+
+    def _work():
+        st["running"] = True
         try:
-            with _fits.open(f) as hdul:
-                hdr = hdul[0].header
-            q = validate_image(str(f), config)
-            record = {
-                "file": rel, "abs_path": str(f),
-                "time": hdr.get("DATE-OBS", ""),
-                "target": hdr.get("OBJECT", "?"),
-                "filter": hdr.get("FILTER", "?"),
-                "exp_s": float(hdr.get("EXPTIME", 0)),
-                "ccd_temp": hdr.get("CCD-TEMP"),
-                "hfr": q.hfr_pixels, "fwhm_arcsec": q.fwhm_arcsec,
-                "stars": q.star_count, "ecc": q.eccentricity,
-                "background": q.background_adu,
-                "passed_qa": q.passed_qa, "reason": q.rejection_reason,
-            }
-            append_sub_record(config, date, record)
-            added.append(record)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Backfill grade failed for %s: %s", f, e)
-    return added
+            root = Path(config.image_watch_dir) / date
+            if not root.exists():
+                return
+            existing = {r.get("file") for r in _load_subs(config, date)}
+            for f in sorted(root.rglob("*.fits")):
+                rel = str(f.relative_to(root))
+                if rel in existing:
+                    continue
+                try:
+                    record = _fast_grade(f, config)
+                    record["file"] = rel
+                    record["abs_path"] = str(f)
+                    append_sub_record(config, date, record)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Backfill grade failed for %s: %s", f, e)
+        finally:
+            st["running"] = False
+
+    threading.Thread(target=_work, daemon=True,
+                     name=f"backfill-{date}").start()
 
 
 _PHASE_PATTERNS = {
@@ -188,8 +239,10 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     plan = json.loads(plan_path.read_text(encoding="utf-8")) \
         if plan_path.exists() else None
 
-    if backfill:
-        _grade_missing_subs(config, date)
+    status = backfill_status(config, date)
+    if backfill and status["pending"] and not status["running"]:
+        start_backfill(config, date)
+        status = backfill_status(config, date)
     subs = _load_subs(config, date)
 
     # Plan vs actual per target/filter
@@ -257,6 +310,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         "subs": subs,
         "phases": _phase_stats(config, date),
         "score": score,
+        "backfill": status,
     }
 
 
@@ -305,7 +359,7 @@ def build_bundle(config, date: str) -> Path:
             z.writestr("report.txt", f"report failed: {e}")
         try:
             z.writestr("night_detail.json",
-                       json.dumps(night_detail(config, date), indent=1,
+                       json.dumps(night_detail(config, date, backfill=False), indent=1,
                                   default=str))
         except Exception as e:  # noqa: BLE001
             z.writestr("night_detail.json", f'{{"error": "{e}"}}')

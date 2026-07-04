@@ -92,4 +92,4 @@ def test_night_plan_anchors_to_local_evening(monkeypatch):
     # not tomorrow night (Jul 5)
     dusk = real_dt.fromisoformat(plan["dusk_utc"].rstrip("Z"))
     assert (dusk - FakeDT.utcnow()).total_seconds() < 3 * 3600
-    assert plan["night_of"] == "2026-07-04"
+    assert plan["night_of"] == "2026-07-03"  # local evening date

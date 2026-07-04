@@ -89,6 +89,13 @@
         document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
         const r = await fetch('/api/runs/' + date);
         const d = await r.json();
+        if (d.backfill && (d.backfill.running || d.backfill.pending > 0)) {
+            document.getElementById('scoreTotal').textContent =
+                d.backfill.graded + '/' + d.backfill.total_files;
+            document.getElementById('scoreBreakdown').innerHTML =
+                'grading subs in the background… page refreshes automatically';
+            setTimeout(() => { if (currentDate === date) loadDetail(date); }, 6000);
+        }
         const sc = d.score;
         const el = document.getElementById('scoreTotal');
         el.textContent = sc.total;

@@ -172,7 +172,8 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         cursor2 = end
 
     return {
-        "night_of": dusk.strftime("%Y-%m-%d"),
+        # NINA files the night under the LOCAL evening date — use the same
+        "night_of": (dusk + timedelta(hours=utc_off)).strftime("%Y-%m-%d"),
         "preconfig_utc": preconfig.isoformat() + "Z",
         "dusk_utc": dusk.isoformat() + "Z",
         "dawn_utc": dawn.isoformat() + "Z",
