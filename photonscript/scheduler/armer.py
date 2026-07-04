@@ -162,18 +162,29 @@ class Armer:
 
     # -- ninaAPI helpers ---------------------------------------------------------
 
-    async def _nina(self, key: str, **params):
+    async def _nina(self, key: str, method: str = "GET",
+                    json_body=None, **params):
         base = self.config.nina_base_url.rstrip("/")
         for path in NINA_PATHS[key]:
             try:
-                async with httpx.AsyncClient(timeout=20) as client:
-                    r = await client.get(base + path, params=params or None)
+                async with httpx.AsyncClient(timeout=30) as client:
+                    if method == "POST":
+                        r = await client.post(base + path, json=json_body,
+                                              params=params or None)
+                    else:
+                        r = await client.get(base + path, params=params or None)
                     if r.status_code == 404:
                         continue  # try next candidate path
                     r.raise_for_status()
-                    return r.json()
+                    data = r.json()
+                    if isinstance(data, dict) and data.get("Success") is False:
+                        logger.error("ninaAPI %s: %s", key, data.get("Error"))
+                        self.detail = f"{key}: {data.get('Error')}"
+                        return None
+                    return data
             except Exception as e:  # noqa: BLE001
                 logger.error("ninaAPI %s (%s) failed: %s", key, path, e)
+                self.detail = f"{key}: {e}"
                 return None
         logger.error("ninaAPI %s: no endpoint candidate worked", key)
         return None
@@ -252,13 +263,18 @@ class Armer:
             await notify(self.config, f"Dispatch FAILED: {self.detail}",
                          title="PhotonScript ERROR", priority=1)
             return False
-        loaded = await self._nina("sequence_load",
-                                  sequencePath=str(self.sequence_path))
+        # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the
+        # request body; load 400s if a sequence is running, so stop first.
+        await self._nina("sequence_stop")  # harmless if nothing running
+        content = json.loads(self.sequence_path.read_text(encoding="utf-8"))
+        loaded = await self._nina("sequence_load", method="POST",
+                                  json_body=content)
         started = await self._nina("sequence_start")
         if loaded is None or started is None:
-            self._set_state("ERROR", "ninaAPI load/start failed")
-            await notify(self.config, "Dispatch failed: ninaAPI load/start "
-                         "error.", title="PhotonScript ERROR", priority=1)
+            self._set_state("ERROR", f"ninaAPI load/start failed "
+                            f"({self.detail})")
+            await notify(self.config, f"Dispatch failed: {self.detail}",
+                         title="PhotonScript ERROR", priority=1)
             return False
         return True
 
