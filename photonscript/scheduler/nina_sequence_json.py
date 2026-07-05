@@ -109,6 +109,22 @@ SOUND_NONE = 22  # GroundStation NotificationSound enum: silent
 _gen_cfg_cache = None
 
 
+_moon_window_cache: dict = {}
+
+
+def _moon_window():
+    import time as _t
+    if _moon_window_cache.get("t", 0) > _t.time() - 1800:
+        return _moon_window_cache["v"]
+    try:
+        from photonscript.scheduler.moon import moon_window_tonight
+        v = moon_window_tonight(_gen_cfg())
+    except Exception:  # noqa: BLE001
+        v = {"available": False}
+    _moon_window_cache.update(t=_t.time(), v=v)
+    return v
+
+
 def _gen_cfg():
     global _gen_cfg_cache
     if _gen_cfg_cache is None:
@@ -403,6 +419,16 @@ def _time_condition(provider: str, minutes_offset: int = 0) -> dict:
             f"NINA.Sequencer.Utility.DateTimeProvider.{provider}, NINA.Sequencer"))
 
 
+def _time_condition_at(hh: int, mm: int) -> dict:
+    """Loop condition: run until a fixed local time (e.g. moonrise)."""
+    return _make_typed(
+        "NINA.Sequencer.Conditions.TimeCondition, NINA.Sequencer",
+        Hours=hh, Minutes=mm, MinutesOffset=0, Seconds=0,
+        SelectedProvider=_make_typed(
+            "NINA.Sequencer.Utility.DateTimeProvider.TimeProvider, "
+            "NINA.Sequencer"))
+
+
 def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer",
@@ -451,21 +477,57 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         items.append(_pushover("Imaging",
                                f"{target.name}: focused, centered, unguided "
                                "on encoders — capturing"))
-    n_blocks = len(active)
-    for bi, exp in enumerate(active, 1):
+    NB_SET = {"Ha", "OIII", "SII"}
+    bb = [e for e in active if e.filter_type.value not in NB_SET]
+    nb = [e for e in active if e.filter_type.value in NB_SET]
+    ordered = active
+    bb_condition = None
+    if bb:
+        mw = _moon_window()
+        if mw.get("available") and mw.get("down_at_dusk"):
+            # dark evening: broadband first, capped at moonrise
+            ordered = bb + nb
+            if mw.get("rise_local_hh") is not None:
+                bb_condition = _time_condition_at(mw["rise_local_hh"],
+                                                  mw["rise_local_mm"])
+        elif mw.get("available") and (mw.get("illum_pct") or 100) < 20:
+            ordered = bb + nb  # faint moon: broadband fine any time
+        else:
+            # moon up at dusk and bright: defer broadband tonight
+            items.append(_pushover(
+                "Imaging",
+                f"{target.name}: moon up at dusk "
+                f"({mw.get('illum_pct', '?')}%) — RGB/L deferred to a "
+                "dark evening; narrowband only tonight"))
+            ordered = nb
+
+    def _block(exp, bi, n_blocks, condition=None):
         n = exp.count - exp.acquired
         block_h = exp.exposure_seconds * n / 3600
-        items.append(_pushover(
+        out = [_pushover(
             "Imaging",
             f"{target.name} [{bi}/{n_blocks}]: starting "
             f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
-            f"(~{block_h:.1f}h) gain {exp.gain}"))
-        items.append(_smart_exposure(exp, target.start_guiding,
-                                     target.dither_every_n))
-        items.append(_pushover(
+            f"(~{block_h:.1f}h) gain {exp.gain}"
+            + (" (moon-free window)" if condition else "")),
+            _smart_exposure(exp, target.start_guiding,
+                            target.dither_every_n),
+            _pushover(
             "Imaging",
             f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
-            f"done ({n}×{exp.exposure_seconds:.0f}s attempted)"))
+            f"done ({n}×{exp.exposure_seconds:.0f}s attempted)")]
+        return out
+
+    n_blocks = len(ordered)
+    for bi, exp in enumerate(ordered, 1):
+        is_bb = exp.filter_type.value not in NB_SET
+        blk = _block(exp, bi, n_blocks, bb_condition if is_bb else None)
+        if is_bb and bb_condition is not None:
+            items.append(_seq_container(
+                f"{exp.filter_type.value} until moonrise", blk,
+                conditions=[bb_condition]))
+        else:
+            items.extend(blk)
     items.append(_pushover("Imaging", f"{target.name}: ALL blocks complete "
                            f"({plan_desc}) — moving on"))
 

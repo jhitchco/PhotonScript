@@ -9,7 +9,7 @@ the horizon.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -51,3 +51,42 @@ def night_moon(config, date_str: str, dark_start: datetime,
         _cache.clear()
     _cache[date_str] = out
     return out
+
+
+def moon_window_tonight(config) -> dict:
+    """Moon geometry for the coming night: is the moon down at dusk, when
+    does it rise (local HH, MM), and tonight's illumination."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, get_body
+    from astropy.time import Time
+    from photonscript.shared.astronomy import (get_earth_location,
+                                               get_twilight_times)
+    from photonscript.shared.localtime import utc_offset_hours
+
+    obs = config.get_observatory()
+    tw = get_twilight_times(obs, datetime.utcnow().replace(
+        hour=0, minute=0, second=0, microsecond=0))
+    dusk, dawn = tw.get("astro_dark_start"), tw.get("astro_dark_end")
+    if not dusk or not dawn or dawn <= dusk:
+        return {"available": False}
+    hours = (dawn - dusk).total_seconds() / 3600
+    times = Time(dusk) + np.linspace(0, hours, 60) * u.hour
+    loc = get_earth_location(obs)
+    alt = get_body("moon", times, loc).transform_to(
+        AltAz(obstime=times, location=loc)).alt.deg
+    info = night_moon(config, dusk.strftime("%Y-%m-%d"), dusk, dawn)
+    down_at_dusk = bool(alt[0] < 0)
+    rise_utc = None
+    if down_at_dusk:
+        for i in range(len(alt) - 1):
+            if alt[i] < 0 <= alt[i + 1]:
+                rise_utc = dusk + (dawn - dusk) * (i + 1) / (len(alt) - 1)
+                break
+    off = utc_offset_hours(config, dusk)
+    rise_local = ((rise_utc + timedelta(hours=off))
+                  if rise_utc else None)
+    return {"available": True, "down_at_dusk": down_at_dusk,
+            "illum_pct": info.get("illum_pct"),
+            "rise_local_hh": rise_local.hour if rise_local else None,
+            "rise_local_mm": rise_local.minute if rise_local else None}
