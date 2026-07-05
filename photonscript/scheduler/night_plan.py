@@ -72,9 +72,20 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     preconfig = dusk - timedelta(minutes=lead)
     dark_hours = (dawn - dusk).total_seconds() / 3600
 
-    # Planned targets with estimated windows (exposure + 15% overhead)
-    seasonal = get_seasonal_targets(dusk.month)
-    projects = [create_project_from_target(t) for t in seasonal]
+    # Planned targets with estimated windows (exposure + 15% overhead).
+    # Use the goal store (priorities, budgets, 600s plans) — the seasonal
+    # catalog is only a fallback when no goals exist. This was the source
+    # of the stale-looking 300s Lagoon/Eagle plan: the card planned from
+    # the catalog while dispatch planned from the store.
+    projects = []
+    try:
+        from photonscript.scheduler.app import get_store
+        projects = [p for p in get_store().projects.values() if p.active]
+    except Exception:  # noqa: BLE001
+        pass
+    if not projects:
+        seasonal = get_seasonal_targets(dusk.month)
+        projects = [create_project_from_target(t) for t in seasonal]
     targets = plan_night_sequence(projects, config, now)
 
     from photonscript.shared.localtime import utc_offset_hours as _tz_off
