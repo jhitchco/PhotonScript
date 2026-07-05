@@ -33,9 +33,17 @@ function log(s) {
 
 function integrate(files, id, isCal, rejectHigh) {
    // isCal: bias/dark/flat masters (no normalization for bias/dark)
+   log("integrate " + id + ": " + files.length + " frames, first=" +
+       File.extractName(files[0]));
    var II = new ImageIntegration;
    II.images = files.map(function (f) { return [true, f, "", ""]; });
    II.combination = ImageIntegration.prototype.Average;
+   // bias/darks/flats have no stars: PSF-based weighting (the modern
+   // default) fails instantly on them — weight them equally instead
+   II.weightMode = isCal ? ImageIntegration.prototype.DontCare
+                         : ImageIntegration.prototype.PSFSignalWeight;
+   II.generateIntegratedImage = true;
+   II.generateRejectionMaps = false;
    II.rejection = files.length >= 15
       ? ImageIntegration.prototype.WinsorizedSigmaClip
       : (files.length >= 8 ? ImageIntegration.prototype.SigmaClip
@@ -49,8 +57,11 @@ function integrate(files, id, isCal, rejectHigh) {
    II.generateDrizzleData = false;
    II.evaluateSNR = !isCal;
    if (rejectHigh !== undefined) II.sigmaHigh = rejectHigh;
-   if (!II.executeGlobal())
-      throw new Error("ImageIntegration failed for " + id);
+   var ok = II.executeGlobal();
+   log("executeGlobal(" + id + ") = " + ok);
+   if (!ok)
+      throw new Error("ImageIntegration failed for " + id +
+                      " (see PixInsight console for the validation reason)");
    var w = ImageWindow.windowById("integration");
    ensureDir(OUT + "/master");
    var path = OUT + "/master/" + id + ".xisf";
