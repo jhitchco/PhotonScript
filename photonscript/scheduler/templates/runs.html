@@ -100,6 +100,7 @@
                 <span class="bd" id="reviewCounts"></span>
                 <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
             </div>
+            <div id="targetChips" style="margin-bottom:.25rem;"></div>
             <div id="filterChips"></div>
             <div class="bd" id="thumbCount"></div>
             <div class="thumbs" id="thumbStrip"></div>
@@ -119,6 +120,7 @@
     </div>
     <script>
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
+    let subTarget = 'ALL';
     let showAllThumbs = false;
     async function loadNights() {
         const r = await fetch('/api/runs');
@@ -161,7 +163,7 @@
         else if (real.length) loadDetail(real[0].date);
     }
     async function loadDetail(date) {
-        currentDate = date; subFilter = 'ALL'; showAllThumbs = false;
+        currentDate = date; subFilter = 'ALL'; subTarget = 'ALL'; showAllThumbs = false;
         document.querySelectorAll('.night-chip').forEach(el =>
             el.classList.toggle('active', el.dataset.date === date));
         const panel = document.getElementById('detailPanel');
@@ -325,7 +327,25 @@
     function renderSubs() {
         const d = currentDetail;
         if (!d) return;
-        const all = d.subs;
+        const all0 = d.subs;
+        // Target chips (only on multi-target nights)
+        const tCounts = {};
+        all0.forEach(s => {
+            const t = (s.target && s.target !== '?') ? s.target : '?';
+            tCounts[t] = (tCounts[t] || 0) + 1;
+        });
+        const tNames = Object.keys(tCounts);
+        const tBox = document.getElementById('targetChips');
+        if (tNames.length > 1) {
+            tBox.innerHTML = ['ALL', ...tNames.sort()].map(t =>
+                '<span class="fchip' + (subTarget === t ? ' active' : '') +
+                '" data-t="' + t + '">' + t +
+                (t === 'ALL' ? ' ' + all0.length : ' ' + tCounts[t]) + '</span>').join('');
+            tBox.querySelectorAll('.fchip').forEach(el =>
+                el.addEventListener('click', () => { subTarget = el.dataset.t; renderSubs(); }));
+        } else { tBox.innerHTML = ''; }
+        const all = subTarget === 'ALL' ? all0
+            : all0.filter(s => ((s.target && s.target !== '?') ? s.target : '?') === subTarget);
         // Filter chips with counts
         const counts = {};
         all.forEach(s => { counts[s.filter] = (counts[s.filter] || 0) + 1; });
