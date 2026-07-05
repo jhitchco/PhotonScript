@@ -786,12 +786,12 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             if e.filter_type not in flat_filters:
                 flat_filters.append(e.filter_type)
     if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:
-        # Narrowband first: at nautical dawn the sky is darkest, which the
-        # 3nm filters need to stay under MaxExposure — broadband can cope
-        # with the brighter sky later. (LRGB-only flats last night = the
-        # NB filters hit the cap at the end of the window.)
+        # Dawn goes dark->bright: broadband first (fine in the dim sky),
+        # narrowband LAST when the sky is bright enough that 3nm exposures
+        # fit under MaxExposure (Jeremy's correction — NB-first put the
+        # narrowband filters in sky too dark for the 30s cap).
         NBF = {"Ha", "OIII", "SII"}
-        flat_filters.sort(key=lambda f: f.value not in NBF)
+        flat_filters.sort(key=lambda f: f.value in NBF)
         n = int(getattr(_cfg, "flat_count", 15))
         end_items += [
             _pushover("Flats", "imaging done — waiting for sky-flat "

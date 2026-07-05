@@ -190,7 +190,7 @@ def generate_dusk_flats_json(config) -> tuple:
 
     obs = config.get_observatory()
     now = datetime.utcnow()
-    tw = _np.get_twilight_crossings(obs, now.replace(hour=0, minute=0,
+    tw = _np.compute_night_times(obs, now.replace(hour=0, minute=0,
                                                      second=0, microsecond=0))
     sunset = tw.get("sunset")
     if not sunset:
@@ -198,8 +198,10 @@ def generate_dusk_flats_json(config) -> tuple:
     local = (sunset + timedelta(minutes=15)
              + timedelta(hours=utc_offset_hours(config, sunset)))
     n = int(getattr(config, "flat_count", 15))
+    # dusk DIMS: narrowband needs the bright end (longest exposures),
+    # L needs the darkest — Jeremy's order: NB -> R,G,B -> L
     filters = [FilterType(v) for v in
-               ("L", "R", "G", "B", "Ha", "OIII", "SII")]
+               ("Ha", "OIII", "SII", "R", "G", "B", "L")]
     wait_start = _make_typed(
         "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
         Hours=local.hour, Minutes=local.minute, MinutesOffset=0, Seconds=0,
