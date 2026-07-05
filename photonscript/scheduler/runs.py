@@ -745,7 +745,7 @@ def build_library(config, date: str | None = None) -> dict:
                 parts = f.relative_to(root).parts
                 if not _is_calibration(parts):
                     continue
-                typ = next((p.upper().rstrip("S") for p in parts
+                typ = next(({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
                             if p.upper() in _CAL_DIRS), "CAL")
                 dest = lib / "Calibration" / typ / d / f.name
                 if dest.exists():
@@ -791,7 +791,7 @@ def calibration_inventory(config, date: str) -> dict:
                 light_exps.add(exp)
                 continue
             typ = str(hdr.get("IMAGETYP", "")).strip().upper() or next(
-                (p.upper().rstrip("S") for p in parts
+                ({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
                  if p.upper() in _CAL_DIRS), "CAL")
             typ = typ.replace(" FRAME", "").replace("LIGHT", "CAL")
             g = frames.setdefault(typ, {"count": 0, "filters": {},

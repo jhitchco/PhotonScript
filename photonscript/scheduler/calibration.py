@@ -40,7 +40,7 @@ def calibration_health(config) -> dict:
                 parts = f.relative_to(d).parts
                 if not _is_calibration(parts):
                     continue
-                typ = next((p.upper().rstrip("S") for p in parts
+                typ = next(({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
                             if p.upper() in _CAL_DIRS), "CAL")
                 if typ == "SNAPSHOT":
                     continue

@@ -21,6 +21,19 @@ if (-not (Test-Path $src)) {
 $stage = Join-Path $StageRoot ($Target -replace '[^\w\- ]','_')
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
+function Get-FitsKeys($path) {
+    # FITS headers are ASCII 80-char cards in the first blocks — cheap to read
+    $fs = [System.IO.File]::OpenRead($path)
+    $buf = New-Object byte[] (2880 * 4)
+    $n = $fs.Read($buf, 0, $buf.Length); $fs.Close()
+    $txt = [System.Text.Encoding]::ASCII.GetString($buf, 0, $n)
+    $out = @{}
+    foreach ($k in @("GAIN", "OFFSET", "EXPTIME", "SET-TEMP")) {
+        if ($txt -match "$k\s*=\s*(-?[\d.]+)") { $out[$k] = [double]$matches[1] }
+    }
+    return $out
+}
+
 function Add-File($file, $destDir) {
     New-Item -ItemType Directory -Force -Path $destDir | Out-Null
     $dest = Join-Path $destDir $file.Name
@@ -33,27 +46,35 @@ function Add-File($file, $destDir) {
     return 1
 }
 
-# Lights (already accepted-only, per filter)
+# Lights (already accepted-only, per filter) — record their epochs
 $nLights = 0
-$exposures = @{}
+$epochs = @{}
 Get-ChildItem $src -Recurse -Filter *.fits | ForEach-Object {
     $filter = $_.Directory.Name
     $nLights += Add-File $_ (Join-Path $stage "LIGHTS\$filter")
-    if ($_.Name -match '_(\d+(?:\.\d+)?)s') { $exposures[$matches[1]] = $true }
+    $k = Get-FitsKeys $_.FullName
+    if ($k.EXPTIME) {
+        $sig = "$($k.EXPTIME)|$($k.GAIN)|$($k.OFFSET)|$($k.'SET-TEMP')"
+        $epochs[$sig] = $true
+    }
 }
+Write-Host "Light epochs (exp|gain|offset|temp): $($epochs.Keys -join '  ·  ')"
 
-# Darks: only sessions whose exposure matches the lights'
-$nDarks = 0
+# Darks: header-matched on exposure AND gain AND offset AND temperature —
+# a dark from the wrong epoch silently poisons calibration
+$nDarks = 0; $nDarkSkipped = 0
 $darkRoot = Join-Path $Library "Calibration\DARK"
 if (Test-Path $darkRoot) {
     Get-ChildItem $darkRoot -Recurse -Filter *.fits | ForEach-Object {
-        foreach ($e in $exposures.Keys) {
-            if ($_.Name -match "_$($e)") {
-                $nDarks += Add-File $_ (Join-Path $stage "DARKS")
-                break
-            }
-        }
+        $k = Get-FitsKeys $_.FullName
+        $sig = "$($k.EXPTIME)|$($k.GAIN)|$($k.OFFSET)|$($k.'SET-TEMP')"
+        if ($epochs.ContainsKey($sig)) {
+            $nDarks += Add-File $_ (Join-Path $stage "DARKS")
+        } else { $nDarkSkipped++ }
     }
+}
+if ($nDarkSkipped) {
+    Write-Host "  ($nDarkSkipped darks skipped: wrong exposure/gain/offset/temp epoch)"
 }
 
 # Bias: newest session
@@ -83,8 +104,8 @@ if (Test-Path $flatRoot) {
 Write-Host ""
 Write-Host "Staged for integration: $stage"
 Write-Host "  Lights: $nLights new (exposures: $($exposures.Keys -join 's, ')s)"
-Write-Host "  Darks (matched): $nDarks new · Bias: $nBias new · Flats: $nFlats new"
-if ($nDarks -eq 0) { Write-Warning "No darks match the light exposures - capture some on the next cloudy night." }
+Write-Host "  Darks (epoch-matched): $nDarks new · Bias: $nBias new · Flats: $nFlats new"
+if ($nDarks -eq 0) { Write-Warning "No darks match the lights' exposure/gain/offset/temp - capture a matching set on the next cloudy night (the button on the dashboard)." }
 if ($nFlats -eq 0) { Write-Warning "No flats staged - dawn sky flats will cover future nights." }
 Write-Host ""
 Write-Host "PixInsight: Scripts > Batch Processing > WeightedBatchPreprocessing"
