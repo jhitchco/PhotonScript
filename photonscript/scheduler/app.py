@@ -946,6 +946,48 @@ async def api_runs():
     return list_runs(get_config())
 
 
+_remoteneed_cache: dict = {"t": 0.0, "names": None}
+
+
+def _syncthing_pending_names():
+    """Basenames the DESKTOP still needs from the Library share (30s cache).
+    None = can't tell (not configured / unreachable)."""
+    import time as _time
+    import httpx
+    cfg = get_config()
+    url = getattr(cfg, "syncthing_url", "") or ""
+    key = getattr(cfg, "syncthing_api_key", "") or ""
+    folder = getattr(cfg, "syncthing_folder_id", "") or ""
+    device = getattr(cfg, "syncthing_device_id", "") or ""
+    if not (url and key and folder and device):
+        return None
+    now = _time.time()
+    if (_remoteneed_cache["names"] is not None
+            and now - _remoteneed_cache["t"] < 30):
+        return _remoteneed_cache["names"]
+    try:
+        names: set = set()
+        with httpx.Client(timeout=6, headers={"X-API-Key": key}) as cl:
+            for page in range(1, 41):  # up to 20k entries
+                r = cl.get(url.rstrip("/") + "/rest/db/remoteneed",
+                           params={"folder": folder, "device": device,
+                                   "page": page, "perpage": 500})
+                d = r.json()
+                batch = d.get("files") or []
+                if not isinstance(batch, list):
+                    batch = []
+                for f in batch:
+                    n = f.get("name", "") if isinstance(f, dict) else str(f)
+                    names.add(Path(n).name)
+                if len(batch) < 500:
+                    break
+        _remoteneed_cache.update(t=now, names=names)
+        return names
+    except Exception as e:  # noqa: BLE001
+        logger.debug("remoteneed unavailable: %s", e)
+        return None
+
+
 @app.get("/api/runs/{date}")
 def api_run_detail(date: str, backfill: bool = True):
     from photonscript.scheduler.runs import night_detail
@@ -964,6 +1006,12 @@ def api_run_detail(date: str, backfill: bool = True):
             row["done_total"] = e.acquired if e else None
     except Exception:  # noqa: BLE001
         pass
+    pending = _syncthing_pending_names()
+    for s in d["subs"]:
+        if s.get("passed_qa") and s.get("reviewed"):
+            base = Path(s.get("abs_path") or s.get("file") or "").name
+            s["transfer"] = (None if pending is None
+                             else "pending" if base in pending else "done")
     return d
 
 

@@ -262,12 +262,17 @@
     function renderReviewBar(d) {
         const subs = d.subs;
         const rej = subs.filter(s => !s.passed_qa).length;
-        const appr = subs.filter(s => s.passed_qa && s.reviewed).length;
         const rev = subs.filter(s => s.passed_qa && !s.reviewed).length;
+        const pend = subs.filter(s => s.transfer === 'pending').length;
+        const done = subs.filter(s => s.transfer === 'done').length;
+        const appr = subs.filter(s => s.passed_qa && s.reviewed).length
+                     - pend - done;
         document.getElementById('reviewCounts').innerHTML =
             '<span style="color:#eab308">' + rev + ' awaiting review</span> · ' +
-            '<span style="color:#4ade80">' + appr + ' accepted (in transfer queue)</span> · ' +
-            '<span style="color:#f87171">' + rej + ' rejected</span>';
+            (pend ? '<span style="color:#7dd3fc">' + pend + ' syncing ⇅</span> · ' : '') +
+            '<span style="color:#4ade80">' + done + ' transferred ✓</span>' +
+            (appr > 0 ? ' · ' + appr + ' accepted' : '') +
+            ' · <span style="color:#f87171">' + rej + ' rejected</span>';
         const btn = document.getElementById('approveBtn');
         btn.hidden = rev === 0;
         btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
@@ -331,11 +336,14 @@
                 's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
                 '</td><td style="cursor:pointer;color:' +
-                (!s.passed_qa ? '#f87171' : s.reviewed ? '#4ade80' : '#eab308') +
+                (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
+                 : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
                 ';" title="click to flip pass/reject (manual override)" ' +
                 'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\', ' + !s.passed_qa + ')">' +
                 (!s.passed_qa ? (s.reason || 'reject')
-                              : s.reviewed ? 'accepted' : 'review') +
+                 : !s.reviewed ? 'review'
+                 : s.transfer === 'pending' ? 'accepted · syncing ⇅'
+                 : s.transfer === 'done' ? 'transferred ✓' : 'accepted') +
                 (s.manual_qa ? ' ✋' : '') + '</td></tr>').join('');
     }
     function fmtEta(s) {
