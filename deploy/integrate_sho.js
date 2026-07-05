@@ -1,4 +1,4 @@
-// PhotonScript SHO integration pipeline (PJSR) — launched by run-integration.ps1
+// PhotonScript SHO integration pipeline (PJSR) - launched by run-integration.ps1
 // Layout expected (from prepare-integration.ps1):
 //   __STAGING__/LIGHTS/<Filter>/*.fits   __STAGING__/DARKS  /BIAS  /FLATS/<Filter>
 // Output: __STAGING__/out/master/master_<Filter>.xisf  (+ intermediate cal/cc/reg)
@@ -102,7 +102,7 @@ function main() {
    var darkFiles = listFits(STAGING + "/DARKS");
    var masterBias = biasFiles.length ? integrate(biasFiles, "masterBias", true) : null;
    var masterDark = darkFiles.length ? integrate(darkFiles, "masterDark", true) : null;
-   log("bias: " + biasFiles.length + " · darks: " + darkFiles.length);
+   log("bias: " + biasFiles.length + " - darks: " + darkFiles.length);
 
    var lightRoot = STAGING + "/LIGHTS";
    var filterDirs = searchDirectory(lightRoot + "/*", true).filter(function (p) {
@@ -159,7 +159,7 @@ function main() {
 
       integrate(regFiles, "masterLight_" + filt, false);
    }
-   log("DONE — masters in " + OUT + "/master (open them and autostretch)");
+   log("DONE - masters in " + OUT + "/master (open them and autostretch)");
 }
 
 try {

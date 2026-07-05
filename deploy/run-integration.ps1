@@ -16,7 +16,7 @@ if (-not (Test-Path $PixInsight)) {
     Write-Error "PixInsight not found at $PixInsight"
     exit 1
 }
-$js = Get-Content (Join-Path $PSScriptRoot "integrate_sho.js") -Raw
+$js = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "integrate_sho.js"))
 $js = $js -replace '__STAGING__', ($stage -replace '\\','/')
 $runjs = Join-Path $stage "integrate_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
