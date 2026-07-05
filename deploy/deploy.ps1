@@ -19,5 +19,12 @@ try {
     Invoke-RestMethod -Method Post "$Scope/api/update" | Out-Null
     Write-Host "Pushed. Scope PC is pulling and restarting - check the nav version stamp."
 } catch {
-    Write-Warning "Could not reach the scope PC at $Scope - update it manually."
+    $status = 0
+    try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+    if ($status -eq 409) {
+        Write-Warning "Pushed, but the scope REFUSED to restart: a night is armed/active."
+        Write-Warning "It will pick the code up on the next restart - or Disarm, rerun deploy, re-Arm."
+    } else {
+        Write-Warning "Could not reach the scope PC at $Scope - update it manually."
+    }
 }
