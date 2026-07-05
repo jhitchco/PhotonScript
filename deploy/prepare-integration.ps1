@@ -103,8 +103,14 @@ foreach ($biasName in @("BIAS", "BIA")) {
 $nFlats = 0
 $flatRoot = Join-Path $Library "Calibration\FLAT"
 if (Test-Path $flatRoot) {
+    $fmap = @{ "H"="Ha"; "O"="OIII"; "S"="SII" }
     Get-ChildItem $flatRoot -Recurse -Filter *.fits | ForEach-Object {
-        $nFlats += Add-File $_ (Join-Path $stage "FLATS")
+        $filt = "UNKNOWN"
+        if ($_.Name -match "__([A-Za-z]+)_") {
+            $filt = $matches[1]
+            if ($fmap.ContainsKey($filt)) { $filt = $fmap[$filt] }
+        }
+        $nFlats += Add-File $_ (Join-Path $stage "FLATS\$filt")
     }
 }
 
