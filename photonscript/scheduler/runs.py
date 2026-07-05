@@ -378,6 +378,7 @@ def start_backfill(config, date: str) -> None:
                 if ri.get("identified"):
                     logger.info("Auto-identify %s: %d subs attributed",
                                 date, ri["identified"])
+                    sync_goal_progress(config)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Auto-identify failed for %s: %s", date, e)
             try:
@@ -453,6 +454,42 @@ def reset_library(config) -> dict:
     return {"removed": removed, **res}
 
 
+def sync_goal_progress(config) -> list:
+    """Rebuild per-filter accepted counts in the goal store from every
+    night's records. Called automatically after approvals, manual
+    verdicts, and identification — the goal bars follow the evidence."""
+    try:
+        from photonscript.scheduler.app import get_store
+        store = get_store()
+    except Exception:  # noqa: BLE001
+        return []
+    counts: dict[tuple, int] = {}
+    for f in runs_dir(config).glob("*_subs.jsonl"):
+        date = f.name.split("_")[0]
+        for s_ in _load_subs(config, date):
+            if not s_.get("passed_qa"):
+                continue
+            t = str(s_.get("target", "")).strip().lower()
+            if t and t != "?":
+                counts[(t, s_.get("filter"))] = \
+                    counts.get((t, s_.get("filter")), 0) + 1
+    changed = []
+    for p in store.projects.values():
+        tname = p.target.name.strip().lower()
+        touched = False
+        for e in p.exposure_plans:
+            n = min(counts.get((tname, e.filter_type.value), 0), e.count)
+            if n != e.acquired:
+                e.acquired = n
+                touched = True
+        if touched:
+            changed.append(p.target.name)
+    if changed:
+        store.save()
+        logger.info("Goal progress synced from history: %s", changed)
+    return changed
+
+
 def approve_night(config, date: str) -> dict:
     """Mark every QA-passing sub as reviewed, then update the library so
     they queue for transfer. The human gate between capture and sync."""
@@ -467,6 +504,7 @@ def approve_night(config, date: str) -> dict:
     res = build_library(config, date)
     logger.info("Night %s approved: %d subs -> library (%s new links)",
                 date, n, res.get("linked"))
+    sync_goal_progress(config)
     return {"approved": n, **res}
 
 
@@ -507,6 +545,7 @@ def set_manual_qa(config, date: str, rel_file: str,
                     f.unlink(missing_ok=True)
     except Exception as e:  # noqa: BLE001
         logger.warning("library update after manual QA failed: %s", e)
+    sync_goal_progress(config)
     return hit
 
 
@@ -771,8 +810,9 @@ def build_library(config, date: str | None = None) -> dict:
             if review_gate and not s_.get("reviewed"):
                 pending_review += 1
                 continue
-            src = Path(s_.get("abs_path") or "")
-            if not src.exists():
+            abs_path = s_.get("abs_path")
+            src = Path(abs_path) if abs_path else None
+            if src is None or not src.is_file():
                 missing += 1
                 continue
             target = _safe_name(_resolve_target(

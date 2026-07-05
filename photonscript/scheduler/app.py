@@ -1354,41 +1354,12 @@ async def api_run_assign_target(date: str, payload: dict = Body(...)):
 
 @app.post("/api/projects2/recount")
 async def api_projects_recount():
-    """Rebuild per-filter accepted counts from every night's grading records
-    — pulls old-season history into goal progress."""
-    from photonscript.scheduler.runs import runs_dir, _load_subs
-    config = get_config()
-    store = get_store()
-    rev = config.reverse_filter_map()  # NINA name -> filter class
-    dates = sorted({f.name.split("_")[0]
-                    for f in runs_dir(config).glob("*_subs.jsonl")})
-    counts: dict[tuple, int] = {}
-    for d in dates:
-        for s in _load_subs(config, d):
-            if not s.get("passed_qa"):
-                continue
-            t = str(s.get("target", "")).strip().lower()
-            fclass = rev.get(str(s.get("filter", "")),
-                             str(s.get("filter", "")))
-            if t and t != "?":
-                counts[(t, fclass)] = counts.get((t, fclass), 0) + 1
-    changed = []
-    for p in store.projects.values():
-        tname = p.target.name.strip().lower()
-        touched = False
-        for e in p.exposure_plans:
-            n = counts.get((tname, e.filter_type.value), 0)
-            newv = min(n, e.count)
-            if newv != e.acquired:
-                e.acquired = newv
-                touched = True
-        if touched:
-            changed.append(p.target.name)
-    if changed:
-        store.save()
-    logger.info("Recount from history: %d nights scanned, updated %s",
-                len(dates), changed or "nothing")
-    return {"ok": True, "nights_scanned": len(dates), "updated": changed}
+    """Rebuild accepted counts from every night's records (also runs
+    automatically after approvals/verdicts/identification)."""
+    from photonscript.scheduler.runs import sync_goal_progress, runs_dir
+    changed = sync_goal_progress(get_config())
+    nights = len(list(runs_dir(get_config()).glob("*_subs.jsonl")))
+    return {"ok": True, "nights_scanned": nights, "updated": changed}
 
 
 @app.get("/api/runs/{date}/thumb")
