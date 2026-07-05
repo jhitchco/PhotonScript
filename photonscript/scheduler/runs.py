@@ -414,6 +414,28 @@ def flag_hfr_outliers(config, date: str, factor: float = 1.4) -> int:
     return n
 
 
+def reset_library(config) -> dict:
+    """Delete the library and rebuild it under the review gate — used to
+    un-queue bulk transfers created before review-first existed. Removes
+    only hardlinks/copies inside library_root; originals are never touched."""
+    import shutil
+    lib = library_root(config).resolve()
+    watch = Path(config.image_watch_dir).resolve()
+    # refuse anything that could touch originals
+    if watch == lib or str(watch).lower().startswith(str(lib).lower()):
+        raise RuntimeError(f"refusing: image_watch_dir {watch} is inside "
+                           f"library_root {lib}")
+    removed = 0
+    if lib.exists():
+        removed = sum(1 for _ in lib.rglob("*.fits"))
+        shutil.rmtree(lib)
+    res = build_library(config)  # honors the review gate
+    logger.warning("Library reset: %d files removed, rebuilt with %d "
+                   "reviewed links (%d await review)", removed,
+                   res.get("linked", 0), res.get("pending_review", 0))
+    return {"removed": removed, **res}
+
+
 def approve_night(config, date: str) -> dict:
     """Mark every QA-passing sub as reviewed, then update the library so
     they queue for transfer. The human gate between capture and sync."""

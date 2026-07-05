@@ -1191,6 +1191,16 @@ def api_library_rebuild(date: str = ""):
     return build_library(get_config(), date or None)
 
 
+@app.post("/api/library/reset")
+def api_library_reset():
+    """Wipe the library and rebuild reviewed-only (un-queues bulk sync)."""
+    from photonscript.scheduler.runs import reset_library
+    try:
+        return reset_library(get_config())
+    except RuntimeError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+
+
 @app.post("/api/runs/{date}/approve")
 async def api_run_approve(date: str):
     """Approve all QA-passing subs for a night -> library -> Syncthing."""

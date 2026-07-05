@@ -80,6 +80,7 @@
                 <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
                 <button class="btn btn-secondary" id="regradeBtn">Re-grade night</button>
                 <button class="btn btn-secondary" id="libraryBtn" title="Hardlink QA-accepted lights into the Library folder for Syncthing">Rebuild library</button>
+                <button class="btn btn-secondary" id="libResetBtn" title="Empty the library and rebuild with APPROVED subs only — stops bulk transfers queued before the review gate">Reset library (approved only)</button>
             </div>
             <div id="backfillBox" class="bd" hidden>
                 <div id="backfillLabel"></div>
@@ -166,6 +167,24 @@
                           current: 'starting…'});
             await fetch('/api/runs/' + date + '/regrade', {method: 'POST'});
             pollBackfill(date);
+        };
+        document.getElementById('libResetBtn').onclick = async () => {
+            if (!confirm('Empty the Library and rebuild it with APPROVED subs only?\n\n' +
+                '• Original FITS files are NOT touched.\n' +
+                '• Syncthing will stop transferring unapproved files and will remove ' +
+                'their copies from the desktop.\n' +
+                '• Approve nights afterwards to queue exactly what you want.')) return;
+            const btn = document.getElementById('libResetBtn');
+            btn.disabled = true; btn.textContent = 'Resetting…';
+            try {
+                const r = await fetch('/api/library/reset', {method: 'POST'});
+                const d = await r.json();
+                alert(r.ok ? d.removed + ' files removed from the library.\n' +
+                        d.linked + ' approved files re-linked · ' + d.pending_review +
+                        ' subs await review.\nSyncthing will settle in a minute or two.'
+                    : d.detail);
+            } finally { btn.disabled = false; btn.textContent = 'Reset library (approved only)'; }
+            loadDetail(currentDate);
         };
         document.getElementById('libraryBtn').onclick = async () => {
             const btn = document.getElementById('libraryBtn');
