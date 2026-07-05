@@ -140,3 +140,34 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
                        "NINA.Sequencer",
     )
     return json.dumps(root, indent=2), total_min
+
+
+def count_matching_darks(config, exp_s: float) -> int:
+    """Darks on disk (within the library age window) matching the current
+    epoch: exposure + gain + offset + setpoint temperature."""
+    from astropy.io import fits as _fits
+    root = Path(config.image_watch_dir)
+    if not root.exists():
+        return 0
+    cal_days = int(getattr(config, "library_cal_days", 120))
+    cutoff = (datetime.now() - __import__("datetime")
+              .timedelta(days=cal_days)).strftime("%Y-%m-%d")
+    n = 0
+    for d in root.iterdir():
+        if not (d.is_dir() and _DATE_RE.match(d.name) and d.name >= cutoff):
+            continue
+        for f in d.rglob("*.fits"):
+            parts = f.relative_to(d).parts
+            if not any(p.upper() in ("DARK", "DARKS") for p in parts):
+                continue
+            try:
+                h = _fits.getheader(f)
+            except Exception:  # noqa: BLE001
+                continue
+            if (abs(float(h.get("EXPTIME", -1)) - exp_s) < 0.5
+                    and int(h.get("GAIN", -1)) == config.default_gain
+                    and int(h.get("OFFSET", -1)) == config.default_offset
+                    and abs(float(h.get("SET-TEMP", 99))
+                            - config.camera_setpoint_c) < 1.5):
+                n += 1
+    return n

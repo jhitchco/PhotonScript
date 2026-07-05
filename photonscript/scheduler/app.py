@@ -398,6 +398,7 @@ _CONFIG_FIELDS = [
     ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
     ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
     ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
+    ("dark_target_count", "PS_DARK_TARGET_COUNT", "Dark library quota per exposure", "Imaging", "int", False, False),
     ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),

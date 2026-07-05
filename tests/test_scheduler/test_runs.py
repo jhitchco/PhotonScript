@@ -16,9 +16,9 @@ def _config(tmp_path):
 
 
 def test_night_score_weighting():
-    s = night_score(100, 100, 100, 100)
+    s = night_score(6.0, 6.0, 6.0, 100)
     assert s["total"] == 100
-    s = night_score(0, 0, 0, 0)
+    s = night_score(6.0, 0, 0, 0)
     assert s["total"] == 0
     s = night_score(100, 0, 0, 0)   # only sky utilization
     assert s["total"] == 30

@@ -419,6 +419,48 @@ def _time_condition(provider: str, minutes_offset: int = 0) -> dict:
             f"NINA.Sequencer.Utility.DateTimeProvider.{provider}, NINA.Sequencer"))
 
 
+def _dark_quota_blocks(dawn_provider, dawn_offset):
+    """Dark blocks for unsafe time, capped by the library quota: for each
+    exposure the current lights use, take only (quota - already on disk),
+    600s first then 180s. Lowest-priority work: any of LoopWhileUnsafe
+    exit, dawn, or the cap ends the block."""
+    cfg = _gen_cfg()
+    quota = int(getattr(cfg, "dark_target_count", 30))
+    blocks = []
+    try:
+        from photonscript.scheduler.calibration import count_matching_darks
+        for exp_s in (float(getattr(cfg, "nb_exposure_s", 600.0)),
+                      float(getattr(cfg, "bb_exposure_s", 180.0))):
+            have = count_matching_darks(cfg, exp_s)
+            need = max(0, quota - have)
+            if need == 0:
+                continue
+            blocks.append(_seq_container(
+                f"DARKS_{exp_s:.0f}s (need {need} of {quota})",
+                [_make_typed(
+                    "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                    "NINA.Sequencer",
+                    ExposureTime=exp_s,
+                    Gain=cfg.default_gain, Offset=cfg.default_offset,
+                    Binning=_make_typed(
+                        "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                        X=1, Y=1),
+                    ImageType="DARK", ExposureCount=0,
+                    ErrorBehavior=0, Attempts=1)],
+                conditions=[
+                    _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                "NINA.Sequencer"),
+                    _time_condition(dawn_provider, dawn_offset),
+                    _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
+                                "NINA.Sequencer",
+                                CompletedIterations=0, Iterations=need)]))
+    except Exception as e:  # noqa: BLE001
+        logger_warn = getattr(__import__("logging").getLogger(__name__),
+                              "warning")
+        logger_warn("dark quota scan failed: %s", e)
+    return blocks
+
+
 def _time_condition_at(hh: int, mm: int) -> dict:
     """Loop condition: run until a fixed local time (e.g. moonrise)."""
     return _make_typed(
@@ -599,28 +641,16 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     ]
     if gate_dark:
         start_items.append(_wait_for_provider("NauticalDuskProvider", -30))
-    dark_exp_s = float(getattr(_gen_cfg(), "nb_exposure_s", 600.0))
+    startup_dark_blocks = _dark_quota_blocks(dawn_provider, dawn_offset)
     start_unsafe_darks = _seq_container(
         "STARTUP_DARKS_IF_UNSAFE",
-        [
-            # first pass may arrive in twilight: hold for true dark before
-            # the first dark frame (instant on later passes)
-            _wait_for_provider("DuskProvider", 0),
-            _make_typed(
-                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
-                "NINA.Sequencer",
-                ExposureTime=dark_exp_s,
-                Gain=_gen_cfg().default_gain,
-                Offset=_gen_cfg().default_offset,
-                Binning=_make_typed(
-                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
-                    X=1, Y=1),
-                ImageType="DARK", ExposureCount=0,
-                ErrorBehavior=0, Attempts=1),
-        ],
-        # loops only while UNSAFE, and never past dawn
+        [_wait_for_provider("DuskProvider", 0)] + startup_dark_blocks
+        if startup_dark_blocks else [],
         conditions=[_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
+            _make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=1),
             _time_condition(dawn_provider, dawn_offset)])
     bias_if_still_unsafe = _seq_container(
         "BIAS_IF_STILL_UNSAFE",
@@ -655,8 +685,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         _connect("Guider"),
         _connect("Weather"),
         _pushover("Startup", f"camera cooling to {temp:.0f}°C; if the night "
-                  f"starts UNSAFE the roof-closed time becomes {dark_exp_s:.0f}s "
-                  "darks until conditions clear"),
+                  "starts UNSAFE the roof-closed time fills the dark-library "
+                  "quota until conditions clear"),
         start_unsafe_darks,
         bias_if_still_unsafe,
         _wait_until_safe(),
@@ -706,31 +736,12 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         unsafe_items.append(_stop_guiding())
     unsafe_items.append(_park())
     if getattr(_gen_cfg(), "unsafe_darks_enabled", True):
-        dark_exp = float(getattr(_gen_cfg(), "nb_exposure_s", 600.0))
-        darks = _seq_container(
-            "DARKS_WHILE_UNSAFE",
-            [_make_typed(
-                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
-                "NINA.Sequencer",
-                ExposureTime=dark_exp,
-                Gain=_gen_cfg().default_gain, Offset=_gen_cfg().default_offset,
-                Binning=_make_typed(
-                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
-                    X=1, Y=1),
-                ImageType="DARK", ExposureCount=0,
-                ErrorBehavior=0, Attempts=1)],
-            # Core NINA condition (type from Jeremy's export): loops only
-            # while the safety monitor reports UNSAFE, so we exit within
-            # one sub of conditions clearing. Roof closed = dark chamber.
-            # Dawn bound so a storm that lasts all night still shuts down.
-            conditions=[_make_typed(
-                "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
-                _time_condition(dawn_provider, dawn_offset)])
-        unsafe_items += [
-            _pushover("Safety", f"roof closed — turning downtime into "
-                      f"{dark_exp:.0f}s darks until conditions clear"),
-            darks,
-        ]
+        night_dark_blocks = _dark_quota_blocks(dawn_provider, dawn_offset)
+        if night_dark_blocks:
+            unsafe_items += [
+                _pushover("Safety", "roof closed — filling the dark-library "
+                          "quota until conditions clear"),
+            ] + night_dark_blocks
     unsafe_items += [
         _wait_until_safe(),
         _pushover("Safety", "SAFE again — waiting 2 min of confirmed-safe, "

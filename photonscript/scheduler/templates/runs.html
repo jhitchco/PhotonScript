@@ -259,11 +259,14 @@
                 k.replace(/_/g, ' ') + ': <b>' + v.value + '</b> (×' + v.weight + ')'
             ).join('<br>');
         const rep = d.report;
+        const pctOf = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
         document.getElementById('reportNumbers').innerHTML =
-            'safe ' + rep.safe_hours.toFixed(1) + 'h · shutter ' +
-            rep.shutter_hours.toFixed(1) + 'h · integrating ' +
-            rep.integrating_hours.toFixed(1) + 'h<br>utilization ' +
-            rep.sky_utilization_pct + '% · efficiency ' + rep.photon_efficiency_pct + '%';
+            '<b>dark ' + (rep.dark_hours ?? '?') + 'h</b> → shutter ' +
+            (rep.light_hours ?? '?') + 'h (' + pctOf(rep.light_hours, rep.dark_hours) +
+            ') → <b>accepted ' + (rep.accepted_hours ?? '?') + 'h (' +
+            pctOf(rep.accepted_hours, rep.dark_hours) + ')</b>' +
+            '<br><span style="opacity:.6">weather: safe ' +
+            rep.safe_hours.toFixed(1) + 'h of the dark window</span>';
         document.getElementById('pvaTable').innerHTML =
             '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
             '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +

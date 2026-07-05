@@ -551,13 +551,19 @@ def _phase_stats(config, date: str) -> dict:
     return {k: v for k, v in stats.items() if v["events"]}
 
 
-def night_score(util_pct: float, eff_pct: float, qa_pct: float,
+def night_score(dark_h: float, light_h: float, accepted_h: float,
                 completion_pct: float) -> dict:
+    """The honest funnel: dark hours -> shutter hours -> accepted hours.
+
+    sky_utilization = accepted/dark (photons that survived review over
+    photons the night offered), keep_rate = accepted/shutter.
+    """
+    util = accepted_h / dark_h * 100 if dark_h else 0
+    keep = accepted_h / light_h * 100 if light_h else 0
     parts = {
-        "sky_utilization": (0.30, min(util_pct, 100)),
-        "photon_efficiency": (0.25, min(eff_pct, 100)),
-        "qa_pass_rate": (0.25, min(qa_pct, 100)),
-        "plan_completion": (0.20, min(completion_pct, 100)),
+        "sky_utilization": (0.40, min(util, 100)),
+        "keep_rate": (0.30, min(keep, 100)),
+        "plan_completion": (0.30, min(completion_pct, 100)),
     }
     total = sum(w * v for w, v in parts.values())
     return {"total": round(total),
@@ -673,14 +679,33 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
             "median_background": med(a.get("bgs", [])),
         })
 
+    cal_tonight = calibration_inventory(config, date)
+    for typ, g in sorted(cal_tonight.get("frames", {}).items()):
+        exps = ", ".join(f"{k}×{v}" for k, v in
+                         sorted(g.get("exposures", {}).items()))
+        table.append({"target": f"Calibration · {typ}", "filter": exps or "—",
+                      "planned": 0, "attempted": g["count"],
+                      "accepted": g["count"], "median_hfr": None,
+                      "median_ecc": None, "median_background": None})
+
     report = build_daily_report(config, date)
-    graded = len(subs)
     accepted = sum(1 for s in subs if s.get("passed_qa"))
     total_planned = sum(planned.values())
+    # the honest funnel
+    from photonscript.shared.astronomy import get_twilight_times
+    try:
+        base = datetime.strptime(date, "%Y-%m-%d")
+        tw = get_twilight_times(config.get_observatory(), base)
+        dark_h = ((tw["astro_dark_end"] - tw["astro_dark_start"])
+                  .total_seconds() / 3600
+                  if tw.get("astro_dark_start") else 0.0)
+    except Exception:  # noqa: BLE001
+        dark_h = 0.0
+    light_h = sum(s.get("exp_s") or 0 for s in subs) / 3600
+    accepted_h = sum(s.get("exp_s") or 0 for s in subs
+                     if s.get("passed_qa")) / 3600
     score = night_score(
-        report.sky_utilization_pct,
-        report.photon_efficiency_pct,
-        (accepted / graded * 100) if graded else 0,
+        dark_h, light_h, accepted_h,
         (accepted / total_planned * 100) if total_planned else
         (100 if accepted else 0),
     )
@@ -689,6 +714,9 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         "date": date,
         "plan": plan,
         "report": {
+            "dark_hours": round(dark_h, 1),
+            "light_hours": round(light_h, 1),
+            "accepted_hours": round(accepted_h, 1),
             "safe_hours": report.safe_hours,
             "shutter_hours": report.shutter_hours,
             "integrating_hours": report.integrating_hours,
