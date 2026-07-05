@@ -20,8 +20,8 @@ def test_night_score_weighting():
     assert s["total"] == 100
     s = night_score(6.0, 0, 0, 0)
     assert s["total"] == 0
-    s = night_score(100, 0, 0, 0)   # only sky utilization
-    assert s["total"] == 30
+    s = night_score(6.0, 3.0, 3.0, 0)   # half the night accepted, no plan credit
+    assert s["total"] == 50  # 50%*0.4 + 100%*0.3 + 0
 
 
 def test_plan_vs_actual_assembly(tmp_path):

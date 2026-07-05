@@ -278,12 +278,12 @@ class TestDawnSkyFlats:
         txt, _, _ = self._night_json()
         assert lint_seq(_json.loads(txt), guided=False).ok
 
-    def test_unsafe_branch_takes_darks_while_unsafe(self):
+    def test_unsafe_branch_takes_quota_darks(self):
         txt, _, _ = self._night_json()
         assert "NINA.Sequencer.Conditions.LoopWhileUnsafe" in txt
-        i = txt.index("DARKS_WHILE_UNSAFE")
+        i = txt.index("DARKS_600s")
         blk = txt[i:i + 3000]
         assert '"ImageType": "DARK"' in blk
-        # darks come before the WaitUntilSafe hold
-        assert txt.index("DARKS_WHILE_UNSAFE") < txt.index(
-            "SafetyMonitor.WaitUntilSafe", i)
+        assert "DARKS_180s" in txt  # second exposure epoch also queued
+        # dark blocks come before the WaitUntilSafe hold
+        assert i < txt.index("SafetyMonitor.WaitUntilSafe", i)
