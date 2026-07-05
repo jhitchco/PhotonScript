@@ -731,8 +731,16 @@ def build_library(config, date: str | None = None) -> dict:
             except OSError:  # cross-volume or FS without hardlinks
                 shutil.copy2(src, dest)
             linked += 1
+        # Calibration: only recent sessions — old darks/flats rarely match
+        # current gain/offset/exposures and were flooding the transfer queue
+        from datetime import datetime as _dt, timedelta as _td
+        cal_days = int(getattr(config, "library_cal_days", 120))
+        try:
+            night_age = (_dt.now() - _dt.strptime(d, "%Y-%m-%d")).days
+        except ValueError:
+            night_age = 0
         root = Path(config.image_watch_dir) / d
-        if root.exists():
+        if root.exists() and night_age <= cal_days:
             for f in root.rglob("*.fits"):
                 parts = f.relative_to(root).parts
                 if not _is_calibration(parts):
