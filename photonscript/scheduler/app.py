@@ -1270,6 +1270,13 @@ async def api_run_manual_qa(date: str, payload: dict = Body(...)):
     return hit
 
 
+@app.post("/api/runs/{date}/identify")
+def api_run_identify(date: str):
+    """Attribute unknown subs by FITS header coordinates / ASTAP solve."""
+    from photonscript.scheduler.identify import identify_night
+    return identify_night(get_config(), date)
+
+
 @app.post("/api/runs/{date}/assign_target")
 async def api_run_assign_target(date: str, payload: dict = Body(...)):
     """Set the target name on a night's unattributed ('?') subs — for old

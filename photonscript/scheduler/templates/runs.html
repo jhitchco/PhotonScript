@@ -239,7 +239,10 @@
                 'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
                 'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.4rem;width:15rem;">' +
                 '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;" ' +
-                'onclick="assignTarget()">Assign</button>' : '');
+                'onclick="assignTarget()">Assign</button>' +
+                '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;margin-left:.3rem;" ' +
+                'title="Read mount coordinates from the FITS headers (plate solve as fallback) and match against the catalog" ' +
+                'onclick="identifyNight()">Identify by position</button>' : '');
         const sc = d.score;
         const el = document.getElementById('scoreTotal');
         el.textContent = sc.total;
@@ -423,6 +426,16 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({name: name,
                 window: (document.getElementById('assignWindow') || {value:''}).value})});
+        loadDetail(currentDate);
+    }
+    async function identifyNight() {
+        const r = await (await fetch('/api/runs/' + currentDate + '/identify',
+                                     {method: 'POST'})).json();
+        alert(r.identified + ' subs attributed.\n\n' + r.clusters.map(c =>
+            c.window + ' UTC · ' + c.subs + ' subs · ' +
+            (c.matched ? c.matched + ' (' + c.method + ')'
+             : 'no match' + (c.ra_deg != null ? ' at RA ' + c.ra_deg +
+               ' Dec ' + c.dec_deg : ' — no coordinates'))).join('\n'));
         loadDetail(currentDate);
     }
     let lbIdx = 0;

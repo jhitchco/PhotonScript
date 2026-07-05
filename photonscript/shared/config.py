@@ -45,6 +45,7 @@ class PhotonScriptConfig(BaseSettings):
     syncthing_api_key: str = ""
     syncthing_folder_id: str = ""   # folder id of the Library share
     syncthing_device_id: str = ""   # the DESKTOP's device id
+    astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
     unsafe_darks_enabled: bool = True  # shoot darks while parked during unsafe pauses
