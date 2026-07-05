@@ -108,7 +108,13 @@ def _candidates(config) -> list[tuple[str, float, float]]:
 
 
 def identify_night(config, date: str) -> dict:
-    """Attribute a night's unknown subs by position, one cluster at a time."""
+    """Attribute unknown subs by sky position.
+
+    Every sub with header coordinates is matched INDIVIDUALLY (NINA stamps
+    the mount RA/DEC on each frame), so back-to-back target handoffs tag
+    correctly. Only subs without coordinates fall back to one ASTAP solve
+    per time cluster.
+    """
     from photonscript.scheduler.runs import _load_subs, _rewrite_subs
 
     subs = _load_subs(config, date)
@@ -117,53 +123,84 @@ def identify_night(config, date: str) -> dict:
     if not unknown:
         return {"identified": 0, "clusters": []}
     unknown.sort(key=lambda s: s["time"])
-
-    # time clusters (a slew gap means a new target)
-    clusters, cur = [], [unknown[0]]
-    for prev, s in zip(unknown, unknown[1:]):
-        try:
-            gap = (datetime.fromisoformat(s["time"][:19])
-                   - datetime.fromisoformat(prev["time"][:19])
-                   ).total_seconds() / 60
-        except ValueError:
-            gap = 0
-        if gap > CLUSTER_GAP_MIN:
-            clusters.append(cur)
-            cur = []
-        cur.append(s)
-    clusters.append(cur)
-
     cands = _candidates(config)
-    results, n_assigned = [], 0
-    for cl in clusters:
-        mid = cl[len(cl) // 2]
-        path = Path(mid.get("abs_path") or "")
+
+    def _match(ra, dec):
+        best = min(cands, key=lambda c: _sep_deg(ra, dec, c[1], c[2]),
+                   default=None)
+        if best and _sep_deg(ra, dec, best[1], best[2]) <= MATCH_RADIUS_DEG:
+            return best[0]
+        return None
+
+    # Pass 1: per-sub header coordinates
+    n_assigned = 0
+    no_coords = []
+    header_hits: dict[str, dict] = {}
+    for s in unknown:
+        path = Path(s.get("abs_path") or "")
         coords = _header_radec(path) if path.exists() else None
-        how = "header"
-        if coords is None and path.exists():
-            coords = _astap_solve(config, path)
-            how = "plate solve"
-        entry = {"window": f'{cl[0]["time"][11:16]}-{cl[-1]["time"][11:16]}',
-                 "subs": len(cl), "method": how, "matched": None}
-        if coords:
-            ra, dec = coords
-            entry["ra_deg"], entry["dec_deg"] = round(ra, 3), round(dec, 3)
-            best = min(cands, key=lambda c: _sep_deg(ra, dec, c[1], c[2]),
-                       default=None)
-            if best and _sep_deg(ra, dec, best[1], best[2]) <= MATCH_RADIUS_DEG:
-                entry["matched"] = best[0]
-                for s in cl:
-                    s["target"] = best[0]
-                    n_assigned += 1
-        results.append(entry)
+        if coords is None:
+            no_coords.append(s)
+            continue
+        name = _match(*coords)
+        if name:
+            s["target"] = name
+            n_assigned += 1
+            e = header_hits.setdefault(name, {"matched": name, "subs": 0,
+                                              "method": "header (per-sub)",
+                                              "first": s["time"][11:16],
+                                              "last": s["time"][11:16]})
+            e["subs"] += 1
+            e["last"] = s["time"][11:16]
+        else:
+            e = header_hits.setdefault("(no match)", {
+                "matched": None, "subs": 0, "method": "header (per-sub)",
+                "ra_deg": round(coords[0], 3), "dec_deg": round(coords[1], 3),
+                "first": s["time"][11:16], "last": s["time"][11:16]})
+            e["subs"] += 1
+            e["last"] = s["time"][11:16]
+    results = [{"window": f'{e.pop("first")}-{e.pop("last")}', **e}
+               for e in header_hits.values()]
+
+    # Pass 2: coordinate-less subs -> one ASTAP solve per time cluster
+    if no_coords:
+        clusters, cur = [], [no_coords[0]]
+        for prev, s in zip(no_coords, no_coords[1:]):
+            try:
+                gap = (datetime.fromisoformat(s["time"][:19])
+                       - datetime.fromisoformat(prev["time"][:19])
+                       ).total_seconds() / 60
+            except ValueError:
+                gap = 0
+            if gap > CLUSTER_GAP_MIN:
+                clusters.append(cur)
+                cur = []
+            cur.append(s)
+        clusters.append(cur)
+        for cl in clusters:
+            mid = cl[len(cl) // 2]
+            path = Path(mid.get("abs_path") or "")
+            coords = _astap_solve(config, path) if path.exists() else None
+            entry = {"window": f'{cl[0]["time"][11:16]}-{cl[-1]["time"][11:16]}',
+                     "subs": len(cl), "method": "plate solve",
+                     "matched": None}
+            if coords:
+                entry["ra_deg"] = round(coords[0], 3)
+                entry["dec_deg"] = round(coords[1], 3)
+                name = _match(*coords)
+                if name:
+                    entry["matched"] = name
+                    for s in cl:
+                        s["target"] = name
+                        n_assigned += 1
+            results.append(entry)
 
     if n_assigned:
-        by_file = {s.get("file"): s for s in unknown}
+        by_file = {s.get("file"): s.get("target") for s in unknown}
         for s in subs:
-            u = by_file.get(s.get("file"))
-            if u is not None:
-                s["target"] = u["target"]
+            if s.get("file") in by_file:
+                s["target"] = by_file[s.get("file")]
         _rewrite_subs(config, date, subs)
-    logger.info("Identify %s: %d subs attributed across %d clusters",
-                date, n_assigned, len(clusters))
+    logger.info("Identify %s: %d subs attributed (%d groups)",
+                date, n_assigned, len(results))
     return {"identified": n_assigned, "clusters": results}
