@@ -599,11 +599,31 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     ]
     if gate_dark:
         start_items.append(_wait_for_provider("NauticalDuskProvider", -30))
+    dark_exp_s = float(getattr(_gen_cfg(), "nb_exposure_s", 600.0))
+    start_unsafe_darks = _seq_container(
+        "STARTUP_DARKS_IF_UNSAFE",
+        [
+            # first pass may arrive in twilight: hold for true dark before
+            # the first dark frame (instant on later passes)
+            _wait_for_provider("DuskProvider", 0),
+            _make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                "NINA.Sequencer",
+                ExposureTime=dark_exp_s,
+                Gain=_gen_cfg().default_gain,
+                Offset=_gen_cfg().default_offset,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                    X=1, Y=1),
+                ImageType="DARK", ExposureCount=0,
+                ErrorBehavior=0, Attempts=1),
+        ],
+        # loops only while UNSAFE, and never past dawn
+        conditions=[_make_typed(
+            "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
+            _time_condition(dawn_provider, dawn_offset)])
     start_items += [
         _connect("Safety Monitor"),
-        _wait_until_safe(),
-        _pushover("Startup", "safety monitor SAFE — connecting camera, FW, "
-                  "focuser, mount, guider, weather"),
         _connect("Camera"),
         _dew_heater(True),
         _cool_camera(temp, 2.0),
@@ -612,10 +632,15 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         _connect("Mount"),
         _connect("Guider"),
         _connect("Weather"),
+        _pushover("Startup", f"camera cooling to {temp:.0f}°C; if the night "
+                  f"starts UNSAFE the roof-closed time becomes {dark_exp_s:.0f}s "
+                  "darks until conditions clear"),
+        start_unsafe_darks,
+        _wait_until_safe(),
+        _pushover("Startup", "safety monitor SAFE — unparking"),
         _unpark(),
         _set_tracking(5),
-        _pushover("Startup", f"all equipment connected; cooling to "
-                  f"{temp:.0f}°C; holding until nautical dusk"),
+        _pushover("Startup", "holding until nautical dusk"),
     ]
     if gate_dark and sequence.targets:
         # Twilight autofocus: spend twilight, not dark time, on first focus
@@ -674,8 +699,10 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             # Core NINA condition (type from Jeremy's export): loops only
             # while the safety monitor reports UNSAFE, so we exit within
             # one sub of conditions clearing. Roof closed = dark chamber.
+            # Dawn bound so a storm that lasts all night still shuts down.
             conditions=[_make_typed(
-                "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")])
+                "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
+                _time_condition(dawn_provider, dawn_offset)])
         unsafe_items += [
             _pushover("Safety", f"roof closed — turning downtime into "
                       f"{dark_exp:.0f}s darks until conditions clear"),
