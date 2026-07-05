@@ -622,6 +622,28 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         conditions=[_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
             _time_condition(dawn_provider, dawn_offset)])
+    bias_if_still_unsafe = _seq_container(
+        "BIAS_IF_STILL_UNSAFE",
+        [_seq_container("50 bias", [_make_typed(
+            "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+            "NINA.Sequencer",
+            ExposureTime=0.001,
+            Gain=_gen_cfg().default_gain, Offset=_gen_cfg().default_offset,
+            Binning=_make_typed(
+                "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                X=1, Y=1),
+            ImageType="BIAS", ExposureCount=0,
+            ErrorBehavior=0, Attempts=1)],
+            conditions=[_make_typed(
+                "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+                CompletedIterations=0, Iterations=50)])],
+        # skipped entirely if the sky is safe by the time we get here;
+        # LoopCondition(1) makes it a one-shot when we are still unsafe
+        conditions=[_make_typed(
+            "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
+            _make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=1)])
     start_items += [
         _connect("Safety Monitor"),
         _connect("Camera"),
@@ -636,6 +658,7 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                   f"starts UNSAFE the roof-closed time becomes {dark_exp_s:.0f}s "
                   "darks until conditions clear"),
         start_unsafe_darks,
+        bias_if_still_unsafe,
         _wait_until_safe(),
         _pushover("Startup", "safety monitor SAFE — unparking"),
         _unpark(),

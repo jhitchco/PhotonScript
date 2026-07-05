@@ -87,6 +87,14 @@
                     <span class="value" id="currentFilter">{{ telescope_state.current_filter or "—" }}</span>
                 </div>
                 <div class="status-card">
+                    <label>Safety</label>
+                    <span class="value" id="safetyState">—</span>
+                </div>
+                <div class="status-card">
+                    <label>Commanding</label>
+                    <span class="value" id="commandState" style="font-size:.8rem;">—</span>
+                </div>
+                <div class="status-card">
                     <label>Guiding RMS</label>
                     <span class="value" id="guidingRms">{{ "%.2f"|format(telescope_state.guiding.rms_total_arcsec) }}"</span>
                 </div>
@@ -300,6 +308,25 @@
         const el = document.getElementById('scopeChip');
         try {
             const d = await (await fetch('/api/scope')).json();
+            const saf = document.getElementById('safetyState');
+            if (saf) {
+                saf.textContent = d.is_safe === true ? 'SAFE'
+                    : d.is_safe === false ? 'UNSAFE' : '—';
+                saf.style.color = d.is_safe === true ? '#4ade80'
+                    : d.is_safe === false ? '#f87171' : '';
+            }
+            const ct = document.getElementById('cameraTemp');
+            if (ct && d.camera_temp != null)
+                ct.textContent = d.camera_temp.toFixed(1) + '°C';
+            try {
+                const arm = await (await fetch('/api/arm')).json();
+                const cmd = document.getElementById('commandState');
+                if (cmd) cmd.textContent =
+                    (arm.state || '—') + (arm.detail ? ' · ' + arm.detail : '');
+                const ss = document.getElementById('sessionState');
+                if (ss && arm.state && ss.textContent.trim() === 'IDLE')
+                    ss.textContent = arm.state;
+            } catch (e2) {}
             el.innerHTML =
                 '<span style="border:1px solid ' + SCOPE_COLORS[d.color] + ';color:' +
                 SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;">' +

@@ -1393,10 +1393,11 @@ async def api_scope():
     """Is the scope home safe? Mount park/tracking + camera cooler state."""
     import httpx
     base = get_config().nina_base_url.rstrip("/")
-    out = {"mount": None, "camera": None}
+    out = {"mount": None, "camera": None, "safety": None}
     async with httpx.AsyncClient(timeout=8) as client:
         for key, path in (("mount", "/equipment/mount/info"),
-                          ("camera", "/equipment/camera/info")):
+                          ("camera", "/equipment/camera/info"),
+                          ("safety", "/equipment/safetymonitor/info")):
             try:
                 r = await client.get(base + path)
                 p = r.json().get("Response", {})
@@ -1404,6 +1405,8 @@ async def api_scope():
             except Exception:  # noqa: BLE001
                 pass
     mount, cam = out["mount"] or {}, out["camera"] or {}
+    saf = out["safety"] or {}
+    is_safe = saf.get("IsSafe") if saf.get("Connected") else None
     parked = mount.get("AtPark", mount.get("AtHome"))
     tracking = mount.get("TrackingEnabled", mount.get("Tracking"))
     temp = cam.get("Temperature")
@@ -1419,4 +1422,5 @@ async def api_scope():
     else:
         status, color = "UNPARKED, not tracking", "yellow"
     return {"status": status, "color": color, "parked": parked,
-            "tracking": tracking, "camera_temp": temp, "cooler_on": cooler}
+            "tracking": tracking, "camera_temp": temp, "cooler_on": cooler,
+            "is_safe": is_safe}
