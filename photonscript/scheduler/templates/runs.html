@@ -234,6 +234,10 @@
             (hasUnknown ? ' <input id="assignTarget" placeholder="target name for this night" ' +
                 'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
                 'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.8rem;">' +
+                '<input id="assignWindow" placeholder="UTC window 04:03-05:18 (optional)" ' +
+                'title="only assign subs inside this UTC time window — for nights with two targets" ' +
+                'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.4rem;width:15rem;">' +
                 '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;" ' +
                 'onclick="assignTarget()">Assign</button>' : '');
         const sc = d.score;
@@ -417,7 +421,8 @@
         if (!name) return;
         await fetch('/api/runs/' + currentDate + '/assign_target', {method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({name: name})});
+            body: JSON.stringify({name: name,
+                window: (document.getElementById('assignWindow') || {value:''}).value})});
         loadDetail(currentDate);
     }
     let lbIdx = 0;

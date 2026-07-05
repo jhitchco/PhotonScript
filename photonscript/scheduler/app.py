@@ -1280,9 +1280,24 @@ async def api_run_assign_target(date: str, payload: dict = Body(...)):
         return JSONResponse(status_code=400, content={"detail": "name required"})
     config = get_config()
     subs = _load_subs(config, date)
+
+    def _in_window(s):
+        w = (payload.get("window") or "").strip()  # "HH:MM-HH:MM" UTC
+        if not w:
+            return True
+        try:
+            lo, hi = [p.strip() for p in w.split("-")]
+        except ValueError:
+            return True
+        t = str(s.get("time", ""))[11:16]
+        if not t:
+            return False
+        return (lo <= t <= hi) if lo <= hi else (t >= lo or t <= hi)
+
     n = 0
     for s in subs:
-        if s.get("target") in ("?", "", None) or payload.get("force"):
+        if (s.get("target") in ("?", "", None) or payload.get("force")) \
+                and _in_window(s):
             s["target"] = name
             n += 1
     if n:
