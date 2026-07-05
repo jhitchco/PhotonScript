@@ -66,12 +66,20 @@ def _load_subs(config, date: str) -> list[dict]:
     p = runs_dir(config) / f"{date}_subs.jsonl"
     if not p.exists():
         return []
+    try:  # normalize NINA filter names (H/O/S) to class names (Ha/OIII/SII)
+        rev = config.reverse_filter_map()
+    except Exception:  # noqa: BLE001
+        rev = {}
     out = []
     for line in p.read_text(encoding="utf-8").splitlines():
         try:
-            out.append(json.loads(line))
+            r = json.loads(line)
         except json.JSONDecodeError:
             continue
+        f = r.get("filter")
+        if f in rev:
+            r["filter"] = rev[f]
+        out.append(r)
     return out
 
 
@@ -275,7 +283,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
         "time": hdr.get("DATE-OBS", ""),
         "target": _resolve_target(hdr.get("OBJECT"), path.name,
                                   plan_names or []),
-        "filter": hdr.get("FILTER", "?"),
+        "filter": (lambda f: {**{}, **getattr(config, "reverse_filter_map",
+                    lambda: {})()}.get(f, f))(hdr.get("FILTER", "?")),
         "exp_s": float(hdr.get("EXPTIME", 0)),
         "ccd_temp": hdr.get("CCD-TEMP"),
         "hfr": hfr,
