@@ -134,6 +134,10 @@
                 <button class="btn btn-secondary" id="addTargetBtn">Add</button>
                 <button class="btn btn-secondary" id="recountBtn" title="Rebuild accepted counts from every graded night on disk — pulls old-season history into goal progress">Recount from history</button>
             </div>
+            <details id="queueBox" style="margin:-.2rem 0 .8rem;" hidden>
+                <summary class="bd" style="cursor:pointer;" id="queueSummary"></summary>
+                <div id="queueList" class="bd" style="margin:.4rem 0 0 .8rem;"></div>
+            </details>
             <div id="projectManager" class="goals-grid"><p class="empty-state">Loading projects…</p></div>
             <div class="actions" style="margin-top:.9rem;">
                 <a href="/api/tonight/sequence.json" class="btn btn-primary" download>Download NINA Sequence (Advanced Sequencer JSON)</a>
@@ -591,6 +595,23 @@
         } finally { b.disabled = false; b.textContent = 'Recount from history'; }
         loadProjects(); loadCampaign();
     };
+    async function loadQueue() {
+        try {
+            const d = await (await fetch('/api/sync/queue')).json();
+            const box = document.getElementById('queueBox');
+            if (!d.configured || !d.total_files) { box.hidden = true; return; }
+            box.hidden = false;
+            const gb = b => (b / 1073741824).toFixed(1) + ' GB';
+            document.getElementById('queueSummary').textContent =
+                'Transfer queue: ' + d.total_files + ' files · ' +
+                gb(d.total_bytes) + ' across ' + d.groups.length + ' folder(s)';
+            document.getElementById('queueList').innerHTML = d.groups.map(g =>
+                '<b>' + g.folder + '</b>: ' + g.files + ' files · ' + gb(g.bytes)
+            ).join('<br>') + (d.more_groups ? '<br>… +' + d.more_groups + ' more' : '');
+        } catch (e) {}
+    }
+    loadQueue();
+    setInterval(loadQueue, 30000);
     async function loadRecentSubs() {
         try {
             const d = await (await fetch('/api/activity')).json();

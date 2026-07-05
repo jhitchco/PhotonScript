@@ -967,6 +967,7 @@ def _syncthing_pending_names():
         return _remoteneed_cache["names"]
     try:
         names: set = set()
+        entries: list = []
         with httpx.Client(timeout=6, headers={"X-API-Key": key}) as cl:
             for page in range(1, 41):  # up to 20k entries
                 r = cl.get(url.rstrip("/") + "/rest/db/remoteneed",
@@ -977,11 +978,15 @@ def _syncthing_pending_names():
                 if not isinstance(batch, list):
                     batch = []
                 for f in batch:
-                    n = f.get("name", "") if isinstance(f, dict) else str(f)
+                    if isinstance(f, dict):
+                        n, sz = f.get("name", ""), int(f.get("size", 0))
+                    else:
+                        n, sz = str(f), 0
                     names.add(Path(n).name)
+                    entries.append((n, sz))
                 if len(batch) < 500:
                     break
-        _remoteneed_cache.update(t=now, names=names)
+        _remoteneed_cache.update(t=now, names=names, entries=entries)
         return names
     except Exception as e:  # noqa: BLE001
         logger.debug("remoteneed unavailable: %s", e)
@@ -1106,6 +1111,28 @@ async def api_sync():
                 "library_synced": library_synced}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "error": str(e)}
+
+
+@app.get("/api/sync/queue")
+def api_sync_queue():
+    """What's still moving to the desktop, grouped by folder."""
+    names = _syncthing_pending_names()  # refreshes the cache
+    if names is None:
+        return {"configured": False, "groups": [], "total_files": 0,
+                "total_bytes": 0}
+    entries = _remoteneed_cache.get("entries") or []
+    groups: dict[str, dict] = {}
+    for name, size in entries:
+        parts = name.replace("\\", "/").split("/")
+        key = "/".join(parts[:2]) if len(parts) > 1 else (parts[0] or "(root)")
+        g = groups.setdefault(key, {"folder": key, "files": 0, "bytes": 0})
+        g["files"] += 1
+        g["bytes"] += size
+    out = sorted(groups.values(), key=lambda g: -g["bytes"])
+    return {"configured": True, "groups": out[:20],
+            "more_groups": max(0, len(out) - 20),
+            "total_files": len(entries),
+            "total_bytes": sum(s for _, s in entries)}
 
 
 @app.get("/api/calibration/health")
