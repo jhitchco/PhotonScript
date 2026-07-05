@@ -18,8 +18,13 @@ if (-not (Test-Path $PixInsight)) {
 }
 $js = Get-Content (Join-Path $PSScriptRoot "integrate_sho.js") -Raw
 $js = $js -replace '__STAGING__', ($stage -replace '\\','/')
-$tmp = Join-Path $env:TEMP "photonscript_integrate.js"
-Set-Content -Path $tmp -Value $js -Encoding UTF8
+$runjs = Join-Path $stage "integrate_run.js"
+Set-Content -Path $runjs -Value $js -Encoding UTF8
 Write-Host "Launching PixInsight pipeline for '$Target'..."
 Write-Host "  bias/dark masters -> per-filter flats -> calibrate -> cosmetic -> register -> integrate"
-& $PixInsight -n --run="$tmp"
+Write-Host "Script: $runjs"
+# PixInsight 1.9 startup-script flag is -r= (each form varies by build; try both)
+& $PixInsight -n "-r=$runjs" "--run=$runjs"
+Write-Host ""
+Write-Host "If the PixInsight console shows no [SHO] lines within ~15s, run it manually:"
+Write-Host "  SCRIPT menu > Execute Script File... > $runjs"
