@@ -1275,11 +1275,13 @@ async def api_run_manual_qa(date: str, payload: dict = Body(...)):
     """Manual pass/reject for one sub (wins over automatic grading)."""
     from photonscript.scheduler.runs import set_manual_qa
     hit = set_manual_qa(get_config(), date, payload.get("file", ""),
-                        bool(payload.get("passed")))
+                        passed=payload.get("passed"),
+                        state=payload.get("state"))
     if hit is None:
         return JSONResponse(status_code=404, content={"detail": "sub not found"})
     logger.info("Manual QA %s: %s -> %s", date, payload.get("file"),
-                "pass" if payload.get("passed") else "reject")
+                payload.get("state") or
+                ("accepted" if payload.get("passed") else "rejected"))
     return hit
 
 

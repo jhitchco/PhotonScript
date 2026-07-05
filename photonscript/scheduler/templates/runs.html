@@ -308,11 +308,11 @@
         const appr = subs.filter(s => s.passed_qa && s.reviewed).length
                      - pend - done;
         document.getElementById('reviewCounts').innerHTML =
-            '<span style="color:#eab308">' + rev + ' awaiting review</span> · ' +
-            (pend ? '<span style="color:#7dd3fc">' + pend + ' syncing ⇅</span> · ' : '') +
-            '<span style="color:#4ade80">' + done + ' transferred ✓</span>' +
-            (appr > 0 ? ' · ' + appr + ' accepted' : '') +
-            ' · <span style="color:#f87171">' + rej + ' rejected</span>';
+            '<span style="color:#eab308">👁 ' + rev + ' review</span> · ' +
+            (pend ? '<span style="color:#7dd3fc">⇅ ' + pend + ' syncing</span> · ' : '') +
+            '<span style="color:#4ade80">✓ ' + done + ' transferred</span>' +
+            (appr > 0 ? ' · <span style="color:#4ade80">✓ ' + appr + ' accepted</span>' : '') +
+            ' · <span style="color:#f87171">✗ ' + rej + ' rejected</span>';
         const btn = document.getElementById('approveBtn');
         btn.hidden = rev === 0;
         btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
@@ -376,9 +376,9 @@
             .map((s, i) => '<figure>' +
                 '<div class="qa-btns">' +
                 '<span class="y" title="approve (accept + queue transfer)" ' +
-                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', true)">✓</span>' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'accepted\')">✓</span>' +
                 '<span class="n" title="reject (kept on disk, excluded from library)" ' +
-                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', false)">✗</span>' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'rejected\')">✗</span>' +
                 '</div>' +
                 '<img loading="lazy" style="cursor:zoom-in;' +
                 (!s.passed_qa ? 'outline:2px solid #f87171;opacity:.55;'
@@ -387,7 +387,7 @@
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
                 '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
-                Math.round(s.exp_s) + 's' + (s.passed_qa ? '' : ' <span class="rej">✗</span>') +
+                Math.round(s.exp_s) + 's' + badge(s) +
                 '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
                 ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
             .join('');
@@ -406,7 +406,7 @@
                 (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
                  : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
                 ';" title="click to flip pass/reject (manual override)" ' +
-                'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\', ' + !s.passed_qa + ')">' +
+                'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\')">' +
                 (!s.passed_qa ? (s.reason || 'reject')
                  : !s.reviewed ? 'review'
                  : s.transfer === 'pending' ? 'accepted · syncing ⇅'
@@ -472,6 +472,31 @@
                ' Dec ' + c.dec_deg : ' — no coordinates'))).join('\n'));
         loadDetail(currentDate);
     }
+    function subState(s) {
+        return !s.passed_qa ? 'rejected' : !s.reviewed ? 'review'
+             : s.transfer === 'pending' ? 'syncing' : 'accepted';
+    }
+    const STATE_ICON = {review: ['👁', '#eab308'], accepted: ['✓', '#4ade80'],
+                        syncing: ['⇅', '#7dd3fc'], rejected: ['✗', '#f87171']};
+    function badge(s) {
+        const [ic, col] = STATE_ICON[subState(s)];
+        return ' <span style="color:' + col + '">' + ic + '</span>';
+    }
+    async function setState(file, state) {
+        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file: file, state: state})});
+    }
+    function nextState(s) {
+        const st = subState(s);
+        return st === 'review' ? 'accepted'
+             : (st === 'accepted' || st === 'syncing') ? 'rejected' : 'review';
+    }
+    function applyLocal(s, state) {
+        s.passed_qa = state !== 'rejected';
+        s.reviewed = state === 'accepted';
+        if (state !== 'accepted') s.transfer = null;
+    }
     let lbIdx = 0;
     function openLb(i) {
         lbIdx = i;
@@ -486,10 +511,11 @@
             '<b>' + (s.time || '').slice(11, 19) + ' UTC</b> · ' + s.filter + ' ' +
             Math.round(s.exp_s) + 's · HFR ' + (s.hfr ?? '–') + ' · ★' +
             (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
-            ' · <span style="color:' + (s.passed_qa ? '#4ade80' : '#f87171') + '">' +
-            (s.passed_qa ? 'pass' : (s.reason || 'reject')) + '</span>';
+            ' ·' + badge(s) + ' <span style="opacity:.75">' + subState(s) +
+            (s.reason && !s.passed_qa ? ' — ' + s.reason : '') + '</span>';
         const btn = document.getElementById('lbQaBtn');
-        btn.textContent = s.passed_qa ? '✗ Reject (X)' : '✓ Accept (X)';
+        const nx = nextState(s);
+        btn.textContent = 'X → ' + STATE_ICON[nx][0] + ' ' + nx;
         btn.onclick = () => lbToggle();
         document.getElementById('lightbox').hidden = false;
     }
@@ -500,10 +526,9 @@
     }
     async function lbToggle() {
         const s = window._shownSubs[lbIdx];
-        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({file: s.file, passed: !s.passed_qa})});
-        s.passed_qa = !s.passed_qa;   // optimistic; full reload on close
+        const st = nextState(s);
+        await setState(s.file, st);
+        applyLocal(s, st);   // optimistic; full reload on close
         openLb(lbIdx);
     }
     document.addEventListener('keydown', (e) => {
@@ -516,17 +541,16 @@
     document.getElementById('lightbox').addEventListener('click', (e) => {
         if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate); }
     });
-    async function qaSet(ev, fileEnc, passed) {
+    async function qaSet(ev, fileEnc, state) {
         ev.stopPropagation();
-        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({file: decodeURIComponent(fileEnc), passed: passed})});
+        await setState(decodeURIComponent(fileEnc), state);
         loadDetail(currentDate);
     }
-    async function toggleQa(fileEnc, passed) {
-        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({file: decodeURIComponent(fileEnc), passed: passed})});
+    async function toggleQa(fileEnc) {
+        const file = decodeURIComponent(fileEnc);
+        const s = currentDetail.subs.find(x => x.file === file);
+        if (!s) return;
+        await setState(file, nextState(s));
         loadDetail(currentDate);
     }
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);

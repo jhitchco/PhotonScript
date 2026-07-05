@@ -462,23 +462,34 @@ def approve_night(config, date: str) -> dict:
 
 
 def set_manual_qa(config, date: str, rel_file: str,
-                  passed: bool) -> dict | None:
-    """Human override for one sub; wins over every automatic pass."""
+                  passed: bool | None = None,
+                  state: str | None = None) -> dict | None:
+    """Human verdict for one sub: 'accepted' | 'rejected' | 'review'.
+
+    'review' hands the sub back to the automatic pipeline (pass, not yet
+    reviewed). Legacy bool `passed` maps to accepted/rejected.
+    """
+    if state is None:
+        state = "accepted" if passed else "rejected"
     subs = _load_subs(config, date)
     hit = None
     for s_ in subs:
         if s_.get("file") == rel_file:
-            s_["passed_qa"] = passed
-            s_["manual_qa"] = True
-            if passed:
-                s_["reviewed"] = True  # a manual pass IS the review
-            s_["reason"] = "" if passed else "rejected manually"
+            if state == "accepted":
+                s_.update(passed_qa=True, reviewed=True, manual_qa=True,
+                          reason="")
+            elif state == "rejected":
+                s_.update(passed_qa=False, reviewed=True, manual_qa=True,
+                          reason="rejected manually")
+            else:  # review
+                s_.update(passed_qa=True, reviewed=False, manual_qa=False,
+                          reason="")
             hit = s_
     if hit is None:
         return None
     _rewrite_subs(config, date, subs)
     try:  # keep the library consistent with the verdict
-        if passed:
+        if state == "accepted":
             build_library(config, date)
         else:
             name = Path(hit.get("abs_path") or "").name
