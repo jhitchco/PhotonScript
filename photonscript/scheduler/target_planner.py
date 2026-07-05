@@ -79,7 +79,15 @@ def plan_night_sequence(
         date_utc = datetime.utcnow()
 
     obs = config.get_observatory()
-    twilight = get_twilight_times(obs, date_utc)
+    # Anchor to the LOCAL evening date — after ~6 PM local the UTC date has
+    # already rolled over and a UTC anchor plans TOMORROW's night (the same
+    # bug fixed in night_plan; this was the last copy).
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+    _local = date_utc + timedelta(hours=_tz_off(config, date_utc))
+    _base = datetime(_local.year, _local.month, _local.day)
+    twilight = get_twilight_times(obs, _base)
+    if twilight.get("astro_dark_end") and twilight["astro_dark_end"] < date_utc:
+        twilight = get_twilight_times(obs, _base + timedelta(days=1))
     dark_start = twilight.get("astro_dark_start")
     dark_end = twilight.get("astro_dark_end")
 

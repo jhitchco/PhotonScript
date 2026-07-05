@@ -33,9 +33,10 @@ def night_moon(config, date_str: str, dark_start: datetime,
     times = Time(dark_start) + np.linspace(0, hours, 25) * u.hour
     loc = get_earth_location(config.get_observatory())
     frame = AltAz(obstime=times, location=loc)
-    moon = get_body("moon", times, loc)
-    alt = moon.transform_to(frame).alt.deg
-    elong = get_sun(times).separation(moon).deg
+    alt = get_body("moon", times, loc).transform_to(frame).alt.deg
+    # geocentric moon for elongation: right for illumination, and avoids
+    # astropy's noisy NonRotationTransformationWarning wall
+    elong = get_sun(times).separation(get_body("moon", times)).deg
     illum = float((1 - np.cos(np.radians(np.median(elong)))) / 2 * 100)
     moon_free = float(np.mean(alt < 0.0) * hours)
     # BB window: enough moonless dark time, or a faint moon all night
