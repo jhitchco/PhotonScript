@@ -429,8 +429,13 @@ def _dark_quota_blocks(dawn_provider, dawn_offset):
     blocks = []
     try:
         from photonscript.scheduler.calibration import count_matching_darks
-        for exp_s in (float(getattr(cfg, "nb_exposure_s", 600.0)),
-                      float(getattr(cfg, "bb_exposure_s", 180.0))):
+        wanted = []
+        for tok in str(getattr(cfg, "dark_exposures", "600,180")).split(","):
+            try:
+                wanted.append(float(tok.strip()))
+            except ValueError:
+                continue
+        for exp_s in wanted:
             have = count_matching_darks(cfg, exp_s)
             need = max(0, quota - have)
             if need == 0:

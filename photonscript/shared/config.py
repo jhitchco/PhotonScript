@@ -47,6 +47,7 @@ class PhotonScriptConfig(BaseSettings):
     syncthing_device_id: str = ""   # the DESKTOP's device id
     astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     dark_target_count: int = 30  # dark-library quota per exposure length (current epoch)
+    dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
     unsafe_darks_enabled: bool = True  # shoot darks while parked during unsafe pauses
