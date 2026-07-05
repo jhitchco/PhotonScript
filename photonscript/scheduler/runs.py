@@ -363,6 +363,14 @@ def start_backfill(config, date: str) -> None:
                                               0.001), 2)
             logger.info("Backfill finished for %s: %d frames graded in "
                         "%.0fs", date, done, time.monotonic() - started)
+            try:  # attribute '?' subs from their header coordinates
+                from photonscript.scheduler.identify import identify_night
+                ri = identify_night(config, date)
+                if ri.get("identified"):
+                    logger.info("Auto-identify %s: %d subs attributed",
+                                date, ri["identified"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Auto-identify failed for %s: %s", date, e)
             try:
                 n_out = flag_hfr_outliers(config, date)
                 if n_out:

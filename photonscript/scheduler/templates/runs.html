@@ -28,7 +28,12 @@
         .bd { font-size:.78rem; opacity:.75; }
         .night-title { font-size:1.25rem; font-weight:700; margin:0 0 .2rem 0; }
         .thumbs { display:flex; gap:.45rem; flex-wrap:wrap; padding:.4rem 0; }
-        .thumbs figure { margin:0; text-align:center; width:132px; }
+        .thumbs figure { margin:0; text-align:center; width:132px; position:relative; }
+        .qa-btns { position:absolute; top:3px; right:3px; display:flex; gap:3px; }
+        .qa-btns span { cursor:pointer; border-radius:4px; padding:0 5px;
+            font-size:.85rem; background:rgba(0,0,0,.65); user-select:none; }
+        .qa-btns .y { color:#4ade80; } .qa-btns .n { color:#f87171; }
+        .qa-btns span:hover { background:rgba(0,0,0,.9); }
         .thumbs img { border-radius:6px; display:block; width:132px; }
         .thumbs figcaption { font-size:.6rem; opacity:.65; margin-top:.15rem;
                              line-height:1.25; }
@@ -368,7 +373,16 @@
                  ' · <a href="#" id="thumbAll">show fewer</a>' : '');
         window._shownSubs = shown;
         document.getElementById('thumbStrip').innerHTML = shown
-            .map((s, i) => '<figure><img loading="lazy" style="cursor:zoom-in;" ' +
+            .map((s, i) => '<figure>' +
+                '<div class="qa-btns">' +
+                '<span class="y" title="approve (accept + queue transfer)" ' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', true)">✓</span>' +
+                '<span class="n" title="reject (kept on disk, excluded from library)" ' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', false)">✗</span>' +
+                '</div>' +
+                '<img loading="lazy" style="cursor:zoom-in;' +
+                (!s.passed_qa ? 'outline:2px solid #f87171;opacity:.55;'
+                 : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" ' +
                 'onclick="openLb(' + i + ')" src="/api/runs/' + currentDate +
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
@@ -502,6 +516,13 @@
     document.getElementById('lightbox').addEventListener('click', (e) => {
         if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate); }
     });
+    async function qaSet(ev, fileEnc, passed) {
+        ev.stopPropagation();
+        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file: decodeURIComponent(fileEnc), passed: passed})});
+        loadDetail(currentDate);
+    }
     async function toggleQa(fileEnc, passed) {
         await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
             headers: {'Content-Type': 'application/json'},
