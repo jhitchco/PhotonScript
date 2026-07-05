@@ -653,12 +653,44 @@
                         ' ' + a.kind + ' ' + a.hours + 'h</span>').join('<br>') +
                     '</div>';
             }).join('');
-            document.getElementById('campaignGoals').innerHTML = d.goals.map(g =>
-                '<b>' + g.name + '</b>: ' + g.hours_done + 'h / ' + g.goal_hours +
-                'h · NB ' + g.nb_remaining_h + 'h + BB ' + g.bb_remaining_h + 'h to go · ' +
-                (g.eta ? 'ETA ~<b>' + g.eta + '</b>' :
-                 '<span style="color:#eab308">not reachable in 14 nights</span>')
-            ).join('<br>') + '<br><span style="opacity:.5;">' + d.note + '</span>';
+            // Timeline: one row per goal, one column per night, today first
+            const days = d.nights.map(n => n.date);
+            const perGoalNight = {};
+            d.nights.forEach(n => n.assigned.forEach(a => {
+                (perGoalNight[a.goal] = perGoalNight[a.goal] || {})[n.date] =
+                    {hours: a.hours, kind: a.kind};
+            }));
+            const KCOL = {NB: '#eab308', BB: '#4ade80'};
+            document.getElementById('campaignGoals').innerHTML =
+                '<div style="display:grid;grid-template-columns:13rem repeat(' + days.length +
+                ',1fr);gap:2px;align-items:center;font-size:.68rem;">' +
+                '<div></div>' + days.map((dt, i) =>
+                    '<div style="text-align:center;opacity:.55;">' +
+                    (i === 0 ? 'today' : dt.slice(8)) + '</div>').join('') +
+                d.goals.map(g => {
+                    const cells = days.map(dt => {
+                        const a = (perGoalNight[g.name] || {})[dt];
+                        const eta = g.eta === dt;
+                        if (!a) return '<div style="height:16px;border-radius:3px;' +
+                            'background:rgba(255,255,255,.04);' +
+                            (eta ? 'outline:1px solid #7dd3fc;' : '') + '"></div>';
+                        const op = Math.min(1, 0.25 + a.hours / 3.5);
+                        return '<div title="' + g.name + ' · ' + dt + ' · ' + a.kind +
+                            ' ' + a.hours + 'h" style="height:16px;border-radius:3px;' +
+                            'background:' + KCOL[a.kind] + ';opacity:' + op.toFixed(2) + ';' +
+                            (eta ? 'outline:2px solid #7dd3fc;' : '') + '"></div>';
+                    }).join('');
+                    return '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+                        '<b>' + g.name + '</b> <span style="opacity:.55">' + g.hours_done +
+                        '/' + g.goal_hours + 'h · ' +
+                        (g.eta ? 'ETA ' + g.eta.slice(5) : '>14d') + '</span></div>' + cells;
+                }).join('') +
+                '</div>' +
+                '<div style="font-size:.68rem;opacity:.5;margin-top:.3rem;">' +
+                'cell = planned hours that night (brighter = more) · ' +
+                '<span style="color:#eab308">NB</span> / ' +
+                '<span style="color:#4ade80">BB</span> · blue outline = ETA night · ' +
+                d.note + '</div>';
             const t = d.totals || {};
             const nbS = Math.round((t.nb_capacity_h - t.nb_demand_h) * 10) / 10;
             const bbS = Math.round((t.bb_capacity_h - t.bb_demand_h) * 10) / 10;
@@ -689,6 +721,19 @@
         } catch (e) { /* scheduler warming up */ }
     }
     loadCampaign();
+    async function suggestAdd(name) {
+        const r = await fetch('/api/projects2/from_catalog', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name, budget_hours: 10})});
+        if (!r.ok) { alert((await r.json()).detail || 'add failed'); return; }
+        loadProjects(); loadCampaign();
+    }
+    async function suggestDismiss(name) {
+        await fetch('/api/campaign/dismiss', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name})});
+        loadCampaign();
+    }
     function btn(id, patch, label) {
         return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
                'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';
