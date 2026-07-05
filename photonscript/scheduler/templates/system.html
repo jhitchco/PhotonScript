@@ -67,6 +67,7 @@
             <div id="calHealth" class="bd">loading…</div>
             <div style="margin-top:.6rem;">
                 <button class="btn btn-secondary" id="calCapture">Capture darks + bias</button>
+                <button class="btn btn-secondary" id="calFlats" title="Dispatches a sequence that waits for sunset+15 local, shoots sky flats for all 7 filters (broadband first), then parks. Run it in the afternoon; ARM tonight's imaging AFTER it finishes (~40 min).">Capture sky flats (dusk today)</button>
                 <span class="bd" id="calStatus"></span>
             </div>
             <details style="margin-top:.7rem;font-size:.8rem;opacity:.8;">
@@ -142,6 +143,16 @@
             'darks/bias need the roof CLOSED (no shutter on the RC16)</span>';
         } catch (e) { el.textContent = 'calibration data unavailable'; }
     }
+    document.getElementById('calFlats').onclick = async () => {
+        if (!confirm('Dispatch dusk sky flats for today?\n\nThe scope will wait for ' +
+            'sunset+15, shoot ~15 flats per filter (all 7, broadband first), then park.\n' +
+            'ARM tonight\'s imaging run AFTER flats finish (~40 min after start).')) return;
+        const st = document.getElementById('calStatus');
+        const r = await fetch('/api/calibration/flats', {method: 'POST'});
+        const d = await r.json();
+        st.textContent = r.ok ? 'dispatched — starts ' + d.starts_local + ' local'
+                              : (d.detail || 'failed');
+    };
     document.getElementById('calCapture').onclick = async () => {
         if (!confirm('Capture darks (300s×20 + 600s×20) and 50 bias now?\n\n' +
             'The ROOF MUST BE CLOSED and the sky dark — the RC16 has no ' +

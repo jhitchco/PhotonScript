@@ -171,3 +171,72 @@ def count_matching_darks(config, exp_s: float) -> int:
                             - config.camera_setpoint_c) < 1.5):
                 n += 1
     return n
+
+
+def generate_dusk_flats_json(config) -> tuple:
+    """Standalone dusk sky-flat run for TODAY: wait for sunset+15 local,
+    slew high away from the sun, sky flats for every filter (broadband
+    first — dusk DIMS, so narrowband gets the darker end), park.
+    Returns (json_text, start_local_hhmm)."""
+    import json as _json
+    from datetime import timedelta
+    from photonscript.scheduler import night_plan as _np
+    from photonscript.shared.localtime import utc_offset_hours
+    from photonscript.shared.models import FilterType
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _pushover, _connect, _cool_camera,
+        _sky_flat, _slew_alt_az, _wait_until_safe, _unpark, _park,
+        _set_tracking)
+
+    obs = config.get_observatory()
+    now = datetime.utcnow()
+    tw = _np.get_twilight_crossings(obs, now.replace(hour=0, minute=0,
+                                                     second=0, microsecond=0))
+    sunset = tw.get("sunset")
+    if not sunset:
+        raise RuntimeError("could not compute sunset")
+    local = (sunset + timedelta(minutes=15)
+             + timedelta(hours=utc_offset_hours(config, sunset)))
+    n = int(getattr(config, "flat_count", 15))
+    filters = [FilterType(v) for v in
+               ("L", "R", "G", "B", "Ha", "OIII", "SII")]
+    wait_start = _make_typed(
+        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
+        Hours=local.hour, Minutes=local.minute, MinutesOffset=0, Seconds=0,
+        SelectedProvider=_make_typed(
+            "NINA.Sequencer.Utility.DateTimeProvider.TimeProvider, "
+            "NINA.Sequencer"))
+    items = [
+        _pushover("Flats", f"dusk sky flats: waiting for "
+                  f"{local.strftime('%H:%M')} local (sunset +15), then "
+                  f"{n} per filter, broadband first"),
+        _connect("Safety Monitor"),
+        _connect("Camera"),
+        _cool_camera(config.camera_setpoint_c, 2.0),
+        _connect("Filter Wheel"),
+        _connect("Mount"),
+        wait_start,
+        _wait_until_safe(),
+        _unpark(),
+        _set_tracking(0),
+        _slew_alt_az(85, 200),
+    ] + [_sky_flat(f, n, config.default_gain, config.default_offset)
+         for f in filters] + [
+        _pushover("Flats", "dusk sky flats complete — parking (cooler "
+                  "stays on for tonight's run)"),
+        _park(),
+    ]
+    root = _seq_container(
+        "PhotonScript_DuskFlats",
+        [
+            _seq_container("Start", [], container_type="NINA.Sequencer."
+                           "Container.StartAreaContainer, NINA.Sequencer"),
+            _seq_container("Targets", items, container_type="NINA.Sequencer."
+                           "Container.TargetAreaContainer, NINA.Sequencer"),
+            _seq_container("End", [], container_type="NINA.Sequencer."
+                           "Container.EndAreaContainer, NINA.Sequencer"),
+        ],
+        container_type="NINA.Sequencer.Container.SequenceRootContainer, "
+                       "NINA.Sequencer")
+    root["Parent"] = None
+    return _json.dumps(root, indent=2), local.strftime("%H:%M")

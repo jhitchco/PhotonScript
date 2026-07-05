@@ -1201,6 +1201,28 @@ async def api_calibration_capture(payload: dict = Body(default={})):
             "estimated_minutes": round(minutes)}
 
 
+@app.post("/api/calibration/flats")
+async def api_calibration_flats():
+    """Dispatch a dusk sky-flat run for today (waits for sunset+15)."""
+    from photonscript.scheduler.calibration import generate_dusk_flats_json
+    config = get_config()
+    try:
+        seq_text, start_local = generate_dusk_flats_json(config)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+    seq_dir = Path.cwd() / "sequences"
+    seq_dir.mkdir(exist_ok=True)
+    path = seq_dir / f"dusk_flats_{datetime.now():%Y%m%d}.json"
+    path.write_text(seq_text, encoding="utf-8")
+    ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                        f"dusk flats {path.name}")
+    if not ok:
+        return JSONResponse(status_code=409, content={
+            "detail": f"dispatch refused/failed: {get_armer().detail}"})
+    return {"ok": True, "starts_local": start_local,
+            "note": "flats first, then ARM tonight's run after they finish"}
+
+
 @app.get("/api/update/check")
 def api_update_check():
     """Is the running checkout behind its upstream? (git fetch + compare)."""
