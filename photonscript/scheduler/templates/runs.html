@@ -64,6 +64,7 @@
     <main>
         <aside class="panel">
             <h2>Nights</h2>
+            <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
             <div id="nightList">Loading…</div>
         </aside>
         <section class="panel" id="detailPanel" hidden>
@@ -124,10 +125,16 @@
         const nights = await r.json();
         const box = document.getElementById('nightList');
         if (!nights.length) { box.textContent = 'No recorded nights yet.'; return; }
-        const label = n => n.subs_logged ? n.subs_logged + ' subs'
-            : n.lights ? n.lights + ' ungraded'
-            : n.cal_frames ? n.cal_frames + ' cal only'
-            : 'empty';
+        const label = n => {
+            if (!n.subs_logged) return n.lights ? n.lights + ' ungraded'
+                : n.cal_frames ? n.cal_frames + ' cal only' : 'empty';
+            let l = n.subs_logged + ' subs';
+            if (n.review) l += ' <span style="color:#eab308" title="awaiting review">👁' + n.review + '</span>';
+            if (n.syncing) l += ' <span style="color:#7dd3fc" title="syncing to desktop">⇅' + n.syncing + '</span>';
+            if (!n.review && !n.syncing && n.transferred)
+                l += ' <span style="color:#4ade80" title="all approved subs transferred">✓</span>';
+            return l;
+        };
         const chip = n => '<span class="night-chip" data-date="' + n.date +
             '">' + n.date + ' <span style="opacity:.6;font-size:.75rem;">' +
             label(n) + '</span></span>';

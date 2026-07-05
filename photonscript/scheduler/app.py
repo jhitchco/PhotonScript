@@ -942,9 +942,30 @@ async def runs_page(request: Request):
 
 
 @app.get("/api/runs")
-async def api_runs():
-    from photonscript.scheduler.runs import list_runs
-    return list_runs(get_config())
+def api_runs():
+    from photonscript.scheduler.runs import list_runs, _load_subs
+    config = get_config()
+    nights = list_runs(config)
+    pending = _syncthing_pending_names()
+    for n in nights:
+        if not n["subs_logged"]:
+            n.update(review=0, syncing=None, transferred=None)
+            continue
+        subs = _load_subs(config, n["date"])
+        n["review"] = sum(1 for s in subs
+                          if s.get("passed_qa") and not s.get("reviewed"))
+        acc = [s for s in subs
+               if s.get("passed_qa") and s.get("reviewed")]
+        if pending is not None and acc:
+            sy = sum(1 for s in acc
+                     if Path(s.get("abs_path") or s.get("file") or "").name
+                     in pending)
+            n["syncing"] = sy
+            n["transferred"] = len(acc) - sy
+        else:
+            n["syncing"] = None
+            n["transferred"] = len(acc) if acc else None
+    return nights
 
 
 _remoteneed_cache: dict = {"t": 0.0, "names": None}
