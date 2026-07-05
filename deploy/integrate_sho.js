@@ -1,7 +1,7 @@
 // PhotonScript SHO integration pipeline (PJSR) - launched by run-integration.ps1
 // Layout expected (from prepare-integration.ps1):
-//   __STAGING__/LIGHTS/<Filter>/*.fits   __STAGING__/DARKS  /BIAS  /FLATS/<Filter>
-// Output: __STAGING__/out/master/master_<Filter>.xisf  (+ intermediate cal/cc/reg)
+//   STAGING: LIGHTS.<Filter>, DARKS, BIAS, FLATS.<Filter>  (fits files)
+// Output: out.master.master_<Filter>.xisf  (+ intermediate cal, cc, reg)
 
 #include <pjsr/DataType.jsh>
 
