@@ -15,7 +15,21 @@ function listFits(dir) {
    return f;
 }
 function ensureDir(d) { if (!File.directoryExists(d)) File.createDirectory(d, true); }
-function log(s) { console.noteln("<b>[SHO]</b> " + s); console.flush(); }
+var LOGLINES = [];
+function writeLog() {
+   try {
+      ensureDir(OUT);
+      var f = new File;
+      f.createForWriting(OUT + "/pipeline.log");
+      for (var i = 0; i < LOGLINES.length; ++i) f.outTextLn(LOGLINES[i]);
+      f.close();
+   } catch (e) { console.criticalln("log write failed: " + e); }
+}
+function log(s) {
+   console.noteln("<b>[SHO]</b> " + s); console.flush();
+   LOGLINES.push((new Date).toISOString() + "  " + s);
+   writeLog();  // flush after every step so a crash still leaves evidence
+}
 
 function integrate(files, id, isCal, rejectHigh) {
    // isCal: bias/dark/flat masters (no normalization for bias/dark)
@@ -148,4 +162,11 @@ function main() {
    log("DONE — masters in " + OUT + "/master (open them and autostretch)");
 }
 
-main();
+try {
+   main();
+   log("EXIT OK");
+} catch (e) {
+   log("ERROR: " + e.toString());
+   console.criticalln("[SHO] FAILED: " + e.toString());
+}
+writeLog();

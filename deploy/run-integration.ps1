@@ -19,7 +19,8 @@ if (-not (Test-Path $PixInsight)) {
 $js = Get-Content (Join-Path $PSScriptRoot "integrate_sho.js") -Raw
 $js = $js -replace '__STAGING__', ($stage -replace '\\','/')
 $runjs = Join-Path $stage "integrate_run.js"
-Set-Content -Path $runjs -Value $js -Encoding UTF8
+# BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
+[System.IO.File]::WriteAllText($runjs, $js)
 Write-Host "Launching PixInsight pipeline for '$Target'..."
 Write-Host "  bias/dark masters -> per-filter flats -> calibrate -> cosmetic -> register -> integrate"
 Write-Host "Script: $runjs"
