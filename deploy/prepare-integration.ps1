@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory=$true)][string]$Target,
     [string]$Library = "$env:USERPROFILE\ninashare\Library",
     [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
-    [switch]$Copy   # default = hardlink (instant, no extra disk); -Copy to copy
+    [switch]$Copy,  # default = hardlink (instant, no extra disk); -Copy to copy
+    [switch]$Loose  # match darks on EXPOSURE only (accept temp/offset drift) — pipeline tests
 )
 
 $src = Join-Path $Library $Target
@@ -65,12 +66,18 @@ Write-Host "Light epochs (exp|gain|offset|temp): $($epochs.Keys -join '  ·  ')"
 $nDarks = 0; $nDarkSkipped = 0
 $darkRoot = Join-Path $Library "Calibration\DARK"
 if (Test-Path $darkRoot) {
+    $lightExps = @{}
+    foreach ($sig in $epochs.Keys) { $lightExps[($sig -split '\|')[0]] = $true }
     Get-ChildItem $darkRoot -Recurse -Filter *.fits | ForEach-Object {
         $k = Get-FitsKeys $_.FullName
         $sig = "$($k.EXPTIME)|$($k.GAIN)|$($k.OFFSET)|$($k.'SET-TEMP')"
-        if ($epochs.ContainsKey($sig)) {
-            $nDarks += Add-File $_ (Join-Path $stage "DARKS")
-        } else { $nDarkSkipped++ }
+        $take = $epochs.ContainsKey($sig)
+        if (-not $take -and $Loose -and $lightExps.ContainsKey("$($k.EXPTIME)")) {
+            $take = $true
+            Write-Host "  LOOSE match: $($_.Name) [$sig] (temp/offset differ from lights)" -ForegroundColor Yellow
+        }
+        if ($take) { $nDarks += Add-File $_ (Join-Path $stage "DARKS") }
+        else { $nDarkSkipped++ }
     }
 }
 if ($nDarkSkipped) {
