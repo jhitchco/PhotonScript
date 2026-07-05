@@ -101,9 +101,83 @@ def build_campaign(config, store, forecast: dict | None = None,
                        "frac_source": frac_src,
                        "moon": moon, "assigned": assigned})
 
+    nb_demand = sum(g["nb_remaining_h"] for g in goals)
+    bb_demand = sum(g["bb_remaining_h"] for g in goals)
+    bb_capacity = sum(
+        (n["dark_h"] * n["usable_frac"]) if (n["moon"].get("illum_pct") or 0) < 20
+        else min(n["dark_h"], (n["moon"].get("moon_free_h") or 0)) * n["usable_frac"]
+        for n in nights)
+    total_capacity = sum(n["dark_h"] * n["usable_frac"] for n in nights)
+    nb_capacity = total_capacity - min(bb_demand, bb_capacity)
     for g in goals:
         g.pop("_nb"), g.pop("_bb")
     return {"nights": nights, "goals": goals,
+            "totals": {"nb_capacity_h": round(nb_capacity, 1),
+                       "nb_demand_h": round(nb_demand, 1),
+                       "bb_capacity_h": round(bb_capacity, 1),
+                       "bb_demand_h": round(bb_demand, 1)},
             "climatology_usable": CLIMATOLOGY_USABLE,
             "note": "v1 capacity-based: per-target visibility windows not "
                     "yet folded in; ETAs are estimates"}
+
+
+def _dismissed_path(config):
+    from pathlib import Path
+    return Path(config.data_dir) / "dismissed_targets.json"
+
+
+def load_dismissed(config) -> set:
+    import json
+    p = _dismissed_path(config)
+    try:
+        return set(json.loads(p.read_text(encoding="utf-8")))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def dismiss_target(config, name: str) -> None:
+    import json
+    d = load_dismissed(config)
+    d.add(name.strip().lower())
+    _dismissed_path(config).write_text(json.dumps(sorted(d)),
+                                       encoding="utf-8")
+
+
+def suggest_targets(config, store, campaign: dict, limit: int = 3) -> list:
+    """Fill spare capacity: bright-moon surplus wants narrowband emission
+    targets, dark-window surplus wants broadband. Excludes existing goals
+    and dismissed suggestions."""
+    from photonscript.shared.astronomy import get_seasonal_targets
+    from photonscript.scheduler.project_store import target_kind
+
+    t = campaign.get("totals", {})
+    nb_spare = t.get("nb_capacity_h", 0) - t.get("nb_demand_h", 0)
+    bb_spare = t.get("bb_capacity_h", 0) - t.get("bb_demand_h", 0)
+    wanted = []
+    if bb_spare > 3:
+        wanted.append(("broadband", round(bb_spare, 1)))
+    if nb_spare > 3:
+        wanted.append(("narrowband", round(nb_spare, 1)))
+    if not wanted:
+        return []
+    existing = {p.target.name.strip().lower()
+                for p in store.projects.values()}
+    dismissed = load_dismissed(config)
+    month = datetime.now().month
+    out = []
+    for kind, spare in wanted:
+        for tgt in get_seasonal_targets(month):
+            if len([s for s in out if s["kind"] == kind]) >= limit:
+                break
+            n = tgt.name.strip().lower()
+            if n in existing or n in dismissed:
+                continue
+            if target_kind(tgt) != kind:
+                continue
+            out.append({"name": tgt.name, "catalog": tgt.catalog_id,
+                        "type": tgt.object_type, "kind": kind,
+                        "spare_h": spare,
+                        "reason": (f"{spare}h of unclaimed "
+                                   f"{'dark-moon' if kind == 'broadband' else 'bright-moon'}"
+                                   " capacity in the next 14 nights")})
+    return out

@@ -1073,8 +1073,21 @@ async def api_campaign(days: int = 14):
         fc = await get_forecast(config)
     except Exception:  # noqa: BLE001 — climatology-only campaign
         pass
-    return build_campaign(config, get_store(), forecast=fc,
-                          days=min(max(days, 7), 28))
+    from photonscript.scheduler.campaign import suggest_targets
+    c = build_campaign(config, get_store(), forecast=fc,
+                       days=min(max(days, 7), 28))
+    try:
+        c["suggestions"] = suggest_targets(config, get_store(), c)
+    except Exception:  # noqa: BLE001
+        c["suggestions"] = []
+    return c
+
+
+@app.post("/api/campaign/dismiss")
+async def api_campaign_dismiss(payload: dict = Body(...)):
+    from photonscript.scheduler.campaign import dismiss_target
+    dismiss_target(get_config(), payload.get("name", ""))
+    return {"ok": True}
 
 
 @app.get("/api/activity")

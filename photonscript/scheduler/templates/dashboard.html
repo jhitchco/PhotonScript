@@ -149,6 +149,8 @@
             <h2>Campaign <span class="bd">(14 nights, moon-aware — BB gets moon-free hours first)</span></h2>
             <div id="campaignNights" style="display:flex;gap:.5rem;flex-wrap:wrap;"></div>
             <div id="campaignGoals" class="bd" style="margin-top:.7rem;"></div>
+            <div id="campaignTotals" class="bd" style="margin-top:.5rem;"></div>
+            <div id="campaignSuggest" style="margin-top:.5rem;"></div>
         </section>
     </main>
 
@@ -657,6 +659,33 @@
                 (g.eta ? 'ETA ~<b>' + g.eta + '</b>' :
                  '<span style="color:#eab308">not reachable in 14 nights</span>')
             ).join('<br>') + '<br><span style="opacity:.5;">' + d.note + '</span>';
+            const t = d.totals || {};
+            const nbS = Math.round((t.nb_capacity_h - t.nb_demand_h) * 10) / 10;
+            const bbS = Math.round((t.bb_capacity_h - t.bb_demand_h) * 10) / 10;
+            document.getElementById('campaignTotals').innerHTML =
+                '<b>Capacity vs demand (14 nights):</b> narrowband ' +
+                t.nb_demand_h + 'h wanted / ~' + t.nb_capacity_h + 'h available ' +
+                (nbS >= 0 ? '<span style="color:#4ade80">(' + nbS + 'h spare)</span>'
+                          : '<span style="color:#eab308">(' + (-nbS) + 'h short)</span>') +
+                ' · broadband ' + t.bb_demand_h + 'h wanted / ~' + t.bb_capacity_h +
+                'h moon-free ' +
+                (bbS >= 0 ? '<span style="color:#4ade80">(' + bbS + 'h spare)</span>'
+                          : '<span style="color:#eab308">(' + (-bbS) + 'h short)</span>');
+            const sug = d.suggestions || [];
+            document.getElementById('campaignSuggest').innerHTML = !sug.length ? '' :
+                '<div class="bd" style="margin-bottom:.3rem;"><b>Suggested additions</b> ' +
+                '(fill spare capacity — Add creates a goal, Dismiss hides forever):</div>' +
+                sug.map(s =>
+                    '<div style="display:inline-block;border:1px solid rgba(255,255,255,.12);' +
+                    'border-radius:8px;padding:.4rem .6rem;margin:0 .4rem .4rem 0;font-size:.78rem;">' +
+                    '<b>' + s.name + '</b> <span style="opacity:.6">' + s.catalog + ' · ' +
+                    s.type + ' · ' + s.kind + '</span><br><span style="opacity:.6">' +
+                    s.reason + '</span><br>' +
+                    '<button class="btn btn-secondary" style="font-size:.72rem;padding:.1rem .45rem;" ' +
+                    'onclick="suggestAdd(\'' + s.name.replace(/'/g, "\\'") + '\')">Add 10h goal</button> ' +
+                    '<button class="btn btn-secondary" style="font-size:.72rem;padding:.1rem .45rem;" ' +
+                    'onclick="suggestDismiss(\'' + s.name.replace(/'/g, "\\'") + '\')">Dismiss</button>' +
+                    '</div>').join('');
         } catch (e) { /* scheduler warming up */ }
     }
     loadCampaign();
