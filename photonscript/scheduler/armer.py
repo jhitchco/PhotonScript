@@ -58,6 +58,7 @@ class Armer:
     def __init__(self, config):
         self.config = config
         self.state = "DISARMED"
+        self.last_raw = None
         self.detail = ""
         self.plan: dict = {}
         self.sequence_path: Path | None = None
@@ -74,6 +75,7 @@ class Armer:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
             self._state_path.write_text(json.dumps({
                 "state": self.state, "detail": self.detail, "plan": self.plan,
+                "last_raw": getattr(self, "last_raw", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
             }, indent=1), encoding="utf-8")
         except OSError as e:
@@ -126,7 +128,7 @@ class Armer:
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
-        self._set_state("ARMED",
+        self.last_raw = None; self._set_state("ARMED",
                         f"Pre-config at {self.plan['preconfig_utc']}, "
                         f"{len(self.plan['targets'])} targets, "
                         f"{self.plan['dark_hours']}h dark")
@@ -172,6 +174,7 @@ class Armer:
                     steps.append(f"{label}:skipped (not connected)")
                     continue
             steps.append(f"{label}:{'ok' if ok else f'FAILED ({self.detail})'}")
+        self.last_raw = None
         report = "make-safe " + " · ".join(steps)
         logger.warning(report)
         return report
@@ -290,6 +293,9 @@ class Armer:
                                   json_body=seq)
         started = await self._nina("sequence_start", skipValidation="true")
         ok = loaded is not None and started is not None
+        if ok:
+            self.last_raw = {"label": label,
+                             "at": datetime.utcnow().isoformat() + "Z"}
         logger.info("dispatch_raw %s: %s", label, "started" if ok
                     else f"FAILED ({self.detail})")
         return ok

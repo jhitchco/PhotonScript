@@ -211,7 +211,8 @@ def generate_dusk_flats_json(config) -> tuple:
     items = [
         _pushover("Flats", f"dusk sky flats: waiting for "
                   f"{local.strftime('%H:%M')} local (sunset +15), then "
-                  f"{n} per filter, broadband first"),
+                  f"{n} per filter — narrowband first (least light "
+                  "through to most: Ha, OIII, SII, R, G, B, L)"),
         _connect("Safety Monitor"),
         _connect("Camera"),
         _cool_camera(config.camera_setpoint_c, 2.0),

@@ -218,6 +218,13 @@
         const active = ['ARMED','RUNNING','PAUSED_UNSAFE'].includes(d.state);
         btn.textContent = active ? 'Disarm' : 'Arm';
         btn.dataset.armed = active ? '1' : '0';
+        const lr = d.last_raw;
+        const el2 = document.getElementById('rawDispatch');
+        if (el2) el2.innerHTML = lr
+            ? '⚙ NINA is running a dispatched job: <b>' + lr.label +
+              '</b> <span style="opacity:.6">(since ' + (lr.at || '').slice(11, 16) +
+              ' UTC — arming will replace it)</span>'
+            : '';
     }
     function sunDiagramSVG(d) {
         const W = 640, H = 150, PAD = 6;
