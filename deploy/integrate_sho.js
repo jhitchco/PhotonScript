@@ -116,14 +116,21 @@ function main() {
    log("bias: " + biasFiles.length + " - darks: " + darkFiles.length);
 
    var lightRoot = STAGING + "/LIGHTS";
-   var filterDirs = searchDirectory(lightRoot + "/*", true).filter(function (p) {
-      return File.directoryExists(p);
-   });
-   if (filterDirs.length == 0) throw new Error("no LIGHTS/<filter> folders found");
+   // searchDirectory matches FILES, not directories — probe known filters
+   var FILTER_NAMES = ["Ha", "OIII", "SII", "L", "R", "G", "B",
+                       "H", "O", "S", "UNKNOWN"];
+   var filterDirs = [];
+   for (var fi = 0; fi < FILTER_NAMES.length; ++fi) {
+      var p = lightRoot + "/" + FILTER_NAMES[fi];
+      if (File.directoryExists(p) && listFits(p).length > 0)
+         filterDirs.push(p);
+   }
+   if (filterDirs.length == 0) throw new Error("no LIGHTS filter folders "
+      + "found under " + lightRoot);
 
    var refImage = null;
    for (var i = 0; i < filterDirs.length; ++i) {
-      var filt = File.extractName(filterDirs[i]) || filterDirs[i].split('/').pop();
+      var filt = filterDirs[i].split('/').pop();
       var lights = listFits(filterDirs[i]);
       if (!lights.length) continue;
       log("=== " + filt + ": " + lights.length + " lights ===");
