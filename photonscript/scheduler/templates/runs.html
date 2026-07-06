@@ -163,12 +163,14 @@
         };
         box.querySelectorAll('.night-chip').forEach(el =>
             el.addEventListener('click', () => loadDetail(el.dataset.date)));
-        const want = new URLSearchParams(location.search).get('night');
+        const pathNight = (location.pathname.match(/\/runs\/(\d{4}-\d{2}-\d{2})/) || [])[1];
+        const want = pathNight || new URLSearchParams(location.search).get('night');
         if (want && nights.some(n => n.date === want)) loadDetail(want);
         else if (real.length) loadDetail(real[0].date);
     }
     async function loadDetail(date) {
         currentDate = date; subFilter = 'ALL'; subTarget = 'ALL'; showAllThumbs = false;
+        try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
         document.querySelectorAll('.night-chip').forEach(el =>
             el.classList.toggle('active', el.dataset.date === date));
         const panel = document.getElementById('detailPanel');

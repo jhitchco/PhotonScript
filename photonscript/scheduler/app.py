@@ -935,6 +935,14 @@ async def api_sun():
 # Imaging Runs: plan vs actual, night score, thumbnails
 # ---------------------------------------------------------------------------
 
+@app.get("/runs/{night}", response_class=HTMLResponse)
+async def runs_page_night(request: Request, night: str):
+    return templates.TemplateResponse(request, "runs.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
 @app.get("/runs", response_class=HTMLResponse)
 async def runs_page(request: Request):
     return templates.TemplateResponse(request, "runs.html", {
