@@ -189,6 +189,22 @@
                 (n.moon && n.moon.illum_pct != null
                  ? '<div style="font-size:.68rem;opacity:.75;">🌙 ' + n.moon.illum_pct +
                    '% · ' + n.moon.moon_free_h + 'h free · <b>' + n.moon.tag + '</b></div>'
+                 : '') +
+                ((n.hourly && n.hourly.length)
+                 ? '<div style="display:flex;gap:1px;margin-top:.3rem;justify-content:center;" ' +
+                   'title="hour-by-hour through the dark window">' +
+                   n.hourly.map(hh => {
+                       const col = hh.score == null ? '#334155'
+                           : hh.score >= 0.75 ? '#22c55e'
+                           : hh.score >= 0.35 ? '#eab308'
+                           : hh.score > 0 ? '#f97316' : '#ef4444';
+                       return '<span title="' + hh.local + ':00 — ' +
+                           (hh.cloud != null ? hh.cloud + '% cloud, ' : '') +
+                           (hh.score == null ? 'no data' :
+                            Math.round(hh.score * 100) + '% usable') +
+                           '" style="width:9px;height:9px;border-radius:2px;' +
+                           'background:' + col + ';display:inline-block;"></span>';
+                   }).join('') + '</div>'
                  : '') + '</div>').join('');
             const staleNote = d.stale
                 ? '<div style="color:#eab308;font-size:.75rem;margin-bottom:.3rem;">⚠ showing cached forecast from ' +

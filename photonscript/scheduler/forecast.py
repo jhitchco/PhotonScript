@@ -90,6 +90,7 @@ def score_nights(hourly: dict, dark_windows: list[dict],
         if not start_utc or not end_utc:
             continue
         usable, dark_hours, clouds_seen = 0.0, 0.0, []
+        hourly = []
         t = start_utc
         while t < end_utc:
             local = t + timedelta(hours=utc_offset_hours)
@@ -104,13 +105,21 @@ def score_nights(hourly: dict, dark_windows: list[dict],
                     c_low[idx] if idx < len(c_low) else None,
                     c_mid[idx] if idx < len(c_mid) else None,
                     c_high[idx] if idx < len(c_high) else None)
-                usable += step * _score_hour(
+                sc = _score_hour(
                     c,
                     wind[idx] if idx < len(wind) else None,
                     hum[idx] if idx < len(hum) else None,
                     precip[idx] if idx < len(precip) else None)
+                usable += step * sc
+                hourly.append({"local": local.strftime("%H"),
+                               "score": round(sc, 2),
+                               "cloud": round(c) if c is not None else None})
                 if c is not None:
                     clouds_seen.append(c)
+            else:
+                hourly.append({"local": (t + timedelta(
+                    hours=utc_offset_hours)).strftime("%H"),
+                    "score": None, "cloud": None})
             t += timedelta(hours=1)
 
         pct = round(usable / dark_hours * 100) if dark_hours else 0
@@ -122,6 +131,7 @@ def score_nights(hourly: dict, dark_windows: list[dict],
             "rating": _rate(pct),
             "avg_cloud_pct": round(sum(clouds_seen) / len(clouds_seen))
             if clouds_seen else None,
+            "hourly": hourly,
         })
     return nights
 
