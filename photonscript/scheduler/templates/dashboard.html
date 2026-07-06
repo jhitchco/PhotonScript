@@ -171,6 +171,16 @@
 
     <script>
     const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
+    function moonSVG(illum) {
+        const f = Math.max(0, Math.min(100, illum)) / 100;
+        const rx = (Math.abs(1 - 2 * f) * 5).toFixed(2);
+        const sweep = f > 0.5 ? 1 : 0;
+        return '<svg width="12" height="12" viewBox="-6 -6 12 12" ' +
+            'style="vertical-align:-2px" aria-label="moon ' + illum + '%">' +
+            '<circle r="5" fill="#131c2e" stroke="#475569" stroke-width="0.8"/>' +
+            '<path d="M 0,-5 A 5,5 0 1,1 0,5 A ' + rx + ',5 0 1,' + sweep +
+            ' 0,-5" fill="#dbe4f0"/></svg>';
+    }
     async function loadOutlook() {
         try {
             const r = await fetch('/api/forecast');
@@ -187,8 +197,9 @@
                 (n.avg_cloud_pct !== null ? '<div style="font-size:.68rem;opacity:.5;">☁ ' +
                 n.avg_cloud_pct + '%</div>' : '') +
                 (n.moon && n.moon.illum_pct != null
-                 ? '<div style="font-size:.68rem;opacity:.75;">🌙 ' + n.moon.illum_pct +
-                   '% · ' + n.moon.moon_free_h + 'h free · <b>' + n.moon.tag + '</b></div>'
+                 ? '<div style="font-size:.68rem;opacity:.75;">' + moonSVG(n.moon.illum_pct) +
+                   ' ' + n.moon.illum_pct + '% · ' + n.moon.moon_free_h +
+                   'h free · <b>' + n.moon.tag + '</b></div>'
                  : '') +
                 ((n.hourly && n.hourly.length)
                  ? '<div style="display:flex;gap:1px;margin-top:.3rem;justify-content:center;" ' +
@@ -696,7 +707,8 @@
                     (n.frac_source === 'climatology' ? 'opacity:.65;' : '') + '">' +
                     '<b>' + n.date.slice(5) + '</b> <span style="color:' + tagCol + ';font-weight:700;">' +
                     (m.tag || '?') + '</span><br>' +
-                    '🌙 ' + (m.illum_pct ?? '?') + '% · ' + (m.moon_free_h ?? '?') + 'h free<br>' +
+                    (m.illum_pct != null ? moonSVG(m.illum_pct) : '🌙') + ' ' +
+                    (m.illum_pct ?? '?') + '% · ' + (m.moon_free_h ?? '?') + 'h free<br>' +
                     '~' + Math.round(n.dark_h * n.usable_frac * 10) / 10 + 'h usable (' +
                     (n.frac_source === 'forecast' ? 'fcst' : 'clim') + ')<br>' +
                     n.assigned.map(a => '<span style="opacity:.85;">' + a.goal.split(' ')[0] +
