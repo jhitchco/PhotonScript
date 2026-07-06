@@ -793,17 +793,21 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         NBF = {"Ha", "OIII", "SII"}
         flat_filters.sort(key=lambda f: f.value in NBF)
         n = int(getattr(_cfg, "flat_count", 15))
-        end_items += [
-            _pushover("Flats", "imaging done — waiting for sky-flat "
-                      f"window (nautical dawn +5), then {n} sky flats per "
-                      "filter: " + ", ".join(f.value for f in flat_filters)),
-            _wait_for_provider("NauticalDawnProvider", 5),
-            _slew_alt_az(85, 200),
-        ]
-        end_items += [_sky_flat(f, n, _cfg.default_gain,
-                                _cfg.default_offset)
-                      for f in flat_filters]
-        end_items.append(_pushover("Flats", "sky flats complete"))
+        flat_block = _seq_container(
+            "DAWN_SKY_FLATS (skipped if unsafe — closed roof makes junk "
+            "flats)",
+            [
+                _pushover("Flats", "imaging done — waiting for sky-flat "
+                          f"window (nautical dawn +5), then {n} sky flats "
+                          "per filter: "
+                          + ", ".join(f.value for f in flat_filters)),
+                _wait_for_provider("NauticalDawnProvider", 5),
+                _slew_alt_az(85, 200),
+            ] + [_sky_flat(f, n, _cfg.default_gain, _cfg.default_offset)
+                 for f in flat_filters]
+            + [_pushover("Flats", "sky flats complete")],
+            conditions=[_safety_condition()])
+        end_items.append(flat_block)
     end_items.append(_pushover("Shutdown", "starting shutdown: park, "
                                "warm camera, disconnect"))
     if guided:
