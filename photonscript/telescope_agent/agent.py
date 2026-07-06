@@ -290,6 +290,22 @@ class TelescopeAgent:
 
     async def _process_new_image(self, file_path: Path):
         """Process a newly captured image — validate quality and report."""
+        # Calibration frames (darks/flats/bias) are inventoried by the
+        # calibration panel, not graded as lights: skip by folder or header
+        _CAL_DIRS = {"DARK", "DARKS", "FLAT", "FLATS", "BIAS", "BIASES",
+                     "SNAPSHOT"}
+        if any(p.upper() in _CAL_DIRS for p in file_path.parts):
+            return
+        try:
+            from astropy.io import fits as _fits
+            imagetyp = str(_fits.getheader(file_path).get(
+                "IMAGETYP", "LIGHT")).strip().upper()
+            if imagetyp and "LIGHT" not in imagetyp:
+                logger.debug("Skipping %s frame: %s", imagetyp,
+                             file_path.name)
+                return
+        except Exception:  # noqa: BLE001 — unreadable yet; let grading retry
+            pass
         logger.info("New image detected: %s", file_path.name)
 
         # Parse filename for metadata (NINA naming convention)
@@ -314,9 +330,13 @@ class TelescopeAgent:
         # Validate image quality
         quality = validate_image(str(file_path), self.config)
 
-        # Add tracking RMS from current guiding
+        # Add tracking RMS from current guiding — but an unguided rig has
+        # PHD2 idling with junk RMS; only judge it when actively guiding
         quality.tracking_rms_arcsec = self.state.guiding.rms_total_arcsec
-        if quality.tracking_rms_arcsec > self.config.quality_tracking_rms_max:
+        _guiding_active = str(getattr(self.state.guiding, "state", "")
+                              ).lower() in ("guiding", "settling")
+        if _guiding_active and \
+                quality.tracking_rms_arcsec > self.config.quality_tracking_rms_max:
             quality.passed_qa = False
             if quality.rejection_reason:
                 quality.rejection_reason += "; "
