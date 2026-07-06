@@ -40,8 +40,11 @@ function integrate(files, id, isCal, rejectHigh) {
    II.combination = ImageIntegration.prototype.Average;
    // bias/darks/flats have no stars: PSF-based weighting (the modern
    // default) fails instantly on them — weight them equally instead
+   // NoiseEvaluation instead of PSF weighting for lights: PSF weights
+   // silently EXCLUDE star-poor narrowband frames (SII used 8 of 16);
+   // noise weighting keeps every registered frame with sane weights
    II.weightMode = isCal ? ImageIntegration.prototype.DontCare
-                         : ImageIntegration.prototype.PSFSignalWeight;
+                         : ImageIntegration.prototype.NoiseEvaluation;
    II.generateIntegratedImage = true;
    II.generateRejectionMaps = false;
    II.rejection = files.length >= 15
