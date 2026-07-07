@@ -116,6 +116,19 @@ function integrateFlats(files, id, masterBias) {
 }
 
 
+// crop stacking borders (unguided drift means each filter covers a
+// slightly different footprint; edges are single-channel color fringes)
+function cropBorders(view, frac) {
+   var img = view.image;
+   var dx = Math.round(img.width * frac);
+   var dy = Math.round(img.height * frac);
+   var CR = new Crop;
+   CR.mode = Crop.prototype.AbsolutePixels;
+   CR.leftMargin = -dx; CR.rightMargin = -dx;
+   CR.topMargin = -dy;  CR.bottomMargin = -dy;
+   CR.executeOn(view, false);
+}
+
 function mtfv(m, x) {
    if (x <= 0) return 0;
    if (x >= 1) return 1;
@@ -128,7 +141,7 @@ function autoStretchGray(view) {
    var med = img.median();
    var mad = img.MAD() * 1.4826;
    var c0 = Math.max(0, Math.min(1, med - 2.8 * mad));
-   var m = mtfv(0.25, Math.max(1.0e-6, med - c0));
+   var m = mtfv(0.12, Math.max(1.0e-6, med - c0));
    var HT = new HistogramTransformation;
    HT.H = [[0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1],
            [c0, m, 1, 0, 1], [0, 0.5, 1, 0, 1]];
@@ -151,6 +164,7 @@ function makeSHOReview() {
    for (var i = 0; i < need.length; ++i) {
       var w = ImageWindow.open(mdir + need[i] + ".xisf")[0];
       w.mainView.id = "SHO_ch" + i;
+      cropBorders(w.mainView, 0.015);
       autoStretchGray(w.mainView);
       wins.push(w);
    }
