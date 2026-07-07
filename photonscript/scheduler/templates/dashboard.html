@@ -367,13 +367,15 @@
                 SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;">' +
                 '🔭 ' + d.status + '</span>' +
                 (d.camera_temp !== null && d.camera_temp !== undefined
-                    ? ' <span style="opacity:.6;">sensor ' + d.camera_temp + '°C</span>' : '');
+                    ? ' <span style="opacity:.6;">sensor ' + d.camera_temp + '°C</span>' : '') +
+                (d.cooler_power !== null && d.cooler_power !== undefined
+                    ? ' <span style="opacity:.6;">· cooler ' + d.cooler_power.toFixed(0) + '%</span>' : '');
         } catch (e) {
             el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
         }
     }
     loadScope();
-    setInterval(loadScope, 30 * 1000);
+    setInterval(loadScope, 5 * 1000);  // equipment state is cheap; keep the chip fresh
     loadSun();
     setInterval(loadSun, 5 * 60 * 1000);   // sun moves ~1.25° per 5 min
 

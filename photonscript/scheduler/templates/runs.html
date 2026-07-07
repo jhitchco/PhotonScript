@@ -403,11 +403,17 @@
         };
         document.getElementById('subTable').innerHTML =
             '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
-            '<th>HFR</th><th>Ecc</th><th>Stars</th><th>Bkg</th><th>QA</th></tr>' +
+            '<th>HFR</th><th>Ecc</th><th>Stars</th><th>Bkg</th><th>Expo</th><th>QA</th></tr>' +
             subs.map(s => '<tr><td>' + (s.time || '').slice(11, 19) + '</td><td>' +
                 s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
                 's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
+                '</td><td style="color:' + (s.exposure === 'ok' ? '#4ade80'
+                    : s.exposure === 'under' ? '#eab308'
+                    : s.exposure ? '#f87171' : '') + ';" title="swamp ' +
+                (s.swamp ?? '–') + '×RN² (≥3 ok, ≥10 fully sky-limited) · clipped ' +
+                (s.clipped_pct ?? '–') + '% px · saturated stars ' +
+                (s.sat_stars_pct ?? '–') + '%">' + (s.exposure ?? '–') +
                 '</td><td style="cursor:pointer;color:' +
                 (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
                  : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
@@ -517,6 +523,8 @@
             '<b>' + (s.time || '').slice(11, 19) + ' UTC</b> · ' + s.filter + ' ' +
             Math.round(s.exp_s) + 's · HFR ' + (s.hfr ?? '–') + ' · ★' +
             (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
+            ' · expo ' + (s.exposure ?? '–') + ' (' + (s.swamp ?? '–') + '×RN²' +
+            (s.sat_stars_pct != null ? ', sat★ ' + s.sat_stars_pct + '%' : '') + ')' +
             ' ·' + badge(s) + ' <span style="opacity:.75">' + subState(s) +
             (s.reason && !s.passed_qa ? ' — ' + s.reason : '') + '</span>';
         const btn = document.getElementById('lbQaBtn');

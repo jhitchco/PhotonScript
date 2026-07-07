@@ -154,6 +154,10 @@ class ImageQualityMetrics(BaseModel):
     snr: Optional[float] = None
     tracking_rms_arcsec: Optional[float] = None
     corner_spread: Optional[float] = None  # corner FWHM spread vs median (collimation/tilt watch)
+    clipped_pct: Optional[float] = None    # % pixels at/near full well
+    sat_star_pct: Optional[float] = None   # % detected stars with saturated cores
+    swamp_factor: Optional[float] = None   # background variance / read-noise variance
+    exposure_flag: Optional[str] = None    # under / ok / sat-stars / clipped
     passed_qa: bool = True
     rejection_reason: str = ""
 

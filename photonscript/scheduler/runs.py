@@ -212,11 +212,31 @@ def _measure(binned, config) -> dict:
                     doubled_frac = float(counts.max() / len(pts))
             except Exception:  # noqa: BLE001
                 pass
+        # Exposure scoring (binned frame: mean of 2x2, so full well and mean
+        # sky level are preserved; noise is halved -> x2 to unbinned-equiv)
+        clipped_pct = round(float((data >= 65000).mean() * 100.0), 3)
+        sat_stars_pct = None
+        if len(objs):
+            try:
+                good_pk = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
+                if len(good_pk):
+                    sat_stars_pct = round(float(
+                        ((good_pk["peak"] + float(bkg.globalback)) >= 65000)
+                        .mean() * 100.0), 1)
+            except Exception:  # noqa: BLE001
+                pass
+        rn = max(float(getattr(config, "camera_read_noise_adu", 8.0)), 0.1)
+        swamp = round((2.0 * float(bkg.globalrms) / rn) ** 2, 1)
+        exposure = ("sat-stars" if (sat_stars_pct or 0) > 5.0
+                    else "clipped" if clipped_pct > 0.05
+                    else "under" if swamp < 3.0 else "ok")
         del data_sub, data, err
         return {"stars": nstars, "hfr": hfr, "ecc": ecc,
                 "doubled_frac": round(doubled_frac, 2),
                 "background": round(float(bkg.globalback), 1),
                 "noise": round(float(bkg.globalrms), 2),
+                "clipped_pct": clipped_pct, "sat_stars_pct": sat_stars_pct,
+                "swamp": swamp, "exposure": exposure,
                 "graded_by": "sep-binned"}
 
     # Honest fallback: count stars, don't invent an HFR (the old area-based
@@ -231,8 +251,15 @@ def _measure(binned, config) -> dict:
     if n:
         sizes = ndimage.sum(mask, labeled, range(1, min(n, 2000) + 1))
         nstars = int((np.atleast_1d(sizes) >= 3).sum())
+    clipped_pct = round(float((binned >= 65000).mean() * 100.0), 3)
+    rn = max(float(getattr(config, "camera_read_noise_adu", 8.0)), 0.1)
+    swamp = round((2.0 * noise / rn) ** 2, 1)
+    exposure = ("clipped" if clipped_pct > 0.05
+                else "under" if swamp < 3.0 else "ok")
     return {"stars": nstars, "hfr": None, "ecc": None,
             "background": round(background, 1), "noise": round(noise, 2),
+            "clipped_pct": clipped_pct, "sat_stars_pct": None,
+            "swamp": swamp, "exposure": exposure,
             "graded_by": "no-sep (install sep-pjw for HFR/ecc)"}
 
 
@@ -292,6 +319,9 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
         "stars": m["stars"], "ecc": m["ecc"],
         "background": m["background"],
         "doubled_frac": m.get("doubled_frac"),
+        "clipped_pct": m.get("clipped_pct"),
+        "sat_stars_pct": m.get("sat_stars_pct"),
+        "swamp": m.get("swamp"), "exposure": m.get("exposure"),
         "passed_qa": passed,
         "reason": "; ".join(reasons),
         "graded_by": m["graded_by"],

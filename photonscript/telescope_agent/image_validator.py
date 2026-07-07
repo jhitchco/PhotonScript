@@ -149,6 +149,45 @@ def _corner_spread(stars: list[dict], shape: tuple[int, int],
     return float((max(corner_medians) - min(corner_medians)) / median_fwhm)
 
 
+SATURATION_ADU = 65000.0
+
+
+def _exposure_metrics(data: np.ndarray, stars: list, noise: float,
+                      config) -> dict:
+    """Exposure scoring: is the sub sky-limited without clipping?
+
+    swamp_factor = (frame noise / read-noise floor)^2 — total background
+    variance over read-noise variance. >=10: fully sky-limited; 3-10: fine;
+    <3: read noise still dominates (underexposed — longer subs pay off).
+    clipped_pct / sat_star_pct catch the other end: blown pixels and
+    saturated star cores (RGB star color dies when cores clip).
+    """
+    sample = data[::4, ::4]
+    clipped_pct = float((sample >= SATURATION_ADU).mean() * 100.0)
+    sat_star_pct = None
+    if stars:
+        h, w = data.shape
+        sat = 0
+        for s in stars:
+            x, y = int(round(s["x"])), int(round(s["y"]))
+            if 1 <= x < w - 1 and 1 <= y < h - 1 and \
+                    float(data[y - 1:y + 2, x - 1:x + 2].max()) >= SATURATION_ADU:
+                sat += 1
+        sat_star_pct = round(sat / len(stars) * 100.0, 1)
+    rn = max(float(getattr(config, "camera_read_noise_adu", 8.0)), 0.1)
+    swamp = round((noise / rn) ** 2, 1)
+    if sat_star_pct is not None and sat_star_pct > 5.0:
+        flag = "sat-stars"
+    elif clipped_pct > 0.05:
+        flag = "clipped"
+    elif swamp < 3.0:
+        flag = "under"
+    else:
+        flag = "ok"
+    return {"clipped_pct": round(clipped_pct, 3), "sat_star_pct": sat_star_pct,
+            "swamp_factor": swamp, "exposure_flag": flag}
+
+
 def validate_image(
     file_path: str,
     config: PhotonScriptConfig,
@@ -170,6 +209,7 @@ def validate_image(
     snr = background / noise if noise > 0 else 0
 
     stars = _detect_stars(data, background, noise)
+    exposure = _exposure_metrics(data, stars, noise, config)
     if len(stars) < 5:
         return ImageQualityMetrics(
             star_count=len(stars),
@@ -178,6 +218,7 @@ def validate_image(
             snr=snr,
             passed_qa=False,
             rejection_reason=f"Only {len(stars)} stars detected (minimum 5)",
+            **exposure,
         )
 
     # Compute aggregate metrics
@@ -214,4 +255,5 @@ def validate_image(
         corner_spread=round(corner_spread, 3) if corner_spread is not None else None,
         passed_qa=passed,
         rejection_reason="; ".join(reasons),
+        **exposure,
     )

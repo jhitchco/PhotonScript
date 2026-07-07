@@ -417,6 +417,7 @@ _CONFIG_FIELDS = [
     ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
     ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
     ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
+    ("camera_read_noise_adu", "PS_CAMERA_READ_NOISE_ADU", "Read-noise floor (ADU16, bias stdev — drives exposure score)", "Quality", "float", False, False),
     ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
     ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
     ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
