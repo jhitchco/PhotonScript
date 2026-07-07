@@ -298,6 +298,18 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
     reasons = []
     if m["stars"] < 5:
         reasons.append(f"only {m['stars']} stars")
+    # Cooler-failure subs: sensor way above the commanded setpoint means the
+    # frame is dominated by dark current no matching dark can calibrate out
+    try:
+        _set_t = hdr.get("SET-TEMP")
+        _ccd_t = hdr.get("CCD-TEMP")
+        if _set_t is None:
+            _set_t = getattr(config, "camera_setpoint_c", 0.0)
+        if _ccd_t is not None and float(_ccd_t) > float(_set_t) + 5.0:
+            reasons.append(f"sensor {float(_ccd_t):.0f}C vs setpoint "
+                           f"{float(_set_t):.0f}C (cooler failure)")
+    except (TypeError, ValueError):
+        pass
     ecc_max = float(getattr(config, "quality_eccentricity_max", 0.6))
     if m["ecc"] is not None and m["ecc"] > ecc_max:
         reasons.append(f"elongated stars (ecc {m['ecc']} > {ecc_max:g})")

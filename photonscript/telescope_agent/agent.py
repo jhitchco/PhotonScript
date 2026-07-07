@@ -56,6 +56,9 @@ class TelescopeAgent:
         # Nanny / escalation state
         self._consecutive_rejects = 0
         self._alerted: set[str] = set()  # de-duped alert keys
+        # Cooling watchdog state
+        self._cool_bad_since: float | None = None
+        self._cool_fix_attempts = 0
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -162,6 +165,71 @@ class TelescopeAgent:
     # Monitoring loops
     # ------------------------------------------------------------------
 
+    COOL_FAIL_GRACE_S = 600   # cooler must show progress within 10 min
+    COOL_FIX_MAX = 3          # reconnect attempts per night
+
+    async def _cooling_watchdog(self, camera: dict):
+        """Active remediation for 'CoolerOn but 0% power, sensor at ambient'.
+
+        Observed 2026-07-03..05: the OGMA driver reported CoolerOn=true with
+        CoolerPower=0% and the sensor never left ambient — three sessions
+        imaged at +30..40C. When that signature persists past the grace
+        period, disconnect/reconnect the camera and re-issue the cool
+        command (cycles the driver's cooler state). A sub in flight is
+        sacrificed knowingly: at ambient temperature it was garbage anyway.
+        """
+        import time
+        cooler_on = camera.get("CoolerOn", False)
+        power = camera.get("CoolerPower")
+        temp = camera.get("Temperature")
+        sp = self.config.camera_setpoint_c
+        tol = self.config.cooling_tolerance_c
+        failed = (cooler_on and temp is not None
+                  and temp > sp + max(3 * tol, 3.0)
+                  and (power is None or power <= 1.0))
+        now = time.monotonic()
+        if not failed:
+            self._cool_bad_since = None
+            if temp is not None and temp <= sp + tol:
+                self._cool_fix_attempts = 0  # reached setpoint — reset budget
+            return
+        if self._cool_bad_since is None:
+            self._cool_bad_since = now
+            return
+        if now - self._cool_bad_since < self.COOL_FAIL_GRACE_S:
+            return
+        if self._cool_fix_attempts >= self.COOL_FIX_MAX:
+            await self._escalate(
+                "cooling-dead",
+                f"Cooler STILL not cooling after {self.COOL_FIX_MAX} camera "
+                f"reconnects — sensor {temp:.1f}C, setpoint {sp:.1f}C. "
+                "Manual intervention (12V / PDU outlet?) needed.",
+                severe=True)
+            return
+        self._cool_fix_attempts += 1
+        self._cool_bad_since = now  # restart grace clock for this attempt
+        n = self._cool_fix_attempts
+        logger.warning("Cooling watchdog: reconnect attempt %d/%d "
+                       "(sensor %.1fC, power %s%%)", n, self.COOL_FIX_MAX,
+                       temp, power)
+        await notify(self.config,
+                     f"Cooler on but {0 if power is None else power:.0f}% power "
+                     f"at {temp:.1f}C (setpoint {sp:.1f}C) — reconnecting "
+                     f"camera, attempt {n}/{self.COOL_FIX_MAX}",
+                     title="PhotonScript cooling watchdog", priority=1)
+        try:
+            await self.nina.disconnect_camera()
+            await asyncio.sleep(10)
+            await self.nina.connect_camera()
+            await asyncio.sleep(5)
+            await self.nina.cool_camera(sp, minutes=10.0)
+            logger.info("Cooling watchdog: cool command re-issued (%.1fC)", sp)
+        except Exception as e:  # noqa: BLE001
+            logger.error("Cooling watchdog attempt %d errored: %s", n, e)
+            await notify(self.config,
+                         f"Cooling watchdog reconnect attempt {n} errored: {e}",
+                         title="PhotonScript cooling watchdog", priority=1)
+
     async def _nina_poll_loop(self):
         """Poll NINA for equipment state every few seconds."""
         while self._running:
@@ -181,6 +249,7 @@ class TelescopeAgent:
                         f"Sensor at {self.state.camera_temp_c:.1f}C with cooler on — "
                         f"setpoint is {self.config.camera_setpoint_c:.1f}C",
                     )
+                await self._cooling_watchdog(camera)
 
                 # Get mount info
                 mount = await self.nina.get_mount_info()
@@ -344,6 +413,18 @@ class TelescopeAgent:
                 f"Tracking RMS {quality.tracking_rms_arcsec:.2f}\" > "
                 f"{self.config.quality_tracking_rms_max}\""
             )
+
+        # Sensor far above setpoint at capture = cooler-failure sub. Dark
+        # current at +30..40C swamps the signal and the dark library can't
+        # match it — reject outright (2026-07-03..05 lesson).
+        _t = self.state.camera_temp_c
+        if _t is not None and _t > self.config.camera_setpoint_c + 5.0:
+            quality.passed_qa = False
+            if quality.rejection_reason:
+                quality.rejection_reason += "; "
+            quality.rejection_reason += (
+                f"sensor {_t:.1f}C vs setpoint "
+                f"{self.config.camera_setpoint_c:.0f}C (cooler failure)")
 
         # Create image record
         image = CapturedImage(

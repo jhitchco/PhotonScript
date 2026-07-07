@@ -65,8 +65,9 @@ class PhotonScriptConfig(BaseSettings):
                                 # the noise floor (bkg 51, sigma 15 -> left tail at 0)
     camera_setpoint_c: float = 0.0
     cooling_tolerance_c: float = 1.0
-    camera_read_noise_adu: float = 8.0  # single-frame bias stdev, unbinned ADU16
-                                        # (measure: np.std of one bias frame).
+    camera_read_noise_adu: float = 4.1  # measured 2026-07-07: 4.07 ADU16 from the
+                                        # library bias (3x50 frames, gain 200 LCG;
+                                        # single-frame and pair-difference agree).
                                         # Floor for the exposure swamp score.
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
