@@ -1,5 +1,7 @@
 # PhotonScript
 
+**Mission: maximize the use of every hour of shutter time, and turn it into award-winning, high-quality astrophotography.**
+
 Remote telescope orchestration platform. Four autonomous agents coordinate to plan imaging sessions, monitor equipment, transfer files, and process astrophotography — so your telescope is always running and you only need to watch the results come in.
 
 Built for a shared Starlink-connected telescope in New Mexico, but configurable for any site.

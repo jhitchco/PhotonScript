@@ -6,6 +6,12 @@ Last updated 2026-07-07.
 
 ## 1. What PhotonScript is
 
+**Mission: maximize the use of every dark hour of shutter time, and turn it
+into award-winning, high-quality astrophotography.** Every design decision
+bends toward one of those two poles: the honest funnel (dark hours -> shutter
+hours -> accepted hours) measures the first; the QA gates, calibration
+discipline, and integration pipeline serve the second.
+
 PhotonScript is Jeremy's automation layer around NINA for the AARO remote
 observatory. It plans nights, generates NINA Advanced Sequencer JSON, arms the
 scope, grades every sub as it lands, tracks per-target goals and a 14-night
