@@ -73,8 +73,18 @@ if (Test-Path $darkRoot) {
         $sig = "$($k.EXPTIME)|$($k.GAIN)|$($k.OFFSET)|$($k.'SET-TEMP')"
         $take = $epochs.ContainsKey($sig)
         if (-not $take -and $Loose -and $lightExps.ContainsKey("$($k.EXPTIME)")) {
-            $take = $true
-            Write-Host "  LOOSE match: $($_.Name) [$sig] (temp/offset differ from lights)" -ForegroundColor Yellow
+            # loose = offset may differ (calibration adds an output pedestal),
+            # but temperature must still match a light epoch: mixing -10C and
+            # 0C darks poisons the master dark with the wrong dark current.
+            $tempOk = $false
+            foreach ($sig2 in $epochs.Keys) {
+                $p = $sig2 -split '\|'
+                if ($p[0] -eq "$($k.EXPTIME)" -and $p[3] -eq "$($k.'SET-TEMP')") { $tempOk = $true }
+            }
+            if ($tempOk) {
+                $take = $true
+                Write-Host "  LOOSE match: $($_.Name) [$sig] (offset differs from lights)" -ForegroundColor Yellow
+            }
         }
         if ($take) { $nDarks += Add-File $_ (Join-Path $stage "DARKS") }
         else { $nDarkSkipped++ }

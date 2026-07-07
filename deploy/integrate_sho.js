@@ -97,6 +97,12 @@ function integrateFlats(files, id, masterBias) {
    var II = new ImageIntegration;
    II.images = cal.map(function (f) { return [true, f, "", ""]; });
    II.combination = ImageIntegration.prototype.Average;
+   // flats have no stars either — same fix as integrate(): equal weights,
+   // no PSF/SNR re-judging, or PixInsight's default PSFSignalWeight throws
+   // "Zero or insignificant PSF Signal Weight estimate" and fails the master.
+   II.weightMode = ImageIntegration.prototype.DontCare;
+   II.minWeight = 0.0;
+   II.evaluateSNR = false;
    II.rejection = ImageIntegration.prototype.PercentileClip;
    II.normalization = ImageIntegration.prototype.Multiplicative;
    II.rejectionNormalization = ImageIntegration.prototype.EqualizeFluxes;
@@ -107,6 +113,58 @@ function integrateFlats(files, id, masterBias) {
    w.saveAs(path, false, false, false, false); w.forceClose();
    log("master flat saved: " + path);
    return path;
+}
+
+
+function mtfv(m, x) {
+   if (x <= 0) return 0;
+   if (x >= 1) return 1;
+   return ((m - 1) * x) / (((2 * m - 1) * x) - m);
+}
+
+// STF-style autostretch baked into the pixels of a GRAYSCALE view
+function autoStretchGray(view) {
+   var img = view.image;
+   var med = img.median();
+   var mad = img.MAD() * 1.4826;
+   var c0 = Math.max(0, Math.min(1, med - 2.8 * mad));
+   var m = mtfv(0.25, Math.max(1.0e-6, med - c0));
+   var HT = new HistogramTransformation;
+   HT.H = [[0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1],
+           [c0, m, 1, 0, 1], [0, 0.5, 1, 0, 1]];
+   HT.executeOn(view, false);
+}
+
+// single review image: R=SII, G=Ha, B=OIII, each channel autostretched,
+// saved as masterSHO_review.xisf + .jpg next to the masters
+function makeSHOReview() {
+   var mdir = OUT + "/master/";
+   var need = ["masterLight_SII", "masterLight_Ha", "masterLight_OIII"];
+   for (var i = 0; i < need.length; ++i) {
+      if (!File.exists(mdir + need[i] + ".xisf")) {
+         log("SHO review skipped - missing " + need[i]);
+         return;
+      }
+   }
+   log("building masterSHO review (R=SII, G=Ha, B=OIII)...");
+   var wins = [];
+   for (var i = 0; i < need.length; ++i) {
+      var w = ImageWindow.open(mdir + need[i] + ".xisf")[0];
+      w.mainView.id = "SHO_ch" + i;
+      autoStretchGray(w.mainView);
+      wins.push(w);
+   }
+   var ref = wins[0].mainView.image;
+   var out = new ImageWindow(ref.width, ref.height, 3, 32, true, true, "masterSHO");
+   var CB = new ChannelCombination;
+   CB.colorSpace = ChannelCombination.prototype.RGB;
+   CB.channels = [[true, "SHO_ch0"], [true, "SHO_ch1"], [true, "SHO_ch2"]];
+   CB.executeOn(out.mainView, false);
+   out.saveAs(mdir + "masterSHO_review.xisf", false, false, false, false);
+   out.saveAs(mdir + "masterSHO_review.jpg", false, false, false, false);
+   log("SHO review saved: " + mdir + "masterSHO_review.jpg");
+   for (var i = 0; i < wins.length; ++i) wins[i].forceClose();
+   out.forceClose();
 }
 
 function main() {
@@ -154,6 +212,12 @@ function main() {
       if (masterDark) { IC.masterDarkPath = masterDark; IC.optimizeDarks = true; }
       IC.masterFlatEnabled = !!masterFlat;
       if (masterFlat) IC.masterFlatPath = masterFlat;
+      // add a fixed pedestal so a master dark with a HIGHER offset than the
+      // lights (loose epoch match) cannot clip the background to zero. 1000 DN
+      // at 16 bits = 0.0153 normalized; harmless constant, removed at stretch.
+      IC.outputPedestal = 1000;
+      if (ImageCalibration.prototype.OutputPedestal_Literal !== undefined)
+         IC.outputPedestalMode = ImageCalibration.prototype.OutputPedestal_Literal;
       IC.outputDirectory = OUT + "/cal/" + filt; ensureDir(IC.outputDirectory);
       IC.outputExtension = ".xisf"; IC.overwriteExistingFiles = true;
       if (!IC.executeGlobal()) throw new Error("calibration failed: " + filt);
@@ -177,12 +241,29 @@ function main() {
       SA.targets = ccFiles.map(function (f) { return [true, true, f]; });
       SA.outputDirectory = OUT + "/reg/" + filt; ensureDir(SA.outputDirectory);
       SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
+      // narrowband (esp. SII) is star-poor: the default detector finds <3
+      // stars and every frame fails to register. Make it more sensitive.
+      SA.structureLayers = 6;             // span more star scales
+      SA.noiseReductionFilterRadius = 2;  // damp narrowband noise false-positives
+      SA.sensitivity = 0.85;              // >0.5 = detect fainter stars
+      SA.peakResponse = 0.40;             // lower = less selective, keeps faint stars
+      SA.useTriangleSimilarity = true;    // robust matching when few stars exist
       if (!SA.executeGlobal()) throw new Error("registration failed: " + filt);
       var regFiles = listFits(SA.outputDirectory);
 
+      // don't let one star-poor filter abort the whole run — skip if <3 frames
+      // survived alignment (ImageIntegration needs >=3). Ha/OIII masters already
+      // saved above are preserved; the aligned frames stay on disk for manual work.
+      if (regFiles.length < 3) {
+         log("WARNING: " + filt + " has only " + regFiles.length +
+             " registered frame(s) after alignment - skipping integration " +
+             "(need >=3). Registered data kept in " + OUT + "/reg/" + filt);
+         continue;
+      }
       integrate(regFiles, "masterLight_" + filt, false);
    }
-   log("DONE - masters in " + OUT + "/master (open them and autostretch)");
+   makeSHOReview();
+   log("DONE - masters in " + OUT + "/master (single review image: masterSHO_review.jpg)");
 }
 
 try {
