@@ -89,7 +89,35 @@ PAUSED_UNSAFE - by design; disarm first or wait for morning.
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 
-## 5. PixInsight integration pipeline (desktop)
+## 5. File transfer: Syncthing
+
+How images get from the scope to the desktop - the bridge between capture
+and integration.
+
+- **Scope side (send):** `C:\Users\jeremy\NINAShare`, folder id
+  `ninashare-ddpnx-urgun`. PhotonScript's librarian HARDLINKS accepted subs
+  and calibration frames into `NINAShare\Library\...` (hardlinks cost no
+  disk and originals stay in the NINA capture tree). Syncthing watches the
+  folder and ships whatever appears.
+- **Desktop side (receive-only):** `C:\Users\sleep\ninashare`, device
+  `LJASGRM-...`, GUI at `https://127.0.0.1:8384`. Receive-only means desktop
+  edits/deletes get reverted at next sync - NEVER write into it. Stage out of
+  it with hardlinks (prepare-integration does this).
+- **Library layout:** `Library\<Target>\<Filter>\*.fits` for lights;
+  `Library\Calibration\{DARK,FLAT,BIAS}\<session>\...` for cal frames.
+- **PhotonScript integration:** the scope talks to Syncthing's REST API
+  (key from its config). `GET /api/sync` on the dashboard = folder completion
+  % + whether the Library subtree is fully synced; `GET /api/sync/queue`
+  = what the desktop still needs (`/rest/db/remoteneed`, grouped by folder).
+  This drives the 4-state sub lifecycle on the runs page:
+  review -> accepted (syncing) -> transferred -> rejected.
+- **Approve night** queues that night's accepted subs into the Library;
+  **Reset library** (approved nights only) rebuilds it from scratch after
+  bookkeeping changes.
+- Typical throughput observed: 227 files / 11 GB overnight batch; watch
+  progress on /api/sync or the Syncthing GUI on either end.
+
+## 6. PixInsight integration pipeline (desktop)
 
 Run from `C:\Users\sleep\Claude\PhotonScript`:
 ```powershell
@@ -135,7 +163,7 @@ or "ERROR: ...". Masters in `out\master\`.
   zero without an output pedestal (masters look like pure noise).
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
-## 6. Claude session context
+## 7. Claude session context
 
 - Mounts: `C:\Users\sleep\Claude` (deliver repo here via
   `cp -rf /tmp/PhotonScript/. .../mnt/Claude/PhotonScript/` - never rm -rf, it
@@ -150,7 +178,7 @@ or "ERROR: ...". Masters in `out\master\`.
 - Constraints: no GitHub pushes, no credentials, no AstroBin scraping for
   data tables, no writes into ninashare, scope deploys refused mid-night.
 
-## 7. Current state (2026-07-07)
+## 8. Current state (2026-07-07)
 
 - Crescent Nebula: 82 accepted OLD-epoch lights (Ha 40/OIII 20/SII 22 staged;
   27/18/9 survived registration unguided). Goal being raised to 25h,

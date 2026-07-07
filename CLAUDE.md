@@ -8,7 +8,7 @@ Before doing anything else, read:
 Mission: maximize every hour of shutter time; turn it into award-winning
 astrophotography.
 
-Non-negotiables for Claude sessions (details in HANDBOOK section 6):
+Non-negotiables for Claude sessions (details in HANDBOOK section 7):
 - Never push to GitHub; Jeremy deploys with .\deploy\deploy.ps1 "msg"
 - Deliver code with cp -rf into the mounted Claude folder (never rm -rf)
 - Never write into the ninashare mount (receive-only Syncthing)
