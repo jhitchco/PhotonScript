@@ -1461,10 +1461,20 @@ async def api_scope():
     tracking = mount.get("TrackingEnabled", mount.get("Tracking"))
     temp = cam.get("Temperature")
     cooler = cam.get("CoolerOn")
+    power = cam.get("CoolerPower")  # % TEC drive; drivers can report CoolerOn=true at 0%
+    setpoint = get_config().camera_setpoint_c
+    tol = get_config().cooling_tolerance_c
+    # "Actually cooling" = flag on AND the TEC is drawing power. A stale
+    # CoolerOn flag with 0% power and the sensor at ambient (the 43.9°C /
+    # 0.00% OGMA case) is idle, not cooling.
+    cooling_idle = (cooler and (power is not None and power <= 0.0)
+                    and temp is not None and temp > setpoint + tol)
     if not mount:
         status, color = "NINA UNREACHABLE", "gray"
     elif parked and not cooler:
         status, color = "PARKED & WARM — home safe", "green"
+    elif parked and cooling_idle:
+        status, color = "PARKED (cooler flag on, 0% power — not cooling)", "yellow"
     elif parked:
         status, color = "PARKED (cooler still on)", "yellow"
     elif tracking:
@@ -1473,4 +1483,5 @@ async def api_scope():
         status, color = "UNPARKED, not tracking", "yellow"
     return {"status": status, "color": color, "parked": parked,
             "tracking": tracking, "camera_temp": temp, "cooler_on": cooler,
+            "cooler_power": power, "cooling_idle": cooling_idle,
             "is_safe": is_safe}

@@ -65,7 +65,10 @@ class PhotonScriptConfig(BaseSettings):
                                 # the noise floor (bkg 51, sigma 15 -> left tail at 0)
     camera_setpoint_c: float = 0.0
     cooling_tolerance_c: float = 1.0
-    guided_default: bool = False  # CEM70G absolute encoders: unguided is the default
+    guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
+                                 # 300s at 3248mm lost 30-60% of frames to trailing.
+                                 # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
+                                 # to fall back to the CEM70G encoders unguided.
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs
