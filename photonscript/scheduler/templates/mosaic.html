@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonScript - Mosaic Planner</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .sys-nav { margin: 1rem 2rem 0; }
+        .sys-nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        .mo-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; margin-bottom: 1.2rem; }
+        .mo-field { display: flex; flex-direction: column; gap: .25rem; }
+        .mo-field label { font-size: .75rem; opacity: .7; }
+        .mo-field input, .mo-field select {
+            background: #0b1220; color: #e2e8f0; border: 1px solid #334155;
+            border-radius: 5px; padding: .4rem .6rem; font-family: inherit; width: 110px; }
+        .mo-field select { width: 220px; }
+        #moStage { position: relative; display: inline-block; margin-top: .5rem; }
+        #moStage img { display: block; border-radius: 8px; max-width: 100%; }
+        .mo-box { position: absolute; border: 2px solid #22d3ee; border-radius: 3px;
+                  background: rgba(34,211,238,.08); pointer-events: none; }
+        .mo-box span { position: absolute; top: 2px; left: 5px; color: #22d3ee;
+                       font-size: .72rem; font-weight: 700; text-shadow: 0 0 4px #000; }
+        #moStatus { margin-left: 1rem; font-size: .9rem; }
+        .mo-meta { font-size: .85rem; opacity: .75; margin-top: .5rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">Mosaic Planner</span>
+            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;">{{ version }}</span>
+        </div>
+    </header>
+    <nav class="sys-nav">
+        <a href="/">&larr; Dashboard</a> <a href="/runs">Imaging Runs</a> <a href="/system">System</a>
+    </nav>
+
+    <main>
+        <section class="panel">
+            <h2>Plan a mosaic</h2>
+            <p class="mo-meta">Splits a wide framing into RC16-sized panels (0.414&deg; &times; 0.277&deg; each)
+               drawn over a DSS2 sky image. Creating panels adds one target goal per panel &mdash;
+               the campaign planner schedules them like any other target.</p>
+            <div class="mo-form">
+                <div class="mo-field"><label>Prefill from goal</label>
+                    <select id="moProj"><option value="">&mdash; pick a target &mdash;</option></select></div>
+                <div class="mo-field"><label>Name</label><input id="moName" value="Mosaic"></div>
+                <div class="mo-field"><label>RA (hours)</label><input id="moRa" type="number" step="0.0001" value="20.2017"></div>
+                <div class="mo-field"><label>Dec (degrees)</label><input id="moDec" type="number" step="0.001" value="38.355"></div>
+                <div class="mo-field"><label>Rows</label><input id="moRows" type="number" min="1" max="6" value="2"></div>
+                <div class="mo-field"><label>Cols</label><input id="moCols" type="number" min="1" max="6" value="2"></div>
+                <div class="mo-field"><label>Overlap %</label><input id="moOv" type="number" min="0" max="60" value="15"></div>
+                <div class="mo-field"><label>Rotation &deg;</label><input id="moRot" type="number" step="1" value="0"></div>
+                <div class="mo-field"><label>Hours / panel</label><input id="moBudget" type="number" min="1" max="60" value="8"></div>
+                <button class="btn btn-primary" id="moPlan">Plan</button>
+                <button class="btn btn-secondary" id="moCreate" disabled>Create panel goals</button>
+                <span id="moStatus"></span>
+            </div>
+            <div id="moStage"></div>
+            <div class="mo-meta" id="moSpan"></div>
+        </section>
+    </main>
+
+<script>
+let lastPlan = null;
+
+async function loadProjects() {
+    try {
+        const r = await fetch('/api/projects2');
+        const data = await r.json();
+        const projects = data.projects || data;
+        const sel = document.getElementById('moProj');
+        for (const p of projects) {
+            const o = document.createElement('option');
+            o.value = JSON.stringify({name: p.target.name, ra: p.target.ra_hours, dec: p.target.dec_degrees});
+            o.textContent = p.target.name;
+            sel.appendChild(o);
+        }
+        sel.onchange = () => {
+            if (!sel.value) return;
+            const t = JSON.parse(sel.value);
+            document.getElementById('moName').value = t.name + ' Mosaic';
+            document.getElementById('moRa').value = t.ra;
+            document.getElementById('moDec').value = t.dec;
+        };
+    } catch (e) { /* dropdown is optional */ }
+}
+
+async function plan() {
+    const q = new URLSearchParams({
+        name: document.getElementById('moName').value,
+        ra_hours: document.getElementById('moRa').value,
+        dec_degrees: document.getElementById('moDec').value,
+        rows: document.getElementById('moRows').value,
+        cols: document.getElementById('moCols').value,
+        overlap_pct: document.getElementById('moOv').value,
+        rotation_deg: document.getElementById('moRot').value,
+    });
+    document.getElementById('moStatus').textContent = 'planning...';
+    const r = await fetch('/api/mosaic/plan?' + q);
+    lastPlan = await r.json();
+    render(lastPlan);
+    document.getElementById('moStatus').textContent = '';
+    document.getElementById('moCreate').disabled = false;
+}
+
+function render(plan) {
+    const stage = document.getElementById('moStage');
+    stage.innerHTML = '';
+    const img = document.createElement('img');
+    img.src = plan.preview.url;
+    img.alt = 'DSS2 sky preview';
+    stage.appendChild(img);
+    img.onload = () => {
+        const W = img.clientWidth, H = img.clientHeight;
+        const fw = plan.preview.fov_w_deg, fh = plan.preview.fov_h_deg;
+        for (const p of plan.panels) {
+            // hips2fits TAN projection: north up, east LEFT
+            const cx = W / 2 - (p.east_deg / fw) * W;
+            const cy = H / 2 - (p.north_deg / fh) * H;
+            const bw = (p.fov_w / fw) * W, bh = (p.fov_h / fh) * H;
+            const box = document.createElement('div');
+            box.className = 'mo-box';
+            box.style.left = (cx - bw / 2) + 'px';
+            box.style.top = (cy - bh / 2) + 'px';
+            box.style.width = bw + 'px';
+            box.style.height = bh + 'px';
+            if (p.rotation_deg) box.style.transform = 'rotate(' + (-p.rotation_deg) + 'deg)';
+            box.innerHTML = '<span>P' + p.row + p.col + '</span>';
+            stage.appendChild(box);
+        }
+        document.getElementById('moSpan').textContent =
+            'Mosaic span: ' + plan.span_w_deg + '° × ' + plan.span_h_deg +
+            '° · ' + plan.panels.length + ' panels';
+    };
+}
+
+async function createPanels() {
+    if (!lastPlan) return;
+    const st = document.getElementById('moStatus');
+    st.textContent = 'creating...';
+    const r = await fetch('/api/mosaic/create', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            panels: lastPlan.panels,
+            budget_hours_per_panel: parseFloat(document.getElementById('moBudget').value),
+        }),
+    });
+    const res = await r.json();
+    st.textContent = res.ok ? ('created ' + res.created.length + ' panel goals ✓') : 'failed';
+    document.getElementById('moCreate').disabled = true;
+}
+
+document.getElementById('moPlan').onclick = plan;
+document.getElementById('moCreate').onclick = createPanels;
+loadProjects();
+</script>
+</body>
+</html>

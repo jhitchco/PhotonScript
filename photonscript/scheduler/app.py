@@ -698,6 +698,51 @@ async def api_project_delete(project_id: str):
     return {"ok": True}
 
 
+@app.get("/mosaic", response_class=HTMLResponse)
+async def mosaic_page(request: Request):
+    return templates.TemplateResponse(request, "mosaic.html",
+                                      {"version": VERSION})
+
+
+@app.get("/api/mosaic/plan")
+async def api_mosaic_plan(name: str = "Mosaic", ra_hours: float = 0.0,
+                          dec_degrees: float = 0.0, rows: int = 2,
+                          cols: int = 2, overlap_pct: float = 15.0,
+                          rotation_deg: float = 0.0):
+    """Panel grid + a DSS2 sky cutout (CDS hips2fits) to draw it over."""
+    from photonscript.scheduler.mosaic import plan_panels
+    plan = plan_panels(name, ra_hours, dec_degrees, rows, cols,
+                       overlap_pct, rotation_deg)
+    fov_w = max(plan["span_w_deg"] * 1.35, plan["span_h_deg"] * 1.35 * 4 / 3)
+    plan["preview"] = {
+        "url": ("https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
+                "?hips=CDS%2FP%2FDSS2%2Fcolor&width=800&height=600"
+                f"&fov={fov_w:.4f}&projection=TAN&coordsys=icrs"
+                f"&ra={ra_hours * 15.0:.5f}&dec={dec_degrees:.5f}&format=jpg"),
+        "fov_w_deg": round(fov_w, 4),
+        "fov_h_deg": round(fov_w * 600 / 800, 4),
+    }
+    return plan
+
+
+@app.post("/api/mosaic/create")
+async def api_mosaic_create(request: Request):
+    """Create one imaging project per panel (shows up as goal cards)."""
+    body = await request.json()
+    store = get_store()
+    budget = float(body.get("budget_hours_per_panel", 8.0))
+    created = []
+    for p in body.get("panels", []):
+        target = CelestialTarget(
+            name=p["name"], ra_hours=float(p["ra_hours"]),
+            dec_degrees=float(p["dec_degrees"]),
+            object_type=body.get("object_type", "nebula"))
+        proj = store.add_from_target(target, budget_hours=budget)
+        _projects[proj.id] = proj
+        created.append({"id": proj.id, "name": p["name"]})
+    return {"ok": True, "created": created}
+
+
 @app.get("/api/target/altitude")
 async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
                               dec_degrees: float = 0.0):

@@ -116,6 +116,23 @@ function integrateFlats(files, id, masterBias) {
 }
 
 
+// which frames were lost at a stage (input vs output, matched by prefix)
+function logDrops(stage, filt, inputs, outputs) {
+   var out = [];
+   for (var j = 0; j < outputs.length; ++j) out.push(File.extractName(outputs[j]));
+   var lost = [];
+   for (var i = 0; i < inputs.length; ++i) {
+      var n = File.extractName(inputs[i]);
+      var ok = false;
+      for (var j = 0; j < out.length; ++j)
+         if (out[j].indexOf(n) === 0) { ok = true; break; }
+      if (!ok) lost.push(n);
+   }
+   for (var i = 0; i < lost.length; ++i)
+      log("  DROPPED at " + stage + " [" + filt + "]: " + lost[i]);
+   return lost.length;
+}
+
 // crop stacking borders (unguided drift means each filter covers a
 // slightly different footprint; edges are single-channel color fringes)
 function cropBorders(view, frac) {
@@ -148,35 +165,52 @@ function autoStretchGray(view) {
    HT.executeOn(view, false);
 }
 
-// single review image: R=SII, G=Ha, B=OIII, each channel autostretched,
-// saved as masterSHO_review.xisf + .jpg next to the masters
-function makeSHOReview() {
+// downsample a saved master 2x (average). 0.24"/px against 2-3" seeing is
+// oversampled: binning costs no real detail and doubles SNR.
+function makeBin2(id) {
    var mdir = OUT + "/master/";
-   var need = ["masterLight_SII", "masterLight_Ha", "masterLight_OIII"];
-   for (var i = 0; i < need.length; ++i) {
-      if (!File.exists(mdir + need[i] + ".xisf")) {
-         log("SHO review skipped - missing " + need[i]);
-         return;
-      }
+   if (!File.exists(mdir + id + ".xisf")) return;
+   var w = ImageWindow.open(mdir + id + ".xisf")[0];
+   var IR = new IntegerResample;
+   IR.zoomFactor = -2;
+   IR.downsampleMode = IntegerResample.prototype.Average;
+   IR.executeOn(w.mainView, false);
+   w.saveAs(mdir + id + "_bin2.xisf", false, false, false, false);
+   w.forceClose();
+   log("bin2 master saved: " + mdir + id + "_bin2.xisf");
+}
+
+// combined review image from three mono masters (prefers the bin2 copies):
+// crop borders, autostretch each channel, combine, save .xisf + .jpg
+function makeComboReview(outName, chans, desc) {
+   var mdir = OUT + "/master/";
+   var paths = [];
+   for (var i = 0; i < chans.length; ++i) {
+      var p2 = mdir + "masterLight_" + chans[i] + "_bin2.xisf";
+      var p1 = mdir + "masterLight_" + chans[i] + ".xisf";
+      if (File.exists(p2)) paths.push(p2);
+      else if (File.exists(p1)) paths.push(p1);
+      else { log(outName + " review skipped - missing " + chans[i]); return; }
    }
-   log("building masterSHO review (R=SII, G=Ha, B=OIII)...");
+   log("building " + outName + " review (" + desc + ")...");
    var wins = [];
-   for (var i = 0; i < need.length; ++i) {
-      var w = ImageWindow.open(mdir + need[i] + ".xisf")[0];
-      w.mainView.id = "SHO_ch" + i;
+   for (var i = 0; i < paths.length; ++i) {
+      var w = ImageWindow.open(paths[i])[0];
+      w.mainView.id = outName + "_ch" + i;
       cropBorders(w.mainView, 0.015);
       autoStretchGray(w.mainView);
       wins.push(w);
    }
    var ref = wins[0].mainView.image;
-   var out = new ImageWindow(ref.width, ref.height, 3, 32, true, true, "masterSHO");
+   var out = new ImageWindow(ref.width, ref.height, 3, 32, true, true, outName);
    var CB = new ChannelCombination;
    CB.colorSpace = ChannelCombination.prototype.RGB;
-   CB.channels = [[true, "SHO_ch0"], [true, "SHO_ch1"], [true, "SHO_ch2"]];
+   CB.channels = [[true, outName + "_ch0"], [true, outName + "_ch1"],
+                  [true, outName + "_ch2"]];
    CB.executeOn(out.mainView, false);
-   out.saveAs(mdir + "masterSHO_review.xisf", false, false, false, false);
-   out.saveAs(mdir + "masterSHO_review.jpg", false, false, false, false);
-   log("SHO review saved: " + mdir + "masterSHO_review.jpg");
+   out.saveAs(mdir + outName + "_review.xisf", false, false, false, false);
+   out.saveAs(mdir + outName + "_review.jpg", false, false, false, false);
+   log(outName + " review saved: " + mdir + outName + "_review.jpg");
    for (var i = 0; i < wins.length; ++i) wins[i].forceClose();
    out.forceClose();
 }
@@ -236,6 +270,7 @@ function main() {
       IC.outputExtension = ".xisf"; IC.overwriteExistingFiles = true;
       if (!IC.executeGlobal()) throw new Error("calibration failed: " + filt);
       var calFiles = listFits(IC.outputDirectory);
+      logDrops("calibration", filt, lights, calFiles);
 
       // cosmetic correction (dark substitute / hot pixel cleanup)
       var CC = new CosmeticCorrection;
@@ -246,6 +281,7 @@ function main() {
       CC.overwrite = true;
       if (!CC.executeGlobal()) throw new Error("cosmetic correction failed: " + filt);
       var ccFiles = listFits(CC.outputDir);
+      logDrops("cosmetic", filt, calFiles, ccFiles);
 
       if (!refImage) refImage = ccFiles[Math.floor(ccFiles.length / 2)];
 
@@ -264,6 +300,10 @@ function main() {
       SA.useTriangleSimilarity = true;    // robust matching when few stars exist
       if (!SA.executeGlobal()) throw new Error("registration failed: " + filt);
       var regFiles = listFits(SA.outputDirectory);
+      logDrops("registration", filt, ccFiles, regFiles);
+      log(filt + " funnel: " + lights.length + " staged -> " +
+          calFiles.length + " calibrated -> " + ccFiles.length +
+          " cleaned -> " + regFiles.length + " registered");
 
       // don't let one star-poor filter abort the whole run — skip if <3 frames
       // survived alignment (ImageIntegration needs >=3). Ha/OIII masters already
@@ -275,8 +315,10 @@ function main() {
          continue;
       }
       integrate(regFiles, "masterLight_" + filt, false);
+      makeBin2("masterLight_" + filt);
    }
-   makeSHOReview();
+   makeComboReview("masterSHO", ["SII", "Ha", "OIII"], "R=SII, G=Ha, B=OIII");
+   makeComboReview("masterRGB", ["R", "G", "B"], "natural-color stars");
    log("DONE - masters in " + OUT + "/master (single review image: masterSHO_review.jpg)");
 }
 
