@@ -163,6 +163,16 @@ or "ERROR: ...". Masters in `out\master\`.
   zero without an output pedestal (masters look like pure noise).
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
+### Night-ops lessons
+- 2026-07-07 (zero-light night): weather held the roof shut past midnight;
+  on safe re-entry the first target (Eagle) was exactly AT the meridian, the
+  flip fired before the first exposure, and the flip's recenter plate solve
+  (through the 3nm H filter) failed until manually cancelled at dawn - the
+  stuck "Recentre - Solving..." dialog blocked the whole sequence for 4+ safe
+  hours. Mitigations: NINA plate-solve filter = L with a longer solve
+  exposure; meridian-aware target ordering (backlog); the /api/nina/log
+  endpoint exists for exactly this triage.
+
 ## 7. Claude session context
 
 - Mounts: `C:\Users\sleep\Claude` (deliver repo here via

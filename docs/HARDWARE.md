@@ -43,14 +43,18 @@ get answered; the planner and QA thresholds should eventually read from here.
 - OAG or guide scope? Model? Guide camera model?
 - First guided-night calibration result / typical RMS:
 
-### 2. Safety monitor  [what feeds is_safe]
-- Sensor/controller (Boltwood? AAG? AARO roof logic?):
-- Latency between "clouds/rain" and roof close:
+### 2. Safety monitor  [ANSWERED 2026-07-08 from NINA log]
+- ASCOM Alpaca: "AARO Safety Obs 2" (ASCOM.AlpacaDynamic1.SafetyMonitor v1.0)
+- Latency between "clouds/rain" and roof close: TODO
 
-### 3. NINA install  [sequencer JSON compatibility]
-- NINA version:
-- Installed plugins:
-- Equipment profile name:
+### 3. NINA install  [ANSWERED 2026-07-08 from NINA log]
+- NINA 3.2.0.9001 · profile "RC16"
+- Plugins seen: Ground Station (Pushover), Hocus Focus (auto-updates)
+- Mount driver: ASCOM.SoftwareBisque (through TheSky) · FW: ASCOM.OGMAVision
+- Guider: "PHD2_Single" at 127.0.0.1:4400 - connects cleanly
+- Plate solve: FL 3248, PixelSize 7.52 (= bin 2x2 solve frames), search 30deg,
+  blind failover on. NOTE 2026-07-08: flip-recenter solves through the 3nm H
+  filter failed repeatedly - set a plate-solve FILTER (L) in NINA options.
 
 ### 4. PixInsight add-ons  [processing pipeline scope]
 - StarXTerminator: yes/no · NoiseXTerminator: yes/no · BlurXTerminator: yes/no
