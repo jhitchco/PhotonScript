@@ -14,7 +14,7 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -1427,6 +1427,23 @@ def api_run_thumb(date: str, file: str, w: int = 360,
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
     return FileResponse(p, media_type="image/png", headers={
         "Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/api/nina/log", response_class=PlainTextResponse)
+async def api_nina_log(lines: int = 500, grep: str = ""):
+    """Tail (and optionally filter) the newest NINA log - remote 2AM triage
+    without pulling the whole bundle."""
+    import glob as _glob
+    logs = sorted(_glob.glob(str(Path(get_config().nina_logs_dir) / "*.log")))
+    if not logs:
+        return "no NINA logs found"
+    rows = Path(logs[-1]).read_text(encoding="utf-8",
+                                    errors="replace").splitlines()
+    if grep:
+        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
+        rows = [r for r in rows if any(n in r.lower() for n in needles)]
+    rows = rows[-min(max(1, lines), 5000):]
+    return f"# {Path(logs[-1]).name} - last {len(rows)} lines\n" + "\n".join(rows)
 
 
 @app.get("/api/runs/{date}/bundle")
