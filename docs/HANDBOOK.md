@@ -169,9 +169,10 @@ or "ERROR: ...". Masters in `out\master\`.
   flip fired before the first exposure, and the flip's recenter plate solve
   (through the 3nm H filter) failed until manually cancelled at dawn - the
   stuck "Recentre - Solving..." dialog blocked the whole sequence for 4+ safe
-  hours. Mitigations: NINA plate-solve filter = L with a longer solve
-  exposure; meridian-aware target ordering (backlog); the /api/nina/log
-  endpoint exists for exactly this triage.
+  hours. Root cause: PlateSolve2 (Regions=5000)
+  hung 6+ hours on a cloud frame; blind failover misconfigured. Fix: ASTAP as
+  primary AND blind solver (fails fast -> safety condition recovers the night).
+  Also: meridian-aware target ordering (backlog); /api/nina/log for triage.
 
 ## 7. Claude session context
 

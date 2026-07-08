@@ -52,9 +52,13 @@ get answered; the planner and QA thresholds should eventually read from here.
 - Plugins seen: Ground Station (Pushover), Hocus Focus (auto-updates)
 - Mount driver: ASCOM.SoftwareBisque (through TheSky) · FW: ASCOM.OGMAVision
 - Guider: "PHD2_Single" at 127.0.0.1:4400 - connects cleanly
-- Plate solve: FL 3248, PixelSize 7.52 (= bin 2x2 solve frames), search 30deg,
-  blind failover on. NOTE 2026-07-08: flip-recenter solves through the 3nm H
-  filter failed repeatedly - set a plate-solve FILTER (L) in NINA options.
+- Plate solve: L filter, 10s, bin 2x2 (PixelSize 7.52), gain 300, search 30deg,
+  5 attempts x 0.5 min. ROOT CAUSE 2026-07-07: primary solver was PlateSolve2
+  (Regions=5000) which HUNG >6h on a cloud frame after the roof closed
+  mid-recenter; blind failover was misconfigured (ASPS dropdown pointing at
+  astap.exe) so it never fired. FIX: primary + blind solver = ASTAP
+  (C:\Program Files\astap\astap.exe) - fails fast, recenter aborts in ~5 min
+  and the safety condition takes over. Verify ASTAP star DB (D50/G05) present.
 
 ### 4. PixInsight add-ons  [processing pipeline scope]
 - StarXTerminator: yes/no · NoiseXTerminator: yes/no · BlurXTerminator: yes/no
