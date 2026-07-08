@@ -39,9 +39,20 @@ get answered; the planner and QA thresholds should eventually read from here.
 
 ## TODO - unknowns to fill in (answers unblock real decisions)
 
-### 1. Guide optics  [blocks guiding confidence]
-- OAG or guide scope? Model? Guide camera model?
-- First guided-night calibration result / typical RMS:
+### 1. Guide optics  [ANSWERED 2026-07-08 - commissioning in progress]
+Three cameras visible to PHD2 (2.6.14, mount via ASCOM TheSky driver):
+- GP678C: guide cam on the OFF-AXIS GUIDER (RC16, 3248mm) - mechanical
+  state/focus unverified. THE right answer long-term: no differential
+  flexure, sees mirror shifts, ~0.13"/px guide scale.
+- AP26CC: color cam on a 600mm PIGGYBACK scope (existing PHD2 profile
+  "Piggy Back - 600mm") - easy stars, but 5.4x focal mismatch to the RC16;
+  differential flexure is the risk on 600s subs.
+- AP26MC: main imaging camera (never select in PHD2).
+Plan: separate PHD2 profiles per guide path with correct focal lengths
+(OAG-RC16-3248 / PiggyBack-600); build a PHD2 dark library for the guide cam
+(hot pixels = fake guide stars - the idle "21 arcsec RMS" artifact); twilight
+OAG test, piggyback fallback; record first calibration + typical RMS here:
+- First guided-night calibration result / typical RMS: TODO
 
 ### 2. Safety monitor  [ANSWERED 2026-07-08 from NINA log]
 - ASCOM Alpaca: "AARO Safety Obs 2" (ASCOM.AlpacaDynamic1.SafetyMonitor v1.0)
