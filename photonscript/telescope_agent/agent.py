@@ -291,6 +291,8 @@ class TelescopeAgent:
         while self._running:
             connected = await self.phd2.connect()
             if connected:
+                await self.phd2.refresh_pixel_scale()
+            if connected:
                 await self.phd2.run_event_loop()
             # Reconnect after delay
             await asyncio.sleep(10)

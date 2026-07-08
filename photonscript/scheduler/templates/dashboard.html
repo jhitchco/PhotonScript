@@ -362,6 +362,22 @@
                 if (ss && arm.state && ss.textContent.trim() === 'IDLE')
                     ss.textContent = arm.state;
             } catch (e2) {}
+            try {
+                const ts = await (await fetch('/api/telescope/state')).json();
+                const g = document.getElementById('guidingRms');
+                if (g && ts.guiding) {
+                    const st = (ts.guiding.state || '').toLowerCase();
+                    const rms = ts.guiding.rms_total_arcsec || 0;
+                    if (st === 'guiding' || st === 'settling' || st === 'calibrating') {
+                        g.textContent = rms.toFixed(2) + '\u2033 ' + st.toUpperCase();
+                        g.style.color = st === 'calibrating' ? '#7dd3fc'
+                            : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
+                    } else {
+                        g.textContent = (st || '\u2014').toUpperCase();
+                        g.style.color = '#64748b';
+                    }
+                }
+            } catch (e3) {}
             el.innerHTML =
                 '<span style="border:1px solid ' + SCOPE_COLORS[d.color] + ';color:' +
                 SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;">' +
