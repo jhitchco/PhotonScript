@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonScript - Calibration Library</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        main { max-width: 1200px; margin: 0 auto; }
+        .cal-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1.1rem; }
+        @media (max-width: 900px){ .cal-grid { grid-template-columns:1fr; } }
+        .cal-card { background:rgba(255,255,255,.04); border-radius:12px;
+                    padding:1rem 1.1rem; border-top:3px solid #334155; }
+        .cal-card h3 { margin:.1rem 0 .5rem 0; font-size:1.2rem; letter-spacing:.02em; }
+        .cal-card .big { font-size:1.05rem; font-weight:700; }
+        .muted { opacity:.62; font-size:.82rem; }
+        .badge { display:inline-block; padding:.12rem .6rem; border-radius:999px;
+                 font-size:.74rem; font-weight:700; }
+        .b-fresh { background:#14532d; color:#86efac; }
+        .b-soon  { background:#78350f; color:#fcd34d; }
+        .b-stale { background:#7f1d1d; color:#fca5a5; }
+        table.cal { width:100%; border-collapse:collapse; font-size:.85rem;
+                    margin-top:.6rem; }
+        table.cal th, table.cal td { padding:.28rem .5rem; text-align:right;
+            border-bottom:1px solid rgba(255,255,255,.07); }
+        table.cal th:first-child, table.cal td:first-child { text-align:left; }
+        .thin td { color:#fcd34d; }
+        .bar { height:7px; border-radius:4px; background:rgba(255,255,255,.08);
+               overflow:hidden; margin:.5rem 0 .2rem; }
+        .bar > i { display:block; height:100%; }
+        .refresh-note { font-size:.85rem; margin-top:.4rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">Calibration Library — coverage &amp; freshness</span>
+            <span class="observatory-badge">{{ observatory.name }}</span>
+        </div>
+        <div class="nav">
+            <a href="/">Dashboard</a>
+            <a href="/runs">Runs</a>
+            <a href="/mosaic">Mosaic</a>
+            <a href="/calibration">Calibration</a>
+            <a href="/system">System &amp; Config</a>
+            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;" title="git commit running on this machine">{{ version }}</span>
+        </div>
+    </header>
+    <main>
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:.2rem 0 1rem;">
+            <h2 style="margin:0;">Calibration masters on disk</h2>
+            <span class="muted" id="updated">loading…</span>
+            <span class="muted" style="margin-left:auto;">auto-refreshes every 60s · flats stale after 45d · darks 90d · bias 180d</span>
+        </div>
+        <div class="cal-grid" id="cards"></div>
+        <p class="muted" id="thinNote" style="margin-top:1rem;"></p>
+    </main>
+    <script>
+    const STALE_COLORS = {fresh:'#22c55e', soon:'#eab308', stale:'#ef4444'};
+    // frames below this count in a given exposure/filter bucket are "thin"
+    const THIN = 10;
+
+    function statusOf(age, staleAfter) {
+        if (age == null || staleAfter == null) return ['stale','—'];
+        const left = staleAfter - age;
+        if (left < 0)  return ['stale', `overdue by ${-left}d`];
+        if (left <= 7) return ['soon',  `refresh in ${left}d`];
+        return ['fresh', `good for ${left}d`];
+    }
+
+    function card(typ, d) {
+        if (!d || d.latest == null) {
+            return `<div class="cal-card"><h3>${typ}</h3>
+                <div class="big" style="color:#f87171;">none on disk</div>
+                <div class="muted">no ${typ} masters found — capture some.</div></div>`;
+        }
+        const [st, label] = statusOf(d.age_days, d.stale_after_days);
+        const cls = {fresh:'b-fresh', soon:'b-soon', stale:'b-stale'}[st];
+        const border = STALE_COLORS[st];
+        const detail = d.detail || {};
+        const isFlat = (typ === 'FLAT');
+        const thin = [];
+        const rows = Object.keys(detail).sort().map(k => {
+            const n = detail[k];
+            const t = n < THIN;
+            if (t) thin.push(`${typ} ${k} (${n})`);
+            return `<tr class="${t?'thin':''}"><td>${k}</td><td>${n}${t?' ⚠':''}</td></tr>`;
+        }).join('');
+        const pct = Math.max(0, Math.min(100,
+            d.stale_after_days ? (1 - d.age_days / d.stale_after_days) * 100 : 0));
+        return `<div class="cal-card" style="border-top-color:${border};" data-thin='${JSON.stringify(thin)}'>
+            <h3>${typ} <span class="badge ${cls}" style="float:right;">${label}</span></h3>
+            <div class="big">${d.total} frames total</div>
+            <div class="muted">latest ${d.latest} · ${d.age_days}d ago · ${d.count_latest} in newest set</div>
+            <div class="bar"><i style="width:${pct}%;background:${border};"></i></div>
+            <div class="muted">${d.age_days}d of ${d.stale_after_days}d staleness budget used</div>
+            <table class="cal"><thead><tr><th>${isFlat?'Filter':'Exposure'}</th><th>newest-set count</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan=2 class="muted">no per-'+(isFlat?'filter':'exposure')+' detail</td></tr>'}</tbody></table>
+            ${d.location ? `<div class="muted" style="margin-top:.4rem;word-break:break-all;">${d.location}</div>` : ''}
+        </div>`;
+    }
+
+    async function load() {
+        try {
+            const r = await fetch('/api/calibration/health');
+            const data = await r.json();
+            const order = ['FLAT','DARK','BIAS'];
+            document.getElementById('cards').innerHTML =
+                order.map(t => card(t, data[t])).join('');
+            const thin = [];
+            document.querySelectorAll('[data-thin]').forEach(el => {
+                try { JSON.parse(el.dataset.thin).forEach(x => thin.push(x)); } catch(e){}
+            });
+            document.getElementById('thinNote').textContent = thin.length
+                ? '⚠ Thin coverage (fewer than ' + THIN + ' frames): ' + thin.join(' · ') +
+                  ' — consider topping these up on the next closed-roof night.'
+                : 'All buckets have healthy frame counts.';
+            document.getElementById('updated').textContent =
+                'updated ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            document.getElementById('updated').textContent = 'dashboard unreachable';
+        }
+    }
+    load();
+    setInterval(load, 60000);
+    </script>
+</body>
+</html>

@@ -998,6 +998,14 @@ async def runs_page(request: Request):
     })
 
 
+@app.get("/calibration", response_class=HTMLResponse)
+async def calibration_page(request: Request):
+    return templates.TemplateResponse(request, "calibration.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
 @app.get("/api/runs")
 def api_runs():
     from photonscript.scheduler.runs import list_runs, _load_subs
