@@ -316,6 +316,16 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
     if m.get("doubled_frac", 0) >= 0.25:
         reasons.append(f"tracking jump: {round(m['doubled_frac']*100)}% of "
                        "stars doubled at a consistent offset")
+    # Defocus / false-detection guards (2026-07-09): a badly out-of-focus
+    # frame reads as donuts — either a flood of false "stars" or a huge HFR.
+    # Both mean the frame is junk regardless of the other metrics.
+    star_max = int(getattr(config, "quality_star_max", 5000))
+    if m["stars"] is not None and m["stars"] > star_max:
+        reasons.append(f"{m['stars']} stars > {star_max} "
+                       "(defocus/false detections)")
+    hfr_abs_max = float(getattr(config, "quality_hfr_abs_max", 8.0))
+    if m["hfr"] is not None and m["hfr"] > hfr_abs_max:
+        reasons.append(f"HFR {m['hfr']} > {hfr_abs_max:g}px (out of focus)")
     passed = not reasons
     hfr = m["hfr"]
     return {
