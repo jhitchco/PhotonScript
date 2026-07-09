@@ -212,6 +212,19 @@ def _autofocus() -> dict:
                        "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
 
 
+def _move_focuser(position: int) -> dict:
+    """Seed the focuser to a known-good absolute position before autofocus so
+    AF starts with tight stars (see focus_seeds.py)."""
+    return _make_typed("NINA.Sequencer.SequenceItem.Focuser."
+                       "MoveFocuserAbsolute, NINA.Sequencer",
+                       Position=int(position), ErrorBehavior=0, Attempts=1)
+
+
+def _seed_position(filter_type, ambient_c=None) -> int:
+    from photonscript.scheduler.focus_seeds import seed_for
+    return seed_for(filter_type.value, ambient_c)
+
+
 def _start_guiding(force_calibration: bool = False) -> dict:
     return _make_typed("NINA.Sequencer.SequenceItem.Guider.StartGuiding, "
                        "NINA.Sequencer", ForceCalibration=force_calibration,
@@ -507,10 +520,17 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     ]
     if active:
         items.append(_switch_filter(active[0].filter_type))
-    if target.auto_focus_on_start:
+    if target.auto_focus_on_start and active:
+        seed0 = _seed_position(active[0].filter_type)
         items.append(_pushover("Imaging",
-                               f"{target.name}: slew done — autofocusing "
-                               f"through {active[0].filter_type.value if active else 'L'}, "
+                               f"{target.name}: slew done — seeding focuser "
+                               f"to {seed0} for {active[0].filter_type.value}, "
+                               "autofocusing, then plate solve & center"))
+        items.append(_move_focuser(seed0))
+        items.append(_autofocus())
+    elif target.auto_focus_on_start:
+        items.append(_pushover("Imaging",
+                               f"{target.name}: slew done — autofocusing, "
                                "then plate solve & center"))
         items.append(_autofocus())
     items.append(_center(target))
@@ -551,12 +571,15 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     def _block(exp, bi, n_blocks, condition=None):
         n = exp.count - exp.acquired
         block_h = exp.exposure_seconds * n / 3600
+        seed = _seed_position(exp.filter_type)
         out = [_pushover(
             "Imaging",
             f"{target.name} [{bi}/{n_blocks}]: starting "
             f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
-            f"(~{block_h:.1f}h) gain {exp.gain}"
+            f"(~{block_h:.1f}h) gain {exp.gain}; focuser seed {seed} "
+            "then autofocus"
             + (" (moon-free window)" if condition else "")),
+            _move_focuser(seed),
             _smart_exposure(exp, target.start_guiding,
                             target.dither_every_n),
             _pushover(
@@ -808,16 +831,16 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             + [_pushover("Flats", "sky flats complete")],
             conditions=[_safety_condition()])
         end_items.append(flat_block)
-    end_items.append(_pushover("Shutdown", "starting shutdown: park, "
-                               "warm camera, disconnect"))
-    if guided:
-        end_items.append(_stop_guiding())
+    end_items.append(_pushover("Shutdown", "starting shutdown: stop guiding, "
+                               "park, warm camera, disconnect"))
+    end_items.append(_stop_guiding())
     if sequence.park_on_finish:
         end_items.append(_park())
     if sequence.warm_camera_on_finish:
         end_items.append(_warm_camera(3.0))
     end_items.append(_disconnect_all())
-    end_items.append(_pushover("Shutdown", "shutdown complete — parked & warm"))
+    end_items.append(_pushover("Shutdown", "shutdown complete — parked, warm, "
+                               "cooler off, guider stopped"))
 
     root = _seq_container(
         sequence.name,
