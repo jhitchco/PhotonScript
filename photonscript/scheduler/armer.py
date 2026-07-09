@@ -62,6 +62,7 @@ class Armer:
         self.detail = ""
         self.plan: dict = {}
         self.sequence_path: Path | None = None
+        self.guiding_override: str | None = None  # "guided" | "encoders" | None
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -76,6 +77,7 @@ class Armer:
             self._state_path.write_text(json.dumps({
                 "state": self.state, "detail": self.detail, "plan": self.plan,
                 "last_raw": getattr(self, "last_raw", None),
+                "guiding_override": getattr(self, "guiding_override", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
             }, indent=1), encoding="utf-8")
         except OSError as e:
@@ -97,6 +99,9 @@ class Armer:
         self.state = saved["state"]
         self.detail = saved.get("detail", "") + " (restored after restart)"
         self.plan = saved.get("plan", {})
+        # Preserve the armed guiding mode across restarts, so a mid-night
+        # dashboard restart doesn't silently revert to the config default.
+        self.guiding_override = saved.get("guiding_override")
         self.sequence_path = (Path(saved["sequence_path"])
                               if saved.get("sequence_path") else None)
         self._task = asyncio.create_task(self._run())
