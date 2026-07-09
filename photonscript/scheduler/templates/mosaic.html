@@ -8,21 +8,35 @@
     <style>
         .sys-nav { margin: 1rem 2rem 0; }
         .sys-nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
-        .mo-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; margin-bottom: 1.2rem; }
+        .mo-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; margin-bottom: .8rem; }
         .mo-field { display: flex; flex-direction: column; gap: .25rem; }
         .mo-field label { font-size: .75rem; opacity: .7; }
         .mo-field input, .mo-field select {
             background: #0b1220; color: #e2e8f0; border: 1px solid #334155;
             border-radius: 5px; padding: .4rem .6rem; font-family: inherit; width: 110px; }
-        .mo-field select { width: 220px; }
-        #moStage { position: relative; display: inline-block; margin-top: .5rem; }
+        .mo-field select { width: 200px; }
+        .mo-field input[type=range] { width: 220px; padding: 0; }
+        .preset-row { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1rem; align-items:center; }
+        .preset-row .btn { padding:.3rem .7rem; font-size:.82rem; }
+        .grid-chip { cursor:pointer; padding:.3rem .75rem; border-radius:6px; font-size:.82rem;
+                     background:rgba(255,255,255,.06); border:1px solid #334155; color:#e2e8f0; }
+        .grid-chip.active { background:#1d4ed8; border-color:#1d4ed8; }
+        #moStage { position: relative; display: inline-block; margin-top: .5rem;
+                   background:#000; border-radius:8px; }
         #moStage img { display: block; border-radius: 8px; max-width: 100%; }
-        .mo-box { position: absolute; border: 2px solid #22d3ee; border-radius: 3px;
-                  background: rgba(34,211,238,.08); pointer-events: none; }
-        .mo-box span { position: absolute; top: 2px; left: 5px; color: #22d3ee;
-                       font-size: .72rem; font-weight: 700; text-shadow: 0 0 4px #000; }
-        #moStatus { margin-left: 1rem; font-size: .9rem; }
-        .mo-meta { font-size: .85rem; opacity: .75; margin-top: .5rem; }
+        .mo-box { position: absolute; border: 2px solid #22d3ee; border-radius: 2px;
+                  background: rgba(34,211,238,.07); pointer-events: none;
+                  box-shadow: 0 0 0 1px rgba(0,0,0,.5) inset; }
+        .mo-box span { position: absolute; top: 2px; left: 4px; color: #22d3ee;
+                       font-size: .7rem; font-weight: 700; text-shadow: 0 0 4px #000; }
+        #moStage .cross { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px;
+                          left:50%; top:50%; pointer-events:none; }
+        #moStage .cross:before, #moStage .cross:after { content:''; position:absolute;
+            background:#f472b6; }
+        #moStage .cross:before { left:6px; top:0; width:2px; height:14px; }
+        #moStage .cross:after  { top:6px; left:0; height:2px; width:14px; }
+        .mo-meta { font-size: .85rem; opacity: .8; margin-top: .5rem; }
+        #moStatus { margin-left: .6rem; font-size: .9rem; }
     </style>
 </head>
 <body>
@@ -40,31 +54,52 @@
     <main>
         <section class="panel">
             <h2>Plan a mosaic</h2>
-            <p class="mo-meta">Splits a wide framing into RC16-sized panels (0.414&deg; &times; 0.277&deg; each)
-               drawn over a DSS2 sky image. Creating panels adds one target goal per panel &mdash;
-               the campaign planner schedules them like any other target.</p>
+            <p class="mo-meta">Pick a target, choose a grid, and frame it live over a real DSS2 sky image by moving the
+               center. Panels are sized from the ASI2600 sensor at your focal length. Your rig has <b>no rotator</b>, so
+               every panel tiles at one <b>fixed camera angle</b> — set it once to your measured PA (from an ASTAP / NINA
+               plate solve). You frame by center + grid, not by rotating. Creating panels adds one target goal per panel.</p>
+
             <div class="mo-form">
-                <div class="mo-field"><label>Prefill from goal</label>
+                <div class="mo-field"><label>Target (prefill)</label>
                     <select id="moProj"><option value="">&mdash; pick a target &mdash;</option></select></div>
                 <div class="mo-field"><label>Name</label><input id="moName" value="Mosaic"></div>
                 <div class="mo-field"><label>RA (hours)</label><input id="moRa" type="number" step="0.0001" value="20.2017"></div>
                 <div class="mo-field"><label>Dec (degrees)</label><input id="moDec" type="number" step="0.001" value="38.355"></div>
-                <div class="mo-field"><label>Rows</label><input id="moRows" type="number" min="1" max="6" value="2"></div>
-                <div class="mo-field"><label>Cols</label><input id="moCols" type="number" min="1" max="6" value="2"></div>
+                <div class="mo-field"><label>Focal length</label>
+                    <select id="moFL">
+                        <option value="3248">RC16 native — 3248 mm</option>
+                        <option value="600">With reducer — 600 mm</option>
+                    </select></div>
                 <div class="mo-field"><label>Overlap %</label><input id="moOv" type="number" min="0" max="60" value="15"></div>
-                <div class="mo-field"><label>Rotation &deg;</label><input id="moRot" type="number" step="1" value="0"></div>
                 <div class="mo-field"><label>Hours / panel</label><input id="moBudget" type="number" min="1" max="60" value="8"></div>
-                <button class="btn btn-primary" id="moPlan">Plan</button>
+            </div>
+
+            <div class="preset-row">
+                <span style="opacity:.7;font-size:.8rem;">Grid:</span>
+                <span class="grid-chip" data-r="1" data-c="1">1×1</span>
+                <span class="grid-chip" data-r="1" data-c="2">1×2</span>
+                <span class="grid-chip" data-r="2" data-c="1">2×1</span>
+                <span class="grid-chip active" data-r="2" data-c="2">2×2</span>
+                <span class="grid-chip" data-r="2" data-c="3">2×3</span>
+                <span class="grid-chip" data-r="3" data-c="2">3×2</span>
+                <span class="grid-chip" data-r="3" data-c="3">3×3</span>
+                <input id="moRows" type="hidden" value="2"><input id="moCols" type="hidden" value="2">
+                <span style="opacity:.7;font-size:.8rem;margin-left:1rem;" title="Your rig has no rotator — this is the single fixed on-sky angle your camera sits at. Set it once from a plate solve; all panels use it.">Camera PA (fixed):</span>
+                <input id="moRotRange" type="range" min="0" max="360" step="1" value="0" style="width:200px;">
+                <input id="moRot" type="number" min="0" max="360" step="1" value="0" style="width:70px;">
+                <span style="opacity:.7;font-size:.8rem;">&deg;</span>
+                <button class="btn btn-primary" id="moPlan" style="margin-left:1rem;">Plan</button>
                 <button class="btn btn-secondary" id="moCreate" disabled>Create panel goals</button>
                 <span id="moStatus"></span>
             </div>
+
             <div id="moStage"></div>
             <div class="mo-meta" id="moSpan"></div>
         </section>
     </main>
 
 <script>
-let lastPlan = null;
+let lastPlan = null, curImgUrl = null, planTimer = null;
 
 async function loadProjects() {
     try {
@@ -84,9 +119,12 @@ async function loadProjects() {
             document.getElementById('moName').value = t.name + ' Mosaic';
             document.getElementById('moRa').value = t.ra;
             document.getElementById('moDec').value = t.dec;
+            plan();
         };
-    } catch (e) { /* dropdown is optional */ }
+    } catch (e) { /* dropdown optional */ }
 }
+
+function planSoon() { clearTimeout(planTimer); planTimer = setTimeout(plan, 130); }
 
 async function plan() {
     const q = new URLSearchParams({
@@ -97,50 +135,67 @@ async function plan() {
         cols: document.getElementById('moCols').value,
         overlap_pct: document.getElementById('moOv').value,
         rotation_deg: document.getElementById('moRot').value,
+        focal_length_mm: document.getElementById('moFL').value,
     });
-    document.getElementById('moStatus').textContent = 'planning...';
-    const r = await fetch('/api/mosaic/plan?' + q);
-    lastPlan = await r.json();
-    render(lastPlan);
+    document.getElementById('moStatus').textContent = 'planning…';
+    try {
+        const r = await fetch('/api/mosaic/plan?' + q);
+        lastPlan = await r.json();
+        render(lastPlan);
+        document.getElementById('moCreate').disabled = false;
+    } catch (e) { document.getElementById('moStatus').textContent = 'error'; return; }
     document.getElementById('moStatus').textContent = '';
-    document.getElementById('moCreate').disabled = false;
+}
+
+function drawBoxes(plan, img) {
+    const stage = document.getElementById('moStage');
+    stage.querySelectorAll('.mo-box, .cross').forEach(el => el.remove());
+    const cross = document.createElement('div'); cross.className = 'cross'; stage.appendChild(cross);
+    const W = img.clientWidth, H = img.clientHeight;
+    const fw = plan.preview.fov_w_deg, fh = plan.preview.fov_h_deg;
+    for (const p of plan.panels) {
+        // hips2fits TAN projection: north up, east LEFT
+        const cx = W / 2 - (p.east_deg / fw) * W;
+        const cy = H / 2 - (p.north_deg / fh) * H;
+        const bw = (p.fov_w / fw) * W, bh = (p.fov_h / fh) * H;
+        const box = document.createElement('div');
+        box.className = 'mo-box';
+        box.style.left = (cx - bw / 2) + 'px';
+        box.style.top = (cy - bh / 2) + 'px';
+        box.style.width = bw + 'px';
+        box.style.height = bh + 'px';
+        if (p.rotation_deg) box.style.transform = 'rotate(' + (-p.rotation_deg) + 'deg)';
+        box.innerHTML = '<span>P' + p.row + p.col + '</span>';
+        stage.appendChild(box);
+    }
+    const pf = plan.panel_fov_deg || {w: fw, h: fh};
+    document.getElementById('moSpan').innerHTML =
+        '<b>' + plan.panels.length + ' panels</b> · each ' + pf.w + '° × ' + pf.h +
+        '° (' + plan.focal_length_mm + ' mm) · full mosaic ' +
+        plan.span_w_deg + '° × ' + plan.span_h_deg + '° · camera PA ' +
+        document.getElementById('moRot').value + '° (fixed)';
 }
 
 function render(plan) {
     const stage = document.getElementById('moStage');
-    stage.innerHTML = '';
-    const img = document.createElement('img');
-    img.src = plan.preview.url;
-    img.alt = 'DSS2 sky preview';
-    stage.appendChild(img);
-    img.onload = () => {
-        const W = img.clientWidth, H = img.clientHeight;
-        const fw = plan.preview.fov_w_deg, fh = plan.preview.fov_h_deg;
-        for (const p of plan.panels) {
-            // hips2fits TAN projection: north up, east LEFT
-            const cx = W / 2 - (p.east_deg / fw) * W;
-            const cy = H / 2 - (p.north_deg / fh) * H;
-            const bw = (p.fov_w / fw) * W, bh = (p.fov_h / fh) * H;
-            const box = document.createElement('div');
-            box.className = 'mo-box';
-            box.style.left = (cx - bw / 2) + 'px';
-            box.style.top = (cy - bh / 2) + 'px';
-            box.style.width = bw + 'px';
-            box.style.height = bh + 'px';
-            if (p.rotation_deg) box.style.transform = 'rotate(' + (-p.rotation_deg) + 'deg)';
-            box.innerHTML = '<span>P' + p.row + p.col + '</span>';
-            stage.appendChild(box);
-        }
-        document.getElementById('moSpan').textContent =
-            'Mosaic span: ' + plan.span_w_deg + '° × ' + plan.span_h_deg +
-            '° · ' + plan.panels.length + ' panels';
-    };
+    let img = stage.querySelector('img');
+    if (!img || plan.preview.url !== curImgUrl) {
+        // sky region changed (RA/Dec/FOV) → (re)load the DSS image
+        stage.querySelectorAll('.mo-box, .cross').forEach(el => el.remove());
+        if (!img) { img = document.createElement('img'); img.alt = 'DSS2 sky preview'; stage.insertBefore(img, stage.firstChild); }
+        curImgUrl = plan.preview.url;
+        img.onload = () => drawBoxes(plan, img);
+        img.src = plan.preview.url;
+    } else {
+        // same sky image (e.g. rotation change) → just redraw the boxes
+        drawBoxes(plan, img);
+    }
 }
 
 async function createPanels() {
     if (!lastPlan) return;
     const st = document.getElementById('moStatus');
-    st.textContent = 'creating...';
+    st.textContent = 'creating…';
     const r = await fetch('/api/mosaic/create', {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
@@ -153,9 +208,26 @@ async function createPanels() {
     document.getElementById('moCreate').disabled = true;
 }
 
+// grid presets
+document.querySelectorAll('.grid-chip').forEach(chip => {
+    chip.onclick = () => {
+        document.querySelectorAll('.grid-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        document.getElementById('moRows').value = chip.dataset.r;
+        document.getElementById('moCols').value = chip.dataset.c;
+        plan();
+    };
+});
+// rotation slider <-> number sync, live redraw
+const rot = document.getElementById('moRot'), rotR = document.getElementById('moRotRange');
+rotR.oninput = () => { rot.value = rotR.value; planSoon(); };
+rot.oninput  = () => { rotR.value = rot.value; planSoon(); };
+// other live controls
+['moOv','moFL','moRa','moDec'].forEach(id => document.getElementById(id).oninput = planSoon);
 document.getElementById('moPlan').onclick = plan;
 document.getElementById('moCreate').onclick = createPanels;
 loadProjects();
+plan();
 </script>
 </body>
 </html>

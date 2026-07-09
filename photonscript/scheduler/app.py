@@ -305,8 +305,11 @@ async def api_tonight_sequence_json(now_mode: bool = False):
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     targets = plan_night_sequence(projects, config, now)
+    # Honor the ARMED guiding mode (encoders/guided) so the preview matches
+    # what will actually be dispatched, not just the config default.
+    preview_guided = get_armer()._use_guiding()
     for t in targets:
-        t.start_guiding = config.guided_default
+        t.start_guiding = preview_guided
     sequence = build_sequence_for_night(
         name=f"PhotonScript_{now.strftime('%Y%m%d')}",
         targets=targets,
@@ -315,7 +318,7 @@ async def api_tonight_sequence_json(now_mode: bool = False):
     sequence.wait_until_local = None if now_mode else "00:00:00"
     json_content = generate_nina_json(sequence)
 
-    result = _lint(json.loads(json_content), guided=config.guided_default)
+    result = _lint(json.loads(json_content), guided=preview_guided)
     if not result.ok:
         return JSONResponse(status_code=500, content={
             "detail": "Lint FAILED — refusing to serve sequence",
@@ -710,11 +713,26 @@ async def mosaic_page(request: Request):
 async def api_mosaic_plan(name: str = "Mosaic", ra_hours: float = 0.0,
                           dec_degrees: float = 0.0, rows: int = 2,
                           cols: int = 2, overlap_pct: float = 15.0,
-                          rotation_deg: float = 0.0):
-    """Panel grid + a DSS2 sky cutout (CDS hips2fits) to draw it over."""
+                          rotation_deg: float = 0.0,
+                          focal_length_mm: float = 3248.0):
+    """Panel grid + a DSS2 sky cutout (CDS hips2fits) to draw it over.
+
+    Panel FOV is derived from the ASI2600/IMX571 sensor (23.5 x 15.7 mm) at
+    the requested focal length, so native (3248 mm) vs reducer (600 mm) framing
+    can be previewed. Default is the RC16 native focal length.
+    """
+    import math
     from photonscript.scheduler.mosaic import plan_panels
+    fl = max(50.0, float(focal_length_mm))
+    SENSOR_W_MM, SENSOR_H_MM = 23.5, 15.7
+    fov_w_panel = math.degrees(2 * math.atan(SENSOR_W_MM / (2 * fl)))
+    fov_h_panel = math.degrees(2 * math.atan(SENSOR_H_MM / (2 * fl)))
     plan = plan_panels(name, ra_hours, dec_degrees, rows, cols,
-                       overlap_pct, rotation_deg)
+                       overlap_pct, rotation_deg,
+                       fov_w=fov_w_panel, fov_h=fov_h_panel)
+    plan["focal_length_mm"] = fl
+    plan["panel_fov_deg"] = {"w": round(fov_w_panel, 4),
+                             "h": round(fov_h_panel, 4)}
     fov_w = max(plan["span_w_deg"] * 1.35, plan["span_h_deg"] * 1.35 * 4 / 3)
     plan["preview"] = {
         "url": ("https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
