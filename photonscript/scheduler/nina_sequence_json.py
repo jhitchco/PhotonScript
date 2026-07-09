@@ -675,13 +675,19 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         dawn_provider, dawn_offset = "DawnProvider", 0
 
     # ---- Start area: cold start + twilight prep --------------------------
+    # Cooling must NOT start at arm. After arming, the sequence idles at the
+    # WaitForTime below, then starts cooling a configurable lead before
+    # ASTRONOMICAL dark (default 30 min). If armed after that point,
+    # WaitForTime returns immediately. The setpoint itself is unchanged
+    # (config.camera_setpoint_c — currently 0 C).
+    cool_lead = int(getattr(_gen_cfg(), "cool_lead_minutes", 30))
     start_items = [
         _pushover("Startup", f"{sequence.name}: standby — "
-                  f"{len(sequence.targets)} target(s) queued, cooling to "
-                  f"{temp:.0f}°C at nautical dusk -30m"),
+                  f"{len(sequence.targets)} target(s) queued; cooler stays OFF "
+                  f"until ~{cool_lead}m before astro dark, then cools to "
+                  f"{temp:.0f}°C"),
+        _wait_for_provider("DuskProvider", -cool_lead),
     ]
-    if gate_dark:
-        start_items.append(_wait_for_provider("NauticalDuskProvider", -30))
     startup_dark_blocks = _dark_quota_blocks(dawn_provider, dawn_offset)
     start_unsafe_darks = _seq_container(
         "STARTUP_DARKS_IF_UNSAFE",
