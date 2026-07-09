@@ -105,8 +105,13 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
         if not _has_type(seq, "StopGuiding"):
             r.warn("guiding", "Guided run without StopGuiding in shutdown")
     else:
-        if guide_elems:
-            kinds = sorted({d["$type"].split(".")[-1].split(",")[0] for d in guide_elems})
+        # A StopGuiding in the shutdown is ALLOWED (and desirable) on an
+        # unguided run — it harmlessly stops a stray looping PHD2. Only
+        # StartGuiding / Dither are actually wrong for an unguided sequence.
+        bad = (_find_type(seq, "StartGuiding")
+               + _find_type(seq, "DitherAfterExposures"))
+        if bad:
+            kinds = sorted({d["$type"].split(",")[0].split(".")[-1] for d in bad})
             r.error("guiding", f"Unguided run contains guiding elements: {kinds}")
 
     # --- Per-target checks -------------------------------------------------

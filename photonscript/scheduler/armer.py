@@ -117,25 +117,40 @@ class Armer:
 
     def status(self) -> dict:
         return {"state": self.state, "detail": self.detail,
+                "guiding": "guided" if self._use_guiding() else "encoders",
                 "night_of": self.plan.get("night_of"),
                 "preconfig_utc": self.plan.get("preconfig_utc"),
                 "dusk_utc": self.plan.get("dusk_utc"),
                 "dawn_utc": self.plan.get("dawn_utc")}
 
-    async def arm(self) -> dict:
+    def _use_guiding(self) -> bool:
+        """Resolve this night's guiding mode. An explicit arm-time choice
+        ('guided' / 'encoders') wins; otherwise fall back to config default."""
+        override = getattr(self, "guiding_override", None)
+        if override == "guided":
+            return True
+        if override == "encoders":
+            return False
+        return bool(self.config.guided_default)
+
+    async def arm(self, guiding: str | None = None) -> dict:
+        """guiding: 'guided' (PHD2) or 'encoders' (unguided, CEM70G encoders).
+        None => use config.guided_default."""
         from photonscript.scheduler.night_plan import build_night_plan
+        self.guiding_override = guiding
         self.plan = build_night_plan(self.config)
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
+        mode = "guided (PHD2)" if self._use_guiding() else "unguided (encoders)"
         self.last_raw = None; self._set_state("ARMED",
                         f"Pre-config at {self.plan['preconfig_utc']}, "
                         f"{len(self.plan['targets'])} targets, "
-                        f"{self.plan['dark_hours']}h dark")
+                        f"{self.plan['dark_hours']}h dark — {mode}")
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
         await notify(self.config,
-                     f"ARMED for {self.plan['night_of']}: "
+                     f"ARMED for {self.plan['night_of']} [{mode}]: "
                      f"{', '.join(self.plan['targets'][:4])} — "
                      f"{self.plan['dark_hours']}h dark window.",
                      title="PhotonScript armed")
@@ -252,8 +267,9 @@ class Armer:
         if not targets:
             self.detail = "No targets with remaining subs visible tonight"
             return False
+        use_guiding = self._use_guiding()
         for t in targets:
-            t.start_guiding = self.config.guided_default
+            t.start_guiding = use_guiding
         seq = build_sequence_for_night(
             f"PhotonScript_{self.plan['night_of'].replace('-', '')}", targets)
 
@@ -263,7 +279,7 @@ class Armer:
             seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
         content = generate_nina_json(seq)
-        result = lint(json.loads(content), guided=self.config.guided_default)
+        result = lint(json.loads(content), guided=use_guiding)
         if not result.ok:
             self.detail = "; ".join(f.detail for f in result.findings
                                     if f.level == "ERROR")

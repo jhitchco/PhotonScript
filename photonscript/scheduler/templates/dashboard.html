@@ -57,7 +57,8 @@
         <section class="panel" id="armPanel">
             <h2>Tonight's Run</h2>
             <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem;">
-                <button class="btn btn-primary" id="armBtn">Arm</button>
+                <button class="btn btn-primary" id="armBtn" title="Arm tonight unguided — trust the CEM70G absolute encoders (no PHD2 calibration)">Arm (Encoders)</button>
+                <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding (for very long subs / extreme precision)">Arm (Guiding)</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;"></span>
                 <span id="scopeChip" style="font-size:.85rem;">🔭 checking scope…</span>
@@ -243,9 +244,13 @@
         el.style.color = ARM_COLORS[d.state] || '#e2e8f0';
         document.getElementById('armDetail').textContent = d.detail || '';
         const btn = document.getElementById('armBtn');
+        const gbtn = document.getElementById('armGuidedBtn');
         const active = ['ARMED','RUNNING','PAUSED_UNSAFE'].includes(d.state);
-        btn.textContent = active ? 'Disarm' : 'Arm';
+        btn.textContent = active
+            ? ('Disarm' + (d.guiding ? ' (' + d.guiding + ')' : ''))
+            : 'Arm (Encoders)';
         btn.dataset.armed = active ? '1' : '0';
+        if (gbtn) gbtn.style.display = active ? 'none' : '';
         const lr = d.last_raw;
         const el2 = document.getElementById('rawDispatch');
         if (el2) el2.innerHTML = lr
@@ -472,12 +477,22 @@
         alert(d.report);
         refreshArm();
     });
-    document.getElementById('armBtn').addEventListener('click', async (ev) => {
-        const arming = ev.target.dataset.armed !== '1';
-        if (!arming && !confirm('Disarm? If a sequence is running it will be stopped.')) return;
+    async function postArm(body) {
         await fetch('/api/arm', {method:'POST', headers:{'Content-Type':'application/json'},
-                                 body: JSON.stringify({armed: arming})});
+                                 body: JSON.stringify(body)});
         refreshArm();
+    }
+    document.getElementById('armBtn').addEventListener('click', async (ev) => {
+        const arming = ev.currentTarget.dataset.armed !== '1';
+        if (!arming) {
+            if (!confirm('Disarm? If a sequence is running it will be stopped.')) return;
+            return postArm({armed: false});
+        }
+        return postArm({armed: true, guiding: 'encoders'});
+    });
+    document.getElementById('armGuidedBtn').addEventListener('click', async () => {
+        if (!confirm('Arm tonight WITH PHD2 guiding? (Encoders-only is the default — use guiding only for very long subs.)')) return;
+        return postArm({armed: true, guiding: 'guided'});
     });
     loadOutlook(); loadTimeline(); refreshArm();
     setInterval(refreshArm, 30000);

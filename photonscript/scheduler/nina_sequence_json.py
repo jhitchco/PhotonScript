@@ -208,8 +208,11 @@ def _center(target) -> dict:
 
 
 def _autofocus() -> dict:
+    # Attempts=2: if the first autofocus run fails (e.g. too few stars because
+    # the scope drifted off focus), retry once before giving up rather than
+    # silently continuing to image out of focus (the donut-night failure).
     return _make_typed("NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus, "
-                       "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
+                       "NINA.Sequencer", ErrorBehavior=0, Attempts=2)
 
 
 def _move_focuser(position: int) -> dict:
@@ -253,6 +256,13 @@ def _nina_filter_name(filter_type: FilterType) -> str:
     return _filter_names_cache.get(filter_type.value, filter_type.value)
 
 
+# Narrowband filters have far fewer/fainter stars, so a default-length
+# autofocus exposure often can't build a valid HFR curve (SII is the worst).
+# Give the narrowband filters a longer dedicated AF exposure; broadband keeps
+# the profile default (-1).
+_NB_AF_EXPOSURE_S = {"Ha": 30.0, "OIII": 30.0, "SII": 45.0}
+
+
 def _filter_info(filter_type: FilterType) -> dict:
     """NINA.Core FilterInfo shape (underscore fields), per the reference file."""
     return _make_typed(
@@ -260,7 +270,7 @@ def _filter_info(filter_type: FilterType) -> dict:
         _name=_nina_filter_name(filter_type),
         _focusOffset=0,
         _position=FILTER_POSITIONS.get(filter_type, 0),
-        _autoFocusExposureTime=-1.0,
+        _autoFocusExposureTime=_NB_AF_EXPOSURE_S.get(filter_type.value, -1.0),
         _autoFocusFilter=False,
         _autoFocusBinning=_make_typed(
             "NINA.Core.Model.Equipment.BinningMode, NINA.Core", X=1, Y=1),
@@ -604,8 +614,11 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     # AF triggers: temp drift + filter change + HFR creep — the proven trio
     # from the known-good AARO sequence (the time-based trigger validated
     # badly against disconnected equipment at load)
+    # Temp trigger relaxed 1.0->2.0 C: with per-filter seed positions and the
+    # HFR-creep trigger already covering focus drift, a 1C re-AF fired too
+    # often on nights with a swinging focuser temp and ate dark time.
     triggers = [_meridian_flip_trigger(), _reconnect_trigger(),
-                _autofocus_temp_trigger(1.0),
+                _autofocus_temp_trigger(2.0),
                 _autofocus_filter_trigger(),
                 _autofocus_hfr_trigger(10.0, 4)]
 

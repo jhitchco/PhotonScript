@@ -578,7 +578,8 @@ async def api_arm(request: Request):
     body = await request.json()
     armer = get_armer()
     if body.get("armed"):
-        return await armer.arm()
+        # guiding: "guided" (PHD2) | "encoders" (unguided) | None (config default)
+        return await armer.arm(guiding=body.get("guiding"))
     return await armer.disarm()
 
 

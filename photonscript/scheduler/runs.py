@@ -137,6 +137,59 @@ def _sep_module():
             return None
 
 
+def _shape_diagnostics(objs, W, H, ecc_floor: float = 0.30) -> dict:
+    """Per-corner eccentricity + elongation-direction diagnosis.
+
+    Distinguishes the *cause* of elongated stars, which a single whole-frame
+    ecc cannot:
+      - uniform PA  -> stars stretched the same direction everywhere = mount
+                       tracking error / wind shake
+      - radial      -> stretch points out from the frame center = tilt /
+                       collimation / field curvature
+      - round       -> nothing to see
+    Returns corner ecc (TL/TR/BL/BR/C), ecc_pa_R (0=random dir .. 1=one
+    direction), ecc_radial_frac (fraction aligned with the radial vector),
+    and a shape label.
+    """
+    import numpy as np
+    good = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
+    if len(good) < 20:
+        return {}
+    x, y, a, b, th = (good["x"], good["y"], good["a"], good["b"],
+                      good["theta"])
+    ecc = 1.0 - b / a
+    zx = np.clip((x / W * 3).astype(int), 0, 2)
+    zy = np.clip((y / H * 3).astype(int), 0, 2)
+
+    def zmed(cx, cy):
+        m = (zx == cx) & (zy == cy)
+        return round(float(np.median(ecc[m])), 2) if m.sum() >= 5 else None
+    corners = {"TL": zmed(0, 0), "TR": zmed(2, 0), "BL": zmed(0, 2),
+               "BR": zmed(2, 2), "C": zmed(1, 1)}
+    el = ecc > ecc_floor
+    if int(el.sum()) < 15:
+        return {"corner_ecc": corners, "ecc_pa_R": 0.0,
+                "ecc_radial_frac": 0.0, "shape": "round"}
+    thE = th[el]
+    # axial (mod-pi) data: resultant length of 2*theta
+    R = float(np.hypot(np.mean(np.cos(2 * thE)), np.mean(np.sin(2 * thE))))
+    cx, cy = W / 2.0, H / 2.0
+    rad = np.arctan2(y[el] - cy, x[el] - cx)
+    d = np.abs(((thE - rad + np.pi / 2) % np.pi) - np.pi / 2)
+    radial_frac = float((d < np.deg2rad(25)).mean())
+    med_ecc = float(np.median(ecc))
+    if med_ecc < 0.25:
+        shape = "round"
+    elif radial_frac > 0.5:
+        shape = "radial (tilt/collimation/curvature)"
+    elif R > 0.55:
+        shape = "uniform PA (tracking/wind)"
+    else:
+        shape = "mixed"
+    return {"corner_ecc": corners, "ecc_pa_R": round(R, 2),
+            "ecc_radial_frac": round(radial_frac, 2), "shape": shape}
+
+
 def _measure(binned, config) -> dict:
     """Star metrics on a 2x2-binned frame. sep gives real HFR/eccentricity;
     without sep we only report a star count (no fabricated HFR)."""
@@ -230,8 +283,16 @@ def _measure(binned, config) -> dict:
         exposure = ("sat-stars" if (sat_stars_pct or 0) > 5.0
                     else "clipped" if clipped_pct > 0.05
                     else "under" if swamp < 3.0 else "ok")
+        try:
+            shape = _shape_diagnostics(objs, data.shape[1], data.shape[0])
+        except Exception:  # noqa: BLE001
+            shape = {}
         del data_sub, data, err
         return {"stars": nstars, "hfr": hfr, "ecc": ecc,
+                "corner_ecc": shape.get("corner_ecc"),
+                "ecc_pa_R": shape.get("ecc_pa_R"),
+                "ecc_radial_frac": shape.get("ecc_radial_frac"),
+                "shape": shape.get("shape"),
                 "doubled_frac": round(doubled_frac, 2),
                 "background": round(float(bkg.globalback), 1),
                 "noise": round(float(bkg.globalrms), 2),
@@ -340,6 +401,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
         "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
         "stars": m["stars"], "ecc": m["ecc"],
         "background": m["background"],
+        "corner_ecc": m.get("corner_ecc"),
+        "ecc_pa_R": m.get("ecc_pa_R"),
+        "ecc_radial_frac": m.get("ecc_radial_frac"),
+        "shape": m.get("shape"),
         "doubled_frac": m.get("doubled_frac"),
         "clipped_pct": m.get("clipped_pct"),
         "sat_stars_pct": m.get("sat_stars_pct"),
@@ -949,22 +1014,15 @@ def calibration_inventory(config, date: str) -> dict:
             key = f"{exp:g}s"
             g["exposures"][key] = g["exposures"].get(key, 0) + 1
 
+    # Per-night "no flats for X / no darks matching Ys" advice removed: flats
+    # and darks come from the master calibration LIBRARY, not from each night's
+    # capture, so comparing a night's captured cal against its lights produced
+    # misleading noise. Library coverage + staleness now lives on the dedicated
+    # Calibration page (/calibration).
     advice = []
-    if light_filters:
-        flat_filters = set(frames.get("FLAT", {}).get("filters", {}))
-        missing_flats = sorted(light_filters - flat_filters - {"?"})
-        if missing_flats:
-            advice.append("no flats for: " + ", ".join(missing_flats))
-        dark_exps = {float(k.rstrip("s")) for k in
-                     frames.get("DARK", {}).get("exposures", {})}
-        missing_darks = sorted(e for e in light_exps
-                               if e > 0 and e not in dark_exps)
-        if missing_darks:
-            advice.append("no darks matching light exposures: "
-                          + ", ".join(f"{e:g}s" for e in missing_darks))
-        if "BIAS" not in frames:
-            advice.append("no bias frames this night (fine if you use a "
-                          "master bias / dark library)")
+    if light_filters and "BIAS" not in frames:
+        advice.append("no bias frames this night (fine if you use a "
+                      "master bias / dark library)")
     return {"frames": frames, "advice": advice,
             "lights_ok": bool(light_filters)}
 
