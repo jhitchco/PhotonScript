@@ -62,6 +62,57 @@ def create_project_from_target(target: CelestialTarget) -> ImagingProject:
     )
 
 
+_NB_FILTERS = {"Ha", "OIII", "SII"}
+# On a dark (moonless) night, cap broadband at this share of the night so it
+# is protected from the uniform time-scaling that otherwise crushes a
+# minority filter set to a single sub — but doesn't hog the whole night.
+BB_SHARE_DARK = 0.5
+
+
+def _scale_group(group, budget_s):
+    """Scale a filter group's counts down to fit budget_s. Returns seconds used."""
+    total = sum(e.exposure_seconds * e.count for e in group)
+    if total <= budget_s or total == 0:
+        return total
+    scale = budget_s / total
+    for e in group:
+        e.count = max(1, int(e.count * scale))
+    return sum(e.exposure_seconds * e.count for e in group)
+
+
+def _fit_by_moon(exposures, available_seconds, moon_tag):
+    """Fit a target's remaining exposures into tonight's time, weighting
+    broadband vs narrowband by the night's moon tag (from scheduler/moon.py):
+
+      "BB"       dark / moonless -> protect a broadband set (BB_SHARE_DARK of
+                 the night), narrowband fills the rest
+      "NB"       bright moon     -> narrowband only; broadband deferred to a
+                 darker night (returns [] for a broadband-only target)
+      "NB+OIII"  intermediate    -> narrowband priority, broadband fills leftover
+      None       moon-aware off  -> legacy uniform scale-down
+
+    Returns the exposures to shoot tonight (order is cosmetic; the sequence
+    generator re-sorts broadband-first by the live moon window).
+    """
+    bb = [e for e in exposures if e.filter_type.value not in _NB_FILTERS]
+    nb = [e for e in exposures if e.filter_type.value in _NB_FILTERS]
+
+    if moon_tag == "NB":
+        _scale_group(nb, available_seconds)
+        return nb
+    if moon_tag == "BB":
+        bb_used = _scale_group(bb, available_seconds * BB_SHARE_DARK)
+        _scale_group(nb, max(0.0, available_seconds - bb_used))
+        return bb + nb
+    if moon_tag == "NB+OIII":
+        nb_used = _scale_group(nb, available_seconds)
+        _scale_group(bb, max(0.0, available_seconds - nb_used))
+        return nb + bb
+    # moon-aware disabled / unknown tag: preserve the legacy uniform behavior
+    _scale_group(exposures, available_seconds)
+    return exposures
+
+
 def plan_night_sequence(
     projects: list[ImagingProject],
     config: PhotonScriptConfig,
@@ -97,6 +148,19 @@ def plan_night_sequence(
 
     dark_hours = (dark_end - dark_start).total_seconds() / 3600
     logger.info("Dark window: %s to %s (%.1f hours)", dark_start, dark_end, dark_hours)
+
+    # Moon tag for the whole night (BB=dark, NB=bright, NB+OIII=intermediate).
+    moon_tag = None
+    if getattr(config, "moon_aware_planning", True):
+        try:
+            from photonscript.scheduler.moon import night_moon
+            moon_tag = night_moon(config, dark_start.strftime("%Y-%m-%d"),
+                                  dark_start, dark_end).get("tag")
+            logger.info("Moon-aware planning: night tag = %s", moon_tag)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("moon-aware planning unavailable, using uniform "
+                           "scale: %s", e)
+            moon_tag = None
 
     # Compute visibility for each project
     visible_projects = []
@@ -153,13 +217,13 @@ def plan_night_sequence(
         if not remaining_exposures:
             continue
 
-        # Scale down if we don't have enough time
-        total_exp_time = sum(e.exposure_seconds * e.count for e in remaining_exposures)
+        # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
-        if total_exp_time > available_seconds:
-            scale = available_seconds / total_exp_time
-            for e in remaining_exposures:
-                e.count = max(1, int(e.count * scale))
+        remaining_exposures = _fit_by_moon(
+            remaining_exposures, available_seconds, moon_tag)
+        if not remaining_exposures:
+            # e.g. a broadband-only target on a bright-moon night -> skip tonight
+            continue
 
         alloc_time = sum(e.exposure_seconds * e.count for e in remaining_exposures) / 3600
         remaining_hours -= alloc_time * 1.15  # account for overhead

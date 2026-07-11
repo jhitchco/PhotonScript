@@ -51,6 +51,9 @@ class PhotonScriptConfig(BaseSettings):
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
     unsafe_darks_enabled: bool = True  # shoot darks while parked during unsafe pauses
+    moon_aware_planning: bool = True  # nightly plan protects broadband on dark
+                                      # (moonless) nights and defers it on bright
+                                      # nights; see scheduler/moon.py tags
     bias_refresh_days: int = 60  # only capture the roof-closed 50-bias block if the
                                  # newest bias on disk is older than this (bias barely
                                  # ages: staleness is 180d). Was firing every unsafe
