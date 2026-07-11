@@ -173,6 +173,30 @@ def count_matching_darks(config, exp_s: float) -> int:
     return n
 
 
+def days_since_last_bias(config) -> int | None:
+    """Age (in days) of the newest night folder holding BIAS frames, or None
+    if the library has no bias at all. Lightweight: matches on the BIAS
+    directory name only (no FITS header reads), unlike calibration_health."""
+    root = Path(config.image_watch_dir)
+    if not root.exists():
+        return None
+    newest: str | None = None
+    for d in root.iterdir():
+        if not (d.is_dir() and _DATE_RE.match(d.name)):
+            continue
+        if d.name <= (newest or ""):
+            continue
+        for f in d.rglob("*.fits"):
+            parts = f.relative_to(d).parts
+            if any(p.upper() in ("BIAS", "BIASES") for p in parts):
+                newest = d.name
+                break
+    if newest is None:
+        return None
+    return (datetime.now().date()
+            - datetime.strptime(newest, "%Y-%m-%d").date()).days
+
+
 def generate_dusk_flats_json(config) -> tuple:
     """Standalone dusk sky-flat run for TODAY: wait for sunset+15 local,
     slew high away from the sun, sky flats for every filter (broadband

@@ -406,6 +406,7 @@ _CONFIG_FIELDS = [
     ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
+    ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),

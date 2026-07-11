@@ -699,28 +699,46 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=1),
             _time_condition(dawn_provider, dawn_offset)])
-    bias_if_still_unsafe = _seq_container(
-        "BIAS_IF_STILL_UNSAFE",
-        [_seq_container("50 bias", [_make_typed(
-            "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
-            "NINA.Sequencer",
-            ExposureTime=0.001,
-            Gain=_gen_cfg().default_gain, Offset=_gen_cfg().default_offset,
-            Binning=_make_typed(
-                "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
-                X=1, Y=1),
-            ImageType="BIAS", ExposureCount=0,
-            ErrorBehavior=0, Attempts=1)],
+    # Bias only needs an occasional top-up (it barely ages). Gate the
+    # roof-closed 50-bias block on library age so a run of cloudy nights
+    # doesn't bank 50 bias every single night. bias_refresh_days<=0 keeps the
+    # legacy "capture whenever unsafe" behavior; None age (empty library)
+    # always captures.
+    _bias_refresh_days = int(getattr(_gen_cfg(), "bias_refresh_days", 60))
+    try:
+        from photonscript.scheduler.calibration import days_since_last_bias
+        _bias_age = days_since_last_bias(_gen_cfg())
+    except Exception:  # noqa: BLE001
+        _bias_age = None
+    _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
+                 or _bias_age >= _bias_refresh_days)
+    if _bias_due:
+        bias_if_still_unsafe = _seq_container(
+            "BIAS_IF_STILL_UNSAFE",
+            [_seq_container("50 bias", [_make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                "NINA.Sequencer",
+                ExposureTime=0.001,
+                Gain=_gen_cfg().default_gain, Offset=_gen_cfg().default_offset,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                    X=1, Y=1),
+                ImageType="BIAS", ExposureCount=0,
+                ErrorBehavior=0, Attempts=1)],
+                conditions=[_make_typed(
+                    "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+                    CompletedIterations=0, Iterations=50)])],
+            # skipped entirely if the sky is safe by the time we get here;
+            # LoopCondition(1) makes it a one-shot when we are still unsafe
             conditions=[_make_typed(
+                "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
+                _make_typed(
                 "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
-                CompletedIterations=0, Iterations=50)])],
-        # skipped entirely if the sky is safe by the time we get here;
-        # LoopCondition(1) makes it a one-shot when we are still unsafe
-        conditions=[_make_typed(
-            "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
-            _make_typed(
-            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
-            CompletedIterations=0, Iterations=1)])
+                CompletedIterations=0, Iterations=1)])
+    else:
+        bias_if_still_unsafe = _annotation(
+            f"BIAS_IF_STILL_UNSAFE skipped: library bias is {_bias_age}d old "
+            f"(refresh every {_bias_refresh_days}d)")
     start_items += [
         _connect("Safety Monitor"),
         _connect("Camera"),
