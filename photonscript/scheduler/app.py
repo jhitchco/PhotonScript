@@ -14,7 +14,8 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -47,6 +48,12 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 app = FastAPI(title="PhotonScript Scheduler", version="0.1.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve the dashboard favicon (browsers request this path by default)."""
+    return FileResponse(STATIC_DIR / "favicon.ico")
 
 # In-memory state (persisted to DB on changes)
 _config: Optional[PhotonScriptConfig] = None
