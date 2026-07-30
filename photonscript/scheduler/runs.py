@@ -18,6 +18,7 @@ from __future__ import annotations
 import gc
 import json
 import logging
+import math
 import re
 import threading
 from datetime import datetime
@@ -52,12 +53,30 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
         json.dumps(snapshot, indent=1), encoding="utf-8")
 
 
+def _sanitize_floats(obj):
+    """Replace non-finite floats (NaN/Inf) with None, recursively.
+
+    NINA/QA occasionally emits NaN for stats like background (e.g. dawn
+    frames). Python's json writes these as the literal `NaN`, which reads
+    back fine but is NOT valid JSON — Starlette's JSONResponse serializes
+    with allow_nan=False and raises, 500-ing the whole night's detail view.
+    Coercing to None keeps a single un-computable stat from sinking the run.
+    """
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
+
 def append_sub_record(config, night_of: str, record: dict) -> None:
     """Called by the telescope agent for every graded sub."""
     try:
         with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",
                   encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+            f.write(json.dumps(_sanitize_floats(record)) + "\n")
     except OSError as e:
         logger.error("Could not append sub record: %s", e)
 
@@ -73,7 +92,7 @@ def _load_subs(config, date: str) -> list[dict]:
     out = []
     for line in p.read_text(encoding="utf-8").splitlines():
         try:
-            r = json.loads(line)
+            r = _sanitize_floats(json.loads(line))
         except json.JSONDecodeError:
             continue
         f = r.get("filter")
@@ -519,7 +538,8 @@ def start_backfill(config, date: str) -> None:
 
 def _rewrite_subs(config, date: str, records: list[dict]) -> None:
     p = runs_dir(config) / f"{date}_subs.jsonl"
-    p.write_text("".join(json.dumps(r) + "\n" for r in records),
+    p.write_text("".join(json.dumps(_sanitize_floats(r)) + "\n"
+                         for r in records),
                  encoding="utf-8")
 
 
