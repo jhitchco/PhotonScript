@@ -297,9 +297,16 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
                     dither_every_n: int) -> dict:
     """SmartExposure: LoopCondition(count) wrapping SwitchFilter+TakeExposure."""
     remaining = exp.count - exp.acquired
-    triggers = []
-    if guided and dither_every_n > 0:
-        triggers.append(_dither_trigger(dither_every_n))
+    # NINA's SmartExposure ALWAYS expects a DitherAfterExposures trigger at
+    # Triggers[0]. Its Validate() calls GetDitherAfterExposures(), which in the
+    # 3.2.0.9001 release indexes Triggers[0] with no empty-guard: an empty
+    # Triggers list throws ArgumentOutOfRangeException during validation and
+    # fails the whole container, so nothing images (observed 2026-07-26). Always
+    # emit the trigger; AfterExposures=0 disables dithering — NINA's Execute()
+    # early-returns and Validate() adds no "guider not connected" issue — so an
+    # unguided run is unaffected while the crash is avoided.
+    after = dither_every_n if (guided and dither_every_n > 0) else 0
+    triggers = [_dither_trigger(after)]
     smart = _seq_container(
         "Smart Exposure",
         [

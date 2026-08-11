@@ -23,31 +23,88 @@ logger = logging.getLogger(__name__)
 
 STALE_DAYS = {"FLAT": 45, "DARK": 90, "BIAS": 180}
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
+_CAL_TYPES = ("BIAS", "DARK", "FLAT")
+
+
+def _norm_cal_type(name: str) -> str:
+    """DARKS -> DARK, FLATS -> FLAT, BIAS -> BIAS (not 'BIA')."""
+    up = str(name).upper()
+    return {"BIAS": "BIAS", "BIASES": "BIAS"}.get(up, up.rstrip("S"))
+
+
+def _iter_watch_frames(root: Path):
+    """NINA output layout: <watch>/<YYYY-MM-DD>/.../<TYPE>/*.fits"""
+    if not root.exists():
+        return
+    for d in sorted(p for p in root.iterdir()
+                    if p.is_dir() and _DATE_RE.match(p.name)):
+        for f in d.rglob("*.fits"):
+            parts = f.relative_to(d).parts
+            if not _is_calibration(parts):
+                continue
+            typ = next((_norm_cal_type(p) for p in parts
+                        if p.upper() in _CAL_DIRS), "CAL")
+            if typ == "SNAPSHOT":
+                continue
+            yield typ, d.name, f
+
+
+def _iter_library_frames(lib: Path):
+    """Librarian layout: <lib>/Calibration/<TYPE>/<YYYY-MM-DD>/*.fits
+
+    build_library() hardlinks frames here; once the NINA output dir is
+    pruned/archived this tree is the only surviving copy, so calibration
+    discovery has to look here too or the library reads as empty.
+    """
+    cal = lib / "Calibration"
+    if not cal.exists():
+        return
+    for tdir in sorted(p for p in cal.iterdir() if p.is_dir()):
+        typ = _norm_cal_type(tdir.name)
+        if typ not in _CAL_TYPES:
+            continue
+        for ddir in sorted(p for p in tdir.iterdir()
+                           if p.is_dir() and _DATE_RE.match(p.name)):
+            for f in ddir.rglob("*.fits"):
+                yield typ, ddir.name, f
+
+
+def iter_calibration_frames(config):
+    """Yield (type, night_date, path) across every place frames may live.
+
+    Scans the NINA output dir first, then the librarian tree. Library
+    entries are hardlinks of watch-dir files, so dedupe on
+    (type, date, filename) to avoid double-counting.
+    """
+    from photonscript.scheduler.runs import library_root
+
+    seen: set[tuple[str, str, str]] = set()
+    sources = [_iter_watch_frames(Path(config.image_watch_dir))]
+    try:
+        sources.append(_iter_library_frames(library_root(config)))
+    except Exception:  # noqa: BLE001 - library dir misconfigured; watch dir still counts
+        logger.warning("library_root unavailable for calibration scan", exc_info=True)
+    for src in sources:
+        for typ, date, f in src:
+            key = (typ, date, f.name)
+            if key in seen:
+                continue
+            seen.add(key)
+            yield typ, date, f
 
 
 def calibration_health(config) -> dict:
     """Latest capture per type across every night folder + staleness."""
     from astropy.io import fits as _fits
 
-    root = Path(config.image_watch_dir)
     latest: dict[str, str] = {}     # type -> newest date
     totals: dict[str, int] = {}
     files_by_type_date: dict[tuple, list[Path]] = {}
-    if root.exists():
-        for d in sorted(p for p in root.iterdir()
-                        if p.is_dir() and _DATE_RE.match(p.name)):
-            for f in d.rglob("*.fits"):
-                parts = f.relative_to(d).parts
-                if not _is_calibration(parts):
-                    continue
-                typ = next(({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
-                            if p.upper() in _CAL_DIRS), "CAL")
-                if typ == "SNAPSHOT":
-                    continue
-                totals[typ] = totals.get(typ, 0) + 1
-                if d.name >= latest.get(typ, ""):
-                    latest[typ] = d.name
-                files_by_type_date.setdefault((typ, d.name), []).append(f)
+    for typ, date, f in iter_calibration_frames(config):
+        totals[typ] = totals.get(typ, 0) + 1
+        if date >= latest.get(typ, ""):
+            latest[typ] = date
+        files_by_type_date.setdefault((typ, date), []).append(f)
 
     today = datetime.now().date()
     out = {}
@@ -146,30 +203,23 @@ def count_matching_darks(config, exp_s: float) -> int:
     """Darks on disk (within the library age window) matching the current
     epoch: exposure + gain + offset + setpoint temperature."""
     from astropy.io import fits as _fits
-    root = Path(config.image_watch_dir)
-    if not root.exists():
-        return 0
     cal_days = int(getattr(config, "library_cal_days", 120))
     cutoff = (datetime.now() - __import__("datetime")
               .timedelta(days=cal_days)).strftime("%Y-%m-%d")
     n = 0
-    for d in root.iterdir():
-        if not (d.is_dir() and _DATE_RE.match(d.name) and d.name >= cutoff):
+    for typ, date, f in iter_calibration_frames(config):
+        if typ != "DARK" or date < cutoff:
             continue
-        for f in d.rglob("*.fits"):
-            parts = f.relative_to(d).parts
-            if not any(p.upper() in ("DARK", "DARKS") for p in parts):
-                continue
-            try:
-                h = _fits.getheader(f)
-            except Exception:  # noqa: BLE001
-                continue
-            if (abs(float(h.get("EXPTIME", -1)) - exp_s) < 0.5
-                    and int(h.get("GAIN", -1)) == config.default_gain
-                    and int(h.get("OFFSET", -1)) == config.default_offset
-                    and abs(float(h.get("SET-TEMP", 99))
-                            - config.camera_setpoint_c) < 1.5):
-                n += 1
+        try:
+            h = _fits.getheader(f)
+        except Exception:  # noqa: BLE001
+            continue
+        if (abs(float(h.get("EXPTIME", -1)) - exp_s) < 0.5
+                and int(h.get("GAIN", -1)) == config.default_gain
+                and int(h.get("OFFSET", -1)) == config.default_offset
+                and abs(float(h.get("SET-TEMP", 99))
+                        - config.camera_setpoint_c) < 1.5):
+            n += 1
     return n
 
 
@@ -177,20 +227,10 @@ def days_since_last_bias(config) -> int | None:
     """Age (in days) of the newest night folder holding BIAS frames, or None
     if the library has no bias at all. Lightweight: matches on the BIAS
     directory name only (no FITS header reads), unlike calibration_health."""
-    root = Path(config.image_watch_dir)
-    if not root.exists():
-        return None
     newest: str | None = None
-    for d in root.iterdir():
-        if not (d.is_dir() and _DATE_RE.match(d.name)):
-            continue
-        if d.name <= (newest or ""):
-            continue
-        for f in d.rglob("*.fits"):
-            parts = f.relative_to(d).parts
-            if any(p.upper() in ("BIAS", "BIASES") for p in parts):
-                newest = d.name
-                break
+    for typ, date, _f in iter_calibration_frames(config):
+        if typ == "BIAS" and date > (newest or ""):
+            newest = date
     if newest is None:
         return None
     return (datetime.now().date()

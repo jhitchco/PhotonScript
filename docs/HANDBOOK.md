@@ -199,3 +199,67 @@ or "ERROR: ...". Masters in `out\master\`.
   (verified: darks median ~257-330 ADU = offset floor; flats ~50% full well).
 - Mosaic planner shipped at `/mosaic`: panel grid over a DSS2 hips2fits
   cutout, one goal per panel.
+
+## 9. Troubleshooting runbook (how to debrief a night)
+
+Read the roof BEFORE judging the rig. The roof controller at
+`https://status.astronomyacres.com/` is the source of truth for open time -
+trust its Roof Log over the PhotonScript API's `safe_hours` (which is not the
+same as roof-open hours). If the roof never opened or opened <~1 h, the night
+was weather-limited: attribute low/zero lights to weather, do NOT invent a
+hardware/AF failure. Only escalate to a rig problem when the roof was genuinely
+open for a meaningful stretch but few/no good lights resulted.
+
+### Triage endpoints (reach via Claude-in-Chrome, not the sandbox)
+- `/api/runs` -> newest night (dates are LOCAL evening date). `/api/runs/DATE`
+  -> score, funnel (dark/light/accepted hrs), per target+filter table, HFR.
+- `/api/preflight` (POST) -> config, directories, equipment, disk. The "NINA
+  image directory" check catches a missing capture folder. (Sends a Pushover
+  test as a side-effect.)
+- `/api/calibration/health` (staleness), `/api/sync` (transfer backlog).
+- `/api/nina/log?lines=N&grep=term1|term2` -> the log endpoint greps the WHOLE
+  file server-side FIRST, then returns the last min(N,5000) matching rows. So
+  for a specific event type (plate solve, autofocus, a given error) grep sees
+  the entire night; the 5000-line cap only bites when one signature spams
+  (e.g. a validation crash loop). For the complete raw log use the full night
+  bundle: `/api/runs/DATE/bundle` (zip). Note the log message body can wrap onto
+  timestamp-less continuation lines - grep the OWNER (`file.cs|Method|line`) or
+  read the stack frames to attribute an exception.
+
+### Failure modes seen in the field
+- **Missing NINA capture folder** (2026-07-26): every LIGHT `TakeExposure`
+  fails validation with "The folder ... in Image File Settings ... was not
+  found"; zero subs land. Fix: recreate the folder on the scope PC
+  (`New-Item -ItemType Directory -Force "C:\Users\jeremy\Documents\N.I.N.A"`)
+  or repoint NINA Options -> Imaging -> File Settings. Confirm with
+  `/api/preflight` ("NINA image directory" -> pass). PS_IMAGE_WATCH_DIR only
+  sets where PhotonScript *watches*, not where NINA *saves* - changing it does
+  NOT fix this.
+- **SmartExposure dither validation crash** (2026-07-26): NINA's SmartExposure
+  ctor always expects a `DitherAfterExposures` trigger at `Triggers[0]`;
+  `Validate()` -> `GetDitherAfterExposures()` indexes `Triggers[0]` with no
+  empty-guard in the 3.2.0.9001 release, so a SmartExposure with no dither
+  trigger throws `ArgumentOutOfRangeException` and the whole container fails
+  validation (log spam: `SequenceContainer.cs|Validate|554`). PhotonScript
+  omitted the trigger whenever guiding was off. Fix (generator): ALWAYS emit
+  the trigger; `AfterExposures=0` disables dithering (Execute early-returns,
+  Validate stays clean) - see `_smart_exposure` in nina_sequence_json.py. The
+  develop branch of NINA added the `Triggers.Count > 0` guard, so a NINA update
+  also fixes it.
+- **Plate solve failing 100%** (2026-07-26): ASTAP "Plate solve failed" x82,
+  zero successes, so `Center`/`Slew and center` never completes and no target
+  is acquired. Cross-check the SOLVE conditions before blaming the sky: last
+  night it solved through **L** filter (20s, bin2, gain300 - correct, plenty of
+  stars), scale hint FocalLength 3248 / PixelSize 7.52 was right, and autofocus
+  completed (5853->6104). 100% failure on well-exposed L frames on a clear,
+  roof-open night points to ASTAP setup, not the frames: verify the ASTAP star
+  database (D50/G05) is installed and its path is set in NINA, and that blind
+  failover (ASTAP as blind solver) actually fires. This is the recurring
+  plate-solver battle - grep `astap|platesolv|Center|filter to` and check for
+  any "solved" line to confirm.
+
+### Two-error rule
+Don't stop at the first cause. A dead night can stack independent failures
+(missing folder + dither crash + plate-solve failure all on 2026-07-26). After
+fixing one, re-check the LIVE log tail: if the fixed error stops but a
+different one keeps firing at a newer timestamp, there's more to do.

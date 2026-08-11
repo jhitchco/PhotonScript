@@ -106,10 +106,15 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
             r.warn("guiding", "Guided run without StopGuiding in shutdown")
     else:
         # A StopGuiding in the shutdown is ALLOWED (and desirable) on an
-        # unguided run — it harmlessly stops a stray looping PHD2. Only
-        # StartGuiding / Dither are actually wrong for an unguided sequence.
+        # unguided run — it harmlessly stops a stray looping PHD2.
+        # A DitherAfterExposures trigger is now MANDATORY on every SmartExposure
+        # (NINA's SmartExposure.Validate() indexes Triggers[0] and throws
+        # ArgumentOutOfRangeException without it), so an unguided run carries it
+        # with AfterExposures=0 — dithering disabled, no guider needed. Only an
+        # ACTIVE dither (AfterExposures>0) or a StartGuiding is wrong here.
         bad = (_find_type(seq, "StartGuiding")
-               + _find_type(seq, "DitherAfterExposures"))
+               + [d for d in _find_type(seq, "DitherAfterExposures")
+                  if d.get("AfterExposures", 0) > 0])
         if bad:
             kinds = sorted({d["$type"].split(",")[0].split(".")[-1] for d in bad})
             r.error("guiding", f"Unguided run contains guiding elements: {kinds}")

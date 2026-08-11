@@ -87,10 +87,18 @@ class TestNinaJsonGeneration:
         assert data_blob["Offset"] == 30.0
         assert data_blob["Coordinates"]["RAHours"] == 5
 
-    def test_unguided_has_no_dither_or_guiding(self):
-        types = _types(_gen(start_guiding=False))
+    def test_unguided_has_no_guiding_but_disabled_dither_trigger(self):
+        # NINA's SmartExposure requires a DitherAfterExposures trigger at
+        # Triggers[0] or its validator throws ArgumentOutOfRangeException.
+        # Unguided runs therefore still emit the trigger, but with
+        # AfterExposures=0 so no dithering actually happens.
+        data = _gen(start_guiding=False)
+        types = _types(data)
         assert not any("StartGuiding" in t for t in types)
-        assert not any("DitherAfterExposures" in t for t in types)
+        dithers = [d for d in _walk(data) if isinstance(d, dict)
+                   and "DitherAfterExposures" in d.get("$type", "")]
+        assert dithers, "SmartExposure must always carry a dither trigger"
+        assert all(d["AfterExposures"] == 0 for d in dithers)
 
     def test_guided_has_dither_and_calibration(self):
         data = _gen(start_guiding=True, dither_every_n=5)
