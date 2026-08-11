@@ -92,6 +92,18 @@ class PhotonScriptConfig(BaseSettings):
     auto_abort_on_severe: bool = False  # enable only after trusting the nanny
     heartbeat_minutes: int = 30
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
+    # --- Auto-arm (hands-off multi-night) ---
+    auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by
+                                    # default: opt in once you trust a night's run.
+                                    # arm() rebuilds the plan from the store each time,
+                                    # so this loop IS the nightly replan.
+    auto_arm_lead_hours: float = 3.0  # arm window opens this long before pre-config;
+                                      # recent enough that the preflight it runs
+                                      # reflects real equipment state.
+    auto_arm_require_preflight: bool = False  # False = arm-and-notify even on a
+                                              # failing preflight (AARO roof controller
+                                              # closes on weather independently). True =
+                                              # skip-and-notify until preflight go=true.
     # Filter names as they appear in the NINA profile, mapped from our classes.
     # AARO wheel names its filters with single letters.
     nina_filter_names: str = "Ha:H,OIII:O,SII:S,L:L,R:R,G:G,B:B"

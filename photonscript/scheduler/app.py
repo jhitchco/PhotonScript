@@ -6,6 +6,7 @@ the remote telescope orchestration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
@@ -385,6 +386,14 @@ async def _restore_armer():
 
 
 @app.on_event("startup")
+async def _start_auto_arm():
+    """Hands-off multi-night supervisor: re-arms every night when enabled.
+    Always started; it no-ops each tick unless config.auto_arm_enabled."""
+    from photonscript.scheduler.auto_armer import run_auto_arm_loop
+    asyncio.create_task(run_auto_arm_loop(get_config(), get_armer))
+
+
+@app.on_event("startup")
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
@@ -441,6 +450,9 @@ _CONFIG_FIELDS = [
     ("auto_abort_on_severe", "PS_AUTO_ABORT_ON_SEVERE", "Auto-abort on severe (enable only once trusted)", "Nanny / Alerts", "bool", False, False),
     ("heartbeat_minutes", "PS_HEARTBEAT_MINUTES", "Heartbeat interval (min)", "Nanny / Alerts", "int", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
+    ("auto_arm_enabled", "PS_AUTO_ARM_ENABLED", "Auto-arm every night (hands-off multi-night)", "Nanny / Alerts", "bool", False, False),
+    ("auto_arm_lead_hours", "PS_AUTO_ARM_LEAD_HOURS", "Auto-arm window opens N hours before pre-config", "Nanny / Alerts", "float", False, False),
+    ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
