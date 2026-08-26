@@ -370,3 +370,66 @@ footer {
     .status-grid { grid-template-columns: repeat(2, 1fr); }
     .header-content { flex-direction: column; gap: 0.25rem; }
 }
+
+/* =====================================================================
+   Light theme
+   Default (no data-theme attribute) stays the dark night-time theme.
+   Setting <html data-theme="light"> overrides the palette variables;
+   because the whole sheet is built on var(--…), everything cascades.
+   Toggled by static/js/theme.js and persisted in localStorage.
+   ===================================================================== */
+:root[data-theme="light"] {
+    --bg-primary: #f4f6fb;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-hover: #eaeef6;
+    --text-primary: #1f2937;
+    --text-secondary: #4b5563;
+    --text-dim: #6b7280;
+    --accent-blue: #2563eb;
+    --accent-green: #059669;
+    --accent-red: #dc2626;
+    --accent-amber: #b45309;
+    --accent-purple: #7c3aed;
+    --border: #d7dee8;
+    --tier-best: #059669;
+    --tier-better: #2563eb;
+    --tier-good: #9ca3af;
+}
+
+/* Cards need a touch of separation from the white page in light mode. */
+:root[data-theme="light"] body { background: var(--bg-primary); }
+:root[data-theme="light"] .panel,
+:root[data-theme="light"] .card,
+:root[data-theme="light"] .bg-card {
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+/* Semi-transparent white overlays baked into a few inline styles read as
+   invisible on a light background — flip them to dark. */
+:root[data-theme="light"] .fbar { background: rgba(0, 0, 0, 0.08); }
+:root[data-theme="light"] .sub-row { border-bottom-color: rgba(0, 0, 0, 0.06); }
+
+/* Some nav links use a hard-coded pale blue (#7dd3fc) that is too faint on a
+   light header — force a darker accent when light mode is active. */
+:root[data-theme="light"] header a,
+:root[data-theme="light"] .sys-nav a { color: var(--accent-blue) !important; }
+
+/* Theme toggle button (injected into each page header by theme.js) */
+.theme-toggle {
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 0.25rem 0.6rem;
+    font: inherit;
+    font-size: 0.75rem;
+    line-height: 1;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    white-space: nowrap;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.theme-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
