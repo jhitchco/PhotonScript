@@ -65,10 +65,26 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
             import sep_pjw as sep  # maintained fork, ships Windows wheels
 
         data_c = np.ascontiguousarray(data, dtype=np.float32)
+        # Hot pixels are single-pixel spikes on these uncalibrated frames -
+        # a 3x3 median erases them completely while a seeing-limited star
+        # (FWHM many px at 0.24"/px) barely notices. Without this the
+        # extractor found ~36k "stars" of HFR 0.42 and QA graded the hot
+        # pixels instead of the sky (2026-09-04 lesson: a month of visibly
+        # trailed subs passed with ecc 0.008).
+        from scipy import ndimage as _ndi
+        data_c = _ndi.median_filter(data_c, size=3)
         bkg = sep.Background(data_c)
         data_sub = data_c - bkg
 
-        objects = sep.extract(data_sub, threshold, err=bkg.globalrms)
+        objects = sep.extract(data_sub, threshold, err=bkg.globalrms,
+                              minarea=9)
+        # real stars only: resolved and extended; then the brightest 400
+        # (all aggregate metrics are medians - 400 is plenty, and it keeps
+        # the per-object flux_radius loop fast)
+        _keep = (objects["npix"] >= 12) & (objects["b"] > 0.7)
+        objects = objects[_keep]
+        if len(objects) > 400:
+            objects = objects[np.argsort(objects["flux"])[::-1][:400]]
         stars = []
         for obj in objects:
             flux_radius, _ = sep.flux_radius(
@@ -83,7 +99,12 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
                 "theta": float(obj["theta"]),
                 "fwhm": float(obj["a"] * 2.355),  # Gaussian approx
                 "hfr": float(flux_radius[0]) if len(flux_radius) > 0 else float(obj["a"]),
-                "eccentricity": float(1 - obj["b"] / obj["a"]) if obj["a"] > 0 else 0,
+                # standard form: e = sqrt(1-(b/a)^2). The old 1-b/a
+                # understated elongation (a 3:1 streak scored 0.67, a 1.3:1
+                # star 0.23) and made the ecc gate nearly unreachable.
+                "eccentricity": float(np.sqrt(max(
+                    1.0 - (obj["b"] / obj["a"]) ** 2, 0.0)))
+                if obj["a"] > 0 else 0,
             })
         return stars
 
@@ -242,7 +263,20 @@ def validate_image(
 
     if median_ecc > config.quality_eccentricity_max:
         passed = False
-        reasons.append(f"Eccentricity {median_ecc:.2f} > {config.quality_eccentricity_max}")
+        reasons.append(f"Eccentricity {median_ecc:.2f} > {config.quality_eccentricity_max}"
+                       " (trailing/drift)")
+
+    star_max = int(getattr(config, "quality_star_max", 5000))
+    if len(stars) > star_max:
+        passed = False
+        reasons.append(f"{len(stars)} stars > {star_max} "
+                       "(defocus/false detections)")
+
+    hfr_abs_max = float(getattr(config, "quality_hfr_abs_max", 8.0))
+    if median_hfr_px > hfr_abs_max:
+        passed = False
+        reasons.append(f"HFR {median_hfr_px:.1f}px > {hfr_abs_max:g}px "
+                       "(out of focus)")
 
     return ImageQualityMetrics(
         fwhm_arcsec=round(fwhm_arcsec, 2),

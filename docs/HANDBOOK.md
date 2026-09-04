@@ -164,6 +164,16 @@ or "ERROR: ...". Masters in `out\master\`.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-09-04 (month of trailed subs): every light since 2026-07-28 drifts
+  ~1-2 arcsec/min at a constant position angle - polar alignment error
+  (~5-8 arcmin azimuth), NOT sidereal rate (encoders hold RA; drift is
+  dec-dominated). Fix at the mount: NINA Three Point Polar Alignment.
+  QA never caught it because the extractor was grading ~36k hot pixels
+  (HFR 0.42, ecc 0.008) instead of stars, and the live watcher parsed
+  NINA's <date>_<time>__<F>_<exp>s filename with split('_'), logging
+  everything as L/300s/target=<date>. All three fixed: 3x3 median before
+  sep + real-star selection + sqrt-form ecc, header-first metadata,
+  star-flood/HFR gates in the live validator.
 - 2026-07-07 (zero-light night): weather held the roof shut past midnight;
   on safe re-entry the first target (Eagle) was exactly AT the meridian, the
   flip fired before the first exposure, and the flip's recenter plate solve

@@ -367,10 +367,11 @@ class TelescopeAgent:
                      "SNAPSHOT"}
         if any(p.upper() in _CAL_DIRS for p in file_path.parts):
             return
+        hdr = {}
         try:
             from astropy.io import fits as _fits
-            imagetyp = str(_fits.getheader(file_path).get(
-                "IMAGETYP", "LIGHT")).strip().upper()
+            hdr = dict(_fits.getheader(file_path))
+            imagetyp = str(hdr.get("IMAGETYP", "LIGHT")).strip().upper()
             if imagetyp and "LIGHT" not in imagetyp:
                 logger.debug("Skipping %s frame: %s", imagetyp,
                              file_path.name)
@@ -379,14 +380,18 @@ class TelescopeAgent:
             pass
         logger.info("New image detected: %s", file_path.name)
 
-        # Parse filename for metadata (NINA naming convention)
-        # Example: M31_Ha_300s_Gain200_001.fits
-        parts = file_path.stem.split("_")
-        target_name = parts[0] if len(parts) > 0 else "Unknown"
-        filter_str = parts[1] if len(parts) > 1 else "L"
-        exposure_str = parts[2] if len(parts) > 2 else "300s"
-
-        # Filenames carry the NINA profile filter name (e.g. 'H'); translate
+        # Metadata: FITS header first (authoritative), filename fallback.
+        # NINA's current pattern is <date>_<time>__<F>_<exp>.00s_<idx>;
+        # the old split('_') read the TIME token as the filter and the empty
+        # token as the exposure, so every live record since 2026-07-28 was
+        # logged as L / 300s / target=<date>  (2026-09-04 lesson).
+        import re as _re
+        stem = file_path.stem
+        filter_str = str(hdr.get("FILTER") or "").strip()
+        if not filter_str:
+            m = _re.search(r"__([A-Za-z][A-Za-z0-9]*)_", stem)
+            filter_str = m.group(1) if m else "L"
+        # NINA profile filter name (e.g. 'H') -> canonical (Ha)
         filter_str = self.config.reverse_filter_map().get(filter_str, filter_str)
         try:
             filter_type = FilterType(filter_str)
@@ -394,9 +399,32 @@ class TelescopeAgent:
             filter_type = FilterType.LUMINANCE
 
         try:
-            exposure_seconds = float(exposure_str.rstrip("s"))
-        except ValueError:
-            exposure_seconds = 300.0
+            exposure_seconds = float(hdr.get("EXPTIME") or 0)
+        except (TypeError, ValueError):
+            exposure_seconds = 0.0
+        if not exposure_seconds:
+            m = _re.search(r"_(\d+(?:\.\d+)?)s", stem)
+            exposure_seconds = float(m.group(1)) if m else 300.0
+
+        target_name = str(hdr.get("OBJECT") or "").strip()
+        if not target_name:
+            tok = stem.split("_")[0]
+            if not _re.match(r"^\d{4}-\d{2}-\d{2}$", tok):
+                target_name = tok
+        if not target_name:
+            # unambiguous if the night's plan has exactly one target
+            try:
+                from photonscript.scheduler.runs import _plan_target_names
+                date_tok = next((p for p in file_path.parts
+                                 if _re.match(r"^\d{4}-\d{2}-\d{2}$", p)), None)
+                if date_tok:
+                    names = _plan_target_names(self.config, date_tok)
+                    if len(names) == 1:
+                        target_name = names[0]
+            except Exception:  # noqa: BLE001
+                pass
+        if not target_name:
+            target_name = "?"
 
         # Validate image quality
         quality = validate_image(str(file_path), self.config)
