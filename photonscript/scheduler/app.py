@@ -1520,6 +1520,73 @@ def api_run_bundle(date: str):
                         filename=f"night_bundle_{date}.zip")
 
 
+@app.get("/target", response_class=HTMLResponse)
+async def target_page(request: Request):
+    return templates.TemplateResponse(request, "target.html",
+                                      {"version": VERSION})
+
+
+@app.get("/api/target/history")
+async def api_target_history(name: str):
+    """Every sub ever recorded for one target, grouped by night, with QA
+    state and whether each accepted light made it into the Library."""
+    from photonscript.scheduler.runs import _load_subs, runs_dir
+    cfg = get_config()
+    lib = Path(cfg.library_dir) if cfg.library_dir \
+        else Path(cfg.data_dir) / "Library"
+    tdir = lib / name
+    lib_files = set()
+    if tdir.exists():
+        lib_files = {f.name for f in tdir.rglob("*.fits")}
+
+    nights = []
+    totals = {"accepted": 0, "rejected": 0, "in_library": 0,
+              "by_filter": {}}
+    for p in sorted(runs_dir(cfg).glob("*_subs.jsonl"), reverse=True):
+        date = p.name[:10]
+        subs = [s for s in _load_subs(cfg, date)
+                if (s.get("target") or "") == name]
+        if not subs:
+            continue
+        rows = []
+        n_acc = n_rej = 0
+        for s in subs:
+            passed = bool(s.get("passed_qa"))
+            base = Path(str(s.get("file") or "")).name
+            in_lib = base in lib_files
+            if passed:
+                n_acc += 1
+                totals["accepted"] += 1
+                if in_lib:
+                    totals["in_library"] += 1
+            else:
+                n_rej += 1
+                totals["rejected"] += 1
+            f = s.get("filter") or "?"
+            bf = totals["by_filter"].setdefault(f, {"accepted": 0,
+                                                    "rejected": 0})
+            bf["accepted" if passed else "rejected"] += 1
+            rows.append({
+                "time": (s.get("time") or "")[11:16],
+                "filter": f,
+                "exp_s": s.get("exp_s"),
+                "hfr": s.get("hfr"), "ecc": s.get("ecc"),
+                "stars": s.get("stars"),
+                "passed": passed,
+                "reviewed": bool(s.get("reviewed")),
+                "reason": s.get("reason") or "",
+                "in_library": in_lib,
+                "file": base,
+            })
+        nights.append({"date": date, "accepted": n_acc,
+                       "rejected": n_rej, "subs": rows})
+    return {"target": name, "nights": nights, "totals": totals,
+            "library_dir": str(tdir),
+            "desktop_hint": "synced to ninashare\\Library\\" + name
+                            + " on the desktop when /api/sync shows "
+                            "library_synced"}
+
+
 @app.get("/api/integration/readiness")
 async def api_integration_readiness():
     """Everything the DESKTOP needs to integrate a target, answered from the

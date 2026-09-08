@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PhotonScript - Target History</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <style>
+        .sys-nav { margin: 1rem 2rem 0; }
+        .night-block { margin-bottom: 1.1rem; background: rgba(255,255,255,.025);
+                       border-radius: 8px; padding: .7rem 1rem; }
+        .night-head { display: flex; gap: 1.2rem; align-items: baseline; }
+        .night-head a { color: #7dd3fc; text-decoration: none; font-weight: 700; }
+        table.subs { width: 100%; border-collapse: collapse; margin-top: .5rem;
+                     font-size: .82rem; }
+        table.subs td, table.subs th { padding: .18rem .5rem; text-align: left;
+                     border-bottom: 1px solid rgba(148,163,184,.08); }
+        table.subs th { opacity: .55; font-weight: 600; }
+        .chip { display: inline-block; padding: .1rem .5rem; border-radius: 5px;
+                font-size: .78rem; font-weight: 700; }
+        .ok { color: #4ade80; } .no { color: #f87171; } .dim { opacity: .5; }
+        #stateFilter button { margin-right: .4rem; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">Target History</span>
+            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;">{{ version }}</span>
+        </div>
+    </header>
+    <nav class="sys-nav" style="display:flex;gap:.55rem;align-items:center;">
+        <a href="/" class="nav-pill">&#127968; Dashboard</a>
+        <a href="/runs" class="nav-pill">&#128248; Runs</a>
+    </nav>
+    <main>
+        <section class="panel">
+            <h2 id="tName">&mdash;</h2>
+            <div class="bd" id="tTotals">loading&hellip;</div>
+            <div class="bd dim" id="tWhere" style="margin:.3rem 0 .8rem;"></div>
+            <div id="stateFilter">
+                <button class="btn btn-secondary" data-f="all">All</button>
+                <button class="btn btn-secondary" data-f="accepted">Accepted</button>
+                <button class="btn btn-secondary" data-f="rejected">Rejected</button>
+            </div>
+            <div id="nights" style="margin-top:.8rem;">loading&hellip;</div>
+        </section>
+    </main>
+<script>
+const name = new URLSearchParams(location.search).get('name') || '';
+let data = null, mode = 'all';
+const FILTER_COLORS = {Ha:'#f87171', OIII:'#22d3ee', SII:'#eab308',
+                       L:'#e2e8f0', R:'#f87171', G:'#4ade80', B:'#60a5fa'};
+function render() {
+    if (!data) return;
+    document.getElementById('tName').textContent = data.target;
+    const t = data.totals;
+    const bf = Object.entries(t.by_filter).map(([f, v]) =>
+        '<span style="color:' + (FILTER_COLORS[f] || '#94a3b8') + ';font-weight:700;">' +
+        f + '</span> ' + v.accepted + '<span class="dim">/' +
+        (v.accepted + v.rejected) + '</span>').join(' &nbsp;&middot;&nbsp; ');
+    document.getElementById('tTotals').innerHTML =
+        '<b class="ok">' + t.accepted + ' accepted</b> (' + t.in_library +
+        ' in library) &middot; <b class="no">' + t.rejected +
+        ' rejected</b> &nbsp;&nbsp;' + bf;
+    document.getElementById('tWhere').textContent =
+        'scope: ' + data.library_dir + ' · ' + data.desktop_hint;
+    document.getElementById('nights').innerHTML = data.nights.map(n => {
+        const rows = n.subs.filter(s => mode === 'all'
+            || (mode === 'accepted') === s.passed);
+        if (!rows.length) return '';
+        return '<div class="night-block">' +
+            '<div class="night-head"><a href="/runs/' + n.date + '">' + n.date +
+            '</a><span class="ok">' + n.accepted + ' ✓</span>' +
+            '<span class="no">' + n.rejected + ' ✗</span>' +
+            '<span class="dim">click date for thumbnails + review</span></div>' +
+            '<table class="subs"><tr><th>UTC</th><th>filter</th><th>exp</th>' +
+            '<th>HFR</th><th>ecc</th><th>★</th><th>state</th>' +
+            '<th>library</th><th>reason</th></tr>' +
+            rows.map(s => '<tr' + (s.passed ? '' : ' style="opacity:.55;"') + '>' +
+                '<td>' + s.time + '</td>' +
+                '<td style="color:' + (FILTER_COLORS[s.filter] || '#94a3b8') +
+                ';font-weight:700;">' + s.filter + '</td>' +
+                '<td>' + Math.round(s.exp_s || 0) + 's</td>' +
+                '<td>' + (s.hfr ?? '–') + '</td>' +
+                '<td>' + (s.ecc ?? '–') + '</td>' +
+                '<td>' + (s.stars ?? '–') + '</td>' +
+                '<td class="' + (s.passed ? 'ok' : 'no') + '">' +
+                (s.passed ? 'accepted' : 'rejected') + '</td>' +
+                '<td>' + (s.in_library ? '<span class="ok">✓</span>'
+                                       : '<span class="dim">—</span>') + '</td>' +
+                '<td class="dim" style="max-width:26rem;">' + s.reason + '</td></tr>'
+            ).join('') + '</table></div>';
+    }).join('') || '<span class="dim">no subs match this filter</span>';
+}
+document.querySelectorAll('#stateFilter button').forEach(b =>
+    b.onclick = () => { mode = b.dataset.f; render(); });
+fetch('/api/target/history?name=' + encodeURIComponent(name))
+    .then(r => r.json()).then(d => { data = d; render(); })
+    .catch(() => document.getElementById('nights').textContent = 'unavailable');
+</script>
+</body>
+</html>
