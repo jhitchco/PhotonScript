@@ -135,6 +135,39 @@ def calibration_health(config) -> dict:
                     "stale": age > STALE_DAYS[typ],
                     "stale_after_days": STALE_DAYS[typ],
                     "detail": detail}
+
+    # Per-bucket latest ACROSS sessions: a filter's newest flat set (or an
+    # exposure's newest dark set) is often older than the newest session of
+    # that type - e.g. tonight's S/H/O flats hide July's RGB set. Walk
+    # sessions newest-first until every bucket is seen (8-session cap).
+    try:
+        rev = config.reverse_filter_map()
+    except Exception:  # noqa: BLE001
+        rev = {}
+    for typ in ("FLAT", "DARK"):
+        if typ not in latest:
+            continue
+        buckets: dict[str, dict] = {}
+        dates = sorted({d for (t, d) in files_by_type_date if t == typ},
+                       reverse=True)[:8]
+        for dt in dates:
+            counts: dict[str, int] = {}
+            for f in files_by_type_date.get((typ, dt), [])[:400]:
+                try:
+                    hdr = _fits.getheader(f)
+                except Exception:  # noqa: BLE001
+                    continue
+                if typ == "FLAT":
+                    raw = str(hdr.get("FILTER", "?"))
+                    key = rev.get(raw, raw)
+                else:
+                    key = f"{float(hdr.get('EXPTIME', 0)):g}s"
+                counts[key] = counts.get(key, 0) + 1
+            age_d = (today - datetime.strptime(dt, "%Y-%m-%d").date()).days
+            for k, v in counts.items():
+                if k not in buckets:
+                    buckets[k] = {"date": dt, "count": v, "age_days": age_d}
+        out[typ]["by_bucket"] = buckets
     return out
 
 

@@ -126,24 +126,47 @@
         const el = document.getElementById('calHealth');
         try {
             const d = await (await fetch('/api/calibration/health')).json();
-            el.innerHTML = ['BIAS', 'DARK', 'FLAT'].map(t => {
+            const STALE = {FLAT: 45, DARK: 90, BIAS: 180};
+            const bucketChip = (t, name, b) => {
+                if (!b) return '<span style="color:#f87171;" title="no ' + name +
+                    ' ' + t.toLowerCase() + 's on disk">' + name + ' ✗</span>';
+                const stale = b.age_days > STALE[t];
+                const col = stale ? '#eab308' : '#4ade80';
+                return '<span title="session ' + b.date + ' · ' + b.count +
+                    ' frames" style="white-space:nowrap;">' + name +
+                    ' <b style="color:' + col + ';">' + b.count + '</b>' +
+                    '<span style="opacity:.55;">(' + b.age_days + 'd)</span></span>';
+            };
+            const FILTER_ORDER = ['Ha', 'OIII', 'SII', 'L', 'R', 'G', 'B'];
+            const lines = ['BIAS', 'DARK', 'FLAT'].map(t => {
                 const c = d[t];
-                const age = c.latest
-                    ? c.latest + ' (' + c.age_days + 'd ago, ' +
-                      c.count_latest + ' frames' +
-                      (Object.keys(c.detail || {}).length ? ': ' +
-                        Object.entries(c.detail).map(([k, v]) => k + '×' + v)
-                            .join(', ') : '') + ')' +
-                      (c.location ? '<br><span style="opacity:.5;margin-left:1.2rem;">' +
-                        c.location + '</span>' : '')
-                    : 'none on disk';
-                const mark = c.stale
-                    ? '<span style="color:#eab308">⚠ stale</span>'
-                    : '<span style="color:#4ade80">✓</span>';
-                return '<b>' + t + '</b>: ' + age + ' ' + mark;
-            }).join('<br>') +
-            '<br><span style="opacity:.55">flats stale after 45d · darks 90d · bias 180d · ' +
-            'darks/bias need the roof CLOSED (no shutter on the RC16)</span>';
+                if (!c || !c.latest)
+                    return '<b>' + t + '</b> <span style="color:#f87171;">none on disk</span>';
+                const mark = c.stale ? '<span style="color:#eab308">⚠</span>'
+                                     : '<span style="color:#4ade80">✓</span>';
+                let body;
+                if (t === 'BIAS') {
+                    body = c.count_latest + ' frames <span style="opacity:.55;">(' +
+                        c.age_days + 'd)</span>';
+                } else if (t === 'FLAT') {
+                    const bb = c.by_bucket || {};
+                    const known = FILTER_ORDER.filter(f => bb[f]);
+                    const extra = Object.keys(bb).filter(f => !FILTER_ORDER.includes(f));
+                    body = FILTER_ORDER.concat(extra).map(f => bucketChip(t, f, bb[f])).join(' · ');
+                } else {
+                    const bb = c.by_bucket || {};
+                    body = Object.keys(bb).sort((a, b2) => parseFloat(b2) - parseFloat(a))
+                        .map(e => bucketChip(t, e, bb[e])).join(' · ')
+                        || c.count_latest + ' frames (' + c.age_days + 'd)';
+                }
+                return '<b title="newest session: ' + (c.location || c.latest) + '">' +
+                    t + '</b> ' + body + ' ' + mark;
+            });
+            el.innerHTML = '<div style="font-size:.82rem;line-height:1.7;">' +
+                lines.join('<br>') +
+                '<br><span style="opacity:.5;">chips show each bucket\u2019s NEWEST set · ' +
+                'hover for session/date · flats stale 45d · darks 90d · bias 180d · ' +
+                'darks/bias need the roof CLOSED</span></div>';
         } catch (e) { el.textContent = 'calibration data unavailable'; }
     }
     document.getElementById('calFlats').onclick = async () => {
