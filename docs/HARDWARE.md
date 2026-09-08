@@ -18,7 +18,12 @@ get answered; the planner and QA thresholds should eventually read from here.
 - Camera setpoint 0 C, tolerance 1 C
 
 ## Mount & guiding
-- iOptron CEM70G, historically unguided (encoders)
+- Software Bisque PARAMOUNT MX with encoders (confirmed 2026-09-04; earlier
+  docs wrongly said CEM70G). Driven via TheSky64 10.5 ASCOM driver.
+  => TPoint model + ProTrack available: measures polar error precisely and
+  corrects tracking rates in software - fully remote, no hands on the mount.
+  Site (from driver): 31d54'25" N, -109d01'16", 1300 m.
+- Historically unguided
 - Unguided reality at 3248 mm: 300s subs lose 30-60% of frames to trailing
   (SII 9/22 through registration, 2026-07-03)
 - PHD2 installed on scope PC; PS_GUIDED_DEFAULT=true as of 2026-07-07
