@@ -59,6 +59,9 @@ class TelescopeAgent:
         # Cooling watchdog state
         self._cool_bad_since: float | None = None
         self._cool_fix_attempts = 0
+        # Dew-heater watchdog state
+        self._dew_last_set: float = 0.0
+        self._dew_api_broken = False
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -168,6 +171,37 @@ class TelescopeAgent:
     COOL_FAIL_GRACE_S = 600   # cooler must show progress within 10 min
     COOL_FIX_MAX = 3          # reconnect attempts per night
 
+    async def _dew_heater_watchdog(self, camera: dict):
+        """Cooler ON => window dew heater ON, always (2026-09-08 request).
+
+        The heater draws a couple of watts; a fogged window in monsoon
+        humidity costs a night. The driver does not reliably report heater
+        state, so while the cooler is on we (re)assert the heater at most
+        every 15 minutes. If the NINA API cannot switch it, escalate once
+        via Pushover and stand down.
+        """
+        import time
+        if self._dew_api_broken or not camera.get("CoolerOn"):
+            return
+        if camera.get("DewHeaterOn") is True:
+            self._dew_last_set = time.monotonic()
+            return
+        if time.monotonic() - self._dew_last_set < 900:
+            return
+        try:
+            await self.nina.set_dew_heater(True)
+            self._dew_last_set = time.monotonic()
+            logger.info("Dew-heater watchdog: heater ON asserted "
+                        "(cooler is running)")
+        except Exception as e:  # noqa: BLE001
+            self._dew_api_broken = True
+            logger.warning("Dew-heater watchdog: NINA API cannot switch the "
+                           "heater (%s) — manual toggle needed", e)
+            await self._escalate(
+                "dew-heater",
+                "Cooler is ON but the dew heater cannot be switched via the "
+                "NINA API — turn it ON manually (Equipment > Camera).")
+
     async def _cooling_watchdog(self, camera: dict):
         """Active remediation for 'CoolerOn but 0% power, sensor at ambient'.
 
@@ -250,6 +284,7 @@ class TelescopeAgent:
                         f"setpoint is {self.config.camera_setpoint_c:.1f}C",
                     )
                 await self._cooling_watchdog(camera)
+                await self._dew_heater_watchdog(camera)
 
                 # Get mount info
                 mount = await self.nina.get_mount_info()

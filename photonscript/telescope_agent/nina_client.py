@@ -56,6 +56,11 @@ class NinaClient:
 
     # --- Equipment Status ---
 
+    async def set_dew_heater(self, power: bool) -> dict:
+        """Advanced API dew-heater control (window heater on the OGMA)."""
+        return await self._get(
+            f"/equipment/camera/dew-heater?power={'true' if power else 'false'}")
+
     async def get_camera_info(self) -> dict:
         return await self._get("/equipment/camera")
 
