@@ -429,9 +429,23 @@
             const names = {mount: 'M', camera: 'C', filterwheel: 'W',
                            focuser: 'F', guider: 'G', safety: 'S'};
             document.getElementById('tsDev').innerHTML =
-                Object.entries(names).map(([k, l]) =>
-                    '<span title="' + k + '" style="font-weight:700;color:' +
-                    DOT(d.devices && d.devices[k]) + ';">' + l + '</span>').join('');
+                Object.entries(names).map(([k, l]) => {
+                    // safety is tri-state: green = SAFE signal, red = UNSAFE,
+                    // grey = monitor disconnected / no signal
+                    let col, tip = k;
+                    if (k === 'safety') {
+                        col = d.is_safe === true ? '#4ade80'
+                            : d.is_safe === false ? '#f87171' : '#475569';
+                        tip = 'safety: ' + (d.is_safe === true ? 'SAFE'
+                            : d.is_safe === false ? 'UNSAFE' : 'no signal');
+                    } else {
+                        col = DOT(d.devices && d.devices[k]);
+                        tip = k + (d.devices && d.devices[k]
+                                   ? ' connected' : ' disconnected');
+                    }
+                    return '<span title="' + tip + '" style="font-weight:700;color:' +
+                        col + ';">' + l + '</span>';
+                }).join('');
             const roof = document.getElementById('tsRoof');
             roof.textContent = d.is_safe === true ? 'ROOF OPEN'
                 : d.is_safe === false ? 'ROOF CLOSED' : 'ROOF \u2014';
