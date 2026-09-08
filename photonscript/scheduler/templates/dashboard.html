@@ -454,7 +454,16 @@
             tt.style.color = d.cooler_on ? '#4ade80' : '#f87171';
             tt.style.opacity = '1';
             tt.title = 'sensor now / setpoint \u00b7 cooler ' +
-                (d.cooler_on ? 'ON' : 'OFF');
+                (d.cooler_on ? 'ON' : 'OFF') + ' \u00b7 click to toggle';
+            tt.style.cursor = 'pointer';
+            tt.onclick = async () => {
+                const to = !d.cooler_on;
+                if (!confirm('Turn camera cooler ' + (to ? 'ON (cool to setpoint)' : 'OFF (warm over 10 min)') + '?')) return;
+                await fetch('/api/camera/cooler', {method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({on: to})});
+                setTimeout(loadStrip, 1500);
+            };
             document.getElementById('tsImgs').textContent =
                 ts.images_captured_tonight ?? 0;
             if (d.scope_local_time) { _clockBase = d.scope_local_time; _clockAt = Date.now(); }

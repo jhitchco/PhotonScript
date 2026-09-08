@@ -427,6 +427,7 @@ _CONFIG_FIELDS = [
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
+    ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),
     ("nina_filter_names", "PS_NINA_FILTER_NAMES", "Filter names (class:NINA name)", "NINA", "str", False, False),
     ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),
     ("phd2_port", "PS_PHD2_PORT", "PHD2 port", "PHD2", "int", False, True),
@@ -1582,8 +1583,8 @@ async def api_target_history(name: str):
                        "rejected": n_rej, "subs": rows})
     return {"target": name, "nights": nights, "totals": totals,
             "library_dir": str(tdir),
-            "desktop_hint": "synced to ninashare\\Library\\" + name
-                            + " on the desktop when /api/sync shows "
+            "desktop_path": str(Path(cfg.desktop_library_dir) / name),
+            "desktop_hint": "desktop copy appears once /api/sync shows "
                             "library_synced"}
 
 
@@ -1647,6 +1648,27 @@ async def api_integration_readiness():
             "command": f'.\\deploy\\prepare-integration.ps1 -Target "{name}"',
         })
     return {"targets": targets, "library_dir": str(lib)}
+
+
+@app.post("/api/camera/cooler")
+async def api_camera_cooler(payload: dict = Body(default={})):
+    """Toggle the imaging-camera cooler via NINA: cool to the configured
+    setpoint (10 min ramp) or warm. Dashboard strip convenience."""
+    import httpx
+    cfg = get_config()
+    base = cfg.nina_base_url.rstrip("/")
+    on = bool(payload.get("on"))
+    path = (f"/equipment/camera/cool?temperature={cfg.camera_setpoint_c:g}"
+            "&minutes=10") if on else "/equipment/camera/warm?minutes=10"
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(base + path)
+            ok = r.status_code == 200
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502,
+                            content={"ok": False, "detail": str(e)})
+    logger.info("Cooler %s requested from dashboard", "ON" if on else "OFF")
+    return {"ok": ok, "cooling": on}
 
 
 @app.get("/api/scope")

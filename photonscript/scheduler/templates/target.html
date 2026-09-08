@@ -64,8 +64,19 @@ function render() {
         '<b class="ok">' + t.accepted + ' accepted</b> (' + t.in_library +
         ' in library) &middot; <b class="no">' + t.rejected +
         ' rejected</b> &nbsp;&nbsp;' + bf;
-    document.getElementById('tWhere').textContent =
-        'scope: ' + data.library_dir + ' · ' + data.desktop_hint;
+    const copyBtn = (label, path) =>
+        '<button class="btn btn-secondary" style="font-size:.72rem;padding:.15rem .5rem;" ' +
+        'onclick="navigator.clipboard.writeText(' + JSON.stringify(JSON.stringify(path)) + ');' +
+        'this.textContent=\'copied ✓\';setTimeout(()=>this.textContent=\'' + label + '\',1500)">' +
+        label + '</button>';
+    document.getElementById('tWhere').innerHTML =
+        'scope: <code>' + data.library_dir + '</code> ' +
+        copyBtn('copy scope path', data.library_dir) +
+        ' &nbsp;·&nbsp; desktop: <code>' + (data.desktop_path || '') + '</code> ' +
+        copyBtn('copy desktop path', data.desktop_path || '') +
+        ' <span class="dim">(paste into Explorer\u2019s address bar or Win+R \u2014 ' +
+        'browsers can\u2019t open Explorer directly)</span><br><span class="dim">' +
+        data.desktop_hint + '</span>';
     document.getElementById('nights').innerHTML = data.nights.map(n => {
         const rows = n.subs.filter(s => mode === 'all'
             || (mode === 'accepted') === s.passed);

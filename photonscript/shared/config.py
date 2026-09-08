@@ -40,6 +40,9 @@ class PhotonScriptConfig(BaseSettings):
     phd2_port: int = 4400
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
     library_dir: str = ""  # accepted-lights library (Syncthing this); "" = <data_dir>/Library
+    desktop_library_dir: str = r"C:\Users\sleep\ninashare\Library"  # the
+    # Syncthing mirror on the DESKTOP - used only to build copy-able paths in
+    # the UI (browsers cannot open File Explorer directly)
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
     syncthing_url: str = "http://localhost:8384"  # Syncthing REST on the scope PC
     syncthing_api_key: str = ""
