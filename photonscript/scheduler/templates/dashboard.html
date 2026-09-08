@@ -77,7 +77,7 @@
         <section class="panel" id="armPanel">
             <h2>Tonight's Run</h2>
             <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem;">
-                <button class="btn btn-primary" id="armBtn" title="Arm tonight unguided — trust the CEM70G absolute encoders (no PHD2 calibration)">Arm (Encoders)</button>
+                <button class="btn btn-primary" id="armBtn" title="Arm tonight unguided — trust the Paramount MX encoders (+ ProTrack once modeled)">Arm (Encoders)</button>
                 <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding (for very long subs / extreme precision)">Arm (Guiding)</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;"></span>
@@ -446,10 +446,15 @@
                 g.style.color = st === 'calibrating' ? '#7dd3fc'
                     : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
             } else { g.hidden = true; }
-            document.getElementById('tsTemp').textContent =
+            const tt = document.getElementById('tsTemp');
+            tt.textContent =
                 (d.camera_temp != null ? d.camera_temp.toFixed(1) : '\u2014') + '/'
                 + (d.setpoint_c != null ? d.setpoint_c.toFixed(0) : '\u2014') + '\u00b0C'
                 + (d.cooler_power ? ' \u00b7 ' + d.cooler_power.toFixed(0) + '%' : '');
+            tt.style.color = d.cooler_on ? '#4ade80' : '#f87171';
+            tt.style.opacity = '1';
+            tt.title = 'sensor now / setpoint \u00b7 cooler ' +
+                (d.cooler_on ? 'ON' : 'OFF');
             document.getElementById('tsImgs').textContent =
                 ts.images_captured_tonight ?? 0;
             if (d.scope_local_time) { _clockBase = d.scope_local_time; _clockAt = Date.now(); }
