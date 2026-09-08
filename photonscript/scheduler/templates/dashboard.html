@@ -41,6 +41,16 @@
             <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;" title="git commit running on this machine">{{ version }}</span>
         </div>
     </header>
+    <div id="topStrip" style="display:flex;flex-wrap:wrap;gap:1.6rem;align-items:center;
+         padding:.5rem 2rem;background:rgba(125,211,252,.05);
+         border-bottom:1px solid rgba(148,163,184,.15);font-size:.95rem;">
+        <span id="tsArm" style="font-weight:700;">&mdash;</span>
+        <span>&#127919; <span id="tsTarget">&mdash;</span></span>
+        <span id="tsSafe">SAFETY &mdash;</span>
+        <span id="tsTemp" style="opacity:.75;">&mdash;</span>
+        <span id="tsClock" style="margin-left:auto;font-variant-numeric:tabular-nums;
+              font-weight:700;color:#7dd3fc;" title="scope local time">--:--:--</span>
+    </div>
 
     <main>
         <!-- 7-Night Outlook + ARM -->
@@ -398,6 +408,45 @@
             el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
         }
     }
+    // ---- top strip: arm / target / safety / temp / scope clock ----
+    let _clockBase = null, _clockAt = null;
+    async function loadStrip() {
+        try {
+            const [d, arm, ts] = await Promise.all([
+                (await fetch('/api/scope')).json(),
+                (await fetch('/api/arm')).json(),
+                (await fetch('/api/telescope/state')).json()]);
+            const a = document.getElementById('tsArm');
+            a.textContent = arm.state || '\u2014';
+            a.style.color = arm.state === 'ARMED' ? '#4ade80'
+                : (arm.state || '').includes('PAUSED') ? '#eab308' : '#94a3b8';
+            const tgt = ts.current_target
+                || (arm.state === 'ARMED' && arm.detail ? 'next: tonight\u2019s plan' : null);
+            document.getElementById('tsTarget').textContent = tgt || 'no target';
+            const s = document.getElementById('tsSafe');
+            s.textContent = d.is_safe === true ? 'SAFE'
+                : d.is_safe === false ? 'UNSAFE' : 'SAFETY \u2014';
+            s.style.color = d.is_safe === true ? '#4ade80'
+                : d.is_safe === false ? '#f87171' : '#64748b';
+            document.getElementById('tsTemp').textContent =
+                (d.camera_temp != null ? d.camera_temp.toFixed(1) + '\u00b0C' : '\u2014')
+                + (d.cooler_power ? ' \u00b7 ' + d.cooler_power.toFixed(0) + '%' : '');
+            if (d.scope_local_time) {
+                _clockBase = d.scope_local_time; _clockAt = Date.now();
+            }
+        } catch (e) {}
+    }
+    setInterval(() => {
+        if (!_clockBase) return;
+        const [h, m, sec] = _clockBase.split(':').map(Number);
+        const t = h * 3600 + m * 60 + sec + Math.round((Date.now() - _clockAt) / 1000);
+        const pad = n => String(n % 60).padStart(2, '0');
+        document.getElementById('tsClock').textContent =
+            String(Math.floor(t / 3600) % 24).padStart(2, '0') + ':' +
+            String(Math.floor(t / 60) % 60).padStart(2, '0') + ':' + pad(t);
+    }, 1000);
+    loadStrip();
+    setInterval(loadStrip, 10 * 1000);
     loadScope();
     setInterval(loadScope, 5 * 1000);  // equipment state is cheap; keep the chip fresh
     loadSun();

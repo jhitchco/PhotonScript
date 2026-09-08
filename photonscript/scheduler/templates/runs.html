@@ -72,6 +72,8 @@
     </header>
     <main>
         <aside class="panel">
+            <h2>Integration readiness</h2>
+            <div class="bd" id="readyBox" style="margin-bottom:1rem;">loading&hellip;</div>
             <h2>Nights</h2>
             <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
             <div id="nightList">Loading…</div>
@@ -572,6 +574,46 @@
     }
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);
     loadNights();
+
+    // ---- integration readiness: what the desktop needs, answered scope-side
+    async function loadReadiness() {
+        const box = document.getElementById('readyBox');
+        try {
+            const [rd, sync] = await Promise.all([
+                (await fetch('/api/integration/readiness')).json(),
+                fetch('/api/sync').then(r => r.json()).catch(() => ({}))]);
+            const synced = sync.library_synced === true;
+            if (!rd.targets || !rd.targets.length) {
+                box.textContent = 'no active target goals'; return;
+            }
+            const ok = t => '<span style="color:#4ade80;">\u2713</span>';
+            const bad = '<span style="color:#f87171;">\u2717</span>';
+            box.innerHTML = rd.targets.map(t => {
+                const fl = Object.entries(t.filters)
+                    .filter(([f, v]) => v.accepted_in_library > 0)
+                    .map(([f, v]) => f + ' ' + v.accepted_in_library +
+                         (v.flats > 0 ? '' : ' <span style="color:#f87171;">(no flats)</span>'))
+                    .join(' \u00b7 ') || '<span style="opacity:.6;">no accepted lights yet</span>';
+                const darks = Object.entries(t.darks_by_exposure)
+                    .map(([e, n]) => e + (n > 0 ? ' ' + ok() + n : ' ' + bad)).join(' \u00b7 ');
+                const verdict = t.ready && synced
+                    ? '<span style="color:#4ade80;font-weight:700;">ready \u2014 </span>' +
+                      '<code style="font-size:.78rem;">' + t.command + '</code>'
+                    : t.ready && !synced
+                    ? '<span style="color:#eab308;">ready on scope \u2014 sync in progress</span>'
+                    : '<span style="opacity:.6;">not ready</span>';
+                return '<div style="margin-bottom:.7rem;">' +
+                    '<b>' + t.target + '</b><br>' +
+                    'lights: ' + fl + '<br>' +
+                    'darks: ' + darks + ' \u00b7 bias: ' +
+                    (t.bias > 0 ? ok() + t.bias : bad) +
+                    ' \u00b7 desktop sync: ' + (synced ? ok() : '\u23f3') + '<br>' +
+                    verdict + '</div>';
+            }).join('');
+        } catch (e) { box.textContent = 'readiness unavailable'; }
+    }
+    loadReadiness();
+    setInterval(loadReadiness, 120 * 1000);
     </script>
 </body>
 </html>

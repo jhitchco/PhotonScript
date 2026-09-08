@@ -1504,6 +1504,68 @@ def api_run_bundle(date: str):
                         filename=f"night_bundle_{date}.zip")
 
 
+@app.get("/api/integration/readiness")
+async def api_integration_readiness():
+    """Everything the DESKTOP needs to integrate a target, answered from the
+    scope's Library: accepted lights per filter, epoch-matched darks, bias,
+    flats. Combine with /api/sync library_synced for 'it is on the desktop'."""
+    from photonscript.scheduler.calibration import (calibration_health,
+                                                    count_matching_darks)
+    cfg = get_config()
+    lib = Path(cfg.library_dir) if cfg.library_dir \
+        else Path(cfg.data_dir) / "Library"
+    health = calibration_health(cfg)
+    try:
+        rev = cfg.reverse_filter_map()
+    except Exception:  # noqa: BLE001
+        rev = {}
+    flats: dict[str, int] = {}
+    for k, v in ((health.get("FLAT") or {}).get("detail") or {}).items():
+        canon = rev.get(k, k)
+        flats[canon] = flats.get(canon, 0) + v
+    bias_n = (health.get("BIAS") or {}).get("count_latest") or 0
+
+    targets = []
+    for p in _projects.values():
+        if not p.active:
+            continue
+        name = p.target.name
+        tdir = lib / name
+        filters: dict[str, dict] = {}
+        dark_needs: dict[float, int] = {}
+        for plan in p.exposure_plans:
+            f = plan.filter_type.value
+            fdir = tdir / f
+            n = len(list(fdir.glob("*.fits"))) if fdir.exists() else 0
+            filters[f] = {"accepted_in_library": n,
+                          "planned": plan.count,
+                          "exposure_s": plan.exposure_seconds,
+                          "flats": flats.get(f, 0)}
+            e = float(plan.exposure_seconds)
+            if e not in dark_needs:
+                try:
+                    dark_needs[e] = count_matching_darks(cfg, e)
+                except Exception:  # noqa: BLE001
+                    dark_needs[e] = 0
+        lights_total = sum(v["accepted_in_library"] for v in filters.values())
+        used = {f: v for f, v in filters.items()
+                if v["accepted_in_library"] > 0}
+        ready = bool(lights_total and bias_n
+                     and all(n > 0 for e, n in dark_needs.items()
+                             if any(v["exposure_s"] == e for v in used.values()))
+                     and all(v["flats"] > 0 for v in used.values()))
+        targets.append({
+            "target": name,
+            "filters": filters,
+            "darks_by_exposure": {f"{k:g}s": v for k, v in dark_needs.items()},
+            "bias": bias_n,
+            "lights_in_library": lights_total,
+            "ready": ready,
+            "command": f'.\\deploy\\prepare-integration.ps1 -Target "{name}"',
+        })
+    return {"targets": targets, "library_dir": str(lib)}
+
+
 @app.get("/api/scope")
 async def api_scope():
     """Is the scope home safe? Mount park/tracking + camera cooler state."""
@@ -1550,4 +1612,5 @@ async def api_scope():
     return {"status": status, "color": color, "parked": parked,
             "tracking": tracking, "camera_temp": temp, "cooler_on": cooler,
             "cooler_power": power, "cooling_idle": cooling_idle,
-            "is_safe": is_safe}
+            "is_safe": is_safe,
+            "scope_local_time": datetime.now().strftime("%H:%M:%S")}
