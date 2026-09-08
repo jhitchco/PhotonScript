@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>PhotonScript - Remote Telescope Dashboard</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
     <style>
         #allskyPanel { grid-column: 1; grid-row: 1; }
@@ -686,7 +686,7 @@
                     'style="width:40px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
                     'border-radius:4px;padding:.05rem .2rem;text-align:center;">%' +
                     '<span style="opacity:.7;width:7.5rem;">' +
-                    (active ? Math.round(e.exposure_seconds) + 's × ' + e.count + ' planned'
+                    (active ? Math.round(e.exposure_seconds) + 's × ' + e.count
                             : 'off — set % to use') + '</span>' +
                     '<span style="width:5.2rem;">' + (active ? e.acquired + ' accepted' : '') + '</span>' +
                     '<div class="fbar"><div style="width:' + pct + '%;background:' + col +

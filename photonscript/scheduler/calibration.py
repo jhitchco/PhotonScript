@@ -299,12 +299,17 @@ def generate_dusk_flats_json(config) -> tuple:
     # L needs the darkest — Jeremy's order: NB -> R,G,B -> L
     filters = [FilterType(v) for v in
                ("Ha", "OIII", "SII", "R", "G", "B", "L")]
-    wait_start = _make_typed(
-        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
-        Hours=local.hour, Minutes=local.minute, MinutesOffset=0, Seconds=0,
-        SelectedProvider=_make_typed(
-            "NINA.Sequencer.Utility.DateTimeProvider.TimeProvider, "
-            "NINA.Sequencer"))
+    def _wait_for(t):
+        return _make_typed(
+            "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
+            Hours=t.hour, Minutes=t.minute, MinutesOffset=0, Seconds=0,
+            SelectedProvider=_make_typed(
+                "NINA.Sequencer.Utility.DateTimeProvider.TimeProvider, "
+                "NINA.Sequencer"))
+    wait_start = _wait_for(local)
+    # cool only ~30 min before flats begin - dispatching at noon should NOT
+    # run the cooler all afternoon (2026-09-08 request)
+    wait_cool = _wait_for(local - timedelta(minutes=30))
     items = [
         _pushover("Flats", f"dusk sky flats: waiting for "
                   f"{local.strftime('%H:%M')} local (sunset +15), then "
@@ -312,6 +317,7 @@ def generate_dusk_flats_json(config) -> tuple:
                   "through to most: Ha, OIII, SII, R, G, B, L)"),
         _connect("Safety Monitor"),
         _connect("Camera"),
+        wait_cool,
         _cool_camera(config.camera_setpoint_c, 2.0),
         _connect("Filter Wheel"),
         _connect("Mount"),

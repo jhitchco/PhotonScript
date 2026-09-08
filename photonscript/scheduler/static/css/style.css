@@ -446,6 +446,7 @@ footer {
     transition: background .15s ease, border-color .15s ease,
                 transform .05s ease;
 }
+.nav-pill:visited, .nav-pill:link { color: #7dd3fc; text-decoration: none; }
 .nav-pill:hover { background: rgba(125,211,252,.16);
                   border-color: rgba(125,211,252,.5); }
 .nav-pill:active { transform: translateY(1px); }
