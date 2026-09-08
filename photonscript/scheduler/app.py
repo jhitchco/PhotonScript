@@ -1587,17 +1587,33 @@ async def api_scope():
     """Is the scope home safe? Mount park/tracking + camera cooler state."""
     import httpx
     base = get_config().nina_base_url.rstrip("/")
-    out = {"mount": None, "camera": None, "safety": None}
+    out = {"mount": None, "camera": None, "safety": None,
+           "filterwheel": None, "focuser": None, "guider": None}
+    nina_ok = False
     async with httpx.AsyncClient(timeout=8) as client:
         for key, path in (("mount", "/equipment/mount/info"),
                           ("camera", "/equipment/camera/info"),
-                          ("safety", "/equipment/safetymonitor/info")):
+                          ("safety", "/equipment/safetymonitor/info"),
+                          ("filterwheel", "/equipment/filterwheel/info"),
+                          ("focuser", "/equipment/focuser/info"),
+                          ("guider", "/equipment/guider/info")):
             try:
                 r = await client.get(base + path)
                 p = r.json().get("Response", {})
                 out[key] = p
+                nina_ok = True
             except Exception:  # noqa: BLE001
                 pass
+    # PHD2 process liveness: its event server listens on 4400 (same PC)
+    phd2_ok = False
+    try:
+        import asyncio as _aio
+        _rd, _wr = await _aio.wait_for(
+            _aio.open_connection("127.0.0.1", 4400), timeout=1.5)
+        _wr.close()
+        phd2_ok = True
+    except Exception:  # noqa: BLE001
+        pass
     mount, cam = out["mount"] or {}, out["camera"] or {}
     saf = out["safety"] or {}
     is_safe = saf.get("IsSafe") if saf.get("Connected") else None
@@ -1629,4 +1645,10 @@ async def api_scope():
             "tracking": tracking, "camera_temp": temp, "cooler_on": cooler,
             "cooler_power": power, "cooling_idle": cooling_idle,
             "is_safe": is_safe,
+            "nina_connected": nina_ok,
+            "phd2_running": phd2_ok,
+            "devices": {k: bool((out[k] or {}).get("Connected"))
+                        for k in out},
+            "focuser_position": (out["focuser"] or {}).get("Position"),
+            "setpoint_c": get_config().camera_setpoint_c,
             "scope_local_time": datetime.now().strftime("%H:%M:%S")}

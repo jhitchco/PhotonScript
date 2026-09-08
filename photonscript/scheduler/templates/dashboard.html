@@ -41,13 +41,20 @@
             <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;" title="git commit running on this machine">{{ version }}</span>
         </div>
     </header>
-    <div id="topStrip" style="display:flex;flex-wrap:wrap;gap:1.6rem;align-items:center;
-         padding:.5rem 2rem;background:rgba(125,211,252,.05);
-         border-bottom:1px solid rgba(148,163,184,.15);font-size:.95rem;">
+    <div id="topStrip" style="display:flex;flex-wrap:nowrap;gap:1.3rem;align-items:center;
+         padding:.5rem 2rem;background:rgba(125,211,252,.05);overflow:hidden;
+         border-bottom:1px solid rgba(148,163,184,.15);font-size:.92rem;white-space:nowrap;">
         <span id="tsArm" style="font-weight:700;">&mdash;</span>
+        <span id="tsPlan" style="opacity:.7;font-size:.85rem;"></span>
+        <span id="tsNext" style="color:#7dd3fc;"></span>
         <span>&#127919; <span id="tsTarget">&mdash;</span></span>
-        <span id="tsSafe">SAFETY &mdash;</span>
-        <span id="tsTemp" style="opacity:.75;">&mdash;</span>
+        <span id="tsNina" title="NINA API reachable">NINA <b>&#9679;</b></span>
+        <span id="tsPhd" title="PHD2 process on the scope PC">PHD2 <b>&#9679;</b></span>
+        <span id="tsDev" title="devices: Mount Camera filterWheel Focuser Guider Safety"></span>
+        <span id="tsRoof" title="derived from the safety monitor: unsafe = AARO closes the roof">ROOF &mdash;</span>
+        <span id="tsGuide" hidden style="font-weight:600;"></span>
+        <span id="tsTemp" style="opacity:.8;" title="sensor now / setpoint &middot; cooler power">&mdash;</span>
+        <span title="images tonight">&#128248; <span id="tsImgs">0</span></span>
         <span id="tsClock" style="margin-left:auto;font-variant-numeric:tabular-nums;
               font-weight:700;color:#7dd3fc;" title="scope local time">--:--:--</span>
     </div>
@@ -83,54 +90,15 @@
             <div id="nightTimeline"></div>
         </section>
 
-        <!-- Telescope Status Panel -->
-        <section class="panel telescope-status">
-            <h2>Telescope Status</h2>
-            <div class="status-grid">
-                <div class="status-card">
-                    <label>State</label>
-                    <span class="value state-{{ telescope_state.session_state.value }}" id="sessionState">
-                        {{ telescope_state.session_state.value | upper }}
-                    </span>
-                </div>
-                <div class="status-card">
-                    <label>Current Target</label>
-                    <span class="value" id="currentTarget">{{ telescope_state.current_target or "—" }}</span>
-                </div>
-                <div class="status-card">
-                    <label>Filter</label>
-                    <span class="value" id="currentFilter">{{ telescope_state.current_filter or "—" }}</span>
-                </div>
-                <div class="status-card">
-                    <label>Safety</label>
-                    <span class="value" id="safetyState">—</span>
-                </div>
-                <div class="status-card">
-                    <label>Commanding</label>
-                    <span class="value" id="commandState" style="font-size:.8rem;">—</span>
-                </div>
-                <div class="status-card">
-                    <label>Guiding RMS</label>
-                    <span class="value" id="guidingRms">{{ "%.2f"|format(telescope_state.guiding.rms_total_arcsec) }}"</span>
-                </div>
-                <div class="status-card">
-                    <label>Camera Temp</label>
-                    <span class="value" id="cameraTemp">{{ telescope_state.camera_temp_c or "—" }}&deg;C</span>
-                </div>
-                <div class="status-card">
-                    <label>Images Tonight</label>
-                    <span class="value" id="imagesTonight">{{ telescope_state.images_captured_tonight }}</span>
-                </div>
-            </div>
-
-            <!-- Exposure Progress Bar -->
-            <div class="exposure-progress" id="exposureProgress" style="display: none;">
-                <label>Exposure Progress</label>
-                <div class="progress-bar">
-                    <div class="progress-fill" id="exposureFill" style="width: 0%"></div>
-                </div>
-            </div>
-        </section>
+        <!-- Telescope Status absorbed into the top strip; hidden stubs keep
+             legacy JS/websocket updates harmless -->
+        <div hidden aria-hidden="true">
+            <span id="sessionState"></span><span id="currentTarget"></span>
+            <span id="currentFilter"></span><span id="safetyState"></span>
+            <span id="commandState"></span><span id="guidingRms"></span>
+            <span id="cameraTemp"></span><span id="imagesTonight"></span>
+            <div id="exposureProgress"><div id="exposureFill"></div></div>
+        </div>
 
         <!-- Recent Activity: last subs + telescope events -->
         <section class="panel" id="activityPanel">
@@ -408,42 +376,96 @@
             el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
         }
     }
-    // ---- top strip: arm / target / safety / temp / scope clock ----
-    let _clockBase = null, _clockAt = null;
+    // ---- top strip v2: single-line telescope truth ----
+    let _clockBase = null, _clockAt = null, _nextAt = null, _nextLabel = '';
+    const DOT = (on) => on ? '#4ade80' : '#475569';
+    function fmtDur(ms) {
+        const s = Math.max(0, Math.round(ms / 1000));
+        if (s >= 3600) return Math.floor(s / 3600) + 'h' + String(Math.floor(s / 60) % 60).padStart(2, '0') + 'm';
+        if (s >= 60) return Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+        return s + 's';
+    }
     async function loadStrip() {
         try {
             const [d, arm, ts] = await Promise.all([
                 (await fetch('/api/scope')).json(),
                 (await fetch('/api/arm')).json(),
                 (await fetch('/api/telescope/state')).json()]);
+            window._scopeLast = d;
             const a = document.getElementById('tsArm');
             a.textContent = arm.state || '\u2014';
+            a.title = arm.detail || '';
             a.style.color = arm.state === 'ARMED' ? '#4ade80'
-                : (arm.state || '').includes('PAUSED') ? '#eab308' : '#94a3b8';
-            const tgt = ts.current_target
-                || (arm.state === 'ARMED' && arm.detail ? 'next: tonight\u2019s plan' : null);
-            document.getElementById('tsTarget').textContent = tgt || 'no target';
-            const s = document.getElementById('tsSafe');
-            s.textContent = d.is_safe === true ? 'SAFE'
-                : d.is_safe === false ? 'UNSAFE' : 'SAFETY \u2014';
-            s.style.color = d.is_safe === true ? '#4ade80'
-                : d.is_safe === false ? '#f87171' : '#64748b';
-            document.getElementById('tsTemp').textContent =
-                (d.camera_temp != null ? d.camera_temp.toFixed(1) + '\u00b0C' : '\u2014')
-                + (d.cooler_power ? ' \u00b7 ' + d.cooler_power.toFixed(0) + '%' : '');
-            if (d.scope_local_time) {
-                _clockBase = d.scope_local_time; _clockAt = Date.now();
+                : (arm.state || '').includes('PAUSED') ? '#eab308'
+                : arm.state === 'RUNNING' ? '#7dd3fc' : '#94a3b8';
+            const pm = (arm.detail || '').match(/(\d+ targets?, [^\u2014-]+)/);
+            document.getElementById('tsPlan').textContent =
+                (pm ? pm[1].trim() : '') +
+                ((arm.detail || '').includes('guided') ? ' \u00b7 guided' : '');
+            // countdown to the next milestone
+            _nextAt = null; _nextLabel = '';
+            const now = Date.now();
+            const t = k => arm[k] ? Date.parse(arm[k]) : null;
+            if (arm.state === 'ARMED' || arm.state === 'RUNNING') {
+                if (t('preconfig_utc') && now < t('preconfig_utc')) {
+                    _nextAt = t('preconfig_utc'); _nextLabel = 'pre-config in ';
+                } else if (t('dusk_utc') && now < t('dusk_utc')) {
+                    _nextAt = t('dusk_utc'); _nextLabel = 'astro dark in ';
+                } else if (t('dawn_utc') && now < t('dawn_utc')) {
+                    _nextAt = t('dawn_utc');
+                    _nextLabel = (d.is_safe === false ? 'waiting on roof \u00b7 ' : '') + 'dawn in ';
+                }
             }
+            const tgt = ts.current_target
+                ? ts.current_target
+                  + (ts.current_filter ? ' \u00b7 ' + ts.current_filter : '')
+                  + (ts.current_exposure_progress
+                     ? ' \u00b7 ' + Math.round(ts.current_exposure_progress * 100) + '%' : '')
+                : (arm.state === 'ARMED' ? 'waiting for dark' : '\u2014');
+            document.getElementById('tsTarget').textContent = tgt;
+            document.getElementById('tsNina').firstElementChild &&
+                (document.getElementById('tsNina').querySelector('b').style.color = DOT(d.nina_connected));
+            document.getElementById('tsPhd').querySelector('b').style.color = DOT(d.phd2_running);
+            const names = {mount: 'M', camera: 'C', filterwheel: 'W',
+                           focuser: 'F', guider: 'G', safety: 'S'};
+            document.getElementById('tsDev').innerHTML =
+                Object.entries(names).map(([k, l]) =>
+                    '<span title="' + k + '" style="font-weight:700;color:' +
+                    DOT(d.devices && d.devices[k]) + ';">' + l + '</span>').join('');
+            const roof = document.getElementById('tsRoof');
+            roof.textContent = d.is_safe === true ? 'ROOF OPEN'
+                : d.is_safe === false ? 'ROOF CLOSED' : 'ROOF \u2014';
+            roof.style.color = d.is_safe === true ? '#4ade80'
+                : d.is_safe === false ? '#f87171' : '#64748b';
+            const g = document.getElementById('tsGuide');
+            const st = ((ts.guiding || {}).state || '').toLowerCase();
+            if (st === 'guiding' || st === 'settling' || st === 'calibrating') {
+                const rms = ts.guiding.rms_total_arcsec || 0;
+                g.hidden = false;
+                g.textContent = rms.toFixed(2) + '\u2033 ' + st.toUpperCase();
+                g.style.color = st === 'calibrating' ? '#7dd3fc'
+                    : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
+            } else { g.hidden = true; }
+            document.getElementById('tsTemp').textContent =
+                (d.camera_temp != null ? d.camera_temp.toFixed(1) : '\u2014') + '/'
+                + (d.setpoint_c != null ? d.setpoint_c.toFixed(0) : '\u2014') + '\u00b0C'
+                + (d.cooler_power ? ' \u00b7 ' + d.cooler_power.toFixed(0) + '%' : '');
+            document.getElementById('tsImgs').textContent =
+                ts.images_captured_tonight ?? 0;
+            if (d.scope_local_time) { _clockBase = d.scope_local_time; _clockAt = Date.now(); }
         } catch (e) {}
     }
     setInterval(() => {
-        if (!_clockBase) return;
-        const [h, m, sec] = _clockBase.split(':').map(Number);
-        const t = h * 3600 + m * 60 + sec + Math.round((Date.now() - _clockAt) / 1000);
-        const pad = n => String(n % 60).padStart(2, '0');
-        document.getElementById('tsClock').textContent =
-            String(Math.floor(t / 3600) % 24).padStart(2, '0') + ':' +
-            String(Math.floor(t / 60) % 60).padStart(2, '0') + ':' + pad(t);
+        if (_clockBase) {
+            const [h, m, sec] = _clockBase.split(':').map(Number);
+            const t = h * 3600 + m * 60 + sec + Math.round((Date.now() - _clockAt) / 1000);
+            document.getElementById('tsClock').textContent =
+                String(Math.floor(t / 3600) % 24).padStart(2, '0') + ':' +
+                String(Math.floor(t / 60) % 60).padStart(2, '0') + ':' +
+                String(t % 60).padStart(2, '0');
+        }
+        const n = document.getElementById('tsNext');
+        n.textContent = _nextAt ? _nextLabel + fmtDur(_nextAt - Date.now()) : '';
     }, 1000);
     loadStrip();
     setInterval(loadStrip, 10 * 1000);
@@ -476,9 +498,9 @@
             d.night_of + '</div>' +
             '<div style="display:flex;gap:.6rem;justify-content:space-between;flex-wrap:wrap;' +
             'padding:.8rem;border-radius:10px;background:rgba(255,255,255,.03);margin-bottom:.8rem;">' +
-            twCard('Sunset', tw.sunset) + twCard('Naut. Dusk', tw.naut_dusk) +
+            twCard('Sunset', tw.sunset) +
             twCard('Astro Dusk', tw.astro_dusk, true) + twCard('Astro Dawn', tw.astro_dawn, true) +
-            twCard('Naut. Dawn', tw.naut_dawn) + twCard('Sunrise', tw.sunrise) + '</div>';
+            twCard('Sunrise', tw.sunrise) + '</div>';
         const st = d.stats || {};
         html += '<div style="display:flex;gap:.7rem;margin-bottom:1rem;">' +
             statCard(st.dark_hours + 'h', 'Dark Hours', '#7dd3fc') +
@@ -765,7 +787,25 @@
         try {
             const d = await (await fetch('/api/activity')).json();
             const el = document.getElementById('recentSubs');
-            if (!d.subs.length) { el.textContent = 'no subs yet tonight (' + d.night + ')'; return; }
+            if (!d.subs.length) {
+                const sc = window._scopeLast || {};
+                let idle = 'no subs yet tonight (' + d.night + ')';
+                try {
+                    const ts = await (await fetch('/api/telescope/state')).json();
+                    const bits = [];
+                    if (sc.focuser_position != null) bits.push('focuser ' + sc.focuser_position);
+                    const li = ts.last_image;
+                    if (li && li.quality) {
+                        const q = li.quality;
+                        bits.push('last image: ' + (li.filter_type || '') +
+                            (q.hfr_pixels != null ? ' HFR ' + q.hfr_pixels : '') +
+                            (q.star_count != null ? ' \u2605' + q.star_count : '') +
+                            (q.eccentricity != null ? ' ecc ' + q.eccentricity : ''));
+                    }
+                    if (bits.length) idle += ' \u00b7 ' + bits.join(' \u00b7 ');
+                } catch (e2) {}
+                el.textContent = idle; return;
+            }
             el.innerHTML = d.subs.map(s =>
                 '<div class="sub-row">' +
                 '<span style="opacity:.6;width:3.6rem;">' + (s.time || '').slice(11, 16) + '</span>' +
