@@ -433,3 +433,21 @@ footer {
     transition: background 0.15s ease, color 0.15s ease;
 }
 .theme-toggle:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+
+/* --- top navigation pills (2026-09-08) --- */
+.nav-pill {
+    display: inline-flex; align-items: center; gap: .45rem;
+    padding: .38rem .9rem; border-radius: 9px;
+    color: #7dd3fc; text-decoration: none; font-size: .88rem;
+    border: 1px solid rgba(125,211,252,.22);
+    background: rgba(125,211,252,.06);
+    white-space: nowrap; line-height: 1;
+    transition: background .15s ease, border-color .15s ease,
+                transform .05s ease;
+}
+.nav-pill:hover { background: rgba(125,211,252,.16);
+                  border-color: rgba(125,211,252,.5); }
+.nav-pill:active { transform: translateY(1px); }
+.nav-pill.active { background: rgba(125,211,252,.2);
+                   border-color: #7dd3fc; color: #e0f2fe; }
