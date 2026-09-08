@@ -76,6 +76,9 @@
             <div class="bd" id="readyBox" style="margin-bottom:1rem;">loading&hellip;</div>
             <h2>Nights</h2>
             <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
+            <button class="btn btn-secondary" id="regradeAllBtn"
+                    title="Wipe and re-grade every night since a date (sequential, background). Deletes manual review verdicts for those nights.">Re-grade all&hellip;</button>
+            <div class="bd" id="regradeAllStatus" style="margin:.4rem 0 .6rem;"></div>
             <div id="nightList">Loading…</div>
         </aside>
         <section class="panel" id="detailPanel" hidden>
@@ -614,6 +617,36 @@
     }
     loadReadiness();
     setInterval(loadReadiness, 120 * 1000);
+
+    // ---- re-grade all nights (sequential, background) ----
+    async function pollRegradeAll(loop) {
+        try {
+            const s = await (await fetch('/api/regrade/all')).json();
+            const el = document.getElementById('regradeAllStatus');
+            if (s.running) {
+                el.textContent = 'Re-grading ' + (s.current || '\u2026') + ' \u2014 night ' +
+                    (s.done + 1) + '/' + s.total;
+                if (loop) setTimeout(() => pollRegradeAll(true), 5000);
+            } else if (s.total) {
+                el.textContent = 'Re-grade all: finished ' + s.done + '/' + s.total + ' nights' +
+                    (s.last_error ? ' \u00b7 last error: ' + s.last_error : '');
+                loadNights && loadNights();
+            }
+        } catch (e) {}
+    }
+    document.getElementById('regradeAllBtn').onclick = async () => {
+        const since = prompt(
+            'Re-grade every night SINCE this date (YYYY-MM-DD).\n' +
+            '2026-07-28 = the metadata-bug era. Blank = ALL nights.\n' +
+            'Manual review verdicts for these nights are deleted.',
+            '2026-07-28');
+        if (since === null) return;
+        await fetch('/api/regrade/all', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({since: since.trim()})});
+        pollRegradeAll(true);
+    };
+    pollRegradeAll(true);
     </script>
 </body>
 </html>

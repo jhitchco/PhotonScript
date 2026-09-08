@@ -1166,6 +1166,22 @@ async def api_run_regrade(date: str):
     return {"ok": True}
 
 
+@app.post("/api/regrade/all")
+async def api_regrade_all(payload: dict = Body(default={})):
+    """Wipe + re-grade every night folder since a date (default: all).
+    Sequential; safe to fire and forget. Deletes manual verdicts for the
+    affected nights."""
+    from photonscript.scheduler.runs import start_regrade_all
+    return start_regrade_all(get_config(),
+                             since=str(payload.get("since") or ""))
+
+
+@app.get("/api/regrade/all")
+async def api_regrade_all_status():
+    from photonscript.scheduler.runs import regrade_all_status
+    return regrade_all_status()
+
+
 @app.get("/api/campaign")
 async def api_campaign(days: int = 14):
     """Moon-aware 14-night plan toward goal completion."""

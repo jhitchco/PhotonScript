@@ -437,6 +437,68 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict
 _backfill_state: dict[str, dict] = {}
 
 
+_regrade_all: dict = {"running": False}
+
+
+def regrade_all_status() -> dict:
+    return dict(_regrade_all)
+
+
+def start_regrade_all(config, since: str = "") -> dict:
+    """Sequentially wipe + re-grade every night folder (>= since), one night
+    at a time so memory stays flat. Each night's backfill also re-runs
+    auto-identify and rebuilds its Library entries, so a metadata/grader fix
+    propagates everywhere with one click. NOTE: deletes manual review
+    verdicts for the affected nights - use 'since' to protect reviewed
+    history."""
+    import re as _re
+    import threading
+    import time
+
+    if _regrade_all.get("running"):
+        return dict(_regrade_all)
+    root = Path(config.image_watch_dir)
+    dates = sorted(d.name for d in root.iterdir()
+                   if d.is_dir() and _re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)
+                   and d.name >= (since or ""))
+    _regrade_all.update(running=True, total=len(dates), done=0,
+                        current=None, since=since, last_error=None)
+    logger.info("Re-grade ALL: %d nights (since %s)", len(dates),
+                since or "beginning")
+
+    def _work():
+        try:
+            for d in dates:
+                _regrade_all["current"] = d
+                try:
+                    p = runs_dir(config) / f"{d}_subs.jsonl"
+                    if p.exists():
+                        p.unlink()
+                    th = Path(config.data_dir) / "thumbs" / d
+                    if th.exists():
+                        for f in th.glob("*.ann.png"):
+                            f.unlink(missing_ok=True)
+                    start_backfill(config, d)
+                    while _backfill_state.get(d, {}).get("running"):
+                        time.sleep(2)
+                except Exception as e:  # noqa: BLE001
+                    _regrade_all["last_error"] = f"{d}: {e}"
+                    logger.warning("Re-grade all: night %s failed: %s", d, e)
+                _regrade_all["done"] += 1
+            try:
+                sync_goal_progress(config)
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info("Re-grade ALL finished: %d nights",
+                        _regrade_all["done"])
+        finally:
+            _regrade_all["running"] = False
+            _regrade_all["current"] = None
+
+    threading.Thread(target=_work, daemon=True, name="regrade-all").start()
+    return dict(_regrade_all)
+
+
 def backfill_status(config, date: str) -> dict:
     root = Path(config.image_watch_dir) / date
     total = len(_light_files(root)) if root.exists() else 0
