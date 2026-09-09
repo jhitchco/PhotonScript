@@ -80,6 +80,54 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
 
     last_armed_night: str | None = None
     last_skip_night: str | None = None
+    flats_state: dict = {}
+
+    async def _maybe_dispatch_dusk_flats(armer):
+        """The 'checkmark' (2026-09-09): if any filter's flats are stale as
+        sunset approaches and the armer is idle, dispatch the dusk sky-flat
+        run for JUST those filters, then hold arming until it finishes."""
+        import json as _json
+        from datetime import timedelta
+        from photonscript.scheduler import night_plan as _np
+        from photonscript.scheduler.calibration import (
+            generate_dusk_flats_json, stale_flat_filters)
+
+        if not getattr(config, "auto_dusk_flats", True):
+            return
+        if armer.state not in TERMINAL_STATES:
+            return
+        now = datetime.utcnow()
+        night = now.strftime("%Y-%m-%d")
+        if flats_state.get("night") == night:
+            return
+        obs = config.get_observatory()
+        tw = _np.compute_night_times(
+            obs, now.replace(hour=0, minute=0, second=0, microsecond=0))
+        sunset = tw.get("sunset")
+        if not sunset:
+            return
+        if not (sunset - timedelta(minutes=90) <= now
+                <= sunset + timedelta(minutes=5)):
+            return
+        stale = stale_flat_filters(config)
+        if not stale:
+            flats_state["night"] = night  # all fresh - done for today
+            return
+        seq_text, start_local = generate_dusk_flats_json(
+            config, only_filters=stale)
+        ok = await armer.dispatch_raw(
+            _json.loads(seq_text), f"auto dusk flats ({','.join(stale)})")
+        if ok:
+            flats_state["night"] = night
+            flats_state["until"] = sunset + timedelta(
+                minutes=15 + 8 * len(stale) + 10)
+            await notify(
+                config,
+                f"Auto dusk flats dispatched for stale filters: "
+                f"{', '.join(stale)} (starts {start_local} local). "
+                "Auto-arm resumes when they finish.",
+                title="PhotonScript auto flats")
+            logger.info("auto-flats: dispatched for %s", stale)
     logger.info("Auto-arm loop started (enabled=%s)",
                 getattr(config, "auto_arm_enabled", False))
 
@@ -91,6 +139,7 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                 if "error" in plan:
                     logger.warning("auto-arm: no plan (%s)", plan["error"])
                 else:
+                    await _maybe_dispatch_dusk_flats(armer)
                     arm_now, reason = auto_arm_decision(
                         enabled=True,
                         state=armer.state,
@@ -100,6 +149,10 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                         last_armed_night=last_armed_night,
                         lead_hours=float(getattr(config, "auto_arm_lead_hours", 3.0)),
                     )
+                    fu = flats_state.get("until")
+                    if arm_now and fu and datetime.utcnow() < fu:
+                        arm_now = False
+                        reason = "holding for auto dusk flats to finish"
                     logger.debug("auto-arm tick: %s (%s)", arm_now, reason)
                     if arm_now:
                         night = plan["night_of"]

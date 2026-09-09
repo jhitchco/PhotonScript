@@ -270,7 +270,19 @@ def days_since_last_bias(config) -> int | None:
             - datetime.strptime(newest, "%Y-%m-%d").date()).days
 
 
-def generate_dusk_flats_json(config) -> tuple:
+def stale_flat_filters(config) -> list[str]:
+    """Canonical filter names whose newest flat set is missing or stale."""
+    health = calibration_health(config)
+    bb = (health.get("FLAT") or {}).get("by_bucket") or {}
+    out = []
+    for f in ("Ha", "OIII", "SII", "R", "G", "B", "L"):
+        b = bb.get(f)
+        if b is None or b.get("age_days", 9999) > STALE_DAYS["FLAT"]:
+            out.append(f)
+    return out
+
+
+def generate_dusk_flats_json(config, only_filters: list[str] | None = None) -> tuple:
     """Standalone dusk sky-flat run for TODAY: wait for sunset+15 local,
     slew high away from the sun, sky flats for every filter (broadband
     first — dusk DIMS, so narrowband gets the darker end), park.
@@ -297,8 +309,10 @@ def generate_dusk_flats_json(config) -> tuple:
     n = int(getattr(config, "flat_count", 15))
     # dusk DIMS: narrowband needs the bright end (longest exposures),
     # L needs the darkest — Jeremy's order: NB -> R,G,B -> L
-    filters = [FilterType(v) for v in
-               ("Ha", "OIII", "SII", "R", "G", "B", "L")]
+    wanted = ("Ha", "OIII", "SII", "R", "G", "B", "L")
+    if only_filters:
+        wanted = tuple(f for f in wanted if f in only_filters)
+    filters = [FilterType(v) for v in wanted]
     def _wait_for(t):
         return _make_typed(
             "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",

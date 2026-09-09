@@ -435,6 +435,7 @@ _CONFIG_FIELDS = [
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale", "Imaging", "bool", False, False),
     ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
     ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
     ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),

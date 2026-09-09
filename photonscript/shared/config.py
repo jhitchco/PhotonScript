@@ -80,6 +80,8 @@ class PhotonScriptConfig(BaseSettings):
                                         # library bias (3x50 frames, gain 200 LCG;
                                         # single-frame and pair-difference agree).
                                         # Floor for the exposure swamp score.
+    auto_dusk_flats: bool = True  # auto-dispatch dusk sky flats for STALE
+                                  # filters before auto-arm (the "checkmark")
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
