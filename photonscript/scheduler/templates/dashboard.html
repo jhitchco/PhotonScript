@@ -55,6 +55,7 @@
         <span id="tsGuide" hidden style="font-weight:600;"></span>
         <span id="tsTemp" style="opacity:.8;" title="sensor now / setpoint &middot; cooler power">&mdash;</span>
         <span title="images tonight">&#128248; <span id="tsImgs">0</span></span>
+        <span id="tsPiggy" hidden title="Piggyback rig (2nd NINA — 600mm OSC)" style="font-weight:600;"></span>
         <span id="tsClock" style="margin-left:auto;font-variant-numeric:tabular-nums;
               font-weight:700;color:#7dd3fc;" title="scope local time">--:--:--</span>
     </div>
@@ -82,6 +83,7 @@
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;"></span>
                 <span id="scopeChip" style="font-size:.85rem;">🔭 checking scope…</span>
+                <span id="armPiggy" hidden style="font-size:.85rem;font-weight:600;padding:.1rem .5rem;border-radius:4px;"></span>
             </div>
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
@@ -598,6 +600,42 @@
     });
     loadOutlook(); loadTimeline(); refreshArm();
     setInterval(refreshArm, 30000);
+    </script>
+
+    <script>
+    // ---- Piggyback rig visibility (2nd NINA) -----------------------------
+    async function refreshPiggy() {
+        const strip = document.getElementById('tsPiggy');
+        const chip = document.getElementById('armPiggy');
+        let pb = null;
+        try {
+            const d = await (await fetch('/api/rigs')).json();
+            pb = (d.rigs || []).find(r => r.rig === 'piggyback');
+        } catch (e) { /* leave hidden on error */ }
+        if (!pb) {                    // rig disabled → hide both
+            if (strip) strip.hidden = true;
+            if (chip) chip.hidden = true;
+            return;
+        }
+        const cam = (pb.devices && pb.devices.camera) || {};
+        const on = !!cam.connected;
+        const temp = (cam.temp_c != null) ? (' ' + cam.temp_c + '°C') : '';
+        if (strip) {
+            strip.hidden = false;
+            strip.innerHTML = '&#128300;&#215;2 ' +
+                (on ? '<b style="color:#4ade80;">PB &#9679;</b>'
+                    : '<b style="color:#f87171;">PB &#9675;</b>');
+        }
+        if (chip) {
+            chip.hidden = false;
+            chip.textContent = on ? ('🔭 Piggyback ON (cam ✓' + temp + ')')
+                                  : '🔭 Piggyback ON (cam not connected)';
+            chip.style.background = on ? 'rgba(34,197,94,.15)' : 'rgba(248,113,113,.15)';
+            chip.style.color = on ? '#4ade80' : '#fca5a5';
+        }
+    }
+    refreshPiggy();
+    setInterval(refreshPiggy, 15000);
     </script>
 
     <script>
