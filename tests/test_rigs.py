@@ -56,6 +56,29 @@ def test_rig_setpoint_and_config_override():
     assert rigs.rig_config(cfg, "piggyback").camera_setpoint_c == -5.0
 
 
+def test_rig_config_piggyback_library_subtree_and_darks():
+    # piggyback calibration + lights land in their OWN library subtree so they
+    # never mix with the RC16's (calibration_health keys off library_dir), and
+    # use the OSC dark-exposure set.
+    cfg = PhotonScriptConfig(
+        piggyback_enabled=True,
+        library_dir="/data/Library",
+        piggyback_dark_exposures="120,300",
+    )
+    pc = rigs.rig_config(cfg, "piggyback")
+    assert pc.library_dir.replace("\\", "/").endswith("Library/piggyback")
+    assert pc.dark_exposures == "120,300"
+    # RC16's own library + darks are untouched
+    assert cfg.library_dir == "/data/Library"
+    assert rigs.rig_config(cfg, "rc16").library_dir == "/data/Library"
+
+
+def test_rig_config_explicit_piggyback_library_wins():
+    cfg = PhotonScriptConfig(piggyback_enabled=True,
+                             piggyback_library_dir="/pb/lib")
+    assert rigs.rig_config(cfg, "piggyback").library_dir == "/pb/lib"
+
+
 def test_orchestrator_spawns_second_agent_only_with_own_dir():
     from photonscript import orchestrator as o
     # main only by default

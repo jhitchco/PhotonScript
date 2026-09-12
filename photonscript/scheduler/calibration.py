@@ -282,10 +282,43 @@ def stale_flat_filters(config) -> list[str]:
     return out
 
 
-def generate_dusk_flats_json(config, only_filters: list[str] | None = None) -> tuple:
+def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
+    """A SkyFlat block for a one-shot-color rig — no filter wheel / SwitchFilter,
+    just the auto-exposure flat loop (mirrors _sky_flat minus the filter step)."""
+    from photonscript.scheduler.nina_sequence_json import _seq_container, _make_typed
+    loop = _seq_container(
+        f"{count} flats",
+        [_make_typed(
+            "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
+            ExposureTime=0.0, Gain=gain, Offset=offset,
+            Binning=_make_typed(
+                "NINA.Core.Model.Equipment.BinningMode, NINA.Core", X=1, Y=1),
+            ImageType="FLAT", ExposureCount=0, ErrorBehavior=0, Attempts=1)],
+        conditions=[_make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=count)])
+    sf = _seq_container(
+        "Sky flats OSC", [loop],
+        container_type="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, "
+                       "NINA.Sequencer")
+    sf["IsExpanded"] = False
+    sf.update(MinExposure=0.1, MaxExposure=30.0, HistogramTargetPercentage=0.5,
+              HistogramTolerancePercentage=0.1, ShouldDither=False,
+              DitherPixels=3.0, DitherSettleTime=5.0)
+    return sf
+
+
+def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
+                             osc: bool = False, owns_mount: bool = True) -> tuple:
     """Standalone dusk sky-flat run for TODAY: wait for sunset+15 local,
-    slew high away from the sun, sky flats for every filter (broadband
-    first — dusk DIMS, so narrowband gets the darker end), park.
+    slew high away from the sun, sky flats, park. Filtered rigs shoot one set
+    per filter (broadband first — dusk DIMS); an OSC rig (osc=True) shoots a
+    single set with no filter wheel.
+
+    owns_mount=False is the piggyback case: NINA #2 owns only its camera, so
+    the sequence never connects/slews/parks the mount or safety monitor — it
+    rides the main rig's mount and must be triggered alongside the main rig's
+    dusk flats (that slew points both scopes at the flat sky).
     Returns (json_text, start_local_hhmm)."""
     import json as _json
     from datetime import timedelta
@@ -324,28 +357,47 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None) -> t
     # cool only ~30 min before flats begin - dispatching at noon should NOT
     # run the cooler all afternoon (2026-09-08 request)
     wait_cool = _wait_for(local - timedelta(minutes=30))
-    items = [
-        _pushover("Flats", f"dusk sky flats: waiting for "
-                  f"{local.strftime('%H:%M')} local (sunset +15), then "
-                  f"{n} per filter — narrowband first (least light "
-                  "through to most: Ha, OIII, SII, R, G, B, L)"),
-        _connect("Safety Monitor"),
-        _connect("Camera"),
-        wait_cool,
-        _cool_camera(config.camera_setpoint_c, 2.0),
-        _connect("Filter Wheel"),
-        _connect("Mount"),
-        wait_start,
-        _wait_until_safe(),
-        _unpark(),
-        _set_tracking(0),
-        _slew_alt_az(85, 200),
-    ] + [_sky_flat(f, n, config.default_gain, config.default_offset)
-         for f in filters] + [
-        _pushover("Flats", "dusk sky flats complete — parking (cooler "
-                  "stays on for tonight's run)"),
-        _park(),
-    ]
+    intro = (f"dusk sky flats: waiting for {local.strftime('%H:%M')} local "
+             f"(sunset +15), then {n} " + ("OSC flats (one-shot color, no "
+             "filter wheel)" if osc else "per filter — narrowband first "
+             "(least light through to most: Ha, OIII, SII, R, G, B, L)"))
+    flat_blocks = ([_osc_sky_flat(n, config.default_gain, config.default_offset)]
+                   if osc else
+                   [_sky_flat(f, n, config.default_gain, config.default_offset)
+                    for f in filters])
+    if owns_mount:
+        items = [
+            _pushover("Flats", intro),
+            _connect("Safety Monitor"),
+            _connect("Camera"),
+            wait_cool,
+            _cool_camera(config.camera_setpoint_c, 2.0),
+        ] + ([] if osc else [_connect("Filter Wheel")]) + [
+            _connect("Mount"),
+            wait_start,
+            _wait_until_safe(),
+            _unpark(),
+            _set_tracking(0),
+            _slew_alt_az(85, 200),
+        ] + flat_blocks + [
+            _pushover("Flats", "dusk sky flats complete — parking (cooler "
+                      "stays on for tonight's run)"),
+            _park(),
+        ]
+    else:
+        # Piggyback rides the main rig's mount: NINA #2 owns only its camera,
+        # so this run never connects/slews/parks the mount or safety monitor.
+        # Trigger it with the main rig's dusk flats — that slew aims both scopes.
+        items = [
+            _pushover("Flats", intro + " — piggyback rides the main mount; "
+                      "run this alongside the main rig's flats"),
+            _connect("Camera"),
+            wait_cool,
+            _cool_camera(config.camera_setpoint_c, 2.0),
+            wait_start,
+        ] + flat_blocks + [
+            _pushover("Flats", "piggyback dusk flats complete"),
+        ]
     root = _seq_container(
         "PhotonScript_DuskFlats",
         [

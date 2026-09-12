@@ -473,6 +473,8 @@ _CONFIG_FIELDS = [
     ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
     ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
     ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
+    ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
+    ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
 ]
 
 _MASK = "••••••••"
@@ -530,6 +532,13 @@ async def api_rigs():
             entry = {"connected": conn}
             if dev == "camera" and payload:
                 entry["temp_c"] = payload.get("Temperature")
+                entry["setpoint_c"] = payload.get("TemperatureSetPoint")
+                entry["cooler_on"] = payload.get("CoolerOn")
+                cp = payload.get("CoolerPower")
+                entry["cooler_power"] = cp
+            if dev == "focuser" and conn and payload:
+                entry["position"] = payload.get("Position")
+                entry["temp_c"] = payload.get("Temperature")
             if dev == "safetymonitor" and conn and payload:
                 entry["safe"] = payload.get("IsSafe")
             if err:
@@ -578,26 +587,30 @@ async def api_rigs_test_capture(duration: float = 2.0):
 
 
 @app.post("/api/rigs/cool")
-async def api_rigs_cool(minutes: float = 10.0, warm: bool = False):
-    """Cool every rig's camera to its setpoint (or warm them if warm=true).
-    Each rig uses its own setpoint (RC16 camera_setpoint_c, piggyback
-    piggyback_setpoint_c)."""
+async def api_rigs_cool(minutes: float = 10.0, warm: bool = False,
+                        rig: str = ""):
+    """Cool a rig's camera to its setpoint (or warm it if warm=true).
+
+    rig="" (default) does EVERY enabled rig; rig="rc16"/"piggyback" targets one
+    — the dashboard cooler toggles pass a single rig. Each rig uses its own
+    setpoint (RC16 camera_setpoint_c, piggyback piggyback_setpoint_c)."""
     import asyncio as _asyncio
     from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
                                           rig_setpoint, nina_cool, nina_warm)
     cfg = get_config()
+    targets = [rig] if rig else rig_ids(cfg)
 
-    async def _do(rig):
-        rc = rig_config(cfg, rig)
+    async def _do(rg):
+        rc = rig_config(cfg, rg)
         if warm:
             res = await nina_warm(rc.nina_base_url, minutes=min(minutes, 5.0))
         else:
-            res = await nina_cool(rc.nina_base_url, rig_setpoint(cfg, rig),
+            res = await nina_cool(rc.nina_base_url, rig_setpoint(cfg, rg),
                                   minutes=minutes)
-        return rig, {"name": rig_label(cfg, rig),
-                     "setpoint_c": rig_setpoint(cfg, rig), **res}
+        return rg, {"name": rig_label(cfg, rg),
+                    "setpoint_c": rig_setpoint(cfg, rg), **res}
 
-    pairs = await _asyncio.gather(*[_do(r) for r in rig_ids(cfg)])
+    pairs = await _asyncio.gather(*[_do(r) for r in targets])
     return {"warm": warm, "results": dict(pairs)}
 
 
@@ -1403,9 +1416,10 @@ def api_sync_queue():
 
 
 @app.get("/api/calibration/health")
-def api_calibration_health():
+def api_calibration_health(rig: str = "rc16"):
     from photonscript.scheduler.calibration import calibration_health
-    return calibration_health(get_config())
+    from photonscript.shared.rigs import rig_config
+    return calibration_health(rig_config(get_config(), rig))
 
 
 @app.get("/api/system/stats")
@@ -1477,47 +1491,78 @@ def api_system_stats():
 
 @app.post("/api/calibration/capture")
 async def api_calibration_capture(payload: dict = Body(default={})):
-    """Generate + dispatch a darks/bias run. Roof must be closed & dark."""
+    """Generate + dispatch a darks/bias run. Roof must be closed & dark.
+
+    Optional payload["rig"] ("rc16" | "piggyback"): the piggyback builds its
+    run at the OSC gain/offset/setpoint (via rig_config) and dispatches straight
+    to NINA #2 (it has no armer state machine). Darks never touch the mount, so
+    both rigs can shoot at once with the roof closed."""
     from photonscript.scheduler.calibration import generate_darks_json
-    config = get_config()
+    from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
+    rig = payload.get("rig", RC16)
+    config = rig_config(get_config(), rig)
     darks = [(float(e), int(c)) for e, c in
              payload.get("darks", [[300, 20], [600, 20]])]
     bias = int(payload.get("bias", 50))
     seq_text, minutes = generate_darks_json(config, darks, bias)
     seq_dir = Path.cwd() / "sequences"
     seq_dir.mkdir(exist_ok=True)
-    path = seq_dir / f"calibration_{datetime.now():%Y%m%d_%H%M}.json"
+    tag = "" if rig == RC16 else f"_{rig}"
+    path = seq_dir / f"calibration{tag}_{datetime.now():%Y%m%d_%H%M}.json"
     path.write_text(seq_text, encoding="utf-8")
-    ok = await get_armer().dispatch_raw(json.loads(seq_text),
-                                        f"calibration {path.name}")
+    if rig == RC16:
+        ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                            f"calibration {path.name}")
+        detail = None if ok else get_armer().detail
+    else:
+        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text))
+        ok, detail = res["ok"], res["detail"]
     if not ok:
         return JSONResponse(status_code=409, content={
-            "detail": f"dispatch refused/failed: {get_armer().detail}"})
-    logger.info("Calibration dispatched: %s (~%.0f min)", path.name, minutes)
-    return {"ok": True, "sequence": path.name,
+            "detail": f"dispatch refused/failed: {detail}"})
+    logger.info("Calibration dispatched (%s): %s (~%.0f min)", rig, path.name,
+                minutes)
+    return {"ok": True, "rig": rig, "sequence": path.name,
             "estimated_minutes": round(minutes)}
 
 
 @app.post("/api/calibration/flats")
-async def api_calibration_flats():
-    """Dispatch a dusk sky-flat run for today (waits for sunset+15)."""
+async def api_calibration_flats(payload: dict = Body(default={})):
+    """Dispatch a dusk sky-flat run for today (waits for sunset+15).
+
+    Optional payload["rig"]: the piggyback shoots OSC flats (one set, no filter
+    wheel) and, riding the main mount, never slews/parks — trigger it alongside
+    the RC16 dusk flats so that slew aims both scopes. Dispatched straight to
+    NINA #2."""
     from photonscript.scheduler.calibration import generate_dusk_flats_json
-    config = get_config()
+    from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
+    rig = payload.get("rig", RC16)
+    config = rig_config(get_config(), rig)
+    is_pb = rig != RC16
     try:
-        seq_text, start_local = generate_dusk_flats_json(config)
+        seq_text, start_local = generate_dusk_flats_json(
+            config, osc=is_pb, owns_mount=not is_pb)
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"detail": str(e)})
     seq_dir = Path.cwd() / "sequences"
     seq_dir.mkdir(exist_ok=True)
-    path = seq_dir / f"dusk_flats_{datetime.now():%Y%m%d}.json"
+    tag = "" if rig == RC16 else f"_{rig}"
+    path = seq_dir / f"dusk_flats{tag}_{datetime.now():%Y%m%d}.json"
     path.write_text(seq_text, encoding="utf-8")
-    ok = await get_armer().dispatch_raw(json.loads(seq_text),
-                                        f"dusk flats {path.name}")
+    if rig == RC16:
+        ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                            f"dusk flats {path.name}")
+        detail = None if ok else get_armer().detail
+    else:
+        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text))
+        ok, detail = res["ok"], res["detail"]
     if not ok:
         return JSONResponse(status_code=409, content={
-            "detail": f"dispatch refused/failed: {get_armer().detail}"})
-    return {"ok": True, "starts_local": start_local,
-            "note": "flats first, then ARM tonight's run after they finish"}
+            "detail": f"dispatch refused/failed: {detail}"})
+    note = ("flats first, then ARM tonight's run after they finish" if not is_pb
+            else "piggyback OSC flats — run with the RC16 flats so the mount "
+                 "slew aims both scopes")
+    return {"ok": True, "rig": rig, "starts_local": start_local, "note": note}
 
 
 @app.get("/api/update/check")

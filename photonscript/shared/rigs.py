@@ -63,10 +63,21 @@ def rig_config(config, rig: str):
         "default_offset": getattr(config, "piggyback_default_offset", 256),
         "quality_hfr_abs_max": getattr(config, "piggyback_hfr_abs_max", 4.5),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
+        "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
     }
     wd = getattr(config, "piggyback_image_watch_dir", "")
     if wd:
         updates["image_watch_dir"] = wd
+    # Keep the piggyback's calibration + lights in their own library subtree so
+    # they never mix with the RC16's (calibration_health/build_library key off
+    # library_dir).
+    pb_lib = getattr(config, "piggyback_library_dir", "") or ""
+    if not pb_lib:
+        main_lib = getattr(config, "library_dir", "") or ""
+        from pathlib import Path as _P
+        base = _P(main_lib) if main_lib else (_P(getattr(config, "data_dir", ".")) / "Library")
+        pb_lib = str(base / "piggyback")
+    updates["library_dir"] = pb_lib
     try:
         return config.model_copy(update=updates)  # pydantic v2
     except Exception:  # noqa: BLE001 - non-pydantic config in tests
@@ -137,3 +148,20 @@ def rig_setpoint(config, rig: str) -> float:
     if rig == PIGGYBACK:
         return float(getattr(config, "piggyback_setpoint_c", 0.0))
     return float(getattr(config, "camera_setpoint_c", 0.0))
+
+
+async def nina_dispatch(base_url: str, seq: dict) -> dict:
+    """Load + start a sequence on a rig's NINA (used for piggyback calibration,
+    which has no armer state machine). Returns {ok, detail}."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            await client.get(base + "/sequence/stop")  # harmless if idle
+            ld = await client.post(base + "/sequence/load", json=seq)
+            ld.raise_for_status()
+            st = await client.get(base + "/sequence/start",
+                                  params={"skipValidation": "true"})
+            st.raise_for_status()
+        return {"ok": True, "detail": "loaded + started"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}

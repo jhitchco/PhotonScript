@@ -77,16 +77,29 @@
 
         <section class="panel" id="armPanel">
             <h2>Tonight's Run</h2>
-            <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.8rem;">
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem 1rem;margin-bottom:.8rem;">
                 <button class="btn btn-primary" id="armBtn" title="Arm tonight unguided — trust the Paramount MX encoders (+ ProTrack once modeled)">Arm (Encoders)</button>
                 <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding (for very long subs / extreme precision)">Arm (Guiding)</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
-                <span id="armState" style="font-weight:700;"></span>
-                <span id="scopeChip" style="font-size:.85rem;">🔭 checking scope…</span>
-                <span id="armPiggy" hidden style="font-size:.85rem;font-weight:600;padding:.1rem .5rem;border-radius:4px;"></span>
+                <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
+                <span id="scopeChip" style="font-size:.85rem;display:inline-flex;align-items:center;flex-wrap:wrap;gap:.35rem;">🔭 checking scope…</span>
             </div>
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
+            </div>
+
+            <!-- Piggyback rig (2nd NINA — 600mm OSC): status + cooler toggle.
+                 Hidden until the rig is enabled (refreshPiggy). -->
+            <div id="piggyPane" hidden style="margin-bottom:1rem;padding:.6rem .8rem;
+                 border:1px solid rgba(148,163,184,.2);border-radius:8px;
+                 background:rgba(125,211,252,.04);display:flex;align-items:center;
+                 flex-wrap:wrap;gap:.5rem 1.1rem;font-size:.85rem;">
+                <span style="font-weight:700;white-space:nowrap;">&#128300;&#215;2
+                    <span id="pbName">Piggyback</span></span>
+                <span id="pbCam" style="white-space:nowrap;">cam &mdash;</span>
+                <span id="pbCool" style="white-space:nowrap;cursor:pointer;"
+                      title="click to toggle the piggyback cooler">cooler &mdash;</span>
+                <span id="pbFoc" style="white-space:nowrap;opacity:.75;">focuser &mdash;</span>
             </div>
             <div id="sunCard" style="margin-bottom:1rem;"></div>
             <div id="nightTimeline"></div>
@@ -368,12 +381,12 @@
             } catch (e3) {}
             el.innerHTML =
                 '<span style="border:1px solid ' + SCOPE_COLORS[d.color] + ';color:' +
-                SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;">' +
+                SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;white-space:nowrap;">' +
                 '🔭 ' + d.status + '</span>' +
                 (d.camera_temp !== null && d.camera_temp !== undefined
-                    ? ' <span style="opacity:.6;">sensor ' + d.camera_temp + '°C</span>' : '') +
+                    ? '<span style="opacity:.6;white-space:nowrap;">sensor ' + d.camera_temp + '°C</span>' : '') +
                 (d.cooler_power !== null && d.cooler_power !== undefined
-                    ? ' <span style="opacity:.6;">· cooler ' + d.cooler_power.toFixed(0) + '%</span>' : '');
+                    ? '<span style="opacity:.6;white-space:nowrap;">· cooler ' + d.cooler_power.toFixed(0) + '%</span>' : '');
         } catch (e) {
             el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
         }
@@ -604,34 +617,83 @@
 
     <script>
     // ---- Piggyback rig visibility (2nd NINA) -----------------------------
+    let _pbBusy = false;   // debounce the cooler toggle while a request is in flight
     async function refreshPiggy() {
         const strip = document.getElementById('tsPiggy');
-        const chip = document.getElementById('armPiggy');
+        const pane = document.getElementById('piggyPane');
         let pb = null;
         try {
             const d = await (await fetch('/api/rigs')).json();
             pb = (d.rigs || []).find(r => r.rig === 'piggyback');
         } catch (e) { /* leave hidden on error */ }
-        if (!pb) {                    // rig disabled → hide both
+        if (!pb) {                    // rig disabled → hide strip badge + pane
             if (strip) strip.hidden = true;
-            if (chip) chip.hidden = true;
+            if (pane) pane.hidden = true;
             return;
         }
         const cam = (pb.devices && pb.devices.camera) || {};
+        const foc = (pb.devices && pb.devices.focuser) || {};
         const on = !!cam.connected;
-        const temp = (cam.temp_c != null) ? (' ' + cam.temp_c + '°C') : '';
+        // top-strip badge
         if (strip) {
             strip.hidden = false;
             strip.innerHTML = '&#128300;&#215;2 ' +
                 (on ? '<b style="color:#4ade80;">PB &#9679;</b>'
                     : '<b style="color:#f87171;">PB &#9675;</b>');
         }
-        if (chip) {
-            chip.hidden = false;
-            chip.textContent = on ? ('🔭 Piggyback ON (cam ✓' + temp + ')')
-                                  : '🔭 Piggyback ON (cam not connected)';
-            chip.style.background = on ? 'rgba(34,197,94,.15)' : 'rgba(248,113,113,.15)';
-            chip.style.color = on ? '#4ade80' : '#fca5a5';
+        if (!pane) return;
+        pane.hidden = false;
+        document.getElementById('pbName').textContent = pb.name || 'Piggyback';
+        // camera
+        const pbCam = document.getElementById('pbCam');
+        const t = (cam.temp_c != null) ? (' ' + Number(cam.temp_c).toFixed(1) + '°C') : '';
+        pbCam.innerHTML = on
+            ? '<b style="color:#4ade80;">cam ● connected</b>'
+              + '<span style="opacity:.7;">' + t + '</span>'
+            : '<b style="color:#f87171;">cam ○ not connected</b>';
+        // cooler (click to toggle — mirrors the main camera cooler toggle)
+        const pbCool = document.getElementById('pbCool');
+        const coolerOn = cam.cooler_on === true;
+        const pwr = (cam.cooler_power != null)
+            ? (' · ' + Number(cam.cooler_power).toFixed(0) + '%') : '';
+        const sp = (cam.setpoint_c != null)
+            ? (' → ' + Number(cam.setpoint_c).toFixed(0) + '°C') : '';
+        if (!on) {
+            pbCool.innerHTML = '<span style="opacity:.5;">cooler —</span>';
+            pbCool.onclick = null;
+            pbCool.style.cursor = 'default';
+        } else {
+            pbCool.innerHTML = coolerOn
+                ? '<b style="color:#4ade80;">cooler ON</b>'
+                  + '<span style="opacity:.7;">' + sp + pwr + '</span>'
+                : '<b style="color:#f87171;">cooler OFF</b>';
+            pbCool.style.cursor = 'pointer';
+            pbCool.title = 'piggyback cooler is ' + (coolerOn ? 'ON' : 'OFF')
+                         + ' · click to turn ' + (coolerOn ? 'OFF (warm)' : 'ON (cool to setpoint)');
+            pbCool.onclick = async () => {
+                if (_pbBusy) return;
+                const to = !coolerOn;
+                if (!confirm('Turn the PIGGYBACK camera cooler '
+                    + (to ? 'ON (cool to setpoint)?' : 'OFF (warm over 5 min)?'))) return;
+                _pbBusy = true;
+                pbCool.innerHTML = '<span style="opacity:.6;">cooler …</span>';
+                try {
+                    await fetch('/api/rigs/cool?rig=piggyback' + (to ? '' : '&warm=true'),
+                                {method: 'POST'});
+                } catch (e) {}
+                _pbBusy = false;
+                setTimeout(refreshPiggy, 1500);
+            };
+        }
+        // focuser
+        const pbFoc = document.getElementById('pbFoc');
+        if (foc.connected) {
+            const pos = (foc.position != null) ? (' @ ' + foc.position) : '';
+            const ft = (foc.temp_c != null) ? (' · ' + Number(foc.temp_c).toFixed(1) + '°C') : '';
+            pbFoc.innerHTML = '<b style="color:#4ade80;">focuser ●</b>'
+                + '<span style="opacity:.7;">' + pos + ft + '</span>';
+        } else {
+            pbFoc.innerHTML = '<span style="color:#f87171;">focuser ○ not connected</span>';
         }
     }
     refreshPiggy();
