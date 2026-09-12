@@ -267,6 +267,33 @@ def bundle(
 
 
 @app.command()
+def analyze(
+    date: str = typer.Option(..., help="Night (YYYY-MM-DD) to pull subs from"),
+    which: str = typer.Option("rejected", help="rejected | accepted | all"),
+    files: str = typer.Option("", help="Comma-separated rel 'file' values "
+                              "(overrides --which)"),
+):
+    """Copy a night's subs into the library Syncthing share for off-scope
+    analysis. They mirror to the desktop (desktop_library_dir/_analysis/<date>)
+    where PixInsight — or Claude — can open the raw FITS.
+    """
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import stage_for_analysis
+
+    config = PhotonScriptConfig()
+    picked = [f.strip() for f in files.split(",") if f.strip()] or None
+    res = stage_for_analysis(config, date, files=picked, which=which)
+    console.print(f"[green]Copied {res['copied']}/{res['requested']} sub(s) "
+                  f"to the analysis dropbox:[/green] {res['dropbox']}")
+    for f in res["files"]:
+        if f.get("ok"):
+            console.print(f"  • {f['name']}  →  "
+                          f"{f.get('desktop_path', '(desktop path unset)')}")
+        else:
+            console.print(f"  [red]✗ {f.get('file')}: {f.get('error')}[/red]")
+
+
+@app.command()
 def status():
     """Show current system status (connects to running scheduler)."""
     import httpx

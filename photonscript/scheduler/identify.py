@@ -20,6 +20,18 @@ MATCH_RADIUS_DEG = 2.5
 CLUSTER_GAP_MIN = 30
 
 
+def _maybe_stamp(config, abs_path, name: str) -> None:
+    """Write the attributed name into the sub's FITS OBJECT header so the
+    science file itself carries the target once identify has matched it."""
+    if not getattr(config, "stamp_fits_object", True):
+        return
+    try:
+        from photonscript.shared.fits_object import stamp_object
+        stamp_object(abs_path, name)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("identify OBJECT stamp skipped for %s: %s", abs_path, e)
+
+
 def _parse_angle(val, sexagesimal_is_hours: bool) -> float | None:
     """Accept float degrees or sexagesimal 'HH MM SS' / 'DD MM SS'."""
     if val is None:
@@ -146,6 +158,7 @@ def identify_night(config, date: str) -> dict:
         if name:
             s["target"] = name
             n_assigned += 1
+            _maybe_stamp(config, path, name)
             e = header_hits.setdefault(name, {"matched": name, "subs": 0,
                                               "method": "header (per-sub)",
                                               "first": s["time"][11:16],
@@ -193,6 +206,7 @@ def identify_night(config, date: str) -> dict:
                     for s in cl:
                         s["target"] = name
                         n_assigned += 1
+                        _maybe_stamp(config, s.get("abs_path"), name)
             results.append(entry)
 
     if n_assigned:

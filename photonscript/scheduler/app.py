@@ -1441,6 +1441,21 @@ def api_run_identify(date: str):
     return identify_night(get_config(), date)
 
 
+@app.post("/api/runs/{date}/analysis")
+async def api_run_analysis(date: str, payload: dict = Body(default={})):
+    """Copy selected subs into the library Syncthing share so they replicate
+    to the desktop for off-scope FITS analysis.
+
+    Body: {"files": ["LIGHT/....fits", ...]} to pick specific subs, or
+    {"which": "rejected"|"accepted"|"all"} to pick by QA state. Returns the
+    dropbox path on the scope PC and the mirrored desktop path per file.
+    """
+    from photonscript.scheduler.runs import stage_for_analysis
+    return stage_for_analysis(get_config(), date,
+                              files=payload.get("files"),
+                              which=payload.get("which", ""))
+
+
 @app.post("/api/runs/{date}/assign_target")
 async def api_run_assign_target(date: str, payload: dict = Body(...)):
     """Set the target name on a night's unattributed ('?') subs — for old

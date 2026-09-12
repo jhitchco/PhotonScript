@@ -981,6 +981,72 @@ def library_root(config) -> Path:
     return Path(d) if d else Path(config.data_dir) / "Library"
 
 
+def analysis_dropbox(config) -> Path:
+    """Subfolder of the library Syncthing share where individual FITS are
+    dropped for off-scope analysis (mirrors to the desktop via Syncthing)."""
+    sub = getattr(config, "analysis_dropbox_subdir", "_analysis") or "_analysis"
+    return library_root(config) / sub
+
+
+def stage_for_analysis(config, date: str, files=None, which: str = "") -> dict:
+    """Copy selected subs' FITS into the library Syncthing share so they
+    replicate to the desktop for analysis (raw-FITS access off the scope PC).
+
+    Select either by explicit `files` (the rel 'file' values from the run) or
+    by QA state via which='rejected'|'accepted'|'all'. build_library only ever
+    touches <Target>/<Filter>/ and Calibration/, so the _analysis subfolder is
+    left alone (a manual Library reset would clear this scratch space).
+    """
+    import shutil
+
+    subs = _load_subs(config, date)
+    by_file = {s.get("file"): s for s in subs}
+    picked: list[dict] = []
+    if files:
+        picked = [by_file[f] for f in files if f in by_file]
+    elif which:
+        for s in subs:
+            st = "accepted" if s.get("passed_qa") else "rejected"
+            if which == "all" or which == st:
+                picked.append(s)
+
+    dropbox = analysis_dropbox(config) / date
+    dropbox.mkdir(parents=True, exist_ok=True)
+    desktop_sub = getattr(config, "analysis_dropbox_subdir", "_analysis")
+    desktop_base = getattr(config, "desktop_library_dir", "") or ""
+
+    out = []
+    for s in picked:
+        src = Path(s.get("abs_path") or "")
+        if not src.is_file():
+            out.append({"file": s.get("file"), "ok": False,
+                        "error": "source not found"})
+            continue
+        dest = dropbox / src.name
+        try:
+            if not dest.exists():
+                shutil.copy2(src, dest)
+            entry = {"file": s.get("file"), "ok": True,
+                     "name": src.name, "bytes": dest.stat().st_size,
+                     "dropbox_path": str(dest)}
+            if desktop_base:
+                # desktop_library_dir is a Windows path and the scheduler may
+                # run off-Windows, so build it as a Windows path explicitly.
+                from pathlib import PureWindowsPath
+                entry["desktop_path"] = str(
+                    PureWindowsPath(desktop_base) / desktop_sub / date
+                    / src.name)
+            out.append(entry)
+        except Exception as e:  # noqa: BLE001
+            out.append({"file": s.get("file"), "ok": False, "error": str(e)})
+
+    ok = sum(1 for o in out if o.get("ok"))
+    logger.info("stage_for_analysis %s: %d/%d copied to %s",
+                date, ok, len(picked), dropbox)
+    return {"date": date, "dropbox": str(dropbox), "requested": len(picked),
+            "copied": ok, "files": out}
+
+
 def build_library(config, date: str | None = None) -> dict:
     """Maintain Library/{Target}/{Filter}/ hardlinks of QA-accepted lights,
     plus Calibration/{TYPE}/ for bias/darks/flats.

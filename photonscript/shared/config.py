@@ -53,6 +53,15 @@ class PhotonScriptConfig(BaseSettings):
     dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
+    stamp_fits_object: bool = True  # write the resolved target name into a
+                                    # blank FITS OBJECT header at capture (and
+                                    # when identify attributes a sub) so
+                                    # downstream tools + the runs page never see
+                                    # target '?'. Never overwrites an existing
+                                    # OBJECT.
+    analysis_dropbox_subdir: str = "_analysis"  # subfolder of the library
+                                    # Syncthing share used to hand individual
+                                    # FITS to the desktop for off-scope analysis
     unsafe_darks_enabled: bool = True  # shoot darks while parked during unsafe pauses
     moon_aware_planning: bool = True  # nightly plan protects broadband on dark
                                       # (moonless) nights and defers it on bright
@@ -105,6 +114,12 @@ class PhotonScriptConfig(BaseSettings):
     # reads safe again it must STAY safe this long before the sequence unparks,
     # resumes and narrates. Kills the safe/unsafe Pushover storm + mount thrash.
     safety_confirm_seconds: int = 120
+    # If the NINA safety monitor is DISCONNECTED (not merely unsafe) and cannot
+    # be auto-reconnected while a sequence is RUNNING, stop the sequence. Off by
+    # default: the watchdog escalates via Pushover and keeps retrying, but never
+    # aborts a night on its own until you opt in. (2026-09-11: a disconnected
+    # monitor let the rig image a closed roof for an hour of donuts.)
+    safety_disconnect_aborts: bool = False
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by

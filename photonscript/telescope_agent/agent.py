@@ -65,6 +65,9 @@ class TelescopeAgent:
         # Safety-monitor watchdog state
         self._safety_bad_since: float | None = None
         self._safety_fix_attempts = 0
+        self._safety_last_attempt: float = 0.0
+        self._safety_last_escalate: float = 0.0
+        self._safety_aborted = False
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -205,58 +208,107 @@ class TelescopeAgent:
                 "Cooler is ON but the dew heater cannot be switched via the "
                 "NINA API — turn it ON manually (Equipment > Camera).")
 
-    async def _safety_monitor_watchdog(self):
-        """Reconnect a dropped safety monitor before it eats a night.
+    SAFETY_GRACE_S = 120       # tolerate a brief drop before acting
+    SAFETY_FAST_ATTEMPTS = 5   # quick reconnects at poll pace, then back off
+    SAFETY_SLOW_RETRY_S = 1800 # after that: retry + re-escalate every 30 min
+    SAFETY_ABORT_AFTER_S = 300 # persistent-disconnect abort threshold (opt-in)
 
-        2026-09-09 lesson: the ASCOM Alpaca monitor sat disconnected all
-        night, 'no signal' read as not-safe, WaitUntilSafe never released,
-        and 8.7 dark hours produced nothing - silently. Now: if the monitor
-        reports disconnected for >2 min, try to reconnect it (up to 5
-        times, 5 min apart); escalate via Pushover on the first failure.
+    async def _safety_monitor_watchdog(self):
+        """Keep the NINA safety monitor CONNECTED all night — a disconnected
+        monitor is as dangerous as bad weather, because the sequence goes
+        blind to the sky.
+
+        2026-09-09/11 lesson: the ASCOM Alpaca monitor sat disconnected the
+        whole night. WaitUntilSafe never released, SafetyMonitorCondition let
+        the rig image a closed roof, and ~1 h of donuts resulted — silently.
+        The old watchdog gave up after 5 tries and alerted only once at low
+        priority. Now it reconnects fast at first, then keeps retrying every
+        30 min for the rest of the night, escalates as SEVERE and re-alerts
+        every 30 min while still down, and — if safety_disconnect_aborts is
+        set — stops a RUNNING sequence that has been blind too long.
         """
         import time
+        from photonscript.shared.models import SessionState
         try:
             info = await self.nina.get_safety_info()
         except Exception:  # noqa: BLE001 - NINA itself unreachable
             return
+
         if info.get("Connected"):
+            if self._safety_bad_since is not None:
+                logger.info("Safety-monitor watchdog: monitor connected again")
             self._safety_bad_since = None
             self._safety_fix_attempts = 0
+            self._safety_last_attempt = 0.0
+            self._safety_last_escalate = 0.0
+            self._safety_aborted = False
+            self._alerted.discard("safety-disconnected")
             return
+
         now = time.monotonic()
         if self._safety_bad_since is None:
             self._safety_bad_since = now
             return
-        if now - self._safety_bad_since < 120:
-            return
-        if self._safety_fix_attempts >= 5:
-            return  # escalated already; stop hammering
-        self._safety_fix_attempts += 1
-        self._safety_bad_since = now  # next attempt >=5 min out (poll pace)
-        try:
-            await self.nina.connect_safety()
-            info = await self.nina.get_safety_info()
-            if info.get("Connected"):
-                logger.info("Safety-monitor watchdog: reconnected on "
-                            "attempt %d", self._safety_fix_attempts)
-                await self._escalate(
-                    "safety-reconnected",
-                    "Safety monitor was DISCONNECTED and has been "
-                    "auto-reconnected. Sequences waiting on safe will "
-                    "now see real weather again.")
-                self._safety_fix_attempts = 0
-                self._safety_bad_since = None
-                return
-        except Exception as e:  # noqa: BLE001
-            logger.warning("Safety-monitor watchdog: reconnect attempt %d "
-                           "failed: %s", self._safety_fix_attempts, e)
-        if self._safety_fix_attempts == 1:
+        down_s = now - self._safety_bad_since
+        if down_s < self.SAFETY_GRACE_S:
+            return  # brief blip — don't act yet
+
+        # --- escalate (severe), and repeat every 30 min while still down ----
+        if now - self._safety_last_escalate >= self.SAFETY_SLOW_RETRY_S:
+            self._safety_last_escalate = now
+            self._alerted.discard("safety-disconnected")  # allow re-fire
             await self._escalate(
                 "safety-disconnected",
-                "Safety monitor is DISCONNECTED - the sequence cannot see "
-                "weather and will wait forever. Auto-reconnect is being "
-                "attempted; if this persists, reconnect it in NINA "
-                "(Equipment > Safety Monitor).", severe=False)
+                f"Safety monitor DISCONNECTED for {int(down_s // 60)} min — the "
+                "sequence is blind to weather and may image a closed roof. "
+                "Auto-reconnect is running; if it persists, reconnect it in "
+                "NINA (Equipment > Safety Monitor).", severe=True)
+
+        # --- reconnect: fast for the first few tries, then every 30 min -----
+        interval = 0 if self._safety_fix_attempts < self.SAFETY_FAST_ATTEMPTS \
+            else self.SAFETY_SLOW_RETRY_S
+        if now - self._safety_last_attempt >= interval:
+            self._safety_last_attempt = now
+            self._safety_fix_attempts += 1
+            try:
+                await self.nina.connect_safety()
+                info = await self.nina.get_safety_info()
+                if info.get("Connected"):
+                    logger.info("Safety-monitor watchdog: reconnected on "
+                                "attempt %d", self._safety_fix_attempts)
+                    await self._escalate(
+                        "safety-reconnected",
+                        "Safety monitor was disconnected and has been "
+                        "auto-reconnected — the sequence can see weather again.")
+                    self._safety_bad_since = None
+                    self._safety_fix_attempts = 0
+                    self._safety_last_escalate = 0.0
+                    self._safety_aborted = False
+                    self._alerted.discard("safety-disconnected")
+                    return
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Safety-monitor watchdog: reconnect attempt %d "
+                               "failed: %s", self._safety_fix_attempts, e)
+
+        # --- last resort: stop a sequence that has been blind too long ------
+        if (getattr(self.config, "safety_disconnect_aborts", False)
+                and not self._safety_aborted
+                and self.state.session_state == SessionState.IMAGING
+                and down_s >= self.SAFETY_ABORT_AFTER_S):
+            self._safety_aborted = True
+            logger.warning("safety_disconnect_aborts: stopping sequence — "
+                           "safety monitor blind for %ds while imaging",
+                           int(down_s))
+            try:
+                await self.nina.stop_sequence()
+            except Exception as e:  # noqa: BLE001
+                logger.error("safety-abort stop_sequence failed: %s", e)
+            await self._escalate(
+                "safety-abort",
+                "Sequence STOPPED: the safety monitor was disconnected while "
+                "imaging and could not be recovered — imaging blind is worse "
+                "than losing the night. Reconnect it in NINA and re-arm.",
+                severe=True)
 
     async def _cooling_watchdog(self, camera: dict):
         """Active remediation for 'CoolerOn but 0% power, sensor at ambient'.
@@ -499,10 +551,19 @@ class TelescopeAgent:
             exposure_seconds = float(m.group(1)) if m else 300.0
 
         target_name = str(hdr.get("OBJECT") or "").strip()
+        object_in_header = bool(target_name)
         if not target_name:
             tok = stem.split("_")[0]
             if not _re.match(r"^\d{4}-\d{2}-\d{2}$", tok):
                 target_name = tok
+        if not target_name:
+            # NINA knows the active target even when it doesn't stamp OBJECT —
+            # the poll loop keeps it in state.current_target (the 2026-09-11
+            # donut night logged 11 subs as '?' with a live target the whole
+            # time). Trust it as the primary fallback.
+            live = str(getattr(self.state, "current_target", "") or "").strip()
+            if live and live != "?":
+                target_name = live
         if not target_name:
             # unambiguous if the night's plan has exactly one target
             try:
@@ -517,6 +578,19 @@ class TelescopeAgent:
                 pass
         if not target_name:
             target_name = "?"
+
+        # Stamp the resolved name back into the FITS OBJECT header when NINA
+        # left it blank, so downstream tools (PixInsight, identify, the runs
+        # page) carry the target instead of '?'. Never overwrites an existing
+        # OBJECT; entirely best-effort.
+        if (target_name != "?" and not object_in_header
+                and getattr(self.config, "stamp_fits_object", True)):
+            try:
+                from photonscript.shared.fits_object import stamp_object
+                stamp_object(file_path, target_name)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("OBJECT stamp skipped for %s: %s",
+                             file_path.name, e)
 
         # Validate image quality
         quality = validate_image(str(file_path), self.config)
