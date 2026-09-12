@@ -45,8 +45,9 @@ class TelescopeAgent:
     - Report state and image events to the scheduler via message bus
     """
 
-    def __init__(self, config: PhotonScriptConfig):
+    def __init__(self, config: PhotonScriptConfig, rig: str = "rc16"):
         self.config = config
+        self.rig = rig  # "rc16" (main) or "piggyback" (2nd NINA, OSC)
         self.nina = NinaClient(config.nina_base_url)
         self.phd2 = PHD2Client(config.phd2_host, config.phd2_port)
         self.bus = get_message_bus()
@@ -649,10 +650,15 @@ class TelescopeAgent:
             rel = file_path.relative_to(watch)
             night = rel.parts[0] if rel.parts and                 rel.parts[0][:2] == "20" else datetime.utcnow().strftime("%Y-%m-%d")
             rel_in_night = str(Path(*rel.parts[1:])) if len(rel.parts) > 1                 else file_path.name
+            # The piggyback is a one-shot-color rig — record its filter as OSC
+            # regardless of NINA's (empty/L) filter token, and tag the rig so
+            # the Runs page can separate the two scopes.
+            rec_filter = "OSC" if self.rig != "rc16" else filter_type.value
             append_sub_record(self.config, night, {
+                "rig": self.rig,
                 "file": rel_in_night, "abs_path": str(file_path),
                 "time": datetime.utcnow().isoformat() + "Z",
-                "target": target_name, "filter": filter_type.value,
+                "target": target_name, "filter": rec_filter,
                 "exp_s": exposure_seconds,
                 "ccd_temp": self.state.camera_temp_c,
                 "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,

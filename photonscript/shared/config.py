@@ -136,6 +136,7 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_default_offset: int = 256
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
     piggyback_hfr_abs_max: float = 4.5  # focused star ~2px at 1.29"/px (8px gate is wrong here)
+    piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by

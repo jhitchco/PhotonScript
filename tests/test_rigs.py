@@ -47,3 +47,29 @@ def test_rig_label():
     cfg = PhotonScriptConfig(piggyback_enabled=True, piggyback_name="Piggy-600")
     assert rigs.rig_label(cfg, "rc16") == "RC16"
     assert rigs.rig_label(cfg, "piggyback") == "Piggy-600"
+
+
+def test_rig_setpoint_and_config_override():
+    cfg = PhotonScriptConfig(piggyback_enabled=True, piggyback_setpoint_c=-5.0)
+    assert rigs.rig_setpoint(cfg, "rc16") == cfg.camera_setpoint_c
+    assert rigs.rig_setpoint(cfg, "piggyback") == -5.0
+    assert rigs.rig_config(cfg, "piggyback").camera_setpoint_c == -5.0
+
+
+def test_orchestrator_spawns_second_agent_only_with_own_dir():
+    from photonscript import orchestrator as o
+    # main only by default
+    assert len(o._telescope_agents(PhotonScriptConfig())) == 1
+    # enabled but no piggyback dir -> refuse (would double-grade RC16)
+    assert len(o._telescope_agents(
+        PhotonScriptConfig(piggyback_enabled=True))) == 1
+    # enabled + distinct dir -> second agent, piggyback-scaled
+    ag = o._telescope_agents(PhotonScriptConfig(
+        piggyback_enabled=True, piggyback_image_watch_dir=r"C:\pb"))
+    assert len(ag) == 2 and ag[1].rig == "piggyback"
+    assert ag[1].config.pixel_scale_arcsec == 1.29
+    # piggyback dir equal to RC16 dir -> refuse
+    same = PhotonScriptConfig(
+        piggyback_enabled=True,
+        piggyback_image_watch_dir=PhotonScriptConfig().image_watch_dir)
+    assert len(o._telescope_agents(same)) == 1

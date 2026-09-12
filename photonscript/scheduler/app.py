@@ -472,6 +472,7 @@ _CONFIG_FIELDS = [
     ("piggyback_default_offset", "PS_PIGGYBACK_DEFAULT_OFFSET", "Piggyback camera offset", "Piggyback", "int", False, False),
     ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
     ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
+    ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
 ]
 
 _MASK = "••••••••"
@@ -574,6 +575,30 @@ async def api_rigs_test_capture(duration: float = 2.0):
     return {"duration": duration,
             "fired_at": datetime.utcnow().isoformat() + "Z",
             "results": dict(pairs)}
+
+
+@app.post("/api/rigs/cool")
+async def api_rigs_cool(minutes: float = 10.0, warm: bool = False):
+    """Cool every rig's camera to its setpoint (or warm them if warm=true).
+    Each rig uses its own setpoint (RC16 camera_setpoint_c, piggyback
+    piggyback_setpoint_c)."""
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          rig_setpoint, nina_cool, nina_warm)
+    cfg = get_config()
+
+    async def _do(rig):
+        rc = rig_config(cfg, rig)
+        if warm:
+            res = await nina_warm(rc.nina_base_url, minutes=min(minutes, 5.0))
+        else:
+            res = await nina_cool(rc.nina_base_url, rig_setpoint(cfg, rig),
+                                  minutes=minutes)
+        return rig, {"name": rig_label(cfg, rig),
+                     "setpoint_c": rig_setpoint(cfg, rig), **res}
+
+    pairs = await _asyncio.gather(*[_do(r) for r in rig_ids(cfg)])
+    return {"warm": warm, "results": dict(pairs)}
 
 
 @app.get("/api/config")

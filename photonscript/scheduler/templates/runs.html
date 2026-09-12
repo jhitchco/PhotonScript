@@ -282,7 +282,7 @@
             '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
             '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +
             '<th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
-            d.table.map(t => '<tr><td>' + t.target + '</td><td>' + t.filter +
+            d.table.map(t => '<tr><td>' + (t.rig && t.rig !== 'rc16' ? '<span title="piggyback rig" style="background:#1e3a5f;color:#7dd3fc;font-size:.7rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;margin-right:.4rem;">PB</span>' : '') + t.target + '</td><td>' + t.filter +
                 '</td><td>' + (t.planned || '–') + '</td><td>' + t.attempted + '</td><td class="' +
                 (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
                 '</td><td>' + (t.goal_total ?? '–') + '</td><td>' +

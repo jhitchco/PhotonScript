@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import Optional
 
 import uvicorn
@@ -45,11 +46,33 @@ async def run_scheduler(config: PhotonScriptConfig):
     await server.serve()
 
 
-async def run_telescope_agent(config: PhotonScriptConfig):
-    """Run only the telescope agent (on Windows telescope PC)."""
+def _telescope_agents(config: PhotonScriptConfig) -> list:
+    """One TelescopeAgent per enabled rig. The piggyback gets a config view
+    pointed at NINA #2 (its base URL, watch dir, pixel scale, setpoint)."""
     from photonscript.telescope_agent.agent import TelescopeAgent
-    agent = TelescopeAgent(config)
-    await agent.start()
+    from photonscript.shared.rigs import rig_ids, rig_config, PIGGYBACK
+    agents = [TelescopeAgent(config, rig="rc16")]
+    if PIGGYBACK in rig_ids(config):
+        # Require the piggyback's OWN watch dir. If unset, rig_config would
+        # inherit the RC16 folder and the 2nd agent would double-grade the main
+        # rig's frames — so refuse to start until a distinct dir is configured.
+        pb_dir = getattr(config, "piggyback_image_watch_dir", "") or ""
+        main_dir = str(getattr(config, "image_watch_dir", "") or "")
+        if pb_dir and Path(pb_dir) != Path(main_dir):
+            agents.append(TelescopeAgent(rig_config(config, PIGGYBACK),
+                                         rig=PIGGYBACK))
+            logger.info("Piggyback rig enabled — 2nd telescope agent watching %s",
+                        pb_dir)
+        else:
+            logger.warning("Piggyback enabled but PS_PIGGYBACK_IMAGE_WATCH_DIR "
+                           "is unset or equals the RC16 dir — not starting its "
+                           "agent (would double-grade the main rig)")
+    return agents
+
+
+async def run_telescope_agent(config: PhotonScriptConfig):
+    """Run the telescope agent(s) — main rig plus piggyback if enabled."""
+    await asyncio.gather(*[a.start() for a in _telescope_agents(config)])
 
 
 async def run_librarian(config: PhotonScriptConfig):
@@ -68,11 +91,10 @@ async def run_librarian(config: PhotonScriptConfig):
 
 async def run_full(config: PhotonScriptConfig):
     """Run all agents together (development / single-machine mode)."""
-    from photonscript.telescope_agent.agent import TelescopeAgent
     from photonscript.librarian.agent import Librarian
     from photonscript.image_processor.agent import ImageProcessor
 
-    telescope = TelescopeAgent(config)
+    telescopes = _telescope_agents(config)  # main + piggyback if enabled
     librarian = Librarian(config)
     processor = ImageProcessor(config)
 
@@ -97,7 +119,7 @@ async def run_full(config: PhotonScriptConfig):
 
     await asyncio.gather(
         server.serve(),
-        telescope.start(),
+        *[t.start() for t in telescopes],
         librarian.start(),
         processor.start(),
     )

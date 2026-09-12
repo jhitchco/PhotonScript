@@ -878,16 +878,16 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         s_["target"] = _resolve_target(s_.get("target"),
                                        s_.get("file", ""), plan_names)
 
-    # Plan vs actual per target/filter
+    # Plan vs actual per rig/target/filter (rig separates the two scopes)
     planned: dict[tuple, int] = {}
     if plan:
         for t in plan["targets"]:
             for e in t["exposures"]:
-                planned[(t["name"], e["filter"])] = \
-                    planned.get((t["name"], e["filter"]), 0) + e["planned"]
+                planned[("rc16", t["name"], e["filter"])] = \
+                    planned.get(("rc16", t["name"], e["filter"]), 0) + e["planned"]
     actual: dict[tuple, dict] = {}
     for s in subs:
-        key = (s.get("target", "?"), s.get("filter", "?"))
+        key = (s.get("rig", "rc16"), s.get("target", "?"), s.get("filter", "?"))
         a = actual.setdefault(key, {"attempted": 0, "accepted": 0,
                                     "hfrs": [], "eccs": [], "bgs": []})
         a["attempted"] += 1
@@ -908,7 +908,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     for key in sorted(set(planned) | set(actual)):
         a = actual.get(key, {})
         table.append({
-            "target": key[0], "filter": key[1],
+            "rig": key[0], "target": key[1], "filter": key[2],
             "planned": planned.get(key, 0),
             "attempted": a.get("attempted", 0),
             "accepted": a.get("accepted", 0),
@@ -921,7 +921,8 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     for typ, g in sorted(cal_tonight.get("frames", {}).items()):
         exps = ", ".join(f"{k}×{v}" for k, v in
                          sorted(g.get("exposures", {}).items()))
-        table.append({"target": f"Calibration · {typ}", "filter": exps or "—",
+        table.append({"rig": "rc16", "target": f"Calibration · {typ}",
+                      "filter": exps or "—",
                       "planned": 0, "attempted": g["count"],
                       "accepted": g["count"], "median_hfr": None,
                       "median_ecc": None, "median_background": None})

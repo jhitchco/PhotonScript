@@ -62,6 +62,7 @@ def rig_config(config, rig: str):
         "default_gain": getattr(config, "piggyback_default_gain", 100),
         "default_offset": getattr(config, "piggyback_default_offset", 256),
         "quality_hfr_abs_max": getattr(config, "piggyback_hfr_abs_max", 4.5),
+        "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
     }
     wd = getattr(config, "piggyback_image_watch_dir", "")
     if wd:
@@ -103,3 +104,36 @@ async def nina_capture(base_url: str, duration: float = 2.0,
             return {"ok": True, "detail": payload}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+async def nina_cool(base_url: str, temperature: float, minutes: float = 10.0) -> dict:
+    """Drive a rig's camera to a cooling setpoint (ninaAPI GET cool)."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(base + "/equipment/camera/cool",
+                                  params={"temperature": temperature,
+                                          "minutes": minutes})
+            r.raise_for_status()
+            return {"ok": True, "detail": f"cooling to {temperature}C over {minutes}m"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+async def nina_warm(base_url: str, minutes: float = 5.0) -> dict:
+    """Warm a rig's camera back up (ninaAPI GET warm)."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(base + "/equipment/camera/warm",
+                                  params={"minutes": minutes})
+            r.raise_for_status()
+            return {"ok": True, "detail": f"warming over {minutes}m"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+def rig_setpoint(config, rig: str) -> float:
+    if rig == PIGGYBACK:
+        return float(getattr(config, "piggyback_setpoint_c", 0.0))
+    return float(getattr(config, "camera_setpoint_c", 0.0))
