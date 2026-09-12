@@ -107,6 +107,11 @@ class Armer:
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
+        # Reconnect everything (esp. safety) after a restart so equipment that
+        # dropped while we were down comes back without waiting for the next
+        # sequence phase. Connect-only; safety still gates imaging.
+        if getattr(self.config, "connect_all_on_arm", True):
+            asyncio.create_task(self.connect_all())
         asyncio.create_task(notify(
             self.config, f"PhotonScript restarted mid-night — reattached in "
             f"state {self.state}.", title="PhotonScript restored"))
@@ -154,10 +159,20 @@ class Armer:
                         f"{self.plan['dark_hours']}h dark — {mode}")
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
+        # Connect everything now (esp. the safety monitor) so a dead/slow
+        # device shows up at arm time — hours before dark — not silently at
+        # runtime. Connect-only; the night loop still gates imaging on safety.
+        conn = ""
+        if getattr(self.config, "connect_all_on_arm", True):
+            try:
+                res = await self.connect_all()
+                conn = " · safety: " + res.get("safetymonitor", "?")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("connect_all at arm failed: %s", e)
         await notify(self.config,
                      f"ARMED for {self.plan['night_of']} [{mode}]: "
                      f"{', '.join(self.plan['targets'][:4])} — "
-                     f"{self.plan['dark_hours']}h dark window.",
+                     f"{self.plan['dark_hours']}h dark window.{conn}",
                      title="PhotonScript armed")
         return self.status()
 
@@ -198,6 +213,30 @@ class Armer:
         report = "make-safe " + " · ".join(steps)
         logger.warning(report)
         return report
+
+    async def connect_all(self) -> dict:
+        """Actively connect every device — camera, filter wheel, focuser,
+        mount, guider, weather, and ESPECIALLY the safety monitor — at arm and
+        on restart, so a dead/slow device surfaces early instead of silently at
+        dark. Reuses preflight's connect-with-retry.
+
+        Connect-only: nothing slews, cools, or opens the roof, and the night
+        loop's SafetyMonitorCondition still gates all imaging. This just makes
+        equipment (e.g. the AARO Alpaca safety monitor that intermittently times
+        out) come up on arm/restart.
+        """
+        from photonscript.scheduler.preflight import _ensure_connected
+        results = {}
+        for dev in ("camera", "filterwheel", "focuser", "mount",
+                    "guider", "weather", "safetymonitor"):
+            try:
+                connected, _payload, err = await _ensure_connected(
+                    self.config, dev, attempts=2)
+                results[dev] = "connected" if connected else (err or "not connected")
+            except Exception as e:  # noqa: BLE001
+                results[dev] = f"{type(e).__name__}: {e}"
+        logger.info("connect_all (arm/restart): %s", results)
+        return results
 
     # -- ninaAPI helpers ---------------------------------------------------------
 

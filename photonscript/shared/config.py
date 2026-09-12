@@ -114,6 +114,10 @@ class PhotonScriptConfig(BaseSettings):
     # reads safe again it must STAY safe this long before the sequence unparks,
     # resumes and narrates. Kills the safe/unsafe Pushover storm + mount thrash.
     safety_confirm_seconds: int = 120
+    connect_all_on_arm: bool = True  # on arm and on restart, actively connect
+                                     # every device (esp. the safety monitor) so
+                                     # a dead/slow device surfaces early. Connect
+                                     # only — nothing moves; imaging still gated.
     # If the NINA safety monitor is DISCONNECTED (not merely unsafe) and cannot
     # be auto-reconnected while a sequence is RUNNING, stop the sequence. Off by
     # default: the watchdog escalates via Pushover and keeps retrying, but never

@@ -496,6 +496,15 @@ async def api_preflight():
     return await run_preflight(get_config())
 
 
+@app.post("/api/equipment/connect")
+async def api_equipment_connect():
+    """Actively connect every device (camera, filter wheel, focuser, mount,
+    guider, weather, safety monitor). Connect-only — nothing slews, cools, or
+    opens the roof. Runs automatically on arm/restart; this is the manual
+    trigger."""
+    return {"results": await get_armer().connect_all()}
+
+
 @app.get("/api/config")
 async def api_get_config():
     config = get_config()
