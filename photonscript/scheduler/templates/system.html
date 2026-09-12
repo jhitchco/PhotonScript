@@ -112,6 +112,74 @@
         })();
         </script>
 
+        <section class="panel" id="rigsPanel" style="margin-bottom:1.5rem;">
+            <h2>Rigs (multi-scope)</h2>
+            <div class="bd" id="rigsBody">loading…</div>
+            <div style="margin-top:.5rem;">
+                <button class="btn btn-secondary" id="rigsRefresh">Refresh status</button>
+                <button class="btn btn-secondary" id="rigsConnect">Connect all rigs</button>
+                <button class="btn btn-primary" id="rigsCapture" title="Fires a short exposure on every enabled rig at once. Caps-on bench test: no slew, no roof, frames not saved — safe while unsafe/daytime.">Test capture (all rigs)</button>
+                <span class="bd" id="rigsStatus"></span>
+            </div>
+            <div class="cfg-hint" style="margin-top:.4rem;">Connection status per NINA instance. Enable the piggyback rig in the Piggyback config group below, set its API URL, then Refresh.</div>
+        </section>
+        <script>
+        (function () {
+            function render(d) {
+                var rigs = (d && d.rigs) || [];
+                if (!rigs.length) return "no rigs";
+                return rigs.map(function (r) {
+                    var devs = Object.keys(r.devices || {}).map(function (k) {
+                        var e = r.devices[k];
+                        var mark = e.connected ? "✓" : "✗";
+                        var extra = (e.temp_c != null ? " " + e.temp_c + "°C" : "")
+                                  + (e.safe != null ? (e.safe ? " SAFE" : " UNSAFE") : "")
+                                  + (e.error ? " (" + e.error + ")" : "");
+                        return "  " + mark + " " + k + extra;
+                    }).join("\n");
+                    return r.name + "  [" + r.nina_base_url + "]  "
+                         + r.pixel_scale_arcsec + "\"/px\n" + devs;
+                }).join("\n\n");
+            }
+            function show(txt) {
+                var el = document.getElementById("rigsBody");
+                el.style.whiteSpace = "pre-wrap";
+                el.style.fontFamily = "ui-monospace, monospace";
+                el.style.fontSize = ".82rem";
+                el.textContent = txt;
+            }
+            function load() {
+                show("loading…");
+                fetch("/api/rigs").then(function (r) { return r.json(); })
+                    .then(function (d) { show(render(d)); })
+                    .catch(function (e) { show("error: " + e); });
+            }
+            function post(url, statusMsg, done) {
+                var s = document.getElementById("rigsStatus");
+                s.textContent = " " + statusMsg;
+                fetch(url, {method: "POST"}).then(function (r) { return r.json(); })
+                    .then(function (d) { s.textContent = " done."; done && done(d); })
+                    .catch(function (e) { s.textContent = " error: " + e; });
+            }
+            document.getElementById("rigsRefresh").addEventListener("click", load);
+            document.getElementById("rigsConnect").addEventListener("click", function () {
+                post("/api/rigs/connect", "connecting…", function (d) { show(render(d)); });
+            });
+            document.getElementById("rigsCapture").addEventListener("click", function () {
+                post("/api/rigs/test_capture?duration=2", "firing test exposures…",
+                     function (d) {
+                        var lines = Object.keys(d.results || {}).map(function (k) {
+                            var x = d.results[k];
+                            return (x.ok ? "✓ " : "✗ ") + x.name + ": " +
+                                   (typeof x.detail === "string" ? x.detail : JSON.stringify(x.detail));
+                        });
+                        show("Test capture @ " + d.duration + "s\n" + lines.join("\n"));
+                     });
+            });
+            load();
+        })();
+        </script>
+
 
 
         <section class="panel" id="calPanel">

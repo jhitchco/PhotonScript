@@ -124,6 +124,18 @@ class PhotonScriptConfig(BaseSettings):
     # aborts a night on its own until you opt in. (2026-09-11: a disconnected
     # monitor let the rig image a closed roof for an hour of donuts.)
     safety_disconnect_aborts: bool = False
+    # --- Piggyback rig: 2nd NINA instance (600mm + OGMA AP26CC, one-shot color) ---
+    piggyback_enabled: bool = False  # turn on the 2nd-rig hooks (connect,
+                                     # status, test-capture). Off until NINA #2
+                                     # is up and confirmed.
+    piggyback_name: str = "Piggy-600"
+    piggyback_nina_base_url: str = "http://localhost:1889/v2/api"  # NINA #2 API
+    piggyback_image_watch_dir: str = ""  # where NINA #2 writes FITS (set once known)
+    piggyback_pixel_scale_arcsec: float = 1.29  # 600mm + IMX571 3.76um
+    piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
+    piggyback_default_offset: int = 256
+    piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
+    piggyback_hfr_abs_max: float = 4.5  # focused star ~2px at 1.29"/px (8px gate is wrong here)
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by

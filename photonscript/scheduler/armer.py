@@ -111,7 +111,7 @@ class Armer:
         # dropped while we were down comes back without waiting for the next
         # sequence phase. Connect-only; safety still gates imaging.
         if getattr(self.config, "connect_all_on_arm", True):
-            asyncio.create_task(self.connect_all())
+            asyncio.create_task(self.connect_all_rigs())
         asyncio.create_task(notify(
             self.config, f"PhotonScript restarted mid-night — reattached in "
             f"state {self.state}.", title="PhotonScript restored"))
@@ -165,8 +165,8 @@ class Armer:
         conn = ""
         if getattr(self.config, "connect_all_on_arm", True):
             try:
-                res = await self.connect_all()
-                conn = " · safety: " + res.get("safetymonitor", "?")
+                res = await self.connect_all_rigs()
+                conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
         await notify(self.config,
@@ -214,11 +214,11 @@ class Armer:
         logger.warning(report)
         return report
 
-    async def connect_all(self) -> dict:
-        """Actively connect every device — camera, filter wheel, focuser,
-        mount, guider, weather, and ESPECIALLY the safety monitor — at arm and
-        on restart, so a dead/slow device surfaces early instead of silently at
-        dark. Reuses preflight's connect-with-retry.
+    async def connect_all(self, rig: str = "rc16") -> dict:
+        """Actively connect every device a rig owns — for RC16 that's camera,
+        filter wheel, focuser, mount, guider, weather, and ESPECIALLY the safety
+        monitor; for the piggyback just its camera + focuser. Reuses preflight's
+        connect-with-retry against the rig's NINA instance.
 
         Connect-only: nothing slews, cools, or opens the roof, and the night
         loop's SafetyMonitorCondition still gates all imaging. This just makes
@@ -226,17 +226,26 @@ class Armer:
         out) come up on arm/restart.
         """
         from photonscript.scheduler.preflight import _ensure_connected
+        from photonscript.shared.rigs import rig_config, rig_devices
+        cfg = rig_config(self.config, rig)
         results = {}
-        for dev in ("camera", "filterwheel", "focuser", "mount",
-                    "guider", "weather", "safetymonitor"):
+        for dev in rig_devices(rig):
             try:
                 connected, _payload, err = await _ensure_connected(
-                    self.config, dev, attempts=2)
+                    cfg, dev, attempts=2)
                 results[dev] = "connected" if connected else (err or "not connected")
             except Exception as e:  # noqa: BLE001
                 results[dev] = f"{type(e).__name__}: {e}"
-        logger.info("connect_all (arm/restart): %s", results)
+        logger.info("connect_all (%s): %s", rig, results)
         return results
+
+    async def connect_all_rigs(self) -> dict:
+        """Connect every enabled rig (main + piggyback). Returns {rig: {...}}."""
+        from photonscript.shared.rigs import rig_ids
+        out = {}
+        for rig in rig_ids(self.config):
+            out[rig] = await self.connect_all(rig)
+        return out
 
     # -- ninaAPI helpers ---------------------------------------------------------
 

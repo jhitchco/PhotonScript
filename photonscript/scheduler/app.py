@@ -463,6 +463,15 @@ _CONFIG_FIELDS = [
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
+    ("piggyback_enabled", "PS_PIGGYBACK_ENABLED", "Piggyback rig enabled (2nd NINA)", "Piggyback", "bool", False, False),
+    ("piggyback_name", "PS_PIGGYBACK_NAME", "Piggyback rig name", "Piggyback", "str", False, False),
+    ("piggyback_nina_base_url", "PS_PIGGYBACK_NINA_BASE_URL", "Piggyback NINA Advanced API URL", "Piggyback", "str", False, False),
+    ("piggyback_image_watch_dir", "PS_PIGGYBACK_IMAGE_WATCH_DIR", "Piggyback NINA image output dir", "Piggyback", "str", False, False),
+    ("piggyback_pixel_scale_arcsec", "PS_PIGGYBACK_PIXEL_SCALE_ARCSEC", "Piggyback pixel scale (\"/px)", "Piggyback", "float", False, False),
+    ("piggyback_default_gain", "PS_PIGGYBACK_DEFAULT_GAIN", "Piggyback camera gain", "Piggyback", "int", False, False),
+    ("piggyback_default_offset", "PS_PIGGYBACK_DEFAULT_OFFSET", "Piggyback camera offset", "Piggyback", "int", False, False),
+    ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
+    ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
 ]
 
 _MASK = "••••••••"
@@ -498,11 +507,73 @@ async def api_preflight():
 
 @app.post("/api/equipment/connect")
 async def api_equipment_connect():
-    """Actively connect every device (camera, filter wheel, focuser, mount,
-    guider, weather, safety monitor). Connect-only — nothing slews, cools, or
-    opens the roof. Runs automatically on arm/restart; this is the manual
-    trigger."""
-    return {"results": await get_armer().connect_all()}
+    """Actively connect every device on ALL enabled rigs (main + piggyback).
+    Connect-only — nothing slews, cools, or opens the roof. Runs automatically
+    on arm/restart; this is the manual trigger."""
+    return {"results": await get_armer().connect_all_rigs()}
+
+
+@app.get("/api/rigs")
+async def api_rigs():
+    """Config + live connection status for every rig (main + piggyback)."""
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          rig_devices)
+    from photonscript.scheduler.preflight import _connected
+    cfg = get_config()
+    rigs = []
+    for rig in rig_ids(cfg):
+        rc = rig_config(cfg, rig)
+        devices = {}
+        for dev in rig_devices(rig):
+            conn, payload, err = await _connected(rc, dev)
+            entry = {"connected": conn}
+            if dev == "camera" and payload:
+                entry["temp_c"] = payload.get("Temperature")
+            if dev == "safetymonitor" and conn and payload:
+                entry["safe"] = payload.get("IsSafe")
+            if err:
+                entry["error"] = err
+            devices[dev] = entry
+        rigs.append({
+            "rig": rig,
+            "name": rig_label(cfg, rig),
+            "nina_base_url": rc.nina_base_url,
+            "pixel_scale_arcsec": rc.pixel_scale_arcsec,
+            "image_watch_dir": getattr(rc, "image_watch_dir", ""),
+            "devices": devices,
+        })
+    return {"rigs": rigs}
+
+
+@app.post("/api/rigs/connect")
+async def api_rigs_connect():
+    """Actively connect everything on every rig, then return fresh status."""
+    connect = await get_armer().connect_all_rigs()
+    status = await api_rigs()
+    return {"connect": connect, **status}
+
+
+@app.post("/api/rigs/test_capture")
+async def api_rigs_test_capture(duration: float = 2.0):
+    """Fire a short test exposure on EVERY enabled rig at the SAME time — the
+    two-camera bench test. Caps-on / bench only: it does not move the mount,
+    open the roof, or save frames, so it is safe to run while unsafe/daytime.
+    """
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          nina_capture)
+    cfg = get_config()
+
+    async def _cap(rig):
+        rc = rig_config(cfg, rig)
+        res = await nina_capture(rc.nina_base_url, duration=duration)
+        return rig, {"name": rig_label(cfg, rig),
+                     "nina_base_url": rc.nina_base_url, **res}
+
+    pairs = await _asyncio.gather(*[_cap(r) for r in rig_ids(cfg)])
+    return {"duration": duration,
+            "fired_at": datetime.utcnow().isoformat() + "Z",
+            "results": dict(pairs)}
 
 
 @app.get("/api/config")
