@@ -62,6 +62,9 @@ class TelescopeAgent:
         # Dew-heater watchdog state
         self._dew_last_set: float = 0.0
         self._dew_api_broken = False
+        # Safety-monitor watchdog state
+        self._safety_bad_since: float | None = None
+        self._safety_fix_attempts = 0
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -202,6 +205,59 @@ class TelescopeAgent:
                 "Cooler is ON but the dew heater cannot be switched via the "
                 "NINA API — turn it ON manually (Equipment > Camera).")
 
+    async def _safety_monitor_watchdog(self):
+        """Reconnect a dropped safety monitor before it eats a night.
+
+        2026-09-09 lesson: the ASCOM Alpaca monitor sat disconnected all
+        night, 'no signal' read as not-safe, WaitUntilSafe never released,
+        and 8.7 dark hours produced nothing - silently. Now: if the monitor
+        reports disconnected for >2 min, try to reconnect it (up to 5
+        times, 5 min apart); escalate via Pushover on the first failure.
+        """
+        import time
+        try:
+            info = await self.nina.get_safety_info()
+        except Exception:  # noqa: BLE001 - NINA itself unreachable
+            return
+        if info.get("Connected"):
+            self._safety_bad_since = None
+            self._safety_fix_attempts = 0
+            return
+        now = time.monotonic()
+        if self._safety_bad_since is None:
+            self._safety_bad_since = now
+            return
+        if now - self._safety_bad_since < 120:
+            return
+        if self._safety_fix_attempts >= 5:
+            return  # escalated already; stop hammering
+        self._safety_fix_attempts += 1
+        self._safety_bad_since = now  # next attempt >=5 min out (poll pace)
+        try:
+            await self.nina.connect_safety()
+            info = await self.nina.get_safety_info()
+            if info.get("Connected"):
+                logger.info("Safety-monitor watchdog: reconnected on "
+                            "attempt %d", self._safety_fix_attempts)
+                await self._escalate(
+                    "safety-reconnected",
+                    "Safety monitor was DISCONNECTED and has been "
+                    "auto-reconnected. Sequences waiting on safe will "
+                    "now see real weather again.")
+                self._safety_fix_attempts = 0
+                self._safety_bad_since = None
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Safety-monitor watchdog: reconnect attempt %d "
+                           "failed: %s", self._safety_fix_attempts, e)
+        if self._safety_fix_attempts == 1:
+            await self._escalate(
+                "safety-disconnected",
+                "Safety monitor is DISCONNECTED - the sequence cannot see "
+                "weather and will wait forever. Auto-reconnect is being "
+                "attempted; if this persists, reconnect it in NINA "
+                "(Equipment > Safety Monitor).", severe=False)
+
     async def _cooling_watchdog(self, camera: dict):
         """Active remediation for 'CoolerOn but 0% power, sensor at ambient'.
 
@@ -285,6 +341,7 @@ class TelescopeAgent:
                     )
                 await self._cooling_watchdog(camera)
                 await self._dew_heater_watchdog(camera)
+                await self._safety_monitor_watchdog()
 
                 # Get mount info
                 mount = await self.nina.get_mount_info()

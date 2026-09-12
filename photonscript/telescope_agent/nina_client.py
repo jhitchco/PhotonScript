@@ -79,6 +79,12 @@ class NinaClient:
     async def get_guider_info(self) -> dict:
         return await self._get("/equipment/guider")
 
+    async def get_safety_info(self) -> dict:
+        return await self._get("/equipment/safetymonitor")
+
+    async def connect_safety(self) -> dict:
+        return await self._get("/equipment/safetymonitor/connect")
+
     # --- Sequence Control ---
 
     async def get_sequence_status(self) -> dict:

@@ -814,21 +814,27 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                 _pushover("Safety", "roof closed — filling the dark-library "
                           "quota until conditions clear"),
             ] + night_dark_blocks
+    # Confirm-safe debounce: WaitUntilSafe releases on a SINGLE safe poll, so a
+    # safety monitor bouncing across the threshold used to spin park/unpark and
+    # fire a Pushover on every edge (the 2026-09-11 07:07 storm). Now the sky must
+    # read safe, STAY safe for safety_confirm_seconds, and still be safe before we
+    # narrate + resume. The scope stays parked for the whole hold.
+    _safe_confirm_s = int(getattr(_gen_cfg(), "safety_confirm_seconds", 120))
     unsafe_items += [
         _wait_until_safe(),
-        _pushover("Safety", "SAFE again — waiting 2 min of confirmed-safe, "
-                  "then unparking and resuming targets"),
+        _wait_for_timespan(_safe_confirm_s),
+        _wait_until_safe(),
+        _pushover("Safety", f"SAFE for {max(1, _safe_confirm_s // 60)} min "
+                  "straight — unparking and resuming targets"),
     ]
 
     safe_loop = _seq_container("SAFE_LOOP", [
         _seq_container("RESET_EQUIPMENT_ONCE_SAFE", [
-            _annotation("Runs on every safe (re)entry; harmless on first pass."),
-            _pushover("Safety", "SAFE_LOOP entry — holding 2 min of "
-                      "confirmed-safe, then unpark + track"),
-            _wait_for_timespan(120),
+            _annotation("Runs on every safe (re)entry; harmless on first pass. "
+                        "The confirm-safe hold now lives in the UNSAFE branch, "
+                        "so this no longer double-waits or re-narrates."),
             _unpark(),
             _set_tracking(0),
-            _pushover("Safety", "equipment re-armed — proceeding to targets"),
         ]),
         _seq_container("TARGETS_CONTAINER", target_containers),
         _annotation("All targets done: park and hold (interruptible) until "

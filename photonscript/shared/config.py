@@ -96,6 +96,15 @@ class PhotonScriptConfig(BaseSettings):
     consecutive_reject_limit: int = 3  # rejects in a row before severe alert
     auto_abort_on_severe: bool = False  # enable only after trusting the nanny
     heartbeat_minutes: int = 30
+    # --- Pushover rate limiting (2026-09-12) ---
+    pushover_ratelimit_enabled: bool = True   # False = old unthrottled behaviour
+    pushover_dedup_window_s: int = 300        # drop identical (title,message) within this
+    pushover_max_per_hour: int = 20           # rolling 1-hour burst cap (priority>=2 exempt)
+    pushover_monthly_cap: int = 9000          # hard stop/month (headroom under Pushover's 10k)
+    # Safety-flap debounce baked into the generated NINA sequence: after the sky
+    # reads safe again it must STAY safe this long before the sequence unparks,
+    # resumes and narrates. Kills the safe/unsafe Pushover storm + mount thrash.
+    safety_confirm_seconds: int = 120
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by
