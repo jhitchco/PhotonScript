@@ -72,8 +72,12 @@
         <script>
         (function () {
             function fmt(d) {
-                if (!d || d.available === false)
-                    return "system stats unavailable" + (d && d.detail ? " — " + d.detail : "");
+                if (!d || d.available === false) {
+                    var m = "system stats unavailable" + (d && d.detail ? " — " + d.detail : "");
+                    if (d && d.fix) m += "\n\nRun on the scope PC, then Refresh:\n  " + d.fix;
+                    if (d && d.python_executable) m += "\n\n(scheduler python: " + d.python_executable + ")";
+                    return m;
+                }
                 var r = d.ram || {}, lines = [];
                 lines.push("RAM: " + (r.used_gb ?? "?") + " / " + (r.total_gb ?? "?") +
                            " GB used (" + (r.percent ?? "?") + "%), " +

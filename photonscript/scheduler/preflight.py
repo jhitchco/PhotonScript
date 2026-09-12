@@ -10,6 +10,7 @@ Each check returns: name, status (pass | warn | fail), detail.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import socket
@@ -29,6 +30,42 @@ async def _nina_get(config, endpoint: str, timeout=5) -> dict:
         r = await client.get(url)
         r.raise_for_status()
         return r.json()
+
+
+async def _nina_connect(config, device: str, timeout=20) -> str:
+    """Actively tell NINA to connect a device. Returns '' on success, else an
+    error string. (NINA's connect endpoints are GET.)"""
+    try:
+        await _nina_get(config, f"/equipment/{device}/connect", timeout=timeout)
+        return ""
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"
+
+
+async def _connected(config, device: str, timeout=8):
+    """Return (connected: bool, payload: dict, err: str) for a device."""
+    try:
+        info = await _nina_get(config, f"/equipment/{device}/info", timeout=timeout)
+        payload = info.get("Response", info)
+        return bool(payload.get("Connected", False)), payload, ""
+    except Exception as e:  # noqa: BLE001
+        return False, {}, f"{type(e).__name__}: {e}"
+
+
+async def _ensure_connected(config, device: str, attempts: int = 3):
+    """Read state; if disconnected, actively connect and re-read. Returns
+    (connected, payload, detail) where detail carries the last error seen."""
+    connected, payload, err = await _connected(config, device)
+    if connected:
+        return True, payload, ""
+    for _ in range(attempts):
+        err = await _nina_connect(config, device) or err
+        await asyncio.sleep(3)
+        connected, payload, read_err = await _connected(config, device)
+        if connected:
+            return True, payload, ""
+        err = read_err or err
+    return False, payload, err
 
 
 async def run_preflight(config) -> dict:
@@ -84,50 +121,52 @@ async def run_preflight(config) -> dict:
                              f"{logs} not found — daily report needs it"))
 
     # 3. NINA Advanced API + equipment -------------------------------------
-    camera_ok = False
+    # Preflight is active, not passive: if a device is disconnected it TRIES to
+    # connect it (rather than just reporting "not connected"), then reports the
+    # real result. This is also the "connect everything" step for a restart.
+    api_ok = False
     try:
-        cam = await _nina_get(config, "/equipment/camera/info")
-        payload = cam.get("Response", cam)
-        connected = payload.get("Connected", False)
+        connected, payload, _ = await _ensure_connected(config, "camera")
+        api_ok = True
         temp = payload.get("Temperature")
-        camera_ok = True
         if connected:
             checks.append(_check("NINA API + camera", "pass",
                                  f"Camera connected, sensor {temp}°C"))
         else:
             checks.append(_check("NINA API + camera", "warn",
-                                 "API reachable but camera not connected in NINA"))
+                                 "API reachable but camera would not connect "
+                                 "(tried auto-connect)"))
     except Exception as e:  # noqa: BLE001
         checks.append(_check("NINA API + camera", "fail",
                              f"{config.nina_base_url} unreachable ({type(e).__name__}) "
                              "— is NINA running with the Advanced API plugin enabled?"))
 
-    if camera_ok:
-        try:
-            mount = await _nina_get(config, "/equipment/mount/info")
-            payload = mount.get("Response", mount)
-            if payload.get("Connected", False):
-                checks.append(_check("Mount", "pass",
-                                     f"Connected, tracking={payload.get('TrackingEnabled', payload.get('Tracking', '?'))}"))
-            else:
-                checks.append(_check("Mount", "warn", "Not connected in NINA"))
-        except Exception:  # noqa: BLE001
-            checks.append(_check("Mount", "warn", "Mount info endpoint failed"))
+    if api_ok:
+        connected, payload, err = await _ensure_connected(config, "mount")
+        if connected:
+            checks.append(_check("Mount", "pass",
+                                 f"Connected, tracking={payload.get('TrackingEnabled', payload.get('Tracking', '?'))}"))
+        else:
+            checks.append(_check("Mount", "warn",
+                                 f"Would not connect (tried auto-connect)"
+                                 + (f" — {err}" if err else "")))
 
-        try:
-            safety = await _nina_get(config, "/equipment/safetymonitor/info")
-            payload = safety.get("Response", safety)
-            if payload.get("Connected", False):
-                state = "SAFE" if payload.get("IsSafe", False) else "UNSAFE"
-                checks.append(_check("Safety monitor", "pass",
-                                     f"Connected, currently {state} "
-                                     "(UNSAFE in daytime is correct)"))
-            else:
-                checks.append(_check("Safety monitor", "fail",
-                                     "Not connected — sequences would image "
-                                     "through weather. Connect it in NINA."))
-        except Exception:  # noqa: BLE001
-            checks.append(_check("Safety monitor", "warn", "Endpoint failed"))
+        # Safety monitor — the one that bit us. Actively connect + retry, and
+        # on failure surface the REAL error (e.g. the AARO Alpaca device at
+        # 192.168.1.8:12345 timing out), not a generic "not connected".
+        connected, payload, err = await _ensure_connected(config, "safetymonitor")
+        if connected:
+            state = "SAFE" if payload.get("IsSafe", False) else "UNSAFE"
+            checks.append(_check("Safety monitor", "pass",
+                                 f"Connected, currently {state} "
+                                 "(UNSAFE in daytime is correct)"))
+        else:
+            checks.append(_check(
+                "Safety monitor", "fail",
+                "Could not connect after auto-connect retries — "
+                f"{err or 'unknown error'}. Sequences would image through "
+                "weather. If this is an Alpaca timeout, the AARO safety device "
+                "may be slow/down or NINA's Alpaca client timeout is too short."))
 
     # 4. PHD2 (optional — unguided is the default) --------------------------
     try:

@@ -1315,8 +1315,13 @@ def api_system_stats():
     try:
         import psutil
     except Exception:  # noqa: BLE001
+        import sys as _sys
         return {"available": False,
-                "detail": "psutil not installed (pip install -e . picks it up)"}
+                "detail": "psutil not installed in the interpreter running the "
+                          "scheduler — install it there, then Refresh.",
+                "python_executable": _sys.executable,
+                "python_prefix": _sys.prefix,
+                "fix": f'"{_sys.executable}" -m pip install psutil'}
     import shutil as _sh
     cfg = get_config()
     vm = psutil.virtual_memory()
