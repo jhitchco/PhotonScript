@@ -63,6 +63,51 @@
             <div class="bd" id="updStatus" style="margin-top:.4rem;"></div>
         </section>
 
+        <section class="panel" id="sysLoadPanel" style="margin-bottom:1.5rem;">
+            <h2>Host Load</h2>
+            <div class="bd" id="sysLoad">loading…</div>
+            <button class="btn btn-secondary" id="sysLoadRefresh" style="margin-top:.5rem;">Refresh</button>
+            <div class="cfg-hint" style="margin-top:.4rem;">RAM/CPU/disk on the scope PC and the heavy astro processes — watch this when running the second (piggyback) camera.</div>
+        </section>
+        <script>
+        (function () {
+            function fmt(d) {
+                if (!d || d.available === false)
+                    return "system stats unavailable" + (d && d.detail ? " — " + d.detail : "");
+                var r = d.ram || {}, lines = [];
+                lines.push("RAM: " + (r.used_gb ?? "?") + " / " + (r.total_gb ?? "?") +
+                           " GB used (" + (r.percent ?? "?") + "%), " +
+                           (r.available_gb ?? "?") + " GB free");
+                lines.push("CPU: " + (d.cpu_percent ?? "?") + "% over " + (d.cpu_count ?? "?") + " cores");
+                (d.disks || []).forEach(function (k) {
+                    lines.push("Disk (" + k.label + "): " + k.free_gb + " GB free of " +
+                               k.total_gb + " GB (" + k.percent_used + "% used) — " + k.path);
+                });
+                if (d.processes && d.processes.length) {
+                    lines.push("Processes:");
+                    d.processes.forEach(function (p) {
+                        lines.push("  " + p.name + " (pid " + p.pid + "): " + p.ram_mb + " MB");
+                    });
+                }
+                return lines.join("\n");
+            }
+            function load() {
+                var el = document.getElementById("sysLoad");
+                el.textContent = "loading…";
+                fetch("/api/system/stats").then(function (r) { return r.json(); })
+                    .then(function (d) {
+                        el.style.whiteSpace = "pre-wrap";
+                        el.style.fontFamily = "ui-monospace, monospace";
+                        el.style.fontSize = ".82rem";
+                        el.textContent = fmt(d);
+                    })
+                    .catch(function (e) { el.textContent = "error: " + e; });
+            }
+            document.getElementById("sysLoadRefresh").addEventListener("click", load);
+            load();
+        })();
+        </script>
+
 
 
         <section class="panel" id="calPanel">

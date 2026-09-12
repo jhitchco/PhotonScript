@@ -1303,6 +1303,68 @@ def api_calibration_health():
     return calibration_health(get_config())
 
 
+@app.get("/api/system/stats")
+def api_system_stats():
+    """Scope-PC load: RAM / CPU / disk + the heavy astro processes.
+
+    Added for the dual-rig bring-up (2026-09-12): a second NINA instance and a
+    second camera pipeline is the main load risk, so surface headroom here
+    instead of guessing. Best-effort — returns available:false if psutil is
+    missing rather than erroring.
+    """
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001
+        return {"available": False,
+                "detail": "psutil not installed (pip install -e . picks it up)"}
+    import shutil as _sh
+    cfg = get_config()
+    vm = psutil.virtual_memory()
+    out = {
+        "available": True,
+        "cpu_percent": psutil.cpu_percent(interval=0.3),
+        "cpu_count": psutil.cpu_count(),
+        "ram": {"total_gb": round(vm.total / 1e9, 1),
+                "used_gb": round(vm.used / 1e9, 1),
+                "available_gb": round(vm.available / 1e9, 1),
+                "percent": vm.percent},
+        "processes": [],
+        "disks": [],
+    }
+    keys = ("nina", "phd2", "thesky", "python", "photonscript", "astap",
+            "pixinsight", "siril")
+    procs = []
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            nm = p.info.get("name") or ""
+            if any(k in nm.lower() for k in keys):
+                rss = p.info["memory_info"].rss if p.info.get("memory_info") else 0
+                procs.append({"name": nm, "pid": p.pid,
+                              "ram_mb": round(rss / 1e6)})
+        except Exception:  # noqa: BLE001 - process vanished / access denied
+            continue
+    out["processes"] = sorted(procs, key=lambda x: -x["ram_mb"])[:20]
+    seen = set()
+    for label, path in (("image", getattr(cfg, "image_watch_dir", "")),
+                        ("library", str(
+                            getattr(cfg, "library_dir", "")
+                            or Path(cfg.data_dir) / "Library"))):
+        try:
+            drive = str(Path(path).anchor or path)
+            if not path or drive in seen:
+                continue
+            seen.add(drive)
+            du = _sh.disk_usage(path if Path(path).exists() else drive)
+            out["disks"].append({
+                "label": label, "path": str(path),
+                "free_gb": round(du.free / 1e9, 1),
+                "total_gb": round(du.total / 1e9, 1),
+                "percent_used": round(du.used / du.total * 100, 1)})
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 @app.post("/api/calibration/capture")
 async def api_calibration_capture(payload: dict = Body(default={})):
     """Generate + dispatch a darks/bias run. Roof must be closed & dark."""

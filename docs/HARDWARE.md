@@ -28,6 +28,9 @@ get answered; the planner and QA thresholds should eventually read from here.
   (SII 9/22 through registration, 2026-07-03)
 - PHD2 installed on scope PC; PS_GUIDED_DEFAULT=true as of 2026-07-07
   (StartGuiding after center, dither every 5, StopGuiding at unsafe/end)
+- GUIDING COMMITTED TO THE OAG (GP678C on the RC16) as of 2026-09-12 — this
+  frees the AP26CC (formerly the piggyback guide cam) to become the 600mm
+  IMAGING camera. See the dual-rig plan below and docs/DUAL_RIG.md.
 
 ## Exposure & calibration standards
 - NB 600s, BB 180s, gain 200, offset 256, 0 C ("NEW epoch", 2026-07-05+)
@@ -53,6 +56,10 @@ Three cameras visible to PHD2 (2.6.14, mount via ASCOM TheSky driver):
   "Piggy Back - 600mm") - easy stars, but 5.4x focal mismatch to the RC16;
   differential flexure is the risk on 600s subs.
 - AP26MC: main imaging camera (never select in PHD2).
+DECISION 2026-09-12 (dual-rig): guide EXCLUSIVELY on the OAG GP678C; promote the
+AP26CC to the 600mm piggyback IMAGING camera (OGMA, one-shot color, own
+motorized focuser on a separate COM/USB port). Confirm PHD2 selects GP678C only
+and never the AP26CC. Full design in docs/DUAL_RIG.md.
 Plan: separate PHD2 profiles per guide path with correct focal lengths
 (OAG-RC16-3248 / PiggyBack-600); build a PHD2 dark library for the guide cam
 (hot pixels = fake guide stars - the idle "21 arcsec RMS" artifact); twilight
