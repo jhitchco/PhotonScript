@@ -261,11 +261,8 @@
     }
     function calRig() { return document.getElementById('calRig').value || 'rc16'; }
 
-    async function loadCalibration() {
-        const el = document.getElementById('calHealth');
-        try {
-            const d = await (await fetch('/api/calibration/health?rig='
-                              + encodeURIComponent(calRig()))).json();
+    // Render one rig's calibration health (BIAS/DARK/FLAT) as an HTML block.
+    function _healthBlock(d) {
             const STALE = {FLAT: 45, DARK: 90, BIAS: 180};
             const bucketChip = (t, name, b) => {
                 if (!b) return '<span style="color:#f87171;" title="no ' + name +
@@ -302,11 +299,42 @@
                 return '<b title="newest session: ' + (c.location || c.latest) + '">' +
                     t + '</b> ' + body + ' ' + mark;
             });
-            el.innerHTML = '<div style="font-size:.82rem;line-height:1.7;">' +
-                lines.join('<br>') +
-                '<br><span style="opacity:.5;">chips show each bucket\u2019s NEWEST set · ' +
-                'hover for session/date · flats stale 45d · darks 90d · bias 180d · ' +
-                'darks/bias need the roof CLOSED</span></div>';
+            return '<div style="font-size:.82rem;line-height:1.7;">' +
+                lines.join('<br>') + '</div>';
+    }
+
+    // Show BOTH scopes' calibration at once (labelled when >1 rig). The rig
+    // picker above still chooses which rig the Capture buttons target.
+    async function loadCalibration() {
+        const el = document.getElementById('calHealth');
+        try {
+            let rigs;
+            try {
+                rigs = ((await (await fetch('/api/rigs')).json()).rigs || [])
+                    .map(r => ({id: r.rig, name: r.name}));
+            } catch (e) { rigs = []; }
+            if (!rigs.length) rigs = [{id: 'rc16', name: 'RC16'}];
+            const blocks = [];
+            for (const rg of rigs) {
+                let inner;
+                try {
+                    const d = await (await fetch('/api/calibration/health?rig='
+                        + encodeURIComponent(rg.id))).json();
+                    inner = _healthBlock(d);
+                } catch (e) { inner = '<span style="opacity:.6;">unavailable</span>'; }
+                const label = rigs.length > 1
+                    ? '<div style="font-weight:700;margin:' +
+                      (blocks.length ? '.7rem' : '.1rem') + ' 0 .25rem;">' +
+                      (rg.id === 'rc16' ? '\uD83D\uDD2D ' : '\uD83D\uDD2D\u00d72 ') +
+                      rg.name + '</div>'
+                    : '';
+                blocks.push(label + inner);
+            }
+            el.innerHTML = blocks.join('') +
+                '<div style="opacity:.5;font-size:.8rem;margin-top:.45rem;">chips show '
+                + 'each bucket\u2019s NEWEST set \u00b7 hover for session/date \u00b7 flats '
+                + 'stale 45d \u00b7 darks 90d \u00b7 bias 180d \u00b7 darks/bias need the '
+                + 'roof CLOSED</div>';
         } catch (e) { el.textContent = 'calibration data unavailable'; }
     }
     document.getElementById('calFlats').onclick = async () => {

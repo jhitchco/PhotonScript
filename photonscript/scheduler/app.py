@@ -520,7 +520,7 @@ async def api_equipment_connect():
 async def api_rigs():
     """Config + live connection status for every rig (main + piggyback)."""
     from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
-                                          rig_devices)
+                                          rig_devices, RC16)
     from photonscript.scheduler.preflight import _connected
     cfg = get_config()
     rigs = []
@@ -536,22 +536,41 @@ async def api_rigs():
                 entry["cooler_on"] = payload.get("CoolerOn")
                 cp = payload.get("CoolerPower")
                 entry["cooler_power"] = cp
+                # window dew heater (OGMA/ToupTek); some drivers don't report it
+                entry["dew_heater_on"] = payload.get("DewHeaterOn")
             if dev == "focuser" and conn and payload:
                 entry["position"] = payload.get("Position")
                 entry["temp_c"] = payload.get("Temperature")
+            if dev == "mount" and conn and payload:
+                entry["parked"] = payload.get("AtPark", payload.get("AtHome"))
+                entry["tracking"] = payload.get("TrackingEnabled",
+                                                payload.get("Tracking"))
+                entry["ra"] = payload.get("RightAscension")
+                entry["dec"] = payload.get("Declination")
+                entry["alt"] = payload.get("Altitude")
+                entry["az"] = payload.get("Azimuth")
             if dev == "safetymonitor" and conn and payload:
                 entry["safe"] = payload.get("IsSafe")
             if err:
                 entry["error"] = err
             devices[dev] = entry
-        rigs.append({
+        rig_entry = {
             "rig": rig,
             "name": rig_label(cfg, rig),
             "nina_base_url": rc.nina_base_url,
             "pixel_scale_arcsec": rc.pixel_scale_arcsec,
             "image_watch_dir": getattr(rc, "image_watch_dir", ""),
             "devices": devices,
-        })
+        }
+        # The mount lives on the RC16 instance and is shared with the
+        # piggyback; surface what the agent believes it's pointing at (the
+        # DSO name comes from the running sequence, not the mount driver).
+        if rig == RC16:
+            rig_entry["target"] = _telescope_state.current_target
+            rig_entry["session_state"] = getattr(
+                _telescope_state.session_state, "value",
+                _telescope_state.session_state)
+        rigs.append(rig_entry)
     return {"rigs": rigs}
 
 
@@ -612,6 +631,19 @@ async def api_rigs_cool(minutes: float = 10.0, warm: bool = False,
 
     pairs = await _asyncio.gather(*[_do(r) for r in targets])
     return {"warm": warm, "results": dict(pairs)}
+
+
+@app.post("/api/rigs/dewheater")
+async def api_rigs_dewheater(on: bool, rig: str = "rc16"):
+    """Toggle a rig camera's window dew heater. The dashboard pane passes the
+    rig + desired state; returns ok:false with a detail if the driver can't
+    switch it."""
+    from photonscript.shared.rigs import rig_config, rig_label, nina_dew_heater
+    cfg = get_config()
+    rc = rig_config(cfg, rig)
+    res = await nina_dew_heater(rc.nina_base_url, on)
+    logger.info("Dew heater %s requested for %s", "ON" if on else "OFF", rig)
+    return {"rig": rig, "name": rig_label(cfg, rig), "on": on, **res}
 
 
 @app.get("/api/config")

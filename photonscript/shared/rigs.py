@@ -144,6 +144,23 @@ async def nina_warm(base_url: str, minutes: float = 5.0) -> dict:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
+async def nina_dew_heater(base_url: str, on: bool) -> dict:
+    """Toggle a rig camera's window dew heater (ninaAPI GET dew-heater).
+
+    The OGMA/ToupTek cameras carry a window heater; NINA exposes it at
+    /equipment/camera/dew-heater?power=true|false. Not every camera/driver
+    supports it — on those the call errors and the detail says so."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(base + "/equipment/camera/dew-heater",
+                                  params={"power": "true" if on else "false"})
+            r.raise_for_status()
+            return {"ok": True, "detail": f"dew heater {'ON' if on else 'OFF'}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 def rig_setpoint(config, rig: str) -> float:
     if rig == PIGGYBACK:
         return float(getattr(config, "piggyback_setpoint_c", 0.0))

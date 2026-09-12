@@ -82,25 +82,17 @@
                 <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding (for very long subs / extreme precision)">Arm (Guiding)</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
-                <span id="scopeChip" style="font-size:.85rem;display:inline-flex;align-items:center;flex-wrap:wrap;gap:.35rem;">🔭 checking scope…</span>
             </div>
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
 
-            <!-- Piggyback rig (2nd NINA — 600mm OSC): status + cooler toggle.
-                 Hidden until the rig is enabled (refreshPiggy). -->
-            <div id="piggyPane" hidden style="margin-bottom:1rem;padding:.6rem .8rem;
-                 border:1px solid rgba(148,163,184,.2);border-radius:8px;
-                 background:rgba(125,211,252,.04);display:flex;align-items:center;
-                 flex-wrap:wrap;gap:.5rem 1.1rem;font-size:.85rem;">
-                <span style="font-weight:700;white-space:nowrap;">&#128300;&#215;2
-                    <span id="pbName">Piggyback</span></span>
-                <span id="pbCam" style="white-space:nowrap;">cam &mdash;</span>
-                <span id="pbCool" style="white-space:nowrap;cursor:pointer;"
-                      title="click to toggle the piggyback cooler">cooler &mdash;</span>
-                <span id="pbFoc" style="white-space:nowrap;opacity:.75;">focuser &mdash;</span>
-            </div>
+            <!-- Equipment: one pane per rig (RC16 + piggyback), rendered
+                 consistently by refreshEquip() from /api/rigs. Each pane shows
+                 camera + focuser rows with cooler/dew-heater toggles; the RC16
+                 pane also carries the shared mount's pointing status. -->
+            <div id="equipPanes" style="margin-bottom:1rem;display:flex;
+                 flex-direction:column;gap:.6rem;"></div>
             <div id="sunCard" style="margin-bottom:1rem;"></div>
             <div id="nightTimeline"></div>
         </section>
@@ -379,16 +371,14 @@
                     }
                 }
             } catch (e3) {}
-            el.innerHTML =
+            // scopeChip was folded into the RC16 equipment pane (refreshEquip);
+            // keep this only for the hidden legacy elements above.
+            if (el) el.innerHTML =
                 '<span style="border:1px solid ' + SCOPE_COLORS[d.color] + ';color:' +
                 SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;white-space:nowrap;">' +
-                '🔭 ' + d.status + '</span>' +
-                (d.camera_temp !== null && d.camera_temp !== undefined
-                    ? '<span style="opacity:.6;white-space:nowrap;">sensor ' + d.camera_temp + '°C</span>' : '') +
-                (d.cooler_power !== null && d.cooler_power !== undefined
-                    ? '<span style="opacity:.6;white-space:nowrap;">· cooler ' + d.cooler_power.toFixed(0) + '%</span>' : '');
+                '🔭 ' + d.status + '</span>';
         } catch (e) {
-            el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
+            if (el) el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
         }
     }
     // ---- top strip v2: single-line telescope truth ----
@@ -616,88 +606,168 @@
     </script>
 
     <script>
-    // ---- Piggyback rig visibility (2nd NINA) -----------------------------
-    let _pbBusy = false;   // debounce the cooler toggle while a request is in flight
-    async function refreshPiggy() {
-        const strip = document.getElementById('tsPiggy');
-        const pane = document.getElementById('piggyPane');
-        let pb = null;
-        try {
-            const d = await (await fetch('/api/rigs')).json();
-            pb = (d.rigs || []).find(r => r.rig === 'piggyback');
-        } catch (e) { /* leave hidden on error */ }
-        if (!pb) {                    // rig disabled → hide strip badge + pane
-            if (strip) strip.hidden = true;
-            if (pane) pane.hidden = true;
-            return;
-        }
-        const cam = (pb.devices && pb.devices.camera) || {};
-        const foc = (pb.devices && pb.devices.focuser) || {};
-        const on = !!cam.connected;
-        // top-strip badge
-        if (strip) {
-            strip.hidden = false;
-            strip.innerHTML = '&#128300;&#215;2 ' +
-                (on ? '<b style="color:#4ade80;">PB &#9679;</b>'
-                    : '<b style="color:#f87171;">PB &#9675;</b>');
-        }
-        if (!pane) return;
-        pane.hidden = false;
-        document.getElementById('pbName').textContent = pb.name || 'Piggyback';
-        // camera
-        const pbCam = document.getElementById('pbCam');
-        const t = (cam.temp_c != null) ? (' ' + Number(cam.temp_c).toFixed(1) + '°C') : '';
-        pbCam.innerHTML = on
-            ? '<b style="color:#4ade80;">cam ● connected</b>'
-              + '<span style="opacity:.7;">' + t + '</span>'
-            : '<b style="color:#f87171;">cam ○ not connected</b>';
-        // cooler (click to toggle — mirrors the main camera cooler toggle)
-        const pbCool = document.getElementById('pbCool');
-        const coolerOn = cam.cooler_on === true;
-        const pwr = (cam.cooler_power != null)
-            ? (' · ' + Number(cam.cooler_power).toFixed(0) + '%') : '';
-        const sp = (cam.setpoint_c != null)
-            ? (' → ' + Number(cam.setpoint_c).toFixed(0) + '°C') : '';
-        if (!on) {
-            pbCool.innerHTML = '<span style="opacity:.5;">cooler —</span>';
-            pbCool.onclick = null;
-            pbCool.style.cursor = 'default';
-        } else {
-            pbCool.innerHTML = coolerOn
-                ? '<b style="color:#4ade80;">cooler ON</b>'
-                  + '<span style="opacity:.7;">' + sp + pwr + '</span>'
-                : '<b style="color:#f87171;">cooler OFF</b>';
-            pbCool.style.cursor = 'pointer';
-            pbCool.title = 'piggyback cooler is ' + (coolerOn ? 'ON' : 'OFF')
-                         + ' · click to turn ' + (coolerOn ? 'OFF (warm)' : 'ON (cool to setpoint)');
-            pbCool.onclick = async () => {
-                if (_pbBusy) return;
-                const to = !coolerOn;
-                if (!confirm('Turn the PIGGYBACK camera cooler '
-                    + (to ? 'ON (cool to setpoint)?' : 'OFF (warm over 5 min)?'))) return;
-                _pbBusy = true;
-                pbCool.innerHTML = '<span style="opacity:.6;">cooler …</span>';
-                try {
-                    await fetch('/api/rigs/cool?rig=piggyback' + (to ? '' : '&warm=true'),
-                                {method: 'POST'});
-                } catch (e) {}
-                _pbBusy = false;
-                setTimeout(refreshPiggy, 1500);
-            };
-        }
-        // focuser
-        const pbFoc = document.getElementById('pbFoc');
-        if (foc.connected) {
-            const pos = (foc.position != null) ? (' @ ' + foc.position) : '';
-            const ft = (foc.temp_c != null) ? (' · ' + Number(foc.temp_c).toFixed(1) + '°C') : '';
-            pbFoc.innerHTML = '<b style="color:#4ade80;">focuser ●</b>'
-                + '<span style="opacity:.7;">' + pos + ft + '</span>';
-        } else {
-            pbFoc.innerHTML = '<span style="color:#f87171;">focuser ○ not connected</span>';
-        }
+    // ---- Equipment panes: one per rig (RC16 + piggyback), rendered the
+    //      same way so both look consistent. Camera + focuser rows with
+    //      cooler / dew-heater toggles; the RC16 pane also carries the shared
+    //      mount's pointing status. Driven by /api/rigs. -------------------
+    const _equipBusy = {};   // debounce per rig+control while a POST is in flight
+
+    function _dot(on) {
+        return on ? '<b style="color:#4ade80;">●</b>'
+                  : '<span style="color:#f87171;">○</span>';
     }
-    refreshPiggy();
-    setInterval(refreshPiggy, 15000);
+    function _fmtRa(ra) {
+        if (ra == null) return '';
+        const h = Math.floor(ra), m = Math.round((ra - h) * 60);
+        return h + 'h' + String(m).padStart(2, '0');
+    }
+    function _fmtDec(dec) {
+        if (dec == null) return '';
+        const s = dec < 0 ? '−' : '+', a = Math.abs(dec);
+        const d = Math.floor(a), m = Math.round((a - d) * 60);
+        return s + d + '°' + String(m).padStart(2, '0') + '′';
+    }
+    function _toggleBtn(id, label, state) {
+        // state: 'on' (green) | 'off' (red) | 'unknown' (grey) | 'disabled'
+        const col = state === 'on' ? '#4ade80'
+                  : state === 'off' ? '#f87171' : '#94a3b8';
+        const dis = state === 'disabled';
+        return '<button id="' + id + '"' + (dis ? ' disabled' : '') +
+            ' style="font-size:.74rem;padding:.15rem .55rem;border-radius:5px;' +
+            'border:1px solid ' + col + ';background:transparent;color:' + col +
+            ';cursor:' + (dis ? 'default' : 'pointer') + ';opacity:' +
+            (dis ? '.4' : '1') + ';white-space:nowrap;">' + label + '</button>';
+    }
+    function _equipRow(label, body) {
+        return '<div style="display:flex;align-items:center;flex-wrap:wrap;' +
+            'gap:.4rem .8rem;margin:.18rem 0;font-size:.85rem;">' +
+            '<span style="min-width:5.5rem;opacity:.7;">' + label + '</span>' +
+            body + '</div>';
+    }
+
+    async function refreshEquip() {
+        const strip = document.getElementById('tsPiggy');
+        const host = document.getElementById('equipPanes');
+        let rigs = [];
+        try {
+            rigs = (await (await fetch('/api/rigs')).json()).rigs || [];
+        } catch (e) { return; }
+
+        // top-strip piggyback badge (unchanged)
+        const pb = rigs.find(r => r.rig === 'piggyback');
+        if (strip) {
+            if (!pb) { strip.hidden = true; }
+            else {
+                const on = !!(((pb.devices || {}).camera || {}).connected);
+                strip.hidden = false;
+                strip.innerHTML = '&#128300;&#215;2 ' + (on
+                    ? '<b style="color:#4ade80;">PB &#9679;</b>'
+                    : '<b style="color:#f87171;">PB &#9675;</b>');
+            }
+        }
+        if (!host) return;
+
+        let html = '';
+        rigs.forEach((r, i) => {
+            const idx = i + 1;
+            const cam = (r.devices || {}).camera || {};
+            const foc = (r.devices || {}).focuser || {};
+            const mnt = (r.devices || {}).mount;
+            const icon = r.rig === 'rc16' ? '&#128301;' : '&#128301;&#215;2';
+            const camOn = !!cam.connected;
+
+            // camera controls
+            const coolerOn = cam.cooler_on === true;
+            const pwr = (camOn && cam.cooler_power != null)
+                ? ' ' + Number(cam.cooler_power).toFixed(0) + '%' : '';
+            const coolLabel = !camOn ? 'cooler —'
+                : coolerOn ? ('cooler ON' + pwr) : 'cooler OFF';
+            const coolState = !camOn ? 'disabled' : (coolerOn ? 'on' : 'off');
+            const dew = cam.dew_heater_on;
+            const dewLabel = !camOn ? 'dew —'
+                : dew === true ? 'dew ON' : dew === false ? 'dew OFF' : 'dew ?';
+            const dewState = !camOn ? 'disabled'
+                : dew === true ? 'on' : dew === false ? 'off' : 'unknown';
+
+            let pane = '<div style="padding:.55rem .8rem;border:1px solid ' +
+                'rgba(148,163,184,.2);border-radius:8px;background:rgba(125,211,252,.04);">';
+            pane += '<div style="font-weight:700;margin-bottom:.4rem;white-space:nowrap;">' +
+                icon + ' ' + (r.name || r.rig) + '</div>';
+            // Camera N: status + cooler + dew toggles
+            pane += _equipRow('Camera ' + idx,
+                '<span style="white-space:nowrap;">' + _dot(camOn) + ' ' +
+                (camOn ? 'connected' : 'not connected') + '</span>' +
+                _toggleBtn('cool-' + r.rig, coolLabel, coolState) +
+                _toggleBtn('dew-' + r.rig, dewLabel, dewState));
+            // Focuser N: status + position
+            const focPos = (foc.position != null) ? ' @ ' + foc.position : '';
+            pane += _equipRow('Focuser ' + idx,
+                '<span style="white-space:nowrap;">' + _dot(!!foc.connected) + ' ' +
+                (foc.connected ? ('connected' + focPos) : 'not connected') + '</span>');
+            // Mount (RC16 owns it; shared with the piggyback) — what it points at
+            if (mnt) {
+                let m;
+                if (!mnt.connected) m = _dot(false) + ' not connected';
+                else if (mnt.parked) m = _dot(true) + ' Parked — home';
+                else if (r.target) m = '<b style="color:#7dd3fc;white-space:nowrap;">&#8594; ' +
+                    r.target + '</b>';
+                else if (mnt.tracking) m = '<b style="color:#7dd3fc;">&#8594; tracking</b> ' +
+                    '<span style="opacity:.7;white-space:nowrap;">' +
+                    _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
+                else m = _dot(true) + ' <span style="opacity:.7;white-space:nowrap;">idle ' +
+                    _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
+                pane += _equipRow('Mount', '<span>' + m + '</span>');
+            }
+            pane += '</div>';
+            html += pane;
+        });
+        host.innerHTML = html;
+
+        // wire toggles (innerHTML was replaced, so re-attach each refresh)
+        rigs.forEach(r => {
+            const cam = (r.devices || {}).camera || {};
+            if (!cam.connected) return;
+            const cb = document.getElementById('cool-' + r.rig);
+            if (cb) cb.onclick = () => _toggleCooler(r, cam.cooler_on === true);
+            const db = document.getElementById('dew-' + r.rig);
+            if (db) db.onclick = () => _toggleDew(r, cam.dew_heater_on === true);
+        });
+    }
+
+    async function _toggleCooler(r, isOn) {
+        const key = r.rig + ':cool';
+        if (_equipBusy[key]) return;
+        const to = !isOn;
+        if (!confirm('Turn the ' + (r.name || r.rig) + ' camera cooler ' +
+            (to ? 'ON (cool to setpoint)?' : 'OFF (warm over 5 min)?'))) return;
+        _equipBusy[key] = true;
+        try {
+            await fetch('/api/rigs/cool?rig=' + encodeURIComponent(r.rig) +
+                        (to ? '' : '&warm=true'), {method: 'POST'});
+        } catch (e) {}
+        _equipBusy[key] = false;
+        setTimeout(refreshEquip, 1500);
+    }
+
+    async function _toggleDew(r, isOn) {
+        const key = r.rig + ':dew';
+        if (_equipBusy[key]) return;
+        const to = !isOn;
+        if (!confirm('Turn the ' + (r.name || r.rig) + ' dew heater ' +
+            (to ? 'ON?' : 'OFF?'))) return;
+        _equipBusy[key] = true;
+        try {
+            const res = await (await fetch('/api/rigs/dewheater?rig=' +
+                encodeURIComponent(r.rig) + '&on=' + to, {method: 'POST'})).json();
+            if (res && res.ok === false)
+                alert('Dew heater could not be switched: ' + (res.detail || 'unknown'));
+        } catch (e) {}
+        _equipBusy[key] = false;
+        setTimeout(refreshEquip, 1500);
+    }
+
+    refreshEquip();
+    setInterval(refreshEquip, 15000);
     </script>
 
     <script>
