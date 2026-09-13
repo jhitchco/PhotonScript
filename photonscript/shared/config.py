@@ -146,7 +146,17 @@ class PhotonScriptConfig(BaseSettings):
                                      # see the shared safety monitor. Whether it
                                      # can is AUTO-DETECTED at arm (connect + read
                                      # the NINA #2 safety monitor) — no manual flag.
-    arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
+    arm_preconfig_lead_min: int = 30  # dispatch the sequence this many min before dusk
+    cool_lead_minutes: int = 30  # the night sequence turns the cooler + dew heater ON
+                                 # this many min before astro dark (and not before),
+                                 # so the camera is at setpoint the moment it's safe
+                                 # to image. This is the "on 30 min before imaging"
+                                 # lead; the dashboard shows a countdown to it.
+    cooler_off_until_precool: bool = True  # on arm, force the cooler + dew heater OFF
+                                 # (every rig) so they stay off from arm until the
+                                 # sequence turns them on at cool_lead. Fresh-arm only
+                                 # — never on restart, so a mid-night restart can't
+                                 # kill cooling.
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by
                                     # default: opt in once you trust a night's run.

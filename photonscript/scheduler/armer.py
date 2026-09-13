@@ -126,12 +126,25 @@ class Armer:
     # -- public API ------------------------------------------------------------
 
     def status(self) -> dict:
+        # When the cooler + dew heater turn ON: cool_lead minutes before astro
+        # dusk. Surfaced so the dashboard can show a live countdown to it.
+        cool_lead = int(getattr(self.config, "cool_lead_minutes", 30))
+        cooler_on_utc = None
+        dusk = self.plan.get("dusk_utc")
+        if dusk:
+            try:
+                cooler_on_utc = (datetime.fromisoformat(dusk.rstrip("Z"))
+                                 - timedelta(minutes=cool_lead)).isoformat() + "Z"
+            except Exception:  # noqa: BLE001
+                cooler_on_utc = None
         return {"state": self.state, "detail": self.detail,
                 "guiding": "guided" if self._use_guiding() else "encoders",
                 "night_of": self.plan.get("night_of"),
                 "preconfig_utc": self.plan.get("preconfig_utc"),
                 "dusk_utc": self.plan.get("dusk_utc"),
-                "dawn_utc": self.plan.get("dawn_utc")}
+                "dawn_utc": self.plan.get("dawn_utc"),
+                "cool_lead_min": cool_lead,
+                "cooler_on_utc": cooler_on_utc}
 
     def _use_guiding(self) -> bool:
         """Resolve this night's guiding mode. An explicit arm-time choice
@@ -169,6 +182,15 @@ class Armer:
                 conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
+        # Pre-imaging state: force the cooler + dew heater OFF now, so they stay
+        # off from arm until the sequence turns them on cool_lead min before dark.
+        # ONLY here in the fresh-arm path — never in connect_all/restore, which
+        # also run mid-night, so a restart while imaging can't kill cooling.
+        if getattr(self.config, "cooler_off_until_precool", True):
+            try:
+                await self._cooler_dew_off_all()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("pre-imaging cooler/dew off at arm failed: %s", e)
         await notify(self.config,
                      f"ARMED for {self.plan['night_of']} [{mode}]: "
                      f"{', '.join(self.plan['targets'][:4])} — "
@@ -246,6 +268,20 @@ class Armer:
         for rig in rig_ids(self.config):
             out[rig] = await self.connect_all(rig)
         return out
+
+    async def _cooler_dew_off_all(self) -> None:
+        """Force the cooler (warm) + dew heater OFF on every enabled rig. Called
+        at fresh arm so both stay off until the night sequence turns them on
+        cool_lead min before astro dark. Best-effort per rig; never raises."""
+        from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
+                                              nina_dew_heater)
+        for rig in rig_ids(self.config):
+            rc = rig_config(self.config, rig)
+            try:
+                await nina_warm(rc.nina_base_url, minutes=3.0)
+                await nina_dew_heater(rc.nina_base_url, False)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cooler/dew off (%s) failed: %s", rig, e)
 
     # -- ninaAPI helpers ---------------------------------------------------------
 

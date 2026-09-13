@@ -295,3 +295,16 @@ class TestDawnSkyFlats:
         assert "DARKS_180s" in txt  # second exposure epoch also queued
         # dark blocks come before the WaitUntilSafe hold
         assert i < txt.index("SafetyMonitor.WaitUntilSafe", i)
+
+
+def test_dew_and_cooler_on_at_start_off_at_end():
+    # Jeremy's request: cooler + dew heater ON before imaging, OFF after.
+    data = _gen()
+    dew = [d for d in _walk(data) if "Camera.DewHeater" in d.get("$type", "")]
+    onoff = [d.get("OnOff") for d in dew]
+    assert onoff, "no DewHeater instructions generated"
+    assert onoff[0] is True        # turned ON in the start area
+    assert onoff[-1] is False      # turned OFF in the end area
+    types = _types(data)
+    assert any("CoolCamera" in t for t in types)   # cools before imaging
+    assert any("WarmCamera" in t for t in types)   # warms (cooler off) after

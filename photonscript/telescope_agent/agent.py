@@ -82,6 +82,7 @@ class TelescopeAgent:
         # Launch monitoring tasks
         tasks = [
             asyncio.create_task(self._nina_poll_loop()),
+            asyncio.create_task(self._safety_loop()),
             asyncio.create_task(self._phd2_monitor()),
             asyncio.create_task(self._file_watch_loop()),
             asyncio.create_task(self._state_broadcast_loop()),
@@ -209,24 +210,39 @@ class TelescopeAgent:
                 "Cooler is ON but the dew heater cannot be switched via the "
                 "NINA API — turn it ON manually (Equipment > Camera).")
 
+    SAFETY_POLL_S = 15         # dedicated safety loop cadence (independent poll)
     SAFETY_GRACE_S = 120       # tolerate a brief drop before acting
-    SAFETY_FAST_ATTEMPTS = 5   # quick reconnects at poll pace, then back off
-    SAFETY_SLOW_RETRY_S = 1800 # after that: retry + re-escalate every 30 min
+    SAFETY_FAST_ATTEMPTS = 5   # quick reconnects at poll pace, then steady retry
+    SAFETY_RETRY_S = 60        # after the fast burst: keep RE-connecting every 60s
+    SAFETY_SLOW_RETRY_S = 1800 # re-ESCALATE (Pushover) every 30 min while down
     SAFETY_ABORT_AFTER_S = 300 # persistent-disconnect abort threshold (opt-in)
+
+    async def _safety_loop(self):
+        """Run the safety-monitor watchdog on its OWN cadence, isolated from the
+        camera/mount poll. A slow or failing NINA call elsewhere must never keep
+        the reconnect from firing — the safety monitor is the one device that,
+        left disconnected, lets the rig image a closed roof."""
+        while self._running:
+            try:
+                await self._safety_monitor_watchdog()
+            except Exception as e:  # noqa: BLE001 - never let this loop die
+                logger.warning("safety loop iteration errored: %s", e)
+            await asyncio.sleep(self.SAFETY_POLL_S)
 
     async def _safety_monitor_watchdog(self):
         """Keep the NINA safety monitor CONNECTED all night — a disconnected
         monitor is as dangerous as bad weather, because the sequence goes
         blind to the sky.
 
-        2026-09-09/11 lesson: the ASCOM Alpaca monitor sat disconnected the
-        whole night. WaitUntilSafe never released, SafetyMonitorCondition let
-        the rig image a closed roof, and ~1 h of donuts resulted — silently.
-        The old watchdog gave up after 5 tries and alerted only once at low
-        priority. Now it reconnects fast at first, then keeps retrying every
-        30 min for the rest of the night, escalates as SEVERE and re-alerts
-        every 30 min while still down, and — if safety_disconnect_aborts is
-        set — stops a RUNNING sequence that has been blind too long.
+        2026-09-09/11/13 lessons: the ASCOM Alpaca monitor ("AARO Safety Obs 2")
+        is slow (poll cycles routinely run 2-10 s against a 2 s interval) and
+        NINA eventually drops it on a Connected-property error (seen 2026-09-13
+        01:33). The watchdog: reconnects fast at first, then keeps RE-connecting
+        every 60 s for the rest of the night (never backs off to 30-min gaps, so
+        it recovers within ~1 min of the device coming back); on a stubborn drop
+        it cycles disconnect->connect to clear a wedged ASCOM handle; escalates
+        SEVERE and re-alerts every 30 min while still down; and — if
+        safety_disconnect_aborts is set — stops a RUNNING sequence blind too long.
         """
         import time
         from photonscript.shared.models import SessionState
@@ -265,13 +281,22 @@ class TelescopeAgent:
                 "Auto-reconnect is running; if it persists, reconnect it in "
                 "NINA (Equipment > Safety Monitor).", severe=True)
 
-        # --- reconnect: fast for the first few tries, then every 30 min -----
+        # --- reconnect: fast burst, then keep trying every 60s (never give up) -
         interval = 0 if self._safety_fix_attempts < self.SAFETY_FAST_ATTEMPTS \
-            else self.SAFETY_SLOW_RETRY_S
+            else self.SAFETY_RETRY_S
         if now - self._safety_last_attempt >= interval:
             self._safety_last_attempt = now
             self._safety_fix_attempts += 1
             try:
+                # After the first plain attempt, cycle disconnect->connect: a
+                # wedged ASCOM handle (the Connected-property error NINA hit)
+                # often needs a clean drop before it will re-attach.
+                if self._safety_fix_attempts > 1:
+                    try:
+                        await self.nina.disconnect_safety()
+                        await asyncio.sleep(1)
+                    except Exception:  # noqa: BLE001 - best effort
+                        pass
                 await self.nina.connect_safety()
                 info = await self.nina.get_safety_info()
                 if info.get("Connected"):
@@ -394,7 +419,10 @@ class TelescopeAgent:
                     )
                 await self._cooling_watchdog(camera)
                 await self._dew_heater_watchdog(camera)
-                await self._safety_monitor_watchdog()
+                # NB: the safety-monitor watchdog runs in its OWN loop
+                # (_safety_loop), NOT here — so a slow/failing camera or mount
+                # poll can never skip the safety reconnect (2026-09-13 lesson:
+                # the monitor dropped at 01:33 and nothing reattempted it).
 
                 # Get mount info
                 mount = await self.nina.get_mount_info()

@@ -457,6 +457,8 @@ _CONFIG_FIELDS = [
     ("pushover_monthly_cap", "PS_PUSHOVER_MONTHLY_CAP", "Pushover monthly hard cap", "Nanny / Alerts", "int", False, False),
     ("safety_confirm_seconds", "PS_SAFETY_CONFIRM_SECONDS", "Confirm-safe hold before resume (s) — safety-flap debounce", "Nanny / Alerts", "int", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
+    ("cool_lead_minutes", "PS_COOL_LEAD_MINUTES", "Cooler + dew heater ON this many min before astro dark", "Imaging", "int", False, False),
+    ("cooler_off_until_precool", "PS_COOLER_OFF_UNTIL_PRECOOL", "On arm, force cooler + dew OFF until pre-cool time", "Imaging", "bool", False, False),
     ("auto_arm_enabled", "PS_AUTO_ARM_ENABLED", "Auto-arm every night (hands-off multi-night)", "Nanny / Alerts", "bool", False, False),
     ("auto_arm_lead_hours", "PS_AUTO_ARM_LEAD_HOURS", "Auto-arm window opens N hours before pre-config", "Nanny / Alerts", "float", False, False),
     ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),

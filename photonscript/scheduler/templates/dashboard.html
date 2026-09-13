@@ -86,6 +86,9 @@
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
+                 padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
+                 background:rgba(125,211,252,.06);white-space:normal;"></div>
 
             <!-- Equipment: one pane per rig (RC16 + piggyback), rendered
                  consistently by refreshEquip() from /api/rigs. Each pane shows
@@ -397,6 +400,10 @@
                 (await fetch('/api/arm')).json(),
                 (await fetch('/api/telescope/state')).json()]);
             window._scopeLast = d;
+            // Cooler + dew heater turn-on countdown (rendered by the 1s ticker)
+            window._armState = arm.state || '';
+            window._coolerOnAt = arm.cooler_on_utc ? Date.parse(arm.cooler_on_utc) : null;
+            window._coolLeadMin = arm.cool_lead_min || 30;
             const a = document.getElementById('tsArm');
             a.textContent = arm.state || '\u2014';
             a.title = arm.detail || '';
@@ -499,6 +506,27 @@
         }
         const n = document.getElementById('tsNext');
         n.textContent = _nextAt ? _nextLabel + fmtDur(_nextAt - Date.now()) : '';
+        // Cooler + dew heater turn-on countdown
+        const cc = document.getElementById('coolerCountdown');
+        if (cc) {
+            const st = window._armState || '';
+            const onAt = window._coolerOnAt || null;
+            const armedish = st === 'ARMED' || st === 'RUNNING' || st.includes('PAUSED');
+            if (armedish && onAt && Date.now() < onAt) {
+                cc.hidden = false;
+                const at = new Date(onAt).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'});
+                cc.innerHTML = '❄️ Cooler + dew heater turn on in <b>' +
+                    fmtDur(onAt - Date.now()) + '</b> <span style="opacity:.65;">(at ' +
+                    at + ' local, ' + (window._coolLeadMin || 30) +
+                    ' min before astro dark)</span>';
+            } else if (armedish && onAt) {
+                cc.hidden = false;
+                cc.innerHTML = '❄️ Cooler + dew heater <b style="color:#4ade80;">' +
+                    'on for imaging</b> <span style="opacity:.65;">(off again at shutdown)</span>';
+            } else {
+                cc.hidden = true;
+            }
+        }
     }, 1000);
     loadStrip();
     setInterval(loadStrip, 10 * 1000);

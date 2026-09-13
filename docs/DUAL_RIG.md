@@ -1,8 +1,10 @@
 # PhotonScript — Dual-Rig Plan (RC16 + 600 mm piggyback)
 
-**Status: LIVING PLAN — pre-build, nothing deployed.**
-Owner: Jeremy · Last updated: 2026-09-12
-Sequence: flesh out → **red-team** → modify → build in phases.
+**Status: BUILT & DEPLOYED — Phases 0–2 shipped; both rigs live.**
+Owner: Jeremy · Last updated: 2026-09-13
+Sequence: flesh out → red-team → modify → build in phases. **Current reality and
+operating procedures are in [§9 Built & operating](#9-built--operating-2026-09-13);
+§§1–8 below are the original plan, kept as history.**
 
 ---
 
@@ -282,3 +284,89 @@ passes, the rest of Phase 0 is just software.
 - Two-camera connect OK? ___ · USB layout (same/diff controller): ___
 - Idle RAM/CPU: ___ · Both-camera peak RAM/CPU: ___
 - Driver misbehavior seen: ___ · f-ratio confirmed: ___
+
+---
+
+## 9. Built & operating (2026-09-13)
+
+What actually shipped, and how to run it. This supersedes the plan above where
+they differ. Nothing here deploys until `deploy.ps1`; the dev clone is
+`C:\dev\PhotonScript`, the live dashboard is `http://100.94.189.77:8100`
+(Tailscale) on the scope PC.
+
+### 9.1 Two rigs, live
+- **NINA #1 "RC16"** on `:1888` — mount, PHD2/OAG, AP26MC, filter wheel, main
+  focuser. Unchanged night sequence.
+- **NINA #2 "Piggy-600"** on `:1889` — AP26CC (OSC) + its own focuser only; rides
+  the RC16 mount, never slews/parks. Two-camera coexistence is confirmed working.
+- PhotonScript is rig-aware end to end: `photonscript/shared/rigs.py` is the rig
+  registry (`rig_config()` returns a per-rig config *view* overriding
+  nina_base_url / pixel scale / gain / offset / setpoint / library subtree / dark
+  exposures), and `GET /api/rigs` reports both rigs' live device state. A second
+  telescope-agent is spawned for the piggyback only when
+  `PS_PIGGYBACK_IMAGE_WATCH_DIR` is set and differs from the RC16's (guards
+  against double-grading).
+
+### 9.2 Dashboard
+- **Equipment panes** (Tonight's Run): one pane per rig, rendered identically —
+  camera (status + **cooler toggle** + **dew-heater toggle**), focuser (status +
+  position), and for the RC16 a **Mount** row (Parked / → target / → tracking
+  RA·Dec). The piggyback pane has a **Roof** row instead: whether NINA #2 is
+  seeing the shared safety monitor (→ can do roof-closed darks/bias) or not
+  (flats only).
+- Per-rig cooler/dew toggles hit `POST /api/rigs/cool?rig=` and
+  `POST /api/rigs/dewheater?rig=`.
+
+### 9.3 Calibration (per rig)
+- The **Calibration Library** page (`/calibration`) is read-only and RC16-only;
+  the **capture controls live on the System page** (`/system` → Calibration
+  Health), which shows **both** rigs' health at once.
+- **Rig picker** targets which scope the Capture buttons drive.
+- **Darks button** shoots each rig's own `dark_exposures` (RC16 `600,180`;
+  piggyback `120`) at that rig's gain/offset/setpoint — matched to its subs, not a
+  hardcoded 300/600.
+- **Flats button** has a scope selector: *all 7 · stale only · broadband (LRGB) ·
+  narrowband (Ha/OIII/SII)*. "stale only" auto-selects any filter whose newest
+  flats are >45 d old (use it — or "broadband" — to refresh the LRGB masters
+  without re-doing fresh narrowband).
+- Endpoints: `POST /api/calibration/capture` and `/api/calibration/flats` take
+  `rig` (+ flats take `only`/`stale`); `GET /api/calibration/health?rig=`.
+- Piggyback calibration lands in its own library subtree (`<main lib>/piggyback`)
+  so OSC never mixes with RC16 LRGB/SHO.
+
+### 9.4 One Arm covers both scopes (the companion)
+- On arm, when the RC16 sequence dispatches (ARMED→RUNNING at pre-config), the
+  armer also dispatches a **piggyback calibration companion** to NINA #2
+  (`generate_piggyback_companion_json`), best-effort — a piggyback failure never
+  touches the RC16 night. Master toggle: `PS_PIGGYBACK_CALIBRATE_ON_ARM`
+  (default on).
+- The companion **auto-detects the roof**: at dispatch it connects NINA #2's
+  safety monitor and reads it back. If NINA #2 sees the monitor → roof-closed OSC
+  **darks (to quota) + bias** gated on `LoopWhileUnsafe`, then **OSC dawn flats**
+  at nautical dawn +5. If it doesn't → **dawn flats only** (time-gated), with an
+  annotation explaining the skip. No manual flag for this — detection replaces it.
+- The companion never slews/parks; its dawn flats ride the RC16's dawn-flat slew,
+  so both fire together.
+- **GOTCHA:** the companion only dispatches on a *fresh* arm→running transition.
+  A restart / reattach to an already-running arm does **not** re-dispatch it —
+  **re-arm** (disarm → arm) to activate it. Re-arming while unsafe/roof-closed is
+  free (RC16 isn't imaging then).
+
+### 9.5 Shared safety monitor (required for piggyback darks/bias)
+- Device: **"AARO Safety Obs 2"** (`ASCOM.AlpacaDynamic1.SafetyMonitor`), the same
+  monitor the RC16 uses. Alpaca is multi-client — **verified both NINA instances
+  hold it at once**.
+- It must be **selected in the NINA #2 profile** (NINA can't connect a device
+  that isn't in the profile). Once it is, PhotonScript connects it on arm, the
+  dashboard Roof row goes green, and the companion switches darks/bias on by
+  itself.
+
+### 9.6 Follow-ups / watch-items
+- **RC16 broadband flats** (L/R/G/B) went 541 d stale while narrowband stayed
+  fresh — the green "healthy" badge only grades filters that are *present*, so it
+  hid this. Refresh with the flats scope = broadband/stale. Dawn-flats-on-arm only
+  covers the filters in that night's plan, so an all-narrowband night never
+  refreshes LRGB.
+- Keep `PS_PIGGYBACK_DARK_EXPOSURES` matched to the OSC sub length
+  (`PS_PIGGYBACK_EXPOSURE_S`, default 120 s), and set the **NINA #2 camera offset
+  to 256** so lights match the generated darks.

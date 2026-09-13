@@ -882,15 +882,17 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             conditions=[_safety_condition()])
         end_items.append(flat_block)
     end_items.append(_pushover("Shutdown", "starting shutdown: stop guiding, "
-                               "park, warm camera, disconnect"))
+                               "park, dew heater off, warm camera, disconnect"))
     end_items.append(_stop_guiding())
     if sequence.park_on_finish:
         end_items.append(_park())
+    # Imaging done: turn the dew heater OFF explicitly (warm handles the cooler).
+    end_items.append(_dew_heater(False))
     if sequence.warm_camera_on_finish:
         end_items.append(_warm_camera(3.0))
     end_items.append(_disconnect_all())
     end_items.append(_pushover("Shutdown", "shutdown complete — parked, warm, "
-                               "cooler off, guider stopped"))
+                               "cooler + dew heater off, guider stopped"))
 
     root = _seq_container(
         sequence.name,
