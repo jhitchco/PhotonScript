@@ -413,6 +413,7 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("ascom_logs_dir", "PS_ASCOM_LOGS_DIR", "ASCOM trace-log base dir", "NINA", "str", False, False),
     ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
     ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
     ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
@@ -1818,6 +1819,46 @@ async def api_nina_log(lines: int = 500, grep: str = ""):
         rows = [r for r in rows if any(n in r.lower() for n in needles)]
     rows = rows[-min(max(1, lines), 5000):]
     return f"# {Path(logs[-1]).name} - last {len(rows)} lines\n" + "\n".join(rows)
+
+
+def _latest_ascom_log(base: str, name: str = ""):
+    """Newest ASCOM trace-log file under `base` (searched recursively, since the
+    TraceLogger writes into dated subfolders like 'Logs YYYY-MM-DD'). Optional
+    `name` filters by filename substring (e.g. 'Safety'). Returns a Path or None.
+    """
+    root = Path(base) if base else None
+    if not root or not root.exists():
+        return None
+    cands = [p for p in root.rglob("*.txt") if p.is_file()]
+    cands += [p for p in root.rglob("*.log") if p.is_file()]
+    if name:
+        cands = [p for p in cands if name.lower() in p.name.lower()]
+    if not cands:
+        return None
+    return max(cands, key=lambda p: p.stat().st_mtime)
+
+
+@app.get("/api/ascom/log", response_class=PlainTextResponse)
+async def api_ascom_log(lines: int = 500, grep: str = "", name: str = "Safety"):
+    """Tail (and optionally filter) the newest ASCOM trace log — the driver-level
+    detail (HTTP calls, exceptions) behind a safety-monitor drop. Requires
+    'Enable Trace' in the ASCOM Alpaca driver setup. name= filters by filename
+    substring (default 'Safety' → the safety-monitor client's log; blank = any
+    ASCOM device); grep= filters lines (case-insensitive, '|' for multiple)."""
+    base = getattr(get_config(), "ascom_logs_dir", "")
+    if not base:
+        return "ascom_logs_dir not configured (set it in System config)"
+    p = _latest_ascom_log(base, name)
+    if p is None:
+        label = f'"{name}" ' if name else ""
+        return (f"no ASCOM {label}logs found under {base} — enable 'Trace' in the "
+                "ASCOM Alpaca driver setup, then reconnect and wait for activity")
+    rows = p.read_text(encoding="utf-8", errors="replace").splitlines()
+    if grep:
+        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
+        rows = [r for r in rows if any(n in r.lower() for n in needles)]
+    rows = rows[-min(max(1, lines), 5000):]
+    return f"# {p.name} - last {len(rows)} lines\n" + "\n".join(rows)
 
 
 @app.get("/api/runs/{date}/bundle")

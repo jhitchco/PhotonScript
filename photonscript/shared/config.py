@@ -73,6 +73,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # month. Set 30 for monthly, 0 to capture every night.
     flat_count: int = 15  # sky flats per filter at dawn
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
+    ascom_logs_dir: str = "C:\\Users\\jeremy\\Documents\\ASCOM"  # ASCOM trace-log
+    # base (TraceLogger writes dated subfolders here); enable Trace in the driver
+    # setup to capture the safety-monitor client's HTTP/exception detail
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
     quality_fwhm_max: float = 4.0  # arcsec
     quality_eccentricity_max: float = 0.6
