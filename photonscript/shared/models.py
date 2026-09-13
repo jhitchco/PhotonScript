@@ -122,6 +122,8 @@ class ImagingProject(BaseModel):
     target: CelestialTarget
     exposure_plans: list[ExposurePlan] = Field(default_factory=list)
     priority: int = 50  # 0-100, higher = more important
+    budget_hours: float = 8.0  # total imaging time to dedicate; drives filter allocation
+    filter_mix: Optional[dict] = None  # custom {filter: percent} split; None = type default
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     total_integration_hours: float = 0.0
@@ -151,6 +153,11 @@ class ImageQualityMetrics(BaseModel):
     noise_adu: Optional[float] = None
     snr: Optional[float] = None
     tracking_rms_arcsec: Optional[float] = None
+    corner_spread: Optional[float] = None  # corner FWHM spread vs median (collimation/tilt watch)
+    clipped_pct: Optional[float] = None    # % pixels at/near full well
+    sat_star_pct: Optional[float] = None   # % detected stars with saturated cores
+    swamp_factor: Optional[float] = None   # background variance / read-noise variance
+    exposure_flag: Optional[str] = None    # under / ok / sat-stars / clipped
     passed_qa: bool = True
     rejection_reason: str = ""
 
@@ -254,8 +261,8 @@ class NinaSequenceTarget(BaseModel):
     auto_focus_on_start: bool = True
     auto_focus_interval_minutes: int = 60
     meridian_flip: bool = True
-    dither_every_n: int = 3
-    start_guiding: bool = True
+    dither_every_n: int = 5
+    start_guiding: bool = False  # CEM70G encoders: unguided default
     cool_camera: bool = True
     camera_temp_c: float = -10.0
 
@@ -265,6 +272,7 @@ class NinaSequenceFile(BaseModel):
     name: str
     targets: list[NinaSequenceTarget] = Field(default_factory=list)
     wait_for_altitude: float = 30.0  # minimum altitude degrees
+    wait_until_local: Optional[str] = None  # "HH:MM:SS" — WaitForTime gate before imaging
     park_on_finish: bool = True
     warm_camera_on_finish: bool = True
 

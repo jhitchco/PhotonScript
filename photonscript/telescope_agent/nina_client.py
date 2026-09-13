@@ -42,7 +42,24 @@ class NinaClient:
         resp.raise_for_status()
         return resp.json()
 
+    # --- Camera control (cooling watchdog) ---
+
+    async def connect_camera(self) -> dict:
+        return await self._get("/equipment/camera/connect")
+
+    async def disconnect_camera(self) -> dict:
+        return await self._get("/equipment/camera/disconnect")
+
+    async def cool_camera(self, temperature: float, minutes: float = 10.0) -> dict:
+        return await self._get(
+            f"/equipment/camera/cool?temperature={temperature}&minutes={minutes}")
+
     # --- Equipment Status ---
+
+    async def set_dew_heater(self, power: bool) -> dict:
+        """Advanced API dew-heater control (window heater on the OGMA)."""
+        return await self._get(
+            f"/equipment/camera/dew-heater?power={'true' if power else 'false'}")
 
     async def get_camera_info(self) -> dict:
         return await self._get("/equipment/camera")
@@ -61,6 +78,12 @@ class NinaClient:
 
     async def get_guider_info(self) -> dict:
         return await self._get("/equipment/guider")
+
+    async def get_safety_info(self) -> dict:
+        return await self._get("/equipment/safetymonitor")
+
+    async def connect_safety(self) -> dict:
+        return await self._get("/equipment/safetymonitor/connect")
 
     # --- Sequence Control ---
 

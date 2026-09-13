@@ -6,15 +6,17 @@ the remote telescope orchestration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -36,12 +38,23 @@ from photonscript.scheduler.nina_sequence_json import generate_nina_json
 
 logger = logging.getLogger(__name__)
 
+
+from photonscript.shared.version import repo_version
+
+VERSION = repo_version()
+
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 app = FastAPI(title="PhotonScript Scheduler", version="0.1.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve the dashboard favicon (browsers request this path by default)."""
+    return FileResponse(STATIC_DIR / "favicon.ico")
 
 # In-memory state (persisted to DB on changes)
 _config: Optional[PhotonScriptConfig] = None
@@ -76,7 +89,8 @@ async def broadcast_state():
         except Exception:
             dead.append(ws)
     for ws in dead:
-        _ws_clients.remove(ws)
+        if ws in _ws_clients:  # concurrent broadcasts can race on removal
+            _ws_clients.remove(ws)
 
 
 @app.websocket("/ws")
@@ -95,7 +109,8 @@ async def websocket_endpoint(ws: WebSocket):
             # Handle client commands if needed
     except WebSocketDisconnect:
         if ws in _ws_clients:
-            _ws_clients.remove(ws)
+            if ws in _ws_clients:
+                _ws_clients.remove(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +126,17 @@ async def on_agent_message(msg: AgentMessage):
         await broadcast_state()
 
     elif msg.msg_type == "image_captured":
-        # Update project progress
-        project_id = msg.payload.get("project_id")
-        filter_type = msg.payload.get("filter_type")
-        if project_id in _projects and filter_type:
-            for plan in _projects[project_id].exposure_plans:
-                if plan.filter_type.value == filter_type:
-                    plan.acquired += 1
-                    break
-            _projects[project_id].compute_completion()
+        # Count ONLY QA-passed subs toward project goals, matched by target
+        # name (the agent never knows project ids)
+        quality = msg.payload.get("quality") or {}
+        if quality.get("passed_qa") or msg.payload.get("status") == "validated":
+            matched = get_store().record_accepted_sub(
+                msg.payload.get("target_name", ""),
+                msg.payload.get("filter_type", ""))
+            if matched:
+                logger.info("Progress: %s %s +1 accepted",
+                            msg.payload.get("target_name"),
+                            msg.payload.get("filter_type"))
         await broadcast_state()
 
     elif msg.msg_type == "image_quality_report":
@@ -151,8 +168,7 @@ async def dashboard(request: Request):
     seasonal = get_seasonal_targets(month)
     ranked = rank_targets_for_night(seasonal, obs, now)
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,
         "telescope_state": _telescope_state,
         "projects": list(_projects.values()),
@@ -274,29 +290,47 @@ async def api_tonight_sequence_xml():
 
 
 @app.get("/api/tonight/sequence.json")
-async def api_tonight_sequence_json():
-    """Generate and download the NINA Advanced Sequencer JSON for tonight.
+async def api_tonight_sequence_json(now_mode: bool = False):
+    """Generate and download tonight's Advanced Sequencer JSON (lint-gated).
 
-    This is the preferred format for NINA's Advanced Sequencer, using
-    .NET $type annotations that NINA can load directly.
+    Safe to load and START at any time of day: the start area holds at
+    nautical dusk -30 and WaitUntilSafe before touching hardware. Pass
+    ?now_mode=true for an ungated daytime-test version.
     """
+    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
+
     config = get_config()
     now = datetime.utcnow()
 
     if _projects:
-        projects = list(_projects.values())
+        projects = [p for p in _projects.values() if p.active]
     else:
+        projects = []
+    if not projects:
         obs = config.get_observatory()
         seasonal = get_seasonal_targets(now.month)
         ranked = rank_targets_for_night(seasonal, obs, now)
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     targets = plan_night_sequence(projects, config, now)
+    # Honor the ARMED guiding mode (encoders/guided) so the preview matches
+    # what will actually be dispatched, not just the config default.
+    preview_guided = get_armer()._use_guiding()
+    for t in targets:
+        t.start_guiding = preview_guided
     sequence = build_sequence_for_night(
         name=f"PhotonScript_{now.strftime('%Y%m%d')}",
         targets=targets,
     )
+    # Dusk/safety gating ON unless explicitly generating a daytime test
+    sequence.wait_until_local = None if now_mode else "00:00:00"
     json_content = generate_nina_json(sequence)
+
+    result = _lint(json.loads(json_content), guided=preview_guided)
+    if not result.ok:
+        return JSONResponse(status_code=500, content={
+            "detail": "Lint FAILED — refusing to serve sequence",
+            "findings": format_result(result)})
     return HTMLResponse(
         content=json_content,
         media_type="application/json",
@@ -346,6 +380,1641 @@ async def api_telescope_command(request: Request):
 
 
 @app.on_event("startup")
+async def _restore_armer():
+    """Reattach to a night in progress if PhotonScript restarted mid-run."""
+    get_armer().restore()
+
+
+@app.on_event("startup")
+async def _start_auto_arm():
+    """Hands-off multi-night supervisor: re-arms every night when enabled.
+    Always started; it no-ops each tick unless config.auto_arm_enabled."""
+    from photonscript.scheduler.auto_armer import run_auto_arm_loop
+    asyncio.create_task(run_auto_arm_loop(get_config(), get_armer))
+
+
+@app.on_event("startup")
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
+
+
+# ---------------------------------------------------------------------------
+# System page: preflight + web config editor
+# ---------------------------------------------------------------------------
+
+# Curated editable config fields: (attr, env var, label, group, type, secret, needs_restart)
+_CONFIG_FIELDS = [
+    ("observatory_name", "PS_OBSERVATORY_NAME", "Observatory name", "Observatory", "str", False, False),
+    ("observatory_lat", "PS_OBSERVATORY_LAT", "Latitude (deg N)", "Observatory", "float", False, False),
+    ("observatory_lon", "PS_OBSERVATORY_LON", "Longitude (deg E)", "Observatory", "float", False, False),
+    ("observatory_elev", "PS_OBSERVATORY_ELEV", "Elevation (m)", "Observatory", "float", False, False),
+    ("observatory_tz", "PS_OBSERVATORY_TZ", "Timezone", "Observatory", "str", False, True),
+    ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
+    ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
+    ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
+    ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
+    ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
+    ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
+    ("dark_exposures", "PS_DARK_EXPOSURES", "Dark library exposures, seconds (comma-sep)", "Imaging", "str", False, False),
+    ("dark_target_count", "PS_DARK_TARGET_COUNT", "Dark library quota per exposure", "Imaging", "int", False, False),
+    ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
+    ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
+    ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
+    ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
+    ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
+    ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
+    ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
+    ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
+    ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),
+    ("nina_filter_names", "PS_NINA_FILTER_NAMES", "Filter names (class:NINA name)", "NINA", "str", False, False),
+    ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),
+    ("phd2_port", "PS_PHD2_PORT", "PHD2 port", "PHD2", "int", False, True),
+    ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
+    ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
+    ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
+    ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale", "Imaging", "bool", False, False),
+    ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
+    ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
+    ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
+    ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
+    ("camera_read_noise_adu", "PS_CAMERA_READ_NOISE_ADU", "Read-noise floor (ADU16, bias stdev — drives exposure score)", "Quality", "float", False, False),
+    ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
+    ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
+    ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
+    ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
+    ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
+    ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
+    ("pushover_api_token", "PS_PUSHOVER_API_TOKEN", "Pushover API token", "Nanny / Alerts", "str", True, False),
+    ("consecutive_reject_limit", "PS_CONSECUTIVE_REJECT_LIMIT", "Consecutive rejects before severe alert", "Nanny / Alerts", "int", False, False),
+    ("auto_abort_on_severe", "PS_AUTO_ABORT_ON_SEVERE", "Auto-abort on severe (enable only once trusted)", "Nanny / Alerts", "bool", False, False),
+    ("heartbeat_minutes", "PS_HEARTBEAT_MINUTES", "Heartbeat interval (min)", "Nanny / Alerts", "int", False, False),
+    ("pushover_ratelimit_enabled", "PS_PUSHOVER_RATELIMIT_ENABLED", "Rate-limit Pushover (dedup + hourly + monthly cap)", "Nanny / Alerts", "bool", False, False),
+    ("pushover_dedup_window_s", "PS_PUSHOVER_DEDUP_WINDOW_S", "Pushover dedup window (s) — collapses flaps", "Nanny / Alerts", "int", False, False),
+    ("pushover_max_per_hour", "PS_PUSHOVER_MAX_PER_HOUR", "Pushover max messages/hour (emergencies exempt)", "Nanny / Alerts", "int", False, False),
+    ("pushover_monthly_cap", "PS_PUSHOVER_MONTHLY_CAP", "Pushover monthly hard cap", "Nanny / Alerts", "int", False, False),
+    ("safety_confirm_seconds", "PS_SAFETY_CONFIRM_SECONDS", "Confirm-safe hold before resume (s) — safety-flap debounce", "Nanny / Alerts", "int", False, False),
+    ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
+    ("auto_arm_enabled", "PS_AUTO_ARM_ENABLED", "Auto-arm every night (hands-off multi-night)", "Nanny / Alerts", "bool", False, False),
+    ("auto_arm_lead_hours", "PS_AUTO_ARM_LEAD_HOURS", "Auto-arm window opens N hours before pre-config", "Nanny / Alerts", "float", False, False),
+    ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),
+    ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
+    ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
+    ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
+    ("piggyback_enabled", "PS_PIGGYBACK_ENABLED", "Piggyback rig enabled (2nd NINA)", "Piggyback", "bool", False, False),
+    ("piggyback_name", "PS_PIGGYBACK_NAME", "Piggyback rig name", "Piggyback", "str", False, False),
+    ("piggyback_nina_base_url", "PS_PIGGYBACK_NINA_BASE_URL", "Piggyback NINA Advanced API URL", "Piggyback", "str", False, False),
+    ("piggyback_image_watch_dir", "PS_PIGGYBACK_IMAGE_WATCH_DIR", "Piggyback NINA image output dir", "Piggyback", "str", False, False),
+    ("piggyback_pixel_scale_arcsec", "PS_PIGGYBACK_PIXEL_SCALE_ARCSEC", "Piggyback pixel scale (\"/px)", "Piggyback", "float", False, False),
+    ("piggyback_default_gain", "PS_PIGGYBACK_DEFAULT_GAIN", "Piggyback camera gain", "Piggyback", "int", False, False),
+    ("piggyback_default_offset", "PS_PIGGYBACK_DEFAULT_OFFSET", "Piggyback camera offset", "Piggyback", "int", False, False),
+    ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
+    ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
+    ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
+    ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
+    ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
+    ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
+]
+
+_MASK = "••••••••"
+
+
+def _mask_secret(value: str) -> str:
+    value = str(value or "")
+    return (_MASK + value[-4:]) if len(value) > 4 else (_MASK if value else "")
+
+
+@app.get("/system", response_class=HTMLResponse)
+async def system_page(request: Request):
+    return templates.TemplateResponse(request, "system.html", {"version": VERSION, 
+        "observatory": get_config().get_observatory(),
+    })
+
+
+@app.post("/api/makesafe")
+async def api_makesafe():
+    """Emergency: stop sequence, warm camera, park mount."""
+    report = await get_armer().make_safe()
+    from photonscript.shared.pushover import notify as _notify
+    await _notify(get_config(), f"Manual make-safe: {report}",
+                  title="PhotonScript make-safe", priority=1)
+    return {"report": report}
+
+
+@app.post("/api/preflight")
+async def api_preflight():
+    from photonscript.scheduler.preflight import run_preflight
+    return await run_preflight(get_config())
+
+
+@app.post("/api/equipment/connect")
+async def api_equipment_connect():
+    """Actively connect every device on ALL enabled rigs (main + piggyback).
+    Connect-only — nothing slews, cools, or opens the roof. Runs automatically
+    on arm/restart; this is the manual trigger."""
+    return {"results": await get_armer().connect_all_rigs()}
+
+
+@app.get("/api/rigs")
+async def api_rigs():
+    """Config + live connection status for every rig (main + piggyback)."""
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          rig_devices, RC16, PIGGYBACK)
+    from photonscript.scheduler.preflight import _connected
+    cfg = get_config()
+    rigs = []
+    for rig in rig_ids(cfg):
+        rc = rig_config(cfg, rig)
+        devices = {}
+        # The piggyback owns only camera+focuser, but it can optionally watch the
+        # SHARED safety monitor (if added to the NINA #2 profile) — probe it too
+        # so the pane can show whether NINA #2 "sees the roof" (gates its darks).
+        probe = list(rig_devices(rig))
+        if rig == PIGGYBACK and "safetymonitor" not in probe:
+            probe.append("safetymonitor")
+        for dev in probe:
+            conn, payload, err = await _connected(rc, dev)
+            entry = {"connected": conn}
+            if dev == "camera" and payload:
+                entry["temp_c"] = payload.get("Temperature")
+                entry["setpoint_c"] = payload.get("TemperatureSetPoint")
+                entry["cooler_on"] = payload.get("CoolerOn")
+                cp = payload.get("CoolerPower")
+                entry["cooler_power"] = cp
+                # window dew heater (OGMA/ToupTek); some drivers don't report it
+                entry["dew_heater_on"] = payload.get("DewHeaterOn")
+            if dev == "focuser" and conn and payload:
+                entry["position"] = payload.get("Position")
+                entry["temp_c"] = payload.get("Temperature")
+            if dev == "mount" and conn and payload:
+                entry["parked"] = payload.get("AtPark", payload.get("AtHome"))
+                entry["tracking"] = payload.get("TrackingEnabled",
+                                                payload.get("Tracking"))
+                entry["ra"] = payload.get("RightAscension")
+                entry["dec"] = payload.get("Declination")
+                entry["alt"] = payload.get("Altitude")
+                entry["az"] = payload.get("Azimuth")
+            if dev == "safetymonitor" and conn and payload:
+                entry["safe"] = payload.get("IsSafe")
+            if err:
+                entry["error"] = err
+            devices[dev] = entry
+        rig_entry = {
+            "rig": rig,
+            "name": rig_label(cfg, rig),
+            "nina_base_url": rc.nina_base_url,
+            "pixel_scale_arcsec": rc.pixel_scale_arcsec,
+            "image_watch_dir": getattr(rc, "image_watch_dir", ""),
+            "devices": devices,
+        }
+        # The mount lives on the RC16 instance and is shared with the
+        # piggyback; surface what the agent believes it's pointing at (the
+        # DSO name comes from the running sequence, not the mount driver).
+        if rig == RC16:
+            rig_entry["target"] = _telescope_state.current_target
+            rig_entry["session_state"] = getattr(
+                _telescope_state.session_state, "value",
+                _telescope_state.session_state)
+        rigs.append(rig_entry)
+    return {"rigs": rigs}
+
+
+@app.post("/api/rigs/connect")
+async def api_rigs_connect():
+    """Actively connect everything on every rig, then return fresh status."""
+    connect = await get_armer().connect_all_rigs()
+    status = await api_rigs()
+    return {"connect": connect, **status}
+
+
+@app.post("/api/rigs/test_capture")
+async def api_rigs_test_capture(duration: float = 2.0):
+    """Fire a short test exposure on EVERY enabled rig at the SAME time — the
+    two-camera bench test. Caps-on / bench only: it does not move the mount,
+    open the roof, or save frames, so it is safe to run while unsafe/daytime.
+    """
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          nina_capture)
+    cfg = get_config()
+
+    async def _cap(rig):
+        rc = rig_config(cfg, rig)
+        res = await nina_capture(rc.nina_base_url, duration=duration)
+        return rig, {"name": rig_label(cfg, rig),
+                     "nina_base_url": rc.nina_base_url, **res}
+
+    pairs = await _asyncio.gather(*[_cap(r) for r in rig_ids(cfg)])
+    return {"duration": duration,
+            "fired_at": datetime.utcnow().isoformat() + "Z",
+            "results": dict(pairs)}
+
+
+@app.post("/api/rigs/cool")
+async def api_rigs_cool(minutes: float = 10.0, warm: bool = False,
+                        rig: str = ""):
+    """Cool a rig's camera to its setpoint (or warm it if warm=true).
+
+    rig="" (default) does EVERY enabled rig; rig="rc16"/"piggyback" targets one
+    — the dashboard cooler toggles pass a single rig. Each rig uses its own
+    setpoint (RC16 camera_setpoint_c, piggyback piggyback_setpoint_c)."""
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          rig_setpoint, nina_cool, nina_warm)
+    cfg = get_config()
+    targets = [rig] if rig else rig_ids(cfg)
+
+    async def _do(rg):
+        rc = rig_config(cfg, rg)
+        if warm:
+            res = await nina_warm(rc.nina_base_url, minutes=min(minutes, 5.0))
+        else:
+            res = await nina_cool(rc.nina_base_url, rig_setpoint(cfg, rg),
+                                  minutes=minutes)
+        return rg, {"name": rig_label(cfg, rg),
+                    "setpoint_c": rig_setpoint(cfg, rg), **res}
+
+    pairs = await _asyncio.gather(*[_do(r) for r in targets])
+    return {"warm": warm, "results": dict(pairs)}
+
+
+@app.post("/api/rigs/dewheater")
+async def api_rigs_dewheater(on: bool, rig: str = "rc16"):
+    """Toggle a rig camera's window dew heater. The dashboard pane passes the
+    rig + desired state; returns ok:false with a detail if the driver can't
+    switch it."""
+    from photonscript.shared.rigs import rig_config, rig_label, nina_dew_heater
+    cfg = get_config()
+    rc = rig_config(cfg, rig)
+    res = await nina_dew_heater(rc.nina_base_url, on)
+    logger.info("Dew heater %s requested for %s", "ON" if on else "OFF", rig)
+    return {"rig": rig, "name": rig_label(cfg, rig), "on": on, **res}
+
+
+@app.get("/api/config")
+async def api_get_config():
+    config = get_config()
+    groups: dict[str, list] = {}
+    for attr, env_var, label, group, ftype, secret, restart in _CONFIG_FIELDS:
+        raw = getattr(config, attr, "")
+        value = _mask_secret(raw) if secret else str(raw)
+        groups.setdefault(group, []).append({
+            "env": env_var, "label": label, "type": ftype,
+            "secret": secret, "restart": restart, "value": value,
+        })
+    return [{"group": g, "fields": f} for g, f in groups.items()]
+
+
+@app.post("/api/config")
+async def api_update_config(request: Request):
+    from photonscript.shared.envfile import env_path, update_env
+
+    body = await request.json()
+    config = get_config()
+    by_env = {f[1]: f for f in _CONFIG_FIELDS}
+    casts = {"int": int, "float": float,
+             "bool": lambda v: str(v).lower() in ("1", "true", "yes", "on")}
+
+    updates: dict[str, str] = {}
+    restart_recommended = False
+    for env_var, raw in body.items():
+        field = by_env.get(env_var)
+        if field is None:
+            continue
+        attr, _, _, _, ftype, secret, restart = field
+        raw = str(raw).strip()
+        if secret and (raw == "" or raw.startswith(_MASK[:2])):
+            continue  # masked/blank secret = keep current value
+        current = str(getattr(config, attr, ""))
+        if raw == current:
+            continue
+        try:
+            typed = casts.get(ftype, str)(raw)
+        except ValueError:
+            return JSONResponse(status_code=400, content={
+                "detail": f"{env_var}: '{raw}' is not a valid {ftype}"})
+        updates[env_var] = raw
+        setattr(config, attr, typed)  # live-apply where components re-read config
+        restart_recommended = restart_recommended or restart
+
+    if updates:
+        update_env(env_path(), updates)
+        logger.info("Config updated via web UI: %s",
+                    ", ".join(k for k in updates
+                              if not by_env[k][5]) or "(secrets)")
+    return {"updated": len(updates), "restart_recommended": restart_recommended}
+
+
+@app.post("/api/pushover/test")
+async def api_pushover_test():
+    from photonscript.shared.pushover import notify
+
+    config = get_config()
+    if not config.pushover_user_key or not config.pushover_api_token:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "detail": "Pushover keys not set — enter them above and Save first."})
+    ok = await notify(config,
+                      "Test notification from the PhotonScript web UI. "
+                      "If you can read this, nanny alerts will reach you.",
+                      title="PhotonScript test")
+    return {"ok": ok,
+            "detail": "Sent — check your phone." if ok
+            else "Pushover API rejected the request — check both keys."}
+
+
+# ---------------------------------------------------------------------------
+# Forecast, night plan, and ARM control
+# ---------------------------------------------------------------------------
+
+_armer = None
+
+
+def get_armer():
+    global _armer
+    if _armer is None:
+        from photonscript.scheduler.armer import Armer
+        _armer = Armer(get_config())
+    return _armer
+
+
+@app.get("/api/forecast")
+async def api_forecast():
+    from photonscript.scheduler.forecast import get_forecast
+    try:
+        return await get_forecast(get_config())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502, content={
+            "detail": f"Forecast fetch failed: {e}"})
+
+
+@app.get("/api/nightplan")
+async def api_nightplan():
+    from photonscript.scheduler.night_plan import build_night_plan
+    return build_night_plan(get_config())
+
+
+@app.get("/api/arm")
+async def api_arm_status():
+    return get_armer().status()
+
+
+@app.post("/api/arm")
+async def api_arm(request: Request):
+    body = await request.json()
+    armer = get_armer()
+    if body.get("armed"):
+        # guiding: "guided" (PHD2) | "encoders" (unguided) | None (config default)
+        return await armer.arm(guiding=body.get("guiding"))
+    return await armer.disarm()
+
+
+# ---------------------------------------------------------------------------
+# Target management: persistent projects, altitude charts, thumbnails
+# ---------------------------------------------------------------------------
+
+_store = None
+_thumb_cache: dict[str, dict] = {}
+_thumb_cache_loaded = False
+_alt_cache: dict[tuple, dict] = {}
+
+
+def _thumb_cache_path():
+    return Path(get_config().data_dir) / "thumb_cache.json"
+
+
+def _load_thumb_cache():
+    global _thumb_cache_loaded
+    if _thumb_cache_loaded:
+        return
+    _thumb_cache_loaded = True
+    p = _thumb_cache_path()
+    if p.exists():
+        try:
+            _thumb_cache.update(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _save_thumb_cache():
+    p = _thumb_cache_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(_thumb_cache, indent=1), encoding="utf-8")
+
+
+def get_store():
+    global _store
+    if _store is None:
+        from photonscript.scheduler.project_store import ProjectStore
+        _store = ProjectStore(get_config())
+        _projects.update(_store.projects)  # planner + ws updates see stored projects
+    return _store
+
+
+def _project_json(p) -> dict:
+    from photonscript.scheduler.project_store import default_mix, target_kind
+    d = p.model_dump(mode="json")
+    d["kind"] = target_kind(p.target)
+    d["mix"] = p.filter_mix or default_mix(d["kind"])
+    total = sum(e.count for e in p.exposure_plans) or 1
+    done = sum(e.acquired for e in p.exposure_plans)
+    d["completion_pct"] = round(done / total * 100)
+    d["hours_done"] = round(sum(e.acquired * e.exposure_seconds
+                                for e in p.exposure_plans) / 3600, 1)
+    try:
+        from photonscript.scheduler.runs import library_root, _safe_name
+        lib = library_root(get_config()) / _safe_name(p.target.name)
+        d["library_files"] = (sum(1 for _ in lib.rglob("*.fits"))
+                              if lib.exists() else 0)
+    except Exception:  # noqa: BLE001
+        d["library_files"] = 0
+    return d
+
+
+@app.get("/api/projects2")
+async def api_projects2():
+    from photonscript.scheduler.runs import nights_by_target
+    store = get_store()
+    out = sorted((_project_json(p) for p in store.projects.values()),
+                 key=lambda d: -d["priority"])
+    try:
+        nbt = nights_by_target(get_config())
+        for d in out:
+            d["nights"] = nbt.get(d["target"]["name"].strip().lower(), [])
+    except Exception:  # noqa: BLE001
+        for d in out:
+            d["nights"] = []
+    return out
+
+
+@app.post("/api/projects2/from_catalog")
+async def api_project_from_catalog(request: Request):
+    body = await request.json()
+    name = body.get("name", "")
+    store = get_store()
+    for month in range(1, 13):
+        for t in get_seasonal_targets(month):
+            if t.name.lower() == name.lower() or t.catalog_id.lower() == name.lower():
+                proj = store.add_from_target(t, float(body.get("budget_hours", 8.0)))
+                _projects[proj.id] = proj
+                return _project_json(proj)
+    return JSONResponse(status_code=404, content={"detail": f"'{name}' not in catalog"})
+
+
+@app.patch("/api/projects2/{project_id}")
+async def api_project_update(project_id: str, request: Request):
+    body = await request.json()
+    store = get_store()
+    proj = store.projects.get(project_id)
+    if proj is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    priority = proj.priority + int(body["priority_delta"]) \
+        if "priority_delta" in body else body.get("priority")
+    budget = proj.budget_hours + float(body["budget_delta"]) \
+        if "budget_delta" in body else body.get("budget_hours")
+    updated = store.update(project_id, priority=priority,
+                           budget_hours=budget, active=body.get("active"),
+                           filter_mix=body.get("filter_mix"))
+    _projects[project_id] = updated
+    return _project_json(updated)
+
+
+@app.delete("/api/projects2/{project_id}")
+async def api_project_delete(project_id: str):
+    get_store().delete(project_id)
+    _projects.pop(project_id, None)
+    return {"ok": True}
+
+
+@app.get("/mosaic", response_class=HTMLResponse)
+async def mosaic_page(request: Request):
+    return templates.TemplateResponse(request, "mosaic.html",
+                                      {"version": VERSION})
+
+
+@app.get("/api/mosaic/plan")
+async def api_mosaic_plan(name: str = "Mosaic", ra_hours: float = 0.0,
+                          dec_degrees: float = 0.0, rows: int = 2,
+                          cols: int = 2, overlap_pct: float = 15.0,
+                          rotation_deg: float = 0.0,
+                          focal_length_mm: float = 3248.0):
+    """Panel grid + a DSS2 sky cutout (CDS hips2fits) to draw it over.
+
+    Panel FOV is derived from the ASI2600/IMX571 sensor (23.5 x 15.7 mm) at
+    the requested focal length, so native (3248 mm) vs reducer (600 mm) framing
+    can be previewed. Default is the RC16 native focal length.
+    """
+    import math
+    from photonscript.scheduler.mosaic import plan_panels
+    fl = max(50.0, float(focal_length_mm))
+    SENSOR_W_MM, SENSOR_H_MM = 23.5, 15.7
+    fov_w_panel = math.degrees(2 * math.atan(SENSOR_W_MM / (2 * fl)))
+    fov_h_panel = math.degrees(2 * math.atan(SENSOR_H_MM / (2 * fl)))
+    plan = plan_panels(name, ra_hours, dec_degrees, rows, cols,
+                       overlap_pct, rotation_deg,
+                       fov_w=fov_w_panel, fov_h=fov_h_panel)
+    plan["focal_length_mm"] = fl
+    plan["panel_fov_deg"] = {"w": round(fov_w_panel, 4),
+                             "h": round(fov_h_panel, 4)}
+    fov_w = max(plan["span_w_deg"] * 1.35, plan["span_h_deg"] * 1.35 * 4 / 3)
+    plan["preview"] = {
+        "url": ("https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
+                "?hips=CDS%2FP%2FDSS2%2Fcolor&width=800&height=600"
+                f"&fov={fov_w:.4f}&projection=TAN&coordsys=icrs"
+                f"&ra={ra_hours * 15.0:.5f}&dec={dec_degrees:.5f}&format=jpg"),
+        "fov_w_deg": round(fov_w, 4),
+        "fov_h_deg": round(fov_w * 600 / 800, 4),
+    }
+    return plan
+
+
+@app.post("/api/mosaic/create")
+async def api_mosaic_create(request: Request):
+    """Create one imaging project per panel (shows up as goal cards)."""
+    body = await request.json()
+    store = get_store()
+    budget = float(body.get("budget_hours_per_panel", 8.0))
+    created = []
+    for p in body.get("panels", []):
+        target = CelestialTarget(
+            name=p["name"], ra_hours=float(p["ra_hours"]),
+            dec_degrees=float(p["dec_degrees"]),
+            object_type=body.get("object_type", "nebula"))
+        proj = store.add_from_target(target, budget_hours=budget)
+        _projects[proj.id] = proj
+        created.append({"id": proj.id, "name": p["name"]})
+    return {"ok": True, "created": created}
+
+
+@app.get("/api/target/altitude")
+async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
+                              dec_degrees: float = 0.0):
+    """Altitude curve for tonight: local noon -> noon, 15-min grid."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, SkyCoord
+    from astropy.time import Time
+    from photonscript.shared.astronomy import (get_earth_location,
+                                               get_twilight_times)
+
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+
+    config = get_config()
+    obs = config.get_observatory()
+    now = datetime.utcnow()
+    off = _tz_off(config, now)
+
+    cache_key = (round(ra_hours, 3), round(dec_degrees, 3),
+                 (now + timedelta(hours=off)).strftime("%Y-%m-%d"))
+    if cache_key in _alt_cache:
+        cached = dict(_alt_cache[cache_key])
+        return cached
+
+    # local noon (UTC) today
+    noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+        - timedelta(hours=off) + timedelta(hours=12)
+    if noon_utc > now:
+        noon_utc -= timedelta(days=1)
+
+    times = Time(noon_utc) + np.arange(0, 24.01, 0.25) * u.hour
+    frame = AltAz(obstime=times, location=get_earth_location(obs))
+    coord = SkyCoord(ra=ra_hours * u.hourangle, dec=dec_degrees * u.deg)
+    alts = coord.transform_to(frame).alt.deg
+
+    # Darkness window for the SAME night as the noon->noon axis
+    tw = get_twilight_times(obs, noon_utc.replace(hour=0, minute=0, second=0,
+                                                  microsecond=0))
+
+    def _frac(dt):  # position 0..1 along the 24h axis
+        if not dt:
+            return None
+        return max(0.0, min(1.0, (dt - noon_utc).total_seconds() / 86400))
+
+    peak = int(np.argmax(alts))
+
+    # 30-degree crossings (rise above / dip below), with local times
+    cross30 = []
+    for i in range(len(alts) - 1):
+        a0, a1 = float(alts[i]), float(alts[i + 1])
+        if (a0 < 30 <= a1) or (a0 >= 30 > a1):
+            # linear interp for the crossing fraction
+            t = (30 - a0) / (a1 - a0) if a1 != a0 else 0
+            frac = (i + t) / (len(alts) - 1)
+            dt = noon_utc + timedelta(hours=frac * 24)
+            cross30.append({
+                "frac": round(frac, 4),
+                "dir": "up" if a1 > a0 else "down",
+                "local": (dt + timedelta(hours=off)).strftime("%I:%M %p").lstrip("0"),
+            })
+
+    _alt_cache.clear() if len(_alt_cache) > 200 else None
+    _alt_cache[cache_key] = result = {
+        "name": name,
+        "alts": [round(float(a), 1) for a in alts],
+        "labels_every_hours": 3,
+        "start_local_hour": 12,
+        "dark_start_frac": _frac(tw.get("astro_dark_start")),
+        "dark_end_frac": _frac(tw.get("astro_dark_end")),
+        "now_frac": _frac(now),
+        "transit_frac": peak / (len(alts) - 1),
+        "transit_alt": round(float(alts[peak]), 0),
+        "min_altitude": 30,
+        "cross30": cross30,
+    }
+    return result
+
+
+@app.get("/api/thumbnail")
+async def api_thumbnail(name: str = "", catalog: str = ""):
+    """Wikipedia thumbnail for a target (cached)."""
+    import httpx
+
+    _load_thumb_cache()
+    key = (name or catalog).lower()
+    if key in _thumb_cache and _thumb_cache[key].get("url"):
+        return _thumb_cache[key]
+
+    candidates = [c for c in (name, catalog, name.replace(" Nebula", "_Nebula"))
+                  if c]
+    result = {"url": None, "page": None}
+    headers = {"User-Agent": "PhotonScriptBot/0.1 (AARO observatory; astro imaging)",
+               "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True,
+                                 headers=headers) as client:
+        for cand in candidates:
+            title = cand.replace(" ", "_")
+            # Primary: REST summary
+            try:
+                r = await client.get(
+                    "https://en.wikipedia.org/api/rest_v1/page/summary/" + title)
+                if r.status_code == 200:
+                    data = r.json()
+                    thumb = data.get("thumbnail", {}).get("source")
+                    if thumb:
+                        result = {"url": thumb,
+                                  "page": data.get("content_urls", {})
+                                  .get("desktop", {}).get("page")}
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            # Fallback: classic MediaWiki pageimages API
+            try:
+                r = await client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={"action": "query", "titles": cand,
+                            "prop": "pageimages", "format": "json",
+                            "pithumbsize": 256, "redirects": 1})
+                if r.status_code == 200:
+                    pages = r.json().get("query", {}).get("pages", {})
+                    for p in pages.values():
+                        thumb = p.get("thumbnail", {}).get("source")
+                        if thumb:
+                            result = {"url": thumb,
+                                      "page": "https://en.wikipedia.org/wiki/"
+                                              + p.get("title", cand).replace(" ", "_")}
+                            break
+                if result["url"]:
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    _thumb_cache[key] = result
+    if result["url"]:
+        _save_thumb_cache()  # persist successes to disk across restarts
+    return result
+
+
+@app.get("/api/projects2/{project_id}/astrobin_mix")
+async def api_astrobin_mix(project_id: str):
+    """Community-average filter mix for this project's target (cached)."""
+    from photonscript.scheduler.astrobin_client import AstroBinMixSuggester
+
+    store = get_store()
+    proj = store.projects.get(project_id)
+    if proj is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    suggester = AstroBinMixSuggester(get_config())
+    return await suggester.suggest(proj.target.name, proj.target.catalog_id)
+
+
+_sun_cache: dict = {}
+
+
+@app.get("/api/sun")
+async def api_sun():
+    """Sun altitude now + tonight's solar curve with twilight thresholds."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, get_sun
+    from astropy.time import Time
+    from photonscript.shared.astronomy import get_earth_location
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+
+    config = get_config()
+    obs = config.get_observatory()
+    now = datetime.utcnow()
+    off = _tz_off(config, now)
+
+    cache_key = now.strftime("%Y-%m-%d-%H")  # refresh curve hourly
+    if cache_key not in _sun_cache:
+        noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+            - timedelta(hours=off) + timedelta(hours=12)
+        if noon_utc > now:
+            noon_utc -= timedelta(days=1)
+        # 48 h so the next-dusk countdown works in the morning, when
+        # tonight's dusk falls outside the chart's noon->noon window
+        times = Time(noon_utc) + np.arange(0, 48.01, 1 / 6) * u.hour  # 10-min grid
+        frame = AltAz(obstime=times, location=get_earth_location(obs))
+        alts = get_sun(times).transform_to(frame).alt.deg
+        _sun_cache.clear()
+        _sun_cache[cache_key] = {
+            "noon_utc": noon_utc,
+            "alts_full": [round(float(a), 1) for a in alts],
+        }
+    cached = _sun_cache[cache_key]
+    noon_utc, alts_full = cached["noon_utc"], cached["alts_full"]
+    alts = alts_full[:145]  # chart stays noon -> noon
+
+    # Current sun altitude via interpolation on the grid
+    frac_now = (now - noon_utc).total_seconds() / 86400
+    idx = min(int(frac_now * (len(alts) - 1)), len(alts) - 2)
+    sub = (frac_now * (len(alts) - 1)) - idx
+    alt_now = round(alts[idx] + (alts[idx + 1] - alts[idx]) * sub, 1)
+    setting = alts[idx + 1] < alts[idx]
+
+    # Next -18 crossing (descending = astro dusk), searched over the full
+    # 48 h grid so it is found even before local noon
+    minutes_to_dark = None
+    dark_at_local = None
+    for i in range(idx, len(alts_full) - 1):
+        if alts_full[i] > -18 >= alts_full[i + 1]:
+            t_cross = noon_utc + timedelta(hours=(i + 1) / 6)
+            minutes_to_dark = max(0, round((t_cross - now).total_seconds() / 60))
+            dark_at_local = (t_cross + timedelta(hours=off)).strftime("%I:%M %p")
+            break
+
+    def _local(frac):
+        dt = noon_utc + timedelta(hours=frac * 24)
+        return (dt + timedelta(hours=off)).strftime("%I:%M %p")
+
+    crossings = {}
+    labels = {0: ("sunset", "sunrise"), -6: ("civil_dusk", "civil_dawn"),
+              -12: ("naut_dusk", "naut_dawn"), -18: ("astro_dusk", "astro_dawn")}
+    for i in range(len(alts) - 1):
+        for th, (down, up) in labels.items():
+            if alts[i] > th >= alts[i + 1] and down not in crossings:
+                crossings[down] = {"frac": (i + 1) / (len(alts) - 1),
+                                   "local": _local((i + 1) / (len(alts) - 1))}
+            if alts[i] <= th < alts[i + 1] and up not in crossings:
+                crossings[up] = {"frac": (i + 1) / (len(alts) - 1),
+                                 "local": _local((i + 1) / (len(alts) - 1))}
+
+    return {
+        "alt_now": alt_now,
+        "setting": setting,
+        "minutes_to_astro_dark": minutes_to_dark,
+        "dark_at_local": dark_at_local,
+        "now_frac": max(0.0, min(1.0, frac_now)),
+        "alts": alts,
+        "crossings": crossings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Imaging Runs: plan vs actual, night score, thumbnails
+# ---------------------------------------------------------------------------
+
+@app.get("/runs/{night}", response_class=HTMLResponse)
+async def runs_page_night(request: Request, night: str):
+    return templates.TemplateResponse(request, "runs.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_page(request: Request):
+    return templates.TemplateResponse(request, "runs.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
+@app.get("/calibration", response_class=HTMLResponse)
+async def calibration_page(request: Request):
+    return templates.TemplateResponse(request, "calibration.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
+@app.get("/api/runs")
+def api_runs():
+    from photonscript.scheduler.runs import list_runs, _load_subs
+    config = get_config()
+    nights = list_runs(config)
+    pending = _syncthing_pending_names()
+    for n in nights:
+        if not n["subs_logged"]:
+            n.update(review=0, syncing=None, transferred=None)
+            continue
+        subs = _load_subs(config, n["date"])
+        n["review"] = sum(1 for s in subs
+                          if s.get("passed_qa") and not s.get("reviewed"))
+        acc = [s for s in subs
+               if s.get("passed_qa") and s.get("reviewed")]
+        if pending is not None and acc:
+            sy = sum(1 for s in acc
+                     if Path(s.get("abs_path") or s.get("file") or "").name
+                     in pending)
+            n["syncing"] = sy
+            n["transferred"] = len(acc) - sy
+        else:
+            n["syncing"] = None
+            n["transferred"] = len(acc) if acc else None
+    return nights
+
+
+_remoteneed_cache: dict = {"t": 0.0, "names": None}
+
+
+def _syncthing_pending_names():
+    """Basenames the DESKTOP still needs from the Library share (30s cache).
+    None = can't tell (not configured / unreachable)."""
+    import time as _time
+    import httpx
+    cfg = get_config()
+    url = getattr(cfg, "syncthing_url", "") or ""
+    key = getattr(cfg, "syncthing_api_key", "") or ""
+    folder = getattr(cfg, "syncthing_folder_id", "") or ""
+    device = getattr(cfg, "syncthing_device_id", "") or ""
+    if not (url and key and folder and device):
+        return None
+    now = _time.time()
+    if (_remoteneed_cache["names"] is not None
+            and now - _remoteneed_cache["t"] < 30):
+        return _remoteneed_cache["names"]
+    try:
+        names: set = set()
+        entries: list = []
+        with httpx.Client(timeout=6, headers={"X-API-Key": key}) as cl:
+            for page in range(1, 41):  # up to 20k entries
+                r = cl.get(url.rstrip("/") + "/rest/db/remoteneed",
+                           params={"folder": folder, "device": device,
+                                   "page": page, "perpage": 500})
+                d = r.json()
+                batch = d.get("files") or []
+                if not isinstance(batch, list):
+                    batch = []
+                for f in batch:
+                    if isinstance(f, dict):
+                        n, sz = f.get("name", ""), int(f.get("size", 0))
+                    else:
+                        n, sz = str(f), 0
+                    names.add(Path(n).name)
+                    entries.append((n, sz))
+                if len(batch) < 500:
+                    break
+        _remoteneed_cache.update(t=now, names=names, entries=entries)
+        return names
+    except Exception as e:  # noqa: BLE001
+        logger.debug("remoteneed unavailable: %s", e)
+        return None
+
+
+@app.get("/api/runs/{date}")
+def api_run_detail(date: str, backfill: bool = True):
+    from photonscript.scheduler.runs import night_detail
+    d = night_detail(get_config(), date, backfill=backfill)
+    try:  # goal context: campaign totals per target+filter
+        rev = get_config().reverse_filter_map()
+        by = {}
+        for p in get_store().projects.values():
+            for e in p.exposure_plans:
+                by[(p.target.name.strip().lower(),
+                    e.filter_type.value)] = e
+        for row in d["table"]:
+            fclass = rev.get(row["filter"], row["filter"])
+            e = by.get((str(row["target"]).strip().lower(), fclass))
+            row["goal_total"] = e.count if e else None
+            row["done_total"] = e.acquired if e else None
+    except Exception:  # noqa: BLE001
+        pass
+    pending = _syncthing_pending_names()
+    for s in d["subs"]:
+        if s.get("passed_qa") and s.get("reviewed"):
+            base = Path(s.get("abs_path") or s.get("file") or "").name
+            s["transfer"] = (None if pending is None
+                             else "pending" if base in pending else "done")
+    return d
+
+
+@app.post("/api/runs/{date}/regrade")
+async def api_run_regrade(date: str):
+    """Delete the night's grades and re-run backfill (e.g. after a grading
+    algorithm fix or installing sep)."""
+    from photonscript.scheduler.runs import runs_dir, start_backfill
+    p = runs_dir(get_config()) / f"{date}_subs.jsonl"
+    n = len(p.read_text(encoding="utf-8").splitlines()) if p.exists() else 0
+    logger.info("Re-grade requested for %s: deleting %d existing grades",
+                date, n)
+    if p.exists():
+        p.unlink()
+    # Annotated thumbnails embed star detections — invalidate them too
+    thumbs = Path(get_config().data_dir) / "thumbs" / date
+    if thumbs.exists():
+        for f in thumbs.glob("*.ann.png"):
+            f.unlink(missing_ok=True)
+    start_backfill(get_config(), date)
+    return {"ok": True}
+
+
+@app.post("/api/regrade/all")
+async def api_regrade_all(payload: dict = Body(default={})):
+    """Wipe + re-grade every night folder since a date (default: all).
+    Sequential; safe to fire and forget. Deletes manual verdicts for the
+    affected nights."""
+    from photonscript.scheduler.runs import start_regrade_all
+    return start_regrade_all(get_config(),
+                             since=str(payload.get("since") or ""))
+
+
+@app.get("/api/regrade/all")
+async def api_regrade_all_status():
+    from photonscript.scheduler.runs import regrade_all_status
+    return regrade_all_status()
+
+
+@app.get("/api/campaign")
+async def api_campaign(days: int = 14):
+    """Moon-aware 14-night plan toward goal completion."""
+    from photonscript.scheduler.campaign import build_campaign
+    from photonscript.scheduler.forecast import get_forecast
+    config = get_config()
+    fc = None
+    try:
+        fc = await get_forecast(config)
+    except Exception:  # noqa: BLE001 — climatology-only campaign
+        pass
+    from photonscript.scheduler.campaign import suggest_targets
+    c = build_campaign(config, get_store(), forecast=fc,
+                       days=min(max(days, 7), 28))
+    try:
+        c["suggestions"] = suggest_targets(config, get_store(), c)
+    except Exception:  # noqa: BLE001
+        c["suggestions"] = []
+    return c
+
+
+@app.post("/api/campaign/dismiss")
+async def api_campaign_dismiss(payload: dict = Body(...)):
+    from photonscript.scheduler.campaign import dismiss_target
+    dismiss_target(get_config(), payload.get("name", ""))
+    return {"ok": True}
+
+
+@app.get("/api/activity")
+async def api_activity(limit: int = 8):
+    """Newest graded subs for the current night (local evening date)."""
+    from photonscript.shared.localtime import utc_offset_hours
+    from photonscript.scheduler.runs import _load_subs
+    config = get_config()
+    now_local = datetime.utcnow() + timedelta(
+        hours=utc_offset_hours(config, datetime.utcnow()))
+    # before local noon, we are still "last night"
+    night = (now_local - timedelta(hours=12)).strftime("%Y-%m-%d")
+    subs = _load_subs(config, night)
+    keep = ("time", "filter", "exp_s", "hfr", "stars", "background",
+            "passed_qa", "target")
+    return {"night": night,
+            "subs": [{k: s.get(k) for k in keep} for s in subs[-limit:]][::-1]}
+
+
+@app.get("/api/sync")
+async def api_sync():
+    """Desktop transfer status via the Syncthing REST API (optional)."""
+    import httpx
+    cfg = get_config()
+    url = getattr(cfg, "syncthing_url", "") or ""
+    key = getattr(cfg, "syncthing_api_key", "") or ""
+    folder = getattr(cfg, "syncthing_folder_id", "") or ""
+    device = getattr(cfg, "syncthing_device_id", "") or ""
+    if not (url and key and folder and device):
+        return {"configured": False}
+    try:
+        async with httpx.AsyncClient(timeout=6,
+                                     headers={"X-API-Key": key}) as cl:
+            r = await cl.get(url.rstrip("/") + "/rest/db/completion",
+                             params={"folder": folder, "device": device})
+            d = r.json()
+            folder_path = None
+            try:
+                rf = await cl.get(url.rstrip("/") + "/rest/config/folders")
+                for f in rf.json():
+                    if f.get("id") == folder:
+                        folder_path = str(Path(f.get("path", "")).expanduser()
+                                          .resolve())
+            except Exception:  # noqa: BLE001
+                pass
+        from photonscript.scheduler.runs import library_root
+        lib = str(library_root(get_config()).expanduser().resolve())
+        library_synced = bool(folder_path) and \
+            lib.lower().startswith(folder_path.lower())
+        return {"configured": True,
+                "completion_pct": round(float(d.get("completion", 0)), 1),
+                "need_items": d.get("needItems", 0),
+                "need_bytes": d.get("needBytes", 0),
+                "folder_path": folder_path,
+                "library_path": lib,
+                "library_synced": library_synced}
+    except Exception as e:  # noqa: BLE001
+        return {"configured": True, "error": str(e)}
+
+
+@app.get("/api/sync/queue")
+def api_sync_queue():
+    """What's still moving to the desktop, grouped by folder."""
+    names = _syncthing_pending_names()  # refreshes the cache
+    if names is None:
+        return {"configured": False, "groups": [], "total_files": 0,
+                "total_bytes": 0}
+    entries = _remoteneed_cache.get("entries") or []
+    groups: dict[str, dict] = {}
+    for name, size in entries:
+        parts = name.replace("\\", "/").split("/")
+        key = "/".join(parts[:2]) if len(parts) > 1 else (parts[0] or "(root)")
+        g = groups.setdefault(key, {"folder": key, "files": 0, "bytes": 0})
+        g["files"] += 1
+        g["bytes"] += size
+    out = sorted(groups.values(), key=lambda g: -g["bytes"])
+    return {"configured": True, "groups": out[:20],
+            "more_groups": max(0, len(out) - 20),
+            "total_files": len(entries),
+            "total_bytes": sum(s for _, s in entries)}
+
+
+@app.get("/api/calibration/health")
+def api_calibration_health(rig: str = "rc16"):
+    from photonscript.scheduler.calibration import calibration_health
+    from photonscript.shared.rigs import rig_config
+    return calibration_health(rig_config(get_config(), rig))
+
+
+@app.get("/api/system/stats")
+def api_system_stats():
+    """Scope-PC load: RAM / CPU / disk + the heavy astro processes.
+
+    Added for the dual-rig bring-up (2026-09-12): a second NINA instance and a
+    second camera pipeline is the main load risk, so surface headroom here
+    instead of guessing. Best-effort — returns available:false if psutil is
+    missing rather than erroring.
+    """
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001
+        import sys as _sys
+        return {"available": False,
+                "detail": "psutil not installed in the interpreter running the "
+                          "scheduler — install it there, then Refresh.",
+                "python_executable": _sys.executable,
+                "python_prefix": _sys.prefix,
+                "fix": f'"{_sys.executable}" -m pip install psutil'}
+    import shutil as _sh
+    cfg = get_config()
+    vm = psutil.virtual_memory()
+    out = {
+        "available": True,
+        "cpu_percent": psutil.cpu_percent(interval=0.3),
+        "cpu_count": psutil.cpu_count(),
+        "ram": {"total_gb": round(vm.total / 1e9, 1),
+                "used_gb": round(vm.used / 1e9, 1),
+                "available_gb": round(vm.available / 1e9, 1),
+                "percent": vm.percent},
+        "processes": [],
+        "disks": [],
+    }
+    keys = ("nina", "phd2", "thesky", "python", "photonscript", "astap",
+            "pixinsight", "siril")
+    procs = []
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            nm = p.info.get("name") or ""
+            if any(k in nm.lower() for k in keys):
+                rss = p.info["memory_info"].rss if p.info.get("memory_info") else 0
+                procs.append({"name": nm, "pid": p.pid,
+                              "ram_mb": round(rss / 1e6)})
+        except Exception:  # noqa: BLE001 - process vanished / access denied
+            continue
+    out["processes"] = sorted(procs, key=lambda x: -x["ram_mb"])[:20]
+    seen = set()
+    for label, path in (("image", getattr(cfg, "image_watch_dir", "")),
+                        ("library", str(
+                            getattr(cfg, "library_dir", "")
+                            or Path(cfg.data_dir) / "Library"))):
+        try:
+            drive = str(Path(path).anchor or path)
+            if not path or drive in seen:
+                continue
+            seen.add(drive)
+            du = _sh.disk_usage(path if Path(path).exists() else drive)
+            out["disks"].append({
+                "label": label, "path": str(path),
+                "free_gb": round(du.free / 1e9, 1),
+                "total_gb": round(du.total / 1e9, 1),
+                "percent_used": round(du.used / du.total * 100, 1)})
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+@app.post("/api/calibration/capture")
+async def api_calibration_capture(payload: dict = Body(default={})):
+    """Generate + dispatch a darks/bias run. Roof must be closed & dark.
+
+    Optional payload["rig"] ("rc16" | "piggyback"): the piggyback builds its
+    run at the OSC gain/offset/setpoint (via rig_config) and dispatches straight
+    to NINA #2 (it has no armer state machine). Darks never touch the mount, so
+    both rigs can shoot at once with the roof closed."""
+    from photonscript.scheduler.calibration import generate_darks_json
+    from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
+    rig = payload.get("rig", RC16)
+    config = rig_config(get_config(), rig)
+    darks = [(float(e), int(c)) for e, c in
+             payload.get("darks", [[300, 20], [600, 20]])]
+    bias = int(payload.get("bias", 50))
+    seq_text, minutes = generate_darks_json(config, darks, bias)
+    seq_dir = Path.cwd() / "sequences"
+    seq_dir.mkdir(exist_ok=True)
+    tag = "" if rig == RC16 else f"_{rig}"
+    path = seq_dir / f"calibration{tag}_{datetime.now():%Y%m%d_%H%M}.json"
+    path.write_text(seq_text, encoding="utf-8")
+    if rig == RC16:
+        ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                            f"calibration {path.name}")
+        detail = None if ok else get_armer().detail
+    else:
+        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text))
+        ok, detail = res["ok"], res["detail"]
+    if not ok:
+        return JSONResponse(status_code=409, content={
+            "detail": f"dispatch refused/failed: {detail}"})
+    logger.info("Calibration dispatched (%s): %s (~%.0f min)", rig, path.name,
+                minutes)
+    return {"ok": True, "rig": rig, "sequence": path.name,
+            "estimated_minutes": round(minutes)}
+
+
+@app.post("/api/calibration/flats")
+async def api_calibration_flats(payload: dict = Body(default={})):
+    """Dispatch a dusk sky-flat run for today (waits for sunset+15).
+
+    Optional payload["rig"]: the piggyback shoots OSC flats (one set, no filter
+    wheel) and, riding the main mount, never slews/parks — trigger it alongside
+    the RC16 dusk flats so that slew aims both scopes. Dispatched straight to
+    NINA #2."""
+    from photonscript.scheduler.calibration import generate_dusk_flats_json
+    from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
+    rig = payload.get("rig", RC16)
+    config = rig_config(get_config(), rig)
+    is_pb = rig != RC16
+    try:
+        seq_text, start_local = generate_dusk_flats_json(
+            config, osc=is_pb, owns_mount=not is_pb)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+    seq_dir = Path.cwd() / "sequences"
+    seq_dir.mkdir(exist_ok=True)
+    tag = "" if rig == RC16 else f"_{rig}"
+    path = seq_dir / f"dusk_flats{tag}_{datetime.now():%Y%m%d}.json"
+    path.write_text(seq_text, encoding="utf-8")
+    if rig == RC16:
+        ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                            f"dusk flats {path.name}")
+        detail = None if ok else get_armer().detail
+    else:
+        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text))
+        ok, detail = res["ok"], res["detail"]
+    if not ok:
+        return JSONResponse(status_code=409, content={
+            "detail": f"dispatch refused/failed: {detail}"})
+    note = ("flats first, then ARM tonight's run after they finish" if not is_pb
+            else "piggyback OSC flats — run with the RC16 flats so the mount "
+                 "slew aims both scopes")
+    return {"ok": True, "rig": rig, "starts_local": start_local, "note": note}
+
+
+@app.get("/api/update/check")
+def api_update_check():
+    """Is the running checkout behind its upstream? (git fetch + compare)."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    def _git(*args, timeout=10):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                              text=True, timeout=timeout).stdout.strip()
+    try:
+        subprocess.run(["git", "fetch", "--quiet"], cwd=root,
+                       capture_output=True, timeout=25)
+        behind = int(_git("rev-list", "--count", "HEAD..@{u}") or 0)
+        return {"running": VERSION, "behind": behind,
+                "remote": _git("log", "-1", "--format=%h · %s", "@{u}")}
+    except Exception as e:  # noqa: BLE001
+        return {"running": VERSION, "error": str(e)}
+
+
+@app.post("/api/update")
+async def api_update():
+    """Exit with code 42; the run-photonscript.ps1 wrapper pulls + restarts.
+
+    Refused while a sequence is running — never yank the code out from
+    under an imaging night.
+    """
+    st_name = str(get_armer().state or "").upper()
+    if st_name in ("RUNNING", "PAUSED_UNSAFE"):
+        return JSONResponse(status_code=409, content={
+            "detail": f"armer is {st_name} — refusing to restart mid-night. "
+                      "Stop the run first."})
+    logger.warning("Update requested via API — exiting 42 so the wrapper "
+                   "can git pull and restart")
+    import os as _os
+    import threading as _th
+    _th.Timer(0.8, lambda: _os._exit(42)).start()
+    return {"ok": True, "detail": "Restarting. If PhotonScript was not "
+            "started via deploy/run-photonscript.ps1 it will stay down."}
+
+
+@app.get("/api/runs/{date}/backfill")
+async def api_run_backfill_status(date: str):
+    """Cheap progress poll for the re-grade bar (no log parsing)."""
+    from photonscript.scheduler.runs import backfill_status
+    return backfill_status(get_config(), date)
+
+
+@app.post("/api/library/rebuild")
+def api_library_rebuild(date: str = ""):
+    """(Re)build the accepted-lights library. Sync endpoint: FastAPI runs it
+    in a worker thread; hardlinking a whole archive takes a few seconds."""
+    from photonscript.scheduler.runs import build_library
+    return build_library(get_config(), date or None)
+
+
+@app.post("/api/library/reset")
+def api_library_reset():
+    """Wipe the library and rebuild reviewed-only (un-queues bulk sync)."""
+    from photonscript.scheduler.runs import reset_library
+    try:
+        return reset_library(get_config())
+    except RuntimeError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+
+
+@app.post("/api/runs/{date}/approve")
+async def api_run_approve(date: str):
+    """Approve all QA-passing subs for a night -> library -> Syncthing."""
+    from photonscript.scheduler.runs import approve_night
+    return approve_night(get_config(), date)
+
+
+@app.post("/api/runs/{date}/qa")
+async def api_run_manual_qa(date: str, payload: dict = Body(...)):
+    """Manual pass/reject for one sub (wins over automatic grading)."""
+    from photonscript.scheduler.runs import set_manual_qa
+    hit = set_manual_qa(get_config(), date, payload.get("file", ""),
+                        passed=payload.get("passed"),
+                        state=payload.get("state"))
+    if hit is None:
+        return JSONResponse(status_code=404, content={"detail": "sub not found"})
+    logger.info("Manual QA %s: %s -> %s", date, payload.get("file"),
+                payload.get("state") or
+                ("accepted" if payload.get("passed") else "rejected"))
+    return hit
+
+
+@app.post("/api/runs/{date}/identify")
+def api_run_identify(date: str):
+    """Attribute unknown subs by FITS header coordinates / ASTAP solve."""
+    from photonscript.scheduler.identify import identify_night
+    return identify_night(get_config(), date)
+
+
+@app.post("/api/runs/{date}/analysis")
+async def api_run_analysis(date: str, payload: dict = Body(default={})):
+    """Copy selected subs into the library Syncthing share so they replicate
+    to the desktop for off-scope FITS analysis.
+
+    Body: {"files": ["LIGHT/....fits", ...]} to pick specific subs, or
+    {"which": "rejected"|"accepted"|"all"} to pick by QA state. Returns the
+    dropbox path on the scope PC and the mirrored desktop path per file.
+    """
+    from photonscript.scheduler.runs import stage_for_analysis
+    return stage_for_analysis(get_config(), date,
+                              files=payload.get("files"),
+                              which=payload.get("which", ""))
+
+
+@app.post("/api/runs/{date}/assign_target")
+async def api_run_assign_target(date: str, payload: dict = Body(...)):
+    """Set the target name on a night's unattributed ('?') subs — for old
+    sessions that predate plan snapshots and OBJECT headers."""
+    from photonscript.scheduler.runs import _load_subs, _rewrite_subs
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"detail": "name required"})
+    config = get_config()
+    subs = _load_subs(config, date)
+
+    def _in_window(s):
+        w = (payload.get("window") or "").strip()  # "HH:MM-HH:MM" UTC
+        if not w:
+            return True
+        try:
+            lo, hi = [p.strip() for p in w.split("-")]
+        except ValueError:
+            return True
+        t = str(s.get("time", ""))[11:16]
+        if not t:
+            return False
+        return (lo <= t <= hi) if lo <= hi else (t >= lo or t <= hi)
+
+    n = 0
+    for s in subs:
+        if (s.get("target") in ("?", "", None) or payload.get("force")) \
+                and _in_window(s):
+            s["target"] = name
+            n += 1
+    if n:
+        _rewrite_subs(config, date, subs)
+    logger.info("Assigned target '%s' to %d subs on %s", name, n, date)
+    return {"ok": True, "updated": n}
+
+
+@app.post("/api/projects2/recount")
+async def api_projects_recount():
+    """Rebuild accepted counts from every night's records (also runs
+    automatically after approvals/verdicts/identification)."""
+    from photonscript.scheduler.runs import sync_goal_progress, runs_dir
+    changed = sync_goal_progress(get_config())
+    nights = len(list(runs_dir(get_config()).glob("*_subs.jsonl")))
+    return {"ok": True, "nights_scanned": nights, "updated": changed}
+
+
+@app.get("/api/runs/{date}/thumb")
+def api_run_thumb(date: str, file: str, w: int = 360,
+                  annotate: bool = False):
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import thumbnail
+    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 1600),
+                  annotate=annotate)
+    if p is None:
+        return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
+    return FileResponse(p, media_type="image/png", headers={
+        "Cache-Control": "public, max-age=604800"})
+
+
+@app.get("/api/nina/log", response_class=PlainTextResponse)
+async def api_nina_log(lines: int = 500, grep: str = ""):
+    """Tail (and optionally filter) the newest NINA log - remote 2AM triage
+    without pulling the whole bundle."""
+    import glob as _glob
+    logs = sorted(_glob.glob(str(Path(get_config().nina_logs_dir) / "*.log")))
+    if not logs:
+        return "no NINA logs found"
+    rows = Path(logs[-1]).read_text(encoding="utf-8",
+                                    errors="replace").splitlines()
+    if grep:
+        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
+        rows = [r for r in rows if any(n in r.lower() for n in needles)]
+    rows = rows[-min(max(1, lines), 5000):]
+    return f"# {Path(logs[-1]).name} - last {len(rows)} lines\n" + "\n".join(rows)
+
+
+@app.get("/api/runs/{date}/bundle")
+def api_run_bundle(date: str):
+    """Download the full night bundle (report, logs, plan, subs, sequences)."""
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import build_bundle
+    p = build_bundle(get_config(), date)
+    return FileResponse(p, media_type="application/zip",
+                        filename=f"night_bundle_{date}.zip")
+
+
+@app.get("/target", response_class=HTMLResponse)
+async def target_page(request: Request):
+    return templates.TemplateResponse(request, "target.html",
+                                      {"version": VERSION})
+
+
+@app.get("/api/target/history")
+async def api_target_history(name: str):
+    """Every sub ever recorded for one target, grouped by night, with QA
+    state and whether each accepted light made it into the Library."""
+    from photonscript.scheduler.runs import _load_subs, runs_dir
+    cfg = get_config()
+    lib = Path(cfg.library_dir) if cfg.library_dir \
+        else Path(cfg.data_dir) / "Library"
+    tdir = lib / name
+    lib_files = set()
+    if tdir.exists():
+        lib_files = {f.name for f in tdir.rglob("*.fits")}
+
+    nights = []
+    totals = {"accepted": 0, "rejected": 0, "in_library": 0,
+              "by_filter": {}}
+    for p in sorted(runs_dir(cfg).glob("*_subs.jsonl"), reverse=True):
+        date = p.name[:10]
+        subs = [s for s in _load_subs(cfg, date)
+                if (s.get("target") or "") == name]
+        if not subs:
+            continue
+        rows = []
+        n_acc = n_rej = 0
+        for s in subs:
+            passed = bool(s.get("passed_qa"))
+            base = Path(str(s.get("file") or "")).name
+            in_lib = base in lib_files
+            if passed:
+                n_acc += 1
+                totals["accepted"] += 1
+                if in_lib:
+                    totals["in_library"] += 1
+            else:
+                n_rej += 1
+                totals["rejected"] += 1
+            f = s.get("filter") or "?"
+            bf = totals["by_filter"].setdefault(f, {"accepted": 0,
+                                                    "rejected": 0})
+            bf["accepted" if passed else "rejected"] += 1
+            rows.append({
+                "time": (s.get("time") or "")[11:16],
+                "filter": f,
+                "exp_s": s.get("exp_s"),
+                "hfr": s.get("hfr"), "ecc": s.get("ecc"),
+                "stars": s.get("stars"),
+                "passed": passed,
+                "reviewed": bool(s.get("reviewed")),
+                "reason": s.get("reason") or "",
+                "in_library": in_lib,
+                "file": base,
+            })
+        nights.append({"date": date, "accepted": n_acc,
+                       "rejected": n_rej, "subs": rows})
+    return {"target": name, "nights": nights, "totals": totals,
+            "library_dir": str(tdir),
+            "desktop_path": str(Path(cfg.desktop_library_dir) / name),
+            "desktop_hint": "desktop copy appears once /api/sync shows "
+                            "library_synced"}
+
+
+@app.get("/api/integration/readiness")
+async def api_integration_readiness():
+    """Everything the DESKTOP needs to integrate a target, answered from the
+    scope's Library: accepted lights per filter, epoch-matched darks, bias,
+    flats. Combine with /api/sync library_synced for 'it is on the desktop'."""
+    from photonscript.scheduler.calibration import (calibration_health,
+                                                    count_matching_darks)
+    cfg = get_config()
+    lib = Path(cfg.library_dir) if cfg.library_dir \
+        else Path(cfg.data_dir) / "Library"
+    health = calibration_health(cfg)
+    try:
+        rev = cfg.reverse_filter_map()
+    except Exception:  # noqa: BLE001
+        rev = {}
+    flats: dict[str, int] = {}
+    for k, v in ((health.get("FLAT") or {}).get("detail") or {}).items():
+        canon = rev.get(k, k)
+        flats[canon] = flats.get(canon, 0) + v
+    bias_n = (health.get("BIAS") or {}).get("count_latest") or 0
+
+    targets = []
+    for p in _projects.values():
+        if not p.active:
+            continue
+        name = p.target.name
+        tdir = lib / name
+        filters: dict[str, dict] = {}
+        dark_needs: dict[float, int] = {}
+        for plan in p.exposure_plans:
+            f = plan.filter_type.value
+            fdir = tdir / f
+            n = len(list(fdir.glob("*.fits"))) if fdir.exists() else 0
+            filters[f] = {"accepted_in_library": n,
+                          "planned": plan.count,
+                          "exposure_s": plan.exposure_seconds,
+                          "flats": flats.get(f, 0)}
+            e = float(plan.exposure_seconds)
+            if e not in dark_needs:
+                try:
+                    dark_needs[e] = count_matching_darks(cfg, e)
+                except Exception:  # noqa: BLE001
+                    dark_needs[e] = 0
+        lights_total = sum(v["accepted_in_library"] for v in filters.values())
+        used = {f: v for f, v in filters.items()
+                if v["accepted_in_library"] > 0}
+        ready = bool(lights_total and bias_n
+                     and all(n > 0 for e, n in dark_needs.items()
+                             if any(v["exposure_s"] == e for v in used.values()))
+                     and all(v["flats"] > 0 for v in used.values()))
+        targets.append({
+            "target": name,
+            "filters": filters,
+            "darks_by_exposure": {f"{k:g}s": v for k, v in dark_needs.items()},
+            "bias": bias_n,
+            "lights_in_library": lights_total,
+            "ready": ready,
+            "command": f'.\\deploy\\prepare-integration.ps1 -Target "{name}"',
+        })
+    return {"targets": targets, "library_dir": str(lib)}
+
+
+@app.post("/api/camera/cooler")
+async def api_camera_cooler(payload: dict = Body(default={})):
+    """Toggle the imaging-camera cooler via NINA: cool to the configured
+    setpoint (10 min ramp) or warm. Dashboard strip convenience."""
+    import httpx
+    cfg = get_config()
+    base = cfg.nina_base_url.rstrip("/")
+    on = bool(payload.get("on"))
+    path = (f"/equipment/camera/cool?temperature={cfg.camera_setpoint_c:g}"
+            "&minutes=10") if on else "/equipment/camera/warm?minutes=10"
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(base + path)
+            ok = r.status_code == 200
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502,
+                            content={"ok": False, "detail": str(e)})
+    logger.info("Cooler %s requested from dashboard", "ON" if on else "OFF")
+    return {"ok": ok, "cooling": on}
+
+
+@app.get("/api/scope")
+async def api_scope():
+    """Is the scope home safe? Mount park/tracking + camera cooler state."""
+    import httpx
+    base = get_config().nina_base_url.rstrip("/")
+    out = {"mount": None, "camera": None, "safety": None,
+           "filterwheel": None, "focuser": None, "guider": None}
+    nina_ok = False
+    async with httpx.AsyncClient(timeout=8) as client:
+        for key, path in (("mount", "/equipment/mount/info"),
+                          ("camera", "/equipment/camera/info"),
+                          ("safety", "/equipment/safetymonitor/info"),
+                          ("filterwheel", "/equipment/filterwheel/info"),
+                          ("focuser", "/equipment/focuser/info"),
+                          ("guider", "/equipment/guider/info")):
+            try:
+                r = await client.get(base + path)
+                p = r.json().get("Response", {})
+                out[key] = p
+                nina_ok = True
+            except Exception:  # noqa: BLE001
+                pass
+    # PHD2 process liveness: its event server listens on 4400 (same PC)
+    phd2_ok = False
+    try:
+        import asyncio as _aio
+        _rd, _wr = await _aio.wait_for(
+            _aio.open_connection("127.0.0.1", 4400), timeout=1.5)
+        _wr.close()
+        phd2_ok = True
+    except Exception:  # noqa: BLE001
+        pass
+    mount, cam = out["mount"] or {}, out["camera"] or {}
+    saf = out["safety"] or {}
+    is_safe = saf.get("IsSafe") if saf.get("Connected") else None
+    parked = mount.get("AtPark", mount.get("AtHome"))
+    tracking = mount.get("TrackingEnabled", mount.get("Tracking"))
+    temp = cam.get("Temperature")
+    cooler = cam.get("CoolerOn")
+    power = cam.get("CoolerPower")  # % TEC drive; drivers can report CoolerOn=true at 0%
+    setpoint = get_config().camera_setpoint_c
+    tol = get_config().cooling_tolerance_c
+    # "Actually cooling" = flag on AND the TEC is drawing power. A stale
+    # CoolerOn flag with 0% power and the sensor at ambient (the 43.9°C /
+    # 0.00% OGMA case) is idle, not cooling.
+    cooling_idle = (cooler and (power is not None and power <= 0.0)
+                    and temp is not None and temp > setpoint + tol)
+    if not mount:
+        status, color = "NINA UNREACHABLE", "gray"
+    elif parked and not cooler:
+        status, color = "PARKED & WARM — home safe", "green"
+    elif parked and cooling_idle:
+        status, color = "PARKED (cooler flag on, 0% power — not cooling)", "yellow"
+    elif parked:
+        status, color = "PARKED (cooler still on)", "yellow"
+    elif tracking:
+        status, color = "TRACKING — scope active", "blue"
+    else:
+        status, color = "UNPARKED, not tracking", "yellow"
+    return {"status": status, "color": color, "parked": parked,
+            "tracking": tracking, "camera_temp": temp, "cooler_on": cooler,
+            "cooler_power": power, "cooling_idle": cooling_idle,
+            "is_safe": is_safe,
+            "nina_connected": nina_ok,
+            "phd2_running": phd2_ok,
+            "devices": {k: bool((out[k] or {}).get("Connected"))
+                        for k in out},
+            "focuser_position": (out["focuser"] or {}).get("Position"),
+            "setpoint_c": get_config().camera_setpoint_c,
+            "scope_local_time": datetime.now().strftime("%H:%M:%S")}

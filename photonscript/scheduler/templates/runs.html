@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Imaging Runs</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        main { max-width: 1560px; margin: 0 auto; display: grid;
+               grid-template-columns: 215px 1fr; gap: 1.2rem;
+               align-items: start; }
+        @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+        #subTable { display:block; max-height: 460px; overflow-y:auto; }
+        .night-chip { display:block; padding:.4rem .8rem; border-radius:8px;
+                      background:rgba(255,255,255,.05); margin:0 0 .4rem 0;
+                      cursor:pointer; white-space:nowrap; }
+        .night-chip.active { background:#1d4ed8; }
+        .fchip { display:inline-block; padding:.25rem .7rem; border-radius:999px;
+                 background:rgba(255,255,255,.06); margin:0 .35rem .35rem 0;
+                 cursor:pointer; font-size:.8rem; }
+        .fchip.active { background:#1d4ed8; }
+        table.runs { width:100%; border-collapse:collapse; font-size:.87rem; }
+        table.runs th, table.runs td { padding:.35rem .6rem; text-align:right;
+            border-bottom:1px solid rgba(255,255,255,.07); }
+        table.runs th:first-child, table.runs td:first-child { text-align:left; }
+        .score-ring { font-size:2.6rem; font-weight:800; }
+        .bd { font-size:.78rem; opacity:.75; }
+        .night-title { font-size:1.25rem; font-weight:700; margin:0 0 .2rem 0; }
+        .thumbs { display:flex; gap:.45rem; flex-wrap:wrap; padding:.4rem 0; }
+        .thumbs figure { margin:0; text-align:center; width:132px; position:relative; }
+        .qa-btns { position:absolute; top:3px; right:3px; display:flex; gap:3px; }
+        .qa-btns span { cursor:pointer; border-radius:4px; padding:0 5px;
+            font-size:.85rem; background:rgba(0,0,0,.65); user-select:none; }
+        .qa-btns .y { color:#4ade80; } .qa-btns .n { color:#f87171; }
+        .qa-btns span:hover { background:rgba(0,0,0,.9); }
+        .thumbs img { border-radius:6px; display:block; width:132px; }
+        .thumbs figcaption { font-size:.6rem; opacity:.65; margin-top:.15rem;
+                             line-height:1.25; }
+        .rej { color:#f87171; }
+        .ok { color:#4ade80; }
+        .warn { color:#eab308; }
+        #lightbox[hidden] { display:none; }
+        #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
+                    display:flex; flex-direction:column; align-items:center;
+                    justify-content:center; z-index:50; gap:.6rem; }
+        #lightbox img { max-width:92vw; max-height:78vh; border-radius:8px; }
+        #lbBar { display:flex; gap:1rem; align-items:center; font-size:.85rem; }
+        #backfillBox { margin-top:.8rem; }
+        .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
+                overflow:hidden; margin:.3rem 0; }
+        .pbar > div { height:100%; background:#1d4ed8; width:0%;
+                      transition:width .5s; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <h1>PhotonScript</h1>
+            <span class="subtitle">Imaging Runs — plan vs. reality</span>
+            <span class="observatory-badge">{{ observatory.name }}</span>
+        </div>
+        <div class="nav" style="display:flex;gap:.55rem;align-items:center;">
+            <a href="/" class="nav-pill">&#127968; Dashboard</a>
+            <a href="/mosaic" class="nav-pill">&#129513; Mosaic</a>
+            <a href="/calibration" class="nav-pill">&#127765; Calibration</a>
+            <a href="/system" class="nav-pill">&#9881;&#65039; System</a>
+            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;" title="git commit running on this machine">{{ version }}</span>
+        </div>
+    </header>
+    <main>
+        <aside class="panel">
+            <h2>Integration readiness</h2>
+            <div class="bd" id="readyBox" style="margin-bottom:1rem;">loading&hellip;</div>
+            <h2>Nights</h2>
+            <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
+            <button class="btn btn-secondary" id="regradeAllBtn"
+                    title="Wipe and re-grade every night since a date (sequential, background). Deletes manual review verdicts for those nights.">Re-grade all&hellip;</button>
+            <div class="bd" id="regradeAllStatus" style="margin:.4rem 0 .6rem;"></div>
+            <div id="nightList">Loading…</div>
+        </aside>
+        <section class="panel" id="detailPanel" hidden>
+            <div class="night-title" id="nightTitle"></div>
+            <div style="display:flex;gap:2.5rem;align-items:center;flex-wrap:wrap;">
+                <div style="text-align:center;">
+                    <div class="score-ring" id="scoreTotal">–</div>
+                    <div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;">NIGHT SCORE</div>
+                </div>
+                <div id="scoreBreakdown" class="bd"></div>
+                <div id="reportNumbers" class="bd"></div>
+            </div>
+            <div style="margin-top:.8rem;">
+                <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
+                <button class="btn btn-secondary" id="regradeBtn">Re-grade night</button>
+                <button class="btn btn-secondary" id="libraryBtn" title="Hardlink QA-accepted lights into the Library folder for Syncthing">Rebuild library</button>
+                <button class="btn btn-secondary" id="libResetBtn" title="Empty the library and rebuild with APPROVED subs only — stops bulk transfers queued before the review gate">Reset library (approved only)</button>
+            </div>
+            <div id="backfillBox" class="bd" hidden>
+                <div id="backfillLabel"></div>
+                <div class="pbar"><div id="backfillBar"></div></div>
+            </div>
+            <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
+            <table class="runs" id="pvaTable"></table>
+            <h2 style="margin-top:1.2rem;">Calibration Frames</h2>
+            <div id="calibration" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
+            <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Subs
+                <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
+                <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
+            <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
+                <span class="bd" id="reviewCounts"></span>
+                <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
+            </div>
+            <div id="targetChips" style="margin-bottom:.25rem;"></div>
+            <div id="filterChips"></div>
+            <div class="bd" id="thumbCount"></div>
+            <div class="thumbs" id="thumbStrip"></div>
+            <table class="runs" id="subTable"></table>
+        </section>
+    </main>
+    <div id="lightbox" hidden>
+        <img id="lbImg" src="">
+        <div id="lbBar">
+            <button class="btn btn-secondary" onclick="lbNav(-1)">◀ prev</button>
+            <span id="lbCaption"></span>
+            <button class="btn btn-secondary" id="lbQaBtn"></button>
+            <button class="btn btn-secondary" onclick="lbNav(1)">next ▶</button>
+            <button class="btn btn-secondary" onclick="closeLb()">close (Esc)</button>
+        </div>
+        <div class="bd">← → navigate · X reject/accept · originals are never deleted — reject only excludes from the library</div>
+    </div>
+    <script>
+    let currentDate = null, currentDetail = null, subFilter = 'ALL';
+    let subTarget = 'ALL';
+    let showAllThumbs = false;
+    async function loadNights() {
+        const r = await fetch('/api/runs');
+        const nights = await r.json();
+        const box = document.getElementById('nightList');
+        if (!nights.length) { box.textContent = 'No recorded nights yet.'; return; }
+        const label = n => {
+            if (!n.subs_logged) return n.lights ? n.lights + ' ungraded'
+                : n.cal_frames ? n.cal_frames + ' cal only' : 'empty';
+            let l = n.subs_logged + ' subs';
+            if (n.review) l += ' <span style="color:#eab308" title="awaiting review">👁' + n.review + '</span>';
+            if (n.syncing) l += ' <span style="color:#7dd3fc" title="syncing to desktop">⇅' + n.syncing + '</span>';
+            if (!n.review && !n.syncing && n.transferred)
+                l += ' <span style="color:#4ade80" title="all approved subs transferred">✓</span>';
+            return l;
+        };
+        const chip = n => '<span class="night-chip" data-date="' + n.date +
+            '">' + n.date + ' <span style="opacity:.6;font-size:.75rem;">' +
+            label(n) + '</span></span>';
+        const real = nights.filter(n => n.subs_logged || n.lights || n.has_plan);
+        const empty = nights.filter(n => !real.includes(n));
+        box.innerHTML = real.map(chip).join('') +
+            (empty.length ? '<a href="#" id="moreNights" class="bd" ' +
+                'style="display:block;margin-top:.4rem;">show ' + empty.length +
+                ' nights with no lights</a><div id="emptyNights" hidden>' +
+                empty.map(chip).join('') + '</div>' : '');
+        const more = document.getElementById('moreNights');
+        if (more) more.onclick = (e) => {
+            e.preventDefault();
+            const d = document.getElementById('emptyNights');
+            d.hidden = !d.hidden;
+            more.textContent = d.hidden
+                ? 'show ' + empty.length + ' nights with no lights'
+                : 'hide nights with no lights';
+        };
+        box.querySelectorAll('.night-chip').forEach(el =>
+            el.addEventListener('click', () => loadDetail(el.dataset.date)));
+        const pathNight = (location.pathname.match(/\/runs\/(\d{4}-\d{2}-\d{2})/) || [])[1];
+        const want = pathNight || new URLSearchParams(location.search).get('night');
+        if (want && nights.some(n => n.date === want)) loadDetail(want);
+        else if (real.length) loadDetail(real[0].date);
+    }
+    async function loadDetail(date) {
+        currentDate = date; subFilter = 'ALL'; subTarget = 'ALL'; showAllThumbs = false;
+        try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
+        document.querySelectorAll('.night-chip').forEach(el =>
+            el.classList.toggle('active', el.dataset.date === date));
+        const panel = document.getElementById('detailPanel');
+        panel.hidden = false;
+        document.getElementById('scoreTotal').textContent = '…';
+        document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
+        document.getElementById('regradeBtn').onclick = async () => {
+            if (!confirm('Delete grades for ' + date + ' and re-grade all subs?')) return;
+            showBackfill({running: true, graded: 0, total_files: 0,
+                          current: 'starting…'});
+            await fetch('/api/runs/' + date + '/regrade', {method: 'POST'});
+            pollBackfill(date);
+        };
+        document.getElementById('libResetBtn').onclick = async () => {
+            if (!confirm('Empty the Library and rebuild it with APPROVED subs only?\n\n' +
+                '• Original FITS files are NOT touched.\n' +
+                '• Syncthing will stop transferring unapproved files and will remove ' +
+                'their copies from the desktop.\n' +
+                '• Approve nights afterwards to queue exactly what you want.')) return;
+            const btn = document.getElementById('libResetBtn');
+            btn.disabled = true; btn.textContent = 'Resetting…';
+            try {
+                const r = await fetch('/api/library/reset', {method: 'POST'});
+                const d = await r.json();
+                alert(r.ok ? d.removed + ' files removed from the library.\n' +
+                        d.linked + ' approved files re-linked · ' + d.pending_review +
+                        ' subs await review.\nSyncthing will settle in a minute or two.'
+                    : d.detail);
+            } finally { btn.disabled = false; btn.textContent = 'Reset library (approved only)'; }
+            loadDetail(currentDate);
+        };
+        document.getElementById('libraryBtn').onclick = async () => {
+            const btn = document.getElementById('libraryBtn');
+            btn.disabled = true; btn.textContent = 'Building…';
+            try {
+                const r = await fetch('/api/library/rebuild', {method: 'POST'});
+                const res = await r.json();
+                let syncMsg = '';
+                try {
+                    const sy = await (await fetch('/api/sync')).json();
+                    syncMsg = !sy.configured ? '\n\nSyncthing not configured — files stay on the scope PC.'
+                        : sy.library_synced
+                          ? '\n\nLibrary is inside the Syncthing share — it will copy to your desktop automatically.'
+                          : '\n\n⚠ Library (' + sy.library_path + ') is OUTSIDE the Syncthing share (' +
+                            sy.folder_path + ').\nSet PS_LIBRARY_DIR to a folder inside the share ' +
+                            '(System & Config) and rebuild, or nothing will transfer.';
+                } catch (e) {}
+                alert('Library: ' + res.library + '\n' + res.linked +
+                      ' new files linked · ' + res.already_there +
+                      ' already there · ' + res.rejected_excluded +
+                      ' rejects excluded' + syncMsg);
+            } finally { btn.disabled = false; btn.textContent = 'Rebuild library'; }
+        };
+        const r = await fetch('/api/runs/' + date);
+        const d = await r.json();
+        currentDetail = d;
+        if (d.backfill && (d.backfill.running || d.backfill.pending > 0)) {
+            showBackfill(d.backfill);
+            pollBackfill(date);
+        } else {
+            document.getElementById('backfillBox').hidden = true;
+            document.getElementById('regradeBtn').disabled = false;
+        }
+        // Title: date + target names
+        const names = [...new Set(d.subs.map(s => s.target).filter(t => t && t !== '?'))];
+        if (!names.length && d.plan) d.plan.targets.forEach(t => names.push(t.name));
+        const hasUnknown = d.subs.some(s => !s.target || s.target === '?');
+        document.getElementById('nightTitle').innerHTML =
+            date + (names.length ? ' — ' + names.join(', ') : '') +
+            (hasUnknown ? ' <input id="assignTarget" placeholder="target name for this night" ' +
+                'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.8rem;">' +
+                '<input id="assignWindow" placeholder="UTC window 04:03-05:18 (optional)" ' +
+                'title="only assign subs inside this UTC time window — for nights with two targets" ' +
+                'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.4rem;width:15rem;">' +
+                '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;" ' +
+                'onclick="assignTarget()">Assign</button>' +
+                '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;margin-left:.3rem;" ' +
+                'title="Read mount coordinates from the FITS headers (plate solve as fallback) and match against the catalog" ' +
+                'onclick="identifyNight()">Identify by position</button>' : '');
+        const sc = d.score;
+        const el = document.getElementById('scoreTotal');
+        el.textContent = sc.total;
+        el.style.color = sc.total >= 70 ? '#4ade80' : sc.total >= 40 ? '#eab308' : '#f87171';
+        document.getElementById('scoreBreakdown').innerHTML =
+            Object.entries(sc.breakdown).map(([k, v]) =>
+                k.replace(/_/g, ' ') + ': <b>' + v.value + '</b> (×' + v.weight + ')'
+            ).join('<br>');
+        const rep = d.report;
+        const pctOf = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+        document.getElementById('reportNumbers').innerHTML =
+            '<b>dark ' + (rep.dark_hours ?? '?') + 'h</b> → shutter ' +
+            (rep.light_hours ?? '?') + 'h (' + pctOf(rep.light_hours, rep.dark_hours) +
+            ') → <b>accepted ' + (rep.accepted_hours ?? '?') + 'h (' +
+            pctOf(rep.accepted_hours, rep.dark_hours) + ')</b>' +
+            '<br><span style="opacity:.6">weather: safe ' +
+            rep.safe_hours.toFixed(1) + 'h of the dark window</span>';
+        document.getElementById('pvaTable').innerHTML =
+            '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
+            '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +
+            '<th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
+            d.table.map(t => '<tr><td>' + (t.rig && t.rig !== 'rc16' ? '<span title="piggyback rig" style="background:#1e3a5f;color:#7dd3fc;font-size:.7rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;margin-right:.4rem;">PB</span>' : '') + t.target + '</td><td>' + t.filter +
+                '</td><td>' + (t.planned || '–') + '</td><td>' + t.attempted + '</td><td class="' +
+                (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
+                '</td><td>' + (t.goal_total ?? '–') + '</td><td>' +
+                (t.done_total != null && t.goal_total
+                 ? t.done_total + ' (' + Math.round(t.done_total / t.goal_total * 100) + '%)'
+                 : '–') +
+                '</td><td>' + (t.median_hfr ?? '–') + '</td><td>' + (t.median_ecc ?? '–') +
+                '</td><td>' + (t.median_background ?? '–') + '</td></tr>').join('');
+        // Calibration frames
+        const cal = d.calibration || {frames: {}, advice: []};
+        const calBox = document.getElementById('calibration');
+        const rows = Object.entries(cal.frames).map(([typ, g]) => {
+            const filts = Object.entries(g.filters).map(([f, n]) => f + '×' + n).join(', ');
+            const exps = Object.entries(g.exposures).map(([e, n]) => e + '×' + n).join(', ');
+            return '<b>' + typ + '</b>: ' + g.count + ' frames (' + filts +
+                   (exps ? ' · ' + exps : '') + ')';
+        });
+        calBox.innerHTML = (rows.length ? rows.join('<br>')
+                : 'no calibration frames captured this night') +
+            (cal.advice.length ? '<br>' + cal.advice.map(a =>
+                '<span class="warn">⚠ ' + a + '</span>').join('<br>') : '');
+        document.getElementById('phases').innerHTML = Object.keys(d.phases).length
+            ? Object.entries(d.phases).map(([k, v]) =>
+                '<b>' + k + '</b>: ' + v.events + ' log events (' +
+                (v.first || '?').slice(11, 16) + ' → ' + (v.last || '?').slice(11, 16) + ')'
+              ).join(' · ')
+            : 'no phase data found in NINA log';
+        renderSubs();
+        renderReviewBar(d);
+    }
+    function renderReviewBar(d) {
+        const subs = d.subs;
+        const rej = subs.filter(s => !s.passed_qa).length;
+        const rev = subs.filter(s => s.passed_qa && !s.reviewed).length;
+        const pend = subs.filter(s => s.transfer === 'pending').length;
+        const done = subs.filter(s => s.transfer === 'done').length;
+        const appr = subs.filter(s => s.passed_qa && s.reviewed).length
+                     - pend - done;
+        document.getElementById('reviewCounts').innerHTML =
+            '<span style="color:#eab308">👁 ' + rev + ' review</span> · ' +
+            (pend ? '<span style="color:#7dd3fc">⇅ ' + pend + ' syncing</span> · ' : '') +
+            '<span style="color:#4ade80">✓ ' + done + ' transferred</span>' +
+            (appr > 0 ? ' · <span style="color:#4ade80">✓ ' + appr + ' accepted</span>' : '') +
+            ' · <span style="color:#f87171">✗ ' + rej + ' rejected</span>';
+        const btn = document.getElementById('approveBtn');
+        btn.hidden = rev === 0;
+        btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
+        btn.onclick = async () => {
+            btn.disabled = true;
+            try {
+                const r = await (await fetch('/api/runs/' + d.date + '/approve',
+                                             {method: 'POST'})).json();
+                alert(r.approved + ' subs approved.\n' + r.linked +
+                      ' new files entered the library' +
+                      (r.pending_review ? '\n(' + r.pending_review +
+                       ' subs on other nights still await review)' : '') +
+                      '\nSyncthing will carry them to the desktop.');
+            } finally { btn.disabled = false; loadDetail(d.date); }
+        };
+    }
+    function renderSubs() {
+        const d = currentDetail;
+        if (!d) return;
+        const all0 = d.subs;
+        // Target chips (only on multi-target nights)
+        const tCounts = {};
+        all0.forEach(s => {
+            const t = (s.target && s.target !== '?') ? s.target : '?';
+            tCounts[t] = (tCounts[t] || 0) + 1;
+        });
+        const tNames = Object.keys(tCounts);
+        const tBox = document.getElementById('targetChips');
+        if (tNames.length > 1) {
+            tBox.innerHTML = ['ALL', ...tNames.sort()].map(t =>
+                '<span class="fchip' + (subTarget === t ? ' active' : '') +
+                '" data-t="' + t + '">' + t +
+                (t === 'ALL' ? ' ' + all0.length : ' ' + tCounts[t]) + '</span>').join('');
+            tBox.querySelectorAll('.fchip').forEach(el =>
+                el.addEventListener('click', () => { subTarget = el.dataset.t; renderSubs(); }));
+        } else { tBox.innerHTML = ''; }
+        const all = subTarget === 'ALL' ? all0
+            : all0.filter(s => ((s.target && s.target !== '?') ? s.target : '?') === subTarget);
+        // Filter chips with counts
+        const counts = {};
+        all.forEach(s => { counts[s.filter] = (counts[s.filter] || 0) + 1; });
+        const chips = ['ALL', ...Object.keys(counts).sort()];
+        document.getElementById('filterChips').innerHTML = chips.map(f =>
+            '<span class="fchip' + (subFilter === f ? ' active' : '') +
+            '" data-f="' + f + '">' + f +
+            (f === 'ALL' ? ' ' + all.length : ' ' + counts[f]) + '</span>').join('');
+        document.querySelectorAll('.fchip').forEach(el =>
+            el.addEventListener('click', () => { subFilter = el.dataset.f; renderSubs(); }));
+        const subs = subFilter === 'ALL' ? all
+                     : all.filter(s => s.filter === subFilter);
+        const step = showAllThumbs ? 1 : Math.max(1, Math.ceil(subs.length / 24));
+        const shown = subs.filter((s, i) => i % step === 0);
+        document.getElementById('thumbCount').innerHTML = step > 1
+            ? 'showing ' + shown.length + ' of ' + subs.length +
+              ' · <a href="#" id="thumbAll">show all</a>'
+            : (showAllThumbs && subs.length > 24
+               ? 'showing all ' + subs.length +
+                 ' · <a href="#" id="thumbAll">show fewer</a>' : '');
+        window._shownSubs = shown;
+        document.getElementById('thumbStrip').innerHTML = shown
+            .map((s, i) => '<figure>' +
+                '<div class="qa-btns">' +
+                '<span class="y" title="approve (accept + queue transfer)" ' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'accepted\')">✓</span>' +
+                '<span class="n" title="reject (kept on disk, excluded from library)" ' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'rejected\')">✗</span>' +
+                '</div>' +
+                '<img loading="lazy" style="cursor:zoom-in;' +
+                (!s.passed_qa ? 'outline:2px solid #f87171;opacity:.55;'
+                 : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" ' +
+                'onclick="openLb(' + i + ')" src="/api/runs/' + currentDate +
+                '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
+                (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
+                '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
+                Math.round(s.exp_s) + 's' + badge(s) +
+                '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
+                ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
+            .join('');
+        const allLink = document.getElementById('thumbAll');
+        if (allLink) allLink.onclick = (e) => {
+            e.preventDefault(); showAllThumbs = !showAllThumbs; renderSubs();
+        };
+        document.getElementById('subTable').innerHTML =
+            '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
+            '<th>HFR</th><th>Ecc</th><th>Stars</th><th>Bkg</th><th>Expo</th><th>QA</th></tr>' +
+            subs.map(s => '<tr><td>' + (s.time || '').slice(11, 19) + '</td><td>' +
+                s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
+                's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
+                '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
+                '</td><td style="color:' + (s.exposure === 'ok' ? '#4ade80'
+                    : s.exposure === 'under' ? '#eab308'
+                    : s.exposure ? '#f87171' : '') + ';" title="swamp ' +
+                (s.swamp ?? '–') + '×RN² (≥3 ok, ≥10 fully sky-limited) · clipped ' +
+                (s.clipped_pct ?? '–') + '% px · saturated stars ' +
+                (s.sat_stars_pct ?? '–') + '%">' + (s.exposure ?? '–') +
+                '</td><td style="cursor:pointer;color:' +
+                (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
+                 : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
+                ';" title="click to flip pass/reject (manual override)" ' +
+                'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\')">' +
+                (!s.passed_qa ? (s.reason || 'reject')
+                 : !s.reviewed ? 'review'
+                 : s.transfer === 'pending' ? 'accepted · syncing ⇅'
+                 : s.transfer === 'done' ? 'transferred ✓' : 'accepted') +
+                (s.manual_qa ? ' ✋' : '') + '</td></tr>').join('');
+    }
+    function fmtEta(s) {
+        if (s == null) return '';
+        return s >= 60 ? '~' + Math.floor(s / 60) + 'm ' + (s % 60) + 's left'
+                       : '~' + s + 's left';
+    }
+    function showBackfill(b) {
+        const box = document.getElementById('backfillBox');
+        box.hidden = false;
+        document.getElementById('regradeBtn').disabled = true;
+        const pct = b.total_files ? Math.round(b.graded / b.total_files * 100) : 0;
+        document.getElementById('backfillBar').style.width = pct + '%';
+        document.getElementById('backfillLabel').innerHTML =
+            '<b>Re-grading:</b> ' + b.graded + '/' + (b.total_files || '?') +
+            (b.current ? ' · <span style="opacity:.7">' +
+                b.current.split(/[\\/]/).pop() + '</span>' +
+                (b.current_s != null ? ' <span style="opacity:.5">(' +
+                    b.current_s + 's)</span>' : '') : '') +
+            (b.rate ? ' · ' + b.rate + '/s · ' + fmtEta(b.eta_s) : '') +
+            (b.last_error ? ' · <span class="rej">last error: ' +
+                b.last_error + '</span>' : '');
+    }
+    let pollTimer = null;
+    function pollBackfill(date) {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(async () => {
+            if (currentDate !== date) return;
+            try {
+                const r = await fetch('/api/runs/' + date + '/backfill');
+                const b = await r.json();
+                if (b.running || b.pending > 0) {
+                    showBackfill(b);
+                } else {
+                    document.getElementById('backfillBox').hidden = true;
+                    loadDetail(date);   // done: render final numbers
+                    return;
+                }
+            } catch (e) { /* transient — keep polling */ }
+            pollBackfill(date);
+        }, 2500);
+    }
+    async function assignTarget() {
+        const name = document.getElementById('assignTarget').value.trim();
+        if (!name) return;
+        await fetch('/api/runs/' + currentDate + '/assign_target', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name,
+                window: (document.getElementById('assignWindow') || {value:''}).value})});
+        loadDetail(currentDate);
+    }
+    async function identifyNight() {
+        const r = await (await fetch('/api/runs/' + currentDate + '/identify',
+                                     {method: 'POST'})).json();
+        alert(r.identified + ' subs attributed.\n\n' + r.clusters.map(c =>
+            c.window + ' UTC · ' + c.subs + ' subs · ' +
+            (c.matched ? c.matched + ' (' + c.method + ')'
+             : 'no match' + (c.ra_deg != null ? ' at RA ' + c.ra_deg +
+               ' Dec ' + c.dec_deg : ' — no coordinates'))).join('\n'));
+        loadDetail(currentDate);
+    }
+    function subState(s) {
+        return !s.passed_qa ? 'rejected' : !s.reviewed ? 'review'
+             : s.transfer === 'pending' ? 'syncing' : 'accepted';
+    }
+    const STATE_ICON = {review: ['👁', '#eab308'], accepted: ['✓', '#4ade80'],
+                        syncing: ['⇅', '#7dd3fc'], rejected: ['✗', '#f87171']};
+    function badge(s) {
+        const [ic, col] = STATE_ICON[subState(s)];
+        return ' <span style="color:' + col + '">' + ic + '</span>';
+    }
+    async function setState(file, state) {
+        await fetch('/api/runs/' + currentDate + '/qa', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file: file, state: state})});
+    }
+    function nextState(s) {
+        const st = subState(s);
+        return st === 'review' ? 'accepted'
+             : (st === 'accepted' || st === 'syncing') ? 'rejected' : 'review';
+    }
+    function applyLocal(s, state) {
+        s.passed_qa = state !== 'rejected';
+        s.reviewed = state === 'accepted';
+        if (state !== 'accepted') s.transfer = null;
+    }
+    let lbIdx = 0;
+    function openLb(i) {
+        lbIdx = i;
+        const s = window._shownSubs[i];
+        if (!s) return;
+        document.getElementById('lbImg').src = '/api/runs/' + currentDate +
+            '/thumb?file=' + encodeURIComponent(s.file) + '&w=1400' +
+            (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
+        document.getElementById('lbCaption').innerHTML =
+            '<b>' + currentDate + '</b> · ' +
+            ((s.target && s.target !== '?') ? s.target + ' · ' : '') +
+            '<b>' + (s.time || '').slice(11, 19) + ' UTC</b> · ' + s.filter + ' ' +
+            Math.round(s.exp_s) + 's · HFR ' + (s.hfr ?? '–') + ' · ★' +
+            (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
+            ' · expo ' + (s.exposure ?? '–') + ' (' + (s.swamp ?? '–') + '×RN²' +
+            (s.sat_stars_pct != null ? ', sat★ ' + s.sat_stars_pct + '%' : '') + ')' +
+            ' ·' + badge(s) + ' <span style="opacity:.75">' + subState(s) +
+            (s.reason && !s.passed_qa ? ' — ' + s.reason : '') + '</span>';
+        const btn = document.getElementById('lbQaBtn');
+        const nx = nextState(s);
+        btn.textContent = 'X → ' + STATE_ICON[nx][0] + ' ' + nx;
+        btn.onclick = () => lbToggle();
+        document.getElementById('lightbox').hidden = false;
+    }
+    function closeLb() { document.getElementById('lightbox').hidden = true; }
+    function lbNav(d) {
+        const n = window._shownSubs.length;
+        openLb(((lbIdx + d) % n + n) % n);
+    }
+    async function lbToggle() {
+        const s = window._shownSubs[lbIdx];
+        const st = nextState(s);
+        await setState(s.file, st);
+        applyLocal(s, st);   // optimistic; full reload on close
+        openLb(lbIdx);
+    }
+    document.addEventListener('keydown', (e) => {
+        if (document.getElementById('lightbox').hidden) return;
+        if (e.key === 'Escape') { closeLb(); loadDetail(currentDate); }
+        if (e.key === 'ArrowLeft') lbNav(-1);
+        if (e.key === 'ArrowRight') lbNav(1);
+        if (e.key.toLowerCase() === 'x') lbToggle();
+    });
+    document.getElementById('lightbox').addEventListener('click', (e) => {
+        if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate); }
+    });
+    async function qaSet(ev, fileEnc, state) {
+        ev.stopPropagation();
+        await setState(decodeURIComponent(fileEnc), state);
+        loadDetail(currentDate);
+    }
+    async function toggleQa(fileEnc) {
+        const file = decodeURIComponent(fileEnc);
+        const s = currentDetail.subs.find(x => x.file === file);
+        if (!s) return;
+        await setState(file, nextState(s));
+        loadDetail(currentDate);
+    }
+    document.getElementById('annotateToggle').addEventListener('change', renderSubs);
+    loadNights();
+
+    // ---- integration readiness: what the desktop needs, answered scope-side
+    async function loadReadiness() {
+        const box = document.getElementById('readyBox');
+        try {
+            const [rd, sync] = await Promise.all([
+                (await fetch('/api/integration/readiness')).json(),
+                fetch('/api/sync').then(r => r.json()).catch(() => ({}))]);
+            const synced = sync.library_synced === true;
+            if (!rd.targets || !rd.targets.length) {
+                box.textContent = 'no active target goals'; return;
+            }
+            const ok = t => '<span style="color:#4ade80;">\u2713</span>';
+            const bad = '<span style="color:#f87171;">\u2717</span>';
+            box.innerHTML = rd.targets.map(t => {
+                const fl = Object.entries(t.filters)
+                    .filter(([f, v]) => v.accepted_in_library > 0)
+                    .map(([f, v]) => f + ' ' + v.accepted_in_library +
+                         (v.flats > 0 ? '' : ' <span style="color:#f87171;">(no flats)</span>'))
+                    .join(' \u00b7 ') || '<span style="opacity:.6;">no accepted lights yet</span>';
+                const darks = Object.entries(t.darks_by_exposure)
+                    .map(([e, n]) => e + (n > 0 ? ' ' + ok() + n : ' ' + bad)).join(' \u00b7 ');
+                const verdict = t.ready && synced
+                    ? '<span style="color:#4ade80;font-weight:700;">ready \u2014 </span>' +
+                      '<code style="font-size:.78rem;">' + t.command + '</code>'
+                    : t.ready && !synced
+                    ? '<span style="color:#eab308;">ready on scope \u2014 sync in progress</span>'
+                    : '<span style="opacity:.6;">not ready</span>';
+                return '<div style="margin-bottom:.7rem;">' +
+                    '<b>' + t.target + '</b><br>' +
+                    'lights: ' + fl + '<br>' +
+                    'darks: ' + darks + ' \u00b7 bias: ' +
+                    (t.bias > 0 ? ok() + t.bias : bad) +
+                    ' \u00b7 desktop sync: ' + (synced ? ok() : '\u23f3') + '<br>' +
+                    verdict + '</div>';
+            }).join('');
+        } catch (e) { box.textContent = 'readiness unavailable'; }
+    }
+    loadReadiness();
+    setInterval(loadReadiness, 120 * 1000);
+
+    // ---- re-grade all nights (sequential, background) ----
+    async function pollRegradeAll(loop) {
+        try {
+            const s = await (await fetch('/api/regrade/all')).json();
+            const el = document.getElementById('regradeAllStatus');
+            if (s.running) {
+                el.textContent = 'Re-grading ' + (s.current || '\u2026') + ' \u2014 night ' +
+                    (s.done + 1) + '/' + s.total;
+                if (loop) setTimeout(() => pollRegradeAll(true), 5000);
+            } else if (s.total) {
+                el.textContent = 'Re-grade all: finished ' + s.done + '/' + s.total + ' nights' +
+                    (s.last_error ? ' \u00b7 last error: ' + s.last_error : '');
+                loadNights && loadNights();
+            }
+        } catch (e) {}
+    }
+    document.getElementById('regradeAllBtn').onclick = async () => {
+        const since = prompt(
+            'Re-grade every night SINCE this date (YYYY-MM-DD).\n' +
+            '2026-07-28 = the metadata-bug era. Blank = ALL nights.\n' +
+            'Manual review verdicts for these nights are deleted.',
+            '2026-07-28');
+        if (since === null) return;
+        await fetch('/api/regrade/all', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({since: since.trim()})});
+        pollRegradeAll(true);
+    };
+    pollRegradeAll(true);
+    </script>
+</body>
+</html>

@@ -3,8 +3,27 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
     <title>PhotonScript - Remote Telescope Dashboard</title>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        #allskyPanel { grid-column: 1; grid-row: 1; }
+        #outlookPanel { grid-column: 1; grid-row: 2; }
+        #activityPanel { grid-column: 1; grid-row: 3; }
+        #armPanel { grid-column: 2; grid-row: 1 / span 3; }
+        @media (max-width: 1000px) {
+            #allskyPanel, #outlookPanel, #activityPanel, #armPanel {
+                grid-column: auto; grid-row: auto; }
+        }
+        .goals-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+        @media (max-width: 1300px) { .goals-grid { grid-template-columns: 1fr; } }
+        .fbar { height: 7px; border-radius: 4px; background: rgba(255,255,255,.07);
+                overflow: hidden; flex: 1; min-width: 60px; }
+        .fbar > div { height: 100%; }
+        .sub-row { display: flex; gap: .7rem; font-size: .78rem; padding: .25rem 0;
+                   border-bottom: 1px solid rgba(255,255,255,.05); }
+    </style>
 </head>
 <body>
     <header>
@@ -13,140 +32,123 @@
             <span class="subtitle">Remote Telescope Orchestration</span>
             <span class="observatory-badge">{{ observatory.name }} &bull; {{ month }}</span>
         </div>
-        <div class="connection-status" id="connectionStatus">Connecting...</div>
+        <div style="display:flex;align-items:center;gap:.55rem;">
+            <a href="/runs" class="nav-pill">&#128248; Runs</a>
+            <a href="/mosaic" class="nav-pill">&#129513; Mosaic</a>
+            <a href="/calibration" class="nav-pill">&#127765; Calibration</a>
+            <a href="/system" class="nav-pill">&#9881;&#65039; System</a>
+            <div class="connection-status" id="connectionStatus" style="margin-left:.6rem;">Connecting...</div>
+            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.5rem;" title="git commit running on this machine">{{ version }}</span>
+        </div>
     </header>
+    <div id="topStrip" style="display:flex;flex-wrap:nowrap;gap:1.3rem;align-items:center;
+         padding:.5rem 2rem;background:rgba(125,211,252,.05);overflow:hidden;
+         border-bottom:1px solid rgba(148,163,184,.15);font-size:.92rem;white-space:nowrap;">
+        <span id="tsArm" style="font-weight:700;">&mdash;</span>
+        <span id="tsPlan" style="opacity:.7;font-size:.85rem;"></span>
+        <span id="tsNext" style="color:#7dd3fc;"></span>
+        <span>&#127919; <span id="tsTarget">&mdash;</span></span>
+        <span id="tsNina" title="NINA API reachable">NINA <b>&#9679;</b></span>
+        <span id="tsPhd" title="PHD2 process on the scope PC">PHD2 <b>&#9679;</b></span>
+        <span id="tsDev" title="devices: Mount Camera filterWheel Focuser Guider Safety"></span>
+        <span id="tsRoof" title="derived from the safety monitor: unsafe = AARO closes the roof">ROOF &mdash;</span>
+        <span id="tsGuide" hidden style="font-weight:600;"></span>
+        <span id="tsTemp" style="opacity:.8;" title="sensor now / setpoint &middot; cooler power">&mdash;</span>
+        <span title="images tonight">&#128248; <span id="tsImgs">0</span></span>
+        <span id="tsPiggy" hidden title="Piggyback rig (2nd NINA — 600mm OSC)" style="font-weight:600;"></span>
+        <span id="tsClock" style="margin-left:auto;font-variant-numeric:tabular-nums;
+              font-weight:700;color:#7dd3fc;" title="scope local time">--:--:--</span>
+    </div>
 
     <main>
-        <!-- Telescope Status Panel -->
-        <section class="panel telescope-status">
-            <h2>Telescope Status</h2>
-            <div class="status-grid">
-                <div class="status-card">
-                    <label>State</label>
-                    <span class="value state-{{ telescope_state.session_state.value }}" id="sessionState">
-                        {{ telescope_state.session_state.value | upper }}
-                    </span>
-                </div>
-                <div class="status-card">
-                    <label>Current Target</label>
-                    <span class="value" id="currentTarget">{{ telescope_state.current_target or "—" }}</span>
-                </div>
-                <div class="status-card">
-                    <label>Filter</label>
-                    <span class="value" id="currentFilter">{{ telescope_state.current_filter or "—" }}</span>
-                </div>
-                <div class="status-card">
-                    <label>Guiding RMS</label>
-                    <span class="value" id="guidingRms">{{ "%.2f"|format(telescope_state.guiding.rms_total_arcsec) }}"</span>
-                </div>
-                <div class="status-card">
-                    <label>Camera Temp</label>
-                    <span class="value" id="cameraTemp">{{ telescope_state.camera_temp_c or "—" }}&deg;C</span>
-                </div>
-                <div class="status-card">
-                    <label>Images Tonight</label>
-                    <span class="value" id="imagesTonight">{{ telescope_state.images_captured_tonight }}</span>
-                </div>
+        <!-- 7-Night Outlook + ARM -->
+        <section class="panel" id="allskyPanel">
+            <h2>All-Sky Camera <span class="bd">(live from AARO, refreshes every 60 s)</span></h2>
+            <a href="https://allsky.astronomyacres.com/" target="_blank">
+                <img id="allskyImg" src="https://allsky.astronomyacres.com/image.jpg"
+                     style="width:100%;border-radius:8px;display:block;"
+                     alt="AARO all-sky camera"></a>
+        </section>
+        <section class="panel" id="outlookPanel">
+            <h2>7-Night Outlook</h2>
+            <div id="outlookStrip" style="display:flex;gap:.6rem;flex-wrap:wrap;">Loading forecast…</div>
+            <div style="margin-top:.5rem;font-size:.75rem;opacity:.55;" id="outlookLinks"></div>
+        </section>
+
+        <section class="panel" id="armPanel">
+            <h2>Tonight's Run</h2>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem 1rem;margin-bottom:.8rem;">
+                <button class="btn btn-primary" id="armBtn" title="Arm tonight unguided — trust the Paramount MX encoders (+ ProTrack once modeled)">Arm (Encoders)</button>
+                <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding (for very long subs / extreme precision)">Arm (Guiding)</button>
+                <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
+                <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
+            </div>
+            <div style="margin-bottom:.8rem;">
+                <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
 
-            <!-- Exposure Progress Bar -->
-            <div class="exposure-progress" id="exposureProgress" style="display: none;">
-                <label>Exposure Progress</label>
-                <div class="progress-bar">
-                    <div class="progress-fill" id="exposureFill" style="width: 0%"></div>
-                </div>
+            <!-- Equipment: one pane per rig (RC16 + piggyback), rendered
+                 consistently by refreshEquip() from /api/rigs. Each pane shows
+                 camera + focuser rows with cooler/dew-heater toggles; the RC16
+                 pane also carries the shared mount's pointing status. -->
+            <div id="equipPanes" style="margin-bottom:1rem;display:flex;
+                 flex-direction:column;gap:.6rem;"></div>
+            <div id="sunCard" style="margin-bottom:1rem;"></div>
+            <div id="nightTimeline"></div>
+        </section>
+
+        <!-- Telescope Status absorbed into the top strip; hidden stubs keep
+             legacy JS/websocket updates harmless -->
+        <div hidden aria-hidden="true">
+            <span id="sessionState"></span><span id="currentTarget"></span>
+            <span id="currentFilter"></span><span id="safetyState"></span>
+            <span id="commandState"></span><span id="guidingRms"></span>
+            <span id="cameraTemp"></span><span id="imagesTonight"></span>
+            <div id="exposureProgress"><div id="exposureFill"></div></div>
+        </div>
+
+        <!-- Recent Activity: last subs + telescope events -->
+        <section class="panel" id="activityPanel">
+            <h2>Activity <span class="bd">(latest subs first)</span></h2>
+            <div id="recentSubs" class="bd">no subs yet tonight</div>
+            <div class="log-entries" id="activityLog" style="margin-top:.5rem;max-height:140px;overflow-y:auto;">
+                <p class="empty-state">Waiting for telescope activity...</p>
             </div>
         </section>
 
-        <!-- Tonight's Darkness Window -->
-        <section class="panel darkness-window">
-            <h2>Tonight's Window</h2>
-            <div class="twilight-info">
-                <div>
-                    <label>Astro Dark Start</label>
-                    <span>{{ twilight.astro_dark_start.strftime('%I:%M %p') if twilight.astro_dark_start else 'N/A' }}</span>
-                </div>
-                <div>
-                    <label>Astro Dark End</label>
-                    <span>{{ twilight.astro_dark_end.strftime('%I:%M %p') if twilight.astro_dark_end else 'N/A' }}</span>
-                </div>
+        <!-- Target Goals -->
+        <section class="panel projects" style="grid-column:1 / -1;">
+            <h2 style="display:flex;align-items:center;gap:1rem;">Target Goals
+                <span class="bd" id="syncChip" style="font-weight:normal;"></span></h2>
+            <div style="display:flex;gap:.6rem;margin-bottom:.8rem;">
+                <input id="addTargetName" list="catalogList"
+                       placeholder="Add a target — type or pick from tonight's catalog"
+                       style="flex:1;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.4rem .6rem;">
+                <datalist id="catalogList">
+                    {% for r in tonight_targets %}
+                    <option value="{{ r.target.name }}">{{ (r.tier.value if r.tier else 'good') | upper }} · {{ r.target.catalog_id }} · {{ r.visibility.hours }}h visible tonight</option>
+                    {% endfor %}
+                </datalist>
+                <button class="btn btn-secondary" id="addTargetBtn">Add</button>
+                <button class="btn btn-secondary" id="recountBtn" title="Rebuild accepted counts from every graded night on disk — pulls old-season history into goal progress">Recount from history</button>
             </div>
-        </section>
-
-        <!-- Tonight's Target Plan -->
-        <section class="panel target-plan">
-            <h2>Tonight's Targets</h2>
-            <div class="target-list" id="targetList">
-                {% for r in tonight_targets %}
-                <div class="target-card tier-{{ r.tier.value if r.tier else 'good' }}">
-                    <div class="target-header">
-                        <span class="target-name">{{ r.target.name }}</span>
-                        <span class="target-tier">{{ r.tier.value | upper if r.tier else 'GOOD' }}</span>
-                    </div>
-                    <div class="target-details">
-                        <span>{{ r.target.catalog_id }}</span>
-                        <span>{{ r.target.object_type }}</span>
-                        <span>{{ r.visibility.hours }}h visible</span>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            <div class="actions">
-                <a href="/api/tonight/sequence.xml" class="btn btn-primary" download>Download NINA Sequence</a>
+            <details id="queueBox" style="margin:-.2rem 0 .8rem;" hidden>
+                <summary class="bd" style="cursor:pointer;" id="queueSummary"></summary>
+                <div id="queueList" class="bd" style="margin:.4rem 0 0 .8rem;"></div>
+            </details>
+            <div id="projectManager" class="goals-grid"><p class="empty-state">Loading projects…</p></div>
+            <div class="actions" style="margin-top:.9rem;">
+                <a href="/api/tonight/sequence.json" class="btn btn-primary" download>Download NINA Sequence (Advanced Sequencer JSON)</a>
+                <a href="/api/tonight/sequence.json?now_mode=true" class="btn btn-secondary" download title="No dusk gate — for daytime testing only">Daytime test version</a>
                 <a href="/api/tonight" class="btn btn-secondary">View Plan JSON</a>
             </div>
         </section>
-
-        <!-- Active Projects -->
-        <section class="panel projects">
-            <h2>Imaging Projects</h2>
-            <div class="project-list" id="projectList">
-                {% for project in projects %}
-                <div class="project-card">
-                    <div class="project-header">
-                        <span class="project-name">{{ project.target.name }}</span>
-                        <span class="project-priority">P{{ project.priority }}</span>
-                    </div>
-                    <div class="progress-bar">
-                        <div class="progress-fill" style="width: {{ project.completion_pct }}%"></div>
-                    </div>
-                    <div class="project-stats">
-                        <span>{{ project.completion_pct }}% complete</span>
-                        <span>{{ project.total_integration_hours }}h planned</span>
-                    </div>
-                    <div class="filter-progress">
-                        {% for ep in project.exposure_plans %}
-                        <span class="filter-badge filter-{{ ep.filter_type.value }}">
-                            {{ ep.filter_type.value }}: {{ ep.acquired }}/{{ ep.count }}
-                        </span>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endfor %}
-                {% if not projects %}
-                <p class="empty-state">No active projects. Tonight's targets will be auto-selected from the seasonal catalog.</p>
-                {% endif %}
-            </div>
-        </section>
-
-        <!-- Seasonal Targets Browser -->
-        <section class="panel seasonal">
-            <h2>Seasonal Catalog ({{ month }})</h2>
-            <div class="month-selector">
-                {% for m in range(1, 13) %}
-                <a href="/api/seasonal/{{ m }}" class="month-btn {% if m == twilight.astro_dark_start.month if twilight.astro_dark_start else 0 %}active{% endif %}">
-                    {{ ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m-1] }}
-                </a>
-                {% endfor %}
-            </div>
-        </section>
-
-        <!-- Recent Activity Log -->
-        <section class="panel activity">
-            <h2>Activity Log</h2>
-            <div class="log-entries" id="activityLog">
-                <p class="empty-state">Waiting for telescope activity...</p>
-            </div>
+        <section class="panel" style="grid-column:1 / -1;" id="campaignPanel">
+            <h2>Campaign <span class="bd">(14 nights, moon-aware — BB gets moon-free hours first)</span></h2>
+            <div id="campaignNights" style="display:flex;gap:.5rem;flex-wrap:wrap;"></div>
+            <div id="campaignGoals" class="bd" style="margin-top:.7rem;"></div>
+            <div id="campaignTotals" class="bd" style="margin-top:.5rem;"></div>
+            <div id="campaignSuggest" style="margin-top:.5rem;"></div>
         </section>
     </main>
 
@@ -156,5 +158,1036 @@
     </footer>
 
     <script src="/static/js/dashboard.js"></script>
+
+    <script>
+    const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
+    function moonSVG(illum) {
+        const f = Math.max(0, Math.min(100, illum)) / 100;
+        const rx = (Math.abs(1 - 2 * f) * 5).toFixed(2);
+        const sweep = f > 0.5 ? 1 : 0;
+        return '<svg width="12" height="12" viewBox="-6 -6 12 12" ' +
+            'style="vertical-align:-2px" aria-label="moon ' + illum + '%">' +
+            '<circle r="5" fill="#131c2e" stroke="#475569" stroke-width="0.8"/>' +
+            '<path d="M 0,-5 A 5,5 0 1,1 0,5 A ' + rx + ',5 0 1,' + sweep +
+            ' 0,-5" fill="#dbe4f0"/></svg>';
+    }
+    async function loadOutlook() {
+        try {
+            const r = await fetch('/api/forecast');
+            const d = await r.json();
+            if (!r.ok) throw new Error(d.detail);
+            document.getElementById('outlookStrip').innerHTML = d.nights.map(n =>
+                '<div style="text-align:center;padding:.55rem .8rem;border-radius:8px;' +
+                'border:2px solid ' + RATING_COLORS[n.rating] + ';min-width:86px;">' +
+                '<div style="font-size:.7rem;opacity:.7;">' + n.date.slice(5) + '</div>' +
+                '<div style="font-size:1.25rem;font-weight:700;color:' + RATING_COLORS[n.rating] + ';">' +
+                n.usable_pct + '%</div>' +
+                '<div style="font-size:.72rem;opacity:.75;">' + n.usable_hours + 'h / ' +
+                n.dark_hours + 'h</div>' +
+                (n.avg_cloud_pct !== null ? '<div style="font-size:.68rem;opacity:.5;">☁ ' +
+                n.avg_cloud_pct + '%</div>' : '') +
+                (n.moon && n.moon.illum_pct != null
+                 ? '<div style="font-size:.68rem;opacity:.75;">' + moonSVG(n.moon.illum_pct) +
+                   ' ' + n.moon.illum_pct + '% · ' + n.moon.moon_free_h +
+                   'h free · <b>' + n.moon.tag + '</b></div>'
+                 : '') +
+                ((n.hourly && n.hourly.length)
+                 ? '<div style="display:flex;gap:1px;margin-top:.3rem;justify-content:center;" ' +
+                   'title="hour-by-hour through the dark window">' +
+                   n.hourly.map(hh => {
+                       const col = hh.score == null ? '#334155'
+                           : hh.score >= 0.75 ? '#22c55e'
+                           : hh.score >= 0.35 ? '#eab308'
+                           : hh.score > 0 ? '#f97316' : '#ef4444';
+                       return '<span title="' + hh.local + ':00 — ' +
+                           (hh.cloud != null ? hh.cloud + '% cloud, ' : '') +
+                           (hh.score == null ? 'no data' :
+                            Math.round(hh.score * 100) + '% usable') +
+                           '" style="width:9px;height:9px;border-radius:2px;' +
+                           'background:' + col + ';display:inline-block;"></span>';
+                   }).join('') + '</div>'
+                 : '') + '</div>').join('');
+            const staleNote = d.stale
+                ? '<div style="color:#eab308;font-size:.75rem;margin-bottom:.3rem;">⚠ showing cached forecast from ' +
+                  d.fetched_at.slice(0, 16).replace('T', ' ') + 'Z (' + d.stale_reason + ')</div>'
+                : '';
+            document.getElementById('outlookStrip').insertAdjacentHTML('beforebegin', staleNote);
+            document.getElementById('outlookLinks').innerHTML =
+                'Source: Open-Meteo · Cross-check: <a style="color:#7dd3fc" href="' +
+                d.cross_check.clear_outside + '" target="_blank">Clear Outside</a> · ' +
+                '<a style="color:#7dd3fc" href="' + d.cross_check.aaro_status +
+                '" target="_blank">AARO Status</a>';
+        } catch (e) {
+            document.getElementById('outlookStrip').textContent = 'Forecast unavailable: ' + e.message;
+        }
+    }
+
+    const ARM_COLORS = {DISARMED:'#64748b', ARMED:'#eab308', RUNNING:'#22c55e',
+                        PAUSED_UNSAFE:'#f97316', COMPLETE:'#7dd3fc', ERROR:'#ef4444'};
+    async function refreshArm() {
+        const r = await fetch('/api/arm');
+        const d = await r.json();
+        const el = document.getElementById('armState');
+        el.textContent = d.state;
+        el.style.color = ARM_COLORS[d.state] || '#e2e8f0';
+        document.getElementById('armDetail').textContent = d.detail || '';
+        const btn = document.getElementById('armBtn');
+        const gbtn = document.getElementById('armGuidedBtn');
+        const active = ['ARMED','RUNNING','PAUSED_UNSAFE'].includes(d.state);
+        btn.textContent = active
+            ? ('Disarm' + (d.guiding ? ' (' + d.guiding + ')' : ''))
+            : 'Arm (Encoders)';
+        btn.dataset.armed = active ? '1' : '0';
+        if (gbtn) gbtn.style.display = active ? 'none' : '';
+        const lr = d.last_raw;
+        const el2 = document.getElementById('rawDispatch');
+        if (el2) el2.innerHTML = lr
+            ? '⚙ NINA is running a dispatched job: <b>' + lr.label +
+              '</b> <span style="opacity:.6">(since ' + (lr.at || '').slice(11, 16) +
+              ' UTC — arming will replace it)</span>'
+            : '';
+    }
+    function sunDiagramSVG(d) {
+        const W = 640, H = 150, PAD = 6;
+        const yMin = -25, yMax = 75;                       // altitude range shown
+        const y = a => PAD + (yMax - Math.max(yMin, Math.min(yMax, a))) /
+                       (yMax - yMin) * (H - 2 * PAD);
+        const x = f => f * W;
+        const n = d.alts.length;
+        // Twilight bands (below horizon)
+        const bands = [
+            [0,  -6,  '#1e293b', 'civil'],
+            [-6, -12, '#16223a', 'nautical'],
+            [-12,-18, '#101a30', 'astro twilight'],
+            [-18, yMin, '#0a1226', 'DARK'],
+        ];
+        let svg = '<svg width="100%" viewBox="0 0 ' + W + ' ' + H +
+                  '" style="background:#0b1220;border-radius:10px;">';
+        // day sky band
+        svg += '<rect x="0" y="0" width="' + W + '" height="' + y(0) +
+               '" fill="#13233f"/>';
+        for (const [top, bot, color, label] of bands) {
+            svg += '<rect x="0" y="' + y(top) + '" width="' + W + '" height="' +
+                   (y(bot) - y(top)) + '" fill="' + color + '"/>';
+            svg += '<text x="6" y="' + (y(top) + 11) + '" fill="#64748b" ' +
+                   'font-size="8">' + label + ' (' + top + '° to ' + bot + '°)</text>';
+        }
+        // threshold lines
+        for (const th of [0, -6, -12, -18])
+            svg += '<line x1="0" y1="' + y(th) + '" x2="' + W + '" y2="' + y(th) +
+                   '" stroke="#334155" stroke-width="' + (th === -18 ? 1.4 : 0.6) +
+                   '" ' + (th === -18 ? 'stroke-dasharray="none"' : 'stroke-dasharray="4,4"') + '/>';
+        // sun path
+        svg += '<polyline fill="none" stroke="#fbbf24" stroke-width="1.8" points="' +
+               d.alts.map((a, i) => x(i / (n - 1)) + ',' + y(a)).join(' ') + '"/>';
+        // crossing markers on the -18 line
+        for (const key of ['astro_dusk', 'astro_dawn']) {
+            const c = d.crossings[key];
+            if (!c) continue;
+            svg += '<circle cx="' + x(c.frac) + '" cy="' + y(-18) + '" r="3" fill="#7dd3fc"/>' +
+                   '<text x="' + x(c.frac) + '" y="' + (y(-18) + 14) +
+                   '" fill="#7dd3fc" font-size="9" text-anchor="middle">' + c.local + '</text>';
+        }
+        // the sun, now
+        const sx = x(d.now_frac), sy = y(d.alt_now);
+        svg += '<circle cx="' + sx + '" cy="' + sy + '" r="7" fill="#fbbf24" opacity=".25"/>' +
+               '<circle cx="' + sx + '" cy="' + sy + '" r="4" fill="#fde047"/>' +
+               '<line x1="' + sx + '" y1="0" x2="' + sx + '" y2="' + H +
+               '" stroke="#e2e8f0" stroke-dasharray="2,4" opacity=".45"/>';
+        svg += '</svg>';
+        return svg;
+    }
+    async function loadSun() {
+        try {
+            const r = await fetch('/api/sun');
+            const d = await r.json();
+            let status;
+            if (d.alt_now <= -18) {
+                status = '<span style="color:#4ade80;font-weight:700;">ASTRONOMICALLY DARK</span>' +
+                    (d.crossings.astro_dawn ? ' — until ' + d.crossings.astro_dawn.local : '');
+            } else if (d.minutes_to_astro_dark !== null) {
+                const h = Math.floor(d.minutes_to_astro_dark / 60),
+                      m = d.minutes_to_astro_dark % 60;
+                status = 'astro dark in <b style="color:#7dd3fc;">' +
+                    (h ? h + 'h ' : '') + m + 'm</b>' +
+                    (d.dark_at_local ? ' (' + d.dark_at_local + ')' : '');
+            } else {
+                status = 'sun data incomplete';
+            }
+            document.getElementById('sunCard').innerHTML =
+                '<div style="display:flex;align-items:baseline;gap:1rem;margin-bottom:.4rem;">' +
+                '<span style="font-size:1.35rem;">☀️ <b>' + d.alt_now +
+                '°</b></span><span style="opacity:.6;font-size:.85rem;">' +
+                (d.setting ? 'setting' : 'rising') + '</span>' +
+                '<span style="font-size:.9rem;">' + status + '</span></div>' +
+                sunDiagramSVG(d) +
+                '<div style="font-size:.66rem;opacity:.45;margin-top:.2rem;">sun altitude, ' +
+                'noon → noon · solid line = −18° astronomical twilight</div>';
+        } catch (e) {
+            document.getElementById('sunCard').textContent = 'Sun data unavailable: ' + e;
+        }
+    }
+    setInterval(() => {
+        const img = document.getElementById('allskyImg');
+        if (img) img.src = 'https://allsky.astronomyacres.com/image.jpg?t=' + Date.now();
+    }, 60000);
+    const SCOPE_COLORS = {green:'#4ade80', yellow:'#eab308', blue:'#7dd3fc', gray:'#64748b'};
+    async function loadScope() {
+        const el = document.getElementById('scopeChip');
+        try {
+            const d = await (await fetch('/api/scope')).json();
+            const saf = document.getElementById('safetyState');
+            if (saf) {
+                saf.textContent = d.is_safe === true ? 'SAFE'
+                    : d.is_safe === false ? 'UNSAFE' : '—';
+                saf.style.color = d.is_safe === true ? '#4ade80'
+                    : d.is_safe === false ? '#f87171' : '';
+            }
+            const ct = document.getElementById('cameraTemp');
+            if (ct && d.camera_temp != null)
+                ct.textContent = d.camera_temp.toFixed(1) + '°C';
+            try {
+                const arm = await (await fetch('/api/arm')).json();
+                const cmd = document.getElementById('commandState');
+                if (cmd) cmd.textContent =
+                    (arm.state || '—') + (arm.detail ? ' · ' + arm.detail : '');
+                const ss = document.getElementById('sessionState');
+                if (ss && arm.state && ss.textContent.trim() === 'IDLE')
+                    ss.textContent = arm.state;
+            } catch (e2) {}
+            try {
+                const ts = await (await fetch('/api/telescope/state')).json();
+                const g = document.getElementById('guidingRms');
+                if (g && ts.guiding) {
+                    const st = (ts.guiding.state || '').toLowerCase();
+                    const rms = ts.guiding.rms_total_arcsec || 0;
+                    if (st === 'guiding' || st === 'settling' || st === 'calibrating') {
+                        g.textContent = rms.toFixed(2) + '\u2033 ' + st.toUpperCase();
+                        g.style.color = st === 'calibrating' ? '#7dd3fc'
+                            : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
+                    } else {
+                        g.textContent = (st || '\u2014').toUpperCase();
+                        g.style.color = '#64748b';
+                    }
+                }
+            } catch (e3) {}
+            // scopeChip was folded into the RC16 equipment pane (refreshEquip);
+            // keep this only for the hidden legacy elements above.
+            if (el) el.innerHTML =
+                '<span style="border:1px solid ' + SCOPE_COLORS[d.color] + ';color:' +
+                SCOPE_COLORS[d.color] + ';border-radius:6px;padding:.2rem .6rem;font-weight:600;white-space:nowrap;">' +
+                '🔭 ' + d.status + '</span>';
+        } catch (e) {
+            if (el) el.innerHTML = '<span style="color:#64748b;">🔭 scope status unavailable</span>';
+        }
+    }
+    // ---- top strip v2: single-line telescope truth ----
+    let _clockBase = null, _clockAt = null, _nextAt = null, _nextLabel = '';
+    const DOT = (on) => on ? '#4ade80' : '#475569';
+    function fmtDur(ms) {
+        const s = Math.max(0, Math.round(ms / 1000));
+        if (s >= 3600) return Math.floor(s / 3600) + 'h' + String(Math.floor(s / 60) % 60).padStart(2, '0') + 'm';
+        if (s >= 60) return Math.floor(s / 60) + 'm' + String(s % 60).padStart(2, '0') + 's';
+        return s + 's';
+    }
+    async function loadStrip() {
+        try {
+            const [d, arm, ts] = await Promise.all([
+                (await fetch('/api/scope')).json(),
+                (await fetch('/api/arm')).json(),
+                (await fetch('/api/telescope/state')).json()]);
+            window._scopeLast = d;
+            const a = document.getElementById('tsArm');
+            a.textContent = arm.state || '\u2014';
+            a.title = arm.detail || '';
+            a.style.color = arm.state === 'ARMED' ? '#4ade80'
+                : (arm.state || '').includes('PAUSED') ? '#eab308'
+                : arm.state === 'RUNNING' ? '#7dd3fc' : '#94a3b8';
+            const pm = (arm.detail || '').match(/(\d+ targets?, [^\u2014-]+)/);
+            document.getElementById('tsPlan').textContent =
+                (pm ? pm[1].trim() : '') +
+                ((arm.detail || '').includes('guided') ? ' \u00b7 guided' : '');
+            // countdown to the next milestone
+            _nextAt = null; _nextLabel = '';
+            const now = Date.now();
+            const t = k => arm[k] ? Date.parse(arm[k]) : null;
+            if (arm.state === 'ARMED' || arm.state === 'RUNNING') {
+                if (t('preconfig_utc') && now < t('preconfig_utc')) {
+                    _nextAt = t('preconfig_utc'); _nextLabel = 'pre-config in ';
+                } else if (t('dusk_utc') && now < t('dusk_utc')) {
+                    _nextAt = t('dusk_utc'); _nextLabel = 'astro dark in ';
+                } else if (t('dawn_utc') && now < t('dawn_utc')) {
+                    _nextAt = t('dawn_utc');
+                    _nextLabel = (d.is_safe === false ? 'waiting on roof \u00b7 ' : '') + 'dawn in ';
+                }
+            }
+            const tgt = ts.current_target
+                ? ts.current_target
+                  + (ts.current_filter ? ' \u00b7 ' + ts.current_filter : '')
+                  + (ts.current_exposure_progress
+                     ? ' \u00b7 ' + Math.round(ts.current_exposure_progress * 100) + '%' : '')
+                : (arm.state === 'ARMED' ? 'waiting for dark' : '\u2014');
+            document.getElementById('tsTarget').textContent = tgt;
+            document.getElementById('tsNina').firstElementChild &&
+                (document.getElementById('tsNina').querySelector('b').style.color = DOT(d.nina_connected));
+            document.getElementById('tsPhd').querySelector('b').style.color = DOT(d.phd2_running);
+            const names = {mount: 'M', camera: 'C', filterwheel: 'W',
+                           focuser: 'F', guider: 'G', safety: 'S'};
+            document.getElementById('tsDev').innerHTML =
+                Object.entries(names).map(([k, l]) => {
+                    // safety is tri-state: green = SAFE signal, red = UNSAFE,
+                    // grey = monitor disconnected / no signal
+                    let col, tip = k;
+                    if (k === 'safety') {
+                        col = d.is_safe === true ? '#4ade80'
+                            : d.is_safe === false ? '#f87171' : '#475569';
+                        tip = 'safety: ' + (d.is_safe === true ? 'SAFE'
+                            : d.is_safe === false ? 'UNSAFE' : 'no signal');
+                    } else {
+                        col = DOT(d.devices && d.devices[k]);
+                        tip = k + (d.devices && d.devices[k]
+                                   ? ' connected' : ' disconnected');
+                    }
+                    return '<span title="' + tip + '" style="font-weight:700;color:' +
+                        col + ';">' + l + '</span>';
+                }).join('');
+            const roof = document.getElementById('tsRoof');
+            roof.textContent = d.is_safe === true ? 'ROOF OPEN'
+                : d.is_safe === false ? 'ROOF CLOSED' : 'ROOF \u2014';
+            roof.style.color = d.is_safe === true ? '#4ade80'
+                : d.is_safe === false ? '#f87171' : '#64748b';
+            const g = document.getElementById('tsGuide');
+            const st = ((ts.guiding || {}).state || '').toLowerCase();
+            if (st === 'guiding' || st === 'settling' || st === 'calibrating') {
+                const rms = ts.guiding.rms_total_arcsec || 0;
+                g.hidden = false;
+                g.textContent = rms.toFixed(2) + '\u2033 ' + st.toUpperCase();
+                g.style.color = st === 'calibrating' ? '#7dd3fc'
+                    : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
+            } else { g.hidden = true; }
+            const tt = document.getElementById('tsTemp');
+            tt.textContent =
+                (d.camera_temp != null ? d.camera_temp.toFixed(1) : '\u2014') + '/'
+                + (d.setpoint_c != null ? d.setpoint_c.toFixed(0) : '\u2014') + '\u00b0C'
+                + (d.cooler_power ? ' \u00b7 ' + d.cooler_power.toFixed(0) + '%' : '');
+            tt.style.color = d.cooler_on ? '#4ade80' : '#f87171';
+            tt.style.opacity = '1';
+            tt.title = 'sensor now / setpoint \u00b7 cooler ' +
+                (d.cooler_on ? 'ON' : 'OFF') + ' \u00b7 click to toggle';
+            tt.style.cursor = 'pointer';
+            tt.onclick = async () => {
+                const to = !d.cooler_on;
+                if (!confirm('Turn camera cooler ' + (to ? 'ON (cool to setpoint)' : 'OFF (warm over 10 min)') + '?')) return;
+                await fetch('/api/camera/cooler', {method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({on: to})});
+                setTimeout(loadStrip, 1500);
+            };
+            document.getElementById('tsImgs').textContent =
+                ts.images_captured_tonight ?? 0;
+            if (d.scope_local_time) { _clockBase = d.scope_local_time; _clockAt = Date.now(); }
+        } catch (e) {}
+    }
+    setInterval(() => {
+        if (_clockBase) {
+            const [h, m, sec] = _clockBase.split(':').map(Number);
+            const t = h * 3600 + m * 60 + sec + Math.round((Date.now() - _clockAt) / 1000);
+            document.getElementById('tsClock').textContent =
+                String(Math.floor(t / 3600) % 24).padStart(2, '0') + ':' +
+                String(Math.floor(t / 60) % 60).padStart(2, '0') + ':' +
+                String(t % 60).padStart(2, '0');
+        }
+        const n = document.getElementById('tsNext');
+        n.textContent = _nextAt ? _nextLabel + fmtDur(_nextAt - Date.now()) : '';
+    }, 1000);
+    loadStrip();
+    setInterval(loadStrip, 10 * 1000);
+    loadScope();
+    setInterval(loadScope, 5 * 1000);  // equipment state is cheap; keep the chip fresh
+    loadSun();
+    setInterval(loadSun, 5 * 60 * 1000);   // sun moves ~1.25° per 5 min
+
+    function twCard(label, value, hi) {
+        return '<div style="text-align:center;min-width:96px;">' +
+            '<div style="font-size:.62rem;letter-spacing:.08em;opacity:.5;text-transform:uppercase;">' +
+            label + '</div><div style="font-weight:700;font-size:1.02rem;color:' +
+            (hi ? '#7dd3fc' : '#e2e8f0') + ';">' + (value || '—') + '</div></div>';
+    }
+    function statCard(value, label, color) {
+        return '<div style="flex:1;text-align:center;padding:.9rem .5rem;border-radius:10px;' +
+            'background:rgba(255,255,255,.03);">' +
+            '<div style="font-size:1.5rem;font-weight:700;color:' + color + ';">' + value + '</div>' +
+            '<div style="font-size:.62rem;letter-spacing:.08em;opacity:.5;text-transform:uppercase;">' +
+            label + '</div></div>';
+    }
+    async function loadTimeline() {
+        const r = await fetch('/api/nightplan');
+        const d = await r.json();
+        const box = document.getElementById('nightTimeline');
+        if (d.error) { box.textContent = d.error; return; }
+        const tw = d.twilight || {};
+        let html =
+            '<div style="font-size:.8rem;opacity:.6;margin-bottom:.6rem;">Night of ' +
+            d.night_of + '</div>' +
+            '<div style="display:flex;gap:.6rem;justify-content:space-between;flex-wrap:wrap;' +
+            'padding:.8rem;border-radius:10px;background:rgba(255,255,255,.03);margin-bottom:.8rem;">' +
+            twCard('Sunset', tw.sunset) +
+            twCard('Astro Dusk', tw.astro_dusk, true) + twCard('Astro Dawn', tw.astro_dawn, true) +
+            twCard('Sunrise', tw.sunrise) + '</div>';
+        const st = d.stats || {};
+        html += '<div style="display:flex;gap:.7rem;margin-bottom:1rem;">' +
+            statCard(st.dark_hours + 'h', 'Dark Hours', '#7dd3fc') +
+            statCard(st.targets, 'Targets', '#4ade80') +
+            statCard(st.planned_subs, 'Planned Subs', '#eab308') +
+            statCard(st.est_integration_h + 'h', 'Est. Integration', '#c084fc') + '</div>';
+        html += '<div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;' +
+            'text-transform:uppercase;margin-bottom:.5rem;">Imaging Schedule</div>';
+        html += (d.schedule || []).map((t, i) => {
+            const chips = t.filters.map(f =>
+                '<span style="border:1px solid ' + (FILTER_COLORS[f.f] || '#64748b') +
+                ';color:' + (FILTER_COLORS[f.f] || '#64748b') +
+                ';border-radius:4px;padding:.1rem .45rem;font-size:.74rem;margin-right:.35rem;">' +
+                '● ' + f.f + ' ' + f.exp + 's <span style="opacity:.6;">×' + f.n +
+                '</span></span>').join('');
+            return '<div style="border-radius:10px;background:rgba(255,255,255,.03);' +
+                'padding:.85rem 1rem;margin-bottom:.7rem;">' +
+                '<div style="display:flex;align-items:baseline;gap:.6rem;margin-bottom:.55rem;">' +
+                '<b style="font-size:1.05rem;">' + t.name + '</b>' +
+                '<span style="opacity:.5;font-size:.78rem;">' + t.kind + '</span></div>' +
+                '<div style="display:flex;gap:2rem;flex-wrap:wrap;font-size:.85rem;margin-bottom:.55rem;">' +
+                '<span><span style="font-size:.62rem;opacity:.5;text-transform:uppercase;display:block;">Window</span>' +
+                t.window_start + ' – ' + t.window_end + '</span>' +
+                '<span><span style="font-size:.62rem;opacity:.5;text-transform:uppercase;display:block;">Transit</span>' +
+                (t.transit_local || '—') + ' at ' + t.transit_alt + '°</span>' +
+                '<span><span style="font-size:.62rem;opacity:.5;text-transform:uppercase;display:block;">Coordinates</span>' +
+                t.coords + '</span></div>' +
+                '<div style="margin-bottom:.5rem;">' + chips + '</div>' +
+                '<div id="runalt-' + i + '"></div></div>';
+        }).join('');
+        box.innerHTML = html;
+        // Noon-to-noon altitude charts per scheduled target
+        (d.schedule || []).forEach((t, i) => {
+            fetch('/api/target/altitude?name=' + encodeURIComponent(t.name) +
+                  '&ra_hours=' + t.ra_hours + '&dec_degrees=' + t.dec_degrees)
+                .then(r => r.json()).then(alt => {
+                    const el = document.getElementById('runalt-' + i);
+                    if (el) el.innerHTML = altChartSVG(alt) +
+                        '<div style="font-size:.66rem;opacity:.45;">noon → noon · ' +
+                        'shaded = astro dark · dashed = 30°</div>';
+                });
+        });
+    }
+    document.getElementById('makeSafeBtn').addEventListener('click', async () => {
+        if (!confirm('Stop the sequence, warm the camera, and park the mount?')) return;
+        const r = await fetch('/api/makesafe', {method: 'POST'});
+        const d = await r.json();
+        alert(d.report);
+        refreshArm();
+    });
+    async function postArm(body) {
+        await fetch('/api/arm', {method:'POST', headers:{'Content-Type':'application/json'},
+                                 body: JSON.stringify(body)});
+        refreshArm();
+    }
+    document.getElementById('armBtn').addEventListener('click', async (ev) => {
+        const arming = ev.currentTarget.dataset.armed !== '1';
+        if (!arming) {
+            if (!confirm('Disarm? If a sequence is running it will be stopped.')) return;
+            return postArm({armed: false});
+        }
+        return postArm({armed: true, guiding: 'encoders'});
+    });
+    document.getElementById('armGuidedBtn').addEventListener('click', async () => {
+        if (!confirm('Arm tonight WITH PHD2 guiding? (Encoders-only is the default — use guiding only for very long subs.)')) return;
+        return postArm({armed: true, guiding: 'guided'});
+    });
+    loadOutlook(); loadTimeline(); refreshArm();
+    setInterval(refreshArm, 30000);
+    </script>
+
+    <script>
+    // ---- Equipment panes: one per rig (RC16 + piggyback), rendered the
+    //      same way so both look consistent. Camera + focuser rows with
+    //      cooler / dew-heater toggles; the RC16 pane also carries the shared
+    //      mount's pointing status. Driven by /api/rigs. -------------------
+    const _equipBusy = {};   // debounce per rig+control while a POST is in flight
+
+    function _dot(on) {
+        return on ? '<b style="color:#4ade80;">●</b>'
+                  : '<span style="color:#f87171;">○</span>';
+    }
+    function _fmtRa(ra) {
+        if (ra == null) return '';
+        const h = Math.floor(ra), m = Math.round((ra - h) * 60);
+        return h + 'h' + String(m).padStart(2, '0');
+    }
+    function _fmtDec(dec) {
+        if (dec == null) return '';
+        const s = dec < 0 ? '−' : '+', a = Math.abs(dec);
+        const d = Math.floor(a), m = Math.round((a - d) * 60);
+        return s + d + '°' + String(m).padStart(2, '0') + '′';
+    }
+    function _toggleBtn(id, label, state) {
+        // state: 'on' (green) | 'off' (red) | 'unknown' (grey) | 'disabled'
+        const col = state === 'on' ? '#4ade80'
+                  : state === 'off' ? '#f87171' : '#94a3b8';
+        const dis = state === 'disabled';
+        return '<button id="' + id + '"' + (dis ? ' disabled' : '') +
+            ' style="font-size:.74rem;padding:.15rem .55rem;border-radius:5px;' +
+            'border:1px solid ' + col + ';background:transparent;color:' + col +
+            ';cursor:' + (dis ? 'default' : 'pointer') + ';opacity:' +
+            (dis ? '.4' : '1') + ';white-space:nowrap;">' + label + '</button>';
+    }
+    function _equipRow(label, body) {
+        return '<div style="display:flex;align-items:center;flex-wrap:wrap;' +
+            'gap:.4rem .8rem;margin:.18rem 0;font-size:.85rem;">' +
+            '<span style="min-width:5.5rem;opacity:.7;">' + label + '</span>' +
+            body + '</div>';
+    }
+
+    async function refreshEquip() {
+        const strip = document.getElementById('tsPiggy');
+        const host = document.getElementById('equipPanes');
+        let rigs = [];
+        try {
+            rigs = (await (await fetch('/api/rigs')).json()).rigs || [];
+        } catch (e) { return; }
+
+        // top-strip piggyback badge (unchanged)
+        const pb = rigs.find(r => r.rig === 'piggyback');
+        if (strip) {
+            if (!pb) { strip.hidden = true; }
+            else {
+                const on = !!(((pb.devices || {}).camera || {}).connected);
+                strip.hidden = false;
+                strip.innerHTML = '&#128300;&#215;2 ' + (on
+                    ? '<b style="color:#4ade80;">PB &#9679;</b>'
+                    : '<b style="color:#f87171;">PB &#9675;</b>');
+            }
+        }
+        if (!host) return;
+
+        let html = '';
+        rigs.forEach((r, i) => {
+            const idx = i + 1;
+            const cam = (r.devices || {}).camera || {};
+            const foc = (r.devices || {}).focuser || {};
+            const mnt = (r.devices || {}).mount;
+            const icon = r.rig === 'rc16' ? '&#128301;' : '&#128301;&#215;2';
+            const camOn = !!cam.connected;
+
+            // camera controls
+            const coolerOn = cam.cooler_on === true;
+            const pwr = (camOn && cam.cooler_power != null)
+                ? ' ' + Number(cam.cooler_power).toFixed(0) + '%' : '';
+            const coolLabel = !camOn ? 'cooler —'
+                : coolerOn ? ('cooler ON' + pwr) : 'cooler OFF';
+            const coolState = !camOn ? 'disabled' : (coolerOn ? 'on' : 'off');
+            const dew = cam.dew_heater_on;
+            const dewLabel = !camOn ? 'dew —'
+                : dew === true ? 'dew ON' : dew === false ? 'dew OFF' : 'dew ?';
+            const dewState = !camOn ? 'disabled'
+                : dew === true ? 'on' : dew === false ? 'off' : 'unknown';
+
+            let pane = '<div style="padding:.55rem .8rem;border:1px solid ' +
+                'rgba(148,163,184,.2);border-radius:8px;background:rgba(125,211,252,.04);">';
+            pane += '<div style="font-weight:700;margin-bottom:.4rem;white-space:nowrap;">' +
+                icon + ' ' + (r.name || r.rig) + '</div>';
+            // Camera N: status + cooler + dew toggles
+            pane += _equipRow('Camera ' + idx,
+                '<span style="white-space:nowrap;">' + _dot(camOn) + ' ' +
+                (camOn ? 'connected' : 'not connected') + '</span>' +
+                _toggleBtn('cool-' + r.rig, coolLabel, coolState) +
+                _toggleBtn('dew-' + r.rig, dewLabel, dewState));
+            // Focuser N: status + position
+            const focPos = (foc.position != null) ? ' @ ' + foc.position : '';
+            pane += _equipRow('Focuser ' + idx,
+                '<span style="white-space:nowrap;">' + _dot(!!foc.connected) + ' ' +
+                (foc.connected ? ('connected' + focPos) : 'not connected') + '</span>');
+            // Mount (RC16 owns it; shared with the piggyback) — what it points at
+            if (mnt) {
+                let m;
+                if (!mnt.connected) m = _dot(false) + ' not connected';
+                else if (mnt.parked) m = _dot(true) + ' Parked — home';
+                else if (r.target) m = '<b style="color:#7dd3fc;white-space:nowrap;">&#8594; ' +
+                    r.target + '</b>';
+                else if (mnt.tracking) m = '<b style="color:#7dd3fc;">&#8594; tracking</b> ' +
+                    '<span style="opacity:.7;white-space:nowrap;">' +
+                    _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
+                else m = _dot(true) + ' <span style="opacity:.7;white-space:nowrap;">idle ' +
+                    _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
+                pane += _equipRow('Mount', '<span>' + m + '</span>');
+            }
+            // Roof (piggyback only): does NINA #2 see the shared safety monitor?
+            // That's what lets the companion shoot roof-closed darks/bias on arm.
+            const sm = (r.devices || {}).safetymonitor;
+            if (!mnt && sm) {
+                let roof;
+                if (sm.connected) {
+                    const safe = sm.safe === true ? '<span style="color:#4ade80;">roof open (safe)</span>'
+                        : sm.safe === false ? '<span style="color:#f87171;">roof closed (unsafe)</span>'
+                        : '<span style="opacity:.7;">no signal</span>';
+                    roof = _dot(true) + ' seeing · ' + safe +
+                        '<span style="opacity:.55;"> · can do darks/bias</span>';
+                } else {
+                    roof = _dot(false) + ' <span style="opacity:.75;">not seeing — flats only ' +
+                        '(add the safety monitor to the NINA #2 profile)</span>';
+                }
+                pane += _equipRow('Roof', '<span style="white-space:normal;">' + roof + '</span>');
+            }
+            pane += '</div>';
+            html += pane;
+        });
+        host.innerHTML = html;
+
+        // wire toggles (innerHTML was replaced, so re-attach each refresh)
+        rigs.forEach(r => {
+            const cam = (r.devices || {}).camera || {};
+            if (!cam.connected) return;
+            const cb = document.getElementById('cool-' + r.rig);
+            if (cb) cb.onclick = () => _toggleCooler(r, cam.cooler_on === true);
+            const db = document.getElementById('dew-' + r.rig);
+            if (db) db.onclick = () => _toggleDew(r, cam.dew_heater_on === true);
+        });
+    }
+
+    async function _toggleCooler(r, isOn) {
+        const key = r.rig + ':cool';
+        if (_equipBusy[key]) return;
+        const to = !isOn;
+        if (!confirm('Turn the ' + (r.name || r.rig) + ' camera cooler ' +
+            (to ? 'ON (cool to setpoint)?' : 'OFF (warm over 5 min)?'))) return;
+        _equipBusy[key] = true;
+        try {
+            await fetch('/api/rigs/cool?rig=' + encodeURIComponent(r.rig) +
+                        (to ? '' : '&warm=true'), {method: 'POST'});
+        } catch (e) {}
+        _equipBusy[key] = false;
+        setTimeout(refreshEquip, 1500);
+    }
+
+    async function _toggleDew(r, isOn) {
+        const key = r.rig + ':dew';
+        if (_equipBusy[key]) return;
+        const to = !isOn;
+        if (!confirm('Turn the ' + (r.name || r.rig) + ' dew heater ' +
+            (to ? 'ON?' : 'OFF?'))) return;
+        _equipBusy[key] = true;
+        try {
+            const res = await (await fetch('/api/rigs/dewheater?rig=' +
+                encodeURIComponent(r.rig) + '&on=' + to, {method: 'POST'})).json();
+            if (res && res.ok === false)
+                alert('Dew heater could not be switched: ' + (res.detail || 'unknown'));
+        } catch (e) {}
+        _equipBusy[key] = false;
+        setTimeout(refreshEquip, 1500);
+    }
+
+    refreshEquip();
+    setInterval(refreshEquip, 15000);
+    </script>
+
+    <script>
+    // ---- Imaging project manager -----------------------------------------
+    const FILTER_COLORS = {Ha:'#ef4444', OIII:'#22d3ee', SII:'#f59e0b',
+                           L:'#e2e8f0', R:'#f87171', G:'#4ade80', B:'#60a5fa'};
+
+    function altChartSVG(d) {
+        const W = 300, H = 88, PAD_B = 14, n = d.alts.length;
+        const plotH = H - PAD_B;
+        const x = i => i / (n - 1) * W;
+        const y = a => plotH - Math.max(0, Math.min(90, a)) / 90 * plotH;
+        // Daytime base is deliberately lighter so the night block pops
+        let svg = '<svg width="' + W + '" height="' + H +
+                  '" style="background:#1a2942;border-radius:6px;">';
+        if (d.dark_start_frac !== null && d.dark_end_frac !== null) {
+            const dx = d.dark_start_frac * W,
+                  dw = (d.dark_end_frac - d.dark_start_frac) * W;
+            svg += '<rect x="' + dx + '" y="0" width="' + dw + '" height="' + plotH +
+                   '" fill="#060b18"/>' +
+                   '<line x1="' + dx + '" y1="0" x2="' + dx + '" y2="' + plotH +
+                   '" stroke="#334155" stroke-width="1"/>' +
+                   '<line x1="' + (dx + dw) + '" y1="0" x2="' + (dx + dw) + '" y2="' + plotH +
+                   '" stroke="#334155" stroke-width="1"/>' +
+                   '<text x="' + (dx + dw / 2) + '" y="10" fill="#475569" font-size="8" ' +
+                   'text-anchor="middle">NIGHT</text>';
+        }
+        // altitude gridlines 30/60 with labels
+        for (const g of [30, 60])
+            svg += '<line x1="0" y1="' + y(g) + '" x2="' + W + '" y2="' + y(g) +
+                   '" stroke="#475569" stroke-dasharray="3,3" opacity="' +
+                   (g === 30 ? '1' : '.4') + '"/>' +
+                   '<text x="2" y="' + (y(g) - 2) + '" fill="#64748b" font-size="7">' +
+                   g + '°</text>';
+        svg += '<polyline fill="none" stroke="#7dd3fc" stroke-width="1.8" points="' +
+               d.alts.map((a, i) => x(i) + ',' + y(a)).join(' ') + '"/>';
+        // 30° crossings: markers + local times below the axis
+        for (const c of (d.cross30 || [])) {
+            const cx = c.frac * W;
+            svg += '<circle cx="' + cx + '" cy="' + y(30) + '" r="3" fill="#fbbf24"/>' +
+                   '<text x="' + cx + '" y="' + (H - 3) + '" fill="#fbbf24" font-size="8" ' +
+                   'text-anchor="middle">' + (c.dir === 'up' ? '↑' : '↓') + c.local + '</text>';
+        }
+        if (d.now_frac !== null)
+            svg += '<line x1="' + d.now_frac * W + '" y1="0" x2="' + d.now_frac * W +
+                   '" y2="' + plotH + '" stroke="#e2e8f0" stroke-dasharray="2,3" opacity=".7"/>';
+        // transit dot + altitude label
+        svg += '<circle cx="' + d.transit_frac * W + '" cy="' + y(d.transit_alt) +
+               '" r="2.5" fill="#e2e8f0"/>' +
+               '<text x="' + Math.min(d.transit_frac * W + 5, W - 22) + '" y="' +
+               (y(d.transit_alt) - 4) + '" fill="#e2e8f0" font-size="9">' +
+               d.transit_alt + '°</text>';
+        svg += '</svg>';
+        return svg;
+    }
+
+    async function loadSync() {
+        const el = document.getElementById('syncChip');
+        try {
+            const d = await (await fetch('/api/sync')).json();
+            if (!d.configured) {
+                el.innerHTML = 'desktop sync: <span style="opacity:.6">not configured ' +
+                    '(Syncthing settings in System &amp; Config)</span>';
+            } else if (d.error) {
+                el.innerHTML = 'desktop sync: <span class="rej" style="color:#f87171">' +
+                    'unreachable</span>';
+            } else if (d.completion_pct >= 100) {
+                el.innerHTML = 'desktop sync: <span style="color:#4ade80">✓ up to date</span>';
+            } else {
+                el.innerHTML = 'desktop sync: <span style="color:#eab308">' +
+                    d.completion_pct + '% · ' + d.need_items + ' files pending</span>';
+            }
+        } catch (e) { el.textContent = ''; }
+    }
+    async function loadProjects() {
+        const r = await fetch('/api/projects2');
+        const projects = await r.json();
+        const box = document.getElementById('projectManager');
+        if (!projects.length) {
+            box.innerHTML = '<p class="empty-state">No goals yet — add a target above; ' +
+                'tonight will auto-select from the seasonal catalog.</p>';
+            return;
+        }
+        box.innerHTML = projects.map(p => {
+            const hoursPct = Math.min(100, Math.round(p.hours_done / p.budget_hours * 100));
+            const ALL_FILTERS = ['Ha', 'OIII', 'SII', 'L', 'R', 'G', 'B'];
+            const plansBy = {};
+            p.exposure_plans.forEach(e => { plansBy[e.filter_type] = e; });
+            const filterRows = ALL_FILTERS.map(f => {
+                const e = plansBy[f];
+                const col = FILTER_COLORS[f] || '#94a3b8';
+                const active = !!e;
+                const pct = (e && e.count) ? Math.min(100, Math.round(e.acquired / e.count * 100)) : 0;
+                const mixPct = Math.round((p.mix[f] ?? 0));
+                return '<div style="display:flex;align-items:center;gap:.5rem;font-size:.78rem;' +
+                    'margin:.25rem 0;' + (active ? '' : 'opacity:.4;') + '">' +
+                    '<span style="color:' + col + ';width:2.4rem;font-weight:600;">' + f + '</span>' +
+                    '<input data-mix="' + p.id + '" data-filter="' + f +
+                    '" value="' + mixPct + '" title="percent of goal — set >0 to enable" ' +
+                    'style="width:40px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                    'border-radius:4px;padding:.05rem .2rem;text-align:center;">%' +
+                    '<span style="opacity:.7;width:7.5rem;">' +
+                    (active ? Math.round(e.exposure_seconds) + 's × ' + e.count
+                            : 'off — set % to use') + '</span>' +
+                    '<span style="width:5.2rem;">' + (active ? e.acquired + ' accepted' : '') + '</span>' +
+                    '<div class="fbar"><div style="width:' + pct + '%;background:' + col +
+                    ';"></div></div>' +
+                    '<span style="width:2.6rem;text-align:right;opacity:.8;">' +
+                    (active ? pct + '%' : '—') + '</span>' +
+                    '</div>';
+            }).join('');
+            return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
+                (p.active ? '' : 'opacity:.45;') + '">' +
+                '<div style="display:flex;gap:.7rem;align-items:center;">' +
+                '<img data-thumb="' + p.target.name + '" style="width:52px;height:52px;' +
+                'object-fit:cover;border-radius:6px;background:#0b1220;">' +
+                '<div style="flex:1;"><b><a href="/target?name=' +
+                encodeURIComponent(p.target.name) +
+                '" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(125,211,252,.5);" title="full capture history for this target">' +
+                p.target.name + '</a></b>' +
+                '<div style="opacity:.5;font-size:.75rem;">' + p.target.catalog_id + ' · ' +
+                p.kind + ' · priority ' + p.priority + ' ' +
+                btn(p.id, "{\"priority_delta\":10}", '▲') +
+                btn(p.id, "{\"priority_delta\":-10}", '▼') + '</div></div>' +
+                '<span style="cursor:pointer;opacity:.55;font-size:.78rem;" onclick="patchProject(\'' +
+                p.id + '\', {active: ' + !p.active + '})">' + (p.active ? 'pause' : 'resume') + '</span>' +
+                '<span style="cursor:pointer;color:#f87171;opacity:.55;font-size:.78rem;" ' +
+                'onclick="deleteProject(\'' + p.id + '\')">remove</span></div>' +
+                // goal line: editable hours + total progress
+                '<div style="display:flex;align-items:center;gap:.6rem;margin:.6rem 0 .3rem;">' +
+                '<span style="font-size:.82rem;">Goal</span>' +
+                btn(p.id, "{\"budget_delta\":-1}", '−') +
+                '<input data-goal="' + p.id + '" value="' + p.budget_hours + '" ' +
+                'style="width:52px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:4px;padding:.15rem .3rem;text-align:center;font-weight:700;">' +
+                btn(p.id, "{\"budget_delta\":1}", '+') +
+                '<span style="font-size:.82rem;">hours</span>' +
+                '<div class="fbar"><div style="width:' + hoursPct + '%;background:#7dd3fc;"></div></div>' +
+                '<span style="font-size:.82rem;"><b>' + p.hours_done + 'h</b> / ' +
+                p.budget_hours + 'h (' + hoursPct + '%)</span></div>' +
+                filterRows +
+                '<div style="display:flex;align-items:center;gap:.6rem;font-size:.75rem;' +
+                'margin-top:.4rem;opacity:.75;">' +
+                '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                'onclick="applyMix(\'' + p.id + '\')">Apply mix</button>' +
+                '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
+                '<span id="abmix-' + p.id + '"></span>' +
+                '<span style="margin-left:auto;">📁 ' + p.library_files +
+                ' accepted lights in library</span></div>' +
+                (p.nights && p.nights.length
+                 ? '<div style="font-size:.74rem;opacity:.75;margin-top:.35rem;">Nights: ' +
+                   p.nights.map(n => '<a href="/runs?night=' + n.date +
+                       '" style="color:#7dd3fc;text-decoration:none;">' + n.date.slice(2) +
+                       '</a> <span style="opacity:.7">' + n.accepted + '✓' +
+                       (n.attempted > n.accepted ? '/' + n.attempted : '') + '</span>')
+                       .join(' · ') + '</div>'
+                 : '') +
+                '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
+                '</div>';
+        }).join('');
+
+        // goal input: commit on Enter/blur
+        document.querySelectorAll('input[data-goal]').forEach(inp => {
+            inp.addEventListener('change', () => {
+                const v = parseFloat(inp.value);
+                if (v > 0) patchProject(inp.dataset.goal, {budget_hours: v});
+            });
+        });
+
+        for (const p of projects) {
+            fetch('/api/thumbnail?name=' + encodeURIComponent(p.target.name) +
+                  '&catalog=' + encodeURIComponent(p.target.catalog_id))
+                .then(r => r.json()).then(t => {
+                    const img = document.querySelector('img[data-thumb="' + p.target.name + '"]');
+                    if (t.url && img) { img.src = t.url; img.onerror = () => { img.style.display = 'none'; }; }
+                }).catch(() => {});
+            fetch('/api/target/altitude?name=' + encodeURIComponent(p.target.name) +
+                  '&ra_hours=' + p.target.ra_hours + '&dec_degrees=' + p.target.dec_degrees)
+                .then(r => r.json()).then(d => {
+                    document.getElementById('alt-' + p.id).innerHTML = altChartSVG(d) +
+                    '<div style="font-size:.68rem;opacity:.5;">noon → noon · shaded = astro dark · ' +
+                    'dashed = 30° · transit ' + d.transit_alt + '°</div>';
+                });
+        }
+    }
+    loadSync();
+    document.getElementById('recountBtn').onclick = async () => {
+        const b = document.getElementById('recountBtn');
+        b.disabled = true; b.textContent = 'Recounting…';
+        try {
+            const r = await (await fetch('/api/projects2/recount', {method: 'POST'})).json();
+            alert('Scanned ' + r.nights_scanned + ' nights.\nUpdated: ' +
+                  (r.updated.length ? r.updated.join(', ') : 'nothing changed') +
+                  '\n\nTip: old nights showing target \'?\' need a target assigned ' +
+                  'on the Imaging Runs page first.');
+        } finally { b.disabled = false; b.textContent = 'Recount from history'; }
+        loadProjects(); loadCampaign();
+    };
+    async function loadQueue() {
+        try {
+            const d = await (await fetch('/api/sync/queue')).json();
+            const box = document.getElementById('queueBox');
+            if (!d.configured || !d.total_files) { box.hidden = true; return; }
+            box.hidden = false;
+            const gb = b => (b / 1073741824).toFixed(1) + ' GB';
+            document.getElementById('queueSummary').textContent =
+                'Transfer queue: ' + d.total_files + ' files · ' +
+                gb(d.total_bytes) + ' across ' + d.groups.length + ' folder(s)';
+            document.getElementById('queueList').innerHTML = d.groups.map(g =>
+                '<b>' + g.folder + '</b>: ' + g.files + ' files · ' + gb(g.bytes)
+            ).join('<br>') + (d.more_groups ? '<br>… +' + d.more_groups + ' more' : '');
+        } catch (e) {}
+    }
+    loadQueue();
+    setInterval(loadQueue, 30000);
+    async function loadRecentSubs() {
+        try {
+            const d = await (await fetch('/api/activity')).json();
+            const el = document.getElementById('recentSubs');
+            if (!d.subs.length) {
+                const sc = window._scopeLast || {};
+                let idle = 'no subs yet tonight (' + d.night + ')';
+                try {
+                    const ts = await (await fetch('/api/telescope/state')).json();
+                    const bits = [];
+                    if (sc.focuser_position != null) bits.push('focuser ' + sc.focuser_position);
+                    const li = ts.last_image;
+                    if (li && li.quality) {
+                        const q = li.quality;
+                        bits.push('last image: ' + (li.filter_type || '') +
+                            (q.hfr_pixels != null ? ' HFR ' + q.hfr_pixels : '') +
+                            (q.star_count != null ? ' \u2605' + q.star_count : '') +
+                            (q.eccentricity != null ? ' ecc ' + q.eccentricity : ''));
+                    }
+                    if (bits.length) idle += ' \u00b7 ' + bits.join(' \u00b7 ');
+                } catch (e2) {}
+                el.textContent = idle; return;
+            }
+            el.innerHTML = d.subs.map(s =>
+                '<div class="sub-row">' +
+                '<span style="opacity:.6;width:3.6rem;">' + (s.time || '').slice(11, 16) + '</span>' +
+                '<span style="color:' + (FILTER_COLORS[s.filter] || '#94a3b8') +
+                ';width:2.6rem;font-weight:600;">' + s.filter + '</span>' +
+                '<span style="width:3.2rem;">' + Math.round(s.exp_s) + 's</span>' +
+                '<span style="width:5.4rem;">HFR ' + (s.hfr ?? '–') + '</span>' +
+                '<span style="width:4.6rem;">★' + (s.stars ?? '–') + '</span>' +
+                '<span style="width:5.4rem;">bkg ' + (s.background ?? '–') + '</span>' +
+                '<span class="' + (s.passed_qa ? '' : 'rej') + '" style="color:' +
+                (s.passed_qa ? '#4ade80' : '#f87171') + ';">' +
+                (s.passed_qa ? 'pass' : 'reject') + '</span></div>').join('');
+        } catch (e) { /* endpoint not up yet */ }
+    }
+    loadRecentSubs();
+    setInterval(loadRecentSubs, 15000);
+    async function loadCampaign() {
+        try {
+            const d = await (await fetch('/api/campaign')).json();
+            document.getElementById('campaignNights').innerHTML = d.nights.map(n => {
+                const m = n.moon || {};
+                const tagCol = m.tag === 'BB' ? '#4ade80' : m.tag === 'NB+OIII' ? '#7dd3fc' : '#eab308';
+                return '<div style="border:1px solid rgba(255,255,255,.12);border-radius:8px;' +
+                    'padding:.45rem .6rem;min-width:108px;font-size:.72rem;' +
+                    (n.frac_source === 'climatology' ? 'opacity:.65;' : '') + '">' +
+                    '<b>' + n.date.slice(5) + '</b> <span style="color:' + tagCol + ';font-weight:700;">' +
+                    (m.tag || '?') + '</span><br>' +
+                    (m.illum_pct != null ? moonSVG(m.illum_pct) : '🌙') + ' ' +
+                    (m.illum_pct ?? '?') + '% · ' + (m.moon_free_h ?? '?') + 'h free<br>' +
+                    '~' + Math.round(n.dark_h * n.usable_frac * 10) / 10 + 'h usable (' +
+                    (n.frac_source === 'forecast' ? 'fcst' : 'clim') + ')<br>' +
+                    n.assigned.map(a => '<span style="opacity:.85;">' + a.goal.split(' ')[0] +
+                        ' ' + a.kind + ' ' + a.hours + 'h</span>').join('<br>') +
+                    '</div>';
+            }).join('');
+            // Timeline: one row per goal, one column per night, today first
+            const days = d.nights.map(n => n.date);
+            const perGoalNight = {};
+            d.nights.forEach(n => n.assigned.forEach(a => {
+                (perGoalNight[a.goal] = perGoalNight[a.goal] || {})[n.date] =
+                    {hours: a.hours, kind: a.kind};
+            }));
+            const KCOL = {NB: '#eab308', BB: '#4ade80'};
+            document.getElementById('campaignGoals').innerHTML =
+                '<div style="display:grid;grid-template-columns:13rem repeat(' + days.length +
+                ',1fr);gap:2px;align-items:center;font-size:.68rem;">' +
+                '<div></div>' + days.map((dt, i) =>
+                    '<div style="text-align:center;opacity:.55;">' +
+                    (i === 0 ? 'today' : dt.slice(8)) + '</div>').join('') +
+                d.goals.map(g => {
+                    const cells = days.map(dt => {
+                        const a = (perGoalNight[g.name] || {})[dt];
+                        const eta = g.eta === dt;
+                        if (!a) return '<div style="height:16px;border-radius:3px;' +
+                            'background:rgba(255,255,255,.04);' +
+                            (eta ? 'outline:1px solid #7dd3fc;' : '') + '"></div>';
+                        const op = Math.min(1, 0.25 + a.hours / 3.5);
+                        return '<div title="' + g.name + ' · ' + dt + ' · ' + a.kind +
+                            ' ' + a.hours + 'h" style="height:16px;border-radius:3px;' +
+                            'background:' + KCOL[a.kind] + ';opacity:' + op.toFixed(2) + ';' +
+                            (eta ? 'outline:2px solid #7dd3fc;' : '') + '"></div>';
+                    }).join('');
+                    return '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
+                        '<b>' + g.name + '</b> <span style="opacity:.55">' + g.hours_done +
+                        '/' + g.goal_hours + 'h · ' +
+                        (g.eta ? 'ETA ' + g.eta.slice(5) : '>14d') + '</span></div>' + cells;
+                }).join('') +
+                '</div>' +
+                '<div style="font-size:.68rem;opacity:.5;margin-top:.3rem;">' +
+                'cell = planned hours that night (brighter = more) · ' +
+                '<span style="color:#eab308">NB</span> / ' +
+                '<span style="color:#4ade80">BB</span> · blue outline = ETA night · ' +
+                d.note + '</div>';
+            const t = d.totals || {};
+            const nbS = Math.round((t.nb_capacity_h - t.nb_demand_h) * 10) / 10;
+            const bbS = Math.round((t.bb_capacity_h - t.bb_demand_h) * 10) / 10;
+            document.getElementById('campaignTotals').innerHTML =
+                '<b>Capacity vs demand (14 nights):</b> narrowband ' +
+                t.nb_demand_h + 'h wanted / ~' + t.nb_capacity_h + 'h available ' +
+                (nbS >= 0 ? '<span style="color:#4ade80">(' + nbS + 'h spare)</span>'
+                          : '<span style="color:#eab308">(' + (-nbS) + 'h short)</span>') +
+                ' · broadband ' + t.bb_demand_h + 'h wanted / ~' + t.bb_capacity_h +
+                'h moon-free ' +
+                (bbS >= 0 ? '<span style="color:#4ade80">(' + bbS + 'h spare)</span>'
+                          : '<span style="color:#eab308">(' + (-bbS) + 'h short)</span>');
+            const sug = d.suggestions || [];
+            document.getElementById('campaignSuggest').innerHTML = !sug.length ? '' :
+                '<div class="bd" style="margin-bottom:.3rem;"><b>Suggested additions</b> ' +
+                '(fill spare capacity — Add creates a goal, Dismiss hides forever):</div>' +
+                sug.map(s =>
+                    '<div style="display:inline-block;border:1px solid rgba(255,255,255,.12);' +
+                    'border-radius:8px;padding:.4rem .6rem;margin:0 .4rem .4rem 0;font-size:.78rem;">' +
+                    '<b>' + s.name + '</b> <span style="opacity:.6">' + s.catalog + ' · ' +
+                    s.type + ' · ' + s.kind + '</span><br><span style="opacity:.6">' +
+                    s.reason + '</span><br>' +
+                    '<button class="btn btn-secondary" style="font-size:.72rem;padding:.1rem .45rem;" ' +
+                    'onclick="suggestAdd(\'' + s.name.replace(/'/g, "\\'") + '\')">Add 10h goal</button> ' +
+                    '<button class="btn btn-secondary" style="font-size:.72rem;padding:.1rem .45rem;" ' +
+                    'onclick="suggestDismiss(\'' + s.name.replace(/'/g, "\\'") + '\')">Dismiss</button>' +
+                    '</div>').join('');
+        } catch (e) { /* scheduler warming up */ }
+    }
+    loadCampaign();
+    async function suggestAdd(name) {
+        const r = await fetch('/api/projects2/from_catalog', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name, budget_hours: 10})});
+        if (!r.ok) { alert((await r.json()).detail || 'add failed'); return; }
+        loadProjects(); loadCampaign();
+    }
+    async function suggestDismiss(name) {
+        await fetch('/api/campaign/dismiss', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name})});
+        loadCampaign();
+    }
+    function btn(id, patch, label) {
+        return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.75rem;" ' +
+               'onclick=\'patchProject("' + id + '", ' + patch + ')\'>' + label + '</button>';
+    }
+    async function astrobinMix(id) {
+        const st = document.getElementById('abmix-' + id);
+        st.textContent = 'Asking AstroBin…';
+        const r = await fetch('/api/projects2/' + id + '/astrobin_mix');
+        const d = await r.json();
+        if (d.error) { st.textContent = d.error; return; }
+        // Fill the mix inputs with the community average (review, then Apply)
+        Object.entries(d.mix).forEach(([f, pct]) => {
+            const inp = document.querySelector('input[data-mix="' + id + '"][data-filter="' + f + '"]');
+            if (inp) inp.value = Math.round(pct);
+        });
+        st.textContent = d.source === 'curated'
+            ? 'Curated community practice: ' + d.note + ' — review and Apply mix'
+            : 'Community avg from ' + d.images_with_data + '/' + d.images_sampled +
+              ' images (' + d.total_community_hours + 'h total) — review and Apply mix';
+    }
+    async function applyMix(id) {
+        const mix = {};
+        document.querySelectorAll('input[data-mix="' + id + '"]').forEach(inp => {
+            mix[inp.dataset.filter] = parseFloat(inp.value) || 0;
+        });
+        await patchProject(id, {filter_mix: mix});
+    }
+    async function patchProject(id, body) {
+        await fetch('/api/projects2/' + id, {method:'PATCH',
+            headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+        loadProjects();
+    }
+    async function deleteProject(id) {
+        if (!confirm('Remove this project?')) return;
+        await fetch('/api/projects2/' + id, {method:'DELETE'});
+        loadProjects();
+    }
+    document.getElementById('addTargetBtn').addEventListener('click', async () => {
+        const name = document.getElementById('addTargetName').value.trim();
+        if (!name) return;
+        const r = await fetch('/api/projects2/from_catalog', {method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({name: name, budget_hours: 8})});
+        if (!r.ok) { alert((await r.json()).detail); return; }
+        document.getElementById('addTargetName').value = '';
+        loadProjects();
+    });
+    loadProjects();
+    </script>
 </body>
 </html>
