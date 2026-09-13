@@ -139,6 +139,13 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs
+    piggyback_calibrate_on_arm: bool = True  # on arm, also dispatch a calibration
+                                     # companion to NINA #2 so ONE arm covers both
+                                     # scopes: OSC dawn flats always, plus
+                                     # roof-closed darks/bias whenever NINA #2 can
+                                     # see the shared safety monitor. Whether it
+                                     # can is AUTO-DETECTED at arm (connect + read
+                                     # the NINA #2 safety monitor) — no manual flag.
     arm_preconfig_lead_min: int = 30  # start cooling this many min before astro dark
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by

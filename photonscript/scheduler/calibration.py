@@ -412,3 +412,172 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
                        "NINA.Sequencer")
     root["Parent"] = None
     return _json.dumps(root, indent=2), local.strftime("%H:%M")
+
+
+def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0):
+    """OSC dark blocks for the piggyback, capped by its own library quota
+    (count_matching_darks keys off the piggyback config's library_dir + OSC
+    gain/offset/setpoint). Roof-closed work: each block exits on any of
+    LoopWhileUnsafe clearing, dawn, or the per-exposure cap."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _time_condition)
+    quota = int(getattr(config, "dark_target_count", 30))
+    blocks = []
+    for tok in str(getattr(config, "dark_exposures", "120")).split(","):
+        try:
+            exp_s = float(tok.strip())
+        except ValueError:
+            continue
+        try:
+            have = count_matching_darks(config, exp_s)
+        except Exception:  # noqa: BLE001
+            have = 0
+        need = max(0, quota - have)
+        if need == 0:
+            continue
+        blocks.append(_seq_container(
+            f"OSC DARKS_{exp_s:.0f}s (need {need} of {quota})",
+            [_make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                "NINA.Sequencer",
+                ExposureTime=exp_s, Gain=config.default_gain,
+                Offset=config.default_offset,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core", X=1, Y=1),
+                ImageType="DARK", ExposureCount=0, ErrorBehavior=0, Attempts=1)],
+            conditions=[
+                _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                            "NINA.Sequencer"),
+                _time_condition(dawn_provider, dawn_offset),
+                _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
+                            "NINA.Sequencer",
+                            CompletedIterations=0, Iterations=need)]))
+    return blocks
+
+
+def generate_piggyback_companion_json(config, has_safety: bool = False) -> str:
+    """A full-night calibration companion for the piggyback (NINA #2), meant to
+    be dispatched alongside the RC16 armed sequence so ONE arm covers both
+    scopes' calibration.
+
+    The piggyback owns only its camera + focuser and rides the RC16 mount, so
+    this sequence never slews, unparks or parks. It:
+      * cools the OSC camera ~cool_lead before astro dark,
+      * (has_safety) fills OSC darks to quota + a 50-bias top-up while the roof
+        is CLOSED (LoopWhileUnsafe) — needs the SHARED safety monitor connected
+        in the NINA #2 profile, since NINA #2 can't otherwise tell roof state,
+      * at nautical dawn +5 shoots one OSC sky-flat set (riding the RC16's dawn
+        slew), then warms.
+
+    has_safety=False (no safety monitor on NINA #2): darks/bias are skipped with
+    an annotation (use the Calibration page button on a closed-roof night) and
+    the dawn flats fire time-gated only. Returns the sequence JSON text.
+    """
+    import json as _json
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _pushover, _connect, _cool_camera,
+        _warm_camera, _dew_heater, _wait_until_safe, _wait_for_provider,
+        _annotation)
+
+    n = int(getattr(config, "flat_count", 15))
+    cool_lead = int(getattr(config, "cool_lead_minutes", 30))
+    setpoint = float(getattr(config, "camera_setpoint_c", 0.0))
+
+    start_items = [
+        _pushover("Piggyback", "companion calibration armed: cools the OSC "
+                  f"camera, {'fills darks/bias while the roof is closed, ' if has_safety else ''}"
+                  "then shoots OSC dawn flats. No mount control — rides the RC16."),
+        _connect("Camera"),
+        _dew_heater(True),
+    ]
+    if has_safety:
+        start_items.append(_connect("Safety Monitor"))
+    start_items += [
+        _wait_for_provider("DuskProvider", -cool_lead),
+        _cool_camera(setpoint, 2.0),
+    ]
+
+    target_items = []
+    if has_safety:
+        dark_blocks = _osc_dark_blocks(config)
+        if dark_blocks:
+            target_items.append(_seq_container(
+                "OSC_DARKS_IF_UNSAFE", dark_blocks,
+                conditions=[
+                    _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                "NINA.Sequencer"),
+                    _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
+                                "NINA.Sequencer",
+                                CompletedIterations=0, Iterations=1)]))
+        # bias top-up only when due (bias barely ages)
+        _bias_refresh_days = int(getattr(config, "bias_refresh_days", 60))
+        try:
+            _bias_age = days_since_last_bias(config)
+        except Exception:  # noqa: BLE001
+            _bias_age = None
+        _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
+                     or _bias_age >= _bias_refresh_days)
+        if _bias_due:
+            target_items.append(_seq_container(
+                "OSC_BIAS_IF_UNSAFE",
+                [_seq_container("50 bias", [_make_typed(
+                    "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                    "NINA.Sequencer",
+                    ExposureTime=0.001, Gain=config.default_gain,
+                    Offset=config.default_offset,
+                    Binning=_make_typed(
+                        "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                        X=1, Y=1),
+                    ImageType="BIAS", ExposureCount=0,
+                    ErrorBehavior=0, Attempts=1)],
+                    conditions=[_make_typed(
+                        "NINA.Sequencer.Conditions.LoopCondition, "
+                        "NINA.Sequencer",
+                        CompletedIterations=0, Iterations=50)])],
+                conditions=[
+                    _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                "NINA.Sequencer"),
+                    _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
+                                "NINA.Sequencer",
+                                CompletedIterations=0, Iterations=1)]))
+        target_items.append(_wait_until_safe())
+    else:
+        target_items.append(_annotation(
+            "OSC darks/bias skipped: NINA #2 is not seeing the safety monitor, "
+            "so it can't tell when the roof is closed. Add the shared safety "
+            "monitor to the NINA #2 profile (it auto-connects on arm and this "
+            "block turns on by itself), or shoot darks/bias from the Calibration "
+            "page on a closed-roof night."))
+
+    # Dawn flats — wait for the RC16's flat window (nautical dawn +5), then one
+    # OSC set. WaitUntilSafe only when NINA #2 can see the monitor.
+    target_items.append(_wait_for_provider("NauticalDawnProvider", 5))
+    if has_safety:
+        target_items.append(_wait_until_safe())
+    target_items += [
+        _pushover("Piggyback", f"dawn flat window — shooting {n} OSC sky flats "
+                  "(riding the RC16 slew)"),
+        _osc_sky_flat(n, config.default_gain, config.default_offset),
+        _pushover("Piggyback", "OSC dawn flats complete — warming"),
+    ]
+
+    end_items = [_warm_camera(3.0),
+                 _pushover("Piggyback", "companion calibration done — camera warm")]
+
+    root = _seq_container(
+        "PhotonScript_PiggybackCompanion",
+        [
+            _seq_container("Start", start_items,
+                           container_type="NINA.Sequencer.Container."
+                           "StartAreaContainer, NINA.Sequencer"),
+            _seq_container("Targets", target_items,
+                           container_type="NINA.Sequencer.Container."
+                           "TargetAreaContainer, NINA.Sequencer"),
+            _seq_container("End", end_items,
+                           container_type="NINA.Sequencer.Container."
+                           "EndAreaContainer, NINA.Sequencer"),
+        ],
+        container_type="NINA.Sequencer.Container.SequenceRootContainer, "
+                       "NINA.Sequencer")
+    root["Parent"] = None
+    return _json.dumps(root, indent=2)

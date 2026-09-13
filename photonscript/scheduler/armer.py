@@ -390,7 +390,60 @@ class Armer:
             await notify(self.config, f"Dispatch failed: {self.detail}",
                          title="PhotonScript ERROR", priority=1)
             return False
+        # One arm covers both scopes: fire a calibration companion at NINA #2.
+        # Best-effort — a piggyback problem never fails the RC16 night.
+        await self._dispatch_piggyback_companion()
         return True
+
+    async def _dispatch_piggyback_companion(self) -> None:
+        """Dispatch the piggyback calibration companion to NINA #2 alongside the
+        RC16 night, so a single arm covers both scopes' calibration. OSC dawn
+        flats always; roof-closed OSC darks/bias only when NINA #2 can see the
+        shared safety monitor. Never raises — logged + noted, never fatal."""
+        cfg = self.config
+        if not (getattr(cfg, "piggyback_enabled", False)
+                and getattr(cfg, "piggyback_calibrate_on_arm", True)):
+            return
+        try:
+            from photonscript.shared.rigs import (rig_config, nina_dispatch,
+                                                  PIGGYBACK)
+            from photonscript.scheduler.calibration import (
+                generate_piggyback_companion_json)
+            pcfg = rig_config(cfg, PIGGYBACK)
+            # Auto-detect whether NINA #2 can see the shared safety monitor:
+            # actively connect it, then read state. If it's in the NINA #2
+            # profile it comes up and the companion gates roof-closed darks/bias
+            # on it; if not, the companion is dawn-flats-only. No manual flag.
+            from photonscript.scheduler.preflight import _ensure_connected
+            try:
+                has_safety, _sm_payload, _sm_err = await _ensure_connected(
+                    pcfg, "safetymonitor")
+            except Exception:  # noqa: BLE001
+                has_safety = False
+            seq_text = generate_piggyback_companion_json(pcfg, has_safety=has_safety)
+            seq_dir = self.sequence_path.parent
+            seq_dir.mkdir(exist_ok=True)
+            path = seq_dir / f"piggyback_companion_{datetime.now():%Y%m%d_%H%M}.json"
+            path.write_text(seq_text, encoding="utf-8")
+            res = await nina_dispatch(pcfg.nina_base_url, json.loads(seq_text))
+            if res.get("ok"):
+                logger.info("Piggyback companion dispatched to NINA #2 (%s)",
+                            "flats+darks/bias" if has_safety else "flats only")
+                await notify(cfg, "Piggyback calibration companion started on "
+                             "NINA #2 (" + ("sees the roof — dawn flats + "
+                             "roof-closed darks/bias)" if has_safety else
+                             "not seeing the safety monitor — dawn flats only; "
+                             "add it to the NINA #2 profile for darks/bias)"),
+                             title="PhotonScript piggyback")
+            else:
+                logger.warning("Piggyback companion dispatch failed: %s",
+                               res.get("detail"))
+                await notify(cfg, "Piggyback calibration companion did NOT start "
+                             f"(NINA #2: {res.get('detail')}). RC16 night is "
+                             "unaffected.", title="PhotonScript piggyback",
+                             priority=1)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Piggyback companion dispatch error: %s", e)
 
     # -- state machine loop ----------------------------------------------------
 

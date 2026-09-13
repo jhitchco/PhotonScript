@@ -11,7 +11,8 @@ import json
 from photonscript.shared.config import PhotonScriptConfig
 from photonscript.shared import rigs
 from photonscript.scheduler.calibration import (
-    generate_darks_json, generate_dusk_flats_json)
+    generate_darks_json, generate_dusk_flats_json,
+    generate_piggyback_companion_json)
 
 
 def _walk(node):
@@ -76,3 +77,59 @@ def test_filtered_flats_still_slew_the_mount():
     assert any("Telescope.SlewScopeToAltAz" in t for t in types)
     assert any("Telescope.ParkScope" in t for t in types)
     assert any("FilterWheel.SwitchFilter" in t for t in types)
+
+
+def _pb_cfg():
+    return rigs.rig_config(PhotonScriptConfig(
+        piggyback_enabled=True, piggyback_default_gain=100,
+        piggyback_default_offset=256, piggyback_dark_exposures="120",
+        piggyback_setpoint_c=0.0), "piggyback")
+
+
+def test_companion_no_safety_is_flats_only():
+    txt = generate_piggyback_companion_json(_pb_cfg(), has_safety=False)
+    root = json.loads(txt)
+    types = _types(root)
+    # dawn OSC flats present, exactly one set
+    flats = [n for n in _walk(root)
+             if n.get("$type", "").startswith(
+                 "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat")]
+    assert len(flats) == 1
+    # no darks/bias and no safety gating without a safety monitor
+    assert not any("LoopWhileUnsafe" in t for t in types)
+    assert not any("WaitUntilSafe" in t for t in types)
+    exps = [n.get("ImageType") for n in _walk(root)
+            if n.get("ImageType") in ("DARK", "BIAS")]
+    assert exps == []
+    # an annotation explains why darks/bias were skipped
+    assert any("Annotation" in t for t in types)
+    # never touches the shared mount
+    assert not any("Telescope." in t for t in types)
+
+
+def test_companion_with_safety_adds_darks_bias_gated():
+    txt = generate_piggyback_companion_json(_pb_cfg(), has_safety=True)
+    root = json.loads(txt)
+    types = _types(root)
+    # darks + bias present, gated LoopWhileUnsafe, plus a WaitUntilSafe hold
+    imgtypes = {n.get("ImageType") for n in _walk(root)
+                if n.get("ImageType") in ("DARK", "BIAS")}
+    assert imgtypes == {"DARK", "BIAS"}
+    assert any("LoopWhileUnsafe" in t for t in types)
+    assert any("SafetyMonitor.WaitUntilSafe" in t for t in types)
+    # OSC gain/offset on the dark/bias frames
+    cal = [n for n in _walk(root) if n.get("ImageType") in ("DARK", "BIAS")]
+    assert all(n.get("Gain") == 100 and n.get("Offset") == 256 for n in cal)
+    # still one flat set, still never slews the shared mount
+    flats = [n for n in _walk(root)
+             if n.get("$type", "").startswith(
+                 "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat")]
+    assert len(flats) == 1
+    assert not any("Telescope." in t for t in types)
+
+
+def test_companion_always_warms_the_camera():
+    for hs in (True, False):
+        types = _types(json.loads(
+            generate_piggyback_companion_json(_pb_cfg(), has_safety=hs)))
+        assert any("Camera.WarmCamera" in t for t in types)

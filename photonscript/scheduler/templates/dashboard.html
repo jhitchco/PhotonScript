@@ -718,6 +718,23 @@
                     _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
                 pane += _equipRow('Mount', '<span>' + m + '</span>');
             }
+            // Roof (piggyback only): does NINA #2 see the shared safety monitor?
+            // That's what lets the companion shoot roof-closed darks/bias on arm.
+            const sm = (r.devices || {}).safetymonitor;
+            if (!mnt && sm) {
+                let roof;
+                if (sm.connected) {
+                    const safe = sm.safe === true ? '<span style="color:#4ade80;">roof open (safe)</span>'
+                        : sm.safe === false ? '<span style="color:#f87171;">roof closed (unsafe)</span>'
+                        : '<span style="opacity:.7;">no signal</span>';
+                    roof = _dot(true) + ' seeing · ' + safe +
+                        '<span style="opacity:.55;"> · can do darks/bias</span>';
+                } else {
+                    roof = _dot(false) + ' <span style="opacity:.75;">not seeing — flats only ' +
+                        '(add the safety monitor to the NINA #2 profile)</span>';
+                }
+                pane += _equipRow('Roof', '<span style="white-space:normal;">' + roof + '</span>');
+            }
             pane += '</div>';
             html += pane;
         });

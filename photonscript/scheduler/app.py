@@ -475,6 +475,7 @@ _CONFIG_FIELDS = [
     ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
     ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
     ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
+    ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
 ]
 
 _MASK = "••••••••"
@@ -520,14 +521,20 @@ async def api_equipment_connect():
 async def api_rigs():
     """Config + live connection status for every rig (main + piggyback)."""
     from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
-                                          rig_devices, RC16)
+                                          rig_devices, RC16, PIGGYBACK)
     from photonscript.scheduler.preflight import _connected
     cfg = get_config()
     rigs = []
     for rig in rig_ids(cfg):
         rc = rig_config(cfg, rig)
         devices = {}
-        for dev in rig_devices(rig):
+        # The piggyback owns only camera+focuser, but it can optionally watch the
+        # SHARED safety monitor (if added to the NINA #2 profile) — probe it too
+        # so the pane can show whether NINA #2 "sees the roof" (gates its darks).
+        probe = list(rig_devices(rig))
+        if rig == PIGGYBACK and "safetymonitor" not in probe:
+            probe.append("safetymonitor")
+        for dev in probe:
             conn, payload, err = await _connected(rc, dev)
             entry = {"connected": conn}
             if dev == "camera" and payload:
