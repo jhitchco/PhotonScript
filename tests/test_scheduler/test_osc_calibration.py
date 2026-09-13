@@ -133,3 +133,18 @@ def test_companion_always_warms_the_camera():
         types = _types(json.loads(
             generate_piggyback_companion_json(_pb_cfg(), has_safety=hs)))
         assert any("Camera.WarmCamera" in t for t in types)
+
+
+def test_dusk_flats_only_filters_refreshes_just_broadband():
+    # only_filters lets the RC16 re-shoot a subset (e.g. the stale LRGB masters)
+    # without re-doing fresh narrowband: exactly 4 SkyFlat blocks, still slews.
+    cfg = PhotonScriptConfig()
+    txt, _ = generate_dusk_flats_json(
+        cfg, only_filters=["L", "R", "G", "B"], osc=False, owns_mount=True)
+    root = json.loads(txt)
+    flats = [n for n in _walk(root)
+             if n.get("$type", "").startswith(
+                 "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat")]
+    assert len(flats) == 4
+    types = _types(root)
+    assert any("Telescope.SlewScopeToAltAz" in t for t in types)

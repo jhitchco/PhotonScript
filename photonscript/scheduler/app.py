@@ -1540,8 +1540,16 @@ async def api_calibration_capture(payload: dict = Body(default={})):
     from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
     rig = payload.get("rig", RC16)
     config = rig_config(get_config(), rig)
-    darks = [(float(e), int(c)) for e, c in
-             payload.get("darks", [[300, 20], [600, 20]])]
+    # Default to THIS rig's own dark library spec (piggyback -> 120s OSC subs,
+    # RC16 -> 600,180) at the configured quota, not a hardcoded 300/600 — so the
+    # button always shoots darks that actually match the rig's light exposures.
+    if payload.get("darks"):
+        darks = [(float(e), int(c)) for e, c in payload["darks"]]
+    else:
+        count = int(getattr(config, "dark_target_count", 30))
+        darks = [(float(t.strip()), count)
+                 for t in str(getattr(config, "dark_exposures", "600,180")).split(",")
+                 if t.strip()]
     bias = int(payload.get("bias", 50))
     seq_text, minutes = generate_darks_json(config, darks, bias)
     seq_dir = Path.cwd() / "sequences"
@@ -1562,7 +1570,8 @@ async def api_calibration_capture(payload: dict = Body(default={})):
     logger.info("Calibration dispatched (%s): %s (~%.0f min)", rig, path.name,
                 minutes)
     return {"ok": True, "rig": rig, "sequence": path.name,
-            "estimated_minutes": round(minutes)}
+            "estimated_minutes": round(minutes),
+            "darks": [[e, c] for e, c in darks], "bias": bias}
 
 
 @app.post("/api/calibration/flats")
@@ -1572,15 +1581,35 @@ async def api_calibration_flats(payload: dict = Body(default={})):
     Optional payload["rig"]: the piggyback shoots OSC flats (one set, no filter
     wheel) and, riding the main mount, never slews/parks — trigger it alongside
     the RC16 dusk flats so that slew aims both scopes. Dispatched straight to
-    NINA #2."""
-    from photonscript.scheduler.calibration import generate_dusk_flats_json
+    NINA #2.
+
+    Filter scoping (RC16 only): payload["only"] is an explicit filter-name list
+    (e.g. ["L","R","G","B"] to refresh just broadband); payload["stale"]=true
+    computes the filters whose newest flats are older than the 45-day window and
+    shoots only those. Omit both to do all seven. Ignored for the OSC piggyback,
+    which is always one set."""
+    from photonscript.scheduler.calibration import (generate_dusk_flats_json,
+                                                    calibration_health)
     from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
     rig = payload.get("rig", RC16)
     config = rig_config(get_config(), rig)
     is_pb = rig != RC16
+    only = payload.get("only") or None
+    if payload.get("stale") and not is_pb:
+        try:
+            bb = (calibration_health(config).get("FLAT", {}) or {}).get(
+                "by_bucket", {}) or {}
+            only = [f for f, v in bb.items()
+                    if (v or {}).get("age_days", 9999) > 45] or None
+        except Exception:  # noqa: BLE001
+            only = None
+        if not only:
+            return JSONResponse(status_code=409, content={
+                "detail": "no stale flat filters to refresh (all within 45d)"})
     try:
         seq_text, start_local = generate_dusk_flats_json(
-            config, osc=is_pb, owns_mount=not is_pb)
+            config, only_filters=(None if is_pb else only),
+            osc=is_pb, owns_mount=not is_pb)
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"detail": str(e)})
     seq_dir = Path.cwd() / "sequences"
@@ -1601,7 +1630,8 @@ async def api_calibration_flats(payload: dict = Body(default={})):
     note = ("flats first, then ARM tonight's run after they finish" if not is_pb
             else "piggyback OSC flats — run with the RC16 flats so the mount "
                  "slew aims both scopes")
-    return {"ok": True, "rig": rig, "starts_local": start_local, "note": note}
+    return {"ok": True, "rig": rig, "starts_local": start_local, "note": note,
+            "filters": (None if is_pb else only)}
 
 
 @app.get("/api/update/check")

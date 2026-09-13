@@ -192,7 +192,15 @@
                     </select>
                 </label>
                 <button class="btn btn-secondary" id="calCapture">Capture darks + bias</button>
-                <button class="btn btn-secondary" id="calFlats" title="Dispatches a sequence that waits for sunset+15 local, shoots sky flats (broadband first for the RC16; a single OSC set for the piggyback), then parks. Run it in the afternoon; ARM tonight's imaging AFTER it finishes (~40 min).">Capture sky flats (dusk today)</button>
+                <label class="bd" style="white-space:nowrap;">Flats
+                    <select id="flatScope" title="Which filters to shoot at dusk (RC16 only; the piggyback is always one OSC set)" style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.25rem .4rem;margin-left:.3rem;">
+                        <option value="all">all 7</option>
+                        <option value="stale">stale only</option>
+                        <option value="bb">broadband (LRGB)</option>
+                        <option value="nb">narrowband (Ha/OIII/SII)</option>
+                    </select>
+                </label>
+                <button class="btn btn-secondary" id="calFlats" title="Dispatches a sequence that waits for sunset+15 local, shoots sky flats for the chosen filters (broadband first), then parks. Run it in the afternoon; ARM tonight's imaging AFTER it finishes.">Capture sky flats (dusk today)</button>
                 <span class="bd" id="calStatus"></span>
             </div>
             <details style="margin-top:.7rem;font-size:.8rem;opacity:.8;">
@@ -340,34 +348,42 @@
     document.getElementById('calFlats').onclick = async () => {
         const rig = calRig();
         const pb = rig !== 'rc16';
+        const scope = document.getElementById('flatScope').value;  // rc16 only
+        const body = {rig: rig};
+        let scopeTxt = 'all 7 filters';
+        if (!pb) {
+            if (scope === 'stale') { body.stale = true; scopeTxt = 'STALE filters only'; }
+            else if (scope === 'bb') { body.only = ['L','R','G','B']; scopeTxt = 'broadband L,R,G,B'; }
+            else if (scope === 'nb') { body.only = ['Ha','OIII','SII']; scopeTxt = 'narrowband Ha,OIII,SII'; }
+        }
         const msg = pb
             ? ('Dispatch dusk OSC sky flats for the piggyback today?\n\n' +
                'The piggyback rides the main mount, so this run does NOT slew — ' +
                'trigger it alongside the RC16 dusk flats so that slew aims both ' +
                'scopes at the flat sky.')
-            : ('Dispatch dusk sky flats for today?\n\nThe scope will wait for ' +
-               'sunset+15, shoot ~15 flats per filter (all 7, broadband first), then park.\n' +
-               'ARM tonight\'s imaging run AFTER flats finish (~40 min after start).');
+            : ('Dispatch dusk sky flats for today (' + scopeTxt + ')?\n\n' +
+               'The scope waits for sunset+15, shoots the chosen filters ' +
+               '(broadband first), then parks.\nARM tonight\'s run AFTER flats finish.');
         if (!confirm(msg)) return;
         const st = document.getElementById('calStatus');
         st.textContent = 'dispatching…';
         const r = await fetch('/api/calibration/flats', {method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({rig: rig})});
+            body: JSON.stringify(body)});
         const d = await r.json();
-        st.textContent = r.ok ? 'dispatched — starts ' + d.starts_local + ' local'
-                              : (d.detail || 'failed');
+        st.textContent = r.ok
+            ? 'dispatched — starts ' + d.starts_local + ' local' +
+              (d.filters ? ' (' + d.filters.join(',') + ')' : '')
+            : (d.detail || 'failed');
     };
     document.getElementById('calCapture').onclick = async () => {
         const rig = calRig();
         const pb = rig !== 'rc16';
-        const msg = pb
-            ? ('Capture piggyback darks (300s×20 + 600s×20) and 50 bias now?\n\n' +
-               'The ROOF MUST BE CLOSED and the sky dark. Shot at the piggyback ' +
-               'OSC gain/offset/setpoint.\n\n~3.5 hours total.')
-            : ('Capture darks (300s×20 + 600s×20) and 50 bias now?\n\n' +
-               'The ROOF MUST BE CLOSED and the sky dark — the RC16 has no ' +
-               'shutter, so any light ruins darks.\n\n~3.5 hours total.');
+        const msg = 'Capture the ' + (pb ? 'piggyback (OSC)' : 'RC16') +
+            ' dark set + 50 bias now?\n\n' +
+            'Uses this rig\'s configured dark exposures (matched to its subs) at ' +
+            'its gain/offset/setpoint.\nThe ROOF MUST BE CLOSED and the sky dark — ' +
+            'any light ruins darks. Can run a few hours.';
         if (!confirm(msg)) return;
         const st = document.getElementById('calStatus');
         st.textContent = 'dispatching…';
@@ -375,8 +391,10 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({rig: rig})});
         const d = await r.json();
+        const plan = (d.darks || []).map(x => x[0] + 's×' + x[1]).join(' + ');
         st.textContent = r.ok
-            ? 'running — ~' + d.estimated_minutes + ' min (' + d.sequence + ')'
+            ? 'running ' + plan + ' + ' + d.bias + ' bias — ~' +
+              d.estimated_minutes + ' min (' + d.sequence + ')'
             : (d.detail || 'failed');
     };
     document.getElementById('calRig').addEventListener('change', loadCalibration);
