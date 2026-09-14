@@ -1,0 +1,6 @@
+{# Shared page footer — one source of truth so it's identical on every page.
+   observatory comes from the render context (guarded for pages without it). #}
+<footer>
+    <span>PhotonScript v0.1.0</span>
+    {% if observatory %}<span>Observatory: {{ observatory.name.split(' (')[0] }} ({{ observatory.latitude }}&deg;N, {{ observatory.longitude }}&deg;W)</span>{% endif %}
+</footer>

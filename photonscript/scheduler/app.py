@@ -894,7 +894,8 @@ async def api_project_delete(project_id: str):
 @app.get("/mosaic", response_class=HTMLResponse)
 async def mosaic_page(request: Request):
     return templates.TemplateResponse(request, "mosaic.html",
-                                      {"version": VERSION})
+                                      {"version": VERSION,
+                                       "observatory": get_config().get_observatory()})
 
 
 @app.get("/api/mosaic/plan")
