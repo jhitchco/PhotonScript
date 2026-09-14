@@ -35,21 +35,9 @@
     </style>
 </head>
 <body>
-    <header>
-        <div class="header-content">
-            <h1>PhotonScript</h1>
-            <span class="subtitle">Calibration Library — coverage &amp; freshness</span>
-            <span class="observatory-badge">{{ observatory.name }}</span>
-        </div>
-        <div class="nav">
-            <a href="/">Dashboard</a>
-            <a href="/runs">Runs</a>
-            <a href="/mosaic" class="nav-pill">&#129513; Mosaic</a>
-            <a href="/calibration" class="nav-pill">&#127765; Calibration</a>
-            <a href="/system" class="nav-pill">&#9881;&#65039; System</a>
-            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;" title="git commit running on this machine">{{ version }}</span>
-        </div>
-    </header>
+    {% set page_subtitle = "Calibration Library — coverage & freshness" %}
+    {% set active_page = "calibration" %}
+    {% include "_header.html" %}
     <main>
         <div style="display:flex;align-items:baseline;gap:1rem;margin:.2rem 0 1rem;">
             <h2 style="margin:0;">Calibration masters on disk</h2>

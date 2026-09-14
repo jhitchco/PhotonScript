@@ -39,18 +39,9 @@
     </style>
 </head>
 <body>
-    <header>
-        <div class="header-content">
-            <h1>PhotonScript</h1>
-            <span class="subtitle">System &amp; Configuration</span>
-            <span class="observatory-badge">{{ observatory.name }}</span>
-            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;" title="git commit running on this machine">{{ version }}</span>
-        </div>
-    </header>
-    <nav class="sys-nav" style="display:flex;gap:.55rem;align-items:center;">
-        <a href="/" class="nav-pill">&#127968; Dashboard</a> <a href="/runs" class="nav-pill">&#128248; Runs</a> <a href="/mosaic" class="nav-pill">&#129513; Mosaic</a>
- <a href="/calibration" class="nav-pill">&#127765; Calibration</a>
-    </nav>
+    {% set page_subtitle = "System & Configuration" %}
+    {% set active_page = "system" %}
+    {% include "_header.html" %}
 
     <main>
         <section class="panel" style="margin-bottom:1.5rem;">
@@ -226,6 +217,39 @@
                 </div>
             </details>
         </section>
+
+        <section class="panel" style="margin-top:1.5rem;" id="logsPanel">
+            <h2>Diagnostic Logs</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">Tail the newest logs without pulling the whole bundle. The <b>ASCOM trace</b> is the driver-level detail (HTTP calls, exceptions) behind a safety-monitor drop — enable "Trace" in the ASCOM Alpaca driver setup first, then reconnect.</p>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;">
+                <input id="logGrep" placeholder="filter lines (optional, e.g. error|exception|timeout)" style="flex:1;min-width:220px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.35rem .5rem;">
+                <button class="btn btn-secondary" id="ascomTraceBtn" title="Newest ASCOM trace log for the safety monitor client">Safety trace (ASCOM)</button>
+                <button class="btn btn-secondary" id="ninaLogBtn" title="Newest NINA log">NINA log</button>
+                <span class="bd" id="logStatus"></span>
+            </div>
+            <pre id="logOut" style="margin-top:.6rem;max-height:360px;overflow:auto;background:#0b1220;border:1px solid #223;border-radius:6px;padding:.6rem;font-size:.75rem;white-space:pre-wrap;word-break:break-word;">(no log loaded — pick a source above)</pre>
+        </section>
+        <script>
+        (function () {
+            var out = document.getElementById('logOut');
+            function grep() { return document.getElementById('logGrep').value.trim(); }
+            async function load(url, label) {
+                var st = document.getElementById('logStatus');
+                st.textContent = 'loading ' + label + '…';
+                try {
+                    var g = grep();
+                    var u = url + (g ? (url.indexOf('?') >= 0 ? '&' : '?') + 'grep=' + encodeURIComponent(g) : '');
+                    var r = await fetch(u);
+                    out.textContent = await r.text();
+                    st.textContent = label + ' · ' + new Date().toLocaleTimeString();
+                } catch (e) { out.textContent = 'error: ' + e; st.textContent = 'failed'; }
+            }
+            document.getElementById('ascomTraceBtn').onclick = function () {
+                load('/api/ascom/log?name=Safety&lines=800', 'ASCOM safety trace'); };
+            document.getElementById('ninaLogBtn').onclick = function () {
+                load('/api/nina/log?lines=800', 'NINA log'); };
+        })();
+        </script>
 
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Preflight Check</h2>

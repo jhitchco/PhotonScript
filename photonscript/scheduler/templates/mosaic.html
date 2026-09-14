@@ -42,16 +42,9 @@
     </style>
 </head>
 <body>
-    <header>
-        <div class="header-content">
-            <h1>PhotonScript</h1>
-            <span class="subtitle">Mosaic Planner</span>
-            <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.8rem;">{{ version }}</span>
-        </div>
-    </header>
-    <nav class="sys-nav" style="display:flex;gap:.55rem;align-items:center;">
-        <a href="/" class="nav-pill">&#127968; Dashboard</a> <a href="/runs" class="nav-pill">&#128248; Runs</a> <a href="/calibration" class="nav-pill">&#127765; Calibration</a> <a href="/system" class="nav-pill">&#9881;&#65039; System</a>
-    </nav>
+    {% set page_subtitle = "Mosaic Planner" %}
+    {% set active_page = "mosaic" %}
+    {% include "_header.html" %}
 
     <main>
         <section class="panel">
