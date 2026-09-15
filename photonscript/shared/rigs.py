@@ -161,6 +161,26 @@ async def nina_dew_heater(base_url: str, on: bool) -> dict:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
+async def nina_camera_info(base_url: str) -> dict | None:
+    """Read a rig camera's live state (ninaAPI GET info): CoolerOn,
+    CoolerPower, Temperature, DewHeaterOn... Returns the payload dict, or
+    None when the rig/NINA is unreachable (callers treat that as unknown)."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(base + "/equipment/camera/info")
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("Success") is False:
+                logger.warning("camera info (%s): %s", base_url, data.get("Error"))
+                return None
+            payload = data.get("Response", data) if isinstance(data, dict) else data
+            return payload if isinstance(payload, dict) else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("camera info (%s) failed: %s", base_url, e)
+        return None
+
+
 def rig_setpoint(config, rig: str) -> float:
     if rig == PIGGYBACK:
         return float(getattr(config, "piggyback_setpoint_c", 0.0))

@@ -463,6 +463,8 @@ _CONFIG_FIELDS = [
     ("auto_arm_enabled", "PS_AUTO_ARM_ENABLED", "Auto-arm every night (hands-off multi-night)", "Nanny / Alerts", "bool", False, False),
     ("auto_arm_lead_hours", "PS_AUTO_ARM_LEAD_HOURS", "Auto-arm window opens N hours before pre-config", "Nanny / Alerts", "float", False, False),
     ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),
+    ("noon_arm_enabled", "PS_NOON_ARM_ENABLED", "Noon auto re-arm when idle (also re-forces coolers off)", "Nanny / Alerts", "bool", False, False),
+    ("noon_arm_guiding", "PS_NOON_ARM_GUIDING", "Noon auto-arm guiding mode (guided|encoders|default)", "Nanny / Alerts", "str", False, False),
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),

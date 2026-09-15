@@ -74,6 +74,9 @@
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <!-- Lifecycle chips: dawn-shutdown result (with cooler verify)
+                 and the next noon auto re-arm countdown. Filled by refreshArm(). -->
+            <div id="armLifecycle" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
             <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
                  padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
                  background:rgba(125,211,252,.06);white-space:normal;"></div>
@@ -234,6 +237,39 @@
               '</b> <span style="opacity:.6">(since ' + (lr.at || '').slice(11, 16) +
               ' UTC — arming will replace it)</span>'
             : '';
+        // Lifecycle chips: dawn-shutdown result + next noon auto re-arm
+        const lc = document.getElementById('armLifecycle');
+        if (lc) {
+            const chips = [];
+            const sd = d.shutdown;
+            if (sd && !active) {
+                const when = sd.at
+                    ? new Date(sd.at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+                    : '';
+                let verify = '⏳ verifying coolers…', border = 'rgba(125,211,252,.3)';
+                if (sd.verify && sd.verify.ok) {
+                    verify = '✓ coolers confirmed OFF'; border = 'rgba(74,222,128,.4)';
+                } else if (sd.verify && !sd.verify.ok) {
+                    verify = '⚠ COOLER STILL ON — check NINA / Stop & Make Safe';
+                    border = 'rgba(239,68,68,.7)';
+                }
+                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + border + ';background:rgba(125,211,252,.06);">' +
+                    '🌅 <b>Dawn shutdown</b> ' + when + ' — ' +
+                    (sd.steps || []).join(' · ') + ' — <b>' + verify + '</b></div>');
+            }
+            const na = d.noon_arm;
+            if (na && na.enabled && !active && na.at_utc) {
+                const ms = Date.parse(na.at_utc) - Date.now();
+                const h = Math.floor(ms / 3600000), m = Math.floor(ms % 3600000 / 60000);
+                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;' +
+                    'border:1px solid rgba(74,222,128,.3);background:rgba(74,222,128,.06);">' +
+                    '🕛 <b>Auto re-arm (' + (na.guiding || 'guided') + ')</b> at noon local — ' +
+                    (ms > 0 ? 'in ' + (h ? h + 'h ' : '') + m + 'm' : 'imminent') + '</div>');
+            }
+            lc.hidden = chips.length === 0;
+            lc.innerHTML = chips.join('');
+        }
     }
     function sunDiagramSVG(d) {
         const W = 640, H = 150, PAD = 6;

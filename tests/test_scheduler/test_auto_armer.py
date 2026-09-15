@@ -70,3 +70,39 @@ def test_lead_hours_widens_window():
     early = datetime(2026, 8, 10, 22, 8)
     assert _dec(now=early, lead_hours=3.0)[0] is False
     assert _dec(now=early, lead_hours=6.0)[0] is True
+
+
+# --- noon auto re-arm (2026-09-15) -----------------------------------------
+
+EARLY = datetime(2026, 8, 10, 22, 8)  # 5h before pre-config: outside the window
+
+
+def test_noon_arm_fires_from_local_noon():
+    assert _dec(now=EARLY)[0] is False  # window alone says too early
+    arm, reason = _dec(now=EARLY, noon_arm=True, local_hour=12)
+    assert arm is True and "noon" in reason
+
+
+def test_noon_arm_waits_for_noon():
+    arm, reason = _dec(now=EARLY, noon_arm=True, local_hour=9)
+    assert arm is False and "too early" in reason
+
+
+def test_noon_only_config_still_arms_afternoon():
+    # nightly window arming off (auto_arm_enabled=False), noon on: an idle
+    # afternoon armer still arms via the noon path
+    arm, reason = _dec(window_arm=False, noon_arm=True, local_hour=18)
+    assert arm is True and "noon" in reason
+
+
+def test_window_disabled_and_before_noon_never_arms():
+    arm, _ = _dec(now=EARLY, window_arm=False, noon_arm=True, local_hour=9)
+    assert arm is False
+
+
+def test_noon_arm_respects_busy_and_double_arm_gates():
+    arm, reason = _dec(state="RUNNING", noon_arm=True, local_hour=13)
+    assert arm is False and "busy" in reason
+    arm, reason = _dec(last_armed_night="2026-08-11", noon_arm=True,
+                       local_hour=13)
+    assert arm is False and "already" in reason

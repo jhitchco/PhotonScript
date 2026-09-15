@@ -172,6 +172,14 @@ class PhotonScriptConfig(BaseSettings):
                                               # failing preflight (AARO roof controller
                                               # closes on weather independently). True =
                                               # skip-and-notify until preflight go=true.
+    noon_arm_enabled: bool = True  # noon auto re-arm (2026-09-15): when the armer is
+                                   # idle at 12:00 local, arm tonight's plan right
+                                   # then instead of waiting for the evening window.
+                                   # Also cooler belt #2: arm() forces cooler + dew
+                                   # OFF, so a missed dawn shutdown is corrected at
+                                   # noon at the latest.
+    noon_arm_guiding: str = "guided"  # guiding mode for noon auto-arms:
+                                      # "guided" | "encoders" | "default" (config)
     # Filter names as they appear in the NINA profile, mapped from our classes.
     # AARO wheel names its filters with single letters.
     nina_filter_names: str = "Ha:H,OIII:O,SII:S,L:L,R:R,G:G,B:B"

@@ -15,6 +15,13 @@ Controls (config / .env):
                                  opens (default 3.0h — recent enough that the
                                  preflight it runs reflects real equipment state)
   PS_AUTO_ARM_REQUIRE_PREFLIGHT  hard-gate on preflight go=true (default False)
+  PS_NOON_ARM_ENABLED            noon auto re-arm (default True, 2026-09-15):
+                                 when the armer is idle at 12:00 local, arm
+                                 tonight's plan right then. Doubles as cooler
+                                 belt #2 — arm() forces cooler + dew OFF, so a
+                                 missed dawn shutdown is corrected by noon.
+  PS_NOON_ARM_GUIDING            guiding mode for noon arms:
+                                 guided (default) | encoders | default
 
 Safety model: by default it ARMS AND NOTIFIES even when preflight fails
 (Jeremy's call). The AARO site roof controller closes on weather independently
@@ -39,11 +46,18 @@ TERMINAL_STATES = ("DISARMED", "COMPLETE", "ERROR")
 def auto_arm_decision(*, enabled: bool, state: str, now: datetime,
                       preconfig_utc: str | None, night_of: str | None,
                       last_armed_night: str | None,
-                      lead_hours: float) -> tuple[bool, str]:
+                      lead_hours: float,
+                      noon_arm: bool = False,
+                      local_hour: float | None = None,
+                      window_arm: bool = True) -> tuple[bool, str]:
     """Pure, side-effect-free: should the loop arm right now?
 
     Returns (arm, reason). Kept separate from all the async plumbing so the
     gating logic can be unit-tested without asyncio / httpx / astropy.
+
+    window_arm gates the classic evening window (auto_arm_enabled); noon_arm +
+    local_hour gate the noon re-arm (noon_arm_enabled) — from 12:00 local an
+    idle armer arms for the coming night without waiting for the window.
     """
     if not enabled:
         return False, "auto-arm disabled"
@@ -55,14 +69,19 @@ def auto_arm_decision(*, enabled: bool, state: str, now: datetime,
         return False, f"already auto-armed {night_of}"
     preconfig = datetime.fromisoformat(preconfig_utc.rstrip("Z"))
     window_open = preconfig - timedelta(hours=lead_hours)
-    if now >= preconfig:
+    if window_arm and now >= preconfig:
         # Past pre-config but still idle (e.g. a night nobody armed): arm so
         # the remaining dark is captured rather than skipped. The armer's
         # ARMED tick dispatches immediately when now >= preconfig.
         return True, "past pre-config — arming for the remaining night"
+    if window_arm and window_open <= now < preconfig:
+        return True, "within arm window"
+    if (noon_arm and local_hour is not None and local_hour >= 12
+            and now < preconfig):
+        return True, "noon auto re-arm — armed early for tonight"
     if now < window_open:
         return False, f"too early (window opens {window_open:%Y-%m-%d %H:%MZ})"
-    return True, "within arm window"
+    return False, "nightly window arming disabled"
 
 
 def _fail_summary(preflight: dict) -> str:
@@ -133,21 +152,29 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
 
     while True:
         try:
-            if getattr(config, "auto_arm_enabled", False):
+            noon_enabled = bool(getattr(config, "noon_arm_enabled", False))
+            if getattr(config, "auto_arm_enabled", False) or noon_enabled:
                 armer = get_armer()
                 plan = build_night_plan(config)
                 if "error" in plan:
                     logger.warning("auto-arm: no plan (%s)", plan["error"])
                 else:
                     await _maybe_dispatch_dusk_flats(armer)
+                    from photonscript.shared.localtime import utc_offset_hours
+                    now = datetime.utcnow()
+                    local_hour = (now + timedelta(
+                        hours=utc_offset_hours(config, now))).hour
                     arm_now, reason = auto_arm_decision(
                         enabled=True,
                         state=armer.state,
-                        now=datetime.utcnow(),
+                        now=now,
                         preconfig_utc=plan.get("preconfig_utc"),
                         night_of=plan.get("night_of"),
                         last_armed_night=last_armed_night,
                         lead_hours=float(getattr(config, "auto_arm_lead_hours", 3.0)),
+                        noon_arm=noon_enabled,
+                        local_hour=local_hour,
+                        window_arm=bool(getattr(config, "auto_arm_enabled", False)),
                     )
                     fu = flats_state.get("until")
                     if arm_now and fu and datetime.utcnow() < fu:
@@ -167,7 +194,12 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                     title="PhotonScript auto-arm skipped", priority=1)
                                 last_skip_night = night
                         else:
-                            await armer.arm()  # sends its own ARMED Pushover
+                            guiding = None
+                            if reason.startswith("noon"):
+                                g = str(getattr(config, "noon_arm_guiding",
+                                                "guided")).lower()
+                                guiding = g if g in ("guided", "encoders") else None
+                            await armer.arm(guiding=guiding)  # sends its own ARMED Pushover
                             last_armed_night = night
                             if not pf.get("go", False):
                                 await notify(

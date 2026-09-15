@@ -7,7 +7,11 @@ States:
                  images; its own SafetyMonitor conditions are the backstop)
   PAUSED_UNSAFE  safety monitor went unsafe mid-night; sequence stopped;
                  waiting for safe-again (smart resume) or dawn (make safe)
-  COMPLETE       night over
+  COMPLETE       night over — dawn_shutdown() has stopped the sequence,
+                 warmed + dew-off'd every rig, parked, and verifies coolers
+                 (never assume NINA's End area ran: an all-night-unsafe
+                 night leaves the loop wedged in WaitUntilSafe — 2026-09-15
+                 both coolers ran at 0°C all day)
   ERROR          dispatch or lint failure — human needed
 
 Resilience:
@@ -63,6 +67,7 @@ class Armer:
         self.plan: dict = {}
         self.sequence_path: Path | None = None
         self.guiding_override: str | None = None  # "guided" | "encoders" | None
+        self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -78,6 +83,7 @@ class Armer:
                 "state": self.state, "detail": self.detail, "plan": self.plan,
                 "last_raw": getattr(self, "last_raw", None),
                 "guiding_override": getattr(self, "guiding_override", None),
+                "shutdown": getattr(self, "shutdown", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
             }, indent=1), encoding="utf-8")
         except OSError as e:
@@ -91,6 +97,9 @@ class Armer:
             saved = json.loads(self._state_path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             return False
+        # Keep the last dawn-shutdown record across restarts regardless of
+        # state, so the dashboard chip survives a morning dashboard restart.
+        self.shutdown = saved.get("shutdown")
         if saved.get("state") not in ACTIVE_STATES:
             return False
         dawn = saved.get("plan", {}).get("dawn_utc")
@@ -144,7 +153,30 @@ class Armer:
                 "dusk_utc": self.plan.get("dusk_utc"),
                 "dawn_utc": self.plan.get("dawn_utc"),
                 "cool_lead_min": cool_lead,
-                "cooler_on_utc": cooler_on_utc}
+                "cooler_on_utc": cooler_on_utc,
+                "shutdown": getattr(self, "shutdown", None),
+                "noon_arm": self._noon_arm_status()}
+
+    def _noon_arm_status(self) -> dict:
+        """Next noon auto re-arm, surfaced for the dashboard countdown chip."""
+        enabled = bool(getattr(self.config, "noon_arm_enabled", False))
+        out = {"enabled": enabled,
+               "guiding": str(getattr(self.config, "noon_arm_guiding",
+                                      "guided"))}
+        if not enabled:
+            return out
+        try:
+            from photonscript.shared.localtime import utc_offset_hours
+            now = datetime.utcnow()
+            off = utc_offset_hours(self.config, now)
+            local = now + timedelta(hours=off)
+            noon = local.replace(hour=12, minute=0, second=0, microsecond=0)
+            if local >= noon:
+                noon += timedelta(days=1)
+            out["at_utc"] = (noon - timedelta(hours=off)).isoformat() + "Z"
+        except Exception:  # noqa: BLE001 — chip is cosmetic, never fatal
+            pass
+        return out
 
     def _use_guiding(self) -> bool:
         """Resolve this night's guiding mode. An explicit arm-time choice
@@ -161,6 +193,7 @@ class Armer:
         None => use config.guided_default."""
         from photonscript.scheduler.night_plan import build_night_plan
         self.guiding_override = guiding
+        self.shutdown = None  # a fresh arm starts a new night — clear the chip
         self.plan = build_night_plan(self.config)
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
@@ -282,6 +315,75 @@ class Armer:
                 await nina_dew_heater(rc.nina_base_url, False)
             except Exception as e:  # noqa: BLE001
                 logger.warning("cooler/dew off (%s) failed: %s", rig, e)
+
+    # -- dawn shutdown -----------------------------------------------------------
+
+    async def dawn_shutdown(self, reason: str = "dawn") -> str:
+        """Positive end-of-night shutdown — never assume NINA's End area ran.
+
+        An all-night-unsafe night leaves the sequence wedged inside
+        WaitUntilSafe until the NEXT evening's dispatch replaces it, so the
+        End area (dew off + warm) runs ~24 h late and both coolers hold
+        setpoint all day (seen 2026-09-15). This stops the sequence, warms +
+        dew-offs EVERY rig, parks the mount, then verifies cooler state once
+        the warm ramp is done and alerts if anything is still cooling.
+        """
+        from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
+                                              nina_dew_heater)
+        steps = []
+        ok = await self._nina("sequence_stop") is not None
+        steps.append(f"stop {'ok' if ok else 'FAILED'}")
+        for rig in rig_ids(self.config):
+            rc = rig_config(self.config, rig)
+            w = await nina_warm(rc.nina_base_url, minutes=3.0)
+            d = await nina_dew_heater(rc.nina_base_url, False)
+            steps.append(f"{rig} warm {'ok' if w.get('ok') else 'FAILED'}"
+                         f"/dew {'ok' if d.get('ok') else 'FAILED'}")
+        ok = await self._nina("mount_park") is not None
+        steps.append(f"park {'ok' if ok else 'FAILED'}")
+        self.shutdown = {"at": datetime.utcnow().isoformat() + "Z",
+                         "reason": reason, "steps": steps, "verify": None}
+        self._persist()
+        # The warm ramp takes ~3 min; verify (and alert) after it should be done.
+        asyncio.create_task(self._verify_shutdown(delay_s=300))
+        report = " · ".join(steps)
+        logger.warning("dawn shutdown (%s): %s", reason, report)
+        return report
+
+    async def _verify_shutdown(self, delay_s: int = 300):
+        """Post-shutdown check: is every cooler actually OFF? One retry, then a
+        priority alert — a cooler at setpoint all day is exactly the failure
+        dawn_shutdown exists to prevent, so the check is not optional."""
+        from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
+                                              nina_dew_heater, nina_camera_info)
+        await asyncio.sleep(delay_s)
+        rigs: dict = {}
+        still_on: list[str] = []
+        for rig in rig_ids(self.config):
+            rc = rig_config(self.config, rig)
+            info = await nina_camera_info(rc.nina_base_url)
+            if not info:
+                rigs[rig] = "unreachable"
+                continue
+            on = bool(info.get("CoolerOn", False))
+            rigs[rig] = {"cooler_on": on,
+                         "temp_c": info.get("Temperature"),
+                         "dew_on": info.get("DewHeaterOn")}
+            if on:
+                still_on.append(rig)
+                await nina_warm(rc.nina_base_url, minutes=1.0)  # one retry
+                await nina_dew_heater(rc.nina_base_url, False)
+        ok = not still_on
+        if self.shutdown is not None:
+            self.shutdown["verify"] = {"at": datetime.utcnow().isoformat() + "Z",
+                                       "ok": ok, "rigs": rigs}
+            self._persist()
+        if not ok:
+            await notify(self.config,
+                         "Dawn-shutdown check: cooler STILL ON on "
+                         f"{', '.join(still_on)} — retried warm + dew-off once. "
+                         "If it persists use Stop & Make Safe and check NINA.",
+                         title="PhotonScript shutdown warning", priority=1)
 
     # -- ninaAPI helpers ---------------------------------------------------------
 
@@ -508,9 +610,12 @@ class Armer:
 
         elif self.state == "RUNNING":
             if now >= self._dawn() + timedelta(minutes=30):
-                self._set_state("COMPLETE")
-                await notify(self.config, "Night complete — sequence end-area "
-                             "handled warm & park. Morning report at 9.",
+                self._set_state("COMPLETE", "Night over — running dawn shutdown")
+                report = await self.dawn_shutdown(reason="dawn")
+                self._set_state("COMPLETE", f"Dawn shutdown: {report}")
+                await notify(self.config,
+                             f"Night complete — dawn shutdown ran ({report}). "
+                             "Cooler check in 5 min; morning report at 9.",
                              title="PhotonScript complete")
                 return
             safe = await self._is_safe()
@@ -527,11 +632,15 @@ class Armer:
 
         elif self.state == "PAUSED_UNSAFE":
             if now >= self._dawn() + timedelta(minutes=30):
-                self._set_state("COMPLETE", "Dawn while paused — night loop "
-                                "exited; End area handled shutdown")
+                # Do NOT assume the night loop exited: unsafe-at-dawn leaves
+                # NINA wedged in WaitUntilSafe and the End area never runs.
+                self._set_state("COMPLETE",
+                                "Dawn while paused — running dawn shutdown")
+                report = await self.dawn_shutdown(reason="dawn while paused")
+                self._set_state("COMPLETE", f"Dawn shutdown: {report}")
                 await notify(self.config,
-                             "Night ended while paused. NINA's End area "
-                             "handled park & warm.",
+                             "Night ended while paused — dawn shutdown "
+                             f"stopped the night loop and shut down: {report}",
                              title="PhotonScript complete")
                 return
             safe = await self._is_safe()
