@@ -1,0 +1,25 @@
+{# Shared page header — one source of truth so the nav/title/version never drift
+   across pages. Callers set (all optional): page_subtitle, active_page
+   (dashboard|runs|mosaic|calibration|system, its own link is hidden), and
+   show_status (renders the dashboard's live connection chip). version and
+   observatory come from the render context. #}
+<header>
+    <div class="header-content" style="display:flex;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <div style="display:flex;flex-direction:column;">
+            <a href="/" style="text-decoration:none;color:inherit;" title="Dashboard">
+                <h1 style="margin:0;line-height:1.05;">PhotonScript</h1></a>
+            <span class="subtitle" style="display:block;">{{ page_subtitle|default('Remote Telescope Orchestration') }}</span>
+        </div>
+        {% if observatory %}<span class="observatory-badge">{{ observatory.name.split(' (')[0] }}</span>{% endif %}
+    </div>
+    <div style="display:flex;align-items:center;gap:.55rem;flex-wrap:wrap;margin-left:auto;">
+        {% set _a = active_page|default('') %}
+        {% if _a != 'dashboard' %}<a href="/" class="nav-pill">&#127968; Dashboard</a>{% endif %}
+        {% if _a != 'runs' %}<a href="/runs" class="nav-pill">&#128248; Runs</a>{% endif %}
+        {% if _a != 'mosaic' %}<a href="/mosaic" class="nav-pill">&#129513; Mosaic</a>{% endif %}
+        {% if _a != 'calibration' %}<a href="/calibration" class="nav-pill">&#127765; Calibration</a>{% endif %}
+        {% if _a != 'system' %}<a href="/system" class="nav-pill">&#9881;&#65039; System</a>{% endif %}
+        {% if show_status %}<div class="connection-status" id="connectionStatus" style="margin-left:.6rem;">Connecting...</div>{% endif %}
+        <span class="version-stamp" style="opacity:.4;font-size:.72rem;margin-left:.5rem;line-height:1.15;text-align:right;" title="git commit running on this machine">{{ version.split(' (')[0] }}{% if ' (' in version %}<br>{{ version[version.find('('):] }}{% endif %}</span>
+    </div>
+</header>

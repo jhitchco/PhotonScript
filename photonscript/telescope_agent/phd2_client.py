@@ -24,6 +24,10 @@ class PHD2Client:
     """
 
     def __init__(self, host: str = "localhost", port: int = 4400):
+        from collections import deque
+        self._px_scale = 1.0          # arcsec/px from get_pixel_scale RPC
+        self._ra_hist = deque(maxlen=120)   # ~last 4-6 min of guide steps
+        self._dec_hist = deque(maxlen=120)
         self.host = host
         self.port = port
         self._reader: Optional[asyncio.StreamReader] = None
@@ -63,6 +67,17 @@ class PHD2Client:
         self._writer.write(data.encode())
         await self._writer.drain()
         return msg
+
+    async def refresh_pixel_scale(self):
+        """PHD2 GuideStep distances are in guide-camera PIXELS; convert with
+        the profile's pixel scale so RMS numbers are honest arcseconds."""
+        try:
+            r = await self._send_rpc("get_pixel_scale")
+            scale = float(r.get("result") or 0)
+            if scale > 0:
+                self._px_scale = scale
+        except Exception:  # noqa: BLE001
+            pass
 
     async def get_app_state(self) -> str:
         """Query PHD2 application state (Stopped, Guiding, etc.)."""
@@ -114,12 +129,22 @@ class PHD2Client:
         event_type = event.get("Event", event.get("jsonrpc", ""))
 
         if event_type == "GuideStep":
-            # Real-time guide correction data
-            self._metrics.rms_ra_arcsec = abs(event.get("RADistanceRaw", 0))
-            self._metrics.rms_dec_arcsec = abs(event.get("DECDistanceRaw", 0))
+            # rolling true RMS in arcsec over the recent history window
+            ra = event.get("RADistanceRaw", 0.0) * self._px_scale
+            dec = event.get("DECDistanceRaw", 0.0) * self._px_scale
+            self._ra_hist.append(ra)
+            self._dec_hist.append(dec)
+
+            def _rms(h):
+                return (sum(x * x for x in h) / len(h)) ** 0.5 if h else 0.0
+
+            self._metrics.rms_ra_arcsec = _rms(self._ra_hist)
+            self._metrics.rms_dec_arcsec = _rms(self._dec_hist)
             self._metrics.rms_total_arcsec = (
-                self._metrics.rms_ra_arcsec ** 2 + self._metrics.rms_dec_arcsec ** 2
-            ) ** 0.5
+                self._metrics.rms_ra_arcsec ** 2
+                + self._metrics.rms_dec_arcsec ** 2) ** 0.5
+            self._metrics.peak_ra_arcsec = max(abs(x) for x in self._ra_hist)
+            self._metrics.peak_dec_arcsec = max(abs(x) for x in self._dec_hist)
             self._metrics.snr = event.get("SNR", 0)
             self._metrics.star_mass = event.get("StarMass", 0)
             self._metrics.state = GuidingState.GUIDING
@@ -140,6 +165,8 @@ class PHD2Client:
             self._metrics.state = GuidingState.CALIBRATING
 
         elif event_type == "StartGuiding":
+            self._ra_hist.clear()
+            self._dec_hist.clear()
             self._metrics.state = GuidingState.GUIDING
 
         elif event_type == "AppState":

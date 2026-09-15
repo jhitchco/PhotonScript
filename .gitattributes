@@ -1,0 +1,17 @@
+# Normalize line endings. Files are authored on Linux/cloud (LF) and edited on
+# the Windows scope PC; without this, Git on Windows (core.autocrlf=true) warns
+# "LF will be replaced by CRLF" and flip-flops endings. Store and check out LF
+# everywhere so it stays consistent and the warnings stop.
+* text=auto eol=lf
+
+# Never touch binaries.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.fits binary
+*.fit binary
+*.xisf binary
