@@ -455,8 +455,46 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0):
     return blocks
 
 
-def generate_piggyback_companion_json(config, has_safety: bool = False) -> str:
-    """A full-night calibration companion for the piggyback (NINA #2), meant to
+def _osc_light_loop(config) -> dict:
+    """Dumb OSC light loop for the piggyback (§4.3 DUAL_RIG): shoot continuous
+    OSC lights while the roof is safe, until dawn, resilient to cloud gaps
+    (re-waits for safe each pass). AF once per (re)acquire + a temperature
+    trigger. No slew/center/dither/guide — those belong to the RC16; the
+    piggyback just rides the mount at its fixed offset. Exposure defaults to
+    piggyback_exposure_s (120 s OSC — the piggyback is background-limited in
+    seconds at 1.29"/px, so 120 s is set by star saturation, not read noise;
+    see DUAL_RIG §4.5)."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _autofocus, _autofocus_temp_trigger,
+        _safety_condition, _time_condition, _wait_until_safe, _pushover)
+    exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
+    gain = int(getattr(config, "piggyback_default_gain", 100))
+    offset = int(getattr(config, "piggyback_default_offset", 256))
+    af_temp_c = float(getattr(config, "autofocus_temp_change_c", 2.0))
+    take = _make_typed(
+        "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
+        ExposureTime=exp_s, Gain=gain, Offset=offset,
+        Binning=_make_typed("NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                            X=1, Y=1),
+        ImageType="LIGHT", ExposureCount=0, ErrorBehavior=0, Attempts=1)
+    # Inner loop: repeat exposures WHILE the roof is safe; temp trigger refocuses.
+    inner = _seq_container(
+        "OSC_LIGHT_LOOP", [take],
+        conditions=[_safety_condition()],
+        triggers=[_autofocus_temp_trigger(af_temp_c)])
+    # Outer loop: keep going UNTIL dawn. Each pass waits for safe, AFs, then
+    # shoots until the roof closes; when it closes the inner loop exits and the
+    # outer pass re-waits for safe. Ends at nautical dawn.
+    return _seq_container(
+        "OSC_LIGHTS_UNTIL_DAWN",
+        [_pushover("Piggyback", f"roof open — OSC lights {exp_s:g}s until dawn"),
+         _wait_until_safe(), _autofocus(), inner],
+        conditions=[_time_condition("NauticalDawnProvider", 0)])
+
+
+def generate_piggyback_companion_json(config, has_safety: bool = False,
+                                      with_lights: bool = False) -> str:
+    """A full-night companion for the piggyback (NINA #2), meant to
     be dispatched alongside the RC16 armed sequence so ONE arm covers both
     scopes' calibration.
 
@@ -484,8 +522,9 @@ def generate_piggyback_companion_json(config, has_safety: bool = False) -> str:
     setpoint = float(getattr(config, "camera_setpoint_c", 0.0))
 
     start_items = [
-        _pushover("Piggyback", "companion calibration armed: cools the OSC "
-                  f"camera, {'fills darks/bias while the roof is closed, ' if has_safety else ''}"
+        _pushover("Piggyback", "piggyback armed: cools the OSC camera, "
+                  f"{'fills darks/bias while the roof is closed, ' if has_safety else ''}"
+                  f"{'shoots OSC lights while the roof is open, ' if (with_lights and has_safety) else ''}"
                   "then shoots OSC dawn flats. No mount control — rides the RC16."),
         _connect("Camera"),
         _dew_heater(True),
@@ -541,6 +580,10 @@ def generate_piggyback_companion_json(config, has_safety: bool = False) -> str:
                                 "NINA.Sequencer",
                                 CompletedIterations=0, Iterations=1)]))
         target_items.append(_wait_until_safe())
+        if with_lights:
+            # Roof is open — shoot OSC lights until dawn, then fall through to
+            # the dawn-flat window below.
+            target_items.append(_osc_light_loop(config))
     else:
         target_items.append(_annotation(
             "OSC darks/bias skipped: NINA #2 is not seeing the safety monitor, "

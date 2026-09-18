@@ -558,7 +558,12 @@ class Armer:
                     pcfg, "safetymonitor")
             except Exception:  # noqa: BLE001
                 has_safety = False
-            seq_text = generate_piggyback_companion_json(pcfg, has_safety=has_safety)
+            # Shoot OSC lights while the roof is open, but only when NINA #2 can
+            # see the shared safety monitor (has_safety) — lights must be roof-gated.
+            want_lights = bool(getattr(cfg, "piggyback_image_lights", True)
+                               and has_safety)
+            seq_text = generate_piggyback_companion_json(
+                pcfg, has_safety=has_safety, with_lights=want_lights)
             seq_dir = self.sequence_path.parent
             seq_dir.mkdir(exist_ok=True)
             path = seq_dir / f"piggyback_companion_{datetime.now():%Y%m%d_%H%M}.json"
@@ -566,7 +571,8 @@ class Armer:
             res = await nina_dispatch(pcfg.nina_base_url, json.loads(seq_text))
             if res.get("ok"):
                 logger.info("Piggyback companion dispatched to NINA #2 (%s)",
-                            "flats+darks/bias" if has_safety else "flats only")
+                            ("lights+flats+darks/bias" if want_lights else
+                             ("flats+darks/bias" if has_safety else "flats only")))
                 await notify(cfg, "Piggyback calibration companion started on "
                              "NINA #2 (" + ("sees the roof — dawn flats + "
                              "roof-closed darks/bias)" if has_safety else

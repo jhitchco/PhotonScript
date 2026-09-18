@@ -1218,7 +1218,15 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
                     except Exception:  # noqa: BLE001
                         pass
         gc.collect()
-        lo, hi = np.percentile(small, (0.5, 99.7))
+        # Black point ~1 sigma above the sky median (MAD-robust to stars) so the
+        # background noise floor clips to near-black instead of the old 0.5-percentile
+        # floor, which let the sqrt stretch amplify sky noise into spurious "extra"
+        # structure (2026-09-17: requested moderate background knockdown). Faint
+        # nebulosity above ~1 sigma still survives.
+        med = float(np.median(small))
+        mad = float(np.median(np.abs(small - med))) or 1.0
+        lo = med + 1.0 * 1.4826 * mad
+        hi = float(np.percentile(small, 99.7))
         stretched = np.sqrt(np.clip((small - lo) / max(hi - lo, 1e-3), 0, 1))
         img = Image.fromarray((stretched * 255).astype(np.uint8),
                               mode="L").convert("RGB")

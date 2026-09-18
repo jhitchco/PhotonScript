@@ -78,7 +78,16 @@ class PhotonScriptConfig(BaseSettings):
     # setup to capture the safety-monitor client's HTTP/exception detail
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
     quality_fwhm_max: float = 4.0  # arcsec
-    quality_eccentricity_max: float = 0.6
+    quality_hfr_abs_max: float = 10.0  # px. RC16 at 0.24"/px: 10px ~= 2.4" HFR,
+                                       # consistent with the 4" FWHM gate. Was an
+                                       # implicit 8px (getattr default) that rejected
+                                       # soft-but-stackable subs whose stars NINA's own
+                                       # HFR read ~1-1.5px lower (2026-09-17). Piggyback
+                                       # overrides this to piggyback_hfr_abs_max in rigs.py.
+    quality_eccentricity_max: float = 0.70  # was 0.60; raised 2026-09-17 to keep
+                                             # mildly-trailed but stackable subs
+                                             # (RC16 guided 600-900s). Loosens the
+                                             # anti-trailing gate — watch for drift.
     quality_tracking_rms_max: float = 1.5  # arcsec (0.24"/px scale)
     quality_corner_spread_max: float = 0.35  # corner FWHM spread vs median (collimation watch)
 
@@ -138,6 +147,10 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
+    piggyback_image_lights: bool = True  # on arm, also shoot OSC lights while the
+                                         # roof is open (needs the shared safety
+                                         # monitor on NINA #2 to gate it). Off =
+                                         # calibration companion only (old behavior).
     piggyback_hfr_abs_max: float = 4.5  # focused star ~2px at 1.29"/px (8px gate is wrong here)
     piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
