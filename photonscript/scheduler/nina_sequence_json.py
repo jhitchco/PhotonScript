@@ -47,14 +47,24 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
 #   on the night's first guided target, a fresh calibration to settle against).
 GUIDING_STARTUP_ATTEMPTS = 3
 # GUIDING_ERROR_BEHAVIOR: NINA InstructionErrorBehavior on StartGuiding.
-#   0 = ContinueOnError (current/default): if guiding never settles, exposures
-#       still run (unguided) - this is what wasted 09-18/-19.
-#   To make a terminal settle failure SKIP the target's exposure block instead
-#   of dumping unguided subs, set this to NINA's "skip instruction set" enum
-#   value. VERIFY that integer against this NINA build (3.2.0.9001) before using
-#   it - a wrong value could skip too much or abort the night. Left at 0 until
-#   confirmed so behavior is unchanged by default.
-GUIDING_ERROR_BEHAVIOR = 0
+# Enum ordinals VERIFIED against NINA source (isbeorn/nina, master:
+# NINA.Sequencer/Utility/InstructionErrorBehavior.cs) - declared with no explicit
+# values, so C# assigns in declaration order:
+#     0 = ContinueOnError
+#     1 = SkipInstructionSetOnError
+#     2 = AbortOnError                 (NOT 3 - a natural guess would abort the night)
+#     3 = SkipToSequenceEndInstructions
+# StartGuiding.Execute throws SequenceEntityFailedException when the guider fails
+# to start/settle; SequenceItem.Run retries Attempts times, then applies this
+# behavior. 1 (SkipInstructionSetOnError) calls Parent.Interrupt() -> skips the
+# rest of THIS target's container (its exposure blocks) and the night loop moves
+# on to the next target, instead of dumping hours of unguided/trailed subs
+# (the 09-18/-19 failure). It does NOT abort the sequence (that's 2) or jump to
+# the end/park (3).
+# Trade-off: on a night where guiding can't settle at all, this yields no data
+# for that target rather than possibly-usable unguided subs (relevant once
+# ProTrack is proven on the Paramount). Set back to 0 to keep exposing unguided.
+GUIDING_ERROR_BEHAVIOR = 1
 
 
 def _decompose_ra(ra_hours: float) -> dict:

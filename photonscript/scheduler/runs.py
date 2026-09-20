@@ -368,11 +368,29 @@ def _resolve_target(raw, filename: str, plan_names: list[str]) -> str:
     return "?"
 
 
-def _fast_grade(path: Path, config, plan_names: list[str] | None = None) -> dict:
-    """Per-sub metrics for backfill: sep on a 2x2-binned frame."""
+def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
+                *, prewarm: tuple[str, str] | None = None) -> dict:
+    """Per-sub metrics for backfill: sep on a 2x2-binned frame.
+
+    prewarm=(date, rel_file): while the frame is already loaded, also render the
+    runs-grid thumbnail (w=264) so the runs page never generates it on first
+    view. Reuses the loaded array — just a stretch + resize + PNG write, so it
+    costs a fraction of the grade and never re-opens the FITS. Best-effort: a
+    thumbnail failure never blocks grading.
+    """
     with _HEAVY:
         hdr, binned = _load_binned(path)
         m = _measure(binned, config)
+        if prewarm is not None:
+            try:
+                p_date, p_rel = prewarm
+                p_out = _thumb_out_path(config, p_date, p_rel,
+                                        PREWARM_THUMB_WIDTH, False)
+                if not p_out.exists():
+                    _stretch_and_save(_decimate(binned), p_out,
+                                      PREWARM_THUMB_WIDTH)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("thumb pre-warm skipped for %s: %s", path.name, e)
         del binned
     gc.collect()
     reasons = []
@@ -554,7 +572,8 @@ def start_backfill(config, date: str) -> None:
                 st["current_since"] = time.monotonic()
                 t0 = time.monotonic()
                 try:
-                    record = _fast_grade(f, config, plan_names)
+                    record = _fast_grade(f, config, plan_names,
+                                         prewarm=(date, rel))
                     record["file"] = rel
                     record["abs_path"] = str(f)
                     append_sub_record(config, date, record)
@@ -579,6 +598,14 @@ def start_backfill(config, date: str) -> None:
                     sync_goal_progress(config)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Auto-identify failed for %s: %s", date, e)
+            try:  # tag piggyback (2nd-rig) subs by time-correlation to the RC16
+                rc = correlate_piggyback_targets(config, date)
+                if rc.get("attributed"):
+                    logger.info("Piggyback correlate %s: %d subs attributed",
+                                date, rc["attributed"])
+                    sync_goal_progress(config)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Piggyback correlate failed for %s: %s", date, e)
             try:
                 n_out = flag_hfr_outliers(config, date)
                 if n_out:
@@ -603,6 +630,83 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
     p.write_text("".join(json.dumps(_sanitize_floats(r)) + "\n"
                          for r in records),
                  encoding="utf-8")
+
+
+# Piggyback subs captured within this margin of the RC16's imaging window
+# inherit its target; frames further out (deep in a slew/flip gap, or after the
+# RC16 stopped) stay '?' — they usually trail and get rejected anyway.
+PIGGYBACK_CORRELATE_TOL_MIN = 45.0
+
+
+def correlate_piggyback_targets(config, date: str) -> dict:
+    """Attribute piggyback (2nd-rig) subs by time-correlation to the RC16.
+
+    The piggyback rides the RC16 mount with no target/OBJECT of its own, so
+    every OSC sub lands as target='?' (identify's coordinate match can't help
+    it — NINA #2 owns no mount, so the frames carry no RA/DEC). But the RC16's
+    own sub timeline says exactly what the mount was pointed at over the night;
+    a piggyback sub inherits the RC16 target whose imaging window covers its
+    capture time. Both rigs share one {date}_subs.jsonl, so this is a cheap
+    metadata pass — no FITS reopened. Idempotent: only touches '?' piggyback
+    subs, so re-running after more RC16 frames land fills in more.
+    """
+    from datetime import datetime, timedelta
+    import bisect
+
+    def _t(s):
+        try:
+            return datetime.fromisoformat(str(s.get("time", ""))[:19])
+        except ValueError:
+            return None
+
+    subs = _load_subs(config, date)
+    rc16 = sorted(
+        ((_t(s), s.get("target"), float(s.get("exp_s") or 0.0)) for s in subs
+         if s.get("rig", "rc16") == "rc16"
+         and s.get("target") not in ("?", "", None) and _t(s) is not None),
+        key=lambda x: x[0])
+    pending = [s for s in subs
+               if s.get("rig") not in ("rc16", None, "")
+               and s.get("target") in ("?", "", None) and _t(s) is not None]
+    if not rc16 or not pending:
+        return {"attributed": 0, "windows": {}}
+
+    starts = [r[0] for r in rc16]
+    tol = timedelta(minutes=PIGGYBACK_CORRELATE_TOL_MIN)
+    n, windows = 0, {}
+    for s in pending:
+        ts = _t(s)
+        i = bisect.bisect_right(starts, ts) - 1
+        name = None
+        if i >= 0:
+            if i < len(rc16) - 1:
+                # ts sits inside [start_i, start_{i+1}) — the RC16 dwell on rc16[i]
+                name = rc16[i][1]
+            else:
+                # after the RC16's last sub start: only within its exposure + tol
+                if ts <= rc16[i][0] + timedelta(seconds=rc16[i][2]) + tol:
+                    name = rc16[i][1]
+        elif starts[0] - ts <= tol:
+            # piggyback opened a little before the RC16's first sub
+            name = rc16[0][1]
+        if name:
+            s["target"] = name
+            n += 1
+            windows[name] = windows.get(name, 0) + 1
+    if n:
+        _rewrite_subs(config, date, subs)
+        # best-effort: stamp the OSC FITS OBJECT so the science file carries it
+        if getattr(config, "stamp_fits_object", True):
+            for s in pending:
+                if s.get("target") not in ("?", "", None) and s.get("abs_path"):
+                    try:
+                        from photonscript.shared.fits_object import stamp_object
+                        stamp_object(s["abs_path"], s["target"])
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("piggyback OBJECT stamp skipped: %s", e)
+    logger.info("Piggyback correlate %s: %d subs attributed %s",
+                date, n, windows)
+    return {"attributed": n, "windows": windows}
 
 
 def flag_hfr_outliers(config, date: str, factor: float = 1.4) -> int:
@@ -1178,6 +1282,59 @@ def calibration_inventory(config, date: str) -> dict:
 
 # --- Thumbnails ---------------------------------------------------------------
 
+# The runs grid requests w=264 non-annotated thumbnails on page load (see
+# runs.html). Pre-warming exactly that size at grade time makes the strip
+# render instantly instead of generating hundreds of thumbnails on first view,
+# one at a time under _HEAVY on the RAM-tight scope PC.
+PREWARM_THUMB_WIDTH = 264
+
+
+def _thumb_out_path(config, date: str, rel_file: str, width: int,
+                    annotate: bool) -> Path:
+    """Cache path for a thumbnail — identical scheme for the lazy route and the
+    grade-time pre-warm so they share one cache (a warmed file is a route hit)."""
+    out_dir = Path(config.data_dir) / "thumbs" / date
+    stem = rel_file.replace("\\", "_").replace("/", "_")
+    return out_dir / f"{stem}.w{width}{'.ann' if annotate else ''}.png"
+
+
+def _decimate(binned, target_w: int = 1400):
+    """Decimate a binned frame to ~target_w px wide for cheap stretching."""
+    import numpy as np
+    step = max(1, binned.shape[1] // target_w)
+    return np.ascontiguousarray(binned[::step, ::step])
+
+
+def _stretch_and_save(small, out: Path, width: int, stars=None) -> None:
+    """Sqrt-stretch a decimated frame to a PNG. Shared by thumbnail() and the
+    grade-time pre-warm so both produce a byte-identical stretch.
+
+    Black point ~1 sigma above the sky median (MAD-robust to stars) so the
+    background noise floor clips to near-black instead of the old 0.5-percentile
+    floor, which let the sqrt stretch amplify sky noise into spurious "extra"
+    structure (2026-09-17: requested moderate background knockdown). Faint
+    nebulosity above ~1 sigma still survives.
+    """
+    import numpy as np
+    from PIL import Image, ImageDraw
+    med = float(np.median(small))
+    mad = float(np.median(np.abs(small - med))) or 1.0
+    lo = med + 1.0 * 1.4826 * mad
+    hi = float(np.percentile(small, 99.7))
+    stretched = np.sqrt(np.clip((small - lo) / max(hi - lo, 1e-3), 0, 1))
+    img = Image.fromarray((stretched * 255).astype(np.uint8),
+                          mode="L").convert("RGB")
+    if stars:
+        draw = ImageDraw.Draw(img)
+        for x, y, a in stars:
+            r0 = max(4, a * 3)
+            draw.ellipse([x - r0, y - r0, x + r0, y + r0],
+                         outline=(248, 113, 113), width=2)
+    h = int(img.height * width / img.width)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    img.resize((width, h)).save(out)
+
+
 def thumbnail(config, date: str, rel_file: str, width: int = 360,
               annotate: bool = False) -> Path | None:
     """Stretched PNG thumbnail; optionally with star-detection circles.
@@ -1185,28 +1342,23 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
     Cached on disk per (file, width, annotate) — repeat remote views never
     reopen the FITS. Frame is loaded binned + decimated (a few MB), never
     at full resolution: full-res loads were exhausting the scope PC's RAM.
+    The non-annotated w=264 tile is usually already cached by the grade-time
+    pre-warm (see _fast_grade), so this only does work for other sizes,
+    annotated views, or subs graded before the pre-warm shipped.
     """
-    import numpy as np
-    from PIL import Image, ImageDraw
-
     src = Path(config.image_watch_dir) / date / rel_file
     if not src.exists() or ".." in rel_file:
         return None
-    out_dir = Path(config.data_dir) / "thumbs" / date
-    out_dir.mkdir(parents=True, exist_ok=True)
-    stem = rel_file.replace("\\", "_").replace("/", "_")
-    out = out_dir / f"{stem}.w{width}{'.ann' if annotate else ''}.png"
+    out = _thumb_out_path(config, date, rel_file, width, annotate)
     if out.exists():
         return out
     try:
         with _HEAVY:
             _, binned = _load_binned(src)
-            step = max(1, binned.shape[1] // 1400)
-            small = np.ascontiguousarray(binned[::step, ::step])
+            small = _decimate(binned)
             del binned
             stars = []
             if annotate:
-                stars_m = _measure(small, config)
                 sep = _sep_module()
                 if sep is not None:
                     bkg = sep.Background(small)
@@ -1218,26 +1370,7 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
                     except Exception:  # noqa: BLE001
                         pass
         gc.collect()
-        # Black point ~1 sigma above the sky median (MAD-robust to stars) so the
-        # background noise floor clips to near-black instead of the old 0.5-percentile
-        # floor, which let the sqrt stretch amplify sky noise into spurious "extra"
-        # structure (2026-09-17: requested moderate background knockdown). Faint
-        # nebulosity above ~1 sigma still survives.
-        med = float(np.median(small))
-        mad = float(np.median(np.abs(small - med))) or 1.0
-        lo = med + 1.0 * 1.4826 * mad
-        hi = float(np.percentile(small, 99.7))
-        stretched = np.sqrt(np.clip((small - lo) / max(hi - lo, 1e-3), 0, 1))
-        img = Image.fromarray((stretched * 255).astype(np.uint8),
-                              mode="L").convert("RGB")
-        if stars:
-            draw = ImageDraw.Draw(img)
-            for x, y, a in stars:
-                r0 = max(4, a * 3)
-                draw.ellipse([x - r0, y - r0, x + r0, y + r0],
-                             outline=(248, 113, 113), width=2)
-        h = int(img.height * width / img.width)
-        img.resize((width, h)).save(out)
+        _stretch_and_save(small, out, width, stars)
         return out
     except Exception as e:  # noqa: BLE001
         logger.warning("Thumbnail failed for %s: %s", src, e)
