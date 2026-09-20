@@ -106,7 +106,8 @@ class PhotonScriptConfig(BaseSettings):
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
-                                 # to fall back to the CEM70G encoders unguided.
+                                 # to fall back to the Paramount MX encoders (+TPoint/
+                                 # ProTrack) unguided.
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs
@@ -152,6 +153,13 @@ class PhotonScriptConfig(BaseSettings):
                                          # monitor on NINA #2 to gate it). Off =
                                          # calibration companion only (old behavior).
     piggyback_hfr_abs_max: float = 4.5  # focused star ~2px at 1.29"/px (8px gate is wrong here)
+    piggyback_fwhm_max: float = 6.0   # arcsec. The RC16's 4.0" gate is wrong for a
+                                      # 1.29"/px wide-field OSC (a focused star is ~2.6"
+                                      # FWHM; average seeing lands 4-6"). Applying 4.0"
+                                      # rejected the entire piggyback set on 2026-09-19
+                                      # ("FWHM 6.5\" > 4.0\""). Tune against real OSC subs.
+    piggyback_ecc_max: float = 0.75   # OSC wide-field tolerates a touch more elongation
+                                      # than the RC16 close-up; overrides quality_eccentricity_max
     piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs

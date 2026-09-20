@@ -84,11 +84,21 @@ class PHD2Client:
         await self._send_rpc("get_app_state")
         return self._metrics.state.value
 
-    async def start_guiding(self, settle_pixels: float = 1.5, settle_time: int = 10, settle_timeout: int = 60):
-        """Start guiding with settle parameters."""
+    async def start_guiding(self, settle_pixels: float = 1.5, settle_time: int = 10,
+                            settle_timeout: int = 60, recalibrate: bool = False):
+        """Start guiding with settle parameters.
+
+        recalibrate=True forces PHD2 to drop stored calibration and recalibrate
+        before guiding — the fix when settles keep timing out because the
+        calibration no longer matches the sky (e.g. after switching to the OAG
+        guide path or a fresh polar/TPoint change). Note: the nightly sequence
+        drives PHD2 through NINA's StartGuiding (see nina_sequence_json.py), so
+        its settle criteria come from the NINA guider profile, not this client;
+        this path is the agent's direct control.
+        """
         await self._send_rpc("guide", [
             {"pixels": settle_pixels, "time": settle_time, "timeout": settle_timeout},
-            False,  # recalibrate
+            recalibrate,
         ])
 
     async def stop_guiding(self):

@@ -35,6 +35,27 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
                            "[[NINA.Sequencer.Trigger.ISequenceTrigger, NINA.Sequencer]],"
                            " System.ObjectModel")
 
+# --- Guiding resilience knobs (2026-09-20) -----------------------------------
+# On 2026-09-18 and -09-19 (both clear, roof open ~12.7 h) PHD2 never settled:
+# 95 guide-start requests, 24 "timed-out waiting for guider to settle", 0
+# successes. StartGuiding had Attempts=1 and ErrorBehavior=0 (continue-on-error),
+# so a single failed settle was swallowed and the whole night exposed 900s subs
+# effectively unguided -> every NB sub trailed and was rejected.
+#
+# GUIDING_STARTUP_ATTEMPTS: how many times NINA retries the guide-start+settle
+#   before giving up. 3 gives the settle three shots (and, with ForceCalibration
+#   on the night's first guided target, a fresh calibration to settle against).
+GUIDING_STARTUP_ATTEMPTS = 3
+# GUIDING_ERROR_BEHAVIOR: NINA InstructionErrorBehavior on StartGuiding.
+#   0 = ContinueOnError (current/default): if guiding never settles, exposures
+#       still run (unguided) - this is what wasted 09-18/-19.
+#   To make a terminal settle failure SKIP the target's exposure block instead
+#   of dumping unguided subs, set this to NINA's "skip instruction set" enum
+#   value. VERIFY that integer against this NINA build (3.2.0.9001) before using
+#   it - a wrong value could skip too much or abort the night. Left at 0 until
+#   confirmed so behavior is unchanged by default.
+GUIDING_ERROR_BEHAVIOR = 0
+
 
 def _decompose_ra(ra_hours: float) -> dict:
     h = int(ra_hours)
@@ -229,9 +250,14 @@ def _seed_position(filter_type, ambient_c=None) -> int:
 
 
 def _start_guiding(force_calibration: bool = False) -> dict:
+    # Attempts>1 so a single failed settle retries instead of silently falling
+    # through to unguided exposures; ErrorBehavior gated by GUIDING_ERROR_BEHAVIOR
+    # (see the constants block above). ForceCalibration on the night's first
+    # guided target gives PHD2 a fresh calibration to settle against.
     return _make_typed("NINA.Sequencer.SequenceItem.Guider.StartGuiding, "
                        "NINA.Sequencer", ForceCalibration=force_calibration,
-                       ErrorBehavior=0, Attempts=1)
+                       ErrorBehavior=GUIDING_ERROR_BEHAVIOR,
+                       Attempts=GUIDING_STARTUP_ATTEMPTS)
 
 
 def _stop_guiding() -> dict:

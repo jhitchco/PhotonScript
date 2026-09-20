@@ -38,8 +38,12 @@ morning. GitHub: github.com/jhitchco/PhotonScript.
 ### Hardware / site facts
 - RC16 (406mm) at 3248mm f/8; scale 0.239"/px; FOV 0.414 x 0.277 deg
 - OGMA AP26MC (IMX571 mono APS-C, 6224x4168, 3.76um)
-- CEM70G mount - historically UNGUIDED; PHD2 present. Guiding now
-  supported: `PS_GUIDED_DEFAULT=true` inserts StartGuiding after centering,
+- Software Bisque PARAMOUNT MX (with encoders), driven via the TheSky64 10.5
+  ASCOM driver (NINA shows the mount as `ASCOM.SoftwareBisque`). Earlier docs
+  wrongly said "CEM70G" - that was a documentation guess, not what the driver
+  reports; corrected 2026-09-04, see HARDWARE.md. TPoint + ProTrack available.
+  Historically UNGUIDED; PHD2 present. Guiding now supported:
+  `PS_GUIDED_DEFAULT=true` inserts StartGuiding after centering,
   DitherAfterExposures every 5 frames, StopGuiding at end/unsafe.
 - Filters: L,R,G,B + 3nm S,H,O (NINA names are single letters; PhotonScript
   canonical names are Ha/OIII/SII - `filter_name_map()` translates)

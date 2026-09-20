@@ -62,6 +62,13 @@ def rig_config(config, rig: str):
         "default_gain": getattr(config, "piggyback_default_gain", 100),
         "default_offset": getattr(config, "piggyback_default_offset", 256),
         "quality_hfr_abs_max": getattr(config, "piggyback_hfr_abs_max", 4.5),
+        # The FWHM + eccentricity gates are scale-dependent too: the RC16's
+        # 4.0" FWHM gate rejected every piggyback sub on 2026-09-19 ("FWHM
+        # 6.5\" > 4.0\"") because a 1.29"/px wide-field star is legitimately
+        # larger in arcsec. Override both so the OSC rig is graded on its own
+        # scale, not the RC16's.
+        "quality_fwhm_max": getattr(config, "piggyback_fwhm_max", 6.0),
+        "quality_eccentricity_max": getattr(config, "piggyback_ecc_max", 0.75),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
     }
