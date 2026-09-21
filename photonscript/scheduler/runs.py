@@ -1053,6 +1053,23 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         (100 if accepted else 0),
     )
 
+    # Per-rig score (the two scopes are graded independently): same dark window,
+    # but each rig's own shutter/accepted hours and plan completion. Only emitted
+    # when more than one rig has subs, so single-rig nights are unchanged.
+    scores_by_rig: dict[str, dict] = {}
+    rigs_present = sorted({s.get("rig", "rc16") for s in subs})
+    if len(rigs_present) > 1:
+        for rg in rigs_present:
+            rsubs = [s for s in subs if s.get("rig", "rc16") == rg]
+            r_light = sum(s.get("exp_s") or 0 for s in rsubs) / 3600
+            r_acc_h = sum(s.get("exp_s") or 0 for s in rsubs
+                          if s.get("passed_qa")) / 3600
+            r_accepted = sum(1 for s in rsubs if s.get("passed_qa"))
+            r_planned = sum(v for k, v in planned.items() if k[0] == rg)
+            r_comp = (r_accepted / r_planned * 100) if r_planned else (
+                100 if r_accepted else 0)
+            scores_by_rig[rg] = night_score(dark_h, r_light, r_acc_h, r_comp)
+
     return {
         "date": date,
         "plan": plan,
@@ -1071,6 +1088,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         "calibration": calibration_inventory(config, date),
         "phases": _phase_stats(config, date),
         "score": score,
+        "scores_by_rig": scores_by_rig,
         "backfill": status,
     }
 
@@ -1346,8 +1364,24 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
     pre-warm (see _fast_grade), so this only does work for other sizes,
     annotated views, or subs graded before the pre-warm shipped.
     """
+    if ".." in rel_file:
+        return None
     src = Path(config.image_watch_dir) / date / rel_file
-    if not src.exists() or ".." in rel_file:
+    if not src.exists():
+        # Other-rig frames (e.g. the piggyback OSC subs) live under a different
+        # NINA watch dir than config's (the route only knows the RC16 config),
+        # so date/rel_file won't resolve. Fall back to the sub record's stored
+        # abs_path, which points at the frame wherever its rig wrote it.
+        try:
+            for s in _load_subs(config, date):
+                if s.get("file") == rel_file and s.get("abs_path"):
+                    cand = Path(s["abs_path"])
+                    if cand.is_file():
+                        src = cand
+                        break
+        except Exception:  # noqa: BLE001
+            pass
+    if not src.exists():
         return None
     out = _thumb_out_path(config, date, rel_file, width, annotate)
     if out.exists():

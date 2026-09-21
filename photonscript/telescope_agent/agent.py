@@ -695,6 +695,17 @@ class TelescopeAgent:
                 "passed_qa": quality.passed_qa,
                 "reason": quality.rejection_reason,
             })
+            # Pre-warm the runs-grid thumbnail (w=264) so the Runs page never
+            # blocks generating it on first view. The RC16 gets this in the
+            # backfill grade; the piggyback is graded live here, so warm it now.
+            # Best-effort and nested so a thumbnail miss never drops the record.
+            try:
+                from photonscript.scheduler.runs import (
+                    thumbnail, PREWARM_THUMB_WIDTH)
+                thumbnail(self.config, night, rel_in_night,
+                          width=PREWARM_THUMB_WIDTH, annotate=False)
+            except Exception as te:  # noqa: BLE001
+                logger.debug("thumb pre-warm skipped: %s", te)
         except Exception as e:  # noqa: BLE001
             logger.debug("Sub record append failed: %s", e)
 

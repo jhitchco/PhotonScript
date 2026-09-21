@@ -103,6 +103,7 @@
                 <span class="bd" id="reviewCounts"></span>
                 <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
             </div>
+            <div id="rigChips" style="margin-bottom:.25rem;"></div>
             <div id="targetChips" style="margin-bottom:.25rem;"></div>
             <div id="filterChips"></div>
             <div class="bd" id="thumbCount"></div>
@@ -124,6 +125,7 @@
     <script>
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
     let subTarget = 'ALL';
+    let subRig = 'ALL';
     let showAllThumbs = false;
     async function loadNights() {
         const r = await fetch('/api/runs');
@@ -167,7 +169,7 @@
         else if (real.length) loadDetail(real[0].date);
     }
     async function loadDetail(date) {
-        currentDate = date; subFilter = 'ALL'; subTarget = 'ALL'; showAllThumbs = false;
+        currentDate = date; subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL'; showAllThumbs = false;
         try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
         document.querySelectorAll('.night-chip').forEach(el =>
             el.classList.toggle('active', el.dataset.date === date));
@@ -250,14 +252,7 @@
                 '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;margin-left:.3rem;" ' +
                 'title="Read mount coordinates from the FITS headers (plate solve as fallback) and match against the catalog" ' +
                 'onclick="identifyNight()">Identify by position</button>' : '');
-        const sc = d.score;
-        const el = document.getElementById('scoreTotal');
-        el.textContent = sc.total;
-        el.style.color = sc.total >= 70 ? '#4ade80' : sc.total >= 40 ? '#eab308' : '#f87171';
-        document.getElementById('scoreBreakdown').innerHTML =
-            Object.entries(sc.breakdown).map(([k, v]) =>
-                k.replace(/_/g, ' ') + ': <b>' + v.value + '</b> (×' + v.weight + ')'
-            ).join('<br>');
+        paintScore(d.score);
         const rep = d.report;
         const pctOf = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
         document.getElementById('reportNumbers').innerHTML =
@@ -267,19 +262,7 @@
             pctOf(rep.accepted_hours, rep.dark_hours) + ')</b>' +
             '<br><span style="opacity:.6">weather: safe ' +
             rep.safe_hours.toFixed(1) + 'h of the dark window</span>';
-        document.getElementById('pvaTable').innerHTML =
-            '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
-            '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +
-            '<th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
-            d.table.map(t => '<tr><td>' + (t.rig && t.rig !== 'rc16' ? '<span title="piggyback rig" style="background:#1e3a5f;color:#7dd3fc;font-size:.7rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;margin-right:.4rem;">PB</span>' : '') + t.target + '</td><td>' + t.filter +
-                '</td><td>' + (t.planned || '–') + '</td><td>' + t.attempted + '</td><td class="' +
-                (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
-                '</td><td>' + (t.goal_total ?? '–') + '</td><td>' +
-                (t.done_total != null && t.goal_total
-                 ? t.done_total + ' (' + Math.round(t.done_total / t.goal_total * 100) + '%)'
-                 : '–') +
-                '</td><td>' + (t.median_hfr ?? '–') + '</td><td>' + (t.median_ecc ?? '–') +
-                '</td><td>' + (t.median_background ?? '–') + '</td></tr>').join('');
+        paintPva(d.table);
         // Calibration frames
         const cal = d.calibration || {frames: {}, advice: []};
         const calBox = document.getElementById('calibration');
@@ -301,6 +284,30 @@
             : 'no phase data found in NINA log';
         renderSubs();
         renderReviewBar(d);
+    }
+    function paintScore(sc) {
+        const el = document.getElementById('scoreTotal');
+        el.textContent = sc.total;
+        el.style.color = sc.total >= 70 ? '#4ade80' : sc.total >= 40 ? '#eab308' : '#f87171';
+        document.getElementById('scoreBreakdown').innerHTML =
+            Object.entries(sc.breakdown).map(([k, v]) =>
+                k.replace(/_/g, ' ') + ': <b>' + v.value + '</b> (×' + v.weight + ')'
+            ).join('<br>');
+    }
+    function paintPva(rows) {
+        document.getElementById('pvaTable').innerHTML =
+            '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
+            '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +
+            '<th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
+            rows.map(t => '<tr><td>' + (t.rig && t.rig !== 'rc16' ? '<span title="piggyback rig" style="background:#1e3a5f;color:#7dd3fc;font-size:.7rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;margin-right:.4rem;">PB</span>' : '') + t.target + '</td><td>' + t.filter +
+                '</td><td>' + (t.planned || '–') + '</td><td>' + t.attempted + '</td><td class="' +
+                (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
+                '</td><td>' + (t.goal_total ?? '–') + '</td><td>' +
+                (t.done_total != null && t.goal_total
+                 ? t.done_total + ' (' + Math.round(t.done_total / t.goal_total * 100) + '%)'
+                 : '–') +
+                '</td><td>' + (t.median_hfr ?? '–') + '</td><td>' + (t.median_ecc ?? '–') +
+                '</td><td>' + (t.median_background ?? '–') + '</td></tr>').join('');
     }
     function renderReviewBar(d) {
         const subs = d.subs;
@@ -335,7 +342,28 @@
     function renderSubs() {
         const d = currentDetail;
         if (!d) return;
-        const all0 = d.subs;
+        let all0 = d.subs;
+        // Rig chips (only when both scopes have subs) — RC16 vs the piggyback OSC
+        const rigOf = s => s.rig || 'rc16';
+        const rigLabel = r => r === 'rc16' ? 'RC16'
+            : (r === 'piggyback' ? 'Piggyback (OSC)' : r);
+        const rigsPresent = [...new Set(d.subs.map(rigOf))];
+        const rBox = document.getElementById('rigChips');
+        if (rigsPresent.length > 1) {
+            const rc = {}; d.subs.forEach(s => { const r = rigOf(s); rc[r] = (rc[r] || 0) + 1; });
+            rBox.innerHTML = ['ALL', ...rigsPresent.sort()].map(r =>
+                '<span class="fchip' + (subRig === r ? ' active' : '') + '" data-r="' + r + '">' +
+                (r === 'ALL' ? 'ALL rigs' : rigLabel(r)) +
+                ' ' + (r === 'ALL' ? d.subs.length : rc[r]) + '</span>').join('');
+            rBox.querySelectorAll('.fchip').forEach(el =>
+                el.addEventListener('click', () => { subRig = el.dataset.r; renderSubs(); }));
+        } else { rBox.innerHTML = ''; subRig = 'ALL'; }
+        if (subRig !== 'ALL') all0 = all0.filter(s => rigOf(s) === subRig);
+        // Score + plan-vs-actual follow the selected rig
+        const scByRig = d.scores_by_rig || {};
+        paintScore(subRig !== 'ALL' && scByRig[subRig] ? scByRig[subRig] : d.score);
+        paintPva(subRig === 'ALL' ? d.table
+                 : d.table.filter(t => (t.rig || 'rc16') === subRig));
         // Target chips (only on multi-target nights)
         const tCounts = {};
         all0.forEach(s => {

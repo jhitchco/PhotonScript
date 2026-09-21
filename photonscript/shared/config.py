@@ -201,6 +201,15 @@ class PhotonScriptConfig(BaseSettings):
                                    # noon at the latest.
     noon_arm_guiding: str = "guided"  # guiding mode for noon auto-arms:
                                       # "guided" | "encoders" | "default" (config)
+    # --- TheSky64 direct hook (EXPERIMENTAL, 2026-09-21) ---
+    # PhotonScript normally reaches the Paramount through NINA's ASCOM pass-through
+    # (TheSky's connector), which does NOT expose TPoint/ProTrack. TheSky also runs
+    # a TCP "TheSky TCP Server" (default :3040) that executes JavaScript; the
+    # thesky_client module talks to it for pointing status and a (best-effort)
+    # ProTrack toggle. Nothing in the nightly flow uses this yet — opt-in only.
+    thesky_enabled: bool = False
+    thesky_tcp_host: str = "localhost"
+    thesky_tcp_port: int = 3040
     # Filter names as they appear in the NINA profile, mapped from our classes.
     # AARO wheel names its filters with single letters.
     nina_filter_names: str = "Ha:H,OIII:O,SII:S,L:L,R:R,G:G,B:B"
