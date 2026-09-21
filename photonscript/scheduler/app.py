@@ -1807,6 +1807,21 @@ def api_run_thumb(date: str, file: str, w: int = 360,
         "Cache-Control": "public, max-age=604800"})
 
 
+@app.post("/api/runs/{date}/warm-thumbs")
+def api_warm_thumbs(date: str):
+    """Kick off background caching of every grid thumbnail for the night."""
+    from photonscript.scheduler.runs import start_thumb_warm
+    start_thumb_warm(get_config(), date)
+    return {"ok": True}
+
+
+@app.get("/api/runs/{date}/thumb-status")
+def api_thumb_status(date: str):
+    """Progress of the thumbnail cache warm ({total, cached, running, done})."""
+    from photonscript.scheduler.runs import thumb_warm_status
+    return thumb_warm_status(get_config(), date)
+
+
 @app.get("/api/nina/log", response_class=PlainTextResponse)
 async def api_nina_log(lines: int = 500, grep: str = ""):
     """Tail (and optionally filter) the newest NINA log - remote 2AM triage

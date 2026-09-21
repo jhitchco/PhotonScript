@@ -1411,6 +1411,59 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
         return None
 
 
+_thumbwarm_state: dict[str, dict] = {}
+
+
+def thumb_warm_status(config, date: str) -> dict:
+    """How many of the night's grid thumbnails (w=264) are cached on disk."""
+    subs = _load_subs(config, date)
+    total = len(subs)
+    cached = sum(
+        1 for s in subs if s.get("file") and _thumb_out_path(
+            config, date, s["file"], PREWARM_THUMB_WIDTH, False).exists())
+    st = _thumbwarm_state.get(date, {})
+    return {"total": total, "cached": cached,
+            "running": bool(st.get("running")),
+            "done": st.get("done", cached),
+            "current": st.get("current")}
+
+
+def start_thumb_warm(config, date: str) -> None:
+    """Background-generate every missing grid thumbnail for the night so the
+    Runs page fills in with local feedback instead of blocking on first view.
+    Serialized through the same _HEAVY lock as grading, so it never blows the
+    scope PC's RAM; safe to call repeatedly (no-op while already running)."""
+    import threading
+
+    st = _thumbwarm_state.setdefault(date, {})
+    if st.get("running"):
+        return
+    st.update(running=True, done=0, total=0, current=None)
+
+    def _work():
+        try:
+            subs = _load_subs(config, date)
+            st["total"] = len(subs)
+            done = 0
+            for s in subs:
+                rel = s.get("file")
+                if rel:
+                    st["current"] = rel
+                    try:
+                        thumbnail(config, date, rel,
+                                  width=PREWARM_THUMB_WIDTH, annotate=False)
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug("warm thumb failed for %s: %s", rel, e)
+                done += 1
+                st["done"] = done
+        finally:
+            st["running"] = False
+            st["current"] = None
+
+    threading.Thread(target=_work, daemon=True,
+                     name=f"thumbwarm-{date}").start()
+
+
 def build_bundle(config, date: str) -> Path:
     """Package the night's evidence into one zip (shared by CLI and web)."""
     import zipfile

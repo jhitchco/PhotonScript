@@ -90,6 +90,10 @@
                 <div id="backfillLabel"></div>
                 <div class="pbar"><div id="backfillBar"></div></div>
             </div>
+            <div id="thumbWarmBox" class="bd" hidden style="margin-top:.4rem;">
+                <div id="thumbWarmLabel"></div>
+                <div class="pbar"><div id="thumbWarmBar"></div></div>
+            </div>
             <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
             <table class="runs" id="pvaTable"></table>
             <h2 style="margin-top:1.2rem;">Calibration Frames</h2>
@@ -284,6 +288,39 @@
             : 'no phase data found in NINA log';
         renderSubs();
         renderReviewBar(d);
+        maybeWarmThumbs(date);
+    }
+    async function maybeWarmThumbs(date) {
+        try {
+            const st = await (await fetch('/api/runs/' + date + '/thumb-status')).json();
+            const box = document.getElementById('thumbWarmBox');
+            if (!st.total || st.cached >= st.total) { box.hidden = true; return; }
+            if (currentDate !== date) return;
+            await fetch('/api/runs/' + date + '/warm-thumbs', {method: 'POST'});
+            pollThumbWarm(date);
+        } catch (e) {}
+    }
+    function pollThumbWarm(date) {
+        const box = document.getElementById('thumbWarmBox');
+        const bar = document.getElementById('thumbWarmBar');
+        const lbl = document.getElementById('thumbWarmLabel');
+        box.hidden = false;
+        fetch('/api/runs/' + date + '/thumb-status').then(r => r.json()).then(st => {
+            if (currentDate !== date) { box.hidden = true; return; }
+            const total = st.total || 0;
+            const done = Math.max(st.cached || 0, st.done || 0);
+            const pct = total ? Math.round(done / total * 100) : 100;
+            bar.style.width = pct + '%';
+            lbl.textContent = 'Caching thumbnails locally: ' + done + ' / ' + total +
+                ' (' + pct + '%)';
+            if (st.running || done < total) {
+                setTimeout(() => pollThumbWarm(date), 1000);
+            } else {
+                lbl.textContent = 'All ' + total + ' thumbnails cached locally ✓';
+                renderSubs();
+                setTimeout(() => { if (currentDate === date) box.hidden = true; }, 2500);
+            }
+        }).catch(() => { box.hidden = true; });
     }
     function paintScore(sc) {
         const el = document.getElementById('scoreTotal');
