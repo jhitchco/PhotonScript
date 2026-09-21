@@ -100,6 +100,55 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
     last_armed_night: str | None = None
     last_skip_night: str | None = None
     flats_state: dict = {}
+    forecast_state: dict = {}
+
+    async def _maybe_send_evening_forecast():
+        """A few hours before sunset, push tonight's viewing outlook once:
+        rating + usable dark hours, the astronomical-dark gate window, the best
+        sky windows, and the moon. Independent of auto-arm (runs every tick)."""
+        from datetime import timedelta
+        from photonscript.scheduler import night_plan as _np
+        from photonscript.scheduler.forecast import (
+            get_forecast, format_evening_forecast)
+        from photonscript.shared.localtime import utc_offset_hours
+
+        if not getattr(config, "evening_forecast_enabled", True):
+            return
+        now = datetime.utcnow()
+        tz = utc_offset_hours(config, now)
+        local_now = now + timedelta(hours=tz)
+        night = local_now.strftime("%Y-%m-%d")
+        if forecast_state.get("night") == night:
+            return
+        obs = config.get_observatory()
+        base = datetime(local_now.year, local_now.month, local_now.day)
+        tw = _np.compute_night_times(obs, base)
+        sunset = tw.get("sunset")
+        if not sunset:
+            return
+        lead = float(getattr(config, "evening_forecast_lead_hours", 3.0))
+        # Fire once inside [sunset - lead, sunset): early enough to plan the
+        # night, and if the app started late we still catch it up to sunset.
+        if not (sunset - timedelta(hours=lead) <= now < sunset):
+            return
+        try:
+            forecast = await get_forecast(config)
+        except Exception as e:  # noqa: BLE001 — never let a fetch blip loop-crash
+            logger.warning("evening forecast fetch failed: %s", e)
+            return
+        nights = forecast.get("nights") or []
+        tonight = next((n for n in nights if n.get("date") == night),
+                       nights[0] if nights else None)
+        astro_dusk = tw.get("astro_dusk")
+        astro_dawn = tw.get("astro_dawn")
+        to_local = lambda dt: dt + timedelta(hours=tz) if dt else None
+        title, msg = format_evening_forecast(
+            tonight, to_local(astro_dusk), to_local(astro_dawn),
+            cross_check=forecast.get("cross_check"),
+            stale=bool(forecast.get("stale")))
+        await notify(config, msg, title=title)
+        forecast_state["night"] = night
+        logger.info("evening forecast pushed for %s", night)
 
     async def _maybe_dispatch_dusk_flats(armer):
         """The 'checkmark' (2026-09-09): if any filter's flats are stale as
@@ -152,6 +201,14 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
 
     while True:
         try:
+            # Evening forecast push runs independent of auto-arm state.
+            try:
+                await _maybe_send_evening_forecast()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.error("evening forecast error: %s", e)
+
             noon_enabled = bool(getattr(config, "noon_arm_enabled", False))
             if getattr(config, "auto_arm_enabled", False) or noon_enabled:
                 armer = get_armer()

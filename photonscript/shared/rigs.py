@@ -68,6 +68,10 @@ def rig_config(config, rig: str):
         # larger in arcsec. Override both so the OSC rig is graded on its own
         # scale, not the RC16's.
         "quality_fwhm_max": getattr(config, "piggyback_fwhm_max", 6.0),
+        # OSC FWHM is advisory, not a hard reject: it's inflated by extended
+        # bright objects, so a tight-HFR sub can read a large FWHM and still be
+        # sharp. HFR + ecc stay the hard gates for this rig (2026-09-20).
+        "quality_fwhm_soft": getattr(config, "piggyback_fwhm_soft", True),
         "quality_eccentricity_max": getattr(config, "piggyback_ecc_max", 0.75),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),

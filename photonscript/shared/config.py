@@ -78,6 +78,11 @@ class PhotonScriptConfig(BaseSettings):
     # setup to capture the safety-monitor client's HTTP/exception detail
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
     quality_fwhm_max: float = 4.0  # arcsec
+    quality_fwhm_soft: bool = False  # False = FWHM is a hard reject gate (RC16).
+                                     # True = advisory only (no reject); the OSC
+                                     # piggyback sets this via rig_config so its
+                                     # galaxy-inflated FWHM never bounces a tight-HFR
+                                     # sub. HFR + ecc remain the hard gates.
     quality_hfr_abs_max: float = 10.0  # px. RC16 at 0.24"/px: 10px ~= 2.4" HFR,
                                        # consistent with the 4" FWHM gate. Was an
                                        # implicit 8px (getattr default) that rejected
@@ -103,6 +108,12 @@ class PhotonScriptConfig(BaseSettings):
                                         # Floor for the exposure swamp score.
     auto_dusk_flats: bool = True  # auto-dispatch dusk sky flats for STALE
                                   # filters before auto-arm (the "checkmark")
+    evening_forecast_enabled: bool = True  # push a night-viewing forecast a few
+                                  # hours before sunset (tonight's rating, usable
+                                  # dark hours, the astro-dark gate window, best
+                                  # sky windows, moon). Runs from the auto-arm
+                                  # loop independent of whether auto-arm is on.
+    evening_forecast_lead_hours: float = 3.0  # how long before sunset to send it
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
@@ -148,6 +159,16 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
+    piggyback_focus_seed: int = 0     # cold-start absolute position for the OSC's
+                                      # OWN focuser, seeded before the first AF so
+                                      # AF starts near focus instead of failing to
+                                      # build an HFR curve from a wild position (the
+                                      # 2026-09-20 defocus night: FWHM 16.8"->6.5"
+                                      # crept in over hours, 271/283 rejected). This
+                                      # is a DIFFERENT EAF than the RC16's, so its
+                                      # focus_seeds table cannot be reused. 0 =
+                                      # disabled (old behavior: bare AF, no seed);
+                                      # set to a known-good NINA #2 focuser position.
     piggyback_image_lights: bool = True  # on arm, also shoot OSC lights while the
                                          # roof is open (needs the shared safety
                                          # monitor on NINA #2 to gate it). Off =
@@ -160,6 +181,12 @@ class PhotonScriptConfig(BaseSettings):
                                       # ("FWHM 6.5\" > 4.0\""). Tune against real OSC subs.
     piggyback_ecc_max: float = 0.75   # OSC wide-field tolerates a touch more elongation
                                       # than the RC16 close-up; overrides quality_eccentricity_max
+    piggyback_fwhm_soft: bool = True  # OSC FWHM is advisory, not a hard reject: the
+                                      # estimator is inflated by extended bright objects
+                                      # (galaxies/nebulae), so a tight-HFR sub can read a
+                                      # large FWHM and still be sharp. HFR + ecc are the
+                                      # real gates for this rig; FWHM stays a score factor.
+                                      # Sets quality_fwhm_soft on the piggyback rig view.
     piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs

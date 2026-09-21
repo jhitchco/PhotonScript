@@ -466,11 +466,19 @@ def _osc_light_loop(config) -> dict:
     see DUAL_RIG §4.5)."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _autofocus_temp_trigger,
-        _safety_condition, _time_condition, _wait_until_safe, _pushover)
+        _move_focuser, _safety_condition, _time_condition, _wait_until_safe,
+        _pushover)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     gain = int(getattr(config, "piggyback_default_gain", 100))
     offset = int(getattr(config, "piggyback_default_offset", 256))
     af_temp_c = float(getattr(config, "autofocus_temp_change_c", 2.0))
+    # Seed the OSC's OWN focuser to a known-good absolute position before the
+    # first AF so it starts near focus, instead of AF failing to build an HFR
+    # curve from a wild start and the rig imaging soft for hours (2026-09-20).
+    # This is a different EAF than the RC16's, so the RC16 focus_seeds table
+    # can't be reused; the seed comes from piggyback_focus_seed. 0 = disabled.
+    focus_seed = int(getattr(config, "piggyback_focus_seed", 0) or 0)
+    pre_af = [_move_focuser(focus_seed)] if focus_seed > 0 else []
     take = _make_typed(
         "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
         ExposureTime=exp_s, Gain=gain, Offset=offset,
@@ -488,7 +496,7 @@ def _osc_light_loop(config) -> dict:
     return _seq_container(
         "OSC_LIGHTS_UNTIL_DAWN",
         [_pushover("Piggyback", f"roof open — OSC lights {exp_s:g}s until dawn"),
-         _wait_until_safe(), _autofocus(), inner],
+         _wait_until_safe(), *pre_af, _autofocus(), inner],
         conditions=[_time_condition("NauticalDawnProvider", 0)])
 
 

@@ -135,6 +135,46 @@ def test_companion_always_warms_the_camera():
         assert any("Camera.WarmCamera" in t for t in types)
 
 
+_MOVE_FOCUSER = "NINA.Sequencer.SequenceItem.Focuser.MoveFocuserAbsolute"
+_RUN_AF = "NINA.Sequencer.SequenceItem.Autofocus.RunAutofocus"
+
+
+def _osc_lights_root(**overrides):
+    cfg = rigs.rig_config(PhotonScriptConfig(
+        piggyback_enabled=True, piggyback_default_gain=100,
+        piggyback_default_offset=256, piggyback_dark_exposures="120",
+        piggyback_setpoint_c=0.0, piggyback_image_lights=True,
+        **overrides), "piggyback")
+    return json.loads(generate_piggyback_companion_json(
+        cfg, has_safety=True, with_lights=True))
+
+
+def test_osc_lights_seed_moves_focuser_before_first_autofocus():
+    # With a cold-start seed set, the OSC light loop moves its own focuser to
+    # that absolute position, then autofocuses from the ballpark.
+    root = _osc_lights_root(piggyback_focus_seed=5200)
+    moves = [n for n in _walk(root)
+             if n.get("$type", "").startswith(_MOVE_FOCUSER)]
+    assert len(moves) == 1, "expected exactly one focuser seed before AF"
+    assert moves[0].get("Position") == 5200
+    # the seed precedes the first RunAutofocus in the OSC-lights container
+    lights = next(n for n in _walk(root)
+                  if n.get("Name") == "OSC_LIGHTS_UNTIL_DAWN")
+    order = [c.get("$type", "") for c in lights["Items"]["$values"]]
+    move_i = next(i for i, t in enumerate(order) if t.startswith(_MOVE_FOCUSER))
+    af_i = next(i for i, t in enumerate(order) if t.startswith(_RUN_AF))
+    assert move_i < af_i
+
+
+def test_osc_lights_no_seed_leaves_focuser_untouched():
+    # Default (seed 0) keeps the old behavior: AF with no absolute move, so a
+    # wrong default can never drive the OSC focuser to a bad position.
+    root = _osc_lights_root()  # piggyback_focus_seed defaults to 0
+    assert not any(n.get("$type", "").startswith(_MOVE_FOCUSER)
+                   for n in _walk(root))
+    assert any(n.get("$type", "").startswith(_RUN_AF) for n in _walk(root))
+
+
 def test_dusk_flats_only_filters_refreshes_just_broadband():
     # only_filters lets the RC16 re-shoot a subset (e.g. the stale LRGB masters)
     # without re-doing fresh narrowband: exactly 4 SkyFlat blocks, still slews.

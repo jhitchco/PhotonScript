@@ -36,6 +36,9 @@ def test_rig_config_piggyback_overrides():
     assert pc.image_watch_dir == r"C:\pb\images"
     # hfr gate swapped to the wide-field-appropriate value
     assert pc.quality_hfr_abs_max == cfg.piggyback_hfr_abs_max
+    # FWHM is a hard reject on the RC16 but advisory (soft) on the OSC piggyback
+    assert cfg.quality_fwhm_soft is False
+    assert pc.quality_fwhm_soft is True
 
 
 def test_rig_devices_piggyback_is_camera_and_focuser():

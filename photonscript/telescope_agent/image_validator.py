@@ -257,7 +257,14 @@ def validate_image(
     passed = True
     reasons = []
 
-    if fwhm_arcsec > config.quality_fwhm_max:
+    # FWHM gate. For wide-field OSC rigs (quality_fwhm_soft) FWHM is advisory,
+    # NOT a rejection: the estimator is inflated by extended bright objects
+    # (galaxies/nebulae filling the frame), so a good-HFR sub can read a large
+    # FWHM and still be sharp (2026-09-20: HFR 2.7px but FWHM 7.8" bounced a
+    # clean M31 sub). HFR + eccentricity are the real focus/trailing guards for
+    # that rig; FWHM stays in the metrics as a score factor only.
+    fwhm_soft = bool(getattr(config, "quality_fwhm_soft", False))
+    if fwhm_arcsec > config.quality_fwhm_max and not fwhm_soft:
         passed = False
         reasons.append(f"FWHM {fwhm_arcsec:.1f}\" > {config.quality_fwhm_max}\"")
 

@@ -136,6 +136,106 @@ def score_nights(hourly: dict, dark_windows: list[dict],
     return nights
 
 
+_RATING_WORD = {"green": "GREEN (go)", "yellow": "YELLOW (marginal)",
+                "red": "RED (poor)"}
+
+
+def _good_windows(hourly: list[dict], good_score: float = 0.75) -> list[str]:
+    """Collapse the per-hour scores into contiguous 'usable' local-time ranges.
+
+    A window is a run of consecutive hours scoring >= good_score (clear or
+    workable). Returned as ['21:00-24:00', '01:00-05:00'] local strings.
+    """
+    runs, start, prev = [], None, None
+    for h in hourly:
+        try:
+            hr = int(h.get("local"))
+        except (TypeError, ValueError):
+            continue
+        good = (h.get("score") or 0) >= good_score
+        if good and start is None:
+            start, prev = hr, hr
+        elif good:
+            prev = hr
+        elif start is not None:
+            runs.append((start, prev))
+            start = None
+    if start is not None:
+        runs.append((start, prev))
+    return [f"{a:02d}:00-{(b + 1) % 24:02d}:00" for a, b in runs]
+
+
+def format_evening_forecast(night: dict | None, astro_dusk_local, astro_dawn_local,
+                            cross_check: dict | None = None,
+                            stale: bool = False) -> tuple[str, str]:
+    """Pure formatter: tonight's forecast night -> (pushover title, message).
+
+    `night` is one element of get_forecast()['nights'] (or None if the outlook
+    couldn't be built). astro_dusk/dawn_local are tonight's astronomical-dark
+    bounds in LOCAL time (the gate on when imaging is even possible).
+    """
+    def _hhmm(dt):
+        return dt.strftime("%H:%M") if dt else "??:??"
+
+    gate = None
+    if astro_dusk_local and astro_dawn_local:
+        span = (astro_dawn_local - astro_dusk_local).total_seconds() / 3600
+        gate = (f"Astro dark (gate): {_hhmm(astro_dusk_local)}-"
+                f"{_hhmm(astro_dawn_local)} local ({span:.1f}h)")
+
+    if not night:
+        title = "Tonight: forecast unavailable"
+        body = ["Couldn't build the observing outlook (weather fetch failed)."]
+        if gate:
+            body.append(gate)
+        if cross_check and cross_check.get("aaro_status"):
+            body.append(cross_check["aaro_status"])
+        return title, "\n".join(body)
+
+    rating = _RATING_WORD.get(night.get("rating"), night.get("rating", "?"))
+    usable = night.get("usable_hours")
+    dark = night.get("dark_hours")
+    pct = night.get("usable_pct")
+    cloud = night.get("avg_cloud_pct")
+    moon = night.get("moon") or {}
+
+    title = f"Tonight: {night.get('rating', '?').upper()}"
+    if usable is not None and dark is not None:
+        title += f" - {usable:g}/{dark:g}h usable"
+
+    lines = []
+    cond = f"Tonight looks {rating}"
+    if usable is not None and dark is not None:
+        cond += f": {usable:g} of {dark:g} dark h usable"
+        if pct is not None:
+            cond += f" ({pct}%)"
+    if cloud is not None:
+        cond += f", avg cloud {cloud}%"
+    lines.append(cond + ".")
+
+    if gate:
+        lines.append(gate)
+
+    windows = _good_windows(night.get("hourly", []))
+    if windows:
+        lines.append("Usable windows: " + ", ".join(windows) + " local.")
+    else:
+        lines.append("Usable windows: none expected - cloud/wind gated.")
+
+    if moon.get("illum_pct") is not None:
+        mline = f"Moon: {moon['illum_pct']}% illum"
+        if moon.get("moon_free_h") is not None:
+            mline += f", {moon['moon_free_h']:g} dark h moon-free"
+        lines.append(mline + ".")
+
+    if stale:
+        lines.append("(stale forecast - last good fetch; verify AARO status.)")
+    if cross_check and cross_check.get("clear_outside"):
+        lines.append(cross_check["clear_outside"])
+
+    return title, "\n".join(lines)
+
+
 def _cache_path(config):
     from pathlib import Path
     return Path(config.data_dir) / "forecast_cache.json"
