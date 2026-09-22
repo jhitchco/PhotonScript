@@ -1424,18 +1424,30 @@ async def api_sync():
             except Exception:  # noqa: BLE001
                 pass
         from photonscript.scheduler.runs import library_root
+        from photonscript.scheduler import sync_batch
         lib = str(library_root(get_config()).expanduser().resolve())
         library_synced = bool(folder_path) and \
             lib.lower().startswith(folder_path.lower())
+        need_items = d.get("needItems", 0)
+        need_bytes = d.get("needBytes", 0)
         return {"configured": True,
                 "completion_pct": round(float(d.get("completion", 0)), 1),
-                "need_items": d.get("needItems", 0),
-                "need_bytes": d.get("needBytes", 0),
+                "need_items": need_items,
+                "need_bytes": need_bytes,
                 "folder_path": folder_path,
                 "library_path": lib,
-                "library_synced": library_synced}
+                "library_synced": library_synced,
+                # batch = "N of M this transfer", draining to 100% (see sync_batch)
+                "batch": sync_batch.annotate(get_config(), need_items, need_bytes)}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "error": str(e)}
+
+
+@app.post("/api/sync/reset")
+def api_sync_reset():
+    """Start a fresh transfer batch — the dashboard 'reset' control."""
+    from photonscript.scheduler import sync_batch
+    return {"ok": True, "batch": sync_batch.mark_reset(get_config())}
 
 
 @app.get("/api/sync/queue")
@@ -1745,15 +1757,21 @@ def api_library_rebuild(date: str = ""):
     """(Re)build the accepted-lights library. Sync endpoint: FastAPI runs it
     in a worker thread; hardlinking a whole archive takes a few seconds."""
     from photonscript.scheduler.runs import build_library
-    return build_library(get_config(), date or None)
+    from photonscript.scheduler import sync_batch
+    res = build_library(get_config(), date or None)
+    sync_batch.mark_reset(get_config())  # new files queued → fresh batch counter
+    return res
 
 
 @app.post("/api/library/reset")
 def api_library_reset():
     """Wipe the library and rebuild reviewed-only (un-queues bulk sync)."""
     from photonscript.scheduler.runs import reset_library
+    from photonscript.scheduler import sync_batch
     try:
-        return reset_library(get_config())
+        res = reset_library(get_config())
+        sync_batch.mark_reset(get_config())
+        return res
     except RuntimeError as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
 
@@ -1762,7 +1780,10 @@ def api_library_reset():
 async def api_run_approve(date: str):
     """Approve all QA-passing subs for a night -> library -> Syncthing."""
     from photonscript.scheduler.runs import approve_night
-    return approve_night(get_config(), date)
+    from photonscript.scheduler import sync_batch
+    res = approve_night(get_config(), date)
+    sync_batch.mark_reset(get_config())  # approved subs queued → fresh batch
+    return res
 
 
 @app.post("/api/runs/{date}/qa")
