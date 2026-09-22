@@ -294,7 +294,9 @@
     function calRig() { return document.getElementById('calRig').value || 'rc16'; }
 
     // Render one rig's calibration health (BIAS/DARK/FLAT) as an HTML block.
-    function _healthBlock(d) {
+    // `rig` decides the FLAT layout: the RC16 has a filter wheel (per-filter
+    // checklist), the OSC piggyback does not (one flat set, no phantom filters).
+    function _healthBlock(d, rig) {
             const STALE = {FLAT: 45, DARK: 90, BIAS: 180};
             const bucketChip = (t, name, b) => {
                 if (!b) return '<span style="color:#f87171;" title="no ' + name +
@@ -319,9 +321,19 @@
                         c.age_days + 'd)</span>';
                 } else if (t === 'FLAT') {
                     const bb = c.by_bucket || {};
-                    const known = FILTER_ORDER.filter(f => bb[f]);
-                    const extra = Object.keys(bb).filter(f => !FILTER_ORDER.includes(f));
-                    body = FILTER_ORDER.concat(extra).map(f => bucketChip(t, f, bb[f])).join(' · ');
+                    if (rig === 'rc16') {
+                        // filtered rig: full per-filter checklist (missing = ✗)
+                        const extra = Object.keys(bb).filter(f => !FILTER_ORDER.includes(f));
+                        body = FILTER_ORDER.concat(extra).map(f => bucketChip(t, f, bb[f])).join(' · ');
+                    } else {
+                        // OSC / filterless rig: one flat set, no phantom filters.
+                        // NINA writes no FILTER keyword, so the frames bucket under
+                        // "?" — show that as a single "OSC" set.
+                        const keys = Object.keys(bb);
+                        body = keys.length
+                            ? keys.map(f => bucketChip(t, f === '?' ? 'OSC' : f, bb[f])).join(' · ')
+                            : bucketChip(t, 'OSC', null);
+                    }
                 } else {
                     const bb = c.by_bucket || {};
                     body = Object.keys(bb).sort((a, b2) => parseFloat(b2) - parseFloat(a))
@@ -352,7 +364,7 @@
                 try {
                     const d = await (await fetch('/api/calibration/health?rig='
                         + encodeURIComponent(rg.id))).json();
-                    inner = _healthBlock(d);
+                    inner = _healthBlock(d, rg.id);
                 } catch (e) { inner = '<span style="opacity:.6;">unavailable</span>'; }
                 const label = rigs.length > 1
                     ? '<div style="font-weight:700;margin:' +
