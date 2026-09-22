@@ -167,9 +167,9 @@ def test_osc_lights_seed_moves_focuser_before_first_autofocus():
 
 
 def test_osc_lights_no_seed_leaves_focuser_untouched():
-    # Default (seed 0) keeps the old behavior: AF with no absolute move, so a
-    # wrong default can never drive the OSC focuser to a bad position.
-    root = _osc_lights_root()  # piggyback_focus_seed defaults to 0
+    # Explicitly disabled (seed 0, no harvest history): AF with no absolute
+    # move, so a wrong seed can never drive the OSC focuser to a bad position.
+    root = _osc_lights_root(piggyback_focus_seed=0)
     assert not any(n.get("$type", "").startswith(_MOVE_FOCUSER)
                    for n in _walk(root))
     assert any(n.get("$type", "").startswith(_RUN_AF) for n in _walk(root))

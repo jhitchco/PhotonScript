@@ -476,8 +476,11 @@ def _osc_light_loop(config) -> dict:
     # first AF so it starts near focus, instead of AF failing to build an HFR
     # curve from a wild start and the rig imaging soft for hours (2026-09-20).
     # This is a different EAF than the RC16's, so the RC16 focus_seeds table
-    # can't be reused; the seed comes from piggyback_focus_seed. 0 = disabled.
-    focus_seed = int(getattr(config, "piggyback_focus_seed", 0) or 0)
+    # can't be reused. piggyback_seed_for() self-harvests the last few nights'
+    # sharp OSC frames and falls back to the static piggyback_focus_seed; 0 =
+    # disabled (no history yet and no static seed set).
+    from photonscript.scheduler.piggyback_focus import piggyback_seed_for
+    focus_seed = piggyback_seed_for(config)
     pre_af = [_move_focuser(focus_seed)] if focus_seed > 0 else []
     take = _make_typed(
         "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",

@@ -30,8 +30,14 @@
         .bd { font-size:.78rem; opacity:.75; }
         .night-title { font-size:1.25rem; font-weight:700; margin:0 0 .2rem 0; }
         .thumbs { display:flex; gap:.45rem; flex-wrap:wrap; padding:.4rem 0; }
-        .thumbs figure { margin:0; text-align:center; width:132px; position:relative; }
-        .qa-btns { position:absolute; top:3px; right:3px; display:flex; gap:3px; }
+        .thumbs figure { margin:0; text-align:center; width:132px; position:relative;
+            /* own stacking context so the verdict buttons always sit above the
+               image — a rejected thumb's opacity:.55 makes the <img> a stacking
+               context that otherwise paints OVER the buttons and steals the
+               click (it just zoomed instead of accepting/rejecting). */
+            isolation:isolate; }
+        .qa-btns { position:absolute; top:3px; right:3px; display:flex; gap:3px;
+            z-index:2; }
         .qa-btns span { cursor:pointer; border-radius:4px; padding:0 5px;
             font-size:.85rem; background:rgba(0,0,0,.65); user-select:none; }
         .qa-btns .y { color:#4ade80; } .qa-btns .n { color:#f87171; }
@@ -172,8 +178,11 @@
         if (want && nights.some(n => n.date === want)) loadDetail(want);
         else if (real.length) loadDetail(real[0].date);
     }
-    async function loadDetail(date) {
-        currentDate = date; subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL'; showAllThumbs = false;
+    async function loadDetail(date, keepView = false) {
+        currentDate = date;
+        // keepView preserves the chosen filters + "show all" across a reload so a
+        // verdict or lightbox-close doesn't snap the grid back to the first 24.
+        if (!keepView) { subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL'; showAllThumbs = false; }
         try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
         document.querySelectorAll('.night-chip').forEach(el =>
             el.classList.toggle('active', el.dataset.date === date));
@@ -609,25 +618,33 @@
     }
     document.addEventListener('keydown', (e) => {
         if (document.getElementById('lightbox').hidden) return;
-        if (e.key === 'Escape') { closeLb(); loadDetail(currentDate); }
+        if (e.key === 'Escape') { closeLb(); loadDetail(currentDate, true); }
         if (e.key === 'ArrowLeft') lbNav(-1);
         if (e.key === 'ArrowRight') lbNav(1);
         if (e.key.toLowerCase() === 'x') lbToggle();
     });
     document.getElementById('lightbox').addEventListener('click', (e) => {
-        if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate); }
+        if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate, true); }
     });
     async function qaSet(ev, fileEnc, state) {
         ev.stopPropagation();
-        await setState(decodeURIComponent(fileEnc), state);
-        loadDetail(currentDate);
+        const file = decodeURIComponent(fileEnc);
+        const s = currentDetail && currentDetail.subs.find(x => x.file === file);
+        await setState(file, state);
+        // Update in place and re-render — no full reload, so "show all", the
+        // active filters, and the scroll position all survive the click.
+        if (s) { const y = window.scrollY; applyLocal(s, state); renderSubs();
+                 window.scrollTo(0, y); }
+        else loadDetail(currentDate, true);
     }
     async function toggleQa(fileEnc) {
         const file = decodeURIComponent(fileEnc);
         const s = currentDetail.subs.find(x => x.file === file);
         if (!s) return;
-        await setState(file, nextState(s));
-        loadDetail(currentDate);
+        const y = window.scrollY;
+        const st = nextState(s);
+        await setState(file, st);
+        applyLocal(s, st); renderSubs(); window.scrollTo(0, y);
     }
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);
     loadNights();

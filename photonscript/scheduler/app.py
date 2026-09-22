@@ -1467,6 +1467,60 @@ def api_calibration_health(rig: str = "rc16"):
     return calibration_health(rig_config(get_config(), rig))
 
 
+@app.get("/api/focus")
+def api_focus():
+    """Per-rig autofocus seed history for the calibration Focus panel.
+
+    Pure local reads (no NINA probe) — the live focuser position comes from
+    /api/rigs. The two rigs stay SEPARATE: RC16 = per-filter focus_seeds on its
+    own EAF; OSC piggyback = single-channel self-harvested seeds on a DIFFERENT
+    EAF (different absolute range), so they are never mixed.
+    """
+    from photonscript.scheduler import focus_seeds as fs
+    from photonscript.scheduler import piggyback_focus as pf
+    cfg = get_config()
+
+    # --- RC16: per-filter records + a median seed per filter ---
+    rc_recs = [r for r in fs.load_records(cfg) if r.get("focpos") is not None]
+    by_filter: dict[str, list] = {}
+    for r in rc_recs:
+        by_filter.setdefault(str(r.get("filter", "?")), []).append({
+            "focpos": r.get("focpos"), "foctemp": r.get("foctemp"),
+            "date": r.get("date"), "source": r.get("source")})
+    rc_filters = {}
+    for filt, pts in sorted(by_filter.items()):
+        try:
+            seed = fs.seed_for(filt, None, cfg)
+        except Exception:  # noqa: BLE001
+            seed = None
+        rc_filters[filt] = {"seed": seed, "points": pts}
+
+    # --- OSC piggyback: single channel, its own store ---
+    pb_recs = [{"focpos": r.get("focpos"), "foctemp": r.get("foctemp"),
+                "n": r.get("n"), "date": r.get("date"), "source": r.get("source")}
+               for r in pf._load(cfg) if r.get("focpos") is not None]
+    pb_min = int(getattr(cfg, "piggyback_focpos_min", 0) or 0)
+    pb_max = int(getattr(cfg, "piggyback_focpos_max", 0) or 0)
+
+    return {
+        "rc16": {
+            "kind": "per_filter",
+            "filters": rc_filters,
+            "count": len(rc_recs),
+            "clamp": [fs._FOCPOS_MIN, fs._FOCPOS_MAX],
+        },
+        "piggyback": {
+            "kind": "single",
+            "enabled": bool(getattr(cfg, "piggyback_enabled", False)),
+            "static_seed": int(getattr(cfg, "piggyback_focus_seed", 0) or 0),
+            "current_seed": pf.current_seed(cfg),
+            "source": pf.seed_source(cfg),
+            "points": pb_recs,
+            "clamp": [pb_min, pb_max] if pb_max > pb_min else None,
+        },
+    }
+
+
 @app.get("/api/system/stats")
 def api_system_stats():
     """Scope-PC load: RAM / CPU / disk + the heavy astro processes.

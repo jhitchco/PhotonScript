@@ -159,16 +159,28 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
-    piggyback_focus_seed: int = 0     # cold-start absolute position for the OSC's
-                                      # OWN focuser, seeded before the first AF so
-                                      # AF starts near focus instead of failing to
-                                      # build an HFR curve from a wild position (the
+    piggyback_focus_seed: int = 11045  # STATIC cold-start position for the OSC's
+                                      # OWN focuser, used as the fallback before the
+                                      # auto-harvester (piggyback_focus.py) has any
+                                      # history. Seeded before the first AF so AF
+                                      # starts near focus instead of failing to build
+                                      # an HFR curve from a wild position (the
                                       # 2026-09-20 defocus night: FWHM 16.8"->6.5"
                                       # crept in over hours, 271/283 rejected). This
                                       # is a DIFFERENT EAF than the RC16's, so its
-                                      # focus_seeds table cannot be reused. 0 =
-                                      # disabled (old behavior: bare AF, no seed);
-                                      # set to a known-good NINA #2 focuser position.
+                                      # focus_seeds table cannot be reused. 11045 is
+                                      # the good-focus position at the CAMERA's 0C
+                                      # operating setpoint (Jeremy, 2026-09-21) — the
+                                      # condition the OSC always images at
+                                      # (piggyback_setpoint_c=0), NOT the daytime 21C
+                                      # ambient. 0 = disabled until the harvester
+                                      # learns one.
+    piggyback_focus_harvest_max_hfr: float = 3.0  # only OSC subs at/below this real
+                                      # HFR (px) feed the focus-seed store, so a soft
+                                      # night never poisons the learned position.
+    piggyback_focpos_min: int = 0     # OSC EAF travel clamp for harvested/seeded
+    piggyback_focpos_max: int = 0     # positions. 0/0 = no clamp (set once the OSC
+                                      # focuser's sane range is known).
     piggyback_image_lights: bool = True  # on arm, also shoot OSC lights while the
                                          # roof is open (needs the shared safety
                                          # monitor on NINA #2 to gate it). Off =
