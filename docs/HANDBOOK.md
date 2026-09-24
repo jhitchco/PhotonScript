@@ -196,9 +196,31 @@ or "ERROR: ...". Masters in `out\master\`.
   receive-only Syncthing, never write), `C:\Users\sleep\Astrophotography`
   (staging + pipeline.log readable/writable directly; file deletion needs the
   permission grant).
-- The sandbox CANNOT reach Tailscale. The ONLY path to the dashboard/API is
-  the Claude-in-Chrome extension (browser "pc windows at home") using
-  javascript_tool fetch against `http://100.94.189.77:8100`.
+- The sandbox/cloud CANNOT reach Tailscale. The ONLY path to the dashboard/API
+  is the Claude-in-Chrome extension, which IS Jeremy's home desktop's Chrome
+  (browser "pc windows at home") - the machine that has Tailscale. Always drive
+  the dashboard through Claude-in-Chrome (navigate + javascript_tool fetch);
+  never expect the sandbox to reach `100.94.189.77`.
+- KNOWN BLOCKER: `http://100.94.189.77:8100` is a RAW-IP http site, so Chrome
+  demands a per-action approval on navigation. An attended session can approve
+  it; the unattended 8:04 AM debrief has nobody to click, so the nav bounces to
+  chrome://newtab and the API reads fail (logged as Status=unreachable, e.g.
+  2026-09-21). This is NOT a cloud-vs-local mistake and NOT a rig fault.
+  DURABLE FIX (do once, on the SCOPE PC): give :8100 a Tailscale HTTPS hostname
+  with `tailscale serve --bg 8100` (needs MagicDNS + HTTPS certs enabled in the
+  tailnet admin console). Then reach it at
+  `https://<scope-hostname>.<tailnet>.ts.net/` - a normal https host, so a
+  one-time "site" approval sticks and unattended runs stop failing.
+  HOSTNAME (set up 2026-09-22): `https://teles-feb25.lobster-bleak.ts.net/`
+  -> localhost:8100 on the scope PC. NOT YET VERIFIED end-to-end: on 2026-09-22
+  both this hostname AND the raw `http://100.94.189.77:8100` timed out
+  (ERR_CONNECTION_TIMED_OUT) from the home desktop's Claude-in-Chrome, while the
+  public roof site loaded fine - i.e. the Tailscale path to the scope PC was
+  down at that moment (scope PC / its tailscaled offline, or `serve` not
+  persisting), NOT a hostname problem. TODO: once a live fetch of
+  `.../api/runs` returns JSON through Claude-in-Chrome, swap all
+  `http://100.94.189.77:8100` references (skill + debrief steps + 8:04 AM task)
+  to the hostname.
 - Scheduled tasks: `photonscript-morning-debrief` (daily 8:04 AM).
 - Constraints: no GitHub pushes, no credentials, no AstroBin scraping for
   data tables, no writes into ninashare, scope deploys refused mid-night.
