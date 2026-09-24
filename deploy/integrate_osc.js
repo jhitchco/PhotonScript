@@ -8,9 +8,9 @@
 // Design notes (see docs/HANDBOOK.md sec 6 for PJSR lessons):
 //   - Pure ASCII; never put a slash-star sequence inside a line comment (the PI
 //     preprocessor would open a block comment). Inside string globs it is fine.
-//   - Soft/eccentric subs are KEPT and down-weighted (SubframeSelector SSWEIGHT),
-//     not hard-rejected: ImageIntegration weights by that keyword so a slightly
-//     blurred sub still contributes signal instead of being thrown away.
+//   - Soft/eccentric subs are KEPT and down-weighted via ImageIntegration PSF
+//     Signal Weight (no SubframeSelector: its scripted -pxm.dll access-violates on
+//     this PI build). A slightly blurred sub contributes less, none are dropped.
 //   - StarAlignment.distortionCorrection = true: the 600mm rig's field drifts and
 //     rotates ~0.16 deg/night, which a rigid transform cannot remove. The local
 //     distortion model (thin-plate splines) fixes the off-center star trailing.
@@ -121,9 +121,8 @@ function mtfv(m, x) { if (x <= 0) return 0; if (x >= 1) return 1;
 // Linked STF-style autostretch baked into an RGB view (one MTF from luminance).
 function autoStretchRGB(view) {
    var img = view.image;
-   img.colorSpace = ColorSpace_CIEXYZ;   // measure on luminance
-   var med = img.median(); var mad = img.MAD() * 1.4826;
-   img.colorSpace = ColorSpace_RGB;
+   var med = img.median();               // whole-image median (all channels)
+   var mad = img.MAD() * 1.4826;
    var c0 = Math.max(0, Math.min(1, med - 2.8 * mad));
    var m = mtfv(0.15, Math.max(1.0e-6, med - c0));
    var HT = new HistogramTransformation;
@@ -208,43 +207,17 @@ function main() {
    var rgbFiles = listFits(DB.outputDirectory);
    log("debayered " + rgbFiles.length + " frames");
 
-   // 6) SubframeSelector: measure + write SSWEIGHT (keep ALL, weight by quality).
-   //    Soft/eccentric subs get a low weight but still contribute; only the
-   //    integration's sigma rejection removes true outlier pixels.
-   var SS = new SubframeSelector;
-   SS.routine = SubframeSelector.prototype.MeasureSubframes;
-   SS.subframes = rgbFiles.map(function (f) { return [true, f]; });
-   SS.fileCache = true;
-   SS.subframeScale = 1.293;               // arcsec/px (600mm, 3.76um)
-   SS.scaleUnit = SubframeSelector.prototype.ArcSeconds;
-   SS.cameraGain = 1.0;
-   SS.cameraResolution = SubframeSelector.prototype.Bits16;
-   SS.dataUnit = SubframeSelector.prototype.Electron;
-   SS.pedestal = 0;
-   SS.approvalExpression = "";             // keep every sub
-   // 15 floor + reward low FWHM, low eccentricity, high SNR (normalized 0..1)
-   SS.weightingExpression =
-      "15" +
-      " + 25*(1 - (FWHM - FWHMMin)/max(FWHMMax - FWHMMin, 1e-6))" +
-      " + 25*(1 - (Eccentricity - EccentricityMin)/max(EccentricityMax - EccentricityMin, 1e-6))" +
-      " + 35*((SNRWeight - SNRWeightMin)/max(SNRWeightMax - SNRWeightMin, 1e-6))";
-   if (!SS.executeGlobal()) throw new Error("SubframeSelector measure failed");
-   // write the weights into copies (SSWEIGHT keyword) for ImageIntegration
-   SS.routine = SubframeSelector.prototype.OutputSubframes;
-   SS.outputDirectory = OUT + "/weighted"; ensureDir(SS.outputDirectory);
-   SS.outputExtension = ".xisf"; SS.overwriteExistingFiles = true;
-   SS.outputKeyword = "SSWEIGHT";
-   SS.outputPrefix = ""; SS.outputPostfix = "_w";
-   if (!SS.executeGlobal()) throw new Error("SubframeSelector output failed");
-   var wFiles = listFits(OUT + "/weighted");
-   log("weighted " + wFiles.length + " frames (SSWEIGHT written)");
-   if (!wFiles.length) wFiles = rgbFiles;  // fallback: unweighted
+   // 6) (No SubframeSelector.) The scripted SubframeSelector-pxm.dll throws a
+   //    native access violation on this PixInsight build (crashes right after
+   //    'measure'), so instead of writing SSWEIGHT we let ImageIntegration
+   //    weight by PSF Signal Weight below: it keeps every sub and down-weights
+   //    the soft / low-SNR ones (blurred subs contribute less, none dropped).
 
    // 7) register with distortion correction to a good reference
-   var refImage = wFiles[Math.floor(wFiles.length / 2)];
+   var refImage = rgbFiles[Math.floor(rgbFiles.length / 2)];
    var SA = new StarAlignment;
    SA.referenceImage = refImage; SA.referenceIsFile = true;
-   SA.targets = wFiles.map(function (f) { return [true, true, f]; });
+   SA.targets = rgbFiles.map(function (f) { return [true, true, f]; });
    SA.outputDirectory = OUT + "/reg"; ensureDir(SA.outputDirectory);
    SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
    SA.distortionCorrection = true;         // key fix for the wandering/rotating field
@@ -254,7 +227,7 @@ function main() {
    SA.useTriangleSimilarity = true;
    if (!SA.executeGlobal()) throw new Error("registration failed");
    var regFiles = listFits(OUT + "/reg");
-   logDrops("registration", wFiles, regFiles);
+   logDrops("registration", rgbFiles, regFiles);
    log("funnel: " + lights.length + " staged -> " + rgbFiles.length +
        " debayered -> " + regFiles.length + " registered");
    if (regFiles.length < 3) throw new Error("too few registered frames");
@@ -263,8 +236,7 @@ function main() {
    var II = new ImageIntegration;
    II.images = regFiles.map(function (f) { return [true, f, "", ""]; });
    II.combination = ImageIntegration.prototype.Average;
-   II.weightMode = ImageIntegration.prototype.KeywordWeight;
-   II.weightKeyword = "SSWEIGHT";
+   II.weightMode = ImageIntegration.prototype.PSFSignalWeight;
    II.minWeight = 0.0;
    II.generateIntegratedImage = true; II.generateRejectionMaps = false;
    II.rejection = regFiles.length >= 15

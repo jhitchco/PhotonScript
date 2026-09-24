@@ -7,7 +7,7 @@ get answered; the planner and QA thresholds should eventually read from here.
 - Astronomy Acres Remote Observatories (AARO), Pier 3, Rodeo NM
 - Sky: SQM ~23.9 (from first-night narrowband analysis)
 - All-sky cam: https://allsky.astronomyacres.com · status: https://status.astronomyacres.com
-- Scope PC on Tailscale: 100.94.189.77 (dashboard :8100)
+- Scope PC on Tailscale: 100.94.189.77 (dashboard at https://teles-feb25.lobster-bleak.ts.net -> :8100; raw IP works on-tailnet)
 
 ## Optical train
 - OTA: RC16 (406 mm) at 3248 mm f/8 (native, no reducer in use)

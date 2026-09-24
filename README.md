@@ -290,7 +290,8 @@ photonscript start --mode full   # scheduler + telescope agent + librarian
 Prerequisites on the scope PC: Python 3.11+, NINA 3.x with the **Advanced API
 plugin** (enable API, note the port, keep localhost-bound), GroundStation plugin
 (Pushover), and PHD2 with **Tools -> Enable Server** if you ever run guided.
-Reach the dashboard from home via Tailscale: `http://100.94.189.77:8100`.
+Reach the dashboard from home via Tailscale: `https://teles-feb25.lobster-bleak.ts.net`
+(HTTPS `serve` -> :8100; raw `http://100.94.189.77:8100` also works on-tailnet).
 
 ## The Nanny (telescope agent escalation)
 

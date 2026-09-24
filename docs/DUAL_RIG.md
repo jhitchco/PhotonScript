@@ -291,8 +291,8 @@ passes, the rest of Phase 0 is just software.
 
 What actually shipped, and how to run it. This supersedes the plan above where
 they differ. Nothing here deploys until `deploy.ps1`; the dev clone is
-`C:\dev\PhotonScript`, the live dashboard is `http://100.94.189.77:8100`
-(Tailscale) on the scope PC.
+`C:\dev\PhotonScript`, the live dashboard is `https://teles-feb25.lobster-bleak.ts.net`
+(Tailscale `serve` -> :8100; raw `http://100.94.189.77:8100` works on-tailnet) on the scope PC.
 
 ### 9.1 Two rigs, live
 - **NINA #1 "RC16"** on `:1888` — mount, PHD2/OAG, AP26MC, filter wheel, main

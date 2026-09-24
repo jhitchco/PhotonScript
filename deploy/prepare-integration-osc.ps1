@@ -10,14 +10,14 @@
 # (see the sequencer's OSC calibration plan). The pipeline runs fine uncalibrated.
 param(
     [string]$Name = "M31_OSC",
-    [string]$Input = "$env:USERPROFILE\ninashare\Library\_\OSC",
+    [string]$Source = "$env:USERPROFILE\ninashare\Library\_\OSC",
     [string]$Library = "$env:USERPROFILE\ninashare\Library",
     [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
     [string]$Instrument = "AP26CC",
     [switch]$Copy   # default = hardlink; -Copy to physically copy
 )
 
-if (-not (Test-Path $Input)) { Write-Error "No OSC lights at $Input"; exit 1 }
+if (-not (Test-Path $Source)) { Write-Error "No OSC lights at $Source"; exit 1 }
 $stage = Join-Path $StageRoot ($Name -replace '[^\w\- ]','_')
 New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
@@ -45,7 +45,7 @@ function Add-File($file, $destDir) {
 
 # Lights -> LIGHTS/OSC ; record epochs
 $nLights = 0; $epochs = @{}
-Get-ChildItem $Input -Filter *.fits | ForEach-Object {
+Get-ChildItem $Source -Filter *.fits | ForEach-Object {
     $nLights += Add-File $_ (Join-Path $stage "LIGHTS\OSC")
     $k = Get-FitsKeys $_.FullName
     if ($k.EXPTIME) { $epochs["$($k.EXPTIME)|$($k.GAIN)|$($k.OFFSET)|$($k.'SET-TEMP')"] = $true }

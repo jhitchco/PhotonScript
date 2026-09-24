@@ -57,3 +57,27 @@ librarian is filing OSC frames under `_/OSC` instead of the piggyback subtree, c
 won't be found even once it's shot. Check `PS_PIGGYBACK_LIBRARY_DIR` / the librarian's
 per-rig routing so OSC lights **and** their darks/flats land in the same subtree. (Left as a
 check, not changed — it touches live librarian routing.)
+
+## 4. WBPP recipe (no-scripting fallback)
+Scripts → Batch Processing → **WeightedBatchPreprocessing**. Same result as
+`integrate_osc.js` through the GUI.
+
+1. **Add Lights** → `C:\Users\sleep\Astrophotography\Staging\M31_OSC\LIGHTS\OSC`
+   (92 frames). Leave darks/flats/bias empty for now (none match yet — WBPP just
+   runs uncalibrated).
+2. **CFA / OSC:** tick **"CFA images"** (top of the Lights tab). Debayer pattern =
+   **Auto** (reads `BAYERPAT=RGGB`); method VNG or Bilinear.
+3. **Weighting (keep soft subs, weight down):** Image Weighting = **PSF Signal
+   Weight** (default). It keeps every sub and down-weights the low-SNR/soft ones —
+   do NOT set an approval/rejection that discards frames.
+4. **Registration → enable "Distortion correction"** (Star Alignment distortion
+   model). This is the key setting — it removes the ~0.16°/night field rotation
+   that left star tails in the quick-look.
+5. **Local Normalization:** ON (helps the uncalibrated gradients).
+6. **Integration → Pixel Rejection:** Winsorized Sigma Clipping (WBPP auto-picks it
+   for ~90 frames). Reference frame: let WBPP auto-select the best-weighted.
+7. Set the output directory → **Run**. Master lands in `<output>/master/`.
+
+Uncalibrated, so finish with **DynamicBackgroundExtraction / GradientCorrection**
+(vignetting + light pollution) then stretch. Once OSC darks/flats/bias are banked
+(§2), drop them into the same WBPP and it auto-calibrates before debayer.

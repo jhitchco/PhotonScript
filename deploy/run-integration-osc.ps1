@@ -17,8 +17,8 @@ $runjs = Join-Path $stage "integrate_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
 [System.IO.File]::WriteAllText($runjs, $js)
 Write-Host "Launching PixInsight OSC pipeline for '$Name'..."
-Write-Host "  bias/dark/flat -> calibrate -> cosmetic -> debayer(RGGB) -> SubframeSelector(SSWEIGHT)"
-Write-Host "  -> StarAlignment(distortion) -> weighted integration -> masterOSC + review.jpg"
+Write-Host "  bias/dark/flat -> calibrate -> cosmetic -> debayer(RGGB) -> PSF-weighted"
+Write-Host "  -> StarAlignment(distortion) -> PSF-weighted integration -> masterOSC + review.jpg"
 Write-Host "Script: $runjs"
 & $PixInsight -n "-r=$runjs" "--run=$runjs"
 Write-Host ""

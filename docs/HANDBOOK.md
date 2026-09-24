@@ -21,7 +21,8 @@ morning. GitHub: github.com/jhitchco/PhotonScript.
 ## 2. The two machines
 
 ### Scope PC (at AARO, Pier 3, Rodeo NM)
-- Tailscale: `100.94.189.77` - dashboard at `http://100.94.189.77:8100`
+- Tailscale: `100.94.189.77` - dashboard at `https://teles-feb25.lobster-bleak.ts.net`
+  (Tailscale `serve` -> localhost:8100; raw `http://100.94.189.77:8100` still works on the tailnet)
 - Repo: `C:\astro\PhotonScript`; runs via `run-photonscript.ps1` wrapper
   (restarts on exit code 42 = self-update)
 - NINA + PHD2 live here. Image files land here first.
@@ -201,26 +202,34 @@ or "ERROR: ...". Masters in `out\master\`.
   (browser "pc windows at home") - the machine that has Tailscale. Always drive
   the dashboard through Claude-in-Chrome (navigate + javascript_tool fetch);
   never expect the sandbox to reach `100.94.189.77`.
-- KNOWN BLOCKER: `http://100.94.189.77:8100` is a RAW-IP http site, so Chrome
-  demands a per-action approval on navigation. An attended session can approve
-  it; the unattended 8:04 AM debrief has nobody to click, so the nav bounces to
-  chrome://newtab and the API reads fail (logged as Status=unreachable, e.g.
-  2026-09-21). This is NOT a cloud-vs-local mistake and NOT a rig fault.
-  DURABLE FIX (do once, on the SCOPE PC): give :8100 a Tailscale HTTPS hostname
-  with `tailscale serve --bg 8100` (needs MagicDNS + HTTPS certs enabled in the
-  tailnet admin console). Then reach it at
-  `https://<scope-hostname>.<tailnet>.ts.net/` - a normal https host, so a
-  one-time "site" approval sticks and unattended runs stop failing.
-  HOSTNAME (set up 2026-09-22): `https://teles-feb25.lobster-bleak.ts.net/`
-  -> localhost:8100 on the scope PC. NOT YET VERIFIED end-to-end: on 2026-09-22
-  both this hostname AND the raw `http://100.94.189.77:8100` timed out
-  (ERR_CONNECTION_TIMED_OUT) from the home desktop's Claude-in-Chrome, while the
-  public roof site loaded fine - i.e. the Tailscale path to the scope PC was
-  down at that moment (scope PC / its tailscaled offline, or `serve` not
-  persisting), NOT a hostname problem. TODO: once a live fetch of
-  `.../api/runs` returns JSON through Claude-in-Chrome, swap all
-  `http://100.94.189.77:8100` references (skill + debrief steps + 8:04 AM task)
-  to the hostname.
+- DASHBOARD ACCESS (RESOLVED 2026-09-24): the canonical remote URL is the
+  Tailscale HTTPS hostname `https://teles-feb25.lobster-bleak.ts.net/`
+  (`serve` -> `127.0.0.1:8100` on the scope PC). Verified end-to-end: a live
+  `.../api/runs` fetch returns JSON through Claude-in-Chrome from the home
+  desktop. Because it's a normal https host (not a raw IP), a one-time "site"
+  approval sticks, so the unattended 8:04 AM debrief no longer bounces to
+  chrome://newtab. Prefer this hostname everywhere; the raw
+  `http://100.94.189.77:8100` still works on the tailnet as a fallback.
+  BACKGROUND (the old raw-IP blocker): `http://100.94.189.77:8100` is a RAW-IP
+  http site, so Chrome demanded a per-action approval on navigation that an
+  unattended run had nobody to click (nights logged Status=unreachable, e.g.
+  2026-09-21). That is what the hostname fixes.
+  HOW IT WAS SET UP (gotchas, in case it needs redoing):
+    * `serve` MUST run on the scope PC itself (`teles-feb25`), not the home
+      desktop - a node cannot reach its own `serve` hostname, so a desktop-hosted
+      serve is unreachable by the desktop's own Claude-in-Chrome.
+    * `serve` config MUST be set as the tailscaled owner (`teles-feb25\sleep`) -
+      Administrator does NOT override the identity check (401 Unauthorized:
+      "connection from teles-feb25\jeremy not allowed"). Use
+      `runas /user:teles-feb25\sleep powershell`, then `tailscale serve --bg 8100`.
+      Optional: `tailscale set --operator=jeremy` so jeremy can manage it later.
+    * Mint the cert from a writable dir (cd `C:\Users\sleep` first; `system32`
+      gives "Access is denied"): `tailscale cert teles-feb25.lobster-bleak.ts.net`.
+    * Requires MagicDNS + HTTPS certs enabled in the tailnet admin console (they
+      are). `tailscale set --auto-update` is on.
+    * `deploy.ps1` intentionally still defaults `$Scope` to the raw IP - it runs
+      ON the scope PC, where the same-node loopback rule makes the hostname
+      unreachable. Leave deploy pointed at `http://100.94.189.77:8100`/localhost.
 - Scheduled tasks: `photonscript-morning-debrief` (daily 8:04 AM).
 - Constraints: no GitHub pushes, no credentials, no AstroBin scraping for
   data tables, no writes into ninashare, scope deploys refused mid-night.
