@@ -160,6 +160,8 @@ function main() {
    var lightDir = STAGING + "/LIGHTS/OSC";
    if (!File.directoryExists(lightDir) || !listFits(lightDir).length)
       lightDir = STAGING + "/LIGHTS";
+   if (!File.directoryExists(lightDir) || !listFits(lightDir).length)
+      lightDir = STAGING;   // loose culled fits dropped straight in the folder
    var lights = listFits(lightDir);
    if (!lights.length) throw new Error("no OSC lights under " + STAGING + "/LIGHTS");
    log("=== OSC: " + lights.length + " lights ===");
@@ -185,16 +187,28 @@ function main() {
       log("no masters staged -> UNCALIBRATED run (debayer + register + integrate only)");
    }
 
-   // 4) cosmetic correction on the CFA frames (hot/cold pixel cleanup)
-   var CC = new CosmeticCorrection;
-   CC.targetFrames = work.map(function (f) { return [true, f]; });
-   CC.cfa = true;   // operate on the CFA (do not treat as debayered)
-   CC.useAutoDetect = true; CC.hotAutoCheck = true; CC.hotAutoValue = 3.0;
-   CC.coldAutoCheck = true; CC.coldAutoValue = 3.0;
-   CC.outputDir = OUT + "/cc"; ensureDir(CC.outputDir); CC.overwrite = true;
-   if (!CC.executeGlobal()) throw new Error("cosmetic correction failed");
-   var ccFiles = listFits(CC.outputDir);
-   logDrops("cosmetic", work, ccFiles);
+   // 4) cosmetic correction - only with a master dark. Uncalibrated, auto hot-
+   //    pixel detection mistakes bright COMPACT sources (galaxy nuclei, M32,
+   //    saturated star cores) for hot-pixel clusters and punches dark holes with
+   //    color fringing. Without a dark we skip it and let ImageIntegration's
+   //    sigma rejection clean hot pixels across the stack instead. With a dark,
+   //    most hot pixels are already gone, so CC runs gentle (hot only, sigma 5).
+   var ccFiles;
+   if (masterDark) {
+      var CC = new CosmeticCorrection;
+      CC.targetFrames = work.map(function (f) { return [true, f]; });
+      CC.cfa = true; CC.useAutoDetect = true;
+      CC.hotAutoCheck = true; CC.hotAutoValue = 5.0;
+      CC.coldAutoCheck = false;
+      CC.outputDir = OUT + "/cc"; ensureDir(CC.outputDir); CC.overwrite = true;
+      if (!CC.executeGlobal()) throw new Error("cosmetic correction failed");
+      ccFiles = listFits(CC.outputDir);
+      logDrops("cosmetic", work, ccFiles);
+   } else {
+      log("no master dark -> skipping CosmeticCorrection (sigma-clip integration "
+          + "cleans hot pixels; avoids punching holes in bright compact sources)");
+      ccFiles = work;
+   }
 
    // 5) debayer RGGB -> RGB
    var DB = new Debayer;
