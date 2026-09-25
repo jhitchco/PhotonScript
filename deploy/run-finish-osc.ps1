@@ -48,13 +48,28 @@ if ([double]::IsNaN($RaDeg) -or [double]::IsNaN($DecDeg)) {
 }
 function JsNum($x) { if ([double]::IsNaN($x)) { "NaN" } else { $x.ToString([Globalization.CultureInfo]::InvariantCulture) } }
 
-# ImageSolver ships with PixInsight under src\scripts\AdP; include it if present.
+# ImageSolver ships with PixInsight under src\scripts\AdP. In library mode
+# (USE_SOLVER_LIBRARY) it does NOT pull in its own dependencies or defines, so
+# mirror what ImageSolver.js does for itself when run standalone (PI 1.9.3,
+# solver 6.3.1): TITLE / SETTINGS_MODULE / STAR_CSV_FILE, then WCSmetadata,
+# AstronomicalCatalogs, SearchCoordinatesDialog, CatalogDownloader, ImageSolver.
 $piRoot = Split-Path (Split-Path $PixInsight -Parent) -Parent
-$solverJs = Join-Path $piRoot "src\scripts\AdP\ImageSolver.js"
+$adp = Join-Path $piRoot "src\scripts\AdP"
+$deps = @("WCSmetadata.jsh", "AstronomicalCatalogs.jsh", "SearchCoordinatesDialog.js",
+          "CatalogDownloader.js", "ImageSolver.js")
+$missing = @($deps | Where-Object { -not (Test-Path (Join-Path $adp $_)) })
 $include = ""
-if (Test-Path $solverJs) {
-    $include = "#define USE_SOLVER_LIBRARY true`n#include `"" + ($solverJs -replace '\\','/') + "`""
-} else { Write-Warning "ImageSolver.js not found at $solverJs - plate solve/SPCC will be skipped." }
+if ($missing.Count -eq 0) {
+    $adpFwd = $adp -replace '\\','/'
+    $lines = @(
+        '#define USE_SOLVER_LIBRARY true',
+        '#define TITLE "PhotonScript Finish"',
+        '#define SETTINGS_MODULE "SOLVER"',
+        '#define STAR_CSV_FILE (File.systemTempDirectory + format( "/stars-%03d.csv", CoreApplication.instance ))'
+    )
+    foreach ($d in $deps) { $lines += "#include `"$adpFwd/$d`"" }
+    $include = $lines -join "`n"
+} else { Write-Warning "ImageSolver files missing in $adp ($($missing -join ', ')) - plate solve/SPCC will be skipped." }
 
 $js = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "finish_osc.js"))
 $js = $js.Replace('//__SOLVER_INCLUDE__', $include)

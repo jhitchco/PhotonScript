@@ -118,10 +118,9 @@ function plateSolve(window) {
          try { solver.solverCfg.showStars = false; } catch (e1) {}
          try { solver.solverCfg.showDistortion = false; } catch (e2) {}
          try { solver.solverCfg.generateErrorImg = false; } catch (e3) {}
+         try { solver.solverCfg.generateDistortModel = false; } catch (e5) {}
          try { solver.solverCfg.distortionCorrection = true; } catch (e4) {}
-         if (solver.SolveImage(window)) {
-            try { solver.metadata.SaveKeywords(window, false); } catch (e5) {}
-            try { solver.metadata.SaveProperties(window); } catch (e6) {}
+         if (solver.SolveImage(window)) {   // SolveImage writes the WCS keywords/properties itself
             log("plate solve: OK on try " + (k + 1) + " (seed RA " + ra.toFixed(3) +
                 " Dec " + dec.toFixed(3) + ", " + scale.toFixed(2) + "\"/px)");
             return true;
