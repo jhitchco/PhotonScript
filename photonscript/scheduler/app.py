@@ -1399,15 +1399,36 @@ async def api_activity(limit: int = 8):
 
 @app.get("/api/sync")
 async def api_sync():
-    """Desktop transfer status via the Syncthing REST API (optional)."""
+    """Desktop transfer status via the Syncthing REST API (optional).
+
+    Also reports free space on the capture drive (image_watch_dir) so the
+    imaging-run view shows how much headroom a night has before the disk fills
+    — independent of whether Syncthing is configured.
+    """
     import httpx
+    import shutil as _sh
     cfg = get_config()
+    # Free space on the drive NINA writes FITS to — the disk that stops an
+    # imaging run when it fills. Best-effort; never fatal.
+    disk = None
+    try:
+        cap_path = str(getattr(cfg, "image_watch_dir", "") or "")
+        if cap_path:
+            probe = (cap_path if Path(cap_path).exists()
+                     else (Path(cap_path).anchor or cap_path))
+            du = _sh.disk_usage(probe)
+            disk = {"path": cap_path,
+                    "free_gb": round(du.free / 1e9, 1),
+                    "total_gb": round(du.total / 1e9, 1),
+                    "percent_used": round(du.used / du.total * 100, 1)}
+    except Exception:  # noqa: BLE001
+        disk = None
     url = getattr(cfg, "syncthing_url", "") or ""
     key = getattr(cfg, "syncthing_api_key", "") or ""
     folder = getattr(cfg, "syncthing_folder_id", "") or ""
     device = getattr(cfg, "syncthing_device_id", "") or ""
     if not (url and key and folder and device):
-        return {"configured": False}
+        return {"configured": False, "disk": disk}
     try:
         async with httpx.AsyncClient(timeout=6,
                                      headers={"X-API-Key": key}) as cl:
@@ -1437,10 +1458,11 @@ async def api_sync():
                 "folder_path": folder_path,
                 "library_path": lib,
                 "library_synced": library_synced,
+                "disk": disk,
                 # batch = "N of M this transfer", draining to 100% (see sync_batch)
                 "batch": sync_batch.annotate(get_config(), need_items, need_bytes)}
     except Exception as e:  # noqa: BLE001
-        return {"configured": True, "error": str(e)}
+        return {"configured": True, "error": str(e), "disk": disk}
 
 
 @app.post("/api/sync/reset")

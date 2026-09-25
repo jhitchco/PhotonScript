@@ -891,12 +891,22 @@
             const d = await (await fetch('/api/sync')).json();
             const reset = ' · <a href="#" id="syncReset" title="start a fresh ' +
                 'batch counter" style="color:#7dd3fc;text-decoration:none;">reset</a>';
+            // Free space on the capture drive — how much room the night has left.
+            let diskStr = '';
+            if (d.disk && d.disk.free_gb != null) {
+                const pu = d.disk.percent_used;
+                const col = pu >= 92 ? '#f87171' : (pu >= 80 ? '#eab308' : '#4ade80');
+                diskStr = ' · <span title="free space on the capture drive (' +
+                    (d.disk.path || '') + ')" style="color:' + col + '">💾 ' +
+                    d.disk.free_gb + ' GB free</span>' +
+                    '<span style="opacity:.5"> of ' + d.disk.total_gb + ' GB</span>';
+            }
             if (!d.configured) {
                 el.innerHTML = 'desktop sync: <span style="opacity:.6">not configured ' +
-                    '(Syncthing settings in System &amp; Config)</span>';
+                    '(Syncthing settings in System &amp; Config)</span>' + diskStr;
             } else if (d.error) {
                 el.innerHTML = 'desktop sync: <span class="rej" style="color:#f87171">' +
-                    'unreachable</span>';
+                    'unreachable</span>' + diskStr;
             } else {
                 const b = d.batch || {};
                 if (b.active) {
@@ -915,6 +925,7 @@
                         (b.baseline_items ? ' <span style="opacity:.55">(batch of ' +
                          b.baseline_items + ' done)</span>' : '') + reset;
                 }
+                el.innerHTML += diskStr;
                 const rb = document.getElementById('syncReset');
                 if (rb) rb.onclick = async (ev) => {
                     ev.preventDefault();
