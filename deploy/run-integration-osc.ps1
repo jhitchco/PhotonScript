@@ -31,13 +31,28 @@ if (-not (Test-Path $PixInsight)) { Write-Error "PixInsight not found at $PixIns
 # --- pre-integration cull (split pointing, duplicates, bright-sky flags) ---
 if (-not $NoCull) {
     $cull = Join-Path $PSScriptRoot "..\photonscript\image_processor\osc_cull.py"
-    # first Python on PATH: py launcher, then python, then python3
-    $pyParts = $null
-    foreach ($cand in @("py -3", "python", "python3")) {
-        $parts = $cand -split ' '
-        if (Get-Command $parts[0] -ErrorAction SilentlyContinue) { $pyParts = $parts; break }
+    # Python for the cull: the repo's .venv first, then py / python / python3 on PATH.
+    # Pick the first one that can actually import numpy.
+    $venvPy = Join-Path $PSScriptRoot "..\.venv\Scripts\python.exe"
+    $cands = @()
+    if (Test-Path $venvPy) { $cands += ,@($venvPy) }
+    foreach ($c in @("py -3", "python", "python3")) {
+        $parts = $c -split ' '
+        if (Get-Command $parts[0] -ErrorAction SilentlyContinue) { $cands += ,$parts }
     }
-    if (-not $pyParts) { Write-Error "No Python found for osc_cull.py (need numpy). Install it or pass -NoCull."; exit 1 }
+    $pyParts = $null
+    foreach ($parts in $cands) {
+        $pre = @(); if ($parts.Count -gt 1) { $pre = $parts[1..($parts.Count - 1)] }
+        & $parts[0] @pre -c "import numpy" 2>$null
+        if ($LASTEXITCODE -eq 0) { $pyParts = $parts; break }
+    }
+    if (-not $pyParts) {
+        Write-Host ""
+        Write-Host "osc_cull.py needs numpy and no Python here has it. One-time fix (repo venv):" -ForegroundColor Yellow
+        Write-Host "    uv pip install --python .venv\Scripts\python.exe numpy" -ForegroundColor Yellow
+        Write-Host "  (or, without uv:  py -3 -m pip install numpy)" -ForegroundColor Yellow
+        Write-Error "No Python with numpy for osc_cull.py. Install as above or pass -NoCull."; exit 1
+    }
     $cullArgs = @()
     if ($pyParts.Count -gt 1) { $cullArgs += $pyParts[1..($pyParts.Count - 1)] }
     $cullArgs += @($cull, $stage)
