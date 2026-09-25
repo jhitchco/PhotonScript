@@ -51,6 +51,19 @@ separate faults:
 Also found: `0282.fits` and `0282_1.fits` identical (duplicate), and 0282 is a
 twilight sub after a 44-min gap (+20% background).
 
+## 1b. Finishing (master -> final image)
+`deploy/run-finish-osc.ps1 -Name "M31_OSC2"` runs `finish_osc.js` on
+`out\master\masterOSC.xisf`: crop 1.5% registration edges -> gradient removal
+(GradientCorrection, else ABE degree 1; `-Gradient none` to skip) -> plate solve
+with PixInsight's ImageSolver, seeded from `-Target`/`-RaDeg -DecDeg` (guessed
+from the name, e.g. M31) and spiralling out to ~1.2 deg because Piggy-600 frames
+rarely center on the target -> SPCC (fallback BackgroundNeutralization +
+ColorCalibration when unsolved) -> BlurXTerminator / NoiseXTerminator if
+installed (`-NoRC` to skip) -> linked stretch + gentle saturation. Output in
+`out\final\`: `<Name>_linear.xisf` (color-calibrated, for manual work),
+`<Name>_final.xisf`, `_final.tif` (16-bit) and `_final.jpg`. Log:
+`out\finish.log`. Every optional step logs and skips on failure.
+
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
 (gain 100 / offset 256 / 0 °C / `dark_exposures="120"`). Three ways to get it:

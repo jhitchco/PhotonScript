@@ -701,29 +701,34 @@
                 box.textContent = 'no active target goals'; return;
             }
             const ok = t => '<span style="color:#4ade80;">\u2713</span>';
-            const bad = '<span style="color:#f87171;">\u2717</span>';
+            // Per-target readiness is about LIGHTS + whether they reached the
+            // desktop. Calibration (darks/bias/flats) is SHARED across targets \u2014
+            // it lives on the Calibration page, not per-target here.
             box.innerHTML = rd.targets.map(t => {
+                const lightsN = Object.values(t.filters)
+                    .reduce((a, v) => a + (v.accepted_in_library || 0), 0);
                 const fl = Object.entries(t.filters)
                     .filter(([f, v]) => v.accepted_in_library > 0)
-                    .map(([f, v]) => f + ' ' + v.accepted_in_library +
-                         (v.flats > 0 ? '' : ' <span style="color:#f87171;">(no flats)</span>'))
-                    .join(' \u00b7 ') || '<span style="opacity:.6;">no accepted lights yet</span>';
-                const darks = Object.entries(t.darks_by_exposure)
-                    .map(([e, n]) => e + (n > 0 ? ' ' + ok() + n : ' ' + bad)).join(' \u00b7 ');
-                const verdict = t.ready && synced
-                    ? '<span style="color:#4ade80;font-weight:700;">ready \u2014 </span>' +
-                      '<code style="font-size:.78rem;">' + t.command + '</code>'
-                    : t.ready && !synced
-                    ? '<span style="color:#eab308;">ready on scope \u2014 sync in progress</span>'
-                    : '<span style="opacity:.6;">not ready</span>';
+                    .map(([f, v]) => f + ' ' + v.accepted_in_library)
+                    .join(' \u00b7 ') ||
+                    '<span style="opacity:.6;">no accepted lights yet</span>';
+                const verdict = lightsN && synced
+                    ? '<span style="color:#4ade80;font-weight:700;">lights ready on '
+                      + 'desktop \u2014 </span><code style="font-size:.78rem;">'
+                      + t.command + '</code>'
+                    : lightsN && !synced
+                    ? '<span style="color:#eab308;">lights accepted \u2014 sync in '
+                      + 'progress</span>'
+                    : '<span style="opacity:.6;">no accepted lights yet</span>';
                 return '<div style="margin-bottom:.7rem;">' +
                     '<b>' + t.target + '</b><br>' +
                     'lights: ' + fl + '<br>' +
-                    'darks: ' + darks + ' \u00b7 bias: ' +
-                    (t.bias > 0 ? ok() + t.bias : bad) +
-                    ' \u00b7 desktop sync: ' + (synced ? ok() : '\u23f3') + '<br>' +
+                    'desktop sync: ' + (synced ? ok() : '\u23f3') + '<br>' +
                     verdict + '</div>';
-            }).join('');
+            }).join('') +
+                '<div style="opacity:.5;font-size:.78rem;margin-top:.3rem;">' +
+                'Calibration (darks \u00b7 bias \u00b7 flats) is shared across ' +
+                'targets \u2014 see the Calibration page.</div>';
         } catch (e) { box.textContent = 'readiness unavailable'; }
     }
     loadReadiness();
