@@ -66,8 +66,8 @@
         <section class="panel" id="armPanel">
             <h2>Tonight's Run</h2>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem 1rem;margin-bottom:.8rem;">
-                <button class="btn btn-primary" id="armBtn" title="Arm tonight unguided — trust the Paramount MX encoders (+ ProTrack once modeled)">Arm (Encoders)</button>
-                <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding (for very long subs / extreme precision)">Arm (Guiding)</button>
+                <button class="btn btn-secondary" id="armBtn" title="Arm tonight UNGUIDED (encoders only) — for short subs or when guiding is down. Guiding is the default; unguided long subs trail at 3248mm.">Arm (Encoders)</button>
+                <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding — the default. Corrects tracking drift for long subs at 3248mm.">Arm (Guiding) — default</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
             </div>
@@ -629,10 +629,14 @@
             if (!confirm('Disarm? If a sequence is running it will be stopped.')) return;
             return postArm({armed: false});
         }
+        // Guard: unguided is the exception now. Unguided long subs at 3248mm
+        // trail (the 2026-09-24 donut/smear night ran unguided).
+        if (!confirm('Arm UNGUIDED (encoders only)?\n\nGuiding is the default — ' +
+                     'unguided 900s subs at 3248mm trail badly. Use this only for ' +
+                     'short subs or when PHD2 is down.')) return;
         return postArm({armed: true, guiding: 'encoders'});
     });
     document.getElementById('armGuidedBtn').addEventListener('click', async () => {
-        if (!confirm('Arm tonight WITH PHD2 guiding? (Encoders-only is the default — use guiding only for very long subs.)')) return;
         return postArm({armed: true, guiding: 'guided'});
     });
     loadOutlook(); loadTimeline(); refreshArm();

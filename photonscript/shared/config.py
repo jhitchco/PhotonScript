@@ -73,6 +73,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # month. Set 30 for monthly, 0 to capture every night.
     flat_count: int = 15  # sky flats per filter at dawn
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
+    phd2_logs_dir: str = "C:\\Users\\jeremy\\Documents\\PHD2"  # PHD2 GuideLog +
+    # DebugLog dir (PHD2 default). Lets the dashboard tail guiding remotely —
+    # RMS, star-lost, calibration — the same way nina_logs_dir does for NINA.
     ascom_logs_dir: str = "C:\\Users\\jeremy\\Documents\\ASCOM"  # ASCOM trace-log
     # base (TraceLogger writes dated subfolders here); enable Trace in the driver
     # setup to capture the safety-monitor client's HTTP/exception detail

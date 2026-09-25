@@ -913,6 +913,44 @@ def night_score(dark_h: float, light_h: float, accepted_h: float,
                           for k, (w, v) in parts.items()}}
 
 
+def _archived_path(config) -> Path:
+    return Path(config.data_dir) / "archived_nights.json"
+
+
+def load_archived(config) -> set:
+    """Set of dates the user has archived out of the runs sidenav."""
+    p = _archived_path(config)
+    try:
+        return set(json.loads(p.read_text(encoding="utf-8"))) if p.exists() \
+            else set()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _save_archived(config, dates: set) -> dict:
+    p = _archived_path(config)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(sorted(dates)), encoding="utf-8")
+    return {"archived": sorted(dates), "count": len(dates)}
+
+
+def set_archived(config, date: str, archived: bool) -> dict:
+    """Archive / unarchive a single night."""
+    cur = load_archived(config)
+    cur.add(date) if archived else cur.discard(date)
+    return _save_archived(config, cur)
+
+
+def archive_before(config, cutoff: str) -> dict:
+    """Archive every run whose date is strictly before cutoff (YYYY-MM-DD).
+    Archiving only hides nights from the sidenav — it never deletes data."""
+    cur = load_archived(config)
+    for r in list_runs(config):
+        if r["date"] < cutoff:
+            cur.add(r["date"])
+    return _save_archived(config, cur)
+
+
 def list_runs(config) -> list[dict]:
     """Nights with any evidence: plan, subs log, or FITS folder."""
     dates = set()
@@ -925,6 +963,7 @@ def list_runs(config) -> list[dict]:
         for d in fits_root.iterdir():
             if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}$", d.name):
                 dates.add(d.name)
+    archived = load_archived(config)
     out = []
     for d in sorted(dates, reverse=True):
         subs = _load_subs(config, d)
@@ -938,7 +977,8 @@ def list_runs(config) -> list[dict]:
                     n_lights += 1
         out.append({"date": d, "subs_logged": len(subs),
                     "lights": n_lights, "cal_frames": n_cal,
-                    "has_plan": (runs_dir(config) / f"{d}_plan.json").exists()})
+                    "has_plan": (runs_dir(config) / f"{d}_plan.json").exists(),
+                    "archived": d in archived})
     return out
 
 
@@ -1462,6 +1502,68 @@ def start_thumb_warm(config, date: str) -> None:
 
     threading.Thread(target=_work, daemon=True,
                      name=f"thumbwarm-{date}").start()
+
+
+def contact_sheet(config, date: str, cols: int = 6, tile_w: int = 200,
+                  max_subs: int = 400) -> Path | None:
+    """Assemble one night's sub thumbnails into a single labeled montage PNG —
+    the archival 'screenshot' of a run before its FITS are pruned.
+
+    Reuses the per-sub thumbnail cache (thumbnail()), so a warmed night is
+    cheap. Each tile gets a green (accepted) / red (rejected) border and a
+    filter/exposure/HFR/ecc caption. Cached under data_dir/contact_sheets/.
+    Returns None if the night has no subs / no renderable thumbnails.
+    """
+    from PIL import Image, ImageDraw
+    subs = [s for s in _load_subs(config, date) if s.get("file")]
+    if not subs:
+        return None
+    subs = subs[:max_subs]
+    tiles = []
+    for s in subs:
+        p = thumbnail(config, date, s["file"], width=tile_w, annotate=False)
+        if not p or not Path(p).exists():
+            continue
+        try:
+            tiles.append((s, Image.open(p).convert("RGB")))
+        except Exception:  # noqa: BLE001
+            continue
+    if not tiles:
+        return None
+    th = max(im.height for _, im in tiles)
+    border, bar, pad, header = 2, 18, 6, 40
+    cell_w, cell_h = tile_w + 2 * border, th + bar + 2 * border
+    rows = (len(tiles) + cols - 1) // cols
+    W = cols * cell_w + (cols + 1) * pad
+    H = header + rows * cell_h + (rows + 1) * pad
+    sheet = Image.new("RGB", (W, H), (10, 10, 14))
+    dr = ImageDraw.Draw(sheet)
+    acc = sum(1 for s, _ in tiles if s.get("passed_qa"))
+    dr.text((pad, 12), f"{date}  ·  {len(tiles)} subs  ·  {acc} accepted / "
+            f"{len(tiles) - acc} rejected  ·  PhotonScript contact sheet",
+            fill=(226, 232, 240))
+    for i, (s, im) in enumerate(tiles):
+        r, c = divmod(i, cols)
+        x = pad + c * (cell_w + pad)
+        y = header + pad + r * (cell_h + pad)
+        col = (74, 222, 128) if s.get("passed_qa") else (248, 113, 113)
+        dr.rectangle([x, y, x + cell_w - 1, y + cell_h - 1], fill=col)
+        sheet.paste(im, (x + border, y + border))
+        dr.rectangle([x + border, y + border + im.height,
+                      x + cell_w - border - 1, y + cell_h - border - 1],
+                     fill=(15, 15, 20))
+        exp = s.get("exp_s") or s.get("exposure")
+        label = f"{s.get('filter', '?')} {int(float(exp)) if exp else '?'}s"
+        if s.get("hfr") is not None:
+            label += f" H{float(s['hfr']):.1f}"
+        if s.get("ecc") is not None:
+            label += f" e{float(s['ecc']):.2f}"
+        dr.text((x + border + 3, y + border + im.height + 3), label[:26],
+                fill=(200, 210, 230))
+    out = Path(config.data_dir) / "contact_sheets" / f"{date}.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out)
+    return out
 
 
 def build_bundle(config, date: str) -> Path:

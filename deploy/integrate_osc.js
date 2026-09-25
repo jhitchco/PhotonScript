@@ -14,6 +14,14 @@
 //   - StarAlignment.distortionCorrection = true: the 600mm rig's field drifts and
 //     rotates ~0.16 deg/night, which a rigid transform cannot remove. The local
 //     distortion model (thin-plate splines) fixes the off-center star trailing.
+//   - Every run starts by CLEARING its own intermediate folders (cal, cc,
+//     debayer, reg, ln). 2026-09-25 M31_OSC2: stale _cc_d files from an earlier
+//     run were re-listed, so 63 subs went in as 125 (each twice, one copy with a
+//     CosmeticCorrection hole in the M31 core). A funnel check now throws if any
+//     stage outputs more frames than it was given.
+//   - Split-pointing subs (mount moved mid-exposure) are culled BEFORE this
+//     script by photonscript/image_processor/osc_cull.py, which also writes
+//     reference.txt (sharpest kept sub) used as the StarAlignment reference.
 
 #include <pjsr/DataType.jsh>
 
@@ -103,6 +111,56 @@ function integrateFlats(files, masterBias) {
    return path;
 }
 
+// Remove this pipeline's own intermediates so nothing stale is re-listed.
+function clearDir(d) {
+   if (!File.directoryExists(d)) return 0;
+   var n = 0;
+   var globs = ["*.xisf", "*.xdrz", "*.xnml", "*.fits", "*.fit"];
+   for (var g = 0; g < globs.length; ++g) {
+      var fs = searchDirectory(d + "/" + globs[g], false);
+      for (var i = 0; i < fs.length; ++i) { File.remove(fs[i]); ++n; }
+   }
+   return n;
+}
+
+// Funnel guard: a stage may drop frames but must never ADD them.
+function assertFunnel(stage, nIn, nOut) {
+   if (nOut > nIn)
+      throw new Error(stage + " produced " + nOut + " frames from " + nIn +
+                      " inputs - stale files in the output folder?");
+}
+
+// Strip pipeline suffixes: <base>[_c][_cc]_d[_r] -> <base>
+function baseOf(path) {
+   var n = File.extractName(path);
+   var sfx = ["_r", "_d", "_cc", "_c"];
+   for (var i = 0; i < sfx.length; ++i)
+      if (n.length > sfx[i].length && n.substr(n.length - sfx[i].length) === sfx[i])
+         n = n.substr(0, n.length - sfx[i].length);
+   return n;
+}
+
+function findByBase(files, base) {
+   for (var i = 0; i < files.length; ++i) if (baseOf(files[i]) === base) return files[i];
+   return null;
+}
+
+// Registration reference: reference.txt (written by osc_cull.py = sharpest kept
+// sub) if present and matched, else the mid-stack frame.
+function pickReference(rgbFiles) {
+   var rf = STAGING + "/reference.txt";
+   if (File.exists(rf)) {
+      try {
+         var lines = File.readLines(rf);
+         var want = File.extractName(String(lines[0]).trim());
+         var hit = findByBase(rgbFiles, want);
+         if (hit) { log("reference (osc_cull sharpest): " + File.extractName(hit)); return hit; }
+         log("reference.txt names " + want + " but no debayered match; using mid-stack");
+      } catch (e) { log("reference.txt unreadable (" + e + "); using mid-stack"); }
+   }
+   return rgbFiles[Math.floor(rgbFiles.length / 2)];
+}
+
 function logDrops(stage, inputs, outputs) {
    var out = [];
    for (var j = 0; j < outputs.length; ++j) out.push(File.extractName(outputs[j]));
@@ -118,16 +176,31 @@ function logDrops(stage, inputs, outputs) {
 function mtfv(m, x) { if (x <= 0) return 0; if (x >= 1) return 1;
    return ((m - 1) * x) / (((2 * m - 1) * x) - m); }
 
-// Linked STF-style autostretch baked into an RGB view (one MTF from luminance).
+// UNLINKED STF-style autostretch (one MTF per channel). The uncalibrated OSC
+// master carries a strong color cast; a linked stretch paints the whole review
+// olive and hides real color problems. Per-channel neutralizes the background
+// so the review shows structure and gradients honestly. Falls back to linked.
 function autoStretchRGB(view) {
    var img = view.image;
-   var med = img.median();               // whole-image median (all channels)
-   var mad = img.MAD() * 1.4826;
-   var c0 = Math.max(0, Math.min(1, med - 2.8 * mad));
-   var m = mtfv(0.15, Math.max(1.0e-6, med - c0));
+   var rows = [];
+   try {
+      for (var c = 0; c < 3; ++c) {
+         img.selectedChannel = c;
+         var med = img.median();
+         var mad = img.MAD() * 1.4826;
+         var c0 = Math.max(0, Math.min(1, med - 2.8 * mad));
+         rows.push([c0, mtfv(0.15, Math.max(1.0e-6, med - c0)), 1, 0, 1]);
+      }
+      img.resetSelections();
+   } catch (e) {
+      img.resetSelections();
+      var lmed = img.median(), lmad = img.MAD() * 1.4826;
+      var l0 = Math.max(0, Math.min(1, lmed - 2.8 * lmad));
+      var lm = mtfv(0.15, Math.max(1.0e-6, lmed - l0));
+      rows = [[l0, lm, 1, 0, 1], [l0, lm, 1, 0, 1], [l0, lm, 1, 0, 1]];
+   }
    var HT = new HistogramTransformation;
-   HT.H = [[c0, m, 1, 0, 1], [c0, m, 1, 0, 1], [c0, m, 1, 0, 1],
-           [0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1]];
+   HT.H = [rows[0], rows[1], rows[2], [0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1]];
    HT.executeOn(view, false);
 }
 
@@ -144,6 +217,10 @@ function main() {
    console.show();
    log("staging: " + STAGING + "  CFA=" + CFA);
    ensureDir(OUT);
+   var stale = 0;
+   ["flatcal", "cal", "cc", "debayer", "reg", "ln"].forEach(function (d) {
+      stale += clearDir(OUT + "/" + d); });
+   if (stale) log("cleared " + stale + " stale intermediate files from previous runs");
 
    // 1) calibration masters (all optional)
    var biasFiles = listFits(STAGING + "/BIAS");
@@ -182,6 +259,7 @@ function main() {
       IC.outputExtension = ".xisf"; IC.overwriteExistingFiles = true;
       if (!IC.executeGlobal()) throw new Error("calibration failed");
       work = listFits(IC.outputDirectory);
+      assertFunnel("calibration", lights.length, work.length);
       logDrops("calibration", lights, work);
    } else {
       log("no masters staged -> UNCALIBRATED run (debayer + register + integrate only)");
@@ -203,6 +281,7 @@ function main() {
       CC.outputDir = OUT + "/cc"; ensureDir(CC.outputDir); CC.overwrite = true;
       if (!CC.executeGlobal()) throw new Error("cosmetic correction failed");
       ccFiles = listFits(CC.outputDir);
+      assertFunnel("cosmetic", work.length, ccFiles.length);
       logDrops("cosmetic", work, ccFiles);
    } else {
       log("no master dark -> skipping CosmeticCorrection (sigma-clip integration "
@@ -219,6 +298,7 @@ function main() {
    DB.outputExtension = ".xisf"; DB.overwriteExistingFiles = true;
    if (!DB.executeGlobal()) throw new Error("debayer failed");
    var rgbFiles = listFits(DB.outputDirectory);
+   assertFunnel("debayer", ccFiles.length, rgbFiles.length);
    log("debayered " + rgbFiles.length + " frames");
 
    // 6) (No SubframeSelector.) The scripted SubframeSelector-pxm.dll throws a
@@ -228,7 +308,7 @@ function main() {
    //    the soft / low-SNR ones (blurred subs contribute less, none dropped).
 
    // 7) register with distortion correction to a good reference
-   var refImage = rgbFiles[Math.floor(rgbFiles.length / 2)];
+   var refImage = pickReference(rgbFiles);
    var SA = new StarAlignment;
    SA.referenceImage = refImage; SA.referenceIsFile = true;
    SA.targets = rgbFiles.map(function (f) { return [true, true, f]; });
@@ -241,14 +321,43 @@ function main() {
    SA.useTriangleSimilarity = true;
    if (!SA.executeGlobal()) throw new Error("registration failed");
    var regFiles = listFits(OUT + "/reg");
+   assertFunnel("registration", rgbFiles.length, regFiles.length);
    logDrops("registration", rgbFiles, regFiles);
    log("funnel: " + lights.length + " staged -> " + rgbFiles.length +
        " debayered -> " + regFiles.length + " registered");
    if (regFiles.length < 3) throw new Error("too few registered frames");
 
-   // 8) integrate, weighting by SSWEIGHT (soft subs contribute less, not zero)
+   // 7b) LocalNormalization: evens out the gradient that changes through the
+   //     night (M31 rising, sky brightening) before rejection. Uses the
+   //     registered reference. Any failure falls back to global scaling.
+   var lnData = null;
+   try {
+      var regRef = findByBase(regFiles, baseOf(refImage)) || regFiles[0];
+      var LN = new LocalNormalization;
+      LN.referencePathOrViewId = regRef;
+      LN.referenceIsView = false;
+      LN.targetItems = regFiles.map(function (f) { return [true, f]; });
+      LN.outputDirectory = OUT + "/ln"; ensureDir(LN.outputDirectory);
+      LN.overwriteExistingFiles = true;
+      LN.generateNormalizationData = true;
+      if (!LN.executeGlobal()) throw new Error("LocalNormalization returned false");
+      var maps = [];
+      for (var i = 0; i < regFiles.length; ++i) {
+         var x = OUT + "/ln/" + File.extractName(regFiles[i]) + ".xnml";
+         if (!File.exists(x)) throw new Error("missing " + x);
+         maps.push(x);
+      }
+      lnData = maps;
+      log("local normalization: " + maps.length + " maps (ref " + File.extractName(regRef) + ")");
+   } catch (e) {
+      log("local normalization skipped (" + e + "); using AdditiveWithScaling");
+      lnData = null;
+   }
+
+   // 8) integrate, weighting by PSF Signal Weight (soft subs contribute less, not zero)
    var II = new ImageIntegration;
-   II.images = regFiles.map(function (f) { return [true, f, "", ""]; });
+   II.images = regFiles.map(function (f, i) {
+      return [true, f, "", lnData ? lnData[i] : ""]; });
    II.combination = ImageIntegration.prototype.Average;
    II.weightMode = ImageIntegration.prototype.PSFSignalWeight;
    II.minWeight = 0.0;
@@ -256,8 +365,13 @@ function main() {
    II.rejection = regFiles.length >= 15
       ? ImageIntegration.prototype.WinsorizedSigmaClip
       : ImageIntegration.prototype.SigmaClip;
-   II.normalization = ImageIntegration.prototype.AdditiveWithScaling;
-   II.rejectionNormalization = ImageIntegration.prototype.Scale;
+   if (lnData) {
+      II.normalization = ImageIntegration.prototype.LocalNormalization;
+      II.rejectionNormalization = ImageIntegration.prototype.LocalRejectionNormalization;
+   } else {
+      II.normalization = ImageIntegration.prototype.AdditiveWithScaling;
+      II.rejectionNormalization = ImageIntegration.prototype.Scale;
+   }
    II.evaluateSNR = true;
    if (!II.executeGlobal()) throw new Error("integration failed");
    var w = ImageWindow.windowById("integration");

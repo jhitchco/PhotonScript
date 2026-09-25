@@ -169,6 +169,12 @@ or "ERROR: ...". Masters in `out\master\`.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-09-25 (M31_OSC2 double galaxy): half the Piggy-600 subs straddled RC16
+  mount moves between two pointings ~51' apart, and the OSC script re-stacked
+  stale intermediates (63 subs -> 125 frames). Fixed with osc_cull.py (split /
+  duplicate cull before PixInsight) and per-run clearing + funnel assertions in
+  integrate_osc.js. Details: OSC_INTEGRATION.md 1a. Piggyback slew gating
+  (DUAL_RIG Phase 4) is now the real fix.
 - 2026-09-04 (month of trailed subs): every light since 2026-07-28 drifts
   ~1-2 arcsec/min at a constant position angle - polar alignment error
   (~5-8 arcmin azimuth), NOT sidereal rate (encoders hold RA; drift is

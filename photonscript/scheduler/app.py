@@ -413,6 +413,7 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("phd2_logs_dir", "PS_PHD2_LOGS_DIR", "PHD2 GuideLog/DebugLog dir", "PHD2", "str", False, False),
     ("ascom_logs_dir", "PS_ASCOM_LOGS_DIR", "ASCOM trace-log base dir", "NINA", "str", False, False),
     ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
     ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
@@ -1242,6 +1243,24 @@ def api_runs():
     return nights
 
 
+@app.post("/api/runs/archive-before")
+def api_runs_archive_before(payload: dict = Body(default={})):
+    """Archive every run before a cutoff date (default 2026-09-01) so old
+    nights collapse out of the sidenav, leaving the current season. Archiving
+    only hides — it never deletes FITS or grades."""
+    from photonscript.scheduler.runs import archive_before
+    cutoff = str(payload.get("date") or "2026-09-01")
+    return archive_before(get_config(), cutoff)
+
+
+@app.post("/api/runs/{date}/archive")
+def api_run_archive(date: str, payload: dict = Body(default={})):
+    """Archive / unarchive one night (hide it from the sidenav)."""
+    from photonscript.scheduler.runs import set_archived
+    return set_archived(get_config(), date,
+                        bool(payload.get("archived", True)))
+
+
 _remoteneed_cache: dict = {"t": 0.0, "names": None}
 
 
@@ -1919,6 +1938,23 @@ def api_thumb_status(date: str):
     return thumb_warm_status(get_config(), date)
 
 
+@app.get("/api/runs/{date}/contact-sheet.png")
+def api_run_contact_sheet(date: str, cols: int = 6, w: int = 200):
+    """One montage PNG of every sub for the night — the archival 'screenshot'
+    of a run (green=accepted, red=rejected). Generated server-side where the
+    FITS live; reuses the thumbnail cache. First call on a cold night warms
+    thumbnails and may take a while; subsequent calls are fast."""
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import contact_sheet
+    p = contact_sheet(get_config(), date, cols=min(max(cols, 2), 10),
+                      tile_w=min(max(w, 120), 400))
+    if p is None:
+        return JSONResponse(status_code=404,
+                            content={"detail": "no subs/thumbnails for this night"})
+    return FileResponse(p, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.get("/api/nina/log", response_class=PlainTextResponse)
 async def api_nina_log(lines: int = 500, grep: str = ""):
     """Tail (and optionally filter) the newest NINA log - remote 2AM triage
@@ -1927,6 +1963,35 @@ async def api_nina_log(lines: int = 500, grep: str = ""):
     logs = sorted(_glob.glob(str(Path(get_config().nina_logs_dir) / "*.log")))
     if not logs:
         return "no NINA logs found"
+    rows = Path(logs[-1]).read_text(encoding="utf-8",
+                                    errors="replace").splitlines()
+    if grep:
+        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
+        rows = [r for r in rows if any(n in r.lower() for n in needles)]
+    rows = rows[-min(max(1, lines), 5000):]
+    return f"# {Path(logs[-1]).name} - last {len(rows)} lines\n" + "\n".join(rows)
+
+
+@app.get("/api/phd2/log", response_class=PlainTextResponse)
+async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide"):
+    """Tail (and optionally filter) the newest PHD2 log — remote guiding triage.
+
+    kind='guide' (default) tails the newest PHD2_GuideLog_*.txt (per-frame RA/Dec
+    error, star-lost, calibration); kind='debug' tails PHD2_DebugLog_*.txt.
+    grep filters lines (case-insensitive, '|' for multiple needles), e.g.
+    grep='star lost|GuideStep|calibration'. Mirrors /api/nina/log.
+    """
+    import glob as _glob
+    base = getattr(get_config(), "phd2_logs_dir", "")
+    if not base:
+        return "phd2_logs_dir not configured (set it in System config)"
+    pattern = ("PHD2_DebugLog*" if str(kind).lower().startswith("debug")
+               else "PHD2_GuideLog*")
+    logs = sorted(_glob.glob(str(Path(base) / "**" / pattern), recursive=True),
+                  key=lambda p: Path(p).stat().st_mtime)
+    if not logs:
+        return (f"no PHD2 {pattern} logs found under {base} — check "
+                "phd2_logs_dir, or PHD2 hasn't guided yet")
     rows = Path(logs[-1]).read_text(encoding="utf-8",
                                     errors="replace").splitlines()
     if grep:

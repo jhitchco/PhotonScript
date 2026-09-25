@@ -152,16 +152,30 @@
                 l += ' <span style="color:#4ade80" title="all approved subs transferred">✓</span>';
             return l;
         };
-        const chip = n => '<span class="night-chip" data-date="' + n.date +
+        const chip = (n, isArch) => '<span class="night-chip" data-date="' + n.date +
             '">' + n.date + ' <span style="opacity:.6;font-size:.75rem;">' +
-            label(n) + '</span></span>';
-        const real = nights.filter(n => n.subs_logged || n.lights || n.has_plan);
-        const empty = nights.filter(n => !real.includes(n));
-        box.innerHTML = real.map(chip).join('') +
+            label(n) + '</span> <a href="#" class="arch-toggle" data-date="' + n.date +
+            '" data-arch="' + (isArch ? '0' : '1') + '" title="' +
+            (isArch ? 'restore to sidenav' : 'archive (hide from sidenav)') +
+            '" style="opacity:.45;text-decoration:none;font-size:.8rem;">' +
+            (isArch ? '⤒' : '⤓') + '</a></span>';
+        const live = nights.filter(n => !n.archived);
+        const arch = nights.filter(n => n.archived);
+        const real = live.filter(n => n.subs_logged || n.lights || n.has_plan);
+        const empty = live.filter(n => !real.includes(n));
+        box.innerHTML = real.map(n => chip(n)).join('') +
             (empty.length ? '<a href="#" id="moreNights" class="bd" ' +
                 'style="display:block;margin-top:.4rem;">show ' + empty.length +
                 ' nights with no lights</a><div id="emptyNights" hidden>' +
-                empty.map(chip).join('') + '</div>' : '');
+                empty.map(n => chip(n)).join('') + '</div>' : '') +
+            '<a href="#" id="archBefore" class="bd" style="display:block;' +
+              'margin-top:.6rem;color:#7dd3fc;text-decoration:none;" ' +
+              'title="Hide every run before September from the sidenav (does NOT ' +
+              'delete anything)">⤓ archive all before 2026-09-01</a>' +
+            (arch.length ? '<a href="#" id="moreArch" class="bd" ' +
+                'style="display:block;margin-top:.4rem;opacity:.7;">show ' +
+                arch.length + ' archived</a><div id="archNights" hidden>' +
+                arch.map(n => chip(n, true)).join('') + '</div>' : '');
         const more = document.getElementById('moreNights');
         if (more) more.onclick = (e) => {
             e.preventDefault();
@@ -171,6 +185,32 @@
                 ? 'show ' + empty.length + ' nights with no lights'
                 : 'hide nights with no lights';
         };
+        const moreA = document.getElementById('moreArch');
+        if (moreA) moreA.onclick = (e) => {
+            e.preventDefault();
+            const d = document.getElementById('archNights');
+            d.hidden = !d.hidden;
+            moreA.textContent = d.hidden ? 'show ' + arch.length + ' archived'
+                                         : 'hide archived';
+        };
+        const ab = document.getElementById('archBefore');
+        if (ab) ab.onclick = async (e) => {
+            e.preventDefault();
+            if (!confirm('Archive every run before 2026-09-01?\n\nThis only hides ' +
+                         'them from the sidenav — no images or grades are deleted.')) return;
+            await fetch('/api/runs/archive-before', {method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({date: '2026-09-01'})});
+            loadNights();
+        };
+        box.querySelectorAll('.arch-toggle').forEach(el =>
+            el.addEventListener('click', async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                await fetch('/api/runs/' + el.dataset.date + '/archive', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({archived: el.dataset.arch === '1'})});
+                loadNights();
+            }));
         box.querySelectorAll('.night-chip').forEach(el =>
             el.addEventListener('click', () => loadDetail(el.dataset.date)));
         const pathNight = (location.pathname.match(/\/runs\/(\d{4}-\d{2}-\d{2})/) || [])[1];

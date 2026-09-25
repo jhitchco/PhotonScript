@@ -51,6 +51,7 @@ NINA_PATHS = {
     "sequence_start": ["/sequence/start"],
     "sequence_stop": ["/sequence/stop"],
     "safety": ["/equipment/safetymonitor/info"],
+    "guider": ["/equipment/guider/info"],
     "mount_park": ["/equipment/mount/park"],
     "camera_warm": ["/equipment/camera/warm"],
     "mount_connect": ["/equipment/mount/connect"],
@@ -67,6 +68,7 @@ class Armer:
         self.plan: dict = {}
         self.sequence_path: Path | None = None
         self.guiding_override: str | None = None  # "guided" | "encoders" | None
+        self._guiding_alerted = False  # once-per-night "guided but not guiding"
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
         self._task: asyncio.Task | None = None
 
@@ -193,6 +195,7 @@ class Armer:
         None => use config.guided_default."""
         from photonscript.scheduler.night_plan import build_night_plan
         self.guiding_override = guiding
+        self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
         self.shutdown = None  # a fresh arm starts a new night — clear the chip
         self.plan = build_night_plan(self.config)
         if "error" in self.plan:
@@ -413,6 +416,46 @@ class Armer:
                 return None
         logger.error("ninaAPI %s: no endpoint candidate worked", key)
         return None
+
+    async def _maybe_warn_not_guiding(self, now: datetime) -> None:
+        """Guided-but-not-guiding watchdog. If the night was armed guided but
+        PHD2 is not actually guiding a while after dark, fire ONE Pushover — the
+        exact silent failure of 2026-09-24 (armed unguided/PHD2 idle → every
+        900s sub trailed). Fails safe: NINA unreachable or transient startup
+        states never alarm, and it fires at most once per night."""
+        if self._guiding_alerted or not self._use_guiding():
+            return
+        dusk = self.plan.get("dusk_utc")
+        if not dusk:
+            return
+        try:
+            dusk_dt = datetime.fromisoformat(dusk.rstrip("Z"))
+        except Exception:  # noqa: BLE001
+            return
+        # Give guiding time to start after dark (slew → center → AF → settle).
+        if now < dusk_dt + timedelta(minutes=20):
+            return
+        data = await self._nina("guider")
+        if data is None:
+            return  # NINA unreachable — don't false-alarm
+        payload = data.get("Response", data)
+        if not payload.get("Connected", False):
+            state = "disconnected"
+            guiding = False
+        else:
+            state = str(payload.get("State", "") or "")
+            # Treat active/transient states as fine; only idle/stopped alarms.
+            guiding = state.lower() in (
+                "guiding", "looping", "calibrating", "settling", "settledone")
+        if guiding:
+            return
+        self._guiding_alerted = True
+        mins = int((now - dusk_dt).total_seconds() // 60)
+        await notify(self.config,
+                     f"Armed GUIDED but PHD2 is not guiding (state: "
+                     f"{state or 'unknown'}) {mins} min into dark — subs are "
+                     "likely trailing. Check PHD2 / guide star, or re-arm.",
+                     title="PhotonScript guiding", priority=1)
 
     async def _is_safe(self) -> bool | None:
         data = await self._nina("safety")
@@ -635,6 +678,9 @@ class Armer:
                              "PAUSED: unsafe — NINA's night loop parked the "
                              "scope and is waiting. Auto-resumes when safe.",
                              title="PhotonScript paused", priority=1)
+            else:
+                # Imaging (or looping to safe) — verify guiding actually runs.
+                await self._maybe_warn_not_guiding(now)
 
         elif self.state == "PAUSED_UNSAFE":
             if now >= self._dawn() + timedelta(minutes=30):

@@ -4,25 +4,52 @@ Covers the 600 mm piggyback rig (AP26CC, IMX571 RGGB, 1.29"/px). Companion to th
 mono RC16 SHO pipeline. Light epoch: **120 s, gain 100, offset 256, 0 °C**.
 
 ## 1. PixInsight pipeline (clean stars)
-Files in `deploy/`:
-- `integrate_osc.js` — PJSR: (bias/dark/flat if staged) -> ImageCalibration ->
-  CosmeticCorrection (CFA) -> Debayer RGGB (VNG) -> **SubframeSelector** (writes an
-  `SSWEIGHT` per sub from FWHM + eccentricity + SNR; **keeps every sub, weights the
-  soft ones down** instead of rejecting) -> **StarAlignment with
-  `distortionCorrection = true`** (the fix for the field's ~0.16°/night rotation that
-  a rigid transform can't remove) -> weighted `ImageIntegration` (WinsorizedSigmaClip)
-  -> `masterOSC.xisf` + `masterOSC_review.jpg`.
-- `prepare-integration-osc.ps1` — stage OSC lights + `INSTRUME=AP26CC`, epoch-matched
+Files in `deploy/` (+ one Python helper):
+- `photonscript/image_processor/osc_cull.py`: **runs first** (called by
+  `run-integration-osc.ps1`). Rejects **split-pointing subs** (the mount moved
+  mid-exposure, so the sub holds the field twice) and **duplicate subs** (same
+  `DATE-OBS`, identical bytes, e.g. `_1` copies); flags sky-background outliers
+  (twilight/moon) without moving them unless `-RejectBright`. Rejects are
+  **moved** to `<stage>\REJECTED\<reason>\`, never deleted. Writes
+  `cull_report.csv` and `reference.txt` (sharpest kept sub). Needs Python + numpy.
+- `integrate_osc.js`: PJSR: **clears its own intermediates** (cal/cc/debayer/
+  reg/ln) -> (bias/dark/flat if staged) -> ImageCalibration -> CosmeticCorrection
+  (CFA, only with a master dark) -> Debayer RGGB (VNG) -> **StarAlignment with
+  `distortionCorrection = true`** (reference = `reference.txt`, else mid-stack)
+  -> **LocalNormalization** (falls back to additive+scaling on any failure) ->
+  PSF-Signal-weighted `ImageIntegration` (WinsorizedSigmaClip) ->
+  `masterOSC.xisf` + `masterOSC_review.jpg` (**unlinked** per-channel stretch).
+  Every stage asserts it did not output more frames than it was given.
+  (No SubframeSelector: its scripted dll access-violates on this PI build.)
+- `prepare-integration-osc.ps1`: stage OSC lights + `INSTRUME=AP26CC`, epoch-matched
   calibration into `Staging/<name>/{LIGHTS/OSC,DARKS,BIAS,FLATS/OSC}`.
-- `run-integration-osc.ps1` — fill the staging path into the script and launch PixInsight.
+- `run-integration-osc.ps1`: cull, fill the staging path into the script, launch
+  PixInsight. `-CullDryRun` = report only and stop; `-NoCull` = skip the cull.
 
 Run on the desktop:
 ```
 .\deploy\prepare-integration-osc.ps1 -Name "M31_OSC"
+.\deploy\run-integration-osc.ps1     -Name "M31_OSC" -CullDryRun   # optional preview
 .\deploy\run-integration-osc.ps1     -Name "M31_OSC"
 ```
 It runs **uncalibrated** if no OSC masters are staged (still debayers, distortion-registers,
-and integrates) — so you get clean stars now, and full calibration once the frames below exist.
+and integrates): so you get clean stars now, and full calibration once the frames below exist.
+
+### 1a. Lesson: M31_OSC2 (2026-09-21 subs, integrated 2026-09-25)
+The master showed **two M31 cores** (one with a black hole punched in it). Two
+separate faults:
+1. **Split-pointing subs.** The RC16 moved the mount between two pointings ~51'
+   apart every few minutes while Piggy-600 kept exposing. 31/62 subs straddled a
+   move (ground truth: M31 flux measured at both pointings in every sub). Stars
+   of the minority copy are sigma-rejected, but its galaxy light survives. The
+   cull detects these from the sub's own autocorrelation (extra peak at the slew
+   vector, over the session's static star-field baseline): 0 misclassified.
+2. **Stale intermediates.** The script listed whole output folders, so `_cc_d`
+   files from an earlier (cosmetic-corrected, no dark) run were stacked alongside
+   the new `_d` files: 63 subs went in as 125, and CosmeticCorrection's hole in
+   the M31 core came along. Now cleared per run + funnel assertions.
+Also found: `0282.fits` and `0282_1.fits` identical (duplicate), and 0282 is a
+twilight sub after a 44-min gap (+20% background).
 
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
@@ -62,6 +89,8 @@ check, not changed — it touches live librarian routing.)
 Scripts → Batch Processing → **WeightedBatchPreprocessing**. Same result as
 `integrate_osc.js` through the GUI.
 
+0. Run `run-integration-osc.ps1 -CullDryRun` (or `osc_cull.py` directly) first:
+   WBPP cannot see split-pointing subs.
 1. **Add Lights** → `C:\Users\sleep\Astrophotography\Staging\M31_OSC\LIGHTS\OSC`
    (92 frames). Leave darks/flats/bias empty for now (none match yet — WBPP just
    runs uncalibrated).

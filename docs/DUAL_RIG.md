@@ -27,6 +27,12 @@ piggyback is the environmental wide-field companion to the RC16's close-up.
   tracking. Subs caught during slews / plate-solve centering / meridian flip are
   expected to trail and get rejected by QA. We accept the small loss (the RC16
   dwells for hours and slews rarely). Revisit only if the loss rate annoys.
+  **Measured 2026-09-21 (M31_OSC2): the loss was NOT small.** The mount moved
+  between two pointings ~51' apart every few minutes; 31 of 62 piggyback subs
+  straddled a move. Those subs do NOT trail (the slew is fast) and they pass
+  star-based QA: they hold the field twice, and the minority copy's diffuse
+  light prints a ghost galaxy into the master. `osc_cull.py` now rejects them
+  before integration (see OSC_INTEGRATION.md), and Phase 4 gating is the real fix.
 - **Guiding is committed to the OAG (GP678C) on the RC16.** The AP26CC is
   released from guide duty and becomes the piggyback imager.
 - **The piggyback is not independently pointable** — it rides the RC16's
@@ -236,8 +242,10 @@ passes, the rest of Phase 0 is just software.
 - **Phase 2 — Calibration + processing per rig.** OSC flats/darks; OSC stacking.
 - **Phase 3 — Planner / framing helper.** Recommend RC16 targets whose
   surroundings make good 600 mm wide-field companions; record piggyback rotation.
-- **Phase 4 (optional) — Slew/flip gating** to reclaim lost subs, only if the
-  measured loss rate justifies it.
+- **Phase 4 — Slew/flip gating** to reclaim lost subs. Promoted from optional
+  after 2026-09-21 (50% of M31 piggyback subs split across two pointings):
+  pause NINA #2 while the RC16 slews/centers, or tag subs that overlap an RC16
+  slew window so staging can drop them without image analysis.
 
 ---
 
