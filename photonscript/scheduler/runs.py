@@ -951,6 +951,38 @@ def archive_before(config, cutoff: str) -> dict:
     return _save_archived(config, cur)
 
 
+def prunable_night_dirs(config, before: str) -> list[dict]:
+    """Night folders (YYYY-MM-DD) strictly before `before`, across the RC16
+    capture dir, the piggyback watch dir, and the thumbnail cache — the heavy
+    pixels safe to delete once archived. Reads live config paths (no hardcoding).
+
+    NEVER includes the grade records (runs_dir *_subs.jsonl / *_plan.json) or
+    the contact sheets — those are the durable per-sub learnings and stay.
+    Used by `photonscript prune-nights`.
+    """
+    roots = []
+    for base in (getattr(config, "image_watch_dir", ""),
+                 getattr(config, "piggyback_image_watch_dir", "")):
+        if base:
+            roots.append(Path(base))
+    roots.append(Path(config.data_dir) / "thumbs")
+    seen: set = set()
+    out: list[dict] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        for d in sorted(root.iterdir()):
+            if (d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}$", d.name)
+                    and d.name < before):
+                key = str(d.resolve()).lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append({"date": d.name, "root": str(root),
+                            "path": str(d)})
+    return sorted(out, key=lambda x: (x["date"], x["path"]))
+
+
 def list_runs(config) -> list[dict]:
     """Nights with any evidence: plan, subs log, or FITS folder."""
     dates = set()

@@ -293,6 +293,86 @@ def analyze(
             console.print(f"  [red]✗ {f.get('file')}: {f.get('error')}[/red]")
 
 
+@app.command("prune-nights")
+def prune_nights(
+    before: str = typer.Option(
+        "2026-09-01", help="Delete night folders strictly before this date "
+        "(YYYY-MM-DD)."),
+    execute: bool = typer.Option(
+        False, "--execute", help="Actually delete. Omit for a dry run."),
+    quarantine: str = typer.Option(
+        "", help="Instead of deleting, MOVE matched folders here (recoverable, "
+        "frees space only if the target is another drive)."),
+    permanent: bool = typer.Option(
+        False, "--permanent", help="With --execute and no --quarantine, "
+        "hard-delete (default is also a hard delete; kept for clarity)."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
+):
+    """Prune captured FITS from nights before a cutoff to free the capture drive.
+
+    Dry run by default — prints what WOULD go. Uses the live config paths
+    (image_watch_dir, piggyback dir, thumbnail cache). Grade records and
+    contact sheets are ALWAYS kept — the per-sub learnings survive the prune.
+
+    Examples:
+        photonscript prune-nights                 # dry run, cutoff 2026-09-01
+        photonscript prune-nights --execute       # delete, with a prompt
+        photonscript prune-nights --before 2026-08-01 --execute --yes
+    """
+    import shutil
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import prunable_night_dirs
+
+    config = PhotonScriptConfig()
+    items = prunable_night_dirs(config, before)
+    if not items:
+        console.print(f"[green]Nothing before {before} found.[/green]")
+        return
+
+    total = 0.0
+    table = Table(title=f"{'EXECUTE' if execute else 'DRY RUN'} — folders before "
+                        f"{before}")
+    table.add_column("Date"); table.add_column("GB", justify="right")
+    table.add_column("Path")
+    for it in items:
+        b = sum(f.stat().st_size for f in Path(it["path"]).rglob("*")
+                if f.is_file())
+        it["gb"] = round(b / 1e9, 2)
+        total += it["gb"]
+        table.add_row(it["date"], f"{it['gb']:.2f}", it["path"])
+    console.print(table)
+    console.print(f"[cyan]{len(items)} folders · {round(total, 2)} GB[/cyan]")
+
+    if not execute:
+        console.print("[yellow]Dry run only. Add --execute to delete "
+                      "(or --execute --quarantine <dir> to move).[/yellow]")
+        return
+
+    action = "MOVE" if quarantine else "DELETE"
+    if not yes and not typer.confirm(
+            f"{action} {len(items)} folders ({round(total, 2)} GB)?"):
+        console.print("[red]Aborted.[/red]")
+        raise typer.Exit(1)
+
+    freed = 0.0
+    for it in items:
+        try:
+            if quarantine:
+                dest = Path(quarantine) / it["date"]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(it["path"], str(dest))
+            else:
+                shutil.rmtree(it["path"])
+            freed += it["gb"]
+            console.print(f"  [green]{'moved' if quarantine else 'removed'}[/green] "
+                          f"{it['date']} ({it['gb']:.2f} GB)")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]FAILED[/red] {it['date']} — {e}")
+    console.print(f"[cyan]Done. {'Moved' if quarantine else 'Freed'} "
+                  f"~{round(freed, 2)} GB. Grade records + contact sheets "
+                  "kept.[/cyan]")
+
+
 @app.command()
 def status():
     """Show current system status (connects to running scheduler)."""
