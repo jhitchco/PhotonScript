@@ -75,9 +75,11 @@ PhotonScript's **own watchdog alerts** (`notify()`).
   telescope-agent cooling watchdog used to overlap. Now the **nanny alerts only
   when the cooler is flat OFF** (and silently re-asserts the setpoint otherwise),
   while the **agent watchdog owns "cooler on but 0% power / not cooling"** — so a
-  single fault raises one alert, not two. Both now cool instantly
-  (`cool_ramp_minutes`), no 10-min ramp. Tolerance is the single
-  `cooling_tolerance_c`.
+  single fault raises one alert, not two. The agent watchdog also used to
+  Pushover on **every** reconnect attempt (2/4, 3/4… — a burst per stuck-cooler
+  episode); it now alerts on the **first attempt only**, and the final give-up
+  still escalates. Both now cool instantly (`cool_ramp_minutes`), no 10-min ramp.
+  Tolerance is the single `cooling_tolerance_c`.
 
 ## Run-time alerts (Pushover)
 

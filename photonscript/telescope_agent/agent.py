@@ -411,11 +411,16 @@ class TelescopeAgent:
         logger.warning("Cooling watchdog: reconnect attempt %d/%d "
                        "(sensor %.1fC, power %s%%)", n, self.COOL_FIX_MAX,
                        temp, power)
-        await notify(self.config,
-                     f"Cooler on but {0 if power is None else power:.0f}% power "
-                     f"at {temp:.1f}C (setpoint {sp:.1f}C) — reconnecting "
-                     f"camera, attempt {n}/{self.COOL_FIX_MAX}",
-                     title="PhotonScript cooling watchdog", priority=1)
+        # Alert ONLY on the first attempt — the intermediate retries used to fire
+        # a Pushover each ("attempt 2/4, 3/4…"), a burst per stuck-cooler episode.
+        # The final give-up still escalates (above), so nothing important is lost.
+        if n == 1:
+            await notify(
+                self.config,
+                f"Cooler on but {0 if power is None else power:.0f}% power at "
+                f"{temp:.1f}C (setpoint {sp:.1f}C) — reconnecting the camera and "
+                f"re-cooling (up to {self.COOL_FIX_MAX} tries).",
+                title="PhotonScript cooling watchdog", priority=1)
         try:
             await self.nina.disconnect_camera()
             await asyncio.sleep(10)
@@ -428,9 +433,10 @@ class TelescopeAgent:
             logger.info("Cooling watchdog: cool command re-issued (%.1fC)", sp)
         except Exception as e:  # noqa: BLE001
             logger.error("Cooling watchdog attempt %d errored: %s", n, e)
-            await notify(self.config,
-                         f"Cooling watchdog reconnect attempt {n} errored: {e}",
-                         title="PhotonScript cooling watchdog", priority=1)
+            if n == 1:   # first error only; the give-up escalation covers the rest
+                await notify(self.config,
+                             f"Cooling watchdog reconnect errored: {e}",
+                             title="PhotonScript cooling watchdog", priority=1)
 
     async def _nina_poll_loop(self):
         """Poll NINA for equipment state every few seconds."""

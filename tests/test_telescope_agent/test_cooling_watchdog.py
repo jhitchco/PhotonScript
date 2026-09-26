@@ -69,6 +69,20 @@ def test_watchdog_ignores_healthy_cooling(monkeypatch):
     assert a._cool_fix_attempts == 0
 
 
+def test_watchdog_alerts_only_on_first_attempt(monkeypatch):
+    """Intermediate reconnect attempts must NOT each fire a Pushover — that burst
+    was the '2026-09-26 a bunch of those' noise. First attempt alerts; the rest
+    cycle silently (the final give-up still escalates)."""
+    a, sent = _agent(monkeypatch)
+    a._cool_bad_since = -1e9
+    asyncio.run(a._cooling_watchdog(BAD))          # attempt 1
+    assert a._cool_fix_attempts == 1 and len(sent) == 1
+    a._cool_bad_since = -1e9
+    asyncio.run(a._cooling_watchdog(BAD))          # attempt 2 — cycles, no alert
+    assert a._cool_fix_attempts == 2
+    assert len(sent) == 1                           # stayed quiet
+
+
 def test_watchdog_gives_up_and_escalates(monkeypatch):
     a, sent = _agent(monkeypatch)
     a._cool_fix_attempts = a.COOL_FIX_MAX
