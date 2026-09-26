@@ -11,7 +11,7 @@ $exe  = "C:\astro\venv\Scripts\photonscript.exe"
 
 # Run from the repo root so the app finds .env (pydantic reads ".env" relative
 # to the current directory). Without this, launching from a subdir (e.g.
-# deploy\) silently drops every PS_* override, including PS_SCHEDULER_TLS_*.
+# deploy\) silently drops every PS_* override from .env.
 Set-Location $repo
 
 while ($true) {

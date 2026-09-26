@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from functools import lru_cache
 from typing import Optional
 
 import numpy as np
@@ -65,11 +66,27 @@ def get_twilight_times(
     obs: ObservatoryLocation,
     date_utc: datetime,
 ) -> dict[str, datetime]:
-    """Compute astronomical twilight start/end (sun at -18 deg) for a given night."""
-    location = get_earth_location(obs)
-    # Scan around sunset/sunrise
-    evening = Time(date_utc.replace(hour=23, minute=0))  # ~5pm MST in UTC
-    morning = Time(date_utc.replace(hour=13, minute=0)) + timedelta(days=1)  # ~6am MST next day
+    """Compute astronomical twilight start/end (sun at -18 deg) for a given night.
+
+    Memoized on (site, scan window): the 200-point sun scan costs ~0.5 s and is
+    requested many times per page (once per target before the 2026-09 perf
+    pass). Callers get a fresh dict each time, so mutating it is safe.
+    """
+    evening = date_utc.replace(hour=23, minute=0)  # ~5pm MST in UTC
+    morning = date_utc.replace(hour=13, minute=0) + timedelta(days=1)  # ~6am MST next day
+    start, end = _twilight_cached(
+        float(obs.latitude), float(obs.longitude), float(obs.elevation),
+        evening, morning)
+    return {"astro_dark_start": start, "astro_dark_end": end}
+
+
+@lru_cache(maxsize=256)
+def _twilight_cached(lat: float, lon: float, elev: float,
+                     evening_dt: datetime, morning_dt: datetime,
+                     ) -> tuple[Optional[datetime], Optional[datetime]]:
+    location = EarthLocation(lat=lat * u.deg, lon=lon * u.deg, height=elev * u.m)
+    evening = Time(evening_dt)
+    morning = Time(morning_dt)
 
     times = Time(np.linspace(evening.jd, morning.jd, 200), format="jd")
     altaz_frame = AltAz(obstime=times, location=location)
@@ -85,41 +102,32 @@ def get_twilight_times(
         if sun_alts[i] <= -18 and sun_alts[i + 1] > -18:
             astro_dark_end = times[i + 1].datetime
 
-    return {
-        "astro_dark_start": astro_dark_start,
-        "astro_dark_end": astro_dark_end,
-    }
+    return astro_dark_start, astro_dark_end
 
 
-def compute_visibility_window(
+def _dark_sample_times(twilight: dict) -> list[datetime]:
+    """10-minute samples across astronomical darkness ([] if no dark window)."""
+    dark_start = twilight.get("astro_dark_start")
+    dark_end = twilight.get("astro_dark_end")
+    if dark_start is None or dark_end is None:
+        return []
+    samples = int((dark_end - dark_start).total_seconds() / 600)
+    if samples < 1:
+        return []
+    return [dark_start + timedelta(minutes=i * 10) for i in range(samples + 1)]
+
+
+def _visibility_from_alts(
     target: CelestialTarget,
     obs: ObservatoryLocation,
     date_utc: datetime,
-    min_altitude: float = 30.0,
+    times: list[datetime],
+    alts,
+    min_altitude: float,
 ) -> dict:
-    """Compute when a target is above min_altitude during astronomical darkness."""
-    twilight = get_twilight_times(obs, date_utc)
-    dark_start = twilight.get("astro_dark_start")
-    dark_end = twilight.get("astro_dark_end")
-
-    if dark_start is None or dark_end is None:
-        return {"visible": False, "hours": 0.0, "rise_time": None, "set_time": None}
-
-    # Sample every 10 minutes through the dark window
-    samples = int((dark_end - dark_start).total_seconds() / 600)
-    if samples < 1:
-        return {"visible": False, "hours": 0.0, "rise_time": None, "set_time": None}
-
-    visible_times = []
-    for i in range(samples + 1):
-        t = dark_start + timedelta(minutes=i * 10)
-        alt = compute_altitude(target, obs, t)
-        if alt >= min_altitude:
-            visible_times.append(t)
-
+    visible_times = [t for t, a in zip(times, alts) if a >= min_altitude]
     if not visible_times:
         return {"visible": False, "hours": 0.0, "rise_time": None, "set_time": None}
-
     return {
         "visible": True,
         "hours": round(len(visible_times) * 10 / 60, 1),
@@ -129,22 +137,58 @@ def compute_visibility_window(
     }
 
 
+def compute_visibility_window(
+    target: CelestialTarget,
+    obs: ObservatoryLocation,
+    date_utc: datetime,
+    min_altitude: float = 30.0,
+    twilight: Optional[dict] = None,
+) -> dict:
+    """Compute when a target is above min_altitude during astronomical darkness.
+
+    One vectorized AltAz transform over all 10-minute samples (was one astropy
+    transform per sample). Pass ``twilight`` to skip the twilight lookup.
+    """
+    if twilight is None:
+        twilight = get_twilight_times(obs, date_utc)
+    times = _dark_sample_times(twilight)
+    if not times:
+        return {"visible": False, "hours": 0.0, "rise_time": None, "set_time": None}
+
+    frame = AltAz(obstime=Time(times), location=get_earth_location(obs))
+    alts = get_sky_coord(target).transform_to(frame).alt.deg
+    return _visibility_from_alts(target, obs, date_utc, times, alts, min_altitude)
+
+
 def rank_targets_for_night(
     targets: list[CelestialTarget],
     obs: ObservatoryLocation,
     date_utc: datetime,
     min_altitude: float = 30.0,
 ) -> list[dict]:
-    """Rank targets by visibility hours and assign tiers."""
+    """Rank targets by visibility hours and assign tiers.
+
+    Twilight is computed once and every target x sample altitude comes from a
+    single broadcast AltAz transform (was ~60 transforms per target: ~13 s for
+    the dashboard's seasonal list on the scope PC).
+    """
     results = []
-    for target in targets:
-        vis = compute_visibility_window(target, obs, date_utc, min_altitude)
-        if not vis["visible"]:
-            continue
-        results.append({
-            "target": target,
-            "visibility": vis,
-        })
+    twilight = get_twilight_times(obs, date_utc)
+    times = _dark_sample_times(twilight)
+    if targets and times:
+        ra = np.array([t.ra_hours * 15 for t in targets])[:, None]
+        dec = np.array([t.dec_degrees for t in targets])[:, None]
+        coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+        frame = AltAz(obstime=Time(times)[None, :], location=get_earth_location(obs))
+        alt_grid = coords.transform_to(frame).alt.deg  # shape (targets, samples)
+        for target, alts in zip(targets, alt_grid):
+            vis = _visibility_from_alts(target, obs, date_utc, times, alts, min_altitude)
+            if not vis["visible"]:
+                continue
+            results.append({
+                "target": target,
+                "visibility": vis,
+            })
 
     # Sort by hours visible (descending)
     results.sort(key=lambda r: r["visibility"]["hours"], reverse=True)

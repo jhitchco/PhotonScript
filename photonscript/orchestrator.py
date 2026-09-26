@@ -81,55 +81,18 @@ def _add_rotating_file_handler(data_dir: Path, level: str) -> Optional[Path]:
     return log_path
 
 
-def _ensure_tls_cert(config: PhotonScriptConfig) -> Optional[tuple[str, str]]:
-    """Export/refresh the Tailscale cert for the HTTPS listener; return
-    (certfile, keyfile) or None to stay HTTP-only. `tailscale cert` is
-    idempotent (re-fetches only near expiry). Requires the service account to be
-    the tailscaled operator (see MAINTENANCE / `tailscale set --operator`)."""
-    import subprocess
-    host = (config.scheduler_tls_hostname or "").strip()
-    if not config.scheduler_tls_enabled or not host:
-        return None
-    cert_dir = Path(config.scheduler_tls_cert_dir or (config.data_dir / "certs"))
-    cert_dir.mkdir(parents=True, exist_ok=True)
-    certfile = cert_dir / f"{host}.crt"
-    keyfile = cert_dir / f"{host}.key"
-    try:
-        subprocess.run(
-            [config.tailscale_exe, "cert",
-             "--cert-file", str(certfile), "--key-file", str(keyfile), host],
-            check=True, capture_output=True, text=True, timeout=120)
-        logger.info("TLS cert ready for %s (%s)", host, certfile)
-    except Exception as e:  # noqa: BLE001
-        if certfile.exists() and keyfile.exists():
-            logger.warning("tailscale cert refresh failed (%s) — using existing "
-                           "files; renew before ~90d expiry", e)
-        else:
-            logger.error("tailscale cert failed, no cert on disk (%s) — HTTPS "
-                         "disabled, HTTP :%d still up", e, config.scheduler_port)
-            return None
-    return str(certfile), str(keyfile)
-
-
 def _web_servers(config: PhotonScriptConfig) -> list[uvicorn.Server]:
-    """HTTP listener (loopback + tailnet, unchanged) + optional HTTPS listener
-    for remote browsers (replaces `tailscale serve`)."""
-    servers = [uvicorn.Server(uvicorn.Config(
+    """The scheduler's HTTP listener (loopback + tailnet).
+
+    Remote HTTPS is `tailscale serve` on the scope PC (443 ->
+    http://127.0.0.1:<scheduler_port>), which owns and renews the cert. The
+    2026-09 in-app uvicorn TLS listener was removed: it needed `tailscale cert`
+    from the service account, which tailscaled refuses for non-owner users.
+    Leftover PS_SCHEDULER_TLS_* lines in .env are ignored (extra="ignore")."""
+    return [uvicorn.Server(uvicorn.Config(
         "photonscript.scheduler.app:app",
         host=config.scheduler_host, port=config.scheduler_port,
         log_level="warning"))]
-    tls = _ensure_tls_cert(config)
-    if tls:
-        certfile, keyfile = tls
-        s = uvicorn.Server(uvicorn.Config(
-            "photonscript.scheduler.app:app",
-            host=config.scheduler_host, port=config.scheduler_tls_port,
-            log_level="warning", ssl_certfile=certfile, ssl_keyfile=keyfile))
-        s.install_signal_handlers = lambda: None  # only the first server owns signals
-        servers.append(s)
-        logger.info("Scheduler HTTPS on :%d (remote); HTTP on :%d (internal)",
-                    config.scheduler_tls_port, config.scheduler_port)
-    return servers
 
 
 def _install_stop_signals(loop: asyncio.AbstractEventLoop,

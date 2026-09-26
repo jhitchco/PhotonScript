@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -158,15 +159,36 @@ def setup_message_listeners():
 # Pages
 # ---------------------------------------------------------------------------
 
+_dashboard_cache: dict = {}  # (utc date, site) -> (twilight, ranked)
+
+
+def _dashboard_targets(obs, now: datetime):
+    """Tonight's twilight + ranked seasonal targets, cached per UTC date.
+
+    Seconds are dropped before the astronomy so the result depends only on the
+    date (twilight scan starts 23:00, transit anchor 07:00): one computation
+    per day instead of one per page view.
+    """
+    key = (now.date(), obs.latitude, obs.longitude, obs.elevation)
+    hit = _dashboard_cache.get(key)
+    if hit is not None:
+        return hit
+    day = now.replace(second=0, microsecond=0)
+    twilight = get_twilight_times(obs, day)
+    ranked = rank_targets_for_night(get_seasonal_targets(day.month), obs, day)
+    _dashboard_cache.clear()  # only today's entry is ever useful
+    _dashboard_cache[key] = (twilight, ranked)
+    return twilight, ranked
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     config = get_config()
     obs = config.get_observatory()
     now = datetime.utcnow()
-    twilight = get_twilight_times(obs, now)
-    month = now.month
-    seasonal = get_seasonal_targets(month)
-    ranked = rank_targets_for_night(seasonal, obs, now)
+    # Astronomy runs in a worker thread: on the event loop it froze every
+    # other request (and the telescope agents, which share this loop).
+    twilight, ranked = await asyncio.to_thread(_dashboard_targets, obs, now)
 
     return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,
@@ -762,7 +784,7 @@ async def api_forecast():
 
 
 @app.get("/api/nightplan")
-async def api_nightplan():
+def api_nightplan():
     from photonscript.scheduler.night_plan import build_night_plan
     return build_night_plan(get_config())
 
@@ -815,12 +837,18 @@ def _save_thumb_cache():
     p.write_text(json.dumps(_thumb_cache, indent=1), encoding="utf-8")
 
 
+_store_lock = threading.Lock()
+
+
 def get_store():
     global _store
     if _store is None:
-        from photonscript.scheduler.project_store import ProjectStore
-        _store = ProjectStore(get_config())
-        _projects.update(_store.projects)  # planner + ws updates see stored projects
+        with _store_lock:  # sync handlers run in worker threads now
+            if _store is None:
+                from photonscript.scheduler.project_store import ProjectStore
+                store = ProjectStore(get_config())
+                _projects.update(store.projects)  # planner + ws updates see stored projects
+                _store = store
     return _store
 
 
@@ -837,15 +865,31 @@ def _project_json(p) -> dict:
     try:
         from photonscript.scheduler.runs import library_root, _safe_name
         lib = library_root(get_config()) / _safe_name(p.target.name)
-        d["library_files"] = (sum(1 for _ in lib.rglob("*.fits"))
-                              if lib.exists() else 0)
+        d["library_files"] = _library_fits_count(lib)
     except Exception:  # noqa: BLE001
         d["library_files"] = 0
     return d
 
 
+_lib_count_cache: dict = {}  # library folder -> (monotonic t, count)
+_LIB_COUNT_TTL_S = 120.0
+
+
+def _library_fits_count(lib: Path) -> int:
+    """FITS count for one target's Library folder, cached 2 min: the projects
+    list rglob'd every project's library on every poll."""
+    import time as _time
+    now = _time.monotonic()
+    hit = _lib_count_cache.get(str(lib))
+    if hit is not None and now - hit[0] < _LIB_COUNT_TTL_S:
+        return hit[1]
+    n = sum(1 for _ in lib.rglob("*.fits")) if lib.exists() else 0
+    _lib_count_cache[str(lib)] = (now, n)
+    return n
+
+
 @app.get("/api/projects2")
-async def api_projects2():
+def api_projects2():
     from photonscript.scheduler.runs import nights_by_target
     store = get_store()
     out = sorted((_project_json(p) for p in store.projects.values()),
@@ -1114,7 +1158,7 @@ _sun_cache: dict = {}
 
 
 @app.get("/api/sun")
-async def api_sun():
+def api_sun():
     """Sun altitude now + tonight's solar curve with twilight thresholds."""
     import numpy as np
     from astropy import units as u
@@ -1277,11 +1321,12 @@ def api_run_archive(date: str, payload: dict = Body(default={})):
 _remoteneed_cache: dict = {"t": 0.0, "names": None}
 
 
-def _syncthing_pending_names():
-    """Basenames the DESKTOP still needs from the Library share (30s cache).
-    None = can't tell (not configured / unreachable)."""
-    import time as _time
-    import httpx
+_REMOTENEED_FRESH_S = 30     # serve from cache without refreshing
+_REMOTENEED_STALE_OK_S = 300  # serve stale (while refreshing) up to this age
+_remoteneed_refresh_lock = threading.Lock()
+
+
+def _syncthing_settings():
     cfg = get_config()
     url = getattr(cfg, "syncthing_url", "") or ""
     key = getattr(cfg, "syncthing_api_key", "") or ""
@@ -1289,10 +1334,15 @@ def _syncthing_pending_names():
     device = getattr(cfg, "syncthing_device_id", "") or ""
     if not (url and key and folder and device):
         return None
-    now = _time.time()
-    if (_remoteneed_cache["names"] is not None
-            and now - _remoteneed_cache["t"] < 30):
-        return _remoteneed_cache["names"]
+    return url, key, folder, device
+
+
+def _refresh_remoteneed(settings) -> Optional[set]:
+    """Page through Syncthing /rest/db/remoteneed (up to 40 x 500 entries)
+    and store the result in _remoteneed_cache. None on failure."""
+    import time as _time
+    import httpx
+    url, key, folder, device = settings
     try:
         names: set = set()
         entries: list = []
@@ -1314,11 +1364,48 @@ def _syncthing_pending_names():
                     entries.append((n, sz))
                 if len(batch) < 500:
                     break
-        _remoteneed_cache.update(t=now, names=names, entries=entries)
+        _remoteneed_cache.update(t=_time.time(), names=names, entries=entries)
         return names
     except Exception as e:  # noqa: BLE001
         logger.debug("remoteneed unavailable: %s", e)
         return None
+
+
+def _refresh_remoteneed_bg(settings) -> None:
+    """Refresh in a daemon thread; at most one refresh in flight."""
+    if not _remoteneed_refresh_lock.acquire(blocking=False):
+        return
+
+    def _run():
+        try:
+            _refresh_remoteneed(settings)
+        finally:
+            _remoteneed_refresh_lock.release()
+
+    threading.Thread(target=_run, name="remoteneed-refresh", daemon=True).start()
+
+
+def _syncthing_pending_names():
+    """Basenames the DESKTOP still needs from the Library share.
+    None = can't tell (not configured / unreachable).
+
+    Stale-while-revalidate: a cached answer younger than 30 s is returned as
+    is; one up to 5 min old is returned immediately while a background thread
+    refreshes it, so the up-to-40-page Syncthing walk never sits in a request
+    (it was a big part of /api/runs taking tens of seconds). Only the very
+    first call, with nothing cached, waits for Syncthing."""
+    import time as _time
+    settings = _syncthing_settings()
+    if settings is None:
+        return None
+    names = _remoteneed_cache["names"]
+    age = _time.time() - _remoteneed_cache["t"]
+    if names is not None and age < _REMOTENEED_FRESH_S:
+        return names
+    if names is not None and age < _REMOTENEED_STALE_OK_S:
+        _refresh_remoteneed_bg(settings)
+        return names
+    return _refresh_remoteneed(settings)
 
 
 @app.get("/api/runs/{date}")
@@ -1396,13 +1483,17 @@ async def api_campaign(days: int = 14):
     except Exception:  # noqa: BLE001 — climatology-only campaign
         pass
     from photonscript.scheduler.campaign import suggest_targets
-    c = build_campaign(config, get_store(), forecast=fc,
-                       days=min(max(days, 7), 28))
-    try:
-        c["suggestions"] = suggest_targets(config, get_store(), c)
-    except Exception:  # noqa: BLE001
-        c["suggestions"] = []
-    return c
+
+    def _build():
+        c = build_campaign(config, get_store(), forecast=fc,
+                           days=min(max(days, 7), 28))
+        try:
+            c["suggestions"] = suggest_targets(config, get_store(), c)
+        except Exception:  # noqa: BLE001
+            c["suggestions"] = []
+        return c
+
+    return await asyncio.to_thread(_build)
 
 
 @app.post("/api/campaign/dismiss")
@@ -1413,7 +1504,7 @@ async def api_campaign_dismiss(payload: dict = Body(...)):
 
 
 @app.get("/api/activity")
-async def api_activity(limit: int = 8):
+def api_activity(limit: int = 8):
     """Newest graded subs for the current night (local evening date)."""
     from photonscript.shared.localtime import utc_offset_hours
     from photonscript.scheduler.runs import _load_subs

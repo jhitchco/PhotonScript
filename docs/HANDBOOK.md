@@ -22,7 +22,7 @@ morning. GitHub: github.com/jhitchco/PhotonScript.
 
 ### Scope PC (at AARO, Pier 3, Rodeo NM)
 - Tailscale: `100.94.189.77` - dashboard at `https://teles-feb25.lobster-bleak.ts.net`
-  (Tailscale `serve` -> localhost:8100; raw `http://100.94.189.77:8100` still works on the tailnet)
+  (Tailscale `serve` -> 127.0.0.1:8100; raw `http://100.94.189.77:8100` still works on the tailnet)
 - Repo: `C:\astro\PhotonScript`; runs via `run-photonscript.ps1` wrapper
   (restarts on exit code 42 = self-update)
 - NINA + PHD2 live here. Image files land here first.
@@ -230,9 +230,11 @@ or "ERROR: ...". Masters in `out\master\`.
   (browser "pc windows at home") - the machine that has Tailscale. Always drive
   the dashboard through Claude-in-Chrome (navigate + javascript_tool fetch);
   never expect the sandbox to reach `100.94.189.77`.
-- DASHBOARD URL (2026-09-26, after the uvicorn TLS change): use
-  `http://teles-feb25.lobster-bleak.ts.net:8100/` (verified from Claude-in-Chrome;
-  the old https hostname without the port no longer loads).
+- DASHBOARD URL (2026-09-26, final): `https://teles-feb25.lobster-bleak.ts.net/`
+  via `tailscale serve --bg http://127.0.0.1:8100` (set as `teles-feb25\sleep`).
+  The in-app uvicorn TLS listener (:8443, `provision-tls.ps1`) was REMOVED: the
+  service runs as `jeremy`, and tailscaled refuses `tailscale cert` from a
+  non-owner account, so it never came up. Direct `http://...:8100` still works.
 - DASHBOARD ACCESS (RESOLVED 2026-09-24): the canonical remote URL is the
   Tailscale HTTPS hostname `https://teles-feb25.lobster-bleak.ts.net/`
   (`serve` -> `127.0.0.1:8100` on the scope PC). Verified end-to-end: a live
@@ -261,15 +263,15 @@ or "ERROR: ...". Masters in `out\master\`.
     * `deploy.ps1` intentionally still defaults `$Scope` to the raw IP - it runs
       ON the scope PC, where the same-node loopback rule makes the hostname
       unreachable. Leave deploy pointed at `http://100.94.189.77:8100`/localhost.
-- SERVE PROXY IS FLAKY (2026-09-26): the 443 `serve` hostname returns 502
-  whenever the uvicorn backend blips, which is often. For anything that must be
-  reliable, hit the DIRECT app port instead of the proxy: `http://teles-feb25.
-  lobster-bleak.ts.net:8100` (hostname on :8100 = stable name + direct uvicorn,
-  no proxy in the middle) or the raw `http://100.94.189.77:8100` on-tailnet.
-  100.94.189.77 has never changed - it IS teles-feb25 (confirm with
-  `tailscale status`); a "can't reach the scope" is almost always the SERVICE
-  being down, not the IP. `deploy.ps1` now posts `/api/update` to the :8100
-  hostname (not the 443 proxy) for exactly this reason.
+- "SERVE PROXY IS FLAKY" WAS THE APP, NOT THE PROXY (2026-09-26 diagnosis):
+  measured from the desktop, `/` took ~13.5 s DIRECT on :8100 and ~14 s via
+  serve; `/api/runs` ~50 s. serve adds ~0.3-0.5 s. Causes: the dashboard ranked
+  every seasonal target with thousands of scalar astropy transforms INSIDE an
+  async handler (freezing the one event loop that also runs the telescope
+  agents), and `/api/runs` rglob'd every night + re-parsed every subs log +
+  walked Syncthing on every poll. Fixed in the perf pass (vectorized
+  astronomy + caches + worker threads). If a 502 shows up again, time the same
+  URL on :8100 before blaming serve. `deploy.ps1` still posts to :8100 direct.
 - SERVICE RESTART (scope PC): `powershell -ExecutionPolicy Bypass -File
   C:\astro\PhotonScript\deploy\run-photonscript.ps1` (note: `C:\astro`, NOT the
   desktop's `C:\dev`). The while-loop only auto-restarts on exit code 42 (an

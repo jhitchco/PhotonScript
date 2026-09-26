@@ -81,16 +81,42 @@ def append_sub_record(config, night_of: str, record: dict) -> None:
         logger.error("Could not append sub record: %s", e)
 
 
+_subs_cache: dict = {}  # path -> (signature, parsed rows)
+_subs_cache_lock = threading.Lock()
+
+
+def _invalidate_subs_cache(p: Path) -> None:
+    with _subs_cache_lock:
+        _subs_cache.pop(str(p), None)
+
+
 def _load_subs(config, date: str) -> list[dict]:
+    """Parsed ``<date>_subs.jsonl``. Memoized on the file's mtime + size, so
+    the dashboard / runs polls stop re-parsing every night's log on every
+    request; any write to the log changes the signature and re-reads it.
+    Returns fresh top-level dicts each call (callers mutate them)."""
     p = runs_dir(config) / f"{date}_subs.jsonl"
-    if not p.exists():
+    try:
+        st = p.stat()
+    except OSError:
+        _invalidate_subs_cache(p)
         return []
     try:  # normalize NINA filter names (H/O/S) to class names (Ha/OIII/SII)
         rev = config.reverse_filter_map()
     except Exception:  # noqa: BLE001
         rev = {}
+    sig = (st.st_mtime_ns, st.st_size, tuple(sorted(rev.items())))
+    key = str(p)
+    with _subs_cache_lock:
+        hit = _subs_cache.get(key)
+    if hit is not None and hit[0] == sig:
+        return [dict(r) for r in hit[1]]
     out = []
-    for line in p.read_text(encoding="utf-8").splitlines():
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    for line in text.splitlines():
         try:
             r = _sanitize_floats(json.loads(line))
         except json.JSONDecodeError:
@@ -99,7 +125,9 @@ def _load_subs(config, date: str) -> list[dict]:
         if f in rev:
             r["filter"] = rev[f]
         out.append(r)
-    return out
+    with _subs_cache_lock:
+        _subs_cache[key] = (sig, out)
+    return [dict(r) for r in out]
 
 
 # One full-frame FITS operation at a time: the scope PC is RAM-tight and
@@ -686,6 +714,9 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
     p.write_text("".join(json.dumps(_sanitize_floats(r)) + "\n"
                          for r in records),
                  encoding="utf-8")
+    # A same-size rewrite inside one coarse NTFS mtime tick would keep the
+    # cache signature, so drop the entry explicitly.
+    _invalidate_subs_cache(p)
 
 
 # Piggyback subs captured within this margin of the RC16's imaging window
@@ -1046,6 +1077,50 @@ def prunable_night_dirs(config, before: str) -> list[dict]:
     return sorted(out, key=lambda x: (x["date"], x["path"]))
 
 
+_fits_count_cache: dict = {}  # night root -> (computed_at, (lights, cal))
+_FITS_COUNT_TTL_RECENT = 30.0    # tonight / last night: frames still landing
+_FITS_COUNT_TTL_OLD = 900.0      # older nights only change on prune/archive
+
+
+def _night_fits_counts(night_root: Path, date: str) -> tuple[int, int]:
+    """(lights, calibration) FITS counts for one night folder, TTL-cached.
+
+    /api/runs used to rglob EVERY night's folder on every poll (tens of
+    seconds on the scope PC once the archive grew). Recent nights refresh
+    every 30 s; older ones every 15 min (or immediately via
+    ``invalidate_fits_counts`` after a prune)."""
+    import time as _time
+    key = str(night_root)
+    now = _time.monotonic()
+    try:
+        age_days = (datetime.utcnow().date()
+                    - datetime.strptime(date, "%Y-%m-%d").date()).days
+    except ValueError:
+        age_days = 0
+    ttl = _FITS_COUNT_TTL_RECENT if age_days <= 2 else _FITS_COUNT_TTL_OLD
+    hit = _fits_count_cache.get(key)
+    if hit is not None and now - hit[0] < ttl:
+        return hit[1]
+    n_lights = n_cal = 0
+    if night_root.exists():
+        for f in night_root.rglob("*.fits"):
+            if _is_calibration(f.relative_to(night_root).parts):
+                n_cal += 1
+            else:
+                n_lights += 1
+    _fits_count_cache[key] = (now, (n_lights, n_cal))
+    return n_lights, n_cal
+
+
+def invalidate_fits_counts(date: str | None = None) -> None:
+    """Drop cached FITS counts (one night, or all) after files move/delete."""
+    if date is None:
+        _fits_count_cache.clear()
+        return
+    for k in [k for k in _fits_count_cache if Path(k).name == date]:
+        _fits_count_cache.pop(k, None)
+
+
 def list_runs(config) -> list[dict]:
     """Nights with any evidence: plan, subs log, or FITS folder."""
     dates = set()
@@ -1062,14 +1137,7 @@ def list_runs(config) -> list[dict]:
     out = []
     for d in sorted(dates, reverse=True):
         subs = _load_subs(config, d)
-        n_lights = n_cal = 0
-        night_root = fits_root / d
-        if night_root.exists():
-            for f in night_root.rglob("*.fits"):
-                if _is_calibration(f.relative_to(night_root).parts):
-                    n_cal += 1
-                else:
-                    n_lights += 1
+        n_lights, n_cal = _night_fits_counts(fits_root / d, d)
         out.append({"date": d, "subs_logged": len(subs),
                     "lights": n_lights, "cal_frames": n_cal,
                     "has_plan": (runs_dir(config) / f"{d}_plan.json").exists(),

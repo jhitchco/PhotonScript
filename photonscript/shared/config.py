@@ -34,13 +34,6 @@ class PhotonScriptConfig(BaseSettings):
     scheduler_host: str = "0.0.0.0"
     scheduler_port: int = 8100
 
-    # --- Scheduler remote TLS (retires `tailscale serve`) ---
-    scheduler_tls_enabled: bool = False   # add a 2nd HTTPS listener for remote
-    scheduler_tls_port: int = 8443        # remote URL: https://<hostname>:<port>
-    scheduler_tls_hostname: str = ""      # MagicDNS name, e.g. teles-feb25.lobster-bleak.ts.net
-    scheduler_tls_cert_dir: str = ""      # cert/key dir; "" = <data_dir>/certs
-    tailscale_exe: str = "tailscale"      # tailscale CLI (for `tailscale cert`)
-
     # --- Telescope Agent ---
     nina_base_url: str = "http://localhost:1888/v2/api"  # NINA Advanced API (ninaAPI plugin)
     phd2_host: str = "localhost"

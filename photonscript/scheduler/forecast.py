@@ -16,6 +16,8 @@ Night rating: green >= 65% usable, yellow >= 30%, else red.
 
 from __future__ import annotations
 
+import asyncio
+import copy
 from datetime import datetime, timedelta
 
 import httpx
@@ -241,14 +243,34 @@ def _cache_path(config):
     return Path(config.data_dir) / "forecast_cache.json"
 
 
+_FORECAST_TTL_S = 600.0
+_forecast_mem: dict = {}  # (lat, lon) -> (monotonic t, result)
+
+
 async def get_forecast(config) -> dict:
     """Fetch Open-Meteo and score the next 7 nights.
+
+    Results are memoized for 10 minutes (Open-Meteo updates hourly; the
+    dashboard, campaign and armer all ask for it), and the twilight/moon
+    scoring runs in a worker thread so it never stalls the event loop.
 
     On fetch failure, falls back to the last successful forecast (marked
     stale) so a transient network blip doesn't blank the outlook.
     """
+    import time as _time
+    obs = config.get_observatory()
+    key = (obs.latitude, obs.longitude)
+    hit = _forecast_mem.get(key)
+    if hit is not None and _time.monotonic() - hit[0] < _FORECAST_TTL_S:
+        return copy.deepcopy(hit[1])
+    result = await _fetch_forecast(config)
+    if not result.get("stale"):
+        _forecast_mem[key] = (_time.monotonic(), copy.deepcopy(result))
+    return result
+
+
+async def _fetch_forecast(config) -> dict:
     import json as _json
-    from photonscript.shared.astronomy import get_twilight_times
 
     obs = config.get_observatory()
     url = OPEN_METEO.format(lat=obs.latitude, lon=obs.longitude)
@@ -267,6 +289,14 @@ async def get_forecast(config) -> dict:
         raise RuntimeError(f"Open-Meteo fetch failed "
                            f"({type(e).__name__}: {e or 'no detail'})") from e
 
+    return await asyncio.to_thread(_score_forecast, config, data)
+
+
+def _score_forecast(config, data: dict) -> dict:
+    import json as _json
+    from photonscript.shared.astronomy import get_twilight_times
+
+    obs = config.get_observatory()
     utc_offset = data.get("utc_offset_seconds", 0) / 3600
     windows = []
     now = datetime.utcnow()
