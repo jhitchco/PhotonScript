@@ -50,6 +50,42 @@ def test_baseline_does_not_shrink_on_transient_dip(tmp_path):
     assert b["baseline_items"] == 140
 
 
+def _t(minutes):
+    from datetime import datetime, timezone, timedelta
+    return datetime(2026, 9, 26, 0, 0, tzinfo=timezone.utc) + timedelta(minutes=minutes)
+
+
+def test_batch_stall_fires_once_then_clears_on_drain(tmp_path):
+    cfg = _cfg(tmp_path)  # sync_stall_min default 30
+    sync_batch.mark_reset(cfg)
+    b = sync_batch.annotate(cfg, 100, 100, now=_t(0))
+    assert b["stalled"] is False and b["stall_new"] is False
+    # same pending 20 min later — not stalled yet
+    b = sync_batch.annotate(cfg, 100, 100, now=_t(20))
+    assert b["stalled"] is False
+    # still 100 pending at 31 min with no drain -> STALLED, alarmed once
+    b = sync_batch.annotate(cfg, 100, 100, now=_t(31))
+    assert b["stalled"] is True and b["stall_new"] is True
+    assert b["stalled_min"] >= 30
+    # keeps reading stalled, but no second alarm
+    b = sync_batch.annotate(cfg, 100, 100, now=_t(40))
+    assert b["stalled"] is True and b["stall_new"] is False
+    # it drains -> progress resets the stall clock and the alarm latch
+    b = sync_batch.annotate(cfg, 60, 60, now=_t(41))
+    assert b["stalled"] is False
+    b = sync_batch.annotate(cfg, 60, 60, now=_t(80))  # long idle but re-armed
+    assert b["stall_new"] is True  # a fresh stall episode can alarm again
+
+
+def test_batch_stall_disabled_when_zero(tmp_path):
+    cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path),
+                             sync_stall_min=0)
+    sync_batch.mark_reset(cfg)
+    sync_batch.annotate(cfg, 100, 100, now=_t(0))
+    b = sync_batch.annotate(cfg, 100, 100, now=_t(120))
+    assert b["stalled"] is False and b["stall_new"] is False
+
+
 def test_idle_when_nothing_ever_queued(tmp_path):
     cfg = _cfg(tmp_path)
     b = sync_batch.annotate(cfg, 0, 0)

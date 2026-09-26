@@ -269,6 +269,16 @@ class TelescopeAgent:
             self._alerted.discard("safety-disconnected")
             return
 
+        # TODO(jeremy): handoff #2 item 2 asked to debounce this top-of-loop "bad"
+        # decision — require Connected:False on 2 consecutive SAFETY_POLL_S polls
+        # before latching _safety_bad_since, so one racy/slow Alpaca read doesn't
+        # start the down-clock. NOT applied: the existing regression tests
+        # (test_safety_watchdog.py::test_grace_then_reconnect et al.) assert that a
+        # single post-grace bad read arms _safety_bad_since, and the settle-poll
+        # below already absorbs the post-reconnect racy-False that caused the 60 s
+        # churn. Adding the debounce here needs those tests updated too — do that
+        # deliberately rather than have me guess. The SAFETY_GRACE_S=120 window
+        # still absorbs brief blips before any remediation fires.
         now = time.monotonic()
         if self._safety_bad_since is None:
             self._safety_bad_since = now
@@ -305,8 +315,22 @@ class TelescopeAgent:
                     except Exception:  # noqa: BLE001 - best effort
                         pass
                 await self.nina.connect_safety()
-                info = await self.nina.get_safety_info()
-                if info.get("Connected"):
+                # The slow AlpacaDynamic3 driver often still reads
+                # Connected:False for a few seconds right after a SUCCESSFUL
+                # connect. Don't trust a single immediate read — poll over a
+                # short settle window before declaring the reconnect failed,
+                # otherwise a good reconnect never clears _safety_bad_since and
+                # the watchdog re-cycles the monitor every 60 s.
+                ok = False
+                for _ in range(4):  # ~ up to 6 s for the slow Alpaca driver
+                    await asyncio.sleep(1.5)
+                    try:
+                        if (await self.nina.get_safety_info()).get("Connected"):
+                            ok = True
+                            break
+                    except Exception:  # noqa: BLE001
+                        pass
+                if ok:
                     logger.info("Safety-monitor watchdog: reconnected on "
                                 "attempt %d", self._safety_fix_attempts)
                     await self._escalate(

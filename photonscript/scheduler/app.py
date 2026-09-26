@@ -1480,6 +1480,21 @@ async def api_sync():
             lib.lower().startswith(folder_path.lower())
         need_items = d.get("needItems", 0)
         need_bytes = d.get("needBytes", 0)
+        # batch = "N of M this transfer", draining to 100% (see sync_batch)
+        batch = sync_batch.annotate(get_config(), need_items, need_bytes)
+        # Alarm once when the batch first stalls (pending not draining) — a
+        # wedged transfer loop was previously only *reported*, never flagged.
+        if batch.get("stall_new"):
+            from photonscript.shared.pushover import notify
+            try:
+                await notify(
+                    get_config(),
+                    f"Transfer STALLED — {batch.get('pending_items')} files still "
+                    f"pending and not draining for ~{batch.get('stalled_min')} min. "
+                    "Check Syncthing / the librarian transfer loop on the scope PC.",
+                    title="PhotonScript transfer", priority=1)
+            except Exception:  # noqa: BLE001
+                pass
         return {"configured": True,
                 "completion_pct": round(float(d.get("completion", 0)), 1),
                 "need_items": need_items,
@@ -1488,8 +1503,7 @@ async def api_sync():
                 "library_path": lib,
                 "library_synced": library_synced,
                 "disk": disk,
-                # batch = "N of M this transfer", draining to 100% (see sync_batch)
-                "batch": sync_batch.annotate(get_config(), need_items, need_bytes)}
+                "batch": batch}
     except Exception as e:  # noqa: BLE001
         return {"configured": True, "error": str(e), "disk": disk}
 
@@ -1966,20 +1980,30 @@ def api_run_contact_sheet(date: str, cols: int = 6, w: int = 200):
 
 
 @app.get("/api/nina/log", response_class=PlainTextResponse)
-async def api_nina_log(lines: int = 500, grep: str = ""):
+async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16"):
     """Tail (and optionally filter) the newest NINA log - remote 2AM triage
-    without pulling the whole bundle."""
+    without pulling the whole bundle. rig='piggyback' (aliases: osc, nina2, 2)
+    tails NINA #2's log instead of the RC16's, so the OSC is triageable too."""
     import glob as _glob
-    logs = sorted(_glob.glob(str(Path(get_config().nina_logs_dir) / "*.log")))
+    cfg = get_config()
+    if str(rig).lower() in ("piggyback", "osc", "nina2", "2"):
+        logs_dir = getattr(cfg, "piggyback_nina_logs_dir", "") or ""
+        if not logs_dir:
+            return ("piggyback_nina_logs_dir not configured (NINA #2 log dir) — "
+                    "set it in System config to tail the OSC's log")
+    else:
+        logs_dir = cfg.nina_logs_dir
+    logs = sorted(_glob.glob(str(Path(logs_dir) / "*.log")))
     if not logs:
-        return "no NINA logs found"
+        return f"no NINA logs found for {rig} under {logs_dir}"
     rows = Path(logs[-1]).read_text(encoding="utf-8",
                                     errors="replace").splitlines()
     if grep:
         needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
         rows = [r for r in rows if any(n in r.lower() for n in needles)]
     rows = rows[-min(max(1, lines), 5000):]
-    return f"# {Path(logs[-1]).name} - last {len(rows)} lines\n" + "\n".join(rows)
+    return (f"# [{rig}] {Path(logs[-1]).name} - last {len(rows)} lines\n"
+            + "\n".join(rows))
 
 
 @app.get("/api/phd2/log", response_class=PlainTextResponse)

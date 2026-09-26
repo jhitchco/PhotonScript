@@ -35,15 +35,60 @@ def setup_logging(level: str = "INFO"):
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
-async def run_scheduler(config: PhotonScriptConfig):
-    """Run only the scheduler web UI."""
-    server = uvicorn.Server(uvicorn.Config(
+def _ensure_tls_cert(config: PhotonScriptConfig) -> Optional[tuple[str, str]]:
+    """Export/refresh the Tailscale cert for the HTTPS listener; return
+    (certfile, keyfile) or None to stay HTTP-only. `tailscale cert` is
+    idempotent (re-fetches only near expiry). Requires the service account to be
+    the tailscaled operator (see MAINTENANCE / `tailscale set --operator`)."""
+    import subprocess
+    host = (config.scheduler_tls_hostname or "").strip()
+    if not config.scheduler_tls_enabled or not host:
+        return None
+    cert_dir = Path(config.scheduler_tls_cert_dir or (config.data_dir / "certs"))
+    cert_dir.mkdir(parents=True, exist_ok=True)
+    certfile = cert_dir / f"{host}.crt"
+    keyfile = cert_dir / f"{host}.key"
+    try:
+        subprocess.run(
+            [config.tailscale_exe, "cert",
+             "--cert-file", str(certfile), "--key-file", str(keyfile), host],
+            check=True, capture_output=True, text=True, timeout=120)
+        logger.info("TLS cert ready for %s (%s)", host, certfile)
+    except Exception as e:  # noqa: BLE001
+        if certfile.exists() and keyfile.exists():
+            logger.warning("tailscale cert refresh failed (%s) — using existing "
+                           "files; renew before ~90d expiry", e)
+        else:
+            logger.error("tailscale cert failed, no cert on disk (%s) — HTTPS "
+                         "disabled, HTTP :%d still up", e, config.scheduler_port)
+            return None
+    return str(certfile), str(keyfile)
+
+
+def _web_servers(config: PhotonScriptConfig) -> list[uvicorn.Server]:
+    """HTTP listener (loopback + tailnet, unchanged) + optional HTTPS listener
+    for remote browsers (replaces `tailscale serve`)."""
+    servers = [uvicorn.Server(uvicorn.Config(
         "photonscript.scheduler.app:app",
-        host=config.scheduler_host,
-        port=config.scheduler_port,
-        log_level="warning",
-    ))
-    await server.serve()
+        host=config.scheduler_host, port=config.scheduler_port,
+        log_level="warning"))]
+    tls = _ensure_tls_cert(config)
+    if tls:
+        certfile, keyfile = tls
+        s = uvicorn.Server(uvicorn.Config(
+            "photonscript.scheduler.app:app",
+            host=config.scheduler_host, port=config.scheduler_tls_port,
+            log_level="warning", ssl_certfile=certfile, ssl_keyfile=keyfile))
+        s.install_signal_handlers = lambda: None  # only the first server owns signals
+        servers.append(s)
+        logger.info("Scheduler HTTPS on :%d (remote); HTTP on :%d (internal)",
+                    config.scheduler_tls_port, config.scheduler_port)
+    return servers
+
+
+async def run_scheduler(config: PhotonScriptConfig):
+    """Run only the scheduler web UI (HTTP + optional remote HTTPS)."""
+    await asyncio.gather(*[s.serve() for s in _web_servers(config)])
 
 
 def _telescope_agents(config: PhotonScriptConfig) -> list:
@@ -98,13 +143,8 @@ async def run_full(config: PhotonScriptConfig):
     librarian = Librarian(config)
     processor = ImageProcessor(config)
 
-    # Start scheduler as uvicorn server
-    server = uvicorn.Server(uvicorn.Config(
-        "photonscript.scheduler.app:app",
-        host=config.scheduler_host,
-        port=config.scheduler_port,
-        log_level="warning",
-    ))
+    # Start scheduler as uvicorn server(s): HTTP (internal) + optional remote HTTPS
+    web = _web_servers(config)
 
     logger.info("=" * 60)
     logger.info("  PhotonScript — Remote Telescope Orchestration")
@@ -118,7 +158,7 @@ async def run_full(config: PhotonScriptConfig):
     logger.info("=" * 60)
 
     await asyncio.gather(
-        server.serve(),
+        *[s.serve() for s in web],
         *[t.start() for t in telescopes],
         librarian.start(),
         processor.start(),

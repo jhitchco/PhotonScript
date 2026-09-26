@@ -45,7 +45,8 @@ for nights you're about to prune so the visual record survives.
 ## Remote log tails (2 AM triage)
 
 ```
-GET /api/nina/log?lines=800&grep=Autofocus        # NINA (nina_logs_dir)
+GET /api/nina/log?lines=800&grep=Autofocus        # NINA #1 / RC16 (nina_logs_dir)
+GET /api/nina/log?rig=piggyback&grep=Autofocus     # NINA #2 / OSC (piggyback_nina_logs_dir)
 GET /api/phd2/log?lines=800&grep=GuideStep|star lost   # PHD2 GuideLog (phd2_logs_dir)
 GET /api/phd2/log?kind=debug                       # PHD2 DebugLog
 GET /api/ascom/log?name=Safety                     # ASCOM trace log
@@ -53,6 +54,19 @@ GET /api/ascom/log?name=Safety                     # ASCOM trace log
 
 `phd2_logs_dir` defaults to `%USERPROFILE%\Documents\PHD2`; set
 `PS_PHD2_LOGS_DIR` (System & Config → PHD2) if PHD2 writes its logs elsewhere.
+Set `piggyback_nina_logs_dir` (NINA #2's log folder) to tail the OSC's log.
+
+## Run-time alerts (Pushover)
+
+Beyond the guiding + cooler watchdogs above, a run now also fires once on:
+- **Safety monitor unreadable** — the monitor reads None (disconnected/erroring)
+  for ~3 min during a run, so roof gating is blind (the OSC Alpaca sim that "came
+  off"). Resets when it reads cleanly. `safety_monitor_watchdog=false` to mute.
+  NINA's own SafetyMonitorCondition still gates imaging regardless.
+- **Transfer stalled** — the desktop transfer batch's pending count hasn't
+  drained in `sync_stall_min` (30) min while non-empty (a wedged Syncthing /
+  librarian loop). Fires from `/api/sync` once per stall episode; `sync_stall_min=0`
+  disables. Also surfaced as `batch.stalled` / `stalled_min` in the sync payload.
 
 ## Guiding is the default
 

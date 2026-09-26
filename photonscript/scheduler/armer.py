@@ -67,6 +67,7 @@ NINA_PATHS = {
 GUIDING_WORKING_WARN_TICKS = 4      # ~2 min stuck calibrating/looping -> warn
 GUIDING_RECOVER_AFTER_TICKS = 6     # ~3 min unlocked -> one auto guider restart
 GUIDING_ESCALATE_AFTER_TICKS = 10   # ~5 min unlocked -> priority escalation
+SAFETY_NONE_ALERT_TICKS = 6         # ~3 min of an unreadable safety monitor -> alert
 
 
 class Armer:
@@ -83,6 +84,8 @@ class Armer:
         self._guiding_recovered = False  # auto guider-restart tried this episode
         self._guiding_escalated = False  # priority escalation sent this episode
         self._cooler_alerted: dict[str, bool] = {}  # per-rig cooler-nanny alert latch
+        self._safety_none_ticks = 0    # consecutive ticks safety monitor unreadable
+        self._safety_alerted = False   # safety-monitor-blind alert latch (episode)
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
         self._task: asyncio.Task | None = None
 
@@ -606,6 +609,39 @@ class Armer:
             else:
                 self._cooler_alerted[rig] = False  # at setpoint — re-arm the latch
 
+    async def _watch_safety_monitor(self, now: datetime, safe: bool | None) -> None:
+        """Safety-monitor watchdog. `safe` is True/False when the monitor reads
+        cleanly and None when it's UNREADABLE (disconnected/erroring/NINA blip).
+        A readable monitor — even reading False (unsafe) — is fine; the danger is
+        a monitor that has gone dark, because then nothing here can tell whether
+        the roof is open (the 2026-09-26 OSC Alpaca sim that "came off"). Alert
+        once after it's been unreadable a few ticks (transient blips filtered),
+        reset when it reads cleanly again. Imaging itself still rides NINA's own
+        SafetyMonitorCondition regardless."""
+        if not getattr(self.config, "safety_monitor_watchdog", True):
+            return
+        if safe is None:
+            self._safety_none_ticks += 1
+            if (self._safety_none_ticks >= SAFETY_NONE_ALERT_TICKS
+                    and not self._safety_alerted):
+                self._safety_alerted = True
+                mins = self._safety_none_ticks * TICK_SECONDS // 60
+                await notify(
+                    self.config,
+                    f"Safety monitor UNREADABLE for ~{mins} min — roof gating is "
+                    "blind (driver likely disconnected, e.g. the Alpaca monitor "
+                    "'came off'). NINA's own SafetyMonitorCondition still gates "
+                    "imaging; reconnect the safety monitor.",
+                    title="PhotonScript safety", priority=1)
+            return
+        # Readable again (True or False) — recover the episode.
+        if self._safety_alerted:
+            await notify(self.config,
+                         "Safety monitor readable again — roof gating restored.",
+                         title="PhotonScript safety")
+        self._safety_none_ticks = 0
+        self._safety_alerted = False
+
     async def _is_safe(self) -> bool | None:
         data = await self._nina("safety")
         if data is None:
@@ -836,6 +872,7 @@ class Armer:
                              title="PhotonScript complete")
                 return
             safe = await self._is_safe()
+            await self._watch_safety_monitor(now, safe)
             if safe is False:
                 # The sequence's own night loop parks and holds via
                 # WaitUntilSafe — we observe and notify, we don't interfere.

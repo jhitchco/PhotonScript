@@ -302,6 +302,71 @@ async def test_cooler_nanny_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_safety_watchdog_alerts_when_unreadable(monkeypatch):
+    """Safety monitor unreadable (None) past the tick threshold → one alert;
+    a readable True/False never alarms."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _armer()
+    notes = []
+
+    async def _notify(cfg, msg, **kw):
+        notes.append(msg)
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+    now = datetime(2026, 9, 25, 3, 0, 0)
+
+    for _ in range(armer_mod.SAFETY_NONE_ALERT_TICKS - 1):
+        await a._watch_safety_monitor(now, None)
+    assert notes == []                      # not yet — transient blips filtered
+    await a._watch_safety_monitor(now, None)
+    assert len(notes) == 1 and "UNREADABLE" in notes[0]
+    await a._watch_safety_monitor(now, None)  # deduped
+    assert len(notes) == 1
+
+
+@pytest.mark.asyncio
+async def test_safety_watchdog_recovers_and_resets(monkeypatch):
+    import photonscript.scheduler.armer as armer_mod
+    a = _armer()
+    notes = []
+
+    async def _notify(cfg, msg, **kw):
+        notes.append(msg)
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+    now = datetime(2026, 9, 25, 3, 0, 0)
+    for _ in range(armer_mod.SAFETY_NONE_ALERT_TICKS):
+        await a._watch_safety_monitor(now, None)
+    assert a._safety_alerted is True
+    await a._watch_safety_monitor(now, True)   # readable again
+    assert any("readable again" in m for m in notes)
+    assert a._safety_alerted is False and a._safety_none_ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_safety_watchdog_quiet_on_clean_unsafe(monkeypatch):
+    """A monitor reading False (genuinely unsafe) is readable — no blind alarm."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _armer()
+    notes = []
+    monkeypatch.setattr(armer_mod, "notify",
+                        lambda *a, **k: notes.append(1) or _noop_sleep())
+    for _ in range(armer_mod.SAFETY_NONE_ALERT_TICKS + 3):
+        await a._watch_safety_monitor(datetime(2026, 9, 25, 3, 0, 0), False)
+    assert notes == [] and a._safety_none_ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_safety_watchdog_disabled(monkeypatch):
+    import photonscript.scheduler.armer as armer_mod
+    a = _armer(safety_monitor_watchdog=False)
+    notes = []
+    monkeypatch.setattr(armer_mod, "notify",
+                        lambda *a, **k: notes.append(1) or _noop_sleep())
+    for _ in range(armer_mod.SAFETY_NONE_ALERT_TICKS + 3):
+        await a._watch_safety_monitor(datetime(2026, 9, 25, 3, 0, 0), None)
+    assert notes == []
+
+
+@pytest.mark.asyncio
 async def test_watchdog_resets_and_renotifies_on_recovery(monkeypatch):
     """Not guiding (warn), then locked again → 'recovered' note + episode reset,
     so the watchdog re-arms for a later failure the same night."""

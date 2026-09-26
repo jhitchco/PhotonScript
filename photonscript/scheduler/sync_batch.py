@@ -51,17 +51,24 @@ def mark_reset(config) -> dict:
     high-water mark from the freshly-queued work. Called by the Reset button and
     automatically after a library rebuild / night approval."""
     state = {"baseline_items": 0, "baseline_bytes": 0,
-             "reset_at": datetime.now(timezone.utc).isoformat()}
+             "reset_at": datetime.now(timezone.utc).isoformat(),
+             "last_pending_items": None, "last_progress_at": None,
+             "stall_alerted": False}
     _save(config, state)
     return state
 
 
-def annotate(config, current_items, current_bytes) -> dict:
+def annotate(config, current_items, current_bytes, now=None) -> dict:
     """Grow the baseline to the peak pending since reset, then report drain.
 
     Returns a batch dict for the sync payload. `active` is True while there's a
-    non-empty batch still transferring.
+    non-empty batch still transferring. Also tracks whether the batch has
+    STALLED — pending hasn't dropped in `sync_stall_min` minutes while still
+    non-empty (a wedged Syncthing/librarian loop that only *reports* the backlog
+    and silently re-queues forever). `stall_new` is True on the single read that
+    first crosses the threshold, so the caller can Pushover exactly once.
     """
+    now = now or datetime.now(timezone.utc)
     try:
         ci = int(current_items or 0)
         cb = int(current_bytes or 0)
@@ -70,14 +77,33 @@ def annotate(config, current_items, current_bytes) -> dict:
     state = _load(config)
     b_items = int(state.get("baseline_items", 0) or 0)
     b_bytes = int(state.get("baseline_bytes", 0) or 0)
-    grew = False
     if ci > b_items:
-        b_items = ci; grew = True
+        b_items = ci
     if cb > b_bytes:
-        b_bytes = cb; grew = True
-    if grew:
-        state.update(baseline_items=b_items, baseline_bytes=b_bytes)
-        _save(config, state)
+        b_bytes = cb
+    state.update(baseline_items=b_items, baseline_bytes=b_bytes)
+
+    # --- stall tracking: "progress" = pending dropped (or first-ever sample) ---
+    prev = state.get("last_pending_items")
+    if prev is None or ci < int(prev):
+        state["last_progress_at"] = now.isoformat()
+        state["stall_alerted"] = False
+    state["last_pending_items"] = ci
+
+    active = b_items > 0 and ci > 0
+    stall_win = int(getattr(config, "sync_stall_min", 30))
+    stalled, stall_new, stalled_min = False, False, 0
+    lp = state.get("last_progress_at")
+    if active and lp:
+        try:
+            stalled_min = int((now - datetime.fromisoformat(lp)).total_seconds() // 60)
+        except (ValueError, TypeError):
+            stalled_min = 0
+        stalled = stall_win > 0 and stalled_min >= stall_win
+        if stalled and not state.get("stall_alerted"):
+            stall_new = True
+            state["stall_alerted"] = True
+    _save(config, state)
 
     done_items = max(0, b_items - ci)
     done_bytes = max(0, b_bytes - cb)
@@ -96,5 +122,8 @@ def annotate(config, current_items, current_bytes) -> dict:
         "pending_bytes": cb,
         "pct": pct,
         "reset_at": state.get("reset_at"),
-        "active": b_items > 0 and ci > 0,
+        "active": active,
+        "stalled": stalled,
+        "stalled_min": stalled_min,
+        "stall_new": stall_new,
     }

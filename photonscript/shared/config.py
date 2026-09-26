@@ -34,6 +34,13 @@ class PhotonScriptConfig(BaseSettings):
     scheduler_host: str = "0.0.0.0"
     scheduler_port: int = 8100
 
+    # --- Scheduler remote TLS (retires `tailscale serve`) ---
+    scheduler_tls_enabled: bool = False   # add a 2nd HTTPS listener for remote
+    scheduler_tls_port: int = 8443        # remote URL: https://<hostname>:<port>
+    scheduler_tls_hostname: str = ""      # MagicDNS name, e.g. teles-feb25.lobster-bleak.ts.net
+    scheduler_tls_cert_dir: str = ""      # cert/key dir; "" = <data_dir>/certs
+    tailscale_exe: str = "tailscale"      # tailscale CLI (for `tailscale cert`)
+
     # --- Telescope Agent ---
     nina_base_url: str = "http://localhost:1888/v2/api"  # NINA Advanced API (ninaAPI plugin)
     phd2_host: str = "localhost"
@@ -54,6 +61,10 @@ class PhotonScriptConfig(BaseSettings):
     syncthing_api_key: str = ""
     syncthing_folder_id: str = ""   # folder id of the Library share
     syncthing_device_id: str = ""   # the DESKTOP's device id
+    sync_stall_min: int = 30        # alarm when the transfer batch's pending count
+                                    # hasn't dropped in this many minutes while
+                                    # still non-empty (a wedged transfer loop that
+                                    # only reports the backlog). 0 = disable.
     astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     dark_target_count: int = 30  # dark-library quota per exposure length (current epoch)
     dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
@@ -79,6 +90,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # month. Set 30 for monthly, 0 to capture every night.
     flat_count: int = 15  # sky flats per filter at dawn
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
+    piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir, for tailing the
+                                    # OSC's log via /api/nina/log?rig=piggyback.
+                                    # Empty = not configured (endpoint says so).
     phd2_logs_dir: str = "C:\\Users\\jeremy\\Documents\\PHD2"  # PHD2 GuideLog +
     # DebugLog dir (PHD2 default). Lets the dashboard tail guiding remotely —
     # RMS, star-lost, calibration — the same way nina_logs_dir does for NINA.
@@ -279,6 +293,12 @@ class PhotonScriptConfig(BaseSettings):
                                  # false to disable the nanny entirely.
     cooler_tolerance_c: float = 3.0  # nanny acts when a rig's live temp is more than
                                  # this many °C above setpoint in the cold window.
+    safety_monitor_watchdog: bool = True  # alert if the safety monitor reads
+                                 # UNREADABLE (disconnected/erroring) for a while
+                                 # during a run — roof gating is then blind (the
+                                 # 2026-09-26 OSC Alpaca sim that "came off"). Off
+                                 # = no alert. Imaging still rides NINA's own
+                                 # SafetyMonitorCondition regardless.
     gradual_warm_minutes: float = 0.0  # duration of the camera warm ramp on cooler-off
                                  # (arm cooler-off, dawn shutdown, disarm make-safe, End
                                  # area). 0 = INSTANT: just release the setpoint / turn
