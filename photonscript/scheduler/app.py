@@ -1634,8 +1634,16 @@ def api_sync_queue():
 @app.get("/api/calibration/health")
 def api_calibration_health(rig: str = "rc16"):
     from photonscript.scheduler.calibration import calibration_health
-    from photonscript.shared.rigs import rig_config
-    return calibration_health(rig_config(get_config(), rig))
+    from photonscript.shared.rigs import PIGGYBACK, rig_config
+    cfg = get_config()
+    if rig == PIGGYBACK and not getattr(cfg, "piggyback_image_watch_dir", ""):
+        # Without its own watch dir the piggyback config falls back to the
+        # RC16's folders, so this used to report the RC16's frames as the
+        # piggyback's (PS-36). Say so instead of reporting healthy.
+        return JSONResponse(status_code=409, content={
+            "detail": "piggyback_image_watch_dir is not set; can't report "
+                      "Piggy-600 calibration (it would show the RC16's frames)"})
+    return calibration_health(rig_config(cfg, rig))
 
 
 @app.get("/api/focus")

@@ -5,9 +5,9 @@
 #   .\deploy\run-integration-osc.ps1 -Name "M31_OSC"
 #
 # Calibration is matched to the OSC camera (INSTRUME=AP26CC) AND the light epoch
-# (exposure|gain|offset|temp). The existing library calibration is all AP26MC
-# (the mono main cam) so nothing will match until OSC darks/flats/bias are shot
-# (see the sequencer's OSC calibration plan). The pipeline runs fine uncalibrated.
+# (exposure|gain|offset|temp). AP26CC calibration comes from the piggyback's
+# library subtree (Library\piggyback\Calibration). The pipeline still runs
+# uncalibrated if none matches.
 param(
     [string]$Name = "M31_OSC",
     [string]$Source = "$env:USERPROFILE\ninashare\Library\_\OSC",
@@ -52,10 +52,16 @@ Get-ChildItem $Source -Filter *.fits | ForEach-Object {
 }
 Write-Host "Light epochs (exp|gain|offset|temp): $($epochs.Keys -join '  |  ')"
 
+# Calibration lives in two trees: the RC16's (Library\Calibration) and the
+# piggyback's own subtree (Library\piggyback\Calibration), which PhotonScript
+# fills from NINA #2's output dir (PS-36). Scan both; INSTRUME picks the camera.
+$calRoots = @(@((Join-Path $Library "Calibration"),
+                (Join-Path $Library "piggyback\Calibration")) | Where-Object { Test-Path $_ })
+Write-Host "Calibration roots: $($calRoots -join '  |  ')"
+
 # Darks: instrument + full-epoch match
 $nDarks = 0; $nDarkSkip = 0
-$darkRoot = Join-Path $Library "Calibration\DARK"
-if (Test-Path $darkRoot) {
+foreach ($darkRoot in @($calRoots | ForEach-Object { Join-Path $_ "DARK" } | Where-Object { Test-Path $_ })) {
     Get-ChildItem $darkRoot -Recurse -Filter *.fits | ForEach-Object {
         $k = Get-FitsKeys $_.FullName
         $sig = "$($k.EXPTIME)|$($k.GAIN)|$($k.OFFSET)|$($k.'SET-TEMP')"
@@ -67,8 +73,7 @@ if (Test-Path $darkRoot) {
 
 # Bias: newest session that is the OSC instrument
 $nBias = 0
-foreach ($bn in @("BIAS","BIA")) {
-    $root = Join-Path $Library "Calibration\$bn"
+foreach ($root in @(foreach ($cr in $calRoots) { foreach ($bn in @("BIAS","BIA")) { Join-Path $cr $bn } })) {
     if (Test-Path $root) {
         Get-ChildItem $root -Directory | Sort-Object Name -Descending | ForEach-Object {
             if ($nBias -gt 0) { return }
@@ -82,8 +87,7 @@ foreach ($bn in @("BIAS","BIA")) {
 
 # Flats: instrument match -> FLATS/OSC
 $nFlats = 0
-$flatRoot = Join-Path $Library "Calibration\FLAT"
-if (Test-Path $flatRoot) {
+foreach ($flatRoot in @($calRoots | ForEach-Object { Join-Path $_ "FLAT" } | Where-Object { Test-Path $_ })) {
     Get-ChildItem $flatRoot -Recurse -Filter *.fits | ForEach-Object {
         if ((Get-FitsKeys $_.FullName).INSTRUME -eq $Instrument) {
             $nFlats += Add-File $_ (Join-Path $stage "FLATS\OSC")

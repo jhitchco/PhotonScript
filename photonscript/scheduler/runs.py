@@ -1443,35 +1443,88 @@ def build_library(config, date: str | None = None) -> dict:
             linked += 1
         # Calibration: only recent sessions — old darks/flats rarely match
         # current gain/offset/exposures and were flooding the transfer queue
-        from datetime import datetime as _dt, timedelta as _td
-        cal_days = int(getattr(config, "library_cal_days", 120))
-        try:
-            night_age = (_dt.now() - _dt.strptime(d, "%Y-%m-%d")).days
-        except ValueError:
-            night_age = 0
-        root = Path(config.image_watch_dir) / d
-        if root.exists() and night_age <= cal_days:
-            for f in root.rglob("*.fits"):
-                parts = f.relative_to(root).parts
-                if not _is_calibration(parts):
-                    continue
-                typ = next(({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
-                            if p.upper() in _CAL_DIRS), "CAL")
-                dest = lib / "Calibration" / typ / d / f.name
-                if dest.exists():
-                    skipped += 1
-                    continue
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                try:
-                    os.link(f, dest)
-                except OSError:
-                    shutil.copy2(f, dest)
-                linked += 1
+        n_l, n_s = _link_calibration_night(config, Path(config.image_watch_dir),
+                                           lib, d)
+        linked += n_l
+        skipped += n_s
     result = {"library": str(lib), "nights": len(dates), "linked": linked,
               "already_there": skipped, "rejected_excluded": rejected,
               "pending_review": pending_review, "missing_files": missing}
+    pb = _build_piggyback_calibration(config, date)
+    if pb is not None:
+        result["piggyback_calibration"] = pb
     logger.info("Library update: %s", result)
     return result
+
+
+def _link_calibration_night(config, watch_dir: Path, lib: Path,
+                            d: str) -> tuple[int, int]:
+    """Hardlink (else copy) one night's BIAS/DARK/FLAT frames from a NINA
+    output dir into <lib>/Calibration/<TYPE>/<date>/. Returns (linked,
+    already_there). Nights older than library_cal_days are skipped."""
+    import os
+    import shutil
+    from datetime import datetime as _dt
+    cal_days = int(getattr(config, "library_cal_days", 120))
+    try:
+        night_age = (_dt.now() - _dt.strptime(d, "%Y-%m-%d")).days
+    except ValueError:
+        night_age = 0
+    root = Path(watch_dir) / d
+    linked = skipped = 0
+    if not root.exists() or night_age > cal_days:
+        return 0, 0
+    for f in root.rglob("*.fits"):
+        parts = f.relative_to(root).parts
+        if not _is_calibration(parts):
+            continue
+        typ = next(({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
+                    if p.upper() in _CAL_DIRS), "CAL")
+        dest = lib / "Calibration" / typ / d / f.name
+        if dest.exists():
+            skipped += 1
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.link(f, dest)
+        except OSError:
+            shutil.copy2(f, dest)
+        linked += 1
+    return linked, skipped
+
+
+def _build_piggyback_calibration(config, date: str | None = None) -> dict | None:
+    """File NINA #2's (Piggy-600) calibration into the piggyback library
+    subtree (<library>/piggyback/Calibration/...), which Syncthing carries to
+    the desktop where prepare-integration-osc.ps1 reads it.
+
+    Before this (PS-36), build_library only scanned the RC16's watch dir, so 69
+    AP26CC darks, 50 bias and 10 flats sat on the scope PC under
+    Documents/NINA-Piggyback and every OSC stack ran uncalibrated. Nights come
+    from the piggyback watch dir itself (calibration-only nights have no subs
+    file). Returns None when the piggyback is disabled or has no watch dir."""
+    from photonscript.shared.rigs import PIGGYBACK, rig_config, rig_ids
+    if PIGGYBACK not in rig_ids(config):
+        return None
+    if not getattr(config, "piggyback_image_watch_dir", ""):
+        return None
+    pcfg = rig_config(config, PIGGYBACK)
+    watch = Path(pcfg.image_watch_dir)
+    if not watch.exists():
+        return {"error": f"piggyback watch dir not found: {watch}"}
+    lib = library_root(pcfg)
+    if date:
+        nights = [date]
+    else:
+        nights = sorted(p.name for p in watch.iterdir()
+                        if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name))
+    linked = skipped = 0
+    for d in nights:
+        n_l, n_s = _link_calibration_night(pcfg, watch, lib, d)
+        linked += n_l
+        skipped += n_s
+    return {"library": str(lib), "nights": len(nights), "linked": linked,
+            "already_there": skipped}
 
 
 # --- Calibration frames --------------------------------------------------------
