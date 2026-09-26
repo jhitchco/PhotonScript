@@ -128,6 +128,41 @@ class PhotonScriptConfig(BaseSettings):
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
                                  # to fall back to the Paramount MX encoders (+TPoint/
                                  # ProTrack) unguided.
+    guiding_force_first_calibration: bool = True  # the night's FIRST guided
+                                 # target sets StartGuiding.ForceCalibration so
+                                 # PHD2 gets one fresh cal to settle against;
+                                 # every later target relies on Auto-restore.
+                                 # Set false to NEVER force — always trust PHD2's
+                                 # restored calibration (avoids a failed first-cal
+                                 # loop, but risks guiding on a stale/absent cal).
+    guiding_watchdog_grace_min: int = 20  # after dusk, give guiding this long to
+                                 # start (slew->center->AF->calibrate->settle)
+                                 # before the not-guiding watchdog can trip.
+    autofocus_filter: str = "L"  # filter PhotonScript switches to for the AFs it
+                                 # EMITS (twilight startup AF + each target's
+                                 # start-of-target AF) so autofocus runs on bright
+                                 # broadband, never a 3nm narrowband filter that
+                                 # starves the star field ("Stars detected: 1" ->
+                                 # no HFR curve -> donuts). Empty = focus in the
+                                 # imaging filter (old behavior). NOTE: NINA's own
+                                 # AF-After-Filter-Change / HFR / temp TRIGGERS run
+                                 # AF too and obey NINA's *global* Autofocus Filter
+                                 # option — set that to L (+ per-filter offsets) so
+                                 # the triggered AFs also focus on broadband.
+    nina_autofocus_reports_dir: str = ""  # path to NINA's AutoFocus report *.json
+                                 # folder (e.g. %LOCALAPPDATA%/NINA/AutoFocus). Set
+                                 # it to enable the post-night AF-quality alert
+                                 # below; empty = alert disabled.
+    af_min_r2: float = 0.7  # an AF run whose best fit R^2 is below this (a
+                                 # too-few-stars / bad-curve run) trips the AF
+                                 # quality alert in the nightly backfill.
+    guiding_auto_recover: bool = True  # when the watchdog sees guiding stay down
+                                 # (idle OR stuck calibrating/looping) well past
+                                 # the grace, attempt ONE automatic PHD2 guider
+                                 # restart (stop+start, no forced cal so
+                                 # Auto-restore reuses a good calibration) to
+                                 # break a stuck loop before escalating. Set false
+                                 # to warn/escalate only and never touch guiding.
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs
@@ -229,6 +264,16 @@ class PhotonScriptConfig(BaseSettings):
                                  # sequence turns them on at cool_lead. Fresh-arm only
                                  # — never on restart, so a mid-night restart can't
                                  # kill cooling.
+    gradual_warm_minutes: float = 0.0  # duration of the camera warm ramp on cooler-off
+                                 # (arm cooler-off, dawn shutdown, disarm make-safe, End
+                                 # area). 0 = INSTANT: just release the setpoint / turn
+                                 # the TEC off and let the sensor drift to ambient on its
+                                 # own — no forced multi-minute ramp. A ramp fights an
+                                 # arm/precool that wants to cool RIGHT NOW (it kept
+                                 # pushing the temp back up), and the "gentler on the
+                                 # sensor" argument doesn't hold up: cutting the TEC is
+                                 # already a soft, passive warm. Set >0 only to bring the
+                                 # old gradual ramp back.
     # --- Auto-arm (hands-off multi-night) ---
     auto_arm_enabled: bool = False  # re-arm every night automatically (v2). Off by
                                     # default: opt in once you trust a night's run.

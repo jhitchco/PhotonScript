@@ -58,8 +58,25 @@ GET /api/ascom/log?name=Safety                     # ASCOM trace log
 
 `guided_default = True`. On the dashboard, **Arm (Guiding)** is the primary
 button; **Arm (Encoders)** now shows a confirm guard (unguided long subs at
-3248 mm trail). A once-per-night Pushover fires if a night is armed guided but
-PHD2 is not actually guiding ~20 min after dark.
+3248 mm trail).
+
+**Not-guiding watchdog (escalation ladder).** Past `guiding_watchdog_grace_min`
+(default 20) after dusk, if PHD2 isn't locked-and-guiding the armer escalates:
+(1) one warning Pushover — a hard idle trips at once, a stuck
+calibrating/looping state only after it persists (so a normal dither settle
+doesn't false-fire); (2) if still unlocked, **one automatic guider restart**
+(stop+start, no forced cal so Auto-restore reuses a good calibration) —
+disable with `guiding_auto_recover=false`; (3) if still unlocked, a priority
+escalation asking for hands-on help. Recovering to a locked state resets the
+episode, so it re-arms for a later failure the same night. This catches both
+the armed-guided/PHD2-idle case (2026-09-24) and a stuck "star did not move
+enough" calibration loop (2026-09-26).
+
+**First-target calibration.** The night's first guided target forces a fresh
+PHD2 calibration (`StartGuiding.ForceCalibration`); every later target relies on
+PHD2 Auto-restore. Set `guiding_force_first_calibration=false` to never force
+(always trust a restored cal) — avoids a failed first-cal loop but risks guiding
+on a stale/absent calibration.
 
 ## Calibration — what an arm captures automatically
 
@@ -91,3 +108,56 @@ Manual capture any time (roof closed): `POST /api/calibration/capture
 
 `GET /api/sync` includes `disk` (free/total GB, % used) for the capture drive;
 the Runs page sync line shows it (green/amber/red at 80 % / 92 % used).
+
+## Camera warm on cooler-off
+
+`gradual_warm_minutes` (default **0 = instant**) sets the WarmCamera ramp on
+every cooler-off: arm cooler-off, dawn shutdown, disarm make-safe, and the
+sequence End area. Instant just releases the setpoint / cuts the TEC and lets
+the sensor drift to ambient — a ramp fought the next arm/precool (it pushed the
+temp back up while the arm wanted to cool now). Set >0 only to deliberately
+restore the old gradual ramp. NINA's own **Warming → Min. Duration** on each
+camera should read 0 to match.
+
+## Autofocus (narrowband star-starvation)
+
+Autofocusing through a 3nm narrowband filter starves the star field — "Stars
+detected: 1", no HFR curve, donuts (2026-09-26, Cat's Eye in Ha). Fixes, both
+needed for full coverage:
+
+- **PhotonScript's own AFs** (twilight startup + each target's start-of-target
+  AF) now focus on `autofocus_filter` (default **L**) instead of the imaging
+  filter. Set it "" to revert to focusing in the imaging filter.
+- **NINA's triggered AFs** (AF-After-Filter-Change / HFR / temperature triggers)
+  are NINA's, not PhotonScript's — they obey NINA's **global Autofocus Filter**
+  option. Set that to **L** and fill in **per-filter focus offsets** so those AFs
+  also run on broadband. Without this, mid-block AFs still fire in narrowband.
+- Note: the per-filter `_autoFocusExposureTime` PhotonScript stamps into each
+  SwitchFilter's FilterInfo (`_NB_AF_EXPOSURE_S`, Ha/OIII 30 s, SII 45 s) is
+  **ignored by NINA for AF** — NINA reads AF exposure from the profile's filter
+  settings, which is why a live AF still ran at 8 s. Set the AF exposure per
+  filter in the NINA profile too.
+
+**AF-quality alert.** Point `nina_autofocus_reports_dir` at NINA's AutoFocus
+report folder (e.g. `%LOCALAPPDATA%/NINA/AutoFocus`) and the nightly backfill
+grades each AF run; a run with fit R² below `af_min_r2` (default 0.7) or <3
+measure points fires one Pushover naming the filter. Empty dir = disabled.
+
+## Field-recovery cheats (things that bit us live)
+
+- **OSC not shooting lights (only flats/darks):** NINA #2's safety monitor is
+  failing to read, so `has_safety` is false. Almost always the shared
+  AlpacaDynamic driver's trace-log lock ("trace log file used by another
+  process") — give NINA #2 its OWN Alpaca safety driver (AlpacaDynamic2) or turn
+  off driver trace logging. Re-check at the next arm (has_safety is auto-detected).
+- **PHD2 "star did not move enough" / won't calibrate at high Dec:** calibrate
+  near **Dec 0 at the meridian** with the Calibration Assistant, enable **Auto
+  restore calibration** (Brain → Guiding), and turn **OFF** NINA's Force
+  Calibration. Don't recalibrate every target.
+- **Mount won't connect / TheSky COM3 "Error 201":** the port is locked. Kill any
+  zombie TheSkyX, re-enumerate the USB in Device Manager, and connect in order
+  **TheSky → NINA → PHD2** (or a clean reboot). Never let two apps own COM3.
+- **Something pins the cooler at setpoint all day / warm+cooler fighting after a
+  restart:** a restored armer state is re-issuing commands. Clear
+  `C:\Users\jeremy\.photonscript\armer_state.json` and restart the service — do
+  NOT click Disarm from RUNNING (it parks the mount as part of make-safe).

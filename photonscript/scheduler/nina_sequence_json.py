@@ -192,7 +192,9 @@ def _cool_camera(temp_c: float, duration_min: float = 2.0) -> dict:
                        Duration=duration_min, ErrorBehavior=0, Attempts=1)
 
 
-def _warm_camera(duration_min: float = 3.0) -> dict:
+def _warm_camera(duration_min: float = 0.0) -> dict:
+    # duration_min=0 -> instant warm: cut the TEC now, no gradual ramp (a ramp
+    # fights the next arm/precool). See config.gradual_warm_minutes.
     return _make_typed("NINA.Sequencer.SequenceItem.Camera.WarmCamera, "
                        "NINA.Sequencer", Duration=duration_min,
                        ErrorBehavior=0, Attempts=1)
@@ -353,6 +355,20 @@ def _switch_filter(filter_type: FilterType) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer",
         Filter=_filter_info(filter_type), ErrorBehavior=0, Attempts=1)
+
+
+def _af_filter_type(config) -> "FilterType | None":
+    """Resolve config.autofocus_filter (e.g. 'L') to a FilterType, or None when
+    unset/unknown — the filter PhotonScript focuses on for the AFs it emits, so
+    autofocus never runs on a star-starved narrowband filter. Matches on the
+    NINA filter name ('L') or the enum name ('LUMINANCE'), case-insensitively."""
+    name = (getattr(config, "autofocus_filter", "") or "").strip()
+    if not name:
+        return None
+    for ft in FilterType:
+        if name.lower() in (ft.value.lower(), ft.name.lower()):
+            return ft
+    return None
 
 
 def _dither_trigger(after_exposures: int) -> dict:
@@ -590,9 +606,14 @@ def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
 # --- Containers ---------------------------------------------------------------
 
 def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
-                            force_calibration: bool = False) -> dict:
+                            force_calibration: bool = False,
+                            af_filter: "FilterType | None" = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
-    plate solve center -> tracking (defensive) -> [guiding] -> exposures."""
+    plate solve center -> tracking (defensive) -> [guiding] -> exposures.
+
+    af_filter (config.autofocus_filter, e.g. L) is the bright filter the
+    start-of-target autofocus runs on so it never focuses through narrowband;
+    None keeps the old behavior (focus in the imaging filter)."""
     active = [e for e in target.exposures if e.count - e.acquired > 0]
 
     plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
@@ -606,13 +627,18 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         _set_tracking(0),
         _slew(target),
     ]
-    if active:
-        items.append(_switch_filter(active[0].filter_type))
+    # Autofocus on the bright AF filter (L) when configured, else the imaging
+    # filter. NINA applies the per-filter offset when the exposure blocks switch
+    # to their own filter, so focusing on L never leaves narrowband soft.
+    focus_filter = (af_filter if (af_filter and active) else
+                    (active[0].filter_type if active else None))
+    if focus_filter is not None:
+        items.append(_switch_filter(focus_filter))
     if target.auto_focus_on_start and active:
-        seed0 = _seed_position(active[0].filter_type)
+        seed0 = _seed_position(focus_filter)
         items.append(_pushover("Imaging",
                                f"{target.name}: slew done — seeding focuser "
-                               f"to {seed0} for {active[0].filter_type.value}, "
+                               f"to {seed0} for {focus_filter.value}, "
                                "autofocusing, then plate solve & center"))
         items.append(_move_focuser(seed0))
         items.append(_autofocus())
@@ -727,6 +753,9 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                UNSAFE: park, WaitUntilSafe, loop resumes automatically
     End:     stop guiding, park, warm, disconnect — always runs at dawn
     """
+    from photonscript.shared.config import PhotonScriptConfig
+    _cfg = PhotonScriptConfig()
+    af_ft = _af_filter_type(_cfg)  # bright AF filter (e.g. L), or None
     guided = any(t.start_guiding for t in sequence.targets)
     temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
     gate_dark = sequence.wait_until_local is not None
@@ -850,13 +879,18 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             _slew_alt_az(70, 180),
             _set_tracking(0),
         ]
-        if first_filter is not None:
-            start_items.append(_switch_filter(first_filter))
+        # Focus on the bright AF filter (L) if configured — a twilight AF through
+        # a 3nm narrowband filter starves the star field and fails (donuts).
+        focus_filter = af_ft or first_filter
+        if focus_filter is not None:
+            start_items.append(_switch_filter(focus_filter))
+            start_items.append(_move_focuser(_seed_position(focus_filter)))
         start_items += [
             _wait_for_timespan(60),
             _autofocus(),
-            _pushover("Startup", "twilight autofocus complete — holding "
-                      "for the imaging gate"),
+            _pushover("Startup", "twilight autofocus complete "
+                      f"(filter {focus_filter.value if focus_filter else '—'}) "
+                      "— holding for the imaging gate"),
             _wait_for_provider(gate_provider, gate_offset),
             _pushover("Startup", gate_msg),
         ]
@@ -864,12 +898,14 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     # ---- Targets area: the night loop -------------------------------------
     target_containers = []
     first_guided = True
+    force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", True))
     for t in sequence.targets:
-        force_cal = first_guided and t.start_guiding
+        force_cal = first_guided and t.start_guiding and force_first_cal
         if t.start_guiding:
             first_guided = False
         target_containers.append(
-            _build_target_container(t, sequence.wait_for_altitude, force_cal))
+            _build_target_container(t, sequence.wait_for_altitude, force_cal,
+                                    af_filter=af_ft))
 
     unsafe_items = [
         _pushover("Safety", "UNSAFE — imaging stopped, parking scope; will "
@@ -922,8 +958,6 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
 
     # ---- End area -----------------------------------------------------------
     end_items = []
-    from photonscript.shared.config import PhotonScriptConfig
-    _cfg = PhotonScriptConfig()
     flat_filters = []
     for t in sequence.targets:
         for e in t.exposures:
@@ -975,7 +1009,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     # Imaging done: turn the dew heater OFF explicitly (warm handles the cooler).
     end_items.append(_dew_heater(False))
     if sequence.warm_camera_on_finish:
-        end_items.append(_warm_camera(3.0))
+        end_items.append(_warm_camera(
+            float(getattr(_cfg, "gradual_warm_minutes", 0.0))))
     end_items.append(_disconnect_all())
     end_items.append(_pushover("Shutdown", "shutdown complete — parked, warm, "
                                "cooler + dew heater off, guider stopped"))

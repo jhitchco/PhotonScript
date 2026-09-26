@@ -113,3 +113,119 @@ async def test_watchdog_holds_fire_before_grace():
     await a._maybe_warn_not_guiding(datetime(2026, 9, 25, 2, 5, 0))  # dusk+5m
     assert calls["n"] == 0
     assert a._guiding_alerted is False
+
+
+async def _noop_sleep(*_a, **_k):
+    return None
+
+
+def _guided_armer(**cfg):
+    a = _armer(guided_default=True, **cfg)
+    a.guiding_override = "guided"
+    a.plan = {"dusk_utc": "2026-09-25T02:00:00Z"}
+    return a
+
+
+@pytest.mark.asyncio
+async def test_watchdog_escalates_and_auto_recovers(monkeypatch):
+    """Sustained not-guiding climbs the ladder: one warn, one automatic guider
+    restart, one priority escalation — the 2026-09-26 stuck-guiding failure."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _guided_armer()
+    keys = []
+
+    async def _fake_nina(key, **kw):
+        keys.append(key)
+        if key == "guider":
+            return {"Response": {"Connected": True, "State": "Stopped"}}
+        return {"ok": True}  # guider_stop / guider_start
+
+    a._nina = _fake_nina
+    notes = []
+
+    async def _fake_notify(cfg, msg, **kw):
+        notes.append((msg, kw.get("priority")))
+
+    monkeypatch.setattr(armer_mod, "notify", _fake_notify)
+    monkeypatch.setattr(armer_mod.asyncio, "sleep", _noop_sleep)
+
+    now = datetime(2026, 9, 25, 3, 0, 0)  # dusk+60m, well past grace
+    for _ in range(armer_mod.GUIDING_ESCALATE_AFTER_TICKS):
+        await a._maybe_warn_not_guiding(now)
+
+    assert sum(1 for m, _ in notes if "likely trailing" in m) == 1  # warn once
+    assert "guider_stop" in keys and "guider_start" in keys           # restarted
+    assert sum(1 for m, _ in notes if "Auto-recovery" in m) == 1      # once
+    assert any(p == 2 for _, p in notes)                              # escalated
+
+
+@pytest.mark.asyncio
+async def test_watchdog_no_autorecover_when_disabled(monkeypatch):
+    """guiding_auto_recover=false → warn + escalate, but never touch the guider."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _guided_armer(guiding_auto_recover=False)
+    keys = []
+
+    async def _fake_nina(key, **kw):
+        keys.append(key)
+        return {"Response": {"Connected": True, "State": "Stopped"}}
+
+    a._nina = _fake_nina
+    monkeypatch.setattr(armer_mod, "notify", lambda *a, **k: _noop_sleep())
+    now = datetime(2026, 9, 25, 3, 0, 0)
+    for _ in range(armer_mod.GUIDING_ESCALATE_AFTER_TICKS):
+        await a._maybe_warn_not_guiding(now)
+    assert "guider_start" not in keys and "guider_stop" not in keys
+    assert a._guiding_escalated is True
+
+
+@pytest.mark.asyncio
+async def test_watchdog_tolerates_brief_working_state(monkeypatch):
+    """A short calibrating blip must NOT warn (normal dither/settle); only a
+    persistent stuck-calibration state trips."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _guided_armer()
+
+    async def _fake_nina(key, **kw):
+        return {"Response": {"Connected": True, "State": "Calibrating"}}
+
+    a._nina = _fake_nina
+    notes = []
+
+    async def _fake_notify(cfg, msg, **kw):
+        notes.append(msg)
+
+    monkeypatch.setattr(armer_mod, "notify", _fake_notify)
+    now = datetime(2026, 9, 25, 3, 0, 0)
+    for _ in range(armer_mod.GUIDING_WORKING_WARN_TICKS - 1):
+        await a._maybe_warn_not_guiding(now)
+    assert notes == []                       # tolerated so far
+    await a._maybe_warn_not_guiding(now)     # crosses the working-warn threshold
+    assert any("stuck" in m for m in notes)  # now it warns, with the cal hint
+
+
+@pytest.mark.asyncio
+async def test_watchdog_resets_and_renotifies_on_recovery(monkeypatch):
+    """Not guiding (warn), then locked again → 'recovered' note + episode reset,
+    so the watchdog re-arms for a later failure the same night."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _guided_armer()
+    state = {"v": "Stopped"}
+
+    async def _fake_nina(key, **kw):
+        return {"Response": {"Connected": True, "State": state["v"]}}
+
+    a._nina = _fake_nina
+    notes = []
+
+    async def _fake_notify(cfg, msg, **kw):
+        notes.append(msg)
+
+    monkeypatch.setattr(armer_mod, "notify", _fake_notify)
+    now = datetime(2026, 9, 25, 3, 0, 0)
+    await a._maybe_warn_not_guiding(now)     # warns
+    assert a._guiding_alerted is True
+    state["v"] = "Guiding"
+    await a._maybe_warn_not_guiding(now)     # recovers
+    assert any("recovered" in m.lower() for m in notes)
+    assert a._guiding_alerted is False and a._not_locked_ticks == 0

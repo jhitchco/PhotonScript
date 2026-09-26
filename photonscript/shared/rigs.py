@@ -142,15 +142,21 @@ async def nina_cool(base_url: str, temperature: float, minutes: float = 10.0) ->
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
-async def nina_warm(base_url: str, minutes: float = 5.0) -> dict:
-    """Warm a rig's camera back up (ninaAPI GET warm)."""
+async def nina_warm(base_url: str, minutes: float = 0.0) -> dict:
+    """Warm a rig's camera back up (ninaAPI GET warm).
+
+    minutes=0 (the default) is an INSTANT warm: release the setpoint / cut the
+    TEC now and let the sensor drift to ambient on its own — no forced ramp.
+    A ramp fights an arm/precool that wants to cool right now, so we don't hold
+    one. Pass minutes>0 only to deliberately bring the gradual ramp back."""
     base = base_url.rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(base + "/equipment/camera/warm",
                                   params={"minutes": minutes})
             r.raise_for_status()
-            return {"ok": True, "detail": f"warming over {minutes}m"}
+            how = "instant (cooler off)" if minutes <= 0 else f"over {minutes}m"
+            return {"ok": True, "detail": f"warming {how}"}
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 

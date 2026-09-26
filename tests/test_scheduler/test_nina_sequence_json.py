@@ -77,7 +77,10 @@ class TestNinaJsonGeneration:
         assert loop["Iterations"] == 20
         filters = [d for d in _walk(data) if isinstance(d, dict)
                    and d.get("$type", "").startswith("NINA.Core.Model.Equipment.FilterInfo")]
-        assert filters and filters[0]["_name"] == "H"   # NINA profile name
+        # The imaging filter's core FilterInfo carries the NINA profile name.
+        # (The very first switch is now the L autofocus filter — see the
+        # autofocus_filter tests — so assert H is present, not that it's first.)
+        assert filters and "H" in [f["_name"] for f in filters]
 
     def test_altitude_condition_has_coordinates(self):
         alts = [d for d in _walk(_gen()) if isinstance(d, dict)
@@ -115,7 +118,58 @@ class TestNinaJsonGeneration:
         assert any("WarmCamera" in t for t in types)
         warms = [d for d in _walk(_gen()) if isinstance(d, dict)
                  and "WarmCamera" in d.get("$type", "")]
-        assert warms[0]["Duration"] == 3.0   # minutes
+        # Default gradual_warm_minutes=0 -> instant warm (cut the TEC, no ramp
+        # that would fight the next arm/precool).
+        assert warms[0]["Duration"] == 0.0   # minutes (0 = instant)
+
+    def test_warm_camera_honors_gradual_minutes(self):
+        from photonscript.scheduler.nina_sequence_json import _warm_camera
+        assert _warm_camera()["Duration"] == 0.0        # default: instant
+        assert _warm_camera(3.0)["Duration"] == 3.0     # ramp restorable
+
+    def test_force_first_calibration_default_on(self):
+        starts = [d for d in _walk(_gen(start_guiding=True)) if isinstance(d, dict)
+                  and "StartGuiding" in d.get("$type", "")]
+        assert starts and starts[0]["ForceCalibration"] is True
+
+    def test_force_first_calibration_toggle_off(self, monkeypatch):
+        # PS_-prefixed env feeds the config generate_nina_json builds internally.
+        monkeypatch.setenv("PS_GUIDING_FORCE_FIRST_CALIBRATION", "false")
+        starts = [d for d in _walk(_gen(start_guiding=True)) if isinstance(d, dict)
+                  and "StartGuiding" in d.get("$type", "")]
+        assert starts and starts[0]["ForceCalibration"] is False
+
+    def test_af_filter_type_resolves(self):
+        from photonscript.scheduler.nina_sequence_json import _af_filter_type
+        from photonscript.shared.config import PhotonScriptConfig
+        assert _af_filter_type(PhotonScriptConfig(autofocus_filter="L")) \
+            is FilterType.LUMINANCE
+        assert _af_filter_type(PhotonScriptConfig(autofocus_filter="Ha")) \
+            is FilterType.HA
+        assert _af_filter_type(PhotonScriptConfig(autofocus_filter="")) is None
+        assert _af_filter_type(PhotonScriptConfig(autofocus_filter="zzz")) is None
+
+    def test_autofocus_runs_on_af_filter_not_narrowband(self, monkeypatch):
+        # Default autofocus_filter='L': a pure-Ha night must still switch to L
+        # for autofocus, so AF never starves on narrowband. Stale dawn flats off
+        # so L can ONLY come from the AF switch, not a broadband flat.
+        from photonscript.scheduler.nina_sequence_json import _nina_filter_name
+        monkeypatch.setenv("PS_AUTO_STALE_FLATS", "false")
+        lum = _nina_filter_name(FilterType.LUMINANCE)
+        names = [d["Filter"].get("_name") for d in _walk(_gen(start_guiding=True))
+                 if isinstance(d, dict) and "SwitchFilter" in d.get("$type", "")
+                 and isinstance(d.get("Filter"), dict)]
+        assert lum in names   # focused on L despite an all-Ha target
+
+    def test_autofocus_filter_disabled_keeps_imaging_filter(self, monkeypatch):
+        from photonscript.scheduler.nina_sequence_json import _nina_filter_name
+        monkeypatch.setenv("PS_AUTOFOCUS_FILTER", "")
+        monkeypatch.setenv("PS_AUTO_STALE_FLATS", "false")
+        lum = _nina_filter_name(FilterType.LUMINANCE)
+        names = [d["Filter"].get("_name") for d in _walk(_gen(start_guiding=True))
+                 if isinstance(d, dict) and "SwitchFilter" in d.get("$type", "")
+                 and isinstance(d.get("Filter"), dict)]
+        assert lum not in names  # off -> focuses in the imaging (Ha) filter only
 
     def test_pushover_narration_present(self):
         types = _types(_gen())

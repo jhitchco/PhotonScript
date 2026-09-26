@@ -169,6 +169,28 @@ or "ERROR: ...". Masters in `out\master\`.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-09-26 (both scopes imaging + warm-vs-arm): three durable fixes.
+  (a) **OSC finally shoots lights on NINA #2.** Root cause it never did before:
+  NINA #1 and #2 shared ONE AlpacaDynamic safety-monitor driver, and the
+  driver's TraceLogger holds an exclusive file lock — the second instance to
+  read it threw "trace log file used by another process", so NINA #2's
+  `safetymonitor/info` failed, `has_safety` came back false, and the piggyback
+  companion dispatched flats/darks ONLY, never lights. Fix: a SECOND Alpaca
+  safety driver (AlpacaDynamic2) dedicated to NINA #2 (or disable driver trace
+  logging). has_safety is auto-detected at arm, so once the driver reads clean
+  the OSC images unattended.
+  (b) **Gradual camera warm disabled** (`config.gradual_warm_minutes`, default
+  0 = instant). A multi-minute WarmCamera ramp on cooler-off fought the next
+  arm/precool — it kept pushing the sensor temp back UP while the arm wanted to
+  cool now. Cutting the TEC (minutes=0) is already a soft, passive warm; the
+  "gentler on the sensor" argument for the ramp doesn't hold. Threaded through
+  every warm path: arm cooler-off, dawn shutdown, disarm make-safe, End area.
+  Set >0 only to bring the old ramp back.
+  (c) **Donut/AF night** (dead focus temperature model): `focus_seeds.
+  harvest_night()` was never called and `_seed_position` got `ambient_c=None`
+  with no config, so AF had no temperature seed and failed to bracket. Revived:
+  harvest wired into the backfill `_work()`, and `_seed_position` now passes
+  config + a live focuser temp (60 s cached GET `/equipment/focuser`).
 - 2026-09-25 (M31_OSC2 double galaxy): half the Piggy-600 subs straddled RC16
   mount moves between two pointings ~51' apart, and the OSC script re-stacked
   stale intermediates (63 subs -> 125 frames). Fixed with osc_cull.py (split /
@@ -236,20 +258,51 @@ or "ERROR: ...". Masters in `out\master\`.
     * `deploy.ps1` intentionally still defaults `$Scope` to the raw IP - it runs
       ON the scope PC, where the same-node loopback rule makes the hostname
       unreachable. Leave deploy pointed at `http://100.94.189.77:8100`/localhost.
+- SERVE PROXY IS FLAKY (2026-09-26): the 443 `serve` hostname returns 502
+  whenever the uvicorn backend blips, which is often. For anything that must be
+  reliable, hit the DIRECT app port instead of the proxy: `http://teles-feb25.
+  lobster-bleak.ts.net:8100` (hostname on :8100 = stable name + direct uvicorn,
+  no proxy in the middle) or the raw `http://100.94.189.77:8100` on-tailnet.
+  100.94.189.77 has never changed - it IS teles-feb25 (confirm with
+  `tailscale status`); a "can't reach the scope" is almost always the SERVICE
+  being down, not the IP. `deploy.ps1` now posts `/api/update` to the :8100
+  hostname (not the 443 proxy) for exactly this reason.
+- SERVICE RESTART (scope PC): `powershell -ExecutionPolicy Bypass -File
+  C:\astro\PhotonScript\deploy\run-photonscript.ps1` (note: `C:\astro`, NOT the
+  desktop's `C:\dev`). The while-loop only auto-restarts on exit code 42 (an
+  update request); ANY other exit (a crash) stays down by design, so after a
+  crash you must relaunch it by hand.
 - Scheduled tasks: `photonscript-morning-debrief` (daily 8:04 AM).
 - Constraints: no GitHub pushes, no credentials, no AstroBin scraping for
   data tables, no writes into ninashare, scope deploys refused mid-night.
 
-## 8. Current state (2026-07-07)
+## 8. Current state (2026-09-26)
 
-- Crescent Nebula: 82 accepted OLD-epoch lights (Ha 40/OIII 20/SII 22 staged;
-  27/18/9 survived registration unguided). Goal being raised to 25h,
-  OIII-heavy + ~1h RGB for star color. Guiding enables 600s subs and should
-  lift registration survival above 90%.
+- DUAL-RIG IMAGING IS LIVE: both scopes shoot lights on one arm. RC16 (NINA #1,
+  mono AP26MC, OAG->PHD2) and the piggyback 600 (NINA #2, OSC AP26CC, rides the
+  mount unguided) both at setpoint 0C. The OSC unblock was the second Alpaca
+  safety driver (see 2026-09-26 Night-ops lesson). Keep the OSC setpoint at 0C
+  so it matches `piggyback_dark_exposures=120` darks.
+- GUIDING: PHD2 calibrated near Dec 0 / meridian via Calibration Assistant with
+  "Auto restore calibration" ON and NINA Force Calibration OFF; ~0.36" RMS
+  achieved. TPoint model built (4x4 bin, wait for dark, image scale 0.942"/px)
+  with ProTrack enabled.
+- SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
+  model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
+  (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
+  on plan open; OSC darks/bias fire unconditionally (dusk-capped) when no safety
+  monitor; per-run contact sheets + sidenav archive; disk-space on the run view;
+  `/api/runs/{date}` hang fix; deploy test/lint gate; `gradual_warm_minutes`
+  (instant warm). Catalog: added NGC 6543 (Cat's Eye) + NGC 7008, widened
+  seasonal windows.
 - Calibration in library: 32x300s darks @0C/offset256, 50 bias, full flat set
   (verified: darks median ~257-330 ADU = offset floor; flats ~50% full well).
-- Mosaic planner shipped at `/mosaic`: panel grid over a DSS2 hips2fits
-  cutout, one goal per panel.
+  OSC (piggyback) calibration now auto-captured on arm.
+- Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout, one goal
+  per panel.
+- OPEN THREADS: `gradual_warm_minutes` change is staged in the desktop repo but
+  NOT yet deployed (deploy after a dawn shutdown, never mid-run - deploy 409s
+  while armed). Confirm the OSC dark library has matching 120s @0C darks.
 
 ## 9. Troubleshooting runbook (how to debrief a night)
 

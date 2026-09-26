@@ -636,6 +636,17 @@ def start_backfill(config, date: str) -> None:
                                    [f["kind"] for f in tr["findings"]])
             except Exception as e:  # noqa: BLE001
                 logger.warning("Trend check failed for %s: %s", date, e)
+            try:  # autofocus-quality alert — a failed/soft AF (few stars through
+                # narrowband) degrades every following sub; catch it from NINA's
+                # AF reports instead of only via passive per-frame QA.
+                from photonscript.scheduler.focus_reports import (
+                    check_and_alert as af_check)
+                af = af_check(config, date)
+                if af.get("bad"):
+                    logger.warning("AF-quality alarm %s: %s bad run(s)",
+                                   date, len(af["bad"]))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("AF-quality check failed for %s: %s", date, e)
         finally:
             st["running"] = False
             st["current"] = None

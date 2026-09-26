@@ -56,7 +56,17 @@ NINA_PATHS = {
     "camera_warm": ["/equipment/camera/warm"],
     "mount_connect": ["/equipment/mount/connect"],
     "camera_connect": ["/equipment/camera/connect"],
+    "guider_start": ["/equipment/guider/start"],
+    "guider_stop": ["/equipment/guider/stop"],
 }
+
+# Guiding watchdog escalation ladder (in TICK_SECONDS units, once past the
+# config grace window). A "working" state (calibrating/looping/settling) is
+# tolerated briefly to avoid false-firing on a normal dither settle; a hard
+# idle/stopped state trips on the first tick.
+GUIDING_WORKING_WARN_TICKS = 4      # ~2 min stuck calibrating/looping -> warn
+GUIDING_RECOVER_AFTER_TICKS = 6     # ~3 min unlocked -> one auto guider restart
+GUIDING_ESCALATE_AFTER_TICKS = 10   # ~5 min unlocked -> priority escalation
 
 
 class Armer:
@@ -68,7 +78,10 @@ class Armer:
         self.plan: dict = {}
         self.sequence_path: Path | None = None
         self.guiding_override: str | None = None  # "guided" | "encoders" | None
-        self._guiding_alerted = False  # once-per-night "guided but not guiding"
+        self._guiding_alerted = False  # once-per-episode "guided but not guiding"
+        self._not_locked_ticks = 0     # consecutive watchdog ticks PHD2 not locked
+        self._guiding_recovered = False  # auto guider-restart tried this episode
+        self._guiding_escalated = False  # priority escalation sent this episode
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
         self._task: asyncio.Task | None = None
 
@@ -255,14 +268,19 @@ class Armer:
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop:{'ok' if ok else 'FAILED'}")
+        # Make-safe is an abort: warm instantly (minutes=0 by default) so cutting
+        # the TEC isn't held up by a ramp. gradual_warm_minutes can restore one.
+        warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
+        step_params = {"camera_warm": {"minutes": warm_min}}
         for label, key, connect_key in (
                 ("warm", "camera_warm", "camera_connect"),
                 ("park", "mount_park", "mount_connect")):
-            ok = await self._nina(key) is not None
+            kw = step_params.get(key, {})
+            ok = await self._nina(key, **kw) is not None
             if not ok and "not connected" in (self.detail or "").lower():
                 # Try connecting the device, then retry once
                 if await self._nina(connect_key) is not None:
-                    ok = await self._nina(key) is not None
+                    ok = await self._nina(key, **kw) is not None
                 if not ok and "not connected" in (self.detail or "").lower():
                     steps.append(f"{label}:skipped (not connected)")
                     continue
@@ -311,10 +329,11 @@ class Armer:
         cool_lead min before astro dark. Best-effort per rig; never raises."""
         from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
                                               nina_dew_heater)
+        warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
         for rig in rig_ids(self.config):
             rc = rig_config(self.config, rig)
             try:
-                await nina_warm(rc.nina_base_url, minutes=3.0)
+                await nina_warm(rc.nina_base_url, minutes=warm_min)
                 await nina_dew_heater(rc.nina_base_url, False)
             except Exception as e:  # noqa: BLE001
                 logger.warning("cooler/dew off (%s) failed: %s", rig, e)
@@ -336,9 +355,10 @@ class Armer:
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop {'ok' if ok else 'FAILED'}")
+        warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
         for rig in rig_ids(self.config):
             rc = rig_config(self.config, rig)
-            w = await nina_warm(rc.nina_base_url, minutes=3.0)
+            w = await nina_warm(rc.nina_base_url, minutes=warm_min)
             d = await nina_dew_heater(rc.nina_base_url, False)
             steps.append(f"{rig} warm {'ok' if w.get('ok') else 'FAILED'}"
                          f"/dew {'ok' if d.get('ok') else 'FAILED'}")
@@ -347,7 +367,8 @@ class Armer:
         self.shutdown = {"at": datetime.utcnow().isoformat() + "Z",
                          "reason": reason, "steps": steps, "verify": None}
         self._persist()
-        # The warm ramp takes ~3 min; verify (and alert) after it should be done.
+        # Instant warm cuts the TEC now (a ramp would take minutes); still verify
+        # + alert after a delay that the cooler actually went off.
         asyncio.create_task(self._verify_shutdown(delay_s=300))
         report = " · ".join(steps)
         logger.warning("dawn shutdown (%s): %s", reason, report)
@@ -374,7 +395,10 @@ class Armer:
                          "dew_on": info.get("DewHeaterOn")}
             if on:
                 still_on.append(rig)
-                await nina_warm(rc.nina_base_url, minutes=1.0)  # one retry
+                await nina_warm(rc.nina_base_url,
+                                minutes=float(getattr(
+                                    self.config, "gradual_warm_minutes", 0.0))
+                                )  # one retry
                 await nina_dew_heater(rc.nina_base_url, False)
         ok = not still_on
         if self.shutdown is not None:
@@ -418,12 +442,28 @@ class Armer:
         return None
 
     async def _maybe_warn_not_guiding(self, now: datetime) -> None:
-        """Guided-but-not-guiding watchdog. If the night was armed guided but
-        PHD2 is not actually guiding a while after dark, fire ONE Pushover — the
-        exact silent failure of 2026-09-24 (armed unguided/PHD2 idle → every
-        900s sub trailed). Fails safe: NINA unreachable or transient startup
-        states never alarm, and it fires at most once per night."""
-        if self._guiding_alerted or not self._use_guiding():
+        """Guided-but-not-guiding watchdog with escalation + auto-recovery.
+
+        Armed guided but PHD2 isn't actually locked-and-guiding well past the
+        grace window? Escalate along a ladder instead of firing once and moving
+        on (the 2026-09-24 silent failure was armed-guided/PHD2-idle → every
+        900s sub trailed; the 2026-09-26 failure was PHD2 stuck recalibrating,
+        "star did not move enough"):
+          1. warn once (Pushover) — a hard idle/stopped trips on the first tick;
+             a "working" state (calibrating/looping/settling) only after it
+             persists (GUIDING_WORKING_WARN_TICKS), so a normal dither settle
+             never false-fires;
+          2. still unlocked after GUIDING_RECOVER_AFTER_TICKS → ONE automatic
+             PHD2 guider restart (opt out with guiding_auto_recover=false) to
+             break a stuck loop; the restart doesn't force calibration, so
+             Auto-restore reuses a good calibration when one exists;
+          3. still unlocked after GUIDING_ESCALATE_AFTER_TICKS → a priority
+             escalation Pushover asking for hands-on intervention.
+        Recovering to a locked 'Guiding' state resets the episode so the
+        watchdog re-arms for a later failure the same night. Fails safe: NINA
+        unreachable never alarms or acts.
+        """
+        if not self._use_guiding():
             return
         dusk = self.plan.get("dusk_utc")
         if not dusk:
@@ -432,30 +472,87 @@ class Armer:
             dusk_dt = datetime.fromisoformat(dusk.rstrip("Z"))
         except Exception:  # noqa: BLE001
             return
-        # Give guiding time to start after dark (slew → center → AF → settle).
-        if now < dusk_dt + timedelta(minutes=20):
+        grace = int(getattr(self.config, "guiding_watchdog_grace_min", 20))
+        # Give guiding time to start after dark (slew → center → AF → cal → settle).
+        if now < dusk_dt + timedelta(minutes=grace):
             return
         data = await self._nina("guider")
         if data is None:
-            return  # NINA unreachable — don't false-alarm
+            return  # NINA unreachable — don't false-alarm or act
         payload = data.get("Response", data)
-        if not payload.get("Connected", False):
-            state = "disconnected"
-            guiding = False
-        else:
-            state = str(payload.get("State", "") or "")
-            # Treat active/transient states as fine; only idle/stopped alarms.
-            guiding = state.lower() in (
-                "guiding", "looping", "calibrating", "settling", "settledone")
-        if guiding:
+        connected = bool(payload.get("Connected", False))
+        state = str(payload.get("State", "") or "") if connected else "disconnected"
+        s = state.lower()
+        # Locked-and-guiding is the only fully-healthy state. calibrating/looping/
+        # settling are "working" — fine transiently (the grace covers real
+        # startup), but past the grace, persistent working == a stuck cal loop.
+        healthy = s in ("guiding", "settledone")
+        working = s in ("calibrating", "looping", "settling")
+
+        if healthy:
+            if self._guiding_alerted or self._not_locked_ticks:
+                await notify(self.config,
+                             "Guiding recovered — PHD2 is locked and guiding "
+                             "again.", title="PhotonScript guiding")
+            self._not_locked_ticks = 0
+            self._guiding_alerted = False
+            self._guiding_recovered = False
+            self._guiding_escalated = False
             return
-        self._guiding_alerted = True
+
+        # --- not locked: climb the escalation ladder --------------------------
+        self._not_locked_ticks += 1
+        ticks = self._not_locked_ticks
         mins = int((now - dusk_dt).total_seconds() // 60)
-        await notify(self.config,
-                     f"Armed GUIDED but PHD2 is not guiding (state: "
-                     f"{state or 'unknown'}) {mins} min into dark — subs are "
-                     "likely trailing. Check PHD2 / guide star, or re-arm.",
-                     title="PhotonScript guiding", priority=1)
+        what = (f"stuck in '{state}' — calibrating/looping but never locking "
+                "(calibration likely failing, e.g. 'star did not move enough': "
+                "check mount tracking, or recalibrate near Dec 0 at the meridian)"
+                if working else
+                f"not guiding (state: {state or 'unknown'})")
+
+        # 1) First warning. Idle trips immediately; a working state must persist.
+        warn_ready = (not working) or ticks >= GUIDING_WORKING_WARN_TICKS
+        if warn_ready and not self._guiding_alerted:
+            self._guiding_alerted = True
+            await notify(self.config,
+                         f"Armed GUIDED but PHD2 is {what} — {mins} min into "
+                         "dark, subs are likely trailing.",
+                         title="PhotonScript guiding", priority=1)
+
+        # 2) One automatic guider restart to break a stuck loop.
+        if (self._guiding_alerted and ticks >= GUIDING_RECOVER_AFTER_TICKS
+                and not self._guiding_recovered
+                and getattr(self.config, "guiding_auto_recover", True)):
+            self._guiding_recovered = True
+            ok = await self._restart_guiding()
+            await notify(self.config,
+                         "Auto-recovery: restarted PHD2 guiding "
+                         f"({'sent' if ok else 'FAILED — guider unreachable'}). "
+                         "If it doesn't lock, calibrate at Dec 0 / the meridian "
+                         "by hand.", title="PhotonScript guiding", priority=1)
+
+        # 3) Priority escalation — auto-recovery didn't take.
+        if (self._guiding_alerted and ticks >= GUIDING_ESCALATE_AFTER_TICKS
+                and not self._guiding_escalated):
+            self._guiding_escalated = True
+            await notify(self.config,
+                         f"STILL not guiding {mins} min into dark after auto-"
+                         "recovery — every long sub is trailing. Intervene: "
+                         "check the PHD2 guide star + mount tracking, "
+                         "recalibrate at the meridian, or re-arm.",
+                         title="PhotonScript guiding", priority=2)
+
+    async def _restart_guiding(self) -> bool:
+        """Best-effort stop→start of PHD2 guiding to break a stuck/idle loop.
+        Start does NOT force calibration, so PHD2 Auto-restore reuses a good
+        calibration when one exists. Never raises."""
+        try:
+            await self._nina("guider_stop")
+            await asyncio.sleep(2)
+            return await self._nina("guider_start", calibrate=False) is not None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("guider restart failed: %s", e)
+            return False
 
     async def _is_safe(self) -> bool | None:
         data = await self._nina("safety")
