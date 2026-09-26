@@ -9,6 +9,11 @@
 $repo = "C:\astro\PhotonScript"
 $exe  = "C:\astro\venv\Scripts\photonscript.exe"
 
+# Run from the repo root so the app finds .env (pydantic reads ".env" relative
+# to the current directory). Without this, launching from a subdir (e.g.
+# deploy\) silently drops every PS_* override, including PS_SCHEDULER_TLS_*.
+Set-Location $repo
+
 while ($true) {
     git -C $repo pull --ff-only
     & $exe start --mode full

@@ -230,6 +230,9 @@ or "ERROR: ...". Masters in `out\master\`.
   (browser "pc windows at home") - the machine that has Tailscale. Always drive
   the dashboard through Claude-in-Chrome (navigate + javascript_tool fetch);
   never expect the sandbox to reach `100.94.189.77`.
+- DASHBOARD URL (2026-09-26, after the uvicorn TLS change): use
+  `http://teles-feb25.lobster-bleak.ts.net:8100/` (verified from Claude-in-Chrome;
+  the old https hostname without the port no longer loads).
 - DASHBOARD ACCESS (RESOLVED 2026-09-24): the canonical remote URL is the
   Tailscale HTTPS hostname `https://teles-feb25.lobster-bleak.ts.net/`
   (`serve` -> `127.0.0.1:8100` on the scope PC). Verified end-to-end: a live
