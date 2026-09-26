@@ -1946,10 +1946,16 @@ async def api_run_backfill_status(date: str):
 def api_library_rebuild(date: str = ""):
     """(Re)build the accepted-lights library. Sync endpoint: FastAPI runs it
     in a worker thread; hardlinking a whole archive takes a few seconds."""
-    from photonscript.scheduler.runs import build_library
+    from photonscript.scheduler.runs import build_library, sync_goal_progress
     from photonscript.scheduler import sync_batch
     res = build_library(get_config(), date or None)
     sync_batch.mark_reset(get_config())  # new files queued → fresh batch counter
+    # PS-51: the build now names '?' subs, so goal bars can move; a full
+    # rebuild (no date) is the one-time backfill of Library/_/.
+    try:
+        res["goals_updated"] = sync_goal_progress(get_config())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Goal sync after library rebuild failed: %s", e)
     return res
 
 

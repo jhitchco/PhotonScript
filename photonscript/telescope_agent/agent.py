@@ -637,6 +637,19 @@ class TelescopeAgent:
             if live and live != "?":
                 target_name = live
         if not target_name:
+            # PS-51: the mount's RA/DEC is in every RC16 header; match it to a
+            # campaign target now, so the sub is named from the first moment
+            # (a 2-target night used to log every sub as '?'). Piggy-600
+            # frames carry no coordinates and fall through to the plan rule /
+            # the dawn time-correlation pass.
+            try:
+                from photonscript.scheduler.identify import target_from_header
+                hit = target_from_header(self.config, hdr)
+                if hit:
+                    target_name = hit
+            except Exception as e:  # noqa: BLE001
+                logger.debug("header target match skipped: %s", e)
+        if not target_name:
             # unambiguous if the night's plan has exactly one target
             try:
                 from photonscript.scheduler.runs import _plan_target_names

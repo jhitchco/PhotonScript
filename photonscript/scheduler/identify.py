@@ -57,6 +57,15 @@ def _header_radec(path: Path) -> tuple[float, float] | None:
         hdr = _fits.getheader(path)
     except Exception:  # noqa: BLE001
         return None
+    return radec_from_header(hdr)
+
+
+def radec_from_header(hdr) -> tuple[float, float] | None:
+    """Mount/plate coordinates (deg) from an already-open FITS header or any
+    mapping with .get(); None when the frame carries no position (Piggy-600:
+    NINA #2 owns no mount)."""
+    if hdr is None:
+        return None
     for ra_k, dec_k, hours in (("RA", "DEC", False),
                                ("OBJCTRA", "OBJCTDEC", True),
                                ("CRVAL1", "CRVAL2", False)):
@@ -99,7 +108,52 @@ def _sep_deg(ra1, dec1, ra2, dec2) -> float:
     return math.degrees(math.acos(max(-1.0, min(1.0, c))))
 
 
-def _candidates(config) -> list[tuple[str, float, float]]:
+def match_target(ra: float, dec: float,
+                 cands: list[tuple[str, float, float, bool]]) -> str | None:
+    """Nearest candidate within MATCH_RADIUS_DEG. Project targets win over
+    the seasonal catalog (PS-51): M31 subs must credit the M31 campaign, not a
+    catalog neighbour such as M32/M110 that happens to sit a little closer to
+    the mount's pointing."""
+    def _best(pool):
+        hit = min(pool, key=lambda c: _sep_deg(ra, dec, c[1], c[2]),
+                  default=None)
+        if hit and _sep_deg(ra, dec, hit[1], hit[2]) <= MATCH_RADIUS_DEG:
+            return hit[0]
+        return None
+    return (_best([c for c in cands if len(c) > 3 and c[3]])
+            or _best(cands))
+
+
+_CAND_CACHE: dict = {"t": 0.0, "v": None}
+_CAND_TTL_S = 600.0
+
+
+def cached_candidates(config) -> list[tuple[str, float, float, bool]]:
+    """_candidates() with a short TTL, for the live per-sub path (the agent
+    calls this once per new frame; the catalog walk is not free)."""
+    import time
+    now = time.monotonic()
+    if _CAND_CACHE["v"] is None or now - _CAND_CACHE["t"] > _CAND_TTL_S:
+        _CAND_CACHE["v"] = _candidates(config)
+        _CAND_CACHE["t"] = now
+    return _CAND_CACHE["v"]
+
+
+def target_from_header(config, hdr) -> str | None:
+    """Live attribution (PS-51): match a new sub's header RA/DEC to a project
+    or catalog target. None when the header has no coordinates or nothing is
+    within MATCH_RADIUS_DEG."""
+    coords = radec_from_header(hdr)
+    if coords is None:
+        return None
+    try:
+        return match_target(*coords, cached_candidates(config))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("live header match failed: %s", e)
+        return None
+
+
+def _candidates(config) -> list[tuple[str, float, float, bool]]:
     from photonscript.shared.astronomy import get_seasonal_targets
     out, seen = [], set()
     try:
@@ -108,24 +162,25 @@ def _candidates(config) -> list[tuple[str, float, float]]:
             t = p.target
             if t.name.lower() not in seen:
                 seen.add(t.name.lower())
-                out.append((t.name, t.ra_hours * 15, t.dec_degrees))
+                out.append((t.name, t.ra_hours * 15, t.dec_degrees, True))
     except Exception:  # noqa: BLE001
         pass
     for m in range(1, 13):
         for t in get_seasonal_targets(m):
             if t.name.lower() not in seen:
                 seen.add(t.name.lower())
-                out.append((t.name, t.ra_hours * 15, t.dec_degrees))
+                out.append((t.name, t.ra_hours * 15, t.dec_degrees, False))
     return out
 
 
-def identify_night(config, date: str) -> dict:
+def identify_night(config, date: str, solve: bool = True) -> dict:
     """Attribute unknown subs by sky position.
 
     Every sub with header coordinates is matched INDIVIDUALLY (NINA stamps
     the mount RA/DEC on each frame), so back-to-back target handoffs tag
     correctly. Only subs without coordinates fall back to one ASTAP solve
-    per time cluster.
+    per time cluster, and only when solve=True (the library build runs the
+    cheap header pass only; runs.attribute_night orders the passes).
     """
     from photonscript.scheduler.runs import _load_subs, _rewrite_subs
 
@@ -138,11 +193,7 @@ def identify_night(config, date: str) -> dict:
     cands = _candidates(config)
 
     def _match(ra, dec):
-        best = min(cands, key=lambda c: _sep_deg(ra, dec, c[1], c[2]),
-                   default=None)
-        if best and _sep_deg(ra, dec, best[1], best[2]) <= MATCH_RADIUS_DEG:
-            return best[0]
-        return None
+        return match_target(ra, dec, cands)
 
     # Pass 1: per-sub header coordinates
     n_assigned = 0
@@ -176,7 +227,7 @@ def identify_night(config, date: str) -> dict:
                for e in header_hits.values()]
 
     # Pass 2: coordinate-less subs -> one ASTAP solve per time cluster
-    if no_coords:
+    if no_coords and solve:
         clusters, cur = [], [no_coords[0]]
         for prev, s in zip(no_coords, no_coords[1:]):
             try:

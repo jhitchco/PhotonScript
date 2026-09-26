@@ -643,23 +643,13 @@ def start_backfill(config, date: str) -> None:
                                               0.001), 2)
             logger.info("Backfill finished for %s: %d frames graded in "
                         "%.0fs", date, done, time.monotonic() - started)
-            try:  # attribute '?' subs from their header coordinates
-                from photonscript.scheduler.identify import identify_night
-                ri = identify_night(config, date)
-                if ri.get("identified"):
-                    logger.info("Auto-identify %s: %d subs attributed",
-                                date, ri["identified"])
+            try:  # attribute '?' subs: header RA/DEC, piggyback time
+                # correlation, then ASTAP for whatever is still unknown (PS-51)
+                ra = attribute_night(config, date, solve=True)
+                if ra.get("attributed"):
                     sync_goal_progress(config)
             except Exception as e:  # noqa: BLE001
-                logger.warning("Auto-identify failed for %s: %s", date, e)
-            try:  # tag piggyback (2nd-rig) subs by time-correlation to the RC16
-                rc = correlate_piggyback_targets(config, date)
-                if rc.get("attributed"):
-                    logger.info("Piggyback correlate %s: %d subs attributed",
-                                date, rc["attributed"])
-                    sync_goal_progress(config)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("Piggyback correlate failed for %s: %s", date, e)
+                logger.warning("Auto-attribute failed for %s: %s", date, e)
             try:
                 n_out = flag_hfr_outliers(config, date)
                 if n_out:
@@ -707,6 +697,40 @@ def start_backfill(config, date: str) -> None:
 
     threading.Thread(target=_work, daemon=True,
                      name=f"backfill-{date}").start()
+
+
+def attribute_night(config, date: str, solve: bool = False) -> dict:
+    """PS-51: give every '?' sub of a night a campaign target.
+
+    Order matters: (1) per-sub header RA/DEC match (RC16 frames carry the
+    mount position, so this is exact and cheap); (2) Piggy-600 subs inherit the
+    RC16 target by capture time (they carry no coordinates, and (1) must run
+    first so the RC16 timeline has names to lend); (3) only with solve=True,
+    one ASTAP plate solve per time cluster for anything still unknown. The
+    library build runs (1)+(2) on every night it touches; the dawn backfill
+    runs all three. Idempotent: only '?' subs are ever touched."""
+    from photonscript.scheduler.identify import identify_night
+    out = {"date": date, "header": 0, "piggyback": 0, "solved": 0}
+    try:
+        out["header"] = identify_night(config, date, solve=False).get(
+            "identified", 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Header attribution failed for %s: %s", date, e)
+    try:
+        out["piggyback"] = correlate_piggyback_targets(config, date).get(
+            "attributed", 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Piggyback correlate failed for %s: %s", date, e)
+    if solve:
+        try:
+            out["solved"] = identify_night(config, date, solve=True).get(
+                "identified", 0)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Plate-solve attribution failed for %s: %s", date, e)
+    out["attributed"] = out["header"] + out["piggyback"] + out["solved"]
+    if out["attributed"]:
+        logger.info("Attribute %s: %s", date, out)
+    return out
 
 
 def _rewrite_subs(config, date: str, records: list[dict]) -> None:
@@ -1415,7 +1439,14 @@ def build_library(config, date: str | None = None) -> dict:
                         for f in runs_dir(config).glob("*_subs.jsonl")})
     review_gate = bool(getattr(config, "review_gate", True))
     linked = skipped = missing = rejected = pending_review = 0
+    attributed = retagged = 0
+    unknown_dir = _safe_name("?")  # '?' is not a legal path char -> "_"
     for d in dates:
+        # PS-51: name every '?' sub before linking, so lights land under their
+        # campaign instead of Library/_/ (header match + piggyback correlation;
+        # no plate solves here, that is the dawn backfill's job).
+        if getattr(config, "library_attribute", True):
+            attributed += attribute_night(config, d).get("attributed", 0)
         plan_names = _plan_target_names(config, d)
         for s_ in _load_subs(config, d):
             if not s_.get("passed_qa"):
@@ -1431,7 +1462,24 @@ def build_library(config, date: str | None = None) -> dict:
                 continue
             target = _safe_name(_resolve_target(
                 s_.get("target"), s_.get("file", ""), plan_names))
-            dest = lib / target / _safe_name(s_.get("filter", "?")) / src.name
+            fdir = _safe_name(s_.get("filter", "?"))
+            dest = lib / target / fdir / src.name
+            # PS-51: a sub linked under Library/_/ before it had a name moves
+            # to its campaign folder (a rename, so Syncthing ships a move, not
+            # a second copy). Only library links are touched, never originals.
+            stale = lib / unknown_dir / fdir / src.name
+            if target != unknown_dir and stale.exists():
+                try:
+                    if dest.exists():
+                        stale.unlink()
+                    else:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(stale, dest)
+                    retagged += 1
+                    continue
+                except OSError as e:
+                    logger.warning("Library retag %s -> %s failed: %s",
+                                   stale, dest, e)
             if dest.exists():
                 skipped += 1
                 continue
@@ -1449,7 +1497,8 @@ def build_library(config, date: str | None = None) -> dict:
         skipped += n_s
     result = {"library": str(lib), "nights": len(dates), "linked": linked,
               "already_there": skipped, "rejected_excluded": rejected,
-              "pending_review": pending_review, "missing_files": missing}
+              "pending_review": pending_review, "missing_files": missing,
+              "attributed": attributed, "retagged": retagged}
     pb = _build_piggyback_calibration(config, date)
     if pb is not None:
         result["piggyback_calibration"] = pb
