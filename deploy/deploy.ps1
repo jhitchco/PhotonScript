@@ -6,7 +6,11 @@
 
 param(
     [string]$Message = "update",
-    [string]$Scope = "http://100.94.189.77:8100",
+    # Tailscale MagicDNS hostname on the DIRECT app port (:8100), NOT the serve
+    # proxy on 443. This gets both: a stable name that follows the node when the
+    # tailnet IP changes, AND a direct hit on uvicorn without the flaky serve
+    # proxy in the middle (which returns 502 whenever the backend blips).
+    [string]$Scope = "http://teles-feb25.lobster-bleak.ts.net:8100",
     [switch]$SkipTests
 )
 $repo = Split-Path $PSScriptRoot -Parent
