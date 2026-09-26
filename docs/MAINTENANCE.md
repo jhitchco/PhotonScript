@@ -143,6 +143,26 @@ report folder (e.g. `%LOCALAPPDATA%/NINA/AutoFocus`) and the nightly backfill
 grades each AF run; a run with fit R² below `af_min_r2` (default 0.7) or <3
 measure points fires one Pushover naming the filter. Empty dir = disabled.
 
+## OSC (AP26CC) calibration facts — verified 2026-09-26
+
+- **AP26CC saves raw Bayer CFA** (`NAXIS=2`, `BAYERPAT=RGGB`), even when the OGMA
+  driver's format toggle read "RGB" — that toggle only affects the live preview,
+  not the saved FITS. So no OSC data was ever debayered‑in‑camera; existing OSC
+  lights are fine. Keep the driver on **RAW** anyway (belt‑and‑suspenders).
+- **OSC real capture params: gain 100, offset 256, LCG, SET‑TEMP 0°C, 120 s.**
+  NINA #2 overrides the sequence plan's gain/offset (200/50) with the camera's
+  own defaults, so lights land at **100 / 256**. OSC darks/bias/flats MUST be
+  captured at 100 / 256 / 0°C (120 s darks) or they won't match — verify the
+  companion captures at those values, not the plan's 200/50.
+- **There is currently NO AP26CC calibration in the library** — every BIAS/DARK/
+  FLAT is the mono AP26MC. The OSC has been integrating uncalibrated. Fix =
+  capture a first OSC set (auto on the next arm); nothing to delete.
+- `/api/calibration/health` is **camera‑blind** (lumps AP26MC + AP26CC), so it
+  won't reveal the OSC gap — split it by INSTRUME (backlog).
+- The mono AP26MC calibration is healthy (900 s darks, NB flats, bias) — keep it.
+  Watch that lights match dark SET‑TEMP: a "stuck at 20°C" cooler night (e.g.
+  2026‑09‑26 warm 900 s Ha) won't match the 0°C dark library.
+
 ## Field-recovery cheats (things that bit us live)
 
 - **OSC not shooting lights (only flats/darks):** NINA #2's safety monitor is
