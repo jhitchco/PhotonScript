@@ -56,6 +56,29 @@ GET /api/ascom/log?name=Safety                     # ASCOM trace log
 `PS_PHD2_LOGS_DIR` (System & Config → PHD2) if PHD2 writes its logs elsewhere.
 Set `piggyback_nina_logs_dir` (NINA #2's log folder) to tail the OSC's log.
 
+## Pushover volume (verbosity + de-duplication)
+
+Two Pushover streams reach the phone: the **sequence narration** (NINA's
+GroundStation plugin, driven by the sequence PhotonScript generates) and
+PhotonScript's **own watchdog alerts** (`notify()`).
+
+- **Narration is the bulk of the volume.** `pushover_verbosity` controls it:
+  `verbose` = every step incl the per-block "starting/done" pair (2×/filter/
+  target); **`normal` (default)** drops the per-block pair but keeps per-target
+  step lines + night milestones; `quiet` drops the per-target step lines too.
+  Changing it takes effect on the next dispatched sequence.
+- **Watchdog alerts** (`notify()`) are each once-per-episode with a reset:
+  guiding, cooler-OFF, safety-monitor-unreadable, transfer-stall, AF-quality,
+  trends, dawn-shutdown, dispatch/arm errors. Not affected by
+  `pushover_verbosity`.
+- **Cooler de-dup (2026-09-26):** the armer's cooler nanny and the
+  telescope-agent cooling watchdog used to overlap. Now the **nanny alerts only
+  when the cooler is flat OFF** (and silently re-asserts the setpoint otherwise),
+  while the **agent watchdog owns "cooler on but 0% power / not cooling"** — so a
+  single fault raises one alert, not two. Both now cool instantly
+  (`cool_ramp_minutes`), no 10-min ramp. Tolerance is the single
+  `cooling_tolerance_c`.
+
 ## Run-time alerts (Pushover)
 
 Beyond the guiding + cooler watchdogs above, a run now also fires once on:

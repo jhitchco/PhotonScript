@@ -42,6 +42,7 @@ def _agent(monkeypatch, nina):
     a.nina = nina
     a.state = TelescopeState()
     a._safety_bad_since = None
+    a._safety_bad_reads = 0
     a._safety_fix_attempts = 0
     a._safety_last_attempt = 0.0
     a._safety_last_escalate = 0.0
@@ -62,7 +63,10 @@ def _agent(monkeypatch, nina):
 def test_grace_then_reconnect(monkeypatch):
     n = FakeNina(connected=False)
     a, _ = _agent(monkeypatch, n)
-    asyncio.run(a._safety_monitor_watchdog())          # first drop: arm grace only
+    asyncio.run(a._safety_monitor_watchdog())          # 1st bad read: debounce only
+    assert n.calls == []
+    assert a._safety_bad_since is None                 # one blip must NOT arm
+    asyncio.run(a._safety_monitor_watchdog())          # 2nd bad read: arm grace
     assert n.calls == []
     assert a._safety_bad_since is not None
     a._safety_bad_since -= a.SAFETY_GRACE_S + 1         # grace expired
@@ -74,7 +78,8 @@ def test_grace_then_reconnect(monkeypatch):
 def test_reconnect_success_clears_state(monkeypatch):
     n = FakeNina(connected=False, reconnect_ok=True)
     a, _ = _agent(monkeypatch, n)
-    asyncio.run(a._safety_monitor_watchdog())
+    asyncio.run(a._safety_monitor_watchdog())          # 1st bad read: debounce only
+    asyncio.run(a._safety_monitor_watchdog())          # 2nd bad read: arm grace
     a._safety_bad_since -= a.SAFETY_GRACE_S + 1
     asyncio.run(a._safety_monitor_watchdog())
     assert n.connected is True
@@ -88,6 +93,7 @@ def test_keeps_retrying_after_fast_burst(monkeypatch):
     n = FakeNina(connected=False)
     a, _ = _agent(monkeypatch, n)
     a._safety_bad_since = -1e9
+    a._safety_bad_reads = 2                             # debounce already satisfied
     a._safety_last_escalate = -1e9
     a._safety_fix_attempts = a.SAFETY_FAST_ATTEMPTS     # burst exhausted
     a._safety_last_attempt = -1e9                       # retry interval elapsed

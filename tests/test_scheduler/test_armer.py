@@ -231,9 +231,10 @@ def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",)):
 
 
 @pytest.mark.asyncio
-async def test_cooler_nanny_drives_warm_rig_to_setpoint(monkeypatch):
-    """A rig sitting warm (20°C, setpoint 0) in the imaging window → instant
-    cool to setpoint + one alert (the 2026-09-26 stuck-at-20°C failure)."""
+async def test_cooler_nanny_reasserts_setpoint_when_warm_but_no_alert(monkeypatch):
+    """Cooler ON but warm (20°C, setpoint 0) — e.g. stuck at a wrong setpoint, or
+    a normal cooldown in progress: re-assert the setpoint (instant) EVERY tick,
+    but never alert (that's the agent cooling watchdog's job / normal cooldown)."""
     import photonscript.scheduler.armer as armer_mod
     a = _cooler_armer()
     cool_calls, notes = [], []
@@ -245,23 +246,27 @@ async def test_cooler_nanny_drives_warm_rig_to_setpoint(monkeypatch):
 
     now = datetime(2026, 9, 25, 3, 0, 0)  # inside dusk→dawn
     await a._reconcile_cooler(now)
-    assert len(cool_calls) == 1 and cool_calls[0]["temp"] == 0.0
-    assert cool_calls[0]["minutes"] == 0.0          # instant, no ramp
-    assert len(notes) == 1
-    await a._reconcile_cooler(now)                  # still warm — alert deduped
-    assert len(cool_calls) == 2 and len(notes) == 1
+    await a._reconcile_cooler(now)
+    assert len(cool_calls) == 2                 # re-asserted setpoint each tick
+    assert cool_calls[0]["temp"] == 0.0 and cool_calls[0]["minutes"] == 0.0
+    assert notes == []                          # cooler is ON — no false alarm
 
 
 @pytest.mark.asyncio
-async def test_cooler_nanny_drives_when_cooler_off(monkeypatch):
+async def test_cooler_nanny_drives_and_alerts_when_cooler_off(monkeypatch):
+    """Cooler flat OFF in the window — unambiguous fault: turn it on + alert once."""
     import photonscript.scheduler.armer as armer_mod
     a = _cooler_armer()
-    cool_calls = []
-    _patch_rigs(monkeypatch, {"Temperature": 0.0, "CoolerOn": False}, cool_calls)
-    monkeypatch.setattr(armer_mod, "notify",
-                        lambda *a, **k: _noop_sleep())
+    cool_calls, notes = [], []
+    _patch_rigs(monkeypatch, {"Temperature": 22.0, "CoolerOn": False}, cool_calls)
+
+    async def _notify(cfg, msg, **kw):
+        notes.append(msg)
+    monkeypatch.setattr(armer_mod, "notify", _notify)
     await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
-    assert len(cool_calls) == 1  # cooler off in the window -> drive it on
+    assert len(cool_calls) == 1 and "OFF" in notes[0]
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
+    assert len(cool_calls) == 2 and len(notes) == 1  # re-driven, alert deduped
 
 
 @pytest.mark.asyncio

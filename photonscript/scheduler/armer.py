@@ -559,14 +559,19 @@ class Armer:
             return False
 
     async def _reconcile_cooler(self, now: datetime) -> None:
-        """Camera-temperature nanny. The rule is simple: during the imaging
-        window (from cool_lead before dark until dawn), every rig's cooler
-        should be ON and AT SETPOINT. Only called on a safe RUNNING tick, so
-        "safe → the camera is cold" holds. If a rig is off or sitting warm (the
-        2026-09-26 stuck-at-20°C night that noised up the RC16 subs), drive it to
-        setpoint with an INSTANT cool (no ramp) and alert once per rig until it
-        recovers. Fails safe: a rig NINA can't be read is left alone, never
-        alarmed. Disable with cooler_nanny=false."""
+        """Camera-temperature nanny. During the imaging window (cool_lead before
+        dark → dawn) every rig's cooler should be ON and targeting the setpoint.
+        Only called on a safe RUNNING tick, so "safe → the camera is cold" holds.
+
+        Every tick it RE-ASSERTS the correct setpoint with an instant cool when a
+        rig is off or above setpoint — idempotent while a cooler is normally
+        pulling down, and the fix for a cooler left ON at the WRONG setpoint (the
+        2026-09-26 stuck-at-20°C night). But it only ALERTS when the cooler is
+        flat OFF — an unambiguous fault — so it never false-alarms during a normal
+        cooldown, and never double-alerts with the telescope-agent cooling
+        watchdog, which owns the 'cooler on but 0% power / not cooling' case.
+        Fails safe: a rig NINA can't be read is left alone. Disable with
+        cooler_nanny=false."""
         if not getattr(self.config, "cooler_nanny", True):
             return
         dusk = self.plan.get("dusk_utc")
@@ -580,7 +585,7 @@ class Armer:
         cold_from = dusk_dt - timedelta(minutes=lead)
         if not (cold_from <= now < self._dawn()):
             return  # outside the cold window — cooler is meant to be off
-        tol = float(getattr(self.config, "cooler_tolerance_c", 3.0))
+        tol = float(getattr(self.config, "cooling_tolerance_c", 3.0))
         ramp = float(getattr(self.config, "cool_ramp_minutes", 0.0))
         from photonscript.shared.rigs import (rig_ids, rig_config, rig_setpoint,
                                               nina_cool, nina_camera_info)
@@ -595,18 +600,18 @@ class Armer:
                 continue
             setp = rig_setpoint(self.config, rig)
             too_warm = (float(temp) - setp) > tol
-            if (not on) or too_warm:
+            if not on or too_warm:
+                # Re-assert the correct setpoint (idempotent; corrects a wrong one).
                 await nina_cool(rc.nina_base_url, setp, minutes=ramp)  # instant
-                if not self._cooler_alerted.get(rig):
+                if not on and not self._cooler_alerted.get(rig):
                     self._cooler_alerted[rig] = True
                     await notify(
                         self.config,
-                        f"Cooler nanny: {rig} was "
-                        f"{'OFF' if not on else f'{float(temp):.1f}°C'} in the "
-                        f"imaging window — driving it to {setp:.0f}°C now (instant, "
-                        "no ramp). Subs shot warm won't match the dark library.",
+                        f"Cooler nanny: {rig} cooler was OFF in the imaging "
+                        f"window — turning it on to {setp:.0f}°C now (instant). "
+                        "Subs shot warm won't match the dark library.",
                         title="PhotonScript cooler", priority=1)
-            else:
+            elif not too_warm:
                 self._cooler_alerted[rig] = False  # at setpoint — re-arm the latch
 
     async def _watch_safety_monitor(self, now: datetime, safe: bool | None) -> None:

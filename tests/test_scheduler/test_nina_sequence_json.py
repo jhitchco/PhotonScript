@@ -179,6 +179,26 @@ class TestNinaJsonGeneration:
         types = _types(_gen())
         assert sum("SendToPushover" in t for t in types) >= 5
 
+    def _pushover_msgs(self, data):
+        return [d.get("Message", "") for d in _walk(data) if isinstance(d, dict)
+                and "SendToPushover" in d.get("$type", "")]
+
+    def test_verbosity_normal_drops_per_block_narration(self):
+        msgs = self._pushover_msgs(_gen(start_guiding=True))
+        assert not any("block done" in m for m in msgs)   # per-block chatter gone
+        assert any("slewing" in m for m in msgs)          # per-target intro stays
+
+    def test_verbosity_verbose_restores_per_block(self, monkeypatch):
+        monkeypatch.setenv("PS_PUSHOVER_VERBOSITY", "verbose")
+        msgs = self._pushover_msgs(_gen(start_guiding=True))
+        assert any("block done" in m for m in msgs)       # per-block narration back
+
+    def test_verbosity_quiet_drops_per_target_steps(self, monkeypatch):
+        monkeypatch.setenv("PS_PUSHOVER_VERBOSITY", "quiet")
+        msgs = self._pushover_msgs(_gen(start_guiding=True))
+        assert not any("capturing" in m for m in msgs)    # step lines gone
+        assert not any("block done" in m for m in msgs)
+
     def test_lint_passes_on_generated(self):
         from photonscript.scheduler.sequence_lint import lint
         result = lint(_gen(), guided=False)

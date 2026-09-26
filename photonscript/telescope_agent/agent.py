@@ -65,6 +65,7 @@ class TelescopeAgent:
         self._dew_api_broken = False
         # Safety-monitor watchdog state
         self._safety_bad_since: float | None = None
+        self._safety_bad_reads = 0  # consecutive Connected:False polls (debounce)
         self._safety_fix_attempts = 0
         self._safety_last_attempt: float = 0.0
         self._safety_last_escalate: float = 0.0
@@ -262,6 +263,7 @@ class TelescopeAgent:
             if self._safety_bad_since is not None:
                 logger.info("Safety-monitor watchdog: monitor connected again")
             self._safety_bad_since = None
+            self._safety_bad_reads = 0
             self._safety_fix_attempts = 0
             self._safety_last_attempt = 0.0
             self._safety_last_escalate = 0.0
@@ -269,16 +271,13 @@ class TelescopeAgent:
             self._alerted.discard("safety-disconnected")
             return
 
-        # TODO(jeremy): handoff #2 item 2 asked to debounce this top-of-loop "bad"
-        # decision — require Connected:False on 2 consecutive SAFETY_POLL_S polls
-        # before latching _safety_bad_since, so one racy/slow Alpaca read doesn't
-        # start the down-clock. NOT applied: the existing regression tests
-        # (test_safety_watchdog.py::test_grace_then_reconnect et al.) assert that a
-        # single post-grace bad read arms _safety_bad_since, and the settle-poll
-        # below already absorbs the post-reconnect racy-False that caused the 60 s
-        # churn. Adding the debounce here needs those tests updated too — do that
-        # deliberately rather than have me guess. The SAFETY_GRACE_S=120 window
-        # still absorbs brief blips before any remediation fires.
+        # Debounce: require Connected:False on 2 consecutive SAFETY_POLL_S polls
+        # before latching _safety_bad_since, so one racy/slow AlpacaDynamic3 read
+        # can't start the down-clock or arm remediation. A single blip returns
+        # early; SAFETY_GRACE_S still absorbs longer drops before any action.
+        self._safety_bad_reads = getattr(self, "_safety_bad_reads", 0) + 1
+        if self._safety_bad_reads < 2:
+            return  # first bad read — treat as transient, wait for confirmation
         now = time.monotonic()
         if self._safety_bad_since is None:
             self._safety_bad_since = now
@@ -338,6 +337,7 @@ class TelescopeAgent:
                         "Safety monitor was disconnected and has been "
                         "auto-reconnected — the sequence can see weather again.")
                     self._safety_bad_since = None
+                    self._safety_bad_reads = 0
                     self._safety_fix_attempts = 0
                     self._safety_last_escalate = 0.0
                     self._safety_aborted = False
@@ -421,7 +421,10 @@ class TelescopeAgent:
             await asyncio.sleep(10)
             await self.nina.connect_camera()
             await asyncio.sleep(5)
-            await self.nina.cool_camera(sp, minutes=10.0)
+            # Instant re-cool (no 10-min ramp — a ramp fought arm/precool). Honors
+            # cool_ramp_minutes so it matches the rest of the cooling path.
+            await self.nina.cool_camera(
+                sp, minutes=float(getattr(self.config, "cool_ramp_minutes", 0.0)))
             logger.info("Cooling watchdog: cool command re-issued (%.1fC)", sp)
         except Exception as e:  # noqa: BLE001
             logger.error("Cooling watchdog attempt %d errored: %s", n, e)

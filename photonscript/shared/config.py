@@ -152,6 +152,16 @@ class PhotonScriptConfig(BaseSettings):
     guiding_watchdog_grace_min: int = 20  # after dusk, give guiding this long to
                                  # start (slew->center->AF->calibrate->settle)
                                  # before the not-guiding watchdog can trip.
+    pushover_verbosity: str = "normal"  # how chatty the sequence's Pushover
+                                 # narration is. "verbose" = every step incl the
+                                 # per-block "starting/done" pair (2×/filter/
+                                 # target — the bulk of the noise); "normal"
+                                 # (default) drops per-block but keeps per-target
+                                 # steps + milestones; "quiet" drops the
+                                 # per-target step lines too, leaving night
+                                 # milestones (start, unsafe/safe, target done,
+                                 # shutdown). PhotonScript's own watchdog alerts
+                                 # (notify()) are unaffected by this.
     autofocus_filter: str = "L"  # filter PhotonScript switches to for the AFs it
                                  # EMITS (twilight startup AF + each target's
                                  # start-of-target AF) so autofocus runs on bright
@@ -291,8 +301,6 @@ class PhotonScriptConfig(BaseSettings):
                                  # night that ruined the RC16 subs), drive it to
                                  # setpoint with an INSTANT cool and alert once. Set
                                  # false to disable the nanny entirely.
-    cooler_tolerance_c: float = 3.0  # nanny acts when a rig's live temp is more than
-                                 # this many °C above setpoint in the cold window.
     safety_monitor_watchdog: bool = True  # alert if the safety monitor reads
                                  # UNREADABLE (disconnected/erroring) for a while
                                  # during a run — roof gating is then blind (the

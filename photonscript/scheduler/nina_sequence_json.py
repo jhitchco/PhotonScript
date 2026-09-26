@@ -608,13 +608,20 @@ def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
 
 def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             force_calibration: bool = False,
-                            af_filter: "FilterType | None" = None) -> dict:
+                            af_filter: "FilterType | None" = None,
+                            narrate: str = "normal") -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [guiding] -> exposures.
 
     af_filter (config.autofocus_filter, e.g. L) is the bright filter the
     start-of-target autofocus runs on so it never focuses through narrowband;
-    None keeps the old behavior (focus in the imaging filter)."""
+    None keeps the old behavior (focus in the imaging filter).
+
+    narrate (config.pushover_verbosity) controls Pushover chatter: "verbose"
+    adds the per-block starting/done pair, "normal" keeps per-target step lines,
+    "quiet" drops those too (target intro + done still fire)."""
+    chatty_block = narrate == "verbose"          # per-block starting/done pair
+    narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
     active = [e for e in target.exposures if e.count - e.acquired > 0]
 
     plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
@@ -637,28 +644,32 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         items.append(_switch_filter(focus_filter))
     if target.auto_focus_on_start and active:
         seed0 = _seed_position(focus_filter)
-        items.append(_pushover("Imaging",
-                               f"{target.name}: slew done — seeding focuser "
-                               f"to {seed0} for {focus_filter.value}, "
-                               "autofocusing, then plate solve & center"))
+        if narrate_steps:
+            items.append(_pushover("Imaging",
+                                   f"{target.name}: slew done — seeding focuser "
+                                   f"to {seed0} for {focus_filter.value}, "
+                                   "autofocusing, then plate solve & center"))
         items.append(_move_focuser(seed0))
         items.append(_autofocus())
     elif target.auto_focus_on_start:
-        items.append(_pushover("Imaging",
-                               f"{target.name}: slew done — autofocusing, "
-                               "then plate solve & center"))
+        if narrate_steps:
+            items.append(_pushover("Imaging",
+                                   f"{target.name}: slew done — autofocusing, "
+                                   "then plate solve & center"))
         items.append(_autofocus())
     items.append(_center(target))
     items.append(_set_tracking(0))
     if target.start_guiding:
         items.append(_start_guiding(force_calibration))
-        items.append(_pushover("Imaging",
-                               f"{target.name}: focused, centered, guiding — "
-                               "capturing"))
+        if narrate_steps:
+            items.append(_pushover("Imaging",
+                                   f"{target.name}: focused, centered, guiding — "
+                                   "capturing"))
     else:
-        items.append(_pushover("Imaging",
-                               f"{target.name}: focused, centered, unguided "
-                               "on encoders — capturing"))
+        if narrate_steps:
+            items.append(_pushover("Imaging",
+                                   f"{target.name}: focused, centered, unguided "
+                                   "on encoders — capturing"))
     NB_SET = {"Ha", "OIII", "SII"}
     bb = [e for e in active if e.filter_type.value not in NB_SET]
     nb = [e for e in active if e.filter_type.value in NB_SET]
@@ -687,20 +698,22 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         n = exp.count - exp.acquired
         block_h = exp.exposure_seconds * n / 3600
         seed = _seed_position(exp.filter_type)
-        out = [_pushover(
-            "Imaging",
-            f"{target.name} [{bi}/{n_blocks}]: starting "
-            f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
-            f"(~{block_h:.1f}h) gain {exp.gain}; focuser seed {seed} "
-            "then autofocus"
-            + (" (moon-free window)" if condition else "")),
-            _move_focuser(seed),
-            _smart_exposure(exp, target.start_guiding,
-                            target.dither_every_n),
-            _pushover(
-            "Imaging",
-            f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
-            f"done ({n}×{exp.exposure_seconds:.0f}s attempted)")]
+        out = []
+        if chatty_block:   # per-block "starting/done" pair — the bulk of the noise
+            out.append(_pushover(
+                "Imaging",
+                f"{target.name} [{bi}/{n_blocks}]: starting "
+                f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
+                f"(~{block_h:.1f}h) gain {exp.gain}; focuser seed {seed} "
+                "then autofocus"
+                + (" (moon-free window)" if condition else "")))
+        out += [_move_focuser(seed),
+                _smart_exposure(exp, target.start_guiding, target.dither_every_n)]
+        if chatty_block:
+            out.append(_pushover(
+                "Imaging",
+                f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
+                f"done ({n}×{exp.exposure_seconds:.0f}s attempted)"))
         return out
 
     n_blocks = len(ordered)
@@ -906,7 +919,9 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             first_guided = False
         target_containers.append(
             _build_target_container(t, sequence.wait_for_altitude, force_cal,
-                                    af_filter=af_ft))
+                                    af_filter=af_ft,
+                                    narrate=getattr(_cfg, "pushover_verbosity",
+                                                    "normal")))
 
     unsafe_items = [
         _pushover("Safety", "UNSAFE — imaging stopped, parking scope; will "
