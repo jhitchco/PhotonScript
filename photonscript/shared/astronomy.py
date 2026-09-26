@@ -250,7 +250,8 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Spindle Galaxy', "catalog_id": 'NGC 3115', "ra": 10.08722, "dec": -7.71858, "type": 'galaxy', "mag": 9.1, "size": 7.1, "months": [1, 2, 3, 4], "hours": 15},
     {"name": "Copeland's Blue Snowball", "catalog_id": 'NGC 7662', "ra": 23.43164, "dec": 42.53494, "type": 'planetary nebula', "mag": 8.3, "size": 0.3, "months": [8, 9, 10, 11], "hours": 10},
     {"name": 'Needle Galaxy', "catalog_id": 'NGC 4565', "ra": 12.60577, "dec": 25.98767, "type": 'galaxy', "mag": 10.9, "size": 16.8, "months": [2, 3, 4, 5], "hours": 15},
-    {"name": "Cat's Eye Nebula", "catalog_id": 'NGC 6543', "ra": 17.97594, "dec": 66.63319, "type": 'planetary nebula', "mag": 9.0, "size": 0.9, "months": [5, 6, 7, 8], "hours": 10},
+    {"name": "Cat's Eye Nebula", "catalog_id": 'NGC 6543', "ra": 17.97594, "dec": 66.63319, "type": 'planetary nebula', "mag": 9.0, "size": 0.9, "months": [4, 5, 6, 7, 8, 9, 10, 11], "hours": 10},  # Draco, dec +66 -> circumpolar from AARO (never sets); widened months 2026-09-25 so it's offered in autumn too
+    {"name": "Fetus Nebula", "catalog_id": 'NGC 7008', "ra": 21.0092, "dec": 54.5436, "type": 'planetary nebula', "mag": 10.7, "size": 1.4, "months": [7, 8, 9, 10, 11], "hours": 15},
     {"name": 'Eight-Burst Nebula', "catalog_id": 'NGC 3132', "ra": 10.11715, "dec": -40.43658, "type": 'planetary nebula', "mag": 9.2, "size": 0.5, "months": [1, 2, 3, 4], "hours": 10},
     {"name": 'Blinking Planetary', "catalog_id": 'NGC 6826', "ra": 19.7467, "dec": 50.52503, "type": 'planetary nebula', "mag": 9.4, "size": 0.4, "months": [6, 7, 8, 9], "hours": 10},
     {"name": 'Eskimo Nebula', "catalog_id": 'NGC 2392', "ra": 7.48632, "dec": 20.91183, "type": 'planetary nebula', "mag": 9.6, "size": 0.9, "months": [1, 2, 3, 12], "hours": 10},
