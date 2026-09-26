@@ -61,6 +61,9 @@ RECUR_RADIUS = 8        # binned px
 BASELINE_PCTL = 20      # per-lag percentile across subs = the static star-field
                         # sidelobes (autocorrelation is translation invariant)
 MIN_SUBS_FOR_SPLIT = 6
+GROUP_CORR = 0.45       # autocorr similarity to share a pointing group (field)
+SPLIT_CONFIRM_SMALL = 0.060  # pointing groups too small for their own baseline
+                        # are judged against the group min, at a higher bar
 BRIGHT_SIGMA = 8.0      # background outlier: > median + 8 * 1.4826 * MAD
 
 
@@ -153,15 +156,60 @@ def _tukey(n: int, alpha: float = 0.2) -> np.ndarray:
     return w
 
 
-def autocorr(binned: np.ndarray) -> np.ndarray:
-    """Centered autocorrelation of the star map, normalized to the zero lag."""
+def star_fft(binned: np.ndarray) -> np.ndarray:
+    """Windowed FFT of the star map (shared by autocorr and pointing)."""
     s = star_image(binned)
     s = s - s.mean()
     win = _tukey(s.shape[0])[:, None] * _tukey(s.shape[1])[None, :]
-    f = np.fft.rfft2(s * win)
-    ac = np.fft.fftshift(np.fft.irfft2(f * np.conj(f), s=s.shape))
-    p0 = ac[s.shape[0] // 2, s.shape[1] // 2]
+    return np.fft.rfft2(s * win)
+
+
+def autocorr(binned: np.ndarray, f: np.ndarray | None = None) -> np.ndarray:
+    """Centered autocorrelation of the star map, normalized to the zero lag."""
+    if f is None:
+        f = star_fft(binned)
+    ac = np.fft.fftshift(np.fft.irfft2(f * np.conj(f), s=binned.shape))
+    p0 = ac[binned.shape[0] // 2, binned.shape[1] // 2]
     return (ac / p0 if p0 > 0 else ac * 0).astype(np.float32)
+
+
+def group_pointings(acs: np.ndarray, min_corr: float | None = None) -> list[int]:
+    """Cluster subs by WHICH star field they saw, using the similarity of their
+    autocorrelations (the sidelobe pattern is a fingerprint of the field and is
+    translation invariant, so dithers and drift don't matter). Phase
+    correlation can't do this: a sub that spent 90% of its time on another
+    field still correlates best with the reference through its 10% minority.
+
+    Greedy: take the medoid of the unassigned subs (highest mean similarity),
+    give it every unassigned sub with similarity >= min_corr, repeat. Group 0
+    is the largest (the majority framing). M31 2026-09-21: clean subs on the
+    majority field score >= 0.8, subs mostly on the other field <= 0.3, 50/50
+    splits sit in between (and are caught by the split test either way)."""
+    if min_corr is None:
+        min_corr = GROUP_CORR
+    n, h, w = acs.shape
+    cy, cx = h // 2, w // 2
+    x = acs[:, ::2, ::2].astype(np.float64).copy()
+    my, mx = cy // 2, cx // 2
+    x[:, my - 4:my + 5, mx - 4:mx + 5] = 0.0
+    x = x.reshape(n, -1)
+    x -= x.mean(axis=1, keepdims=True)
+    x /= np.linalg.norm(x, axis=1, keepdims=True) + 1e-12
+    sim = x @ x.T
+    gid = [-1] * n
+    groups: list[list[int]] = []
+    left = list(range(n))
+    while left:
+        sub = sim[np.ix_(left, left)]
+        med = left[int(np.argmax(sub.mean(axis=1)))]
+        members = [i for i in left if sim[med, i] >= min_corr] or [med]
+        groups.append(members)
+        left = [i for i in left if i not in members]
+    groups.sort(key=len, reverse=True)
+    for g, members in enumerate(groups):
+        for i in members:
+            gid[i] = g
+    return gid
 
 
 def softness(ac: np.ndarray) -> float:
@@ -177,43 +225,66 @@ class SplitResult:
     dy: int
     softness: float
     recur: float = 0.0  # excess near a lag confirmed split in another sub
+    group: int = 0      # pointing group (0 = majority framing)
+    small: bool = False  # group too small for its own baseline
 
 
-def split_scan(acs: np.ndarray) -> list[SplitResult]:
-    """Two-pass split detection over a session's autocorrelations.
+def split_scan(acs: np.ndarray, groups: list[int] | None = None) -> list[SplitResult]:
+    """Two-pass split detection over a session's autocorrelations, run
+    separately for each pointing group (a sub's star-field sidelobes depend on
+    WHICH field it saw, so a minority framing must not be judged against the
+    majority's baseline: 2026-09-21 M31, the M31-centered subs read their own
+    field's sidelobes as a 'split').
 
-    Pass 1: excess = ac - per-lag percentile across subs (removes the star
-    field's own sidelobes, identical in every clean sub). A sub whose worst
-    excess >= SPLIT_CONFIRM is a confirmed split and votes its lag.
-    Pass 2: any other sub with excess >= SPLIT_RECUR within RECUR_RADIUS of a
-    voted lag is also split (small-minority splits along the same slew).
+    Pass 1: excess = ac - per-lag percentile across the group's subs. A sub
+    whose worst excess >= SPLIT_CONFIRM is a confirmed split and votes its lag.
+    Pass 2: any other sub in the group with excess >= SPLIT_RECUR within
+    RECUR_RADIUS of a voted lag is also split.
+    Groups smaller than MIN_SUBS_FOR_SPLIT use the group minimum as baseline
+    (or none, for a single sub) and only SPLIT_CONFIRM_SMALL, no recurrence.
     """
     n, h, w = acs.shape
+    if groups is None:
+        groups = [0] * n
     cy, cx = h // 2, w // 2
-    base = np.percentile(acs, BASELINE_PCTL, axis=0) if n >= MIN_SUBS_FOR_SPLIT \
-        else np.zeros((h, w), np.float32)
-    res: list[SplitResult] = []
-    lags: list[tuple[int, int]] = []
-    for ac in acs:
-        e = ac - base
-        e[cy - CENTER_MASK:cy + CENTER_MASK + 1, cx - CENTER_MASK:cx + CENTER_MASK + 1] = -np.inf
-        iy, ix = np.unravel_index(np.argmax(e), e.shape)
-        r = SplitResult(float(e[iy, ix]), int(ix - cx) * BIN * BIN2,
-                        int(iy - cy) * BIN * BIN2, softness(ac))
-        res.append(r)
-        if r.excess >= SPLIT_CONFIRM:
-            lags.append((int(iy), int(ix)))
-    for ac, r in zip(acs, res):
-        if r.excess >= SPLIT_CONFIRM or not lags:
+    res: list[SplitResult | None] = [None] * n
+    for g in sorted(set(groups)):
+        idx = [i for i in range(n) if groups[i] == g]
+        small = len(idx) < MIN_SUBS_FOR_SPLIT
+        if not small:
+            base = np.percentile(acs[idx], BASELINE_PCTL, axis=0)
+        elif len(idx) >= 2:
+            base = acs[idx].min(axis=0)
+        else:
+            base = np.zeros((h, w), np.float32)
+        confirm = SPLIT_CONFIRM_SMALL if small else SPLIT_CONFIRM
+        lags: list[tuple[int, int]] = []
+        for i in idx:
+            e = acs[i] - base
+            e[cy - CENTER_MASK:cy + CENTER_MASK + 1, cx - CENTER_MASK:cx + CENTER_MASK + 1] = -np.inf
+            iy, ix = np.unravel_index(np.argmax(e), e.shape)
+            r = SplitResult(float(e[iy, ix]), int(ix - cx) * BIN * BIN2,
+                            int(iy - cy) * BIN * BIN2, softness(acs[i]))
+            r.group, r.small = g, small
+            res[i] = r
+            if r.excess >= confirm:
+                lags.append((int(iy), int(ix)))
+        if small:
             continue
-        e = ac - base
-        r.recur = max(float(e[max(0, y - RECUR_RADIUS):y + RECUR_RADIUS + 1,
-                              max(0, x - RECUR_RADIUS):x + RECUR_RADIUS + 1].max())
-                      for y, x in lags)
-    return res
+        for i in idx:
+            r = res[i]
+            if r.excess >= SPLIT_CONFIRM or not lags:
+                continue
+            e = acs[i] - base
+            r.recur = max(float(e[max(0, y - RECUR_RADIUS):y + RECUR_RADIUS + 1,
+                                  max(0, x - RECUR_RADIUS):x + RECUR_RADIUS + 1].max())
+                          for y, x in lags)
+    return res  # type: ignore[return-value]
 
 
 def is_split(r: SplitResult) -> bool:
+    if r.small:
+        return r.excess >= SPLIT_CONFIRM_SMALL
     return r.excess >= SPLIT_CONFIRM or r.recur >= SPLIT_RECUR
 
 
@@ -254,18 +325,27 @@ def analyze(files: list[Path], log=print) -> list[Sub]:
         acs.append(autocorr(b))
         if i % 10 == 0 or i == len(files):
             log(f"  measured {i}/{len(files)}")
+    groups = group_pointings(np.stack(acs)) if len(acs) >= 2 else [0] * len(acs)
+    ng = max(groups) + 1 if groups else 0
+    if ng > 1:
+        sizes = [groups.count(g) for g in range(ng)]
+        log(f"  {ng} pointings (framings) found; subs per pointing: {sizes}. "
+            "Only pointing 0 (the majority) is integrated; the others are moved "
+            "to REJECTED/other_pointing_<n>/ so they can be stacked on their own.")
     if len(subs) >= MIN_SUBS_FOR_SPLIT:
-        for s, r in zip(subs, split_scan(np.stack(acs))):
+        for s, r in zip(subs, split_scan(np.stack(acs), groups)):
             s.split = r
             if is_split(r):
                 s.reasons.append("split_pointing")
+            elif r.group > 0:
+                s.reasons.append(f"other_pointing_{r.group}")
     else:
         log(f"  only {len(subs)} subs: split-pointing check needs >= {MIN_SUBS_FOR_SPLIT}, skipped")
         for s, ac in zip(subs, acs):
             s.split = SplitResult(0.0, 0, 0, softness(ac))
     for s in subs:
         r = s.split
-        log(f"  {s.path.name}: excess={r.excess:.3f} recur={r.recur:.3f} "
+        log(f"  {s.path.name}: pointing={r.group} excess={r.excess:.3f} recur={r.recur:.3f} "
             f"lag=({r.dx},{r.dy})px bg={s.background:.1f}"
             f"{'  SPLIT' if 'split_pointing' in s.reasons else ''}")
 
@@ -313,11 +393,11 @@ def cull(stage: Path, dry_run: bool = False, reject_bright: bool = False, log=pr
 
     with open(stage / "cull_report.csv", "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["file", "date_obs", "action", "reasons", "flags", "split_excess",
+        w.writerow(["file", "date_obs", "action", "reasons", "flags", "pointing", "split_excess",
                     "split_recur", "split_dx", "split_dy", "softness", "background"])
         for s in subs:
             w.writerow([s.path.name, s.date_obs, "reject" if s.reasons else "keep",
-                        ";".join(s.reasons), ";".join(s.flags), f"{s.split.excess:.4f}", f"{s.split.recur:.4f}",
+                        ";".join(s.reasons), ";".join(s.flags), s.split.group, f"{s.split.excess:.4f}", f"{s.split.recur:.4f}",
                         s.split.dx, s.split.dy, f"{s.split.softness:.4f}",
                         f"{s.background:.2f}"])
 

@@ -114,3 +114,26 @@ def test_dry_run_moves_nothing(stage):
     oc.cull(stage, dry_run=True, log=lambda *_: None)
     assert len(list(stage.glob("*.fits"))) == n_before
     assert not (stage / "REJECTED").exists()
+
+
+def test_second_pointing_is_separated_not_called_split(tmp_path):
+    """A minority framing (mount parked at a second target) must be judged
+    against its own star-field baseline: clean subs there go to
+    other_pointing_1, not split_pointing (2026-09-21 M31 regression)."""
+    rng = np.random.default_rng(11)
+    big = _sky(rng)
+    plan = [("A", 1.0)] * 9 + [("B", 1.0)] * 7 + [("A", 0.5)] * 2
+    for i, (where, w) in enumerate(plan):
+        jit = (int(rng.integers(-3, 4)), int(rng.integers(-3, 4)))
+        if where == "B":
+            jit = (jit[0] + SLEW[0], jit[1] + SLEW[1])
+        a = _frame(rng, big, w, jitter=jit)
+        _write_fits(tmp_path / f"sub_{i:03d}.fits", a, f"2026-09-21T09:{i:02d}:00")
+    subs = oc.cull(tmp_path, dry_run=True, log=lambda *_: None)
+    got = {s.path.name: s.reasons for s in subs}
+    for i in range(9):
+        assert got[f"sub_{i:03d}.fits"] == [], (i, got[f"sub_{i:03d}.fits"])
+    for i in range(9, 16):
+        assert got[f"sub_{i:03d}.fits"] == ["other_pointing_1"], (i, got[f"sub_{i:03d}.fits"])
+    for i in (16, 17):
+        assert "split_pointing" in got[f"sub_{i:03d}.fits"]

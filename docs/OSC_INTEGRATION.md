@@ -48,6 +48,13 @@ separate faults:
    files from an earlier (cosmetic-corrected, no dark) run were stacked alongside
    the new `_d` files: 63 subs went in as 125, and CosmeticCorrection's hole in
    the M31 core came along. Now cleared per run + funnel assertions.
+Follow-up (2026-09-26, all 92 library subs as M31_OSC3): some subs sat
+almost entirely on the OTHER pointing (M31 centered). Judged against the
+majority field's sidelobe baseline they read as "split". The cull now first
+groups subs by which field they saw (autocorrelation similarity), judges each
+group against its own baseline, integrates only group 0 (the majority
+framing) and moves clean subs from other framings to
+`REJECTED\other_pointing_<n>\` so they can be stacked separately.
 Also found: `0282.fits` and `0282_1.fits` identical (duplicate), and 0282 is a
 twilight sub after a 44-min gap (+20% background).
 
