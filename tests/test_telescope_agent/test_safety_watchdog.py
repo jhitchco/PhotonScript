@@ -108,3 +108,11 @@ def test_connected_is_noop(monkeypatch):
     asyncio.run(a._safety_monitor_watchdog())
     assert n.calls == []
     assert a._safety_bad_since is None
+
+
+def test_safety_disconnect_repeat_is_hourly_by_default():
+    """PS-50: repeat the DISCONNECTED push hourly, not every 30 min."""
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.telescope_agent.agent import TelescopeAgent
+    assert TelescopeAgent.SAFETY_SLOW_RETRY_S == 3600
+    assert PhotonScriptConfig(_env_file=None).safety_disconnect_repeat_min == 60

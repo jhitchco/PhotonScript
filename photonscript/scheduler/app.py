@@ -480,6 +480,7 @@ _CONFIG_FIELDS = [
     ("pushover_quiet_daytime", "PS_PUSHOVER_QUIET_DAYTIME", "Quiet Pushover while the sun is up (no heartbeats; each alert type at most once per window)", "Nanny / Alerts", "bool", False, False),
     ("pushover_daytime_title_window_h", "PS_PUSHOVER_DAYTIME_TITLE_WINDOW_H", "Daytime: hours between repeats of the same alert", "Nanny / Alerts", "float", False, False),
     ("pushover_daytime_sun_alt_deg", "PS_PUSHOVER_DAYTIME_SUN_ALT_DEG", "Daytime = sun above this altitude (deg)", "Nanny / Alerts", "float", False, False),
+    ("safety_disconnect_repeat_min", "PS_SAFETY_DISCONNECT_REPEAT_MIN", "Repeat the safety-monitor DISCONNECTED alert every N min", "Nanny / Alerts", "int", False, False),
     ("pushover_ratelimit_enabled", "PS_PUSHOVER_RATELIMIT_ENABLED", "Rate-limit Pushover (dedup + hourly + monthly cap)", "Nanny / Alerts", "bool", False, False),
     ("pushover_dedup_window_s", "PS_PUSHOVER_DEDUP_WINDOW_S", "Pushover dedup window (s) — collapses flaps", "Nanny / Alerts", "int", False, False),
     ("pushover_max_per_hour", "PS_PUSHOVER_MAX_PER_HOUR", "Pushover max messages/hour (emergencies exempt)", "Nanny / Alerts", "int", False, False),

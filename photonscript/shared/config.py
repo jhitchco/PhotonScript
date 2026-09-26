@@ -203,6 +203,7 @@ class PhotonScriptConfig(BaseSettings):
     pushover_quiet_daytime: bool = True        # sun up: no heartbeats, 1 per title per window
     pushover_daytime_title_window_h: float = 4.0
     pushover_daytime_sun_alt_deg: float = -3.0  # "daytime" = sun above this altitude
+    safety_disconnect_repeat_min: int = 60     # repeat the safety-DISCONNECTED push every N min
     # Safety-flap debounce baked into the generated NINA sequence: after the sky
     # reads safe again it must STAY safe this long before the sequence unparks,
     # resumes and narrates. Kills the safe/unsafe Pushover storm + mount thrash.

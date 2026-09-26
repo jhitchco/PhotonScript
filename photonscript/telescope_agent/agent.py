@@ -215,7 +215,8 @@ class TelescopeAgent:
     SAFETY_GRACE_S = 120       # tolerate a brief drop before acting
     SAFETY_FAST_ATTEMPTS = 5   # quick reconnects at poll pace, then steady retry
     SAFETY_RETRY_S = 60        # after the fast burst: keep RE-connecting every 60s
-    SAFETY_SLOW_RETRY_S = 1800 # re-ESCALATE (Pushover) every 30 min while down
+    SAFETY_SLOW_RETRY_S = 3600 # re-ESCALATE (Pushover) every 60 min while down
+                               # (config safety_disconnect_repeat_min overrides)
     SAFETY_ABORT_AFTER_S = 300 # persistent-disconnect abort threshold (opt-in)
 
     async def _safety_loop(self):
@@ -287,7 +288,9 @@ class TelescopeAgent:
             return  # brief blip — don't act yet
 
         # --- escalate (severe), and repeat every 30 min while still down ----
-        if now - self._safety_last_escalate >= self.SAFETY_SLOW_RETRY_S:
+        repeat_s = 60 * float(getattr(self.config, "safety_disconnect_repeat_min",
+                                      self.SAFETY_SLOW_RETRY_S / 60))
+        if now - self._safety_last_escalate >= repeat_s:
             self._safety_last_escalate = now
             self._alerted.discard("safety-disconnected")  # allow re-fire
             await self._escalate(
