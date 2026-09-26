@@ -264,6 +264,21 @@ class PhotonScriptConfig(BaseSettings):
                                  # sequence turns them on at cool_lead. Fresh-arm only
                                  # — never on restart, so a mid-night restart can't
                                  # kill cooling.
+    cool_ramp_minutes: float = 0.0  # duration of the camera COOL ramp (mirror of
+                                 # gradual_warm_minutes). 0 = drive straight to the
+                                 # setpoint, no forced multi-minute ramp — the TEC
+                                 # pulls down as fast as it can and the nanny below
+                                 # verifies it got there. A ramp is what kept the
+                                 # cooler "losing its mind" fighting arm/precool.
+    cooler_nanny: bool = True    # active temperature reconciler: during the safe
+                                 # imaging window (cool_lead before dark → dawn)
+                                 # every rig's cooler must be ON and at setpoint. If
+                                 # a rig is off or warm (the 2026-09-26 stuck-at-20°C
+                                 # night that ruined the RC16 subs), drive it to
+                                 # setpoint with an INSTANT cool and alert once. Set
+                                 # false to disable the nanny entirely.
+    cooler_tolerance_c: float = 3.0  # nanny acts when a rig's live temp is more than
+                                 # this many °C above setpoint in the cold window.
     gradual_warm_minutes: float = 0.0  # duration of the camera warm ramp on cooler-off
                                  # (arm cooler-off, dawn shutdown, disarm make-safe, End
                                  # area). 0 = INSTANT: just release the setpoint / turn

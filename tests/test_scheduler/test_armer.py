@@ -204,6 +204,103 @@ async def test_watchdog_tolerates_brief_working_state(monkeypatch):
     assert any("stuck" in m for m in notes)  # now it warns, with the cal hint
 
 
+def _cooler_armer(**cfg):
+    a = _armer(**cfg)
+    a.plan = {"dusk_utc": "2026-09-25T02:00:00Z",
+              "dawn_utc": "2026-09-25T11:00:00Z"}
+    return a
+
+
+def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",)):
+    import photonscript.shared.rigs as rigs_mod
+    from types import SimpleNamespace
+
+    async def _info(base):
+        return info
+
+    async def _cool(base, temp, minutes=0.0):
+        cool_calls.append({"temp": temp, "minutes": minutes})
+        return {"ok": True}
+
+    monkeypatch.setattr(rigs_mod, "rig_ids", lambda cfg: list(rigs))
+    monkeypatch.setattr(rigs_mod, "rig_config", lambda cfg, r:
+                        SimpleNamespace(nina_base_url="http://x"))
+    monkeypatch.setattr(rigs_mod, "rig_setpoint", lambda cfg, r: setpoint)
+    monkeypatch.setattr(rigs_mod, "nina_camera_info", _info)
+    monkeypatch.setattr(rigs_mod, "nina_cool", _cool)
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_drives_warm_rig_to_setpoint(monkeypatch):
+    """A rig sitting warm (20°C, setpoint 0) in the imaging window → instant
+    cool to setpoint + one alert (the 2026-09-26 stuck-at-20°C failure)."""
+    import photonscript.scheduler.armer as armer_mod
+    a = _cooler_armer()
+    cool_calls, notes = [], []
+    _patch_rigs(monkeypatch, {"Temperature": 20.0, "CoolerOn": True}, cool_calls)
+
+    async def _notify(cfg, msg, **kw):
+        notes.append(msg)
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+
+    now = datetime(2026, 9, 25, 3, 0, 0)  # inside dusk→dawn
+    await a._reconcile_cooler(now)
+    assert len(cool_calls) == 1 and cool_calls[0]["temp"] == 0.0
+    assert cool_calls[0]["minutes"] == 0.0          # instant, no ramp
+    assert len(notes) == 1
+    await a._reconcile_cooler(now)                  # still warm — alert deduped
+    assert len(cool_calls) == 2 and len(notes) == 1
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_drives_when_cooler_off(monkeypatch):
+    import photonscript.scheduler.armer as armer_mod
+    a = _cooler_armer()
+    cool_calls = []
+    _patch_rigs(monkeypatch, {"Temperature": 0.0, "CoolerOn": False}, cool_calls)
+    monkeypatch.setattr(armer_mod, "notify",
+                        lambda *a, **k: _noop_sleep())
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
+    assert len(cool_calls) == 1  # cooler off in the window -> drive it on
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_quiet_at_setpoint(monkeypatch):
+    a = _cooler_armer()
+    cool_calls = []
+    _patch_rigs(monkeypatch, {"Temperature": 0.5, "CoolerOn": True}, cool_calls)
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
+    assert cool_calls == []  # within tolerance -> no action
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_noop_outside_window(monkeypatch):
+    a = _cooler_armer()
+    cool_calls = []
+    _patch_rigs(monkeypatch, {"Temperature": 20.0, "CoolerOn": False}, cool_calls)
+    # 22:00 the previous evening — before cool_lead(30m) ahead of dusk 02:00
+    await a._reconcile_cooler(datetime(2026, 9, 24, 22, 0, 0))
+    assert cool_calls == []  # cooler meant to be off pre-window
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_noop_when_unreachable(monkeypatch):
+    a = _cooler_armer()
+    cool_calls = []
+    _patch_rigs(monkeypatch, None, cool_calls)  # NINA unreadable
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
+    assert cool_calls == []  # unknown state -> never act
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_disabled(monkeypatch):
+    a = _cooler_armer(cooler_nanny=False)
+    cool_calls = []
+    _patch_rigs(monkeypatch, {"Temperature": 20.0, "CoolerOn": False}, cool_calls)
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
+    assert cool_calls == []
+
+
 @pytest.mark.asyncio
 async def test_watchdog_resets_and_renotifies_on_recovery(monkeypatch):
     """Not guiding (warn), then locked again → 'recovered' note + episode reset,

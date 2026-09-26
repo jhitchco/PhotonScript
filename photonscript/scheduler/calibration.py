@@ -168,6 +168,51 @@ def calibration_health(config) -> dict:
                 if k not in buckets:
                     buckets[k] = {"date": dt, "count": v, "age_days": age_d}
         out[typ]["by_bucket"] = buckets
+
+    # --- Per-camera view (INSTRUME) ------------------------------------------
+    # The flat aggregate above hides that one camera may have NO calibration at
+    # all: at AARO the mono AP26MC has darks/bias/flats while the OSC AP26CC has
+    # none, so OSC lights were integrating uncalibrated. Split by camera so that
+    # gap is visible. One header read per (type,date) bucket keeps it cheap.
+    def _bucket_camera(files) -> str:
+        for f in files[:5]:
+            try:
+                return str(_fits.getheader(f).get("INSTRUME", "?")).strip() or "?"
+            except Exception:  # noqa: BLE001
+                continue
+        return "?"
+
+    by_camera: dict[str, dict] = {}
+    for (typ, date), files in files_by_type_date.items():
+        cam = _bucket_camera(files)
+        slot = by_camera.setdefault(cam, {})
+        t = slot.setdefault(typ, {"total": 0, "latest": None,
+                                  "count_latest": 0, "buckets": {}})
+        t["total"] += len(files)
+        age_d = (today - datetime.strptime(date, "%Y-%m-%d").date()).days
+        t["buckets"][date] = {"count": len(files), "age_days": age_d}
+        if t["latest"] is None or date > t["latest"]:
+            t["latest"] = date
+            t["count_latest"] = len(files)
+    for _cam, _types in by_camera.items():
+        for _typ, _t in _types.items():
+            if _t["latest"]:
+                _t["age_days"] = (today - datetime.strptime(
+                    _t["latest"], "%Y-%m-%d").date()).days
+                _t["stale"] = _t["age_days"] > STALE_DAYS[_typ]
+    out["by_camera"] = by_camera
+    out["cameras"] = sorted(c for c in by_camera if c != "?")
+
+    # Flag a dual-rig setup where a camera has no calibration at all.
+    if getattr(config, "piggyback_enabled", False):
+        have_types = {c: set(by_camera[c]) for c in by_camera if c != "?"}
+        missing = [c for c, ts in have_types.items()
+                   if ts != set(_CAL_TYPES)]
+        if len(by_camera) < 2 or missing:
+            out["multi_camera_note"] = (
+                "Piggyback (OSC) enabled — calibration present for "
+                f"{sorted(have_types) or 'no cameras'}. A camera missing here "
+                "integrates UNCALIBRATED; capture its BIAS/DARK/FLAT.")
     return out
 
 
@@ -232,10 +277,25 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
     return json.dumps(root, indent=2), total_min
 
 
-def count_matching_darks(config, exp_s: float) -> int:
-    """Darks on disk (within the library age window) matching the current
-    epoch: exposure + gain + offset + setpoint temperature."""
+def _pb_gain_offset(config) -> tuple[int, int]:
+    """OSC (piggyback) capture gain/offset. The OSC images at its own values
+    (100/256), NOT the mono RC16's default_gain/offset (200/…) — so its darks,
+    bias and flats MUST be shot at these or they won't calibrate the lights."""
+    return (int(getattr(config, "piggyback_default_gain", 100)),
+            int(getattr(config, "piggyback_default_offset", 256)))
+
+
+def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
+                         offset: int | None = None,
+                         setpoint: float | None = None) -> int:
+    """Darks on disk (within the library age window) matching the epoch:
+    exposure + gain + offset + setpoint temperature. gain/offset/setpoint
+    default to the mono RC16's; pass the piggyback's for OSC darks so the two
+    cameras' dark libraries don't cross-count (gain 200 vs 100)."""
     from astropy.io import fits as _fits
+    gain = config.default_gain if gain is None else gain
+    offset = config.default_offset if offset is None else offset
+    setpoint = config.camera_setpoint_c if setpoint is None else setpoint
     cal_days = int(getattr(config, "library_cal_days", 120))
     cutoff = (datetime.now() - __import__("datetime")
               .timedelta(days=cal_days)).strftime("%Y-%m-%d")
@@ -248,10 +308,9 @@ def count_matching_darks(config, exp_s: float) -> int:
         except Exception:  # noqa: BLE001
             continue
         if (abs(float(h.get("EXPTIME", -1)) - exp_s) < 0.5
-                and int(h.get("GAIN", -1)) == config.default_gain
-                and int(h.get("OFFSET", -1)) == config.default_offset
-                and abs(float(h.get("SET-TEMP", 99))
-                        - config.camera_setpoint_c) < 1.5):
+                and int(h.get("GAIN", -1)) == gain
+                and int(h.get("OFFSET", -1)) == offset
+                and abs(float(h.get("SET-TEMP", 99)) - setpoint) < 1.5):
             n += 1
     return n
 
@@ -361,10 +420,11 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
              f"(sunset +15), then {n} " + ("OSC flats (one-shot color, no "
              "filter wheel)" if osc else "per filter — narrowband first "
              "(least light through to most: Ha, OIII, SII, R, G, B, L)"))
-    flat_blocks = ([_osc_sky_flat(n, config.default_gain, config.default_offset)]
+    _fg, _fo = (_pb_gain_offset(config) if osc
+                else (config.default_gain, config.default_offset))
+    flat_blocks = ([_osc_sky_flat(n, _fg, _fo)]
                    if osc else
-                   [_sky_flat(f, n, config.default_gain, config.default_offset)
-                    for f in filters])
+                   [_sky_flat(f, n, _fg, _fo) for f in filters])
     if owns_mount:
         items = [
             _pushover("Flats", intro),
@@ -428,6 +488,8 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _time_condition)
     quota = int(getattr(config, "dark_target_count", 30))
+    pb_gain, pb_offset = _pb_gain_offset(config)
+    pb_temp = float(getattr(config, "piggyback_setpoint_c", 0.0))
     blocks = []
     for tok in str(getattr(config, "dark_exposures", "120")).split(","):
         try:
@@ -435,7 +497,8 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
         except ValueError:
             continue
         try:
-            have = count_matching_darks(config, exp_s)
+            have = count_matching_darks(config, exp_s, gain=pb_gain,
+                                        offset=pb_offset, setpoint=pb_temp)
         except Exception:  # noqa: BLE001
             have = 0
         need = max(0, quota - have)
@@ -446,8 +509,7 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
             [_make_typed(
                 "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
                 "NINA.Sequencer",
-                ExposureTime=exp_s, Gain=config.default_gain,
-                Offset=config.default_offset,
+                ExposureTime=exp_s, Gain=pb_gain, Offset=pb_offset,
                 Binning=_make_typed(
                     "NINA.Core.Model.Equipment.BinningMode, NINA.Core", X=1, Y=1),
                 ImageType="DARK", ExposureCount=0, ErrorBehavior=0, Attempts=1)],
@@ -600,8 +662,8 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             [_seq_container("50 bias", [_make_typed(
                 "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
                 "NINA.Sequencer",
-                ExposureTime=0.001, Gain=config.default_gain,
-                Offset=config.default_offset,
+                ExposureTime=0.001, Gain=_pb_gain_offset(config)[0],
+                Offset=_pb_gain_offset(config)[1],
                 Binning=_make_typed(
                     "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
                     X=1, Y=1),
@@ -627,11 +689,11 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     target_items += [
         _pushover("Piggyback", f"dawn flat window — shooting {n} OSC sky flats "
                   "(riding the RC16 slew)"),
-        _osc_sky_flat(n, config.default_gain, config.default_offset),
+        _osc_sky_flat(n, *_pb_gain_offset(config)),
         _pushover("Piggyback", "OSC dawn flats complete — warming"),
     ]
 
-    end_items = [_warm_camera(3.0),
+    end_items = [_warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
                  _pushover("Piggyback", "companion calibration done — camera warm")]
 
     root = _seq_container(

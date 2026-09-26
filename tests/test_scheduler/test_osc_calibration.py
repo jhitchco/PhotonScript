@@ -30,6 +30,24 @@ def _types(root):
     return {n["$type"] for n in _walk(root) if isinstance(n.get("$type"), str)}
 
 
+def test_companion_calibration_locks_piggyback_params():
+    """OSC darks + bias in the companion use the PIGGYBACK gain/offset (100/256),
+    never the mono default (200/…) — even if called with the main config, so a
+    missing rig_config remap can't silently mismatch the OSC lights."""
+    cfg = PhotonScriptConfig(
+        piggyback_enabled=True,
+        piggyback_default_gain=100, piggyback_default_offset=256,
+        default_gain=200, default_offset=50,   # mono — must NOT leak in
+    )
+    root = json.loads(generate_piggyback_companion_json(
+        cfg, has_safety=False, with_lights=False))
+    cal = [n for n in _walk(root) if n.get("ExposureTime") is not None
+           and n.get("ImageType") in ("DARK", "BIAS")]
+    assert cal, "no OSC dark/bias exposures generated"
+    assert all(e.get("Gain") == 100 and e.get("Offset") == 256 for e in cal), \
+        [(e.get("ImageType"), e.get("Gain"), e.get("Offset")) for e in cal]
+
+
 def test_osc_darks_use_piggyback_gain_offset_and_setpoint():
     cfg = PhotonScriptConfig(
         piggyback_enabled=True,

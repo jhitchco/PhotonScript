@@ -50,9 +50,13 @@ class TestNinaJsonGeneration:
         assert any("Platesolving.Center" in t for t in types)
 
     def test_cooling_duration_is_minutes(self):
+        from photonscript.scheduler.nina_sequence_json import _cool_camera
+        # Duration is MINUTES (not seconds). Default is now 0 = instant (no ramp,
+        # matching the warm); a nonzero ramp is still expressible.
         cools = [d for d in _walk(_gen()) if isinstance(d, dict)
                  and "CoolCamera" in d.get("$type", "")]
-        assert cools and cools[0]["Duration"] == 2.0   # minutes, not seconds
+        assert cools and cools[0]["Duration"] == 0.0   # instant by default
+        assert _cool_camera(-10.0, 2.0)["Duration"] == 2.0  # minutes, restorable
 
     def test_dusk_provider_gate(self):
         waits = [d for d in _walk(_gen()) if isinstance(d, dict)

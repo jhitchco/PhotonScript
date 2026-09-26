@@ -185,8 +185,9 @@ def _dew_heater(on: bool = True) -> dict:
                        "NINA.Sequencer", OnOff=on, ErrorBehavior=0, Attempts=1)
 
 
-def _cool_camera(temp_c: float, duration_min: float = 2.0) -> dict:
-    # Duration is MINUTES (reference file uses 2.0)
+def _cool_camera(temp_c: float, duration_min: float = 0.0) -> dict:
+    # Duration is MINUTES. 0 = drive straight to the setpoint (no forced ramp);
+    # see config.cool_ramp_minutes. A ramp is what let the cooler fight the arm.
     return _make_typed("NINA.Sequencer.SequenceItem.Camera.CoolCamera, "
                        "NINA.Sequencer", Temperature=temp_c,
                        Duration=duration_min, ErrorBehavior=0, Attempts=1)
@@ -850,7 +851,7 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         _connect("Safety Monitor"),
         _connect("Camera"),
         _dew_heater(True),
-        _cool_camera(temp, 2.0),
+        _cool_camera(temp, float(getattr(_cfg, "cool_ramp_minutes", 0.0))),
         _connect("Filter Wheel"),
         _connect("Focuser"),
         _connect("Mount"),
