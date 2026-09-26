@@ -8,6 +8,7 @@ Usage:
     photonscript lint <sequence.json>
     photonscript report [--date 2026-07-01]
     photonscript status
+    photonscript monitor [--url http://host:8100] [--grep cooler] [--level warning]
 """
 
 from __future__ import annotations
@@ -441,6 +442,85 @@ def prune_nights(
     console.print(f"[cyan]Done. {'Moved' if quarantine else 'Freed'} "
                   f"~{round(freed, 2)} GB. Grade records + contact sheets "
                   "kept.[/cyan]")
+
+
+@app.command()
+def monitor(
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Remote scheduler, e.g. http://100.94.189.77:8100 "
+                                 "(default: tail the local log file)"),
+    lines: int = typer.Option(50, "--lines", "-n", help="Lines of history first"),
+    since: str = typer.Option("", "--since", help="Only lines newer than 30m / 2h / 1d"),
+    grep: str = typer.Option("", "--grep", "-g", help="Only lines containing this text"),
+    level: str = typer.Option("DEBUG", "--level", "-l",
+                              help="Minimum level: debug, info, warning, error"),
+    no_color: bool = typer.Option(False, "--no-color", help="Plain text"),
+    follow: bool = typer.Option(True, "--follow/--no-follow",
+                                help="Keep tailing (default) or print and exit"),
+    interval: float = typer.Option(1.0, "--interval", help="Poll seconds"),
+):
+    """Tail the PhotonScript service log live, colorized by level and event.
+
+    photonscript monitor                      # local log on this machine
+    photonscript monitor --url http://100.94.189.77:8100 -g cooler
+    photonscript monitor --since 2h --level warning --no-follow
+    """
+    import time
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import logmonitor as lm
+
+    try:
+        flt = lm.LineFilter(level, grep, lm.parse_since(since))
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(2)
+    out = Console(highlight=False, no_color=no_color, soft_wrap=True)
+
+    def emit(raw_lines):
+        for s in lm.render(raw_lines, flt, color=not no_color):
+            if no_color:
+                out.print(s, markup=False)
+            else:
+                out.print(s)
+
+    try:
+        if url:
+            import httpx
+            base = url.rstrip("/")
+            r = httpx.get(f"{base}/api/logs/tail",
+                          params={"offset": -1, "lines": lines}, timeout=20)
+            r.raise_for_status()
+            d = r.json()
+            emit(d.get("lines", []))
+            off = d.get("offset", 0)
+            while follow:
+                time.sleep(interval)
+                try:
+                    d = httpx.get(f"{base}/api/logs/tail", params={"offset": off},
+                                  timeout=20).json()
+                except Exception as e:  # noqa: BLE001 — keep tailing through blips
+                    out.print(f"[dim]… {base} unreachable ({e.__class__.__name__}), "
+                              "retrying[/dim]")
+                    time.sleep(max(interval, 5))
+                    continue
+                if d.get("rotated"):
+                    out.print("[dim]— log rotated —[/dim]")
+                emit(d.get("lines", []))
+                off = d.get("offset", off)
+        else:
+            path = lm.service_log_path(PhotonScriptConfig())
+            if not path.exists():
+                console.print(f"[red]No log at {path}[/red] — is PhotonScript "
+                              "running on this machine? Use --url for a remote one.")
+                raise typer.Exit(1)
+            out.print(f"[dim]tailing {path} (Ctrl-C to stop)[/dim]")
+            emit(lm.last_lines(path, lines))
+            fol = lm.FileFollower(path, from_end=True)
+            while follow:
+                time.sleep(interval)
+                emit(fol.poll())
+    except KeyboardInterrupt:
+        pass
 
 
 @app.command()

@@ -154,3 +154,14 @@ async def api_ascom_log(lines: int = 500, grep: str = "", name: str = "Safety"):
         rows = [r for r in rows if any(n in r.lower() for n in needles)]
     rows = rows[-min(max(1, lines), 5000):]
     return f"# {p.name} - last {len(rows)} lines\n" + "\n".join(rows)
+
+
+@router.get("/api/logs/tail")
+async def api_logs_tail(offset: int = -1, lines: int = 200):
+    """PhotonScript's own service log, incrementally, for `photonscript monitor
+    --url ...` (PS-34b). offset=-1 returns the last `lines` lines plus the
+    offset to poll from next; later calls return only new whole lines.
+    Read-only."""
+    from photonscript.shared.logmonitor import read_from_offset, service_log_path
+    return read_from_offset(service_log_path(_cfg()), int(offset),
+                            tail_lines=max(1, min(int(lines), 2000)))
