@@ -211,7 +211,8 @@ def _cooler_armer(**cfg):
     return a
 
 
-def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",)):
+def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",),
+                cool_result=None):
     import photonscript.shared.rigs as rigs_mod
     from types import SimpleNamespace
 
@@ -220,7 +221,7 @@ def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",)):
 
     async def _cool(base, temp, minutes=0.0):
         cool_calls.append({"temp": temp, "minutes": minutes})
-        return {"ok": True}
+        return cool_result if cool_result is not None else {"ok": True}
 
     monkeypatch.setattr(rigs_mod, "rig_ids", lambda cfg: list(rigs))
     monkeypatch.setattr(rigs_mod, "rig_config", lambda cfg, r:
@@ -396,3 +397,51 @@ async def test_watchdog_resets_and_renotifies_on_recovery(monkeypatch):
     await a._maybe_warn_not_guiding(now)     # recovers
     assert any("recovered" in m.lower() for m in notes)
     assert a._guiding_alerted is False and a._not_locked_ticks == 0
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_alerts_when_still_warm_after_stuck_minutes(monkeypatch):
+    """Cooler ON but stuck warm (the 2026-09-26 SET-TEMP=20 night): quiet at
+    first (could be a normal cooldown), one alert once it's been warm for
+    cooler_stuck_minutes, re-armed only after it reaches setpoint."""
+    from datetime import timedelta
+    import photonscript.scheduler.armer as armer_mod
+    a = _cooler_armer(cooler_stuck_minutes=20)
+    cool_calls, notes = [], []
+    info = {"Temperature": 22.0, "CoolerOn": True}
+    _patch_rigs(monkeypatch, info, cool_calls)
+
+    async def _notify(cfg, msg, **kw):
+        notes.append(msg)
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+    t0 = datetime(2026, 9, 25, 3, 0, 0)
+    await a._reconcile_cooler(t0)
+    await a._reconcile_cooler(t0 + timedelta(minutes=19))
+    assert notes == []
+    await a._reconcile_cooler(t0 + timedelta(minutes=20))
+    assert len(notes) == 1 and "still 22.0" in notes[0]
+    await a._reconcile_cooler(t0 + timedelta(minutes=40))
+    assert len(notes) == 1                       # deduped
+    info["Temperature"] = 0.3                    # recovers -> latch re-armed
+    await a._reconcile_cooler(t0 + timedelta(minutes=41))
+    info["Temperature"] = 22.0
+    await a._reconcile_cooler(t0 + timedelta(minutes=50))
+    assert len(notes) == 1                       # new episode starts its own clock
+    await a._reconcile_cooler(t0 + timedelta(minutes=70))
+    assert len(notes) == 2
+
+
+@pytest.mark.asyncio
+async def test_cooler_nanny_alerts_when_cool_command_fails(monkeypatch):
+    import photonscript.scheduler.armer as armer_mod
+    a = _cooler_armer()
+    cool_calls, notes = [], []
+    _patch_rigs(monkeypatch, {"Temperature": 22.0, "CoolerOn": True}, cool_calls,
+                cool_result={"ok": False, "detail": "HTTPStatusError: 500"})
+
+    async def _notify(cfg, msg, **kw):
+        notes.append(msg)
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
+    await a._reconcile_cooler(datetime(2026, 9, 25, 3, 1, 0))
+    assert len(notes) == 1 and "FAILED" in notes[0] and "500" in notes[0]

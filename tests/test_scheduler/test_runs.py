@@ -51,3 +51,50 @@ def test_plan_vs_actual_assembly(tmp_path):
     assert runs[0]["date"] == "2026-07-04"
     assert runs[0]["has_plan"] is True
     assert runs[0]["subs_logged"] == 3
+
+
+def test_approve_night_only_listed_files(tmp_path):
+    """Scoped approve (Runs page chips): only the listed review subs move to
+    reviewed; rejected subs are never approved even if listed."""
+    from photonscript.scheduler.runs import approve_night, _load_subs
+    config = _config(tmp_path)
+    recs = [("LIGHT/cat_O_1.fits", True), ("LIGHT/cat_O_2.fits", True),
+            ("LIGHT/cres_H_1.fits", True), ("LIGHT/cat_O_bad.fits", False)]
+    for f, ok in recs:
+        append_sub_record(config, "2026-09-25", {
+            "file": f, "time": "2026-09-26T00:00:00Z", "target": "x",
+            "filter": "OIII", "exp_s": 900, "passed_qa": ok, "reason": ""})
+    res = approve_night(config, "2026-09-25",
+                        files=["LIGHT/cat_O_1.fits", "LIGHT/cat_O_2.fits",
+                               "LIGHT/cat_O_bad.fits"])
+    assert res["approved"] == 2
+    by = {s["file"]: s for s in _load_subs(config, "2026-09-25")}
+    assert by["LIGHT/cat_O_1.fits"]["reviewed"] and by["LIGHT/cat_O_2.fits"]["reviewed"]
+    assert not by["LIGHT/cres_H_1.fits"].get("reviewed")
+    assert not by["LIGHT/cat_O_bad.fits"].get("reviewed")
+
+
+def test_post_night_warm_starts_recent_nights(tmp_path, monkeypatch):
+    """Dawn shutdown pre-grades + pre-thumbnails recent nights so the Runs page
+    opens with the work done; old nights are left alone."""
+    import os
+    import time
+    import photonscript.scheduler.runs as runs_mod
+    config = _config(tmp_path)
+    fits = tmp_path / "fits"
+    (fits / "2026-09-25" / "LIGHT").mkdir(parents=True)
+    (fits / "2026-09-25" / "LIGHT" / "a.fits").write_bytes(b"x")
+    old = fits / "2026-08-01"
+    old.mkdir()
+    t = time.time() - 10 * 86400
+    os.utime(old, (t, t))
+    started = []
+    monkeypatch.setattr(runs_mod, "start_backfill",
+                        lambda c, d: started.append(("grade", d)))
+    monkeypatch.setattr(runs_mod, "start_thumb_warm",
+                        lambda c, d: started.append(("thumbs", d)))
+    monkeypatch.setattr(runs_mod, "_light_files",
+                        lambda root: list(root.rglob("*.fits")))
+    nights = runs_mod.post_night_warm(config)
+    assert nights == ["2026-09-25"]
+    assert ("grade", "2026-09-25") in started and ("thumbs", "2026-09-25") in started

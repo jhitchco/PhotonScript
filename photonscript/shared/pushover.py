@@ -74,6 +74,36 @@ def _save_state(path: Path, state: dict) -> None:
         logger.warning("Pushover state save failed: %s", e)
 
 
+def _audit_path(config) -> Path:
+    data_dir = Path(getattr(config, "data_dir", Path.home() / ".photonscript"))
+    return data_dir / "notifications.jsonl"
+
+
+def _audit(config, title: str, message: str, priority: int, sent: bool,
+           reason: str) -> None:
+    """Append every notification DECISION (sent or suppressed) to
+    notifications.jsonl so alert volume is auditable later — nothing was logged
+    for *sent* alerts before, so there was no trail. Best-effort; append-only,
+    trimmed to the last ~5000 lines when it grows past ~4 MB."""
+    try:
+        p = _audit_path(config)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        rec = {"ts": datetime.now(timezone.utc).isoformat(),
+               "title": title, "message": (message or "")[:500],
+               "priority": int(priority), "sent": bool(sent), "reason": reason}
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        try:
+            if p.stat().st_size > 4_000_000:
+                tail = p.read_text(encoding="utf-8",
+                                   errors="replace").splitlines()[-5000:]
+                p.write_text("\n".join(tail) + "\n", encoding="utf-8")
+        except OSError:
+            pass
+    except Exception as e:  # noqa: BLE001 - auditing must never break an alert
+        logger.debug("notification audit-log write failed: %s", e)
+
+
 async def _send_raw(config, message: str, title: str, priority: int,
                     sound: str) -> bool:
     """The actual POST. No-op (logged) if keys unset."""
@@ -152,7 +182,9 @@ async def notify(config, message: str, title: str = "PhotonScript",
                  priority: int = 0, sound: str = "none") -> bool:
     """Send a Pushover notification, rate-limited. No-op (logged) if keys unset."""
     if not _cfg(config, "pushover_ratelimit_enabled"):
-        return await _send_raw(config, message, title, priority, sound)
+        sent = await _send_raw(config, message, title, priority, sound)
+        _audit(config, title, message, priority, sent, "sent" if sent else "not-sent")
+        return sent
 
     try:
         now = time.time()
@@ -170,11 +202,16 @@ async def notify(config, message: str, title: str = "PhotonScript",
             _save_state(path, state)
     except Exception as e:  # noqa: BLE001 - never let the limiter drop a real alert
         logger.warning("Pushover limiter error (%s) — sending unthrottled", e)
-        return await _send_raw(config, message, title, priority, sound)
+        sent = await _send_raw(config, message, title, priority, sound)
+        _audit(config, title, message, priority, sent, "limiter-error")
+        return sent
 
     if not allow:
         logger.info("[pushover suppressed:%s] %s: %s", reason, title, message)
+        _audit(config, title, message, priority, False, reason)
         return False
     if reason == "monthly-cap-final":
         priority = max(priority, 1)
-    return await _send_raw(config, message + note, title, priority, sound)
+    sent = await _send_raw(config, message + note, title, priority, sound)
+    _audit(config, title, message, priority, sent, reason if sent else "send-failed")
+    return sent

@@ -2013,6 +2013,47 @@ async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16"):
             + "\n".join(rows))
 
 
+@app.get("/api/notifications")
+def api_notifications(since_hours: float = 24.0, limit: int = 200,
+                      title: str = ""):
+    """Audit the Pushover stream: recent notification records (sent AND
+    suppressed) plus a per-title tally over the window, so alert volume is
+    reviewable later — 'how many of each did I get, and how many were throttled'.
+    """
+    from datetime import timedelta
+    from photonscript.shared.pushover import _audit_path
+    p = _audit_path(get_config())
+    if not p.exists():
+        return {"records": [], "summary": {}, "count": 0,
+                "note": "no notifications.jsonl yet"}
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=float(since_hours))
+    recs = []
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            r = json.loads(line)
+        except Exception:  # noqa: BLE001
+            continue
+        try:
+            if datetime.fromisoformat(r.get("ts", "")) < cutoff:
+                continue
+        except (ValueError, TypeError):
+            pass  # keep undateable rows rather than drop silently
+        if title and title.lower() not in str(r.get("title", "")).lower():
+            continue
+        recs.append(r)
+    summary: dict = {}
+    for r in recs:
+        s = summary.setdefault(r.get("title", "?"),
+                               {"total": 0, "sent": 0, "suppressed": 0})
+        s["total"] += 1
+        s["sent" if r.get("sent") else "suppressed"] += 1
+    summary = dict(sorted(summary.items(), key=lambda kv: -kv[1]["total"]))
+    return {"window_hours": float(since_hours), "count": len(recs),
+            "sent_total": sum(s["sent"] for s in summary.values()),
+            "suppressed_total": sum(s["suppressed"] for s in summary.values()),
+            "summary": summary, "records": recs[-int(limit):]}
+
+
 @app.get("/api/phd2/log", response_class=PlainTextResponse)
 async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide"):
     """Tail (and optionally filter) the newest PHD2 log — remote guiding triage.
