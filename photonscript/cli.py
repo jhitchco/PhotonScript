@@ -4,7 +4,9 @@ Usage:
     photonscript start [--mode scheduler|telescope|librarian|full]
     photonscript plan [--month 3] [--date 2024-03-15]
     photonscript targets [--month 3]
-    photonscript sequence [--output tonight.xml]
+    photonscript sequence [--output tonight.json] [--guided]
+    photonscript lint <sequence.json>
+    photonscript report [--date 2026-07-01]
     photonscript status
 """
 
@@ -30,17 +32,87 @@ console = Console()
 
 @app.command()
 def start(
-    mode: str = typer.Option("scheduler", help="Run mode: full, scheduler, telescope, librarian"),
+    mode: str = typer.Option("full", help="Run mode: full, scheduler, telescope, librarian"),
     host: str = typer.Option("0.0.0.0", help="Bind address for scheduler"),
     port: int = typer.Option(8100, help="Port for scheduler web UI"),
 ):
-    """Start PhotonScript agents."""
+    """Start PhotonScript (foreground). Writes a PID file, sets up console +
+    rotating-file logging, and runs the orchestrator. Stop it with Ctrl-C or
+    `photonscript stop`.
+
+    This is a foreground process — deploy/run-photonscript.ps1 keeps it running
+    and restarts it on exit code 42 (self-update). Not a Windows service.
+    """
     from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import process_control
     from photonscript.orchestrator import start as _start
 
     config = PhotonScriptConfig(scheduler_host=host, scheduler_port=port)
-    console.print(f"[bold blue]PhotonScript[/bold blue] starting in [green]{mode}[/green] mode...")
-    _start(mode=mode, config=config)
+
+    # Refuse to start a second copy if a live instance already holds the PID.
+    live = process_control.running_pid(config)
+    if live is not None:
+        console.print(f"[red]PhotonScript is already running (pid {live}).[/red] "
+                      f"Stop it first with [bold]photonscript stop[/bold].")
+        raise typer.Exit(1)
+
+    # Fresh start: clear any leftover STOP sentinel so we don't immediately
+    # shut ourselves down, then claim the PID file (overwrites a stale one).
+    import os
+    process_control.clear_stop_sentinel(config)
+    pid_path = process_control.write_pid_file(config)
+    console.print(f"[bold blue]PhotonScript[/bold blue] starting in "
+                  f"[green]{mode}[/green] mode (pid {os.getpid()}, "
+                  f"pidfile {pid_path})...")
+    try:
+        _start(mode=mode, config=config)  # sets up logging + runs the orchestrator
+    finally:
+        # Best-effort: a clean/operator stop removes the PID file. The exit-42
+        # self-update uses os._exit and skips this by design (it restarts and
+        # rewrites the PID).
+        process_control.remove_pid_file(config)
+
+
+@app.command()
+def stop(
+    force: bool = typer.Option(
+        False, "--force", help="Hard-kill the process (taskkill /F on Windows) "
+        "instead of asking it to stop gracefully."),
+):
+    """Stop a running PhotonScript instance.
+
+    Default: drop a STOP sentinel that the running process polls (~1s) and then
+    shuts down cleanly. --force reads the PID file and hard-kills as a fallback.
+    """
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import process_control
+
+    config = PhotonScriptConfig()
+    pid = process_control.read_pid_file(config)
+
+    if pid is None:
+        console.print("[yellow]PhotonScript is not running (no PID file).[/yellow]")
+        raise typer.Exit(0)
+
+    if not process_control.is_pid_alive(pid):
+        console.print(f"[yellow]No live process for pid {pid} — clearing stale "
+                      f"PID file.[/yellow]")
+        process_control.remove_pid_file(config)
+        raise typer.Exit(0)
+
+    if force:
+        ok, detail = process_control.force_kill(pid)
+        if ok:
+            process_control.remove_pid_file(config)
+            console.print(f"[green]Force-killed pid {pid}.[/green] {detail}")
+            raise typer.Exit(0)
+        console.print(f"[red]Failed to force-kill pid {pid}:[/red] {detail}")
+        raise typer.Exit(1)
+
+    sentinel = process_control.create_stop_sentinel(config)
+    console.print(f"[green]Signaled pid {pid} to shut down gracefully.[/green]")
+    console.print(f"[dim]Wrote STOP sentinel {sentinel}; the running process "
+                  f"will stop within ~1s and remove it.[/dim]")
 
 
 @app.command()
@@ -146,10 +218,14 @@ def plan(
 
 @app.command()
 def sequence(
-    output: str = typer.Option("", help="Output XML file path"),
+    output: str = typer.Option("", help="Output file path"),
     month: int = typer.Option(0, help="Month (1-12), 0 = current"),
+    fmt: str = typer.Option("json", "--format", help="json (Advanced Sequencer) or xml"),
+    guided: bool = typer.Option(False, help="Guided run (default: unguided, CEM70G encoders)"),
+    now: bool = typer.Option(False, "--now",
+                             help="No dusk gate — starts immediately (daytime testing)"),
 ):
-    """Generate a NINA sequence XML file for tonight."""
+    """Generate a NINA sequence file for tonight (lint-gated for JSON)."""
     from photonscript.shared.astronomy import get_seasonal_targets
     from photonscript.shared.config import PhotonScriptConfig
     from photonscript.scheduler.target_planner import (
@@ -158,25 +234,213 @@ def sequence(
     from photonscript.scheduler.nina_sequence import generate_nina_xml, build_sequence_for_night
 
     config = PhotonScriptConfig()
-    now = datetime.utcnow()
+    now_dt = datetime.utcnow()
     if month == 0:
-        month = now.month
+        month = now_dt.month
 
     seasonal = get_seasonal_targets(month)
     projects = [create_project_from_target(t) for t in seasonal]
-    targets = plan_night_sequence(projects, config, now)
-    seq = build_sequence_for_night(f"PhotonScript_{now.strftime('%Y%m%d')}", targets)
-    xml = generate_nina_xml(seq)
+    targets = plan_night_sequence(projects, config, now_dt)
+    for t in targets:
+        t.start_guiding = guided
+    seq = build_sequence_for_night(f"PhotonScript_{now_dt.strftime('%Y%m%d')}", targets)
+    seq.wait_until_local = None if now else "00:00:00"  # flag: gate on dusk providers
 
-    if output:
-        Path(output).write_text(xml)
-        console.print(f"[green]Sequence saved to {output}[/green]")
+    if fmt == "xml":
+        content = generate_nina_xml(seq)
+        default_path = f"PhotonScript_{now_dt.strftime('%Y%m%d')}.xml"
     else:
-        default_path = f"PhotonScript_{now.strftime('%Y%m%d')}.xml"
-        Path(default_path).write_text(xml)
-        console.print(f"[green]Sequence saved to {default_path}[/green]")
+        from photonscript.scheduler.nina_sequence_json import generate_nina_json
+        from photonscript.scheduler.sequence_lint import lint as lint_seq, format_result
 
+        content = generate_nina_json(seq)
+        default_path = f"PhotonScript_{now_dt.strftime('%Y%m%d')}.json"
+
+        # Lint gate — refuse to write a sequence that would fail at 3 AM
+        result = lint_seq(json.loads(content), guided=guided)
+        console.print(format_result(result))
+        if not result.ok:
+            console.print("[red]REFUSING to write sequence: lint failed.[/red]")
+            raise typer.Exit(1)
+
+    path = Path(output) if output else Path(default_path)
+    path.write_text(content)
+    console.print(f"[green]Sequence saved to {path}[/green]")
     console.print(f"[dim]{len(targets)} targets, ready for NINA import[/dim]")
+
+
+@app.command()
+def lint(
+    file: str = typer.Argument(..., help="Sequence JSON file to validate"),
+    guided: bool = typer.Option(None, help="Expected mode (default: auto-detect)"),
+):
+    """Validate a NINA Advanced Sequencer JSON against AARO operational rules."""
+    from photonscript.scheduler.sequence_lint import lint_file, format_result
+
+    result = lint_file(file, guided=guided)
+    console.print(format_result(result))
+    raise typer.Exit(0 if result.ok else 1)
+
+
+@app.command()
+def report(
+    date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),
+):
+    """Daily report: sky utilization + photon efficiency for a night."""
+    from datetime import timedelta
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.daily_report import build_daily_report
+
+    config = PhotonScriptConfig()
+    d = date or (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    rpt = build_daily_report(config, d)
+    console.print(Panel(rpt.to_text(), title="PhotonScript daily", border_style="blue"))
+
+
+@app.command()
+def preflight():
+    """Run the full daytime system test (config, dirs, NINA, PHD2, lint, Pushover)."""
+    import asyncio
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.preflight import run_preflight
+
+    result = asyncio.run(run_preflight(PhotonScriptConfig()))
+    colors = {"pass": "green", "warn": "yellow", "fail": "red"}
+    for c in result["checks"]:
+        console.print(f"[{colors[c['status']]}]{c['status'].upper():5s}[/] "
+                      f"[bold]{c['name']:28s}[/] {c['detail']}")
+    verdict = "[bold green]GO[/]" if result["go"] else "[bold red]NO-GO[/]"
+    s = result["summary"]
+    console.print(f"\n{verdict} — {s['pass']} pass, {s['warn']} warn, {s['fail']} fail")
+    raise typer.Exit(0 if result["go"] else 1)
+
+
+@app.command()
+def bundle(
+    date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),
+):
+    """Package the night's evidence into one zip for post-mortem analysis.
+
+    Contents: daily report, armer state, projects, dispatched sequences,
+    and the most recent NINA log. Copy the zip to your analysis machine.
+    """
+    from datetime import timedelta
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import build_bundle
+
+    config = PhotonScriptConfig()
+    d = date or (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+    out = build_bundle(config, d)
+    console.print(f"[green]Bundle written: {out}[/green]")
+    console.print("Copy it to your analysis machine (e.g. the Claude folder) "
+                  "for post-mortem review.")
+
+
+@app.command()
+def analyze(
+    date: str = typer.Option(..., help="Night (YYYY-MM-DD) to pull subs from"),
+    which: str = typer.Option("rejected", help="rejected | accepted | all"),
+    files: str = typer.Option("", help="Comma-separated rel 'file' values "
+                              "(overrides --which)"),
+):
+    """Copy a night's subs into the library Syncthing share for off-scope
+    analysis. They mirror to the desktop (desktop_library_dir/_analysis/<date>)
+    where PixInsight — or Claude — can open the raw FITS.
+    """
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import stage_for_analysis
+
+    config = PhotonScriptConfig()
+    picked = [f.strip() for f in files.split(",") if f.strip()] or None
+    res = stage_for_analysis(config, date, files=picked, which=which)
+    console.print(f"[green]Copied {res['copied']}/{res['requested']} sub(s) "
+                  f"to the analysis dropbox:[/green] {res['dropbox']}")
+    for f in res["files"]:
+        if f.get("ok"):
+            console.print(f"  • {f['name']}  →  "
+                          f"{f.get('desktop_path', '(desktop path unset)')}")
+        else:
+            console.print(f"  [red]✗ {f.get('file')}: {f.get('error')}[/red]")
+
+
+@app.command("prune-nights")
+def prune_nights(
+    before: str = typer.Option(
+        "2026-09-01", help="Delete night folders strictly before this date "
+        "(YYYY-MM-DD)."),
+    execute: bool = typer.Option(
+        False, "--execute", help="Actually delete. Omit for a dry run."),
+    quarantine: str = typer.Option(
+        "", help="Instead of deleting, MOVE matched folders here (recoverable, "
+        "frees space only if the target is another drive)."),
+    permanent: bool = typer.Option(
+        False, "--permanent", help="With --execute and no --quarantine, "
+        "hard-delete (default is also a hard delete; kept for clarity)."),
+    yes: bool = typer.Option(False, "--yes", help="Skip the confirmation."),
+):
+    """Prune captured FITS from nights before a cutoff to free the capture drive.
+
+    Dry run by default — prints what WOULD go. Uses the live config paths
+    (image_watch_dir, piggyback dir, thumbnail cache). Grade records and
+    contact sheets are ALWAYS kept — the per-sub learnings survive the prune.
+
+    Examples:
+        photonscript prune-nights                 # dry run, cutoff 2026-09-01
+        photonscript prune-nights --execute       # delete, with a prompt
+        photonscript prune-nights --before 2026-08-01 --execute --yes
+    """
+    import shutil
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import prunable_night_dirs
+
+    config = PhotonScriptConfig()
+    items = prunable_night_dirs(config, before)
+    if not items:
+        console.print(f"[green]Nothing before {before} found.[/green]")
+        return
+
+    total = 0.0
+    table = Table(title=f"{'EXECUTE' if execute else 'DRY RUN'} — folders before "
+                        f"{before}")
+    table.add_column("Date"); table.add_column("GB", justify="right")
+    table.add_column("Path")
+    for it in items:
+        b = sum(f.stat().st_size for f in Path(it["path"]).rglob("*")
+                if f.is_file())
+        it["gb"] = round(b / 1e9, 2)
+        total += it["gb"]
+        table.add_row(it["date"], f"{it['gb']:.2f}", it["path"])
+    console.print(table)
+    console.print(f"[cyan]{len(items)} folders · {round(total, 2)} GB[/cyan]")
+
+    if not execute:
+        console.print("[yellow]Dry run only. Add --execute to delete "
+                      "(or --execute --quarantine <dir> to move).[/yellow]")
+        return
+
+    action = "MOVE" if quarantine else "DELETE"
+    if not yes and not typer.confirm(
+            f"{action} {len(items)} folders ({round(total, 2)} GB)?"):
+        console.print("[red]Aborted.[/red]")
+        raise typer.Exit(1)
+
+    freed = 0.0
+    for it in items:
+        try:
+            if quarantine:
+                dest = Path(quarantine) / it["date"]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(it["path"], str(dest))
+            else:
+                shutil.rmtree(it["path"])
+            freed += it["gb"]
+            console.print(f"  [green]{'moved' if quarantine else 'removed'}[/green] "
+                          f"{it['date']} ({it['gb']:.2f} GB)")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"  [red]FAILED[/red] {it['date']} — {e}")
+    console.print(f"[cyan]Done. {'Moved' if quarantine else 'Freed'} "
+                  f"~{round(freed, 2)} GB. Grade records + contact sheets "
+                  "kept.[/cyan]")
 
 
 @app.command()
