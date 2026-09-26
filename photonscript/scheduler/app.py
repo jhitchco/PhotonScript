@@ -1325,8 +1325,10 @@ def api_run_archive(date: str, payload: dict = Body(default={})):
 _remoteneed_cache: dict = {"t": 0.0, "names": None}
 
 
-_REMOTENEED_FRESH_S = 30     # serve from cache without refreshing
-_REMOTENEED_STALE_OK_S = 300  # serve stale (while refreshing) up to this age
+_REMOTENEED_FRESH_S = 30       # serve from cache without refreshing
+_REMOTENEED_STALE_OK_S = 900    # keep serving a stale answer this long
+_REMOTENEED_FAIL_BACKOFF_S = 120  # after a failed walk, wait before retrying
+_REMOTENEED_PAGE_TIMEOUT_S = 30   # per page; only ever runs off-request now
 _remoteneed_refresh_lock = threading.Lock()
 
 
@@ -1343,15 +1345,20 @@ def _syncthing_settings():
 
 def _refresh_remoteneed(settings) -> Optional[set]:
     """Page through Syncthing /rest/db/remoteneed (up to 40 x 500 entries)
-    and store the result in _remoteneed_cache. None on failure."""
+    and store the result in _remoteneed_cache. None on failure (the failure
+    time is recorded so callers back off instead of hammering Syncthing)."""
     import time as _time
     import httpx
     url, key, folder, device = settings
+    t0 = _time.monotonic()
+    pages = 0
     try:
         names: set = set()
         entries: list = []
-        with httpx.Client(timeout=6, headers={"X-API-Key": key}) as cl:
+        with httpx.Client(timeout=_REMOTENEED_PAGE_TIMEOUT_S,
+                          headers={"X-API-Key": key}) as cl:
             for page in range(1, 41):  # up to 20k entries
+                pages = page
                 r = cl.get(url.rstrip("/") + "/rest/db/remoteneed",
                            params={"folder": folder, "device": device,
                                    "page": page, "perpage": 500})
@@ -1368,10 +1375,20 @@ def _refresh_remoteneed(settings) -> Optional[set]:
                     entries.append((n, sz))
                 if len(batch) < 500:
                     break
-        _remoteneed_cache.update(t=_time.time(), names=names, entries=entries)
+        took = _time.monotonic() - t0
+        _remoteneed_cache.update(t=_time.time(), names=names, entries=entries,
+                                 fail_t=0.0, last_error="", took_s=round(took, 1))
+        if took > 5:
+            logger.info("Syncthing remoteneed walk: %d files, %d page(s), %.1f s",
+                        len(entries), pages, took)
         return names
     except Exception as e:  # noqa: BLE001
-        logger.debug("remoteneed unavailable: %s", e)
+        took = _time.monotonic() - t0
+        _remoteneed_cache.update(fail_t=_time.time(),
+                                 last_error=f"{type(e).__name__}: {e}",
+                                 took_s=round(took, 1))
+        logger.warning("Syncthing remoteneed walk failed after %.1f s on page "
+                       "%d: %s: %s", took, pages, type(e).__name__, e)
         return None
 
 
@@ -1391,25 +1408,27 @@ def _refresh_remoteneed_bg(settings) -> None:
 
 def _syncthing_pending_names():
     """Basenames the DESKTOP still needs from the Library share.
-    None = can't tell (not configured / unreachable).
+    None = can't tell (not configured, unreachable, or not fetched yet).
 
-    Stale-while-revalidate: a cached answer younger than 30 s is returned as
-    is; one up to 5 min old is returned immediately while a background thread
-    refreshes it, so the up-to-40-page Syncthing walk never sits in a request
-    (it was a big part of /api/runs taking tens of seconds). Only the very
-    first call, with nothing cached, waits for Syncthing."""
+    NEVER blocks a request on Syncthing. The remoteneed walk (up to 40 pages,
+    each recomputed by Syncthing) measured ~45 s on the scope PC and kept
+    /api/runs and /api/runs/{date} at ~50 s. Now: a cached answer younger than
+    30 s is returned as is; anything older triggers ONE background refresh
+    (skipped for 2 min after a failure) and the last answer is served
+    meanwhile, up to 15 min old. Before the first walk finishes, the transfer
+    column just shows unknown."""
     import time as _time
     settings = _syncthing_settings()
     if settings is None:
         return None
-    names = _remoteneed_cache["names"]
-    age = _time.time() - _remoteneed_cache["t"]
+    now = _time.time()
+    names = _remoteneed_cache.get("names")
+    age = now - _remoteneed_cache.get("t", 0.0)
     if names is not None and age < _REMOTENEED_FRESH_S:
         return names
-    if names is not None and age < _REMOTENEED_STALE_OK_S:
+    if now - _remoteneed_cache.get("fail_t", 0.0) >= _REMOTENEED_FAIL_BACKOFF_S:
         _refresh_remoteneed_bg(settings)
-        return names
-    return _refresh_remoteneed(settings)
+    return names if (names is not None and age < _REMOTENEED_STALE_OK_S) else None
 
 
 @app.get("/api/runs/{date}")
@@ -1616,7 +1635,7 @@ def api_sync_reset():
 @app.get("/api/sync/queue")
 def api_sync_queue():
     """What's still moving to the desktop, grouped by folder."""
-    names = _syncthing_pending_names()  # refreshes the cache
+    names = _syncthing_pending_names()  # kicks a background refresh when stale
     if names is None:
         return {"configured": False, "groups": [], "total_files": 0,
                 "total_bytes": 0}

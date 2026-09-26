@@ -136,31 +136,76 @@ def test_list_runs_uses_cached_counts(tmp_path):
 
 # --- Syncthing stale-while-revalidate -----------------------------------------
 
-def test_syncthing_names_serve_stale_and_refresh_in_background(monkeypatch):
+def _wait_for(pred, timeout=2.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if pred():
+            return True
+        time.sleep(0.02)
+    return pred()
+
+
+def test_syncthing_names_never_block_and_refresh_in_background(monkeypatch):
+    import threading
     import photonscript.scheduler.app as app
     monkeypatch.setattr(app, "_syncthing_settings", lambda: ("u", "k", "f", "d"))
     calls = []
+    gate = threading.Event()
 
-    def fake_refresh(settings):
-        calls.append(time.time())
+    def slow_refresh(settings):
+        gate.wait(2)                       # a slow Syncthing walk
+        calls.append(1)
         names = {f"n{len(calls)}"}
-        app._remoteneed_cache.update(t=time.time(), names=names, entries=[])
+        app._remoteneed_cache.update(t=time.time(), names=names, entries=[],
+                                     fail_t=0.0)
         return names
 
-    monkeypatch.setattr(app, "_refresh_remoteneed", fake_refresh)
+    monkeypatch.setattr(app, "_refresh_remoteneed", slow_refresh)
     monkeypatch.setattr(app, "_remoteneed_cache", {"t": 0.0, "names": None})
-    assert app._syncthing_pending_names() == {"n1"}          # cold: waits once
-    assert app._syncthing_pending_names() == {"n1"} and len(calls) == 1  # fresh
-    app._remoteneed_cache["t"] = time.time() - 60             # stale but usable
-    assert app._syncthing_pending_names() == {"n1"}           # served immediately
-    for _ in range(50):
-        if len(calls) == 2:
-            break
-        time.sleep(0.02)
-    assert len(calls) == 2                                    # refreshed in bg
+    t0 = time.time()
+    assert app._syncthing_pending_names() is None      # cold: unknown, no wait
+    assert time.time() - t0 < 0.5
+    gate.set()
+    assert _wait_for(lambda: len(calls) == 1)
+    assert app._syncthing_pending_names() == {"n1"}     # fresh
+    app._remoteneed_cache["t"] = time.time() - 60       # stale but usable
+    assert app._syncthing_pending_names() == {"n1"}     # served immediately
+    assert _wait_for(lambda: len(calls) == 2)
     assert app._syncthing_pending_names() == {"n2"}
-    app._remoteneed_cache["t"] = time.time() - 3600           # too old: refetch inline
-    assert app._syncthing_pending_names() == {"n3"}
+    app._remoteneed_cache["t"] = time.time() - 3600     # too old to trust
+    assert app._syncthing_pending_names() is None
+    assert _wait_for(lambda: len(calls) == 3)
+
+
+def test_syncthing_failure_backs_off(monkeypatch):
+    import photonscript.scheduler.app as app
+    monkeypatch.setattr(app, "_syncthing_settings", lambda: ("u", "k", "f", "d"))
+    kicked = []
+    monkeypatch.setattr(app, "_refresh_remoteneed_bg", lambda s: kicked.append(1))
+    monkeypatch.setattr(app, "_remoteneed_cache",
+                        {"t": 0.0, "names": None, "fail_t": time.time()})
+    assert app._syncthing_pending_names() is None
+    assert kicked == []                                 # inside the backoff
+    app._remoteneed_cache["fail_t"] = time.time() - 600
+    app._syncthing_pending_names()
+    assert kicked == [1]
+
+
+def test_refresh_records_failure(monkeypatch):
+    import httpx
+    import photonscript.scheduler.app as app
+    monkeypatch.setattr(app, "_remoteneed_cache", {"t": 0.0, "names": None})
+
+    class Boom:
+        def __init__(self, *a, **k): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k): raise httpx.ReadTimeout("slow")
+
+    monkeypatch.setattr(httpx, "Client", Boom)
+    assert app._refresh_remoteneed(("http://x", "k", "f", "d")) is None
+    assert app._remoteneed_cache["fail_t"] > 0
+    assert "ReadTimeout" in app._remoteneed_cache["last_error"]
 
 
 def test_syncthing_not_configured_returns_none(monkeypatch):
