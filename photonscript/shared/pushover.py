@@ -213,5 +213,6 @@ async def notify(config, message: str, title: str = "PhotonScript",
     if reason == "monthly-cap-final":
         priority = max(priority, 1)
     sent = await _send_raw(config, message + note, title, priority, sound)
-    _audit(config, title, message, priority, sent, reason if sent else "send-failed")
+    reason_out = ("sent" if reason == "ok" else reason) if sent else "send-failed"
+    _audit(config, title, message, priority, sent, reason_out)
     return sent

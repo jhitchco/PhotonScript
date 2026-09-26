@@ -50,7 +50,15 @@ GET /api/nina/log?rig=piggyback&grep=Autofocus     # NINA #2 / OSC (piggyback_ni
 GET /api/phd2/log?lines=800&grep=GuideStep|star lost   # PHD2 GuideLog (phd2_logs_dir)
 GET /api/phd2/log?kind=debug                       # PHD2 DebugLog
 GET /api/ascom/log?name=Safety                     # ASCOM trace log
+GET /api/notifications?since_hours=24&title=cooler # Pushover audit: tally by type
 ```
+
+Every Pushover **decision** (sent AND suppressed) is now appended to
+`<data_dir>/notifications.jsonl` — before, a sent alert was logged nowhere, so
+there was no audit trail. `/api/notifications` reads it back with a per-title
+tally (total / sent / suppressed) over a window, so "how many of each did I get,
+and how many did the rate-limiter throttle" is answerable. The file is
+append-only, auto-trimmed to the last ~5000 lines past ~4 MB.
 
 `phd2_logs_dir` defaults to `%USERPROFILE%\Documents\PHD2`; set
 `PS_PHD2_LOGS_DIR` (System & Config → PHD2) if PHD2 writes its logs elsewhere.

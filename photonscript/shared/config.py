@@ -57,6 +57,7 @@ class PhotonScriptConfig(BaseSettings):
     auto_stale_flats: bool = True  # at dawn, also reshoot flats for filters whose
     # library set has gone stale (>45d) even if tonight didn't image them — keeps
     # broadband flats fresh across runs of narrowband-only nights
+    # --- Desktop transfer (Syncthing) ---
     syncthing_url: str = "http://localhost:8384"  # Syncthing REST on the scope PC
     syncthing_api_key: str = ""
     syncthing_folder_id: str = ""   # folder id of the Library share
@@ -65,6 +66,7 @@ class PhotonScriptConfig(BaseSettings):
                                     # hasn't dropped in this many minutes while
                                     # still non-empty (a wedged transfer loop that
                                     # only reports the backlog). 0 = disable.
+    # --- Calibration & library ---
     astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     dark_target_count: int = 30  # dark-library quota per exposure length (current epoch)
     dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
@@ -89,6 +91,7 @@ class PhotonScriptConfig(BaseSettings):
                                  # night and over-padding the library; 60 = ~every other
                                  # month. Set 30 for monthly, 0 to capture every night.
     flat_count: int = 15  # sky flats per filter at dawn
+    # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir, for tailing the
                                     # OSC's log via /api/nina/log?rig=piggyback.
@@ -99,6 +102,7 @@ class PhotonScriptConfig(BaseSettings):
     ascom_logs_dir: str = "C:\\Users\\jeremy\\Documents\\ASCOM"  # ASCOM trace-log
     # base (TraceLogger writes dated subfolders here); enable Trace in the driver
     # setup to capture the safety-monitor client's HTTP/exception detail
+    # --- Quality gates (per-sub grading) ---
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
     quality_fwhm_max: float = 4.0  # arcsec
     quality_fwhm_soft: bool = False  # False = FWHM is a hard reject gate (RC16).
@@ -137,6 +141,7 @@ class PhotonScriptConfig(BaseSettings):
                                   # sky windows, moon). Runs from the auto-arm
                                   # loop independent of whether auto-arm is on.
     evening_forecast_lead_hours: float = 3.0  # how long before sunset to send it
+    # --- Guiding, autofocus & sequence narration ---
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false

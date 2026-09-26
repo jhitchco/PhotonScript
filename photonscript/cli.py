@@ -32,17 +32,87 @@ console = Console()
 
 @app.command()
 def start(
-    mode: str = typer.Option("scheduler", help="Run mode: full, scheduler, telescope, librarian"),
+    mode: str = typer.Option("full", help="Run mode: full, scheduler, telescope, librarian"),
     host: str = typer.Option("0.0.0.0", help="Bind address for scheduler"),
     port: int = typer.Option(8100, help="Port for scheduler web UI"),
 ):
-    """Start PhotonScript agents."""
+    """Start PhotonScript (foreground). Writes a PID file, sets up console +
+    rotating-file logging, and runs the orchestrator. Stop it with Ctrl-C or
+    `photonscript stop`.
+
+    This is a foreground process — deploy/run-photonscript.ps1 keeps it running
+    and restarts it on exit code 42 (self-update). Not a Windows service.
+    """
     from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import process_control
     from photonscript.orchestrator import start as _start
 
     config = PhotonScriptConfig(scheduler_host=host, scheduler_port=port)
-    console.print(f"[bold blue]PhotonScript[/bold blue] starting in [green]{mode}[/green] mode...")
-    _start(mode=mode, config=config)
+
+    # Refuse to start a second copy if a live instance already holds the PID.
+    live = process_control.running_pid(config)
+    if live is not None:
+        console.print(f"[red]PhotonScript is already running (pid {live}).[/red] "
+                      f"Stop it first with [bold]photonscript stop[/bold].")
+        raise typer.Exit(1)
+
+    # Fresh start: clear any leftover STOP sentinel so we don't immediately
+    # shut ourselves down, then claim the PID file (overwrites a stale one).
+    import os
+    process_control.clear_stop_sentinel(config)
+    pid_path = process_control.write_pid_file(config)
+    console.print(f"[bold blue]PhotonScript[/bold blue] starting in "
+                  f"[green]{mode}[/green] mode (pid {os.getpid()}, "
+                  f"pidfile {pid_path})...")
+    try:
+        _start(mode=mode, config=config)  # sets up logging + runs the orchestrator
+    finally:
+        # Best-effort: a clean/operator stop removes the PID file. The exit-42
+        # self-update uses os._exit and skips this by design (it restarts and
+        # rewrites the PID).
+        process_control.remove_pid_file(config)
+
+
+@app.command()
+def stop(
+    force: bool = typer.Option(
+        False, "--force", help="Hard-kill the process (taskkill /F on Windows) "
+        "instead of asking it to stop gracefully."),
+):
+    """Stop a running PhotonScript instance.
+
+    Default: drop a STOP sentinel that the running process polls (~1s) and then
+    shuts down cleanly. --force reads the PID file and hard-kills as a fallback.
+    """
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import process_control
+
+    config = PhotonScriptConfig()
+    pid = process_control.read_pid_file(config)
+
+    if pid is None:
+        console.print("[yellow]PhotonScript is not running (no PID file).[/yellow]")
+        raise typer.Exit(0)
+
+    if not process_control.is_pid_alive(pid):
+        console.print(f"[yellow]No live process for pid {pid} — clearing stale "
+                      f"PID file.[/yellow]")
+        process_control.remove_pid_file(config)
+        raise typer.Exit(0)
+
+    if force:
+        ok, detail = process_control.force_kill(pid)
+        if ok:
+            process_control.remove_pid_file(config)
+            console.print(f"[green]Force-killed pid {pid}.[/green] {detail}")
+            raise typer.Exit(0)
+        console.print(f"[red]Failed to force-kill pid {pid}:[/red] {detail}")
+        raise typer.Exit(1)
+
+    sentinel = process_control.create_stop_sentinel(config)
+    console.print(f"[green]Signaled pid {pid} to shut down gracefully.[/green]")
+    console.print(f"[dim]Wrote STOP sentinel {sentinel}; the running process "
+                  f"will stop within ~1s and remove it.[/dim]")
 
 
 @app.command()

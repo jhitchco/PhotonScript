@@ -1,16 +1,21 @@
 <#
-  provision-tls.ps1  — idempotent scope-PC setup for PhotonScript direct HTTPS
-  (uvicorn TLS on :8443), replacing the flaky `tailscale serve` 443 proxy.
+  provision-tls.ps1  - idempotent scope-PC setup for PhotonScript direct HTTPS
+  (uvicorn TLS on :8443), replacing the flaky "tailscale serve" 443 proxy.
 
   RUN ON: the scope PC (teles-feb25), AS THE ACCOUNT THE PHOTONSCRIPT SERVICE
   RUNS AS (so the cert lands in that account's %USERPROFILE%\.photonscript\certs,
   which is where the app reads it). Elevated if the cert step 401s.
 
+  RUN IT IN POWERSHELL, not cmd. From a PS prompt:
+      .\provision-tls.ps1
+  Or from cmd:
+      powershell -ExecutionPolicy Bypass -File .\provision-tls.ps1
+
   Safe to re-run: every step checks state first and only changes what's missing.
 
   Examples:
     .\provision-tls.ps1                       # cert + firewall + .env (leaves 443 alone)
-    .\provision-tls.ps1 -RetireServe          # ...and turn `tailscale serve --https=443 off`
+    .\provision-tls.ps1 -RetireServe          # ...and turn "tailscale serve --https=443 off"
     .\provision-tls.ps1 -EnvFile C:\astro\PhotonScript\.env
 #>
 [CmdletBinding()]
@@ -33,7 +38,7 @@ if (-not $ts) { throw "tailscale CLI not found on PATH" }
 Info "tailscale: $($ts.Source)"
 
 # 2. Cert mint/refresh (idempotent; tailscale only re-fetches near expiry).
-#    The app also mints at startup — this validates identity BEFORE you deploy.
+#    The app also mints at startup - this validates identity BEFORE you deploy.
 New-Item -ItemType Directory -Force -Path $CertDir | Out-Null
 $crt = Join-Path $CertDir "$Hostname.crt"
 $key = Join-Path $CertDir "$Hostname.key"
@@ -42,7 +47,7 @@ Push-Location $CertDir   # mint from a writable dir (system32 gives Access denie
 try {
   & tailscale cert --cert-file $crt --key-file $key $Hostname
   if ($LASTEXITCODE -ne 0) {
-    throw "tailscale cert failed (exit $LASTEXITCODE) — run elevated, or as the tailscaled owner (teles-feb25\sleep)"
+    throw "tailscale cert failed (exit $LASTEXITCODE) - run elevated, or as the tailscaled owner (teles-feb25\sleep)"
   }
 } finally { Pop-Location }
 if (-not (Test-Path $crt) -or -not (Test-Path $key)) { throw "cert/key not written to $CertDir" }
@@ -67,9 +72,9 @@ if (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue) {
   }
 }
 
-# 4. Ensure .env carries the TLS flags (idempotent — append only if missing).
+# 4. Ensure .env carries the TLS flags (idempotent - append only if missing).
 if (-not (Test-Path $EnvFile)) { throw ".env not found at $EnvFile" }
-$envtext = Get-Content $EnvFile -Raw
+$script:envtext = Get-Content $EnvFile -Raw
 function Ensure-EnvLine([string]$k, [string]$v) {
   if ($script:envtext -match "(?m)^\s*$([regex]::Escape($k))=") {
     Info "$k already set in .env"
