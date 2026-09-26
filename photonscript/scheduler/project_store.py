@@ -47,32 +47,76 @@ def default_mix(kind: str) -> dict[str, float]:
     return {f.value: round(frac * 100, 1) for f, frac, _ in mix}
 
 
+# HDR short companion set: a small FIXED number of short subs ADDED as a light
+# time overhead. Their exposure time is subtracted from the filter's budget
+# first and the remainder becomes the long set, so total integration stays
+# ~= budget and the deep long set is preserved (NOT gutted by carving sub count).
+# Fixed-count so the short set never grows with the budget.
+HDR_SHORT_COUNT = 12
+
+
 def allocate_exposures(kind: str, budget_hours: float, config,
                        acquired: dict | None = None,
-                       custom_mix: dict | None = None) -> list[ExposurePlan]:
+                       custom_mix: dict | None = None,
+                       hdr: dict | None = None,
+                       overrides: dict | None = None) -> list[ExposurePlan]:
     """Split an hour budget across filters. Preserves acquired counts.
 
     custom_mix: {filter_value: percent} — normalized; overrides type default.
+    hdr: {filter_value: short_exposure_seconds} — for each listed filter, add a
+        fixed HDR_SHORT_COUNT short subs; their time is subtracted from that
+        filter's budget first and the remainder becomes the long set, so total
+        integration stays ~= budget and the deep long set is preserved.
+    overrides: {filter_value: long_exposure_seconds} — override the default
+        long-sub length for specific filters (else config nb/bb defaults).
     """
     base = NARROWBAND_MIX if kind == "narrowband" else BROADBAND_MIX
+    nb = {"Ha", "OIII", "SII"}
+
+    def _exp(fv):
+        if overrides and fv in overrides and overrides[fv]:
+            return overrides[fv]
+        return (getattr(config, "nb_exposure_s", 600) if fv in nb
+                else getattr(config, "bb_exposure_s", 180))
+
     if custom_mix:
         total = sum(v for v in custom_mix.values() if v and v > 0) or 1
-        nb = {"Ha", "OIII", "SII"}
-        def _exp(fv):
-            return (getattr(config, "nb_exposure_s", 600) if fv in nb
-                    else getattr(config, "bb_exposure_s", 180))
         mix = [(FilterType(fv), pct / total, _exp(fv))
                for fv, pct in custom_mix.items() if pct and pct > 0]
+    elif overrides:
+        # No custom mix but per-filter overrides -> honor overrides on the
+        # type-default mix.
+        mix = [(ftype, frac, _exp(ftype.value)) for ftype, frac, _ in base]
     else:
         mix = base
     acquired = acquired or {}
+    hdr = hdr or {}
     plans = []
     for ftype, frac, exp_s in mix:
-        count = max(1, round(budget_hours * 3600 * frac / exp_s))
+        filter_seconds = budget_hours * 3600 * frac
+        short_seconds = hdr.get(ftype.value)
+        short_count = 0
+        if short_seconds:
+            # Add the fixed short set as a light time overhead: subtract its time
+            # from the budget, then size the long set from what remains, so total
+            # integration stays ~= budget and the deep long set is preserved.
+            short_count = HDR_SHORT_COUNT
+            remaining = filter_seconds - short_count * short_seconds
+            if remaining >= exp_s:
+                long_count = max(1, round(remaining / exp_s))
+            else:
+                # Budget too small to justify HDR (no room for a real long set) —
+                # go all long rather than let the short set dominate the budget.
+                short_count = 0
+                long_count = max(1, round(filter_seconds / exp_s))
+        else:
+            long_count = max(1, round(filter_seconds / exp_s))
         plans.append(ExposurePlan(
-            filter_type=ftype, exposure_seconds=exp_s, count=count,
+            filter_type=ftype, exposure_seconds=exp_s, count=long_count,
             gain=config.default_gain, offset=config.default_offset,
-            acquired=min(acquired.get(ftype.value, 0), count),
+            acquired=min(acquired.get(ftype.value, 0), long_count),
+            hdr_short_seconds=(short_seconds if short_count else None),
+            hdr_short_count=short_count,
         ))
     return plans
 
@@ -85,14 +129,72 @@ class ProjectStore:
         self.load()
 
     def load(self):
-        if not self.path.exists():
+        if self.path.exists():
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+                self.projects = {pid: ImagingProject(**p)
+                                 for pid, p in raw.items()}
+                logger.info("Loaded %d projects from %s",
+                            len(self.projects), self.path)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Failed to load projects.json: %s", e)
+        self._seed_special_projects()
+
+    # Committed seed of "special plan per target" entries. Any target here whose
+    # catalog_id is not already among the loaded projects is ADDED (never
+    # overwritten). Future special targets = one more entry in this file — no
+    # code change. Path: <repo>/config/seed_projects.json.
+    SEED_PATH = Path(__file__).resolve().parents[2] / "config" / "seed_projects.json"
+
+    def _seed_special_projects(self):
+        """Non-destructively ADD any committed seed target whose catalog_id is
+        missing from the loaded projects. Malformed/absent seed is logged and
+        skipped — never crashes startup. Persists added targets via save()."""
+        seed_path = self.SEED_PATH
+        if not seed_path.exists():
             return
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-            self.projects = {pid: ImagingProject(**p) for pid, p in raw.items()}
-            logger.info("Loaded %d projects from %s", len(self.projects), self.path)
+            raw = json.loads(seed_path.read_text(encoding="utf-8"))
         except Exception as e:  # noqa: BLE001
-            logger.error("Failed to load projects.json: %s", e)
+            logger.warning("seed_projects.json unreadable (%s) — skipping seed", e)
+            return
+        if not isinstance(raw, dict):
+            logger.warning("seed_projects.json is not a dict — skipping seed")
+            return
+
+        def _norm(cid: str) -> str:
+            return (cid or "").replace(" ", "").lower()
+
+        existing = {_norm(p.target.catalog_id) for p in self.projects.values()}
+        added = []
+        for pid, entry in raw.items():
+            try:
+                cid = _norm((entry.get("target") or {}).get("catalog_id", ""))
+                if cid and cid in existing:
+                    continue  # user already has this target — never overwrite
+                if pid in self.projects:
+                    continue  # id collision with an existing project — leave it
+                proj = ImagingProject(**entry)
+                proj.id = proj.id or pid
+                # A seed entry may declare only the high-level intent (budget +
+                # filter_mix + hdr) and leave exposure_plans empty; allocate them
+                # here so authoring a new special target needs no hand-computed
+                # counts. If the seed already carries plans, keep them as-is.
+                if not proj.exposure_plans:
+                    proj.exposure_plans = allocate_exposures(
+                        target_kind(proj.target), proj.budget_hours, self.config,
+                        custom_mix=proj.filter_mix, hdr=proj.hdr,
+                        overrides=proj.exposure_overrides)
+                    proj.total_integration_hours = proj.budget_hours
+                self.projects[proj.id] = proj
+                existing.add(cid)
+                added.append(proj.target.name)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("skipping malformed seed entry %r: %s", pid, e)
+        if added:
+            logger.info("Seeded %d special target(s): %s",
+                        len(added), ", ".join(added))
+            self.save()
 
     def save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,10 +219,22 @@ class ProjectStore:
     def update(self, project_id: str, priority: int | None = None,
                budget_hours: float | None = None,
                active: bool | None = None,
-               filter_mix: dict | None = None) -> ImagingProject | None:
+               filter_mix: dict | None = None,
+               hdr: dict | None = None,
+               exposure_overrides: dict | None = None) -> ImagingProject | None:
+        """hdr / exposure_overrides: pass {} to clear, a dict to set, None to
+        leave unchanged. Either change re-allocates the plans."""
         proj = self.projects.get(project_id)
         if proj is None:
             return None
+        plan_change = False
+        if hdr is not None:
+            proj.hdr = {k: float(v) for k, v in hdr.items() if v} or None
+            plan_change = True
+        if exposure_overrides is not None:
+            proj.exposure_overrides = {k: float(v) for k, v
+                                       in exposure_overrides.items() if v} or None
+            plan_change = True
         if priority is not None:
             proj.priority = max(0, min(100, priority))
         if active is not None:
@@ -133,19 +247,29 @@ class ProjectStore:
                                    if v and v > 0}
         if budget_hours is not None and budget_hours > 0:
             proj.budget_hours = round(budget_hours, 1)
-        if (budget_hours is not None and budget_hours > 0) or filter_mix is not None:
+        if ((budget_hours is not None and budget_hours > 0)
+                or filter_mix is not None or plan_change):
             acquired = {p.filter_type.value: p.acquired
                         for p in proj.exposure_plans}
+            short_acq = {p.filter_type.value: p.hdr_short_acquired
+                         for p in proj.exposure_plans}
             proj.exposure_plans = allocate_exposures(
                 target_kind(proj.target), proj.budget_hours, self.config,
-                acquired, custom_mix=proj.filter_mix)
+                acquired, custom_mix=proj.filter_mix,
+                hdr=proj.hdr, overrides=proj.exposure_overrides)
+            for p in proj.exposure_plans:  # keep short-set progress too
+                p.hdr_short_acquired = min(short_acq.get(p.filter_type.value, 0),
+                                           p.hdr_short_count)
             proj.total_integration_hours = proj.budget_hours
         proj.compute_completion() if hasattr(proj, "compute_completion") else None
         self.save()
         return proj
 
-    def record_accepted_sub(self, target_name: str, filter_class: str) -> bool:
-        """Increment acquired for a QA-passed sub. Returns True if matched."""
+    def record_accepted_sub(self, target_name: str, filter_class: str,
+                            exposure_seconds: float | None = None) -> bool:
+        """Increment acquired for a QA-passed sub. Returns True if matched.
+        With HDR, a sub whose length is closer to the short set's counts toward
+        hdr_short_acquired instead of the long set."""
         tn = (target_name or "").strip().lower()
         for proj in self.projects.values():
             names = {proj.target.name.lower(), proj.target.catalog_id.lower(),
@@ -153,7 +277,10 @@ class ProjectStore:
             if tn in names or any(tn and tn in n for n in names if n):
                 for plan in proj.exposure_plans:
                     if plan.filter_type.value == filter_class:
-                        plan.acquired += 1
+                        if plan.is_short_exposure(exposure_seconds):
+                            plan.hdr_short_acquired += 1
+                        else:
+                            plan.acquired += 1
                         self.save()
                         return True
         return False

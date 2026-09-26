@@ -877,7 +877,9 @@ def sync_goal_progress(config) -> list:
         store = get_store()
     except Exception:  # noqa: BLE001
         return []
-    counts: dict[tuple, int] = {}
+    # (target, filter) -> list of accepted sub lengths (s); lengths let an HDR
+    # plan split its short companion subs from the long set.
+    lengths: dict[tuple, list] = {}
     for f in runs_dir(config).glob("*_subs.jsonl"):
         date = f.name.split("_")[0]
         for s_ in _load_subs(config, date):
@@ -885,16 +887,20 @@ def sync_goal_progress(config) -> list:
                 continue
             t = str(s_.get("target", "")).strip().lower()
             if t and t != "?":
-                counts[(t, s_.get("filter"))] = \
-                    counts.get((t, s_.get("filter")), 0) + 1
+                lengths.setdefault((t, s_.get("filter")), []).append(
+                    s_.get("exp_s"))
     changed = []
     for p in store.projects.values():
         tname = p.target.name.strip().lower()
         touched = False
         for e in p.exposure_plans:
-            n = min(counts.get((tname, e.filter_type.value), 0), e.count)
-            if n != e.acquired:
+            subs = lengths.get((tname, e.filter_type.value), [])
+            short = sum(1 for x in subs if e.is_short_exposure(x))
+            n = min(len(subs) - short, e.count)
+            ns = min(short, e.hdr_short_count)
+            if n != e.acquired or ns != e.hdr_short_acquired:
                 e.acquired = n
+                e.hdr_short_acquired = ns
                 touched = True
         if touched:
             changed.append(p.target.name)
@@ -1438,7 +1444,7 @@ def build_library(config, date: str | None = None) -> dict:
         dates = sorted({f.name.split("_")[0]
                         for f in runs_dir(config).glob("*_subs.jsonl")})
     review_gate = bool(getattr(config, "review_gate", True))
-    linked = skipped = missing = rejected = pending_review = 0
+    linked = skipped = missing = rejected = pending_review = archived = 0
     attributed = retagged = 0
     # Target folders a sub could have been linked under before it was (re)named:
     # Library/_/ ('?' is not a legal path char) or another target after a
@@ -1450,6 +1456,7 @@ def build_library(config, date: str | None = None) -> dict:
     target_dirs = ([x for x in lib.iterdir()
                     if x.is_dir() and x.name.lower() not in _not_targets]
                    if lib.exists() else [])
+    from photonscript.scheduler.library_archive import archived_kinds
     for d in dates:
         # PS-51: name every '?' sub before linking, so lights land under their
         # campaign instead of Library/_/ (header match + piggyback correlation;
@@ -1457,7 +1464,8 @@ def build_library(config, date: str | None = None) -> dict:
         if getattr(config, "library_attribute", True):
             attributed += attribute_night(config, d).get("attributed", 0)
         plan_names = _plan_target_names(config, d)
-        for s_ in _load_subs(config, d):
+        gone = archived_kinds(config, d)
+        for s_ in ([] if "lights" in gone else _load_subs(config, d)):
             if not s_.get("passed_qa"):
                 rejected += 1
                 continue
@@ -1508,11 +1516,14 @@ def build_library(config, date: str | None = None) -> dict:
             linked += 1
         # Calibration: only recent sessions — old darks/flats rarely match
         # current gain/offset/exposures and were flooding the transfer queue
+        if "lights" in gone:
+            archived += 1
         n_l, n_s = _link_calibration_night(config, Path(config.image_watch_dir),
                                            lib, d)
         linked += n_l
         skipped += n_s
     result = {"library": str(lib), "nights": len(dates), "linked": linked,
+              "archived_nights_skipped": archived,
               "already_there": skipped, "rejected_excluded": rejected,
               "pending_review": pending_review, "missing_files": missing,
               "attributed": attributed, "retagged": retagged}
@@ -1540,12 +1551,16 @@ def _link_calibration_night(config, watch_dir: Path, lib: Path,
     linked = skipped = 0
     if not root.exists() or night_age > cal_days:
         return 0, 0
+    from photonscript.scheduler.library_archive import archived_kinds
+    gone = archived_kinds(config, d)  # archived calibration stays archived
     for f in root.rglob("*.fits"):
         parts = f.relative_to(root).parts
         if not _is_calibration(parts):
             continue
         typ = next(({"BIAS": "BIAS"}.get(p.upper(), p.upper().rstrip("S")) for p in parts
                     if p.upper() in _CAL_DIRS), "CAL")
+        if typ in gone:
+            continue
         dest = lib / "Calibration" / typ / d / f.name
         if dest.exists():
             skipped += 1

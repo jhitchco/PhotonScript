@@ -133,7 +133,8 @@ async def on_agent_message(msg: AgentMessage):
         if quality.get("passed_qa") or msg.payload.get("status") == "validated":
             matched = get_store().record_accepted_sub(
                 msg.payload.get("target_name", ""),
-                msg.payload.get("filter_type", ""))
+                msg.payload.get("filter_type", ""),
+                msg.payload.get("exposure_seconds"))
             if matched:
                 logger.info("Progress: %s %s +1 accepted",
                             msg.payload.get("target_name"),
@@ -480,6 +481,9 @@ _CONFIG_FIELDS = [
     ("pushover_quiet_daytime", "PS_PUSHOVER_QUIET_DAYTIME", "Quiet Pushover while the sun is up (no heartbeats; each alert type at most once per window)", "Nanny / Alerts", "bool", False, False),
     ("pushover_daytime_title_window_h", "PS_PUSHOVER_DAYTIME_TITLE_WINDOW_H", "Daytime: hours between repeats of the same alert", "Nanny / Alerts", "float", False, False),
     ("pushover_daytime_sun_alt_deg", "PS_PUSHOVER_DAYTIME_SUN_ALT_DEG", "Daytime = sun above this altitude (deg)", "Nanny / Alerts", "float", False, False),
+    ("safety_monitor_device_id", "PS_SAFETY_MONITOR_DEVICE_ID", "RC16 safety monitor NINA Id to (re)connect (blank = last seen connected)", "Nanny / Alerts", "str", False, True),
+    ("piggyback_safety_monitor_device_id", "PS_PIGGYBACK_SAFETY_MONITOR_DEVICE_ID", "Piggyback safety monitor NINA Id (blank = last seen connected)", "Nanny / Alerts", "str", False, True),
+    ("safety_watchdog_sun_alt_deg", "PS_SAFETY_WATCHDOG_SUN_ALT_DEG", "Safety reconnect watchdog idles above this sun altitude when not armed (deg)", "Nanny / Alerts", "float", False, True),
     ("safety_disconnect_repeat_min", "PS_SAFETY_DISCONNECT_REPEAT_MIN", "Repeat the safety-monitor DISCONNECTED alert every N min", "Nanny / Alerts", "int", False, False),
     ("pushover_ratelimit_enabled", "PS_PUSHOVER_RATELIMIT_ENABLED", "Rate-limit Pushover (dedup + hourly + monthly cap)", "Nanny / Alerts", "bool", False, False),
     ("pushover_dedup_window_s", "PS_PUSHOVER_DEDUP_WINDOW_S", "Pushover dedup window (s) — collapses flaps", "Nanny / Alerts", "int", False, False),
@@ -861,10 +865,15 @@ def _project_json(p) -> dict:
     d = p.model_dump(mode="json")
     d["kind"] = target_kind(p.target)
     d["mix"] = p.filter_mix or default_mix(d["kind"])
-    total = sum(e.count for e in p.exposure_plans) or 1
-    done = sum(e.acquired for e in p.exposure_plans)
+    total = sum(e.count + (e.hdr_short_count if e.hdr_short_seconds else 0)
+                for e in p.exposure_plans) or 1
+    done = sum(e.acquired + (min(e.hdr_short_acquired, e.hdr_short_count)
+                             if e.hdr_short_seconds else 0)
+               for e in p.exposure_plans)
     d["completion_pct"] = round(done / total * 100)
     d["hours_done"] = round(sum(e.acquired * e.exposure_seconds
+                                + (e.hdr_short_acquired * e.hdr_short_seconds
+                                   if e.hdr_short_seconds else 0)
                                 for e in p.exposure_plans) / 3600, 1)
     try:
         from photonscript.scheduler.runs import library_root, _safe_name
@@ -935,7 +944,9 @@ async def api_project_update(project_id: str, request: Request):
         if "budget_delta" in body else body.get("budget_hours")
     updated = store.update(project_id, priority=priority,
                            budget_hours=budget, active=body.get("active"),
-                           filter_mix=body.get("filter_mix"))
+                           filter_mix=body.get("filter_mix"),
+                           hdr=body.get("hdr"),
+                           exposure_overrides=body.get("exposure_overrides"))
     _projects[project_id] = updated
     return _project_json(updated)
 
@@ -1429,6 +1440,20 @@ def _syncthing_pending_names():
     if now - _remoteneed_cache.get("fail_t", 0.0) >= _REMOTENEED_FAIL_BACKOFF_S:
         _refresh_remoteneed_bg(settings)
     return names if (names is not None and age < _REMOTENEED_STALE_OK_S) else None
+
+
+@app.post("/api/library/archive")
+def api_library_archive(payload: dict = Body(default={})):
+    """Plan (default) or apply ({"apply": true}) moving Library nights before
+    `before` out of the Syncthing share. See library_archive.py."""
+    from photonscript.scheduler.library_archive import run_archive
+    try:
+        return run_archive(get_config(), str(payload.get("before", "")),
+                           str(payload.get("calibration", "flats")),
+                           apply=bool(payload.get("apply", False)),
+                           dest=payload.get("dest") or None)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
 
 
 @app.get("/api/runs/{date}")

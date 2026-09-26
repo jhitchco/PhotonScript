@@ -169,6 +169,22 @@ or "ERROR: ...". Masters in `out\master\`.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-09-26 (safety watchdog was polling a 404): `NinaClient.get_safety_info`
+  hit `/equipment/safetymonitor`, which ninaAPI v2 (2.2.15.2 on the scope)
+  does not serve; the real endpoint is `/equipment/safetymonitor/info` (payload
+  wrapped in `{"Response": ...}`). Every poll failed, so the watchdog treated a
+  HEALTHY monitor as blind: it cycled disconnect/connect every ~20 s (the NINA
+  "Safety Monitor connected" toasts), sent false DISCONNECTED pushes, and the
+  "slow AlpacaDynamic3 reads Connected:False" notes were this bug. Fixed; the
+  watchdog also now (a) reconnects by NAME (`connect?to=<Id>`: the pinned
+  `safety_monitor_device_id` / `piggyback_safety_monitor_device_id`, else the
+  Id last seen connected) and (b) idles while the sun is up and nothing is
+  armed. Drivers as of today: NINA #1 (:1888) = ASCOM.AlpacaDynamic3
+  (chooser name "OBS2 OSC Scope"), NINA #2 (:1889) = ASCOM.AlpacaDynamic4
+  ("OBS2 Safety 2026"); AlpacaDynamic2 is the Alpaca SIMULATOR, never use it.
+  OTHER NinaClient reads (camera/mount/focuser/sequence) use the same
+  pre-v2 paths and still 404, so the agent's camera poll, cooling and dew
+  watchdogs are inert until that is fixed (tracked separately).
 - 2026-09-26 (both scopes imaging + warm-vs-arm): three durable fixes.
   (a) **OSC finally shoots lights on NINA #2.** Root cause it never did before:
   NINA #1 and #2 shared ONE AlpacaDynamic safety-monitor driver, and the

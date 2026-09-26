@@ -631,7 +631,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     "quiet" drops those too (target intro + done still fire)."""
     chatty_block = narrate == "verbose"          # per-block starting/done pair
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
-    active = [e for e in target.exposures if e.count - e.acquired > 0]
+    active = [e for e in target.exposures
+              if e.count - e.acquired > 0 or e.short_remaining() > 0]
 
     # Moon ordering FIRST: if it leaves nothing to shoot, emit no container at
     # all. An empty DSO container still slews/AFs/centers and, looping under
@@ -662,7 +663,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
 
     plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
                           f"@{e.exposure_seconds:.0f}s" for e in active)
-    total_h = sum(e.exposure_seconds * (e.count - e.acquired)
+    total_h = sum(e.exposure_seconds * max(0, e.count - e.acquired)
+                  + (e.hdr_short_seconds or 0) * e.short_remaining()
                   for e in active) / 3600
     items = [
         _pushover("Imaging", f"{target.name}: slewing "
@@ -726,8 +728,27 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                 f"(~{block_h:.1f}h) gain {exp.gain}; focuser seed {seed} "
                 "then autofocus"
                 + (" (moon-free window)" if condition else "")))
-        out += [_move_focuser(seed),
-                _smart_exposure(exp, target.start_guiding, target.dither_every_n)]
+        out.append(_move_focuser(seed))
+        # HDR: emit a SHORT companion SmartExposure alongside the long one, same
+        # filter/gain/offset/binning, its own (shorter) length + count. Short
+        # first (bright cores), then the long set. Dither + AF triggers are
+        # container-level, so both blocks share them; each SmartExposure carries
+        # its own dither trigger via _smart_exposure (guided/dither_every_n).
+        # Only what is still owed: the short set stops once hdr_short_acquired
+        # reaches its count (it used to re-shoot all of it every night), and a
+        # finished long set is not re-emitted just because shorts remain.
+        short_n = exp.short_remaining()
+        if short_n > 0:
+            short_exp = exp.model_copy(update={
+                "exposure_seconds": exp.hdr_short_seconds,
+                "count": short_n, "acquired": 0,
+                "hdr_short_seconds": None, "hdr_short_count": 0,
+                "hdr_short_acquired": 0})
+            out.append(_smart_exposure(short_exp, target.start_guiding,
+                                       target.dither_every_n))
+        if exp.count - exp.acquired > 0:
+            out.append(_smart_exposure(exp, target.start_guiding,
+                                       target.dither_every_n))
         if chatty_block:
             out.append(_pushover(
                 "Imaging",

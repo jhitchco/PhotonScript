@@ -205,6 +205,60 @@ class TestNinaJsonGeneration:
         assert result.ok, [f"{f.rule}: {f.detail}" for f in result.findings]
 
 
+class TestHDRExposures:
+    """A filter with an HDR short set emits BOTH a short and a long
+    SmartExposure block ("special plan per target" -> generic HDR)."""
+
+    def _hdr_data(self, **target_kwargs):
+        target = NinaSequenceTarget(
+            name="NGC 6543", ra_hours=17.976, dec_degrees=66.633,
+            exposures=[ExposurePlan(
+                filter_type=FilterType.HA, exposure_seconds=600, count=14,
+                gain=200, hdr_short_seconds=60.0, hdr_short_count=12)],
+            **target_kwargs)
+        seq = build_sequence_for_night("HDRSeq", [target])
+        seq.wait_until_local = "21:00:00"
+        return json.loads(generate_nina_json(seq))
+
+    def _smart_exposure_lengths(self, data):
+        out = []
+        for sm in _walk(data):
+            if not (isinstance(sm, dict) and "SmartExposure" in sm.get("$type", "")):
+                continue
+            te = next(d for d in _walk(sm) if isinstance(d, dict)
+                      and "TakeExposure" in d.get("$type", ""))
+            loop = next(d for d in _walk(sm) if isinstance(d, dict)
+                        and "LoopCondition" in d.get("$type", ""))
+            out.append((te["ExposureTime"], loop["Iterations"]))
+        return out
+
+    def test_emits_both_short_and_long_blocks(self):
+        blocks = self._smart_exposure_lengths(self._hdr_data())
+        assert (60.0, 12) in blocks   # short HDR companion set
+        assert (600.0, 14) in blocks  # long set
+
+    def test_no_hdr_emits_only_long_block(self):
+        # baseline single-filter target from the module helper has no HDR
+        blocks = self._smart_exposure_lengths(_gen())
+        assert all(exp != 60.0 for exp, _ in blocks)
+        assert len(blocks) == 1
+
+    def test_hdr_sequence_lints_clean(self):
+        from photonscript.scheduler.sequence_lint import lint
+        result = lint(self._hdr_data(), guided=False)
+        assert result.ok, [f"{f.rule}: {f.detail}" for f in result.findings]
+
+    def test_hdr_short_block_keeps_dither_trigger(self):
+        # every SmartExposure (short and long) must carry the dither trigger
+        data = self._hdr_data(start_guiding=False)
+        smarts = [d for d in _walk(data) if isinstance(d, dict)
+                  and "SmartExposure" in d.get("$type", "")]
+        assert len(smarts) >= 2
+        for sm in smarts:
+            trigs = sm["Triggers"]["$values"]
+            assert any("DitherAfterExposures" in t.get("$type", "") for t in trigs)
+
+
 class TestNightLoopArchitecture:
     """The Jerry Macon / Patriot Astro safety-loop pattern (all core NINA)."""
 
@@ -422,3 +476,34 @@ def test_dew_and_cooler_on_at_start_off_at_end():
     types = _types(data)
     assert any("CoolCamera" in t for t in types)   # cools before imaging
     assert any("WarmCamera" in t for t in types)   # warms (cooler off) after
+
+
+class TestHDRRemaining:
+    """The short set is emitted only while owed, and a finished long set is not
+    re-shot just because shorts remain."""
+
+    def _blocks(self, **exp_kw):
+        target = NinaSequenceTarget(
+            name="NGC 6543", ra_hours=17.976, dec_degrees=66.633,
+            exposures=[ExposurePlan(filter_type=FilterType.HA,
+                                    exposure_seconds=600, gain=200,
+                                    hdr_short_seconds=60.0, **exp_kw)])
+        seq = build_sequence_for_night("HDRSeq", [target])
+        seq.wait_until_local = "21:00:00"
+        return TestHDRExposures()._smart_exposure_lengths(
+            json.loads(generate_nina_json(seq)))
+
+    def test_short_set_counts_down(self):
+        b = self._blocks(count=14, acquired=0, hdr_short_count=12,
+                         hdr_short_acquired=9)
+        assert (60.0, 3) in b and (600.0, 14) in b
+
+    def test_short_set_done_emits_long_only(self):
+        b = self._blocks(count=14, acquired=4, hdr_short_count=12,
+                         hdr_short_acquired=12)
+        assert b == [(600.0, 10)]
+
+    def test_long_done_emits_short_only(self):
+        b = self._blocks(count=14, acquired=14, hdr_short_count=12,
+                         hdr_short_acquired=2)
+        assert b == [(60.0, 10)]

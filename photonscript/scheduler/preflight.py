@@ -35,8 +35,16 @@ async def _nina_get(config, endpoint: str, timeout=5) -> dict:
 async def _nina_connect(config, device: str, timeout=20) -> str:
     """Actively tell NINA to connect a device. Returns '' on success, else an
     error string. (NINA's connect endpoints are GET.)"""
+    endpoint = f"/equipment/{device}/connect"
+    if device == "safetymonitor":
+        # Name the rig's own monitor when pinned, so a connect can never land
+        # on another chooser entry (each NINA has its own safety driver).
+        pin = (getattr(config, "safety_monitor_device_id", "") or "").strip()
+        if pin:
+            from urllib.parse import quote
+            endpoint += f"?to={quote(pin, safe='')}"
     try:
-        await _nina_get(config, f"/equipment/{device}/connect", timeout=timeout)
+        await _nina_get(config, endpoint, timeout=timeout)
         return ""
     except Exception as e:  # noqa: BLE001
         return f"{type(e).__name__}: {e}"

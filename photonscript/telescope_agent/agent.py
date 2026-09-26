@@ -70,6 +70,8 @@ class TelescopeAgent:
         self._safety_last_attempt: float = 0.0
         self._safety_last_escalate: float = 0.0
         self._safety_aborted = False
+        self._safety_device_id = ""   # chooser Id last seen connected (learned)
+        self._safety_idle = False     # watchdog parked (daytime, not armed)
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -178,6 +180,7 @@ class TelescopeAgent:
     # ------------------------------------------------------------------
 
     COOL_FAIL_GRACE_S = 600   # cooler must show progress within 10 min
+    COOL_ALERT_GRACE_S = 1200  # off-setpoint this long before the "cooling" alert
     COOL_FIX_MAX = 3          # reconnect attempts per night
 
     async def _dew_heater_watchdog(self, camera: dict):
@@ -192,6 +195,8 @@ class TelescopeAgent:
         import time
         if self._dew_api_broken or not camera.get("CoolerOn"):
             return
+        if camera.get("HasDewHeater") is False:
+            return  # this camera has no heater to switch (don't false-alarm)
         if camera.get("DewHeaterOn") is True:
             self._dew_last_set = time.monotonic()
             return
@@ -231,6 +236,65 @@ class TelescopeAgent:
                 logger.warning("safety loop iteration errored: %s", e)
             await asyncio.sleep(self.SAFETY_POLL_S)
 
+    # Armer states in which a night is in progress (mirrors
+    # photonscript.scheduler.armer.ACTIVE_STATES; a test keeps them in sync).
+    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+
+    def _armer_active(self) -> bool:
+        """True when the scheduler's armer has a night in progress. Read from
+        its persisted state file so this works in any run mode."""
+        import json
+        p = Path(getattr(self.config, "data_dir", ".")) / "armer_state.json"
+        try:
+            state = json.loads(p.read_text(encoding="utf-8")).get("state")
+        except Exception:  # noqa: BLE001 - no file / unreadable = not armed
+            return False
+        return state in self._ARMER_ACTIVE_STATES
+
+    def _safety_watch_needed(self) -> bool:
+        """The reconnect watchdog only matters when the rig could be imaging:
+        a night is armed, or the sun is down. In daylight with nothing armed
+        it stays out of the way (no reconnect cycling while you swap devices
+        in NINA, no DISCONNECTED pushes about a monitor nobody is using)."""
+        if self._armer_active():
+            return True
+        from datetime import timezone
+        from photonscript.shared.pushover import sun_altitude_deg
+        try:
+            lat = float(self.config.observatory_lat)
+            lon = float(self.config.observatory_lon)
+        except (AttributeError, TypeError, ValueError):
+            return True  # unknown site: stay on (fail safe)
+        alt = sun_altitude_deg(lat, lon, datetime.now(timezone.utc))
+        return alt <= float(getattr(self.config, "safety_watchdog_sun_alt_deg", -3.0))
+
+    def _safety_reset(self) -> None:
+        self._safety_bad_since = None
+        self._safety_bad_reads = 0
+        self._safety_fix_attempts = 0
+        self._safety_last_attempt = 0.0
+        self._safety_last_escalate = 0.0
+        self._safety_aborted = False
+        self._alerted.discard("safety-disconnected")
+
+    def _safety_target_id(self) -> str:
+        """Which monitor a reconnect should name: the configured pin for this
+        rig, else the device last seen connected, else '' (NINA's selection)."""
+        return ((getattr(self.config, "safety_monitor_device_id", "") or "").strip()
+                or getattr(self, "_safety_device_id", "") or "")
+
+    async def _safety_connect(self) -> None:
+        target = self._safety_target_id()
+        if not target:
+            await self.nina.connect_safety()
+            return
+        try:
+            await self.nina.connect_safety(target)
+        except Exception as e:  # noqa: BLE001 - pinned Id gone? fall back
+            logger.warning("Safety-monitor watchdog: connect to %s failed (%s) — "
+                           "falling back to NINA's selected device", target, e)
+            await self.nina.connect_safety()
+
     async def _safety_monitor_watchdog(self):
         """Keep the NINA safety monitor CONNECTED all night — a disconnected
         monitor is as dangerous as bad weather, because the sequence goes
@@ -248,6 +312,17 @@ class TelescopeAgent:
         """
         import time
         from photonscript.shared.models import SessionState
+        if not self._safety_watch_needed():
+            if not getattr(self, "_safety_idle", False):
+                logger.info("Safety-monitor watchdog idle [%s]: sun up and "
+                            "nothing armed", getattr(self, "rig", "rc16"))
+                self._safety_idle = True
+            self._safety_reset()
+            return
+        if getattr(self, "_safety_idle", False):
+            logger.info("Safety-monitor watchdog active [%s]",
+                        getattr(self, "rig", "rc16"))
+            self._safety_idle = False
         try:
             info = await self.nina.get_safety_info()
         except Exception as _e:  # noqa: BLE001 - NINA itself unreachable
@@ -261,6 +336,11 @@ class TelescopeAgent:
             info = {"Connected": False}
 
         if info.get("Connected"):
+            dev = info.get("DeviceId") or ""
+            if dev and dev != getattr(self, "_safety_device_id", ""):
+                logger.info("Safety-monitor watchdog [%s]: tracking %s",
+                            getattr(self, "rig", "rc16"), dev)
+                self._safety_device_id = dev
             if self._safety_bad_since is not None:
                 logger.info("Safety-monitor watchdog: monitor connected again")
             self._safety_bad_since = None
@@ -316,7 +396,7 @@ class TelescopeAgent:
                         await asyncio.sleep(1)
                     except Exception:  # noqa: BLE001 - best effort
                         pass
-                await self.nina.connect_safety()
+                await self._safety_connect()
                 # The slow AlpacaDynamic3 driver often still reads
                 # Connected:False for a few seconds right after a SUCCESSFUL
                 # connect. Don't trust a single immediate read — poll over a
@@ -450,15 +530,26 @@ class TelescopeAgent:
                 self.state.camera_temp_c = camera.get("Temperature")
                 self.state.camera_cooling_on = camera.get("CoolerOn", False)
 
-                # Cooling watch: cooler on but sensor off-setpoint (the 0°C incident)
-                if (self.state.camera_cooling_on
-                        and self.state.camera_temp_c is not None
-                        and abs(self.state.camera_temp_c - self.config.camera_setpoint_c)
-                        > self.config.cooling_tolerance_c):
+                # Cooling watch: cooler on but sensor off-setpoint (the 0°C
+                # incident). Must PERSIST past COOL_ALERT_GRACE_S: a normal
+                # cool-down takes minutes and used to be indistinguishable.
+                # (This loop only started receiving real data on 2026-09-26,
+                # when the client moved to the ninaAPI v2 /info endpoints.)
+                import time as _t
+                off = (self.state.camera_cooling_on
+                       and self.state.camera_temp_c is not None
+                       and abs(self.state.camera_temp_c - self.config.camera_setpoint_c)
+                       > self.config.cooling_tolerance_c)
+                if not off:
+                    self._cool_off_since = None
+                elif getattr(self, "_cool_off_since", None) is None:
+                    self._cool_off_since = _t.monotonic()
+                elif _t.monotonic() - self._cool_off_since >= self.COOL_ALERT_GRACE_S:
                     await self._escalate(
                         "cooling",
-                        f"Sensor at {self.state.camera_temp_c:.1f}C with cooler on — "
-                        f"setpoint is {self.config.camera_setpoint_c:.1f}C",
+                        f"Sensor at {self.state.camera_temp_c:.1f}C with cooler on for "
+                        f"{self.COOL_ALERT_GRACE_S // 60} min — setpoint is "
+                        f"{self.config.camera_setpoint_c:.1f}C",
                     )
                 await self._cooling_watchdog(camera)
                 await self._dew_heater_watchdog(camera)

@@ -106,7 +106,15 @@ class CelestialTarget(BaseModel):
 
 
 class ExposurePlan(BaseModel):
-    """Exposure plan for a single filter on a target."""
+    """Exposure plan for a single filter on a target.
+
+    HDR (high-dynamic-range) support: a filter may carry an optional SHORTER
+    companion sub set alongside its main (long) subs — short subs keep bright
+    cores from clipping (e.g. a planetary nebula's central star) while the long
+    subs pull the faint shell. `exposure_seconds`/`count` describe the LONG set;
+    `hdr_short_seconds`/`hdr_short_count` describe the short companion set. Both
+    HDR fields are optional and default to "no HDR", so existing projects.json
+    round-trips unchanged."""
     filter_type: FilterType
     exposure_seconds: float = 300.0
     count: int = 20
@@ -114,6 +122,22 @@ class ExposurePlan(BaseModel):
     offset: int = 50
     binning: int = 1
     acquired: int = 0  # how many already captured
+    hdr_short_seconds: Optional[float] = None  # shorter companion sub length (s)
+    hdr_short_count: int = 0  # how many short subs; 0 = no HDR companion set
+    hdr_short_acquired: int = 0  # accepted short subs so far (long set uses `acquired`)
+
+    def short_remaining(self) -> int:
+        if not self.hdr_short_count or not self.hdr_short_seconds:
+            return 0
+        return max(0, self.hdr_short_count - self.hdr_short_acquired)
+
+    def is_short_exposure(self, seconds) -> bool:
+        """True when a sub of `seconds` belongs to this plan's HDR short set
+        (closer to the short length than to the long one)."""
+        if not self.hdr_short_seconds or not self.hdr_short_count or not seconds:
+            return False
+        s = float(seconds)
+        return abs(s - self.hdr_short_seconds) < abs(s - self.exposure_seconds)
 
 
 class ImagingProject(BaseModel):
@@ -124,6 +148,13 @@ class ImagingProject(BaseModel):
     priority: int = 50  # 0-100, higher = more important
     budget_hours: float = 8.0  # total imaging time to dedicate; drives filter allocation
     filter_mix: Optional[dict] = None  # custom {filter: percent} split; None = type default
+    hdr: Optional[dict] = None  # {filter_value: short_exposure_seconds} — request an
+    # HDR short companion sub set on those filters (see ExposurePlan HDR fields).
+    # None/{} = no HDR. This is the GENERIC "special plan per target" hook: a
+    # target opts into HDR purely as data, no per-target code.
+    exposure_overrides: Optional[dict] = None  # {filter_value: long_exposure_seconds}
+    # — override the config default long-sub length for specific filters (else
+    # config.nb_exposure_s / bb_exposure_s). None = use the global defaults.
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     total_integration_hours: float = 0.0
@@ -131,8 +162,11 @@ class ImagingProject(BaseModel):
     active: bool = True
 
     def compute_completion(self) -> float:
-        total = sum(p.count for p in self.exposure_plans)
-        acquired = sum(p.acquired for p in self.exposure_plans)
+        total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)
+                    for p in self.exposure_plans)
+        acquired = sum(p.acquired + (min(p.hdr_short_acquired, p.hdr_short_count)
+                                     if p.hdr_short_seconds else 0)
+                       for p in self.exposure_plans)
         if total == 0:
             return 0.0
         self.completion_pct = round(acquired / total * 100, 1)

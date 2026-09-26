@@ -22,29 +22,65 @@ def _cfg():
     return get_config()
 
 
+_LISTEN_RE_TMPL = r"listening at \S*:{port}\b"
+
+
+def _rig_log(cfg, rig: str):
+    """(path, note) of the newest NINA log belonging to `rig`.
+
+    Both NINA instances run as the same Windows user, so they write into ONE
+    Logs folder and "newest file" is whichever NINA started last. Each log
+    records the Advanced API port it serves ("starting web server, listening
+    at 0.0.0.0:1889"), so pick the newest log whose head names this rig's
+    port. Falls back to the newest log for the RC16 (old behavior)."""
+    import re
+    from urllib.parse import urlparse
+    pig = str(rig).lower() in ("piggyback", "osc", "nina2", "2")
+    own_dir = (getattr(cfg, "piggyback_nina_logs_dir", "") or "") if pig else ""
+    logs_dir = own_dir or cfg.nina_logs_dir
+    # A dedicated NINA #2 folder holds only its logs: newest is right.
+    dedicated = bool(own_dir) and Path(own_dir) != Path(cfg.nina_logs_dir)
+    base = (getattr(cfg, "piggyback_nina_base_url", "") if pig
+            else cfg.nina_base_url) or ""
+    port = urlparse(base).port
+    logs = sorted(_glob.glob(str(Path(logs_dir) / "*.log")),
+                  key=lambda p: Path(p).stat().st_mtime, reverse=True)
+    if not logs:
+        return None, f"no NINA logs found for {rig} under {logs_dir}"
+    if dedicated:
+        return logs[0], ""
+    if port:
+        pat = re.compile(_LISTEN_RE_TMPL.format(port=port))
+        for p in logs[:15]:
+            try:
+                with open(p, encoding="utf-8", errors="replace") as fh:
+                    head = fh.read(2_000_000)
+            except OSError:
+                continue
+            if pat.search(head):
+                return p, ""
+    if pig:
+        return None, (f"no NINA log under {logs_dir} says it serves the "
+                      f"Advanced API on :{port} (NINA #2) - is it running?")
+    return logs[0], ""
+
+
 @router.get("/api/nina/log", response_class=PlainTextResponse)
 async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16"):
     """Tail (and optionally filter) the newest NINA log - remote 2AM triage
     without pulling the whole bundle. rig='piggyback' (aliases: osc, nina2, 2)
     tails NINA #2's log instead of the RC16's, so the OSC is triageable too."""
     cfg = _cfg()
-    if str(rig).lower() in ("piggyback", "osc", "nina2", "2"):
-        logs_dir = getattr(cfg, "piggyback_nina_logs_dir", "") or ""
-        if not logs_dir:
-            return ("piggyback_nina_logs_dir not configured (NINA #2 log dir) — "
-                    "set it in System config to tail the OSC's log")
-    else:
-        logs_dir = cfg.nina_logs_dir
-    logs = sorted(_glob.glob(str(Path(logs_dir) / "*.log")))
-    if not logs:
-        return f"no NINA logs found for {rig} under {logs_dir}"
-    rows = Path(logs[-1]).read_text(encoding="utf-8",
-                                    errors="replace").splitlines()
+    path, note = _rig_log(cfg, rig)
+    if path is None:
+        return note
+    rows = Path(path).read_text(encoding="utf-8",
+                                errors="replace").splitlines()
     if grep:
         needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
         rows = [r for r in rows if any(n in r.lower() for n in needles)]
     rows = rows[-min(max(1, lines), 5000):]
-    return (f"# [{rig}] {Path(logs[-1]).name} - last {len(rows)} lines\n"
+    return (f"# [{rig}] {Path(path).name} - last {len(rows)} lines\n"
             + "\n".join(rows))
 
 

@@ -63,6 +63,9 @@ class PhotonScriptConfig(BaseSettings):
     astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     dark_target_count: int = 30  # dark-library quota per exposure length (current epoch)
     dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
+    library_archive_before: str = ""  # YYYY-MM-DD: nights before this stay out of the
+                                      # Library (archived); the archive tool records it too
+    library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
     stamp_fits_object: bool = True  # write the resolved target name into a
@@ -86,9 +89,10 @@ class PhotonScriptConfig(BaseSettings):
     flat_count: int = 15  # sky flats per filter at dawn
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
-    piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir, for tailing the
-                                    # OSC's log via /api/nina/log?rig=piggyback.
-                                    # Empty = not configured (endpoint says so).
+    piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as
+                                    # nina_logs_dir (both NINAs log to one folder;
+                                    # /api/nina/log picks each rig's file by the
+                                    # Advanced API port its log says it listens on).
     phd2_logs_dir: str = "C:\\Users\\jeremy\\Documents\\PHD2"  # PHD2 GuideLog +
     # DebugLog dir (PHD2 default). Lets the dashboard tail guiding remotely —
     # RMS, star-lost, calibration — the same way nina_logs_dir does for NINA.
@@ -203,6 +207,12 @@ class PhotonScriptConfig(BaseSettings):
     pushover_quiet_daytime: bool = True        # sun up: no heartbeats, 1 per title per window
     pushover_daytime_title_window_h: float = 4.0
     pushover_daytime_sun_alt_deg: float = -3.0  # "daytime" = sun above this altitude
+    safety_monitor_device_id: str = ""  # NINA #1 chooser Id to (re)connect, e.g.
+                                        # ASCOM.AlpacaDynamic3.SafetyMonitor. "" = the
+                                        # device last seen connected (auto-learned).
+    piggyback_safety_monitor_device_id: str = ""  # same, for NINA #2 (the OSC)
+    safety_watchdog_sun_alt_deg: float = -3.0  # the reconnect watchdog idles while the
+                                               # sun is above this AND nothing is armed
     safety_disconnect_repeat_min: int = 60     # repeat the safety-DISCONNECTED push every N min
     # Safety-flap debounce baked into the generated NINA sequence: after the sky
     # reads safe again it must STAY safe this long before the sequence unparks,

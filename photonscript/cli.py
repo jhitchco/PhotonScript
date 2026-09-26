@@ -437,6 +437,42 @@ def analyze(
             console.print(f"  [red]✗ {f.get('file')}: {f.get('error')}[/red]")
 
 
+@app.command("archive-library")
+def archive_library(
+    before: str = typer.Option(..., help="Archive nights before this date (YYYY-MM-DD)"),
+    calibration: str = typer.Option("flats", help="flats (default) | all | none"),
+    apply: bool = typer.Option(False, "--apply", help="Actually move (default: dry run)"),
+    dest: str = typer.Option("", help="Archive root (default <share parent>/NINAArchive)"),
+):
+    """Move old Library lights (+ calibration) OUT of the Syncthing share so the
+    desktop stops tracking them. Dry run unless --apply. Desktop copies of moved
+    files are removed by Syncthing (the desktop mirrors deletions)."""
+    from photonscript.scheduler.library_archive import run_archive
+    from photonscript.shared.config import PhotonScriptConfig
+    config = PhotonScriptConfig()
+    r = run_archive(config, before, calibration, apply=apply, dest=dest or None)
+    table = Table(title=f"{'APPLIED' if r['applied'] else 'DRY RUN'} - archive "
+                        f"before {before} (calibration: {calibration})")
+    table.add_column("Kind"); table.add_column("Files", justify="right")
+    table.add_column("GB", justify="right")
+    for k, v in r["summary"].items():
+        table.add_row(k, str(v["files"]), f"{v['gb']:.2f}")
+    console.print(table)
+    console.print(f"[cyan]{r['files']} files, {r['gb']} GB -> "
+                  f"{r['archive_root']}[/cyan]")
+    if r.get("kept_calibration"):
+        kept = ", ".join(f"{k['type']} {k['date']} ({k['files']})"
+                         for k in r["kept_calibration"][:12])
+        console.print(f"[yellow]Kept in the share (older calibration, not "
+                      f"archived in this mode): {kept}[/yellow]")
+    if r["applied"]:
+        console.print(f"[green]Moved {r['moved']}, failed {r['failed']}[/green]")
+        for e in r.get("errors", []):
+            console.print(f"  [red]{e}[/red]")
+    else:
+        console.print("[yellow]Dry run only. Add --apply to move.[/yellow]")
+
+
 @app.command("prune-nights")
 def prune_nights(
     before: str = typer.Option(

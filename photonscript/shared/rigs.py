@@ -75,6 +75,10 @@ def rig_config(config, rig: str):
         "quality_eccentricity_max": getattr(config, "piggyback_ecc_max", 0.75),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
+        # NINA #2 has its own safety driver (a shared one deadlocks on the
+        # driver's trace-log file lock), so pin its own chooser Id.
+        "safety_monitor_device_id": getattr(
+            config, "piggyback_safety_monitor_device_id", ""),
     }
     wd = getattr(config, "piggyback_image_watch_dir", "")
     if wd:
