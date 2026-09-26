@@ -502,6 +502,15 @@ def _altitude_condition(target, min_alt: float) -> dict:
             Coordinates=_coords(target), Offset=min_alt, Comparator=1))
 
 
+def _loop_once() -> dict:
+    """LoopCondition(1): run a container a single time per entry. NINA resets
+    the counter when a parent container loops (the SmartExposure counts rely
+    on the same reset), so a target is re-acquired once after an unsafe pause,
+    not on every pass."""
+    return _make_typed("NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+                       CompletedIterations=0, Iterations=1)
+
+
 def _annotation(text: str) -> dict:
     return _make_typed("NINA.Sequencer.SequenceItem.Utility.Annotation, "
                        "NINA.Sequencer", Text=text, ErrorBehavior=0, Attempts=1)
@@ -624,6 +633,33 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
     active = [e for e in target.exposures if e.count - e.acquired > 0]
 
+    # Moon ordering FIRST: if it leaves nothing to shoot, emit no container at
+    # all. An empty DSO container still slews/AFs/centers and, looping under
+    # Safety+Altitude, re-acquired every ~8 min all night (2026-09-21, PS-27).
+    NB_SET = {"Ha", "OIII", "SII"}
+    bb = [e for e in active if e.filter_type.value not in NB_SET]
+    nb = [e for e in active if e.filter_type.value in NB_SET]
+    ordered = active
+    bb_condition = None
+    bb_deferred_note = None
+    if bb:
+        from photonscript.scheduler.moon import broadband_deferred
+        mw = _moon_window()
+        if mw.get("available") and mw.get("down_at_dusk"):
+            # dark evening: broadband first, capped at moonrise
+            ordered = bb + nb
+            if mw.get("rise_local_hh") is not None:
+                bb_condition = _time_condition_at(mw["rise_local_hh"],
+                                                  mw["rise_local_mm"])
+        elif not broadband_deferred(mw):
+            ordered = bb + nb  # faint moon: broadband fine any time
+        else:
+            # moon up at dusk and bright: defer broadband tonight
+            bb_deferred_note = mw.get("illum_pct", "?")
+            ordered = nb
+    if not ordered:
+        return None
+
     plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
                           f"@{e.exposure_seconds:.0f}s" for e in active)
     total_h = sum(e.exposure_seconds * (e.count - e.acquired)
@@ -670,29 +706,12 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             items.append(_pushover("Imaging",
                                    f"{target.name}: focused, centered, unguided "
                                    "on encoders — capturing"))
-    NB_SET = {"Ha", "OIII", "SII"}
-    bb = [e for e in active if e.filter_type.value not in NB_SET]
-    nb = [e for e in active if e.filter_type.value in NB_SET]
-    ordered = active
-    bb_condition = None
-    if bb:
-        mw = _moon_window()
-        if mw.get("available") and mw.get("down_at_dusk"):
-            # dark evening: broadband first, capped at moonrise
-            ordered = bb + nb
-            if mw.get("rise_local_hh") is not None:
-                bb_condition = _time_condition_at(mw["rise_local_hh"],
-                                                  mw["rise_local_mm"])
-        elif mw.get("available") and (mw.get("illum_pct") or 100) < 20:
-            ordered = bb + nb  # faint moon: broadband fine any time
-        else:
-            # moon up at dusk and bright: defer broadband tonight
-            items.append(_pushover(
-                "Imaging",
-                f"{target.name}: moon up at dusk "
-                f"({mw.get('illum_pct', '?')}%) — RGB/L deferred to a "
-                "dark evening; narrowband only tonight"))
-            ordered = nb
+    if bb_deferred_note is not None:
+        items.append(_pushover(
+            "Imaging",
+            f"{target.name}: moon up at dusk "
+            f"({bb_deferred_note}%) — RGB/L deferred to a "
+            "dark evening; narrowband only tonight"))
 
     def _block(exp, bi, n_blocks, condition=None):
         n = exp.count - exp.acquired
@@ -717,17 +736,27 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         return out
 
     n_blocks = len(ordered)
+    imaging = []
     for bi, exp in enumerate(ordered, 1):
         is_bb = exp.filter_type.value not in NB_SET
         blk = _block(exp, bi, n_blocks, bb_condition if is_bb else None)
         if is_bb and bb_condition is not None:
-            items.append(_seq_container(
+            imaging.append(_seq_container(
                 f"{exp.filter_type.value} until moonrise", blk,
                 conditions=[bb_condition]))
         else:
-            items.extend(blk)
-    items.append(_pushover("Imaging", f"{target.name}: ALL blocks complete "
-                           f"({plan_desc}) — moving on"))
+            imaging.extend(blk)
+    # Acquire ONCE per entry, then keep shooting the plan while safe and above
+    # the altitude limit (Jeremy 2026-09-26: keep shooting when the plan is
+    # done and there's nothing else to do). Only this inner container loops;
+    # the outer DSO container carries LoopCondition(1) so it never re-slews,
+    # re-focuses and re-centers on every pass (PS-27).
+    items.append(_seq_container(
+        f"{target.name} imaging (repeats while safe and up)", imaging,
+        conditions=[_safety_condition(),
+                    _altitude_condition(target, min_altitude)]))
+    items.append(_pushover("Imaging", f"{target.name}: leaving target "
+                           f"({plan_desc}) — below altitude or unsafe"))
 
     # AF triggers: temp drift + filter change + HFR creep — the proven trio
     # from the known-good AARO sequence (the time-based trigger validated
@@ -743,7 +772,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     container = _seq_container(
         target.name, items,
         conditions=[_safety_condition(),
-                    _altitude_condition(target, min_altitude)],
+                    _altitude_condition(target, min_altitude),
+                    _loop_once()],
         triggers=triggers,
         container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
                        "NINA.Sequencer",
@@ -915,13 +945,24 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", True))
     for t in sequence.targets:
         force_cal = first_guided and t.start_guiding and force_first_cal
-        if t.start_guiding:
-            first_guided = False
-        target_containers.append(
-            _build_target_container(t, sequence.wait_for_altitude, force_cal,
+        c = _build_target_container(t, sequence.wait_for_altitude, force_cal,
                                     af_filter=af_ft,
                                     narrate=getattr(_cfg, "pushover_verbosity",
-                                                    "normal")))
+                                                    "normal"))
+        if c is None:
+            # Nothing to shoot tonight (e.g. broadband-only under a bright
+            # moon): skip it rather than emit an empty container that loops
+            # slew/AF/center all night (PS-27).
+            target_containers.append(_annotation(
+                f"{t.name}: skipped tonight (nothing to shoot: broadband "
+                "deferred by the moon, or plan complete)"))
+            target_containers.append(_pushover(
+                "Imaging", f"{t.name}: skipped tonight — nothing to shoot "
+                "(broadband deferred by the moon, or plan complete)"))
+            continue
+        if t.start_guiding:
+            first_guided = False  # only a target that actually runs uses it
+        target_containers.append(c)
 
     unsafe_items = [
         _pushover("Safety", "UNSAFE — imaging stopped, parking scope; will "

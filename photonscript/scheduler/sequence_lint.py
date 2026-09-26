@@ -135,6 +135,16 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
         if "AltitudeCondition" not in cond_blob:
             r.warn("altitude", f"[{name}] missing AltitudeCondition (want >=30 deg)")
 
+        # An empty target still slews/AFs/centers; looping under Safety +
+        # Altitude it re-acquires all night (2026-09-21, PS-27).
+        if not (_has_type(tgt, "TakeExposure") or _has_type(tgt, "SmartExposure")):
+            r.error("empty-target", f"[{name}] has no exposures — it would "
+                                    "slew, focus and center on every pass")
+        elif "LoopCondition" not in cond_blob:
+            r.warn("reacquire", f"[{name}] target container has no "
+                                "LoopCondition(1) — it may re-slew/AF/center "
+                                "on every pass")
+
         # Centering: Platesolving.Center or SlewScopeAndCenter both plate-solve
         if not (_has_type(tgt, "Platesolving.Center")
                 or _has_type(tgt, "SlewScopeAndCenter")):

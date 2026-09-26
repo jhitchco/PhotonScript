@@ -221,6 +221,7 @@ def plan_night_sequence(
     # Build sequence targets
     sequence_targets = []
     remaining_hours = dark_hours
+    _gen_moon = None  # generator's moon window, fetched only if needed
 
     for vp in visible_projects:
         if remaining_hours <= 0.3:
@@ -246,6 +247,25 @@ def plan_night_sequence(
         if not remaining_exposures:
             # e.g. a broadband-only target on a bright-moon night -> skip tonight
             continue
+        # Same moon rule as the sequence generator (moon.broadband_deferred):
+        # a broadband-only target the generator would empty is dropped here, so
+        # the plan and the sequence agree (PS-27).
+        if (getattr(config, "moon_aware_planning", True)
+                and all(e.filter_type.value not in _NB_FILTERS
+                        for e in remaining_exposures)):
+            if _gen_moon is None:
+                try:
+                    from photonscript.scheduler.moon import moon_window_tonight
+                    _gen_moon = moon_window_tonight(config)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("moon window unavailable: %s", e)
+                    _gen_moon = {}
+            if _gen_moon.get("available"):
+                from photonscript.scheduler.moon import broadband_deferred
+                if broadband_deferred(_gen_moon):
+                    logger.info("Skipping %s tonight: broadband-only and the "
+                                "moon defers broadband", proj.target.name)
+                    continue
 
         alloc_time = sum(e.exposure_seconds * e.count for e in remaining_exposures) / 3600
         remaining_hours -= alloc_time * 1.15  # account for overhead

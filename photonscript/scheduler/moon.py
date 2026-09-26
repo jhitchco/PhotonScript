@@ -91,3 +91,18 @@ def moon_window_tonight(config) -> dict:
             "illum_pct": info.get("illum_pct"),
             "rise_local_hh": rise_local.hour if rise_local else None,
             "rise_local_mm": rise_local.minute if rise_local else None}
+
+
+def broadband_deferred(mw: dict) -> bool:
+    """Single moon rule shared by the planner and the sequence generator.
+
+    True when tonight's broadband (L/RGB/OSC) should be deferred: the moon is
+    up at dusk and at least 20% lit. Unknown geometry (mw unavailable) defers,
+    matching the generator's historical fallback. Keeping ONE rule stops the
+    planner from keeping a broadband-only target that the generator then
+    empties (the 2026-09-20/21 empty-Andromeda re-acquire loop, PS-27)."""
+    if not mw or not mw.get("available"):
+        return True
+    if mw.get("down_at_dusk"):
+        return False
+    return (mw.get("illum_pct") or 100) >= 20
