@@ -52,7 +52,10 @@
         #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
                     display:flex; flex-direction:column; align-items:center;
                     justify-content:center; z-index:50; gap:.6rem; }
-        #lightbox img { max-width:92vw; max-height:78vh; border-radius:8px; }
+        #lightbox img { max-width:92vw; max-height:78vh; border-radius:8px;
+                        cursor:zoom-in; transition:transform .04s linear; }
+        #lightbox img.zoomed { cursor:move; border-radius:0; }
+        #lbCount { font-weight:700; opacity:.9; }
         #lbBar { display:flex; gap:1rem; align-items:center; font-size:.85rem; }
         #backfillBox { margin-top:.8rem; }
         .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
@@ -125,12 +128,13 @@
         <img id="lbImg" src="">
         <div id="lbBar">
             <button class="btn btn-secondary" onclick="lbNav(-1)">◀ prev</button>
+            <span id="lbCount"></span>
             <span id="lbCaption"></span>
             <button class="btn btn-secondary" id="lbQaBtn"></button>
             <button class="btn btn-secondary" onclick="lbNav(1)">next ▶</button>
             <button class="btn btn-secondary" onclick="closeLb()">close (Esc)</button>
         </div>
-        <div class="bd">← → navigate · X reject/accept · originals are never deleted — reject only excludes from the library</div>
+        <div class="bd">← → navigate · X reject/accept · click image to zoom to that spot, move to pan, click again to reset (+/− also zoom) · originals are never deleted — reject only excludes from the library</div>
     </div>
     <script>
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
@@ -625,9 +629,12 @@
         lbIdx = i;
         const s = window._shownSubs[i];
         if (!s) return;
+        lbZoomReset();   // always open a new frame at 1×
         document.getElementById('lbImg').src = '/api/runs/' + currentDate +
             '/thumb?file=' + encodeURIComponent(s.file) + '&w=1400' +
             (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
+        const _n = (window._shownSubs || []).length;
+        document.getElementById('lbCount').textContent = (i + 1) + ' / ' + _n;
         document.getElementById('lbCaption').innerHTML =
             '<b>' + currentDate + '</b> · ' +
             ((s.target && s.target !== '?') ? s.target + ' · ' : '') +
@@ -649,6 +656,49 @@
         const n = window._shownSubs.length;
         openLb(((lbIdx + d) % n + n) % n);
     }
+    // ---- lightbox zoom/pan: click a spot to zoom in there, move to pan,
+    //      click again to reset. Lets you eyeball star shape/ecc on a reject.
+    let lbZoom = 1;
+    function lbZoomReset() {
+        lbZoom = 1;
+        const img = document.getElementById('lbImg');
+        img.style.transform = ''; img.style.transformOrigin = '50% 50%';
+        img.classList.remove('zoomed');
+    }
+    function _lbOriginFromEvent(e, img) {
+        const r = img.getBoundingClientRect();
+        const x = Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100));
+        const y = Math.min(100, Math.max(0, ((e.clientY - r.top) / r.height) * 100));
+        img.style.transformOrigin = x + '% ' + y + '%';
+    }
+    function lbImgClick(e) {
+        e.stopPropagation();               // never close the lightbox on image click
+        const img = document.getElementById('lbImg');
+        if (lbZoom === 1) {
+            _lbOriginFromEvent(e, img);
+            lbZoom = 3; img.style.transform = 'scale(3)'; img.classList.add('zoomed');
+        } else { lbZoomReset(); }
+    }
+    function lbImgMove(e) {
+        if (lbZoom === 1) return;
+        _lbOriginFromEvent(e, document.getElementById('lbImg'));
+    }
+    function lbZoomStep(delta) {
+        const img = document.getElementById('lbImg');
+        lbZoom = Math.min(6, Math.max(1, lbZoom + delta));
+        if (lbZoom === 1) { lbZoomReset(); return; }
+        img.style.transform = 'scale(' + lbZoom + ')'; img.classList.add('zoomed');
+    }
+    (function () {
+        const img = document.getElementById('lbImg');
+        img.addEventListener('click', lbImgClick);
+        img.addEventListener('mousemove', lbImgMove);
+        img.addEventListener('wheel', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (lbZoom === 1) _lbOriginFromEvent(e, img);
+            lbZoomStep(e.deltaY < 0 ? 0.5 : -0.5);
+        }, { passive: false });
+    })();
     async function lbToggle() {
         const s = window._shownSubs[lbIdx];
         const st = nextState(s);
@@ -662,6 +712,8 @@
         if (e.key === 'ArrowLeft') lbNav(-1);
         if (e.key === 'ArrowRight') lbNav(1);
         if (e.key.toLowerCase() === 'x') lbToggle();
+        if (e.key === '+' || e.key === '=') lbZoomStep(0.5);
+        if (e.key === '-' || e.key === '_') lbZoomStep(-0.5);
     });
     document.getElementById('lightbox').addEventListener('click', (e) => {
         if (e.target.id === 'lightbox') { closeLb(); loadDetail(currentDate, true); }

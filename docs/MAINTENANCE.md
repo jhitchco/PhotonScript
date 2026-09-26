@@ -109,15 +109,25 @@ Manual capture any time (roof closed): `POST /api/calibration/capture
 `GET /api/sync` includes `disk` (free/total GB, % used) for the capture drive;
 the Runs page sync line shows it (green/amber/red at 80 % / 92 % used).
 
-## Camera warm on cooler-off
+## Camera temperature (no ramps + a nanny)
 
-`gradual_warm_minutes` (default **0 = instant**) sets the WarmCamera ramp on
-every cooler-off: arm cooler-off, dawn shutdown, disarm make-safe, and the
-sequence End area. Instant just releases the setpoint / cuts the TEC and lets
-the sensor drift to ambient — a ramp fought the next arm/precool (it pushed the
-temp back up while the arm wanted to cool now). Set >0 only to deliberately
-restore the old gradual ramp. NINA's own **Warming → Min. Duration** on each
-camera should read 0 to match.
+Both the warm and the cool are **instant** by default, and a nanny enforces the
+setpoint during the imaging window — no more "the cooler lost its mind" fights.
+
+- `gradual_warm_minutes` (default **0 = instant**) — WarmCamera ramp on every
+  cooler-off (arm cooler-off, dawn shutdown, disarm make-safe, sequence End,
+  and the OSC companion End). 0 just cuts the TEC and lets the sensor drift.
+- `cool_ramp_minutes` (default **0 = instant**) — CoolCamera ramp on precool.
+  0 drives straight to the setpoint. A ramp is what let the cooler fight the
+  arm/precool (kept pushing the temp back up). NINA's **Warming/Cooling →
+  Min. Duration** on each camera should read 0 to match.
+- `cooler_nanny` (default **on**), `cooler_tolerance_c` (default 3): on every
+  safe RUNNING tick, from `cool_lead_minutes` before dark until dawn, each rig's
+  cooler must be ON and within tolerance of setpoint. If a rig is off or warm
+  (the 2026-09-26 stuck-at-20°C night that noised up the RC16 subs), the nanny
+  drives it to setpoint with an **instant** cool and Pushovers once per rig
+  until it recovers. The rule the user wanted: *safe → the camera is cold.*
+  Set `cooler_nanny=false` to disable.
 
 ## Autofocus (narrowband star-starvation)
 
