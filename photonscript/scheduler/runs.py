@@ -743,10 +743,12 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
     _invalidate_subs_cache(p)
 
 
-# Piggyback subs captured within this margin of the RC16's imaging window
-# inherit its target; frames further out (deep in a slew/flip gap, or after the
-# RC16 stopped) stay '?' — they usually trail and get rejected anyway.
-PIGGYBACK_CORRELATE_TOL_MIN = 45.0
+# Piggyback subs captured within this margin of an RC16 exposure inherit its
+# target; frames further out (a slew/flip gap, or after the RC16 stopped) stay
+# '?'. Was 45 min, measured from the RC16's last sub START, which on 2026-09-20
+# handed an hour of M31 frames to Crescent after the mount moved on (PS-51):
+# an unknown sub is recoverable, a wrong one silently pollutes a stack.
+PIGGYBACK_CORRELATE_TOL_MIN = 10.0
 
 
 def correlate_piggyback_targets(config, date: str) -> dict:
@@ -790,13 +792,11 @@ def correlate_piggyback_targets(config, date: str) -> dict:
         i = bisect.bisect_right(starts, ts) - 1
         name = None
         if i >= 0:
-            if i < len(rc16) - 1:
-                # ts sits inside [start_i, start_{i+1}) — the RC16 dwell on rc16[i]
+            # inherit rc16[i] only while its exposure (plus a short margin for
+            # dither/filter/AF gaps) covers ts; a longer gap means the mount
+            # may be somewhere else, and the next RC16 sub may be a new target
+            if ts <= rc16[i][0] + timedelta(seconds=rc16[i][2]) + tol:
                 name = rc16[i][1]
-            else:
-                # after the RC16's last sub start: only within its exposure + tol
-                if ts <= rc16[i][0] + timedelta(seconds=rc16[i][2]) + tol:
-                    name = rc16[i][1]
         elif starts[0] - ts <= tol:
             # piggyback opened a little before the RC16's first sub
             name = rc16[0][1]
@@ -1440,7 +1440,16 @@ def build_library(config, date: str | None = None) -> dict:
     review_gate = bool(getattr(config, "review_gate", True))
     linked = skipped = missing = rejected = pending_review = 0
     attributed = retagged = 0
-    unknown_dir = _safe_name("?")  # '?' is not a legal path char -> "_"
+    # Target folders a sub could have been linked under before it was (re)named:
+    # Library/_/ ('?' is not a legal path char) or another target after a
+    # corrected attribution. Calibration, piggyback cal and the analysis
+    # dropbox are never target folders.
+    _not_targets = {"calibration", "piggyback",
+                    str(getattr(config, "analysis_dropbox_subdir", "_analysis")
+                        or "_analysis").lower()}
+    target_dirs = ([x for x in lib.iterdir()
+                    if x.is_dir() and x.name.lower() not in _not_targets]
+                   if lib.exists() else [])
     for d in dates:
         # PS-51: name every '?' sub before linking, so lights land under their
         # campaign instead of Library/_/ (header match + piggyback correlation;
@@ -1464,11 +1473,17 @@ def build_library(config, date: str | None = None) -> dict:
                 s_.get("target"), s_.get("file", ""), plan_names))
             fdir = _safe_name(s_.get("filter", "?"))
             dest = lib / target / fdir / src.name
-            # PS-51: a sub linked under Library/_/ before it had a name moves
-            # to its campaign folder (a rename, so Syncthing ships a move, not
-            # a second copy). Only library links are touched, never originals.
-            stale = lib / unknown_dir / fdir / src.name
-            if target != unknown_dir and stale.exists():
+            # PS-51: a sub linked under Library/_/ (or under the wrong target
+            # before a correction) moves to its campaign folder: a rename, so
+            # Syncthing ships a move, not a second copy. Only library links
+            # are touched, never the originals.
+            moved = False
+            for tdir in target_dirs:
+                if tdir.name == target:
+                    continue
+                stale = tdir / fdir / src.name
+                if not stale.exists():
+                    continue
                 try:
                     if dest.exists():
                         stale.unlink()
@@ -1476,10 +1491,12 @@ def build_library(config, date: str | None = None) -> dict:
                         dest.parent.mkdir(parents=True, exist_ok=True)
                         os.replace(stale, dest)
                     retagged += 1
-                    continue
+                    moved = True
                 except OSError as e:
                     logger.warning("Library retag %s -> %s failed: %s",
                                    stale, dest, e)
+            if moved:
+                continue
             if dest.exists():
                 skipped += 1
                 continue

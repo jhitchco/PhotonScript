@@ -129,3 +129,58 @@ def test_library_build_never_plate_solves(tmp_path, monkeypatch):
     _sub(config, "piggy/OSC_0002.fits", filt="OSC", rig="piggyback")
     res = attribute_night(config, NIGHT)
     assert res["attributed"] == 0  # no RC16 anchor, no coords: stays '?'
+
+
+def test_piggyback_after_rc16_stops_stays_unknown(tmp_path):
+    """2026-09-20: the RC16's last Crescent sub started 08:57:38 (900 s); the
+    mount then moved to M31 for the piggyback. Frames after the RC16 exposure
+    plus the short margin must stay '?', not inherit Crescent."""
+    from photonscript.scheduler.runs import correlate_piggyback_targets
+    config = _config(tmp_path)
+    _sub(config, "LIGHT/H_last.fits", target="Crescent Nebula",
+         time="2026-09-21T08:57:38")
+    _sub(config, "piggy/during.fits", filt="OSC", rig="piggyback",
+         time="2026-09-21T09:05:00")
+    _sub(config, "piggy/after.fits", filt="OSC", rig="piggyback",
+         time="2026-09-21T09:40:00")
+    correlate_piggyback_targets(config, NIGHT)
+    by = {s["file"]: s["target"] for s in _load_subs(config, NIGHT)}
+    assert by["piggy/during.fits"] == "Crescent Nebula"
+    assert by["piggy/after.fits"] == "?"
+
+
+def test_piggyback_in_mid_night_gap_stays_unknown(tmp_path):
+    """A long gap between two RC16 subs (slew to another target the RC16 did
+    not shoot) no longer hands the gap to the earlier target."""
+    from photonscript.scheduler.runs import correlate_piggyback_targets
+    config = _config(tmp_path)
+    _sub(config, "LIGHT/a.fits", target="Cat's Eye Nebula",
+         time="2026-09-26T04:00:00")
+    _sub(config, "LIGHT/b.fits", target="Heart Nebula",
+         time="2026-09-26T07:00:00")
+    _sub(config, "piggy/gap.fits", filt="OSC", rig="piggyback",
+         time="2026-09-26T05:30:00")
+    _sub(config, "piggy/heart.fits", filt="OSC", rig="piggyback",
+         time="2026-09-26T07:05:00")
+    correlate_piggyback_targets(config, NIGHT)
+    by = {s["file"]: s["target"] for s in _load_subs(config, NIGHT)}
+    assert by["piggy/gap.fits"] == "?"
+    assert by["piggy/heart.fits"] == "Heart Nebula"
+
+
+def test_corrected_target_moves_link_from_wrong_target(tmp_path, monkeypatch):
+    """A sub re-attributed from Crescent to M31 leaves no copy under Crescent."""
+    config = _config(tmp_path)
+    watch = tmp_path / "fits" / NIGHT
+    src = _fits(watch / "piggy" / "OSC_0191.fits")
+    _sub(config, "piggy/OSC_0191.fits", target="Andromeda Galaxy",
+         filt="OSC", rig="piggyback")
+    lib = library_root(config)
+    wrong = lib / "Crescent Nebula" / "OSC" / "OSC_0191.fits"
+    wrong.parent.mkdir(parents=True)
+    wrong.write_bytes(src.read_bytes())
+    (lib / "Calibration" / "FLAT").mkdir(parents=True)
+    res = build_library(config, NIGHT)
+    assert res["retagged"] == 1
+    assert not wrong.exists()
+    assert (lib / "Andromeda Galaxy" / "OSC" / "OSC_0191.fits").exists()
