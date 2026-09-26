@@ -257,7 +257,13 @@ class TestDawnSkyFlats:
         for t in targets:
             t.start_guiding = False
         seq = build_sequence_for_night("flats_test", targets)
-        txt = generate_nina_json(seq)
+        # Isolate the BASE dawn-flat behavior from the stale-flat augmentation
+        # (which would otherwise add every filter here, since this throwaway
+        # config has no flat library). The augmentation has its own test below.
+        from unittest.mock import patch
+        with patch("photonscript.scheduler.calibration.stale_flat_filters",
+                   return_value=[]):
+            txt = generate_nina_json(seq)
         return txt, _json.loads(txt), targets
 
     def test_one_skyflat_block_per_filter(self):
@@ -269,6 +275,36 @@ class TestDawnSkyFlats:
                     filters.append(e.filter_type.value)
         assert txt.count(
             '"NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat') == len(filters)
+
+    def test_stale_flats_added_to_dawn_set(self):
+        """Filters whose library flats are stale get reshot at dawn even if
+        tonight didn't image them (auto_stale_flats)."""
+        import json as _json
+        from datetime import datetime
+        from unittest.mock import patch
+        from photonscript.shared.config import PhotonScriptConfig
+        from photonscript.shared.astronomy import get_seasonal_targets
+        from photonscript.scheduler.target_planner import (
+            create_project_from_target, plan_night_sequence)
+        from photonscript.scheduler.nina_sequence import build_sequence_for_night
+        from photonscript.scheduler.nina_sequence_json import generate_nina_json
+
+        config = PhotonScriptConfig()
+        projects = [create_project_from_target(t)
+                    for t in get_seasonal_targets(7)]
+        targets = plan_night_sequence(projects, config, datetime.utcnow())[:2]
+        for t in targets:
+            t.start_guiding = False
+        seq = build_sequence_for_night("flats_test", targets)
+        tonight = {e.filter_type.value for t in targets for e in t.exposures}
+        stale = next((f for f in ("L", "R", "G", "B", "Ha", "OIII", "SII")
+                      if f not in tonight), "L")
+        with patch("photonscript.scheduler.calibration.stale_flat_filters",
+                   return_value=[stale]):
+            txt = generate_nina_json(seq)
+        # the stale filter now appears in the dawn flat set as an extra block
+        assert txt.count('"NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat') \
+            == len(tonight) + 1
 
     def test_flats_run_before_park_in_end_area(self):
         txt, _, _ = self._night_json()

@@ -254,9 +254,44 @@ def _move_focuser(position: int) -> dict:
                        Position=int(position), ErrorBehavior=0, Attempts=1)
 
 
+_FOCTEMP_CACHE = {"t": 0.0, "v": None}
+
+
+def _current_focuser_temp(config) -> float | None:
+    """Best-effort current focuser temperature — a proxy for tonight's ambient,
+    so seed_for() can temperature-interpolate the seed instead of always using
+    the median. Cached 60s (one sequence build = one read). Returns None on any
+    failure, which falls seed_for() back to the median seed (prior behavior)."""
+    import time as _t
+    if _t.time() - _FOCTEMP_CACHE["t"] < 60:
+        return _FOCTEMP_CACHE["v"]
+    v = None
+    try:
+        import httpx
+        base = str(getattr(config, "nina_base_url", "")).rstrip("/")
+        if base:
+            r = httpx.get(base + "/equipment/focuser", timeout=4)
+            d = r.json()
+            payload = d.get("Response", d) if isinstance(d, dict) else {}
+            t = payload.get("Temperature")
+            v = float(t) if t is not None else None
+    except Exception:  # noqa: BLE001
+        v = None
+    _FOCTEMP_CACHE.update(t=_t.time(), v=v)
+    return v
+
+
 def _seed_position(filter_type, ambient_c=None) -> int:
+    """Best-guess focuser start position for a filter, temperature-compensated.
+    Passes config (so harvested per-site seeds in data_dir load) and the current
+    focuser temperature (so the linear temp-fit branch activates) — both were
+    missing before, which left the whole temperature model as dead code."""
     from photonscript.scheduler.focus_seeds import seed_for
-    return seed_for(filter_type.value, ambient_c)
+    from photonscript.shared.config import PhotonScriptConfig
+    cfg = PhotonScriptConfig()
+    if ambient_c is None:
+        ambient_c = _current_focuser_temp(cfg)
+    return seed_for(filter_type.value, ambient_c, cfg)
 
 
 def _start_guiding(force_calibration: bool = False) -> dict:

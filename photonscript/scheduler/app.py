@@ -173,7 +173,7 @@ async def dashboard(request: Request):
         "telescope_state": _telescope_state,
         "projects": list(_projects.values()),
         "twilight": twilight,
-        "tonight_targets": ranked[:10],
+        "tonight_targets": ranked[:60],  # picker list — show everything well-placed tonight, not just the top 10
         "month": now.strftime("%B"),
     })
 
@@ -426,6 +426,7 @@ _CONFIG_FIELDS = [
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
     ("auto_stale_flats", "PS_AUTO_STALE_FLATS", "At dawn, also reshoot flats for filters gone stale (>45d), even if unused tonight", "Imaging", "bool", False, False),
+    ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
@@ -466,7 +467,7 @@ _CONFIG_FIELDS = [
     ("auto_arm_lead_hours", "PS_AUTO_ARM_LEAD_HOURS", "Auto-arm window opens N hours before pre-config", "Nanny / Alerts", "float", False, False),
     ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),
     ("noon_arm_enabled", "PS_NOON_ARM_ENABLED", "Noon auto re-arm when idle (also re-forces coolers off)", "Nanny / Alerts", "bool", False, False),
-    ("noon_arm_guiding", "PS_NOON_ARM_GUIDING", "Noon auto-arm guiding mode (guided|encoders|default)", "Nanny / Alerts", "str", False, False),
+    ("noon_arm_guided", "PS_NOON_ARM_GUIDED", "Auto/noon re-arm uses PHD2 guiding (uncheck = re-arm unguided)", "Nanny / Alerts", "bool", False, False),
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
@@ -1242,6 +1243,14 @@ def api_runs():
             n["syncing"] = None
             n["transferred"] = len(acc) if acc else None
     return nights
+
+
+@app.get("/api/trends")
+def api_trends(nights: int = 14):
+    """Cross-night data-quality trends + any systematic-fault findings (polar
+    drift, optical tilt, soft focus) that per-frame QA can't see."""
+    from photonscript.scheduler.trends import analyze_trends
+    return analyze_trends(get_config(), nights=min(max(nights, 1), 60))
 
 
 @app.post("/api/runs/archive-before")

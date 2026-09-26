@@ -113,6 +113,28 @@ def _fit_by_moon(exposures, available_seconds, moon_tag):
     return exposures
 
 
+def meridian_safe_order(pairs, dark_start, guard_min: int = 20):
+    """Transit-order targets west->east, but push any target crossing the
+    meridian within `guard_min` minutes of dark-start PAST the meridian so the
+    run doesn't open on an immediate flip + recenter failure (the 2026-07-07
+    dead-night). `pairs` = [(transit_time | datetime.max, target), ...].
+    Returns (ordered_targets, deferred_names)."""
+    from datetime import timedelta
+    guard = timedelta(minutes=int(guard_min))
+    deferred: list[str] = []
+
+    def _key(item):
+        transit, tgt = item
+        if (isinstance(transit, datetime) and dark_start is not None
+                and dark_start - guard <= transit <= dark_start + guard):
+            deferred.append(getattr(tgt, "name", None))
+            return transit + guard * 2
+        return transit
+
+    ordered = [t for _, t in sorted(pairs, key=_key)]
+    return ordered, deferred
+
+
 def plan_night_sequence(
     projects: list[ImagingProject],
     config: PhotonScriptConfig,
@@ -240,9 +262,14 @@ def plan_night_sequence(
         sequence_targets.append(
             (vp["visibility"].get("transit_time") or datetime.max, seq_target))
 
-    # Transit-order the selected targets (west-to-east through the night)
-    sequence_targets = [t for _, t in sorted(sequence_targets,
-                                             key=lambda x: x[0])]
+    # Transit-order the selected targets (west-to-east through the night), with
+    # a meridian guard so the run doesn't open on an immediate flip (see helper).
+    sequence_targets, _deferred = meridian_safe_order(
+        sequence_targets, dark_start,
+        int(getattr(config, "meridian_guard_min", 20)))
+    if _deferred:
+        logger.info("Meridian guard: deferred %s past the meridian so the run "
+                    "doesn't open on an immediate flip", ", ".join(_deferred))
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",

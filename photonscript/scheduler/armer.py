@@ -163,8 +163,8 @@ class Armer:
         """Next noon auto re-arm, surfaced for the dashboard countdown chip."""
         enabled = bool(getattr(self.config, "noon_arm_enabled", False))
         out = {"enabled": enabled,
-               "guiding": str(getattr(self.config, "noon_arm_guiding",
-                                      "guided"))}
+               "guiding": ("guided" if getattr(self.config, "noon_arm_guided",
+                                                True) else "encoders")}
         if not enabled:
             return out
         try:

@@ -44,6 +44,9 @@ class PhotonScriptConfig(BaseSettings):
     # Syncthing mirror on the DESKTOP - used only to build copy-able paths in
     # the UI (browsers cannot open File Explorer directly)
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
+    meridian_guard_min: int = 20  # don't open the run on a target crossing the
+    # meridian within this many minutes of dark-start (avoids an immediate flip
+    # + recenter failure); it's reordered to image after the meridian instead
     auto_stale_flats: bool = True  # at dawn, also reshoot flats for filters whose
     # library set has gone stale (>45d) even if tonight didn't image them — keeps
     # broadband flats fresh across runs of narrowband-only nights
@@ -244,7 +247,10 @@ class PhotonScriptConfig(BaseSettings):
                                    # Also cooler belt #2: arm() forces cooler + dew
                                    # OFF, so a missed dawn shutdown is corrected at
                                    # noon at the latest.
-    noon_arm_guiding: str = "guided"  # guiding mode for noon auto-arms:
+    noon_arm_guided: bool = True  # auto/noon re-arm uses PHD2 guiding when set;
+    # uncheck to have the hands-off re-arm run UNGUIDED (encoders). Replaces the
+    # old tri-state noon_arm_guiding string with a plain checkbox.
+    noon_arm_guiding: str = "guided"  # (legacy) guiding mode for noon auto-arms:
                                       # "guided" | "encoders" | "default" (config)
     # --- TheSky64 direct hook (EXPERIMENTAL, 2026-09-21) ---
     # PhotonScript normally reaches the Paramount through NINA's ASCOM pass-through

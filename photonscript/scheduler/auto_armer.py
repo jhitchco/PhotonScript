@@ -253,9 +253,10 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                         else:
                             guiding = None
                             if reason.startswith("noon"):
-                                g = str(getattr(config, "noon_arm_guiding",
-                                                "guided")).lower()
-                                guiding = g if g in ("guided", "encoders") else None
+                                # single checkbox: guided when set, else unguided
+                                guiding = ("guided"
+                                           if getattr(config, "noon_arm_guided",
+                                                      True) else "encoders")
                             await armer.arm(guiding=guiding)  # sends its own ARMED Pushover
                             last_armed_night = night
                             if not pf.get("go", False):

@@ -248,8 +248,15 @@ class TelescopeAgent:
         from photonscript.shared.models import SessionState
         try:
             info = await self.nina.get_safety_info()
-        except Exception:  # noqa: BLE001 - NINA itself unreachable
-            return
+        except Exception as _e:  # noqa: BLE001 - NINA itself unreachable
+            # NINA down = we are BLIND to safety — at least as bad as a
+            # disconnected monitor. Don't return mute: log (once, on transition)
+            # and fall into the same escalation path so sustained blindness
+            # alerts. The grace period still absorbs brief NINA blips.
+            if self._safety_bad_since is None:
+                logger.warning("Safety-monitor watchdog: NINA unreachable (%s) "
+                               "— treating as safety-blind", _e)
+            info = {"Connected": False}
 
         if info.get("Connected"):
             if self._safety_bad_since is not None:
@@ -707,7 +714,13 @@ class TelescopeAgent:
             except Exception as te:  # noqa: BLE001
                 logger.debug("thumb pre-warm skipped: %s", te)
         except Exception as e:  # noqa: BLE001
-            logger.debug("Sub record append failed: %s", e)
+            # A failed sub-record write means this exposure silently never
+            # reaches the runs page, library, or transfer funnel — a real
+            # imaging loss, not a cosmetic miss. Surface it loudly (was DEBUG).
+            self._sub_write_failures = getattr(self, "_sub_write_failures", 0) + 1
+            logger.error("Sub record append FAILED (%s) — sub %s NOT recorded; "
+                         "it will be missing from the runs page and library",
+                         e, locals().get("rel_in_night", "?"))
 
         # Nanny: consecutive rejects mean something systemic (clouds, dew,
         # focus loss, tracking) — a single bad sub is just a bad sub.

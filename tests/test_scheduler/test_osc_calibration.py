@@ -86,7 +86,10 @@ def _pb_cfg():
         piggyback_setpoint_c=0.0), "piggyback")
 
 
-def test_companion_no_safety_is_flats_only():
+def test_companion_no_safety_fires_darks_bias_unconditionally():
+    # Jeremy 2026-09-25: without a safety monitor the OSC would otherwise get
+    # ZERO matching calibration, so darks/bias now fire ANYWAY — ungated (no
+    # LoopWhileUnsafe), time-capped at dusk. Only lights stay off.
     txt = generate_piggyback_companion_json(_pb_cfg(), has_safety=False)
     root = json.loads(txt)
     types = _types(root)
@@ -95,13 +98,14 @@ def test_companion_no_safety_is_flats_only():
              if n.get("$type", "").startswith(
                  "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat")]
     assert len(flats) == 1
-    # no darks/bias and no safety gating without a safety monitor
-    assert not any("LoopWhileUnsafe" in t for t in types)
-    assert not any("WaitUntilSafe" in t for t in types)
+    # darks AND bias ARE present now (the whole point of the change)
     exps = [n.get("ImageType") for n in _walk(root)
             if n.get("ImageType") in ("DARK", "BIAS")]
-    assert exps == []
-    # an annotation explains why darks/bias were skipped
+    assert "DARK" in exps and "BIAS" in exps
+    # but UNGATED — no safety conditions without a monitor
+    assert not any("LoopWhileUnsafe" in t for t in types)
+    assert not any("WaitUntilSafe" in t for t in types)
+    # an annotation explains the unconditional mode
     assert any("Annotation" in t for t in types)
     # never touches the shared mount
     assert not any("Telescope." in t for t in types)

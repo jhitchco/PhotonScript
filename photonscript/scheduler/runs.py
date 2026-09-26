@@ -617,6 +617,25 @@ def start_backfill(config, date: str) -> None:
                 build_library(config, date)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Library update failed for %s: %s", date, e)
+            try:  # harvest measured FOCPOS/FOCTEMP from tonight's sharp subs so
+                # the RC16 focus-seed table self-improves (was never called —
+                # the whole temperature model sat dead until now).
+                from photonscript.scheduler.focus_seeds import harvest_night
+                n_seed = harvest_night(config, date)
+                if n_seed:
+                    logger.info("Focus-seed harvest %s: %d filter-records added",
+                                date, n_seed)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Focus-seed harvest failed for %s: %s", date, e)
+            try:  # cross-night trend/drift alarm — catch systematic rig faults
+                # (polar drift, tilt, soft focus) that per-frame QA can't see.
+                from photonscript.scheduler.trends import check_and_alert
+                tr = check_and_alert(config)
+                if tr.get("findings"):
+                    logger.warning("Trend alarm %s: %s", date,
+                                   [f["kind"] for f in tr["findings"]])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Trend check failed for %s: %s", date, e)
         finally:
             st["running"] = False
             st["current"] = None
@@ -1034,9 +1053,33 @@ def nights_by_target(config) -> dict:
             for t, d in out.items()}
 
 
+_night_extras_cache: dict = {}  # date -> {"key": (...), "cal": ..., "report": ...}
+
+
+def _cached_night_extras(config, date: str, subs_count: int):
+    """calibration_inventory() + build_daily_report() both rglob + read FITS
+    headers for the whole night — slow on the RAM-tight scope PC and the reason
+    /api/runs/{date} appeared to hang under the runs-page poll. Cache them per
+    night, keyed on the sub count + the night folder's mtime, so repeat views
+    are free and only a genuinely-changed night recomputes."""
+    from photonscript.scheduler.daily_report import build_daily_report
+    root = Path(config.image_watch_dir) / date
+    try:
+        mtime = round(root.stat().st_mtime) if root.exists() else 0
+    except Exception:  # noqa: BLE001
+        mtime = 0
+    key = (subs_count, mtime)
+    ent = _night_extras_cache.get(date)
+    if ent and ent["key"] == key:
+        return ent["cal"], ent["report"]
+    cal = calibration_inventory(config, date)
+    report = build_daily_report(config, date)
+    _night_extras_cache[date] = {"key": key, "cal": cal, "report": report}
+    return cal, report
+
+
 def night_detail(config, date: str, backfill: bool = True) -> dict:
     """Full plan-vs-actual record for one night."""
-    from photonscript.scheduler.daily_report import build_daily_report
 
     plan_path = runs_dir(config) / f"{date}_plan.json"
     plan = json.loads(plan_path.read_text(encoding="utf-8")) \
@@ -1093,7 +1136,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
             "median_background": med(a.get("bgs", [])),
         })
 
-    cal_tonight = calibration_inventory(config, date)
+    cal_tonight, report = _cached_night_extras(config, date, len(subs))
     for typ, g in sorted(cal_tonight.get("frames", {}).items()):
         exps = ", ".join(f"{k}×{v}" for k, v in
                          sorted(g.get("exposures", {}).items()))
@@ -1103,7 +1146,6 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
                       "accepted": g["count"], "median_hfr": None,
                       "median_ecc": None, "median_background": None})
 
-    report = build_daily_report(config, date)
     accepted = sum(1 for s in subs if s.get("passed_qa"))
     total_planned = sum(planned.values())
     # the honest funnel
