@@ -8,7 +8,10 @@ Built for a shared Starlink-connected telescope in New Mexico, but configurable 
 
 ## One-command deploy
 
-On the **scope PC**, start PhotonScript through the wrapper (instead of `photonscript start`):
+On the **scope PC**, PhotonScript runs from the `PhotonScript` scheduled task
+(starts at boot, restarts on crash; install once with
+`deploy\install-autostart.ps1`, see docs/MAINTENANCE.md "Running the service").
+To run it by hand in a console instead:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File C:\astro\PhotonScript\deploy\run-photonscript.ps1
@@ -21,7 +24,7 @@ From the **desktop**, after making changes:
 ```
 
 This commits, pushes, and calls `POST /api/update` on the scope PC, which exits
-with code 42; the wrapper then `git pull`s and restarts in the same console.
+with code 42; the wrapper then `git pull`s and restarts it.
 The nav-bar version stamp shows the commit each machine is running. Updates are
 refused while a sequence is RUNNING so a night is never interrupted. The System
 page has the same controls (`Check for updates` / `Pull latest & restart`).

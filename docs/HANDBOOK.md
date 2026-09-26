@@ -272,12 +272,13 @@ or "ERROR: ...". Masters in `out\master\`.
   walked Syncthing on every poll. Fixed in the perf pass (vectorized
   astronomy + caches + worker threads). If a 502 shows up again, time the same
   URL on :8100 before blaming serve. `deploy.ps1` still posts to :8100 direct.
-- SERVICE RESTART (scope PC): `powershell -ExecutionPolicy Bypass -File
-  C:\astro\PhotonScript\deploy\run-photonscript.ps1` (note: `C:\astro`, NOT the
-  desktop's `C:\dev`). The while-loop only auto-restarts on exit code 42 (an
-  update request); ANY other exit (a crash) stays down by design, so after a
-  crash you must relaunch it by hand.
-- Scheduled tasks: `photonscript-morning-debrief` (daily 8:04 AM).
+- SERVICE (scope PC, PS-44): runs from the `PhotonScript` scheduled task at
+  boot (`deploy\install-autostart.ps1`), wrapper -> `photonscript supervise`,
+  which restarts it after a crash with backoff and alerts via Pushover.
+  `photonscript stop` / `restart` / `status` / `monitor`; start with
+  `Start-ScheduledTask PhotonScript`. Paths are `C:\astro`, NOT the desktop's
+  `C:\dev`. Details: docs/MAINTENANCE.md "Running the service".
+- Scheduled tasks: `photonscript-morning-debrief` (daily 8:04 AM), `PhotonScript` (scope PC, at startup).
 - Constraints: no GitHub pushes, no credentials, no AstroBin scraping for
   data tables, no writes into ninashare, scope deploys refused mid-night.
 

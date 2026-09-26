@@ -7,7 +7,10 @@ Usage:
     photonscript sequence [--output tonight.json] [--guided]
     photonscript lint <sequence.json>
     photonscript report [--date 2026-07-01]
-    photonscript status
+    photonscript status [--url http://host:8100]
+    photonscript supervise [--mode full]      # keep it running (PS-44)
+    photonscript stop | restart
+    photonscript notify "message"
     photonscript monitor [--url http://host:8100] [--grep cooler] [--level warning]
 """
 
@@ -41,8 +44,9 @@ def start(
     rotating-file logging, and runs the orchestrator. Stop it with Ctrl-C or
     `photonscript stop`.
 
-    This is a foreground process — deploy/run-photonscript.ps1 keeps it running
-    and restarts it on exit code 42 (self-update). Not a Windows service.
+    This is a foreground process. On the scope PC it runs under
+    `photonscript supervise` (deploy/run-photonscript.ps1, started at boot by
+    the "PhotonScript" scheduled task), which restarts it after a crash.
     """
     from photonscript.shared.config import PhotonScriptConfig
     from photonscript.shared import process_control
@@ -55,7 +59,8 @@ def start(
     if live is not None:
         console.print(f"[red]PhotonScript is already running (pid {live}).[/red] "
                       f"Stop it first with [bold]photonscript stop[/bold].")
-        raise typer.Exit(1)
+        from photonscript.shared.supervisor import EXIT_ALREADY_RUNNING
+        raise typer.Exit(EXIT_ALREADY_RUNNING)
 
     # Fresh start: clear any leftover STOP sentinel so we don't immediately
     # shut ourselves down, then claim the PID file (overwrites a stale one).
@@ -84,11 +89,15 @@ def stop(
 
     Default: drop a STOP sentinel that the running process polls (~1s) and then
     shuts down cleanly. --force reads the PID file and hard-kills as a fallback.
+    Either way a HOLD marker tells the supervisor to leave it down; start it
+    again with `Start-ScheduledTask PhotonScript` (or the wrapper script).
     """
     from photonscript.shared.config import PhotonScriptConfig
     from photonscript.shared import process_control
+    from photonscript.shared import supervisor as sv
 
     config = PhotonScriptConfig()
+    sv.create_hold(config)
     pid = process_control.read_pid_file(config)
 
     if pid is None:
@@ -114,6 +123,70 @@ def stop(
     console.print(f"[green]Signaled pid {pid} to shut down gracefully.[/green]")
     console.print(f"[dim]Wrote STOP sentinel {sentinel}; the running process "
                   f"will stop within ~1s and remove it.[/dim]")
+
+
+@app.command()
+def restart():
+    """Restart PhotonScript in place (supervisor starts it again right away)."""
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import process_control
+    from photonscript.shared import supervisor as sv
+
+    config = PhotonScriptConfig()
+    pid = process_control.running_pid(config)
+    if pid is None:
+        console.print("[yellow]PhotonScript is not running.[/yellow] Start it with "
+                      "[bold]Start-ScheduledTask PhotonScript[/bold].")
+        raise typer.Exit(1)
+    if sv.running_supervisor_pid(config) is None:
+        console.print("[red]No supervisor is running[/red], so a restart would "
+                      "leave it stopped. Use [bold]photonscript stop[/bold] and "
+                      "start it by hand instead.")
+        raise typer.Exit(1)
+    sv.create_restart(config)
+    process_control.create_stop_sentinel(config)
+    console.print(f"[green]Asked pid {pid} to stop; the supervisor will start it "
+                  f"again.[/green]")
+
+
+@app.command()
+def supervise(
+    mode: str = typer.Option("full", help="Run mode passed to `photonscript start`"),
+):
+    """Run PhotonScript and keep it running: restart on crash with backoff,
+    give up after a crash loop, alert via Pushover. Exits 42 on an update
+    request so deploy/run-photonscript.ps1 can pull and relaunch. (PS-44)"""
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import supervisor as sv
+
+    repo_root = Path(__file__).resolve().parents[1]
+    import os
+    os.chdir(repo_root)  # .env is read relative to the working directory
+    config = PhotonScriptConfig()
+    log_path = sv.setup_supervisor_logging(config.data_dir)
+    sv.logger.info("Config from %s, data_dir %s, log %s",
+                   repo_root / ".env", config.data_dir, log_path)
+    rc = sv.run(config, sv.child_command(mode), cwd=repo_root,
+                notify=sv.pushover_notifier(config))
+    raise typer.Exit(rc)
+
+
+@app.command()
+def notify(
+    message: str = typer.Argument(..., help="Message text"),
+    title: str = typer.Option("PhotonScript", "--title", "-t"),
+    priority: int = typer.Option(0, "--priority", "-p",
+                                 help="-1 quiet, 0 normal, 1 high"),
+):
+    """Send a Pushover alert with the configured keys (used by the wrapper)."""
+    import asyncio
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import pushover
+
+    sent = asyncio.run(pushover.notify(PhotonScriptConfig(), message,
+                                       title=title, priority=priority))
+    console.print("[green]sent[/green]" if sent else "[yellow]not sent[/yellow] "
+                  "(keys unset, rate-limited or quiet daytime)")
 
 
 @app.command()
@@ -524,30 +597,71 @@ def monitor(
 
 
 @app.command()
-def status():
-    """Show current system status (connects to running scheduler)."""
+def status(
+    url: str = typer.Option("http://localhost:8100", "--url",
+                            help="Scheduler to query, e.g. "
+                                 "https://teles-feb25.lobster-bleak.ts.net"),
+):
+    """Show whether PhotonScript is running (PID, uptime, supervisor, version)
+    and the telescope state from the running scheduler."""
     import httpx
+    import time as _time
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import process_control
+    from photonscript.shared import supervisor as sv
+
+    config = PhotonScriptConfig()
+    console.print(Panel("[bold]PhotonScript Status[/bold]", border_style="blue"))
+
+    # --- this machine's process (meaningful on the scope PC) ---
+    pid = process_control.running_pid(config)
+    if pid is not None:
+        up = ""
+        try:
+            import psutil
+            up = f", up {_fmt_uptime(_time.time() - psutil.Process(pid).create_time())}"
+        except Exception:  # noqa: BLE001
+            pass
+        console.print(f"  Process:    [green]running[/green] (pid {pid}{up})")
+    else:
+        console.print("  Process:    [dim]not running on this machine[/dim]")
+    spid = sv.running_supervisor_pid(config)
+    console.print("  Supervisor: " + (f"[green]running[/green] (pid {spid})" if spid
+                                      else "[yellow]not running[/yellow]"))
+    if sv.hold_active(config):
+        console.print("  Hold:       [yellow]HOLD set (operator stop)[/yellow]")
+
+    base = url.rstrip("/")
+    try:
+        ver = httpx.get(f"{base}/api/update/check", timeout=10).json()
+        console.print(f"  Version:    {ver.get('running', '?')}"
+                      + (f" ([yellow]{ver.get('behind')} behind[/yellow])"
+                         if ver.get("behind") else ""))
+    except Exception:  # noqa: BLE001
+        pass
 
     try:
-        resp = httpx.get("http://localhost:8100/api/status", timeout=5)
-        data = resp.json()
-
-        console.print(Panel("[bold]PhotonScript Status[/bold]", border_style="blue"))
-
+        data = httpx.get(f"{base}/api/status", timeout=10).json()
         telescope = data.get("telescope", {})
         state = telescope.get("session_state", "unknown")
         state_color = {"imaging": "green", "idle": "dim", "error": "red"}.get(state, "yellow")
 
-        console.print(f"  Telescope: [{state_color}]{state.upper()}[/]")
-        console.print(f"  Target:    {telescope.get('current_target', '—')}")
-        console.print(f"  Filter:    {telescope.get('current_filter', '—')}")
-        console.print(f"  Guiding:   {telescope.get('guiding', {}).get('rms_total_arcsec', 0):.2f}\"")
-        console.print(f"  Images:    {telescope.get('images_captured_tonight', 0)} tonight")
-        console.print(f"  Projects:  {data.get('active_projects', 0)} active / {data.get('total_projects', 0)} total")
+        console.print(f"  Telescope:  [{state_color}]{state.upper()}[/]")
+        console.print(f"  Target:     {telescope.get('current_target', '-')}")
+        console.print(f"  Filter:     {telescope.get('current_filter', '-')}")
+        console.print(f"  Guiding:    {telescope.get('guiding', {}).get('rms_total_arcsec', 0):.2f}\"")
+        console.print(f"  Images:     {telescope.get('images_captured_tonight', 0)} tonight")
+        console.print(f"  Projects:   {data.get('active_projects', 0)} active / {data.get('total_projects', 0)} total")
+    except Exception:  # noqa: BLE001
+        console.print(f"[red]Cannot reach the scheduler at {base}[/red]")
 
-    except Exception:
-        console.print("[red]Cannot connect to PhotonScript scheduler at localhost:8100[/red]")
-        console.print("[dim]Start the scheduler with: photonscript start --mode scheduler[/dim]")
+
+def _fmt_uptime(seconds: float) -> str:
+    s = int(max(0, seconds))
+    d, s = divmod(s, 86400)
+    h, s = divmod(s, 3600)
+    m = s // 60
+    return f"{d}d {h}h {m}m" if d else (f"{h}h {m}m" if h else f"{m}m")
 
 
 if __name__ == "__main__":

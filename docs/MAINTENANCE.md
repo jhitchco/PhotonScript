@@ -3,6 +3,37 @@
 Operational tasks ship **in the repo** and reach the scope PC through the normal
 deploy (`.\deploy\deploy.ps1 "msg"`) — never hand-copied.
 
+## Running the service (start, stop, boot) - PS-44
+
+On the scope PC PhotonScript runs as the `PhotonScript` scheduled task:
+`deploy\run-photonscript.ps1` (git pull) -> `photonscript supervise` ->
+`photonscript start --mode full`. The task starts it at boot (1 min delay) as
+`jeremy` with nobody logged on (S4U), and the supervisor restarts it after a
+crash: 5 s, 10 s, 20 s ... up to 5 min, reset after 30 min up. Five crashes in
+15 min and it gives up and sends "PhotonScript is down". Every crash sends
+"PhotonScript crashed". Exit 42 (update) goes back to the wrapper, which pulls
+and starts a fresh supervisor.
+
+| Do this | Command (scope PC) |
+|---|---|
+| Status | `photonscript status` (pid, uptime, supervisor, version) |
+| Watch logs | `photonscript monitor` (or from the desktop: `--url https://teles-feb25.lobster-bleak.ts.net`) |
+| Stop, stay down | `photonscript stop` (`--force` to hard-kill; both leave a HOLD so the supervisor does not restart it) |
+| Restart | `photonscript restart` |
+| Start | `Start-ScheduledTask PhotonScript` |
+| Task state | `Get-ScheduledTask PhotonScript \| Get-ScheduledTaskInfo` |
+| Install / remove | elevated: `deploy\install-autostart.ps1 [-StartNow]` / `-Uninstall` |
+
+Logs: `<data_dir>\logs\photonscript.log` (service), `supervisor.log`
+(starts, exits, restarts), `wrapper.log` (git pulls). data_dir is
+`C:\Users\jeremy\.photonscript` unless `PS_DATA_DIR` is set.
+
+Gotchas: the task has no console, so use `photonscript monitor` instead of
+watching a window. Running the wrapper by hand while the task is up just exits
+("another supervisor is already running"). NINA and PHD2 are not started by
+PhotonScript and still need jeremy logged on after a reboot. If the task will
+not start with a logon error, re-run the installer with `-UsePassword`.
+
 ## Pruning old captures (free the capture drive)
 
 Deletes captured FITS from nights before a cutoff. Uses the **live config
