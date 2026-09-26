@@ -18,6 +18,10 @@ every 30 s tick and burned through the 10,000/mo Pushover cap):
                                 headroom under Pushover's 10k). One final
                                 high-priority notice is sent when the cap trips.
 
+  * quiet daytime (PS-50)     - while the sun is up at the observatory,
+                                heartbeats are dropped and each title sends at
+                                most once per pushover_daytime_title_window_h.
+
 Emergency messages (priority >= 2) bypass the hourly burst cap but still count
 toward — and are still stopped by — the monthly cap. Everything is best-effort:
 any limiter error falls through to sending. Set pushover_ratelimit_enabled
@@ -45,6 +49,9 @@ _DEFAULTS = {
     "pushover_dedup_window_s": 300,
     "pushover_max_per_hour": 20,
     "pushover_monthly_cap": 9000,
+    "pushover_quiet_daytime": True,
+    "pushover_daytime_title_window_h": 4.0,
+    "pushover_daytime_sun_alt_deg": -3.0,
 }
 
 _lock = asyncio.Lock()
@@ -126,6 +133,60 @@ async def _send_raw(config, message: str, title: str, priority: int,
         return False
 
 
+def sun_altitude_deg(lat_deg: float, lon_deg: float, when: datetime) -> float:
+    """Approximate solar altitude (NOAA low-precision formulas, ~0.1 deg).
+    Pure math so the Pushover path never pays for an astropy import."""
+    import math
+    t = when.astimezone(timezone.utc)
+    doy = t.timetuple().tm_yday
+    hour = t.hour + t.minute / 60 + t.second / 3600
+    g = 2 * math.pi / 365 * (doy - 1 + (hour - 12) / 24)
+    decl = (0.006918 - 0.399912 * math.cos(g) + 0.070257 * math.sin(g)
+            - 0.006758 * math.cos(2 * g) + 0.000907 * math.sin(2 * g)
+            - 0.002697 * math.cos(3 * g) + 0.00148 * math.sin(3 * g))
+    eqtime = 229.18 * (0.000075 + 0.001868 * math.cos(g) - 0.032077 * math.sin(g)
+                       - 0.014615 * math.cos(2 * g) - 0.040849 * math.sin(2 * g))
+    tst = hour * 60 + eqtime + 4 * lon_deg          # true solar time, minutes
+    ha = math.radians(tst / 4 - 180)                 # hour angle
+    lat = math.radians(lat_deg)
+    cos_zen = (math.sin(lat) * math.sin(decl)
+               + math.cos(lat) * math.cos(decl) * math.cos(ha))
+    return 90 - math.degrees(math.acos(max(-1.0, min(1.0, cos_zen))))
+
+
+def _is_daytime(config, when: datetime | None = None) -> bool:
+    try:
+        lat = float(getattr(config, "observatory_lat"))
+        lon = float(getattr(config, "observatory_lon"))
+    except (AttributeError, TypeError, ValueError):
+        return False  # unknown site: never quiet (fail loud)
+    alt = sun_altitude_deg(lat, lon, when or datetime.now(timezone.utc))
+    return alt > float(_cfg(config, "pushover_daytime_sun_alt_deg"))
+
+
+def _daytime_gate(state: dict, now: float, title: str, priority: int,
+                  window_s: float) -> tuple[bool, str]:
+    """Daytime quieting (PS-50). Only called while the sun is up.
+
+    priority <= -1 (heartbeats): suppressed.
+    priority 0..1: at most one per TITLE per window (a repeating
+      "DISCONNECTED for 32/62/92 min" sends once, not every 30 min).
+    priority >= 2 (emergency): always passes.
+    Mutates `state`; returns (allow, reason)."""
+    if priority >= 2:
+        return True, "ok"
+    if priority <= -1:
+        return False, "quiet-daytime"
+    by_title = state.setdefault("day_titles", {})
+    last = by_title.get(title)
+    if last is not None and (now - last) < window_s:
+        return False, "quiet-daytime"
+    by_title[title] = now
+    for k in [k for k, ts in by_title.items() if now - ts > window_s * 2]:
+        by_title.pop(k, None)
+    return True, "ok"
+
+
 def _gate(state: dict, now: float, month: str, key: str, priority: int,
           dedup_window_s: int, max_per_hour: int, monthly_cap: int):
     """Pure decision function. Mutates `state`, returns (allow, reason, note).
@@ -193,6 +254,15 @@ async def notify(config, message: str, title: str = "PhotonScript",
         path = _state_path(config)
         async with _lock:
             state = _load_state(path)
+            if _cfg(config, "pushover_quiet_daytime") and _is_daytime(config):
+                ok, why = _daytime_gate(
+                    state, now, title, priority,
+                    float(_cfg(config, "pushover_daytime_title_window_h")) * 3600)
+                if not ok:
+                    _save_state(path, state)
+                    logger.info("[pushover suppressed:%s] %s: %s", why, title, message)
+                    _audit(config, title, message, priority, False, why)
+                    return False
             allow, reason, note = _gate(
                 state, now, month, key, priority,
                 int(_cfg(config, "pushover_dedup_window_s")),

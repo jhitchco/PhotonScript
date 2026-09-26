@@ -200,6 +200,9 @@ class PhotonScriptConfig(BaseSettings):
     pushover_dedup_window_s: int = 300        # drop identical (title,message) within this
     pushover_max_per_hour: int = 20           # rolling 1-hour burst cap (priority>=2 exempt)
     pushover_monthly_cap: int = 9000          # hard stop/month (headroom under Pushover's 10k)
+    pushover_quiet_daytime: bool = True        # sun up: no heartbeats, 1 per title per window
+    pushover_daytime_title_window_h: float = 4.0
+    pushover_daytime_sun_alt_deg: float = -3.0  # "daytime" = sun above this altitude
     # Safety-flap debounce baked into the generated NINA sequence: after the sky
     # reads safe again it must STAY safe this long before the sequence unparks,
     # resumes and narrates. Kills the safe/unsafe Pushover storm + mount thrash.

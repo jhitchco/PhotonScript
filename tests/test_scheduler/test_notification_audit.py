@@ -13,6 +13,9 @@ async def test_notify_writes_sent_and_suppressed_records(tmp_path, monkeypatch):
     async def _fake_send(config, message, title, priority, sound):
         return True   # pretend the POST succeeded — no network
     monkeypatch.setattr(pushover, "_send_raw", _fake_send)
+    # night-time path: this test is about the audit + dedup, not PS-50's
+    # daytime quieting (which would otherwise depend on the wall clock)
+    monkeypatch.setattr(pushover, "_is_daytime", lambda config, when=None: False)
     cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path))
 
     await pushover.notify(cfg, "hello", title="PhotonScript guiding", priority=1)
