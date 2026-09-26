@@ -84,6 +84,9 @@ class Armer:
         self._guiding_recovered = False  # auto guider-restart tried this episode
         self._guiding_escalated = False  # priority escalation sent this episode
         self._cooler_alerted: dict[str, bool] = {}  # per-rig cooler-nanny alert latch
+        self._cooler_warm_since: dict[str, datetime] = {}  # per-rig first warm tick
+        self._cooler_stuck_alerted: dict[str, bool] = {}   # per-rig "still warm" latch
+        self._cooler_cmd_alerted: dict[str, bool] = {}     # per-rig "cool cmd failed" latch
         self._safety_none_ticks = 0    # consecutive ticks safety monitor unreadable
         self._safety_alerted = False   # safety-monitor-blind alert latch (episode)
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
@@ -374,6 +377,16 @@ class Armer:
         # Instant warm cuts the TEC now (a ramp would take minutes); still verify
         # + alert after a delay that the cooler actually went off.
         asyncio.create_task(self._verify_shutdown(delay_s=300))
+        # Grade + thumbnail the night now (background threads), so the Runs
+        # page opens instantly in the morning instead of starting the work on
+        # first view. Best-effort: never blocks or fails the shutdown.
+        try:
+            from photonscript.scheduler.runs import post_night_warm
+            nights = post_night_warm(self.config)
+            if nights:
+                steps.append("prewarm " + ",".join(nights))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("post-night grade/thumbnail warm failed: %s", e)
         report = " · ".join(steps)
         logger.warning("dawn shutdown (%s): %s", reason, report)
         return report
@@ -602,7 +615,35 @@ class Armer:
             too_warm = (float(temp) - setp) > tol
             if not on or too_warm:
                 # Re-assert the correct setpoint (idempotent; corrects a wrong one).
-                await nina_cool(rc.nina_base_url, setp, minutes=ramp)  # instant
+                res = await nina_cool(rc.nina_base_url, setp, minutes=ramp)  # instant
+                if not (res or {}).get("ok", False):
+                    # The command itself failed (NINA error / camera gone):
+                    # re-asserting silently would hide it all night.
+                    if not self._cooler_cmd_alerted.get(rig):
+                        self._cooler_cmd_alerted[rig] = True
+                        await notify(
+                            self.config,
+                            f"Cooler nanny: cool command to {rig} FAILED "
+                            f"({(res or {}).get('detail', 'no response')}). Sensor "
+                            f"{float(temp):.1f}°C, setpoint {setp:.0f}°C. Subs "
+                            "are being shot warm.",
+                            title="PhotonScript cooler", priority=1)
+                else:
+                    self._cooler_cmd_alerted[rig] = False
+                # Still warm this long into the window, cooler on or not: the
+                # re-assert isn't taking. Alert once per episode.
+                since = self._cooler_warm_since.setdefault(rig, now)
+                stuck_min = int(getattr(self.config, "cooler_stuck_minutes", 20))
+                if (too_warm and (now - since) >= timedelta(minutes=stuck_min)
+                        and not self._cooler_stuck_alerted.get(rig)):
+                    self._cooler_stuck_alerted[rig] = True
+                    await notify(
+                        self.config,
+                        f"Cooler nanny: {rig} still {float(temp):.1f}°C after "
+                        f"{stuck_min} min (setpoint {setp:.0f}°C, cooler "
+                        f"{'ON' if on else 'OFF'}). Re-asserting isn't working; "
+                        "subs above the limit are rejected at grading.",
+                        title="PhotonScript cooler", priority=1)
                 if not on and not self._cooler_alerted.get(rig):
                     self._cooler_alerted[rig] = True
                     await notify(
@@ -612,7 +653,10 @@ class Armer:
                         "Subs shot warm won't match the dark library.",
                         title="PhotonScript cooler", priority=1)
             elif not too_warm:
-                self._cooler_alerted[rig] = False  # at setpoint — re-arm the latch
+                self._cooler_alerted[rig] = False  # at setpoint — re-arm the latches
+                self._cooler_stuck_alerted[rig] = False
+                self._cooler_cmd_alerted[rig] = False
+                self._cooler_warm_since.pop(rig, None)
 
     async def _watch_safety_monitor(self, now: datetime, safe: bool | None) -> None:
         """Safety-monitor watchdog. `safe` is True/False when the monitor reads

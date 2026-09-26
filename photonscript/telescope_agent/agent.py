@@ -682,14 +682,16 @@ class TelescopeAgent:
         # Sensor far above setpoint at capture = cooler-failure sub. Dark
         # current at +30..40C swamps the signal and the dark library can't
         # match it — reject outright (2026-07-03..05 lesson).
-        _t = self.state.camera_temp_c
-        if _t is not None and _t > self.config.camera_setpoint_c + 5.0:
+        # Same rule as grading (runs.sensor_temp_reasons): configured
+        # setpoint + sub_temp_over_setpoint_c, and the sub_temp_max_c ceiling.
+        from photonscript.scheduler.runs import sensor_temp_reasons
+        for _r in sensor_temp_reasons(self.state.camera_temp_c, None,
+                                      self.config,
+                                      setpoint=self.config.camera_setpoint_c):
             quality.passed_qa = False
             if quality.rejection_reason:
                 quality.rejection_reason += "; "
-            quality.rejection_reason += (
-                f"sensor {_t:.1f}C vs setpoint "
-                f"{self.config.camera_setpoint_c:.0f}C (cooler failure)")
+            quality.rejection_reason += _r
 
         # Create image record
         image = CapturedImage(
@@ -743,7 +745,8 @@ class TelescopeAgent:
                 from photonscript.scheduler.runs import (
                     thumbnail, PREWARM_THUMB_WIDTH)
                 thumbnail(self.config, night, rel_in_night,
-                          width=PREWARM_THUMB_WIDTH, annotate=False)
+                          width=PREWARM_THUMB_WIDTH, annotate=False,
+                          fill_prewarm=True)
             except Exception as te:  # noqa: BLE001
                 logger.debug("thumb pre-warm skipped: %s", te)
         except Exception as e:  # noqa: BLE001

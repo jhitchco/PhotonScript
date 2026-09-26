@@ -114,6 +114,7 @@
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
             <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
                 <span class="bd" id="reviewCounts"></span>
+                <button class="btn btn-primary" id="approveShownBtn" hidden>Approve shown</button>
                 <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
             </div>
             <div id="rigChips" style="margin-bottom:.25rem;"></div>
@@ -416,6 +417,31 @@
         const btn = document.getElementById('approveBtn');
         btn.hidden = rev === 0;
         btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
+        // Scoped approve: just the subs the rig/target/filter chips select,
+        // e.g. "Approve 3 in review · NGC 6543 · OIII". Hidden when nothing is
+        // filtered (then it's the same as the night button).
+        const shown = (window._filteredSubs || subs)
+            .filter(s => s.passed_qa && !s.reviewed);
+        const scoped = (window._filteredSubs || subs).length !== subs.length;
+        const sBtn = document.getElementById('approveShownBtn');
+        sBtn.hidden = !scoped || shown.length === 0;
+        const scopeLbl = [subRig !== 'ALL' ? subRig : null,
+                          subTarget !== 'ALL' ? subTarget : null,
+                          subFilter !== 'ALL' ? subFilter : null]
+            .filter(Boolean).join(' · ');
+        sBtn.textContent = 'Approve ' + shown.length + ' in review · ' + scopeLbl;
+        sBtn.onclick = async () => {
+            if (!confirm('Approve ' + shown.length + ' subs awaiting review (' +
+                         scopeLbl + ') and queue them for transfer?')) return;
+            sBtn.disabled = true;
+            try {
+                const r = await (await fetch('/api/runs/' + d.date + '/approve', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({files: shown.map(s => s.file)})})).json();
+                alert(r.approved + ' subs approved (' + scopeLbl + ').\n' +
+                      r.linked + ' new files entered the library.');
+            } finally { sBtn.disabled = false; loadDetail(d.date); }
+        };
         btn.onclick = async () => {
             btn.disabled = true;
             try {
@@ -484,6 +510,7 @@
             el.addEventListener('click', () => { subFilter = el.dataset.f; renderSubs(); }));
         const subs = subFilter === 'ALL' ? all
                      : all.filter(s => s.filter === subFilter);
+        window._filteredSubs = subs;  // everything the chips select (not just the tiles drawn)
         const step = showAllThumbs ? 1 : Math.max(1, Math.ceil(subs.length / 24));
         const shown = subs.filter((s, i) => i % step === 0);
         document.getElementById('thumbCount').innerHTML = step > 1
@@ -493,6 +520,7 @@
                ? 'showing all ' + subs.length +
                  ' · <a href="#" id="thumbAll">show fewer</a>' : '');
         window._shownSubs = shown;
+        renderReviewBar(d);  // keep the scoped approve button in step with the chips
         document.getElementById('thumbStrip').innerHTML = shown
             .map((s, i) => '<figure>' +
                 '<div class="qa-btns">' +

@@ -368,6 +368,38 @@ def _resolve_target(raw, filename: str, plan_names: list[str]) -> str:
     return "?"
 
 
+def sensor_temp_reasons(ccd_temp, header_setpoint, config,
+                        setpoint: float | None = None) -> list[str]:
+    """Rejection reasons for a warm sub (empty list = temperature is fine).
+
+    Judged against the CONFIGURED setpoint, never the header SET-TEMP: on
+    2026-09-26 the camera was left with SET-TEMP=20, so 22-25°C subs looked
+    'at setpoint' and passed into review. The header value is only reported.
+    Two rules: more than sub_temp_over_setpoint_c above setpoint, or above the
+    absolute ceiling sub_temp_max_c (default 10°C) whatever the setpoint."""
+    try:
+        if ccd_temp is None:
+            return []
+        t = float(ccd_temp)
+    except (TypeError, ValueError):
+        return []
+    sp = float(setpoint if setpoint is not None
+               else getattr(config, "camera_setpoint_c", 0.0))
+    over = float(getattr(config, "sub_temp_over_setpoint_c", 5.0))
+    ceiling = float(getattr(config, "sub_temp_max_c", 10.0))
+    hdr_note = ""
+    try:
+        if header_setpoint is not None and abs(float(header_setpoint) - sp) > 1.0:
+            hdr_note = f"; camera was set to {float(header_setpoint):.0f}C"
+    except (TypeError, ValueError):
+        pass
+    if t > sp + over:
+        return [f"sensor {t:.0f}C vs setpoint {sp:.0f}C (cooler failure{hdr_note})"]
+    if t > ceiling:
+        return [f"sensor {t:.0f}C above {ceiling:.0f}C limit{hdr_note}"]
+    return []
+
+
 def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                 *, prewarm: tuple[str, str] | None = None) -> dict:
     """Per-sub metrics for backfill: sep on a 2x2-binned frame.
@@ -384,11 +416,13 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         if prewarm is not None:
             try:
                 p_date, p_rel = prewarm
-                p_out = _thumb_out_path(config, p_date, p_rel,
-                                        PREWARM_THUMB_WIDTH, False)
-                if not p_out.exists():
-                    _stretch_and_save(_decimate(binned), p_out,
-                                      PREWARM_THUMB_WIDTH)
+                small = None
+                for w in PREWARM_WIDTHS:
+                    p_out = _thumb_out_path(config, p_date, p_rel, w, False)
+                    if not p_out.exists():
+                        if small is None:
+                            small = _decimate(binned)
+                        _stretch_and_save(small, p_out, w)
             except Exception as e:  # noqa: BLE001
                 logger.debug("thumb pre-warm skipped for %s: %s", path.name, e)
         del binned
@@ -396,18 +430,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     reasons = []
     if m["stars"] < 5:
         reasons.append(f"only {m['stars']} stars")
-    # Cooler-failure subs: sensor way above the commanded setpoint means the
-    # frame is dominated by dark current no matching dark can calibrate out
-    try:
-        _set_t = hdr.get("SET-TEMP")
-        _ccd_t = hdr.get("CCD-TEMP")
-        if _set_t is None:
-            _set_t = getattr(config, "camera_setpoint_c", 0.0)
-        if _ccd_t is not None and float(_ccd_t) > float(_set_t) + 5.0:
-            reasons.append(f"sensor {float(_ccd_t):.0f}C vs setpoint "
-                           f"{float(_set_t):.0f}C (cooler failure)")
-    except (TypeError, ValueError):
-        pass
+    # Cooler-failure subs: sensor way above the setpoint means the frame is
+    # dominated by dark current no matching dark can calibrate out
+    reasons.extend(sensor_temp_reasons(hdr.get("CCD-TEMP"), hdr.get("SET-TEMP"),
+                                       config))
     ecc_max = float(getattr(config, "quality_eccentricity_max", 0.6))
     if m["ecc"] is not None and m["ecc"] > ecc_max:
         reasons.append(f"elongated stars (ecc {m['ecc']} > {ecc_max:g})")
@@ -823,12 +849,19 @@ def sync_goal_progress(config) -> list:
     return changed
 
 
-def approve_night(config, date: str) -> dict:
+def approve_night(config, date: str, files: list[str] | None = None) -> dict:
     """Mark every QA-passing sub as reviewed, then update the library so
-    they queue for transfer. The human gate between capture and sync."""
+    they queue for transfer. The human gate between capture and sync.
+
+    files: approve only these subs (the Runs page passes the subs currently
+    shown by its rig/target/filter chips, e.g. just Cat's Eye OIII). None =
+    the whole night. Rejected subs are never approved by this path."""
     subs = _load_subs(config, date)
+    only = set(files) if files is not None else None
     n = 0
     for s_ in subs:
+        if only is not None and s_.get("file") not in only:
+            continue
         if s_.get("passed_qa") and not s_.get("reviewed"):
             s_["reviewed"] = True
             n += 1
@@ -1429,7 +1462,9 @@ def calibration_inventory(config, date: str) -> dict:
 # runs.html). Pre-warming exactly that size at grade time makes the strip
 # render instantly instead of generating hundreds of thumbnails on first view,
 # one at a time under _HEAVY on the RAM-tight scope PC.
-PREWARM_THUMB_WIDTH = 264
+PREWARM_THUMB_WIDTH = 264   # runs-page grid tile
+PREVIEW_THUMB_WIDTH = 1400  # lightbox (click a tile)
+PREWARM_WIDTHS = (PREWARM_THUMB_WIDTH, PREVIEW_THUMB_WIDTH)
 
 
 def _thumb_out_path(config, date: str, rel_file: str, width: int,
@@ -1479,7 +1514,7 @@ def _stretch_and_save(small, out: Path, width: int, stars=None) -> None:
 
 
 def thumbnail(config, date: str, rel_file: str, width: int = 360,
-              annotate: bool = False) -> Path | None:
+              annotate: bool = False, fill_prewarm: bool = False) -> Path | None:
     """Stretched PNG thumbnail; optionally with star-detection circles.
 
     Cached on disk per (file, width, annotate) — repeat remote views never
@@ -1509,7 +1544,13 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
     if not src.exists():
         return None
     out = _thumb_out_path(config, date, rel_file, width, annotate)
-    if out.exists():
+    # fill_prewarm (background warmers only): while the FITS is open anyway,
+    # also write every other pre-warm size (grid 264 + lightbox 1400) so a
+    # click on a tile never waits either. Page requests never pay for this.
+    extra = [w for w in PREWARM_WIDTHS if w != width and not
+             _thumb_out_path(config, date, rel_file, w, False).exists()] \
+        if (fill_prewarm and not annotate) else []
+    if out.exists() and not extra:
         return out
     try:
         with _HEAVY:
@@ -1529,7 +1570,11 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
                     except Exception:  # noqa: BLE001
                         pass
         gc.collect()
-        _stretch_and_save(small, out, width, stars)
+        if not out.exists():
+            _stretch_and_save(small, out, width, stars)
+        for w in extra:
+            _stretch_and_save(small, _thumb_out_path(config, date, rel_file, w,
+                                                     False), w)
         return out
     except Exception as e:  # noqa: BLE001
         logger.warning("Thumbnail failed for %s: %s", src, e)
@@ -1576,7 +1621,8 @@ def start_thumb_warm(config, date: str) -> None:
                     st["current"] = rel
                     try:
                         thumbnail(config, date, rel,
-                                  width=PREWARM_THUMB_WIDTH, annotate=False)
+                                  width=PREWARM_THUMB_WIDTH, annotate=False,
+                                  fill_prewarm=True)
                     except Exception as e:  # noqa: BLE001
                         logger.debug("warm thumb failed for %s: %s", rel, e)
                 done += 1
@@ -1587,6 +1633,41 @@ def start_thumb_warm(config, date: str) -> None:
 
     threading.Thread(target=_work, daemon=True,
                      name=f"thumbwarm-{date}").start()
+
+
+def post_night_warm(config, hours: float = 30.0) -> list[str]:
+    """Called at dawn shutdown: grade + thumbnail every night touched in the
+    last `hours`, in background threads, so the Runs page opens with the work
+    already done (before, RC16 grading and thumbnails only started when the
+    page was first opened). Covers the RC16 folder (backfill grades and writes
+    the grid + lightbox thumbnails in the same pass) and every sub record,
+    including piggyback subs graded live (thumb warm fills both sizes).
+    Returns the nights started. Safe to call repeatedly."""
+    import re as _re
+    import time as _time
+    cutoff = _time.time() - hours * 3600
+    nights: set[str] = set()
+    root = Path(config.image_watch_dir)
+    if root.exists():
+        for d in root.iterdir():
+            if (d.is_dir() and _re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)
+                    and d.stat().st_mtime >= cutoff):
+                nights.add(d.name)
+    rd = runs_dir(config)
+    if rd.exists():
+        for f in rd.glob("*_subs.jsonl"):
+            if f.stat().st_mtime >= cutoff:
+                nights.add(f.name[:10])
+    for d in sorted(nights):
+        try:
+            if (root / d).exists() and backfill_status(config, d)["pending"]:
+                start_backfill(config, d)
+            start_thumb_warm(config, d)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("post-night warm for %s failed: %s", d, e)
+    if nights:
+        logger.info("Post-night warm started for %s", ", ".join(sorted(nights)))
+    return sorted(nights)
 
 
 def contact_sheet(config, date: str, cols: int = 6, tile_w: int = 200,

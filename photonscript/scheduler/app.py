@@ -461,6 +461,9 @@ _CONFIG_FIELDS = [
     ("pushover_monthly_cap", "PS_PUSHOVER_MONTHLY_CAP", "Pushover monthly hard cap", "Nanny / Alerts", "int", False, False),
     ("safety_confirm_seconds", "PS_SAFETY_CONFIRM_SECONDS", "Confirm-safe hold before resume (s) — safety-flap debounce", "Nanny / Alerts", "int", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
+    ("cooler_stuck_minutes", "PS_COOLER_STUCK_MINUTES", "Cooler nanny: alert if still warm this many min into the window", "Imaging", "int", False, False),
+    ("sub_temp_over_setpoint_c", "PS_SUB_TEMP_OVER_SETPOINT_C", "Reject subs this many °C above setpoint", "Imaging", "float", False, False),
+    ("sub_temp_max_c", "PS_SUB_TEMP_MAX_C", "Reject subs with sensor above (°C)", "Imaging", "float", False, False),
     ("cool_lead_minutes", "PS_COOL_LEAD_MINUTES", "Cooler + dew heater ON this many min before astro dark", "Imaging", "int", False, False),
     ("cooler_off_until_precool", "PS_COOLER_OFF_UNTIL_PRECOOL", "On arm, force cooler + dew OFF until pre-cool time", "Imaging", "bool", False, False),
     ("auto_arm_enabled", "PS_AUTO_ARM_ENABLED", "Auto-arm every night (hands-off multi-night)", "Nanny / Alerts", "bool", False, False),
@@ -1842,11 +1845,15 @@ def api_library_reset():
 
 
 @app.post("/api/runs/{date}/approve")
-async def api_run_approve(date: str):
-    """Approve all QA-passing subs for a night -> library -> Syncthing."""
+async def api_run_approve(date: str, payload: dict | None = Body(default=None)):
+    """Approve QA-passing subs awaiting review -> library -> Syncthing.
+    Body {"files": [...]} limits it to those subs (the Runs page sends the
+    subs its chips are showing); no body = the whole night."""
     from photonscript.scheduler.runs import approve_night
     from photonscript.scheduler import sync_batch
-    res = approve_night(get_config(), date)
+    files = (payload or {}).get("files")
+    res = approve_night(get_config(), date,
+                        files=list(files) if isinstance(files, list) else None)
     sync_batch.mark_reset(get_config())  # approved subs queued → fresh batch
     return res
 

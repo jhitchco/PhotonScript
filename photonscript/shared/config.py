@@ -301,6 +301,18 @@ class PhotonScriptConfig(BaseSettings):
                                  # night that ruined the RC16 subs), drive it to
                                  # setpoint with an INSTANT cool and alert once. Set
                                  # false to disable the nanny entirely.
+    cooler_stuck_minutes: int = 20  # nanny: alert when a rig is STILL warm this
+                                 # long into the cold window even with the cooler
+                                 # ON (wrong setpoint that won't take, weak TEC).
+                                 # Re-asserting silently all night is how the
+                                 # 2026-09-26 20°C night went unnoticed.
+    sub_temp_over_setpoint_c: float = 5.0  # grading: reject a sub whose sensor
+                                 # was more than this above the CONFIGURED rig
+                                 # setpoint (never the header SET-TEMP, which is
+                                 # whatever wrong setpoint the camera was given:
+                                 # 2026-09-26 SET-TEMP=20 let 25°C subs pass)
+    sub_temp_max_c: float = 10.0  # grading: absolute ceiling, reject any sub with
+                                 # the sensor above this regardless of setpoint
     safety_monitor_watchdog: bool = True  # alert if the safety monitor reads
                                  # UNREADABLE (disconnected/erroring) for a while
                                  # during a run — roof gating is then blind (the
