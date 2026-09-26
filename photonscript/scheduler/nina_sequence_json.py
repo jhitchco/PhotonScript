@@ -894,6 +894,21 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         for e in t.exposures:
             if e.filter_type not in flat_filters:
                 flat_filters.append(e.filter_type)
+    # Also refresh any STALE flat filters at dawn, even if tonight didn't image
+    # them — otherwise broadband flats age out across a run of narrowband-only
+    # nights and never get retaken. Staleness-gated, so it's a no-op when all
+    # flats are fresh. (The OSC piggyback already reshoots its one flat set every
+    # arm via the companion, so this covers the RC16 half of "both scopes".)
+    if getattr(_cfg, "auto_stale_flats", True):
+        try:
+            from photonscript.scheduler.calibration import stale_flat_filters
+            _by_val = {ft.value: ft for ft in FilterType}
+            for _name in stale_flat_filters(_cfg):
+                _ft = _by_val.get(_name)
+                if _ft is not None and _ft not in flat_filters:
+                    flat_filters.append(_ft)
+        except Exception:  # noqa: BLE001
+            pass
     if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:
         # Dawn goes dark->bright: broadband first (fine in the dim sky),
         # narrowband LAST when the sky is bright enough that 3nm exposures

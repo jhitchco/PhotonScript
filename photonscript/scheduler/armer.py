@@ -596,11 +596,19 @@ class Armer:
             # profile it comes up and the companion gates roof-closed darks/bias
             # on it; if not, the companion is dawn-flats-only. No manual flag.
             from photonscript.scheduler.preflight import _ensure_connected
-            try:
-                has_safety, _sm_payload, _sm_err = await _ensure_connected(
-                    pcfg, "safetymonitor")
-            except Exception:  # noqa: BLE001
-                has_safety = False
+            # The Alpaca safety-monitor connect on NINA #2 is flaky — a single
+            # miss dropped the OSC to flats-only (and left it with no darks/bias).
+            # Retry once before giving up.
+            has_safety = False
+            for _attempt in range(2):
+                try:
+                    has_safety, _sm_payload, _sm_err = await _ensure_connected(
+                        pcfg, "safetymonitor")
+                except Exception:  # noqa: BLE001
+                    has_safety = False
+                if has_safety:
+                    break
+                await asyncio.sleep(3)
             # Shoot OSC lights while the roof is open, but only when NINA #2 can
             # see the shared safety monitor (has_safety) — lights must be roof-gated.
             want_lights = bool(getattr(cfg, "piggyback_image_lights", True)
@@ -616,12 +624,23 @@ class Armer:
                 logger.info("Piggyback companion dispatched to NINA #2 (%s)",
                             ("lights+flats+darks/bias" if want_lights else
                              ("flats+darks/bias" if has_safety else "flats only")))
-                await notify(cfg, "Piggyback calibration companion started on "
-                             "NINA #2 (" + ("sees the roof — dawn flats + "
-                             "roof-closed darks/bias)" if has_safety else
-                             "not seeing the safety monitor — dawn flats only; "
-                             "add it to the NINA #2 profile for darks/bias)"),
-                             title="PhotonScript piggyback")
+                if has_safety:
+                    await notify(cfg, "Piggyback companion started on NINA #2 — "
+                                 "sees the roof: dawn flats + roof-closed darks/bias"
+                                 + (" + OSC lights" if want_lights else ""),
+                                 title="PhotonScript piggyback")
+                else:
+                    # Darks/bias now run UNCONDITIONALLY (time-capped at dusk)
+                    # when NINA #2 can't see the safety monitor — the OSC would
+                    # otherwise have zero matching calibration. Flag it so the
+                    # (slightly-riskier) mode is visible, and name the real fix.
+                    await notify(cfg, "OSC darks/bias running UNCONDITIONALLY "
+                                 "tonight — NINA #2 can't see the safety monitor, "
+                                 "so they're time-capped at dusk instead of "
+                                 "roof-gated (a few frames may be junked if the "
+                                 "roof opens early). Add the safety monitor to the "
+                                 "NINA #2 profile to roof-gate them.",
+                                 title="PhotonScript piggyback", priority=1)
             else:
                 logger.warning("Piggyback companion dispatch failed: %s",
                                res.get("detail"))

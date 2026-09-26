@@ -414,11 +414,17 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
     return _json.dumps(root, indent=2), local.strftime("%H:%M")
 
 
-def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0):
+def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
+                     gated=True):
     """OSC dark blocks for the piggyback, capped by its own library quota
     (count_matching_darks keys off the piggyback config's library_dir + OSC
-    gain/offset/setpoint). Roof-closed work: each block exits on any of
-    LoopWhileUnsafe clearing, dawn, or the per-exposure cap."""
+    gain/offset/setpoint). Each block exits on the per-exposure count, the time
+    cap (dawn_provider), and — when ``gated`` — LoopWhileUnsafe clearing.
+
+    ``gated=False`` drops the LoopWhileUnsafe guard so the darks fire even when
+    NINA #2 can't see the safety monitor (the caller then caps the time window
+    at dusk so they run in the roof-closed pre-dark window; frames that catch a
+    just-opened roof are rejected by QA — accepted trade-off vs. no OSC darks)."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _time_condition)
     quota = int(getattr(config, "dark_target_count", 30))
@@ -445,13 +451,13 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0):
                 Binning=_make_typed(
                     "NINA.Core.Model.Equipment.BinningMode, NINA.Core", X=1, Y=1),
                 ImageType="DARK", ExposureCount=0, ErrorBehavior=0, Attempts=1)],
-            conditions=[
-                _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
-                            "NINA.Sequencer"),
-                _time_condition(dawn_provider, dawn_offset),
-                _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
-                            "NINA.Sequencer",
-                            CompletedIterations=0, Iterations=need)]))
+            conditions=(
+                [_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                             "NINA.Sequencer")] if gated else [])
+                + [_time_condition(dawn_provider, dawn_offset),
+                   _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
+                               "NINA.Sequencer",
+                               CompletedIterations=0, Iterations=need)]))
     return blocks
 
 
@@ -534,9 +540,11 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
 
     start_items = [
         _pushover("Piggyback", "piggyback armed: cools the OSC camera, "
-                  f"{'fills darks/bias while the roof is closed, ' if has_safety else ''}"
-                  f"{'shoots OSC lights while the roof is open, ' if (with_lights and has_safety) else ''}"
-                  "then shoots OSC dawn flats. No mount control — rides the RC16."),
+                  + ("fills darks/bias while the roof is closed, " if has_safety
+                     else "fills darks/bias (unconditional — no safety monitor), ")
+                  + ("shoots OSC lights while the roof is open, "
+                     if (with_lights and has_safety) else "")
+                  + "then shoots OSC dawn flats. No mount control — rides the RC16."),
         _connect("Camera"),
         _dew_heater(True),
     ]
@@ -548,60 +556,68 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     ]
 
     target_items = []
-    if has_safety:
-        dark_blocks = _osc_dark_blocks(config)
-        if dark_blocks:
-            target_items.append(_seq_container(
-                "OSC_DARKS_IF_UNSAFE", dark_blocks,
-                conditions=[
-                    _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
-                                "NINA.Sequencer"),
-                    _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
-                                "NINA.Sequencer",
-                                CompletedIterations=0, Iterations=1)]))
-        # bias top-up only when due (bias barely ages)
-        _bias_refresh_days = int(getattr(config, "bias_refresh_days", 60))
-        try:
-            _bias_age = days_since_last_bias(config)
-        except Exception:  # noqa: BLE001
-            _bias_age = None
-        _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
-                     or _bias_age >= _bias_refresh_days)
-        if _bias_due:
-            target_items.append(_seq_container(
-                "OSC_BIAS_IF_UNSAFE",
-                [_seq_container("50 bias", [_make_typed(
-                    "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+    # Gate roof-closed capture on the safety monitor when NINA #2 has it. Without
+    # it, fire darks/bias ANYWAY (Jeremy's call 2026-09-25): the OSC otherwise
+    # ends up with zero matching calibration. Ungated darks are time-capped at
+    # astro dusk so they run in the roof-closed pre-dark window; any frame that
+    # catches a just-opened roof is rejected by QA. Bias is 0.001s (light-safe).
+    gated = has_safety
+    if not gated:
+        target_items.append(_annotation(
+            "OSC darks/bias running UNCONDITIONALLY: NINA #2 can't see the safety "
+            "monitor, so these are time-capped at dusk instead of roof-gated. Add "
+            "the shared safety monitor to the NINA #2 profile to roof-gate them."))
+    dark_blocks = _osc_dark_blocks(
+        config, dawn_provider=("DawnProvider" if gated else "DuskProvider"),
+        dawn_offset=0, gated=gated)
+    if dark_blocks:
+        _dark_conds = ([_make_typed(
+            "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")]
+            if gated else [])
+        _dark_conds.append(_make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=1))
+        target_items.append(_seq_container(
+            "OSC_DARKS" + ("_IF_UNSAFE" if gated else "_UNCONDITIONAL"),
+            dark_blocks, conditions=_dark_conds))
+    # bias top-up only when due (bias barely ages)
+    _bias_refresh_days = int(getattr(config, "bias_refresh_days", 60))
+    try:
+        _bias_age = days_since_last_bias(config)
+    except Exception:  # noqa: BLE001
+        _bias_age = None
+    _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
+                 or _bias_age >= _bias_refresh_days)
+    if _bias_due:
+        _bias_conds = ([_make_typed(
+            "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")]
+            if gated else [])
+        _bias_conds.append(_make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=1))
+        target_items.append(_seq_container(
+            "OSC_BIAS" + ("_IF_UNSAFE" if gated else "_UNCONDITIONAL"),
+            [_seq_container("50 bias", [_make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
+                "NINA.Sequencer",
+                ExposureTime=0.001, Gain=config.default_gain,
+                Offset=config.default_offset,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                    X=1, Y=1),
+                ImageType="BIAS", ExposureCount=0,
+                ErrorBehavior=0, Attempts=1)],
+                conditions=[_make_typed(
+                    "NINA.Sequencer.Conditions.LoopCondition, "
                     "NINA.Sequencer",
-                    ExposureTime=0.001, Gain=config.default_gain,
-                    Offset=config.default_offset,
-                    Binning=_make_typed(
-                        "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
-                        X=1, Y=1),
-                    ImageType="BIAS", ExposureCount=0,
-                    ErrorBehavior=0, Attempts=1)],
-                    conditions=[_make_typed(
-                        "NINA.Sequencer.Conditions.LoopCondition, "
-                        "NINA.Sequencer",
-                        CompletedIterations=0, Iterations=50)])],
-                conditions=[
-                    _make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
-                                "NINA.Sequencer"),
-                    _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
-                                "NINA.Sequencer",
-                                CompletedIterations=0, Iterations=1)]))
+                    CompletedIterations=0, Iterations=50)])],
+            conditions=_bias_conds))
+    if has_safety:
         target_items.append(_wait_until_safe())
         if with_lights:
             # Roof is open — shoot OSC lights until dawn, then fall through to
             # the dawn-flat window below.
             target_items.append(_osc_light_loop(config))
-    else:
-        target_items.append(_annotation(
-            "OSC darks/bias skipped: NINA #2 is not seeing the safety monitor, "
-            "so it can't tell when the roof is closed. Add the shared safety "
-            "monitor to the NINA #2 profile (it auto-connects on arm and this "
-            "block turns on by itself), or shoot darks/bias from the Calibration "
-            "page on a closed-roof night."))
 
     # Dawn flats — wait for the RC16's flat window (nautical dawn +5), then one
     # OSC set. WaitUntilSafe only when NINA #2 can see the monitor.

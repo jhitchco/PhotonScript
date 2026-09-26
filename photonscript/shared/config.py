@@ -44,6 +44,9 @@ class PhotonScriptConfig(BaseSettings):
     # Syncthing mirror on the DESKTOP - used only to build copy-able paths in
     # the UI (browsers cannot open File Explorer directly)
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
+    auto_stale_flats: bool = True  # at dawn, also reshoot flats for filters whose
+    # library set has gone stale (>45d) even if tonight didn't image them — keeps
+    # broadband flats fresh across runs of narrowband-only nights
     syncthing_url: str = "http://localhost:8384"  # Syncthing REST on the scope PC
     syncthing_api_key: str = ""
     syncthing_folder_id: str = ""   # folder id of the Library share

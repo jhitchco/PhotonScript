@@ -61,6 +61,32 @@ button; **Arm (Encoders)** now shows a confirm guard (unguided long subs at
 3248 mm trail). A once-per-night Pushover fires if a night is armed guided but
 PHD2 is not actually guiding ~20 min after dark.
 
+## Calibration — what an arm captures automatically
+
+Matching is by **camera (INSTRUME) + full epoch** (`EXPTIME|GAIN|OFFSET|SET-TEMP`
+for darks, camera for flats/bias), so RC16 (AP26MC) and the OSC (AP26CC) never
+cross-use calibration, and only frames older than `library_cal_days` (120) or
+shot at different settings are ignored. Capture at each rig's imaging settings
+(the capture endpoints already do) and integration picks them up.
+
+On arm:
+- **RC16 darks** — shot roof-closed pre-dusk for `dark_exposures` up to
+  `dark_target_count`, age-aware (a stale set counts as 0 and refills).
+- **RC16 dawn flats** — for the filters used that night **plus any stale flat
+  filter** (`auto_stale_flats`, default on) — so broadband flats stay fresh even
+  across narrowband-only nights. Disable with `PS_AUTO_STALE_FLATS=false`.
+- **OSC (piggyback) companion** — dawn flats always; darks/bias **always run**.
+  When NINA #2 can see the shared safety monitor they're roof-gated
+  (`LoopWhileUnsafe`); when it can't (the probe retries once first), they run
+  **unconditionally, time-capped at astro dusk** so they fall in the roof-closed
+  pre-dark window — a loud Pushover flags this mode, and frames that catch a
+  just-opened roof are rejected by QA. Best fix: add the safety monitor to the
+  NINA #2 profile to roof-gate them properly.
+
+Manual capture any time (roof closed): `POST /api/calibration/capture
+{"rig":"rc16"|"piggyback"}`; stale flats at dusk: `POST /api/calibration/flats
+{"rig":"rc16","stale":true}`.
+
 ## Capture-drive free space
 
 `GET /api/sync` includes `disk` (free/total GB, % used) for the capture drive;
