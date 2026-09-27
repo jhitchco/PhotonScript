@@ -523,18 +523,43 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
     return blocks
 
 
+def _wait_safe_until(provider: str, minutes_offset: int = 0,
+                     name: str = "WAIT_SAFE_OR_TIME", step_s: int = 30) -> dict:
+    """Bounded WaitUntilSafe: loop a short WaitForTimeSpan while the roof is
+    UNSAFE and the provider time has not passed, so it exits on safe OR time.
+
+    The core WaitUntilSafe has no timeout, and a parent TimeCondition does not
+    pull a running instruction out: on 2026-09-26 the roof closed for clouds at
+    11:39Z and the companion sat in the light loop's WaitUntilSafe until NINA #2
+    was restarted at 13:04Z, never reaching its dawn flats (PS-36). Same
+    LoopWhileUnsafe + TimeCondition pattern the RC16 uses for its unsafe darks.
+    Skipped outright (no wait) when the roof is already safe."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _time_condition, _wait_for_timespan)
+    return _seq_container(
+        name, [_wait_for_timespan(step_s)],
+        conditions=[_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                "NINA.Sequencer"),
+                    _time_condition(provider, minutes_offset)])
+
+
 def _osc_light_loop(config) -> dict:
     """Dumb OSC light loop for the piggyback (§4.3 DUAL_RIG): shoot continuous
-    OSC lights while the roof is safe, until dawn, resilient to cloud gaps
-    (re-waits for safe each pass). AF once per (re)acquire + a temperature
-    trigger. No slew/center/dither/guide — those belong to the RC16; the
+    OSC lights while the roof is safe, until nautical dawn, resilient to cloud
+    gaps. No slew/center/dither/guide (those belong to the RC16); the
     piggyback just rides the mount at its fixed offset. Exposure defaults to
     piggyback_exposure_s (120 s OSC — the piggyback is background-limited in
     seconds at 1.29"/px, so 120 s is set by star saturation, not read noise;
-    see DUAL_RIG §4.5)."""
+    see DUAL_RIG §4.5).
+
+    Each pass of OSC_LIGHTS_UNTIL_DAWN: a BOUNDED wait for safe (exits at
+    nautical dawn even if the roof stays shut), then a safety-gated, run-once
+    image pass (seed + AF, then lights until unsafe or dawn). A closed roof at
+    dawn therefore falls through to the dawn-flat step instead of wedging
+    (PS-36). AF once per (re)acquire + a temperature trigger."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _autofocus_temp_trigger,
-        _move_focuser, _safety_condition, _time_condition, _wait_until_safe,
+        _move_focuser, _safety_condition, _time_condition, _loop_once,
         _pushover)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     gain = int(getattr(config, "piggyback_default_gain", 100))
@@ -556,19 +581,23 @@ def _osc_light_loop(config) -> dict:
         Binning=_make_typed("NINA.Core.Model.Equipment.BinningMode, NINA.Core",
                             X=1, Y=1),
         ImageType="LIGHT", ExposureCount=0, ErrorBehavior=0, Attempts=1)
-    # Inner loop: repeat exposures WHILE the roof is safe; temp trigger refocuses.
+    dawn = ("NauticalDawnProvider", 0)
+    # Inner loop: repeat exposures WHILE safe and before dawn (checked between
+    # exposures, so the loop ends on its own at dawn); temp trigger refocuses.
     inner = _seq_container(
         "OSC_LIGHT_LOOP", [take],
-        conditions=[_safety_condition()],
+        conditions=[_safety_condition(), _time_condition(*dawn)],
         triggers=[_autofocus_temp_trigger(af_temp_c)])
-    # Outer loop: keep going UNTIL dawn. Each pass waits for safe, AFs, then
-    # shoots until the roof closes; when it closes the inner loop exits and the
-    # outer pass re-waits for safe. Ends at nautical dawn.
+    image_pass = _seq_container(
+        "OSC_IMAGE_PASS",
+        [_pushover("Piggyback", f"roof open: OSC lights {exp_s:g}s until "
+                   "nautical dawn"),
+         *pre_af, _autofocus(), inner],
+        conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         "OSC_LIGHTS_UNTIL_DAWN",
-        [_pushover("Piggyback", f"roof open — OSC lights {exp_s:g}s until dawn"),
-         _wait_until_safe(), *pre_af, _autofocus(), inner],
-        conditions=[_time_condition("NauticalDawnProvider", 0)])
+        [_wait_safe_until(*dawn, name="WAIT_SAFE_OR_NAUTICAL_DAWN"), image_pass],
+        conditions=[_time_condition(*dawn)])
 
 
 def generate_piggyback_companion_json(config, has_safety: bool = False,
@@ -583,20 +612,28 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
       * (has_safety) fills OSC darks to quota + a 50-bias top-up while the roof
         is CLOSED (LoopWhileUnsafe) — needs the SHARED safety monitor connected
         in the NINA #2 profile, since NINA #2 can't otherwise tell roof state,
-      * at nautical dawn +5 shoots one OSC sky-flat set (riding the RC16's dawn
-        slew), then warms.
+      * at nautical dawn +5 (+90 s for the RC16's dawn slew) shoots one OSC
+        sky-flat set of piggyback_flat_count at the OSC gain/offset, then warms.
+        With the safety monitor the flats wait (bounded) for safe until
+        nautical dawn + piggyback_flat_wait_min and are skipped, not wedged,
+        if the roof stays closed. The armer's dawn shutdown waits for this
+        window (dawn_flats_window_min, PS-36).
 
-    has_safety=False (no safety monitor on NINA #2): darks/bias are skipped with
-    an annotation (use the Calibration page button on a closed-roof night) and
-    the dawn flats fire time-gated only. Returns the sequence JSON text.
+    has_safety=False (no safety monitor on NINA #2): darks/bias fire ungated
+    (time-capped at dusk) with an annotation, and the dawn flats fire
+    time-gated only. Returns the sequence JSON text.
     """
     import json as _json
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _pushover, _connect, _cool_camera,
-        _warm_camera, _dew_heater, _wait_until_safe, _wait_for_provider,
-        _annotation)
+        _warm_camera, _dew_heater, _wait_for_provider, _wait_for_timespan,
+        _annotation, _safety_condition, _loop_once)
 
-    n = int(getattr(config, "flat_count", 15))
+    # OSC flats count is its own knob (PS-36: 20-30 wanted; flat_count is the
+    # RC16's per-filter count).
+    n = int(getattr(config, "piggyback_flat_count",
+                    getattr(config, "flat_count", 15)))
+    flat_wait = int(getattr(config, "piggyback_flat_wait_min", 25))
     cool_lead = int(getattr(config, "cool_lead_minutes", 30))
     setpoint = float(getattr(config, "camera_setpoint_c", 0.0))
 
@@ -674,24 +711,34 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
                     "NINA.Sequencer",
                     CompletedIterations=0, Iterations=50)])],
             conditions=_bias_conds))
-    if has_safety:
-        target_items.append(_wait_until_safe())
-        if with_lights:
-            # Roof is open — shoot OSC lights until dawn, then fall through to
-            # the dawn-flat window below.
-            target_items.append(_osc_light_loop(config))
+    if has_safety and with_lights:
+        # Shoot OSC lights while the roof is open until nautical dawn. The loop
+        # waits for safe itself (bounded), so a roof that never opens, or
+        # closes before dawn, falls through to the dawn-flat window below
+        # instead of wedging in an unbounded WaitUntilSafe (PS-36, 2026-09-26).
+        target_items.append(_osc_light_loop(config))
 
-    # Dawn flats — wait for the RC16's flat window (nautical dawn +5), then one
-    # OSC set. WaitUntilSafe only when NINA #2 can see the monitor.
+    # Dawn flats: the RC16's flat window opens at nautical dawn +5 (its End
+    # area slews to alt 85 / az 200); give that slew 90 s to land, then one OSC
+    # set. With the safety monitor: wait (bounded) for safe, and skip the flats
+    # if the roof is still closed (closed roof = junk flats).
     target_items.append(_wait_for_provider("NauticalDawnProvider", 5))
-    if has_safety:
-        target_items.append(_wait_until_safe())
-    target_items += [
+    target_items.append(_wait_for_timespan(90))
+    flat_items = [
         _pushover("Piggyback", f"dawn flat window — shooting {n} OSC sky flats "
                   "(riding the RC16 slew)"),
         _osc_sky_flat(n, *_pb_gain_offset(config)),
         _pushover("Piggyback", "OSC dawn flats complete — warming"),
     ]
+    if has_safety:
+        target_items.append(_wait_safe_until(
+            "NauticalDawnProvider", flat_wait, name="WAIT_SAFE_FOR_OSC_FLATS"))
+        target_items.append(_seq_container(
+            "DAWN_SKY_FLATS_OSC (skipped if unsafe: closed roof makes junk "
+            "flats)", flat_items,
+            conditions=[_safety_condition(), _loop_once()]))
+    else:
+        target_items += flat_items
 
     end_items = [_warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
                  _pushover("Piggyback", "companion calibration done — camera warm")]

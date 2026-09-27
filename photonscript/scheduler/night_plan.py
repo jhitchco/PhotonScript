@@ -188,6 +188,12 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         "preconfig_utc": preconfig.isoformat() + "Z",
         "dusk_utc": dusk.isoformat() + "Z",
         "dawn_utc": dawn.isoformat() + "Z",
+        # PS-36: the armer times the dawn shutdown after the flat window
+        # (nautical dawn + 5 + dawn_flats_window_min, capped at sunrise).
+        "naut_dawn_utc": (tw_all["naut_dawn"].isoformat() + "Z"
+                          if tw_all.get("naut_dawn") else None),
+        "sunrise_utc": (tw_all["sunrise"].isoformat() + "Z"
+                        if tw_all.get("sunrise") else None),
         "dark_hours": round(dark_hours, 1),
         "targets": target_names,
         "events": events,

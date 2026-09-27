@@ -208,6 +208,24 @@ def rig_setpoint(config, rig: str) -> float:
     return float(getattr(config, "camera_setpoint_c", 0.0))
 
 
+async def nina_sequence_stop(base_url: str) -> dict:
+    """Stop whatever sequence a rig's NINA is running (ninaAPI GET
+    sequence/stop; harmless if idle). The armer's dawn shutdown uses it on
+    NINA #2 so a companion wedged waiting for safe can't resume lights or
+    flats after sunrise if the roof reopens (PS-36). Returns {ok, detail}."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(base + "/sequence/stop")
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("Success") is False:
+                return {"ok": False, "detail": str(data.get("Error"))}
+        return {"ok": True, "detail": "sequence stopped"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
 async def nina_dispatch(base_url: str, seq: dict) -> dict:
     """Load + start a sequence on a rig's NINA (used for piggyback calibration,
     which has no armer state machine). Returns {ok, detail}."""

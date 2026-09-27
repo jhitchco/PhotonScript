@@ -452,6 +452,7 @@ _CONFIG_FIELDS = [
     ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
+    ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),
@@ -517,6 +518,8 @@ _CONFIG_FIELDS = [
     ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
     ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
     ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
+    ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
+    ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
 ]
 
 _MASK = "••••••••"

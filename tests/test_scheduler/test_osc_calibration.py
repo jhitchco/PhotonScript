@@ -138,7 +138,15 @@ def test_companion_with_safety_adds_darks_bias_gated():
                 if n.get("ImageType") in ("DARK", "BIAS")}
     assert imgtypes == {"DARK", "BIAS"}
     assert any("LoopWhileUnsafe" in t for t in types)
-    assert any("SafetyMonitor.WaitUntilSafe" in t for t in types)
+    # PS-36: no UNBOUNDED WaitUntilSafe (a pre-dawn roof close wedged the
+    # companion in one on 2026-09-26); the flats wait is LoopWhileUnsafe +
+    # TimeCondition, and the flats are skipped (not wedged) if still unsafe
+    assert not any("SafetyMonitor.WaitUntilSafe" in t for t in types)
+    wait = next(n for n in _walk(root)
+                if n.get("Name") == "WAIT_SAFE_FOR_OSC_FLATS")
+    conds = [c["$type"] for c in wait["Conditions"]["$values"]]
+    assert any("LoopWhileUnsafe" in c for c in conds)
+    assert any("TimeCondition" in c for c in conds)
     # OSC gain/offset on the dark/bias frames
     cal = [n for n in _walk(root) if n.get("ImageType") in ("DARK", "BIAS")]
     assert all(n.get("Gain") == 100 and n.get("Offset") == 256 for n in cal)
@@ -179,9 +187,9 @@ def test_osc_lights_seed_moves_focuser_before_first_autofocus():
              if n.get("$type", "").startswith(_MOVE_FOCUSER)]
     assert len(moves) == 1, "expected exactly one focuser seed before AF"
     assert moves[0].get("Position") == 5200
-    # the seed precedes the first RunAutofocus in the OSC-lights container
+    # the seed precedes the first RunAutofocus in the OSC image pass
     lights = next(n for n in _walk(root)
-                  if n.get("Name") == "OSC_LIGHTS_UNTIL_DAWN")
+                  if n.get("Name") == "OSC_IMAGE_PASS")
     order = [c.get("$type", "") for c in lights["Items"]["$values"]]
     move_i = next(i for i, t in enumerate(order) if t.startswith(_MOVE_FOCUSER))
     af_i = next(i for i, t in enumerate(order) if t.startswith(_RUN_AF))

@@ -125,8 +125,16 @@ class Armer:
         if saved.get("state") not in ACTIVE_STATES:
             return False
         dawn = saved.get("plan", {}).get("dawn_utc")
-        if dawn and datetime.fromisoformat(dawn.rstrip("Z")) < datetime.utcnow():
-            return False  # that night is over
+        if dawn:
+            # The night is over once its dawn shutdown is due (PS-36: that is
+            # after the dawn flat window, not astro dawn), so a restart during
+            # the flat window still reattaches and still runs the shutdown.
+            try:
+                over_at = self._shutdown_due_at(saved.get("plan", {}))
+            except Exception:  # noqa: BLE001
+                over_at = datetime.fromisoformat(dawn.rstrip("Z"))
+            if over_at < datetime.utcnow():
+                return False  # that night is over
         self.state = saved["state"]
         self.detail = saved.get("detail", "") + " (restored after restart)"
         self.plan = saved.get("plan", {})
@@ -174,10 +182,20 @@ class Armer:
                 "preconfig_utc": self.plan.get("preconfig_utc"),
                 "dusk_utc": self.plan.get("dusk_utc"),
                 "dawn_utc": self.plan.get("dawn_utc"),
+                "shutdown_due_utc": self._shutdown_due_iso(),
                 "cool_lead_min": cool_lead,
                 "cooler_on_utc": cooler_on_utc,
                 "shutdown": getattr(self, "shutdown", None),
                 "noon_arm": self._noon_arm_status()}
+
+    def _shutdown_due_iso(self) -> str | None:
+        """Planned dawn-shutdown time for the dashboard (None when unarmed)."""
+        if self.state not in ACTIVE_STATES or not self.plan.get("dawn_utc"):
+            return None
+        try:
+            return self._shutdown_due_at().isoformat() + "Z"
+        except Exception:  # noqa: BLE001 (cosmetic, never fatal)
+            return None
 
     def _noon_arm_status(self) -> dict:
         """Next noon auto re-arm, surfaced for the dashboard countdown chip."""
@@ -358,13 +376,21 @@ class Armer:
         the warm ramp is done and alerts if anything is still cooling.
         """
         from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
-                                              nina_dew_heater)
+                                              nina_dew_heater, nina_sequence_stop,
+                                              RC16)
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop {'ok' if ok else 'FAILED'}")
         warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
         for rig in rig_ids(self.config):
             rc = rig_config(self.config, rig)
+            if rig != RC16:
+                # PS-36: also stop the other rig's sequence (the NINA #2
+                # companion). By now its dawn flats are done or impossible; a
+                # companion left waiting for safe could otherwise resume
+                # lights/flats after sunrise if the roof reopens.
+                st = await nina_sequence_stop(rc.nina_base_url)
+                steps.append(f"{rig} stop {'ok' if st.get('ok') else 'FAILED'}")
             w = await nina_warm(rc.nina_base_url, minutes=warm_min)
             d = await nina_dew_heater(rc.nina_base_url, False)
             steps.append(f"{rig} warm {'ok' if w.get('ok') else 'FAILED'}"
@@ -703,6 +729,73 @@ class Armer:
     def _dawn(self) -> datetime:
         return datetime.fromisoformat(self.plan["dawn_utc"].rstrip("Z"))
 
+    # -- dawn flat window (PS-36) ----------------------------------------------
+
+    def _dawn_flats_expected(self) -> bool:
+        """Will either rig shoot dawn sky flats? RC16: its End-area flats
+        (dawn_flats_enabled). Piggyback: the NINA #2 companion always carries
+        an OSC dawn-flat set when it is dispatched."""
+        cfg = self.config
+        rc16 = bool(getattr(cfg, "dawn_flats_enabled", True))
+        pb = bool(getattr(cfg, "piggyback_enabled", False)
+                  and getattr(cfg, "piggyback_calibrate_on_arm", True))
+        return rc16 or pb
+
+    def _morning_twilight(self, plan: dict) -> tuple:
+        """(nautical dawn, sunrise) as naive-UTC datetimes for the armed night.
+        From the plan when present; plans saved before PS-36 lack them, so
+        compute once (cached per dawn). Either may be None."""
+        def _parse(v):
+            try:
+                return datetime.fromisoformat(v.rstrip("Z")) if v else None
+            except (TypeError, ValueError):
+                return None
+        naut, rise = _parse(plan.get("naut_dawn_utc")), _parse(plan.get("sunrise_utc"))
+        if naut is not None:
+            return naut, rise
+        dawn_s = plan.get("dawn_utc")
+        cache = getattr(self, "_twilight_cache", None)
+        if cache and cache[0] == dawn_s:
+            return cache[1], cache[2]
+        naut = rise = None
+        try:
+            from photonscript.scheduler.night_plan import compute_night_times
+            dawn = datetime.fromisoformat(dawn_s.rstrip("Z"))
+            # compute_night_times scans 23:00Z on the given date + 15 h
+            tw = compute_night_times(self.config.get_observatory(),
+                                     dawn - timedelta(days=1))
+            naut, rise = tw.get("naut_dawn"), tw.get("sunrise")
+            if naut is not None and not (dawn < naut < dawn + timedelta(hours=2)):
+                naut = None  # wrong night: fall back to the astro-dawn rule
+        except Exception as e:  # noqa: BLE001
+            logger.warning("nautical dawn lookup failed: %s", e)
+        self._twilight_cache = (dawn_s, naut, rise)
+        return naut, rise
+
+    def _shutdown_due_at(self, plan: dict | None = None) -> datetime:
+        """When the positive dawn shutdown fires.
+
+        Base rule: astro dawn + 30 min. But both rigs' dawn flats open at
+        nautical dawn + 5, and at AARO nautical dawn is 28-37 min after astro
+        dawn, so the base rule ALWAYS parked the mount and cut both coolers
+        before a single flat (2026-09-26: shutdown 12:18Z, flat window 12:20Z).
+        When dawn flats are expected, wait until nautical dawn + 5 +
+        dawn_flats_window_min (capped at sunrise). The RC16 End area parks and
+        warms itself when its flats finish; this is the backstop."""
+        plan = self.plan if plan is None else plan
+        dawn = datetime.fromisoformat(plan["dawn_utc"].rstrip("Z"))
+        base = dawn + timedelta(minutes=30)
+        win = int(getattr(self.config, "dawn_flats_window_min", 40))
+        if win <= 0 or not self._dawn_flats_expected():
+            return base
+        naut, rise = self._morning_twilight(plan)
+        if naut is None:
+            return base
+        end = naut + timedelta(minutes=5 + win)
+        if rise is not None and rise > naut:
+            end = min(end, rise)
+        return max(base, end)
+
     # -- dispatch -----------------------------------------------------------------
 
     def _dispatch(self) -> bool:
@@ -912,12 +1005,27 @@ class Armer:
 
         elif self.state == "RUNNING":
             if now >= self._dawn() + timedelta(minutes=30):
+                due = self._shutdown_due_at()
+                reason = "dawn"
+                if now < due:
+                    # Dawn flat window (PS-36): hold the shutdown so both rigs
+                    # can shoot flats, unless the roof is closed (no flats
+                    # possible: shut down now, as before).
+                    safe = await self._is_safe()
+                    if safe is not False:
+                        hold = (f"Dawn flat window: shutdown held until "
+                                f"{due:%H:%M}Z")
+                        if self.detail != hold:
+                            self._set_state("RUNNING", hold)
+                        return
+                    reason = "dawn: unsafe, no flats possible"
                 self._set_state("COMPLETE", "Night over — running dawn shutdown")
-                report = await self.dawn_shutdown(reason="dawn")
+                report = await self.dawn_shutdown(reason=reason)
                 self._set_state("COMPLETE", f"Dawn shutdown: {report}")
                 await notify(self.config,
-                             f"Night complete — dawn shutdown ran ({report}). "
-                             "Cooler check in 5 min; morning report at 9.",
+                             f"Night complete: dawn shutdown ran ({reason}; "
+                             f"{report}). Cooler check in 5 min; morning "
+                             "report at 9.",
                              title="PhotonScript complete")
                 return
             safe = await self._is_safe()

@@ -44,6 +44,12 @@ class PhotonScriptConfig(BaseSettings):
     # Syncthing mirror on the DESKTOP - used only to build copy-able paths in
     # the UI (browsers cannot open File Explorer directly)
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
+    dawn_flats_window_min: int = 40  # PS-36: the armer's dawn shutdown waits
+    # until nautical dawn + 5 + this many minutes (capped at sunrise) whenever dawn
+    # flats are expected, so it no longer parks/warms both rigs before the flat
+    # window opens. Astro->nautical dawn is 28-37 min at AARO, so the old astro
+    # dawn + 30 shutdown ALWAYS fired before nautical dawn + 5. Unsafe at that
+    # point = shut down at once (no flats possible).
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
@@ -299,6 +305,11 @@ class PhotonScriptConfig(BaseSettings):
                                      # see the shared safety monitor. Whether it
                                      # can is AUTO-DETECTED at arm (connect + read
                                      # the NINA #2 safety monitor) — no manual flag.
+    piggyback_flat_count: int = 25  # PS-36: OSC dawn sky flats per night (20-30
+                                    # target), at the OSC gain/offset
+    piggyback_flat_wait_min: int = 25  # PS-36: after nautical dawn + 5, wait at most
+                                       # until nautical dawn + this for the roof to be
+                                       # safe; later = skip the OSC flats (not wedge)
     arm_preconfig_lead_min: int = 30  # dispatch the sequence this many min before dusk
     cool_lead_minutes: int = 30  # the night sequence turns the cooler + dew heater ON
                                  # this many min before astro dark (and not before),

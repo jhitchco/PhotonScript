@@ -169,6 +169,20 @@ or "ERROR: ...". Masters in `out\master\`.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-09-26 (no dawn flats on either rig, PS-36): the roof closed for clouds
+  at 11:39Z (AARO roof state `status.astronomyacres.com/WeatherData/
+  dragonfly_state.json`: `closeReason`) and the NINA #2 companion sat in its
+  light loop's unbounded WaitUntilSafe until NINA #2 restarted; a parent
+  TimeCondition does not pull a running instruction out (the RC16 also started
+  subs after its nautical-10 loop end). Latent and worse: the armer's dawn
+  shutdown fired at astro dawn + 30, but both rigs' flats start at nautical
+  dawn + 5, which at AARO is 28-37 min after astro dawn, so the shutdown parked
+  and warmed everything before any flat, every clear dawn since 2026-09-15.
+  Fixed: shutdown held until nautical dawn + 5 + `dawn_flats_window_min`
+  (capped at sunrise; unsafe = shut down now), bounded waits in the companion,
+  and the shutdown now stops NINA #2 as well. `/api/arm` shows
+  `shutdown_due_utc`. Note the "last sub 12:17:45Z" first blamed on the
+  piggyback was an RC16 OIII sub.
 - 2026-09-26 (safety watchdog was polling a 404): `NinaClient.get_safety_info`
   hit `/equipment/safetymonitor`, which ninaAPI v2 (2.2.15.2 on the scope)
   does not serve; the real endpoint is `/equipment/safetymonitor/info` (payload
