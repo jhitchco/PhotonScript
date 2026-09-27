@@ -174,6 +174,16 @@ or "ERROR: ...". Masters in `out\master\`.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-09-26 (RC16 imaged 38 min into a closed roof, PS-77): the generated
+  NINA JSON had no `$id`/`Parent` references, and NINA sets Parent ONLY from
+  them, so every item loaded with Parent == null. CanContinue then never
+  reached the Safety/Altitude/dawn conditions above a SmartExposure and the
+  5 s safety watchdog could not interrupt. That is also why NINA never wrote
+  OBJECT (PS-51) and why "a parent TimeCondition does not pull a running
+  instruction out" (below). Fix: `link_parents()` on every generated tree,
+  Safety + loop-end TimeCondition on every light SmartExposure (lint rules
+  `parent-links`, `light-loop-safety`, `light-loop-end`), and the armer
+  stops NINA itself if SAFE_LOOP is still running 2 min into an unsafe read.
 - 2026-09-26 (no dawn flats on either rig, PS-36): the roof closed for clouds
   at 11:39Z (AARO roof state `status.astronomyacres.com/WeatherData/
   dragonfly_state.json`: `closeReason`) and the NINA #2 companion sat in its

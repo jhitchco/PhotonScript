@@ -274,7 +274,8 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
         container_type="NINA.Sequencer.Container.SequenceRootContainer, "
                        "NINA.Sequencer",
     )
-    return json.dumps(root, indent=2), total_min
+    from photonscript.scheduler.nina_sequence_json import link_parents
+    return json.dumps(link_parents(root), indent=2), total_min
 
 
 def _pb_gain_offset(config) -> tuple[int, int]:
@@ -470,8 +471,9 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
         ],
         container_type="NINA.Sequencer.Container.SequenceRootContainer, "
                        "NINA.Sequencer")
-    root["Parent"] = None
-    return _json.dumps(root, indent=2), local.strftime("%H:%M")
+    from photonscript.scheduler.nina_sequence_json import link_parents
+    return (_json.dumps(link_parents(root), indent=2),
+            local.strftime("%H:%M"))
 
 
 def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
@@ -776,5 +778,5 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         ],
         container_type="NINA.Sequencer.Container.SequenceRootContainer, "
                        "NINA.Sequencer")
-    root["Parent"] = None
-    return _json.dumps(root, indent=2)
+    from photonscript.scheduler.nina_sequence_json import link_parents
+    return _json.dumps(link_parents(root), indent=2)

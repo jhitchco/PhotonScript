@@ -17,9 +17,13 @@ States:
 Resilience:
   - State persists to <data_dir>/armer_state.json on every transition and is
     restored on startup, so a PhotonScript restart mid-night reattaches.
-  - Resume after a weather pause RE-DISPATCHES: the planner subtracts subs
-    already accepted tonight, so only the remainder is re-run (no repeated
-    slews through completed work).
+  - A weather pause is normally NINA's own: the night loop leaves SAFE_LOOP,
+    parks and waits (WaitUntilSafe), then re-enters targets by itself. PS-77
+    defense in depth: if the monitor has read unsafe for unsafe_stop_grace_s
+    and NINA's tree still shows SAFE_LOOP running, the armer stops the
+    sequence, stops guiding and parks (cooler kept on), and when it has been
+    safe for safety_confirm_seconds it RE-DISPATCHES: the planner subtracts
+    subs already accepted tonight, so only the remainder is re-run.
   - make_safe(): stop -> warm camera -> park mount via ninaAPI, used by every
     abort path and exposed as a dashboard button.
 
@@ -51,6 +55,7 @@ NINA_PATHS = {
     "sequence_load": ["/sequence/load"],
     "sequence_start": ["/sequence/start"],
     "sequence_stop": ["/sequence/stop"],
+    "sequence_json": ["/sequence/json"],
     "safety": ["/equipment/safetymonitor/info"],
     "guider": ["/equipment/guider/info"],
     "mount_park": ["/equipment/mount/park"],
@@ -93,6 +98,15 @@ class Armer:
         self._safety_none_ticks = 0    # consecutive ticks safety monitor unreadable
         self._safety_alerted = False   # safety-monitor-blind alert latch (episode)
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
+        # PS-77 unsafe-stop episode: when the monitor first read unsafe, when
+        # it first read safe again (confirm window), whether the armer had to
+        # stop NINA itself (then resume = re-dispatch), and whether this
+        # episode's stuck-imaging check is settled.
+        self._unsafe_since: datetime | None = None
+        self._safe_since: datetime | None = None
+        self._unsafe_stopped = False
+        self._unsafe_check_done = False
+        self._unsafe_tree_misses = 0
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -110,6 +124,7 @@ class Armer:
                 "guiding_override": getattr(self, "guiding_override", None),
                 "shutdown": getattr(self, "shutdown", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
+                "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -146,6 +161,9 @@ class Armer:
         self.guiding_override = saved.get("guiding_override")
         self.sequence_path = (Path(saved["sequence_path"])
                               if saved.get("sequence_path") else None)
+        # PS-77: an armer safety stop survives a restart, so the resume still
+        # re-dispatches instead of waiting on a sequence that is not running.
+        self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -404,9 +422,10 @@ class Armer:
         self.shutdown = {"at": datetime.utcnow().isoformat() + "Z",
                          "reason": reason, "steps": steps, "verify": None}
         self._persist()
-        # Instant warm cuts the TEC now (a ramp would take minutes); still verify
-        # + alert after a delay that the cooler actually went off.
-        asyncio.create_task(self._verify_shutdown(delay_s=300))
+        # Verify + alert once NINA's warm has had time to finish (PS-77: the
+        # 5 min check fired mid-warm on 2026-09-27, see _shutdown_verify_delay_s).
+        asyncio.create_task(self._verify_shutdown(
+            delay_s=self._shutdown_verify_delay_s()))
         # Grade + thumbnail the night now (background threads), so the Runs
         # page opens instantly in the morning instead of starting the work on
         # first view. Best-effort: never blocks or fails the shutdown.
@@ -420,6 +439,19 @@ class Armer:
         report = " · ".join(steps)
         logger.warning("dawn shutdown (%s): %s", reason, report)
         return report
+
+    def _shutdown_verify_delay_s(self) -> int:
+        """When to check that every cooler really went off after a warm.
+
+        NINA's WarmCamera (CameraVM) sets the setpoint to +20 C and keeps the
+        TEC ON until the sensor reaches 19 C; if it cannot (ambient below
+        ~19 C, the AARO dawn case) it gives up after a 2 min stall, or after
+        its duration + 15 min timeout when the camera keeps reporting cooler
+        power, then waits 20 s and turns the cooler off. A 5 min check lands
+        mid-warm (2026-09-27 12:23Z: 17.9 C, cooler on) and its retry restarts
+        NINA's clock. Wait out the whole window: warm minutes + 17 min."""
+        warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
+        return max(300, int((warm_min + 17.0) * 60))
 
     async def _verify_shutdown(self, delay_s: int = 300):
         """Post-shutdown check: is every cooler actually OFF? One retry, then a
@@ -921,9 +953,14 @@ class Armer:
                     else f"FAILED ({self.detail})")
         return ok
 
-    async def _dispatch_and_start(self) -> bool:
+    async def _dispatch_and_start(self, companion: bool = True,
+                                  fail_state: str | None = "ERROR") -> bool:
+        """companion=False skips the NINA #2 companion (a mid-night re-dispatch
+        must not restart the Piggy-600's running sequence). fail_state=None
+        leaves the armer state alone on failure (the caller handles it)."""
         if not self._dispatch():
-            self._set_state("ERROR")
+            if fail_state:
+                self._set_state(fail_state)
             await notify(self.config, f"Dispatch FAILED: {self.detail}",
                          title="PhotonScript ERROR", priority=1)
             return False
@@ -937,14 +974,16 @@ class Armer:
         # so pre-start validation ('camera not connected') is expected noise
         started = await self._nina("sequence_start", skipValidation="true")
         if loaded is None or started is None:
-            self._set_state("ERROR", f"ninaAPI load/start failed "
-                            f"({self.detail})")
+            if fail_state:
+                self._set_state(fail_state, f"ninaAPI load/start failed "
+                                f"({self.detail})")
             await notify(self.config, f"Dispatch failed: {self.detail}",
                          title="PhotonScript ERROR", priority=1)
             return False
         # One arm covers both scopes: fire a calibration companion at NINA #2.
         # Best-effort — a piggyback problem never fails the RC16 night.
-        await self._dispatch_piggyback_companion()
+        if companion:
+            await self._dispatch_piggyback_companion()
         return True
 
     async def _dispatch_piggyback_companion(self) -> None:
@@ -1024,6 +1063,120 @@ class Armer:
 
     # -- state machine loop ----------------------------------------------------
 
+    # -- PS-77: unsafe but still imaging ------------------------------------------
+
+    @staticmethod
+    def _safe_loop_running(tree) -> bool:
+        """True if NINA's /sequence/json tree shows SAFE_LOOP (the imaging
+        half of the night loop) RUNNING. ninaAPI names containers
+        '<Name>_Container', so match the prefix."""
+        found = False
+
+        def walk(node):
+            nonlocal found
+            if found or not isinstance(node, dict):
+                return
+            if (str(node.get("Name", "")).startswith("SAFE_LOOP")
+                    and str(node.get("Status", "")).upper() == "RUNNING"):
+                found = True
+                return
+            for child in node.get("Items") or []:
+                walk(child)
+
+        for top in tree if isinstance(tree, list) else [tree]:
+            walk(top)
+        return found
+
+    async def _maybe_stop_stuck_imaging(self, now: datetime) -> None:
+        """Defense in depth for 2026-09-26 (roof closed 11:39Z, RC16 shot OIII
+        lights until the dawn shutdown's stop at 12:18Z). Once the monitor has
+        read unsafe for unsafe_stop_grace_s, look at NINA's tree: if SAFE_LOOP
+        is still RUNNING the night loop never left imaging, so stop the
+        sequence, stop guiding and park. The cooler is left at setpoint (no
+        warm) so a re-dispatch can image straight away. A tree that cannot be
+        read three ticks running is treated as imaging (fail safe). One
+        verdict per unsafe episode."""
+        if (not getattr(self.config, "unsafe_stop_enabled", True)
+                or self._unsafe_check_done or self._unsafe_since is None):
+            return
+        grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
+        if (now - self._unsafe_since).total_seconds() < grace:
+            return
+        data = await self._nina("sequence_json")
+        tree = None if data is None else data.get("Response", data) \
+            if isinstance(data, dict) else data
+        if tree is None:
+            self._unsafe_tree_misses += 1
+            if self._unsafe_tree_misses < 3:
+                return
+            imaging, why = True, "NINA sequence tree unreadable"
+        else:
+            imaging = self._safe_loop_running(tree)
+            why = "SAFE_LOOP still running"
+        self._unsafe_check_done = True
+        if not imaging:
+            logger.info("unsafe-stop check: NINA night loop left SAFE_LOOP "
+                        "on its own; nothing to do")
+            return
+        steps = []
+        for label, key in (("stop", "sequence_stop"), ("guider stop", "guider_stop"),
+                           ("park", "mount_park")):
+            ok = await self._nina(key) is not None
+            steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        self._unsafe_stopped = True
+        mins = int((now - self._unsafe_since).total_seconds() // 60)
+        report = " · ".join(steps)
+        self._set_state("PAUSED_UNSAFE",
+                        f"Unsafe {mins} min and NINA kept imaging ({why}): "
+                        f"armer stopped the sequence ({report}); cooler kept "
+                        "on, re-dispatch when safe")
+        logger.warning("PS-77 unsafe stop after %d min (%s): %s", mins, why,
+                       report)
+        await notify(self.config,
+                     f"SAFETY STOP: unsafe for {mins} min but NINA was still "
+                     f"imaging ({why}). Armer stopped the sequence, stopped "
+                     f"guiding and parked: {report}. Cooler kept at setpoint; "
+                     "the remainder is re-dispatched once it has been safe "
+                     f"for {int(getattr(self.config, 'safety_confirm_seconds', 120))} s.",
+                     title="PhotonScript SAFETY STOP", priority=1)
+
+    async def _resume_after_safety_stop(self, now: datetime) -> None:
+        """Safe again after an armer safety stop: nothing is running in NINA,
+        so resuming means re-dispatching. Same confirm-safe debounce as the
+        sequence's own UNSAFE branch, and no resume with too little dark
+        left (the dawn shutdown still runs from PAUSED_UNSAFE)."""
+        if self._safe_since is None:
+            self._safe_since = now
+        confirm = int(getattr(self.config, "safety_confirm_seconds", 120))
+        held = (now - self._safe_since).total_seconds()
+        if held < confirm:
+            msg = f"Safe again, confirming ({int(held)}/{confirm} s)"
+            if self.detail != msg:
+                self._set_state("PAUSED_UNSAFE", msg)
+            return
+        left_min = (self._dawn() - now).total_seconds() / 60
+        if left_min < RESUME_MIN_REMAINING_MIN:
+            msg = (f"Safe again but only {max(0, int(left_min))} min of dark "
+                   "left: not re-dispatching; dawn shutdown will run")
+            if self.detail != msg:
+                self._set_state("PAUSED_UNSAFE", msg)
+            return
+        if await self._dispatch_and_start(companion=False, fail_state=None):
+            self._unsafe_stopped = False
+            self._unsafe_since = self._safe_since = None
+            self._set_state("RUNNING", "Safe again: remainder re-dispatched "
+                                       "after the armer safety stop")
+            await notify(self.config,
+                         f"RESUMED: safe for {confirm} s, re-dispatched the "
+                         f"remainder ({left_min / 60:.1f} h of dark left).",
+                         title="PhotonScript resumed")
+        else:
+            # Stay PAUSED so the dawn shutdown still runs; retry next tick.
+            self._safe_since = None
+            self._set_state("PAUSED_UNSAFE",
+                            f"Re-dispatch after safety stop FAILED "
+                            f"({self.detail}); retrying")
+
     async def _run(self):
         try:
             while self.state in ACTIVE_STATES:
@@ -1075,14 +1228,23 @@ class Armer:
             safe = await self._is_safe()
             await self._watch_safety_monitor(now, safe)
             if safe is False:
-                # The sequence's own night loop parks and holds via
-                # WaitUntilSafe — we observe and notify, we don't interfere.
+                # The sequence's own night loop should leave SAFE_LOOP, park
+                # and hold via WaitUntilSafe. PS-77: the armer no longer takes
+                # that on faith; after unsafe_stop_grace_s it checks NINA's
+                # tree and stops the sequence itself if imaging carried on.
+                self._unsafe_since = now
+                self._safe_since = None
+                self._unsafe_check_done = False
+                self._unsafe_tree_misses = 0
+                grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
                 self._set_state("PAUSED_UNSAFE",
                                 f"Unsafe at {now:%H:%M}Z — NINA night loop "
-                                "parked, waiting for safe")
+                                "should park and wait for safe")
                 await notify(self.config,
-                             "PAUSED: unsafe — NINA's night loop parked the "
-                             "scope and is waiting. Auto-resumes when safe.",
+                             "PAUSED: unsafe. NINA's night loop should stop "
+                             "imaging, park and wait; the armer checks in "
+                             f"{grace} s and stops the sequence itself if it "
+                             "is still imaging. Auto-resumes when safe.",
                              title="PhotonScript paused", priority=1)
             else:
                 # Imaging (or looping to safe) — verify guiding actually runs,
@@ -1105,9 +1267,19 @@ class Armer:
                 return
             safe = await self._is_safe()
             if safe is True:
+                if self._unsafe_stopped:
+                    await self._resume_after_safety_stop(now)
+                    return
                 remaining = (self._dawn() - now).total_seconds() / 3600
+                self._unsafe_since = self._safe_since = None
                 self._set_state("RUNNING", "Safe again — night loop resuming")
                 await notify(self.config,
                              f"RESUMED: safe again, {remaining:.1f}h of dark "
                              "left. NINA night loop re-entering targets.",
                              title="PhotonScript resumed")
+            else:
+                self._safe_since = None  # the confirm window restarts
+                if safe is False:
+                    if self._unsafe_since is None:  # e.g. restored mid-pause
+                        self._unsafe_since = now
+                    await self._maybe_stop_stuck_imaging(now)

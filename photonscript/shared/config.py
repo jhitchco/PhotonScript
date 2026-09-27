@@ -251,6 +251,14 @@ class PhotonScriptConfig(BaseSettings):
     # reads safe again it must STAY safe this long before the sequence unparks,
     # resumes and narrates. Kills the safe/unsafe Pushover storm + mount thrash.
     safety_confirm_seconds: int = 120
+    # PS-77 defense in depth: when the safety monitor has read UNSAFE for this
+    # long and NINA's sequence tree still shows SAFE_LOOP running (the night
+    # loop never left imaging), the armer stops the sequence, stops guiding
+    # and parks, keeping the cooler at setpoint; when it has been safe for
+    # safety_confirm_seconds it re-dispatches the remainder. The grace covers
+    # NINA's own interrupt (5 s watchdog) plus the UNSAFE branch's park.
+    unsafe_stop_enabled: bool = True
+    unsafe_stop_grace_s: int = 120
     connect_all_on_arm: bool = True  # on arm and on restart, actively connect
                                      # every device (esp. the safety monitor) so
                                      # a dead/slow device surfaces early. Connect

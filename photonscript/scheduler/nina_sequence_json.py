@@ -132,6 +132,60 @@ def _trigger_runner(items: list = None) -> dict:
     return _seq_container(None, items or [])
 
 
+_ENTITY_LISTS = ("Items", "Conditions", "Triggers")
+
+
+def link_parents(root: dict) -> dict:
+    """Give every sequence entity a NINA-native "$id" and every child a
+    "Parent": {"$ref": <its container's $id>}, the way NINA's own exports do.
+
+    PS-77 root cause: NINA's deserializer (SequenceJsonConverter + the
+    *CreationConverter classes) sets an item's, condition's or trigger's
+    Parent ONLY from this JSON reference; SequenceContainer.OnDeserialized
+    does not re-attach children. Without it every entity loads with
+    Parent == null, and then:
+      - SequentialStrategy.CanContinue stops recursing at the running
+        container, so a SmartExposure checks only its own LoopCondition and
+        ignores Safety / Altitude / the dawn TimeCondition on every ancestor
+        (2026-09-26: 38 min of subs with the roof closed, two more after the
+        loop end);
+      - the SafetyMonitorCondition (5 s) and TimeCondition (1 s) watchdogs
+        require Parent != null and IsInRootContainer(Parent), so an in-flight
+        exposure is never interrupted;
+      - ancestor triggers (meridian flip, reconnect) never run mid-block,
+        TakeExposure cannot find its DeepSkyObjectContainer (no OBJECT
+        header, PS-51) and SkipInstructionSetOnError's Parent?.Interrupt()
+        is a no-op.
+
+    "$id" must be the FIRST key: Json.NET's Populate() only registers a
+    reference id when "$id" is the object's first property. Only sequence
+    entities (the root, members of Items / Conditions / Triggers, and trigger
+    runners) get ids; other objects are emitted exactly as before. A trigger
+    runner keeps Parent null (NINA constructs it unattached) while its own
+    items point at it. Returns a new tree; the input is not modified."""
+    counter = [0]
+
+    def _entity(node: dict, parent_id) -> dict:
+        counter[0] += 1
+        nid = str(counter[0])
+        new = {"$id": nid}
+        new.update((k, v) for k, v in node.items() if k != "$id")
+        new["Parent"] = {"$ref": parent_id} if parent_id is not None else None
+        for key in _ENTITY_LISTS:
+            coll = new.get(key)
+            if isinstance(coll, dict) and isinstance(coll.get("$values"), list):
+                coll = dict(coll)
+                coll["$values"] = [_entity(ch, nid) if isinstance(ch, dict)
+                                   else ch for ch in coll["$values"]]
+                new[key] = coll
+        runner = new.get("TriggerRunner")
+        if isinstance(runner, dict):
+            new["TriggerRunner"] = _entity(runner, None)
+        return new
+
+    return _entity(root, None)
+
+
 # --- Instructions -----------------------------------------------------------
 
 SOUND_NONE = 22  # GroundStation NotificationSound enum: silent
@@ -401,8 +455,20 @@ def _dither_trigger(after_exposures: int) -> dict:
 
 
 def _smart_exposure(exp: ExposurePlan, guided: bool,
-                    dither_every_n: int) -> dict:
-    """SmartExposure: LoopCondition(count) wrapping SwitchFilter+TakeExposure."""
+                    dither_every_n: int,
+                    guard_conditions: list | None = None,
+                    extra_triggers: list | None = None) -> dict:
+    """SmartExposure: LoopCondition(count) wrapping SwitchFilter+TakeExposure.
+
+    guard_conditions (PS-77) are appended AFTER the LoopCondition, which must
+    stay at Conditions[0] (SmartExposure.GetLoopCondition indexes it). They make
+    the SmartExposure itself, the innermost repeating container, check Safety
+    and the loop end between every exposure. NINA checks a container's OWN
+    conditions between its items whether or not parent links resolve, which is
+    exactly what kept the Piggy-600 light loop honest on 2026-09-26 while the
+    RC16 SmartExposure, guarded only by its ancestors, shot 38 min into a
+    closed roof. extra_triggers go after the dither trigger, which must stay
+    at Triggers[0] (GetDitherAfterExposures)."""
     remaining = exp.count - exp.acquired
     # NINA's SmartExposure ALWAYS expects a DitherAfterExposures trigger at
     # Triggers[0]. Its Validate() calls GetDitherAfterExposures(), which in the
@@ -413,7 +479,7 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     # early-returns and Validate() adds no "guider not connected" issue — so an
     # unguided run is unaffected while the crash is avoided.
     after = dither_every_n if (guided and dither_every_n > 0) else 0
-    triggers = [_dither_trigger(after)]
+    triggers = [_dither_trigger(after)] + list(extra_triggers or [])
     smart = _seq_container(
         "Smart Exposure",
         [
@@ -430,7 +496,8 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
         ],
         conditions=[_make_typed(
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
-            CompletedIterations=0, Iterations=remaining)],
+            CompletedIterations=0, Iterations=remaining)]
+        + list(guard_conditions or []),
         triggers=triggers,
         container_type="NINA.Sequencer.SequenceItem.Imaging.SmartExposure, "
                        "NINA.Sequencer",
@@ -479,19 +546,32 @@ def _autofocus_filter_trigger() -> dict:
 
 
 def _autofocus_hfr_trigger(amount_pct: float = 10.0,
-                           sample_size: int = 4) -> dict:
+                           sample_size: int = 4,
+                           runner: list | None = None) -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger, "
         "NINA.Sequencer",
         Amount=amount_pct, SampleSize=sample_size,
-        TriggerRunner=_trigger_runner([_autofocus()]))
+        TriggerRunner=_trigger_runner(runner or [_autofocus()]))
 
 
-def _autofocus_temp_trigger(amount_c: float = 1.0) -> dict:
+def _autofocus_temp_trigger(amount_c: float = 1.0,
+                            runner: list | None = None) -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus."
         "AutofocusAfterTemperatureChangeTrigger, NINA.Sequencer",
-        Amount=amount_c, TriggerRunner=_trigger_runner([_autofocus()]))
+        Amount=amount_c, TriggerRunner=_trigger_runner(runner or [_autofocus()]))
+
+
+def _block_af_runner(af_filter: FilterType, offset: int) -> list:
+    """PS-77: the refocus recipe a mid-block AF trigger runs. Same order as
+    the block start (PS-65): AF filter, autofocus, measured filter offset.
+    The SmartExposure's own SwitchFilter puts the imaging filter back on the
+    next iteration, so a triggered AF never focuses through 3 nm."""
+    out = [_switch_filter(af_filter), _autofocus()]
+    if offset:
+        out.append(_move_focuser_relative(offset))
+    return out
 
 
 def _autofocus_time_trigger(minutes: float = 60.0) -> dict:
@@ -649,7 +729,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             force_calibration: bool = False,
                             af_filter: "FilterType | None" = None,
                             narrate: str = "normal",
-                            focus_offsets: dict | None = None) -> dict:
+                            focus_offsets: dict | None = None,
+                            loop_end: tuple | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [guiding] -> exposures.
 
@@ -664,7 +745,13 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
 
     narrate (config.pushover_verbosity) controls Pushover chatter: "verbose"
     adds the per-block starting/done pair, "normal" keeps per-target step lines,
-    "quiet" drops those too (target intro + done still fire)."""
+    "quiet" drops those too (target intro + done still fire).
+
+    loop_end = (date provider, minutes offset) of the night loop's end (the
+    LOOP_ALL_NIGHT TimeCondition). PS-77: every LIGHT SmartExposure carries
+    SafetyMonitorCondition + this TimeCondition itself, and the temperature /
+    HFR refocus triggers ride on each SmartExposure with the block's own
+    AF-filter + offset recipe instead of on the target container."""
     chatty_block = narrate == "verbose"          # per-block starting/done pair
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
     active = [e for e in target.exposures
@@ -784,6 +871,23 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         # Only what is still owed: the short set stops once hdr_short_acquired
         # reaches its count (it used to re-shoot all of it every night), and a
         # finished long set is not re-emitted just because shorts remain.
+        # PS-77: the light loop guards itself. Safety + loop end sit on the
+        # SmartExposure (the innermost repeating container) so NINA checks
+        # them between EVERY exposure, and the refocus triggers carry this
+        # block's AF filter + offset (a target-level AF trigger would focus
+        # through the narrowband filter once parent links make it fire
+        # mid-block).
+        def _guards():
+            g = [_safety_condition()]
+            if loop_end:
+                g.append(_time_condition(*loop_end))
+            return g
+
+        def _af_triggers():
+            runner = lambda: _block_af_runner(block_af, offset)  # noqa: E731
+            return [_autofocus_temp_trigger(2.0, runner()),
+                    _autofocus_hfr_trigger(10.0, 4, runner())]
+
         short_n = exp.short_remaining()
         if short_n > 0:
             short_exp = exp.model_copy(update={
@@ -792,10 +896,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                 "hdr_short_seconds": None, "hdr_short_count": 0,
                 "hdr_short_acquired": 0})
             out.append(_smart_exposure(short_exp, target.start_guiding,
-                                       target.dither_every_n))
+                                       target.dither_every_n,
+                                       guard_conditions=_guards(),
+                                       extra_triggers=_af_triggers()))
         if exp.count - exp.acquired > 0:
             out.append(_smart_exposure(exp, target.start_guiding,
-                                       target.dither_every_n))
+                                       target.dither_every_n,
+                                       guard_conditions=_guards(),
+                                       extra_triggers=_af_triggers()))
         if chatty_block:
             out.append(_pushover(
                 "Imaging",
@@ -819,24 +927,28 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     # done and there's nothing else to do). Only this inner container loops;
     # the outer DSO container carries LoopCondition(1) so it never re-slews,
     # re-focuses and re-centers on every pass (PS-27).
+    # PS-77: the loop end rides here too, so even if parent links were ever
+    # lost this container stops re-running its filter switches and AFs once
+    # the SmartExposures have stopped at the loop end.
+    inner_conds = [_safety_condition(),
+                   _altitude_condition(target, min_altitude)]
+    if loop_end:
+        inner_conds.append(_time_condition(*loop_end))
     items.append(_seq_container(
         f"{target.name} imaging (repeats while safe and up)", imaging,
-        conditions=[_safety_condition(),
-                    _altitude_condition(target, min_altitude)]))
+        conditions=inner_conds))
     items.append(_pushover("Imaging", f"{target.name}: leaving target "
                            f"({plan_desc}) — below altitude or unsafe"))
 
-    # AF triggers: temp drift + HFR creep (the time-based trigger validated
-    # badly against disconnected equipment at load). AutofocusAfterFilterChange
-    # was dropped in PS-65: every filter block now runs its own AF on the AF
-    # filter + offset, and the trigger would fire a second AF in the narrowband
-    # filter right after the offset (3nm, 1x1 AF: the 2026-09-26 failure).
-    # Temp trigger relaxed 1.0->2.0 C: with a per-block AF (PS-65) and the
-    # HFR-creep trigger already covering focus drift, a 1C re-AF fired too
-    # often on nights with a swinging focuser temp and ate dark time.
-    triggers = [_meridian_flip_trigger(), _reconnect_trigger(),
-                _autofocus_temp_trigger(2.0),
-                _autofocus_hfr_trigger(10.0, 4)]
+    # AF triggers (temp drift 2.0 C + HFR creep 10%) moved onto each light
+    # SmartExposure with the block's AF filter + offset (PS-77, see _block).
+    # Until PS-77 the generated JSON carried no Parent links, so these
+    # target-level triggers could only fire between the target container's
+    # own items, never mid-block; with links they would fire between
+    # exposures and autofocus through the narrowband filter.
+    # AutofocusAfterFilterChange stays dropped (PS-65). The meridian flip and
+    # reconnect triggers stay here: they are target-wide.
+    triggers = [_meridian_flip_trigger(), _reconnect_trigger()]
 
     container = _seq_container(
         target.name, items,
@@ -1018,7 +1130,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                                     af_filter=af_ft,
                                     narrate=getattr(_cfg, "pushover_verbosity",
                                                     "normal"),
-                                    focus_offsets=_cfg.focus_offset_map())
+                                    focus_offsets=_cfg.focus_offset_map(),
+                                    loop_end=(dawn_provider, dawn_offset))
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
@@ -1126,7 +1239,12 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             ] + [_sky_flat(f, n, _cfg.default_gain, _cfg.default_offset)
                  for f in flat_filters]
             + [_pushover("Flats", "sky flats complete")],
-            conditions=[_safety_condition()])
+            # LoopCondition(1): a container under a SafetyMonitorCondition
+            # REPEATS while safe, so without it the flat set would reshoot
+            # until the armer's dawn shutdown stopped NINA (latent: the
+            # shutdown always fired before the flat window until PS-36;
+            # caught by the PS-77 sequence simulator).
+            conditions=[_safety_condition(), _loop_once()])
         end_items.append(flat_block)
     end_items.append(_pushover("Shutdown", "starting shutdown: stop guiding, "
                                "park, dew heater off, warm camera, disconnect"))
@@ -1160,5 +1278,4 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         container_type="NINA.Sequencer.Container.SequenceRootContainer, "
                        "NINA.Sequencer",
     )
-    root["Parent"] = None
-    return json.dumps(root, indent=2)
+    return json.dumps(link_parents(root), indent=2)

@@ -90,6 +90,89 @@ def _check_focus_moves(seq: dict, r: LintResult) -> None:
             pending = None   # one finding per offending move
 
 
+_ENTITY_LISTS = ("Items", "Conditions", "Triggers")
+
+
+def _check_parent_links(seq: dict, r: LintResult) -> None:
+    """PS-77: every sequence entity must carry a leading "$id" and every child
+    a "Parent": {"$ref"} to its container. NINA sets Parent only from that
+    reference; without it ancestor conditions are never checked between a
+    SmartExposure's exposures and the safety/time watchdogs never interrupt
+    (2026-09-26: 38 min of lights with the roof closed). Use
+    nina_sequence_json.link_parents() on any generated tree."""
+    problems: list[str] = []
+    seen: set = set()
+
+    def visit(node: dict, parent_id, where: str) -> None:
+        nid = node.get("$id")
+        if nid is None or next(iter(node)) != "$id":
+            problems.append(f"{where}: no leading $id")
+        elif nid in seen:
+            problems.append(f"{where}: duplicate $id {nid}")
+        else:
+            seen.add(nid)
+        if parent_id is not None:
+            ref = (node.get("Parent") or {}).get("$ref") \
+                if isinstance(node.get("Parent"), dict) else None
+            if ref != parent_id:
+                problems.append(f"{where}: Parent is {ref!r}, want {parent_id!r}")
+        for key in _ENTITY_LISTS:
+            for i, ch in enumerate((node.get(key) or {}).get("$values", []) or []):
+                if isinstance(ch, dict):
+                    visit(ch, nid, f"{where}/{ch.get('Name') or key}[{i}]")
+        runner = node.get("TriggerRunner")
+        if isinstance(runner, dict):
+            visit(runner, None, f"{where}/TriggerRunner")
+
+    visit(seq, None, seq.get("Name") or "root")
+    if problems:
+        more = f" (+{len(problems) - 3} more)" if len(problems) > 3 else ""
+        r.error("parent-links", "sequence entities without NINA Parent links, "
+                                "so ancestor Safety/Time conditions are never "
+                                "checked between exposures: "
+                                + "; ".join(problems[:3]) + more)
+
+
+def _light_loops(node, path=""):
+    """(path, container) for every container whose OWN Items include a LIGHT
+    TakeExposure: the innermost repeating container of a light loop."""
+    if isinstance(node, dict):
+        here = f"{path}/{node.get('Name')}" if node.get("Name") else path
+        items = (node.get("Items") or {}).get("$values") \
+            if isinstance(node.get("Items"), dict) else None
+        if items and any(isinstance(it, dict)
+                         and "Imaging.TakeExposure" in it.get("$type", "")
+                         and str(it.get("ImageType", "LIGHT")).upper() == "LIGHT"
+                         for it in items):
+            yield here, node
+        for v in node.values():
+            yield from _light_loops(v, here)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _light_loops(v, path)
+
+
+def _check_light_loop_guards(seq: dict, r: LintResult) -> None:
+    """PS-77: every light loop must be guarded at its innermost repeating
+    container (the one that directly holds TakeExposure, e.g. the
+    SmartExposure) by a SafetyMonitorCondition and a TimeCondition (the
+    night's loop end). NINA checks a container's OWN conditions between its
+    items no matter what; conditions on ancestors only count through Parent
+    links. The Piggy-600 loop (guarded this way) stopped after one sub on
+    2026-09-26; the RC16 SmartExposure (guarded only by ancestors) did not."""
+    for path, c in _light_loops(seq):
+        name = c.get("Name") or path or "?"
+        conds = json.dumps(c.get("Conditions", {}))
+        if "SafetyMonitorCondition" not in conds:
+            r.error("light-loop-safety", f"[{path or name}] light loop has no "
+                                         "SafetyMonitorCondition of its own: it "
+                                         "keeps exposing when the roof closes")
+        if "Conditions.TimeCondition" not in conds:
+            r.error("light-loop-end", f"[{path or name}] light loop has no "
+                                      "TimeCondition of its own: it keeps "
+                                      "starting subs after the night loop's end")
+
+
 def lint(seq: dict, guided: bool | None = None) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content."""
     r = LintResult()
@@ -108,6 +191,8 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
                                "or below the 0.0°C setpoint (never a warm sensor)")
 
     _check_focus_moves(seq, r)
+    _check_parent_links(seq, r)
+    _check_light_loop_guards(seq, r)
 
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")

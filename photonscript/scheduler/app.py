@@ -497,6 +497,8 @@ _CONFIG_FIELDS = [
     ("guiding_flap_count", "PS_GUIDING_FLAP_COUNT", "Guiding flapping: losses in the window before one summary push", "Nanny / Alerts", "int", False, False),
     ("guiding_flap_window_min", "PS_GUIDING_FLAP_WINDOW_MIN", "Guiding flapping: window (min)", "Nanny / Alerts", "float", False, False),
     ("safety_confirm_seconds", "PS_SAFETY_CONFIRM_SECONDS", "Confirm-safe hold before resume (s) — safety-flap debounce", "Nanny / Alerts", "int", False, False),
+    ("unsafe_stop_enabled", "PS_UNSAFE_STOP_ENABLED", "Armer stops NINA if it is still imaging while unsafe (PS-77)", "Nanny / Alerts", "bool", False, False),
+    ("unsafe_stop_grace_s", "PS_UNSAFE_STOP_GRACE_S", "Unsafe this long with SAFE_LOOP still running before the armer stops NINA (s)", "Nanny / Alerts", "int", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
     ("cooler_stuck_minutes", "PS_COOLER_STUCK_MINUTES", "Cooler nanny: alert if still warm this many min into the window", "Imaging", "int", False, False),
     ("sub_temp_over_setpoint_c", "PS_SUB_TEMP_OVER_SETPOINT_C", "Reject subs this many °C above setpoint", "Imaging", "float", False, False),
