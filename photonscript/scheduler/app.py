@@ -1409,7 +1409,9 @@ def api_runs():
                      if Path(s.get("abs_path") or s.get("file") or "").name
                      in pending)
             n["syncing"] = sy
-            n["transferred"] = len(acc) - sy
+            # a capped (partial) list can't prove a file has transferred
+            n["transferred"] = (None if _remoteneed_cache.get("capped")
+                                else len(acc) - sy)
         else:
             n["syncing"] = None
             n["transferred"] = len(acc) if acc else None
@@ -1445,10 +1447,27 @@ def api_run_archive(date: str, payload: dict = Body(default={})):
 _remoteneed_cache: dict = {"t": 0.0, "names": None}
 
 
-_REMOTENEED_FRESH_S = 30       # serve from cache without refreshing
-_REMOTENEED_STALE_OK_S = 900    # keep serving a stale answer this long
-_REMOTENEED_FAIL_BACKOFF_S = 120  # after a failed walk, wait before retrying
+# PS-75: the dashboard polls /api/sync/queue every 30 s and every poll older
+# than 30 s kicked a walk, so with a 45k-file backlog the scheduler walked
+# remoteneed back to back all day (40 pages, 60 to 126 s each, always cut at
+# 20,000 files) and the service showed ~0.8 to 2.3 s loop-lag spikes as each
+# walk finished (GIL + garbage collection over ~20k parsed entries). Now:
+# - a walk is due at most every _REMOTENEED_FRESH_S (10 min), every
+#   _REMOTENEED_CAPPED_S (15 min) when the last walk hit the cap;
+# - before a capped re-walk the refresh thread asks /rest/db/completion
+#   (one cheap call) and skips the walk while needItems has not dropped;
+# - no walks while the armer is active (the night loop owns the machine);
+# - totals come from completion, and a capped list is treated as a partial
+#   answer (a file missing from it is "unknown", not "transferred").
+_REMOTENEED_PAGES = 40
+_REMOTENEED_PERPAGE = 500
+_REMOTENEED_CAP = _REMOTENEED_PAGES * _REMOTENEED_PERPAGE
+_REMOTENEED_FRESH_S = 600       # uncapped answer: re-walk after 10 min
+_REMOTENEED_CAPPED_S = 900      # capped answer: re-check after 15 min
+_REMOTENEED_STALE_OK_S = 1800   # serve a stale answer this long
+_REMOTENEED_FAIL_BACKOFF_S = 600  # after a failed walk, wait before retrying
 _REMOTENEED_PAGE_TIMEOUT_S = 30   # per page; only ever runs off-request now
+_REMOTENEED_SKIP_WHILE_ARMED = True
 _remoteneed_refresh_lock = threading.Lock()
 
 
@@ -1463,10 +1482,49 @@ def _syncthing_settings():
     return url, key, folder, device
 
 
+def _armer_active() -> bool:
+    try:
+        from photonscript.scheduler.armer import ACTIVE_STATES
+        return (_armer is not None
+                and getattr(_armer, "state", "DISARMED") in ACTIVE_STATES)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remoteneed_walk_due(cache: dict, now: float, armed: bool) -> bool:
+    """Pure cadence rule (see the PS-75 note above)."""
+    if armed and _REMOTENEED_SKIP_WHILE_ARMED:
+        return False
+    if now - cache.get("fail_t", 0.0) < _REMOTENEED_FAIL_BACKOFF_S:
+        return False
+    if cache.get("names") is None:
+        return True
+    period = (_REMOTENEED_CAPPED_S if cache.get("capped")
+              else _REMOTENEED_FRESH_S)
+    return now - cache.get("checked_t", cache.get("t", 0.0)) >= period
+
+
+def _syncthing_need(settings) -> Optional[dict]:
+    """{"items", "bytes"} the desktop still needs, from /rest/db/completion
+    (one cheap call, unlike the paged remoteneed walk). None on failure."""
+    import httpx
+    url, key, folder, device = settings
+    try:
+        with httpx.Client(timeout=10, headers={"X-API-Key": key}) as cl:
+            r = cl.get(url.rstrip("/") + "/rest/db/completion",
+                       params={"folder": folder, "device": device})
+            d = r.json()
+            return {"items": int(d.get("needItems", 0)),
+                    "bytes": int(d.get("needBytes", 0))}
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _refresh_remoteneed(settings) -> Optional[set]:
     """Page through Syncthing /rest/db/remoteneed (up to 40 x 500 entries)
     and store the result in _remoteneed_cache. None on failure (the failure
-    time is recorded so callers back off instead of hammering Syncthing)."""
+    time is recorded so callers back off instead of hammering Syncthing).
+    Runs in the refresh thread, never on the event loop."""
     import time as _time
     import httpx
     url, key, folder, device = settings
@@ -1475,13 +1533,15 @@ def _refresh_remoteneed(settings) -> Optional[set]:
     try:
         names: set = set()
         entries: list = []
+        capped = False
         with httpx.Client(timeout=_REMOTENEED_PAGE_TIMEOUT_S,
                           headers={"X-API-Key": key}) as cl:
-            for page in range(1, 41):  # up to 20k entries
+            for page in range(1, _REMOTENEED_PAGES + 1):
                 pages = page
                 r = cl.get(url.rstrip("/") + "/rest/db/remoteneed",
                            params={"folder": folder, "device": device,
-                                   "page": page, "perpage": 500})
+                                   "page": page,
+                                   "perpage": _REMOTENEED_PERPAGE})
                 d = r.json()
                 batch = d.get("files") or []
                 if not isinstance(batch, list):
@@ -1493,14 +1553,21 @@ def _refresh_remoteneed(settings) -> Optional[set]:
                         n, sz = str(f), 0
                     names.add(Path(n).name)
                     entries.append((n, sz))
-                if len(batch) < 500:
+                del d, batch
+                if len(entries) < page * _REMOTENEED_PERPAGE:
                     break
+            else:
+                capped = True
         took = _time.monotonic() - t0
-        _remoteneed_cache.update(t=_time.time(), names=names, entries=entries,
-                                 fail_t=0.0, last_error="", took_s=round(took, 1))
+        now = _time.time()
+        _remoteneed_cache.update(t=now, checked_t=now, names=names,
+                                 entries=entries, capped=capped,
+                                 fail_t=0.0, last_error="",
+                                 took_s=round(took, 1))
         if took > 5:
-            logger.info("Syncthing remoteneed walk: %d files, %d page(s), %.1f s",
-                        len(entries), pages, took)
+            logger.info("Syncthing remoteneed walk: %s files, %d page(s), "
+                        "%.1f s", f"{len(entries)}+" if capped
+                        else len(entries), pages, took)
         return names
     except Exception as e:  # noqa: BLE001
         took = _time.monotonic() - t0
@@ -1512,6 +1579,30 @@ def _refresh_remoteneed(settings) -> Optional[set]:
         return None
 
 
+def _refresh_remoteneed_maybe(settings) -> None:
+    """Refresh-thread body: ask completion for the true backlog, then walk
+    remoteneed unless the last walk was capped and the backlog has not
+    drained since (the walk would return the same 20,000 names)."""
+    import time as _time
+    cache = _remoteneed_cache
+    need = _syncthing_need(settings)
+    if need is not None:
+        cache.update(need_items=need["items"], need_bytes=need["bytes"])
+    prev = cache.get("need_at_walk")
+    if (need is not None and cache.get("capped")
+            and cache.get("names") is not None and prev is not None
+            and need["items"] >= _REMOTENEED_CAP and need["items"] >= prev):
+        # The listed files are still pending, so the partial answer stays
+        # valid (anything not listed is reported as unknown anyway).
+        now = _time.time()
+        cache.update(checked_t=now, t=now)
+        logger.info("Syncthing backlog %d files, not draining; skipping the "
+                    "remoteneed walk", need["items"])
+        return
+    if _refresh_remoteneed(settings) is not None:
+        cache["need_at_walk"] = need["items"] if need is not None else None
+
+
 def _refresh_remoteneed_bg(settings) -> None:
     """Refresh in a daemon thread; at most one refresh in flight."""
     if not _remoteneed_refresh_lock.acquire(blocking=False):
@@ -1519,7 +1610,7 @@ def _refresh_remoteneed_bg(settings) -> None:
 
     def _run():
         try:
-            _refresh_remoteneed(settings)
+            _refresh_remoteneed_maybe(settings)
         finally:
             _remoteneed_refresh_lock.release()
 
@@ -1529,14 +1620,12 @@ def _refresh_remoteneed_bg(settings) -> None:
 def _syncthing_pending_names():
     """Basenames the DESKTOP still needs from the Library share.
     None = can't tell (not configured, unreachable, or not fetched yet).
+    When _remoteneed_cache["capped"] is set the set is PARTIAL: a name in it
+    is pending, a name missing from it is unknown (see _transfer_state).
 
-    NEVER blocks a request on Syncthing. The remoteneed walk (up to 40 pages,
-    each recomputed by Syncthing) measured ~45 s on the scope PC and kept
-    /api/runs and /api/runs/{date} at ~50 s. Now: a cached answer younger than
-    30 s is returned as is; anything older triggers ONE background refresh
-    (skipped for 2 min after a failure) and the last answer is served
-    meanwhile, up to 15 min old. Before the first walk finishes, the transfer
-    column just shows unknown."""
+    NEVER blocks a request on Syncthing: the walk runs in a background
+    thread on the PS-75 cadence and the last answer is served meanwhile, up
+    to _REMOTENEED_STALE_OK_S old."""
     import time as _time
     settings = _syncthing_settings()
     if settings is None:
@@ -1544,11 +1633,18 @@ def _syncthing_pending_names():
     now = _time.time()
     names = _remoteneed_cache.get("names")
     age = now - _remoteneed_cache.get("t", 0.0)
-    if names is not None and age < _REMOTENEED_FRESH_S:
-        return names
-    if now - _remoteneed_cache.get("fail_t", 0.0) >= _REMOTENEED_FAIL_BACKOFF_S:
+    if _remoteneed_walk_due(_remoteneed_cache, now, _armer_active()):
         _refresh_remoteneed_bg(settings)
     return names if (names is not None and age < _REMOTENEED_STALE_OK_S) else None
+
+
+def _transfer_state(base: str, pending: Optional[set]) -> Optional[str]:
+    """'pending' / 'done' / None (unknown) for one accepted sub."""
+    if pending is None:
+        return None
+    if base in pending:
+        return "pending"
+    return None if _remoteneed_cache.get("capped") else "done"
 
 
 @app.post("/api/library/archive")
@@ -1587,8 +1683,7 @@ def api_run_detail(date: str, backfill: bool = True):
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
             base = Path(s.get("abs_path") or s.get("file") or "").name
-            s["transfer"] = (None if pending is None
-                             else "pending" if base in pending else "done")
+            s["transfer"] = _transfer_state(base, pending)
     return d
 
 
@@ -1782,10 +1877,21 @@ def api_sync_queue():
         g["files"] += 1
         g["bytes"] += size
     out = sorted(groups.values(), key=lambda g: -g["bytes"])
+    capped = bool(_remoteneed_cache.get("capped"))
+    listed = len(entries)
+    need = _remoteneed_cache.get("need_items")
+    # PS-75: the true total comes from /rest/db/completion; the folder
+    # breakdown only covers the files the (capped) walk listed.
+    total = need if isinstance(need, int) and need >= listed else listed
     return {"configured": True, "groups": out[:20],
             "more_groups": max(0, len(out) - 20),
-            "total_files": len(entries),
-            "total_bytes": sum(s for _, s in entries)}
+            "total_files": total,
+            "listed_files": listed,
+            "partial": capped,
+            "total_bytes": (_remoteneed_cache.get("need_bytes")
+                            if capped and _remoteneed_cache.get("need_bytes")
+                            else sum(s for _, s in entries)),
+            "walked_at": _remoteneed_cache.get("t") or None}
 
 
 @app.get("/api/calibration/health")

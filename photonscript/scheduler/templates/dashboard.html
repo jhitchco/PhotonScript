@@ -1080,7 +1080,8 @@
             const gb = b => (b / 1073741824).toFixed(1) + ' GB';
             document.getElementById('queueSummary').textContent =
                 'Transfer queue: ' + d.total_files + ' files · ' +
-                gb(d.total_bytes) + ' across ' + d.groups.length + ' folder(s)';
+                gb(d.total_bytes) + ' across ' + d.groups.length + ' folder(s)' +
+                (d.partial ? ' (folders from the first ' + d.listed_files + ' listed)' : '');
             document.getElementById('queueList').innerHTML = d.groups.map(g =>
                 '<b>' + g.folder + '</b>: ' + g.files + ' files · ' + gb(g.bytes)
             ).join('<br>') + (d.more_groups ? '<br>… +' + d.more_groups + ' more' : '');

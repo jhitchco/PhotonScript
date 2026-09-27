@@ -161,6 +161,7 @@ def test_syncthing_names_never_block_and_refresh_in_background(monkeypatch):
         return names
 
     monkeypatch.setattr(app, "_refresh_remoteneed", slow_refresh)
+    monkeypatch.setattr(app, "_syncthing_need", lambda s: None)
     monkeypatch.setattr(app, "_remoteneed_cache", {"t": 0.0, "names": None})
     t0 = time.time()
     assert app._syncthing_pending_names() is None      # cold: unknown, no wait
@@ -168,7 +169,7 @@ def test_syncthing_names_never_block_and_refresh_in_background(monkeypatch):
     gate.set()
     assert _wait_for(lambda: len(calls) == 1)
     assert app._syncthing_pending_names() == {"n1"}     # fresh
-    app._remoteneed_cache["t"] = time.time() - 60       # stale but usable
+    app._remoteneed_cache["t"] = time.time() - 700      # stale but usable (PS-75: 10 min)
     assert app._syncthing_pending_names() == {"n1"}     # served immediately
     assert _wait_for(lambda: len(calls) == 2)
     assert app._syncthing_pending_names() == {"n2"}
@@ -186,7 +187,7 @@ def test_syncthing_failure_backs_off(monkeypatch):
                         {"t": 0.0, "names": None, "fail_t": time.time()})
     assert app._syncthing_pending_names() is None
     assert kicked == []                                 # inside the backoff
-    app._remoteneed_cache["fail_t"] = time.time() - 600
+    app._remoteneed_cache["fail_t"] = time.time() - 700   # PS-75: 10 min backoff
     app._syncthing_pending_names()
     assert kicked == [1]
 
