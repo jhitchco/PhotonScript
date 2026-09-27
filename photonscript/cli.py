@@ -7,7 +7,7 @@ Usage:
     photonscript sequence [--output tonight.json] [--guided]
     photonscript lint <sequence.json>
     photonscript report [--date 2026-07-01]
-    photonscript status [--url http://host:8100]
+    photonscript status [--url http://host:8100] [--timeout 30]
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript stop | restart
     photonscript notify "message"
@@ -632,14 +632,45 @@ def monitor(
         pass
 
 
+def _probe_health(base: str, timeout: float = 30.0, slow_s: float = 2.0) -> dict:
+    """GET /api/health and classify the answer (PS-57): up (with latency),
+    slow (answered, but over 2 s), old (server predates /api/health),
+    refused (nothing listening), timeout (listening but not answering, i.e.
+    running and stalled) or error."""
+    import time as _time
+    import httpx
+    t0 = _time.monotonic()
+    try:
+        r = httpx.get(f"{base}/api/health", timeout=timeout)
+    except httpx.ConnectError as e:
+        return {"state": "refused", "detail": str(e) or "connection refused"}
+    except httpx.TimeoutException:
+        return {"state": "timeout", "after_s": timeout}
+    except Exception as e:  # noqa: BLE001
+        return {"state": "error", "detail": f"{type(e).__name__}: {e}"}
+    dt = _time.monotonic() - t0
+    if r.status_code == 404:
+        return {"state": "old", "latency_s": dt}
+    if r.status_code != 200:
+        return {"state": "error", "detail": f"HTTP {r.status_code}", "latency_s": dt}
+    try:
+        data = r.json()
+    except ValueError:
+        data = {}
+    return {"state": "slow" if dt > slow_s else "up", "latency_s": dt, "data": data}
+
+
 @app.command()
 def status(
     url: str = typer.Option("http://localhost:8100", "--url",
                             help="Scheduler to query, e.g. "
                                  "https://teles-feb25.lobster-bleak.ts.net"),
+    timeout: float = typer.Option(30.0, "--timeout",
+                                  help="Seconds to wait for the scheduler"),
 ):
-    """Show whether PhotonScript is running (PID, uptime, supervisor, version)
-    and the telescope state from the running scheduler."""
+    """Show whether PhotonScript is running (PID, uptime, supervisor, version),
+    whether its API is up, slow or down (GET /api/health), and the telescope
+    state from the running scheduler."""
     import httpx
     import time as _time
     from photonscript.shared.config import PhotonScriptConfig
@@ -667,17 +698,61 @@ def status(
     if sv.hold_active(config):
         console.print("  Hold:       [yellow]HOLD set (operator stop)[/yellow]")
 
+    # --- the API: up, slow or down? (PS-57) ---
     base = url.rstrip("/")
+    h = _probe_health(base, timeout=timeout)
+    st = h["state"]
+    if st == "refused":
+        console.print(f"[red]Cannot reach the scheduler at {base}[/red]: "
+                      f"connection refused (nothing listening)")
+        return
+    if st == "timeout":
+        console.print(f"[red]Cannot reach the scheduler at {base}[/red]: no answer "
+                      f"within {timeout:.0f} s. The port is open, so the process is "
+                      f"probably running but stalled; check "
+                      f"{config.data_dir / 'logs' / 'stalls.log'}")
+        return
+    if st == "error":
+        console.print(f"[red]Cannot reach the scheduler at {base}[/red]: {h['detail']}")
+        return
+    lat = h["latency_s"]
+    d = h.get("data") or {}
+    loop = d.get("loop") or {}
+    lag = (f", loop lag {loop.get('lag_ms', 0):.0f} ms, max "
+           f"{loop.get('max_lag_ms_5min', 0):.0f} ms / 5 min"
+           + (f", {loop['stalls_5min']} stall(s)" if loop.get("stalls_5min") else "")
+           if loop else "")
+    if st == "slow":
+        console.print(f"  API:        [yellow]SLOW[/yellow], answered in {lat:.1f} s{lag}")
+    elif st == "up":
+        console.print(f"  API:        [green]up[/green], answered in {lat:.2f} s{lag}")
+    else:  # old server without /api/health
+        console.print(f"  API:        [green]up[/green] ({lat:.2f} s, no /api/health: "
+                      f"older version)")
+    if d:
+        pr = d.get("process") or {}
+        up_s = d.get("uptime_s")
+        bits = [f"pid {d.get('pid')}", f"mode {d.get('mode')}"]
+        if up_s is not None:
+            bits.append(f"up {_fmt_uptime(up_s)}")
+        for key, label in (("session_id", "session"), ("priority_class", "priority"),
+                           ("power_throttling", "throttling"), ("launcher", "launcher")):
+            if pr.get(key) not in (None, ""):
+                bits.append(f"{label} {pr[key]}")
+        console.print("  Service:    " + ", ".join(bits))
+        console.print(f"  Armer:      {d.get('armer', '?')}")
+
     try:
-        ver = httpx.get(f"{base}/api/update/check", timeout=10).json()
+        ver = httpx.get(f"{base}/api/update/check", timeout=timeout).json()
         console.print(f"  Version:    {ver.get('running', '?')}"
                       + (f" ([yellow]{ver.get('behind')} behind[/yellow])"
                          if ver.get("behind") else ""))
     except Exception:  # noqa: BLE001
-        pass
+        if d.get("version"):
+            console.print(f"  Version:    {d['version']}")
 
     try:
-        data = httpx.get(f"{base}/api/status", timeout=10).json()
+        data = httpx.get(f"{base}/api/status", timeout=timeout).json()
         telescope = data.get("telescope", {})
         state = telescope.get("session_state", "unknown")
         state_color = {"imaging": "green", "idle": "dim", "error": "red"}.get(state, "yellow")
@@ -688,8 +763,8 @@ def status(
         console.print(f"  Guiding:    {telescope.get('guiding', {}).get('rms_total_arcsec', 0):.2f}\"")
         console.print(f"  Images:     {telescope.get('images_captured_tonight', 0)} tonight")
         console.print(f"  Projects:   {data.get('active_projects', 0)} active / {data.get('total_projects', 0)} total")
-    except Exception:  # noqa: BLE001
-        console.print(f"[red]Cannot reach the scheduler at {base}[/red]")
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[yellow]/api/status failed:[/yellow] {type(e).__name__}")
 
 
 def _fmt_uptime(seconds: float) -> str:

@@ -2389,6 +2389,8 @@ async def api_scope():
 # --- Mounted routers (extracted from this file; see routers/) --------------
 from photonscript.scheduler.routers import triage as _triage_router  # noqa: E402
 app.include_router(_triage_router.router)
+from photonscript.scheduler.routers import health as _health_router  # noqa: E402
+app.include_router(_health_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

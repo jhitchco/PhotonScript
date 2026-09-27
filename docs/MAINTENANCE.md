@@ -16,7 +16,7 @@ and starts a fresh supervisor.
 
 | Do this | Command (scope PC) |
 |---|---|
-| Status | `photonscript status` (pid, uptime, supervisor, version) |
+| Status | `photonscript status` (pid, uptime, supervisor, version; API up / SLOW / refused / no answer, loop lag) |
 | Watch logs | `photonscript monitor` (or from the desktop: `--url https://teles-feb25.lobster-bleak.ts.net`) |
 | Stop, stay down | `photonscript stop` (`--force` to hard-kill; both leave a HOLD so the supervisor does not restart it) |
 | Restart | `photonscript restart` |
@@ -36,6 +36,12 @@ not start with a logon error, re-run the installer with `-UsePassword`.
 
 ### Slow or stalled service (PS-55)
 
+- `GET /api/health` (PS-57) answers from memory only: version, commit (full
+  SHA), started_at, uptime_s, pid, mode, loop lag (`lag_ms`,
+  `max_lag_ms_5min`, `stalls_5min`), process context, armer state. Its
+  response time is the event loop's own latency. `photonscript status` uses
+  it with a 30 s timeout and says `up`, `SLOW` (over 2 s), `connection
+  refused` (not listening) or `no answer within 30 s` (running but stalled).
 - The service log starts every run with a `Process:` line: pid, user, Windows
   session (0 = scheduled task without a desktop), priority class, power
   throttling, elevated, launcher (`console` or `task-<LogonType>`, set by
