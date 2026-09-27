@@ -52,6 +52,8 @@ _DEFAULTS = {
     "pushover_quiet_daytime": True,
     "pushover_daytime_title_window_h": 4.0,
     "pushover_daytime_sun_alt_deg": -3.0,
+    "pushover_emergency_retry_s": 300,
+    "pushover_emergency_expire_s": 1800,
 }
 
 _lock = asyncio.Lock()
@@ -111,6 +113,36 @@ def _audit(config, title: str, message: str, priority: int, sent: bool,
         logger.debug("notification audit-log write failed: %s", e)
 
 
+def record(config, message: str, title: str = "PhotonScript",
+           priority: int = 0, reason: str = "held") -> None:
+    """Audit a notification that the CALLER decided not to push (e.g. the
+    armer collapsing a guiding flap, PS-66), so notifications.jsonl and
+    /api/notifications still show every event with sent=false."""
+    logger.info("[pushover held:%s] %s: %s", reason, title, message)
+    _audit(config, title, message, priority, False, reason)
+
+
+def _payload(config, message: str, title: str, priority: int,
+             sound: str) -> dict:
+    """POST body. Pushover REJECTS priority 2 (emergency) without retry and
+    expire: both 2026-09-26 "STILL not guiding" escalations came back
+    send-failed for that reason (PS-66)."""
+    data = {
+        "token": config.pushover_api_token,
+        "user": config.pushover_user_key,
+        "title": title,
+        "message": message,
+        "priority": priority,
+        "sound": sound,
+    }
+    if int(priority) >= 2:
+        retry = int(_cfg(config, "pushover_emergency_retry_s"))
+        expire = int(_cfg(config, "pushover_emergency_expire_s"))
+        data["retry"] = max(30, retry)              # Pushover minimum 30 s
+        data["expire"] = max(data["retry"], min(10800, expire))  # max 3 h
+    return data
+
+
 async def _send_raw(config, message: str, title: str, priority: int,
                     sound: str) -> bool:
     """The actual POST. No-op (logged) if keys unset."""
@@ -119,14 +151,11 @@ async def _send_raw(config, message: str, title: str, priority: int,
         return False
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(API, data={
-                "token": config.pushover_api_token,
-                "user": config.pushover_user_key,
-                "title": title,
-                "message": message,
-                "priority": priority,
-                "sound": sound,
-            })
+            r = await client.post(API, data=_payload(config, message, title,
+                                                     priority, sound))
+        if r.status_code != 200:
+            logger.error("Pushover rejected (%s): %s", r.status_code,
+                         (r.text or "")[:200])
         return r.status_code == 200
     except Exception as e:  # noqa: BLE001
         logger.error("Pushover send failed: %s", e)

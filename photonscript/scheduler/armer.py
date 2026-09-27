@@ -36,7 +36,8 @@ from pathlib import Path
 
 import httpx
 
-from photonscript.shared.pushover import notify
+from photonscript.scheduler.guiding_alerts import GuidingAlertGate
+from photonscript.shared.pushover import notify, record
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,8 @@ class Armer:
         self._not_locked_ticks = 0     # consecutive watchdog ticks PHD2 not locked
         self._guiding_recovered = False  # auto guider-restart tried this episode
         self._guiding_escalated = False  # priority escalation sent this episode
+        self._not_locked_since: datetime | None = None  # start of current streak
+        self._guiding_gate = GuidingAlertGate(config)  # PS-66 flood collapse
         self._cooler_alerted: dict[str, bool] = {}  # per-rig cooler-nanny alert latch
         self._cooler_warm_since: dict[str, datetime] = {}  # per-rig first warm tick
         self._cooler_stuck_alerted: dict[str, bool] = {}   # per-rig "still warm" latch
@@ -234,6 +237,7 @@ class Armer:
         from photonscript.scheduler.night_plan import build_night_plan
         self.guiding_override = guiding
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
+        self._guiding_gate = GuidingAlertGate(self.config)  # fresh flap history
         self.shutdown = None  # a fresh arm starts a new night — clear the chip
         self.plan = build_night_plan(self.config)
         if "error" in self.plan:
@@ -505,6 +509,16 @@ class Armer:
         Recovering to a locked 'Guiding' state resets the episode so the
         watchdog re-arms for a later failure the same night. Fails safe: NINA
         unreachable never alarms or acts.
+
+        PS-66 (2026-09-26: PHD2 flapped LostLock/Guiding all night, 77 guiding
+        pushes): pushes go through GuidingAlertGate. Lost / flapping /
+        auto-recovery pushes share one budget of one per
+        guiding_alert_repeat_min; a flap becomes one "guiding flapping: N
+        losses" push; held events are audited; and
+        "recovered" pushes only after a loss of guiding_recovered_push_min or
+        more. Every held event is still audited (sent=false). The priority-2
+        escalation (lost continuously for the whole ladder) still goes out, at
+        most once per window.
         """
         if not self._use_guiding():
             return
@@ -533,11 +547,19 @@ class Armer:
         working = s in ("calibrating", "looping", "settling")
 
         if healthy:
-            if self._guiding_alerted or self._not_locked_ticks:
-                await notify(self.config,
-                             "Guiding recovered — PHD2 is locked and guiding "
-                             "again.", title="PhotonScript guiding")
+            if self._guiding_alerted:
+                # PS-66: a short blip's "recovered" is audit-only (priority -1);
+                # only a real outage earns a push.
+                push, lost_min = self._guiding_gate.on_recovered(now)
+                msg = ("Guiding recovered: PHD2 is locked and guiding again "
+                       f"(lost for {lost_min:.0f} min).")
+                if push:
+                    await notify(self.config, msg, title="PhotonScript guiding")
+                else:
+                    record(self.config, msg, title="PhotonScript guiding",
+                           priority=-1, reason="guiding-short-loss")
             self._not_locked_ticks = 0
+            self._not_locked_since = None
             self._guiding_alerted = False
             self._guiding_recovered = False
             self._guiding_escalated = False
@@ -546,6 +568,8 @@ class Armer:
         # --- not locked: climb the escalation ladder --------------------------
         self._not_locked_ticks += 1
         ticks = self._not_locked_ticks
+        if self._not_locked_since is None:
+            self._not_locked_since = now
         mins = int((now - dusk_dt).total_seconds() // 60)
         what = (f"stuck in '{state}' — calibrating/looping but never locking "
                 "(calibration likely failing, e.g. 'star did not move enough': "
@@ -557,10 +581,21 @@ class Armer:
         warn_ready = (not working) or ticks >= GUIDING_WORKING_WARN_TICKS
         if warn_ready and not self._guiding_alerted:
             self._guiding_alerted = True
-            await notify(self.config,
-                         f"Armed GUIDED but PHD2 is {what} — {mins} min into "
-                         "dark, subs are likely trailing.",
-                         title="PhotonScript guiding", priority=1)
+            msg = (f"Armed GUIDED but PHD2 is {what}, {mins} min into "
+                   "dark, subs are likely trailing.")
+            # PS-66: first loss pushes; repeats inside the window are held
+            # (audited) and a flap turns into one "flapping: N losses" push.
+            action = self._guiding_gate.on_lost(now, self._not_locked_since)
+            if action == "push":
+                await notify(self.config, msg, title="PhotonScript guiding",
+                             priority=1)
+            else:
+                record(self.config, msg, title="PhotonScript guiding",
+                       priority=1, reason="guiding-repeat-held")
+                if action == "flap":
+                    await notify(self.config,
+                                 self._guiding_gate.flap_message(now),
+                                 title="PhotonScript guiding", priority=1)
 
         # 2) One automatic guider restart to break a stuck loop.
         if (self._guiding_alerted and ticks >= GUIDING_RECOVER_AFTER_TICKS
@@ -568,22 +603,31 @@ class Armer:
                 and getattr(self.config, "guiding_auto_recover", True)):
             self._guiding_recovered = True
             ok = await self._restart_guiding()
-            await notify(self.config,
-                         "Auto-recovery: restarted PHD2 guiding "
-                         f"({'sent' if ok else 'FAILED — guider unreachable'}). "
-                         "If it doesn't lock, calibrate at Dec 0 / the meridian "
-                         "by hand.", title="PhotonScript guiding", priority=1)
+            msg = ("Auto-recovery: restarted PHD2 guiding "
+                   f"({'sent' if ok else 'FAILED, guider unreachable'}). "
+                   "If it doesn't lock, calibrate at Dec 0 / the meridian "
+                   "by hand.")
+            if self._guiding_gate.on_auto_recover(now, ok):
+                await notify(self.config, msg, title="PhotonScript guiding",
+                             priority=1)
+            else:
+                record(self.config, msg, title="PhotonScript guiding",
+                       priority=1, reason="guiding-repeat-held")
 
         # 3) Priority escalation — auto-recovery didn't take.
         if (self._guiding_alerted and ticks >= GUIDING_ESCALATE_AFTER_TICKS
                 and not self._guiding_escalated):
             self._guiding_escalated = True
-            await notify(self.config,
-                         f"STILL not guiding {mins} min into dark after auto-"
-                         "recovery — every long sub is trailing. Intervene: "
-                         "check the PHD2 guide star + mount tracking, "
-                         "recalibrate at the meridian, or re-arm.",
-                         title="PhotonScript guiding", priority=2)
+            msg = (f"STILL not guiding {mins} min into dark after auto-"
+                   "recovery; every long sub is trailing. Intervene: "
+                   "check the PHD2 guide star + mount tracking, "
+                   "recalibrate at the meridian, or re-arm.")
+            if self._guiding_gate.on_escalate(now):
+                await notify(self.config, msg, title="PhotonScript guiding",
+                             priority=2)
+            else:
+                record(self.config, msg, title="PhotonScript guiding",
+                       priority=2, reason="guiding-repeat-held")
 
     async def _restart_guiding(self) -> bool:
         """Best-effort stop→start of PHD2 guiding to break a stuck/idle loop.

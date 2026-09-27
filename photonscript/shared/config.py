@@ -223,6 +223,17 @@ class PhotonScriptConfig(BaseSettings):
     pushover_quiet_daytime: bool = True        # sun up: no heartbeats, 1 per title per window
     pushover_daytime_title_window_h: float = 4.0
     pushover_daytime_sun_alt_deg: float = -3.0  # "daytime" = sun above this altitude
+    pushover_emergency_retry_s: int = 300      # priority-2 pushes repeat this often until
+                                              # acknowledged (Pushover requires retry+expire)
+    pushover_emergency_expire_s: int = 1800    # ...and stop repeating after this (max 10800)
+    # --- Guiding alert collapse (PS-66) ---
+    guiding_alert_repeat_min: float = 30.0     # after a "guiding lost" push, hold further
+                                              # lost/auto-recovery pushes this long
+    guiding_recovered_push_min: float = 10.0   # push "recovered" only if the loss lasted
+                                              # at least this long (else audit at -1)
+    guiding_flap_count: int = 3                # this many losses inside the flap window
+                                              # -> one "guiding flapping: N losses" push
+    guiding_flap_window_min: float = 60.0
     safety_monitor_device_id: str = ""  # NINA #1 chooser Id to (re)connect, e.g.
                                         # ASCOM.AlpacaDynamic3.SafetyMonitor. "" = the
                                         # device last seen connected (auto-learned).

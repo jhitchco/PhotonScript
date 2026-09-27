@@ -390,12 +390,18 @@ async def test_watchdog_resets_and_renotifies_on_recovery(monkeypatch):
         notes.append(msg)
 
     monkeypatch.setattr(armer_mod, "notify", _fake_notify)
+    held = []
+    monkeypatch.setattr(armer_mod, "record",
+                        lambda cfg, msg, **kw: held.append((msg, kw)))
     now = datetime(2026, 9, 25, 3, 0, 0)
     await a._maybe_warn_not_guiding(now)     # warns
     assert a._guiding_alerted is True
     state["v"] = "Guiding"
     await a._maybe_warn_not_guiding(now)     # recovers
-    assert any("recovered" in m.lower() for m in notes)
+    # PS-66: a short blip's recovery is audited at priority -1, not pushed
+    assert not any("recovered" in m.lower() for m in notes)
+    assert any("recovered" in m.lower() and kw.get("priority") == -1
+               for m, kw in held)
     assert a._guiding_alerted is False and a._not_locked_ticks == 0
 
 
