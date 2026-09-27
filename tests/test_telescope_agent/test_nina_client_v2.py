@@ -135,6 +135,7 @@ def test_cooling_alert_waits_for_grace(monkeypatch):
     a._cool_fix_attempts = 0
     a._dew_last_set = 0.0
     a._dew_api_broken = False
+    a._armer_state = lambda: None   # hermetic: ignore any real armer_state.json
     sent = []
 
     async def fake_notify(config, msg, **kw):

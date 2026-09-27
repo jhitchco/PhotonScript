@@ -32,6 +32,7 @@ def _agent(monkeypatch):
     a._cool_bad_since = None
     a._cool_fix_attempts = 0
     a._alerted = set()
+    a._armer_state = lambda: None   # hermetic: ignore any real armer_state.json
     sent = []
 
     async def fake_notify(config, msg, **kw):

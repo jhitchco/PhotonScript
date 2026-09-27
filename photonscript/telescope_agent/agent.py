@@ -196,6 +196,8 @@ class TelescopeAgent:
         import time
         if self._dew_api_broken or not camera.get("CoolerOn"):
             return
+        if self._cooling_hold(camera):  # PS-79: never after the dawn shutdown
+            return
         if camera.get("HasDewHeater") is False:
             return  # this camera has no heater to switch (don't false-alarm)
         if camera.get("DewHeaterOn") is True:
@@ -240,6 +242,40 @@ class TelescopeAgent:
     # Armer states in which a night is in progress (mirrors
     # photonscript.scheduler.armer.ACTIVE_STATES; a test keeps them in sync).
     _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+
+    def _armer_state(self) -> str | None:
+        """The armer's persisted state, or None when there is no readable
+        state file."""
+        import json
+        p = Path(getattr(self.config, "data_dir", ".")) / "armer_state.json"
+        try:
+            return json.loads(p.read_text(encoding="utf-8")).get("state")
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _cooling_hold(self, camera: dict | None = None) -> str | None:
+        """PS-79: why the cooler / dew watchdogs must leave the camera alone,
+        or None.
+
+        After the dawn shutdown (armer COMPLETE) or a disarm the rig is shut
+        down until the next arm: NINA's WarmCamera keeps the TEC on for up to
+        15 min while it warms, and the watchdogs used to read that as "cooler
+        on" and turn the dew heater back on, alert "cooler on at the wrong
+        setpoint" and even reconnect and re-cool the camera. No armer state
+        file at all keeps the old behavior (nothing says the rig is shut
+        down). The camera's own setpoint is deliberately NOT used to spot a
+        warm: a wrong setpoint while armed is exactly what the cooling alert
+        must still report."""
+        st = self._armer_state()
+        if st is not None and st not in self._ARMER_ACTIVE_STATES:
+            return f"armer {st} (shut down until the next arm)"
+        return None
+
+    def _log_hold(self, why: str | None) -> None:
+        if why and why != getattr(self, "_hold_logged", None):
+            logger.info("Cooler/dew watchdogs standing down [%s]: %s",
+                        getattr(self, "rig", "rc16"), why)
+        self._hold_logged = why
 
     def _armer_active(self) -> bool:
         """True when the scheduler's armer has a night in progress. Read from
@@ -462,6 +498,9 @@ class TelescopeAgent:
         sacrificed knowingly: at ambient temperature it was garbage anyway.
         """
         import time
+        if self._cooling_hold(camera):  # PS-79: a warm is not a dead cooler
+            self._cool_bad_since = None
+            return
         cooler_on = camera.get("CoolerOn", False)
         power = camera.get("CoolerPower")
         temp = camera.get("Temperature")
@@ -537,7 +576,9 @@ class TelescopeAgent:
                 # (This loop only started receiving real data on 2026-09-26,
                 # when the client moved to the ninaAPI v2 /info endpoints.)
                 import time as _t
-                off = (self.state.camera_cooling_on
+                hold = self._cooling_hold(camera)  # PS-79
+                self._log_hold(hold)
+                off = (not hold and self.state.camera_cooling_on
                        and self.state.camera_temp_c is not None
                        and abs(self.state.camera_temp_c - self.config.camera_setpoint_c)
                        > self.config.cooling_tolerance_c)
