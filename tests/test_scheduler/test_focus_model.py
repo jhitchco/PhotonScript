@@ -157,17 +157,133 @@ class TestIngest:
             _report("L", 5736, 24.3, ts="2026-09-27T02:12:00"),
             _report("L", 5650, 20.3, ts="2026-09-27T05:12:00"),
             _report("H", 5550, 24.0, ts="2026-09-27T02:20:00"),
-            _report("L", 9999, 20.0, r2=0.2, ts="2026-09-27T06:00:00"),
+            _report("L", 5999, 20.0, r2=0.2, ts="2026-09-27T06:00:00"),
         ])
         cfg = _cfg(tmp_path, nina_autofocus_reports_dir=str(rdir))
         out = fm.ingest_af_reports(cfg)
-        assert out == {"enabled": True, "read": 4, "added": 3, "rejected": 1,
-                       "total": 3}
+        assert {k: out[k] for k in ("enabled", "read", "added", "rejected",
+                                    "total")} == {"enabled": True, "read": 4,
+                                                  "added": 3, "rejected": 1,
+                                                  "total": 3}
         again = fm.ingest_af_reports(cfg)
         assert again["added"] == 0 and again["total"] == 3
         model = json.loads((tmp_path / fm.MODEL_FILE).read_text())
         assert set(model["filters"]) == {"L", "Ha"}
         assert model["offsets"]["Ha"]["steps"] < 0
+
+
+# --------------------------------------------- rig filter (shared AF folder)
+
+def _osc(pos=11045, temp=2.0, ts="2026-09-27T03:00:00", filt=None, **kw):
+    r = _report("L", pos, temp, ts=ts, initial=pos + 150, **kw)
+    r["Filter"] = filt           # the OSC has no filter wheel
+    return r
+
+
+class TestRigFilter:
+    def test_default_rule(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        assert fm.classify_report(_report("L", 5736), cfg) == "rc16"
+        assert fm.classify_report(_report("H", 5550), cfg) == "rc16"
+        assert fm.classify_report(_osc(), cfg) == "piggyback"
+        assert fm.classify_report(_osc(filt=""), cfg) == "piggyback"
+        assert fm.classify_report(_osc(filt="L-Pro"), cfg) == "piggyback"
+        # an RC16-looking filter name far outside the RC16 EAF range, near
+        # the Piggy-600 seed, is the Piggy-600 (e.g. a stub wheel named L)
+        assert fm.classify_report(_osc(filt="L", pos=10900), cfg) == "piggyback"
+        # an RC16 filter at a wild position nearer the RC16: unknown, left out
+        assert fm.classify_report(_report("L", 2500), cfg) is None
+
+    def test_configured_matchers(self, tmp_path):
+        rc = _report("L", 5736)
+        rc["CameraName"] = "OGMA AP26MC"
+        pb = _osc(filt="L", pos=5800)          # would pass the default rule
+        pb["CameraName"] = "OGMA AP26CC"
+        cfg = _cfg(tmp_path, focus_model_rc16_match="any~AP26MC")
+        assert fm.classify_report(rc, cfg) == "rc16"
+        assert fm.classify_report(pb, cfg) == "piggyback"
+        cfg = _cfg(tmp_path,
+                   focus_model_rc16_match="Filter=L|R|G|B|H|O|S;position:4000-7000",
+                   focus_model_piggyback_match="CameraName~AP26CC")
+        assert fm.classify_report(rc, cfg) == "rc16"
+        assert fm.classify_report(pb, cfg) == "rc16"     # rc16 rule checked first
+        pb["CalculatedFocusPoint"]["Position"] = 11000
+        assert fm.classify_report(pb, cfg) == "piggyback"
+        odd = _report("SII", 9000)
+        assert fm.classify_report(odd, cfg) is None       # neither matches
+
+    def test_match_report_clauses(self):
+        r = _report("H", 5550, 18.3)
+        r["_file"] = "2026-09-27--02-20-00.json"
+        assert fm.match_report(r, "filter=h|o|s")
+        assert fm.match_report(r, "position:5000-6000; temp:10-")
+        assert not fm.match_report(r, "position:-5000")
+        assert fm.match_report(r, "file~2026-09-27")
+        assert fm.match_report(r, "CalculatedFocusPoint.Value:3-4")
+        assert not fm.match_report(r, "nosuchfield=x")
+        assert not fm.match_report(r, "garbage clause")
+        assert not fm.match_report(r, "")
+
+    def test_mixed_folder_only_rc16_reaches_the_rc16_model(self, tmp_path):
+        rdir = tmp_path / "AutoFocus"
+        rdir.mkdir()
+        reps = [
+            _report("L", 5736, 24.3, ts="2026-09-27T02:12:00"),
+            _report("L", 5650, 20.3, ts="2026-09-27T05:12:00"),
+            _report("H", 5550, 24.0, ts="2026-09-27T02:20:00"),
+            _osc(11045, 1.0, ts="2026-09-27T02:13:00"),
+            _osc(11020, 0.0, ts="2026-09-27T04:13:00"),
+            _osc(11060, 3.5, ts="2026-09-27T05:13:00", filt=""),
+            _report("L", 2500, 20.0, ts="2026-09-27T06:00:00"),   # unknown
+        ]
+        for i, r in enumerate(reps):
+            (rdir / f"af_{i}.json").write_text(json.dumps(r))
+        cfg = _cfg(tmp_path, nina_autofocus_reports_dir=str(rdir))
+        out = fm.ingest_af_reports(cfg)
+        assert out["added"] == 3 and out["total"] == 3
+        assert out["other_rig"] == 3 and out["unclassified"] == 1
+        assert out["piggyback"] == {"added": 3, "total": 3}
+        rc = json.loads((tmp_path / fm.MODEL_FILE).read_text())
+        assert set(rc["filters"]) == {"L", "Ha"}
+        assert rc["filters"]["L"]["intercept"] < 7000     # no 11000s mixed in
+        pb = json.loads((tmp_path / fm.PB_MODEL_FILE).read_text())
+        assert set(pb["filters"]) == {"OSC"} and pb["filters"]["OSC"]["n"] == 3
+        again = fm.ingest_af_reports(cfg)
+        assert again["added"] == 0 and again["piggyback"]["added"] == 0
+
+    def test_points_stored_before_the_filter_are_resorted(self, tmp_path):
+        mixed = [{"filter": "L", "position": 5736, "temp": 24.3, "time": "a"},
+                 {"filter": "", "position": 11045, "temp": 1.0, "time": "b"},
+                 {"filter": "L", "position": 11020, "temp": 0.0, "time": "c"}]
+        (tmp_path / fm.POINTS_FILE).write_text(json.dumps(mixed))
+        cfg = _cfg(tmp_path)
+        assert fm.summary(cfg)["model"]["n_points"] == 1        # read-only view
+        rdir = tmp_path / "AutoFocus"
+        rdir.mkdir()
+        out = fm.ingest_af_reports(cfg, str(rdir))
+        assert out["total"] == 1 and out["piggyback"]["total"] == 2
+        kept = json.loads((tmp_path / fm.POINTS_FILE).read_text())
+        assert [p["position"] for p in kept] == [5736] and kept[0]["rig"] == "rc16"
+
+    def test_piggyback_model_can_be_switched_off(self, tmp_path):
+        rdir = tmp_path / "AutoFocus"
+        rdir.mkdir()
+        (rdir / "a.json").write_text(json.dumps(_osc()))
+        cfg = _cfg(tmp_path, nina_autofocus_reports_dir=str(rdir),
+                   focus_model_piggyback=False)
+        out = fm.ingest_af_reports(cfg)
+        assert out["other_rig"] == 1 and out["piggyback"]["added"] == 0
+
+    def test_api_focus_shows_piggyback_model(self, tmp_path, monkeypatch):
+        from photonscript.scheduler import app
+        pts = [{"filter": "OSC", "position": 11045 + i, "temp": float(i),
+                "time": f"t{i}", "rig": "piggyback"} for i in range(4)]
+        (tmp_path / fm.PB_POINTS_FILE).write_text(json.dumps(pts))
+        monkeypatch.setattr(app, "_config", _cfg(tmp_path))
+        out = app.api_focus()
+        assert out["piggyback"]["model"]["af_runs"]["stored"] == 4
+        assert out["piggyback"]["model"]["model"]["filters"]["OSC"]["n"] == 4
+        assert out["rc16"]["model"]["af_runs"]["stored"] == 0
 
 
 # ------------------------------------------------------------ seed hook

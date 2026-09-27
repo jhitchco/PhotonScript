@@ -124,9 +124,20 @@ def check_and_alert(config, date: str) -> dict:
     try:
         reports = load_reports(reports_dir, date)
         graded = [evaluate(r, min_r2) for r in reports]
+        # PS-76 follow-up: both NINAs share this folder; name the rig
+        try:
+            from photonscript.scheduler.focus_model import classify_report
+            for g, r in zip(graded, reports):
+                g["rig"] = classify_report(r, config)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("focus_reports: rig classification failed: %s", e)
+        names = {"rc16": "RC16", "piggyback": getattr(config, "piggyback_name",
+                                                       "Piggy-600")}
         bad = [g for g in graded if not g["ok"]]
         if bad:
-            worst = ", ".join(f"{g['filter']} ({g['reason']})" for g in bad[:5])
+            worst = ", ".join(
+                f"{names.get(g.get('rig'), '?')} {g['filter']} ({g['reason']})"
+                for g in bad[:5])
             _fire(config,
                   f"Autofocus quality: {len(bad)}/{len(graded)} AF run(s) on "
                   f"{date} looked bad — {worst}. Likely focusing through "

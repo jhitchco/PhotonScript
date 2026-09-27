@@ -561,6 +561,8 @@ _CONFIG_FIELDS = [
     ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
     ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
     ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
+    ("focus_model_rc16_match", "PS_FOCUS_MODEL_RC16_MATCH", "Focus model: which AF reports are the RC16's (empty = RC16 filter name + EAF 4000-7000; e.g. any~AP26MC)", "Imaging", "str", False, False),
+    ("focus_model_piggyback_match", "PS_FOCUS_MODEL_PIGGYBACK_MATCH", "Focus model: which AF reports are the Piggy-600's (empty = everything not RC16)", "Imaging", "str", False, False),
     ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
     ("camera_read_noise_adu", "PS_CAMERA_READ_NOISE_ADU", "Read-noise floor (ADU16, bias stdev — drives exposure score)", "Quality", "float", False, False),
     ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
@@ -1912,11 +1914,11 @@ def api_calibration_health(rig: str = "rc16"):
     return calibration_health(rig_config(cfg, rig))
 
 
-def _focus_model_summary(cfg) -> dict:
+def _focus_model_summary(cfg, rig: str = "rc16") -> dict:
     """PS-76 focus model read-out; never breaks /api/focus."""
     try:
         from photonscript.scheduler import focus_model as fm
-        return fm.summary(cfg)
+        return fm.piggyback_summary(cfg) if rig == "piggyback" else fm.summary(cfg)
     except Exception as e:  # noqa: BLE001
         return {"error": str(e)}
 
@@ -1990,6 +1992,7 @@ def api_focus():
             "source": pf.seed_source(cfg),
             "points": pb_recs,
             "clamp": [pb_min, pb_max] if pb_max > pb_min else None,
+            "model": _focus_model_summary(cfg, rig="piggyback"),
         },
     }
 

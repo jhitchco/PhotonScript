@@ -252,6 +252,17 @@ class PhotonScriptConfig(BaseSettings):
                                  # still runs after the seed.
     focus_model_min_af_points: int = 5  # PS-76: an AF report with fewer measure
                                  # points than this never enters the focus model.
+    # PS-76 follow-up: both NINAs write AF reports into one folder. Which rig
+    # a report belongs to: empty = built-in rule (RC16 filter-wheel name and
+    # RC16 EAF range 4000-7000; else Piggy-600). Otherwise ';'-separated
+    # clauses, all must hold: field~a|b (substring), field=a|b (exact),
+    # field:lo-hi (number). Fields: filter, position, temp, file, any (whole
+    # report text) or a report key path. E.g. "any~AP26MC" once NINA's
+    # reports are seen to name the camera.
+    focus_model_rc16_match: str = ""
+    focus_model_piggyback_match: str = ""
+    focus_model_piggyback: bool = True  # also keep a (read-only) Piggy-600
+                                 # focus model from its AF reports
     guiding_auto_recover: bool = True  # when the watchdog sees guiding stay down
                                  # (idle OR stuck calibrating/looping) well past
                                  # the grace, attempt ONE automatic PHD2 guider

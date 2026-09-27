@@ -34,6 +34,22 @@ What uses it
 Files (config.data_dir): focus_af_points.json (ingested AF points, append-only
 with de-dup) and focus_model.json (the fitted model + lookup table, rebuilt on
 every ingest). Nothing here talks to NINA or moves hardware.
+
+Which rig (PS-76 follow-up)
+---------------------------
+Both NINA instances run as one Windows user, so both write AF reports into the
+same %LOCALAPPDATA%/NINA/AutoFocus folder. Only RC16 reports may enter the RC16
+model: classify_report() sorts each report by rig. With the matchers empty the
+rule is: an RC16 report names an RC16 filter-wheel filter (nina_filter_names)
+and lands inside the RC16 EAF range (focus_seeds clamp, 4000 to 7000);
+anything else is the Piggy-600 (one-shot colour, no filter wheel, its own EAF
+near piggyback_focus_seed) when its filter is empty or foreign, or its
+position is nearer the Piggy-600 seed; otherwise it is left out. When NINA's
+reports carry something better (camera, focuser or profile names, the file
+name), focus_model_rc16_match / focus_model_piggyback_match take over, e.g.
+"Filter=L|R|G|B|H|O|S;position:4000-7000" or "any~AP26MC". Piggy-600 reports
+feed a separate read-only model (piggyback_focus_af_points.json /
+piggyback_focus_model.json), shown in GET /api/focus; nothing seeds from it.
 """
 from __future__ import annotations
 
@@ -47,6 +63,9 @@ logger = logging.getLogger(__name__)
 
 POINTS_FILE = "focus_af_points.json"
 MODEL_FILE = "focus_model.json"
+PB_POINTS_FILE = "piggyback_focus_af_points.json"
+PB_MODEL_FILE = "piggyback_focus_model.json"
+OSC_FILTER = "OSC"   # the Piggy-600's single channel (reports carry no filter)
 
 # Fit guards
 _MIN_TEMP_SPAN_C = 3.0     # within-filter temperature spread needed for a slope
@@ -139,6 +158,132 @@ def point_from_report(report: dict, config=None, min_r2: float = 0.7,
     }, "ok")
 
 
+# --------------------------------------------------------------------------
+# Which rig wrote the report
+# --------------------------------------------------------------------------
+
+def _report_field(report: dict, name: str):
+    """Field for a matcher clause: 'filter', 'position', 'temp', 'file',
+    'any' (the whole report as text), or any dotted report key
+    (e.g. CalculatedFocusPoint.Position, AutoFocuserName)."""
+    low = name.strip().lower()
+    if low == "any":
+        return json.dumps(report, default=str)
+    if low == "filter":
+        return report.get("Filter") or report.get("AutoFocusFilter") or ""
+    if low == "position":
+        return _pos(report.get("CalculatedFocusPoint"))
+    if low in ("temp", "temperature"):
+        return report.get("Temperature")
+    if low == "file":
+        return report.get("_file") or ""
+    cur = report
+    for part in name.strip().split("."):
+        if not isinstance(cur, dict):
+            return None
+        hit = next((k for k in cur if str(k).lower() == part.lower()), None)
+        if hit is None:
+            return None
+        cur = cur[hit]
+    return cur
+
+
+_CLAUSE = re.compile(r"^\s*([A-Za-z_][\w.]*)\s*([~=:])\s*(.*?)\s*$")
+
+
+def match_report(report: dict, spec: str) -> bool:
+    """True when every ';'-separated clause of spec holds:
+      field~a|b     substring (case-insensitive), any alternative
+      field=a|b     exact (case-insensitive), any alternative
+      field:lo-hi   number in range (either end may be empty)
+    An unparseable clause never matches (fail closed)."""
+    clauses = [c for c in (spec or "").split(";") if c.strip()]
+    if not clauses:
+        return False
+    for c in clauses:
+        m = _CLAUSE.match(c)
+        if not m:
+            return False
+        field, op, arg = m.groups()
+        v = _report_field(report, field)
+        if op == ":":
+            x = _num(v)
+            lo, _, hi = arg.partition("-")
+            if x is None:
+                return False
+            if lo.strip() and x < float(lo):
+                return False
+            if hi.strip() and x > float(hi):
+                return False
+            continue
+        text = "" if v is None else str(v).strip().lower()
+        alts = [a.strip().lower() for a in arg.split("|")]
+        if op == "=" and text not in alts:
+            return False
+        if op == "~" and not any(a and a in text for a in alts):
+            return False
+    return True
+
+
+def _rc16_filter_names(config) -> set[str]:
+    names = {"L", "R", "G", "B", "Ha", "OIII", "SII", "H", "O", "S"}
+    if config is not None:
+        try:
+            fmap = config.filter_name_map()
+            names |= set(fmap) | set(fmap.values())
+        except Exception as e:  # noqa: BLE001
+            logger.debug("focus_model: filter map unavailable: %s", e)
+    return {n.strip().lower() for n in names if n and n.strip()}
+
+
+def _piggy_ref(config) -> float | None:
+    try:
+        from photonscript.scheduler.piggyback_focus import current_seed
+        v = current_seed(config)
+    except Exception:  # noqa: BLE001
+        v = getattr(config, "piggyback_focus_seed", 0)
+    return float(v) if v and float(v) > 0 else None
+
+
+def classify_report(report: dict, config=None) -> str | None:
+    """'rc16', 'piggyback' or None (unknown: left out of both models)."""
+    rc = (getattr(config, "focus_model_rc16_match", "") or "").strip()
+    pb = (getattr(config, "focus_model_piggyback_match", "") or "").strip()
+    if rc or pb:
+        if rc and match_report(report, rc):
+            return "rc16"
+        if pb and match_report(report, pb):
+            return "piggyback"
+        if rc and pb:
+            return None
+        return "piggyback" if rc else "rc16"
+    from photonscript.scheduler.focus_seeds import _FOCPOS_MAX, _FOCPOS_MIN
+    filt = str(_report_field(report, "filter") or "").strip().lower()
+    pos = _report_field(report, "position")
+    rc_filter = bool(filt) and filt in _rc16_filter_names(config)
+    rc_range = pos is not None and _FOCPOS_MIN <= pos <= _FOCPOS_MAX
+    if rc_filter and rc_range:
+        return "rc16"
+    if not rc_filter:
+        return "piggyback"
+    ref = _piggy_ref(config)
+    if pos is not None and ref is not None:
+        mid = (_FOCPOS_MIN + _FOCPOS_MAX) / 2
+        if abs(pos - ref) < abs(pos - mid):
+            return "piggyback"
+    return None
+
+
+def _point_rig(p: dict, config=None) -> str | None:
+    """Rig of a stored point (points stored before the rig filter carry no
+    tag: classify them from their filter and position)."""
+    if p.get("rig"):
+        return p["rig"]
+    return classify_report({"Filter": p.get("filter"),
+                            "CalculatedFocusPoint": {"Position": p.get("position")},
+                            "_file": p.get("file")}, config)
+
+
 def _key(p: dict) -> tuple:
     return (p.get("time"), p.get("filter"), p.get("position"))
 
@@ -147,16 +292,18 @@ def _key(p: dict) -> tuple:
 # Store
 # --------------------------------------------------------------------------
 
-def _points_path(config) -> Path:
-    return Path(config.data_dir) / POINTS_FILE
+def _points_path(config, rig: str = "rc16") -> Path:
+    return Path(config.data_dir) / (PB_POINTS_FILE if rig == "piggyback"
+                                    else POINTS_FILE)
 
 
-def _model_path(config) -> Path:
-    return Path(config.data_dir) / MODEL_FILE
+def _model_path(config, rig: str = "rc16") -> Path:
+    return Path(config.data_dir) / (PB_MODEL_FILE if rig == "piggyback"
+                                    else MODEL_FILE)
 
 
-def load_points(config) -> list[dict]:
-    p = _points_path(config)
+def load_points(config, rig: str = "rc16") -> list[dict]:
+    p = _points_path(config, rig)
     try:
         if p.exists():
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -174,10 +321,13 @@ def _write_json(path: Path, obj) -> None:
 
 
 def ingest_af_reports(config, reports_dir: str | None = None) -> dict:
-    """Read every NINA AF report in the reports dir, add the good ones not
-    already stored, then refit and persist the model. Never raises.
+    """Read every NINA AF report in the reports dir, sort each by rig, add
+    the good ones not already stored, then refit and persist the models.
+    Only RC16 reports reach the RC16 model; Piggy-600 reports go to their
+    own store (focus_model_piggyback, default on). Never raises.
 
-    Returns {enabled, read, added, rejected, total}."""
+    Returns {enabled, read, added, rejected, total, other_rig, unclassified,
+    piggyback: {added, total}}."""
     rdir = (reports_dir if reports_dir is not None else
             (getattr(config, "nina_autofocus_reports_dir", "") or "")).strip()
     if not rdir:
@@ -188,28 +338,61 @@ def ingest_af_reports(config, reports_dir: str | None = None) -> dict:
         reports = load_reports(rdir)
         min_r2 = float(getattr(config, "af_min_r2", 0.7))
         min_pts = int(getattr(config, "focus_model_min_af_points", 5))
-        existing = load_points(config)
-        seen = {_key(p) for p in existing}
-        added = rejected = 0
+        want_pb = bool(getattr(config, "focus_model_piggyback", True))
+        stores = {"rc16": [], "piggyback": load_points(config, "piggyback")}
+        moved = 0
+        # points stored before the rig filter: re-sort them once
+        for p in load_points(config, "rc16"):
+            rig = _point_rig(p, config)
+            if rig == "rc16":
+                stores["rc16"].append(dict(p, rig="rc16"))
+            elif rig == "piggyback":
+                moved += 1
+                stores["piggyback"].append(dict(p, rig="piggyback",
+                                                filter=OSC_FILTER))
+            else:
+                moved += 1
+        seen = {r: {_key(p) for p in pts} for r, pts in stores.items()}
+        added = {"rc16": 0, "piggyback": 0}
+        rejected = other = unknown = 0
         for rep in reports:
+            rig = classify_report(rep, config)
+            if rig is None:
+                unknown += 1
+                continue
+            if rig != "rc16":
+                other += 1
+                if not want_pb:
+                    continue
             pt, _why = point_from_report(rep, config, min_r2, min_pts)
             if pt is None:
-                rejected += 1
+                if rig == "rc16":
+                    rejected += 1
                 continue
-            if _key(pt) in seen:
+            pt["rig"] = rig
+            if rig == "piggyback":
+                pt["filter"] = OSC_FILTER
+            if _key(pt) in seen[rig]:
                 continue
-            seen.add(_key(pt))
-            existing.append(pt)
-            added += 1
-        existing.sort(key=lambda p: str(p.get("time") or ""))
-        if added:
-            _write_json(_points_path(config), existing)
-        model = fit(existing, ref_filter=_ref_filter(config))
-        _write_json(_model_path(config), model)
-        logger.info("focus_model: %d AF report(s) read, %d added, %d rejected, "
-                    "%d stored", len(reports), added, rejected, len(existing))
-        return {"enabled": True, "read": len(reports), "added": added,
-                "rejected": rejected, "total": len(existing)}
+            seen[rig].add(_key(pt))
+            stores[rig].append(pt)
+            added[rig] += 1
+        for rig, pts in stores.items():
+            pts.sort(key=lambda p: str(p.get("time") or ""))
+            if added[rig] or moved:
+                _write_json(_points_path(config, rig), pts)
+            _write_json(_model_path(config, rig),
+                        fit(pts, ref_filter=(OSC_FILTER if rig == "piggyback"
+                                             else _ref_filter(config))))
+        logger.info("focus_model: %d AF report(s) read, RC16 %d added / %d "
+                    "rejected / %d stored, Piggy-600 %d added, %d other-rig, "
+                    "%d unclassified", len(reports), added["rc16"], rejected,
+                    len(stores["rc16"]), added["piggyback"], other, unknown)
+        return {"enabled": True, "read": len(reports), "added": added["rc16"],
+                "rejected": rejected, "total": len(stores["rc16"]),
+                "other_rig": other, "unclassified": unknown,
+                "piggyback": {"added": added["piggyback"],
+                              "total": len(stores["piggyback"])}}
     except Exception as e:  # noqa: BLE001
         logger.warning("focus_model: ingest failed: %s", e)
         return {"enabled": True, "read": 0, "added": 0, "rejected": 0,
@@ -446,7 +629,7 @@ def af_skip_readiness(model: dict, min_points: int = 8,
 def summary(config) -> dict:
     """Read-only view for GET /api/focus: the fitted model (refit from the
     stored points, nothing written), AF run stats and phase-2 readiness."""
-    pts = load_points(config)
+    pts = [p for p in load_points(config) if _point_rig(p, config) == "rc16"]
     model = fit(pts, ref_filter=_ref_filter(config))
     durs = [d for p in pts if (d := _num(p.get("duration_s"))) is not None]
     walks = [abs(p["position"] - p["initial"]) for p in pts
@@ -462,4 +645,22 @@ def summary(config) -> dict:
             "median_seed_error_steps": (_median(walks) if walks else None),
         },
         "af_skip_readiness": af_skip_readiness(model),
+    }
+
+
+def piggyback_summary(config) -> dict:
+    """Read-only Piggy-600 model from the AF reports sorted to it: one channel
+    (OSC), its temperature slope once the data spans 3 C, and the lookup
+    table. Informational: nothing seeds from it yet."""
+    pts = load_points(config, "piggyback")
+    model = fit(pts, ref_filter=OSC_FILTER)
+    durs = [d for p in pts if (d := _num(p.get("duration_s"))) is not None]
+    return {
+        "enabled": bool((getattr(config, "nina_autofocus_reports_dir", "")
+                         or "").strip())
+                   and bool(getattr(config, "focus_model_piggyback", True)),
+        "model": model,
+        "af_runs": {"stored": len(pts),
+                    "median_duration_s": (round(_median(durs), 1) if durs
+                                          else None)},
     }

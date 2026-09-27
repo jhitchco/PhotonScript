@@ -80,3 +80,21 @@ def test_check_and_alert_quiet_when_all_good(tmp_path, monkeypatch):
     cfg = PhotonScriptConfig(nina_autofocus_reports_dir=str(tmp_path))
     out = fr.check_and_alert(cfg, "2026-09-25")
     assert out["bad"] == [] and fired == []
+
+
+def test_alert_names_the_rig(tmp_path, monkeypatch):
+    """PS-76 follow-up: both NINAs share the AF folder, so the alert says
+    which rig's autofocus went bad."""
+    d = tmp_path / "af"
+    d.mkdir()
+    osc = _report(filter_=None, r2=0.2)
+    osc["CalculatedFocusPoint"]["Position"] = 11045.0
+    (d / "rc.json").write_text(json.dumps(_report(r2=0.3)))
+    (d / "osc.json").write_text(json.dumps(osc))
+    fired = []
+    monkeypatch.setattr(fr, "_fire", lambda cfg, msg: fired.append(msg))
+    cfg = PhotonScriptConfig(_env_file=None, nina_autofocus_reports_dir=str(d),
+                             data_dir=str(tmp_path))
+    out = fr.check_and_alert(cfg, "2026-09-25")
+    assert {g["rig"] for g in out["bad"]} == {"rc16", "piggyback"}
+    assert "RC16 H" in fired[0] and "Piggy-600" in fired[0]
