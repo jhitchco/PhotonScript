@@ -1796,6 +1796,29 @@ def _decimate(binned, target_w: int = 1400):
     return np.ascontiguousarray(binned[::step, ::step])
 
 
+def _save_png_atomic(img, out: Path) -> None:
+    """PS-59: write to a temp file beside ``out`` and os.replace it in, so a
+    hard kill mid-write (supervisor restart, 15 s update fallback) can never
+    leave a truncated PNG that the ``out.exists()`` cache then serves forever.
+    If two writers race (same thumbnail, identical bytes) and Windows refuses
+    the replace because a reader holds the file, the existing file wins."""
+    import os
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f"{out.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        img.save(tmp, format="PNG")
+        try:
+            os.replace(tmp, out)
+        except OSError:
+            if not out.exists():
+                raise
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _stretch_and_save(small, out: Path, width: int, stars=None) -> None:
     """Sqrt-stretch a decimated frame to a PNG. Shared by thumbnail() and the
     grade-time pre-warm so both produce a byte-identical stretch.
@@ -1822,8 +1845,7 @@ def _stretch_and_save(small, out: Path, width: int, stars=None) -> None:
             draw.ellipse([x - r0, y - r0, x + r0, y + r0],
                          outline=(248, 113, 113), width=2)
     h = int(img.height * width / img.width)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    img.resize((width, h)).save(out)
+    _save_png_atomic(img.resize((width, h)), out)
 
 
 def thumbnail(config, date: str, rel_file: str, width: int = 360,
@@ -2040,8 +2062,7 @@ def contact_sheet(config, date: str, cols: int = 6, tile_w: int = 200,
         dr.text((x + border + 3, y + border + im.height + 3), label[:26],
                 fill=(200, 210, 230))
     out = Path(config.data_dir) / "contact_sheets" / f"{date}.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    sheet.save(out)
+    _save_png_atomic(sheet, out)
     return out
 
 
