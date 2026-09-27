@@ -123,6 +123,7 @@ if ($StartNow) {
 }
 
 Write-Host ""
+Write-Host "Verify:  photonscript autostart-check   (normal PowerShell, after 60 s)"
 Write-Host "Check:   Get-ScheduledTask $TaskName | Get-ScheduledTaskInfo"
 Write-Host "Status:  photonscript status"
 Write-Host "Logs:    photonscript monitor"

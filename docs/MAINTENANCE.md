@@ -26,6 +26,7 @@ and starts a fresh supervisor.
 | Start | `Start-ScheduledTask PhotonScript` |
 | Task state | `Get-ScheduledTask PhotonScript \| Get-ScheduledTaskInfo` |
 | Install / remove | elevated: `deploy\install-autostart.ps1 [-StartNow] [-LogonType Interactive\|S4U\|Password]` / `-Uninstall` |
+| Verify autostart | `photonscript autostart-check` after an install or reboot (read-only; exit 1 on FAIL); `--hours 16` the morning after; `--watch-restart [--kill]` times a crash recovery. Full procedure: `docs/AUTOSTART_TEST_PLAN.md` (PS-34a) |
 
 Logs: `<data_dir>\logs\photonscript.log` (service), `supervisor.log`
 (starts, exits, restarts), `wrapper.log` (git pulls). data_dir is

@@ -8,6 +8,7 @@ Usage:
     photonscript lint <sequence.json>
     photonscript report [--date 2026-07-01]
     photonscript status [--url http://host:8100] [--timeout 30]
+    photonscript autostart-check [--watch-restart] [--kill]   # PS-34a
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript stop | restart
     photonscript notify "message"
@@ -798,6 +799,94 @@ def _fmt_uptime(seconds: float) -> str:
     h, s = divmod(s, 3600)
     m = s // 60
     return f"{d}d {h}h {m}m" if d else (f"{h}h {m}m" if h else f"{m}m")
+
+
+def _config_for_repo(repo: Path):
+    """PhotonScriptConfig with the repo's .env, whatever the current directory."""
+    from photonscript.shared.config import PhotonScriptConfig
+    env = repo / ".env"
+    return PhotonScriptConfig(_env_file=str(env)) if env.exists() else PhotonScriptConfig()
+
+
+@app.command("autostart-check")
+def autostart_check(
+    url: str = typer.Option("http://localhost:8100", "--url",
+                            help="Scheduler to probe (GET /api/health)"),
+    task: str = typer.Option("PhotonScript", "--task", help="Scheduled task name"),
+    repo_opt: str = typer.Option("", "--repo",
+                                 help="Checkout the task runs (default: this one)"),
+    user: str = typer.Option("jeremy", "--user", help="Account the task runs as"),
+    hours: float = typer.Option(24.0, "--hours",
+                                help="Look-back window for stalls.log and supervisor.log"),
+    tailscale_url: str = typer.Option(
+        "https://teles-feb25.lobster-bleak.ts.net", "--tailscale-url",
+        help='tailscale serve URL to probe ("" skips it)'),
+    watch_restart: bool = typer.Option(
+        False, "--watch-restart",
+        help="After the checks, wait for the service to be killed and time how "
+             "long the supervisor takes to bring it back"),
+    kill: bool = typer.Option(
+        False, "--kill",
+        help="With --watch-restart: hard-kill the service here instead of asking "
+             "you to. Refused while the armer is ARMED, RUNNING or PAUSED_UNSAFE"),
+    max_wait: float = typer.Option(180.0, "--max-wait",
+                                   help="Seconds to wait for the restart"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON instead of lines"),
+):
+    """Check the autostart setup (PS-34a): scheduled task, Windows auto-logon,
+    one supervised PhotonScript in a desktop session, /api/health fast and on
+    the checked-out commit, no stalls, NINA / PHD2 / tailscale reachable.
+
+    Read-only unless --kill is given. Exit 1 when any check FAILs.
+
+    photonscript autostart-check                      # after install / reboot
+    photonscript autostart-check --hours 16           # morning after a night
+    photonscript autostart-check --watch-restart      # you kill it, it times recovery
+    photonscript autostart-check --watch-restart --kill
+    """
+    from rich.text import Text
+    from photonscript.shared import autostart_check as ac
+    from photonscript.shared.rigs import PIGGYBACK, rig_ids
+
+    if kill and not watch_restart:
+        console.print("[red]--kill only works together with --watch-restart.[/red]")
+        raise typer.Exit(2)
+    repo = Path(repo_opt) if repo_opt else Path(__file__).resolve().parents[1]
+    config = _config_for_repo(repo)
+    nina = [("1", config.nina_base_url)]
+    if PIGGYBACK in rig_ids(config):
+        nina.append(("2", getattr(config, "piggyback_nina_base_url",
+                                  "http://localhost:1889/v2/api")))
+    opts = ac.Options(repo=repo, data_dir=Path(config.data_dir), url=url,
+                      task_name=task, user=user, hours=hours, nina_urls=nina,
+                      tailscale_url=tailscale_url)
+    env = ac.Env()
+    styles = {ac.PASS: "green", ac.WARN: "yellow", ac.FAIL: "bold red",
+              ac.SKIP: "dim", ac.INFO: "cyan"}
+
+    def show(checks):
+        for c in checks:
+            console.print(Text.assemble((f"{c.status.upper():5s}", styles[c.status]),
+                                        f" {c.name:20s} {c.detail}"))
+
+    checks, _ = ac.run_checks(env, opts)
+    if not as_json:
+        console.print(f"PhotonScript autostart check, {datetime.now():%Y-%m-%d %H:%M}, "
+                      f"repo {repo}, data_dir {config.data_dir}")
+        show(checks)
+    if watch_restart:
+        say = (lambda s: None) if as_json else (lambda s: console.print(s, markup=False))
+        more = ac.watch_restart(env, opts, kill=kill, max_recover_s=max_wait, say=say)
+        if not as_json:
+            show(more)
+        checks += more
+    text, rc = ac.verdict(checks)
+    if as_json:
+        print(json.dumps({"verdict": text, "exit": rc,
+                          "checks": [c.as_dict() for c in checks]}, indent=2))
+    else:
+        console.print(Text(text, style="bold green" if rc == 0 else "bold red"))
+    raise typer.Exit(rc)
 
 
 if __name__ == "__main__":
