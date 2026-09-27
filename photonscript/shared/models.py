@@ -106,7 +106,15 @@ class CelestialTarget(BaseModel):
 
 
 class ExposurePlan(BaseModel):
-    """Exposure plan for a single filter on a target."""
+    """Exposure plan for a single filter on a target.
+
+    HDR (high-dynamic-range) support: a filter may carry an optional SHORTER
+    companion sub set alongside its main (long) subs — short subs keep bright
+    cores from clipping (e.g. a planetary nebula's central star) while the long
+    subs pull the faint shell. `exposure_seconds`/`count` describe the LONG set;
+    `hdr_short_seconds`/`hdr_short_count` describe the short companion set. Both
+    HDR fields are optional and default to "no HDR", so existing projects.json
+    round-trips unchanged."""
     filter_type: FilterType
     exposure_seconds: float = 300.0
     count: int = 20
@@ -114,6 +122,22 @@ class ExposurePlan(BaseModel):
     offset: int = 50
     binning: int = 1
     acquired: int = 0  # how many already captured
+    hdr_short_seconds: Optional[float] = None  # shorter companion sub length (s)
+    hdr_short_count: int = 0  # how many short subs; 0 = no HDR companion set
+    hdr_short_acquired: int = 0  # accepted short subs so far (long set uses `acquired`)
+
+    def short_remaining(self) -> int:
+        if not self.hdr_short_count or not self.hdr_short_seconds:
+            return 0
+        return max(0, self.hdr_short_count - self.hdr_short_acquired)
+
+    def is_short_exposure(self, seconds) -> bool:
+        """True when a sub of `seconds` belongs to this plan's HDR short set
+        (closer to the short length than to the long one)."""
+        if not self.hdr_short_seconds or not self.hdr_short_count or not seconds:
+            return False
+        s = float(seconds)
+        return abs(s - self.hdr_short_seconds) < abs(s - self.exposure_seconds)
 
 
 class ImagingProject(BaseModel):
@@ -122,6 +146,15 @@ class ImagingProject(BaseModel):
     target: CelestialTarget
     exposure_plans: list[ExposurePlan] = Field(default_factory=list)
     priority: int = 50  # 0-100, higher = more important
+    budget_hours: float = 8.0  # total imaging time to dedicate; drives filter allocation
+    filter_mix: Optional[dict] = None  # custom {filter: percent} split; None = type default
+    hdr: Optional[dict] = None  # {filter_value: short_exposure_seconds} — request an
+    # HDR short companion sub set on those filters (see ExposurePlan HDR fields).
+    # None/{} = no HDR. This is the GENERIC "special plan per target" hook: a
+    # target opts into HDR purely as data, no per-target code.
+    exposure_overrides: Optional[dict] = None  # {filter_value: long_exposure_seconds}
+    # — override the config default long-sub length for specific filters (else
+    # config.nb_exposure_s / bb_exposure_s). None = use the global defaults.
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     total_integration_hours: float = 0.0
@@ -129,8 +162,11 @@ class ImagingProject(BaseModel):
     active: bool = True
 
     def compute_completion(self) -> float:
-        total = sum(p.count for p in self.exposure_plans)
-        acquired = sum(p.acquired for p in self.exposure_plans)
+        total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)
+                    for p in self.exposure_plans)
+        acquired = sum(p.acquired + (min(p.hdr_short_acquired, p.hdr_short_count)
+                                     if p.hdr_short_seconds else 0)
+                       for p in self.exposure_plans)
         if total == 0:
             return 0.0
         self.completion_pct = round(acquired / total * 100, 1)
@@ -151,8 +187,15 @@ class ImageQualityMetrics(BaseModel):
     noise_adu: Optional[float] = None
     snr: Optional[float] = None
     tracking_rms_arcsec: Optional[float] = None
+    corner_spread: Optional[float] = None  # corner FWHM spread vs median (collimation/tilt watch)
+    clipped_pct: Optional[float] = None    # % pixels at/near full well
+    sat_star_pct: Optional[float] = None   # % detected stars with saturated cores
+    swamp_factor: Optional[float] = None   # background variance / read-noise variance
+    exposure_flag: Optional[str] = None    # under / ok / sat-stars / clipped
     passed_qa: bool = True
     rejection_reason: str = ""
+    # PS-80 star sidecar (shared.star_table.build); kept out of bus payloads
+    star_table: Optional[dict] = Field(default=None, exclude=True)
 
 
 class CapturedImage(BaseModel):
@@ -182,13 +225,28 @@ class CapturedImage(BaseModel):
 # ---------------------------------------------------------------------------
 
 class GuidingMetrics(BaseModel):
-    """PHD2 guiding performance snapshot."""
+    """PHD2 guiding performance snapshot.
+
+    PS-70: PHD2 measures guide errors in guide-camera PIXELS. The *_px fields
+    are always those pixels; the *_arcsec fields are pixels x
+    pixel_scale_arcsec and are None when the scale is unknown (units="px").
+    scale_source says where the scale came from: "phd2" (its profile) or
+    "config" (guide_camera_pixel_um x binning / guide focal length)."""
     state: GuidingState = GuidingState.STOPPED
-    rms_ra_arcsec: float = 0.0
-    rms_dec_arcsec: float = 0.0
-    rms_total_arcsec: float = 0.0
-    peak_ra_arcsec: float = 0.0
-    peak_dec_arcsec: float = 0.0
+    rms_ra_arcsec: Optional[float] = 0.0
+    rms_dec_arcsec: Optional[float] = 0.0
+    rms_total_arcsec: Optional[float] = 0.0
+    peak_ra_arcsec: Optional[float] = 0.0
+    peak_dec_arcsec: Optional[float] = 0.0
+    rms_ra_px: float = 0.0
+    rms_dec_px: float = 0.0
+    rms_total_px: float = 0.0
+    samples: int = 0                      # guide steps in the RMS window
+    units: str = "arcsec"                 # "arcsec" or "px" (scale unknown)
+    pixel_scale_arcsec: Optional[float] = None
+    scale_source: Optional[str] = None
+    guide_binning: Optional[int] = None
+    scale_warning: Optional[str] = None
     snr: float = 0.0
     star_mass: float = 0.0
     guide_camera_exposure: float = 2.0
@@ -254,10 +312,26 @@ class NinaSequenceTarget(BaseModel):
     auto_focus_on_start: bool = True
     auto_focus_interval_minutes: int = 60
     meridian_flip: bool = True
-    dither_every_n: int = 3
-    start_guiding: bool = True
+    dither_every_n: int = 5
+    start_guiding: bool = False  # CEM70G encoders: unguided default
     cool_camera: bool = True
     camera_temp_c: float = -10.0
+    # PS-76: a focus-offset calibration target. Instead of imaging, it runs a
+    # bracketed series of autofocus runs (L, R, G, B, L, Ha, OIII, SII, L by
+    # default) so NINA's AF reports measure every filter's best focus against
+    # L at nearly the same temperature. See generate_focus_calibration_json().
+    focus_calibration: bool = False
+    focus_calibration_rounds: int = 1
+    focus_calibration_filters: list[str] = Field(default_factory=list)
+    # PS-84: an unguided tracking test target (TPoint + ProTrack check).
+    # Instead of the imaging plan it stops guiding, focuses on L, centers,
+    # then shoots an exposure ladder (each length `tracking_test_repeats`
+    # times) in every filter, re-centering between filters. See
+    # generate_tracking_test_json() and scheduler/tracking_test.py.
+    tracking_test: bool = False
+    tracking_test_filters: list[str] = Field(default_factory=list)
+    tracking_test_exposures: list[float] = Field(default_factory=list)
+    tracking_test_repeats: int = 2
 
 
 class NinaSequenceFile(BaseModel):
@@ -265,6 +339,7 @@ class NinaSequenceFile(BaseModel):
     name: str
     targets: list[NinaSequenceTarget] = Field(default_factory=list)
     wait_for_altitude: float = 30.0  # minimum altitude degrees
+    wait_until_local: Optional[str] = None  # "HH:MM:SS" — WaitForTime gate before imaging
     park_on_finish: bool = True
     warm_camera_on_finish: bool = True
 

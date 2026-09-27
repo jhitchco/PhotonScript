@@ -1,0 +1,8 @@
+[
+ {"filter": "L",   "focpos": 6040, "foctemp": 28.8, "date": "2026-07-03", "source": "july3-quarantine"},
+ {"filter": "Ha",  "focpos": 5785, "foctemp": 20.3, "date": "2026-07-03", "source": "july3-quarantine"},
+ {"filter": "Ha",  "focpos": 5853, "foctemp": 28.3, "date": "2026-07-03", "source": "july3-quarantine"},
+ {"filter": "OIII", "focpos": 5853, "foctemp": 25.3, "date": "2026-07-03", "source": "july3-quarantine"},
+ {"filter": "SII", "focpos": 5853, "foctemp": 24.0, "date": "2026-07-03", "source": "july3-quarantine"},
+ {"filter": "L",   "focpos": 5200, "foctemp": 10.0, "date": "2026-07-03", "source": "jeremy-estimate-coolnight"}
+]

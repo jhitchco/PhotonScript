@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import datetime
 from typing import Callable, Awaitable
 from uuid import uuid4
@@ -23,10 +23,15 @@ class MessageBus:
     matching their role arrive.
     """
 
-    def __init__(self):
+    # PS-74: history used to be an unbounded list. Two rigs publish a state
+    # update every 10 s, so a multi-day uptime grew it by ~17k messages a day
+    # (each a full TelescopeState payload). Only the recent tail is ever read.
+    HISTORY_MAX = 500
+
+    def __init__(self, history_max: int = HISTORY_MAX):
         self._listeners: dict[str, list[Listener]] = defaultdict(list)
         self._global_listeners: list[Listener] = []
-        self._history: list[AgentMessage] = []
+        self._history: deque[AgentMessage] = deque(maxlen=max(1, history_max))
 
     def subscribe(self, msg_type: str, listener: Listener) -> None:
         self._listeners[msg_type].append(listener)
@@ -59,7 +64,9 @@ class MessageBus:
             logger.exception("Error in message listener for %s", message.msg_type)
 
     def get_history(self, limit: int = 100) -> list[AgentMessage]:
-        return self._history[-limit:]
+        if limit <= 0:
+            return []
+        return list(self._history)[-limit:]
 
 
 # Singleton for the application

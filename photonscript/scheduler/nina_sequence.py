@@ -12,14 +12,15 @@ from photonscript.shared.models import (
 
 
 # NINA filter wheel position mapping (customize per setup)
+# AARO Pier 3 filter wheel (verified against observatory config)
 FILTER_POSITIONS: dict[FilterType, int] = {
-    FilterType.LUMINANCE: 0,
-    FilterType.RED: 1,
-    FilterType.GREEN: 2,
-    FilterType.BLUE: 3,
+    FilterType.RED: 0,
+    FilterType.GREEN: 1,
+    FilterType.BLUE: 2,
+    FilterType.SII: 3,
     FilterType.HA: 4,
     FilterType.OIII: 5,
-    FilterType.SII: 6,
+    FilterType.LUMINANCE: 6,
 }
 
 
