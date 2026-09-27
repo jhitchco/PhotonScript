@@ -176,7 +176,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
                                  # to fall back to the Paramount MX encoders (+TPoint/
                                  # ProTrack) unguided.
-    guiding_force_first_calibration: bool = True  # the night's FIRST guided
+    guiding_force_first_calibration: bool = False  # PS-72 (2026-09-27): default off;
+                                 # a forced cal at a high-Dec first target wrecked
+                                 # 2026-09-26. When True, the night's FIRST guided
                                  # target sets StartGuiding.ForceCalibration so
                                  # PHD2 gets one fresh cal to settle against;
                                  # every later target relies on Auto-restore.

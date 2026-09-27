@@ -173,6 +173,16 @@ def _check_light_loop_guards(seq: dict, r: LintResult) -> None:
                                       "starting subs after the night loop's end")
 
 
+def _force_cal_wanted() -> bool:
+    """PS-72: does the config ask the night's first StartGuiding to force a
+    PHD2 calibration? Defaults to False if the config can't be read."""
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        return bool(getattr(PhotonScriptConfig(), "guiding_force_first_calibration", False))
+    except Exception:
+        return False
+
+
 def lint(seq: dict, guided: bool | None = None) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content."""
     r = LintResult()
@@ -220,9 +230,12 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
         starts = _find_type(seq, "StartGuiding")
         if not starts:
             r.error("guiding", "Guided run but no StartGuiding instruction")
-        elif not starts[0].get("ForceCalibration", False):
+        elif not starts[0].get("ForceCalibration", False) and _force_cal_wanted():
+            # PS-72: only an error when the config asks for a forced first
+            # calibration; with PS_GUIDING_FORCE_FIRST_CALIBRATION=false (the
+            # default since 2026-09-27) PHD2's saved calibration is trusted.
             r.error("guiding", "First StartGuiding must set ForceCalibration=true "
-                               "(stale PHD2 calibration causes runaway errors)")
+                               "(PS_GUIDING_FORCE_FIRST_CALIBRATION is on)")
         if not _has_type(seq, "StopGuiding"):
             r.warn("guiding", "Guided run without StopGuiding in shutdown")
     else:

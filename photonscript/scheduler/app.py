@@ -492,6 +492,8 @@ _CONFIG_FIELDS = [
     ("pushover_monthly_cap", "PS_PUSHOVER_MONTHLY_CAP", "Pushover monthly hard cap", "Nanny / Alerts", "int", False, False),
     ("pushover_emergency_retry_s", "PS_PUSHOVER_EMERGENCY_RETRY_S", "Emergency (priority 2) pushes: repeat every N s until acknowledged", "Nanny / Alerts", "int", False, False),
     ("pushover_emergency_expire_s", "PS_PUSHOVER_EMERGENCY_EXPIRE_S", "Emergency pushes: stop repeating after N s (max 10800)", "Nanny / Alerts", "int", False, False),
+    ("guiding_force_first_calibration", "PS_GUIDING_FORCE_FIRST_CALIBRATION", "Force a fresh PHD2 calibration at the night's first guided target (off = keep your saved calibration)", "Nanny / Alerts", "bool", False, False),
+    ("nina_autofocus_reports_dir", "PS_NINA_AUTOFOCUS_REPORTS_DIR", "NINA AutoFocus reports folder (feeds the RC16 focus model and AF-quality alert)", "Imaging", "str", False, False),
     ("guiding_alert_repeat_min", "PS_GUIDING_ALERT_REPEAT_MIN", "Guiding lost: hold repeat pushes for N min (all events still logged)", "Nanny / Alerts", "float", False, False),
     ("guiding_recovered_push_min", "PS_GUIDING_RECOVERED_PUSH_MIN", "Guiding recovered: push only if the loss lasted N min", "Nanny / Alerts", "float", False, False),
     ("guiding_flap_count", "PS_GUIDING_FLAP_COUNT", "Guiding flapping: losses in the window before one summary push", "Nanny / Alerts", "int", False, False),

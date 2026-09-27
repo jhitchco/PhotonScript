@@ -114,7 +114,7 @@ class TestNinaJsonGeneration:
         assert any("DitherAfterExposures" in t for t in types)
         starts = [d for d in _walk(data) if isinstance(d, dict)
                   and "StartGuiding" in d.get("$type", "")]
-        assert starts[0]["ForceCalibration"] is True
+        assert starts[0]["ForceCalibration"] is False   # PS-72 default
 
     def test_park_and_warm_in_end(self):
         types = _types(_gen())
@@ -131,7 +131,14 @@ class TestNinaJsonGeneration:
         assert _warm_camera()["Duration"] == 0.0        # default: instant
         assert _warm_camera(3.0)["Duration"] == 3.0     # ramp restorable
 
-    def test_force_first_calibration_default_on(self):
+    def test_force_first_calibration_default_off(self):
+        # PS-72: default off, the saved PHD2 calibration is trusted.
+        starts = [d for d in _walk(_gen(start_guiding=True)) if isinstance(d, dict)
+                  and "StartGuiding" in d.get("$type", "")]
+        assert starts and all(s["ForceCalibration"] is False for s in starts)
+
+    def test_force_first_calibration_toggle_on(self, monkeypatch):
+        monkeypatch.setenv("PS_GUIDING_FORCE_FIRST_CALIBRATION", "true")
         starts = [d for d in _walk(_gen(start_guiding=True)) if isinstance(d, dict)
                   and "StartGuiding" in d.get("$type", "")]
         assert starts and starts[0]["ForceCalibration"] is True

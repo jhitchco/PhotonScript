@@ -1228,7 +1228,7 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     # ---- Targets area: the night loop -------------------------------------
     target_containers = []
     first_guided = True
-    force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", True))
+    force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", False))
     for t in sequence.targets:
         force_cal = first_guided and t.start_guiding and force_first_cal
         c = _build_target_container(t, sequence.wait_for_altitude, force_cal,
