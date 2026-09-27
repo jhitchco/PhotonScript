@@ -75,43 +75,134 @@ def get_config() -> PhotonScriptConfig:
 # WebSocket for live updates
 # ---------------------------------------------------------------------------
 
-async def broadcast_state():
-    """Push current state to all connected WebSocket clients."""
-    state = {
+# PS-74: a dashboard tab that stops reading (asleep laptop, phone on a bad
+# link) used to stall every publisher. broadcast_state() awaited ws.send_text
+# per client with no timeout, and the telescope agents await the bus publish
+# that triggers it, so on 2026-09-26 the 10 s state loop ran every ~22 s.
+# Now: sends run concurrently, each capped at _WS_SEND_TIMEOUT_S; a client
+# that errors or times out is dropped (and closed in the background); and
+# callers only *request* a broadcast, which is coalesced into at most one
+# in-flight send round plus one follow-up carrying the latest state.
+_WS_SEND_TIMEOUT_S = 2.0
+_WS_CLOSE_TIMEOUT_S = 1.0
+_broadcast_task: Optional[asyncio.Task] = None
+_broadcast_dirty = False
+_bg_tasks: set = set()   # strong refs so background tasks are not GC'd
+
+
+def _state_payload() -> dict:
+    return {
         "telescope": _telescope_state.model_dump(mode="json"),
         "projects": {pid: p.model_dump(mode="json") for pid, p in _projects.items()},
         "timestamp": datetime.utcnow().isoformat(),
     }
-    msg = json.dumps(state, default=str)
-    dead = []
-    for ws in _ws_clients:
+
+
+def _spawn(coro) -> asyncio.Task:
+    t = asyncio.get_running_loop().create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
+async def _close_quietly(ws) -> None:
+    try:
+        await asyncio.wait_for(ws.close(code=1011), _WS_CLOSE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - already dead or still wedged
+        pass
+
+
+def _drop_ws_client(ws, reason: str) -> None:
+    if ws in _ws_clients:
+        _ws_clients.remove(ws)
+        logger.info("Dashboard WebSocket dropped (%s); %d client(s) left",
+                    reason, len(_ws_clients))
         try:
-            await ws.send_text(msg)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        if ws in _ws_clients:  # concurrent broadcasts can race on removal
-            _ws_clients.remove(ws)
+            _spawn(_close_quietly(ws))
+        except RuntimeError:  # no running loop
+            pass
+
+
+async def _send_ws(ws, msg: str) -> Optional[str]:
+    """Send one message; None on success, else why the client is dropped."""
+    try:
+        await asyncio.wait_for(ws.send_text(msg), _WS_SEND_TIMEOUT_S)
+        return None
+    except asyncio.TimeoutError:
+        return f"send took over {_WS_SEND_TIMEOUT_S:g} s"
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}"
+
+
+async def _broadcast_now() -> None:
+    """One send round to every connected client, bounded by the timeout."""
+    clients = list(_ws_clients)
+    if not clients:
+        return
+    msg = json.dumps(_state_payload(), default=str)
+    results = await asyncio.gather(*(_send_ws(ws, msg) for ws in clients))
+    for ws, why in zip(clients, results):
+        if why is not None:
+            _drop_ws_client(ws, why)
+
+
+async def _broadcast_worker() -> None:
+    global _broadcast_dirty, _broadcast_task
+    try:
+        while _broadcast_dirty:
+            _broadcast_dirty = False
+            try:
+                await _broadcast_now()
+            except Exception:  # noqa: BLE001
+                logger.exception("Dashboard broadcast failed")
+    finally:
+        _broadcast_task = None
+
+
+def request_broadcast() -> None:
+    """Ask for the current state to be pushed to dashboards. Never waits on
+    a client: at most one send round runs at a time, and requests arriving
+    meanwhile collapse into one more round with the latest state."""
+    global _broadcast_dirty, _broadcast_task
+    _broadcast_dirty = True
+    if _broadcast_task is not None and not _broadcast_task.done():
+        return
+    try:
+        _broadcast_task = _spawn(_broadcast_worker())
+    except RuntimeError:  # called outside the event loop: nothing to push to
+        _broadcast_task = None
+
+
+async def broadcast_state():
+    """Push current state to all connected WebSocket clients (fire and
+    forget since PS-74; see request_broadcast)."""
+    request_broadcast()
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    _ws_clients.append(ws)
     try:
-        # Send initial state
+        # Send initial state before joining the broadcast list, bounded like
+        # every other send
         state = {
             "telescope": _telescope_state.model_dump(mode="json"),
             "projects": {pid: p.model_dump(mode="json") for pid, p in _projects.items()},
         }
-        await ws.send_text(json.dumps(state, default=str))
+        if await _send_ws(ws, json.dumps(state, default=str)) is not None:
+            await _close_quietly(ws)
+            return
+        _ws_clients.append(ws)
         while True:
             data = await ws.receive_text()
             # Handle client commands if needed
     except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 - we closed it after a failed send
+        pass
+    finally:
         if ws in _ws_clients:
-            if ws in _ws_clients:
-                _ws_clients.remove(ws)
+            _ws_clients.remove(ws)
 
 
 # ---------------------------------------------------------------------------
