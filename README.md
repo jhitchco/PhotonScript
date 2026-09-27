@@ -20,10 +20,13 @@ powershell -ExecutionPolicy Bypass -File C:\astro\PhotonScript\deploy\run-photon
 From the **desktop**, after making changes:
 
 ```powershell
-.\deploy\deploy.ps1 "what I changed"
+git add <files>; git commit -m "what I changed"
+.\deploy\deploy.ps1
 ```
 
-This commits, pushes, and calls `POST /api/update` on the scope PC, which exits
+This refuses a dirty working tree (commit or stash first, or pass
+`-IncludeWorkingTree "msg"` to commit everything after a confirmation), runs
+the tests, pushes the committed HEAD, and calls `POST /api/update` on the scope PC, which exits
 with code 42; the wrapper then `git pull`s and restarts it.
 The nav-bar version stamp shows the commit each machine is running. Updates are
 refused while a sequence is RUNNING so a night is never interrupted. The System

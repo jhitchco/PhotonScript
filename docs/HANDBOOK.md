@@ -61,10 +61,15 @@ pipeline adds a 1000 DN output pedestal at calibration.
 
 Desktop, from `C:\Users\sleep\Claude\PhotonScript`:
 ```powershell
-.\deploy\deploy.ps1 "commit message"
+git add <files>; git commit -m "commit message"
+.\deploy\deploy.ps1
 ```
-commits, pulls --rebase, pushes to GitHub, then POSTs `/api/update` on the
-scope, which pulls and restarts (exit 42). Refused with 409 while ARMED or
+ships only COMMITTED work (PS-56): refuses (and lists) a dirty tree, since
+other sessions leave unfinished work in this checkout; `-IncludeWorkingTree
+"msg"` commits everything after showing `git status` and asking. Then it
+pulls --rebase, runs the test gate on exactly what ships, shows
+`origin/main..HEAD`, pushes, POSTs `/api/update` on the scope, which pulls and
+restarts (exit 42), and waits for `GET /api/health` to report the pushed SHA. Refused with 409 while ARMED or
 PAUSED_UNSAFE - by design; disarm first or wait for morning.
 - Claude NEVER pushes to GitHub; Jeremy runs deploy.ps1.
 - Scope commit hashes can differ from desktop after rebases - verify by the

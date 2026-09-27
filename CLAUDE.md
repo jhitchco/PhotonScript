@@ -9,7 +9,8 @@ Mission: maximize every hour of shutter time; turn it into award-winning
 astrophotography.
 
 Non-negotiables for Claude sessions (details in HANDBOOK section 7):
-- Never push to GitHub; Jeremy deploys with .\deploy\deploy.ps1 "msg"
+- Never push to GitHub; Jeremy commits, then deploys with .\deploy\deploy.ps1
+  (it refuses a dirty tree and ships only committed work, PS-56)
 - Deliver code with cp -rf into the mounted Claude folder (never rm -rf)
 - Never write into the ninashare mount (receive-only Syncthing)
 - The dashboard (https://teles-feb25.lobster-bleak.ts.net/ via tailscale serve

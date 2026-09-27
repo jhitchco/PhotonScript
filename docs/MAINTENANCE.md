@@ -1,7 +1,7 @@
 # PhotonScript — Maintenance & Operations
 
 Operational tasks ship **in the repo** and reach the scope PC through the normal
-deploy (`.\deploy\deploy.ps1 "msg"`) — never hand-copied.
+deploy (commit, then `.\deploy\deploy.ps1`) — never hand-copied.
 
 ## Running the service (start, stop, boot) - PS-44
 
