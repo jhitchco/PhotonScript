@@ -6,7 +6,7 @@ deploy (commit, then `.\deploy\deploy.ps1`) — never hand-copied.
 ## Running the service (start, stop, boot) - PS-44
 
 On the scope PC PhotonScript runs as the `PhotonScript` scheduled task:
-`deploy\run-photonscript.ps1` (git pull) -> `photonscript supervise` ->
+`deploy\run-photonscript.ps1` (`photonscript self-update`, PS-58) -> `photonscript supervise` ->
 `photonscript start --mode full`. By default (PS-55) the task starts it 30 s
 after `jeremy` logs on, in his desktop session with a hidden window
 (`-LogonType Interactive`, the environment the console wrapper runs in); with
@@ -14,8 +14,14 @@ Windows auto-logon that is also "at boot". `-LogonType S4U` starts it at boot
 with nobody logged on (session 0), which went slow on 2026-09-26 and is kept
 only for a supervised test. The supervisor restarts it after a crash: 5 s, 10 s, 20 s ... up to 5 min, reset after 30 min up. Five crashes in
 15 min and it gives up and sends "PhotonScript is down". Every crash sends
-"PhotonScript crashed". Exit 42 (update) goes back to the wrapper, which pulls
-and starts a fresh supervisor.
+"PhotonScript crashed". Exit 42 (update) goes back to the wrapper, which runs
+the staged, smoke-checked update and starts a fresh supervisor. After an
+update the supervisor waits up to 90 s for /api/health to report the new
+SHA; otherwise it exits 43 and the wrapper resets to the previous SHA and
+sends "PhotonScript rolled back" (PS-58). The wrapper script is read once at
+start, so a change to it takes effect only after the wrapper restarts:
+`photonscript stop` (the wrapper ends with the supervisor), then
+`Start-ScheduledTask PhotonScript` (or a reboot).
 
 | Do this | Command (scope PC) |
 |---|---|
@@ -29,7 +35,8 @@ and starts a fresh supervisor.
 | Verify autostart | `photonscript autostart-check` after an install or reboot (read-only; exit 1 on FAIL); `--hours 16` the morning after; `--watch-restart [--kill]` times a crash recovery. Full procedure: `docs/AUTOSTART_TEST_PLAN.md` (PS-34a) |
 
 Logs: `<data_dir>\logs\photonscript.log` (service), `supervisor.log`
-(starts, exits, restarts), `wrapper.log` (git pulls). data_dir is
+(starts, exits, restarts), `wrapper.log` (updates, rollbacks), `update_state.json` (last update: pending /
+good / rejected / rolled_back, previous and last-good SHA). data_dir is
 `C:\Users\jeremy\.photonscript` unless `PS_DATA_DIR` is set.
 
 Gotchas: the task has no console, so use `photonscript monitor` instead of

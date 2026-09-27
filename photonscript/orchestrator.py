@@ -95,6 +95,32 @@ def _web_servers(config: PhotonScriptConfig) -> list[uvicorn.Server]:
         log_level="warning"))]
 
 
+# PS-58: POST /api/update asks for a graceful stop with exit code 42 instead
+# of os._exit(42), so uvicorn, the agents and in-flight writes wind down.
+_stop_ctx: dict = {"loop": None, "event": None}
+_exit_code: Optional[int] = None
+
+
+def request_exit(code: int) -> bool:
+    """Ask the running orchestrator to shut down gracefully and make
+    ``photonscript start`` exit with ``code``. Thread-safe. False when no
+    orchestrator loop is running (the caller then falls back to os._exit)."""
+    global _exit_code
+    loop, event = _stop_ctx.get("loop"), _stop_ctx.get("event")
+    if loop is None or event is None or loop.is_closed():
+        return False
+    _exit_code = int(code)
+    try:
+        loop.call_soon_threadsafe(event.set)
+    except RuntimeError:
+        return False
+    return True
+
+
+def requested_exit_code() -> Optional[int]:
+    return _exit_code
+
+
 def _install_stop_signals(loop: asyncio.AbstractEventLoop,
                           stop_event: asyncio.Event) -> None:
     """Route SIGINT / SIGBREAK (Win) / SIGTERM to a single stop_event.
@@ -167,6 +193,7 @@ async def _run_with_shutdown(config: PhotonScriptConfig,
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
     _install_stop_signals(loop, stop_event)
+    _stop_ctx.update(loop=loop, event=stop_event)
 
     for s in servers:
         s.install_signal_handlers = lambda: None  # single owner of shutdown
@@ -194,6 +221,7 @@ async def _run_with_shutdown(config: PhotonScriptConfig,
         # Let the watcher flip should_exit / cancel, then drain everything.
         await asyncio.gather(*all_tasks, return_exceptions=True)
     finally:
+        _stop_ctx.update(loop=None, event=None)
         monitor.stop()
         monitor_task.cancel()
         for t in all_tasks:

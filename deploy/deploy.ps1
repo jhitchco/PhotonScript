@@ -12,6 +12,13 @@
 # Order: on main + clean tree, rebase onto origin/main, test gate on exactly
 # what ships, show the outgoing commits, push, POST /api/update, then wait for
 # GET /api/health on the scope to report the pushed SHA (PS-57).
+#
+# PS-58: the scope stages and smoke-checks the new commit before switching,
+# and rolls back to the previous SHA if /api/health does not come up on the
+# new one. This script reads that outcome from /api/health ("update") and
+# says so instead of just timing out. The scope refuses (409) while a night
+# runs, while ARMED (-AllowArmed overrides: the armed night is restored) and
+# while a grading job is writing.
 
 param(
     [string]$Message = "",
@@ -22,7 +29,9 @@ param(
     [string]$Scope = "http://teles-feb25.lobster-bleak.ts.net:8100",
     [switch]$SkipTests,
     [switch]$IncludeWorkingTree,
-    [int]$VerifySeconds = 120
+    [switch]$AllowArmed,
+    # graceful stop + staging import check + start + health verify
+    [int]$VerifySeconds = 240
 )
 $repo = Split-Path $PSScriptRoot -Parent
 
@@ -119,16 +128,20 @@ if ($outgoing.Count -eq 0) {
 
 # --- 5. Ask the scope to pull + restart ---------------------------------------
 $posted = $false
+$updateUrl = "$Scope/api/update"
+if ($AllowArmed) { $updateUrl = "$updateUrl`?allow_armed=true" }
 try {
-    Invoke-RestMethod -Method Post "$Scope/api/update" | Out-Null
+    Invoke-RestMethod -Method Post $updateUrl | Out-Null
     $posted = $true
-    Write-Host "Scope PC is pulling and restarting."
+    Write-Host "Scope PC is staging the new code and restarting."
 } catch {
     $status = 0
     try { $status = [int]$_.Exception.Response.StatusCode } catch {}
     if ($status -eq 409) {
-        Write-Warning "Pushed, but the scope REFUSED to restart: a night is armed/active."
-        Write-Warning "It will pick the code up on the next restart - or Disarm, rerun deploy, re-Arm."
+        $detail = ""
+        try { $detail = ($_.ErrorDetails.Message | ConvertFrom-Json).detail } catch {}
+        Write-Warning "Pushed, but the scope REFUSED to restart: $detail"
+        Write-Warning "It will pick the code up on the next restart - or rerun deploy when that clears (-AllowArmed if it is only ARMED)."
     } else {
         Write-Warning "Could not reach the scope PC at $Scope - update it manually."
     }
@@ -138,7 +151,7 @@ try {
 if ($posted) {
     Write-Host "Waiting up to $VerifySeconds s for the scope to report $short ..."
     $deadline = (Get-Date).AddSeconds($VerifySeconds)
-    $ok = $false; $noHealth = $false; $h = $null
+    $ok = $false; $noHealth = $false; $h = $null; $outcome = ""
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Seconds 5
         try {
@@ -150,9 +163,20 @@ if ($posted) {
             continue
         }
         if ($h.commit -eq $head) { $ok = $true; break }
+        # PS-58: the scope kept or restored the old code for this SHA
+        $u = $h.update
+        if ($u -and $u.status -eq "rolled_back" -and $u.bad_sha -eq $head) { $outcome = "rolled_back"; break }
+        if ($u -and $u.status -eq "rejected" -and $u.target -eq $head) { $outcome = "rejected"; break }
     }
     if ($ok) {
         Write-Host ("Scope is running {0}: pid {1}, up {2} s, loop lag {3} ms, armer {4}." -f $short, $h.pid, $h.uptime_s, $h.loop.lag_ms, $h.armer) -ForegroundColor Green
+    } elseif ($outcome -eq "rolled_back") {
+        Write-Host ("Scope ROLLED BACK {0}: it did not come up healthy ({1}). Running {2} again." -f $short, $h.update.reason, $h.update.target) -ForegroundColor Red
+        Write-Host "Push a fix and deploy again (the scope skips $short until something newer is pushed). Details: supervisor.log / wrapper.log on the scope."
+        exit 1
+    } elseif ($outcome -eq "rejected") {
+        Write-Host ("Scope REFUSED {0} before switching: {1}. Still running the previous code." -f $short, $h.update.reason) -ForegroundColor Red
+        exit 1
     } elseif ($noHealth) {
         Write-Warning "The scope answers without /api/health (older code still running?). Check the nav version stamp."
     } else {

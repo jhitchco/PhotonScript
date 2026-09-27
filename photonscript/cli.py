@@ -11,6 +11,7 @@ Usage:
     photonscript autostart-check [--watch-restart] [--kill]   # PS-34a
     photonscript rename-targets [--apply] [--date D] [--stamp-headers]  # PS-78
     photonscript supervise [--mode full]      # keep it running (PS-44)
+    photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
     photonscript notify "message"
     photonscript monitor [--url http://host:8100] [--grep cooler] [--level warning]
@@ -22,6 +23,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -35,12 +37,16 @@ app = typer.Typer(
 )
 console = Console()
 
+# `photonscript start` binds here unless --port is given; the supervisor's
+# child command passes no --port, so its health check probes the same port.
+DEFAULT_PORT = 8100
+
 
 @app.command()
 def start(
     mode: str = typer.Option("full", help="Run mode: full, scheduler, telescope, librarian"),
     host: str = typer.Option("0.0.0.0", help="Bind address for scheduler"),
-    port: int = typer.Option(8100, help="Port for scheduler web UI"),
+    port: int = typer.Option(DEFAULT_PORT, help="Port for scheduler web UI"),
 ):
     """Start PhotonScript (foreground). Writes a PID file, sets up console +
     rotating-file logging, and runs the orchestrator. Stop it with Ctrl-C or
@@ -75,10 +81,14 @@ def start(
     try:
         _start(mode=mode, config=config)  # sets up logging + runs the orchestrator
     finally:
-        # Best-effort: a clean/operator stop removes the PID file. The exit-42
-        # self-update uses os._exit and skips this by design (it restarts and
-        # rewrites the PID).
+        # Best-effort: a clean/operator stop removes the PID file. Since PS-58
+        # the exit-42 update also shuts down gracefully and lands here; only
+        # its 15 s hard-exit fallback (os._exit) skips this.
         process_control.remove_pid_file(config)
+    from photonscript.orchestrator import requested_exit_code
+    code = requested_exit_code()
+    if code:
+        raise typer.Exit(code)
 
 
 @app.command()
@@ -168,9 +178,67 @@ def supervise(
     log_path = sv.setup_supervisor_logging(config.data_dir)
     sv.logger.info("Config from %s, data_dir %s, log %s",
                    repo_root / ".env", config.data_dir, log_path)
+    # PS-58: verify a freshly pulled update via /api/health, but only when the
+    # wrapper can act on exit 43 (it sets PS_WRAPPER_ROLLBACK=1); an older
+    # wrapper or a console run keeps the plain PS-44 behavior.
+    rollback = os.environ.get("PS_WRAPPER_ROLLBACK") == "1"
+    health_url = (f"http://127.0.0.1:{DEFAULT_PORT}/api/health"
+                  if mode in ("full", "scheduler") else None)
     rc = sv.run(config, sv.child_command(mode), cwd=repo_root,
-                notify=sv.pushover_notifier(config))
+                notify=sv.pushover_notifier(config),
+                health_url=health_url, rollback=rollback,
+                verify_s=float(getattr(config, "update_verify_s", 90)))
     raise typer.Exit(rc)
+
+
+@app.command("self-update")
+def self_update(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Stage and smoke-"
+                                 "check the upstream commit; change nothing."),
+    tests: Optional[bool] = typer.Option(None, "--tests/--no-tests", help="Also run the "
+                               "fast test subset in staging (default: "
+                               "PS_UPDATE_SMOKE_TESTS)."),
+):
+    """Fetch, stage, smoke-check and fast-forward this checkout (PS-58).
+    Run by deploy/run-photonscript.ps1 before it starts the supervisor.
+    Exit codes: 0 updated, 10 unchanged, 11 deferred (night running),
+    2 refused (old code kept, alert sent)."""
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import supervisor as sv
+    from photonscript.shared import updater
+
+    repo_root = Path(__file__).resolve().parents[1]
+    import os
+    os.chdir(repo_root)
+    config = PhotonScriptConfig()
+    sv.setup_supervisor_logging(config.data_dir)   # updater logs go there too
+    rc, detail = updater.self_update(config, repo_root, run_tests=tests,
+                                     dry_run=dry_run,
+                                     notify=sv.pushover_notifier(config))
+    console.print(detail)
+    raise typer.Exit(rc)
+
+
+@app.command("rollback-done")
+def rollback_done(
+    reason: str = typer.Option("", "--reason", help="Why the wrapper rolled back"),
+):
+    """Record a rollback and alert (PS-58). The wrapper calls this after it
+    reset the checkout to the previous SHA, so it runs the restored code."""
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared import supervisor as sv
+    from photonscript.shared import updater
+
+    repo_root = Path(__file__).resolve().parents[1]
+    import os
+    os.chdir(repo_root)
+    config = PhotonScriptConfig()
+    sv.setup_supervisor_logging(config.data_dir)
+    st = updater.rollback_done(config, reason,
+                               notify=sv.pushover_notifier(config))
+    sv.logger.error("Rolled back %s -> %s: %s", (st.get("bad_sha") or "")[:7],
+                    (st.get("target") or "")[:7], st.get("reason"))
+    console.print(f"rolled back to {(st.get('target') or '')[:7]}")
 
 
 @app.command()

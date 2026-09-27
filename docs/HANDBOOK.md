@@ -68,9 +68,19 @@ ships only COMMITTED work (PS-56): refuses (and lists) a dirty tree, since
 other sessions leave unfinished work in this checkout; `-IncludeWorkingTree
 "msg"` commits everything after showing `git status` and asking. Then it
 pulls --rebase, runs the test gate on exactly what ships, shows
-`origin/main..HEAD`, pushes, POSTs `/api/update` on the scope, which pulls and
-restarts (exit 42), and waits for `GET /api/health` to report the pushed SHA. Refused with 409 while ARMED or
-PAUSED_UNSAFE - by design; disarm first or wait for morning.
+`origin/main..HEAD`, pushes, POSTs `/api/update` on the scope, which stops
+gracefully (exit 42), and waits for `GET /api/health` to report the pushed SHA.
+Refused with 409 while RUNNING or PAUSED_UNSAFE, while a grading job writes,
+and while ARMED unless `-AllowArmed` (the armed night is restored).
+PS-58: the scope wrapper runs `photonscript self-update` with the OLD code:
+fetch, check the new commit out into a staging worktree, import every module
+from it (and the fast tests if `PS_UPDATE_SMOKE_TESTS=true`), and only then
+fast-forward. The supervisor then waits `PS_UPDATE_VERIFY_S` (90 s) for
+`/api/health` to report the new SHA; if it does not, the wrapper runs
+`git reset --hard <previous SHA>`, sends "PhotonScript rolled back" and skips
+that SHA until a newer one is pushed. deploy.ps1 prints "ROLLED BACK" or
+"REFUSED" from the health `update` field. State: `<data_dir>\update_state.json`.
+Check a pending update on the scope without switching: `photonscript self-update --dry-run`.
 - Claude NEVER pushes to GitHub; Jeremy runs deploy.ps1.
 - Scope commit hashes can differ from desktop after rebases - verify by the
   version stamp on the dashboard header, not by hash equality.

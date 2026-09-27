@@ -461,8 +461,13 @@
     document.getElementById('updGo').onclick = async () => {
         if (!confirm('Pull the latest code and restart PhotonScript?')) return;
         const st = document.getElementById('updStatus');
-        const r = await fetch('/api/update', {method: 'POST'});
-        const d = await r.json();
+        let r = await fetch('/api/update', {method: 'POST'});
+        let d = await r.json();
+        if (r.status === 409 && /allow_armed/.test(d.detail || '') &&
+            confirm(d.detail + '\n\nRestart anyway? The armed night is restored after the restart.')) {
+            r = await fetch('/api/update?allow_armed=true', {method: 'POST'});
+            d = await r.json();
+        }
         if (!r.ok) { st.textContent = d.detail; return; }
         st.textContent = 'Restarting… this page will come back in ~20 s.';
         setTimeout(() => location.reload(), 20000);

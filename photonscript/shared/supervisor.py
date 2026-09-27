@@ -15,6 +15,12 @@ keeps it up:
   the supervisor stays down after an operator stop, graceful or ``--force``.
 - ``photonscript restart`` drops a RESTART marker: the supervisor restarts the
   child at once, without an alert and without counting it as a crash.
+- PS-58: when ``update_state.json`` says an update is ``pending`` and the
+  wrapper can roll back (``PS_WRAPPER_ROLLBACK=1``), the first start is
+  verified: GET /api/health must report the new SHA within
+  ``update_verify_s``. If it does, the SHA is recorded as good; if the child
+  dies or never answers, the supervisor exits 43 and the wrapper resets the
+  checkout to the previous SHA (see shared/updater.py).
 
 Files, all under ``config.data_dir``:
 
@@ -41,6 +47,7 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence
 
 from photonscript.shared import process_control
+from photonscript.shared import updater
 
 logger = logging.getLogger("photonscript.supervisor")
 
@@ -52,6 +59,7 @@ SUPERVISOR_PID_NAME = "supervisor.pid"
 EXIT_OK = 0
 EXIT_ALREADY_RUNNING = 3
 EXIT_UPDATE = 42
+EXIT_ROLLBACK = updater.EXIT_ROLLBACK   # 43: wrapper resets to the previous SHA
 
 # decide() results
 STOP = "stop"
@@ -235,6 +243,35 @@ def _kill_child(config, proc) -> None:
         process_control.force_kill(svc)
 
 
+def health_probe(url: str, expected: str, timeout: float = 5.0) -> bool:
+    """True when GET ``url`` (/api/health) answers ok with commit ``expected``."""
+    try:
+        import httpx
+        r = httpx.get(url, timeout=timeout)
+        d = r.json()
+        return (r.status_code == 200 and d.get("ok") is True
+                and d.get("commit") == expected)
+    except Exception:  # noqa: BLE001 - down, starting, or not JSON yet
+        return False
+
+
+def verify_child(proc, check: Callable[[], bool], verify_s: float, *,
+                 sleep: Callable[[float], None] = time.sleep,
+                 clock: Callable[[], float] = time.monotonic,
+                 poll_s: float = 3.0) -> str:
+    """Wait for a freshly updated child to answer healthy.
+    Returns "healthy", "exited" (the child ended first) or "timeout"."""
+    deadline = clock() + verify_s
+    while True:
+        if proc.poll() is not None:
+            return "exited"
+        if check():
+            return "healthy"
+        if clock() >= deadline:
+            return "timeout"
+        sleep(poll_s)
+
+
 def child_command(mode: str) -> list:
     return [sys.executable, "-m", "photonscript.cli", "start", "--mode", mode]
 
@@ -247,7 +284,11 @@ def run(config, cmd: Sequence[str], *,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
         policy: Optional[RestartPolicy] = None,
-        host: str = "") -> int:
+        host: str = "",
+        health_url: Optional[str] = None,
+        rollback: bool = False,
+        verify_s: float = 90.0,
+        probe: Callable[[str, str], bool] = health_probe) -> int:
     """Supervise ``cmd`` until an operator stop, an update (returns 42), a
     crash-loop give-up, or another instance already running. Returns the exit
     code for the wrapper."""
@@ -274,7 +315,32 @@ def run(config, cmd: Sequence[str], *,
             pid_before = process_control.read_pid_file(config)
             proc = subprocess.Popen(list(cmd), cwd=str(cwd) if cwd else None)
             logger.info("Started PhotonScript (pid %s, start #%d)", proc.pid, starts)
+            pend = (updater.pending_target(config)
+                    if (rollback and health_url) else None)
+            verdict = None
             try:
+                if pend:
+                    logger.info("Verifying the update to %s: waiting up to %s "
+                                "for %s", pend[:7], _fmt_dur(verify_s), health_url)
+                    verdict = verify_child(
+                        proc, lambda: probe(health_url, pend), verify_s,
+                        sleep=sleep, clock=clock)
+                    if verdict == "healthy":
+                        updater.mark_good(config, pend)
+                        logger.info("Update %s is healthy after %s; recorded "
+                                    "as last good.", pend[:7],
+                                    _fmt_dur(clock() - t0))
+                    elif verdict == "timeout":
+                        why = (f"/api/health did not report {pend[:7]} within "
+                               f"{_fmt_dur(verify_s)}")
+                        logger.error("%s; stopping it for a rollback.", why)
+                        _kill_child(config, proc)
+                        proc.wait()
+                        if process_control.read_pid_file(config) not in (
+                                None, pid_before):
+                            process_control.remove_pid_file(config)
+                        updater.mark_failed(config, why)
+                        return EXIT_ROLLBACK
                 rc = proc.wait()
             except KeyboardInterrupt:
                 # Ctrl-C reaches the child too; give it time to shut down.
@@ -301,6 +367,13 @@ def run(config, cmd: Sequence[str], *,
                             interrupted=interrupted)
             logger.info("PhotonScript exited with code %s after %s -> %s",
                         rc, _fmt_dur(ran), action)
+
+            if verdict == "exited" and action == CRASH:
+                why = (f"new code exited with code {rc} after {_fmt_dur(ran)}, "
+                       f"before /api/health reported {pend[:7]}")
+                logger.error("%s; handing back to the wrapper to roll back.", why)
+                updater.mark_failed(config, why)
+                return EXIT_ROLLBACK
 
             if action == STOP:
                 logger.info("Operator stop: staying down.")

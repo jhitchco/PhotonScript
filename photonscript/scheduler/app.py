@@ -2182,23 +2182,64 @@ def api_update_check():
         return {"running": VERSION, "error": str(e)}
 
 
-@app.post("/api/update")
-async def api_update():
-    """Exit with code 42; the run-photonscript.ps1 wrapper pulls + restarts.
+_UPDATE_HARD_EXIT_S = 15.0   # graceful shutdown budget before os._exit(42)
 
-    Refused while a sequence is running — never yank the code out from
-    under an imaging night.
-    """
+
+def _update_blockers(allow_armed: bool) -> list[str]:
+    """Why a restart for an update must wait (PS-58). Empty = go."""
+    why = []
     st_name = str(get_armer().state or "").upper()
     if st_name in ("RUNNING", "PAUSED_UNSAFE"):
-        return JSONResponse(status_code=409, content={
-            "detail": f"armer is {st_name} — refusing to restart mid-night. "
-                      "Stop the run first."})
-    logger.warning("Update requested via API — exiting 42 so the wrapper "
-                   "can git pull and restart")
+        why.append(f"armer is {st_name}: refusing to restart mid-night. "
+                   "Stop the run first.")
+    elif st_name == "ARMED" and not allow_armed:
+        why.append("armer is ARMED: disarm first, or pass allow_armed=true "
+                   "(the armed night is restored after the restart)")
+    try:
+        from photonscript.scheduler.runs import running_jobs
+        jobs = running_jobs()
+    except Exception:  # noqa: BLE001
+        jobs = []
+    if jobs:
+        why.append("background job(s) running: " + "; ".join(jobs)
+                   + ". Try again when they finish.")
+    return why
+
+
+@app.post("/api/update")
+async def api_update(allow_armed: bool = False):
+    """Graceful restart with exit code 42; the run-photonscript.ps1 wrapper
+    then stages, smoke-checks and fast-forwards the new code (PS-58).
+
+    Refused (409) while a sequence runs, while ARMED (unless allow_armed),
+    and while a grading job is writing. The service shuts down through the
+    orchestrator's stop path (uvicorn, agents, PID file); a hard os._exit(42)
+    follows only if that takes longer than 15 s.
+    """
+    why = _update_blockers(allow_armed)
+    if why:
+        return JSONResponse(status_code=409, content={"detail": " ".join(why)})
+    logger.warning("Update requested via API: graceful stop with exit 42 so "
+                   "the wrapper can stage the new code and restart")
     import os as _os
     import threading as _th
-    _th.Timer(0.8, lambda: _os._exit(42)).start()
+    from photonscript import orchestrator
+
+    def _hard_exit():
+        logger.error("Graceful update shutdown took over %.0f s: exiting 42 "
+                     "hard", _UPDATE_HARD_EXIT_S)
+        _os._exit(42)
+
+    def _go():
+        if orchestrator.request_exit(42):
+            t = _th.Timer(_UPDATE_HARD_EXIT_S, _hard_exit)
+        else:   # not under the orchestrator (dev server): old behavior
+            t = _th.Timer(0.1, lambda: _os._exit(42))
+        t.daemon = True
+        t.start()
+
+    # let this response go out before the servers stop
+    asyncio.get_running_loop().call_later(0.5, _go)
     return {"ok": True, "detail": "Restarting. If PhotonScript was not "
             "started via deploy/run-photonscript.ps1 it will stay down."}
 

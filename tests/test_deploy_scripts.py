@@ -63,3 +63,25 @@ def test_deploy_include_working_tree_refuses_unmerged_paths():
     s = _read("deploy.ps1")
     block = s[s.index("if (-not $IncludeWorkingTree)"):s.index("git -C $repo add -A")]
     assert "^(DD|AU|UD|UA|DU|AA|UU) " in block
+
+
+# --- PS-58: staged update + rollback ---------------------------------------------
+
+def test_wrapper_updates_through_self_update_and_can_roll_back():
+    w = _read("run-photonscript.ps1")
+    assert '$env:PS_WRAPPER_ROLLBACK = "1"' in w
+    assert "& $Exe self-update" in w
+    assert "pull --ff-only" not in w           # no unchecked pulls any more
+    i_sup = w.index("& $Exe supervise --mode $Mode")
+    i_reset = w.index("git -C $Repo reset --hard $prev")
+    i_done = w.index("& $Exe rollback-done --reason $why")
+    assert i_sup < i_reset < i_done
+    assert "$rc -eq 43" in w and "$skipUpdate = $true" in w
+
+
+def test_deploy_reports_scope_rollback_and_refusal():
+    s = _read("deploy.ps1")
+    assert "[switch]$AllowArmed" in s and "allow_armed=true" in s
+    assert '$u.status -eq "rolled_back" -and $u.bad_sha -eq $head' in s
+    assert '$u.status -eq "rejected" -and $u.target -eq $head' in s
+    assert "ConvertFrom-Json).detail" in s    # 409 says why

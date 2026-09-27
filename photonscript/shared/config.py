@@ -27,6 +27,12 @@ class PhotonScriptConfig(BaseSettings):
     # PS-55: on Windows, opt out of power throttling (EcoQoS) and lift a
     # below-normal CPU/memory priority to normal at startup
     process_qos_guard: bool = True
+    # PS-58: after an update the supervisor waits this long for /api/health
+    # to report the new SHA before the wrapper rolls back to the previous one
+    update_verify_s: int = 90
+    # PS-58: also run the fast test subset in the staging checkout before
+    # switching code (needs pytest in the scope venv; skipped if missing)
+    update_smoke_tests: bool = False
 
     # --- Observatory ---
     observatory_name: str = "AARO Pier 3 (Rodeo, NM)"

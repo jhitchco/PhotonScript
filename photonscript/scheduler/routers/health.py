@@ -5,7 +5,8 @@ response time is the event loop's own latency. Used by `photonscript status`
 to tell slow from down, and by deploy.ps1 to confirm the scope runs the SHA
 that was just pushed. Fields: version, commit, started_at, uptime_s, pid,
 mode, loop lag (PS-55), process context, armer state, piggyback_enabled,
-config source.
+config source, and (PS-58) the self-update state from update_state.json
+(one small file read) so deploy.ps1 can tell "rolled back" from "slow".
 """
 from __future__ import annotations
 
@@ -32,6 +33,11 @@ async def api_health():
         armer = None
     env = Path.cwd() / ".env"
     snap = health.snapshot()
+    try:
+        from photonscript.shared.updater import public_state
+        update = public_state(cfg)
+    except Exception:  # noqa: BLE001
+        update = None
     return {
         "ok": True,
         "version": VERSION,
@@ -41,4 +47,5 @@ async def api_health():
         "armer": armer,
         "piggyback_enabled": PIGGYBACK in rig_ids(cfg),
         "config_source": str(env) if env.exists() else None,
+        "update": update,
     }

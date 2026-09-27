@@ -548,6 +548,21 @@ def regrade_all_status() -> dict:
     return dict(_regrade_all)
 
 
+def running_jobs() -> list[str]:
+    """Background jobs that write grades (PS-58: POST /api/update waits for
+    them; a restart mid-job would cut a _subs.jsonl append). Thumbnail
+    prewarm is not listed: thumbnails are written atomically (PS-59) and a
+    restart only costs the rest of the warm-up."""
+    jobs = []
+    if _regrade_all.get("running"):
+        jobs.append(f"re-grade all ({_regrade_all.get('done', 0)} of "
+                    f"{_regrade_all.get('total', '?')} nights)")
+    for date, st in list(_backfill_state.items()):
+        if st.get("running"):
+            jobs.append(f"grading {date}")
+    return jobs
+
+
 def start_regrade_all(config, since: str = "") -> dict:
     """Sequentially wipe + re-grade every night folder (>= since), one night
     at a time so memory stays flat. Each night's backfill also re-runs
