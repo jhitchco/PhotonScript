@@ -167,6 +167,30 @@ class PhotonScriptConfig(BaseSettings):
     quality_reject_unsafe_subs: bool = True  # reject a light whose exposure
                                  # overlaps a window the safety monitor read
                                  # UNSAFE (safety history, PS-71)
+    # PS-21 unified QA rules (shared.qa_rules: one scorecard for live and
+    # backfill grading). Limits above stay the single source; these add the
+    # ones that used to be hard-coded plus the scorecard behavior.
+    quality_star_min: int = 5      # fewer detected stars = cloud / no sky
+    quality_star_max: int = 5000   # more = defocus donuts / false detections
+    qa_warn_fraction: float = 0.10  # yellow "near the limit" band on the max
+                                 # gates (ecc, HFR, FWHM, guide RMS); 0 = off
+    qa_background_rel_max: float = 2.0  # warn above this x the night's median
+                                 # background for the same rig/target/filter
+    qa_hfr_outlier_factor: float = 1.4  # reject HFR above this x the night's
+                                 # median for the same rig/target/filter
+    qa_night_min_subs: int = 5    # subs needed before the night-median checks
+    qa_tracking_jump_max: float = 0.25  # doubled-star fraction = mount jump
+    quality_offtarget_max_arcmin: float = 5.0  # pointing check (PS-67 data)
+    qa_auto_approve: bool = True  # all-green subs are approved (reviewed)
+                                 # automatically; the reviewer can override
+    qa_target_overrides: str = ""  # PS-48 hook: JSON {"<target>" or
+                                 # "<target>|<filter>" or "<rig>:<target>":
+                                 # {"hfr_max": 6.0, ...}} tighter per target
+    qa_guide_rms_mode: str = "info"  # guide RMS check: info (recorded, not
+                                 # judged) | warn | fail. "info" until PS-70
+                                 # puts the PHD2 RMS in real arcsec
+    qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
+                                 # per sub for the review overlay; 0 = off
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200

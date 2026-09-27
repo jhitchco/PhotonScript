@@ -568,6 +568,15 @@ _CONFIG_FIELDS = [
     ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
     ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
     ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
+    ("quality_hfr_abs_max", "PS_QUALITY_HFR_ABS_MAX", "Max HFR (px, RC16)", "Quality", "float", False, False),
+    ("quality_star_min", "PS_QUALITY_STAR_MIN", "Min detected stars", "Quality", "int", False, False),
+    ("quality_star_max", "PS_QUALITY_STAR_MAX", "Max detected stars (defocus guard)", "Quality", "int", False, False),
+    ("piggyback_ecc_max", "PS_PIGGYBACK_ECC_MAX", "Piggyback max eccentricity", "Quality", "float", False, False),
+    ("piggyback_fwhm_max", "PS_PIGGYBACK_FWHM_MAX", "Piggyback max FWHM (arcsec, advisory)", "Quality", "float", False, False),
+    ("qa_warn_fraction", "PS_QA_WARN_FRACTION", "Scorecard yellow band (fraction of a limit)", "Quality", "float", False, False),
+    ("qa_background_rel_max", "PS_QA_BACKGROUND_REL_MAX", "Warn: background above x night median", "Quality", "float", False, False),
+    ("qa_hfr_outlier_factor", "PS_QA_HFR_OUTLIER_FACTOR", "Reject: HFR above x night median", "Quality", "float", False, False),
+    ("qa_auto_approve", "PS_QA_AUTO_APPROVE", "Auto-approve all-green subs", "Quality", "bool", False, False),
     ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
     ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
     ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
@@ -2307,7 +2316,8 @@ async def api_run_manual_qa(date: str, payload: dict = Body(...)):
     from photonscript.scheduler.runs import set_manual_qa
     hit = set_manual_qa(get_config(), date, payload.get("file", ""),
                         passed=payload.get("passed"),
-                        state=payload.get("state"))
+                        state=payload.get("state"),
+                        why=payload.get("why"))
     if hit is None:
         return JSONResponse(status_code=404, content={"detail": "sub not found"})
     logger.info("Manual QA %s: %s -> %s", date, payload.get("file"),
@@ -2687,6 +2697,8 @@ from photonscript.scheduler.routers import triage as _triage_router  # noqa: E40
 app.include_router(_triage_router.router)
 from photonscript.scheduler.routers import health as _health_router  # noqa: E402
 app.include_router(_health_router.router)
+from photonscript.scheduler.routers import review as _review_router  # noqa: E402
+app.include_router(_review_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

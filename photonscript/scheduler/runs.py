@@ -19,6 +19,7 @@ import gc
 import json
 import logging
 import math
+import os
 import re
 import threading
 from datetime import datetime, timedelta
@@ -276,6 +277,7 @@ def _measure(binned, config) -> dict:
                 break
         del det_img
         hfr = ecc = None
+        star_arrays = None  # PS-80 sidecar: the stars behind the medians
         nstars = int(len(objs))
         if len(objs):
             good = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
@@ -285,11 +287,19 @@ def _measure(binned, config) -> dict:
                 try:
                     # Radii measured on the ORIGINAL image at the positions
                     # found on the filtered one
-                    r, _ = sep.flux_radius(data_sub, top["x"], top["y"],
-                                           6.0 * top["a"], 0.5)
-                    r = r[np.isfinite(r) & (r > 0.2) & (r < 15)]
+                    r_all, _ = sep.flux_radius(data_sub, top["x"], top["y"],
+                                               6.0 * top["a"], 0.5)
+                    ok = np.isfinite(r_all) & (r_all > 0.2) & (r_all < 15)
+                    r = r_all[ok]
                     if len(r):
                         hfr = round(float(np.median(r)) * 2, 2)  # ->native px
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        e_all = 1.0 - top["b"] / top["a"]
+                    star_arrays = {"x": top["x"][ok], "y": top["y"][ok],
+                                   "hfr": r_all[ok], "ecc": e_all[ok],
+                                   "theta": top["theta"][ok],
+                                   "flux": top["flux"][ok],
+                                   "w": data.shape[1], "h": data.shape[0]}
                 except Exception:  # noqa: BLE001
                     pass
                 with np.errstate(divide="ignore", invalid="ignore"):
@@ -348,7 +358,7 @@ def _measure(binned, config) -> dict:
                 "noise": round(float(bkg.globalrms), 2),
                 "clipped_pct": clipped_pct, "sat_stars_pct": sat_stars_pct,
                 "swamp": swamp, "exposure": exposure,
-                "graded_by": "sep-binned"}
+                "graded_by": "sep-binned", "_stars": star_arrays}
 
     # Honest fallback: count stars, don't invent an HFR (the old area-based
     # estimate quantized to 3.91 px for every frame).
@@ -407,38 +417,16 @@ def _resolve_target(raw, filename: str, plan_names: list[str],
 
 def sensor_temp_reasons(ccd_temp, header_setpoint, config,
                         setpoint: float | None = None) -> list[str]:
-    """Rejection reasons for a warm sub (empty list = temperature is fine).
-
-    Judged against the CONFIGURED setpoint, never the header SET-TEMP: on
-    2026-09-26 the camera was left with SET-TEMP=20, so 22-25°C subs looked
-    'at setpoint' and passed into review. The header value is only reported.
-    Two rules: more than sub_temp_over_setpoint_c above setpoint, or above the
-    absolute ceiling sub_temp_max_c (default 10°C) whatever the setpoint."""
-    try:
-        if ccd_temp is None:
-            return []
-        t = float(ccd_temp)
-    except (TypeError, ValueError):
-        return []
-    sp = float(setpoint if setpoint is not None
-               else getattr(config, "camera_setpoint_c", 0.0))
-    over = float(getattr(config, "sub_temp_over_setpoint_c", 5.0))
-    ceiling = float(getattr(config, "sub_temp_max_c", 10.0))
-    hdr_note = ""
-    try:
-        if header_setpoint is not None and abs(float(header_setpoint) - sp) > 1.0:
-            hdr_note = f"; camera was set to {float(header_setpoint):.0f}C"
-    except (TypeError, ValueError):
-        pass
-    if t > sp + over:
-        return [f"sensor {t:.0f}C vs setpoint {sp:.0f}C (cooler failure{hdr_note})"]
-    if t > ceiling:
-        return [f"sensor {t:.0f}C above {ceiling:.0f}C limit{hdr_note}"]
-    return []
+    """Rejection reasons for a warm sub; the rule lives in shared.qa_rules
+    (PS-21) so live and backfill grading share it. Kept here for callers."""
+    from photonscript.shared.qa_rules import sensor_temp_reasons as _str
+    return _str(ccd_temp, header_setpoint, config, setpoint=setpoint)
 
 
 def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
-                *, prewarm: tuple[str, str] | None = None) -> dict:
+                *, prewarm: tuple[str, str] | None = None,
+                rig: str = "rc16", night: dict | None = None,
+                stars_to: tuple[str, str] | None = None) -> dict:
     """Per-sub metrics for backfill: sep on a 2x2-binned frame.
 
     prewarm=(date, rel_file): while the frame is already loaded, also render the
@@ -446,6 +434,11 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     view. Reuses the loaded array — just a stretch + resize + PNG write, so it
     costs a fraction of the grade and never re-opens the FITS. Best-effort: a
     thumbnail failure never blocks grading.
+
+    PS-21: graded by shared.qa_rules.evaluate (same rules as live grading);
+    `night` is the night-median context (None: those checks skip until the
+    rescore_night post-pass). stars_to=(date, rel_file) also writes the PS-80
+    star sidecar from the stars already in memory.
     """
     with _HEAVY:
         hdr, binned = _load_binned(path)
@@ -464,61 +457,58 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                 logger.debug("thumb pre-warm skipped for %s: %s", path.name, e)
         del binned
     gc.collect()
-    reasons = []
-    if m["stars"] < 5:
-        reasons.append(f"only {m['stars']} stars")
-    # Cooler-failure subs: sensor way above the setpoint means the frame is
-    # dominated by dark current no matching dark can calibrate out
-    reasons.extend(sensor_temp_reasons(hdr.get("CCD-TEMP"), hdr.get("SET-TEMP"),
-                                       config))
-    ecc_max = float(getattr(config, "quality_eccentricity_max", 0.6))
-    if m["ecc"] is not None and m["ecc"] > ecc_max:
-        reasons.append(f"elongated stars (ecc {m['ecc']} > {ecc_max:g})")
-    if m.get("doubled_frac", 0) >= 0.25:
-        reasons.append(f"tracking jump: {round(m['doubled_frac']*100)}% of "
-                       "stars doubled at a consistent offset")
-    # Defocus / false-detection guards (2026-07-09): a badly out-of-focus
-    # frame reads as donuts — either a flood of false "stars" or a huge HFR.
-    # Both mean the frame is junk regardless of the other metrics.
-    star_max = int(getattr(config, "quality_star_max", 5000))
-    if m["stars"] is not None and m["stars"] > star_max:
-        reasons.append(f"{m['stars']} stars > {star_max} "
-                       "(defocus/false detections)")
-    hfr_abs_max = float(getattr(config, "quality_hfr_abs_max", 8.0))
-    if m["hfr"] is not None and m["hfr"] > hfr_abs_max:
-        reasons.append(f"HFR {m['hfr']} > {hfr_abs_max:g}px (out of focus)")
-    # PS-71: roof closed / parked. This grader has no true FWHM (its
-    # fwhm_arcsec is HFR x scale), so judge star size on HFR only.
-    qa_flag = ""
+    # PS-21: one set of rules for live and backfill (shared.qa_rules). This
+    # grader has no true FWHM (its fwhm_arcsec is HFR x scale), so FWHM is
+    # not judged here, and the PS-71 star-size signature runs on HFR only.
+    from photonscript.shared import qa_rules
+    star_arrays = m.pop("_stars", None)
+    target = _resolve_target(hdr.get("OBJECT"), path.name, plan_names or [])
+    flt = (lambda f: {**{}, **getattr(config, "reverse_filter_map",
+                      lambda: {})()}.get(f, f))(hdr.get("FILTER", "?"))
+    _exp = float(hdr.get("EXPTIME", 0) or 0)
+    _start = _wins = None
     try:
-        from photonscript.shared.qa_signatures import (parked_frame_verdict,
-                                                       exposure_start)
+        from photonscript.shared.qa_signatures import exposure_start
         from photonscript.shared.safety_history import unsafe_windows
-        _exp = float(hdr.get("EXPTIME", 0) or 0)
         _start = exposure_start(hdr.get("DATE-OBS"))
-        _wins = None
         if _start is not None:
             _wins, _src = unsafe_windows(config, _start,
                                          _start + timedelta(seconds=_exp))
-        _v = parked_frame_verdict(
-            config, hfr_px=m["hfr"], fwhm_arcsec=None,
-            background=m.get("background"), exp_s=_exp, stars=m["stars"],
-            start_utc=_start, unsafe_windows=_wins,
-            image_type=str(hdr.get("IMAGETYP", "LIGHT")))
-        reasons.extend(_v.reasons)
-        qa_flag = _v.flag
     except Exception as e:  # noqa: BLE001
-        logger.debug("parked-frame QA skipped for %s: %s", path.name, e)
-    passed = not reasons
+        logger.debug("safety history skipped for %s: %s", path.name, e)
+    metrics = qa_rules.record_metrics(
+        hfr=m["hfr"], fwhm_arcsec=None, ecc=m["ecc"], stars=m["stars"],
+        background=m.get("background"), exp_s=_exp,
+        ccd_temp=hdr.get("CCD-TEMP"), set_temp=hdr.get("SET-TEMP"),
+        doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
+        clipped_pct=m.get("clipped_pct"), sat_stars_pct=m.get("sat_stars_pct"),
+        swamp=m.get("swamp"))
+    card = qa_rules.evaluate(metrics, qa_rules.context(
+        config, rig, target, flt, night=night, unsafe_windows=_wins,
+        start_utc=_start, image_type=str(hdr.get("IMAGETYP", "LIGHT"))))
+    if stars_to is not None and star_arrays is not None:
+        try:
+            from photonscript.shared import star_table
+            n_max = int(getattr(config, "qa_star_sidecar_max", 500) or 0)
+            tbl = star_table.build(
+                star_arrays["x"], star_arrays["y"], star_arrays["hfr"],
+                star_arrays["ecc"], theta=star_arrays["theta"],
+                flux=star_arrays["flux"], w=star_arrays["w"],
+                h=star_arrays["h"], scale=2.0, limit=n_max,
+                grader="sep-binned", rig=rig, ecc_def="1-b/a")
+            star_table.write(config, stars_to[0], stars_to[1], tbl, rig=rig)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("star sidecar skipped for %s: %s", path.name, e)
     hfr = m["hfr"]
-    return {
+    rec = {
+        "rig": rig,
         "time": hdr.get("DATE-OBS", ""),
-        "target": _resolve_target(hdr.get("OBJECT"), path.name,
-                                  plan_names or []),
-        "filter": (lambda f: {**{}, **getattr(config, "reverse_filter_map",
-                    lambda: {})()}.get(f, f))(hdr.get("FILTER", "?")),
+        "target": target,
+        "filter": flt,
         "exp_s": float(hdr.get("EXPTIME", 0)),
         "ccd_temp": hdr.get("CCD-TEMP"),
+        "set_temp": hdr.get("SET-TEMP"),
+        "setpoint_c": card.thresholds.get("setpoint_c"),
         "hfr": hfr,
         "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
         "stars": m["stars"], "ecc": m["ecc"],
@@ -531,11 +521,13 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "clipped_pct": m.get("clipped_pct"),
         "sat_stars_pct": m.get("sat_stars_pct"),
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
-        "passed_qa": passed,
-        "reason": "; ".join(reasons),
-        "qa_flag": qa_flag,
+        "noise": m.get("noise"),
         "graded_by": m["graded_by"],
     }
+    # passed_qa, reason, qa_flag, scorecard, auto_verdict, auto_reason,
+    # drivers (+ reviewed / review_source when all green)
+    rec.update(card.record_fields())
+    return rec
 
 
 _backfill_state: dict[str, dict] = {}
@@ -674,7 +666,8 @@ def start_backfill(config, date: str) -> None:
                 t0 = time.monotonic()
                 try:
                     record = _fast_grade(f, config, plan_names,
-                                         prewarm=(date, rel))
+                                         prewarm=(date, rel),
+                                         stars_to=(date, rel))
                     record["file"] = rel
                     record["abs_path"] = str(f)
                     append_sub_record(config, date, record)
@@ -893,30 +886,159 @@ def correlate_piggyback_targets(config, date: str) -> dict:
     return {"attributed": n, "windows": windows}
 
 
-def flag_hfr_outliers(config, date: str, factor: float = 1.4) -> int:
-    """Post-pass: reject subs whose HFR is far above the night's per-filter
-    median — soft/trailed frames that pass absolute checks. Never
-    un-rejects, never overrides a manual verdict."""
-    subs = _load_subs(config, date)
-    by_filter: dict[str, list[float]] = {}
-    for s_ in subs:
-        if s_.get("hfr"):
-            by_filter.setdefault(s_.get("filter", "?"), []).append(s_["hfr"])
-    med = {f: sorted(v)[len(v) // 2] for f, v in by_filter.items()
-           if len(v) >= 5}
-    n = 0
-    for s_ in subs:
-        if not s_.get("passed_qa") or s_.get("manual_qa"):
+def _human_verdict(rec: dict) -> bool:
+    """A reviewer decided this sub (manual accept/reject, or approved via
+    approve_night): no automatic pass may change it."""
+    return bool(rec.get("manual_qa")) or rec.get("review_source") == "manual" \
+        or (bool(rec.get("reviewed")) and rec.get("review_source") != "auto")
+
+
+def _old_verdict(rec: dict) -> str:
+    if not rec.get("passed_qa"):
+        return "rejected"
+    return rec.get("auto_verdict") or "passed (legacy)"
+
+
+def rescore_night(config, date: str, apply: bool = False,
+                  allow_unreject: bool = False,
+                  extra_unsafe: list[tuple] | None = None,
+                  records: list[dict] | None = None) -> dict:
+    """PS-21: re-grade a night's stored metrics with the current rules and the
+    night-median context (HFR and background per rig + target + filter). No
+    FITS load. DRY-RUN BY DEFAULT: reports the verdict diff and changes
+    nothing unless apply=True.
+
+    Never touches a human verdict (manual accept/reject or approve_night).
+    Without allow_unreject a sub rejected earlier stays rejected even if the
+    new rules pass it (reported as `kept_rejected`): older records lack some
+    inputs (guiding, safety windows) the original grade may have used.
+    With apply, newly rejected subs leave the stack set (Library links move
+    to Library/_rejected/, as PS-71) and newly approved subs are linked.
+    `records` grades that list instead of the night's jsonl (offline dry
+    runs on a copy); apply is refused then."""
+    from collections import Counter
+    from photonscript.shared import qa_rules
+    from photonscript.scheduler.qa_backfill import _library_links, _start_of
+    if records is not None and apply:
+        raise ValueError("apply needs the night's own records")
+    subs = records if records is not None else _load_subs(config, date)
+    ctxs = qa_rules.night_context(subs)
+    wins, source = None, None
+    try:
+        from photonscript.shared.safety_history import unsafe_windows
+        day = datetime.fromisoformat(date)
+        wins, source = unsafe_windows(config, day + timedelta(hours=12),
+                                      day + timedelta(hours=40),
+                                      extra=extra_unsafe)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("rescore %s: no safety history (%s)", date, e)
+    counts: Counter = Counter()
+    transitions: Counter = Counter()
+    drivers: Counter = Counter()
+    diffs, moves = [], []
+    changed = 0
+    lib = library_root(config)
+    for rec in subs:
+        key = qa_rules.group_key(rec)
+        try:
+            start = _start_of(rec)
+        except Exception:  # noqa: BLE001
+            start = None
+        card = qa_rules.evaluate(
+            qa_rules.metrics_from_record(rec),
+            qa_rules.context(config, key[0], key[1], key[2],
+                             night=ctxs.get(key), unsafe_windows=wins,
+                             start_utc=start))
+        old = _old_verdict(rec)
+        new = card.verdict
+        counts[f"new_{new}"] += 1
+        for d in card.drivers:
+            drivers[d] += 1
+        if _human_verdict(rec):
+            counts["human_kept"] += 1
+            if (new == "rejected") == bool(rec.get("passed_qa")):
+                diffs.append({"file": rec.get("file"), "rig": key[0],
+                              "old": "human " + ("accepted" if rec.get(
+                                  "passed_qa") else "rejected"),
+                              "new": new, "action": "kept (human verdict)",
+                              "drivers": card.drivers})
             continue
-        m_ = med.get(s_.get("filter", "?"))
-        if m_ and s_.get("hfr") and s_["hfr"] > m_ * factor:
-            s_["passed_qa"] = False
-            s_["reason"] = (f"HFR outlier: {s_['hfr']} vs night median "
-                            f"{m_} (x{factor:g} limit)")
-            n += 1
-    if n:
+        transitions[f"{old} -> {new}"] += 1
+        action = None
+        if not rec.get("passed_qa") and card.passed:
+            if not allow_unreject:
+                counts["kept_rejected"] += 1
+                action = "kept rejected (no --allow-unreject)"
+            else:
+                counts["unrejected"] += 1
+                action = "un-rejected"
+        elif rec.get("passed_qa") and not card.passed:
+            counts["newly_rejected"] += 1
+            action = "rejected"
+        elif (rec.get("reason") or "") != card.reason and not card.passed:
+            counts["reason_changed"] += 1
+            action = "reason updated"
+        if old != new or action:
+            diffs.append({"file": rec.get("file"), "rig": key[0],
+                          "target": key[1], "filter": key[2], "old": old,
+                          "new": new, "action": action or "verdict updated",
+                          "drivers": card.drivers,
+                          "warnings": card.warnings,
+                          "old_reason": rec.get("reason") or "",
+                          "new_reason": card.reason})
+        if not apply or (action or "").startswith("kept"):
+            continue
+        was_passed = bool(rec.get("passed_qa"))
+        fields = card.record_fields()
+        if not card.auto_approved and rec.get("review_source") == "auto":
+            fields.update(reviewed=False, review_source=None)
+        if all(rec.get(k) == v for k, v in fields.items()):
+            continue
+        rec.update(fields)
+        if rec.get("review_source") is None:
+            rec.pop("review_source", None)
+        rec["rescored"] = qa_rules.RULES_VERSION
+        changed += 1
+        if was_passed and not card.passed:
+            for src in _library_links(config, rec):
+                dest = lib / "_rejected" / src.relative_to(lib)
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    if dest.exists():
+                        src.unlink()
+                    else:
+                        os.replace(src, dest)
+                    moves.append(f"{src} -> {dest}")
+                except OSError as e:
+                    logger.warning("rescore library move %s failed: %s",
+                                   src, e)
+    if apply and changed:
         _rewrite_subs(config, date, subs)
-    return n
+        try:
+            build_library(config, date)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("rescore %s: library update failed: %s", date, e)
+        sync_goal_progress(config)
+    result = {"date": date, "mode": "apply" if apply else "dry-run",
+              "rules_version": qa_rules.RULES_VERSION, "subs": len(subs),
+              "counts": dict(counts), "transitions": dict(transitions),
+              "records_changed": changed,
+              "drivers": dict(drivers),
+              "unsafe_source": source, "diffs": diffs,
+              "library_moves": moves}
+    logger.info("PS-21 rescore %s (%s): %s", date, result["mode"],
+                dict(counts))
+    return result
+
+
+def flag_hfr_outliers(config, date: str, factor: float | None = None) -> int:
+    """Backfill post-pass (kept for callers): now the PS-21 rescore, which
+    applies the night-median checks (HFR outlier x qa_hfr_outlier_factor,
+    background vs median) with every other rule. Never un-rejects, never
+    overrides a human verdict. Returns the number of newly rejected subs.
+    `factor` is ignored (qa_hfr_outlier_factor in config)."""
+    res = rescore_night(config, date, apply=True)
+    return int(res["counts"].get("newly_rejected", 0))
 
 
 def reset_library(config) -> dict:
@@ -1012,27 +1134,51 @@ def approve_night(config, date: str, files: list[str] | None = None) -> dict:
 
 def set_manual_qa(config, date: str, rel_file: str,
                   passed: bool | None = None,
-                  state: str | None = None) -> dict | None:
+                  state: str | None = None,
+                  why: str | None = None) -> dict | None:
     """Human verdict for one sub: 'accepted' | 'rejected' | 'review'.
 
     'review' hands the sub back to the automatic pipeline (pass, not yet
     reviewed). Legacy bool `passed` maps to accepted/rejected.
+
+    PS-21: the automatic result is never erased. `auto_verdict` /
+    `auto_reason` / `scorecard` / `drivers` stay on the record (captured from
+    passed_qa / reason first for records graded before PS-21); `why` (a check
+    id such as 'ecc', or 'visual') lands in `manual_reason`.
     """
     if state is None:
         state = "accepted" if passed else "rejected"
     subs = _load_subs(config, date)
     hit = None
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     for s_ in subs:
         if s_.get("file") == rel_file:
+            if "auto_verdict" not in s_ and not s_.get("manual_qa"):
+                s_["auto_verdict"] = ("rejected" if not s_.get("passed_qa")
+                                      else "passed (legacy)")
+                s_["auto_reason"] = s_.get("reason") or ""
             if state == "accepted":
                 s_.update(passed_qa=True, reviewed=True, manual_qa=True,
-                          reason="")
+                          reason="", review_source="manual",
+                          reviewed_at=now)
             elif state == "rejected":
                 s_.update(passed_qa=False, reviewed=True, manual_qa=True,
-                          reason="rejected manually")
+                          reason="rejected manually" + (f": {why}" if why
+                                                        else ""),
+                          review_source="manual", reviewed_at=now)
             else:  # review
+                # review_source stays "manual": a rescore must not
+                # auto-approve a sub a person sent back to review
                 s_.update(passed_qa=True, reviewed=False, manual_qa=False,
-                          reason="")
+                          reason="", review_source="manual",
+                          reviewed_at=now)
+            if state in ("accepted", "rejected"):
+                if why:
+                    s_["manual_reason"] = str(why)[:120]
+                else:
+                    s_.pop("manual_reason", None)
+            else:
+                s_.pop("manual_reason", None)
             hit = s_
     if hit is None:
         return None
@@ -1306,6 +1452,35 @@ def _cached_night_extras(config, date: str, subs_count: int):
     return cal, report
 
 
+def score_legacy_on_read(config, subs: list[dict]) -> int:
+    """PS-21: records graded before the scorecard existed get one computed
+    from their stored metrics (current thresholds, night medians, no safety
+    history), marked scored_on_read. passed_qa / reason are NOT changed:
+    the stored verdict stands until a rescore. Returns how many were scored."""
+    from photonscript.shared import qa_rules
+    legacy = [s_ for s_ in subs if not s_.get("scorecard")]
+    if not legacy:
+        return 0
+    ctxs = qa_rules.night_context(subs)
+    cache: dict = {}
+    n = 0
+    for s_ in legacy:
+        key = qa_rules.group_key(s_)
+        try:
+            ctx = cache.get(key)
+            if ctx is None:
+                ctx = cache[key] = qa_rules.context(
+                    config, key[0], key[1], key[2], night=ctxs.get(key))
+            card = qa_rules.evaluate(qa_rules.metrics_from_record(s_), ctx)
+            s_["scorecard"] = card.compact()
+            s_["scored_on_read"] = True
+            n += 1
+        except Exception as e:  # noqa: BLE001 - a card never sinks the page
+            logger.debug("on-read scorecard skipped for %s: %s",
+                         s_.get("file"), e)
+    return n
+
+
 def night_detail(config, date: str, backfill: bool = True) -> dict:
     """Full plan-vs-actual record for one night."""
 
@@ -1325,6 +1500,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     for s_ in subs:
         s_["target"] = _resolve_target(s_.get("target"),
                                        s_.get("file", ""), plan_names)
+    score_legacy_on_read(config, subs)
 
     # Plan vs actual per rig/target/filter (rig separates the two scopes)
     planned: dict[tuple, int] = {}

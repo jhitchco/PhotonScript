@@ -466,6 +466,43 @@ def qa_backfill(
     console.print_json(_json.dumps(res))
 
 
+@app.command("qa-rescore")
+def qa_rescore(
+    date: str = typer.Option(..., help="Night (YYYY-MM-DD, the runs page date)"),
+    apply: bool = typer.Option(False, "--apply",
+                               help="Write the changes (default: dry run)"),
+    allow_unreject: bool = typer.Option(
+        False, "--allow-unreject",
+        help="Let the new rules pass a sub that was rejected before"),
+    records: str = typer.Option(
+        "", help="Grade a copy instead: a <date>_subs.jsonl or a saved "
+                 "/api/runs/<date> JSON (dry run only)"),
+    full: bool = typer.Option(False, "--full", help="Print every diff row"),
+):
+    """PS-21: re-grade a night's stored metrics with the unified QA rules and
+    show the verdict diff. Dry run unless --apply; human verdicts are never
+    changed."""
+    import json as _json
+    from pathlib import Path as _P
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import rescore_night
+
+    recs = None
+    if records:
+        text = _P(records).read_text(encoding="utf-8")
+        try:
+            doc = _json.loads(text)
+            recs = doc["subs"] if isinstance(doc, dict) else doc
+        except ValueError:
+            recs = [_json.loads(x) for x in text.splitlines() if x.strip()]
+    res = rescore_night(PhotonScriptConfig(), date, apply=apply,
+                        allow_unreject=allow_unreject, records=recs)
+    if not full:
+        res = {**res, "diffs": res["diffs"][:20],
+               "diffs_total": len(res["diffs"])}
+    console.print_json(_json.dumps(res, default=str))
+
+
 @app.command()
 def preflight():
     """Run the full daytime system test (config, dirs, NINA, PHD2, lint, Pushover)."""

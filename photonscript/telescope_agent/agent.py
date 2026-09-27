@@ -847,74 +847,72 @@ class TelescopeAgent:
                 logger.debug("OBJECT stamp skipped for %s: %s",
                              file_path.name, e)
 
-        # Validate image quality
-        quality = validate_image(str(file_path), self.config)
-
-        # Add tracking RMS from current guiding — but an unguided rig has
-        # PHD2 idling with junk RMS; only judge it when actively guiding
-        # PS-70: only in arcsec (None when the guide pixel scale is unknown,
-        # so a pixel number is never judged against the arcsec gate)
-        g = self.state.guiding
-        quality.tracking_rms_arcsec = (g.rms_total_arcsec
-                                       if getattr(g, "units", "arcsec") == "arcsec"
+        # PS-21: measure, then grade ONCE with the full context through
+        # shared.qa_rules.evaluate, the same rules the backfill grader uses
+        # (frame metrics + sensor temp vs the configured setpoint + guiding
+        # snapshot + PS-71 roof-closed / parked signatures + night medians).
+        quality = validate_image(str(file_path), self.config, rig=self.rig)
+        _g = self.state.guiding
+        # PS-70: only an arcsec RMS is judged; None when the guide pixel
+        # scale is unknown, so a pixel number never meets the arcsec gate.
+        quality.tracking_rms_arcsec = (_g.rms_total_arcsec
+                                       if getattr(_g, "units", "arcsec") == "arcsec"
                                        else None)
-        _st = getattr(g, "state", "")
-        _guiding_active = str(getattr(_st, "value", _st)).lower() in ("guiding", "settling")
-        if _guiding_active and quality.tracking_rms_arcsec is not None and \
-                quality.tracking_rms_arcsec > self.config.quality_tracking_rms_max:
-            quality.passed_qa = False
-            if quality.rejection_reason:
-                quality.rejection_reason += "; "
-            quality.rejection_reason += (
-                f"Tracking RMS {quality.tracking_rms_arcsec:.2f}\" > "
-                f"{self.config.quality_tracking_rms_max}\""
-            )
-
-        # Sensor far above setpoint at capture = cooler-failure sub. Dark
-        # current at +30..40C swamps the signal and the dark library can't
-        # match it — reject outright (2026-07-03..05 lesson).
-        # Same rule as grading (runs.sensor_temp_reasons): configured
-        # setpoint + sub_temp_over_setpoint_c, and the sub_temp_max_c ceiling.
-        from photonscript.scheduler.runs import sensor_temp_reasons
-        for _r in sensor_temp_reasons(self.state.camera_temp_c, None,
-                                      self.config,
-                                      setpoint=self.config.camera_setpoint_c):
-            quality.passed_qa = False
-            if quality.rejection_reason:
-                quality.rejection_reason += "; "
-            quality.rejection_reason += _r
-
-        # PS-71: frames shot with the roof closed / mount parked. Hot pixels
-        # graded as stars (sub-physical size), a bias-floor background, or an
-        # exposure overlapping an UNSAFE safety-monitor window.
-        qa_flag = ""
+        # GuidingState is a str Enum: str() gives 'GuidingState.GUIDING', so
+        # the old str(...).lower() in ("guiding", ...) test never matched and
+        # the live RMS gate never ran. Compare the enum value.
+        _gs = getattr(_g, "state", "")
+        guide_state = str(getattr(_gs, "value", _gs) or "").lower()
+        # The piggyback is a one-shot-color rig: record its filter as OSC
+        # regardless of NINA's (empty/L) filter token.
+        rec_filter = "OSC" if self.rig != "rc16" else filter_type.value
+        night = rel_in_night = None
         try:
-            from photonscript.shared.qa_signatures import (
-                parked_frame_verdict, exposure_start)
+            watch = Path(self.config.image_watch_dir)
+            rel = file_path.relative_to(watch)
+            night = rel.parts[0] if rel.parts and \
+                rel.parts[0][:2] == "20" else datetime.utcnow().strftime("%Y-%m-%d")
+            rel_in_night = str(Path(*rel.parts[1:])) if len(rel.parts) > 1 \
+                else file_path.name
+        except ValueError:
+            pass
+        from photonscript.shared import qa_rules
+        from photonscript.telescope_agent.image_validator import image_metrics
+        start = wins = None
+        try:  # PS-71 inputs: exposure start + UNSAFE safety-monitor windows
+            from photonscript.shared.qa_signatures import exposure_start
             from photonscript.shared.safety_history import unsafe_windows
             start = exposure_start(hdr.get("DATE-OBS"),
                                    datetime.utcnow(), exposure_seconds)
-            wins = None
             if start is not None:
                 wins, _src = unsafe_windows(
                     self.config, start,
                     start + timedelta(seconds=exposure_seconds or 0))
-            verdict = parked_frame_verdict(
-                self.config, hfr_px=quality.hfr_pixels,
-                fwhm_arcsec=quality.fwhm_arcsec,
-                background=quality.background_adu, exp_s=exposure_seconds,
-                stars=quality.star_count, start_utc=start,
-                unsafe_windows=wins)
-            if verdict.reject:
-                quality.passed_qa = False
-                for _r in verdict.reasons:
-                    if quality.rejection_reason:
-                        quality.rejection_reason += "; "
-                    quality.rejection_reason += _r
-            qa_flag = verdict.flag
         except Exception as e:  # noqa: BLE001 - never lose a sub over this
-            logger.warning("parked-frame QA skipped for %s: %s",
+            logger.warning("safety history skipped for %s: %s",
                            file_path.name, e)
+        night_ctx = None
+        if night:
+            try:  # night medians so far for this rig + target + filter
+                from photonscript.scheduler.runs import _load_subs
+                key = (self.rig, target_name, rec_filter)
+                night_ctx = qa_rules.night_context(
+                    [r for r in _load_subs(self.config, night)
+                     if qa_rules.group_key(r) == key]).get(key)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("night context skipped: %s", e)
+        metrics = image_metrics(quality)
+        metrics.update(exp_s=exposure_seconds,
+                       ccd_temp=self.state.camera_temp_c,
+                       set_temp=hdr.get("SET-TEMP"),
+                       guide_rms=quality.tracking_rms_arcsec,
+                       guide_state=guide_state)
+        card = qa_rules.evaluate(metrics, qa_rules.context(
+            self.config, self.rig, target_name, rec_filter, night=night_ctx,
+            unsafe_windows=wins, start_utc=start))
+        quality.passed_qa = card.passed
+        quality.rejection_reason = card.reason
+        qa_flag = card.qa_flag
 
         # Create image record
         image = CapturedImage(
@@ -939,15 +937,9 @@ class TelescopeAgent:
         # date folder NINA used, i.e. the parent date directory if present)
         try:
             from photonscript.scheduler.runs import append_sub_record
-            watch = Path(self.config.image_watch_dir)
-            rel = file_path.relative_to(watch)
-            night = rel.parts[0] if rel.parts and                 rel.parts[0][:2] == "20" else datetime.utcnow().strftime("%Y-%m-%d")
-            rel_in_night = str(Path(*rel.parts[1:])) if len(rel.parts) > 1                 else file_path.name
-            # The piggyback is a one-shot-color rig — record its filter as OSC
-            # regardless of NINA's (empty/L) filter token, and tag the rig so
-            # the Runs page can separate the two scopes.
-            rec_filter = "OSC" if self.rig != "rc16" else filter_type.value
-            append_sub_record(self.config, night, {
+            if night is None:
+                raise ValueError(f"{file_path} is not under image_watch_dir")
+            rec = {
                 "rig": self.rig,
                 "file": rel_in_night, "abs_path": str(file_path),
                 "time": datetime.utcnow().isoformat() + "Z",
@@ -957,10 +949,30 @@ class TelescopeAgent:
                 "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,
                 "stars": quality.star_count, "ecc": quality.eccentricity,
                 "background": quality.background_adu,
-                "passed_qa": quality.passed_qa,
-                "reason": quality.rejection_reason,
-                "qa_flag": qa_flag,
-            })
+                # PS-21: measured inputs live grading used to drop
+                "noise": quality.noise_adu,
+                "setpoint_c": card.thresholds.get("setpoint_c"),
+                "set_temp": hdr.get("SET-TEMP"),
+                "guide_rms": (round(quality.tracking_rms_arcsec, 3)
+                              if quality.tracking_rms_arcsec is not None
+                              else None),
+                "guide_state": guide_state or None,
+                "corner_spread": quality.corner_spread,
+                "clipped_pct": quality.clipped_pct,
+                "sat_stars_pct": quality.sat_star_pct,
+                "swamp": quality.swamp_factor,
+                "exposure": quality.exposure_flag,
+            }
+            # passed_qa, reason, qa_flag, scorecard, auto_verdict,
+            # auto_reason, drivers (+ reviewed / review_source when all green)
+            rec.update(card.record_fields())
+            append_sub_record(self.config, night, rec)
+            try:  # PS-80: the stars behind the medians, for the overlay
+                from photonscript.shared.star_table import write as _w_stars
+                _w_stars(self.config, night, rel_in_night, quality.star_table,
+                         rig=self.rig)
+            except Exception as se:  # noqa: BLE001
+                logger.debug("star sidecar skipped: %s", se)
             # Pre-warm the runs-grid thumbnail (w=264) so the Runs page never
             # blocks generating it on first view. The RC16 gets this in the
             # backfill grade; the piggyback is graded live here, so warm it now.

@@ -209,12 +209,30 @@ def _exposure_metrics(data: np.ndarray, stars: list, noise: float,
             "swamp_factor": swamp, "exposure_flag": flag}
 
 
+def image_metrics(quality: ImageQualityMetrics) -> dict:
+    """The qa_rules metrics this grader measures (PS-21). FWHM here is a
+    real per-star estimate, so it is judged; the backfill grader has none."""
+    from photonscript.shared.qa_rules import record_metrics
+    return record_metrics(
+        hfr=quality.hfr_pixels, fwhm_arcsec=quality.fwhm_arcsec,
+        ecc=quality.eccentricity, stars=quality.star_count,
+        background=quality.background_adu, exposure=quality.exposure_flag,
+        clipped_pct=quality.clipped_pct, sat_stars_pct=quality.sat_star_pct,
+        swamp=quality.swamp_factor)
+
+
 def validate_image(
     file_path: str,
     config: PhotonScriptConfig,
     pixel_scale: Optional[float] = None,  # arcsec/pixel; defaults to config value
+    rig: str = "rc16",
 ) -> ImageQualityMetrics:
-    """Analyze an image and return quality metrics."""
+    """Measure an image and grade what the frame alone can show.
+
+    Pass/fail comes from shared.qa_rules.evaluate (PS-21), the same rules the
+    backfill grader uses; the telescope agent re-evaluates with the sensor
+    temperature, guiding and safety context before it records the sub.
+    `config` is the rig's config view (rigs.rig_config)."""
     if pixel_scale is None:
         pixel_scale = getattr(config, "pixel_scale_arcsec", 1.0)
 
@@ -231,70 +249,51 @@ def validate_image(
 
     stars = _detect_stars(data, background, noise)
     exposure = _exposure_metrics(data, stars, noise, config)
-    if len(stars) < 5:
-        return ImageQualityMetrics(
-            star_count=len(stars),
-            background_adu=background,
-            noise_adu=noise,
-            snr=snr,
-            passed_qa=False,
-            rejection_reason=f"Only {len(stars)} stars detected (minimum 5)",
-            **exposure,
-        )
 
-    # Compute aggregate metrics
-    fwhm_values = [s["fwhm"] for s in stars if s["fwhm"] > 0]
-    hfr_values = [s["hfr"] for s in stars if s["hfr"] > 0]
-    ecc_values = [s.get("eccentricity", 0) for s in stars]
+    median_fwhm_px = median_hfr_px = median_ecc = None
+    fwhm_arcsec = corner_spread = None
+    if stars:
+        fwhm_values = [s["fwhm"] for s in stars if s["fwhm"] > 0]
+        hfr_values = [s["hfr"] for s in stars if s["hfr"] > 0]
+        ecc_values = [s.get("eccentricity", 0) for s in stars]
+        median_fwhm_px = float(np.median(fwhm_values)) if fwhm_values else 0
+        median_hfr_px = float(np.median(hfr_values)) if hfr_values else 0
+        median_ecc = float(np.median(ecc_values)) if ecc_values else 0
+        fwhm_arcsec = median_fwhm_px * pixel_scale
+        corner_spread = _corner_spread(stars, data.shape, median_fwhm_px)
 
-    median_fwhm_px = float(np.median(fwhm_values)) if fwhm_values else 0
-    median_hfr_px = float(np.median(hfr_values)) if hfr_values else 0
-    median_ecc = float(np.median(ecc_values)) if ecc_values else 0
-    fwhm_arcsec = median_fwhm_px * pixel_scale
-    corner_spread = _corner_spread(stars, data.shape, median_fwhm_px)
+    # PS-80: the stars behind the medians, for the review overlay. Kept on
+    # the metrics object (excluded from bus payloads); the agent writes it.
+    star_table = None
+    try:
+        from photonscript.shared.star_table import build
+        n_max = int(getattr(config, "qa_star_sidecar_max", 500) or 0)
+        if stars and n_max > 0:
+            star_table = build(
+                [s["x"] for s in stars], [s["y"] for s in stars],
+                [s["hfr"] for s in stars],
+                [s.get("eccentricity", 0.0) for s in stars],
+                theta=[s.get("theta") for s in stars],
+                flux=[s.get("flux") for s in stars],
+                w=data.shape[1], h=data.shape[0], limit=n_max,
+                grader="live-sep", rig=rig, ecc_def="sqrt(1-(b/a)^2)")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("star table skipped: %s", e)
 
-    # Quality assessment
-    passed = True
-    reasons = []
-
-    # FWHM gate. For wide-field OSC rigs (quality_fwhm_soft) FWHM is advisory,
-    # NOT a rejection: the estimator is inflated by extended bright objects
-    # (galaxies/nebulae filling the frame), so a good-HFR sub can read a large
-    # FWHM and still be sharp (2026-09-20: HFR 2.7px but FWHM 7.8" bounced a
-    # clean M31 sub). HFR + eccentricity are the real focus/trailing guards for
-    # that rig; FWHM stays in the metrics as a score factor only.
-    fwhm_soft = bool(getattr(config, "quality_fwhm_soft", False))
-    if fwhm_arcsec > config.quality_fwhm_max and not fwhm_soft:
-        passed = False
-        reasons.append(f"FWHM {fwhm_arcsec:.1f}\" > {config.quality_fwhm_max}\"")
-
-    if median_ecc > config.quality_eccentricity_max:
-        passed = False
-        reasons.append(f"Eccentricity {median_ecc:.2f} > {config.quality_eccentricity_max}"
-                       " (trailing/drift)")
-
-    star_max = int(getattr(config, "quality_star_max", 5000))
-    if len(stars) > star_max:
-        passed = False
-        reasons.append(f"{len(stars)} stars > {star_max} "
-                       "(defocus/false detections)")
-
-    hfr_abs_max = float(getattr(config, "quality_hfr_abs_max", 8.0))
-    if median_hfr_px > hfr_abs_max:
-        passed = False
-        reasons.append(f"HFR {median_hfr_px:.1f}px > {hfr_abs_max:g}px "
-                       "(out of focus)")
-
-    return ImageQualityMetrics(
-        fwhm_arcsec=round(fwhm_arcsec, 2),
-        hfr_pixels=round(median_hfr_px, 2),
+    quality = ImageQualityMetrics(
+        fwhm_arcsec=round(fwhm_arcsec, 2) if fwhm_arcsec is not None else None,
+        hfr_pixels=round(median_hfr_px, 2) if median_hfr_px is not None else None,
         star_count=len(stars),
-        eccentricity=round(median_ecc, 3),
+        eccentricity=round(median_ecc, 3) if median_ecc is not None else None,
         background_adu=round(background, 1),
         noise_adu=round(noise, 2),
         snr=round(snr, 1),
         corner_spread=round(corner_spread, 3) if corner_spread is not None else None,
-        passed_qa=passed,
-        rejection_reason="; ".join(reasons),
+        star_table=star_table,
         **exposure,
     )
+    from photonscript.shared.qa_rules import context, evaluate
+    card = evaluate(image_metrics(quality), context(config, rig))
+    quality.passed_qa = card.passed
+    quality.rejection_reason = card.reason
+    return quality

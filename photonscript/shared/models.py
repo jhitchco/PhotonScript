@@ -194,6 +194,8 @@ class ImageQualityMetrics(BaseModel):
     exposure_flag: Optional[str] = None    # under / ok / sat-stars / clipped
     passed_qa: bool = True
     rejection_reason: str = ""
+    # PS-80 star sidecar (shared.star_table.build); kept out of bus payloads
+    star_table: Optional[dict] = Field(default=None, exclude=True)
 
 
 class CapturedImage(BaseModel):
