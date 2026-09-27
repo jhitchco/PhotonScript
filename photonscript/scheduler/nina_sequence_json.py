@@ -43,6 +43,12 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
 # rename a container here and the mapping follows.
 TARGET_IMAGING_SUFFIX = " imaging (repeats while safe and up)"
 TARGET_FOCUS_CAL_SUFFIX = " focus calibration AFs"
+# PS-84: the unguided tracking test. Its DeepSkyObjectContainer (and so every
+# sub's OBJECT) is "Tracking test <field>", a name that never matches a
+# project, so test subs stay out of goal sync and project stacks. The ladder
+# container is "<that name> unguided ladder".
+TRACKING_TEST_PREFIX = "Tracking test "
+TARGET_TRACKING_LADDER_SUFFIX = " unguided ladder"
 FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
 SAFE_LOOP_NAME = "SAFE_LOOP"
 RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
@@ -774,6 +780,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets)
+    if getattr(target, "tracking_test", False):
+        return _build_tracking_test_container(target, min_altitude,
+                                              af_filter, focus_offsets,
+                                              loop_end)
     chatty_block = narrate == "verbose"          # per-block starting/done pair
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
     active = [e for e in target.exposures
@@ -1088,6 +1098,203 @@ def generate_focus_calibration_json(name: str = "NGC 7789",
                            focus_calibration_rounds=rounds,
                            focus_calibration_filters=list(filters or []))
     seq = build_sequence_for_night(f"Focus calibration {name}", [t])
+    return generate_nina_json(seq)
+
+
+# --- PS-84 unguided tracking test --------------------------------------------
+
+TRACKING_TEST_FILTERS = ("L", "Ha")
+TRACKING_TEST_EXPOSURES = (60.0, 120.0, 180.0, 300.0)
+TRACKING_TEST_REPEATS = 2
+# Rough overheads for the duration estimate (and the target picker's "does
+# it cross the meridian during the test" check): download + save per sub,
+# one autofocus run, one plate-solve center, the initial slew.
+_TT_DOWNLOAD_S = 6.0
+_TT_AF_S = 240.0
+_TT_CENTER_S = 90.0
+_TT_SLEW_S = 120.0
+
+
+def _tracking_test_filters(names) -> list:
+    """Filter names ('L', 'Ha', 'H', 'luminance', ...) to FilterTypes, in the
+    given order, de-duplicated; calibration frame types and unknown names are
+    dropped. Empty input gives the default L then Ha."""
+    ft_by = {ft.value.lower(): ft for ft in FilterType}
+    ft_by.update({ft.name.lower(): ft for ft in FilterType})
+    try:
+        ft_by.update({str(v).lower(): FilterType(k) for k, v in
+                      _gen_cfg().filter_name_map().items()
+                      if k in {ft.value for ft in FilterType}})
+    except Exception:  # noqa: BLE001 - NINA names are a convenience only
+        pass
+    skip = {FilterType.DARK, FilterType.FLAT, FilterType.BIAS}
+    out = []
+    for n in [str(x).strip() for x in (names or TRACKING_TEST_FILTERS)]:
+        ft = ft_by.get(n.lower())
+        if ft is not None and ft not in skip and ft not in out:
+            out.append(ft)
+    return out
+
+
+def _tracking_test_exposures(values) -> list[float]:
+    """Positive exposure lengths (s), ascending and de-duplicated, so the
+    ladder always climbs from short to long."""
+    out = set()
+    for v in (values or TRACKING_TEST_EXPOSURES):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            continue
+        if 0 < x <= 3600:
+            out.add(round(x, 3))
+    return sorted(out)
+
+
+def tracking_test_duration_s(n_filters: int, exposures, repeats: int) -> float:
+    """Estimated wall-clock length of the test (s): the ladder itself plus
+    download, one AF and one center per filter, and the first slew."""
+    exps = _tracking_test_exposures(exposures)
+    n_subs = n_filters * max(1, int(repeats)) * len(exps)
+    return (n_filters * max(1, int(repeats)) * sum(exps)
+            + n_subs * _TT_DOWNLOAD_S + n_filters * (_TT_AF_S + _TT_CENTER_S)
+            + _TT_SLEW_S)
+
+
+def _build_tracking_test_container(target: NinaSequenceTarget,
+                                   min_altitude: float,
+                                   af_filter: "FilterType | None",
+                                   focus_offsets: dict | None,
+                                   loop_end: tuple | None) -> dict:
+    """PS-84 unguided tracking test (TPoint + ProTrack check on the Paramount
+    MX): StopGuiding, cool, slew, AF on the reference filter (L), center, then
+    for each filter an exposure ladder with `tracking_test_repeats` subs per
+    length. Between filters the mount re-centers and refocuses on L, then the
+    measured filter offset is applied (PS-65). No StartGuiding and no active
+    dither anywhere. Every light SmartExposure carries Safety + the loop-end
+    TimeCondition (PS-77); the ladder container adds Safety, Altitude, the
+    loop end and LoopCondition(1) so it runs once per entry.
+
+    Only a temperature refocus trigger rides on the ladder: an HFR-increase
+    trigger would fire on trailed stars (the very thing being measured) and
+    refocus mid-ladder."""
+    ref = af_filter or FilterType.LUMINANCE
+    filters = _tracking_test_filters(target.tracking_test_filters)
+    exposures = _tracking_test_exposures(target.tracking_test_exposures)
+    repeats = max(1, int(target.tracking_test_repeats or 1))
+    cfg = _gen_cfg()
+    gain = int(getattr(cfg, "default_gain", 100))
+    offset_adu = int(getattr(cfg, "default_offset", 50))
+    temp = float(target.camera_temp_c)
+    est_h = tracking_test_duration_s(len(filters), exposures, repeats) / 3600
+    ladder_desc = (", ".join(f.value for f in filters) + " x "
+                   + "/".join(f"{e:g}" for e in exposures)
+                   + f" s, {repeats} each")
+
+    def _guards():
+        g = [_safety_condition()]
+        if loop_end:
+            g.append(_time_condition(*loop_end))
+        return g
+
+    items = [
+        _annotation("PS-84 unguided tracking test (TPoint + ProTrack). "
+                    "Guiding is stopped and never restarted; dithers are off. "
+                    f"Ladder: {ladder_desc}. Subs are named '{target.name}'. "
+                    "Afterwards open /api/tracking-test/report on the "
+                    "dashboard. When the ladder is done the scope parks and "
+                    "holds until dawn: stop the sequence to image."),
+        _pushover("Imaging", f"{target.name}: unguided tracking test, "
+                  f"slewing (RA {target.ra_hours:.2f}h Dec "
+                  f"{target.dec_degrees:+.1f} deg) - {ladder_desc} "
+                  f"(~{est_h:.1f} h)"),
+        _stop_guiding(),
+        _cool_camera(temp, 0.0),
+        _set_tracking(0),
+        _slew(target),
+        _switch_filter(ref),
+        _move_focuser(_seed_position(ref)),
+        _autofocus(),
+        _center(target),
+        _set_tracking(0),
+        _pushover("Imaging", f"{target.name}: focused on {ref.value}, "
+                  "centered, guiding stopped - starting the unguided ladder"),
+    ]
+    ladder = []
+    for i, f in enumerate(filters):
+        off = _focus_offset(ref, f, focus_offsets)
+        if i > 0:
+            # Re-center once between filters (drift from the first ladder must
+            # not carry into the second), refocus on L, apply the offset.
+            ladder += [_center(target), _set_tracking(0),
+                       _switch_filter(ref), _autofocus()]
+        if off:
+            ladder.append(_move_focuser_relative(off))
+        for e in exposures:
+            exp = ExposurePlan(filter_type=f, exposure_seconds=e,
+                               count=repeats, gain=gain, offset=offset_adu)
+            ladder.append(_smart_exposure(
+                exp, False, 0, guard_conditions=_guards(),
+                extra_triggers=[_autofocus_temp_trigger(
+                    2.0, _block_af_runner(ref, off))]))
+        ladder.append(_pushover("Imaging", f"{target.name}: {f.value} ladder "
+                                f"done ({repeats} x {len(exposures)} subs)"))
+    ladder_conds = [_safety_condition(),
+                    _altitude_condition(target, min_altitude)]
+    if loop_end:
+        ladder_conds.append(_time_condition(*loop_end))
+    ladder_conds.append(_loop_once())
+    items.append(_seq_container(f"{target.name}{TARGET_TRACKING_LADDER_SUFFIX}",
+                                ladder, conditions=ladder_conds))
+    items.append(_pushover("Imaging", f"{target.name}: tracking test done - "
+                           "open /api/tracking-test/report"))
+    return _seq_container(
+        target.name, items,
+        conditions=[_safety_condition(),
+                    _altitude_condition(target, min_altitude),
+                    _loop_once()],
+        triggers=[_meridian_flip_trigger(), _reconnect_trigger()],
+        container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
+                       "NINA.Sequencer",
+        Target=_make_typed(
+            "NINA.Astrometry.InputTarget, NINA.Astrometry",
+            Expanded=True, TargetName=target.name,
+            PositionAngle=target.rotation,
+            InputCoordinates=_coords(target)),
+    )
+
+
+def tracking_test_name(field: str) -> str:
+    """'Heart Nebula' -> 'Tracking test Heart Nebula' (idempotent)."""
+    f = str(field or "").strip() or "field"
+    if f.lower().startswith(TRACKING_TEST_PREFIX.lower()):
+        return f
+    return f"{TRACKING_TEST_PREFIX}{f}"
+
+
+def generate_tracking_test_json(name: str = "Heart Nebula",
+                                ra_hours: float = 2.555,
+                                dec_degrees: float = 61.47,
+                                filters: list[str] | None = None,
+                                exposures: list[float] | None = None,
+                                repeats: int = TRACKING_TEST_REPEATS,
+                                min_altitude: float = 30.0) -> str:
+    """PS-84: a whole-night NINA sequence (same startup, safety loop and
+    shutdown as a normal night) whose only target is an unguided tracking
+    test on one field. Generated only: nothing is sent to NINA. Load it by
+    hand in NINA #1 after the TPoint model is built and ProTrack is on."""
+    from photonscript.scheduler.nina_sequence import build_sequence_for_night
+    cfg = _gen_cfg()
+    tname = tracking_test_name(name)
+    t = NinaSequenceTarget(
+        name=tname, ra_hours=ra_hours, dec_degrees=dec_degrees,
+        start_guiding=False, dither_every_n=0,
+        camera_temp_c=float(getattr(cfg, "camera_setpoint_c", 0.0)),
+        tracking_test=True,
+        tracking_test_filters=[str(f) for f in (filters or [])],
+        tracking_test_exposures=(_tracking_test_exposures(exposures)
+                                 if exposures else []),
+        tracking_test_repeats=max(1, int(repeats or 1)))
+    seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
     return generate_nina_json(seq)
 
 

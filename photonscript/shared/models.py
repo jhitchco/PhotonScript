@@ -323,6 +323,15 @@ class NinaSequenceTarget(BaseModel):
     focus_calibration: bool = False
     focus_calibration_rounds: int = 1
     focus_calibration_filters: list[str] = Field(default_factory=list)
+    # PS-84: an unguided tracking test target (TPoint + ProTrack check).
+    # Instead of the imaging plan it stops guiding, focuses on L, centers,
+    # then shoots an exposure ladder (each length `tracking_test_repeats`
+    # times) in every filter, re-centering between filters. See
+    # generate_tracking_test_json() and scheduler/tracking_test.py.
+    tracking_test: bool = False
+    tracking_test_filters: list[str] = Field(default_factory=list)
+    tracking_test_exposures: list[float] = Field(default_factory=list)
+    tracking_test_repeats: int = 2
 
 
 class NinaSequenceFile(BaseModel):

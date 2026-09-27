@@ -262,6 +262,51 @@
             <div id="pfResults" style="margin-top:1rem;"></div>
         </section>
 
+        <section class="panel" style="margin-top:1.5rem;" id="ttPanel">
+            <h2>Tracking Test (unguided, PS-84)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">After building the TPoint model and turning on ProTrack: download the sequence, load it by hand in NINA #1 with guiding stopped, run it, then open the report. It stops guiding, focuses on L, centers, and shoots an L and an Ha exposure ladder (60/120/180/300 s, 2 each). Nothing is sent to NINA from here.</p>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;">
+                <a class="btn btn-primary" id="ttDownload" href="/api/tracking-test/sequence" download>Download tracking-test sequence</a>
+                <span class="bd" id="ttField">field: loading…</span>
+            </div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
+                <input id="ttDate" placeholder="night YYYY-MM-DD (blank = tonight)" style="min-width:220px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.35rem .5rem;">
+                <button class="btn btn-secondary" id="ttReportBtn">Show report</button>
+                <a class="bd" id="ttJson" href="/api/tracking-test/report" target="_blank">JSON</a>
+            </div>
+            <div id="ttOut" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            fetch('/api/tracking-test/target').then(function (r) { return r.json(); }).then(function (f) {
+                document.getElementById('ttField').textContent = 'field now: ' + f.name +
+                    ' (alt ' + f.alt_deg + ' deg, HA ' + f.ha_hours + ' h, ~' + f.est_minutes + ' min; ' + f.source + ')';
+            }).catch(function () { document.getElementById('ttField').textContent = 'field: unavailable'; });
+            document.getElementById('ttReportBtn').onclick = async function () {
+                var d = document.getElementById('ttDate').value.trim();
+                var url = '/api/tracking-test/report' + (d ? '?date=' + encodeURIComponent(d) : '');
+                document.getElementById('ttJson').href = url;
+                var out = document.getElementById('ttOut');
+                out.textContent = 'loading…';
+                try {
+                    var r = await (await fetch(url)).json();
+                    var rows = (r.groups || []).map(function (g) {
+                        return '<tr><td>' + esc(g.rig) + '</td><td>' + esc(g.filter) + '</td><td>' + esc(g.exp_s) + '</td><td>' + esc(g.n) +
+                            '</td><td>' + esc(g.ecc_median) + ' / ' + esc(g.ecc_max) + '</td><td>' + esc(g.hfr_median) + '</td><td>' + esc(g.fwhm_median) +
+                            '</td><td>' + esc(g.stars_median) + '</td><td>' + esc(g.tracking_pass) + '/' + esc(g.n) + '</td><td>' + esc(g.alt_median) +
+                            '</td><td>' + esc((g.pier_side || []).join(',')) + '</td><td>' + esc((g.elongation || {}).direction) +
+                            '</td><td><b>' + esc(g.status) + '</b></td></tr>';
+                    }).join('');
+                    var rec = r.recommendation || {};
+                    out.innerHTML = '<p><b>' + esc(r.date) + ': ' + esc(r.n_subs) + ' subs.</b> ' + esc(rec.headline) + '</p>' +
+                        (rows ? '<table class="tbl" style="font-size:.8rem;"><tr><th>rig</th><th>filter</th><th>exp s</th><th>n</th><th>ecc med / max</th><th>HFR</th><th>FWHM</th><th>stars</th><th>ecc pass</th><th>alt</th><th>pier</th><th>elongation</th><th>status</th></tr>' + rows + '</table>' : '') +
+                        '<ul>' + (rec.detail || []).map(function (x) { return '<li>' + esc(x) + '</li>'; }).join('') + '</ul>';
+                } catch (e) { out.textContent = 'error: ' + e; }
+            };
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Configuration</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Edits are written to

@@ -278,6 +278,24 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
                              or _has_type(tgt, "SmartExposure"))
                         and "focus calibration AFs" in json.dumps(tgt)
                         and len(_find_type(tgt, "RunAutofocus")) >= 3)
+        # PS-84 unguided tracking test: an exposure ladder with guiding
+        # stopped. Allowed (WARN, so the operator knows what it is); any
+        # StartGuiding or active dither inside it defeats the test.
+        is_tracking_test = " unguided ladder" in json.dumps(tgt)
+        if is_tracking_test:
+            guiding = (_find_type(tgt, "StartGuiding")
+                       + [d for d in _find_type(tgt, "DitherAfterExposures")
+                          if d.get("AfterExposures", 0) > 0])
+            if guiding:
+                r.error("tracking-test", f"[{name}] unguided tracking test "
+                        "contains StartGuiding or an active dither")
+            if not _find_type(tgt, "StopGuiding"):
+                r.warn("tracking-test", f"[{name}] tracking test does not "
+                       "stop guiding first")
+            r.warn("tracking-test", f"[{name}] unguided tracking test "
+                   "(TPoint + ProTrack check): guiding stopped, no dithers. "
+                   "After the ladder the scope parks and holds until dawn; "
+                   "stop the sequence to image.")
         if is_focus_cal:
             r.warn("focus-calibration", f"[{name}] focus-offset calibration "
                    "target (AF runs only, no lights); it repeats while safe "

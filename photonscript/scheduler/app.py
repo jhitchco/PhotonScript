@@ -1950,6 +1950,115 @@ def api_focus_calibration_sequence(name: str = "NGC 7789", ra: float = 23.957,
             f'attachment; filename="focus_calibration_{safe}.json"'})
 
 
+def _tracking_test_params(filters: str, exposures: str, repeats: int):
+    fl = [f.strip() for f in (filters or "").split(",") if f.strip()]
+    ex = []
+    for tok in (exposures or "").split(","):
+        try:
+            ex.append(float(tok))
+        except ValueError:
+            continue
+    return fl, ex, max(1, min(int(repeats or 1), 10))
+
+
+def _tracking_test_field(name: str, ra: float | None, dec: float | None,
+                         filters: list, exposures: list, repeats: int,
+                         at: str = "") -> dict:
+    """The field for the PS-84 tracking test: the caller's name/ra/dec when
+    both coordinates are given, else pick_target (50 to 70 deg up near the
+    meridian, not crossing it during the test; Heart Nebula fallback)."""
+    from photonscript.scheduler import tracking_test as tt
+    from photonscript.scheduler.nina_sequence_json import (
+        _tracking_test_exposures, _tracking_test_filters,
+        tracking_test_duration_s)
+    n_f = len(_tracking_test_filters(filters)) or 1
+    dur = tracking_test_duration_s(n_f, _tracking_test_exposures(exposures),
+                                   repeats)
+    if ra is not None and dec is not None:
+        return {"name": name or "Custom field", "ra_hours": float(ra),
+                "dec_degrees": float(dec), "source": "request",
+                "est_minutes": round(dur / 60),
+                "reason": "coordinates given in the request"}
+    when = None
+    if at:
+        try:
+            when = datetime.fromisoformat(at.replace("Z", "")).replace(
+                tzinfo=None)
+        except ValueError:
+            when = None
+    projects = [p for p in _projects.values() if getattr(p, "active", False)]
+    pick = tt.pick_target(get_config(), when, dur, projects)
+    if name:  # a name with no coordinates: keep the name only if it is known
+        for c in tt._candidates(projects):
+            if c["name"].lower() == name.strip().lower():
+                pick = {**pick, "name": c["name"], "ra_hours": c["ra_hours"],
+                        "dec_degrees": c["dec_degrees"], "source": "named",
+                        "reason": "named field from the catalog / projects"}
+                break
+    return pick
+
+
+@app.get("/api/tracking-test/target")
+def api_tracking_test_target(name: str = "", ra: float | None = None,
+                             dec: float | None = None,
+                             filters: str = "L,Ha",
+                             exposures: str = "60,120,180,300",
+                             repeats: int = 2, at: str = ""):
+    """PS-84: the field the tracking-test sequence would use right now (or
+    at ?at=<UTC ISO>), with its altitude, hour angle and the test length.
+    Read-only."""
+    fl, ex, rep = _tracking_test_params(filters, exposures, repeats)
+    return _tracking_test_field(name, ra, dec, fl, ex, rep, at)
+
+
+@app.get("/api/tracking-test/sequence")
+def api_tracking_test_sequence(name: str = "", ra: float | None = None,
+                               dec: float | None = None,
+                               filters: str = "L,Ha",
+                               exposures: str = "60,120,180,300",
+                               repeats: int = 2, at: str = ""):
+    """PS-84: download a NINA sequence for the unguided tracking test
+    (TPoint + ProTrack check): StopGuiding, cool, slew + center, AF on L,
+    then an L and an Ha exposure ladder (`repeats` subs per length) with a
+    re-center and L refocus + filter offset between filters. Generated and
+    lint-gated only; nothing is loaded, armed or sent to NINA. Omit
+    name/ra/dec to have a field picked (50 to 70 deg up near the meridian;
+    Heart Nebula fallback)."""
+    from fastapi.responses import Response
+    from photonscript.scheduler.nina_sequence_json import (
+        generate_tracking_test_json)
+    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
+    fl, ex, rep = _tracking_test_params(filters, exposures, repeats)
+    field = _tracking_test_field(name, ra, dec, fl, ex, rep, at)
+    body = generate_tracking_test_json(
+        field["name"], field["ra_hours"], field["dec_degrees"],
+        filters=fl, exposures=ex, repeats=rep)
+    result = _lint(json.loads(body), guided=False)
+    if not result.ok:
+        return JSONResponse(status_code=500, content={
+            "detail": "Lint FAILED - refusing to serve the tracking test",
+            "findings": format_result(result), "field": field})
+    safe = "".join(c if c.isalnum() else "_" for c in field["name"])
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition":
+            f'attachment; filename="tracking_test_{safe}.json"',
+        "X-PhotonScript-Field": safe})
+
+
+@app.get("/api/tracking-test/report")
+def api_tracking_test_report(date: str = "", pa: float | None = None,
+                             headers: bool = True):
+    """PS-84: that night's tracking-test subs grouped by filter and exposure
+    (n, eccentricity, HFR, FWHM, stars, PS-21 pass rates, altitude, pier
+    side, elongation direction) with the longest exposure that passes
+    unguided per filter and a recommendation. date = the runs-page night
+    (default: tonight). pa = camera position angle (NINA plate-solve
+    rotation) to label the elongation axis RA or Dec."""
+    from photonscript.scheduler.tracking_test import build_report
+    return build_report(get_config(), date or None, read_headers=headers,
+                        pa_override=pa)
+
+
 @app.get("/api/focus")
 def api_focus():
     """Per-rig autofocus seed history for the calibration Focus panel.
