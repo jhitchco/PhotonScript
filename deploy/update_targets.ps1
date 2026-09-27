@@ -30,9 +30,10 @@ Info "Stopping PhotonScript (graceful) before editing projects.json..."
 & $Exe stop
 Start-Sleep -Seconds 5
 
-# 2. Cat's Eye -> deep HOO+HDR; Crescent -> parked. Run from the repo so the
+# 2. Cat's Eye -> deep HOO+HDR; Crescent -> parked. Single-quoted here-string so
+#    PowerShell does NOT interpolate or need escaping. Run from the repo so the
 #    app finds .env (pydantic reads '.env' relative to the current directory).
-$py = @"
+$py = @'
 import sys
 from photonscript.shared.config import PhotonScriptConfig
 from photonscript.scheduler.project_store import ProjectStore, allocate_exposures, target_kind
@@ -42,11 +43,14 @@ store = ProjectStore(cfg)
 cat = cres = None
 for p in store.projects.values():
     n = (p.target.name or '').lower()
-    if 'cat' in n and 'eye' in n: cat = p
-    if 'crescent' in n: cres = p
+    if 'cat' in n and 'eye' in n:
+        cat = p
+    if 'crescent' in n:
+        cres = p
 if cres is not None:
     cres.priority = 0
-    if hasattr(cres, 'active'): cres.active = False
+    if hasattr(cres, 'active'):
+        cres.active = False
     print('Parked Crescent (priority 0, inactive)')
 else:
     print('WARNING: no Crescent project found (nothing to park)')
@@ -58,14 +62,15 @@ if cat is not None:
     cat.exposure_plans = allocate_exposures(target_kind(cat.target), hours, cfg,
                                             custom_mix=cat.filter_mix, hdr=cat.hdr)
     cat.total_integration_hours = hours
-    tot = sum(e.count*e.exposure_seconds + (e.hdr_short_count or 0)*(e.hdr_short_seconds or 0)
+    tot = sum(e.count * e.exposure_seconds
+              + (e.hdr_short_count or 0) * (e.hdr_short_seconds or 0)
               for e in cat.exposure_plans) / 3600.0
-    print(\"Cat's Eye -> %.1fh HOO+HDR, priority 70 (%.2fh allocated across Ha/OIII)\" % (hours, tot))
+    print("Cat's Eye -> {:.1f}h HOO+HDR, priority 70 ({:.2f}h allocated across Ha/OIII)".format(hours, tot))
 else:
-    print(\"WARNING: no Cat's Eye project found. Deploy the feature and let the seed create it, or add it in the dashboard, then re-run.\")
+    print("WARNING: no Cat's Eye project found. Deploy the feature and let the seed create it, or add it in the dashboard, then re-run.")
 store.save()
 print('Saved', store.path)
-"@
+'@
 Info "Updating projects (Cat's Eye -> ${CatsEyeHours}h, Crescent -> parked)..."
 Push-Location $Repo
 try {
