@@ -183,6 +183,10 @@ class PhotonScriptConfig(BaseSettings):
     quality_offtarget_max_arcmin: float = 5.0  # pointing check (PS-67 data)
     qa_auto_approve: bool = True  # all-green subs are approved (reviewed)
                                  # automatically; the reviewer can override
+    qa_auto_approve_rigs: str = "rc16"  # rigs whose all-green subs auto-
+                                 # approve (comma list; empty = every rig).
+                                 # Jeremy 2026-09-27: RC16 only for now; the
+                                 # Piggy-600 stays manual.
     qa_target_overrides: str = ""  # PS-48 hook: JSON {"<target>" or
                                  # "<target>|<filter>" or "<rig>:<target>":
                                  # {"hfr_max": 6.0, ...}} tighter per target

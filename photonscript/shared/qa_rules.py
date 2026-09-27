@@ -82,6 +82,16 @@ def _target_overrides(config) -> dict:
         return {}
 
 
+def _rig_auto_approves(config, rig: str) -> bool:
+    """qa_auto_approve_rigs: comma list of rigs whose all-green subs are
+    auto-approved; empty means every rig."""
+    raw = str(_f(config, "qa_auto_approve_rigs", "rc16") or "").strip()
+    if not raw:
+        return True
+    rigs = {r.strip().lower() for r in raw.split(",") if r.strip()}
+    return str(rig or "rc16").lower() in rigs
+
+
 def thresholds(config, rig: str = "rc16", target: str | None = None,
                filter: str | None = None) -> dict:  # noqa: A002
     """Every limit the rules use, resolved for one rig (and target/filter).
@@ -121,7 +131,8 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         "offtarget_max_arcmin": float(_f(config, "quality_offtarget_max_arcmin",
                                          5.0)),
         "warn_fraction": float(_f(config, "qa_warn_fraction", 0.10)),
-        "auto_approve": bool(_f(config, "qa_auto_approve", True)),
+        "auto_approve": bool(_f(config, "qa_auto_approve", True))
+        and _rig_auto_approves(config, rig),
     }
     ov = _target_overrides(config)
     if ov and target:

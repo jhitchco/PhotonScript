@@ -295,3 +295,13 @@ def test_runs_sensor_temp_reasons_is_the_shared_rule():
     cfg = _cfg()
     assert sensor_temp_reasons(23.4, 20.0, cfg) == q.sensor_temp_reasons(
         23.4, 20.0, cfg)
+
+
+def test_auto_approve_rc16_only_by_default():
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.shared.qa_rules import thresholds
+    cfg = PhotonScriptConfig()
+    assert thresholds(cfg, "rc16")["auto_approve"] is True
+    assert thresholds(cfg, "piggyback")["auto_approve"] is False
+    cfg.qa_auto_approve_rigs = ""
+    assert thresholds(cfg, "piggyback")["auto_approve"] is True

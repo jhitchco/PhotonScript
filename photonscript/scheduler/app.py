@@ -577,6 +577,7 @@ _CONFIG_FIELDS = [
     ("qa_background_rel_max", "PS_QA_BACKGROUND_REL_MAX", "Warn: background above x night median", "Quality", "float", False, False),
     ("qa_hfr_outlier_factor", "PS_QA_HFR_OUTLIER_FACTOR", "Reject: HFR above x night median", "Quality", "float", False, False),
     ("qa_auto_approve", "PS_QA_AUTO_APPROVE", "Auto-approve all-green subs", "Quality", "bool", False, False),
+    ("qa_auto_approve_rigs", "PS_QA_AUTO_APPROVE_RIGS", "Auto-approve only these rigs (comma list, empty = all)", "Quality", "str", False, False),
     ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
     ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
     ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
