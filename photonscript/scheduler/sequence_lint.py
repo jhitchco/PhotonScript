@@ -56,6 +56,40 @@ def _find_type(node, fragment: str) -> list[dict]:
     return [d for _, d in _types_in(node) if fragment in d["$type"]]
 
 
+def _exec_items(node):
+    """Yield sequence items in execution (document) order, descending only
+    through Items. Trigger runners and conditions are skipped: an AF inside a
+    trigger may never fire, so it cannot satisfy an ordering rule."""
+    if not isinstance(node, dict):
+        return
+    for it in (node.get("Items") or {}).get("$values", []) or []:
+        if isinstance(it, dict):
+            yield it
+            yield from _exec_items(it)
+
+
+def _check_focus_moves(seq: dict, r: LintResult) -> None:
+    """PS-65: a MoveFocuserAbsolute is only a starting point for autofocus. If
+    a LIGHT exposure runs after it with no RunAutofocus in between, the frames
+    are shot at a stale seed (2026-09-26: a July Ha seed with no AF after it
+    put the RC16 ~300 steps out all night). Darks, bias and flats are not
+    affected by focus and are ignored. A MoveFocuserRelative after an AF (a
+    filter offset) is allowed."""
+    pending = None   # position of the last absolute move not yet followed by AF
+    for it in _exec_items(seq):
+        t = it.get("$type", "")
+        if "MoveFocuserAbsolute" in t:
+            pending = it.get("Position")
+        elif "RunAutofocus" in t:
+            pending = None
+        elif pending is not None and "Imaging.TakeExposure" in t \
+                and str(it.get("ImageType", "LIGHT")).upper() == "LIGHT":
+            r.error("focus-seed", f"MoveFocuserAbsolute to {pending} is followed "
+                                  "by LIGHT exposures with no RunAutofocus in "
+                                  "between (frames shot at a stale seed)")
+            pending = None   # one finding per offending move
+
+
 def lint(seq: dict, guided: bool | None = None) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content."""
     r = LintResult()
@@ -72,6 +106,8 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
         if temp is None or temp > 0.0:
             r.error("cooling", f"CoolCamera Temperature is {temp!r} — must be at "
                                "or below the 0.0°C setpoint (never a warm sensor)")
+
+    _check_focus_moves(seq, r)
 
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")

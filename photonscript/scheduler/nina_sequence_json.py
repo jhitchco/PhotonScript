@@ -257,6 +257,25 @@ def _move_focuser(position: int) -> dict:
                        Position=int(position), ErrorBehavior=0, Attempts=1)
 
 
+def _move_focuser_relative(steps: int) -> dict:
+    """Relative focuser move: applies a measured filter focus offset right
+    after an autofocus on the AF filter (PS-65). Never used as a seed."""
+    return _make_typed("NINA.Sequencer.SequenceItem.Focuser."
+                       "MoveFocuserRelative, NINA.Sequencer",
+                       RelativePosition=int(steps), ErrorBehavior=0, Attempts=1)
+
+
+def _focus_offset(af_filter, imaging_filter, offsets: dict | None) -> int:
+    """EAF steps to move after an AF on af_filter so imaging_filter is in focus:
+    offsets are relative to the AF filter's best focus, so the delta is
+    offset[imaging] - offset[af]. 0 when there is no AF filter, the filters
+    match, or no offsets are configured."""
+    if af_filter is None or not offsets or af_filter == imaging_filter:
+        return 0
+    return int(offsets.get(imaging_filter.value, 0)) \
+        - int(offsets.get(af_filter.value, 0))
+
+
 _FOCTEMP_CACHE = {"t": 0.0, "v": None}
 
 
@@ -618,13 +637,19 @@ def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
 def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             force_calibration: bool = False,
                             af_filter: "FilterType | None" = None,
-                            narrate: str = "normal") -> dict:
+                            narrate: str = "normal",
+                            focus_offsets: dict | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [guiding] -> exposures.
 
     af_filter (config.autofocus_filter, e.g. L) is the bright filter the
     start-of-target autofocus runs on so it never focuses through narrowband;
     None keeps the old behavior (focus in the imaging filter).
+
+    focus_offsets (config.focus_offset_map()) are EAF steps from the AF
+    filter's best focus to each imaging filter's. Every filter block runs
+    SwitchFilter(AF filter) -> RunAutofocus -> MoveFocuserRelative(offset) ->
+    exposures, so no block ever images at a stale absolute seed (PS-65).
 
     narrate (config.pushover_verbosity) controls Pushover chatter: "verbose"
     adds the per-block starting/done pair, "normal" keeps per-target step lines,
@@ -674,8 +699,9 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         _slew(target),
     ]
     # Autofocus on the bright AF filter (L) when configured, else the imaging
-    # filter. NINA applies the per-filter offset when the exposure blocks switch
-    # to their own filter, so focusing on L never leaves narrowband soft.
+    # filter. This AF gets the stars tight for centering and guiding; each
+    # filter block below then runs its own AF + measured offset (PS-65). The
+    # absolute seed is ONLY an AF starting point and is always followed by AF.
     focus_filter = (af_filter if (af_filter and active) else
                     (active[0].filter_type if active else None))
     if focus_filter is not None:
@@ -718,17 +744,27 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     def _block(exp, bi, n_blocks, condition=None):
         n = exp.count - exp.acquired
         block_h = exp.exposure_seconds * n / 3600
-        seed = _seed_position(exp.filter_type)
+        # PS-65: every block focuses for itself. AF on the AF filter (L), or on
+        # the block's own filter when no AF filter is configured, then move by
+        # the measured filter offset. The old per-block MoveFocuserAbsolute to a
+        # July seed with no AF after it put a whole night's Ha ~300 steps out
+        # (2026-09-26), and on every loop pass undid the triggered AFs.
+        block_af = af_filter or exp.filter_type
+        offset = _focus_offset(block_af, exp.filter_type, focus_offsets)
         out = []
         if chatty_block:   # per-block "starting/done" pair — the bulk of the noise
             out.append(_pushover(
                 "Imaging",
                 f"{target.name} [{bi}/{n_blocks}]: starting "
                 f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
-                f"(~{block_h:.1f}h) gain {exp.gain}; focuser seed {seed} "
-                "then autofocus"
+                f"(~{block_h:.1f}h) gain {exp.gain}; autofocus on "
+                f"{block_af.value}"
+                + (f" then offset {offset:+d}" if offset else "")
                 + (" (moon-free window)" if condition else "")))
-        out.append(_move_focuser(seed))
+        out.append(_switch_filter(block_af))
+        out.append(_autofocus())
+        if offset:
+            out.append(_move_focuser_relative(offset))
         # HDR: emit a SHORT companion SmartExposure alongside the long one, same
         # filter/gain/offset/binning, its own (shorter) length + count. Short
         # first (bright cores), then the long set. Dither + AF triggers are
@@ -779,15 +815,16 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     items.append(_pushover("Imaging", f"{target.name}: leaving target "
                            f"({plan_desc}) — below altitude or unsafe"))
 
-    # AF triggers: temp drift + filter change + HFR creep — the proven trio
-    # from the known-good AARO sequence (the time-based trigger validated
-    # badly against disconnected equipment at load)
-    # Temp trigger relaxed 1.0->2.0 C: with per-filter seed positions and the
+    # AF triggers: temp drift + HFR creep (the time-based trigger validated
+    # badly against disconnected equipment at load). AutofocusAfterFilterChange
+    # was dropped in PS-65: every filter block now runs its own AF on the AF
+    # filter + offset, and the trigger would fire a second AF in the narrowband
+    # filter right after the offset (3nm, 1x1 AF: the 2026-09-26 failure).
+    # Temp trigger relaxed 1.0->2.0 C: with a per-block AF (PS-65) and the
     # HFR-creep trigger already covering focus drift, a 1C re-AF fired too
     # often on nights with a swinging focuser temp and ate dark time.
     triggers = [_meridian_flip_trigger(), _reconnect_trigger(),
                 _autofocus_temp_trigger(2.0),
-                _autofocus_filter_trigger(),
                 _autofocus_hfr_trigger(10.0, 4)]
 
     container = _seq_container(
@@ -969,7 +1006,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         c = _build_target_container(t, sequence.wait_for_altitude, force_cal,
                                     af_filter=af_ft,
                                     narrate=getattr(_cfg, "pushover_verbosity",
-                                                    "normal"))
+                                                    "normal"),
+                                    focus_offsets=_cfg.focus_offset_map())
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops

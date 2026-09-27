@@ -507,3 +507,133 @@ class TestHDRRemaining:
         b = self._blocks(count=14, acquired=14, hdr_short_count=12,
                          hdr_short_acquired=2)
         assert b == [(60.0, 10)]
+
+
+# --- PS-65: filter blocks autofocus on the AF filter, then apply the offset ---
+
+_ABS = "Focuser.MoveFocuserAbsolute"
+_REL = "Focuser.MoveFocuserRelative"
+_AF = "Autofocus.RunAutofocus"
+
+
+def _exec_items(node):
+    """Items in execution order (no trigger runners / conditions)."""
+    for it in (node.get("Items") or {}).get("$values", []):
+        yield it
+        yield from _exec_items(it)
+
+
+def _gen_multi(filters=(FilterType.LUMINANCE, FilterType.HA, FilterType.OIII)):
+    target = NinaSequenceTarget(
+        name="IC 1805", ra_hours=2.55, dec_degrees=61.5, start_guiding=True,
+        exposures=[ExposurePlan(filter_type=f, exposure_seconds=300, count=20,
+                                gain=200) for f in filters])
+    seq = build_sequence_for_night("PS65", [target])
+    seq.wait_until_local = "21:00:00"
+    return json.loads(generate_nina_json(seq))
+
+
+def _imaging_loop(data):
+    return next(d for d in _walk(data) if isinstance(d, dict)
+                and "imaging (repeats" in str(d.get("Name", "")))
+
+
+def _block_steps(data):
+    """[(kind, detail)] for the imaging loop's top-level items."""
+    out = []
+    for it in _imaging_loop(data)["Items"]["$values"]:
+        t = it["$type"]
+        if "SwitchFilter" in t:
+            out.append(("switch", it["Filter"]["_name"]))
+        elif _AF in t:
+            out.append(("af", None))
+        elif _REL in t:
+            out.append(("rel", it["RelativePosition"]))
+        elif _ABS in t:
+            out.append(("abs", it["Position"]))
+        elif "SmartExposure" in t:
+            out.append(("expose", it["Items"]["$values"][0]["Filter"]["_name"]))
+    return out
+
+
+class TestFocusBlocksPS65:
+    def test_no_absolute_seed_inside_imaging_loop(self):
+        loop = _imaging_loop(_gen_multi())
+        assert not any(_ABS in d.get("$type", "") for d in _walk(loop)
+                       if isinstance(d, dict))
+
+    def test_every_light_exposure_follows_an_af_after_last_seed(self):
+        data = _gen_multi()
+        pending = False
+        for it in _exec_items(data):
+            t = it.get("$type", "")
+            if _ABS in t:
+                pending = True
+            elif _AF in t:
+                pending = False
+            elif "TakeExposure" in t and it.get("ImageType") == "LIGHT":
+                assert not pending, "LIGHT exposure at a seed with no AF after it"
+
+    def test_blocks_af_on_l_then_offset_for_narrowband(self):
+        from photonscript.scheduler.nina_sequence_json import _nina_filter_name
+        L = _nina_filter_name(FilterType.LUMINANCE)
+        H = _nina_filter_name(FilterType.HA)
+        O = _nina_filter_name(FilterType.OIII)
+        assert _block_steps(_gen_multi()) == [
+            ("switch", L), ("af", None), ("expose", L),               # no offset
+            ("switch", L), ("af", None), ("rel", -187), ("expose", H),
+            ("switch", L), ("af", None), ("rel", -187), ("expose", O),
+        ]
+
+    def test_offsets_come_from_config(self, monkeypatch):
+        monkeypatch.setenv("PS_FOCUS_FILTER_OFFSETS", "Ha:-150,OIII:-210")
+        rels = [v for k, v in _block_steps(_gen_multi()) if k == "rel"]
+        assert rels == [-150, -210]
+
+    def test_offsets_disabled_emits_no_relative_move(self, monkeypatch):
+        monkeypatch.setenv("PS_FOCUS_FILTER_OFFSETS", "")
+        steps = _block_steps(_gen_multi())
+        assert not any(k == "rel" for k, _ in steps)
+        assert sum(k == "af" for k, _ in steps) == 3   # still one AF per block
+
+    def test_no_af_filter_focuses_in_block_filter_without_offset(self, monkeypatch):
+        from photonscript.scheduler.nina_sequence_json import _nina_filter_name
+        monkeypatch.setenv("PS_AUTOFOCUS_FILTER", "")
+        H = _nina_filter_name(FilterType.HA)
+        O = _nina_filter_name(FilterType.OIII)
+        steps = _block_steps(_gen_multi((FilterType.HA, FilterType.OIII)))
+        assert steps == [("switch", H), ("af", None), ("expose", H),
+                         ("switch", O), ("af", None), ("expose", O)]
+
+    def test_filter_change_trigger_removed_temp_and_hfr_kept(self):
+        types = _types(_gen_multi())
+        assert not any("AutofocusAfterFilterChange" in t for t in types)
+        assert any("AutofocusAfterTemperatureChangeTrigger" in t for t in types)
+        assert any("AutofocusAfterHFRIncreaseTrigger" in t for t in types)
+
+    def test_target_start_seed_still_followed_by_af(self):
+        dso = next(d for d in _walk(_gen_multi()) if isinstance(d, dict)
+                   and "DeepSkyObjectContainer" in d.get("$type", ""))
+        order = [i["$type"] for i in dso["Items"]["$values"]]
+        abs_i = next(i for i, t in enumerate(order) if _ABS in t)
+        assert _AF in order[abs_i + 1]
+
+    def test_generated_multi_filter_sequence_passes_lint(self):
+        from photonscript.scheduler.sequence_lint import lint
+        result = lint(_gen_multi(), guided=True)
+        assert result.ok, [f"{f.rule}: {f.detail}" for f in result.findings]
+
+    def test_focus_offset_map_parsing(self):
+        from photonscript.shared.config import PhotonScriptConfig
+        cfg = PhotonScriptConfig(focus_filter_offsets="Ha:-187, OIII : -190,x,SII:abc")
+        assert cfg.focus_offset_map() == {"Ha": -187, "OIII": -190}
+        assert PhotonScriptConfig(focus_filter_offsets="").focus_offset_map() == {}
+
+    def test_focus_offset_delta(self):
+        from photonscript.scheduler.nina_sequence_json import _focus_offset
+        offs = {"Ha": -187, "OIII": -190}
+        assert _focus_offset(FilterType.LUMINANCE, FilterType.HA, offs) == -187
+        assert _focus_offset(FilterType.HA, FilterType.OIII, offs) == -3
+        assert _focus_offset(FilterType.HA, FilterType.HA, offs) == 0
+        assert _focus_offset(None, FilterType.HA, offs) == 0
+        assert _focus_offset(FilterType.LUMINANCE, FilterType.RED, offs) == 0
