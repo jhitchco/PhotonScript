@@ -12,7 +12,7 @@ import asyncio
 import logging
 import os
 import platform
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path, PureWindowsPath
 from typing import Optional
 from uuid import uuid4
@@ -800,6 +800,38 @@ class TelescopeAgent:
                 quality.rejection_reason += "; "
             quality.rejection_reason += _r
 
+        # PS-71: frames shot with the roof closed / mount parked. Hot pixels
+        # graded as stars (sub-physical size), a bias-floor background, or an
+        # exposure overlapping an UNSAFE safety-monitor window.
+        qa_flag = ""
+        try:
+            from photonscript.shared.qa_signatures import (
+                parked_frame_verdict, exposure_start)
+            from photonscript.shared.safety_history import unsafe_windows
+            start = exposure_start(hdr.get("DATE-OBS"),
+                                   datetime.utcnow(), exposure_seconds)
+            wins = None
+            if start is not None:
+                wins, _src = unsafe_windows(
+                    self.config, start,
+                    start + timedelta(seconds=exposure_seconds or 0))
+            verdict = parked_frame_verdict(
+                self.config, hfr_px=quality.hfr_pixels,
+                fwhm_arcsec=quality.fwhm_arcsec,
+                background=quality.background_adu, exp_s=exposure_seconds,
+                stars=quality.star_count, start_utc=start,
+                unsafe_windows=wins)
+            if verdict.reject:
+                quality.passed_qa = False
+                for _r in verdict.reasons:
+                    if quality.rejection_reason:
+                        quality.rejection_reason += "; "
+                    quality.rejection_reason += _r
+            qa_flag = verdict.flag
+        except Exception as e:  # noqa: BLE001 - never lose a sub over this
+            logger.warning("parked-frame QA skipped for %s: %s",
+                           file_path.name, e)
+
         # Create image record
         image = CapturedImage(
             id=str(uuid4()),
@@ -843,6 +875,7 @@ class TelescopeAgent:
                 "background": quality.background_adu,
                 "passed_qa": quality.passed_qa,
                 "reason": quality.rejection_reason,
+                "qa_flag": qa_flag,
             })
             # Pre-warm the runs-grid thumbnail (w=264) so the Runs page never
             # blocks generating it on first view. The RC16 gets this in the

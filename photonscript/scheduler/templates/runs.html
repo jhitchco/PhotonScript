@@ -536,7 +536,7 @@
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
                 '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
-                Math.round(s.exp_s) + 's' + badge(s) +
+                Math.round(s.exp_s) + 's' + badge(s) + roofTag(s) +
                 '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
                 ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
             .join('');
@@ -566,7 +566,7 @@
                  : !s.reviewed ? 'review'
                  : s.transfer === 'pending' ? 'accepted · syncing ⇅'
                  : s.transfer === 'done' ? 'transferred ✓' : 'accepted') +
-                (s.manual_qa ? ' ✋' : '') + '</td></tr>').join('');
+                (s.manual_qa ? ' ✋' : '') + roofTag(s) + '</td></tr>').join('');
     }
     function fmtEta(s) {
         if (s == null) return '';
@@ -633,6 +633,14 @@
     }
     const STATE_ICON = {review: ['👁', '#eab308'], accepted: ['✓', '#4ade80'],
                         syncing: ['⇅', '#7dd3fc'], rejected: ['✗', '#f87171']};
+    // PS-71: subs graded as shot with the roof closed / mount parked
+    function roofTag(s) {
+        return s.qa_flag === 'roof-closed'
+            ? ' <span title="shot while the roof was closed or the mount parked '
+              + '(PS-71)" style="background:#7c2d12;color:#fed7aa;border-radius:4px;'
+              + 'padding:0 .35rem;font-size:.75em;white-space:nowrap;">roof closed / parked</span>'
+            : '';
+    }
     function badge(s) {
         const [ic, col] = STATE_ICON[subState(s)];
         return ' <span style="color:' + col + '">' + ic + '</span>';
@@ -671,7 +679,7 @@
             (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
             ' · expo ' + (s.exposure ?? '–') + ' (' + (s.swamp ?? '–') + '×RN²' +
             (s.sat_stars_pct != null ? ', sat★ ' + s.sat_stars_pct + '%' : '') + ')' +
-            ' ·' + badge(s) + ' <span style="opacity:.75">' + subState(s) +
+            ' ·' + badge(s) + roofTag(s) + ' <span style="opacity:.75">' + subState(s) +
             (s.reason && !s.passed_qa ? ' — ' + s.reason : '') + '</span>';
         const btn = document.getElementById('lbQaBtn');
         const nx = nextState(s);

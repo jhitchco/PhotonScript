@@ -73,6 +73,9 @@ def rig_config(config, rig: str):
         # sharp. HFR + ecc stay the hard gates for this rig (2026-09-20).
         "quality_fwhm_soft": getattr(config, "piggyback_fwhm_soft", True),
         "quality_eccentricity_max": getattr(config, "piggyback_ecc_max", 0.75),
+        # PS-71: the sub-physical star-size floor is scale-dependent too.
+        "quality_fwhm_min_arcsec": getattr(config, "piggyback_fwhm_min_arcsec",
+                                           2.0),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
         # NINA #2 has its own safety driver (a shared one deadlocks on the

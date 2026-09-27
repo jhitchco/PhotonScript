@@ -21,7 +21,7 @@ import logging
 import math
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -478,6 +478,28 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     hfr_abs_max = float(getattr(config, "quality_hfr_abs_max", 8.0))
     if m["hfr"] is not None and m["hfr"] > hfr_abs_max:
         reasons.append(f"HFR {m['hfr']} > {hfr_abs_max:g}px (out of focus)")
+    # PS-71: roof closed / parked. This grader has no true FWHM (its
+    # fwhm_arcsec is HFR x scale), so judge star size on HFR only.
+    qa_flag = ""
+    try:
+        from photonscript.shared.qa_signatures import (parked_frame_verdict,
+                                                       exposure_start)
+        from photonscript.shared.safety_history import unsafe_windows
+        _exp = float(hdr.get("EXPTIME", 0) or 0)
+        _start = exposure_start(hdr.get("DATE-OBS"))
+        _wins = None
+        if _start is not None:
+            _wins, _src = unsafe_windows(config, _start,
+                                         _start + timedelta(seconds=_exp))
+        _v = parked_frame_verdict(
+            config, hfr_px=m["hfr"], fwhm_arcsec=None,
+            background=m.get("background"), exp_s=_exp, stars=m["stars"],
+            start_utc=_start, unsafe_windows=_wins,
+            image_type=str(hdr.get("IMAGETYP", "LIGHT")))
+        reasons.extend(_v.reasons)
+        qa_flag = _v.flag
+    except Exception as e:  # noqa: BLE001
+        logger.debug("parked-frame QA skipped for %s: %s", path.name, e)
     passed = not reasons
     hfr = m["hfr"]
     return {
@@ -502,6 +524,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
         "passed_qa": passed,
         "reason": "; ".join(reasons),
+        "qa_flag": qa_flag,
         "graded_by": m["graded_by"],
     }
 
@@ -1450,7 +1473,7 @@ def build_library(config, date: str | None = None) -> dict:
     # Library/_/ ('?' is not a legal path char) or another target after a
     # corrected attribution. Calibration, piggyback cal and the analysis
     # dropbox are never target folders.
-    _not_targets = {"calibration", "piggyback",
+    _not_targets = {"calibration", "piggyback", "_rejected",
                     str(getattr(config, "analysis_dropbox_subdir", "_analysis")
                         or "_analysis").lower()}
     target_dirs = ([x for x in lib.iterdir()

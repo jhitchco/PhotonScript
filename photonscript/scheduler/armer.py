@@ -793,6 +793,15 @@ class Armer:
         self._safety_none_ticks = 0
         self._safety_alerted = False
 
+    def _record_safety(self, safe, now: datetime) -> None:
+        """PS-71: keep a transition log of the monitor so grading can reject
+        lights shot while it read unsafe. Never raises."""
+        try:
+            from photonscript.shared.safety_history import record
+            record(self.config, safe, now=now)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("safety history: %s", e)
+
     async def _is_safe(self) -> bool | None:
         data = await self._nina("safety")
         if data is None:
@@ -1226,6 +1235,7 @@ class Armer:
                              title="PhotonScript complete")
                 return
             safe = await self._is_safe()
+            self._record_safety(safe, now)
             await self._watch_safety_monitor(now, safe)
             if safe is False:
                 # The sequence's own night loop should leave SAFE_LOOP, park
@@ -1266,6 +1276,7 @@ class Armer:
                              title="PhotonScript complete")
                 return
             safe = await self._is_safe()
+            self._record_safety(safe, now)
             if safe is True:
                 if self._unsafe_stopped:
                     await self._resume_after_safety_stop(now)

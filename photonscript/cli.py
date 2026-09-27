@@ -371,6 +371,31 @@ def report(
     console.print(Panel(rpt.to_text(), title="PhotonScript daily", border_style="blue"))
 
 
+@app.command("qa-backfill")
+def qa_backfill(
+    date: str = typer.Option(..., help="Night (YYYY-MM-DD, the runs page date)"),
+    apply: bool = typer.Option(False, "--apply",
+                               help="Write the changes (default: dry run)"),
+    unsafe: list[str] = typer.Option(
+        [], help="Extra unsafe window FROM/TO in UTC ISO, e.g. "
+                 "2026-09-27T11:39:44Z/2026-09-27T13:00:00Z (repeatable)"),
+):
+    """PS-71: re-grade a night for roof-closed / parked frames. Dry run unless
+    --apply; with --apply rejected subs leave the stack set (Library links
+    move to Library/_rejected/)."""
+    import json as _json
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.qa_backfill import regrade_parked
+
+    extra = []
+    for w in unsafe:
+        a, _, b = w.partition("/")
+        extra.append((a, b))
+    res = regrade_parked(PhotonScriptConfig(), date, apply=apply,
+                         extra_unsafe=extra)
+    console.print_json(_json.dumps(res))
+
+
 @app.command()
 def preflight():
     """Run the full daytime system test (config, dirs, NINA, PHD2, lint, Pushover)."""

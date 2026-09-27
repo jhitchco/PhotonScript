@@ -131,6 +131,26 @@ class PhotonScriptConfig(BaseSettings):
                                              # anti-trailing gate — watch for drift.
     quality_tracking_rms_max: float = 1.5  # arcsec (0.24"/px scale)
     quality_corner_spread_max: float = 0.35  # corner FWHM spread vs median (collimation watch)
+    # PS-71 parked / roof-closed frame signatures (shared.qa_signatures):
+    quality_fwhm_min_arcsec: float = 1.0  # physical floor: no RC16 star is
+                                 # sharper than ~1" (seeing + 3248 mm optics;
+                                 # good subs read 2-3.5"). Below it the
+                                 # "stars" are hot pixels: the 2026-09-26
+                                 # roof-closed subs read 0.57" / HFR 1.5 px.
+                                 # HFR is judged as FWHM ~ 2 x HFR x scale.
+    quality_bias_floor_margin_adu: float = 6.0  # background <= default_offset
+                                 # + this = the sensor saw no sky (bias +
+                                 # dark current only; 2026-09-26: 257 ADU)
+    quality_bias_floor_min_exp_s: float = 600.0  # background at the floor
+                                 # rejects ON ITS OWN only from this length:
+                                 # short narrowband subs legitimately sit at
+                                 # the floor (09-26 Ha 60 s: 257 ADU with
+                                 # 156 real stars; 900 s NB runs 269+). Below
+                                 # it the floor only rejects together with
+                                 # sub-physical star sizes.
+    quality_reject_unsafe_subs: bool = True  # reject a light whose exposure
+                                 # overlaps a window the safety monitor read
+                                 # UNSAFE (safety history, PS-71)
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200
@@ -312,6 +332,8 @@ class PhotonScriptConfig(BaseSettings):
                                       # FWHM; average seeing lands 4-6"). Applying 4.0"
                                       # rejected the entire piggyback set on 2026-09-19
                                       # ("FWHM 6.5\" > 4.0\""). Tune against real OSC subs.
+    piggyback_fwhm_min_arcsec: float = 2.0  # PS-71 physical floor at 1.29"/px
+                                      # (focused OSC stars read 4.8-5.7")
     piggyback_ecc_max: float = 0.75   # OSC wide-field tolerates a touch more elongation
                                       # than the RC16 close-up; overrides quality_eccentricity_max
     piggyback_fwhm_soft: bool = True  # OSC FWHM is advisory, not a hard reject: the
