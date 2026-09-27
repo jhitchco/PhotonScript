@@ -35,6 +35,25 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
                            "[[NINA.Sequencer.Trigger.ISequenceTrigger, NINA.Sequencer]],"
                            " System.ObjectModel")
 
+# --- Container names (PS-78) ---------------------------------------------------
+# NINA's running-container name is what the telescope agent falls back to when
+# a frame has no OBJECT, so these names end up in sub records and Library
+# folders. shared/target_names.canonical_target imports them to map a
+# container back to its target (or to "unattributed" for structural loops):
+# rename a container here and the mapping follows.
+TARGET_IMAGING_SUFFIX = " imaging (repeats while safe and up)"
+TARGET_FOCUS_CAL_SUFFIX = " focus calibration AFs"
+FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
+SAFE_LOOP_NAME = "SAFE_LOOP"
+RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
+TARGETS_LOOP_NAME = "TARGETS_CONTAINER"
+NIGHT_LOOP_NAME = "LOOP_ALL_NIGHT"
+UNSAFE_BRANCH_NAME = "UNSAFE"
+SMART_EXPOSURE_NAME = "Smart Exposure"
+NIGHT_LOOP_CONTAINER_NAMES = (SAFE_LOOP_NAME, RESET_EQUIPMENT_NAME,
+                              TARGETS_LOOP_NAME, NIGHT_LOOP_NAME,
+                              UNSAFE_BRANCH_NAME, SMART_EXPOSURE_NAME)
+
 # --- Guiding resilience knobs (2026-09-20) -----------------------------------
 # On 2026-09-18 and -09-19 (both clear, roof open ~12.7 h) PHD2 never settled:
 # 95 guide-start requests, 24 "timed-out waiting for guider to settle", 0
@@ -481,7 +500,7 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     after = dither_every_n if (guided and dither_every_n > 0) else 0
     triggers = [_dither_trigger(after)] + list(extra_triggers or [])
     smart = _seq_container(
-        "Smart Exposure",
+        SMART_EXPOSURE_NAME,
         [
             _switch_filter(exp.filter_type),
             _make_typed(
@@ -921,7 +940,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         blk = _block(exp, bi, n_blocks, bb_condition if is_bb else None)
         if is_bb and bb_condition is not None:
             imaging.append(_seq_container(
-                f"{exp.filter_type.value} until moonrise", blk,
+                f"{exp.filter_type.value}{FILTER_UNTIL_MOONRISE_SUFFIX}", blk,
                 conditions=[bb_condition]))
         else:
             imaging.extend(blk)
@@ -938,7 +957,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if loop_end:
         inner_conds.append(_time_condition(*loop_end))
     items.append(_seq_container(
-        f"{target.name} imaging (repeats while safe and up)", imaging,
+        f"{target.name}{TARGET_IMAGING_SUFFIX}", imaging,
         conditions=inner_conds))
     items.append(_pushover("Imaging", f"{target.name}: leaving target "
                            f"({plan_desc}) — below altitude or unsafe"))
@@ -1033,7 +1052,7 @@ def _build_focus_calibration_container(target: NinaSequenceTarget,
             cal.append(_move_focuser_relative(delta))
         cal.append(_autofocus())
         prev = f
-    items.append(_seq_container(f"{target.name} focus calibration AFs", cal,
+    items.append(_seq_container(f"{target.name}{TARGET_FOCUS_CAL_SUFFIX}", cal,
                                 conditions=[_safety_condition()]))
     items.append(_pushover("Imaging", f"{target.name}: focus calibration "
                            f"done ({n_af} AF runs)"))
@@ -1280,15 +1299,15 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                   "straight — unparking and resuming targets"),
     ]
 
-    safe_loop = _seq_container("SAFE_LOOP", [
-        _seq_container("RESET_EQUIPMENT_ONCE_SAFE", [
+    safe_loop = _seq_container(SAFE_LOOP_NAME, [
+        _seq_container(RESET_EQUIPMENT_NAME, [
             _annotation("Runs on every safe (re)entry; harmless on first pass. "
                         "The confirm-safe hold now lives in the UNSAFE branch, "
                         "so this no longer double-waits or re-narrates."),
             _unpark(),
             _set_tracking(0),
         ]),
-        _seq_container("TARGETS_CONTAINER", target_containers),
+        _seq_container(TARGETS_LOOP_NAME, target_containers),
         _annotation("All targets done: park and hold (interruptible) until "
                     "dawn ends LOOP_ALL_NIGHT and the End area runs."),
         _pushover("Imaging", "all targets complete — parked, holding until dawn"),
@@ -1296,9 +1315,9 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         _wait_for_provider("DawnProvider", 0),
     ], conditions=[_safety_condition()])
 
-    night_loop = _seq_container("LOOP_ALL_NIGHT", [
+    night_loop = _seq_container(NIGHT_LOOP_NAME, [
         safe_loop,
-        _seq_container("UNSAFE", unsafe_items),
+        _seq_container(UNSAFE_BRANCH_NAME, unsafe_items),
     ], conditions=[_time_condition(dawn_provider, dawn_offset)])
 
     # ---- End area -----------------------------------------------------------

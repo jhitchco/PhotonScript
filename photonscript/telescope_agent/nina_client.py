@@ -13,6 +13,11 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# ninaAPI reports every sequence container as "<Name>_Container" in
+# /sequence/json (PS-78: shared/target_names strips it back off).
+NINAAPI_CONTAINER_SUFFIX = "_Container"
+TARGETS_AREA_CONTAINER = "Targets" + NINAAPI_CONTAINER_SUFFIX
+
 
 def _unwrap(body):
     """ninaAPI v2 wraps payloads as {"Response": ..., "Success": ...}."""
@@ -36,11 +41,11 @@ def _sequence_status(tree: list) -> dict:
         if is_running:
             running = True
             if under_targets and node.get("Items") is not None \
-                    and node.get("Name") != "Targets_Container":
+                    and node.get("Name") != TARGETS_AREA_CONTAINER:
                 target = node.get("Name") or target
         name = node.get("Name", "")
         for child in node.get("Items") or []:
-            walk(child, under_targets or name == "Targets_Container")
+            walk(child, under_targets or name == TARGETS_AREA_CONTAINER)
 
     for top in tree:
         walk(top, False)

@@ -270,7 +270,12 @@ class ProjectStore:
         """Increment acquired for a QA-passed sub. Returns True if matched.
         With HDR, a sub whose length is closer to the short set's counts toward
         hdr_short_acquired instead of the long set."""
-        tn = (target_name or "").strip().lower()
+        # PS-78: a container name ("<target> imaging (...)_Container") counts
+        # for its target; an OSC loop container names none
+        from photonscript.shared.target_names import canonical_target
+        tn = (canonical_target(target_name) or "").strip().lower()
+        if not tn:
+            return False
         for proj in self.projects.values():
             names = {proj.target.name.lower(), proj.target.catalog_id.lower(),
                      proj.target.catalog_id.replace(" ", "").lower()}

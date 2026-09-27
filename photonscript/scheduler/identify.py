@@ -183,10 +183,14 @@ def identify_night(config, date: str, solve: bool = True) -> dict:
     cheap header pass only; runs.attribute_night orders the passes).
     """
     from photonscript.scheduler.runs import _load_subs, _rewrite_subs
+    from photonscript.shared.target_names import canonical_target
 
     subs = _load_subs(config, date)
+    # PS-78: a sub named after a structural loop container
+    # (OSC_LIGHT_LOOP_Container) is as unknown as '?'
     unknown = [s for s in subs
-               if s.get("target") in ("?", "", None) and s.get("time")]
+               if canonical_target(s.get("target")) is None
+               and s.get("time")]
     if not unknown:
         return {"identified": 0, "clusters": []}
     unknown.sort(key=lambda s: s["time"])

@@ -24,6 +24,9 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.target_names import (canonical_target,
+                                              known_target_index, target_key)
+
 logger = logging.getLogger(__name__)
 
 
@@ -382,10 +385,16 @@ def _plan_target_names(config, date: str) -> list[str]:
         return []
 
 
-def _resolve_target(raw, filename: str, plan_names: list[str]) -> str:
-    """OBJECT header, else filename match, else the plan's only target."""
-    t = str(raw or "").strip()
-    if t and t != "?":
+def _resolve_target(raw, filename: str, plan_names: list[str],
+                    known=None) -> str:
+    """OBJECT header / recorded name, else filename match, else the plan's
+    only target. PS-78: the name is canonicalized first, so a container name
+    ("Heart Nebula imaging (repeats while safe and up)_Container") resolves to
+    its target and a structural loop ("OSC_LIGHT_LOOP_Container") counts as
+    unknown. known: extra target names / projects to match (default: the
+    night's plan names)."""
+    t = canonical_target(raw, known if known is not None else plan_names)
+    if t:
         return t
     fn = filename.lower()
     for name in plan_names:
@@ -784,19 +793,14 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
 PIGGYBACK_CORRELATE_TOL_MIN = 10.0
 
 
-def correlate_piggyback_targets(config, date: str) -> dict:
-    """Attribute piggyback (2nd-rig) subs by time-correlation to the RC16.
+def correlate_piggyback_records(subs: list[dict]) -> tuple[int, dict, list]:
+    """In-memory core of correlate_piggyback_targets (no file writes).
 
-    The piggyback rides the RC16 mount with no target/OBJECT of its own, so
-    every OSC sub lands as target='?' (identify's coordinate match can't help
-    it — NINA #2 owns no mount, so the frames carry no RA/DEC). But the RC16's
-    own sub timeline says exactly what the mount was pointed at over the night;
-    a piggyback sub inherits the RC16 target whose imaging window covers its
-    capture time. Both rigs share one {date}_subs.jsonl, so this is a cheap
-    metadata pass — no FITS reopened. Idempotent: only touches '?' piggyback
-    subs, so re-running after more RC16 frames land fills in more.
-    """
-    from datetime import datetime, timedelta
+    Sets s["target"] on each unattributed piggyback sub inside an RC16
+    exposure window. PS-78: RC16 names are canonicalized before they are
+    lent (a container-named RC16 sub lends its real target), and a piggyback
+    sub named after its OSC loop container counts as unattributed. Returns
+    (attributed, {target: n}, pending subs)."""
     import bisect
 
     def _t(s):
@@ -805,17 +809,18 @@ def correlate_piggyback_targets(config, date: str) -> dict:
         except ValueError:
             return None
 
-    subs = _load_subs(config, date)
     rc16 = sorted(
-        ((_t(s), s.get("target"), float(s.get("exp_s") or 0.0)) for s in subs
+        ((_t(s), canonical_target(s.get("target")),
+          float(s.get("exp_s") or 0.0)) for s in subs
          if s.get("rig", "rc16") == "rc16"
-         and s.get("target") not in ("?", "", None) and _t(s) is not None),
+         and canonical_target(s.get("target")) and _t(s) is not None),
         key=lambda x: x[0])
     pending = [s for s in subs
                if s.get("rig") not in ("rc16", None, "")
-               and s.get("target") in ("?", "", None) and _t(s) is not None]
+               and canonical_target(s.get("target")) is None
+               and _t(s) is not None]
     if not rc16 or not pending:
-        return {"attributed": 0, "windows": {}}
+        return 0, {}, []
 
     starts = [r[0] for r in rc16]
     tol = timedelta(minutes=PIGGYBACK_CORRELATE_TOL_MIN)
@@ -834,9 +839,29 @@ def correlate_piggyback_targets(config, date: str) -> dict:
             # piggyback opened a little before the RC16's first sub
             name = rc16[0][1]
         if name:
+            if s.get("target") not in ("?", "", None) \
+                    and not s.get("target_raw"):
+                s["target_raw"] = s.get("target")
             s["target"] = name
             n += 1
             windows[name] = windows.get(name, 0) + 1
+    return n, windows, pending
+
+
+def correlate_piggyback_targets(config, date: str) -> dict:
+    """Attribute piggyback (2nd-rig) subs by time-correlation to the RC16.
+
+    The piggyback rides the RC16 mount with no target/OBJECT of its own, so
+    every OSC sub lands as target='?' (identify's coordinate match can't help
+    it — NINA #2 owns no mount, so the frames carry no RA/DEC). But the RC16's
+    own sub timeline says exactly what the mount was pointed at over the night;
+    a piggyback sub inherits the RC16 target whose imaging window covers its
+    capture time. Both rigs share one {date}_subs.jsonl, so this is a cheap
+    metadata pass (no FITS reopened). Idempotent: only touches unattributed
+    piggyback subs, so re-running after more RC16 frames land fills in more.
+    """
+    subs = _load_subs(config, date)
+    n, windows, pending = correlate_piggyback_records(subs)
     if n:
         _rewrite_subs(config, date, subs)
         # best-effort: stamp the OSC FITS OBJECT so the science file carries it
@@ -910,21 +935,23 @@ def sync_goal_progress(config) -> list:
         store = get_store()
     except Exception:  # noqa: BLE001
         return []
-    # (target, filter) -> list of accepted sub lengths (s); lengths let an HDR
-    # plan split its short companion subs from the long set.
+    # (target key, filter) -> list of accepted sub lengths (s); lengths let an
+    # HDR plan split its short companion subs from the long set. PS-78: keyed
+    # on the canonical target, so container-named subs count toward the goal.
+    known = known_target_index(list(store.projects.values()))
     lengths: dict[tuple, list] = {}
     for f in runs_dir(config).glob("*_subs.jsonl"):
         date = f.name.split("_")[0]
         for s_ in _load_subs(config, date):
             if not s_.get("passed_qa"):
                 continue
-            t = str(s_.get("target", "")).strip().lower()
-            if t and t != "?":
-                lengths.setdefault((t, s_.get("filter")), []).append(
-                    s_.get("exp_s"))
+            t = canonical_target(s_.get("target"), known)
+            if t:
+                lengths.setdefault((target_key(t), s_.get("filter")),
+                                   []).append(s_.get("exp_s"))
     changed = []
     for p in store.projects.values():
-        tname = p.target.name.strip().lower()
+        tname = target_key(p.target.name)
         touched = False
         for e in p.exposure_plans:
             subs = lengths.get((tname, e.filter_type.value), [])
@@ -1184,6 +1211,17 @@ def invalidate_fits_counts(date: str | None = None) -> None:
         _fits_count_cache.pop(k, None)
 
 
+def _note_raw_targets(subs: list[dict]) -> None:
+    """PS-78: keep what a sub was called (target_raw) when its recorded name
+    is a container name that resolves to something else."""
+    for s_ in subs:
+        raw = s_.get("target")
+        if raw in (None, "", "?") or s_.get("target_raw"):
+            continue
+        if canonical_target(raw) != raw:
+            s_["target_raw"] = raw
+
+
 def list_runs(config) -> list[dict]:
     """Nights with any evidence: plan, subs log, or FITS folder."""
     dates = set()
@@ -1265,6 +1303,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         start_backfill(config, date)
         status = backfill_status(config, date)
     subs = _load_subs(config, date)
+    _note_raw_targets(subs)  # PS-78
 
     # Fix up subs recorded before target attribution existed
     plan_names = _plan_target_names(config, date)
@@ -1391,6 +1430,30 @@ def _safe_name(name: str) -> str:
 def library_root(config) -> Path:
     d = getattr(config, "library_dir", "") or ""
     return Path(d) if d else Path(config.data_dir) / "Library"
+
+
+def library_target_dirs(lib: Path, name: str, known=None) -> list[Path]:
+    """PS-78: every top-level Library folder holding lights of target `name`:
+    the canonical folder first, then any folder named after one of its
+    containers (e.g. "Cat's Eye Nebula imaging (repeats while safe and
+    up)_Container") until the rename backfill merges them."""
+    canon = canonical_target(name, known) or name
+    main = lib / _safe_name(canon)
+    out = [main]
+    if not lib.exists():
+        return out
+    key = target_key(canon)
+    try:
+        dirs = sorted(x for x in lib.iterdir() if x.is_dir())
+    except OSError:
+        return out
+    for d in dirs:
+        if d.name == main.name or d.name.startswith("_"):
+            continue
+        c = canonical_target(d.name, known)
+        if c and target_key(c) == key:
+            out.append(d)
+    return out
 
 
 def analysis_dropbox(config) -> Path:

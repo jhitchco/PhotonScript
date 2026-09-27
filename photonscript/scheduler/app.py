@@ -892,9 +892,11 @@ def _project_json(p) -> dict:
                                    if e.hdr_short_seconds else 0)
                                 for e in p.exposure_plans) / 3600, 1)
     try:
-        from photonscript.scheduler.runs import library_root, _safe_name
-        lib = library_root(get_config()) / _safe_name(p.target.name)
-        d["library_files"] = _library_fits_count(lib)
+        from photonscript.scheduler.runs import library_root, library_target_dirs
+        # PS-78: include not-yet-merged container-named folders
+        d["library_files"] = sum(
+            _library_fits_count(x) for x in library_target_dirs(
+                library_root(get_config()), p.target.name))
     except Exception:  # noqa: BLE001
         d["library_files"] = 0
     return d
@@ -2116,10 +2118,12 @@ async def api_run_assign_target(date: str, payload: dict = Body(...)):
             return False
         return (lo <= t <= hi) if lo <= hi else (t >= lo or t <= hi)
 
+    from photonscript.shared.target_names import canonical_target
     n = 0
     for s in subs:
-        if (s.get("target") in ("?", "", None) or payload.get("force")) \
-                and _in_window(s):
+        # PS-78: an OSC loop container name is as unassigned as '?'
+        if (canonical_target(s.get("target")) is None
+                or payload.get("force")) and _in_window(s):
             s["target"] = name
             n += 1
     if n:
@@ -2205,15 +2209,27 @@ async def target_page(request: Request):
 @app.get("/api/target/history")
 async def api_target_history(name: str):
     """Every sub ever recorded for one target, grouped by night, with QA
-    state and whether each accepted light made it into the Library."""
-    from photonscript.scheduler.runs import _load_subs, runs_dir
+    state and whether each accepted light made it into the Library.
+    PS-78: names are canonicalized, so subs recorded under a container name
+    ("Heart Nebula imaging (repeats while safe and up)_Container") count for
+    the target, and a container name as `name` shows the real target."""
+    from photonscript.scheduler.runs import _load_subs, library_target_dirs, runs_dir
+    from photonscript.shared.target_names import canonical_target, known_target_index, target_key
     cfg = get_config()
     lib = Path(cfg.library_dir) if cfg.library_dir \
         else Path(cfg.data_dir) / "Library"
-    tdir = lib / name
+    try:
+        known = known_target_index(list(get_store().projects.values()))
+    except Exception:  # noqa: BLE001
+        known = None
+    name = canonical_target(name, known) or name
+    key = target_key(name)
+    tdirs = library_target_dirs(lib, name, known)
+    tdir = tdirs[0]
     lib_files = set()
-    if tdir.exists():
-        lib_files = {f.name for f in tdir.rglob("*.fits")}
+    for d_ in tdirs:
+        if d_.exists():
+            lib_files |= {f.name for f in d_.rglob("*.fits")}
 
     nights = []
     totals = {"accepted": 0, "rejected": 0, "in_library": 0,
@@ -2221,7 +2237,8 @@ async def api_target_history(name: str):
     for p in sorted(runs_dir(cfg).glob("*_subs.jsonl"), reverse=True):
         date = p.name[:10]
         subs = [s for s in _load_subs(cfg, date)
-                if (s.get("target") or "") == name]
+                if target_key(canonical_target(s.get("target"), known))
+                == key]
         if not subs:
             continue
         rows = []
@@ -2253,6 +2270,7 @@ async def api_target_history(name: str):
                 "reason": s.get("reason") or "",
                 "in_library": in_lib,
                 "file": base,
+                "target_raw": s.get("target_raw") or s.get("target"),
             })
         nights.append({"date": date, "accepted": n_acc,
                        "rejected": n_rej, "subs": rows})
@@ -2284,18 +2302,20 @@ async def api_integration_readiness():
         flats[canon] = flats.get(canon, 0) + v
     bias_n = (health.get("BIAS") or {}).get("count_latest") or 0
 
+    from photonscript.scheduler.runs import library_target_dirs
     targets = []
     for p in _projects.values():
         if not p.active:
             continue
         name = p.target.name
-        tdir = lib / name
+        # PS-78: count container-named folders too until they are merged
+        tdirs = library_target_dirs(lib, name)
         filters: dict[str, dict] = {}
         dark_needs: dict[float, int] = {}
         for plan in p.exposure_plans:
             f = plan.filter_type.value
-            fdir = tdir / f
-            n = len(list(fdir.glob("*.fits"))) if fdir.exists() else 0
+            n = sum(len(list((td / f).glob("*.fits")))
+                    for td in tdirs if (td / f).exists())
             filters[f] = {"accepted_in_library": n,
                           "planned": plan.count,
                           "exposure_s": plan.exposure_seconds,

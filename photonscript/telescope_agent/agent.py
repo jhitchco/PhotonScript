@@ -666,6 +666,21 @@ class TelescopeAgent:
 
             await asyncio.sleep(3)
 
+    @staticmethod
+    def _canonical_capture_name(name) -> str:
+        """PS-78: the target a live name refers to, '' when it names none.
+        NINA's running container ("Heart Nebula imaging (repeats while safe
+        and up)_Container") maps to "Heart Nebula"; a structural loop such as
+        the Piggy-600's OSC_LIGHT_LOOP_Container maps to '' so the header
+        match / plan rule / dawn correlation name the sub instead."""
+        try:
+            from photonscript.shared.target_names import canonical_target
+            return canonical_target(name) or ""
+        except Exception as e:  # noqa: BLE001
+            logger.debug("target canonicalize skipped: %s", e)
+            s = str(name or "").strip()
+            return "" if s == "?" else s
+
     async def _process_new_image(self, file_path: Path):
         """Process a newly captured image — validate quality and report."""
         # Calibration frames (darks/flats/bias) are inventoried by the
@@ -715,6 +730,7 @@ class TelescopeAgent:
 
         target_name = str(hdr.get("OBJECT") or "").strip()
         object_in_header = bool(target_name)
+        target_name = self._canonical_capture_name(target_name)  # PS-78
         if not target_name:
             tok = stem.split("_")[0]
             if not _re.match(r"^\d{4}-\d{2}-\d{2}$", tok):
@@ -724,7 +740,8 @@ class TelescopeAgent:
             # the poll loop keeps it in state.current_target (the 2026-09-11
             # donut night logged 11 subs as '?' with a live target the whole
             # time). Trust it as the primary fallback.
-            live = str(getattr(self.state, "current_target", "") or "").strip()
+            live = self._canonical_capture_name(  # PS-78: not the container
+                getattr(self.state, "current_target", ""))
             if live and live != "?":
                 target_name = live
         if not target_name:

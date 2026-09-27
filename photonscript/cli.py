@@ -9,6 +9,7 @@ Usage:
     photonscript report [--date 2026-07-01]
     photonscript status [--url http://host:8100] [--timeout 30]
     photonscript autostart-check [--watch-restart] [--kill]   # PS-34a
+    photonscript rename-targets [--apply] [--date D] [--stamp-headers]  # PS-78
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript stop | restart
     photonscript notify "message"
@@ -461,6 +462,71 @@ def analyze(
                           f"{f.get('desktop_path', '(desktop path unset)')}")
         else:
             console.print(f"  [red]✗ {f.get('file')}: {f.get('error')}[/red]")
+
+
+@app.command("rename-targets")
+def rename_targets(
+    apply: bool = typer.Option(False, "--apply",
+                               help="Write the changes (default: dry run)"),
+    date: list[str] = typer.Option(
+        [], help="Only these nights (YYYY-MM-DD, repeatable; default all)"),
+    stamp_headers: bool = typer.Option(
+        False, "--stamp-headers",
+        help="Also rewrite FITS OBJECT headers that still hold a container "
+             "name (header only; off by default)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-78: rename container-named subs to their real target
+    ("Heart Nebula imaging (repeats while safe and up)_Container" -> "Heart
+    Nebula"; OSC loop names -> unattributed, then PS-51 piggyback
+    correlation) and merge container-named Library folders into the target
+    folders (moves only, collisions reported, nothing deleted). Dry run
+    unless --apply. Afterwards: POST /api/projects2/recount."""
+    import json as _json
+
+    from photonscript.scheduler.target_backfill import rename_backfill
+    from photonscript.shared.config import PhotonScriptConfig
+
+    r = rename_backfill(PhotonScriptConfig(), apply=apply, dates=date or None,
+                        stamp_headers=stamp_headers)
+    if as_json:
+        console.print_json(_json.dumps(r))
+        return
+    title = "APPLIED" if r["applied"] else "DRY RUN"
+    t = Table(title=f"{title} - PS-78 rename ({r['nights_scanned']} nights "
+                    f"scanned, {r['nights_changed']} changed)")
+    for c in ("Night", "Rig", "From", "To", "Subs"):
+        t.add_column(c, justify="right" if c == "Subs" else "left")
+    for n in r["nights"]:
+        for x in n["renamed"]:
+            t.add_row(n["date"], x["rig"], x["from"], x["to"], str(x["subs"]))
+        for name, k in n["piggyback_correlated"].items():
+            t.add_row(n["date"], "piggyback", "? (correlated)", name, str(k))
+    console.print(t)
+    console.print(f"Subs per target: {r['subs_by_target']}; piggyback still "
+                  f"unattributed: {r['piggyback_still_unattributed']}")
+    lt = Table(title=f"Library {r['library']}")
+    for c in ("Folder", "Moves to", "Links", "Collisions"):
+        lt.add_column(c)
+    for f in r["library_folders"]:
+        to = ", ".join(f"{k} ({v})" for k, v in f["to"].items()) or "-"
+        lt.add_row(f["folder"], to, str(f["moved"]), str(len(f["collisions"])))
+    console.print(lt)
+    for f in r["library_folders"]:
+        for c in f["collisions"]:
+            console.print(f"  [yellow]collision (left in place): "
+                          f"{f['folder']}/{c['file']} -> {c['dest']}"
+                          f"{' (same file)' if c.get('same_file') else ''}"
+                          f"{' ' + c['error'] if c.get('error') else ''}"
+                          "[/yellow]")
+    if r["headers"]["requested"]:
+        console.print(f"OBJECT headers: {r['headers']['candidates']} "
+                      f"candidates, {r['headers']['stamped']} rewritten")
+    if r["applied"]:
+        console.print("[green]Done. Now resync goals: POST "
+                      "/api/projects2/recount[/green]")
+    else:
+        console.print("[yellow]Dry run only. Add --apply to write.[/yellow]")
 
 
 @app.command("archive-library")

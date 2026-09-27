@@ -21,6 +21,15 @@ from photonscript.scheduler.runs import _CAL_DIRS, _is_calibration
 
 logger = logging.getLogger(__name__)
 
+# Piggyback OSC loop container names (PS-78): structural loops, not targets.
+# shared/target_names imports them so a sub named after one of these reads as
+# unattributed and the PS-51 time correlation names it instead.
+OSC_LIGHT_LOOP_NAME = "OSC_LIGHT_LOOP"
+OSC_IMAGE_PASS_NAME = "OSC_IMAGE_PASS"
+OSC_LIGHTS_UNTIL_DAWN_NAME = "OSC_LIGHTS_UNTIL_DAWN"
+PIGGYBACK_LOOP_CONTAINER_NAMES = (OSC_LIGHT_LOOP_NAME, OSC_IMAGE_PASS_NAME,
+                                  OSC_LIGHTS_UNTIL_DAWN_NAME)
+
 STALE_DAYS = {"FLAT": 45, "DARK": 90, "BIAS": 180}
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
 _CAL_TYPES = ("BIAS", "DARK", "FLAT")
@@ -605,17 +614,17 @@ def _osc_light_loop(config) -> dict:
     # Inner loop: repeat exposures WHILE safe and before dawn (checked between
     # exposures, so the loop ends on its own at dawn); triggers refocus.
     inner = _seq_container(
-        "OSC_LIGHT_LOOP", [take],
+        OSC_LIGHT_LOOP_NAME, [take],
         conditions=[_safety_condition(), _time_condition(*dawn)],
         triggers=_osc_af_triggers(config))
     image_pass = _seq_container(
-        "OSC_IMAGE_PASS",
+        OSC_IMAGE_PASS_NAME,
         [_pushover("Piggyback", f"roof open: OSC lights {exp_s:g}s until "
                    "nautical dawn"),
          *pre_af, _autofocus(), inner],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
-        "OSC_LIGHTS_UNTIL_DAWN",
+        OSC_LIGHTS_UNTIL_DAWN_NAME,
         [_wait_safe_until(*dawn, name="WAIT_SAFE_OR_NAUTICAL_DAWN"), image_pass],
         conditions=[_time_condition(*dawn)])
 
