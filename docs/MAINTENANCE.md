@@ -7,9 +7,12 @@ deploy (`.\deploy\deploy.ps1 "msg"`) — never hand-copied.
 
 On the scope PC PhotonScript runs as the `PhotonScript` scheduled task:
 `deploy\run-photonscript.ps1` (git pull) -> `photonscript supervise` ->
-`photonscript start --mode full`. The task starts it at boot (1 min delay) as
-`jeremy` with nobody logged on (S4U), and the supervisor restarts it after a
-crash: 5 s, 10 s, 20 s ... up to 5 min, reset after 30 min up. Five crashes in
+`photonscript start --mode full`. By default (PS-55) the task starts it 30 s
+after `jeremy` logs on, in his desktop session with a hidden window
+(`-LogonType Interactive`, the environment the console wrapper runs in); with
+Windows auto-logon that is also "at boot". `-LogonType S4U` starts it at boot
+with nobody logged on (session 0), which went slow on 2026-09-26 and is kept
+only for a supervised test. The supervisor restarts it after a crash: 5 s, 10 s, 20 s ... up to 5 min, reset after 30 min up. Five crashes in
 15 min and it gives up and sends "PhotonScript is down". Every crash sends
 "PhotonScript crashed". Exit 42 (update) goes back to the wrapper, which pulls
 and starts a fresh supervisor.
@@ -22,7 +25,7 @@ and starts a fresh supervisor.
 | Restart | `photonscript restart` |
 | Start | `Start-ScheduledTask PhotonScript` |
 | Task state | `Get-ScheduledTask PhotonScript \| Get-ScheduledTaskInfo` |
-| Install / remove | elevated: `deploy\install-autostart.ps1 [-StartNow]` / `-Uninstall` |
+| Install / remove | elevated: `deploy\install-autostart.ps1 [-StartNow] [-LogonType Interactive\|S4U\|Password]` / `-Uninstall` |
 
 Logs: `<data_dir>\logs\photonscript.log` (service), `supervisor.log`
 (starts, exits, restarts), `wrapper.log` (git pulls). data_dir is
@@ -31,8 +34,10 @@ Logs: `<data_dir>\logs\photonscript.log` (service), `supervisor.log`
 Gotchas: the task has no console, so use `photonscript monitor` instead of
 watching a window. Running the wrapper by hand while the task is up just exits
 ("another supervisor is already running"). NINA and PHD2 are not started by
-PhotonScript and still need jeremy logged on after a reboot. If the task will
-not start with a logon error, re-run the installer with `-UsePassword`.
+PhotonScript and still need jeremy logged on after a reboot (auto-logon).
+Signing out of jeremy's session stops an Interactive task; disconnect Remote
+Desktop instead of signing out. If an S4U task will not start with a logon
+error, re-run the installer with `-LogonType Password`.
 
 ### Slow or stalled service (PS-55)
 

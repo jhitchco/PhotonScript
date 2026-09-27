@@ -302,8 +302,10 @@ or "ERROR: ...". Masters in `out\master\`.
   walked Syncthing on every poll. Fixed in the perf pass (vectorized
   astronomy + caches + worker threads). If a 502 shows up again, time the same
   URL on :8100 before blaming serve. `deploy.ps1` still posts to :8100 direct.
-- SERVICE (scope PC, PS-44): runs from the `PhotonScript` scheduled task at
-  boot (`deploy\install-autostart.ps1`), wrapper -> `photonscript supervise`,
+- SERVICE (scope PC, PS-44): runs from the `PhotonScript` scheduled task
+  (`deploy\install-autostart.ps1`; default `-LogonType Interactive` = at
+  jeremy's logon, since S4U/session 0 went slow on 2026-09-26, PS-55),
+  wrapper -> `photonscript supervise`,
   which restarts it after a crash with backoff and alerts via Pushover.
   `photonscript stop` / `restart` / `status` / `monitor`; start with
   `Start-ScheduledTask PhotonScript`. Paths are `C:\astro`, NOT the desktop's
