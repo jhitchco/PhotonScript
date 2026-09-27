@@ -120,6 +120,11 @@ GET /api/nina/log?lines=800&grep=Autofocus        # NINA #1 / RC16 (nina_logs_di
 GET /api/nina/log?rig=piggyback&grep=Autofocus     # NINA #2 / OSC (piggyback_nina_logs_dir)
 GET /api/phd2/log?lines=800&grep=GuideStep|star lost   # PHD2 GuideLog (phd2_logs_dir)
 GET /api/phd2/log?kind=debug                       # PHD2 DebugLog
+GET /api/nina/log?rig=rc16&date=2026-09-26         # PS-73: every log of that night (12:00-12:00 local), survives a NINA restart
+GET /api/nina/logs?rig=piggyback                   # PS-73: NINA log files with rig + start time (for file=)
+GET /api/phd2/log?date=2026-09-26&grep=star lost   # PS-73: a night's PHD2 log(s); file=<name> for one
+GET /api/phd2/logs                                 # PS-73: where PHD2 logs were searched / found, file list
+GET /api/phd2/summary?date=2026-09-26              # PS-73: RMS RA/Dec (arcsec + px), star lost, calibrations (Dec, pier side)
 GET /api/ascom/log?name=Safety                     # ASCOM trace log
 GET /api/notifications?since_hours=24&title=cooler # Pushover audit: tally by type
 ```

@@ -1,7 +1,8 @@
 """Triage / log-tail endpoints — remote 2 AM debugging without the full bundle.
 
-/api/nina/log (rig=rc16|piggyback), /api/phd2/log, /api/ascom/log, and
-/api/notifications (Pushover audit). Extracted from app.py; handlers lazily
+/api/nina/log (rig=rc16|piggyback, date=, file=), /api/nina/logs,
+/api/phd2/log (date=, file=), /api/phd2/logs, /api/phd2/summary,
+/api/ascom/log, and /api/notifications (Pushover audit). Extracted from app.py; handlers lazily
 import get_config to avoid an import cycle.
 """
 from __future__ import annotations
@@ -65,23 +66,143 @@ def _rig_log(cfg, rig: str):
     return logs[0], ""
 
 
+_PORT_RE = None
+_PORT_CACHE: dict[str, int | None] = {}
+
+
+def _log_port(p) -> int | None:
+    """The Advanced API port a NINA log says its instance serves (from the
+    startup line), or None. Cached once the file is older than 10 min (its
+    head no longer changes)."""
+    import re
+    import time
+    global _PORT_RE
+    if _PORT_RE is None:
+        _PORT_RE = re.compile(r"listening at \S*:(\d+)\b")
+    key = str(p)
+    if key in _PORT_CACHE:
+        return _PORT_CACHE[key]
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            head = fh.read(2_000_000)
+        age = time.time() - Path(p).stat().st_mtime
+    except OSError:
+        return None
+    m = _PORT_RE.search(head)
+    port = int(m.group(1)) if m else None
+    if port is not None or age > 600:
+        _PORT_CACHE[key] = port
+    return port
+
+
+def _nina_setup(cfg, rig: str):
+    """(logs_dir, dedicated, port, is_piggyback) for a rig."""
+    from urllib.parse import urlparse
+    pig = str(rig).lower() in ("piggyback", "osc", "nina2", "2")
+    own_dir = (getattr(cfg, "piggyback_nina_logs_dir", "") or "") if pig else ""
+    logs_dir = own_dir or cfg.nina_logs_dir
+    dedicated = bool(own_dir) and Path(own_dir) != Path(cfg.nina_logs_dir)
+    base = (getattr(cfg, "piggyback_nina_base_url", "") if pig
+            else cfg.nina_base_url) or ""
+    return logs_dir, dedicated, urlparse(base).port, pig
+
+
+def _all_nina_logs(logs_dir: str, newest: int = 60) -> list[Path]:
+    logs = sorted((Path(p) for p in _glob.glob(str(Path(logs_dir) / "*.log"))),
+                  key=lambda p: p.stat().st_mtime, reverse=True)
+    return logs[:newest]
+
+
+def _rig_night_logs(cfg, rig: str, date: str) -> tuple[list[Path], str]:
+    """PS-73: every log of this rig that covers the night of `date` (oldest
+    first), so a NINA restart does not hide the night's log."""
+    from photonscript.scheduler.log_files import in_night
+    logs_dir, dedicated, port, pig = _nina_setup(cfg, rig)
+    try:
+        cands = [p for p in _all_nina_logs(logs_dir, 200) if in_night(p, date)]
+    except ValueError:
+        return [], f"bad date {date!r} (use YYYY-MM-DD)"
+    if not dedicated and port:
+        mine = [p for p in cands if _log_port(p) == port]
+        if not mine and not pig:
+            # RC16 fallback (old behavior): logs that name no port at all
+            mine = [p for p in cands if _log_port(p) is None]
+        cands = mine
+    cands.sort(key=lambda p: p.stat().st_mtime)
+    if not cands:
+        return [], f"no NINA log for {rig} covers the night of {date} under {logs_dir}"
+    return cands, ""
+
+
+def _rig_of(cfg, p: Path) -> str | None:
+    port = _log_port(p)
+    for rig in ("rc16", "piggyback"):
+        _d, _ded, rp, _pig = _nina_setup(cfg, rig)
+        if port is not None and port == rp:
+            return rig
+    return None
+
+
 @router.get("/api/nina/log", response_class=PlainTextResponse)
-async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16"):
+async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16",
+                       date: str = "", file: str = ""):
     """Tail (and optionally filter) the newest NINA log - remote 2AM triage
     without pulling the whole bundle. rig='piggyback' (aliases: osc, nina2, 2)
-    tails NINA #2's log instead of the RC16's, so the OSC is triageable too."""
+    tails NINA #2's log instead of the RC16's, so the OSC is triageable too.
+
+    PS-73: date=YYYY-MM-DD reads every log of this rig covering that night
+    (12:00 to 12:00 local, oldest first, one header per file), so the night
+    stays readable after a NINA restart; file=<name> reads one log by name
+    (see /api/nina/logs for the list)."""
+    from photonscript.scheduler.log_files import read_rows, safe_name
     cfg = _cfg()
-    path, note = _rig_log(cfg, rig)
-    if path is None:
-        return note
-    rows = Path(path).read_text(encoding="utf-8",
-                                errors="replace").splitlines()
-    if grep:
-        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
-        rows = [r for r in rows if any(n in r.lower() for n in needles)]
-    rows = rows[-min(max(1, lines), 5000):]
-    return (f"# [{rig}] {Path(path).name} - last {len(rows)} lines\n"
-            + "\n".join(rows))
+    if file:
+        logs_dir, _ded, _port, _pig = _nina_setup(cfg, rig)
+        name = safe_name(file)
+        p = Path(logs_dir) / name if name else None
+        if p is None or not p.is_file():
+            return f"no NINA log named {file!r} under {logs_dir}"
+        paths = [p]
+    elif date:
+        paths, note = _rig_night_logs(cfg, rig, date)
+        if not paths:
+            return note
+    else:
+        path, note = _rig_log(cfg, rig)
+        if path is None:
+            return note
+        paths = [Path(path)]
+    rows = read_rows(paths, grep, lines)
+    names = ", ".join(p.name for p in paths)
+    return f"# [{rig}] {names} - last {len(rows)} lines\n" + "\n".join(rows)
+
+
+@router.get("/api/nina/logs")
+def api_nina_logs(rig: str = "", date: str = "", limit: int = 60):
+    """PS-73: the NINA log files on disk, newest first, with the rig each one
+    belongs to (by the Advanced API port its startup line names) and its
+    start time, for picking a file= or date= in /api/nina/log."""
+    from photonscript.scheduler.log_files import describe, in_night
+    cfg = _cfg()
+    dirs = [cfg.nina_logs_dir]
+    pdir = getattr(cfg, "piggyback_nina_logs_dir", "") or ""
+    if pdir and Path(pdir) != Path(cfg.nina_logs_dir):
+        dirs.append(pdir)
+    out = []
+    for d in dirs:
+        for p in _all_nina_logs(d, max(1, min(int(limit), 200))):
+            if date:
+                try:
+                    if not in_night(p, date):
+                        continue
+                except ValueError:
+                    return {"error": f"bad date {date!r} (use YYYY-MM-DD)"}
+            who = ("piggyback" if d == pdir and len(dirs) > 1 else _rig_of(cfg, p))
+            if rig and who != rig:
+                continue
+            out.append(dict(describe(p), rig=who, dir=d))
+    out.sort(key=lambda r: r["modified"] or "", reverse=True)
+    return {"count": len(out), "logs": out[:max(1, min(int(limit), 200))]}
 
 
 @router.get("/api/notifications")
@@ -125,31 +246,64 @@ def api_notifications(since_hours: float = 24.0, limit: int = 200,
 
 
 @router.get("/api/phd2/log", response_class=PlainTextResponse)
-async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide"):
-    """Tail (and optionally filter) the newest PHD2 log — remote guiding triage.
+async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide",
+                       date: str = "", file: str = ""):
+    """Tail (and optionally filter) a PHD2 log: remote guiding triage.
 
-    kind='guide' (default) tails the newest PHD2_GuideLog_*.txt (per-frame RA/Dec
-    error, star-lost, calibration); kind='debug' tails PHD2_DebugLog_*.txt.
+    kind='guide' (default) reads PHD2_GuideLog_*.txt (per-frame RA/Dec
+    error, star-lost, calibration); kind='debug' reads PHD2_DebugLog_*.txt.
     grep filters lines (case-insensitive, '|' for multiple needles), e.g.
     grep='star lost|GuideStep|calibration'. Mirrors /api/nina/log.
+
+    PS-73: newest log by default; date=YYYY-MM-DD reads every log covering
+    that night (12:00 to 12:00 local); file=<name> reads one log. The folder
+    is phd2_logs_dir, or the first usual PHD2 folder that holds logs (see
+    /api/phd2/logs for where it looked).
     """
-    base = getattr(_cfg(), "phd2_logs_dir", "")
-    if not base:
-        return "phd2_logs_dir not configured (set it in System config)"
-    pattern = ("PHD2_DebugLog*" if str(kind).lower().startswith("debug")
-               else "PHD2_GuideLog*")
-    logs = sorted(_glob.glob(str(Path(base) / "**" / pattern), recursive=True),
-                  key=lambda p: Path(p).stat().st_mtime)
-    if not logs:
-        return (f"no PHD2 {pattern} logs found under {base} — check "
-                "phd2_logs_dir, or PHD2 hasn't guided yet")
-    rows = Path(logs[-1]).read_text(encoding="utf-8",
-                                    errors="replace").splitlines()
-    if grep:
-        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
-        rows = [r for r in rows if any(n in r.lower() for n in needles)]
-    rows = rows[-min(max(1, lines), 5000):]
-    return f"# {Path(logs[-1]).name} - last {len(rows)} lines\n" + "\n".join(rows)
+    from photonscript.scheduler.log_files import read_rows
+    from photonscript.scheduler.phd2_logs import find_logs, select
+    found = find_logs(_cfg(), kind)
+    if not found["files"]:
+        where = "; ".join(s["dir"] for s in found["searched"])
+        return (f"no PHD2 {found['pattern']} logs found (searched: {where}); "
+                "check PHD2 logging (Tools > Enable Guide Log) and set "
+                "phd2_logs_dir to PHD2's log folder")
+    paths, note = select(found["files"], date=date, file=file)
+    if not paths:
+        return note
+    rows = read_rows(paths, grep, lines)
+    extra = "" if found["why"] == "configured" else f" [found in {found['dir']}]"
+    return (f"# {', '.join(p.name for p in paths)} - last {len(rows)} lines"
+            f"{extra}\n" + "\n".join(rows))
+
+
+@router.get("/api/phd2/logs")
+def api_phd2_logs(kind: str = "guide", date: str = "", limit: int = 60):
+    """PS-73: where PHD2 logs were looked for and found, and the files there
+    (newest first), for picking a file= or date= in /api/phd2/log."""
+    from photonscript.scheduler.log_files import describe, in_night
+    from photonscript.scheduler.phd2_logs import find_logs
+    found = find_logs(_cfg(), kind)
+    files = list(reversed(found["files"]))
+    if date:
+        try:
+            files = [p for p in files if in_night(p, date)]
+        except ValueError:
+            return {"error": f"bad date {date!r} (use YYYY-MM-DD)"}
+    return {"dir": found["dir"], "why": found["why"],
+            "searched": found["searched"], "pattern": found["pattern"],
+            "count": len(files),
+            "logs": [describe(p) for p in files[:max(1, min(int(limit), 500))]]}
+
+
+@router.get("/api/phd2/summary")
+def api_phd2_summary(date: str = "", file: str = ""):
+    """PS-73: a night's PHD2 guide log in one read: RMS RA/Dec (arcsec, with
+    the pixel figures), star-lost count and reasons, dithers, and every
+    calibration with its Dec, hour angle, pier side and result. date=
+    YYYY-MM-DD (the evening date) or file=<name>; default = newest log."""
+    from photonscript.scheduler.phd2_logs import night_summary
+    return night_summary(_cfg(), date=date, file=file)
 
 
 def _latest_ascom_log(base: str, name: str = ""):
