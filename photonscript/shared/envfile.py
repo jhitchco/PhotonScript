@@ -11,8 +11,10 @@ _LINE = re.compile(r'^\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*)$')
 def env_path(root: Path | None = None) -> Path:
     """Locate the .env file (cwd, then repo root)."""
     candidates = [Path.cwd() / ".env"]
-    if root:
-        candidates.append(Path(root) / ".env")
+    if root is None:
+        # PS-86: fall back to the checkout's own .env, not just the cwd.
+        root = Path(__file__).resolve().parents[2]
+    candidates.append(Path(root) / ".env")
     for c in candidates:
         if c.exists():
             return c

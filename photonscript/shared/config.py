@@ -11,10 +11,19 @@ from pydantic import Field
 from photonscript.shared.models import ObservatoryLocation, TransferWindow
 
 
+# The checkout this package runs from (photonscript/shared/config.py -> repo).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 class PhotonScriptConfig(BaseSettings):
     """Master configuration for the entire PhotonScript system."""
 
-    model_config = {"env_prefix": "PS_", "env_file": ".env", "extra": "ignore"}
+    # The repo's .env is read wherever the command runs from (a CLI started in
+    # C:\Users\jeremy used to see code defaults: ecc 0.70 instead of 0.6).
+    # A .env in the current directory still wins (pydantic: later file wins).
+    model_config = {"env_prefix": "PS_",
+                    "env_file": (str(REPO_ROOT / ".env"), ".env"),
+                    "extra": "ignore"}
 
     # --- General ---
     app_name: str = "PhotonScript"
