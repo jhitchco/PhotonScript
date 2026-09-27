@@ -752,6 +752,9 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     SafetyMonitorCondition + this TimeCondition itself, and the temperature /
     HFR refocus triggers ride on each SmartExposure with the block's own
     AF-filter + offset recipe instead of on the target container."""
+    if getattr(target, "focus_calibration", False):
+        return _build_focus_calibration_container(target, min_altitude,
+                                                  af_filter, focus_offsets)
     chatty_block = narrate == "verbose"          # per-block starting/done pair
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
     active = [e for e in target.exposures
@@ -965,6 +968,108 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             InputCoordinates=_coords(target)),
     )
     return container
+
+
+FOCUS_CAL_ORDER = ("L", "R", "G", "B", "L", "Ha", "OIII", "SII", "L")
+
+
+def _focus_cal_steps(filters, rounds: int, ref) -> list:
+    """Resolve the calibration filter order to FilterTypes, repeated `rounds`
+    times. Unknown names are skipped; the reference filter brackets each
+    round so drift between AFs is visible in the reports."""
+    names = [str(f) for f in (filters or FOCUS_CAL_ORDER)]
+    ft_by = {ft.value.lower(): ft for ft in FilterType}
+    ft_by.update({ft.name.lower(): ft for ft in FilterType})
+    one = [ft_by[n.lower()] for n in names if n.lower() in ft_by]
+    steps = []
+    for _ in range(max(1, int(rounds or 1))):
+        steps.extend(one)
+    if ref is not None and (not steps or steps[-1] != ref):
+        steps.append(ref)
+    return steps
+
+
+def _build_focus_calibration_container(target: NinaSequenceTarget,
+                                       min_altitude: float,
+                                       af_filter: "FilterType | None",
+                                       focus_offsets: dict | None) -> dict:
+    """PS-76 focus-offset calibration: slew to a rich star field, AF on the
+    reference filter (L), center, then run RunAutofocus in every filter of the
+    bracketed order. Before each AF the focuser is moved by the configured
+    offset delta from the previous filter, so every AF starts near its best
+    focus. No lights are taken; the product is NINA's AF reports, which the
+    backfill ingests into focus_model.
+
+    NINA's profile "Autofocus filter" must be OFF for this run, or every
+    RunAutofocus switches to that filter and only L gets measured."""
+    ref = af_filter or FilterType.LUMINANCE
+    steps = _focus_cal_steps(target.focus_calibration_filters,
+                             target.focus_calibration_rounds, ref)
+    if steps and steps[0] == ref:
+        steps = steps[1:]  # the acquisition AF below already measured ref
+    n_af = len(steps) + 1
+    items = [
+        _annotation("PS-76 focus-offset calibration. Turn OFF the NINA "
+                    "profile Autofocus filter for this run, or every AF runs "
+                    "in that filter. Results land in NINA's AutoFocus reports "
+                    "and feed focus_model on the next backfill."),
+        _pushover("Imaging", f"{target.name}: focus calibration, slewing - "
+                  f"{n_af} autofocus runs "
+                  f"({', '.join(f.value for f in [ref] + steps)})"),
+        _set_tracking(0),
+        _slew(target),
+        _switch_filter(ref),
+        _move_focuser(_seed_position(ref)),
+        _autofocus(),
+        _center(target),
+        _set_tracking(0),
+    ]
+    prev = ref
+    cal = []
+    for f in steps:
+        cal.append(_switch_filter(f))
+        delta = _focus_offset(prev, f, focus_offsets)
+        if delta:
+            cal.append(_move_focuser_relative(delta))
+        cal.append(_autofocus())
+        prev = f
+    items.append(_seq_container(f"{target.name} focus calibration AFs", cal,
+                                conditions=[_safety_condition()]))
+    items.append(_pushover("Imaging", f"{target.name}: focus calibration "
+                           f"done ({n_af} AF runs)"))
+    return _seq_container(
+        target.name, items,
+        conditions=[_safety_condition(),
+                    _altitude_condition(target, min_altitude),
+                    _loop_once()],
+        triggers=[_meridian_flip_trigger(), _reconnect_trigger()],
+        container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
+                       "NINA.Sequencer",
+        Target=_make_typed(
+            "NINA.Astrometry.InputTarget, NINA.Astrometry",
+            Expanded=True, TargetName=target.name,
+            PositionAngle=target.rotation,
+            InputCoordinates=_coords(target)),
+    )
+
+
+def generate_focus_calibration_json(name: str = "NGC 7789",
+                                    ra_hours: float = 23.957,
+                                    dec_degrees: float = 56.708,
+                                    rounds: int = 1,
+                                    filters: list[str] | None = None) -> str:
+    """A whole-night NINA sequence (same startup, safety loop and shutdown as
+    a normal night) whose only target is a focus-offset calibration. Default
+    field NGC 7789: a rich open cluster that fills the RC16 frame and is high
+    from Rodeo on autumn evenings. Pass another bright, uncrowded field any
+    other season."""
+    from photonscript.scheduler.nina_sequence import build_sequence_for_night
+    t = NinaSequenceTarget(name=name, ra_hours=ra_hours,
+                           dec_degrees=dec_degrees, focus_calibration=True,
+                           focus_calibration_rounds=rounds,
+                           focus_calibration_filters=list(filters or []))
+    seq = build_sequence_for_night(f"Focus calibration {name}", [t])
+    return generate_nina_json(seq)
 
 
 def generate_nina_json(sequence: NinaSequenceFile) -> str:

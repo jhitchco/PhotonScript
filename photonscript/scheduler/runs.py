@@ -714,6 +714,16 @@ def start_backfill(config, date: str) -> None:
                                    date, len(af["bad"]))
             except Exception as e:  # noqa: BLE001
                 logger.warning("AF-quality check failed for %s: %s", date, e)
+            try:  # PS-76: learn the RC16 focus model (temperature slope +
+                # measured filter offsets) from NINA's AF reports. No-op until
+                # nina_autofocus_reports_dir is set.
+                from photonscript.scheduler.focus_model import ingest_af_reports
+                fm = ingest_af_reports(config)
+                if fm.get("added"):
+                    logger.info("Focus model %s: %d AF point(s) added (%d "
+                                "stored)", date, fm["added"], fm["total"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Focus-model ingest failed for %s: %s", date, e)
         finally:
             st["running"] = False
             st["current"] = None

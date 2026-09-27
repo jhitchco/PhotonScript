@@ -258,7 +258,19 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
 
         # An empty target still slews/AFs/centers; looping under Safety +
         # Altitude it re-acquires all night (2026-09-21, PS-27).
-        if not (_has_type(tgt, "TakeExposure") or _has_type(tgt, "SmartExposure")):
+        # PS-76 focus-offset calibration target: no lights by design, a
+        # bracketed series of AF runs instead. Allowed, with a note that the
+        # night loop repeats it while the field is up and it is safe.
+        is_focus_cal = (not (_has_type(tgt, "TakeExposure")
+                             or _has_type(tgt, "SmartExposure"))
+                        and "focus calibration AFs" in json.dumps(tgt)
+                        and len(_find_type(tgt, "RunAutofocus")) >= 3)
+        if is_focus_cal:
+            r.warn("focus-calibration", f"[{name}] focus-offset calibration "
+                   "target (AF runs only, no lights); it repeats while safe "
+                   "and above the altitude limit. Turn off NINA's profile "
+                   "Autofocus filter for this run.")
+        elif not (_has_type(tgt, "TakeExposure") or _has_type(tgt, "SmartExposure")):
             r.error("empty-target", f"[{name}] has no exposures — it would "
                                     "slew, focus and center on every pass")
         elif "LoopCondition" not in cond_blob:

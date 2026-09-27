@@ -1708,6 +1708,33 @@ def api_calibration_health(rig: str = "rc16"):
     return calibration_health(rig_config(cfg, rig))
 
 
+def _focus_model_summary(cfg) -> dict:
+    """PS-76 focus model read-out; never breaks /api/focus."""
+    try:
+        from photonscript.scheduler import focus_model as fm
+        return fm.summary(cfg)
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+@app.get("/api/focus/calibration-sequence")
+def api_focus_calibration_sequence(name: str = "NGC 7789", ra: float = 23.957,
+                                   dec: float = 56.708, rounds: int = 1):
+    """PS-76: download a NINA sequence that measures every RC16 filter's focus
+    offset against L (bracketed AF runs on one rich star field). Generated
+    only; nothing is loaded, armed or sent to NINA. Turn OFF the NINA profile
+    Autofocus filter before running it."""
+    from fastapi.responses import Response
+    from photonscript.scheduler.nina_sequence_json import (
+        generate_focus_calibration_json)
+    rounds = max(1, min(int(rounds), 3))
+    body = generate_focus_calibration_json(name, ra, dec, rounds)
+    safe = "".join(c if c.isalnum() else "_" for c in name)
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition":
+            f'attachment; filename="focus_calibration_{safe}.json"'})
+
+
 @app.get("/api/focus")
 def api_focus():
     """Per-rig autofocus seed history for the calibration Focus panel.
@@ -1749,6 +1776,7 @@ def api_focus():
             "filters": rc_filters,
             "count": len(rc_recs),
             "clamp": [fs._FOCPOS_MIN, fs._FOCPOS_MAX],
+            "model": _focus_model_summary(cfg),
         },
         "piggyback": {
             "kind": "single",

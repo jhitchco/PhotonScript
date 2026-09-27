@@ -299,6 +299,13 @@ class NinaSequenceTarget(BaseModel):
     start_guiding: bool = False  # CEM70G encoders: unguided default
     cool_camera: bool = True
     camera_temp_c: float = -10.0
+    # PS-76: a focus-offset calibration target. Instead of imaging, it runs a
+    # bracketed series of autofocus runs (L, R, G, B, L, Ha, OIII, SII, L by
+    # default) so NINA's AF reports measure every filter's best focus against
+    # L at nearly the same temperature. See generate_focus_calibration_json().
+    focus_calibration: bool = False
+    focus_calibration_rounds: int = 1
+    focus_calibration_filters: list[str] = Field(default_factory=list)
 
 
 class NinaSequenceFile(BaseModel):

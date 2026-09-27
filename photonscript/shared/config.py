@@ -224,6 +224,16 @@ class PhotonScriptConfig(BaseSettings):
     af_min_r2: float = 0.7  # an AF run whose best fit R^2 is below this (a
                                  # too-few-stars / bad-curve run) trips the AF
                                  # quality alert in the nightly backfill.
+    focus_model_seed: bool = True  # PS-76: seed each RC16 autofocus from the
+                                 # learned focus model (focus_model.py) when it
+                                 # is at least "med" confidence for that filter,
+                                 # instead of the July focus_seeds table. The
+                                 # model only learns from NINA AF reports, so
+                                 # this does nothing until
+                                 # nina_autofocus_reports_dir is set. AF always
+                                 # still runs after the seed.
+    focus_model_min_af_points: int = 5  # PS-76: an AF report with fewer measure
+                                 # points than this never enters the focus model.
     guiding_auto_recover: bool = True  # when the watchdog sees guiding stay down
                                  # (idle OR stuck calibrating/looping) well past
                                  # the grace, attempt ONE automatic PHD2 guider

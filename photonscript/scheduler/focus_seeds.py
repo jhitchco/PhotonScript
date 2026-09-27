@@ -71,7 +71,19 @@ def _clamp(pos: float) -> int:
 
 def seed_for(filter_name: str, foctemp: float | None = None,
              config=None) -> int:
-    """Best-guess focuser start position for a filter at a given temperature."""
+    """Best-guess focuser start position for a filter at a given temperature.
+
+    PS-76: when config is given and the AF-report focus model is at least
+    "med" confidence for this filter, its prediction wins; otherwise the
+    table logic below runs unchanged."""
+    if config is not None:
+        try:
+            from photonscript.scheduler.focus_model import seed_position
+            mp = seed_position(config, str(filter_name), foctemp)
+            if mp is not None:
+                return _clamp(mp)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("focus_seeds: focus model unavailable: %s", e)
     recs = [r for r in load_records(config)
             if str(r.get("filter")) == str(filter_name) and r.get("focpos")]
     if not recs:
