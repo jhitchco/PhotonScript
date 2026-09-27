@@ -171,6 +171,10 @@ async def _run_with_shutdown(config: PhotonScriptConfig,
     for s in servers:
         s.install_signal_handlers = lambda: None  # single owner of shutdown
 
+    # PS-55: event-loop lag + stall watchdog (GET /api/health, stalls.log)
+    from photonscript.shared import health
+    monitor, monitor_task = health.start_monitor(getattr(config, "data_dir", None))
+
     server_tasks = [asyncio.create_task(s.serve(), name=f"uvicorn-{i}")
                     for i, s in enumerate(servers)]
     agent_tasks = [asyncio.create_task(c, name=f"agent-{i}")
@@ -190,6 +194,8 @@ async def _run_with_shutdown(config: PhotonScriptConfig,
         # Let the watcher flip should_exit / cancel, then drain everything.
         await asyncio.gather(*all_tasks, return_exceptions=True)
     finally:
+        monitor.stop()
+        monitor_task.cancel()
         for t in all_tasks:
             if not t.done():
                 t.cancel()
@@ -275,6 +281,28 @@ async def run_full(config: PhotonScriptConfig):
     await _run_with_shutdown(config, web, agent_coros)
 
 
+def _prepare_process(config: PhotonScriptConfig, mode: str) -> None:
+    """PS-55: pin astropy IERS offline, guard the Windows QoS, and log who and
+    where this process is (session 0 = scheduled task without a desktop), so a
+    slow or stalled service can be told apart from its environment."""
+    from photonscript.shared import health
+    health.mark_started(mode)
+    st = health.state()
+    if getattr(config, "process_qos_guard", True):
+        st["qos"] = health.apply_process_qos()
+    st["iers"] = health.configure_astropy_iers(getattr(config, "iers_offline", True))
+    st["process"] = health.process_context()
+    p = st["process"]
+    logger.info("Process: pid %s, user %s, session %s, priority %s, power "
+                "throttling %s, elevated %s, launcher %s",
+                p.get("pid"), p.get("user"), p.get("session_id", "-"),
+                p.get("priority_class", "-"), p.get("power_throttling", "-"),
+                p.get("elevated", "-"), p.get("launcher"))
+    if st["qos"].get("applied"):
+        logger.info("Process QoS guard: %s", st["qos"])
+    logger.info("astropy IERS: %s", st["iers"])
+
+
 def start(mode: str = "full", config: Optional[PhotonScriptConfig] = None):
     """Entry point to start PhotonScript in the specified mode."""
     if config is None:
@@ -282,6 +310,7 @@ def start(mode: str = "full", config: Optional[PhotonScriptConfig] = None):
 
     config.data_dir.mkdir(parents=True, exist_ok=True)
     setup_logging(config.log_level, config.data_dir)
+    _prepare_process(config, mode)
 
     runners = {
         "full": run_full,

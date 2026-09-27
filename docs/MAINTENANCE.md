@@ -34,6 +34,27 @@ watching a window. Running the wrapper by hand while the task is up just exits
 PhotonScript and still need jeremy logged on after a reboot. If the task will
 not start with a logon error, re-run the installer with `-UsePassword`.
 
+### Slow or stalled service (PS-55)
+
+- The service log starts every run with a `Process:` line: pid, user, Windows
+  session (0 = scheduled task without a desktop), priority class, power
+  throttling, elevated, launcher (`console` or `task-<LogonType>`, set by
+  `run-photonscript.ps1 -Launcher`). Compare a slow run with a healthy one.
+- A watchdog thread writes `<data_dir>\logs\stalls.log` whenever the event
+  loop has not ticked for 5 s, with the Python stack of the code that is
+  blocking it; loop lag over 2 s is logged as `Event loop lag N s`.
+- At startup the process opts out of Windows power throttling (EcoQoS) and
+  lifts a below-normal CPU or memory priority to normal
+  (`PS_PROCESS_QOS_GUARD=false` turns this off).
+- astropy IERS data is pinned offline (`PS_IERS_OFFLINE=true`, default): the
+  table bundled in `astropy-iers-data` is used and never downloaded from the
+  night loop. Refresh it in daytime with
+  `C:\astro\venv\Scripts\python.exe -m pip install -U astropy-iers-data`.
+  The astropy cache is `C:\Users\jeremy\.cache\astropy` (not `.astropy`).
+- Never start the service from an elevated (Administrator) shell: files it
+  creates (astropy cache, logs) end up owned by Administrators and the normal
+  account can no longer write them.
+
 ## Pruning old captures (free the capture drive)
 
 Deletes captured FITS from nights before a cutoff. Uses the **live config

@@ -21,6 +21,12 @@ class PhotonScriptConfig(BaseSettings):
     data_dir: Path = Path.home() / ".photonscript"
     db_path: Path = Path.home() / ".photonscript" / "photonscript.db"
     log_level: str = "INFO"
+    # PS-55: never download astropy IERS data from inside the service (use the
+    # table bundled in astropy-iers-data; refresh it with pip, in daytime)
+    iers_offline: bool = True
+    # PS-55: on Windows, opt out of power throttling (EcoQoS) and lift a
+    # below-normal CPU/memory priority to normal at startup
+    process_qos_guard: bool = True
 
     # --- Observatory ---
     observatory_name: str = "AARO Pier 3 (Rodeo, NM)"

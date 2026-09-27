@@ -21,7 +21,10 @@
 param(
     [string]$Repo = "C:\astro\PhotonScript",
     [string]$Exe  = "C:\astro\venv\Scripts\photonscript.exe",
-    [string]$Mode = "full"
+    [string]$Mode = "full",
+    # Tag shown in the service log and GET /api/health (PS-55): "console" when
+    # run by hand, "task-<LogonType>" when install-autostart.ps1 starts it.
+    [string]$Launcher = "console"
 )
 
 # Run from the repo root so the app finds .env (pydantic reads ".env" relative
@@ -48,7 +51,9 @@ function Write-Log([string]$msg) {
     Add-Content -Path $log -Value $line -Encoding UTF8
 }
 
-Write-Log "wrapper start (user $env:USERNAME, repo $Repo, mode $Mode, pid $PID)"
+$env:PS_LAUNCHER = $Launcher
+$session = (Get-Process -Id $PID).SessionId
+Write-Log "wrapper start (user $env:USERNAME, repo $Repo, mode $Mode, pid $PID, session $session, launcher $Launcher)"
 
 while ($true) {
     $before = (git -C $Repo rev-parse --short HEAD 2>$null)
