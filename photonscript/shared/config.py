@@ -50,6 +50,16 @@ class PhotonScriptConfig(BaseSettings):
     nina_base_url: str = "http://localhost:1888/v2/api"  # NINA Advanced API (ninaAPI plugin)
     phd2_host: str = "localhost"
     phd2_port: int = 4400
+    # PS-70: guide-camera plate scale. PHD2 reports guide errors in PIXELS; the
+    # telescope agent asks PHD2 (get_pixel_scale) first and falls back to these
+    # when the PHD2 profile has no focal length / pixel size.
+    phd2_pixel_scale_arcsec: float = 0.0  # explicit guide "/px override; 0 = compute
+    guide_camera_pixel_um: float = 2.0    # OGMA GP678C on the OAG (2.0 um pixels)
+    guide_focal_length_mm: float = 0.0    # 0 = derive from pixel_scale_arcsec and
+                                          # imaging_camera_pixel_um (0.24"/px at
+                                          # 3.76 um = about 3230 mm; the OAG
+                                          # shares the RC16 focal length)
+    imaging_camera_pixel_um: float = 3.76  # RC16 imaging camera (AP26MC / IMX571)
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
     library_dir: str = ""  # accepted-lights library (Syncthing this); "" = <data_dir>/Library
     desktop_library_dir: str = r"C:\Users\sleep\ninashare\Library"  # the

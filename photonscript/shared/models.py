@@ -223,13 +223,28 @@ class CapturedImage(BaseModel):
 # ---------------------------------------------------------------------------
 
 class GuidingMetrics(BaseModel):
-    """PHD2 guiding performance snapshot."""
+    """PHD2 guiding performance snapshot.
+
+    PS-70: PHD2 measures guide errors in guide-camera PIXELS. The *_px fields
+    are always those pixels; the *_arcsec fields are pixels x
+    pixel_scale_arcsec and are None when the scale is unknown (units="px").
+    scale_source says where the scale came from: "phd2" (its profile) or
+    "config" (guide_camera_pixel_um x binning / guide focal length)."""
     state: GuidingState = GuidingState.STOPPED
-    rms_ra_arcsec: float = 0.0
-    rms_dec_arcsec: float = 0.0
-    rms_total_arcsec: float = 0.0
-    peak_ra_arcsec: float = 0.0
-    peak_dec_arcsec: float = 0.0
+    rms_ra_arcsec: Optional[float] = 0.0
+    rms_dec_arcsec: Optional[float] = 0.0
+    rms_total_arcsec: Optional[float] = 0.0
+    peak_ra_arcsec: Optional[float] = 0.0
+    peak_dec_arcsec: Optional[float] = 0.0
+    rms_ra_px: float = 0.0
+    rms_dec_px: float = 0.0
+    rms_total_px: float = 0.0
+    samples: int = 0                      # guide steps in the RMS window
+    units: str = "arcsec"                 # "arcsec" or "px" (scale unknown)
+    pixel_scale_arcsec: Optional[float] = None
+    scale_source: Optional[str] = None
+    guide_binning: Optional[int] = None
+    scale_warning: Optional[str] = None
     snr: float = 0.0
     star_mass: float = 0.0
     guide_camera_exposure: float = 2.0

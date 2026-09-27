@@ -25,7 +25,7 @@ from photonscript.shared.models import (
 from photonscript.shared.messagebus import get_message_bus
 from photonscript.shared.pushover import notify
 from photonscript.telescope_agent.nina_client import NinaClient
-from photonscript.telescope_agent.phd2_client import PHD2Client
+from photonscript.telescope_agent.phd2_client import PHD2Client, guide_rms_text
 from photonscript.telescope_agent.image_validator import validate_image
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,8 @@ class TelescopeAgent:
         self.config = config
         self.rig = rig  # "rc16" (main) or "piggyback" (2nd NINA, OSC)
         self.nina = NinaClient(config.nina_base_url)
-        self.phd2 = PHD2Client(config.phd2_host, config.phd2_port)
+        self.phd2 = PHD2Client(config.phd2_host, config.phd2_port, config=config)
+        self._rms_logged_at: float | None = None  # PS-70 RMS log rate limit
         self.bus = get_message_bus()
         self.state = TelescopeState()
         self._running = False
@@ -604,22 +605,42 @@ class TelescopeAgent:
             # Reconnect after delay
             await asyncio.sleep(10)
 
-    async def _on_guiding_update(self, metrics: GuidingMetrics):
-        """Called when PHD2 reports updated guiding metrics."""
-        self.state.guiding = metrics
+    # PS-70: judge guide RMS only on a real window of guide steps (30 steps is
+    # about a minute at 2 s exposures), and log the breach at most every 5 min.
+    RMS_MIN_SAMPLES = 30
+    RMS_LOG_EVERY_S = 300
 
-        # Check for tracking issues
-        if metrics.rms_total_arcsec > self.config.quality_tracking_rms_max:
-            logger.warning(
-                "Guiding RMS %.2f\" exceeds threshold %.2f\"",
-                metrics.rms_total_arcsec,
-                self.config.quality_tracking_rms_max,
-            )
-            await self._escalate(
-                f"rms-{datetime.utcnow():%Y%m%d%H}",  # re-alert at most hourly
-                f"Guide RMS {metrics.rms_total_arcsec:.2f}\" over threshold "
-                f"{self.config.quality_tracking_rms_max:.2f}\"",
-            )
+    async def _on_guiding_update(self, metrics: GuidingMetrics):
+        """Called when PHD2 reports updated guiding metrics.
+
+        The threshold (quality_tracking_rms_max) is TOTAL RMS in ARCSEC. It is
+        only compared while PHD2 is actually guiding, over a full window, and
+        only when the guide pixel scale is known: a pixel number is never
+        compared with an arcsec threshold (the pre-PS-70 bug: "Guide RMS 98\""
+        was 98 guide pixels). Both rigs' agents watch the same PHD2, so only
+        the RC16 agent (the guide camera is on its OAG) logs and pushes."""
+        self.state.guiding = metrics
+        if getattr(self, "rig", "rc16") != "rc16":
+            return
+        if str(getattr(metrics.state, "value", metrics.state)).lower() != "guiding":
+            return
+        if metrics.samples < self.RMS_MIN_SAMPLES:
+            return
+        if metrics.units != "arcsec" or metrics.rms_total_arcsec is None:
+            return
+        limit = float(self.config.quality_tracking_rms_max)
+        if metrics.rms_total_arcsec <= limit:
+            return
+        import time as _t
+        now = _t.monotonic()
+        if self._rms_logged_at is None or now - self._rms_logged_at >= self.RMS_LOG_EVERY_S:
+            self._rms_logged_at = now
+            logger.warning("Guiding RMS %s exceeds threshold %.2f\"",
+                           guide_rms_text(metrics), limit)
+        await self._escalate(
+            f"rms-{datetime.utcnow():%Y%m%d%H}",  # re-alert at most hourly
+            f"Guide RMS {guide_rms_text(metrics)} over threshold {limit:.2f}\"",
+        )
 
     async def _file_watch_loop(self):
         """Watch the image output directory for new FITS/TIFF files.
@@ -790,10 +811,15 @@ class TelescopeAgent:
 
         # Add tracking RMS from current guiding — but an unguided rig has
         # PHD2 idling with junk RMS; only judge it when actively guiding
-        quality.tracking_rms_arcsec = self.state.guiding.rms_total_arcsec
-        _guiding_active = str(getattr(self.state.guiding, "state", "")
-                              ).lower() in ("guiding", "settling")
-        if _guiding_active and \
+        # PS-70: only in arcsec (None when the guide pixel scale is unknown,
+        # so a pixel number is never judged against the arcsec gate)
+        g = self.state.guiding
+        quality.tracking_rms_arcsec = (g.rms_total_arcsec
+                                       if getattr(g, "units", "arcsec") == "arcsec"
+                                       else None)
+        _st = getattr(g, "state", "")
+        _guiding_active = str(getattr(_st, "value", _st)).lower() in ("guiding", "settling")
+        if _guiding_active and quality.tracking_rms_arcsec is not None and \
                 quality.tracking_rms_arcsec > self.config.quality_tracking_rms_max:
             quality.passed_qa = False
             if quality.rejection_reason:

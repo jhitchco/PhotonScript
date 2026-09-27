@@ -384,10 +384,15 @@
                 const g = document.getElementById('guidingRms');
                 if (g && ts.guiding) {
                     const st = (ts.guiding.state || '').toLowerCase();
-                    const rms = ts.guiding.rms_total_arcsec || 0;
+                    // PS-70: arcsec only when the guide pixel scale is known
+                    const px = ts.guiding.units === 'px' || ts.guiding.rms_total_arcsec == null;
+                    const rms = px ? (ts.guiding.rms_total_px || 0) : (ts.guiding.rms_total_arcsec || 0);
                     if (st === 'guiding' || st === 'settling' || st === 'calibrating') {
-                        g.textContent = rms.toFixed(2) + '\u2033 ' + st.toUpperCase();
-                        g.style.color = st === 'calibrating' ? '#7dd3fc'
+                        g.textContent = rms.toFixed(2) + (px ? ' px ' : '\u2033 ') + st.toUpperCase();
+                        g.title = px ? 'Guide RMS in guide-camera pixels: pixel scale unknown'
+                            : ('Guide RMS, ' + (ts.guiding.pixel_scale_arcsec || 0).toFixed(3)
+                               + '\u2033/px from ' + (ts.guiding.scale_source || '?'));
+                        g.style.color = st === 'calibrating' ? '#7dd3fc' : px ? '#94a3b8'
                             : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
                     } else {
                         g.textContent = (st || '\u2014').toUpperCase();
@@ -487,10 +492,12 @@
             const g = document.getElementById('tsGuide');
             const st = ((ts.guiding || {}).state || '').toLowerCase();
             if (st === 'guiding' || st === 'settling' || st === 'calibrating') {
-                const rms = ts.guiding.rms_total_arcsec || 0;
+                const px = ts.guiding.units === 'px' || ts.guiding.rms_total_arcsec == null;
+                const rms = px ? (ts.guiding.rms_total_px || 0) : (ts.guiding.rms_total_arcsec || 0);
                 g.hidden = false;
-                g.textContent = rms.toFixed(2) + '\u2033 ' + st.toUpperCase();
-                g.style.color = st === 'calibrating' ? '#7dd3fc'
+                g.textContent = rms.toFixed(2) + (px ? ' px ' : '\u2033 ') + st.toUpperCase();
+                g.title = px ? 'Guide RMS in guide-camera pixels: pixel scale unknown' : 'Guide RMS (arcsec)';
+                g.style.color = st === 'calibrating' ? '#7dd3fc' : px ? '#94a3b8'
                     : rms < 0.7 ? '#4ade80' : rms < 1.2 ? '#eab308' : '#f87171';
             } else { g.hidden = true; }
             // Camera temp removed from the strip \u2014 it's shown per-rig in the

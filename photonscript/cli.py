@@ -920,7 +920,12 @@ def status(
         console.print(f"  Telescope:  [{state_color}]{state.upper()}[/]")
         console.print(f"  Target:     {telescope.get('current_target', '-')}")
         console.print(f"  Filter:     {telescope.get('current_filter', '-')}")
-        console.print(f"  Guiding:    {telescope.get('guiding', {}).get('rms_total_arcsec', 0):.2f}\"")
+        g = telescope.get('guiding', {}) or {}
+        if g.get('units', 'arcsec') == 'arcsec' and g.get('rms_total_arcsec') is not None:
+            gtxt = f"{g['rms_total_arcsec']:.2f}\""
+        else:  # PS-70: guide pixel scale unknown, say so instead of fake arcsec
+            gtxt = f"{g.get('rms_total_px', 0) or 0:.2f} guide px (scale unknown)"
+        console.print(f"  Guiding:    {gtxt}")
         console.print(f"  Images:     {telescope.get('images_captured_tonight', 0)} tonight")
         console.print(f"  Projects:   {data.get('active_projects', 0)} active / {data.get('total_projects', 0)} total")
     except Exception as e:  # noqa: BLE001
