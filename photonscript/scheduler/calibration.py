@@ -543,6 +543,26 @@ def _wait_safe_until(provider: str, minutes_offset: int = 0,
                     _time_condition(provider, minutes_offset)])
 
 
+def _osc_af_triggers(config) -> list:
+    """Refocus triggers for the OSC light loop (PS-68), same NINA trigger JSON
+    as the RC16 target containers: focuser-temperature change, HFR rise over
+    the post-AF baseline, and a periodic AF. The periodic AF stands in for
+    "after meridian flip" (NINA #2 has no mount, so it can't see the RC16's
+    flip) and repairs a bad AF, which the HFR trigger can't: it baselines on
+    the last AF (2026-09-26: after a 7-min gap in OSC subs, likely an AF, that
+    overlapped the RC16's 04:00Z target change, the OSC sat near 6 px HFR for
+    five hours)."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _autofocus_hfr_trigger, _autofocus_temp_trigger, _autofocus_time_trigger)
+    temp_c = float(getattr(config, "piggyback_af_temp_change_c", 1.5))
+    hfr_pct = float(getattr(config, "piggyback_af_hfr_increase_pct", 10.0))
+    every_min = int(getattr(config, "piggyback_af_interval_min", 60))
+    trig = [_autofocus_temp_trigger(temp_c), _autofocus_hfr_trigger(hfr_pct, 4)]
+    if every_min > 0:
+        trig.append(_autofocus_time_trigger(every_min))
+    return trig
+
+
 def _osc_light_loop(config) -> dict:
     """Dumb OSC light loop for the piggyback (§4.3 DUAL_RIG): shoot continuous
     OSC lights while the roof is safe, until nautical dawn, resilient to cloud
@@ -556,15 +576,13 @@ def _osc_light_loop(config) -> dict:
     nautical dawn even if the roof stays shut), then a safety-gated, run-once
     image pass (seed + AF, then lights until unsafe or dawn). A closed roof at
     dawn therefore falls through to the dawn-flat step instead of wedging
-    (PS-36). AF once per (re)acquire + a temperature trigger."""
+    (PS-36). Refocus triggers: _osc_af_triggers (PS-68)."""
     from photonscript.scheduler.nina_sequence_json import (
-        _seq_container, _make_typed, _autofocus, _autofocus_temp_trigger,
-        _move_focuser, _safety_condition, _time_condition, _loop_once,
-        _pushover)
+        _seq_container, _make_typed, _autofocus, _move_focuser,
+        _safety_condition, _time_condition, _loop_once, _pushover)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     gain = int(getattr(config, "piggyback_default_gain", 100))
     offset = int(getattr(config, "piggyback_default_offset", 256))
-    af_temp_c = float(getattr(config, "autofocus_temp_change_c", 2.0))
     # Seed the OSC's OWN focuser to a known-good absolute position before the
     # first AF so it starts near focus, instead of AF failing to build an HFR
     # curve from a wild start and the rig imaging soft for hours (2026-09-20).
@@ -583,11 +601,11 @@ def _osc_light_loop(config) -> dict:
         ImageType="LIGHT", ExposureCount=0, ErrorBehavior=0, Attempts=1)
     dawn = ("NauticalDawnProvider", 0)
     # Inner loop: repeat exposures WHILE safe and before dawn (checked between
-    # exposures, so the loop ends on its own at dawn); temp trigger refocuses.
+    # exposures, so the loop ends on its own at dawn); triggers refocus.
     inner = _seq_container(
         "OSC_LIGHT_LOOP", [take],
         conditions=[_safety_condition(), _time_condition(*dawn)],
-        triggers=[_autofocus_temp_trigger(af_temp_c)])
+        triggers=_osc_af_triggers(config))
     image_pass = _seq_container(
         "OSC_IMAGE_PASS",
         [_pushover("Piggyback", f"roof open: OSC lights {exp_s:g}s until "

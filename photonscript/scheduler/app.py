@@ -520,6 +520,9 @@ _CONFIG_FIELDS = [
     ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
     ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
+    ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
+    ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
+    ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
 ]
 
 _MASK = "••••••••"

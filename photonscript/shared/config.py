@@ -310,6 +310,14 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_flat_wait_min: int = 25  # PS-36: after nautical dawn + 5, wait at most
                                        # until nautical dawn + this for the roof to be
                                        # safe; later = skip the OSC flats (not wedge)
+    piggyback_af_temp_change_c: float = 1.5  # PS-68: OSC refocus on this focuser
+                                             # temperature change (C)
+    piggyback_af_hfr_increase_pct: float = 10.0  # PS-68: OSC refocus when HFR rises
+                                                 # this % over the post-AF baseline
+    piggyback_af_interval_min: int = 60  # PS-68: OSC periodic refocus (min). NINA #2
+                                         # can't see the RC16's meridian flip or a bad
+                                         # AF (HFR trigger baselines on it), so this is
+                                         # the in-sequence repair. 0 = off.
     arm_preconfig_lead_min: int = 30  # dispatch the sequence this many min before dusk
     cool_lead_minutes: int = 30  # the night sequence turns the cooler + dew heater ON
                                  # this many min before astro dark (and not before),

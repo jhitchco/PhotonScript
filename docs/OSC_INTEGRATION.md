@@ -87,7 +87,10 @@ No new code needed; the machinery matches the light epoch via `rig_config(PIGGYB
   the roof is still closed; the light loop's wait for safe is bounded the same way, so a
   pre-dawn roof close can no longer wedge the companion. The armer's dawn shutdown holds
   until nautical dawn + 5 + `dawn_flats_window_min` (40, capped at sunrise) and then also
-  stops NINA #2's sequence.
+  stops NINA #2's sequence. Refocus in the light loop (PS-68): temperature
+  (`piggyback_af_temp_change_c` 1.5 C), HFR rise (`piggyback_af_hfr_increase_pct` 10%)
+  and every `piggyback_af_interval_min` (60; covers the RC16 meridian flip NINA #2 can't
+  see, and a bad AF the HFR trigger won't catch).
 - **On demand (any closed-roof night)** — dispatch a matched OSC dark/bias set to NINA #2:
   ```
   POST /api/calibration/capture   {"rig":"piggyback"}          # 120 s x quota + 50 bias

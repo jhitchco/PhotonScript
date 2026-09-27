@@ -494,6 +494,17 @@ def _autofocus_temp_trigger(amount_c: float = 1.0) -> dict:
         Amount=amount_c, TriggerRunner=_trigger_runner([_autofocus()]))
 
 
+def _autofocus_time_trigger(minutes: float = 60.0) -> dict:
+    """Periodic refocus: AF once `minutes` have passed since the last AF.
+    Used on the Piggy-600 (PS-68), where NINA #2 cannot see the RC16's
+    meridian flip and the HFR trigger baselines on the last AF (a bad AF
+    never re-triggers it), so a timed AF is the in-sequence repair."""
+    return _make_typed(
+        "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterTimeTrigger, "
+        "NINA.Sequencer",
+        Amount=float(minutes), TriggerRunner=_trigger_runner([_autofocus()]))
+
+
 def _meridian_flip_trigger() -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.MeridianFlip.MeridianFlipTrigger, NINA.Sequencer",
