@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 
 from photonscript.scheduler import log_files as lf
@@ -116,26 +117,88 @@ def select(files: list[Path], date: str = "", file: str = "") -> tuple[list[Path
 # --------------------------------------------------------------------------
 # Guide-log parser
 # --------------------------------------------------------------------------
+#
+# Frame rows end with PHD2's FindResult code (star.h). STAR_OK and
+# STAR_SATURATED are guided frames: PHD2 guides on a saturated star (its
+# graph shows "SAT"), so a night where every frame is code 1 is still a
+# guided night (PS-88: 2026-09-26 read as 0 frames / 4075 dropped). DROP
+# rows carry PHD2's own quoted reason as a 19th field; that text is the
+# source of truth, the names below only fill in when it is missing.
+
+FIND_RESULT = {0: "STAR_OK", 1: "STAR_SATURATED", 2: "STAR_LOWSNR",
+               3: "STAR_LOWMASS", 4: "STAR_LOWHFD", 5: "STAR_HIHFD",
+               6: "STAR_TOO_NEAR_EDGE", 7: "STAR_MASSCHANGE", 8: "STAR_ERROR"}
+_CODE_TEXT = {2: "Star lost - low SNR", 3: "Star lost - low mass",
+              4: "Star lost - low HFD", 5: "Star lost - HFD too large",
+              6: "Star lost - too near edge", 7: "Star lost - mass changed",
+              8: "Star lost - error"}
+GUIDED_CODES = (0, 1)
 
 _F = r"(-?\d+(?:\.\d+)?)"
+# Settings from each section header, first match wins (so the target's
+# "Dec = 66.6 deg" is not overwritten by the "Norm rates ... Dec = 8.0"/s").
 _RX = {
+    "profile": re.compile(r"^Equipment Profile\s*=\s*(.+?)\s*$", re.IGNORECASE),
+    "dither_mode": re.compile(r"^Dither\s*=\s*([^,]+)", re.IGNORECASE),
+    "dither_scale": re.compile(r"Dither scale\s*=\s*" + _F, re.IGNORECASE),
+    "noise_reduction": re.compile(r"Image noise reduction\s*=\s*([^,]+)", re.IGNORECASE),
     "pixel_scale": re.compile(r"Pixel scale\s*=\s*" + _F + r"\s*arc-?sec/px", re.IGNORECASE),
     "binning": re.compile(r"Binning\s*=\s*(\d+)", re.IGNORECASE),
     "focal_length_mm": re.compile(r"Focal length\s*=\s*" + _F + r"\s*mm", re.IGNORECASE),
-    "profile": re.compile(r"Equipment Profile\s*=\s*(.+?)\s*$", re.IGNORECASE),
+    "search_region_px": re.compile(r"Search region\s*=\s*(\d+)\s*px", re.IGNORECASE),
+    "mass_tolerance": re.compile(r"Star mass tolerance\s*=\s*([^,]+)", re.IGNORECASE),
+    "multi_star_list": re.compile(r"list size\s*=\s*(\d+)", re.IGNORECASE),
+    "camera": re.compile(r"^Camera\s*=\s*([^,]+)", re.IGNORECASE),
+    "gain": re.compile(r"\bgain\s*=\s*" + _F, re.IGNORECASE),
+    "dark_dur_ms": re.compile(r"dark dur\s*=\s*(\d+)", re.IGNORECASE),
+    "pixel_size_um": re.compile(r"pixel size\s*=\s*" + _F + r"\s*um", re.IGNORECASE),
     "exposure_ms": re.compile(r"^Exposure\s*=\s*(\d+)\s*ms", re.IGNORECASE),
+    "mount": re.compile(r"^Mount\s*=\s*([^,]+?)\s*(?:,|$)", re.IGNORECASE),
+    "calibration_step_ms": re.compile(r"Calibration Step\s*=\s*(\d+)\s*ms", re.IGNORECASE),
+    "calibration_distance_px": re.compile(r"Calibration Distance\s*=\s*(\d+)\s*px", re.IGNORECASE),
+    "assume_orthogonal": re.compile(r"Assume orthogonal axes\s*=\s*(\w+)", re.IGNORECASE),
+    "x_angle": re.compile(r"xAngle\s*=\s*" + _F), "x_rate": re.compile(r"xRate\s*=\s*" + _F),
+    "y_angle": re.compile(r"yAngle\s*=\s*" + _F), "y_rate": re.compile(r"yRate\s*=\s*" + _F),
+    "parity": re.compile(r"parity\s*=\s*([^,\s]+)"),
+    "norm_rate_ra": re.compile(r"Norm rates RA\s*=\s*" + _F),
+    "norm_rate_dec": re.compile(r"Norm rates RA.*?Dec\s*=\s*" + _F),
+    "ortho_err_deg": re.compile(r"ortho\.?\s*err\.?\s*=\s*" + _F, re.IGNORECASE),
+    "x_algorithm": re.compile(r"^X guide algorithm\s*=\s*([^,]+)", re.IGNORECASE),
+    "y_algorithm": re.compile(r"^Y guide algorithm\s*=\s*([^,]+)", re.IGNORECASE),
+    "backlash_comp": re.compile(r"Backlash comp\s*=\s*(\w+)", re.IGNORECASE),
+    "backlash_pulse_ms": re.compile(r"Backlash comp.*?pulse\s*=\s*(\d+)", re.IGNORECASE),
+    "max_ra_ms": re.compile(r"Max RA duration\s*=\s*(\d+)", re.IGNORECASE),
+    "max_dec_ms": re.compile(r"Max DEC duration\s*=\s*(\d+)", re.IGNORECASE),
+    "dec_mode": re.compile(r"DEC guide mode\s*=\s*(\w+)", re.IGNORECASE),
+    "ra_guide_speed": re.compile(r"RA Guide Speed\s*=\s*" + _F + r"\s*a-s/s", re.IGNORECASE),
+    "dec_guide_speed": re.compile(r"Dec Guide Speed\s*=\s*" + _F + r"\s*a-s/s", re.IGNORECASE),
+    "cal_dec": re.compile(r"Cal Dec\s*=\s*([^,]+)", re.IGNORECASE),
+    "last_cal_issue": re.compile(r"Last Cal Issue\s*=\s*([^,]+)", re.IGNORECASE),
+    "cal_timestamp": re.compile(r"Last Cal Issue.*?Timestamp\s*=\s*(.+?)\s*$", re.IGNORECASE),
+    "ra_hr": re.compile(r"^RA\s*=\s*" + _F + r"\s*hr", re.IGNORECASE),
     "dec_deg": re.compile(r"(?<![A-Za-z])Dec\s*=\s*" + _F + r"\s*deg", re.IGNORECASE),
     "hour_angle_hr": re.compile(r"Hour angle\s*=\s*" + _F + r"\s*hr", re.IGNORECASE),
     "pier_side": re.compile(r"Pier side\s*=\s*([A-Za-z]+)", re.IGNORECASE),
     "alt_deg": re.compile(r"Alt\s*=\s*" + _F + r"\s*deg", re.IGNORECASE),
-    "cal_dec": re.compile(r"Cal Dec\s*=\s*([^,]+)", re.IGNORECASE),
-    "last_cal_issue": re.compile(r"Last Cal Issue\s*=\s*([^,]+)", re.IGNORECASE),
+    "az_deg": re.compile(r"Az\s*=\s*" + _F + r"\s*deg", re.IGNORECASE),
+    "hfd_px": re.compile(r"HFD\s*=\s*" + _F + r"\s*px", re.IGNORECASE),
 }
+_TEXT_KEYS = {"profile", "dither_mode", "noise_reduction", "mass_tolerance",
+              "camera", "mount", "assume_orthogonal", "parity", "x_algorithm",
+              "y_algorithm", "backlash_comp", "dec_mode", "cal_dec",
+              "last_cal_issue", "cal_timestamp", "pier_side"}
+_ALGO_PARAM = re.compile(r"([A-Za-z][A-Za-z .]*?)\s*=\s*" + _F)
 _CAL_AXIS = re.compile(r"^(West|East|North|South|Backlash)\s+calibration complete\.?"
-                       r"\s*Angle\s*=\s*" + _F + r"\s*deg,\s*Rate\s*=\s*" + _F,
-                       re.IGNORECASE)
+                       r"\s*Angle\s*=\s*" + _F + r"\s*deg,\s*Rate\s*=\s*" + _F
+                       + r"(?:.*?Parity\s*=\s*(\w+))?", re.IGNORECASE)
+_CAL_STEP = re.compile(r"^(West|East|North|South|Backlash),(\d+),", re.IGNORECASE)
 _BEGIN = re.compile(r"^(Calibration|Guiding) Begins at (.+?)\s*$", re.IGNORECASE)
 _END = re.compile(r"^(Calibration|Guiding) Ends at (.+?)\s*$", re.IGNORECASE)
+_LOG_MARK = re.compile(r"^(?:PHD2 version.*Log enabled at|Log closed at)", re.IGNORECASE)
+_DITHER = re.compile(r"DITHER by\s*" + _F + r"\s*,\s*" + _F, re.IGNORECASE)
+_LOCK = re.compile(r"new lock pos\s*=\s*" + _F + r"\s*,\s*" + _F, re.IGNORECASE)
+_PARAM = re.compile(r"Guiding parameter change,\s*(.+?)\s*=\s*(.+?)\s*$", re.IGNORECASE)
+_TS_FORMATS = ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f")
 
 
 def _num(v):
@@ -149,10 +212,22 @@ def _rms(xs):
     return (sum(x * x for x in xs) / len(xs)) ** 0.5 if xs else None
 
 
+def parse_ts(s: str | None) -> datetime | None:
+    """PHD2's 'YYYY-MM-DD HH:MM:SS' (the scope PC's LOCAL clock) -> naive."""
+    for fmt in _TS_FORMATS:
+        try:
+            return datetime.strptime((s or "").strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
 def _new(kind, start, source):
-    return {"kind": kind, "start": start, "end": None, "file": source,
-            "header": {}, "rows": [], "cols": None, "settling": False,
-            "events": []}
+    return {"kind": kind, "start": start, "start_local": parse_ts(start),
+            "end": None, "end_local": None, "closed": None, "file": source,
+            "header": {}, "frames": [], "cols": None,
+            "settling": False, "lock_epoch": 0, "events": [], "cal_steps": {},
+            "cal_lost": {}, "output": True}
 
 
 def _header(sec, line):
@@ -163,12 +238,68 @@ def _header(sec, line):
         m = rx.search(line)
         if m:
             v = m.group(1).strip()
-            h[k] = v if k in ("profile", "pier_side", "cal_dec",
-                               "last_cal_issue") else _num(v)
+            h[k] = v if k in _TEXT_KEYS else _num(v)
+    low = line.lower()
+    if low.startswith("mount") and "guide_output" not in h and (
+            "guiding enabled" in low or "guiding disabled" in low):
+        h["guide_output"] = "guiding enabled" in low
+        sec["output"] = h["guide_output"]
+    if "search region" in low and "multi_star" not in h:
+        h["multi_star"] = "multi-star" in low
+    if low.lstrip().startswith("camera") and "dark" in low and "have_dark" not in h:
+        h["have_dark"] = "have dark" in low
+        h["defect_map"] = "defect map" in low and "no defect map" not in low
+    for ax in ("x", "y"):
+        if low.startswith(f"{ax} guide algorithm") and f"{ax}_params" not in h:
+            h[f"{ax}_params"] = {m.group(1).strip().lower(): _num(m.group(2))
+                                 for m in _ALGO_PARAM.finditer(line.split(",", 1)[-1])}
+
+
+def _close(cur, how, when=None):
+    if cur is not None and cur["closed"] is None:
+        cur["closed"] = how
+        cur["end"] = when
+        cur["end_local"] = parse_ts(when) if when else None
+
+
+def _frame(cols, vals, settling, epoch, output=True):
+    """One guide-frame row as a dict (raw distances in guide-camera px)."""
+    def col(name):
+        try:
+            i = cols.index(name)
+        except ValueError:
+            return None
+        return vals[i] if i < len(vals) else None
+    mount = (col("mount") or "").strip().strip('"')
+    code = _num(col("ErrorCode"))
+    code = int(code) if code is not None else 0
+    msg = vals[len(cols)].strip().strip('"') if len(vals) > len(cols) else ""
+    ra, dec = _num(col("RARawDistance")), _num(col("DECRawDistance"))
+    drop = mount.upper() == "DROP" or ra is None or dec is None or \
+        code not in GUIDED_CODES
+    return {"n": int(_num(col("Frame")) or 0), "t": _num(col("Time")) or 0.0,
+            "mount": mount, "ra": ra, "dec": dec,
+            "ra_ms": _num(col("RADuration")) or 0.0,
+            "ra_dir": (col("RADirection") or "").strip().upper(),
+            "dec_ms": _num(col("DECDuration")) or 0.0,
+            "dec_dir": (col("DECDirection") or "").strip().upper(),
+            "mass": _num(col("StarMass")), "snr": _num(col("SNR")),
+            "code": code, "drop": drop,
+            "reason": (msg or _CODE_TEXT.get(code) or f"error code {code}")
+            if drop else None,
+            "settling": settling, "epoch": epoch, "output": output}
 
 
 def parse_guide_log(text: str, source: str = "") -> list[dict]:
-    """Raw sections (calibration / guiding) of one PHD2 guide log."""
+    """Sections (calibration / guiding) of one PHD2 guide log, in file order.
+
+    A section ends at its own 'Ends at' line, at the next 'Begins at' (PHD2
+    does not always write an end: a calibration started while guiding
+    interrupts the guiding section), or at 'Log closed'. Guiding sections
+    hold `frames` (dicts, see _frame) and `events` (dither, settle, lock,
+    param, info) tagged with the index of the next frame, so each event can
+    be placed in time. Calibration sections hold the steps per direction,
+    the axis results and star-lost counts."""
     sections, cur = [], None
     for raw in text.splitlines():
         line = raw.strip()
@@ -176,32 +307,55 @@ def parse_guide_log(text: str, source: str = "") -> list[dict]:
             continue
         m = _BEGIN.match(line)
         if m:
+            if cur is not None:
+                _close(cur, "interrupted", m.group(2))
             cur = _new(m.group(1).lower(), m.group(2), source)
             sections.append(cur)
+            continue
+        if _LOG_MARK.match(line):
+            if cur is not None:
+                w = line.split(" at ", 1)[-1] if line.lower().startswith("log closed") else None
+                _close(cur, "log closed", w)
+            cur = None
             continue
         if cur is None:
             continue
         m = _END.match(line)
         if m:
-            cur["end"] = m.group(2)
+            _close(cur, "ended" if m.group(1).lower() == cur["kind"] else
+                   "aborted", m.group(2))
             cur = None
             continue
-        if cur["kind"] == "guiding" and line.lower().startswith("frame,time,mount"):
+        low = line.lower()
+        if cur["kind"] == "guiding" and low.startswith("frame,time,"):
             cur["cols"] = [c.strip() for c in line.split(",")]
             continue
-        if cur["kind"] == "calibration" and line.lower().startswith("direction,step"):
-            continue
-        low = line.lower()
         if cur["kind"] == "calibration":
+            if low.startswith("direction,step"):
+                continue
             m = _CAL_AXIS.match(line)
             if m:
                 cur["events"].append(("axis", m.group(1).title(),
-                                      _num(m.group(2)), _num(m.group(3))))
+                                      _num(m.group(2)), _num(m.group(3)),
+                                      m.group(4)))
                 continue
-            if "calibration complete" in low:
+            m = _CAL_STEP.match(line)
+            if m:
+                parts = line.split(",")
+                cur["cal_steps"].setdefault(m.group(1).title(), []).append(
+                    (int(m.group(2)), _num(parts[-1])))
+                continue
+            if "star lost during calibration" in low:
+                why = line.split("Status=", 1)[-1].strip() if "status=" in low \
+                    else "star lost"
+                cur["cal_lost"][why] = cur["cal_lost"].get(why, 0) + 1
+                continue
+            if low.startswith("calibration complete") or \
+                    "calibration complete, mount" in low:
                 cur["events"].append(("complete", line))
                 continue
-            if "calibration failed" in low or low.startswith("error"):
+            if "calibration failed" in low or low.startswith("error") or \
+                    ("calibration" in low and "alert" in low):
                 cur["events"].append(("failed", line))
                 continue
         if cur["kind"] == "guiding" and cur["cols"] and line[:1].isdigit():
@@ -209,15 +363,39 @@ def parse_guide_log(text: str, source: str = "") -> list[dict]:
                 vals = next(csv.reader([line]))
             except (csv.Error, StopIteration):
                 continue
-            cur["rows"].append((vals, cur["settling"]))
+            cur["frames"].append(_frame(cur["cols"], vals, cur["settling"],
+                                        cur["lock_epoch"], cur["output"]))
             continue
         if low.startswith("info:"):
-            if "settling started" in low:
-                cur["settling"] = True
-            elif "settling complete" in low or "settling failed" in low:
-                cur["settling"] = False
-            if "dither" in low and "settling state" not in low:
-                cur["events"].append(("dither", line))
+            i = len(cur["frames"])
+            body = line[5:].strip()
+            if "settling state change" in low:
+                st = ("started" if "started" in low else "complete"
+                      if "complete" in low else "failed" if "failed" in low
+                      else "other")
+                cur["events"].append(("settle", i, st))
+                cur["settling"] = st == "started"
+            elif _DITHER.search(line):
+                d = _DITHER.search(line)
+                cur["lock_epoch"] += 1
+                cur["events"].append(("dither", i, _num(d.group(1)),
+                                      _num(d.group(2)), line))
+            elif "set lock position" in low or _LOCK.search(line):
+                cur["lock_epoch"] += 1
+                cur["events"].append(("lock", i, body))
+            elif _PARAM.search(line):
+                p = _PARAM.search(line)
+                cur["events"].append(("param", i, p.group(1).strip(),
+                                      p.group(2).strip()))
+                if p.group(1).strip().lower() == "mountguidingenabled":
+                    cur["output"] = p.group(2).strip().lower() == "true"
+                if p.group(1).strip().lower() == "exposure":
+                    cur["header"].setdefault("exposure_changes", []).append(
+                        _num(p.group(2).split()[0]))
+            elif body.lower().startswith("ga result"):
+                cur["events"].append(("ga", i, body.split("-", 1)[-1].strip()))
+            else:
+                cur["events"].append(("info", i, body))
             continue
         _header(cur, line)
     return sections
@@ -235,12 +413,13 @@ def _scale_for(h: dict, config) -> tuple[float | None, str | None]:
     return None, None
 
 
-def _col(cols, row, name):
-    try:
-        i = cols.index(name)
-    except ValueError:
+def ortho_error(x_angle, y_angle) -> float | None:
+    """Degrees the RA and Dec axes are away from perpendicular, the way PHD2
+    reports 'ortho.err.': 86.6 / 11.7 -> 15.1; 91.6 / 3.4 -> 1.8."""
+    if x_angle is None or y_angle is None:
         return None
-    return row[i] if i < len(row) else None
+    d = abs((x_angle - y_angle + 180.0) % 360.0 - 180.0)
+    return round(abs(90.0 - d), 1)
 
 
 def _calibration(sec) -> dict:
@@ -249,39 +428,46 @@ def _calibration(sec) -> dict:
             for e in sec["events"] if e[0] == "axis"}
     failed = [e[1] for e in sec["events"] if e[0] == "failed"]
     done = any(e[0] == "complete" for e in sec["events"])
+    steps = {d: max((s for s, _ in v), default=0)
+             for d, v in sec["cal_steps"].items()}
+    bl = sec["cal_steps"].get("Backlash") or []
+    x, y = axes.get("West", {}), axes.get("North", {})
     return {"start": sec["start"], "end": sec["end"], "file": sec["file"],
             "profile": h.get("profile"), "dec_deg": h.get("dec_deg"),
             "hour_angle_hr": h.get("hour_angle_hr"),
             "pier_side": h.get("pier_side"), "alt_deg": h.get("alt_deg"),
             "axes": axes,
             "result": ("failed" if failed else "complete" if done
-                       else "incomplete"),
-            "messages": failed[:5]}
+                       else "aborted"),
+            "messages": failed[:5],
+            "steps": steps,
+            "backlash_steps": max((s for s, _ in bl), default=None) if bl else None,
+            "backlash_px": bl[-1][1] if bl else None,
+            "star_lost": dict(sec["cal_lost"]),
+            "step_ms": h.get("calibration_step_ms"),
+            "distance_px": h.get("calibration_distance_px"),
+            "ortho_err_deg": ortho_error(x.get("angle_deg"), y.get("angle_deg")),
+            "exposure_ms": h.get("exposure_ms")}
 
 
 def _session(sec, config) -> tuple[dict, list, list, dict]:
-    h, cols = sec["header"], sec["cols"] or []
+    h = sec["header"]
     scale, src = _scale_for(h, config)
     ra, dec, ra_s, dec_s = [], [], [], []
-    dropped, reasons = 0, {}
-    for vals, settling in sec["rows"]:
-        mount = (_col(cols, vals, "mount") or "").strip().strip('"')
-        err = _num(_col(cols, vals, "ErrorCode")) or 0
-        if mount.upper() == "DROP" or err:
+    dropped, reasons, saturated = 0, {}, 0
+    for f in sec["frames"]:
+        if f["drop"]:
             dropped += 1
-            msg = (vals[-1] if len(vals) > len(cols) else "").strip().strip('"')
-            key = msg or f"error code {int(err)}"
-            reasons[key] = reasons.get(key, 0) + 1
+            reasons[f["reason"]] = reasons.get(f["reason"], 0) + 1
             continue
-        r, d = _num(_col(cols, vals, "RARawDistance")), _num(_col(cols, vals, "DECRawDistance"))
-        if r is None or d is None:
-            continue
-        ra.append(r)
-        dec.append(d)
-        if not settling:
-            ra_s.append(r)
-            dec_s.append(d)
-    star_lost = sum(n for k, n in reasons.items() if "star lost" in k.lower())
+        saturated += f["code"] == 1
+        ra.append(f["ra"])
+        dec.append(f["dec"])
+        if not f["settling"]:
+            ra_s.append(f["ra"])
+            dec_s.append(f["dec"])
+    star_lost = sum(n for k, n in reasons.items()
+                    if "star lost" in k.lower() or "no star" in k.lower())
 
     def block(a, b):
         rp, dp = _rms(a), _rms(b)
@@ -303,7 +489,8 @@ def _session(sec, config) -> tuple[dict, list, list, dict]:
          "dec_deg": h.get("dec_deg"), "hour_angle_hr": h.get("hour_angle_hr"),
          "pier_side": h.get("pier_side"), "cal_dec": h.get("cal_dec"),
          "last_cal_issue": h.get("last_cal_issue"),
-         "frames": len(ra), "dropped": dropped, "star_lost": star_lost,
+         "frames": len(ra), "saturated_frames": saturated,
+         "dropped": dropped, "star_lost": star_lost,
          "dithers": sum(1 for e in sec["events"] if e[0] == "dither"),
          **block(ra, dec),
          "settled": block(ra_s, dec_s),
@@ -340,6 +527,7 @@ def summarize_sections(sections: list[dict], config=None) -> dict:
         "totals": {
             "guiding_sessions": len(sess),
             "frames": frames,
+            "saturated_frames": sum(s["saturated_frames"] for s in sess),
             "dropped_frames": sum(s["dropped"] for s in sess),
             "star_lost": sum(s["star_lost"] for s in sess),
             "dithers": sum(s["dithers"] for s in sess),
@@ -356,18 +544,29 @@ def summarize_sections(sections: list[dict], config=None) -> dict:
     }
 
 
-def night_summary(config, date: str = "", file: str = "") -> dict:
-    """GET /api/phd2/summary: the night's guide logs, summarized."""
+def night_sections(config, date: str = "", file: str = "") -> tuple[list, dict]:
+    """(sections from every guide log of the night, info) where info holds
+    ok/note/searched/dir/files. Shared by the summary and PS-88's analysis."""
     found = find_logs(config, "guide")
     paths, note = select(found["files"], date=date, file=file)
     if not paths:
-        return {"ok": False, "note": note or "no PHD2 guide logs found",
-                "searched": found["searched"], "date": date or None}
+        return [], {"ok": False, "note": note or "no PHD2 guide logs found",
+                    "searched": found["searched"], "date": date or None}
     sections = []
     for p in paths:
         sections += parse_guide_log(
             Path(p).read_text(encoding="utf-8", errors="replace"), p.name)
+    return sections, {"ok": True, "date": date or None, "dir": found["dir"],
+                      "files": [lf.describe(p) for p in paths],
+                      "paths": [str(p) for p in paths]}
+
+
+def night_summary(config, date: str = "", file: str = "") -> dict:
+    """GET /api/phd2/summary: the night's guide logs, summarized."""
+    sections, info = night_sections(config, date=date, file=file)
+    if not info["ok"]:
+        return info
     out = summarize_sections(sections, config)
-    out.update({"ok": True, "date": date or None, "dir": found["dir"],
-                "files": [lf.describe(p) for p in paths]})
+    info.pop("paths", None)
+    out.update(info)
     return out

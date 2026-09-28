@@ -1694,6 +1694,13 @@ def api_run_detail(date: str, backfill: bool = True):
             row["done_total"] = e.acquired if e else None
     except Exception:  # noqa: BLE001
         pass
+    try:  # PS-88: the night's guiding from PHD2's guide log, top findings
+        from photonscript.scheduler.phd2_analysis import compact, night_analysis
+        d["guiding"] = compact(night_analysis(get_config(), date=date,
+                                              with_subs=False))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("guiding analysis skipped for %s: %s", date, e)
+        d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
     pending = _syncthing_pending_names()
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):

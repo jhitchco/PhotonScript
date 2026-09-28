@@ -11,6 +11,7 @@ Usage:
     photonscript autostart-check [--watch-restart] [--kill]   # PS-34a
     photonscript rename-targets [--apply] [--date D] [--stamp-headers]  # PS-78
     photonscript tracking-test-report [--date D] [--pa DEG] [--json]  # PS-84
+    photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -502,6 +503,56 @@ def qa_rescore(
         res = {**res, "diffs": res["diffs"][:20],
                "diffs_total": len(res["diffs"])}
     console.print_json(_json.dumps(res, default=str))
+
+
+def _last_night() -> str:
+    """The evening date of the night that started most recently (local)."""
+    from datetime import timedelta
+    now = datetime.now()
+    return (now - timedelta(days=1 if now.hour < 12 else 0)).strftime("%Y-%m-%d")
+
+
+@app.command("guiding-report")
+def guiding_report(
+    date: str = typer.Option("", help="Night (YYYY-MM-DD, the evening date); "
+                                      "default the night that started last"),
+    file: str = typer.Option("", help="One PHD2 guide log by name instead"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Ask a running PhotonScript (GET /api/phd2/analysis) "
+                                 "instead of reading PHD2's logs on this machine"),
+    no_subs: bool = typer.Option(False, "--no-subs", help="Skip the per-sub part"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-88: why guiding went the way it did. Reads the night's PHD2 guide
+    logs and prints the findings (with fixes), the calibrations and every
+    guiding session, plus the guiding during each graded sub. Read-only.
+
+    photonscript guiding-report --date 2026-09-26
+    photonscript guiding-report --date 2026-09-26 --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler.phd2_analysis import format_report, night_analysis
+    d = date or ("" if file else _last_night())
+    if url:
+        import urllib.parse
+        import urllib.request
+        q = urllib.parse.urlencode({"date": d, "file": file,
+                                    "subs": "false" if no_subs else "true"})
+        try:
+            with urllib.request.urlopen(url.rstrip("/") + "/api/phd2/analysis?" + q,
+                                        timeout=170) as r:
+                rep = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not read {url}: {e}[/red]")
+            raise typer.Exit(2)
+    else:
+        rep = night_analysis(_config_for_repo(Path(__file__).resolve().parents[1]),
+                             date=d, file=file, with_subs=not no_subs)
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+    raise typer.Exit(0 if rep.get("ok") else 1)
 
 
 @app.command("tracking-test-report")

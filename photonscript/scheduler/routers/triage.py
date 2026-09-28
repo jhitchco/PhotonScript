@@ -2,6 +2,7 @@
 
 /api/nina/log (rig=rc16|piggyback, date=, file=), /api/nina/logs,
 /api/phd2/log (date=, file=), /api/phd2/logs, /api/phd2/summary,
+/api/phd2/analysis (PS-88),
 /api/ascom/log, and /api/notifications (Pushover audit). Extracted from app.py; handlers lazily
 import get_config to avoid an import cycle.
 """
@@ -304,6 +305,20 @@ def api_phd2_summary(date: str = "", file: str = ""):
     YYYY-MM-DD (the evening date) or file=<name>; default = newest log."""
     from photonscript.scheduler.phd2_logs import night_summary
     return night_summary(_cfg(), date=date, file=file)
+
+
+@router.get("/api/phd2/analysis")
+def api_phd2_analysis(date: str = "", file: str = "", subs: bool = True):
+    """PS-88: why guiding went the way it did, for one night (date=YYYY-MM-DD,
+    the evening date) or one log (file=). Per guiding session: RMS in arcsec
+    (all / settled, about the lock and PHD2-style std), SNR, saturation,
+    drops by PHD2's own reason, pulse balance and max-duration share, the
+    correction commanded vs what the star did, dithers and settling, and the
+    calibration in use with its quality and pier side. `findings` ranks
+    rule-based problems with a fix each; `per_sub` gives every graded sub's
+    guiding during its own exposure (subs=false skips it). Read-only."""
+    from photonscript.scheduler.phd2_analysis import night_analysis
+    return night_analysis(_cfg(), date=date, file=file, with_subs=subs)
 
 
 def _latest_ascom_log(base: str, name: str = ""):

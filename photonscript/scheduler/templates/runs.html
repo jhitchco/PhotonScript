@@ -48,6 +48,7 @@
         .rej { color:#f87171; }
         .ok { color:#4ade80; }
         .warn { color:#eab308; }
+        .bad { color:#ef4444; }
         #lightbox[hidden] { display:none; }
         #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
                     display:flex; flex-direction:column; align-items:center;
@@ -109,6 +110,8 @@
             <div id="calibration" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
             <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Guiding <span class="bd">(PHD2 guide log, PS-88)</span></h2>
+            <div id="guiding" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Subs
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
@@ -334,12 +337,29 @@
                 : 'no calibration frames captured this night') +
             (cal.advice.length ? '<br>' + cal.advice.map(a =>
                 '<span class="warn">⚠ ' + a + '</span>').join('<br>') : '');
+        function renderGuiding(g, date) {  // PS-88
+            const box = document.getElementById('guiding');
+            const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (!g || !g.ok) { box.textContent = (g && g.note) || 'no PHD2 guide log for this night'; return; }
+            const sev = {critical: 'bad', warning: 'warn', info: ''};
+            box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
+                g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
+                g.dropped_pct + '% frames dropped · dithers back on lock ' + g.dithers_recovered +
+                '/' + g.dithers + ' · <a href="/api/phd2/analysis?date=' + encodeURIComponent(date) +
+                '" target="_blank">full analysis</a>' +
+                (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
+                    esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
+                    esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
+                    '</span>').join('');
+        }
         document.getElementById('phases').innerHTML = Object.keys(d.phases).length
             ? Object.entries(d.phases).map(([k, v]) =>
                 '<b>' + k + '</b>: ' + v.events + ' log events (' +
                 (v.first || '?').slice(11, 16) + ' → ' + (v.last || '?').slice(11, 16) + ')'
               ).join(' · ')
             : 'no phase data found in NINA log';
+        renderGuiding(d.guiding, date);
         renderSubs();
         renderReviewBar(d);
         maybeWarmThumbs(date);
