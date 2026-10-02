@@ -362,7 +362,12 @@
                 'none tonight') + (cal.stale ? '; on record is ' + esc(cal.age_days) + ' d old' : '') +
                 (cal.poor ? '; on record FAILED' : '') +
                 ' <a href="/api/phd2/calibration?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
-            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine; return; }
+            const au = g && g.audit;  // PS-89 settings audit
+            const auLine = au && au.counts ? '<br><span class="' + (au.counts.fail ? 'bad' : (au.counts.warn ? 'warn' : '')) +
+                '">PHD2 settings at ' + esc(au.reason) + ': ' + esc(au.counts.fail) + ' fail, ' + esc(au.counts.warn) + ' warn' +
+                ((au.fails || []).length ? ' (' + au.fails.map(esc).join('; ') + ')' : '') +
+                ' <a href="/api/phd2/audit" target="_blank">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine; return; }
             const sev = {critical: 'bad', warning: 'warn', info: ''};
             box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
                 g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
@@ -372,7 +377,7 @@
                 (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
                     esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
-                    '</span>').join('') + guardLine + stLine + calLine;
+                    '</span>').join('') + guardLine + stLine + calLine + auLine;
         }
         document.getElementById('phases').innerHTML = Object.keys(d.phases).length
             ? Object.entries(d.phases).map(([k, v]) =>

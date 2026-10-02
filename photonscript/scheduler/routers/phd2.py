@@ -8,6 +8,8 @@ POST /api/phd2/selftest/run?context=&slot=   run the self-test now
 GET  /api/phd2/calibration?date=   calibration record, history, flip, plan (PS-93)
 POST /api/phd2/calibrate?mode=next|now    ask for a calibration (PS-93)
 GET  /api/phd2/calibration-sequence       the standalone calibration sequence
+GET  /api/phd2/audit?refresh=&raw=        settings audit vs the desired state (PS-89)
+POST /api/phd2/audit/apply {ids, dry_run}  apply audit rows (API / gated profile)
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
 stay in routers/triage.py. Handlers lazily import get_config to avoid an
@@ -268,3 +270,45 @@ async def api_phd2_calibrate(request: Request, mode: str = ""):
     return {"ok": ok, "mode": "now", "field": field,
             "note": "calibration sequence dispatched to NINA" if ok else
                     f"dispatch failed: {armer.detail}"}
+
+
+# ---- PS-89 settings audit ---------------------------------------------------
+
+@router.get("/api/phd2/audit")
+async def api_phd2_audit(refresh: bool = False, raw: bool = False):
+    """The last PHD2 settings audit (from the arm, a PHD2 configuration
+    change or a refresh); refresh=1 runs a new one now. raw=1 (with refresh)
+    adds every observed value, including every registry value read under
+    the PHD2 profile, to fill in phd2_profile_store.KEYS."""
+    from photonscript.scheduler import phd2_audit as pa
+    from photonscript.telescope_agent import phd2_ops
+    cfg = _cfg()
+    out = None if (refresh or raw) else pa.load_latest(cfg)
+    if out is None:
+        out = await pa.run_audit(cfg, reason="manual", raw=raw)
+        out["cached"] = False
+    else:
+        out["cached"] = True
+    out["phd2_ops"] = phd2_ops.status()
+    return out
+
+
+@router.post("/api/phd2/audit/apply")
+async def api_phd2_audit_apply(request: Request):
+    """Apply audit rows: {"ids": [...], "dry_run": true|false} (dry_run
+    defaults to true). API rows (exposure, RA min-move, Dec guide mode) only
+    while PHD2 is Stopped or Looping and nothing else holds PHD2; profile
+    rows only with phd2_audit_autofix, the armer idle, PHD2 closed, verified
+    registry names and a backup; every other row is report only."""
+    from photonscript.scheduler import phd2_audit as pa
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    ids = [str(x) for x in (body or {}).get("ids") or []]
+    if not ids:
+        return JSONResponse(status_code=400, content={
+            "ok": False, "note": "ids: the audit rows to apply"})
+    dry = (body or {}).get("dry_run", True)
+    dry = dry if isinstance(dry, bool) else str(dry).lower() not in ("0", "false", "no")
+    return await pa.apply(_cfg(), ids, dry_run=dry, armer_state=_armer_state())

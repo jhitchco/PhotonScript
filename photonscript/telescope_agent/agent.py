@@ -100,6 +100,7 @@ class TelescopeAgent:
         self._pier_last: str | None = None   # PS-92 passive post-flip check
         self._flip_at: float | None = None
         self.calmgr = None                   # PS-93 calibration manager (RC16)
+        self.reauditor = None                # PS-89 settings re-audit (RC16)
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -114,6 +115,7 @@ class TelescopeAgent:
         if guard:
             self._guard_setup()
         self._calmgr_setup()
+        self._audit_setup()
 
         # Launch monitoring tasks
         tasks = [
@@ -751,6 +753,15 @@ class TelescopeAgent:
         from photonscript.telescope_agent.phd2_calmanager import CalManager
         self.calmgr = CalManager(self.config, self.phd2, self.nina)
         self.calmgr.attach()
+
+    def _audit_setup(self) -> None:
+        """PS-89: re-audit PHD2's settings 60 s after a ConfigurationChange
+        (RC16 agent only); pushes only a new FAIL while a night is armed."""
+        if getattr(self, "rig", "rc16") != "rc16":
+            return
+        from photonscript.scheduler.phd2_audit import ReAuditor
+        self.reauditor = ReAuditor(self.config, armed_fn=self._armer_active)
+        self.phd2.on_event(self.reauditor.on_event)
 
     def _load_hotpix(self):
         """The hot-pixel map, re-read when its file changes."""

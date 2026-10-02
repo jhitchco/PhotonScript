@@ -367,7 +367,7 @@ def sequence(
     output: str = typer.Option("", help="Output file path"),
     month: int = typer.Option(0, help="Month (1-12), 0 = current"),
     fmt: str = typer.Option("json", "--format", help="json (Advanced Sequencer) or xml"),
-    guided: bool = typer.Option(False, help="Guided run (default: unguided, CEM70G encoders)"),
+    guided: bool = typer.Option(False, help="Guided run (default: unguided, Paramount MX encoders)"),
     now: bool = typer.Option(False, "--now",
                              help="No dusk gate — starts immediately (daytime testing)"),
 ):

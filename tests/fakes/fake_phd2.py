@@ -1,5 +1,6 @@
 """A fake PHD2 event server for offline tests (PS-91 / PS-92, reused by the
-calibration manager, settings audit and auto-tune tickets).
+calibration manager, settings audit (PS-89: exposure durations, algorithm
+params, Dec guide mode, search region, profiles) and auto-tune tickets).
 
 It speaks PHD2's real wire protocol (JSON-RPC requests and replies plus the
 event stream on one TCP socket, CRLF-terminated JSON lines), so the real
@@ -86,7 +87,10 @@ class FakePHD2:
                  app_state: str = "Stopped", calibration: dict | None = None,
                  refuse: set | None = None, camera: str = "GP678C",
                  gain: int = 100, cal_outcomes: list | None = None,
-                 profile: str = "Primary RC Profile (Guider)"):
+                 profile: str = "Primary RC Profile (Guider)",
+                 algo: dict | None = None, search_region: int = 15,
+                 dec_guide_mode: str = "Auto",
+                 durations: list | None = None):
         self.tmpdir = Path(tmpdir)
         self.field = field or SimField.default()
         self.ra_px_s, self.dec_px_s = ra_px_s, dec_px_s
@@ -110,6 +114,19 @@ class FakePHD2:
         # the current calibration.
         self.cal_outcomes = list(cal_outcomes or [])
         self.profile = profile
+        # PS-89 settings audit: the API-readable / settable guiding settings.
+        # guide_exposure_ms is what get/set_exposure report (exposure_s stays
+        # the simulated frame cadence).
+        self.algo = algo or {
+            "ra": {"algorithmName": "Lowpass2", "Aggressiveness": 55.0,
+                   "MinMove": 0.76},
+            "dec": {"algorithmName": "Lowpass2", "Aggressiveness": 50.0,
+                    "MinMove": 0.76}}
+        self.search_region = search_region
+        self.dec_guide_mode = dec_guide_mode
+        self.durations = list(durations or [500, 1000, 1500, 2000, 2500, 3000,
+                                            3500, 4000, 4500, 5000, 6000])
+        self.guide_exposure_ms: int | None = None
         self.calibrations = 0
         self.lock: tuple | None = None
         self.settling = False
@@ -179,6 +196,10 @@ class FakePHD2:
             writer.close()   # server.wait_closed() waits for every connection
         except Exception:  # noqa: BLE001
             pass
+
+    @staticmethod
+    def _axis(a) -> str:
+        return "ra" if str(a).lower() in ("ra", "x") else "dec"
 
     def methods(self) -> list[str]:
         return [r["method"] for r in self.requests]
@@ -274,7 +295,43 @@ class FakePHD2:
         if method == "get_camera_binning":
             return self.binning
         if method == "get_exposure":
+            if self.guide_exposure_ms is not None:
+                return self.guide_exposure_ms
             return int(self.exposure_s * 1000)
+        if method == "set_exposure":
+            ms = int(params[0])
+            if ms not in self.durations:
+                raise RuntimeError(f"invalid exposure {ms}")
+            self.guide_exposure_ms = ms
+            return 0
+        if method == "get_exposure_durations":
+            return list(self.durations)
+        if method == "get_search_region":
+            return self.search_region
+        if method == "get_algo_param_names":
+            return list(self.algo[self._axis(params[0])])
+        if method == "get_algo_param":
+            ax = self.algo[self._axis(params[0])]
+            if params[1] not in ax:
+                raise RuntimeError(f"could not get param {params[1]}")
+            return ax[params[1]]
+        if method == "set_algo_param":
+            ax = self.algo[self._axis(params[0])]
+            if params[1] not in ax or params[1] == "algorithmName":
+                raise RuntimeError(f"could not set param {params[1]}")
+            ax[params[1]] = float(params[2])
+            return 0
+        if method == "get_dec_guide_mode":
+            return self.dec_guide_mode
+        if method == "set_dec_guide_mode":
+            if params[0] not in ("Off", "Auto", "North", "South"):
+                raise RuntimeError("invalid dec guide mode")
+            self.dec_guide_mode = params[0]
+            return 0
+        if method == "get_profiles":
+            return [{"id": 1, "name": self.profile, "selected": True}]
+        if method == "get_variable_delay_settings":
+            return {"Enabled": False, "ShortDelaySeconds": 0, "LongDelaySeconds": 0}
         if method == "get_connected":
             return True
         if method == "get_current_equipment":

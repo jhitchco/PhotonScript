@@ -24,6 +24,26 @@ def _check(name: str, status: str, detail: str) -> dict:
     return {"name": name, "status": status, "detail": detail}
 
 
+def _audit_check(config) -> dict:
+    """PS-89: the last PHD2 settings audit (at arm, a PHD2 change or a
+    refresh), read from disk; a WARN, never a no-go (PHD2 is optional)."""
+    try:
+        from photonscript.scheduler.phd2_audit import fails, load_latest
+        a = load_latest(config)
+    except Exception as e:  # noqa: BLE001
+        return _check("PHD2 settings audit", "warn", f"unreadable: {e}")
+    if not a:
+        return _check("PHD2 settings audit", "warn",
+                      "no audit yet: GET /api/phd2/audit?refresh=1 or arm guided")
+    c = a.get("counts") or {}
+    bad = "; ".join(f"{r['label']} {r['current']}" for r in fails(a)[:3])
+    detail = (f"PHD2 settings at {a.get('reason')} ({a.get('t_utc')}): "
+              f"{c.get('fail', 0)} fail, {c.get('warn', 0)} warn"
+              + (f" ({bad})" if bad else ""))
+    return _check("PHD2 settings audit",
+                  "pass" if not c.get("fail") and not c.get("warn") else "warn", detail)
+
+
 async def _nina_get(config, endpoint: str, timeout=5) -> dict:
     url = config.nina_base_url.rstrip("/") + endpoint
     async with httpx.AsyncClient(timeout=timeout) as client:
@@ -184,6 +204,7 @@ async def run_preflight(config) -> dict:
     except OSError:
         checks.append(_check("PHD2 event server", "warn",
                              "Not reachable — fine for unguided runs"))
+    checks.append(_audit_check(config))   # PS-89
 
     # 5. Sequence generation + lint round-trip ------------------------------
     try:

@@ -111,6 +111,7 @@ class Armer:
         self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
         self._recal_night: str | None = None  # PS-93: mid-night recalibration done
         self._cal_force: str | None = None     # PS-93: reason forcing the slot
+        self._audit_task: asyncio.Task | None = None  # PS-89: audit at arm
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -258,8 +259,10 @@ class Armer:
         return bool(self.config.guided_default)
 
     async def arm(self, guiding: str | None = None) -> dict:
-        """guiding: 'guided' (PHD2) or 'encoders' (unguided, CEM70G encoders).
-        None => use config.guided_default."""
+        """guiding: 'guided' (PHD2) or 'encoders' (unguided, on the Paramount
+        MX's encoders). None => use config.guided_default. A guided arm also
+        runs the PS-89 PHD2 settings audit in the background (never blocks
+        the arm; one push only on a FAIL)."""
         from photonscript.scheduler.night_plan import build_night_plan
         self.guiding_override = guiding
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
@@ -286,6 +289,10 @@ class Armer:
                 conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
+        # PS-89: audit PHD2's settings against the desired state now that the
+        # equipment is connected. In the background: it never blocks the arm.
+        if self._use_guiding() and getattr(self.config, "phd2_audit_enabled", True):
+            self._audit_task = asyncio.create_task(self._phd2_audit_at_arm())
         # Pre-imaging state: force the cooler + dew heater OFF now, so they stay
         # off from arm until the sequence turns them on cool_lead min before dark.
         # ONLY here in the fresh-arm path — never in connect_all/restore, which
@@ -301,6 +308,15 @@ class Armer:
                      f"{self.plan['dark_hours']}h dark window.{conn}",
                      title="PhotonScript armed")
         return self.status()
+
+    async def _phd2_audit_at_arm(self) -> None:
+        """PS-89 settings audit at arm. Never raises."""
+        try:
+            from photonscript.scheduler import phd2_audit
+            a = await asyncio.wait_for(phd2_audit.at_arm(self.config), 180)
+            logger.info("PHD2 settings audit at arm: %s", a.get("counts"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PHD2 settings audit at arm failed: %s", e)
 
     async def disarm(self) -> dict:
         prev = self.state

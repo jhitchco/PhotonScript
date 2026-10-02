@@ -362,6 +362,22 @@ class PhotonScriptConfig(BaseSettings):
                                  # "alert" (one push per night with the Reverse
                                  # Dec fix) or "off" (record only). In-place
                                  # recalibration is not built (PS-93 approval)
+    # PS-89 PHD2 settings audit (scheduler.phd2_audit): compare PHD2, its
+    # stored profile, the guide log, NINA and the dark library with
+    # config/phd2/desired_oag_rc16.toml at every guided arm.
+    phd2_audit_enabled: bool = True   # audit at a guided arm (one push only
+                                 # on a FAIL) and on PHD2 ConfigurationChange
+    phd2_audit_autofix: bool = False  # allow registry profile writes (PHD2
+                                 # closed, armer idle, backup first). Off until
+                                 # one daytime round trip has been checked
+    phd2_desired_file: str = ""  # desired-state TOML; "" = the repo's
+                                 # config/phd2/desired_oag_rc16.toml
+    phd2_dark_max_age_days: float = 30.0  # PHD2 dark library older = WARN
+    phd2_darks_dir: str = ""     # PHD2 dark library folder; "" =
+                                 # %LOCALAPPDATA%\phd2\darks_defects
+    pe_owner: str = "protrack"   # who corrects periodic error: protrack
+                                 # (TheSky; PHD2 PPEC must be off) | phd2_ppec
+                                 # | none
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

@@ -10,6 +10,8 @@ wraps the PHD2 RPCs PhotonScript commands (loop, find_star, save_image,
 guide_pulse, ...) through call(), so an error reply raises PHD2RPCError
 instead of vanishing. Only one PhotonScript actor should command PHD2 at a
 time: hold telescope_agent.phd2_ops.hold(owner) around a command sequence.
+PS-89 adds the settings-audit reads (exposure durations, algorithm params,
+Dec guide mode, search region, profiles) and the three setters it applies.
 """
 
 from __future__ import annotations
@@ -423,6 +425,54 @@ class PHD2Client:
 
     async def get_current_equipment(self) -> dict:
         return await self.call("get_current_equipment") or {}
+
+    # -- PS-89 settings audit: reads, and the few API-settable keys --------
+
+    async def set_exposure(self, ms: int):
+        """Guide exposure in ms; PHD2 only offers the values that
+        get_exposure_durations() lists, so pick one of those."""
+        return await self.call("set_exposure", [int(ms)])
+
+    async def get_exposure_durations(self) -> list[int]:
+        r = await self.call("get_exposure_durations")
+        return [int(x) for x in (r or [])]
+
+    async def get_pixel_scale(self) -> float | None:
+        """PHD2's arcsec/px, None when the profile cannot know it (PHD2
+        answers null or 1.0 then)."""
+        r = await self.call("get_pixel_scale")
+        v = _fnum(r, 0.0)
+        return v if v > 0 and abs(v - _UNKNOWN_SCALE) > 1e-9 else None
+
+    async def get_search_region(self) -> int | None:
+        r = await self.call("get_search_region")
+        return int(r) if r is not None else None
+
+    async def get_algo_param_names(self, axis: str) -> list[str]:
+        """Parameter names of the axis' guide algorithm (axis ra|dec|x|y);
+        PHD2 lists "algorithmName" first."""
+        return list(await self.call("get_algo_param_names", [axis]) or [])
+
+    async def get_algo_param(self, axis: str, name: str):
+        return await self.call("get_algo_param", [axis, name])
+
+    async def set_algo_param(self, axis: str, name: str, value: float):
+        return await self.call("set_algo_param", [axis, name, float(value)])
+
+    async def get_dec_guide_mode(self) -> str | None:
+        """Off, Auto, North or South."""
+        r = await self.call("get_dec_guide_mode")
+        return str(r) if r is not None else None
+
+    async def set_dec_guide_mode(self, mode: str):
+        return await self.call("set_dec_guide_mode", [str(mode)])
+
+    async def get_profiles(self) -> list[dict]:
+        """Every PHD2 equipment profile [{id, name, selected}]."""
+        return list(await self.call("get_profiles") or [])
+
+    async def get_variable_delay_settings(self) -> dict:
+        return await self.call("get_variable_delay_settings") or {}
 
     async def guide_pulse(self, amount_ms: int, direction: str,
                           which: str = "Mount"):

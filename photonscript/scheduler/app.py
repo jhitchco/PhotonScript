@@ -572,6 +572,12 @@ _CONFIG_FIELDS = [
     ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
     ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once) | unguided (keep until PS-85)", "PHD2", "str", False, True),
     ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
+    ("phd2_audit_enabled", "PS_PHD2_AUDIT_ENABLED", "PHD2 settings audit at each guided arm and on a PHD2 configuration change (PS-89; one push only on a FAIL)", "PHD2", "bool", False, False),
+    ("phd2_audit_autofix", "PS_PHD2_AUDIT_AUTOFIX", "Allow PHD2 profile (registry) writes from the audit: PHD2 closed, armer idle, backup first (off until a daytime round trip is checked)", "PHD2", "bool", False, False),
+    ("phd2_desired_file", "PS_PHD2_DESIRED_FILE", "PHD2 desired-state file; empty = config/phd2/desired_oag_rc16.toml", "PHD2", "str", False, False),
+    ("phd2_dark_max_age_days", "PS_PHD2_DARK_MAX_AGE_DAYS", "PHD2 dark library older than N days = WARN", "PHD2", "float", False, False),
+    ("phd2_darks_dir", "PS_PHD2_DARKS_DIR", "PHD2 dark library folder; empty = %LOCALAPPDATA%\\phd2\\darks_defects", "PHD2", "str", False, False),
+    ("pe_owner", "PS_PE_OWNER", "Who corrects periodic error: protrack (PHD2 PPEC must be off) | phd2_ppec | none", "PHD2", "str", False, False),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -1731,6 +1737,8 @@ def api_run_detail(date: str, backfill: bool = True):
         d["guiding"]["selftest"] = selftest_summary(get_config(), date)  # PS-92
         from photonscript.scheduler.routers.phd2 import calibration_summary
         d["guiding"]["calibration"] = calibration_summary(get_config(), date)  # PS-93
+        from photonscript.scheduler.phd2_audit import summary as audit_summary
+        d["guiding"]["audit"] = audit_summary(get_config(), date)  # PS-89
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guard summary skipped for %s: %s", date, e)
     for s in d["subs"]:

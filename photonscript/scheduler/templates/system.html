@@ -251,6 +251,67 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="auditPanel">
+            <h2>PHD2 Settings Audit (PS-89)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">PHD2, its stored profile, the newest guide log, NINA's guider settings, the mount driver, TheSky and the PHD2 dark library against config/phd2/desired_oag_rc16.toml. Runs at every guided arm (one push only on a FAIL) and 60 s after a PHD2 configuration change. Hover a row for why it matters. Apply sets API rows (exposure, RA min-move, Dec guide mode) only while PHD2 is Stopped or Looping; profile rows need PS_PHD2_AUDIT_AUTOFIX, PHD2 closed and the armer idle; mount driver, TheSky and NINA rows are report only. Unknown = no source could read it (registry names are not verified yet).</p>
+            <div class="bd" id="auditInfo">loading...</div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
+                <button class="btn btn-secondary" id="auditRefresh">Run audit now</button>
+                <span class="bd" id="auditStatus"></span>
+            </div>
+            <div id="auditRows" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+            var chip = {fail: 'badge-fail', warn: 'badge-warn', pass: 'badge-pass'};
+            function render(a) {
+                var c = a.counts || {};
+                document.getElementById('auditInfo').innerHTML = esc(a.title) + ' | ' + esc(a.reason) + ' at ' + esc(a.t_utc) +
+                    ' | <b>' + esc(c.fail) + ' fail</b>, ' + esc(c.warn) + ' warn, ' + esc(c.pass) + ' pass, ' + esc(c.unknown) + ' unknown' +
+                    ' | PHD2 ' + esc(a.phd2_state || 'not reachable') + ', pe_owner ' + esc(a.pe_owner) + ', profile writes ' + (a.autofix ? 'ON' : 'off') +
+                    (a.desired_error ? '<br><span class="badge badge-fail">desired file: ' + esc(a.desired_error) + '</span>' : '');
+                var groups = {};
+                (a.rows || []).forEach(function (r) { (groups[r.group] = groups[r.group] || []).push(r); });
+                var html = '';
+                Object.keys(groups).forEach(function (g) {
+                    html += '<h3 style="margin:.6rem 0 .3rem;color:#7dd3fc;font-size:.85rem;">' + esc(g) + '</h3><table class="tbl" style="font-size:.8rem;width:100%;">';
+                    groups[g].forEach(function (r) {
+                        var btn = r.applicable ? '<button class="btn btn-secondary" data-apply="' + esc(r.id) + '" title="apply ' + esc(r.target) + ' (' + esc(r.apply) + ')">Apply</button>' : '';
+                        html += '<tr title="' + esc(r.why) + '"><td><span class="badge ' + (chip[r.status] || '') + '">' + esc(r.status) + '</span></td><td>' + esc(r.label) +
+                            '</td><td>' + esc(r.current) + ' <span style="opacity:.6">(' + esc(r.source) + ')</span></td><td>want ' + esc(r.desired) +
+                            '</td><td style="opacity:.8">' + esc(r.note || (r.status === 'pass' ? '' : r.fix)) + '</td><td>' + btn + '</td></tr>';
+                    });
+                    html += '</table>';
+                });
+                document.getElementById('auditRows').innerHTML = html;
+                Array.prototype.forEach.call(document.querySelectorAll('#auditRows [data-apply]'), function (b) {
+                    b.onclick = function () { apply(b.getAttribute('data-apply')); };
+                });
+            }
+            async function load(refresh) {
+                var s = document.getElementById('auditStatus');
+                if (refresh) s.textContent = ' auditing...';
+                try {
+                    render(await (await fetch('/api/phd2/audit' + (refresh ? '?refresh=1' : ''))).json());
+                    if (refresh) s.textContent = ' done';
+                } catch (e) { document.getElementById('auditInfo').textContent = 'error: ' + e; }
+            }
+            async function apply(id) {
+                var s = document.getElementById('auditStatus');
+                if (!confirm('Apply the desired value for ' + id + ' to PHD2 now?')) return;
+                try {
+                    var r = await (await fetch('/api/phd2/audit/apply', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ids: [id], dry_run: false})})).json();
+                    s.textContent = ' ' + (r.results || []).map(function (x) { return x.id + ': ' + (x.ok ? 'ok' : 'not done') + (x.note ? ' (' + x.note + ')' : ''); }).join('; ');
+                } catch (e) { s.textContent = ' error: ' + e; }
+                load(true);
+            }
+            document.getElementById('auditRefresh').onclick = function () { load(true); };
+            load(false);
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Preflight Check</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system
