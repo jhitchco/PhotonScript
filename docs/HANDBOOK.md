@@ -376,6 +376,16 @@ or "ERROR: ...". Masters in `out\master\`.
   Record: `<data_dir>/phd2/calibration.json` (+ `calibrations.jsonl`),
   `GET /api/phd2/calibration`, the System page panel and the runs page line.
   On an empty store the newest guide-log calibration is seeded and graded.
+- PHD2 SETTINGS AUDIT (PS-89): `config/phd2/desired_oag_rc16.toml` holds the
+  desired PHD2 / NINA / mount-driver state with a "why" per setting. Every
+  guided arm audits it in the background (one push only on a FAIL) and the
+  RC16 agent re-audits after a PHD2 configuration change. System page panel
+  "PHD2 Settings Audit", `GET /api/phd2/audit`, runs page line, preflight
+  line. Apply: API keys (exposure, RA min-move, Dec guide mode) while PHD2 is
+  Stopped or Looping; profile (registry) writes only behind
+  `phd2_audit_autofix` (off) with PHD2 closed and a backup; ASCOM, TheSky and
+  NINA rows report only. Registry names are unverified until a `reg export`
+  from the scope PC (MAINTENANCE.md). `pe_owner=protrack`: PHD2 PPEC off.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard

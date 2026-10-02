@@ -216,6 +216,39 @@ left); with nothing running it sends a standalone calibration sequence to NINA
 (roof open and dark only). `GET /api/phd2/calibration-sequence` returns that
 sequence for loading by hand.
 
+**PHD2 settings audit (PS-89).** `config/phd2/desired_oag_rc16.toml` is the
+desired PHD2 state for the RC16 OAG, one "why" per row. Every guided arm
+audits it in the background after connecting the equipment (never blocks the
+arm; one Pushover only when at least one row FAILs, once per night), and the
+RC16 agent re-audits 60 s after a PHD2 configuration change (a push only for
+a FAIL not pushed tonight, and only while a night is armed). Sources: PHD2's
+JSON-RPC API (a short second connection), PHD2's stored profile in the
+registry, the newest guide-log header (8-bit inferred from the PS-88
+saturated-star rule), the newest Guiding Assistant, the PS-93 calibration
+record, NINA's guider settings and mount guide rate, the TheSky TCP port and
+the PHD2 dark library (`%LOCALAPPDATA%\phd2\darks_defects`). Each row: pass /
+warn / fail / unknown / info, current vs desired, why, fix.
+```
+GET  /api/phd2/audit                  the last audit (arm, PHD2 change or refresh)
+GET  /api/phd2/audit?refresh=1        audit now
+GET  /api/phd2/audit?refresh=1&raw=1  + every observed value and every registry value read
+POST /api/phd2/audit/apply {"ids": ["exposure_ms"], "dry_run": false}
+```
+Apply (also the System page buttons): API rows (guide exposure, picked from
+PHD2's own exposure list; RA min-move from the Guiding Assistant; Dec guide
+mode) only while PHD2 is Stopped or Looping and no other PhotonScript actor
+holds PHD2. Profile rows (bit depth, Max ADU, search region, mass tolerance,
+min HFD, ...) only with `phd2_audit_autofix=true`, the armer DISARMED or
+COMPLETE, phd2.exe closed, a verified registry name and a fresh backup in
+`<data_dir>\phd2_profile_backups\<ts>_<id>.reg` (restore: close PHD2, `reg
+import <file>`). Mount driver, TheSky and NINA rows are report only. Every
+change is logged to `<data_dir>\phd2_audit\changes.jsonl`. The registry value
+names in `scheduler/phd2_profile_store.KEYS` are candidates until checked
+against a `reg export` of the scope PC; until then those rows read "unknown"
+(with the candidate value) and writes to them are refused. `pe_owner`
+(`protrack`) says who corrects periodic error: with ProTrack, PHD2's RA
+algorithm must not be Predictive PEC.
+
 ## Calibration — what an arm captures automatically
 
 Matching is by **camera (INSTRUME) + full epoch** (`EXPTIME|GAIN|OFFSET|SET-TEMP`
