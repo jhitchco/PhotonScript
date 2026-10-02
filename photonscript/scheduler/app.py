@@ -1716,6 +1716,7 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guiding analysis skipped for %s: %s", date, e)
         d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
+    pending = _syncthing_pending_names()
     try:  # PS-91 / PS-92: the live guard's episodes and the pulse self-test
         from photonscript.scheduler.routers.phd2 import guard_summary
         g = guard_summary(get_config(), date)
@@ -1725,7 +1726,6 @@ def api_run_detail(date: str, backfill: bool = True):
         d["guiding"]["selftest"] = selftest_summary(get_config(), date)  # PS-92
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guard summary skipped for %s: %s", date, e)
-    pending = _syncthing_pending_names()
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
             base = Path(s.get("abs_path") or s.get("file") or "").name
