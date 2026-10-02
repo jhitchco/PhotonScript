@@ -18,15 +18,12 @@ fail / skip) and a plain reason. Verdict: any fail -> "rejected" (every
 failing check is a driver); else any warn -> "needs-look"; else "approved"
 (all green, auto-approved unless qa_auto_approve is off).
 
-PS-91 adds the metrics key guide_lock ("star" | "non-star"): was PHD2 guiding
-on a real star during the sub (see the guide_lock check and the end of this
-module).
-
 ``metrics`` keys (all optional; a missing input makes its check "skip"):
   hfr (native px), fwhm_arcsec (only when the grader truly measured FWHM),
   ecc, stars, background, exp_s, ccd_temp, set_temp (header SET-TEMP),
-  guide_rms, guide_state, doubled_frac, exposure (ok|under|clipped|sat-stars),
-  clipped_pct, sat_stars_pct, swamp, pointing_offset_arcmin.
+  guide_rms, guide_state, guide_lock (star|non-star, PS-91), doubled_frac,
+  exposure (ok|under|clipped|sat-stars), clipped_pct, sat_stars_pct, swamp,
+  pointing_offset_arcmin.
 """
 
 from __future__ import annotations
@@ -612,8 +609,8 @@ def metrics_from_record(rec: dict) -> dict:
     set) carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped."""
     m = {k: rec.get(k) for k in (
         "hfr", "ecc", "stars", "background", "exp_s", "ccd_temp", "set_temp",
-        "guide_rms", "guide_state", "doubled_frac", "exposure", "clipped_pct",
-        "sat_stars_pct", "swamp", "pointing_offset_arcmin")}
+        "guide_rms", "guide_state", "guide_lock", "doubled_frac", "exposure",
+        "clipped_pct", "sat_stars_pct", "swamp", "pointing_offset_arcmin")}
     m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
     return m
 
@@ -621,30 +618,7 @@ def metrics_from_record(rec: dict) -> dict:
 def record_metrics(**kw) -> dict:
     """The canonical metrics dict both graders build (unknown keys dropped)."""
     keys = ("hfr", "fwhm_arcsec", "ecc", "stars", "background", "exp_s",
-            "ccd_temp", "set_temp", "guide_rms", "guide_state",
+            "ccd_temp", "set_temp", "guide_rms", "guide_state", "guide_lock",
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin")
     return {k: kw.get(k) for k in keys}
-
-
-# PS-91: guide_lock rides along in both metrics builders. Added here, apart
-# from the key tuples above, so other tickets can extend those freely.
-GUIDE_LOCK_KEYS = ("guide_lock",)
-_metrics_from_record_base = metrics_from_record
-_record_metrics_base = record_metrics
-
-
-def metrics_from_record(rec: dict) -> dict:  # noqa: F811
-    m = _metrics_from_record_base(rec)
-    m.update({k: rec.get(k) for k in GUIDE_LOCK_KEYS})
-    return m
-
-
-def record_metrics(**kw) -> dict:  # noqa: F811
-    m = _record_metrics_base(**kw)
-    m.update({k: kw.get(k) for k in GUIDE_LOCK_KEYS})
-    return m
-
-
-metrics_from_record.__doc__ = _metrics_from_record_base.__doc__
-record_metrics.__doc__ = _record_metrics_base.__doc__
