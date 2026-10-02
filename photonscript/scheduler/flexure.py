@@ -20,8 +20,8 @@ dovetail, bracket, cable drag, focuser) moves one without the other. So:
    Piggy rate minus RC16 rate: common motion cancels. Without a solve for
    both rigs the two tracks are in different pixel frames, so only the
    rate MAGNITUDES are compared.
-5. per pair: eccentricity (as an axis ratio, so the two graders' ecc
-   definitions compare) and the elongation's sky direction: both elongated
+5. per pair: eccentricity (as an axis ratio, so old 1-b/a backfill grades
+   compare with sqrt-form ones) and the elongation's sky direction: both elongated
    the same way = common motion; Piggy-only = differential.
 6. flag the night when a block's differential rate (or Piggy drift minus
    RC16 drift) exceeds flexure_warn_arcsec_min, and rank likely causes.
@@ -60,9 +60,22 @@ def _iso(dt):
     return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt else None
 
 
+LIN_DEF = "1-b/a"
+
+
+def record_ecc_def(rec: dict, table: dict | None = None) -> str:
+    """Which form a stored ecc is in: the record's own ecc_def (PS-94 on),
+    else its sidecar's, else 1-b/a for an old backfill record ("sep-binned",
+    graded before PS-94), else the live grader's sqrt form."""
+    d = rec.get("ecc_def") or (table or {}).get("ecc_def")
+    if d:
+        return str(d)
+    return LIN_DEF if rec.get("graded_by") == "sep-binned" else "sqrt(1-(b/a)^2)"
+
+
 def axis_ratio(ecc, ecc_def: str = "") -> float | None:
     """b/a from either grader's eccentricity: the live grader's sqrt form
-    e = sqrt(1-(b/a)^2), the backfill grader's 1-b/a."""
+    e = sqrt(1-(b/a)^2), or 1-b/a for backfill grades from before PS-94."""
     if ecc is None:
         return None
     e = min(max(float(ecc), 0.0), 1.0)
@@ -403,7 +416,7 @@ def analyze_block(idx, block, rc16_frames, tables_p, tables_r, cd_p, cd_r,
     for pr in block:
         p, r = pr["piggy"], pr["rc16"]
         tp = tables_p.get(p["file"]) or {}
-        qp = axis_ratio(p["rec"].get("ecc"), tp.get("ecc_def", "sqrt"))
+        qp = axis_ratio(p["rec"].get("ecc"), record_ecc_def(p["rec"], tp))
         dp, _ = _axial_mean(tp.get("theta") or [])
         row = {"piggy": p["file"], "start_utc": _iso(p["start"]),
                "piggy_ecc": p["rec"].get("ecc"), "piggy_q": _r(qp),
@@ -414,7 +427,7 @@ def analyze_block(idx, block, rc16_frames, tables_p, tables_r, cd_p, cd_r,
                "rc16_dir_deg": None, "verdict": None}
         if r:
             tr = tables_r.get(r["file"]) or {}
-            qr = axis_ratio(r["rec"].get("ecc"), tr.get("ecc_def", "sqrt"))
+            qr = axis_ratio(r["rec"].get("ecc"), record_ecc_def(r["rec"], tr))
             dr, _ = _axial_mean(tr.get("theta") or [])
             row.update(rc16_ecc=r["rec"].get("ecc"), rc16_q=_r(qr),
                        rc16_dir_deg=_r(_sky_pa(cd_r, dr), 1))
@@ -599,6 +612,7 @@ def analyze(config, date: str, records, tables_p: dict, tables_r: dict,
         return {"ok": False, "date": date, "note": "no Piggy-600 subs this night"}
     if not rf:
         return {"ok": False, "date": date, "note": "no RC16 subs to pair with"}
+    _rec_by_file = {r["file"]: r for r in records if r.get("file")}
     pairs = pair_subs(pf, rf)
     st = tag_straddles(pairs, rf, dither_times)
     blocks_raw = make_blocks(pairs, st["slew_windows"])
@@ -644,12 +658,14 @@ def analyze(config, date: str, records, tables_p: dict, tables_r: dict,
     if not any(b["piggy_registered"] for b in blocks):
         notes.append("no Piggy star sidecars registered (sidecars are written "
                      "by the live grader since PS-80)")
-    ecc_defs = {(t or {}).get("ecc_def") for t in list(tables_p.values())
-                + list(tables_r.values()) if t}
-    if len({d for d in ecc_defs if d}) > 1:
-        notes.append("the two rigs' eccentricities use different definitions "
-                     f"({', '.join(sorted(d for d in ecc_defs if d))}); compare "
-                     "the axis ratios (q = b/a) instead")
+    n_lin = sum(1 for b in blocks for sh in b["shapes"] for f, t in
+                ((sh["piggy"], tables_p), (sh["rc16"], tables_r))
+                if f and f in _rec_by_file
+                and LIN_DEF in record_ecc_def(_rec_by_file[f], t.get(f)).replace(" ", ""))
+    if n_lin:
+        notes.append(f"{n_lin} sub(s) are older backfill grades whose stored ecc "
+                     "is 1-b/a (before PS-94 unified the form); shapes are "
+                     "compared as axis ratios (q = b/a), so this is accounted for")
     flagged = any(b["flagged"] for b in blocks)
     return {
         "ok": True, "date": date, "warn_arcsec_min": warn,

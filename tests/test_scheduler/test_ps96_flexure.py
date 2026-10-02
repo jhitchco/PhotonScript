@@ -216,7 +216,15 @@ def test_shape_verdicts_use_axis_ratio(tmp_path):
     row = rep["blocks"][0]["shapes"][0]
     assert row["piggy_q"] == pytest.approx(0.866, abs=0.01)
     assert row["rc16_q"] == pytest.approx(0.7, abs=0.01)
-    assert any("different definitions" in n for n in rep["notes"])
+    assert any("older backfill grades" in n for n in rep["notes"])
+
+
+def test_ecc_form_follows_the_record():
+    # PS-94 records name their form; old backfill records are 1-b/a
+    assert flexure.record_ecc_def({"ecc_def": "sqrt(1-(b/a)^2)"},
+                                  {"ecc_def": "1-b/a"}) == "sqrt(1-(b/a)^2)"
+    assert flexure.record_ecc_def({"graded_by": "sep-binned"}) == "1-b/a"
+    assert flexure.record_ecc_def({}) == "sqrt(1-(b/a)^2)"
 
 
 def test_no_piggy_subs(tmp_path):

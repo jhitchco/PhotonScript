@@ -387,8 +387,9 @@ after each night (daytime backfill post-pass), report only:
 - **Measure first.** Since PS-96 the live grader measures OSC frames on a 2x2
   superpixel (`image_validator._detect_stars_osc`) instead of the raw RGGB
   mosaic; `scripts/ps96_osc_measure_check.py` compares the two on any Piggy
-  FITS (read-only). Eccentricities from the live grader are sqrt(1-(b/a)^2),
-  the backfill grader's are 1-b/a: compare axis ratios, not raw ecc numbers.
+  FITS (read-only). Backfill grades from before PS-94 stored ecc as 1-b/a
+  (newer ones are sqrt(1-(b/a)^2) like the live grader), so the report
+  compares axis ratios, not raw ecc numbers.
 - **Pairing.** Each Piggy sub is paired with the RC16 sub covering at least
   80% of its exposure (pointing and pier side come from that RC16 header).
   Subs straddling an RC16 move or a PHD2 dither are tagged and not fitted.

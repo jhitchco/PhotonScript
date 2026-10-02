@@ -1721,6 +1721,11 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guiding analysis skipped for %s: %s", date, e)
         d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
+    pending = _syncthing_pending_names()
+    for s in d["subs"]:
+        if s.get("passed_qa") and s.get("reviewed"):
+            base = Path(s.get("abs_path") or s.get("file") or "").name
+            s["transfer"] = _transfer_state(base, pending)
     try:  # PS-96: Piggy-600 vs RC16 differential flexure (cached report)
         from photonscript.scheduler.flexure import compact as fx_compact
         from photonscript.scheduler.flexure import fresh_report
@@ -1728,11 +1733,6 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("flexure report skipped for %s: %s", date, e)
         d["flexure"] = {"ok": False, "note": f"flexure report failed: {e}"}
-    pending = _syncthing_pending_names()
-    for s in d["subs"]:
-        if s.get("passed_qa") and s.get("reviewed"):
-            base = Path(s.get("abs_path") or s.get("file") or "").name
-            s["transfer"] = _transfer_state(base, pending)
     return d
 
 

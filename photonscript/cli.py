@@ -555,6 +555,29 @@ def guiding_report(
     raise typer.Exit(0 if rep.get("ok") else 1)
 
 
+@app.command("tracking-test-report")
+def tracking_test_report(
+    date: str = typer.Option("", help="Night (YYYY-MM-DD, the runs page "
+                                      "date); default tonight"),
+    pa: Optional[float] = typer.Option(
+        None, help="Camera position angle (NINA plate-solve rotation, deg) "
+                   "to label the elongation axis RA or Dec"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-84: unguided tracking test report (TPoint + ProTrack): subs named
+    'Tracking test ...' grouped by filter and exposure, the longest length
+    that passes unguided per filter, and a recommendation. Read-only."""
+    import json as _json
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.tracking_test import (build_report,
+                                                      format_report)
+    rep = build_report(PhotonScriptConfig(), date or None, pa_override=pa)
+    if as_json:
+        console.print_json(_json.dumps(rep, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+
+
 @app.command("flexure-report")
 def flexure_report(
     date: str = typer.Option("", help="Night (YYYY-MM-DD, the evening date); "
@@ -596,29 +619,6 @@ def flexure_report(
     else:
         console.print(format_report(rep), markup=False, highlight=False)
     raise typer.Exit(0 if rep.get("ok") else 1)
-
-
-@app.command("tracking-test-report")
-def tracking_test_report(
-    date: str = typer.Option("", help="Night (YYYY-MM-DD, the runs page "
-                                      "date); default tonight"),
-    pa: Optional[float] = typer.Option(
-        None, help="Camera position angle (NINA plate-solve rotation, deg) "
-                   "to label the elongation axis RA or Dec"),
-    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
-):
-    """PS-84: unguided tracking test report (TPoint + ProTrack): subs named
-    'Tracking test ...' grouped by filter and exposure, the longest length
-    that passes unguided per filter, and a recommendation. Read-only."""
-    import json as _json
-    from photonscript.shared.config import PhotonScriptConfig
-    from photonscript.scheduler.tracking_test import (build_report,
-                                                      format_report)
-    rep = build_report(PhotonScriptConfig(), date or None, pa_override=pa)
-    if as_json:
-        console.print_json(_json.dumps(rep, default=str))
-    else:
-        console.print(format_report(rep), markup=False, highlight=False)
 
 
 @app.command()
