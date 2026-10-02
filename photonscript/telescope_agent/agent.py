@@ -1073,11 +1073,9 @@ class TelescopeAgent:
         elif action == "stop_sequence":
             await self.nina.stop_sequence()
 
-        elif action == "start_guiding":
-            await self.phd2.start_guiding()
-
-        elif action == "stop_guiding":
-            await self.phd2.stop_guiding()
-
-        elif action == "dither":
-            await self.phd2.dither()
+        elif action in ("start_guiding", "stop_guiding", "dither"):
+            # PS-91: these now go through call(), so a refusal raises
+            try:
+                await getattr(self.phd2, action)()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("PHD2 %s failed: %s", action, e)

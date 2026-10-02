@@ -36,6 +36,11 @@ from pathlib import Path
 
 from photonscript.scheduler import log_files as lf
 from photonscript.scheduler import phd2_logs as pl
+from photonscript.shared import guide_motion as gm
+# PS-91/92: the motion math moved to shared.guide_motion (the live guard and
+# the pulse self-test use the same numbers); re-exported under the old names.
+from photonscript.shared.guide_motion import (  # noqa: F401
+    axis_stats as _axis_stats, epochs as _epochs, pulse_rates, slope as _slope)
 
 SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 # within a severity, root causes first
@@ -64,14 +69,12 @@ T = {
     "search_vs_dither": 2.0,        # search region >= 2 x largest dither
     "search_vs_rms": 3.0,           # search region >= 3 x total RMS (px)
     "settle_success_pct": 70.0,
-    "cmd_rate_arcsec_min": 10.0,    # commanded correction worth judging
-    "response_min": 0.25,           # observed / commanded below this = no response
     "min_steps": 8,                 # PHD2 aims for about 12 calibration steps
     "rate_ratio_tol": 0.3,          # measured RA/Dec rate ratio vs cos(Dec)
-    "min_session_s": 120.0,         # shorter sessions get no per-axis rules
     "saturated_low_snr": 60.0,      # 'saturated' below this SNR = ADU ceiling
-    "static_std_arcsec": 0.15,      # a real star jitters more than this
-    "static_min_s": 300.0,          # ... over at least this long between dithers
+    # cmd_rate_arcsec_min, response_min, min_session_s, static_std_arcsec,
+    # static_min_s: shared with the live guard (shared.guide_motion.T)
+    **gm.T,
 }
 
 
@@ -136,20 +139,6 @@ def _iso(dt: datetime | None) -> str | None:
 
 def _iso_z(dt: datetime | None) -> str | None:
     return dt.isoformat(timespec="seconds") + "Z" if dt else None
-
-
-def _slope(points):
-    """Least-squares slope of (t, y) pooled within groups: {key: [(t, y)]}.
-    Pooling within lock epochs keeps a dither's step out of the drift."""
-    num = den = 0.0
-    for pts in points.values():
-        if len(pts) < 3:
-            continue
-        tm = sum(p[0] for p in pts) / len(pts)
-        ym = sum(p[1] for p in pts) / len(pts)
-        num += sum((p[0] - tm) * (p[1] - ym) for p in pts)
-        den += sum((p[0] - tm) ** 2 for p in pts)
-    return num / den if den > 0 else None
 
 
 # --------------------------------------------------------------------------
@@ -235,20 +224,6 @@ def _cal_record(i, sec, config) -> dict:
             "messages": c["messages"], **q}
 
 
-def pulse_rates(h, scale) -> tuple[float | None, float | None]:
-    """px/s a guide pulse moves the star at this pointing, RA and Dec.
-    From PHD2's 'Norm rates' ("/s at Dec 0, measured at calibration) when
-    present: the header's xRate is sometimes already rescaled to the current
-    Dec and sometimes not (PHD2 skips the cos(Dec) rescale above 60 deg)."""
-    xr, yr = h.get("x_rate"), h.get("y_rate")
-    nra, ndec, dec = h.get("norm_rate_ra"), h.get("norm_rate_dec"), h.get("dec_deg")
-    if scale and nra and dec is not None:
-        xr = nra * math.cos(math.radians(dec)) / scale
-    if scale and ndec:
-        yr = ndec / scale
-    return xr, yr
-
-
 _CAL_TS = ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%Y-%m-%d %H:%M:%S")
 
 
@@ -290,71 +265,6 @@ def _match_calibration(h, start_local, cals):
 # --------------------------------------------------------------------------
 # per session
 # --------------------------------------------------------------------------
-
-def _axis_stats(frames, key, ms_key, dir_key, rate_px_s, max_ms, scale):
-    """Pulse balance, max-duration share, drift and commanded vs observed."""
-    guided = [f for f in frames if not f["drop"]]
-    live = [f for f in guided if f.get("output", True)]  # guide output on
-    pulses = [f for f in live if f[ms_key] > 0 and f[dir_key]]
-    by_dir: dict[str, int] = {}
-    for f in pulses:
-        by_dir[f[dir_key]] = by_dir.get(f[dir_key], 0) + 1
-    # which direction PHD2 uses for a positive raw error (W and S in 2.6)
-    votes: dict[str, int] = {}
-    for f in pulses:
-        if f[key]:
-            d = f[dir_key] if f[key] > 0 else "-" + f[dir_key]
-            votes[d] = votes.get(d, 0) + 1
-    pos = max((d for d in votes if not d.startswith("-")),
-              key=lambda d: votes[d], default=None)
-    at_max = sum(1 for f in pulses if max_ms and f[ms_key] >= max_ms - 1)
-    dom = max(by_dir, key=by_dir.get) if by_dir else None
-    out = {"pulses": len(pulses), "by_direction": by_dir,
-           "dominant": dom, "dominant_pct": _pct(by_dir.get(dom, 0), len(pulses)),
-           "at_max": at_max, "at_max_pct": _pct(at_max, len(pulses)),
-           "mean_ms": _r(statistics.fmean([f[ms_key] for f in pulses]), 0) if pulses else None}
-    # drift of the raw error within each lock epoch
-    pts: dict[int, list] = {}
-    for f in guided:
-        pts.setdefault(f["epoch"], []).append((f["t"], f[key]))
-    sl = _slope(pts)
-    out["drift_px_min"] = _r(sl * 60, 3) if sl is not None else None
-    out["drift_arcsec_min"] = _r(sl * 60 * scale, 3) if sl is not None and scale else None
-    if guided:
-        out["error_first_px"] = _r(guided[0][key], 1)
-        out["error_last_px"] = _r(guided[-1][key], 1)
-        out["error_peak_px"] = _r(max((f[key] for f in guided), key=abs), 1)
-    # commanded correction vs what the star did, per lock epoch
-    C = O = span = 0.0
-    if rate_px_s and pos:
-        segs: dict[int, list] = {}
-        for f in live:
-            segs.setdefault(f["epoch"], []).append(f)
-        for seg in segs.values():
-            if len(seg) < 3:
-                continue
-            for f in seg[:-1]:
-                if f[ms_key] > 0 and f[dir_key]:
-                    sgn = -1.0 if f[dir_key] == pos else 1.0
-                    C += sgn * f[ms_key] / 1000.0 * rate_px_s
-            O += seg[-1][key] - seg[0][key]
-            span += seg[-1]["t"] - seg[0]["t"]
-    if span > 0 and scale:
-        cmd = C * scale / span * 60
-        obs = O * scale / span * 60
-        out.update(commanded_arcsec_min=_r(cmd, 1), observed_arcsec_min=_r(obs, 1),
-                   implied_drift_arcsec_min=_r(obs - cmd, 1))
-        if abs(cmd) >= T["cmd_rate_arcsec_min"] and span >= T["min_session_s"]:
-            resp = obs / cmd
-            out["response"] = _r(resp, 2)
-            out["response_verdict"] = (
-                "reversed" if resp < -T["response_min"] else
-                "not moving" if resp < T["response_min"] else
-                "weak" if resp < 0.5 else "moving")
-        else:
-            out["response_verdict"] = "small demand"
-    return out
-
 
 def _dithers(sec, frames):
     """Dither sizes, recovery to the new lock, and PHD2 settle outcomes."""
@@ -401,35 +311,6 @@ def _dithers(sec, frames):
                        "unfinished": max(0, started - done - failed),
                        "success_pct": _pct(done, done + failed),
                        "median_s": _r(statistics.median(times), 1) if times else None}}
-
-
-def _epochs(guided, scale) -> dict:
-    """Scatter of the star within each lock epoch (between dithers): a real
-    star through seeing scatters 0.3 to 0.6\" here; a hot pixel or a fixed
-    artifact sits still."""
-    ep: dict[int, list] = {}
-    for f in guided:
-        if not f["settling"]:
-            ep.setdefault(f["epoch"], []).append(f)
-    num = den = 0.0
-    static_s, stds = 0.0, []
-    for fs in ep.values():
-        if len(fs) < 20:
-            continue
-        v = statistics.pvariance([f["ra"] for f in fs]) + \
-            statistics.pvariance([f["dec"] for f in fs])
-        num += v * len(fs)
-        den += len(fs)
-        sd = math.sqrt(v) * (scale or 0)
-        stds.append(sd)
-        span = fs[-1]["t"] - fs[0]["t"]
-        if scale and len(fs) >= 60 and span >= T["static_min_s"] and \
-                sd < T["static_std_arcsec"]:
-            static_s += span
-    return {"count": len(ep),
-            "pooled_std_arcsec": _r(math.sqrt(num / den) * scale, 3) if den and scale else None,
-            "min_std_arcsec": _r(min(stds), 3) if stds else None,
-            "static_minutes": _r(static_s / 60, 1)}
 
 
 def _block(ra, dec, scale):

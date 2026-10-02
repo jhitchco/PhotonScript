@@ -2,6 +2,14 @@
 
 PHD2 exposes a JSON-RPC over TCP socket (default port 4400).
 This client connects and monitors guiding metrics in real-time.
+
+PS-91: it also keeps a ring buffer (about 30 min) of full guide frames in the
+shared.guide_motion frame shape, tracks the lock position and lock epoch,
+counts looping frames, forwards every raw event to on_event() listeners, and
+wraps the PHD2 RPCs PhotonScript commands (loop, find_star, save_image,
+guide_pulse, ...) through call(), so an error reply raises PHD2RPCError
+instead of vanishing. Only one PhotonScript actor should command PHD2 at a
+time: hold telescope_agent.phd2_ops.hold(owner) around a command sequence.
 """
 
 from __future__ import annotations
@@ -10,6 +18,7 @@ import asyncio
 import json
 import logging
 import time
+from collections import deque
 from typing import Optional, Callable, Awaitable
 
 from photonscript.shared.models import GuidingMetrics, GuidingState
@@ -25,6 +34,46 @@ _UNKNOWN_SCALE = 1.0
 # is worth a warning (e.g. a 600 mm profile left selected on the OAG).
 _SCALE_MISMATCH = 0.25
 _CONNECT_WARN_EVERY_S = 1800.0
+# PS-91 ring buffer of guide frames: keep this many seconds (and at most
+# FRAME_BUFFER_MAX frames, about 30 min at 0.5 s exposures)
+FRAME_BUFFER_S = 1800.0
+FRAME_BUFFER_MAX = 3600
+# PHD2 event direction words -> the guide-log letters guide_motion expects
+_DIR = {"east": "E", "west": "W", "north": "N", "south": "S",
+        "e": "E", "w": "W", "n": "N", "s": "S"}
+# AppState names PHD2 reports (get_app_state / AppState event)
+APP_STATES = ("Stopped", "Selected", "Calibrating", "Guiding", "LostLock",
+              "Paused", "Looping")
+
+
+def _fnum(v, default=0.0):
+    try:
+        return float(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def frame_from_event(event: dict, *, t: float, settling: bool, epoch: int,
+                     output: bool = True) -> dict:
+    """One GuideStep (guided) or StarLost (dropped) event as a guide frame in
+    the shared.guide_motion / phd2_logs._frame shape, plus HFD and the PHD2
+    frame number. Distances are raw guide-camera pixels; t is unix seconds."""
+    lost = event.get("Event") == "StarLost"
+    code = int(_fnum(event.get("ErrorCode"), 0))
+    snr, mass = event.get("SNR"), event.get("StarMass")
+    return {"n": int(_fnum(event.get("Frame"), 0)), "t": float(t),
+            "ra": None if lost else _fnum(event.get("RADistanceRaw")),
+            "dec": None if lost else _fnum(event.get("DECDistanceRaw")),
+            "ra_ms": 0.0 if lost else _fnum(event.get("RADuration")),
+            "ra_dir": _DIR.get(str(event.get("RADirection") or "").lower(), ""),
+            "dec_ms": 0.0 if lost else _fnum(event.get("DECDuration")),
+            "dec_dir": _DIR.get(str(event.get("DECDirection") or "").lower(), ""),
+            "hfd": None if lost else (_fnum(event.get("HFD"), 0.0) or None),
+            "snr": _fnum(snr) if snr is not None else None,
+            "mass": _fnum(mass) if mass is not None else None,
+            "code": code, "drop": lost,
+            "reason": (str(event.get("Status") or "star lost") if lost else None),
+            "settling": bool(settling), "epoch": int(epoch), "output": bool(output)}
 
 
 def guide_rms_text(m) -> str:
@@ -86,7 +135,6 @@ class PHD2Client:
     """
 
     def __init__(self, host: str = "localhost", port: int = 4400, config=None):
-        from collections import deque
         # PS-70: guide-camera arcsec/px. None = unknown, and then RMS stays
         # in guide-camera PIXELS and is labelled that way (units="px").
         self._px_scale: float | None = None
@@ -108,6 +156,16 @@ class PHD2Client:
         self._rpc_id = 0
         self._listeners: list[Callable[[GuidingMetrics], Awaitable[None]]] = []
         self._running = False
+        # PS-91: full guide frames, lock tracking, raw event listeners
+        self._frames: deque = deque(maxlen=FRAME_BUFFER_MAX)
+        self._event_listeners: list[Callable[[dict], Awaitable[None]]] = []
+        self._settling = False
+        self.lock_epoch = 0
+        self.lock_position: tuple[float, float] | None = None
+        self.star_selected: tuple[float, float] | None = None
+        self.app_state: str = "Unknown"   # PHD2's own AppState name
+        self.frame_count = 0              # looping + guide frames seen
+        self.last_event_at: float | None = None
 
     @property
     def metrics(self) -> GuidingMetrics:
@@ -116,9 +174,53 @@ class PHD2Client:
     def on_update(self, callback: Callable[[GuidingMetrics], Awaitable[None]]):
         self._listeners.append(callback)
 
+    def on_event(self, callback: Callable[[dict], Awaitable[None]]):
+        """PS-91: every raw PHD2 event, after the client has processed it.
+        Listeners run inside the socket reader: never await call() from one
+        (schedule a task instead)."""
+        self._event_listeners.append(callback)
+
     @property
     def pixel_scale(self) -> float | None:
         return self._px_scale
+
+    @property
+    def binning(self) -> int | None:
+        return self._binning
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
+
+    @property
+    def settling(self) -> bool:
+        return self._settling
+
+    def recent_frames(self, seconds: float | None = None,
+                      now: float | None = None) -> list[dict]:
+        """Guide frames from the ring buffer, oldest first; the last
+        `seconds` only when given."""
+        frames = list(self._frames)
+        if seconds is None:
+            return frames
+        now = time.time() if now is None else now
+        return [f for f in frames if f["t"] >= now - seconds]
+
+    def clear_frames(self) -> None:
+        self._frames.clear()
+
+    async def wait_frames(self, n: int = 1, timeout: float = 30.0,
+                          poll_s: float = 0.05) -> bool:
+        """Wait until n more looping/guide frames have arrived (needs
+        run_event_loop running). False on timeout."""
+        target = self.frame_count + max(1, int(n))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while self.frame_count < target:
+            if loop.time() >= deadline or not self._connected:
+                return False
+            await asyncio.sleep(poll_s)
+        return True
 
     async def connect(self) -> bool:
         try:
@@ -141,18 +243,6 @@ class PHD2Client:
                              self.host, self.port, e)
             self._connected = False
             return False
-
-    async def _send_rpc(self, method: str, params: list | None = None) -> dict:
-        if not self._connected or not self._writer:
-            return {}
-        self._rpc_id += 1
-        msg = {"method": method, "id": self._rpc_id}
-        if params:
-            msg["params"] = params
-        data = json.dumps(msg) + "\r\n"
-        self._writer.write(data.encode())
-        await self._writer.drain()
-        return msg
 
     async def call(self, method: str, params: list | None = None,
                    timeout: float = 5.0):
@@ -265,9 +355,78 @@ class PHD2Client:
         self._recompute()
 
     async def get_app_state(self) -> str:
-        """Query PHD2 application state (Stopped, Guiding, etc.)."""
-        await self._send_rpc("get_app_state")
-        return self._metrics.state.value
+        """PHD2's application state name (Stopped, Selected, Calibrating,
+        Guiding, LostLock, Paused, Looping), asked live. Before PS-91 this
+        sent the request and returned the cached metrics state without
+        reading the reply. Falls back to the last AppState seen (or
+        "Unknown") when PHD2 does not answer."""
+        try:
+            r = await self.call("get_app_state")
+            if r:
+                self.app_state = str(r)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("PHD2 get_app_state failed: %s", e)
+        return self.app_state
+
+    # -- PS-91 RPC wrappers (all through call(): errors raise PHD2RPCError) --
+
+    async def loop(self):
+        """Start looping exposures (no guiding)."""
+        return await self.call("loop")
+
+    async def stop_capture(self):
+        """Stop looping and guiding."""
+        return await self.call("stop_capture")
+
+    async def find_star(self, roi: list | tuple | None = None):
+        """Auto-select a star, inside roi = [x, y, width, height] when given.
+        Returns PHD2's lock position [x, y]."""
+        return await self.call("find_star", [list(roi)] if roi else None,
+                               timeout=15.0)
+
+    async def set_lock_position(self, x: float, y: float, exact: bool = True):
+        return await self.call("set_lock_position", [float(x), float(y),
+                                                     bool(exact)])
+
+    async def get_lock_position(self):
+        return await self.call("get_lock_position")
+
+    async def get_star_image(self, size: int | None = None) -> dict:
+        """The guide-star crop: {frame, width, height, star_pos, pixels}
+        (pixels = base64 of 16-bit little-endian values)."""
+        return await self.call("get_star_image", [int(size)] if size else None,
+                               timeout=10.0)
+
+    async def save_image(self) -> str:
+        """Save PHD2's current frame as FITS; returns the file name (in
+        PHD2's temp folder: the caller deletes it when done)."""
+        r = await self.call("save_image", timeout=15.0)
+        return (r or {}).get("filename", "") if isinstance(r, dict) else str(r or "")
+
+    async def get_calibration_data(self, which: str = "Mount") -> dict:
+        """{calibrated, xAngle, xRate (px/s), xParity, yAngle, yRate,
+        yParity, declination} of the stored calibration."""
+        return await self.call("get_calibration_data", [which]) or {}
+
+    async def get_exposure(self) -> int | None:
+        """Guide exposure in ms."""
+        r = await self.call("get_exposure")
+        return int(r) if r is not None else None
+
+    async def get_camera_binning(self) -> int | None:
+        r = await self.call("get_camera_binning")
+        return int(r) if r else None
+
+    async def get_current_equipment(self) -> dict:
+        return await self.call("get_current_equipment") or {}
+
+    async def guide_pulse(self, amount_ms: int, direction: str,
+                          which: str = "Mount"):
+        """One manual guide pulse (direction N/S/E/W or the full word)."""
+        d = _DIR.get(str(direction).strip().lower())
+        if d is None:
+            raise ValueError(f"bad guide direction {direction!r}")
+        return await self.call("guide_pulse", [int(amount_ms), d, which])
 
     async def start_guiding(self, settle_pixels: float = 1.5, settle_time: int = 10,
                             settle_timeout: int = 60, recalibrate: bool = False):
@@ -279,19 +438,20 @@ class PHD2Client:
         guide path or a fresh polar/TPoint change). Note: the nightly sequence
         drives PHD2 through NINA's StartGuiding (see nina_sequence_json.py), so
         its settle criteria come from the NINA guider profile, not this client;
-        this path is the agent's direct control.
+        this path is the agent's direct control. PS-91: through call(), so a
+        refused start raises PHD2RPCError instead of vanishing.
         """
-        await self._send_rpc("guide", [
+        return await self.call("guide", [
             {"pixels": settle_pixels, "time": settle_time, "timeout": settle_timeout},
             recalibrate,
         ])
 
     async def stop_guiding(self):
-        await self._send_rpc("stop_capture")
+        return await self.stop_capture()
 
     async def dither(self, amount: float = 5.0, settle_pixels: float = 1.5, settle_time: int = 10):
         """Dither the guide star."""
-        await self._send_rpc("dither", [
+        return await self.call("dither", [
             amount,
             False,  # raOnly
             {"pixels": settle_pixels, "time": settle_time, "timeout": 60},
@@ -355,9 +515,60 @@ class PHD2Client:
             m.rms_ra_arcsec = m.rms_dec_arcsec = m.rms_total_arcsec = None
             m.peak_ra_arcsec = m.peak_dec_arcsec = None
 
+    def _track(self, event_type: str, event: dict) -> None:
+        """PS-91: ring buffer, lock position / epoch, app state, frame count."""
+        now = _fnum(event.get("Timestamp"), 0.0) or time.time()
+        self.last_event_at = now
+        if event_type in ("GuideStep", "StarLost"):
+            self.frame_count += 1
+            self._frames.append(frame_from_event(
+                event, t=now, settling=self._settling, epoch=self.lock_epoch))
+            while self._frames and self._frames[0]["t"] < now - FRAME_BUFFER_S:
+                self._frames.popleft()
+            if event_type == "GuideStep":
+                self.app_state = "Guiding"
+            elif self.app_state == "Guiding":
+                self.app_state = "LostLock"
+        elif event_type == "LoopingExposures":
+            self.frame_count += 1
+            if self.app_state not in ("Guiding", "Calibrating"):
+                self.app_state = "Looping"
+        elif event_type == "LoopingExposuresStopped":
+            self.app_state = "Stopped"
+        elif event_type in ("LockPositionSet", "StarSelected"):
+            xy = (_fnum(event.get("X")), _fnum(event.get("Y")))
+            if event_type == "LockPositionSet":
+                self.lock_position = xy
+            else:
+                self.star_selected = xy
+            self.lock_epoch += 1
+        elif event_type == "LockPositionLost":
+            self.lock_position = None
+        elif event_type in ("GuidingDithered", "StartGuiding"):
+            self.lock_epoch += 1
+            if event_type == "StartGuiding":
+                self.app_state = "Guiding"
+        elif event_type in ("SettleBegin", "Settling"):
+            self._settling = True
+        elif event_type == "SettleDone":
+            self._settling = False
+        elif event_type == "StartCalibration":
+            self.app_state = "Calibrating"
+        elif event_type == "GuidingStopped":
+            self.app_state = "Stopped"
+            self._settling = False
+        elif event_type == "Paused":
+            self.app_state = "Paused"
+        elif event_type == "AppState":
+            self.app_state = str(event.get("State") or self.app_state)
+
     async def _handle_event(self, event: dict):
         """Process a PHD2 server event."""
         event_type = event.get("Event", event.get("jsonrpc", ""))
+        try:
+            self._track(event_type, event)
+        except Exception:  # noqa: BLE001 - never lose metrics over the buffer
+            logger.exception("PHD2 event tracking error")
 
         if event_type == "GuideStep":
             # PHD2 reports RADistanceRaw / DECDistanceRaw in guide-camera
@@ -412,6 +623,11 @@ class PHD2Client:
                 await listener(self._metrics)
             except Exception:
                 logger.exception("PHD2 listener error")
+        for listener in self._event_listeners:
+            try:
+                await listener(event)
+            except Exception:
+                logger.exception("PHD2 event listener error")
 
     async def _safe_refresh(self):
         try:
