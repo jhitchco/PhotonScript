@@ -5,6 +5,7 @@ GET  /api/runs/{date}/scorecard?file=          one sub's labeled scorecard
 GET  /api/runs/{date}/rescore                  dry-run verdict diff
 POST /api/runs/{date}/rescore                  {"apply": true} to write
 GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (stored)
+GET  /api/qa/ecc-scale?date=&refresh=          PS-94 native vs binned ecc report
 
 Kept out of app.py (PS-8 router split). Handlers lazily import get_config
 to avoid an import cycle.
@@ -30,6 +31,18 @@ def api_qa_thresholds(rig: str = "rc16", target: str = "", filter: str = ""):  #
                                               filter or None),
             "checks": [{"id": k, "name": v[0], "unit": v[1], "why": v[2]}
                        for k, v in qa_rules.CHECKS.items()]}
+
+
+@router.get("/api/qa/ecc-scale")
+def api_qa_ecc_scale(date: str, refresh: bool = False):
+    """PS-94: eccentricity at 0.24"/px vs 0.48"/px for one night's RC16
+    lights (dry run, never touches the subs log). Runs in the background
+    (202 while it works; poll again); a saved report comes back at once
+    unless refresh=true. Refused (409) while the armer is armed or running
+    or a grading job is active."""
+    from photonscript.scheduler import ecc_scale
+    code, body = ecc_scale.request(_cfg(), date, refresh=refresh)
+    return JSONResponse(status_code=code, content=body)
 
 
 @router.get("/api/runs/{date}/scorecard")

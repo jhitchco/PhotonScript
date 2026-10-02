@@ -97,9 +97,15 @@ Check a pending update on the scope without switching: `photonscript self-update
    lowest priority) -> bias one-shot if still unsafe -> dawn sky flats
    (SafetyMonitorCondition-wrapped so a closed roof is skipped; order
    BB first -> NB last as sky brightens).
-3. **Live watcher** grades each sub (sep HFR/ecc on binned frames), skips
-   calibration frames (path part or IMAGETYP != LIGHT), applies tracking-RMS
-   rejection only while PHD2 reports guiding/settling.
+3. **Live watcher** grades each sub (sep HFR/ecc/FWHM on the NATIVE
+   0.24"/px frame; RC16 subs are also measured on a 2x2-binned copy,
+   `ecc_bin` at 0.48"/px, PS-94), skips calibration frames (path part or
+   IMAGETYP != LIGHT), applies tracking-RMS rejection only while PHD2 reports
+   guiding/settling. The backfill grader measures the 2x2-binned frame (plus
+   native ecc with the live pipeline). Every ecc is sqrt(1-(b/a)^2); records
+   say so in `ecc_def` (older backfill records held 1-b/a and are converted
+   on read and on rescore). `qa_ecc_scale` (native, default, or binned)
+   picks which scale gates; the other is shown as info only.
 4. Morning: runs page `/runs/YYYY-MM-DD` (permalinks work) shows plan vs
    actual, the honest funnel (dark hours -> shutter hours -> accepted hours;
    sky utilization = accepted/dark), 4-state sub review

@@ -12,6 +12,7 @@ Usage:
     photonscript rename-targets [--apply] [--date D] [--stamp-headers]  # PS-78
     photonscript tracking-test-report [--date D] [--pa DEG] [--json]  # PS-84
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
+    photonscript ecc-scale-report --date D [--date D2] [--json]  # PS-94
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -576,6 +577,34 @@ def tracking_test_report(
         console.print_json(_json.dumps(rep, default=str))
     else:
         console.print(format_report(rep), markup=False, highlight=False)
+
+
+@app.command("ecc-scale-report")
+def ecc_scale_report(
+    date: list[str] = typer.Option(..., "--date",
+                                   help="Night (YYYY-MM-DD, the runs page "
+                                        "date); repeat for several"),
+    gate: list[float] = typer.Option(
+        [0.60, 0.70], "--gate", help="Eccentricity gates to count (repeat)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-94: eccentricity at the native 0.24"/px vs 2x2-binned 0.48"/px for
+    every RC16 light of a night, same pipeline and formula at both scales:
+    medians per target + filter, pass counts per gate, subs that would flip,
+    and which grader produced the stored numbers. Dry run: writes
+    <data_dir>/reports/ps94_<date>.json only. Full-frame work: run it in
+    daytime on the scope PC (the API refuses while armed)."""
+    import json as _json
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.ecc_scale import compare_night, format_report
+    cfg = PhotonScriptConfig()
+    reps = [compare_night(cfg, d, gates=tuple(gate)) for d in date]
+    if as_json:
+        print(_json.dumps(reps if len(reps) > 1 else reps[0], indent=1,
+                          default=str))
+    else:
+        console.print(format_report(reps), markup=False, highlight=False)
+    raise typer.Exit(0 if all(r["n_measured"] for r in reps) else 1)
 
 
 @app.command()
