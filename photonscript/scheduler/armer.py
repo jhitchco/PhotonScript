@@ -306,7 +306,7 @@ class Armer:
         return self.status()
 
     async def make_safe(self) -> str:
-        """Stop the sequence, warm the camera, park the mount.
+        """Stop the sequence, stop the guider, warm the camera, park the mount.
 
         Works from any state: if a device is disconnected, connect it and
         retry; if it stays disconnected that is benign (nothing to make
@@ -315,6 +315,9 @@ class Armer:
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop:{'ok' if ok else 'FAILED'}")
+        # PS-91: stop PHD2 before parking (NINA's End-area StopGuiding never
+        # runs once the sequence is stopped). Never blocks the park.
+        steps.append(f"guider stop:{await self._stop_guider_best_effort()}")
         # Make-safe is an abort: warm instantly (minutes=0 by default) so cutting
         # the TEC isn't held up by a ramp. gradual_warm_minutes can restore one.
         warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
@@ -385,6 +388,15 @@ class Armer:
             except Exception as e:  # noqa: BLE001
                 logger.warning("cooler/dew off (%s) failed: %s", rig, e)
 
+    async def _stop_guider_best_effort(self) -> str:
+        """PS-91: ask NINA to stop the guider. Returns 'ok' or 'FAILED'.
+        Never raises: every shutdown path must still reach the park."""
+        try:
+            return "ok" if await self._nina("guider_stop") is not None else "FAILED"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("guider stop failed: %s", e)
+            return "FAILED"
+
     # -- dawn shutdown -----------------------------------------------------------
 
     async def dawn_shutdown(self, reason: str = "dawn") -> str:
@@ -393,8 +405,8 @@ class Armer:
         An all-night-unsafe night leaves the sequence wedged inside
         WaitUntilSafe until the NEXT evening's dispatch replaces it, so the
         End area (dew off + warm) runs ~24 h late and both coolers hold
-        setpoint all day (seen 2026-09-15). This stops the sequence, warms +
-        dew-offs EVERY rig, parks the mount, then verifies cooler state once
+        setpoint all day (seen 2026-09-15). This stops the sequence and the
+        guider, warms + dew-offs EVERY rig, parks the mount, then verifies cooler state once
         the warm ramp is done and alerts if anything is still cooling.
         """
         from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
@@ -403,6 +415,10 @@ class Armer:
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop {'ok' if ok else 'FAILED'}")
+        # PS-91: stopping the sequence skips its End-area StopGuiding, so PHD2
+        # kept "guiding" a parked scope after the roof closed (2026-09-26
+        # session 21). Stop it here, before the park; a failure never blocks.
+        steps.append(f"guider stop {await self._stop_guider_best_effort()}")
         warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
         for rig in rig_ids(self.config):
             rc = rig_config(self.config, rig)
