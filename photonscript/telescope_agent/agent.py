@@ -1008,8 +1008,11 @@ class TelescopeAgent:
                     severe=True,
                 )
 
-        # Collimation/tilt watch (RC16): corner FWHM spread trending high
-        if (quality.corner_spread is not None
+        # Collimation/tilt watch (RC16): corner FWHM spread trending high.
+        # PS-95: off by default (optics_corner_alert); the persistent
+        # tilt/collimation finding from the nightly optics report replaces it.
+        if (getattr(self.config, "optics_corner_alert", False)
+                and quality.corner_spread is not None
                 and quality.corner_spread > self.config.quality_corner_spread_max):
             await self._escalate(
                 f"corners-{datetime.utcnow():%Y%m%d}",  # at most daily

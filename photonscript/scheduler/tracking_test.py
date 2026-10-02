@@ -295,30 +295,16 @@ def _star_axis(config, date: str, rec: dict) -> dict:
                               rec.get("rig") or "rc16")
     except Exception:  # noqa: BLE001
         tbl = None
-    th = (tbl or {}).get("theta") or []
-    ecc = (tbl or {}).get("ecc") or []
-    xs, ys = (tbl or {}).get("x") or [], (tbl or {}).get("y") or []
-    w, h = (tbl or {}).get("w"), (tbl or {}).get("h")
-    pts = [(t, x, y) for t, e, x, y in zip(th, ecc, xs or [None] * len(th),
-                                           ys or [None] * len(th))
-           if t is not None and e is not None and e > ELONG_FLOOR]
-    if len(pts) >= 15:
-        c2 = sum(math.cos(2 * t) for t, _, _ in pts) / len(pts)
-        s2 = sum(math.sin(2 * t) for t, _, _ in pts) / len(pts)
-        r = math.hypot(c2, s2)
-        ang = (math.degrees(0.5 * math.atan2(s2, c2))) % 180.0
-        radial = None
-        if w and h and all(x is not None and y is not None for _, x, y in pts):
-            cx, cy = w / 2.0, h / 2.0
-            near = 0
-            for t, x, y in pts:
-                rad = math.atan2(y - cy, x - cx)
-                d = abs(((t - rad + math.pi / 2) % math.pi) - math.pi / 2)
-                near += d < math.radians(25)
-            radial = near / len(pts)
-        return {"axis_deg": round(ang, 1), "R": round(r, 2),
-                "radial_frac": None if radial is None else round(radial, 2),
-                "n_elongated": len(pts), "source": "stars"}
+    # PS-95: the axial math lives in optics_report (one formula for both).
+    from photonscript.scheduler.optics_report import axial_stats
+    t = tbl or {}
+    ax = axial_stats(t.get("theta") or [], t.get("ecc") or [],
+                     t.get("x") or [], t.get("y") or [], t.get("w"),
+                     t.get("h"), floor=ELONG_FLOOR)
+    if ax:
+        return {"axis_deg": ax["axis_deg"], "R": ax["R"],
+                "radial_frac": ax["radial_frac"],
+                "n_elongated": ax["n_elongated"], "source": "stars"}
     if rec.get("ecc_pa_R") is not None or rec.get("shape"):
         return {"axis_deg": None, "R": _num(rec.get("ecc_pa_R")),
                 "radial_frac": _num(rec.get("ecc_radial_frac")),
@@ -345,12 +331,8 @@ def _group_status(n_track_pass: int, n: int, ecc_med, ecc_max) -> str:
 
 
 def _axial_mean(angles: list[float]) -> float | None:
-    a = [x for x in angles if x is not None]
-    if not a:
-        return None
-    c = sum(math.cos(math.radians(2 * x)) for x in a)
-    s = sum(math.sin(math.radians(2 * x)) for x in a)
-    return round((math.degrees(0.5 * math.atan2(s, c))) % 180.0, 1)
+    from photonscript.scheduler.optics_report import axial_mean
+    return axial_mean(angles)
 
 
 def _axis_label(axis_deg, pa_deg) -> str | None:

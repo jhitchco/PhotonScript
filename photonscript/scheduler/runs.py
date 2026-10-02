@@ -711,6 +711,15 @@ def start_backfill(config, date: str) -> None:
                                 date, n_seed)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Focus-seed harvest failed for %s: %s", date, e)
+            try:  # PS-95: per-night tilt / collimation report from the star
+                # sidecars (no FITS reads); cached for the trend just below.
+                from photonscript.scheduler.optics_report import night_optics
+                op = night_optics(config, date)
+                logger.info("Optics %s: %s (%s subs measured)", date,
+                            op["overall"]["verdict"],
+                            op["overall"]["n_measured"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Optics report failed for %s: %s", date, e)
             try:  # cross-night trend/drift alarm — catch systematic rig faults
                 # (polar drift, tilt, soft focus) that per-frame QA can't see.
                 from photonscript.scheduler.trends import check_and_alert
