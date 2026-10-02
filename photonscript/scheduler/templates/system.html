@@ -307,6 +307,59 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="guardPanel">
+            <h2>PHD2 Guide Guard (PS-91)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">Watches PHD2 live for a lock on a hot pixel or other non-star, PHD2 guiding a parked or closed-roof scope, and max-length pulses that move nothing. Subs guided on a non-star are marked guide_lock WARN. The hot-pixel map is rebuilt automatically while the roof is closed before dusk; build it by hand only with the roof closed or the guide camera capped.</p>
+            <div class="bd" id="guardInfo">loading...</div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
+                <button class="btn btn-secondary" id="guardRefresh">Refresh</button>
+                <button class="btn btn-secondary" id="hotpixCapture" title="Loops PHD2 for 8 frames at its guide exposure and maps hot pixels. Roof closed / camera capped only. Refused while a night runs or PHD2 guides.">Build hot-pixel map now</button>
+                <span class="bd" id="guardStatus"></span>
+            </div>
+            <div id="guardOut" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            async function load() {
+                var info = document.getElementById('guardInfo');
+                var out = document.getElementById('guardOut');
+                try {
+                    var g = await (await fetch('/api/phd2/guard')).json();
+                    var h = await (await fetch('/api/phd2/hotpix')).json();
+                    info.innerHTML = 'Guard ' + (g.enabled ? 'ON' : 'OFF') + ' | ' +
+                        (g.auto_recover ? 'auto-recover ON' : 'observe-only') +
+                        ' | PHD2 held by: ' + esc((g.phd2_ops || {}).owner || 'nobody') +
+                        '<br>Hot-pixel map: ' + (h.exists ? esc(h.count) + ' pixels, ' + esc(h.age_days) +
+                        ' d old (bin ' + esc(h.binning) + ', ' + esc(h.exposure_ms) + ' ms, ' + esc(h.camera) + ')' : 'none yet') +
+                        (h.stale ? ' | <span class="warn">needs refresh: ' + esc(h.stale) + '</span>' : '');
+                    var rows = (g.list || []).map(function (e) {
+                        var rec = (e.recoveries || []).map(function (r) {
+                            return (r.ok === true ? 'ok' : r.ok === false ? 'FAILED' : 'skipped') + ': ' + esc(r.detail);
+                        }).join('; ');
+                        return '<tr><td>' + esc((e.start_utc || '').slice(11, 16)) + '-' + esc((e.end_utc || 'open').slice(11, 16)) +
+                            'Z</td><td>' + esc(e.kind) + '</td><td>' + esc((e.codes || []).join(',')) + '</td><td>' + esc(e.detail) +
+                            '</td><td>' + (rec || (e.observe_only ? 'observe-only' : '-')) + '</td></tr>';
+                    }).join('');
+                    out.innerHTML = '<b>' + esc(g.date) + ':</b> ' + esc(g.episodes) + ' episode(s)' +
+                        (rows ? '<table class="tbl" style="font-size:.8rem;"><tr><th>UTC</th><th>kind</th><th>detectors</th><th>detail</th><th>recovery</th></tr>' + rows + '</table>' : '');
+                } catch (e) { info.textContent = 'error: ' + e; }
+            }
+            document.getElementById('guardRefresh').onclick = load;
+            document.getElementById('hotpixCapture').onclick = async function () {
+                var s = document.getElementById('guardStatus');
+                if (!confirm('Build the guide-camera hot-pixel map now? Only with the roof closed or the guide camera capped.')) return;
+                s.textContent = ' capturing (about a minute)...';
+                try {
+                    var r = await (await fetch('/api/phd2/hotpix/capture', {method: 'POST'})).json();
+                    s.textContent = r.ok ? ' done: ' + r.count + ' hot pixels.' : ' not built: ' + (r.note || r.detail || '?');
+                } catch (e) { s.textContent = ' error: ' + e; }
+                load();
+            };
+            load();
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Configuration</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Edits are written to

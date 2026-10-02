@@ -107,6 +107,8 @@ class Armer:
         self._unsafe_stopped = False
         self._unsafe_check_done = False
         self._unsafe_tree_misses = 0
+        self._hotpix_tried: str | None = None   # PS-91: night of the last map try
+        self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -125,6 +127,7 @@ class Armer:
                 "shutdown": getattr(self, "shutdown", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
+                "fallback_night": getattr(self, "_fallback_night", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -164,6 +167,7 @@ class Armer:
         # PS-77: an armer safety stop survives a restart, so the resume still
         # re-dispatches instead of waiting on a sequence that is not running.
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
+        self._fallback_night = saved.get("fallback_night")
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -1202,6 +1206,61 @@ class Armer:
                             f"Re-dispatch after safety stop FAILED "
                             f"({self.detail}); retrying")
 
+    # -- PS-91 / PS-92: guide-camera hot-pixel map + unguided fallback ----------
+
+    HOTPIX_LEAD_MIN = 30   # map window: this long before pre-config
+
+    async def _maybe_hotpix_map(self, now: datetime, why: str) -> None:
+        """Refresh the guide-camera hot-pixel map while the roof is closed
+        (safety reads unsafe), at most one try per night, in the background.
+        guide_hotpix.maybe_capture skips a current map and a busy or absent
+        PHD2 by itself. Never raises, never blocks the tick."""
+        if not getattr(self.config, "guard_enabled", True):
+            return
+        night = self.plan.get("night_of") or f"{now:%Y-%m-%d}"
+        if self._hotpix_tried == night:
+            return
+        self._hotpix_tried = night
+
+        async def _run():
+            try:
+                from photonscript.telescope_agent.guide_hotpix import maybe_capture
+                res = await maybe_capture(self.config, why)
+                logger.info("hot-pixel map (%s): %s", why, res)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hot-pixel map (%s) failed: %s", why, e)
+        asyncio.create_task(_run())
+
+    async def fallback_unguided(self, reason: str) -> bool:
+        """Switch the rest of tonight to unguided (PS-91 recovery failure /
+        PS-92 self-test FAIL): guiding_override="encoders", stop the sequence
+        and the guider, re-dispatch the remainder (companion untouched).
+        Once per night, RUNNING only.
+
+        NOT reachable with the default config: guard_on_fail and
+        selftest_on_fail both default to "alert" until PS-85 caps unguided
+        sub lengths (an uncapped 600 s unguided sub at 3248 mm trails)."""
+        night = self.plan.get("night_of")
+        if self.state != "RUNNING" or not night or self._fallback_night == night:
+            return False
+        self._fallback_night = night
+        self.guiding_override = "encoders"
+        self._persist()
+        steps = []
+        for label, key in (("stop", "sequence_stop"), ("guider stop", "guider_stop")):
+            ok = await self._nina(key) is not None
+            steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        steps.append(f"re-dispatch {'ok' if ok else 'FAILED'}")
+        report = "; ".join(steps)
+        self._set_state("RUNNING", f"Unguided fallback ({reason}): {report}")
+        logger.warning("unguided fallback (%s): %s", reason, report)
+        await notify(self.config,
+                     f"Guiding abandoned for tonight ({reason}): the remainder "
+                     f"is re-dispatched UNGUIDED ({report}).",
+                     title="PhotonScript unguided fallback", priority=1)
+        return ok
+
     async def _run(self):
         try:
             while self.state in ACTIVE_STATES:
@@ -1216,6 +1275,11 @@ class Armer:
         if self.state == "ARMED":
             preconfig = datetime.fromisoformat(
                 self.plan["preconfig_utc"].rstrip("Z"))
+            if (preconfig - timedelta(minutes=self.HOTPIX_LEAD_MIN) <= now < preconfig
+                    and self._hotpix_tried != self.plan.get("night_of")):
+                # PS-91: roof closed before dusk = dark guide frames
+                if await self._is_safe() is False:
+                    await self._maybe_hotpix_map(now, "pre-dusk, roof closed")
             if now >= preconfig:
                 if await self._dispatch_and_start():
                     self._set_state("RUNNING",
@@ -1310,3 +1374,24 @@ class Armer:
                     if self._unsafe_since is None:  # e.g. restored mid-pause
                         self._unsafe_since = now
                     await self._maybe_stop_stuck_imaging(now)
+                    # PS-91: opportunistic map refresh while the roof is shut
+                    await self._maybe_hotpix_map(now, "paused unsafe")
+
+
+async def request_fallback_unguided(config, reason: str) -> bool:
+    """PS-91 / PS-92: ask the scheduler's armer (same process in `start
+    --mode full`) to switch the rest of the night to unguided. Callers only
+    reach this when guard_on_fail / selftest_on_fail is "unguided"; both
+    default to "alert" until PS-85. False when no armer runs here."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is None:
+        logger.warning("unguided fallback requested (%s) but no armer in this "
+                       "process", reason)
+        return False
+    try:
+        return await armer.fallback_unguided(reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("unguided fallback failed: %s", e)
+        return False

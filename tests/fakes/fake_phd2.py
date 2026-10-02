@@ -167,6 +167,10 @@ class FakePHD2:
                                           "error": {"code": 1, "message": str(e)}})
         if writer in self.writers:
             self.writers.remove(writer)
+        try:
+            writer.close()   # server.wait_closed() waits for every connection
+        except Exception:  # noqa: BLE001
+            pass
 
     def methods(self) -> list[str]:
         return [r["method"] for r in self.requests]

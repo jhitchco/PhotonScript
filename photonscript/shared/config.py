@@ -202,6 +202,8 @@ class PhotonScriptConfig(BaseSettings):
     qa_guide_rms_mode: str = "info"  # guide RMS check: info (recorded, not
                                  # judged) | warn | fail. "info" until PS-70
                                  # puts the PHD2 RMS in real arcsec
+    qa_guide_lock_mode: str = "warn"  # PS-91: a sub guided on a non-star lock
+                                 # (guard episode overlapping it): warn | fail
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
 
@@ -307,6 +309,23 @@ class PhotonScriptConfig(BaseSettings):
                                  # Auto-restore reuses a good calibration) to
                                  # break a stuck loop before escalating. Set false
                                  # to warn/escalate only and never touch guiding.
+    # PS-91 non-star lock guard (telescope_agent.guide_guard): the RC16 agent
+    # watches PHD2 live for a hot-pixel / non-star lock, PHD2 guiding a parked
+    # or closed-roof scope, and max pulses that move nothing.
+    guard_enabled: bool = True   # detect, log episodes, mark subs, alert once
+                                 # per night (observe-only unless the next is on)
+    guard_auto_recover: bool = False  # on a non-star lock, re-select a vetted
+                                 # real star and resume guiding (D3: stop PHD2).
+                                 # Off for the first guarded night (observe-only)
+    guard_on_fail: str = "alert"  # recovery failed: "alert" (one push per night)
+                                 # or "unguided" (armer.fallback_unguided: re-
+                                 # dispatch the rest unguided). Keep "alert"
+                                 # until PS-85 caps unguided sub lengths
+    guide_min_star_hfd_px: float = 1.5  # D1: a guide "star" under this HFD
+                                 # (PHD2 px at bin 2; scaled by 2 / binning) is
+                                 # checked for a one-pixel profile
+    phd2_hotpix_max_age_days: float = 7.0  # rebuild the guide-camera hot-pixel
+                                 # map after this (or a binning/exposure change)
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

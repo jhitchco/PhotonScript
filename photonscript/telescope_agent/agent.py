@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 IS_WINDOWS = platform.system() == "Windows"
 
 
+def _pier_side(v) -> str | None:
+    """ninaAPI SideOfPier (pierEast / pierWest / 0 / 1 / East) -> East|West."""
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    if s in ("0", "piereast", "east"):
+        return "East"
+    if s in ("1", "pierwest", "west"):
+        return "West"
+    return None
+
+
 class TelescopeAgent:
     """Main telescope monitoring agent.
 
@@ -73,6 +85,18 @@ class TelescopeAgent:
         self._safety_aborted = False
         self._safety_device_id = ""   # chooser Id last seen connected (learned)
         self._safety_idle = False     # watchdog parked (daytime, not armed)
+        self._last_safe: bool | None = None  # last safety read (PS-91 D3)
+        # PS-91 non-star lock guard (RC16 agent only; see _guard_tick)
+        self.guard = None
+        self._guard_ep: dict = {}        # kind -> open episode
+        self._guard_cap = None
+        self._guard_seq = 0
+        self._guard_rates = None         # (RA, Dec) px/s at the current Dec
+        self._guard_rates_at = 0.0
+        self._guard_skip_note = None
+        self._hotpix = None
+        self._hotpix_mtime = None
+        self._flip_running = False
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -82,6 +106,10 @@ class TelescopeAgent:
 
         # Register PHD2 update callback
         self.phd2.on_update(self._on_guiding_update)
+        guard = (getattr(self, "rig", "rc16") == "rc16"
+                 and getattr(self.config, "guard_enabled", True))
+        if guard:
+            self._guard_setup()
 
         # Launch monitoring tasks
         tasks = [
@@ -92,6 +120,8 @@ class TelescopeAgent:
             asyncio.create_task(self._state_broadcast_loop()),
             asyncio.create_task(self._heartbeat_loop()),
         ]
+        if guard:
+            tasks.append(asyncio.create_task(self._guard_loop()))
 
         # Listen for commands from scheduler
         self.bus.subscribe("command", self._on_command)
@@ -372,6 +402,8 @@ class TelescopeAgent:
                                "— treating as safety-blind", _e)
             info = {"Connected": False}
 
+        self._last_safe = (bool(info["IsSafe"]) if info.get("Connected")
+                           and info.get("IsSafe") is not None else None)
         if info.get("Connected"):
             dev = info.get("DeviceId") or ""
             if dev and dev != getattr(self, "_safety_device_id", ""):
@@ -605,6 +637,10 @@ class TelescopeAgent:
                 self.state.mount_ra = mount.get("RightAscension")
                 self.state.mount_dec = mount.get("Declination")
                 self.state.mount_tracking = mount.get("Tracking", False)
+                # PS-91 / PS-92: park, slew and pier side for the guard
+                self.state.mount_at_park = mount.get("AtPark")
+                self.state.mount_slewing = mount.get("Slewing")
+                self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
 
                 # Get focuser info
                 try:
@@ -622,6 +658,7 @@ class TelescopeAgent:
                     "PAUSED": SessionState.PAUSED,
                 }
                 self.state.session_state = state_map.get(status, SessionState.IDLE)
+                self._flip_running = bool(seq.get("MeridianFlip", False))
 
                 # Current target from sequence
                 current = seq.get("CurrentTarget")
@@ -682,6 +719,256 @@ class TelescopeAgent:
             f"rms-{datetime.utcnow():%Y%m%d%H}",  # re-alert at most hourly
             f"Guide RMS {guide_rms_text(metrics)} over threshold {limit:.2f}\"",
         )
+
+    # ------------------------------------------------------------------
+    # PS-91 non-star lock guard
+    # ------------------------------------------------------------------
+
+    GUARD_TICK_S = 60
+    GUARD_RATES_EVERY_S = 600
+    GUARD_CLOSE_TICKS = 2   # clean ticks before an episode closes
+
+    def _guard_setup(self) -> None:
+        from photonscript.telescope_agent.guard_recovery import RecoveryCap
+        from photonscript.telescope_agent.guide_guard import NonStarLockGuard
+        self.guard = NonStarLockGuard(self.config, hotpix=self._load_hotpix())
+        self._guard_cap = RecoveryCap()
+        self.phd2.on_event(self._on_phd2_event)
+
+    def _load_hotpix(self):
+        """The hot-pixel map, re-read when its file changes."""
+        from photonscript.shared import phd2_store as store
+        from photonscript.telescope_agent import guide_hotpix
+        p = store.hotpix_path(self.config)
+        try:
+            mtime = p.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime != getattr(self, "_hotpix_mtime", None):
+            self._hotpix_mtime = mtime
+            self._hotpix = guide_hotpix.load(self.config) if mtime else None
+        return getattr(self, "_hotpix", None)
+
+    async def _on_phd2_event(self, event: dict) -> None:
+        """Lock events go straight to the guard (D5); never awaits PHD2
+        (this runs inside the client's socket reader)."""
+        if self.guard is None:
+            return
+        found = self.guard.feed(event)
+        if found and self.phd2.app_state == "Guiding":
+            asyncio.get_running_loop().create_task(
+                self._guard_act(found, tick=False))
+
+    async def _guard_loop(self):
+        while self._running:
+            await asyncio.sleep(self.GUARD_TICK_S)
+            try:
+                await self._guard_tick()
+            except Exception as e:  # noqa: BLE001 - never let the guard die
+                logger.warning("guard tick errored: %s", e)
+
+    async def _guard_rates_now(self):
+        """(RA, Dec) px/s a pulse moves the star now: PHD2's calibration
+        rates (px/s at the calibration Dec), RA rescaled by cos Dec."""
+        import math
+        import time as _t
+        if (self._guard_rates is not None
+                and _t.monotonic() - self._guard_rates_at < self.GUARD_RATES_EVERY_S):
+            return self._guard_rates
+        self._guard_rates_at = _t.monotonic()
+        try:
+            cal = await self.phd2.get_calibration_data()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("guard: no calibration data (%s)", e)
+            return self._guard_rates
+        if not cal or not cal.get("calibrated"):
+            self._guard_rates = None
+            return None
+        xr, yr = float(cal.get("xRate") or 0), float(cal.get("yRate") or 0)
+        cdec, dec = cal.get("declination"), self.state.mount_dec
+        if cdec is not None and dec is not None:
+            c0 = math.cos(math.radians(float(cdec)))
+            if abs(c0) > 0.05:
+                xr *= abs(math.cos(math.radians(float(dec))) / c0)
+        self._guard_rates = (xr, yr) if xr and yr else None
+        return self._guard_rates
+
+    async def _guard_context(self):
+        import time as _t
+        from photonscript.telescope_agent import phd2_ops
+        from photonscript.telescope_agent.guide_guard import GuardContext
+        guiding = self.phd2.app_state == "Guiding"
+        return GuardContext(
+            frames=self.phd2.recent_frames(1800), app_state=self.phd2.app_state,
+            scale=self.phd2.pixel_scale, binning=self.phd2.binning,
+            lock=self.phd2.lock_position, at_park=self.state.mount_at_park,
+            tracking=self.state.mount_tracking,
+            safe=getattr(self, "_last_safe", None),
+            armer_active=self._armer_active() if self._armer_state() else None,
+            ops_busy=phd2_ops.busy(),
+            rates_px_s=await self._guard_rates_now() if guiding else None,
+            now=_t.time())
+
+    async def _guard_tick(self):
+        """One guard pass: build the context, confirm D1 with PHD2's star
+        image when its HFD test trips, act on the verdicts."""
+        if self.guard is None:
+            return
+        if not self.phd2.connected:
+            await self._guard_act([], tick=True)   # let open episodes close
+            return
+        hp = self._load_hotpix()
+        if hp is not self.guard.hotpix:
+            self.guard.set_hotpix(hp)
+        ctx = await self._guard_context()
+        if self.guard.wants_star_image(ctx):
+            from photonscript.telescope_agent.guide_guard import peak_fraction
+            try:
+                ctx.star_peak_frac = peak_fraction(await self.phd2.get_star_image())
+            except Exception as e:  # noqa: BLE001
+                logger.debug("guard: get_star_image failed: %s", e)
+        await self._guard_act(self.guard.verdicts(ctx), tick=True)
+
+    async def _guard_act(self, verdicts, tick: bool = True) -> None:
+        """Open / update / close episodes, log them, alert once per night,
+        and (guard_auto_recover only) recover. D4 on a real star goes to the
+        PS-92 pulse-path FAIL record instead."""
+        from photonscript.shared import phd2_store as store
+        from photonscript.telescope_agent.guide_guard import (
+            IMPOSSIBLE, NON_STAR, PULSES)
+        now = datetime.utcnow()
+        night = store.night_of(self.config, now)
+        path = store.guard_path(self.config, night)
+        auto = bool(getattr(self.config, "guard_auto_recover", False))
+        for v in verdicts:
+            if v.kind == PULSES:
+                await self._guard_pulses_not_moving(v, night)
+        for kind in (NON_STAR, IMPOSSIBLE):
+            vs = [v for v in verdicts if v.kind == kind]
+            ep = self._guard_ep.get(kind)
+            if vs and ep is None:
+                self._guard_seq += 1
+                ep = {"id": f"{night}-{now:%H%M%S}-{self._guard_seq}",
+                      "kind": kind, "codes": sorted({v.code for v in vs}),
+                      "clean": 0}
+                self._guard_ep[kind] = ep
+                detail = "; ".join(v.detail for v in vs)
+                lock = self.phd2.lock_position
+                store.append_jsonl(path, {
+                    "event": "open", "id": ep["id"], "t_utc": store.iso_z(now),
+                    "kind": kind, "codes": ep["codes"], "detail": detail,
+                    "evidence": {v.code: v.evidence for v in vs},
+                    "lock": list(lock) if lock else None,
+                    "target": self.state.current_target,
+                    "app_state": self.phd2.app_state, "observe_only": not auto})
+                logger.warning("GUARD %s episode %s: %s", kind, ep["id"], detail)
+                if not auto:
+                    what = ("locked on a non-star (hot pixel or artifact)"
+                            if kind == NON_STAR else "guiding in an impossible state")
+                    await self._guard_alert(
+                        night, f"Guide guard: PHD2 {what} at {now:%H:%M}Z: "
+                        f"{detail}. Observe-only tonight (guard_auto_recover "
+                        "off): subs in the episode are marked guide_lock "
+                        "WARN. Check the PHD2 star profile.")
+            elif vs and ep is not None:
+                ep["clean"] = 0
+                new = sorted(set(ep["codes"]) | {v.code for v in vs})
+                if new != ep["codes"]:
+                    ep["codes"] = new
+                    store.append_jsonl(path, {
+                        "event": "update", "id": ep["id"],
+                        "t_utc": store.iso_z(now), "codes": new})
+            elif tick and ep is not None:
+                ep["clean"] += 1
+                if ep["clean"] >= self.GUARD_CLOSE_TICKS:
+                    store.append_jsonl(path, {
+                        "event": "close", "id": ep["id"], "t_utc": store.iso_z(now),
+                        "codes": ep["codes"],
+                        "reason": f"no verdict for {self.GUARD_CLOSE_TICKS} ticks "
+                                  f"(PHD2 {self.phd2.app_state})"})
+                    self._guard_ep.pop(kind, None)
+            if vs and auto:
+                await self._guard_recover(kind, vs, night, path)
+
+    async def _guard_recover(self, kind, vs, night, path) -> None:
+        from photonscript.shared import phd2_store as store
+        from photonscript.telescope_agent import guard_recovery as gr
+        from photonscript.telescope_agent.guide_guard import IMPOSSIBLE
+        ep = self._guard_ep.get(kind) or {}
+        if kind == IMPOSSIBLE:
+            res = await gr.stop_impossible(self.phd2)
+        else:
+            res = await gr.recover(
+                self.phd2, self.config, self._hotpix,
+                target=self.state.current_target or "?", cap=self._guard_cap,
+                slewing=self.state.mount_slewing,
+                flip_running=getattr(self, "_flip_running", False))
+        rec = {"event": "recovery", "id": ep.get("id"),
+               "t_utc": store.iso_z(datetime.utcnow())}
+        if res.get("skipped"):
+            # log a skip once per reason, not every tick
+            if res["skipped"] != getattr(self, "_guard_skip_note", None):
+                self._guard_skip_note = res["skipped"]
+                store.append_jsonl(path, dict(rec, ok=None, detail=res["skipped"],
+                                              steps=[]))
+            return
+        self._guard_skip_note = None
+        store.append_jsonl(path, dict(rec, ok=res.get("ok"),
+                                      detail=res.get("detail"),
+                                      steps=res.get("steps")))
+        if res.get("ok"):
+            logger.warning("GUARD recovery ok: %s", res.get("detail"))
+            return
+        reason = (f"guard recovery failed ({res.get('detail')}) after "
+                  + ", ".join(v.code for v in vs))
+        await self._guard_alert(night, f"Guide guard: {reason}. Guiding is not "
+                                "on a real star; subs are marked guide_lock WARN.")
+        if str(getattr(self.config, "guard_on_fail", "alert")).lower() == "unguided":
+            from photonscript.scheduler.armer import request_fallback_unguided
+            await request_fallback_unguided(self.config, reason)
+
+    async def _guard_alert(self, night: str, msg: str) -> None:
+        """One guard Pushover per night (key guard-<night>); the rest are
+        audited only."""
+        from photonscript.shared import phd2_store as store
+        from photonscript.shared.pushover import record
+        if store.alert_once(self.config, f"guard-{night}"):
+            await notify(self.config, msg, title="PhotonScript guide guard",
+                         priority=1)
+        else:
+            record(self.config, msg, title="PhotonScript guide guard",
+                   priority=1, reason="guard-once-per-night")
+
+    async def _guard_pulses_not_moving(self, verdict, night: str) -> None:
+        """D4 on a real star: the pulse path, not the star (PS-92 FAIL)."""
+        try:
+            from photonscript.telescope_agent.pulse_selftest import record_passive_fail
+        except ImportError:  # PS-92 not present
+            logger.warning("GUARD D4 (pulses not moving): %s", verdict.detail)
+            return
+        await record_passive_fail(self.config, verdict.detail, source="guard D4",
+                                  evidence=verdict.evidence, night=night,
+                                  pier_side=self.state.mount_side_of_pier)
+
+    def _guide_lock_for(self, start, exp_s, guide_state) -> str | None:
+        """PS-91 grading input: 'non-star' when a guard non-star episode
+        overlaps the exposure, 'star' when guided with the guard watching,
+        None otherwise (no guard on this rig, or not guiding)."""
+        if (getattr(self, "rig", "rc16") != "rc16" or start is None
+                or not getattr(self.config, "guard_enabled", True)):
+            return None
+        try:
+            from photonscript.shared import phd2_store as store
+            end = start + timedelta(seconds=float(exp_s or 0))
+            wins = store.nonstar_windows(self.config,
+                                         store.night_of(self.config, start),
+                                         now=datetime.utcnow())
+            if any(a < end and b > start for a, b in wins):
+                return "non-star"
+        except Exception as e:  # noqa: BLE001
+            logger.debug("guide lock lookup skipped: %s", e)
+            return None
+        return "star" if guide_state in ("guiding", "settling") else None
 
     async def _file_watch_loop(self):
         """Watch the image output directory for new FITS/TIFF files.
@@ -901,12 +1188,13 @@ class TelescopeAgent:
                      if qa_rules.group_key(r) == key]).get(key)
             except Exception as e:  # noqa: BLE001
                 logger.debug("night context skipped: %s", e)
+        guide_lock = self._guide_lock_for(start, exposure_seconds, guide_state)
         metrics = image_metrics(quality)
         metrics.update(exp_s=exposure_seconds,
                        ccd_temp=self.state.camera_temp_c,
                        set_temp=hdr.get("SET-TEMP"),
                        guide_rms=quality.tracking_rms_arcsec,
-                       guide_state=guide_state)
+                       guide_state=guide_state, guide_lock=guide_lock)
         card = qa_rules.evaluate(metrics, qa_rules.context(
             self.config, self.rig, target_name, rec_filter, night=night_ctx,
             unsafe_windows=wins, start_utc=start))
@@ -957,6 +1245,7 @@ class TelescopeAgent:
                               if quality.tracking_rms_arcsec is not None
                               else None),
                 "guide_state": guide_state or None,
+                "guide_lock": guide_lock,
                 "corner_spread": quality.corner_spread,
                 "clipped_pct": quality.clipped_pct,
                 "sat_stars_pct": quality.sat_star_pct,

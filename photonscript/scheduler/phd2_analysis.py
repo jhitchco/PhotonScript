@@ -1193,6 +1193,51 @@ def night_timeline(config, date: str) -> GuideTimeline | None:
     return GuideTimeline(raw, config)
 
 
+_TL_CACHE: dict = {}   # date -> (built monotonic s, GuideTimeline | None)
+_TL_TTL_S = 300.0
+LOCK_MIN_FRAMES = 30   # guided frames in a sub before its scatter is judged
+
+
+def sub_guide_lock(config, date: str, start_utc: datetime, exp_s: float,
+                   timeline: GuideTimeline | None = None) -> str | None:
+    """PS-91 backfill: was the RC16 guided on a real star during this sub?
+
+    'non-star' when a live guard episode (<data_dir>/phd2/guard) overlaps
+    the exposure, or when the night's PHD2 guide log shows the sub fully
+    guided with the 'star' scattering under the static threshold (0.15",
+    shared with the live guard's D2 and PS-88's star_static); 'star' when it
+    was guided and scattered like a star; None when unguided or no log."""
+    from photonscript.shared import phd2_store as store
+    if start_utc is None or not exp_s:
+        return None
+    end = start_utc + timedelta(seconds=float(exp_s))
+    try:
+        if any(a < end and b > start_utc
+               for a, b in store.nonstar_windows(config, date)):
+            return "non-star"
+    except Exception:  # noqa: BLE001 - no guard log is fine
+        pass
+    if timeline is None:
+        import time as _time
+        hit = _TL_CACHE.get(date)
+        if hit is None or _time.monotonic() - hit[0] > _TL_TTL_S:
+            try:
+                tl = night_timeline(config, date)
+            except Exception:  # noqa: BLE001
+                tl = None
+            if len(_TL_CACHE) > 4:
+                _TL_CACHE.clear()
+            _TL_CACHE[date] = hit = (_time.monotonic(), tl)
+        timeline = hit[1]
+    if timeline is None:
+        return None
+    g = timeline.stats(start_utc, float(exp_s))
+    if g["state"] != "guided" or g["frames"] < LOCK_MIN_FRAMES \
+            or g["std_total_arcsec"] is None:
+        return None
+    return "non-star" if g["std_total_arcsec"] < gm.STATIC_STD_ARCSEC else "star"
+
+
 def compact(a: dict, n: int = 4) -> dict:
     """The guiding block for the night report (/api/runs/<date>)."""
     if not a.get("ok"):

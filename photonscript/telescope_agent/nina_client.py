@@ -32,25 +32,36 @@ def _sequence_status(tree: list) -> dict:
     target is the innermost running container under Targets_Container."""
     running = False
     target = None
+    flip = False
 
     def walk(node, under_targets):
-        nonlocal running, target
+        nonlocal running, target, flip
         if not isinstance(node, dict):
             return
         is_running = str(node.get("Status", "")).upper() == "RUNNING"
         if is_running:
             running = True
+            # PS-91: a running meridian flip (trigger or item) blocks the
+            # guard's recovery; best effort, by name
+            if "meridian" in str(node.get("Name", "")).lower():
+                flip = True
             if under_targets and node.get("Items") is not None \
                     and node.get("Name") != TARGETS_AREA_CONTAINER:
                 target = node.get("Name") or target
         name = node.get("Name", "")
         for child in node.get("Items") or []:
             walk(child, under_targets or name == TARGETS_AREA_CONTAINER)
+        for trig in node.get("Triggers") or []:
+            if isinstance(trig, dict) and "meridian" in str(trig.get("Name", "")).lower()                     and str(trig.get("Status", "")).upper() == "RUNNING":
+                flip = True
 
     for top in tree:
         walk(top, False)
-    return {"State": "RUNNING" if running else "IDLE",
-            "CurrentTarget": {"Name": target} if target else None}
+    out = {"State": "RUNNING" if running else "IDLE",
+           "CurrentTarget": {"Name": target} if target else None}
+    if flip:
+        out["MeridianFlip"] = True
+    return out
 
 
 class NinaClient:

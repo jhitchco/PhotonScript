@@ -261,6 +261,9 @@ class TelescopeState(BaseModel):
     mount_ra: Optional[float] = None
     mount_dec: Optional[float] = None
     mount_tracking: bool = False
+    mount_at_park: Optional[bool] = None       # PS-91 guard (D3)
+    mount_slewing: Optional[bool] = None
+    mount_side_of_pier: Optional[str] = None   # "East" | "West" (PS-92 flip watch)
     guiding: GuidingMetrics = Field(default_factory=GuidingMetrics)
     camera_temp_c: Optional[float] = None
     camera_cooling_on: bool = False

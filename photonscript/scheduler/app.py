@@ -553,6 +553,11 @@ _CONFIG_FIELDS = [
     ("phd2_pixel_scale_arcsec", "PS_PHD2_PIXEL_SCALE_ARCSEC", "Guide camera scale (\"/px) override; 0 = ask PHD2, else compute from the fields below", "PHD2", "float", False, True),
     ("guide_camera_pixel_um", "PS_GUIDE_CAMERA_PIXEL_UM", "Guide camera pixel size (um), OGMA GP678C = 2.0", "PHD2", "float", False, True),
     ("guide_focal_length_mm", "PS_GUIDE_FOCAL_LENGTH_MM", "Guide focal length (mm); 0 = derive from the imaging pixel scale (OAG on the RC16)", "PHD2", "float", False, True),
+    ("guard_enabled", "PS_GUARD_ENABLED", "Non-star lock guard: watch PHD2 for hot-pixel / non-star locks and guiding a parked scope (PS-91)", "PHD2", "bool", False, True),
+    ("guard_auto_recover", "PS_GUARD_AUTO_RECOVER", "Guard auto-recovery: re-select a vetted star (off = observe-only)", "PHD2", "bool", False, True),
+    ("guard_on_fail", "PS_GUARD_ON_FAIL", "Guard recovery failed: alert | unguided (keep alert until PS-85)", "PHD2", "str", False, True),
+    ("guide_min_star_hfd_px", "PS_GUIDE_MIN_STAR_HFD_PX", "Guard D1: guide star HFD below this (PHD2 px at bin 2) is checked for a one-pixel profile", "PHD2", "float", False, True),
+    ("phd2_hotpix_max_age_days", "PS_PHD2_HOTPIX_MAX_AGE_DAYS", "Guide-camera hot-pixel map: rebuild after N days", "PHD2", "float", False, False),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -578,6 +583,7 @@ _CONFIG_FIELDS = [
     ("qa_hfr_outlier_factor", "PS_QA_HFR_OUTLIER_FACTOR", "Reject: HFR above x night median", "Quality", "float", False, False),
     ("qa_auto_approve", "PS_QA_AUTO_APPROVE", "Auto-approve all-green subs", "Quality", "bool", False, False),
     ("qa_auto_approve_rigs", "PS_QA_AUTO_APPROVE_RIGS", "Auto-approve only these rigs (comma list, empty = all)", "Quality", "str", False, False),
+    ("qa_guide_lock_mode", "PS_QA_GUIDE_LOCK_MODE", "Sub guided on a non-star lock (PS-91): warn | fail", "Quality", "str", False, True),
     ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
     ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
     ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
@@ -1701,6 +1707,13 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guiding analysis skipped for %s: %s", date, e)
         d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
+    try:  # PS-91: the live non-star lock guard's episodes for the night
+        from photonscript.scheduler.routers.phd2 import guard_summary
+        g = guard_summary(get_config(), date)
+        g.pop("list", None)
+        d["guiding"]["guard"] = g
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("guard summary skipped for %s: %s", date, e)
     pending = _syncthing_pending_names()
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
@@ -2816,6 +2829,8 @@ from photonscript.scheduler.routers import health as _health_router  # noqa: E40
 app.include_router(_health_router.router)
 from photonscript.scheduler.routers import review as _review_router  # noqa: E402
 app.include_router(_review_router.router)
+from photonscript.scheduler.routers import phd2 as _phd2_router  # noqa: E402
+app.include_router(_phd2_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
