@@ -97,6 +97,8 @@ class TelescopeAgent:
         self._hotpix = None
         self._hotpix_mtime = None
         self._flip_running = False
+        self._pier_last: str | None = None   # PS-92 passive post-flip check
+        self._flip_at: float | None = None
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -828,6 +830,58 @@ class TelescopeAgent:
             except Exception as e:  # noqa: BLE001
                 logger.debug("guard: get_star_image failed: %s", e)
         await self._guard_act(self.guard.verdicts(ctx), tick=True)
+        await self._flip_watch(ctx)
+
+    FLIP_WATCH_S = 180.0
+
+    async def _flip_watch(self, ctx) -> None:
+        """PS-92 passive check: after a pier-side change while guiding, judge
+        the first 3 min of guiding with the shared response logic. 'not
+        moving' is a pulse-path FAIL; Dec 'reversed' alerts with the PS-93
+        fix. A later target on the new side re-runs the active test (its
+        cache is keyed by pier side)."""
+        side = self.state.mount_side_of_pier
+        last = getattr(self, "_pier_last", None)
+        if side and last and side != last and ctx.app_state in (
+                "Guiding", "Calibrating", "LostLock", "Looping", "Stopped"):
+            self._flip_at = ctx.now
+            logger.info("pier side %s -> %s: watching the next %.0f s of guiding",
+                        last, side, self.FLIP_WATCH_S)
+        if side:
+            self._pier_last = side
+        t0 = getattr(self, "_flip_at", None)
+        if t0 is None or ctx.app_state != "Guiding":
+            return
+        frames = [f for f in ctx.frames if f["t"] >= t0 and not f.get("drop")
+                  and not f.get("settling")]
+        if not frames or frames[-1]["t"] - frames[0]["t"] < self.FLIP_WATCH_S:
+            return
+        self._flip_at = None
+        try:
+            from photonscript.shared import phd2_store as store
+            from photonscript.telescope_agent import pulse_selftest as ps
+        except ImportError:
+            return
+        verdict, axes = ps.passive_verdict(frames, ctx.rates_px_s, ctx.scale)
+        night = store.night_of(self.config)
+        ev = {a: {k: axes[a].get(k) for k in ("response", "response_verdict",
+                                              "commanded_arcsec_min",
+                                              "observed_arcsec_min")}
+              for a in axes}
+        if verdict == "FAIL":
+            bad = [a.upper() for a in ("ra", "dec")
+                   if axes[a].get("response_verdict") == "not moving"]
+            await ps.record_passive_fail(
+                self.config, f"after the meridian flip {', '.join(bad)} pulses "
+                "did not move the star", source="post-flip", evidence=ev,
+                night=night, pier_side=side)
+        elif verdict == "REVERSED":
+            await ps.record_passive_fail(
+                self.config, "Dec corrections reversed after the flip",
+                source="post-flip", evidence=ev, night=night, pier_side=side,
+                verdict="REVERSED")
+            await ps.passive_reversed_alert(
+                self.config, f"response {axes['dec'].get('response')}", night, side)
 
     async def _guard_act(self, verdicts, tick: bool = True) -> None:
         """Open / update / close episodes, log them, alert once per night,

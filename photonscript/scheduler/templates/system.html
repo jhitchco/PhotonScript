@@ -360,6 +360,55 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="selftestPanel">
+            <h2>PHD2 Pulse Self-Test (PS-92)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">Does the mount move on a guide pulse? PHD2 loops while PhotonScript pulses W, E, N, S (3 each) and measures how far the star field moved against the guide speed. PASS: every direction 0.5 to 1.5x of expected and opposite pairs oppose; WARN above 1.5x (guide-rate mismatch); FAIL under 0.5x or not opposing. With PS_PHD2_SELFTEST_ENABLED on, NINA runs it after the twilight autofocus and before each guided target. Run it by hand only with the scope tracking on a star field and PHD2 not guiding.</p>
+            <div class="bd" id="stLast">loading...</div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
+                <button class="btn btn-secondary" id="stRefresh">Refresh</button>
+                <button class="btn btn-secondary" id="stRun" title="Runs the test now (1.5 to 4 min). Refused while PHD2 is guiding.">Run self-test now</button>
+                <span class="bd" id="stStatus"></span>
+            </div>
+            <div id="stTrend" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            function ratios(dirs) {
+                return ['W', 'E', 'N', 'S'].map(function (d) { return d + ' ' + esc(((dirs || {})[d] || {}).ratio); }).join(', ');
+            }
+            async function load() {
+                try {
+                    var t = await (await fetch('/api/phd2/selftest?days=30')).json();
+                    var last = (t.results || []).filter(function (r) { return (r.kind || 'active') === 'active' && r.verdict !== 'SKIPPED'; }).pop();
+                    document.getElementById('stLast').innerHTML = last ?
+                        'Last: <b>' + esc(last.verdict) + '</b> ' + esc(last.t_utc) + ' (' + esc(last.context) + ', pier ' + esc(last.pier_side) +
+                        ', Dec ' + esc(last.dec_deg) + ') ratios ' + ratios(last.directions) + '<br>' + esc((last.reasons || []).join('; ')) :
+                        'No self-test yet.';
+                    var rows = (t.nights || []).map(function (n) {
+                        return '<tr><td>' + esc(n.night) + '</td><td><b>' + esc(n.verdict) + '</b></td><td>' + esc(n.pier_side) +
+                            '</td><td>' + ['W', 'E', 'N', 'S'].map(function (d) { return esc((n.ratios || {})[d]); }).join(' / ') +
+                            '</td><td>' + esc((n.reasons || []).join('; ')) + '</td></tr>';
+                    }).join('');
+                    document.getElementById('stTrend').innerHTML = rows ?
+                        '<table class="tbl" style="font-size:.8rem;"><tr><th>night</th><th>worst</th><th>pier</th><th>W / E / N / S ratio</th><th>why</th></tr>' + rows + '</table>' : '';
+                } catch (e) { document.getElementById('stLast').textContent = 'error: ' + e; }
+            }
+            document.getElementById('stRefresh').onclick = load;
+            document.getElementById('stRun').onclick = async function () {
+                var s = document.getElementById('stStatus');
+                if (!confirm('Run the pulse self-test now? The scope must be tracking on a star field and PHD2 not guiding.')) return;
+                s.textContent = ' running (1.5 to 4 min)...';
+                try {
+                    var r = await (await fetch('/api/phd2/selftest/run', {method: 'POST'})).json();
+                    s.textContent = ' ' + r.verdict + ': ' + (r.reasons || []).join('; ');
+                } catch (e) { s.textContent = ' error: ' + e; }
+                load();
+            };
+            load();
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Configuration</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Edits are written to

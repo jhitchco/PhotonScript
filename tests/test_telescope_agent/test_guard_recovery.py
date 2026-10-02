@@ -35,7 +35,7 @@ async def locked_on_hot_pixel(tmp_path):
     port = await f.start()
     c = PHD2Client("127.0.0.1", port, config=_cfg(tmp_path))
     assert await c.connect()
-    task = asyncio.create_task(c.run_event_loop())
+    task = await c.start_event_loop()
     await c.find_star([HOT[0] - 4, HOT[1] - 4, 8, 8])     # the hot pixel
     await c.loop()
     await c.start_guiding()
@@ -108,7 +108,7 @@ async def test_no_real_star_fails_cleanly(tmp_path):
     port = await f.start()
     c = PHD2Client("127.0.0.1", port, config=_cfg(tmp_path))
     await c.connect()
-    task = asyncio.create_task(c.run_event_loop())
+    task = await c.start_event_loop()
     try:
         await c.loop()
         await c.start_guiding()

@@ -3,6 +3,8 @@
 GET  /api/phd2/guard?date=         non-star lock guard episodes for a night
 GET  /api/phd2/hotpix              guide-camera hot-pixel map status
 POST /api/phd2/hotpix/capture      capture a new map now (roof closed!)
+GET  /api/phd2/selftest?date=|days=   pulse-path self-test results (PS-92)
+POST /api/phd2/selftest/run?context=&slot=   run the self-test now
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
 stay in routers/triage.py. Handlers lazily import get_config to avoid an
@@ -87,3 +89,84 @@ async def api_phd2_hotpix_capture():
             "ok": False, "note": "a night is running: the map is built "
                                  "automatically while the roof is closed"})
     return await guide_hotpix.capture(_cfg(), "manual")
+
+
+# ---- PS-92 pulse-path self-test --------------------------------------------
+
+def selftest_summary(config, date: str) -> dict:
+    """The self-test block for a night (runs page, morning report)."""
+    from photonscript.shared import phd2_store as store
+    rows = store.selftest_results(config, night=date)
+    active = [r for r in rows if r.get("kind", "active") == "active"
+              and r.get("verdict") not in ("SKIPPED",)]
+    passive = [r for r in rows if r.get("kind") == "passive"]
+    last = active[-1] if active else None
+    return {"date": date, "runs": len(active),
+            "verdict": last.get("verdict") if last else None,
+            "by_pier": {r.get("pier_side") or "?": r.get("verdict") for r in active},
+            "passive": [{k: r.get(k) for k in ("t_utc", "source", "verdict",
+                                                "reasons", "pier_side")}
+                        for r in passive],
+            "last": {k: (last or {}).get(k) for k in (
+                "t_utc", "context", "slot", "verdict", "reasons", "pier_side",
+                "dec_deg", "speeds", "directions", "pairs")} if last else None}
+
+
+def _trend(rows: list[dict]) -> list[dict]:
+    """One row per night: the worst active verdict and its per-direction
+    ratios (the 30-night table)."""
+    rank = {"FAIL": 0, "WARN": 1, "PASS": 2, "INCONCLUSIVE": 3}
+    by: dict[str, dict] = {}
+    for r in rows:
+        if r.get("kind", "active") != "active" or r.get("verdict") == "SKIPPED":
+            continue
+        cur = by.get(r.get("night"))
+        if cur is None or rank.get(r.get("verdict"), 9) < rank.get(cur.get("verdict"), 9):
+            by[r.get("night")] = r
+    out = []
+    for night in sorted(by, reverse=True):
+        r = by[night]
+        out.append({"night": night, "verdict": r.get("verdict"),
+                    "pier_side": r.get("pier_side"),
+                    "ratios": {d: (v or {}).get("ratio")
+                               for d, v in (r.get("directions") or {}).items()},
+                    "reasons": r.get("reasons")})
+    return out
+
+
+@router.get("/api/phd2/selftest")
+def api_phd2_selftest(date: str = "", days: int = 0):
+    """Self-test results: one night (date=, default tonight) or the last
+    `days` nights as a per-night trend."""
+    from photonscript.shared import phd2_store as store
+    cfg = _cfg()
+    if days:
+        rows = store.selftest_results(cfg, days=days)
+        return {"days": days, "nights": _trend(rows), "results": rows}
+    date = date or store.night_of(cfg, datetime.utcnow())
+    out = selftest_summary(cfg, date)
+    out["results"] = store.selftest_results(cfg, night=date)
+    return out
+
+
+def _auto_slot() -> str:
+    """twilight before the armed night's dusk, target after it."""
+    try:
+        from photonscript.scheduler.app import get_armer
+        dusk = (get_armer().plan or {}).get("dusk_utc")
+        if dusk and datetime.utcnow() < datetime.fromisoformat(dusk.rstrip("Z")):
+            return "twilight"
+    except Exception:  # noqa: BLE001
+        pass
+    return "target"
+
+
+@router.post("/api/phd2/selftest/run")
+async def api_phd2_selftest_run(context: str = "manual", slot: str = "auto"):
+    """Run the pulse-path self-test now (NINA's ExternalScript slot posts
+    context=nina). Blocks until it finishes (about 1.5 to 4 min)."""
+    from photonscript.telescope_agent.pulse_selftest import run_selftest
+    context = "nina" if context == "nina" else "manual"
+    if slot not in ("twilight", "target", "manual"):
+        slot = _auto_slot() if context == "nina" else "manual"
+    return await run_selftest(_cfg(), context=context, slot=slot)

@@ -324,6 +324,23 @@ class PhotonScriptConfig(BaseSettings):
     guide_min_star_hfd_px: float = 1.5  # D1: a guide "star" under this HFD
                                  # (PHD2 px at bin 2; scaled by 2 / binning) is
                                  # checked for a one-pixel profile
+    # PS-92 pulse-path self-test (telescope_agent.pulse_selftest): does the
+    # mount move on a guide pulse? Run from NINA ExternalScript slots (after
+    # the twilight AF, and before each guided target's StartGuiding).
+    phd2_selftest_enabled: bool = False  # insert the NINA slots + lint them.
+                                 # Off until the first manual twilight run
+                                 # (POST /api/phd2/selftest/run) looks right
+    phd2_selftest_script: str = "C:\\astro\\PhotonScript\\deploy\\phd2-selftest.cmd"
+    selftest_step_px: float = 10.0   # aim each pulse at about this many px
+    selftest_steps: int = 3          # pulses per direction (W, E, N, S)
+    selftest_ratio_min: float = 0.5  # observed/expected below this = FAIL
+    selftest_ratio_max: float = 1.5  # above this = WARN (guide-rate mismatch)
+    selftest_timeout_s: int = 240    # hard stop (INCONCLUSIVE)
+    guide_rate_sidereal: float = 0.5  # fallback guide speed (x sidereal) when
+                                 # neither NINA nor the PHD2 log reports one
+    selftest_on_fail: str = "alert"  # FAIL: "alert" (one push per night) or
+                                 # "unguided" (armer.fallback_unguided). Keep
+                                 # "alert" until PS-85 caps unguided subs
     phd2_hotpix_max_age_days: float = 7.0  # rebuild the guide-camera hot-pixel
                                  # map after this (or a binning/exposure change)
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s

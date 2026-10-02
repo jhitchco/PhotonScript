@@ -457,6 +457,13 @@ class PHD2Client:
             {"pixels": settle_pixels, "time": settle_time, "timeout": 60},
         ])
 
+    async def start_event_loop(self) -> asyncio.Task:
+        """run_event_loop() as a task, started before this returns, so a
+        call() right after never races it for the socket (PS-91)."""
+        task = asyncio.create_task(self.run_event_loop())
+        await asyncio.sleep(0)
+        return task
+
     async def run_event_loop(self):
         """Listen for PHD2 events (and RPC replies) and update metrics."""
         self._running = True

@@ -558,6 +558,15 @@ _CONFIG_FIELDS = [
     ("guard_on_fail", "PS_GUARD_ON_FAIL", "Guard recovery failed: alert | unguided (keep alert until PS-85)", "PHD2", "str", False, True),
     ("guide_min_star_hfd_px", "PS_GUIDE_MIN_STAR_HFD_PX", "Guard D1: guide star HFD below this (PHD2 px at bin 2) is checked for a one-pixel profile", "PHD2", "float", False, True),
     ("phd2_hotpix_max_age_days", "PS_PHD2_HOTPIX_MAX_AGE_DAYS", "Guide-camera hot-pixel map: rebuild after N days", "PHD2", "float", False, False),
+    ("phd2_selftest_enabled", "PS_PHD2_SELFTEST_ENABLED", "Pulse-path self-test in the NINA sequence (twilight + before each guided target, PS-92)", "PHD2", "bool", False, False),
+    ("phd2_selftest_script", "PS_PHD2_SELFTEST_SCRIPT", "Self-test script NINA runs (deploy\\phd2-selftest.cmd on the scope PC)", "PHD2", "str", False, False),
+    ("selftest_step_px", "PS_SELFTEST_STEP_PX", "Self-test: aim each pulse at N guide px", "PHD2", "float", False, False),
+    ("selftest_steps", "PS_SELFTEST_STEPS", "Self-test: pulses per direction", "PHD2", "int", False, False),
+    ("selftest_ratio_min", "PS_SELFTEST_RATIO_MIN", "Self-test: moved/expected below this = FAIL", "PHD2", "float", False, False),
+    ("selftest_ratio_max", "PS_SELFTEST_RATIO_MAX", "Self-test: moved/expected above this = WARN (guide-rate mismatch)", "PHD2", "float", False, False),
+    ("selftest_timeout_s", "PS_SELFTEST_TIMEOUT_S", "Self-test: hard timeout (s)", "PHD2", "int", False, False),
+    ("guide_rate_sidereal", "PS_GUIDE_RATE_SIDEREAL", "Fallback guide speed (x sidereal) when NINA and the PHD2 log give none", "PHD2", "float", False, False),
+    ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (keep alert until PS-85)", "PHD2", "str", False, True),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -1707,11 +1716,13 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guiding analysis skipped for %s: %s", date, e)
         d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
-    try:  # PS-91: the live non-star lock guard's episodes for the night
+    try:  # PS-91 / PS-92: the live guard's episodes and the pulse self-test
         from photonscript.scheduler.routers.phd2 import guard_summary
         g = guard_summary(get_config(), date)
         g.pop("list", None)
         d["guiding"]["guard"] = g
+        from photonscript.scheduler.routers.phd2 import selftest_summary
+        d["guiding"]["selftest"] = selftest_summary(get_config(), date)  # PS-92
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guard summary skipped for %s: %s", date, e)
     pending = _syncthing_pending_names()

@@ -22,7 +22,7 @@ async def fake(tmp_path):
     port = await f.start()
     c = PHD2Client("127.0.0.1", port, config=_cfg())
     assert await c.connect()
-    task = asyncio.create_task(c.run_event_loop())
+    task = await c.start_event_loop()
     yield f, c
     await c.disconnect()
     task.cancel()

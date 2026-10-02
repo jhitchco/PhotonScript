@@ -346,7 +346,13 @@
                 ' episode(s) (' + gd.non_star + ' non-star lock, ' + gd.impossible_state + ' impossible state; ' +
                 (gd.auto_recover ? gd.recoveries_ok + ' recovered, ' + gd.recoveries_failed + ' failed' : 'observe-only') +
                 ') <a href="/api/phd2/guard?date=' + encodeURIComponent(date) + '" target="_blank">episodes</a></span>' : '';
-            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine; return; }
+            const st = g && g.selftest;  // PS-92 pulse self-test
+            const stLine = st && (st.runs || (st.passive || []).length) ? '<br><span class="' +
+                ({FAIL: 'bad', WARN: 'warn'}[st.verdict] || '') + '">Pulse self-test: ' + esc(st.verdict || 'none') +
+                ' (' + st.runs + ' run(s)' + ((st.passive || []).length ? ', passive: ' +
+                st.passive.map(p => esc(p.verdict) + ' ' + esc(p.source)).join(', ') : '') +
+                ') <a href="/api/phd2/selftest?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine; return; }
             const sev = {critical: 'bad', warning: 'warn', info: ''};
             box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
                 g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
@@ -356,7 +362,7 @@
                 (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
                     esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
-                    '</span>').join('') + guardLine;
+                    '</span>').join('') + guardLine + stLine;
         }
         document.getElementById('phases').innerHTML = Object.keys(d.phases).length
             ? Object.entries(d.phases).map(([k, v]) =>

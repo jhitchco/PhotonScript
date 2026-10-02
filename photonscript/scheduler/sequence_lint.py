@@ -183,6 +183,57 @@ def _force_cal_wanted() -> bool:
         return False
 
 
+def _selftest_wanted() -> tuple[bool, str]:
+    """PS-92: (slots enabled, script path) from the config; (False, "") if
+    the config can't be read."""
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        c = PhotonScriptConfig()
+        return (bool(getattr(c, "phd2_selftest_enabled", False)),
+                str(getattr(c, "phd2_selftest_script", "") or ""))
+    except Exception:
+        return False, ""
+
+
+def _check_selftest(seq: dict, r: LintResult) -> None:
+    """PS-92 rule phd2-selftest: with the self-test enabled, every
+    StartGuiding must be directly preceded by the self-test ExternalScript
+    (the mount's pulse path is tested before PHD2 is asked to guide), and the
+    script file should exist on this machine (a missing script fails in NINA
+    harmlessly, ErrorBehavior 0, so that is a warning)."""
+    enabled, path = _selftest_wanted()
+    if not enabled:
+        return
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    missing = 0
+
+    def visit(node):
+        nonlocal missing
+        items = (node.get("Items") or {}).get("$values", []) if isinstance(
+            node.get("Items"), dict) else []
+        prev = None
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if "StartGuiding" in it.get("$type", ""):
+                ok = (prev is not None and "ExternalScript" in prev.get("$type", "")
+                      and name and name in str(prev.get("Script", "")).lower())
+                if not ok:
+                    missing += 1
+            prev = it
+            visit(it)
+    visit(seq)
+    if missing:
+        r.error("phd2-selftest", f"{missing} StartGuiding item(s) not preceded by "
+                                 f"the pulse self-test script ({path}); "
+                                 "PS_PHD2_SELFTEST_ENABLED is on")
+    if path:
+        from pathlib import Path
+        if not Path(path).exists():
+            r.warn("phd2-selftest", f"self-test script {path} not found on this "
+                                    "machine (NINA would skip it)")
+
+
 def lint(seq: dict, guided: bool | None = None) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content."""
     r = LintResult()
@@ -238,6 +289,7 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
                                "(PS_GUIDING_FORCE_FIRST_CALIBRATION is on)")
         if not _has_type(seq, "StopGuiding"):
             r.warn("guiding", "Guided run without StopGuiding in shutdown")
+        _check_selftest(seq, r)
     else:
         # A StopGuiding in the shutdown is ALLOWED (and desirable) on an
         # unguided run — it harmlessly stops a stray looping PHD2.

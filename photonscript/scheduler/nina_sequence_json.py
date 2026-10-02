@@ -406,6 +406,22 @@ def _start_guiding(force_calibration: bool = False) -> dict:
                        Attempts=GUIDING_STARTUP_ATTEMPTS)
 
 
+def _external_script(path: str, arg: str = "") -> dict:
+    """NINA ExternalScript: runs a program and waits for it. ErrorBehavior 0 +
+    Attempts 1, so a failed script never blocks the sequence (PS-92)."""
+    script = f'"{path}"' + (f" {arg}" if arg else "")
+    return _make_typed("NINA.Sequencer.SequenceItem.Utility.ExternalScript, "
+                       "NINA.Sequencer", Script=script, ErrorBehavior=0,
+                       Attempts=1)
+
+
+def _selftest_script(cfg) -> str | None:
+    """PS-92: the pulse self-test script path when the slots are enabled."""
+    if not getattr(cfg, "phd2_selftest_enabled", False):
+        return None
+    return str(getattr(cfg, "phd2_selftest_script", "") or "") or None
+
+
 def _stop_guiding() -> dict:
     return _make_typed("NINA.Sequencer.SequenceItem.Guider.StopGuiding, "
                        "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
@@ -755,9 +771,15 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             af_filter: "FilterType | None" = None,
                             narrate: str = "normal",
                             focus_offsets: dict | None = None,
-                            loop_end: tuple | None = None) -> dict:
+                            loop_end: tuple | None = None,
+                            selftest_script: str | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
-    plate solve center -> tracking (defensive) -> [guiding] -> exposures.
+    plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
+    -> exposures.
+
+    selftest_script (PS-92): a guided target runs the pulse-path self-test
+    script (NINA ExternalScript, slot "target") between SetTracking and
+    StartGuiding; the service skips it once tonight passed on this pier side.
 
     af_filter (config.autofocus_filter, e.g. L) is the bright filter the
     start-of-target autofocus runs on so it never focuses through narrowband;
@@ -854,6 +876,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     items.append(_center(target))
     items.append(_set_tracking(0))
     if target.start_guiding:
+        if selftest_script:
+            items.append(_external_script(selftest_script, "target"))
         items.append(_start_guiding(force_calibration))
         if narrate_steps:
             items.append(_pushover("Imaging",
@@ -1313,6 +1337,7 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
     _cfg = PhotonScriptConfig()
     af_ft = _af_filter_type(_cfg)  # bright AF filter (e.g. L), or None
     guided = any(t.start_guiding for t in sequence.targets)
+    selftest = _selftest_script(_cfg) if guided else None  # PS-92 slots
     temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
     gate_dark = sequence.wait_until_local is not None
 
@@ -1447,6 +1472,12 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             _pushover("Startup", "twilight autofocus complete "
                       f"(filter {focus_filter.value if focus_filter else '—'}) "
                       "— holding for the imaging gate"),
+        ]
+        if selftest:
+            # PS-92: test the guide-pulse path while the scope tracks at the
+            # twilight slot, before any guided target needs it
+            start_items.append(_external_script(selftest, "twilight"))
+        start_items += [
             _wait_for_provider(gate_provider, gate_offset),
             _pushover("Startup", gate_msg),
         ]
@@ -1462,7 +1493,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                                     narrate=getattr(_cfg, "pushover_verbosity",
                                                     "normal"),
                                     focus_offsets=_cfg.focus_offset_map(),
-                                    loop_end=(dawn_provider, dawn_offset))
+                                    loop_end=(dawn_provider, dawn_offset),
+                                    selftest_script=selftest)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops

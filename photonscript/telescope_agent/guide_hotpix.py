@@ -110,7 +110,7 @@ async def _client(config):
     c = PHD2Client(config.phd2_host, config.phd2_port, config=config)
     if not await c.connect():
         return None, None
-    task = asyncio.create_task(c.run_event_loop())
+    task = await c.start_event_loop()
     return c, task
 
 
