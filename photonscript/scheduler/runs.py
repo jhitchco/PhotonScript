@@ -188,7 +188,14 @@ def _sep_module():
             return None
 
 
-def _shape_diagnostics(objs, W, H, ecc_floor: float = 0.30) -> dict:
+# PS-94: sqrt-form floors (were 0.30 / 0.25 in the old 1-b/a form; same
+# stars: lin_to_sqrt(0.30) = 0.71, lin_to_sqrt(0.25) = 0.66)
+_SHAPE_ELONG_FLOOR = 0.71
+_SHAPE_ROUND_MAX = 0.66
+
+
+def _shape_diagnostics(objs, W, H,
+                       ecc_floor: float = _SHAPE_ELONG_FLOOR) -> dict:
     """Per-corner eccentricity + elongation-direction diagnosis.
 
     Distinguishes the *cause* of elongated stars, which a single whole-frame
@@ -208,7 +215,8 @@ def _shape_diagnostics(objs, W, H, ecc_floor: float = 0.30) -> dict:
         return {}
     x, y, a, b, th = (good["x"], good["y"], good["a"], good["b"],
                       good["theta"])
-    ecc = 1.0 - b / a
+    from photonscript.shared.star_shape import ecc_sqrt
+    ecc = ecc_sqrt(a, b)
     zx = np.clip((x / W * 3).astype(int), 0, 2)
     zy = np.clip((y / H * 3).astype(int), 0, 2)
 
@@ -229,7 +237,7 @@ def _shape_diagnostics(objs, W, H, ecc_floor: float = 0.30) -> dict:
     d = np.abs(((thE - rad + np.pi / 2) % np.pi) - np.pi / 2)
     radial_frac = float((d < np.deg2rad(25)).mean())
     med_ecc = float(np.median(ecc))
-    if med_ecc < 0.25:
+    if med_ecc < _SHAPE_ROUND_MAX:
         shape = "round"
     elif radial_frac > 0.5:
         shape = "radial (tilt/collimation/curvature)"
@@ -246,6 +254,7 @@ def _measure(binned, config) -> dict:
     without sep we only report a star count (no fabricated HFR)."""
     import numpy as np
 
+    from photonscript.shared.star_shape import ECC_DEF, ecc_sqrt
     sep = _sep_module()
     if sep is not None:
         data = np.ascontiguousarray(binned, dtype=np.float32)
@@ -293,8 +302,7 @@ def _measure(binned, config) -> dict:
                     r = r_all[ok]
                     if len(r):
                         hfr = round(float(np.median(r)) * 2, 2)  # ->native px
-                    with np.errstate(divide="ignore", invalid="ignore"):
-                        e_all = 1.0 - top["b"] / top["a"]
+                    e_all = ecc_sqrt(top["a"], top["b"])
                     star_arrays = {"x": top["x"][ok], "y": top["y"][ok],
                                    "hfr": r_all[ok], "ecc": e_all[ok],
                                    "theta": top["theta"][ok],
@@ -302,8 +310,8 @@ def _measure(binned, config) -> dict:
                                    "w": data.shape[1], "h": data.shape[0]}
                 except Exception:  # noqa: BLE001
                     pass
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    e = 1.0 - top["b"] / top["a"]
+                # PS-94: sqrt(1-(b/a)^2) like the live grader (was 1-b/a)
+                e = ecc_sqrt(top["a"], top["b"])
                 e = e[np.isfinite(e)]
                 if len(e):
                     ecc = round(float(np.median(e)), 3)
@@ -358,7 +366,8 @@ def _measure(binned, config) -> dict:
                 "noise": round(float(bkg.globalrms), 2),
                 "clipped_pct": clipped_pct, "sat_stars_pct": sat_stars_pct,
                 "swamp": swamp, "exposure": exposure,
-                "graded_by": "sep-binned", "_stars": star_arrays}
+                "graded_by": "sep-binned", "ecc_def": ECC_DEF,
+                "_stars": star_arrays}
 
     # Honest fallback: count stars, don't invent an HFR (the old area-based
     # estimate quantized to 3.91 px for every frame).
@@ -423,11 +432,57 @@ def sensor_temp_reasons(ccd_temp, header_setpoint, config,
     return _str(ccd_temp, header_setpoint, config, setpoint=setpoint)
 
 
+def _load_native(path: Path):
+    """Full-resolution float32 frame (BZERO / BSCALE applied) for the PS-94
+    native measure. About 104 MB for a 26 MP frame: callers hold _HEAVY."""
+    import numpy as np
+    from astropy.io import fits as _fits
+    with _fits.open(path, memmap=True,
+                    do_not_scale_image_data=True) as hdul:
+        hdr = hdul[0].header
+        data = np.array(hdul[0].data, dtype=np.float32)
+        bscale, bzero = float(hdr.get("BSCALE", 1)), float(hdr.get("BZERO", 0))
+    if bscale != 1.0:
+        data *= bscale
+    if bzero:
+        data += bzero
+    return data
+
+
+def _measure_native(path: Path) -> dict | None:
+    """PS-94: eccentricity / HFR at the native 0.24"/px with the live
+    grader's pipeline (shared.star_shape.measure), so backfill records carry
+    the same native ecc the live watcher measures. None without sep or on
+    MemoryError (the scope PC is RAM-tight): the record then keeps the binned
+    measure only. Logs the time it took per sub."""
+    import time
+    from photonscript.shared import star_shape
+    t0 = time.monotonic()
+    try:
+        data = _load_native(path)
+        res = star_shape.measure(data, binned=False)
+        del data
+    except MemoryError:
+        logger.warning("native measure skipped for %s: MemoryError (binned "
+                       "measure only)", path.name)
+        return None
+    logger.info("native measure %s: %.1fs", path.name, time.monotonic() - t0)
+    return res
+
+
 def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                 *, prewarm: tuple[str, str] | None = None,
                 rig: str = "rc16", night: dict | None = None,
-                stars_to: tuple[str, str] | None = None) -> dict:
+                stars_to: tuple[str, str] | None = None,
+                native: bool = True) -> dict:
     """Per-sub metrics for backfill: sep on a 2x2-binned frame.
+
+    PS-94: with native=True (RC16 only) it also measures the native frame
+    with the live pipeline. Then `ecc` is the native value (what the native
+    gate judges, as on live records) and `ecc_bin` / `hfr_bin` the binned
+    ones. Without it (MemoryError, no sep, native=False) `ecc` stays the
+    binned value and `ecc_at` says "binned". All ecc in sqrt(1-(b/a)^2)
+    form (`ecc_def`).
 
     prewarm=(date, rel_file): while the frame is already loaded, also render the
     runs-grid thumbnail (w=264) so the runs page never generates it on first
@@ -456,7 +511,17 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
             except Exception as e:  # noqa: BLE001
                 logger.debug("thumb pre-warm skipped for %s: %s", path.name, e)
         del binned
+        gc.collect()
+        # PS-94: the native measure, one full-res frame at a time (_HEAVY)
+        mn = None
+        if native and rig == "rc16" and m.get("ecc") is not None:
+            mn = _measure_native(path)
     gc.collect()
+    ecc_bin, hfr_bin = m.get("ecc"), m.get("hfr")
+    if mn and mn.get("ecc") is not None:
+        ecc, ecc_at = round(mn["ecc"], 3), "native"
+    else:
+        ecc, ecc_at = ecc_bin, "binned"
     # PS-21: one set of rules for live and backfill (shared.qa_rules). This
     # grader has no true FWHM (its fwhm_arcsec is HFR x scale), so FWHM is
     # not judged here, and the PS-71 star-size signature runs on HFR only.
@@ -477,7 +542,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     except Exception as e:  # noqa: BLE001
         logger.debug("safety history skipped for %s: %s", path.name, e)
     metrics = qa_rules.record_metrics(
-        hfr=m["hfr"], fwhm_arcsec=None, ecc=m["ecc"], stars=m["stars"],
+        hfr=m["hfr"], fwhm_arcsec=None, ecc=ecc, ecc_bin=ecc_bin,
+        stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
         ccd_temp=hdr.get("CCD-TEMP"), set_temp=hdr.get("SET-TEMP"),
         doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
@@ -495,7 +561,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                 star_arrays["ecc"], theta=star_arrays["theta"],
                 flux=star_arrays["flux"], w=star_arrays["w"],
                 h=star_arrays["h"], scale=2.0, limit=n_max,
-                grader="sep-binned", rig=rig, ecc_def="1-b/a")
+                grader="sep-binned", rig=rig,
+                ecc_def=m.get("ecc_def") or "")
             star_table.write(config, stars_to[0], stars_to[1], tbl, rig=rig)
         except Exception as e:  # noqa: BLE001
             logger.debug("star sidecar skipped for %s: %s", path.name, e)
@@ -511,7 +578,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "setpoint_c": card.thresholds.get("setpoint_c"),
         "hfr": hfr,
         "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
-        "stars": m["stars"], "ecc": m["ecc"],
+        "stars": m["stars"], "ecc": ecc,
+        # PS-94: the 0.48"/px measure next to the native one; sqrt form
+        "ecc_bin": ecc_bin, "hfr_bin": hfr_bin, "ecc_at": ecc_at,
+        "ecc_def": m.get("ecc_def"),
         "background": m["background"],
         "corner_ecc": m.get("corner_ecc"),
         "ecc_pa_R": m.get("ecc_pa_R"),
@@ -1481,6 +1551,26 @@ def score_legacy_on_read(config, subs: list[dict]) -> int:
     return n
 
 
+def _ecc_display_sqrt(subs: list[dict]) -> int:
+    """PS-94: show every sub's ecc in sqrt(1-(b/a)^2) form. Pre-PS-94
+    backfill records hold 1-b/a; on these in-memory copies `ecc` is
+    converted (the stored value is kept as `ecc_raw`), so the runs page and
+    its medians compare like with like. Nothing is written."""
+    from photonscript.shared import qa_rules
+    from photonscript.shared.star_shape import ECC_DEF
+    n = 0
+    for s_ in subs:
+        if s_.get("ecc_def") is not None or s_.get("graded_by") != "sep-binned":
+            continue
+        e = qa_rules.record_ecc(s_)
+        if e is not None:
+            s_["ecc_raw"] = s_.get("ecc")
+            s_["ecc"] = round(e, 3)
+            s_["ecc_def"] = ECC_DEF
+            n += 1
+    return n
+
+
 def night_detail(config, date: str, backfill: bool = True) -> dict:
     """Full plan-vs-actual record for one night."""
 
@@ -1501,6 +1591,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
         s_["target"] = _resolve_target(s_.get("target"),
                                        s_.get("file", ""), plan_names)
     score_legacy_on_read(config, subs)
+    _ecc_display_sqrt(subs)
 
     # Plan vs actual per rig/target/filter (rig separates the two scopes)
     planned: dict[tuple, int] = {}

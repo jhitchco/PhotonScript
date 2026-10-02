@@ -204,6 +204,16 @@ class PhotonScriptConfig(BaseSettings):
                                  # puts the PHD2 RMS in real arcsec
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
+    # PS-94: eccentricity at the 2x2-binned scale (0.48"/px on the RC16,
+    # the scale the _bin2 masters integrate at) next to the native 0.24"/px.
+    # Report-only until the ecc-scale-report numbers are in.
+    qa_ecc_binned: bool = True   # live grader also measures a 2x2-binned
+                                 # copy of each RC16 sub (ecc_bin, hfr_bin)
+    qa_ecc_scale: str = "native"  # which scale gates: native | binned (the
+                                 # other is recorded as info only)
+    quality_eccentricity_max_binned: float = 0.0  # gate at 0.48"/px when
+                                 # qa_ecc_scale=binned; 0 = same as
+                                 # quality_eccentricity_max
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200

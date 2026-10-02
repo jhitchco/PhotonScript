@@ -405,12 +405,15 @@ def group_records(config, records: list[dict], date: str = "",
                                                         order.get(kv[0][1], 99),
                                                         kv[0][1], kv[0][2])):
         th = qa_rules.thresholds(config, rig, recs[0].get("target"), flt)
-        ecc_max = float(th["ecc_max"])
-        eccs = [_num(r.get("ecc")) for r in recs]
+        # PS-94: the gating scale's ecc and limit, sqrt form (old 1-b/a
+        # backfill records converted)
+        gated = [qa_rules.gating_ecc(r, th) for r in recs]
+        eccs = [_num(e) for e, _ in gated]
+        ecc_max = max((lim for _, lim in gated), default=float(th["ecc_max"]))
         n_track = 0
-        for r, e in zip(recs, eccs):
+        for r, e, (_, lim) in zip(recs, eccs, gated):
             jump = _scorecard_status(r, "tracking_jump") == qa_rules.FAIL
-            if e is not None and e <= ecc_max + 1e-9 and not jump:
+            if e is not None and e <= lim + 1e-9 and not jump:
                 n_track += 1
         n = len(recs)
         ecc_med = _median(eccs)
