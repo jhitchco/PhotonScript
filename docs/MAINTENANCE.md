@@ -201,6 +201,21 @@ PHD2 Auto-restore. Set `guiding_force_first_calibration=false` to never force
 (always trust a restored cal) — avoids a failed first-cal loop but risks guiding
 on a stale/absent calibration.
 
+**PHD2 calibration manager (PS-93).** With `phd2_cal_mode=auto` (default)
+the night's sequence gets a `PHD2_CALIBRATION` slot only when it is needed (no
+calibration on record, the last one FAILED, older than `phd2_cal_max_age_days`
+(30), PHD2 profile / binning / scale changed, or a request from the System page
+"Calibrate at the next dispatch" / `POST /api/phd2/calibrate?mode=next`).
+`always` adds it every guided night (about 4 min of twilight), `never` keeps the
+PS-72 behavior above. The slot calibrates on a field near Dec +5 by the
+meridian, then holds `phd2_cal_hold_s` (240) while the RC16 agent grades it and
+retries a FAIL once. `GET /api/phd2/calibration` shows the graded record, the
+plan, the after-flip checks and the recommended PHD2 Calibration Step.
+`mode=now` while a night runs re-dispatches once with the slot (1 h of dark
+left); with nothing running it sends a standalone calibration sequence to NINA
+(roof open and dark only). `GET /api/phd2/calibration-sequence` returns that
+sequence for loading by hand.
+
 ## Calibration — what an arm captures automatically
 
 Matching is by **camera (INSTRUME) + full epoch** (`EXPTIME|GAIN|OFFSET|SET-TEMP`
@@ -307,6 +322,18 @@ measure points fires one Pushover naming the filter. Empty dir = disabled.
   near **Dec 0 at the meridian** with the Calibration Assistant, enable **Auto
   restore calibration** (Brain → Guiding), and turn **OFF** NINA's Force
   Calibration. Don't recalibrate every target.
+- **PHD2 calibration FAILED alert (PS-93):** read `GET /api/phd2/calibration`.
+  "few steps" means the PHD2 Calibration Step is too long: set it to the
+  recommended step (about 50 to 70 ms here, not 250; Brain > Guiding >
+  Calibration step calculator). "star moved only N px" is the pulse path (run
+  the PS-92 self-test) or a hot-pixel lock (PS-91 guard). Ortho over 5 deg with
+  few steps is the step size again; ortho over 5 deg with 12 steps is backlash
+  or flexure. Ask for a fresh one with "Calibrate at the next dispatch".
+- **"Dec runs away after the meridian flip" alert (PS-93):** PHD2 Advanced >
+  Mount > "Reverse Dec output after meridian flip" does not match the mount.
+  Toggle it only after this alert (leave it alone until the flip check proves
+  it), and keep the Bisque driver's "Can Get Pointing State" ticked so PHD2
+  knows the pier side (the guide log must never show `Pier side = Unknown`).
 - **Mount won't connect / TheSky COM3 "Error 201":** the port is locked. Kill any
   zombie TheSkyX, re-enumerate the USB in Device Manager, and connect in order
   **TheSky → NINA → PHD2** (or a clean reboot). Never let two apps own COM3.
