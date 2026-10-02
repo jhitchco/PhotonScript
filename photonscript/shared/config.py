@@ -343,6 +343,25 @@ class PhotonScriptConfig(BaseSettings):
                                  # "alert" until PS-85 caps unguided subs
     phd2_hotpix_max_age_days: float = 7.0  # rebuild the guide-camera hot-pixel
                                  # map after this (or a binning/exposure change)
+    # PS-93 PHD2 calibration manager (scheduler.phd2_calibration +
+    # telescope_agent.phd2_calmanager): calibrate near Dec +5 by the meridian
+    # in a PHD2_CALIBRATION slot when one is needed, grade it, retry once.
+    phd2_cal_mode: str = "auto"  # auto: a slot only when needs_calibration
+                                 # says so (none on record, FAIL, too old,
+                                 # profile/binning changed, manual request);
+                                 # always: every guided night (~4 min of
+                                 # twilight); never: no slot (the PS-72 behavior)
+    phd2_cal_max_age_days: float = 30.0  # recalibrate after this many days
+    phd2_cal_hold_s: int = 240   # hold after the slot: the agent grades and
+                                 # retries once inside it (needs 150 s left)
+    phd2_cal_fail_action: str = "keep"  # second failed grade: "keep" guiding
+                                 # on the poor calibration and alert once, or
+                                 # "unguided" (armer.fallback_unguided; keep
+                                 # "keep" until PS-85 caps unguided subs)
+    phd2_flip_action: str = "alert"  # Dec runs away after a meridian flip:
+                                 # "alert" (one push per night with the Reverse
+                                 # Dec fix) or "off" (record only). In-place
+                                 # recalibration is not built (PS-93 approval)
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

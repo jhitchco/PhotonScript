@@ -409,6 +409,61 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="calPanel">
+            <h2>PHD2 Calibration (PS-93)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">The calibration PHD2 uses now, graded. PASS: axes within 5 deg of perpendicular, RA/Dec rate ratio within 30% of cos(Dec), 8 or more steps per axis, taken near Dec 0 and the meridian. FAIL: failed, no motion, ortho over 5 deg, ratio off, parity changed. With PS_PHD2_CAL_MODE=auto a guided night calibrates (NINA slot PHD2_CALIBRATION after the twilight autofocus) only when this is missing, FAILED, older than PS_PHD2_CAL_MAX_AGE_DAYS, the PHD2 profile or binning changed, or you ask for it below.</p>
+            <div class="bd" id="calInfo">loading...</div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
+                <button class="btn btn-secondary" id="calRefresh">Refresh</button>
+                <button class="btn btn-secondary" id="calNext" title="The next dispatch (tonight's arm, or the next) includes a calibration slot.">Calibrate at the next dispatch</button>
+                <button class="btn btn-secondary" id="calNow" title="While a night runs: one re-dispatch with a calibration slot (once per night, 1 h of dark left). Otherwise: sends the calibration sequence to NINA now (roof open, dark sky only).">Calibrate now</button>
+                <span class="bd" id="calStatus"></span>
+            </div>
+            <div id="calHist" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            async function load() {
+                try {
+                    var c = await (await fetch('/api/phd2/calibration')).json();
+                    var r = c.record;
+                    var flip = Object.keys(c.flip || {}).map(function (p) { return p + ' ' + (c.flip[p].ok ? 'verified' : 'RUNAWAY'); }).join(', ');
+                    document.getElementById('calInfo').innerHTML = 'Mode ' + esc(c.mode) + ' | ' + (r ?
+                        'On record: <b>' + esc(r.grade) + '</b> ' + esc(r.t_utc) + ' (' + esc(r.source) + ', Dec ' + esc(r.dec_deg) +
+                        ', HA ' + esc(r.ha_hr) + ' h, pier ' + esc(r.pier_side) + ', ortho ' + esc(r.ortho_err_deg) + ' deg, ' +
+                        esc(c.age_days) + ' d old)' + (c.stale ? ' <span class="warn">stale</span>' : '') +
+                        '<br>' + esc((r.reasons || []).concat(r.warnings || []).join('; ')) +
+                        (c.recommended_step_ms ? '<br>Recommended PHD2 Calibration Step: about ' + esc(c.recommended_step_ms) + ' ms' : '') :
+                        'no calibration on record') +
+                        (flip ? '<br>After the flip: ' + esc(flip) : '') +
+                        (c.plan ? '<br>Plan: ' + esc(c.plan.status) + ' at ' + esc((c.plan.field || {}).name) + ' (' + esc(c.plan.reason) + ')' : '') +
+                        (c.request ? '<br>Requested: ' + esc(c.request.mode) + ' at ' + esc(c.request.t_utc) : '');
+                    var rows = (c.history || []).slice(-10).reverse().map(function (h) {
+                        return '<tr><td>' + esc(h.t_utc) + '</td><td><b>' + esc(h.grade) + '</b></td><td>' + esc(h.context) +
+                            '</td><td>' + esc(h.dec_deg) + ' / ' + esc(h.ha_hr) + '</td><td>' + esc(h.ortho_err_deg) +
+                            '</td><td>' + esc((h.reasons || []).concat(h.warnings || []).join('; ')) + '</td></tr>';
+                    }).join('');
+                    document.getElementById('calHist').innerHTML = rows ?
+                        '<table class="tbl" style="font-size:.8rem;"><tr><th>UTC</th><th>grade</th><th>context</th><th>Dec / HA</th><th>ortho</th><th>why</th></tr>' + rows + '</table>' : '';
+                } catch (e) { document.getElementById('calInfo').textContent = 'error: ' + e; }
+            }
+            async function ask(mode) {
+                var s = document.getElementById('calStatus');
+                if (mode === 'now' && !confirm('Calibrate PHD2 now? While a night runs this re-dispatches the rest of the night with a calibration slot; otherwise it sends a calibration sequence to NINA (roof open, dark sky only).')) return;
+                try {
+                    var r = await (await fetch('/api/phd2/calibrate?mode=' + mode, {method: 'POST'})).json();
+                    s.textContent = ' ' + (r.ok ? 'ok' : 'not done') + ': ' + (r.note || '');
+                } catch (e) { s.textContent = ' error: ' + e; }
+                load();
+            }
+            document.getElementById('calRefresh').onclick = load;
+            document.getElementById('calNext').onclick = function () { ask('next'); };
+            document.getElementById('calNow').onclick = function () { ask('now'); };
+            load();
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Configuration</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Edits are written to

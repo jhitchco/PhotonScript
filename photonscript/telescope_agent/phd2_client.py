@@ -408,6 +408,10 @@ class PHD2Client:
         yParity, declination} of the stored calibration."""
         return await self.call("get_calibration_data", [which]) or {}
 
+    async def get_profile(self) -> dict:
+        """PS-93: the selected PHD2 profile {id, name}."""
+        return await self.call("get_profile") or {}
+
     async def get_exposure(self) -> int | None:
         """Guide exposure in ms."""
         r = await self.call("get_exposure")
@@ -561,6 +565,12 @@ class PHD2Client:
             self._settling = False
         elif event_type == "StartCalibration":
             self.app_state = "Calibrating"
+        elif event_type == "CalibrationComplete":
+            # PS-93: PHD2 goes straight on to guide (and settle)
+            if self.app_state == "Calibrating":
+                self.app_state = "Guiding"
+        elif event_type == "CalibrationFailed":
+            self.app_state = "Stopped"
         elif event_type == "GuidingStopped":
             self.app_state = "Stopped"
             self._settling = False
@@ -599,8 +609,11 @@ class PHD2Client:
         elif event_type == "GuidingStopped":
             self._metrics.state = GuidingState.STOPPED
 
-        elif event_type == "Calibrating":
+        elif event_type in ("Calibrating", "StartCalibration"):
             self._metrics.state = GuidingState.CALIBRATING
+
+        elif event_type == "CalibrationFailed":   # PS-93
+            self._metrics.state = GuidingState.STOPPED
 
         elif event_type == "StartGuiding":
             self._ra_hist.clear()

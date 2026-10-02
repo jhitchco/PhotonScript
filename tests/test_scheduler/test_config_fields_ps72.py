@@ -22,3 +22,22 @@ def test_lint_requires_forced_cal_only_when_configured(monkeypatch):
     assert _force_cal_wanted() is True
     monkeypatch.setenv("PS_GUIDING_FORCE_FIRST_CALIBRATION", "false")
     assert _force_cal_wanted() is False
+
+
+def test_ps72_rule_waived_when_the_ps93_slot_calibrates(monkeypatch):
+    """PS-93: a PHD2_CALIBRATION slot replaces the forced first-target
+    calibration, so the PS-72 lint rule only applies without one."""
+    import json
+    from photonscript.scheduler.nina_sequence import build_sequence_for_night
+    from photonscript.scheduler.nina_sequence_json import generate_nina_json
+    from photonscript.scheduler.sequence_lint import lint
+    from photonscript.shared.models import ExposurePlan, FilterType, NinaSequenceTarget
+    monkeypatch.setenv("PS_GUIDING_FORCE_FIRST_CALIBRATION", "true")
+    t = NinaSequenceTarget(name="M51", ra_hours=13.498, dec_degrees=47.2,
+                           start_guiding=True, exposures=[ExposurePlan(
+                               filter_type=FilterType.LUMINANCE, exposure_seconds=180,
+                               count=30, gain=200, offset=50)])
+    data = json.loads(generate_nina_json(build_sequence_for_night("x", [t]), cal_field={
+        "name": "M67", "ra_hours": 8.855, "dec_degrees": 11.82}))
+    assert lint(data, guided=True).ok
+    assert PhotonScriptConfig().phd2_cal_mode == "auto"

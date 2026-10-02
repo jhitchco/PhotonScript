@@ -85,7 +85,8 @@ class FakePHD2:
                  binning: int = 2, pixel_scale: float = 0.255,
                  app_state: str = "Stopped", calibration: dict | None = None,
                  refuse: set | None = None, camera: str = "GP678C",
-                 gain: int = 100):
+                 gain: int = 100, cal_outcomes: list | None = None,
+                 profile: str = "Primary RC Profile (Guider)"):
         self.tmpdir = Path(tmpdir)
         self.field = field or SimField.default()
         self.ra_px_s, self.dec_px_s = ra_px_s, dec_px_s
@@ -103,6 +104,13 @@ class FakePHD2:
             "yParity": "+", "declination": 0.0}
         self.refuse = set(refuse or ())
         self.camera, self.gain = camera, gain
+        # PS-93: guide(recalibrate=True) runs a simulated calibration; each
+        # outcome is calibration data (a dict -> CalibrationComplete) or a
+        # failure reason (a str -> CalibrationFailed). Empty = complete with
+        # the current calibration.
+        self.cal_outcomes = list(cal_outcomes or [])
+        self.profile = profile
+        self.calibrations = 0
         self.lock: tuple | None = None
         self.settling = False
         self.frame_no = 0
@@ -232,6 +240,30 @@ class FakePHD2:
         crop = img[y0:cy + r + 1, x0:cx + r + 1]
         return crop, (cx - x0, cy - y0)
 
+    async def _calibrate(self):
+        """PS-93: StartCalibration, Calibrating steps West then North, then
+        CalibrationComplete (guiding follows) or CalibrationFailed."""
+        self.calibrations += 1
+        await asyncio.sleep(0.01)
+        await self.push({"Event": "StartCalibration", "Mount": "Mount"})
+        for d in ("West", "East", "North", "South"):
+            for i in range(1, 13):
+                await self.push({"Event": "Calibrating", "Mount": "Mount", "dir": d,
+                                 "dist": 25.0 * i / 12, "dx": 0.0, "dy": 0.0,
+                                 "pos": [0, 0], "step": i, "State": d})
+        out = self.cal_outcomes.pop(0) if self.cal_outcomes else dict(self.calibration)
+        if self.app_state != "Calibrating":
+            return                                  # stopped meanwhile
+        if isinstance(out, str):
+            self.app_state = "Stopped"
+            await self.push({"Event": "CalibrationFailed", "Reason": out})
+            return
+        self.calibration = dict(out, calibrated=True)
+        await self.push({"Event": "CalibrationComplete", "Mount": "Mount"})
+        self.app_state = "Guiding"
+        self.settling = True
+        await self.push({"Event": "StartGuiding"})
+
     async def _rpc(self, method: str, params):
         if method in self.refuse:
             raise RuntimeError(f"{method} refused")
@@ -250,6 +282,8 @@ class FakePHD2:
                     "mount": {"name": "ASCOM.SoftwareBisque", "connected": True}}
         if method == "get_calibration_data":
             return self.calibration
+        if method == "get_profile":
+            return {"id": 1, "name": self.profile}
         if method == "loop":
             if self.app_state in ("Guiding", "Calibrating"):
                 raise RuntimeError("cannot loop while guiding")
@@ -318,6 +352,11 @@ class FakePHD2:
                 self.lock = (o[0], o[1])
                 await self.push({"Event": "StarSelected", "X": o[0], "Y": o[1]})
                 await self.push({"Event": "LockPositionSet", "X": o[0], "Y": o[1]})
+            recal = len(params) > 1 and bool(params[1])
+            if recal or not self.calibration.get("calibrated"):
+                self.app_state = "Calibrating"
+                asyncio.get_running_loop().create_task(self._calibrate())
+                return 0
             self.app_state = "Guiding"
             self.settling = True
             await self.push({"Event": "StartGuiding"})

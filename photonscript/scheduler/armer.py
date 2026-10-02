@@ -109,6 +109,8 @@ class Armer:
         self._unsafe_tree_misses = 0
         self._hotpix_tried: str | None = None   # PS-91: night of the last map try
         self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
+        self._recal_night: str | None = None  # PS-93: mid-night recalibration done
+        self._cal_force: str | None = None     # PS-93: reason forcing the slot
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -128,6 +130,7 @@ class Armer:
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
                 "fallback_night": getattr(self, "_fallback_night", None),
+                "recal_night": getattr(self, "_recal_night", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -168,6 +171,7 @@ class Armer:
         # re-dispatches instead of waiting on a sequence that is not running.
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
         self._fallback_night = saved.get("fallback_night")
+        self._recal_night = saved.get("recal_night")
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -944,7 +948,8 @@ class Armer:
         if now < dusk:
             seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
-        content = generate_nina_json(seq)
+        cal_field = self._calibration_slot(targets, now) if use_guiding else None
+        content = generate_nina_json(seq, cal_field=cal_field)
         result = lint(json.loads(content), guided=use_guiding)
         if not result.ok:
             self.detail = "; ".join(f.detail for f in result.findings
@@ -963,6 +968,88 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.warning("Plan snapshot failed: %s", e)
         return True
+
+    def _calibration_slot(self, targets, now: datetime) -> dict | None:
+        """PS-93: the PHD2 calibration field when tonight needs a calibration
+        (phd2_calibration.needs_calibration, or a mid-night invalidation in
+        _cal_force), else None and the sequence is exactly as before. Saves
+        the plan (field, hold) the RC16 agent grades and retries against, and
+        consumes a pending manual request. Never raises: a planning error
+        means no slot."""
+        try:
+            from photonscript.scheduler import phd2_calibration as pc
+            from photonscript.scheduler.tracking_test import hour_angle
+            forced = getattr(self, "_cal_force", None)
+            request = pc.pending_request(self.config)
+            need = ({"needed": True, "reason": forced} if forced else
+                    pc.needs_calibration(pc.load_active(self.config),
+                                         pc.load_live(self.config), self.config,
+                                         now, request))
+            if not need["needed"]:
+                logger.info("PHD2 calibration slot: not needed (%s)", need["reason"])
+                pc.save_plan(self.config, None)
+                return None
+            dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
+            # the slot runs after the twilight AF (about 20 min before astro
+            # dusk) or, on a late arm / re-dispatch, a few minutes from now
+            when = max(now + timedelta(minutes=5), dusk - timedelta(minutes=20))
+            first = targets[0] if targets else None
+            ha = (hour_angle(first.ra_hours, max(now, dusk),
+                             float(getattr(self.config, "observatory_lon", -109.0)))
+                  if first is not None else None)
+            field = pc.pick_calibration_field(self.config, when, ha)
+            hold = int(getattr(self.config, "phd2_cal_hold_s", 240) or 240)
+            pc.save_plan(self.config, {
+                "night": self.plan.get("night_of"), "created_utc": f"{now:%Y-%m-%dT%H:%M:%S}Z",
+                "reason": need["reason"], "field": field, "hold_s": hold,
+                "status": "pending", "attempts": 0, "forced": bool(forced)})
+            if request:
+                pc.clear_request(self.config)
+            logger.info("PHD2 calibration slot: %s at %s (%s)", field.get("name"),
+                        field.get("for_utc"), need["reason"])
+            return field
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            logger.warning("PHD2 calibration slot skipped: %s", e)
+            return None
+
+    async def recalibrate(self, reason: str) -> bool:
+        """PS-93 option C, the mid-night fallback: the calibration became
+        invalid (guide binning / profile changed, PHD2 uncalibrated, or a
+        manual 'now'). Stop the sequence and the guider, then re-dispatch the
+        remainder with a PHD2_CALIBRATION slot (companion untouched). Once per
+        night, RUNNING only, and only with at least 1 h of dark left (each
+        costs 5 to 10 min and repeats the start area)."""
+        from photonscript.scheduler import phd2_calibration as pc
+        night = self.plan.get("night_of")
+        if self.state != "RUNNING" or not night or self._recal_night == night:
+            return False
+        if pc.cfg_mode(self.config) == "never":
+            return False
+        now = datetime.utcnow()
+        left_h = (self._dawn() - now).total_seconds() / 3600.0
+        if left_h < 1.0:
+            logger.info("recalibration (%s) skipped: %.1f h of dark left", reason, left_h)
+            return False
+        self._recal_night = night
+        self._persist()
+        steps = []
+        for label, key in (("stop", "sequence_stop"), ("guider stop", "guider_stop")):
+            ok = await self._nina(key) is not None
+            steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        self._cal_force = reason
+        try:
+            ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        finally:
+            self._cal_force = None
+        steps.append(f"re-dispatch {'ok' if ok else 'FAILED'}")
+        report = "; ".join(steps)
+        self._set_state("RUNNING", f"PHD2 recalibration ({reason}): {report}")
+        logger.warning("PHD2 recalibration re-dispatch (%s): %s", reason, report)
+        await notify(self.config,
+                     f"PHD2 calibration invalid ({reason}): the remainder is "
+                     f"re-dispatched with a calibration slot first ({report}).",
+                     title="PhotonScript PHD2 calibration", priority=1)
+        return ok
 
     async def dispatch_raw(self, seq: dict, label: str) -> bool:
         """Load + start an arbitrary sequence (calibration). Refused while a
@@ -1376,6 +1463,24 @@ class Armer:
                     await self._maybe_stop_stuck_imaging(now)
                     # PS-91: opportunistic map refresh while the roof is shut
                     await self._maybe_hotpix_map(now, "paused unsafe")
+
+
+async def request_recalibration(config, reason: str) -> bool:
+    """PS-93: ask the scheduler's armer (same process in `start --mode
+    full`) for a mid-night recalibration re-dispatch (Armer.recalibrate).
+    False when no armer runs here or it declines."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is None:
+        logger.warning("recalibration requested (%s) but no armer in this "
+                       "process", reason)
+        return False
+    try:
+        return await armer.recalibrate(reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("recalibration re-dispatch failed: %s", e)
+        return False
 
 
 async def request_fallback_unguided(config, reason: str) -> bool:

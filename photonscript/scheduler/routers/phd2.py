@@ -5,6 +5,9 @@ GET  /api/phd2/hotpix              guide-camera hot-pixel map status
 POST /api/phd2/hotpix/capture      capture a new map now (roof closed!)
 GET  /api/phd2/selftest?date=|days=   pulse-path self-test results (PS-92)
 POST /api/phd2/selftest/run?context=&slot=   run the self-test now
+GET  /api/phd2/calibration?date=   calibration record, history, flip, plan (PS-93)
+POST /api/phd2/calibrate?mode=next|now    ask for a calibration (PS-93)
+GET  /api/phd2/calibration-sequence       the standalone calibration sequence
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
 stay in routers/triage.py. Handlers lazily import get_config to avoid an
@@ -14,7 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 router = APIRouter()
@@ -170,3 +173,98 @@ async def api_phd2_selftest_run(context: str = "manual", slot: str = "auto"):
     if slot not in ("twilight", "target", "manual"):
         slot = _auto_slot() if context == "nina" else "manual"
     return await run_selftest(_cfg(), context=context, slot=slot)
+
+
+# ---- PS-93 calibration manager ----------------------------------------------
+
+def calibration_summary(config, date: str) -> dict:
+    """The calibration block for a night (runs page, morning report)."""
+    from photonscript.scheduler import phd2_calibration as pc
+    out = pc.summary(config, date)
+    rec = out.pop("record", None) or {}
+    out["record"] = {k: rec.get(k) for k in (
+        "t_utc", "source", "context", "grade", "reasons", "warnings", "dec_deg",
+        "ha_hr", "pier_side", "ortho_err_deg", "steps", "recommended_step_ms")}         if rec else None
+    return out
+
+
+@router.get("/api/phd2/calibration")
+def api_phd2_calibration(date: str = "", days: int = 30):
+    """The calibration PHD2 uses now (graded), tonight's plan, the flip
+    checks, the recommended Calibration Step and the last `days` of graded
+    calibrations."""
+    from photonscript.scheduler import phd2_calibration as pc
+    from photonscript.shared import phd2_store as store
+    from photonscript.telescope_agent import phd2_ops
+    cfg = _cfg()
+    date = date or store.night_of(cfg, datetime.utcnow())
+    out = pc.summary(cfg, date)
+    out["date"] = date
+    out["live"] = pc.load_live(cfg)
+    out["history"] = pc.history(cfg, days=days)
+    out["phd2_ops"] = phd2_ops.status()
+    return out
+
+
+def _field_now(cfg) -> dict:
+    from photonscript.scheduler import phd2_calibration as pc
+    return pc.pick_calibration_field(cfg, datetime.utcnow())
+
+
+@router.get("/api/phd2/calibration-sequence")
+def api_phd2_calibration_sequence():
+    """A standalone NINA sequence that calibrates PHD2 on a field picked for
+    right now (connect, unpark, the PHD2_CALIBRATION slot). For loading by
+    hand in NINA; POST /api/phd2/calibrate?mode=now dispatches it."""
+    import json as _json
+    from photonscript.scheduler.nina_sequence_json import generate_phd2_calibration_json
+    cfg = _cfg()
+    field = _field_now(cfg)
+    return {"field": field, "sequence": _json.loads(generate_phd2_calibration_json(
+        field, int(getattr(cfg, "phd2_cal_hold_s", 240) or 240)))}
+
+
+@router.post("/api/phd2/calibrate")
+async def api_phd2_calibrate(request: Request, mode: str = ""):
+    """Ask for a PHD2 calibration. mode (query or JSON body {"mode": ...}):
+    next = tonight's (or the next) dispatch includes the calibration slot;
+    now = while a night runs, one re-dispatch with the slot (once per night,
+    1 h of dark left); armed and waiting = same as next; otherwise the
+    standalone calibration sequence is dispatched to NINA right away (the
+    roof must be open and the sky dark)."""
+    from photonscript.scheduler import phd2_calibration as pc
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    mode = str(mode or (body or {}).get("mode") or "next").strip().lower()
+    if mode not in ("next", "now"):
+        return JSONResponse(status_code=400, content={
+            "ok": False, "note": "mode must be next or now"})
+    cfg = _cfg()
+    state = _armer_state()
+    if mode == "next" or state == "ARMED":
+        req = pc.set_request(cfg, "next")
+        return {"ok": True, "mode": "next", "request": req,
+                "note": "the next dispatch includes a PHD2 calibration slot"}
+    from photonscript.scheduler.app import get_armer
+    armer = get_armer()
+    if state in ("RUNNING", "PAUSED_UNSAFE"):
+        ok = await armer.recalibrate("manual request")
+        return {"ok": ok, "mode": "now",
+                "note": "re-dispatched with a calibration slot" if ok else
+                        "declined: only while RUNNING, once per night, with at "
+                        "least 1 h of dark left"}
+    import json as _json
+    from photonscript.scheduler.nina_sequence_json import generate_phd2_calibration_json
+    hold = int(getattr(cfg, "phd2_cal_hold_s", 240) or 240)
+    field = _field_now(cfg)
+    from photonscript.shared import phd2_store as store
+    pc.save_plan(cfg, {"night": store.night_of(cfg), "created_utc": store.iso_z(datetime.utcnow()),
+                       "reason": "manual request (now)", "field": field, "hold_s": hold,
+                       "status": "pending", "attempts": 0, "forced": True})
+    ok = await armer.dispatch_raw(_json.loads(generate_phd2_calibration_json(field, hold)),
+                                  "phd2-calibration")
+    return {"ok": ok, "mode": "now", "field": field,
+            "note": "calibration sequence dispatched to NINA" if ok else
+                    f"dispatch failed: {armer.detail}"}

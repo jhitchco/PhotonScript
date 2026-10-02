@@ -352,7 +352,17 @@
                 ' (' + st.runs + ' run(s)' + ((st.passive || []).length ? ', passive: ' +
                 st.passive.map(p => esc(p.verdict) + ' ' + esc(p.source)).join(', ') : '') +
                 ') <a href="/api/phd2/selftest?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
-            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine; return; }
+            const cal = g && g.calibration;  // PS-93 calibration manager
+            const calRows = (cal && cal.tonight) || [];
+            const calRec = cal && cal.record;
+            const calLine = calRows.length || (calRec && (cal.stale || cal.poor)) ? '<br><span class="' +
+                ({FAIL: 'bad', WARN: 'warn'}[(calRows.length ? calRows[calRows.length - 1].grade : cal.grade)] || '') +
+                '">PHD2 calibration: ' + (calRows.length ? calRows.map(c => esc(c.grade) + ' (' + esc(c.context) +
+                ', Dec ' + esc(c.dec_deg) + ', ortho ' + esc(c.ortho_err_deg) + ')').join(', ') :
+                'none tonight') + (cal.stale ? '; on record is ' + esc(cal.age_days) + ' d old' : '') +
+                (cal.poor ? '; on record FAILED' : '') +
+                ' <a href="/api/phd2/calibration?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine; return; }
             const sev = {critical: 'bad', warning: 'warn', info: ''};
             box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
                 g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
@@ -362,7 +372,7 @@
                 (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
                     esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
-                    '</span>').join('') + guardLine + stLine;
+                    '</span>').join('') + guardLine + stLine + calLine;
         }
         document.getElementById('phases').innerHTML = Object.keys(d.phases).length
             ? Object.entries(d.phases).map(([k, v]) =>

@@ -567,6 +567,11 @@ _CONFIG_FIELDS = [
     ("selftest_timeout_s", "PS_SELFTEST_TIMEOUT_S", "Self-test: hard timeout (s)", "PHD2", "int", False, False),
     ("guide_rate_sidereal", "PS_GUIDE_RATE_SIDEREAL", "Fallback guide speed (x sidereal) when NINA and the PHD2 log give none", "PHD2", "float", False, False),
     ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (keep alert until PS-85)", "PHD2", "str", False, True),
+    ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
+    ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
+    ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
+    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once) | unguided (keep until PS-85)", "PHD2", "str", False, True),
+    ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -1724,6 +1729,8 @@ def api_run_detail(date: str, backfill: bool = True):
         d["guiding"]["guard"] = g
         from photonscript.scheduler.routers.phd2 import selftest_summary
         d["guiding"]["selftest"] = selftest_summary(get_config(), date)  # PS-92
+        from photonscript.scheduler.routers.phd2 import calibration_summary
+        d["guiding"]["calibration"] = calibration_summary(get_config(), date)  # PS-93
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guard summary skipped for %s: %s", date, e)
     for s in d["subs"]:

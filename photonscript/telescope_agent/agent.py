@@ -99,6 +99,7 @@ class TelescopeAgent:
         self._flip_running = False
         self._pier_last: str | None = None   # PS-92 passive post-flip check
         self._flip_at: float | None = None
+        self.calmgr = None                   # PS-93 calibration manager (RC16)
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -112,6 +113,7 @@ class TelescopeAgent:
                  and getattr(self.config, "guard_enabled", True))
         if guard:
             self._guard_setup()
+        self._calmgr_setup()
 
         # Launch monitoring tasks
         tasks = [
@@ -681,7 +683,11 @@ class TelescopeAgent:
             if connected:
                 await self.phd2.refresh_pixel_scale()
             if connected:
-                await self.phd2.run_event_loop()
+                loop_task = await self.phd2.start_event_loop()
+                if getattr(self, "calmgr", None) is not None:
+                    # PS-93: is the active calibration still PHD2's?
+                    self.calmgr.connected()
+                await loop_task
             # Reconnect after delay
             await asyncio.sleep(10)
 
@@ -736,6 +742,15 @@ class TelescopeAgent:
         self.guard = NonStarLockGuard(self.config, hotpix=self._load_hotpix())
         self._guard_cap = RecoveryCap()
         self.phd2.on_event(self._on_phd2_event)
+
+    def _calmgr_setup(self) -> None:
+        """PS-93: the calibration manager listens on the RC16 agent only
+        (the guide camera is on its OAG)."""
+        if getattr(self, "rig", "rc16") != "rc16":
+            return
+        from photonscript.telescope_agent.phd2_calmanager import CalManager
+        self.calmgr = CalManager(self.config, self.phd2, self.nina)
+        self.calmgr.attach()
 
     def _load_hotpix(self):
         """The hot-pixel map, re-read when its file changes."""
@@ -864,6 +879,10 @@ class TelescopeAgent:
             return
         verdict, axes = ps.passive_verdict(frames, ctx.rates_px_s, ctx.scale)
         night = store.night_of(self.config)
+        if getattr(self, "calmgr", None) is not None:
+            # PS-93: Dec runaway alert / flip verified on the calibration
+            await self.calmgr.flip_check(frames, ctx.rates_px_s, ctx.scale, side,
+                                         verdict)
         ev = {a: {k: axes[a].get(k) for k in ("response", "response_verdict",
                                               "commanded_arcsec_min",
                                               "observed_arcsec_min")}
@@ -880,8 +899,10 @@ class TelescopeAgent:
                 self.config, "Dec corrections reversed after the flip",
                 source="post-flip", evidence=ev, night=night, pier_side=side,
                 verdict="REVERSED")
-            await ps.passive_reversed_alert(
-                self.config, f"response {axes['dec'].get('response')}", night, side)
+            from photonscript.telescope_agent.phd2_calmanager import flip_alerts
+            if flip_alerts(self.config):   # PS-93 phd2_flip_action
+                await ps.passive_reversed_alert(
+                    self.config, f"response {axes['dec'].get('response')}", night, side)
 
     async def _guard_act(self, verdicts, tick: bool = True) -> None:
         """Open / update / close episodes, log them, alert once per night,
