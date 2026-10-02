@@ -112,6 +112,8 @@ class Armer:
         self._recal_night: str | None = None  # PS-93: mid-night recalibration done
         self._cal_force: str | None = None     # PS-93: reason forcing the slot
         self._audit_task: asyncio.Task | None = None  # PS-89: audit at arm
+        self._tune_night: str | None = None    # PS-90: pre-dusk tune done
+        self._tune_note: str | None = None
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -1364,6 +1366,38 @@ class Armer:
                      title="PhotonScript unguided fallback", priority=1)
         return ok
 
+    # -- PS-90: guide-star gain / binning, pre-dusk ----------------------------
+
+    async def _maybe_predusk_tune(self) -> None:
+        """While ARMED and before the dispatch: write the PS-90 tuner's
+        recommended guide gain / binning into PHD2's stored profile through
+        the PS-89 writer (phd2_tuning.apply_predusk: phd2_audit_autofix,
+        PHD2 closed, backup, verified registry names), then re-audit. Retried
+        each tick only while PHD2 is running; one outcome per night. Never
+        raises."""
+        night = self.plan.get("night_of")
+        if (not night or getattr(self, "_tune_night", None) == night
+                or not self._use_guiding()):
+            return
+        try:
+            from photonscript.scheduler import phd2_tuning
+            res = await asyncio.to_thread(phd2_tuning.apply_predusk, self.config,
+                                          str(self.state or ""))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-90 pre-dusk tune failed: %s", e)
+            self._tune_night = night
+            return
+        note = res.get("note")
+        if "PHD2 is running" not in str(note or ""):
+            self._tune_night = night
+        if note != getattr(self, "_tune_note", None):
+            self._tune_note = note
+            logger.info("PS-90 pre-dusk tune: %s (written %s)", note, res.get("written"))
+        if res.get("written"):
+            from photonscript.scheduler import phd2_audit
+            asyncio.create_task(phd2_audit.run_audit(self.config,
+                                                     reason="PS-90 pre-dusk tune"))
+
     async def _run(self):
         try:
             while self.state in ACTIVE_STATES:
@@ -1383,6 +1417,8 @@ class Armer:
                 # PS-91: roof closed before dusk = dark guide frames
                 if await self._is_safe() is False:
                     await self._maybe_hotpix_map(now, "pre-dusk, roof closed")
+            if now < preconfig:
+                await self._maybe_predusk_tune()
             if now >= preconfig:
                 if await self._dispatch_and_start():
                     self._set_state("RUNNING",

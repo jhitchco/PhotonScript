@@ -19,6 +19,12 @@ the 09-26 guide-rate mismatch) along an RA axis at `ra_axis_deg` in the image;
 pulses are refused while guiding, as PHD2 does. save_image writes the current
 frame as FITS. find_star picks the brightest object (star OR hot pixel) in the
 ROI, which is exactly how PHD2's auto-select locks onto a hot pixel.
+
+PS-90 auto-tune: with flux_ref_ms set, star peaks scale with the guide
+exposure (guide_exposure_ms / flux_ref_ms) and with flux_scale (a filter's
+transmission: change it to simulate a filter change); GuideStep then reports
+the locked star's ErrorCode 1 when its peak clips and an HFD from its sigma.
+bit_depth=8 serves 8-bit star images (values 0 to 255).
 """
 from __future__ import annotations
 
@@ -54,7 +60,7 @@ class SimField:
         hp = [(20.0, 15.0, 30000.0), (130.0, 100.0, 25000.0)] if hot else []
         return cls(stars=stars, hot=hp, **kw)
 
-    def render(self, frame_no: int = 0) -> np.ndarray:
+    def render(self, frame_no: int = 0, gain: float = 1.0) -> np.ndarray:
         rng = np.random.default_rng(self.seed + frame_no)
         img = rng.normal(self.bias, self.noise, (self.height, self.width))
         yy, xx = np.mgrid[0:self.height, 0:self.width]
@@ -62,8 +68,8 @@ class SimField:
         for (x, y, peak, sig) in self.stars:
             cx, cy = x + ox, y + oy
             if -10 < cx < self.width + 10 and -10 < cy < self.height + 10:
-                img += peak * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2)
-                                     / (2 * sig * sig))
+                img += peak * gain * np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2)
+                                            / (2 * sig * sig))
         for (x, y, v) in self.hot:
             img[int(y), int(x)] = v
         return np.clip(img, 0, 65535).astype(np.uint16)
@@ -90,7 +96,9 @@ class FakePHD2:
                  profile: str = "Primary RC Profile (Guider)",
                  algo: dict | None = None, search_region: int = 15,
                  dec_guide_mode: str = "Auto",
-                 durations: list | None = None):
+                 durations: list | None = None, flux_ref_ms: float | None = None,
+                 flux_scale: float = 1.0, guide_exposure_ms: int | None = None,
+                 bit_depth: int = 16, settle_every: int = 3):
         self.tmpdir = Path(tmpdir)
         self.field = field or SimField.default()
         self.ra_px_s, self.dec_px_s = ra_px_s, dec_px_s
@@ -126,7 +134,12 @@ class FakePHD2:
         self.dec_guide_mode = dec_guide_mode
         self.durations = list(durations or [500, 1000, 1500, 2000, 2500, 3000,
                                             3500, 4000, 4500, 5000, 6000])
-        self.guide_exposure_ms: int | None = None
+        self.guide_exposure_ms: int | None = guide_exposure_ms
+        # PS-90: exposure-proportional star flux (None = fixed, as before)
+        self.flux_ref_ms = flux_ref_ms
+        self.flux_scale = flux_scale
+        self.bit_depth = bit_depth
+        self.settle_every = settle_every
         self.calibrations = 0
         self.lock: tuple | None = None
         self.settling = False
@@ -212,6 +225,27 @@ class FakePHD2:
         self.field.offset[0] += sign * px * u[0]
         self.field.offset[1] += sign * px * u[1]
 
+    def _flux_gain(self) -> float:
+        """PS-90: star flux factor for the current guide exposure / filter."""
+        if not self.flux_ref_ms:
+            return 1.0
+        ms = self.guide_exposure_ms or int(self.exposure_s * 1000)
+        return float(ms) / float(self.flux_ref_ms) * float(self.flux_scale)
+
+    def _locked_star(self):
+        """(peak ADU after the flux factor, sigma) of the locked star, or None."""
+        if self.lock is None:
+            return None
+        ox, oy = self.field.offset
+        best = None
+        for (x, y, peak, sig) in self.field.stars:
+            d = math.hypot(x + ox - self.lock[0], y + oy - self.lock[1])
+            if d < 3 and (best is None or d < best[0]):
+                best = (d, peak, sig)
+        if best is None:
+            return None
+        return (self.field.bias + best[1] * self._flux_gain(), best[2])
+
     def _locked_kind(self):
         if self.lock is None:
             return None
@@ -233,13 +267,19 @@ class FakePHD2:
             elif self.app_state == "Guiding":
                 self.frame_no += 1
                 kind = self._locked_kind()
+                hfd, code, snr = (0.6 if kind == "hot" else 3.8), 0, 40.0
+                star = self._locked_star() if self.flux_ref_ms else None
+                if star is not None:
+                    hfd = round(2.355 * star[1], 2)
+                    code = 1 if star[0] >= 65535 * 0.98 else 0
+                    snr = round(min(200.0, (star[0] - self.field.bias) / self.field.noise / 2), 1)
                 await self.push({
                     "Event": "GuideStep", "Frame": self.frame_no, "Time": 0.0,
                     "Mount": "Mount", "RADistanceRaw": 0.01, "DECDistanceRaw": -0.01,
                     "RADuration": 0, "RADirection": "West", "DECDuration": 0,
-                    "DECDirection": "North", "StarMass": 5000, "SNR": 40.0,
-                    "HFD": 0.6 if kind == "hot" else 3.8, "ErrorCode": 0})
-                if self.settling and self.frame_no % 3 == 0:
+                    "DECDirection": "North", "StarMass": 5000, "SNR": snr,
+                    "HFD": hfd, "ErrorCode": code})
+                if self.settling and self.frame_no % self.settle_every == 0:
                     self.settling = False
                     await self.push({"Event": "SettleDone", "Status": 0,
                                      "TotalFrames": 3, "DroppedFrames": 0})
@@ -254,7 +294,9 @@ class FakePHD2:
         return max(cands, key=lambda o: o[2])
 
     def _crop(self, size=15):
-        img = self.field.render(self.frame_no)
+        img = self.field.render(self.frame_no, gain=self._flux_gain())
+        if self.bit_depth == 8:
+            img = (img // 257).astype(np.uint16)
         cx, cy = int(round(self.lock[0])), int(round(self.lock[1]))
         r = size // 2
         x0, y0 = max(0, cx - r), max(0, cy - r)

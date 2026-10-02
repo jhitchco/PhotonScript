@@ -578,6 +578,13 @@ _CONFIG_FIELDS = [
     ("phd2_dark_max_age_days", "PS_PHD2_DARK_MAX_AGE_DAYS", "PHD2 dark library older than N days = WARN", "PHD2", "float", False, False),
     ("phd2_darks_dir", "PS_PHD2_DARKS_DIR", "PHD2 dark library folder; empty = %LOCALAPPDATA%\\phd2\\darks_defects", "PHD2", "str", False, False),
     ("pe_owner", "PS_PE_OWNER", "Who corrects periodic error: protrack (PHD2 PPEC must be off) | phd2_ppec | none", "PHD2", "str", False, False),
+    ("phd2_tune_mode", "PS_PHD2_TUNE_MODE", "Guide-star auto-tune (PS-90): off | observe (measure and record, never change) | exposure (live exposure-only tuning)", "PHD2", "str", False, True),
+    ("phd2_tune_peak_lo", "PS_PHD2_TUNE_PEAK_LO", "Auto-tune: guide star peak band, low (fraction of full scale)", "PHD2", "float", False, True),
+    ("phd2_tune_peak_hi", "PS_PHD2_TUNE_PEAK_HI", "Auto-tune: guide star peak band, high (fraction of full scale)", "PHD2", "float", False, True),
+    ("phd2_tune_snr_min", "PS_PHD2_TUNE_SNR_MIN", "Auto-tune: a guide star under this SNR is faint", "PHD2", "float", False, True),
+    ("phd2_tune_hfd_px", "PS_PHD2_TUNE_HFD_PX", "Auto-tune: guide star HFD band (guide px, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_tune_exp_ms", "PS_PHD2_TUNE_EXP_MS", "Auto-tune: guide exposures it may pick (ms, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_guide_full_scale_adu", "PS_PHD2_GUIDE_FULL_SCALE_ADU", "Guide camera full scale (ADU): 65535 for 16-bit", "PHD2", "int", False, True),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -1739,6 +1746,8 @@ def api_run_detail(date: str, backfill: bool = True):
         d["guiding"]["calibration"] = calibration_summary(get_config(), date)  # PS-93
         from photonscript.scheduler.phd2_audit import summary as audit_summary
         d["guiding"]["audit"] = audit_summary(get_config(), date)  # PS-89
+        from photonscript.scheduler.phd2_tuning import summary as tune_summary
+        d["guiding"]["tuning"] = tune_summary(get_config(), date)  # PS-90
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guard summary skipped for %s: %s", date, e)
     for s in d["subs"]:

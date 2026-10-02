@@ -897,10 +897,15 @@ class GuideTimeline:
 
     def __init__(self, sessions_raw, config):
         self.frames, self.spans = [], []
+        self.headers: dict = {}   # PS-90: session id -> guide exposure / star HFD
         for sec, scale in sessions_raw:
             st = to_utc(config, sec["start_local"])
             if st is None:
                 continue
+            h = sec.get("header") or {}
+            self.headers[id(sec)] = {"exposure_ms": h.get("exposure_ms"),
+                                     "hfd_px": h.get("hfd_px"), "gain": h.get("gain"),
+                                     "binning": h.get("binning")}
             last = sec["frames"][-1]["t"] if sec["frames"] else 0.0
             en = to_utc(config, sec["end_local"]) if sec["end_local"] and \
                 sec["closed"] in ("ended", "aborted") else None
@@ -910,6 +915,15 @@ class GuideTimeline:
                                     id(sec)))
         self.frames.sort(key=lambda x: x[0])
         self._keys = [x[0] for x in self.frames]
+
+    def _session_value(self, win, key):
+        """The value of the session holding most of the window's frames."""
+        n: dict = {}
+        for _, _f, _k, sid in win:
+            n[sid] = n.get(sid, 0) + 1
+        if not n:
+            return None
+        return (self.headers.get(max(n, key=n.get)) or {}).get(key)
 
     def stats(self, start_utc: datetime, exp_s: float) -> dict:
         end = start_utc + timedelta(seconds=float(exp_s or 0))
@@ -927,6 +941,11 @@ class GuideTimeline:
                "settling_frames": sum(1 for f, _ in g if f["settling"]),
                "lock_changes": len({(sid, f["epoch"]) for _, f, _, sid in win}) - 1 if win else 0,
                "max_pulses": sum(1 for f, _ in g if f["ra_ms"] >= 2499 or f["dec_ms"] >= 2499),
+               # PS-90: PHD2's clipped-star flag and the session's guide
+               # exposure / star HFD (the lock line of the session header)
+               "saturated": sum(1 for f, _ in g if f.get("code") == 1),
+               "guide_exposure_ms": self._session_value(win, "exposure_ms"),
+               "star_hfd_px": self._session_value(win, "hfd_px"),
                "snr_median": _r(statistics.median([f["snr"] for f, _ in g
                                                    if f["snr"] is not None]), 1)
                if any(f["snr"] is not None for f, _ in g) else None}
@@ -992,14 +1011,23 @@ def sub_guide_stats(timeline: GuideTimeline, subs: list[dict], config) -> dict:
         if (x["rig"] or "rc16") != "rc16" or x["state"] == "unguided":
             continue
         b = by_f.setdefault(str(x.get("filter") or "?"),
-                            {"subs": 0, "frames": 0, "dropped": 0, "snr": []})
+                            {"subs": 0, "frames": 0, "dropped": 0, "snr": [],
+                             "guided": 0, "saturated": 0, "exp": [], "hfd": []})
         b["subs"] += 1
         b["frames"] += x["frames"] + x["dropped"]
         b["dropped"] += x["dropped"]
         b["snr"].append(x["snr_median"])
+        b["guided"] += x["frames"]
+        b["saturated"] += x.get("saturated") or 0
+        b["exp"].append(x.get("guide_exposure_ms"))
+        b["hfd"].append(x.get("star_hfd_px"))
+    # PS-90: with the guide exposure, PHD2's saturated share and the star HFD
     summary["rc16_by_filter"] = {
         k: {"subs": v["subs"], "dropped_pct": _pct(v["dropped"], v["frames"]),
-            "median_snr": med(v["snr"])} for k, v in sorted(by_f.items())}
+            "median_snr": med(v["snr"]),
+            "saturated_pct": _pct(v["saturated"], v["guided"]),
+            "guide_exposure_ms": med(v["exp"]),
+            "star_hfd_px": med(v["hfd"])} for k, v in sorted(by_f.items())}
     return {"summary": summary, "subs": rows}
 
 
@@ -1312,6 +1340,8 @@ def format_report(a: dict) -> str:
                      f"motion {v['median_std_arcsec']}\"")
         if sm.get("rc16_by_filter"):
             L.append("  guide star by RC16 filter (OAG): " + "; ".join(
-                f"{k} {v['subs']} subs, {v['dropped_pct']}% frames lost, SNR {v['median_snr']}"
+                f"{k} {v['subs']} subs, {v['dropped_pct']}% frames lost, SNR {v['median_snr']}, "
+                f"{v.get('saturated_pct')}% saturated, exp {v.get('guide_exposure_ms')} ms, "
+                f"HFD {v.get('star_hfd_px')} px"
                 for k, v in sm["rc16_by_filter"].items()))
     return "\n".join(L)

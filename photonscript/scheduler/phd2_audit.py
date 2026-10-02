@@ -343,6 +343,20 @@ def _c_dark_library(row, val, observed, config, ctx):
     return (PASS if exps else UNKNOWN), want, None, None
 
 
+def _c_guide_gain(row, val, observed, config, ctx):
+    """PS-90: the gain the guide-star tuner recommends from recent nights
+    (scheduler.phd2_tuning.recommend, collected as observed["tuning"])."""
+    rec = observed.get("tuning") or {}
+    if not rec.get("ok") or rec.get("gain") is None:
+        return INFO, "the PS-90 tuner's recommendation", None,             rec.get("note") or "no guide-star tuning data yet"
+    want = _num(rec["gain"])
+    desired = f"{want:g} (PS-90 tuner: {rec.get('note')})"
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, desired, int(want), None
+    return (PASS if abs(v - want) < 1e-6 else row["severity"]), desired, int(want), None
+
+
 COMPUTED = {
     "pe_owner": _c_pe_owner,
     "ra_min_move_ga": _c_ra_min_move_ga,
@@ -352,6 +366,7 @@ COMPUTED = {
     "focal_length": _c_focal_length,
     "guide_speed": _c_guide_speed,
     "dark_library": _c_dark_library,
+    "guide_gain": _c_guide_gain,
 }
 
 
@@ -775,6 +790,15 @@ def _collect_files(config, profile_id=None) -> tuple[dict, dict]:
                                    f"defect map {'found' if dmap else 'missing'}"}
 
 
+def dark_inventory(config, profile_id=None) -> list[int] | None:
+    """PS-90: exposures (ms) the PHD2 dark library holds, None when there is
+    no library or it cannot be read (the tuner then changes nothing)."""
+    o, _src = _collect_files(config, profile_id)
+    lib = o.get("dark_library") or {}
+    exps = lib.get("exposures_ms")
+    return list(exps) if exps else None
+
+
 def _profile_observed(read: dict) -> tuple[dict, dict]:
     """Verified registry values as observations; every read value as a
     candidate (shown in the unknown note)."""
@@ -858,6 +882,11 @@ async def collect(config, *, client=None, nina=None, raw: bool = False) -> dict:
         obs["file"], src["file"] = await asyncio.to_thread(_collect_files, config, pid)
     except Exception as e:  # noqa: BLE001
         src["file"] = {"ok": False, "note": str(e)}
+    try:
+        from photonscript.scheduler import phd2_tuning
+        obs["tuning"] = await asyncio.to_thread(phd2_tuning.recommend, config)
+    except Exception as e:  # noqa: BLE001
+        obs["tuning"] = {"ok": False, "note": f"PS-90 tuning: {e}"}
     obs["_sources"] = src
     return obs
 

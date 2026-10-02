@@ -378,6 +378,20 @@ class PhotonScriptConfig(BaseSettings):
     pe_owner: str = "protrack"   # who corrects periodic error: protrack
                                  # (TheSky; PHD2 PPEC must be off) | phd2_ppec
                                  # | none
+    # PS-90 guide-star auto-tune (telescope_agent.guide_tuner +
+    # scheduler.phd2_tuning): measure the guide star after each settle and
+    # (mode exposure) step PHD2's exposure toward a bright, unclipped peak.
+    phd2_tune_mode: str = "observe"  # off | observe (measure and record only,
+                                 # never set_exposure) | exposure (live
+                                 # exposure-only tuning). Gain / binning change
+                                 # only pre-dusk via the PS-89 profile writer
+                                 # (behind phd2_audit_autofix)
+    phd2_tune_peak_lo: float = 0.60  # target band for the star's peak as a
+    phd2_tune_peak_hi: float = 0.80  # fraction of full scale (aims at the middle)
+    phd2_tune_snr_min: float = 20.0  # a guide star under this SNR is "faint"
+    phd2_tune_hfd_px: str = "2,5"    # HFD target band (guide px at the binning)
+    phd2_tune_exp_ms: str = "1000,4000"  # exposures the tuner may pick (ms)
+    phd2_guide_full_scale_adu: int = 65535  # guide camera full scale (16-bit)
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

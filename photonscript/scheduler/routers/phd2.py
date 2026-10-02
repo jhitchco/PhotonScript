@@ -1,4 +1,4 @@
-"""PhotonScript's own PHD2 records and actions (PS-91, PS-92).
+"""PhotonScript's own PHD2 records and actions (PS-91, PS-92, PS-93, PS-89, PS-90).
 
 GET  /api/phd2/guard?date=         non-star lock guard episodes for a night
 GET  /api/phd2/hotpix              guide-camera hot-pixel map status
@@ -10,6 +10,7 @@ POST /api/phd2/calibrate?mode=next|now    ask for a calibration (PS-93)
 GET  /api/phd2/calibration-sequence       the standalone calibration sequence
 GET  /api/phd2/audit?refresh=&raw=        settings audit vs the desired state (PS-89)
 POST /api/phd2/audit/apply {ids, dry_run}  apply audit rows (API / gated profile)
+GET  /api/phd2/tuning?date=       guide-star auto-tune: per filter, changes, advice (PS-90)
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
 stay in routers/triage.py. Handlers lazily import get_config to avoid an
@@ -312,3 +313,20 @@ async def api_phd2_audit_apply(request: Request):
     dry = (body or {}).get("dry_run", True)
     dry = dry if isinstance(dry, bool) else str(dry).lower() not in ("0", "false", "no")
     return await pa.apply(_cfg(), ids, dry_run=dry, armer_state=_armer_state())
+
+
+# ---- PS-90 guide-star auto-tune --------------------------------------------
+
+@router.get("/api/phd2/tuning")
+def api_phd2_tuning(date: str = ""):
+    """The night's guide-star tuning (default: tonight): per-filter peak %,
+    SNR, HFD and exposure, every exposure change, the last measurement, the
+    next-night gain / binning recommendation and the bin 3 HFD check."""
+    from photonscript.scheduler import phd2_tuning as tn
+    from photonscript.shared import phd2_store as store
+    from photonscript.telescope_agent import phd2_ops
+    cfg = _cfg()
+    date = date or store.night_of(cfg, datetime.utcnow())
+    out = tn.summary(cfg, date)
+    out["phd2_ops"] = phd2_ops.status()
+    return out

@@ -249,7 +249,10 @@ class GuidingMetrics(BaseModel):
     scale_warning: Optional[str] = None
     snr: float = 0.0
     star_mass: float = 0.0
-    guide_camera_exposure: float = 2.0
+    guide_camera_exposure: float = 2.0    # seconds; PS-90 sets it from get_exposure
+    hfd_px: Optional[float] = None        # PS-90: last GuideStep HFD (guide px)
+    error_code: int = 0                   # last GuideStep ErrorCode (1 = saturated)
+    saturated: bool = False               # PHD2 flagged the star clipped
 
 
 class TelescopeState(BaseModel):

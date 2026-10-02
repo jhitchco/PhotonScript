@@ -367,7 +367,15 @@
                 '">PHD2 settings at ' + esc(au.reason) + ': ' + esc(au.counts.fail) + ' fail, ' + esc(au.counts.warn) + ' warn' +
                 ((au.fails || []).length ? ' (' + au.fails.map(esc).join('; ') + ')' : '') +
                 ' <a href="/api/phd2/audit" target="_blank">details</a></span>' : '';
-            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine; return; }
+            const tu = g && g.tuning;  // PS-90 guide-star auto-tune
+            const tuRows = tu && tu.by_filter ? Object.entries(tu.by_filter) : [];
+            const tuLine = tuRows.length ? '<br><span>Guide star (' + esc(tu.mode) + '): ' + tuRows.map(([f, v]) =>
+                esc(f) + ' ' + esc(v.exposure_ms) + ' ms, peak ' + esc(v.peak_pct) + '%, SNR ' + esc(v.snr) + ', HFD ' + esc(v.hfd_px) +
+                (v.clipped ? ', <span class="warn">' + esc(v.clipped) + ' clipped</span>' : '')).join('; ') +
+                ((tu.changes || []).length ? ', ' + tu.changes.length + ' change(s)' : '') +
+                (tu.recommend && tu.recommend.bin3 && tu.recommend.bin3.note ? '<br><span style="opacity:.8">' + esc(tu.recommend.bin3.note) + '</span>' : '') +
+                ' <a href="/api/phd2/tuning?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine + tuLine; return; }
             const sev = {critical: 'bad', warning: 'warn', info: ''};
             box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
                 g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
@@ -377,7 +385,7 @@
                 (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
                     esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
-                    '</span>').join('') + guardLine + stLine + calLine + auLine;
+                    '</span>').join('') + guardLine + stLine + calLine + auLine + tuLine;
         }
         document.getElementById('phases').innerHTML = Object.keys(d.phases).length
             ? Object.entries(d.phases).map(([k, v]) =>

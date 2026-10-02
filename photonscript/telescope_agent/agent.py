@@ -101,6 +101,8 @@ class TelescopeAgent:
         self._flip_at: float | None = None
         self.calmgr = None                   # PS-93 calibration manager (RC16)
         self.reauditor = None                # PS-89 settings re-audit (RC16)
+        self.tuner = None                    # PS-90 guide-star tuner (RC16)
+        self._wheel_filter: str | None = None  # PS-90: NINA's filter (canonical)
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -116,6 +118,7 @@ class TelescopeAgent:
             self._guard_setup()
         self._calmgr_setup()
         self._audit_setup()
+        self._tuner_setup()
 
         # Launch monitoring tasks
         tasks = [
@@ -648,6 +651,9 @@ class TelescopeAgent:
                 self.state.mount_slewing = mount.get("Slewing")
                 self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
 
+                if getattr(self, "rig", "rc16") == "rc16":
+                    await self._poll_filter()   # PS-90
+
                 # Get focuser info
                 try:
                     focuser = await self.nina.get_focuser_info()
@@ -684,6 +690,7 @@ class TelescopeAgent:
             connected = await self.phd2.connect()
             if connected:
                 await self.phd2.refresh_pixel_scale()
+                await self.phd2.refresh_exposure()   # PS-90
             if connected:
                 loop_task = await self.phd2.start_event_loop()
                 if getattr(self, "calmgr", None) is not None:
@@ -762,6 +769,45 @@ class TelescopeAgent:
         from photonscript.scheduler.phd2_audit import ReAuditor
         self.reauditor = ReAuditor(self.config, armed_fn=self._armer_active)
         self.phd2.on_event(self.reauditor.on_event)
+
+    def _tuner_setup(self) -> None:
+        """PS-90: the guide-star tuner runs in the RC16 agent only (the guide
+        camera is on its OAG); phd2_tune_mode=off leaves it out entirely."""
+        if getattr(self, "rig", "rc16") != "rc16":
+            return
+        from photonscript.telescope_agent.guide_tuner import GuideStarTuner, tune_mode
+        if tune_mode(self.config) == "off":
+            return
+        self.tuner = GuideStarTuner(self.config, self.phd2, context_fn=self._tuner_context)
+        self.tuner.attach()
+
+    def _tuner_context(self) -> dict:
+        """What the tuner needs from the agent (None = unknown)."""
+        return {"target": self.state.current_target,
+                "filter": getattr(self, "_wheel_filter", None) or (
+                    self.state.current_filter.value if self.state.current_filter else None),
+                "mount_ra": self.state.mount_ra, "mount_dec": self.state.mount_dec,
+                "slewing": bool(self.state.mount_slewing),
+                "flip": bool(getattr(self, "_flip_running", False)),
+                "guard_open": bool((getattr(self, "_guard_ep", None) or {}).get("non_star"))}
+
+    async def _poll_filter(self) -> None:
+        """PS-90: the RC16 filter now (NINA's filter wheel), canonical name;
+        a change goes to the tuner (the OAG sits behind the wheel)."""
+        try:
+            fw = await self.nina.get_filter_wheel_info() or {}
+        except Exception as e:  # noqa: BLE001
+            logger.debug("filter wheel poll failed: %s", e)
+            return
+        sel = fw.get("SelectedFilter")
+        name = (sel.get("Name") if isinstance(sel, dict) else sel) or None
+        if not name:
+            return
+        name = self.config.reverse_filter_map().get(str(name), str(name))
+        if name != getattr(self, "_wheel_filter", None):
+            self._wheel_filter = name
+            if getattr(self, "tuner", None) is not None:
+                self.tuner.filter_changed(name)
 
     def _load_hotpix(self):
         """The hot-pixel map, re-read when its file changes."""

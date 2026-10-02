@@ -12,6 +12,9 @@ instead of vanishing. Only one PhotonScript actor should command PHD2 at a
 time: hold telescope_agent.phd2_ops.hold(owner) around a command sequence.
 PS-89 adds the settings-audit reads (exposure durations, algorithm params,
 Dec guide mode, search region, profiles) and the three setters it applies.
+PS-90 keeps the guide star's HFD and ErrorCode on the live metrics, the
+guide exposure (get_exposure, refreshed on connect, ConfigurationChange and
+every set_exposure) and any star fields PHD2 sends while looping.
 """
 
 from __future__ import annotations
@@ -168,6 +171,9 @@ class PHD2Client:
         self.app_state: str = "Unknown"   # PHD2's own AppState name
         self.frame_count = 0              # looping + guide frames seen
         self.last_event_at: float | None = None
+        # PS-90: star fields of the last LoopingExposures event, when PHD2
+        # sends any (unverified for 2.6.14: None until one arrives)
+        self.loop_star: dict | None = None
 
     @property
     def metrics(self) -> GuidingMetrics:
@@ -431,7 +437,21 @@ class PHD2Client:
     async def set_exposure(self, ms: int):
         """Guide exposure in ms; PHD2 only offers the values that
         get_exposure_durations() lists, so pick one of those."""
-        return await self.call("set_exposure", [int(ms)])
+        r = await self.call("set_exposure", [int(ms)])
+        self._metrics.guide_camera_exposure = int(ms) / 1000.0
+        return r
+
+    async def refresh_exposure(self) -> int | None:
+        """PS-90: read the guide exposure into metrics.guide_camera_exposure
+        (seconds). None (metrics untouched) when PHD2 does not answer."""
+        try:
+            ms = await self.get_exposure()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("PHD2 get_exposure failed: %s", e)
+            return None
+        if ms:
+            self._metrics.guide_camera_exposure = ms / 1000.0
+        return ms
 
     async def get_exposure_durations(self) -> list[int]:
         r = await self.call("get_exposure_durations")
@@ -592,6 +612,10 @@ class PHD2Client:
                 self.app_state = "LostLock"
         elif event_type == "LoopingExposures":
             self.frame_count += 1
+            star = {k: event.get(k) for k in ("HFD", "SNR", "StarMass", "ErrorCode")
+                    if event.get(k) is not None}
+            if star:
+                self.loop_star = dict(star, t=now)
             if self.app_state not in ("Guiding", "Calibrating"):
                 self.app_state = "Looping"
         elif event_type == "LoopingExposuresStopped":
@@ -645,6 +669,10 @@ class PHD2Client:
             self._recompute()
             self._metrics.snr = event.get("SNR", 0)
             self._metrics.star_mass = event.get("StarMass", 0)
+            # PS-90: the star's size and PHD2's verdict on it
+            self._metrics.hfd_px = _fnum(event.get("HFD"), 0.0) or None
+            self._metrics.error_code = int(_fnum(event.get("ErrorCode"), 0))
+            self._metrics.saturated = self._metrics.error_code == 1
             self._metrics.state = GuidingState.GUIDING
 
         elif event_type == "Settling":
@@ -702,6 +730,7 @@ class PHD2Client:
     async def _safe_refresh(self):
         try:
             await self.refresh_pixel_scale()
+            await self.refresh_exposure()
         except Exception as e:  # noqa: BLE001
             logger.debug("PHD2 pixel-scale refresh failed: %s", e)
 

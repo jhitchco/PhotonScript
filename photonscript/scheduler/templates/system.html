@@ -312,6 +312,34 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="tunePanel">
+            <h2>Guide star (PS-90)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">The RC16 agent measures the guide star after each settle and on a filter change (get_star_image plus PHD2's SNR, HFD and ErrorCode). Target: peak 60 to 80% of full scale, never clipped, SNR over 20, HFD 2 to 5 px, exposure 1 to 4 s. Mode observe records only; exposure steps PHD2's exposure (only to exposures the dark library has). Gain and binning are recommended for the next night and written pre-dusk only with PS_PHD2_AUDIT_AUTOFIX.</p>
+            <div class="bd" id="tuneInfo">loading...</div>
+            <div id="tuneRows" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+            fetch('/api/phd2/tuning').then(function (r) { return r.json(); }).then(function (t) {
+                var l = t.last || {}, rc = t.recommend || {}, b3 = rc.bin3 || {};
+                var lc = (t.changes || []).slice(-1)[0];
+                document.getElementById('tuneInfo').innerHTML = 'mode <b>' + esc(t.mode) + '</b> | night ' + esc(t.date) + ', ' + esc(t.measurements) + ' measurements' +
+                    (t.last ? '<br>last ' + esc(l.t_utc) + ': ' + esc(l.target) + ' ' + esc(l.filter) + ', ' + esc(l.exposure_ms) + ' ms, peak ' +
+                        esc(l.peak_frac != null ? Math.round(l.peak_frac * 1000) / 10 : null) + '%, SNR ' + esc(l.snr) + ', HFD ' + esc(l.hfd_px) + ' px' +
+                        (l.clipped ? ' <span class="badge badge-warn">clipped</span>' : '') + (l.bit8 ? ' <span class="badge badge-fail">8-bit</span>' : '') +
+                        ((l.would || l.decision) ? '<br>' + (l.decision ? 'decision' : 'would') + ': ' + esc((l.decision || l.would).reason) : '') : '') +
+                    '<br>last change: ' + (lc ? esc(lc.t_utc) + ' ' + esc(lc.kind) + ' ' + esc(lc.from) + ' -> ' + esc(lc.to) + ' (' + esc(lc.reason) + ')' : 'none tonight') +
+                    '<br>next night: ' + esc(rc.note) + (rc.change ? ' <span class="badge badge-warn">gain ' + esc(rc.gain) + '</span>' : '') +
+                    (b3.note ? '<br>bin 3: ' + esc(b3.note) : '');
+                var rows = Object.entries(t.by_filter || {});
+                document.getElementById('tuneRows').innerHTML = rows.length ? '<table class="tbl" style="font-size:.8rem;width:100%;"><tr><th>Filter</th><th>Exposure ms</th><th>Peak %</th><th>SNR</th><th>HFD px</th><th>Clipped</th><th>In band %</th></tr>' +
+                    rows.map(function (e) { var v = e[1]; return '<tr><td>' + esc(e[0]) + '</td><td>' + esc(v.exposure_ms) + '</td><td>' + esc(v.peak_pct) + '</td><td>' + esc(v.snr) +
+                        '</td><td>' + esc(v.hfd_px) + '</td><td>' + esc(v.clipped) + '</td><td>' + esc(v.in_band_pct) + '</td></tr>'; }).join('') + '</table>' : '';
+            }).catch(function (e) { document.getElementById('tuneInfo').textContent = 'error: ' + e; });
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Preflight Check</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system

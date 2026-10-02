@@ -103,11 +103,11 @@ id = "gain"
 group = "Camera"
 label = "Guide camera gain"
 sources = ["api", "profile", "log"]
-report = true
+computed = "guide_gain"
 severity = "warn"
-apply = "manual"
-why = "Gain is chosen by the auto-tune ticket (PS-90); shown here so a change is visible at arm."
-fix = "Set per PS-90 once it ships."
+apply = "profile"
+why = "Gain sets how bright the guide star reads at a 1 to 4 s exposure. The PS-90 tuner recommends it from recent nights (more gain when a filter is still faint at 4 s, less when one clips at 1 s); info until it has data."
+fix = "Brain > Camera: camera gain as recommended (System page > Guide star). The armer writes it pre-dusk only with phd2_audit_autofix."
 
 [[check]]
 id = "exposure_ms"
