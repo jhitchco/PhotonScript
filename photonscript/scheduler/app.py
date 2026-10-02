@@ -639,6 +639,8 @@ _CONFIG_FIELDS = [
     ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
+    ("flexure_warn_arcsec_min", "PS_FLEXURE_WARN_ARCSEC_MIN", "Flexure report: flag Piggy drift above the RC16's by this (\"/min, PS-96)", "Piggyback", "float", False, False),
+    ("flexure_solve_all", "PS_FLEXURE_SOLVE_ALL", "Flexure report: plate-solve every Piggy sub (default: first/middle/last per block)", "Piggyback", "bool", False, False),
 ]
 
 _MASK = "••••••••"
@@ -1437,8 +1439,26 @@ def api_runs():
 def api_trends(nights: int = 14):
     """Cross-night data-quality trends + any systematic-fault findings (polar
     drift, optical tilt, soft focus) that per-frame QA can't see."""
-    from photonscript.scheduler.trends import analyze_trends
-    return analyze_trends(get_config(), nights=min(max(nights, 1), 60))
+    from photonscript.scheduler.trends import analyze_trends, flexure_nights
+    n = min(max(nights, 1), 60)
+    out = analyze_trends(get_config(), nights=n)
+    out["flexure"] = flexure_nights(get_config(), nights=n)  # PS-96
+    return out
+
+
+@app.get("/api/flexure")
+def api_flexure(date: str, refresh: bool = False):
+    """PS-96: Piggy-600 vs RC16 differential flexure for one night (the
+    evening date): paired subs, per-block drift rates ("/min) for both rigs
+    and their difference, shape comparison per pair, ranked causes. Served
+    from the cache the daytime backfill writes; refresh=true recomputes from
+    the stored solves (never runs ASTAP from a request)."""
+    from photonscript.scheduler.flexure import build_report, cached_report
+    if not refresh:
+        hit = cached_report(get_config(), date)
+        if hit is not None:
+            return hit
+    return build_report(get_config(), date, solve=False)
 
 
 @app.post("/api/runs/archive-before")
@@ -1701,6 +1721,13 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guiding analysis skipped for %s: %s", date, e)
         d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
+    try:  # PS-96: Piggy-600 vs RC16 differential flexure (cached report)
+        from photonscript.scheduler.flexure import compact as fx_compact
+        from photonscript.scheduler.flexure import fresh_report
+        d["flexure"] = fx_compact(fresh_report(get_config(), date))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("flexure report skipped for %s: %s", date, e)
+        d["flexure"] = {"ok": False, "note": f"flexure report failed: {e}"}
     pending = _syncthing_pending_names()
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
