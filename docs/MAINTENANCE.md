@@ -249,6 +249,42 @@ against a `reg export` of the scope PC; until then those rows read "unknown"
 (`protrack`) says who corrects periodic error: with ProTrack, PHD2's RA
 algorithm must not be Predictive PEC.
 
+**Guide-star auto-tune (PS-90).** The RC16 agent measures the guide star
+after every settle (and on a filter change: the OAG is assumed to sit behind
+the wheel) from PHD2's `get_star_image` crop plus the GuideStep SNR, HFD and
+ErrorCode: peak and star amplitude as a share of `phd2_guide_full_scale_adu`
+(65535), clipped (a pixel at 98%, or ErrorCode 1), HFD, an 8-bit flag and the
+one-pixel share (PS-91). Target: peak 60 to 80%, never clipped, SNR over 20,
+HFD 2 to 5 px, exposure 1 to 4 s. It never touches PHD2 unless PHD2 is
+Guiding and settled, nothing else holds it (guard recovery, self-test,
+calibration retry, audit apply, hot-pixel map), the PS-93 calibration slot
+is not running and no guard non-star episode is open.
+```
+phd2_tune_mode = observe     measure and record only (default; never set_exposure)
+phd2_tune_mode = exposure    live exposure-only tuning (one change per settle at most)
+phd2_tune_mode = off         not started
+GET /api/phd2/tuning?date=   per filter, changes, last measurement, advice, bin 3 check
+```
+In `exposure` mode it steps down at once on a clipped star, otherwise only
+after 3 readings outside 55 to 85%, and picks the longest listed PHD2
+exposure not over the linear prediction, inside `phd2_tune_exp_ms` and only
+one the PHD2 dark library holds (no library = no change). Changes go under
+`phd2_ops.hold("tuner")` and are logged to `<data_dir>\phd2\tune\<night>.jsonl`
+and the PS-89 `changes.jsonl`. Memory: `<data_dir>\phd2\tune.json`, one entry
+per profile / binning / gain / target / filter; a filter change applies the
+remembered (or L-ratio predicted) exposure first. Gain and binning are not
+API settable: the System page "Guide star" box shows next night's gain advice
+(also the PS-89 audit's gain row) and whether bin 3 would hit the HFD band.
+The armer writes the gain pre-dusk (ARMED, before the dispatch) through the
+PS-89 profile writer only with `phd2_audit_autofix=true`, PHD2 closed, a
+backup and a verified registry name, then re-audits. PHD2's gain is its own
+0 to 100 setting (mapping to sensor gain unverified).
+
+By hand on the scope PC before `exposure` mode: PHD2 16-bit, saturation by
+Max ADU 65535, auto exposure off (so `set_exposure` sticks), and a dark
+library covering every exposure from 1 to 4 s at the chosen gain and binning
+(plus the defect map).
+
 ## Calibration — what an arm captures automatically
 
 Matching is by **camera (INSTRUME) + full epoch** (`EXPTIME|GAIN|OFFSET|SET-TEMP`

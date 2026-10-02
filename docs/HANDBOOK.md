@@ -386,6 +386,14 @@ or "ERROR: ...". Masters in `out\master\`.
   `phd2_audit_autofix` (off) with PHD2 closed and a backup; ASCOM, TheSky and
   NINA rows report only. Registry names are unverified until a `reg export`
   from the scope PC (MAINTENANCE.md). `pe_owner=protrack`: PHD2 PPEC off.
+- GUIDE-STAR AUTO-TUNE (PS-90): the RC16 agent measures the guide star after
+  each settle and filter change (peak % of full scale, clipped, SNR, HFD).
+  `phd2_tune_mode=observe` (default) records only; `exposure` steps PHD2's
+  exposure toward a 60 to 80% peak within 1 to 4 s (dark-library exposures
+  only). Gain advice for the next night (also the audit's gain row) is
+  written pre-dusk only behind `phd2_audit_autofix`; binning stays at 2 and
+  the report says from the measured HFD whether bin 3 would hit 2 to 5 px.
+  `GET /api/phd2/tuning`, System page "Guide star", runs page line.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
