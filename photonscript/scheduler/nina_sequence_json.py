@@ -829,6 +829,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                                               loop_end)
     chatty_block = narrate == "verbose"          # per-block starting/done pair
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
+    # PS-105: planner copies arrive with acquired 0 (count = still owed, see
+    # target_planner.remaining_copy), so `count - acquired` here is just count.
     active = [e for e in target.exposures
               if e.count - e.acquired > 0 or e.short_remaining() > 0]
 
