@@ -528,6 +528,14 @@ async def _start_auto_arm():
 
 
 @app.on_event("startup")
+async def _start_calibration_autofill():
+    """PS-113: daytime calibration auto-fill. Always started; each tick is a
+    no-op unless config.calibration_autofill (default off)."""
+    from photonscript.scheduler.calibration_capture import autofill_loop
+    asyncio.create_task(autofill_loop(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
@@ -556,6 +564,10 @@ _CONFIG_FIELDS = [
     ("dark_exposures", "PS_DARK_EXPOSURES", "Dark library exposures, seconds (comma-sep)", "Imaging", "str", False, False),
     ("dark_target_count", "PS_DARK_TARGET_COUNT", "Dark library quota per exposure", "Imaging", "int", False, False),
     ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
+    ("calibration_qa_mode", "PS_CALIBRATION_QA_MODE", "Calibration frame QA (PS-113): quarantine (bad frames to Calibration/_quarantine) | report (verdicts only) | off", "Imaging", "str", False, False),
+    ("calibration_temp_tol_c", "PS_CALIBRATION_TEMP_TOL_C", "Calibration: sensor within setpoint +/- this (C) for darks/bias and capture jobs", "Imaging", "float", False, False),
+    ("calibration_capture_budget_min", "PS_CALIBRATION_CAPTURE_BUDGET_MIN", "Calibration capture job time budget (min, cooling included)", "Imaging", "float", False, False),
+    ("calibration_autofill", "PS_CALIBRATION_AUTOFILL", "Daytime calibration auto-fill (sun up, armer idle, once a day per rig; never at night)", "Imaging", "bool", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
@@ -2393,52 +2405,40 @@ def api_system_stats():
 
 @app.post("/api/calibration/capture")
 async def api_calibration_capture(payload: dict = Body(default={})):
-    """Generate + dispatch a darks/bias run. Roof must be closed & dark.
-
-    Optional payload["rig"] ("rc16" | "piggyback"): the piggyback builds its
-    run at the OSC gain/offset/setpoint (via rig_config) and dispatches straight
-    to NINA #2 (it has no armer state machine). Darks never touch the mount, so
-    both rigs can shoot at once with the roof closed."""
-    from photonscript.scheduler.calibration import generate_darks_json
-    from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
+    """Darks + bias for one rig (System page Capture button). PS-113: runs as
+    a guarded capture job (scheduler/calibration_capture.py): refused unless
+    the armer is DISARMED or COMPLETE, the rig's NINA is idle and the roof
+    reads closed; cools to the setpoint first; stops if the roof opens or the
+    sensor drifts. Optional payload["darks"] [[exp, n]], payload["bias"]
+    (default 50); without darks: the rig's dark library list at the quota
+    (RC16 also the PS-66 unguided cap). 409 with the refusals."""
+    from photonscript.scheduler import calibration_capture as cc
+    from photonscript.shared.rigs import rig_config, RC16
     rig = payload.get("rig", RC16)
-    config = rig_config(get_config(), rig)
-    # Default to THIS rig's own dark library spec (piggyback -> 120s OSC subs,
-    # RC16 -> 600,180) at the configured quota, not a hardcoded 300/600 — so the
-    # button always shoots darks that actually match the rig's light exposures.
+    config = get_config()
     if payload.get("darks"):
-        darks = [(float(e), int(c)) for e, c in payload["darks"]]
+        darks = [[float(e), int(c)] for e, c in payload["darks"]]
     else:
         count = int(getattr(config, "dark_target_count", 30))
         if rig == RC16:   # PS-66: plus the unguided cap length (300 s)
             from photonscript.scheduler.nina_sequence_json import dark_library_exposures
-            darks = [(e, count) for e in dark_library_exposures(config)]
+            darks = [[e, count] for e in dark_library_exposures(config)]
         else:
-            darks = [(float(t.strip()), count)
-                     for t in str(getattr(config, "dark_exposures", "600,180")).split(",")
-                     if t.strip()]
+            darks = [[float(t.strip()), count]
+                     for t in str(getattr(rig_config(config, rig), "dark_exposures",
+                                          "120")).split(",") if t.strip()]
     bias = int(payload.get("bias", 50))
-    seq_text, minutes = generate_darks_json(config, darks, bias)
-    seq_dir = Path.cwd() / "sequences"
-    seq_dir.mkdir(exist_ok=True)
-    tag = "" if rig == RC16 else f"_{rig}"
-    path = seq_dir / f"calibration{tag}_{datetime.now():%Y%m%d_%H%M}.json"
-    path.write_text(seq_text, encoding="utf-8")
-    if rig == RC16:
-        ok = await get_armer().dispatch_raw(json.loads(seq_text),
-                                            f"calibration {path.name}")
-        detail = None if ok else get_armer().detail
-    else:
-        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text))
-        ok, detail = res["ok"], res["detail"]
+    ok, body = await cc.start_job(config, rig, darks=darks, bias=bias,
+                                  armer_state_fn=lambda: get_armer().state,
+                                  armer_status_fn=lambda: get_armer().status(),
+                                  source="system page")
     if not ok:
         return JSONResponse(status_code=409, content={
-            "detail": f"dispatch refused/failed: {detail}"})
-    logger.info("Calibration dispatched (%s): %s (~%.0f min)", rig, path.name,
-                minutes)
-    return {"ok": True, "rig": rig, "sequence": path.name,
-            "estimated_minutes": round(minutes),
-            "darks": [[e, c] for e, c in darks], "bias": bias}
+            "detail": "refused: " + "; ".join(body.get("refusals") or []),
+            **body})
+    return {"ok": True, "rig": rig, "sequence": body.get("sequence") or body["id"],
+            "estimated_minutes": round(body["estimated_minutes"]),
+            "darks": body["darks"], "bias": body["bias"], "job": body}
 
 
 @app.post("/api/calibration/flats")
@@ -2898,6 +2898,8 @@ from photonscript.scheduler.routers import targets as _targets_router  # noqa: E
 app.include_router(_targets_router.router)
 from photonscript.scheduler.routers import pointing as _pointing_router  # noqa: E402
 app.include_router(_pointing_router.router)
+from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
+app.include_router(_calibration_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

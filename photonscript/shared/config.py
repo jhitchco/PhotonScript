@@ -129,6 +129,24 @@ class PhotonScriptConfig(BaseSettings):
                                  # night and over-padding the library; 60 = ~every other
                                  # month. Set 30 for monthly, 0 to capture every night.
     flat_count: int = 15  # sky flats per filter at dawn
+    # PS-113: calibration capture + QA (scheduler/calibration_qa.py,
+    # calibration_capture.py). Bad frames never enter the Library or a master.
+    calibration_qa_mode: str = "quarantine"  # off (file every frame, no QA) |
+                                 # report (QA + verdicts, file every frame) |
+                                 # quarantine (failing frames go to
+                                 # Library/.../Calibration/_quarantine/ with
+                                 # the reasons; NINA's originals untouched)
+    calibration_temp_tol_c: float = 1.0  # darks / bias: CCD-TEMP within SET-TEMP
+                                 # +/- this; a capture job also waits for it
+                                 # before the first exposure and stops on drift
+    calibration_capture_budget_min: float = 240.0  # one capture job's time
+                                 # budget (cooling included); the plan is
+                                 # trimmed to fit and the job stops at it
+    calibration_autofill: bool = False  # daytime auto-fill: when the sun is up
+                                 # and the armer idle, start one gap-driven
+                                 # darks + bias job per rig per day (ends 2 h
+                                 # before sunset). Never at night. Off = only
+                                 # the Capture now button / CLI start a job
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as

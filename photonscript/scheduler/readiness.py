@@ -38,6 +38,9 @@ piggyback_setpoint_c), and every OSC flat counts for the "OSC" filter (no
 wheel). Its lights live in the main Library (<lib>/<target>/OSC) like the
 RC16's. A context only judges the plans of its own rig (ExposurePlan.rig).
 
+    PS-113: once a rig has a calibration QA store (calibration_qa), the
+    context counts only QA-passed frames: ctx.qa == "passed".
+
     calibration_missing(readiness) -> list[str]
         PS-30 campaign gate: what calibration one target_readiness() result
         still lacks for its PLANNED filters and exposures (bias, darks per
@@ -67,20 +70,60 @@ class CalibrationContext:
     health: dict = field(default_factory=dict)  # calibration_health() output
     dark_kwargs: dict = field(default_factory=dict)  # count_matching_darks epoch
     built_at: float = 0.0             # time.monotonic() when built
+    qa: str = ""                      # PS-113: "passed" = QA-passed frames only
     _config: Any = None
     _darks: dict[float, int] = field(default_factory=dict)
+    _qa_store: dict | None = None
 
     def darks(self, exp_s: float) -> int:
-        """Epoch-matched darks for one exposure (memoized; 0 on error)."""
+        """Epoch-matched darks for one exposure (memoized; 0 on error).
+        PS-113: QA-passed darks only once the rig has a QA store."""
         e = float(exp_s)
         if e not in self._darks:
-            from photonscript.scheduler.calibration import count_matching_darks
             try:
-                self._darks[e] = count_matching_darks(self._config, e,
-                                                      **self.dark_kwargs)
+                if self._qa_store is not None:
+                    from photonscript.scheduler.calibration_qa import (
+                        count_passed_darks)
+                    self._darks[e] = count_passed_darks(
+                        self._config, self.rig, e, store=self._qa_store,
+                        **_qa_epoch(self._config, self.dark_kwargs))
+                else:
+                    from photonscript.scheduler.calibration import (
+                        count_matching_darks)
+                    self._darks[e] = count_matching_darks(self._config, e,
+                                                          **self.dark_kwargs)
             except Exception:  # noqa: BLE001
                 self._darks[e] = 0
         return self._darks[e]
+
+
+def _qa_epoch(config, dark_kwargs: dict) -> dict:
+    """gain / offset / setpoint of a rig's dark epoch (count_matching_darks'
+    defaults: the RC16's)."""
+    return {"gain": dark_kwargs.get("gain", getattr(config, "default_gain", 200)),
+            "offset": dark_kwargs.get("offset", getattr(config, "default_offset", 256)),
+            "setpoint": float(dark_kwargs.get(
+                "setpoint", getattr(config, "camera_setpoint_c", 0.0)))}
+
+
+def _apply_qa(view, ctx: CalibrationContext) -> None:
+    """PS-113: once a rig has a calibration QA store, readiness counts only
+    QA-passed frames (bias in the newest bias session, flats per filter,
+    darks per exposure). Without a store (QA never ran, or
+    calibration_qa_mode=off) the header count stays as before."""
+    from photonscript.scheduler import calibration_qa as cq
+    if cq.mode(view) == "off":
+        return
+    store = cq.load_store(view, ctx.rig)
+    if not store["frames"]:
+        return
+    ep = _qa_epoch(view, ctx.dark_kwargs)
+    ctx.qa = "passed"
+    ctx._qa_store = store
+    ctx.bias = cq.count_passed_bias(view, ctx.rig, gain=ep["gain"],
+                                    offset=ep["offset"], store=store)
+    ctx.flats = cq.count_passed_flats(view, ctx.rig, gain=ep["gain"],
+                                      offset=ep["offset"], store=store)
 
 
 def _rc16_profile(config, ctx: CalibrationContext) -> None:
@@ -164,6 +207,10 @@ def calibration_context(config, rig: str = RC16, *, health: dict | None = None,
     ctx = CalibrationContext(rig=rig, lib=Path("."), health=health,
                              built_at=now, _config=view)
     profile(view, ctx)
+    try:
+        _apply_qa(view, ctx)
+    except Exception:  # noqa: BLE001 - readiness never breaks over QA
+        pass
     if rig != RC16:
         from photonscript.scheduler.runs import library_root
         ctx.lib = library_root(config)  # its lights: the main Library
