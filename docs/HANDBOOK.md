@@ -356,6 +356,50 @@ or "ERROR: ...". Masters in `out\master\`.
   "Auto restore calibration" ON and NINA Force Calibration OFF; ~0.36" RMS
   achieved. TPoint model built (4x4 bin, wait for dark, image scale 0.942"/px)
   with ProTrack enabled.
+- PHD2 CALIBRATION MANAGER (PS-93): PhotonScript decides when PHD2 calibrates,
+  where, and whether the result is good. Every completed calibration is graded
+  from `get_calibration_data` plus NINA's mount: PASS = axes within 5 deg of
+  perpendicular, RA/Dec rate ratio within 30% of cos(Dec), 8+ steps per axis;
+  FAIL = failed / aborted, a star that did not move, ortho over 5 deg, ratio off
+  (judged within 60 deg of Dec 0), parity flipped against the last good one on
+  that pier; WARN = far from Dec 0 / the meridian, absolute rate 30% off the
+  guide speed, few steps. With `phd2_cal_mode=auto` a guided night gets a NINA
+  `PHD2_CALIBRATION` slot (L filter, slew + center on a field at Dec -5..+15,
+  0.25..1 h from the meridian on the first target's side, StartGuiding with
+  ForceCalibration, StopGuiding, `phd2_cal_hold_s` hold) only when there is no
+  calibration on record, the last one FAILED, it is older than
+  `phd2_cal_max_age_days`, the PHD2 profile / binning / scale changed, or one
+  was asked for (System page or `POST /api/phd2/calibrate`). The slot sits after
+  the twilight AF and the PS-92 twilight self-test, before the imaging gate (on
+  a late arm or re-dispatch: right after the unpark); with it no target forces
+  a calibration. A FAIL inside the slot is retried once over PHD2 during the
+  hold; a second FAIL keeps guiding on it and alerts once
+  (`phd2_cal_fail_action=keep`). A profile / binning change or an uncalibrated
+  PHD2 mid-night triggers one re-dispatch with the slot (1 h of dark left).
+  After a meridian flip the first 3 min of guiding are checked for a Dec
+  runaway; a runaway alerts with the "Reverse Dec output after meridian flip"
+  fix (`phd2_flip_action=alert`), a clean pass marks the pier side verified.
+  Record: `<data_dir>/phd2/calibration.json` (+ `calibrations.jsonl`),
+  `GET /api/phd2/calibration`, the System page panel and the runs page line.
+  On an empty store the newest guide-log calibration is seeded and graded.
+- PHD2 SETTINGS AUDIT (PS-89): `config/phd2/desired_oag_rc16.toml` holds the
+  desired PHD2 / NINA / mount-driver state with a "why" per setting. Every
+  guided arm audits it in the background (one push only on a FAIL) and the
+  RC16 agent re-audits after a PHD2 configuration change. System page panel
+  "PHD2 Settings Audit", `GET /api/phd2/audit`, runs page line, preflight
+  line. Apply: API keys (exposure, RA min-move, Dec guide mode) while PHD2 is
+  Stopped or Looping; profile (registry) writes only behind
+  `phd2_audit_autofix` (off) with PHD2 closed and a backup; ASCOM, TheSky and
+  NINA rows report only. Registry names are unverified until a `reg export`
+  from the scope PC (MAINTENANCE.md). `pe_owner=protrack`: PHD2 PPEC off.
+- GUIDE-STAR AUTO-TUNE (PS-90): the RC16 agent measures the guide star after
+  each settle and filter change (peak % of full scale, clipped, SNR, HFD).
+  `phd2_tune_mode=observe` (default) records only; `exposure` steps PHD2's
+  exposure toward a 60 to 80% peak within 1 to 4 s (dark-library exposures
+  only). Gain advice for the next night (also the audit's gain row) is
+  written pre-dusk only behind `phd2_audit_autofix`; binning stays at 2 and
+  the report says from the measured HFD whether bin 3 would hit 2 to 5 px.
+  `GET /api/phd2/tuning`, System page "Guide star", runs page line.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard

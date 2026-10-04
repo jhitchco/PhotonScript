@@ -107,6 +107,13 @@ class Armer:
         self._unsafe_stopped = False
         self._unsafe_check_done = False
         self._unsafe_tree_misses = 0
+        self._hotpix_tried: str | None = None   # PS-91: night of the last map try
+        self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
+        self._recal_night: str | None = None  # PS-93: mid-night recalibration done
+        self._cal_force: str | None = None     # PS-93: reason forcing the slot
+        self._audit_task: asyncio.Task | None = None  # PS-89: audit at arm
+        self._tune_night: str | None = None    # PS-90: pre-dusk tune done
+        self._tune_note: str | None = None
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -125,6 +132,8 @@ class Armer:
                 "shutdown": getattr(self, "shutdown", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
+                "fallback_night": getattr(self, "_fallback_night", None),
+                "recal_night": getattr(self, "_recal_night", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -164,6 +173,8 @@ class Armer:
         # PS-77: an armer safety stop survives a restart, so the resume still
         # re-dispatches instead of waiting on a sequence that is not running.
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
+        self._fallback_night = saved.get("fallback_night")
+        self._recal_night = saved.get("recal_night")
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -250,8 +261,10 @@ class Armer:
         return bool(self.config.guided_default)
 
     async def arm(self, guiding: str | None = None) -> dict:
-        """guiding: 'guided' (PHD2) or 'encoders' (unguided, CEM70G encoders).
-        None => use config.guided_default."""
+        """guiding: 'guided' (PHD2) or 'encoders' (unguided, on the Paramount
+        MX's encoders). None => use config.guided_default. A guided arm also
+        runs the PS-89 PHD2 settings audit in the background (never blocks
+        the arm; one push only on a FAIL)."""
         from photonscript.scheduler.night_plan import build_night_plan
         self.guiding_override = guiding
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
@@ -278,6 +291,10 @@ class Armer:
                 conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
+        # PS-89: audit PHD2's settings against the desired state now that the
+        # equipment is connected. In the background: it never blocks the arm.
+        if self._use_guiding() and getattr(self.config, "phd2_audit_enabled", True):
+            self._audit_task = asyncio.create_task(self._phd2_audit_at_arm())
         # Pre-imaging state: force the cooler + dew heater OFF now, so they stay
         # off from arm until the sequence turns them on cool_lead min before dark.
         # ONLY here in the fresh-arm path — never in connect_all/restore, which
@@ -294,6 +311,15 @@ class Armer:
                      title="PhotonScript armed")
         return self.status()
 
+    async def _phd2_audit_at_arm(self) -> None:
+        """PS-89 settings audit at arm. Never raises."""
+        try:
+            from photonscript.scheduler import phd2_audit
+            a = await asyncio.wait_for(phd2_audit.at_arm(self.config), 180)
+            logger.info("PHD2 settings audit at arm: %s", a.get("counts"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PHD2 settings audit at arm failed: %s", e)
+
     async def disarm(self) -> dict:
         prev = self.state
         self._set_state("DISARMED", "")
@@ -306,7 +332,7 @@ class Armer:
         return self.status()
 
     async def make_safe(self) -> str:
-        """Stop the sequence, warm the camera, park the mount.
+        """Stop the sequence, stop the guider, warm the camera, park the mount.
 
         Works from any state: if a device is disconnected, connect it and
         retry; if it stays disconnected that is benign (nothing to make
@@ -315,6 +341,9 @@ class Armer:
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop:{'ok' if ok else 'FAILED'}")
+        # PS-91: stop PHD2 before parking (NINA's End-area StopGuiding never
+        # runs once the sequence is stopped). Never blocks the park.
+        steps.append(f"guider stop:{await self._stop_guider_best_effort()}")
         # Make-safe is an abort: warm instantly (minutes=0 by default) so cutting
         # the TEC isn't held up by a ramp. gradual_warm_minutes can restore one.
         warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
@@ -385,6 +414,15 @@ class Armer:
             except Exception as e:  # noqa: BLE001
                 logger.warning("cooler/dew off (%s) failed: %s", rig, e)
 
+    async def _stop_guider_best_effort(self) -> str:
+        """PS-91: ask NINA to stop the guider. Returns 'ok' or 'FAILED'.
+        Never raises: every shutdown path must still reach the park."""
+        try:
+            return "ok" if await self._nina("guider_stop") is not None else "FAILED"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("guider stop failed: %s", e)
+            return "FAILED"
+
     # -- dawn shutdown -----------------------------------------------------------
 
     async def dawn_shutdown(self, reason: str = "dawn") -> str:
@@ -393,8 +431,8 @@ class Armer:
         An all-night-unsafe night leaves the sequence wedged inside
         WaitUntilSafe until the NEXT evening's dispatch replaces it, so the
         End area (dew off + warm) runs ~24 h late and both coolers hold
-        setpoint all day (seen 2026-09-15). This stops the sequence, warms +
-        dew-offs EVERY rig, parks the mount, then verifies cooler state once
+        setpoint all day (seen 2026-09-15). This stops the sequence and the
+        guider, warms + dew-offs EVERY rig, parks the mount, then verifies cooler state once
         the warm ramp is done and alerts if anything is still cooling.
         """
         from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
@@ -403,6 +441,10 @@ class Armer:
         steps = []
         ok = await self._nina("sequence_stop") is not None
         steps.append(f"stop {'ok' if ok else 'FAILED'}")
+        # PS-91: stopping the sequence skips its End-area StopGuiding, so PHD2
+        # kept "guiding" a parked scope after the roof closed (2026-09-26
+        # session 21). Stop it here, before the park; a failure never blocks.
+        steps.append(f"guider stop {await self._stop_guider_best_effort()}")
         warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
         for rig in rig_ids(self.config):
             rc = rig_config(self.config, rig)
@@ -924,7 +966,8 @@ class Armer:
         if now < dusk:
             seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
-        content = generate_nina_json(seq)
+        cal_field = self._calibration_slot(targets, now) if use_guiding else None
+        content = generate_nina_json(seq, cal_field=cal_field)
         result = lint(json.loads(content), guided=use_guiding)
         if not result.ok:
             self.detail = "; ".join(f.detail for f in result.findings
@@ -943,6 +986,88 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.warning("Plan snapshot failed: %s", e)
         return True
+
+    def _calibration_slot(self, targets, now: datetime) -> dict | None:
+        """PS-93: the PHD2 calibration field when tonight needs a calibration
+        (phd2_calibration.needs_calibration, or a mid-night invalidation in
+        _cal_force), else None and the sequence is exactly as before. Saves
+        the plan (field, hold) the RC16 agent grades and retries against, and
+        consumes a pending manual request. Never raises: a planning error
+        means no slot."""
+        try:
+            from photonscript.scheduler import phd2_calibration as pc
+            from photonscript.scheduler.tracking_test import hour_angle
+            forced = getattr(self, "_cal_force", None)
+            request = pc.pending_request(self.config)
+            need = ({"needed": True, "reason": forced} if forced else
+                    pc.needs_calibration(pc.load_active(self.config),
+                                         pc.load_live(self.config), self.config,
+                                         now, request))
+            if not need["needed"]:
+                logger.info("PHD2 calibration slot: not needed (%s)", need["reason"])
+                pc.save_plan(self.config, None)
+                return None
+            dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
+            # the slot runs after the twilight AF (about 20 min before astro
+            # dusk) or, on a late arm / re-dispatch, a few minutes from now
+            when = max(now + timedelta(minutes=5), dusk - timedelta(minutes=20))
+            first = targets[0] if targets else None
+            ha = (hour_angle(first.ra_hours, max(now, dusk),
+                             float(getattr(self.config, "observatory_lon", -109.0)))
+                  if first is not None else None)
+            field = pc.pick_calibration_field(self.config, when, ha)
+            hold = int(getattr(self.config, "phd2_cal_hold_s", 240) or 240)
+            pc.save_plan(self.config, {
+                "night": self.plan.get("night_of"), "created_utc": f"{now:%Y-%m-%dT%H:%M:%S}Z",
+                "reason": need["reason"], "field": field, "hold_s": hold,
+                "status": "pending", "attempts": 0, "forced": bool(forced)})
+            if request:
+                pc.clear_request(self.config)
+            logger.info("PHD2 calibration slot: %s at %s (%s)", field.get("name"),
+                        field.get("for_utc"), need["reason"])
+            return field
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            logger.warning("PHD2 calibration slot skipped: %s", e)
+            return None
+
+    async def recalibrate(self, reason: str) -> bool:
+        """PS-93 option C, the mid-night fallback: the calibration became
+        invalid (guide binning / profile changed, PHD2 uncalibrated, or a
+        manual 'now'). Stop the sequence and the guider, then re-dispatch the
+        remainder with a PHD2_CALIBRATION slot (companion untouched). Once per
+        night, RUNNING only, and only with at least 1 h of dark left (each
+        costs 5 to 10 min and repeats the start area)."""
+        from photonscript.scheduler import phd2_calibration as pc
+        night = self.plan.get("night_of")
+        if self.state != "RUNNING" or not night or self._recal_night == night:
+            return False
+        if pc.cfg_mode(self.config) == "never":
+            return False
+        now = datetime.utcnow()
+        left_h = (self._dawn() - now).total_seconds() / 3600.0
+        if left_h < 1.0:
+            logger.info("recalibration (%s) skipped: %.1f h of dark left", reason, left_h)
+            return False
+        self._recal_night = night
+        self._persist()
+        steps = []
+        for label, key in (("stop", "sequence_stop"), ("guider stop", "guider_stop")):
+            ok = await self._nina(key) is not None
+            steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        self._cal_force = reason
+        try:
+            ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        finally:
+            self._cal_force = None
+        steps.append(f"re-dispatch {'ok' if ok else 'FAILED'}")
+        report = "; ".join(steps)
+        self._set_state("RUNNING", f"PHD2 recalibration ({reason}): {report}")
+        logger.warning("PHD2 recalibration re-dispatch (%s): %s", reason, report)
+        await notify(self.config,
+                     f"PHD2 calibration invalid ({reason}): the remainder is "
+                     f"re-dispatched with a calibration slot first ({report}).",
+                     title="PhotonScript PHD2 calibration", priority=1)
+        return ok
 
     async def dispatch_raw(self, seq: dict, label: str) -> bool:
         """Load + start an arbitrary sequence (calibration). Refused while a
@@ -1186,6 +1311,93 @@ class Armer:
                             f"Re-dispatch after safety stop FAILED "
                             f"({self.detail}); retrying")
 
+    # -- PS-91 / PS-92: guide-camera hot-pixel map + unguided fallback ----------
+
+    HOTPIX_LEAD_MIN = 30   # map window: this long before pre-config
+
+    async def _maybe_hotpix_map(self, now: datetime, why: str) -> None:
+        """Refresh the guide-camera hot-pixel map while the roof is closed
+        (safety reads unsafe), at most one try per night, in the background.
+        guide_hotpix.maybe_capture skips a current map and a busy or absent
+        PHD2 by itself. Never raises, never blocks the tick."""
+        if not getattr(self.config, "guard_enabled", True):
+            return
+        night = self.plan.get("night_of") or f"{now:%Y-%m-%d}"
+        if self._hotpix_tried == night:
+            return
+        self._hotpix_tried = night
+
+        async def _run():
+            try:
+                from photonscript.telescope_agent.guide_hotpix import maybe_capture
+                res = await maybe_capture(self.config, why)
+                logger.info("hot-pixel map (%s): %s", why, res)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("hot-pixel map (%s) failed: %s", why, e)
+        asyncio.create_task(_run())
+
+    async def fallback_unguided(self, reason: str) -> bool:
+        """Switch the rest of tonight to unguided (PS-91 recovery failure /
+        PS-92 self-test FAIL): guiding_override="encoders", stop the sequence
+        and the guider, re-dispatch the remainder (companion untouched).
+        Once per night, RUNNING only.
+
+        NOT reachable with the default config: guard_on_fail and
+        selftest_on_fail both default to "alert" until PS-85 caps unguided
+        sub lengths (an uncapped 600 s unguided sub at 3248 mm trails)."""
+        night = self.plan.get("night_of")
+        if self.state != "RUNNING" or not night or self._fallback_night == night:
+            return False
+        self._fallback_night = night
+        self.guiding_override = "encoders"
+        self._persist()
+        steps = []
+        for label, key in (("stop", "sequence_stop"), ("guider stop", "guider_stop")):
+            ok = await self._nina(key) is not None
+            steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        steps.append(f"re-dispatch {'ok' if ok else 'FAILED'}")
+        report = "; ".join(steps)
+        self._set_state("RUNNING", f"Unguided fallback ({reason}): {report}")
+        logger.warning("unguided fallback (%s): %s", reason, report)
+        await notify(self.config,
+                     f"Guiding abandoned for tonight ({reason}): the remainder "
+                     f"is re-dispatched UNGUIDED ({report}).",
+                     title="PhotonScript unguided fallback", priority=1)
+        return ok
+
+    # -- PS-90: guide-star gain / binning, pre-dusk ----------------------------
+
+    async def _maybe_predusk_tune(self) -> None:
+        """While ARMED and before the dispatch: write the PS-90 tuner's
+        recommended guide gain / binning into PHD2's stored profile through
+        the PS-89 writer (phd2_tuning.apply_predusk: phd2_audit_autofix,
+        PHD2 closed, backup, verified registry names), then re-audit. Retried
+        each tick only while PHD2 is running; one outcome per night. Never
+        raises."""
+        night = self.plan.get("night_of")
+        if (not night or getattr(self, "_tune_night", None) == night
+                or not self._use_guiding()):
+            return
+        try:
+            from photonscript.scheduler import phd2_tuning
+            res = await asyncio.to_thread(phd2_tuning.apply_predusk, self.config,
+                                          str(self.state or ""))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-90 pre-dusk tune failed: %s", e)
+            self._tune_night = night
+            return
+        note = res.get("note")
+        if "PHD2 is running" not in str(note or ""):
+            self._tune_night = night
+        if note != getattr(self, "_tune_note", None):
+            self._tune_note = note
+            logger.info("PS-90 pre-dusk tune: %s (written %s)", note, res.get("written"))
+        if res.get("written"):
+            from photonscript.scheduler import phd2_audit
+            asyncio.create_task(phd2_audit.run_audit(self.config,
+                                                     reason="PS-90 pre-dusk tune"))
+
     async def _run(self):
         try:
             while self.state in ACTIVE_STATES:
@@ -1200,6 +1412,13 @@ class Armer:
         if self.state == "ARMED":
             preconfig = datetime.fromisoformat(
                 self.plan["preconfig_utc"].rstrip("Z"))
+            if (preconfig - timedelta(minutes=self.HOTPIX_LEAD_MIN) <= now < preconfig
+                    and self._hotpix_tried != self.plan.get("night_of")):
+                # PS-91: roof closed before dusk = dark guide frames
+                if await self._is_safe() is False:
+                    await self._maybe_hotpix_map(now, "pre-dusk, roof closed")
+            if now < preconfig:
+                await self._maybe_predusk_tune()
             if now >= preconfig:
                 if await self._dispatch_and_start():
                     self._set_state("RUNNING",
@@ -1294,3 +1513,42 @@ class Armer:
                     if self._unsafe_since is None:  # e.g. restored mid-pause
                         self._unsafe_since = now
                     await self._maybe_stop_stuck_imaging(now)
+                    # PS-91: opportunistic map refresh while the roof is shut
+                    await self._maybe_hotpix_map(now, "paused unsafe")
+
+
+async def request_recalibration(config, reason: str) -> bool:
+    """PS-93: ask the scheduler's armer (same process in `start --mode
+    full`) for a mid-night recalibration re-dispatch (Armer.recalibrate).
+    False when no armer runs here or it declines."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is None:
+        logger.warning("recalibration requested (%s) but no armer in this "
+                       "process", reason)
+        return False
+    try:
+        return await armer.recalibrate(reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("recalibration re-dispatch failed: %s", e)
+        return False
+
+
+async def request_fallback_unguided(config, reason: str) -> bool:
+    """PS-91 / PS-92: ask the scheduler's armer (same process in `start
+    --mode full`) to switch the rest of the night to unguided. Callers only
+    reach this when guard_on_fail / selftest_on_fail is "unguided"; both
+    default to "alert" until PS-85. False when no armer runs here."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is None:
+        logger.warning("unguided fallback requested (%s) but no armer in this "
+                       "process", reason)
+        return False
+    try:
+        return await armer.fallback_unguided(reason)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("unguided fallback failed: %s", e)
+        return False

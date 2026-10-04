@@ -369,7 +369,7 @@ def sequence(
     output: str = typer.Option("", help="Output file path"),
     month: int = typer.Option(0, help="Month (1-12), 0 = current"),
     fmt: str = typer.Option("json", "--format", help="json (Advanced Sequencer) or xml"),
-    guided: bool = typer.Option(False, help="Guided run (default: unguided, CEM70G encoders)"),
+    guided: bool = typer.Option(False, help="Guided run (default: unguided, Paramount MX encoders)"),
     now: bool = typer.Option(False, "--now",
                              help="No dusk gate — starts immediately (daytime testing)"),
 ):
@@ -428,6 +428,46 @@ def lint(
     result = lint_file(file, guided=guided)
     console.print(format_result(result))
     raise typer.Exit(0 if result.ok else 1)
+
+
+@app.command("phd2-selftest")
+def phd2_selftest(
+    slot: str = typer.Argument("auto", help="twilight | target | auto (from the "
+                                            "armed night's dusk)"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA's ExternalScript slot: "
+                                        "always exit 0 so NINA never stalls"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-92: run the pulse-path self-test through the PhotonScript service
+    (POST /api/phd2/selftest/run) and print the verdict. NINA runs this via
+    deploy\\phd2-selftest.cmd; the service skips it when tonight already
+    passed on this pier side, or (from NINA) when phd2_selftest_enabled is
+    off."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({"context": "nina" if from_nina else "manual",
+                                "slot": slot})
+    try:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        timeout = float(getattr(cfg, "selftest_timeout_s", 240) or 240) + 60
+    except Exception:  # noqa: BLE001
+        timeout = 300.0
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/api/phd2/selftest/run?" + q,
+                                     data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+        print(f"pulse self-test: {rep.get('verdict')} "
+              + "; ".join(rep.get("reasons") or []))
+    except Exception as e:  # noqa: BLE001
+        print(f"pulse self-test not run: {e}")
+        rep = {"verdict": "INCONCLUSIVE"}
+    if from_nina:
+        raise typer.Exit(0)
+    raise typer.Exit(0 if rep.get("verdict") in ("PASS", "WARN", "SKIPPED") else 1)
 
 
 @app.command()

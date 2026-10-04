@@ -36,6 +36,11 @@ from pathlib import Path
 
 from photonscript.scheduler import log_files as lf
 from photonscript.scheduler import phd2_logs as pl
+from photonscript.shared import guide_motion as gm
+# PS-91/92: the motion math moved to shared.guide_motion (the live guard and
+# the pulse self-test use the same numbers); re-exported under the old names.
+from photonscript.shared.guide_motion import (  # noqa: F401
+    axis_stats as _axis_stats, epochs as _epochs, pulse_rates, slope as _slope)
 
 SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 # within a severity, root causes first
@@ -64,14 +69,12 @@ T = {
     "search_vs_dither": 2.0,        # search region >= 2 x largest dither
     "search_vs_rms": 3.0,           # search region >= 3 x total RMS (px)
     "settle_success_pct": 70.0,
-    "cmd_rate_arcsec_min": 10.0,    # commanded correction worth judging
-    "response_min": 0.25,           # observed / commanded below this = no response
     "min_steps": 8,                 # PHD2 aims for about 12 calibration steps
     "rate_ratio_tol": 0.3,          # measured RA/Dec rate ratio vs cos(Dec)
-    "min_session_s": 120.0,         # shorter sessions get no per-axis rules
     "saturated_low_snr": 60.0,      # 'saturated' below this SNR = ADU ceiling
-    "static_std_arcsec": 0.15,      # a real star jitters more than this
-    "static_min_s": 300.0,          # ... over at least this long between dithers
+    # cmd_rate_arcsec_min, response_min, min_session_s, static_std_arcsec,
+    # static_min_s: shared with the live guard (shared.guide_motion.T)
+    **gm.T,
 }
 
 
@@ -136,20 +139,6 @@ def _iso(dt: datetime | None) -> str | None:
 
 def _iso_z(dt: datetime | None) -> str | None:
     return dt.isoformat(timespec="seconds") + "Z" if dt else None
-
-
-def _slope(points):
-    """Least-squares slope of (t, y) pooled within groups: {key: [(t, y)]}.
-    Pooling within lock epochs keeps a dither's step out of the drift."""
-    num = den = 0.0
-    for pts in points.values():
-        if len(pts) < 3:
-            continue
-        tm = sum(p[0] for p in pts) / len(pts)
-        ym = sum(p[1] for p in pts) / len(pts)
-        num += sum((p[0] - tm) * (p[1] - ym) for p in pts)
-        den += sum((p[0] - tm) ** 2 for p in pts)
-    return num / den if den > 0 else None
 
 
 # --------------------------------------------------------------------------
@@ -235,20 +224,6 @@ def _cal_record(i, sec, config) -> dict:
             "messages": c["messages"], **q}
 
 
-def pulse_rates(h, scale) -> tuple[float | None, float | None]:
-    """px/s a guide pulse moves the star at this pointing, RA and Dec.
-    From PHD2's 'Norm rates' ("/s at Dec 0, measured at calibration) when
-    present: the header's xRate is sometimes already rescaled to the current
-    Dec and sometimes not (PHD2 skips the cos(Dec) rescale above 60 deg)."""
-    xr, yr = h.get("x_rate"), h.get("y_rate")
-    nra, ndec, dec = h.get("norm_rate_ra"), h.get("norm_rate_dec"), h.get("dec_deg")
-    if scale and nra and dec is not None:
-        xr = nra * math.cos(math.radians(dec)) / scale
-    if scale and ndec:
-        yr = ndec / scale
-    return xr, yr
-
-
 _CAL_TS = ("%m/%d/%Y %H:%M:%S", "%m/%d/%Y %I:%M:%S %p", "%Y-%m-%d %H:%M:%S")
 
 
@@ -290,71 +265,6 @@ def _match_calibration(h, start_local, cals):
 # --------------------------------------------------------------------------
 # per session
 # --------------------------------------------------------------------------
-
-def _axis_stats(frames, key, ms_key, dir_key, rate_px_s, max_ms, scale):
-    """Pulse balance, max-duration share, drift and commanded vs observed."""
-    guided = [f for f in frames if not f["drop"]]
-    live = [f for f in guided if f.get("output", True)]  # guide output on
-    pulses = [f for f in live if f[ms_key] > 0 and f[dir_key]]
-    by_dir: dict[str, int] = {}
-    for f in pulses:
-        by_dir[f[dir_key]] = by_dir.get(f[dir_key], 0) + 1
-    # which direction PHD2 uses for a positive raw error (W and S in 2.6)
-    votes: dict[str, int] = {}
-    for f in pulses:
-        if f[key]:
-            d = f[dir_key] if f[key] > 0 else "-" + f[dir_key]
-            votes[d] = votes.get(d, 0) + 1
-    pos = max((d for d in votes if not d.startswith("-")),
-              key=lambda d: votes[d], default=None)
-    at_max = sum(1 for f in pulses if max_ms and f[ms_key] >= max_ms - 1)
-    dom = max(by_dir, key=by_dir.get) if by_dir else None
-    out = {"pulses": len(pulses), "by_direction": by_dir,
-           "dominant": dom, "dominant_pct": _pct(by_dir.get(dom, 0), len(pulses)),
-           "at_max": at_max, "at_max_pct": _pct(at_max, len(pulses)),
-           "mean_ms": _r(statistics.fmean([f[ms_key] for f in pulses]), 0) if pulses else None}
-    # drift of the raw error within each lock epoch
-    pts: dict[int, list] = {}
-    for f in guided:
-        pts.setdefault(f["epoch"], []).append((f["t"], f[key]))
-    sl = _slope(pts)
-    out["drift_px_min"] = _r(sl * 60, 3) if sl is not None else None
-    out["drift_arcsec_min"] = _r(sl * 60 * scale, 3) if sl is not None and scale else None
-    if guided:
-        out["error_first_px"] = _r(guided[0][key], 1)
-        out["error_last_px"] = _r(guided[-1][key], 1)
-        out["error_peak_px"] = _r(max((f[key] for f in guided), key=abs), 1)
-    # commanded correction vs what the star did, per lock epoch
-    C = O = span = 0.0
-    if rate_px_s and pos:
-        segs: dict[int, list] = {}
-        for f in live:
-            segs.setdefault(f["epoch"], []).append(f)
-        for seg in segs.values():
-            if len(seg) < 3:
-                continue
-            for f in seg[:-1]:
-                if f[ms_key] > 0 and f[dir_key]:
-                    sgn = -1.0 if f[dir_key] == pos else 1.0
-                    C += sgn * f[ms_key] / 1000.0 * rate_px_s
-            O += seg[-1][key] - seg[0][key]
-            span += seg[-1]["t"] - seg[0]["t"]
-    if span > 0 and scale:
-        cmd = C * scale / span * 60
-        obs = O * scale / span * 60
-        out.update(commanded_arcsec_min=_r(cmd, 1), observed_arcsec_min=_r(obs, 1),
-                   implied_drift_arcsec_min=_r(obs - cmd, 1))
-        if abs(cmd) >= T["cmd_rate_arcsec_min"] and span >= T["min_session_s"]:
-            resp = obs / cmd
-            out["response"] = _r(resp, 2)
-            out["response_verdict"] = (
-                "reversed" if resp < -T["response_min"] else
-                "not moving" if resp < T["response_min"] else
-                "weak" if resp < 0.5 else "moving")
-        else:
-            out["response_verdict"] = "small demand"
-    return out
-
 
 def _dithers(sec, frames):
     """Dither sizes, recovery to the new lock, and PHD2 settle outcomes."""
@@ -401,35 +311,6 @@ def _dithers(sec, frames):
                        "unfinished": max(0, started - done - failed),
                        "success_pct": _pct(done, done + failed),
                        "median_s": _r(statistics.median(times), 1) if times else None}}
-
-
-def _epochs(guided, scale) -> dict:
-    """Scatter of the star within each lock epoch (between dithers): a real
-    star through seeing scatters 0.3 to 0.6\" here; a hot pixel or a fixed
-    artifact sits still."""
-    ep: dict[int, list] = {}
-    for f in guided:
-        if not f["settling"]:
-            ep.setdefault(f["epoch"], []).append(f)
-    num = den = 0.0
-    static_s, stds = 0.0, []
-    for fs in ep.values():
-        if len(fs) < 20:
-            continue
-        v = statistics.pvariance([f["ra"] for f in fs]) + \
-            statistics.pvariance([f["dec"] for f in fs])
-        num += v * len(fs)
-        den += len(fs)
-        sd = math.sqrt(v) * (scale or 0)
-        stds.append(sd)
-        span = fs[-1]["t"] - fs[0]["t"]
-        if scale and len(fs) >= 60 and span >= T["static_min_s"] and \
-                sd < T["static_std_arcsec"]:
-            static_s += span
-    return {"count": len(ep),
-            "pooled_std_arcsec": _r(math.sqrt(num / den) * scale, 3) if den and scale else None,
-            "min_std_arcsec": _r(min(stds), 3) if stds else None,
-            "static_minutes": _r(static_s / 60, 1)}
 
 
 def _block(ra, dec, scale):
@@ -1017,6 +898,7 @@ class GuideTimeline:
     def __init__(self, sessions_raw, config):
         self.frames, self.spans = [], []
         self.dithers = []  # PS-96: UTC of every dither (after the frame before it)
+        self.headers: dict = {}   # PS-90: session id -> guide exposure / star HFD
         for sec, scale in sessions_raw:
             st = to_utc(config, sec["start_local"])
             if st is None:
@@ -1027,6 +909,10 @@ class GuideTimeline:
                     fr = sec["frames"]
                     t = fr[min(i, len(fr)) - 1]["t"] if i > 0 and fr else 0.0
                     self.dithers.append(st + timedelta(seconds=t))
+            h = sec.get("header") or {}
+            self.headers[id(sec)] = {"exposure_ms": h.get("exposure_ms"),
+                                     "hfd_px": h.get("hfd_px"), "gain": h.get("gain"),
+                                     "binning": h.get("binning")}
             last = sec["frames"][-1]["t"] if sec["frames"] else 0.0
             en = to_utc(config, sec["end_local"]) if sec["end_local"] and \
                 sec["closed"] in ("ended", "aborted") else None
@@ -1044,6 +930,15 @@ class GuideTimeline:
         hi = bisect.bisect_right(self.dithers, end_utc)
         return self.dithers[lo:hi]
 
+    def _session_value(self, win, key):
+        """The value of the session holding most of the window's frames."""
+        n: dict = {}
+        for _, _f, _k, sid in win:
+            n[sid] = n.get(sid, 0) + 1
+        if not n:
+            return None
+        return (self.headers.get(max(n, key=n.get)) or {}).get(key)
+
     def stats(self, start_utc: datetime, exp_s: float) -> dict:
         end = start_utc + timedelta(seconds=float(exp_s or 0))
         cover = sum(max(0.0, (min(b, end) - max(a, start_utc)).total_seconds())
@@ -1060,6 +955,11 @@ class GuideTimeline:
                "settling_frames": sum(1 for f, _ in g if f["settling"]),
                "lock_changes": len({(sid, f["epoch"]) for _, f, _, sid in win}) - 1 if win else 0,
                "max_pulses": sum(1 for f, _ in g if f["ra_ms"] >= 2499 or f["dec_ms"] >= 2499),
+               # PS-90: PHD2's clipped-star flag and the session's guide
+               # exposure / star HFD (the lock line of the session header)
+               "saturated": sum(1 for f, _ in g if f.get("code") == 1),
+               "guide_exposure_ms": self._session_value(win, "exposure_ms"),
+               "star_hfd_px": self._session_value(win, "hfd_px"),
                "snr_median": _r(statistics.median([f["snr"] for f, _ in g
                                                    if f["snr"] is not None]), 1)
                if any(f["snr"] is not None for f, _ in g) else None}
@@ -1125,14 +1025,23 @@ def sub_guide_stats(timeline: GuideTimeline, subs: list[dict], config) -> dict:
         if (x["rig"] or "rc16") != "rc16" or x["state"] == "unguided":
             continue
         b = by_f.setdefault(str(x.get("filter") or "?"),
-                            {"subs": 0, "frames": 0, "dropped": 0, "snr": []})
+                            {"subs": 0, "frames": 0, "dropped": 0, "snr": [],
+                             "guided": 0, "saturated": 0, "exp": [], "hfd": []})
         b["subs"] += 1
         b["frames"] += x["frames"] + x["dropped"]
         b["dropped"] += x["dropped"]
         b["snr"].append(x["snr_median"])
+        b["guided"] += x["frames"]
+        b["saturated"] += x.get("saturated") or 0
+        b["exp"].append(x.get("guide_exposure_ms"))
+        b["hfd"].append(x.get("star_hfd_px"))
+    # PS-90: with the guide exposure, PHD2's saturated share and the star HFD
     summary["rc16_by_filter"] = {
         k: {"subs": v["subs"], "dropped_pct": _pct(v["dropped"], v["frames"]),
-            "median_snr": med(v["snr"])} for k, v in sorted(by_f.items())}
+            "median_snr": med(v["snr"]),
+            "saturated_pct": _pct(v["saturated"], v["guided"]),
+            "guide_exposure_ms": med(v["exp"]),
+            "star_hfd_px": med(v["hfd"])} for k, v in sorted(by_f.items())}
     return {"summary": summary, "subs": rows}
 
 
@@ -1326,6 +1235,51 @@ def night_timeline(config, date: str) -> GuideTimeline | None:
     return GuideTimeline(raw, config)
 
 
+_TL_CACHE: dict = {}   # date -> (built monotonic s, GuideTimeline | None)
+_TL_TTL_S = 300.0
+LOCK_MIN_FRAMES = 30   # guided frames in a sub before its scatter is judged
+
+
+def sub_guide_lock(config, date: str, start_utc: datetime, exp_s: float,
+                   timeline: GuideTimeline | None = None) -> str | None:
+    """PS-91 backfill: was the RC16 guided on a real star during this sub?
+
+    'non-star' when a live guard episode (<data_dir>/phd2/guard) overlaps
+    the exposure, or when the night's PHD2 guide log shows the sub fully
+    guided with the 'star' scattering under the static threshold (0.15",
+    shared with the live guard's D2 and PS-88's star_static); 'star' when it
+    was guided and scattered like a star; None when unguided or no log."""
+    from photonscript.shared import phd2_store as store
+    if start_utc is None or not exp_s:
+        return None
+    end = start_utc + timedelta(seconds=float(exp_s))
+    try:
+        if any(a < end and b > start_utc
+               for a, b in store.nonstar_windows(config, date)):
+            return "non-star"
+    except Exception:  # noqa: BLE001 - no guard log is fine
+        pass
+    if timeline is None:
+        import time as _time
+        hit = _TL_CACHE.get(date)
+        if hit is None or _time.monotonic() - hit[0] > _TL_TTL_S:
+            try:
+                tl = night_timeline(config, date)
+            except Exception:  # noqa: BLE001
+                tl = None
+            if len(_TL_CACHE) > 4:
+                _TL_CACHE.clear()
+            _TL_CACHE[date] = hit = (_time.monotonic(), tl)
+        timeline = hit[1]
+    if timeline is None:
+        return None
+    g = timeline.stats(start_utc, float(exp_s))
+    if g["state"] != "guided" or g["frames"] < LOCK_MIN_FRAMES \
+            or g["std_total_arcsec"] is None:
+        return None
+    return "non-star" if g["std_total_arcsec"] < gm.STATIC_STD_ARCSEC else "star"
+
+
 def compact(a: dict, n: int = 4) -> dict:
     """The guiding block for the night report (/api/runs/<date>)."""
     if not a.get("ok"):
@@ -1400,6 +1354,8 @@ def format_report(a: dict) -> str:
                      f"motion {v['median_std_arcsec']}\"")
         if sm.get("rc16_by_filter"):
             L.append("  guide star by RC16 filter (OAG): " + "; ".join(
-                f"{k} {v['subs']} subs, {v['dropped_pct']}% frames lost, SNR {v['median_snr']}"
+                f"{k} {v['subs']} subs, {v['dropped_pct']}% frames lost, SNR {v['median_snr']}, "
+                f"{v.get('saturated_pct')}% saturated, exp {v.get('guide_exposure_ms')} ms, "
+                f"HFD {v.get('star_hfd_px')} px"
                 for k, v in sm["rc16_by_filter"].items()))
     return "\n".join(L)

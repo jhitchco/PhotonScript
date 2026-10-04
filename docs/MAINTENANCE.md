@@ -201,6 +201,90 @@ PHD2 Auto-restore. Set `guiding_force_first_calibration=false` to never force
 (always trust a restored cal) — avoids a failed first-cal loop but risks guiding
 on a stale/absent calibration.
 
+**PHD2 calibration manager (PS-93).** With `phd2_cal_mode=auto` (default)
+the night's sequence gets a `PHD2_CALIBRATION` slot only when it is needed (no
+calibration on record, the last one FAILED, older than `phd2_cal_max_age_days`
+(30), PHD2 profile / binning / scale changed, or a request from the System page
+"Calibrate at the next dispatch" / `POST /api/phd2/calibrate?mode=next`).
+`always` adds it every guided night (about 4 min of twilight), `never` keeps the
+PS-72 behavior above. The slot calibrates on a field near Dec +5 by the
+meridian, then holds `phd2_cal_hold_s` (240) while the RC16 agent grades it and
+retries a FAIL once. `GET /api/phd2/calibration` shows the graded record, the
+plan, the after-flip checks and the recommended PHD2 Calibration Step.
+`mode=now` while a night runs re-dispatches once with the slot (1 h of dark
+left); with nothing running it sends a standalone calibration sequence to NINA
+(roof open and dark only). `GET /api/phd2/calibration-sequence` returns that
+sequence for loading by hand.
+
+**PHD2 settings audit (PS-89).** `config/phd2/desired_oag_rc16.toml` is the
+desired PHD2 state for the RC16 OAG, one "why" per row. Every guided arm
+audits it in the background after connecting the equipment (never blocks the
+arm; one Pushover only when at least one row FAILs, once per night), and the
+RC16 agent re-audits 60 s after a PHD2 configuration change (a push only for
+a FAIL not pushed tonight, and only while a night is armed). Sources: PHD2's
+JSON-RPC API (a short second connection), PHD2's stored profile in the
+registry, the newest guide-log header (8-bit inferred from the PS-88
+saturated-star rule), the newest Guiding Assistant, the PS-93 calibration
+record, NINA's guider settings and mount guide rate, the TheSky TCP port and
+the PHD2 dark library (`%LOCALAPPDATA%\phd2\darks_defects`). Each row: pass /
+warn / fail / unknown / info, current vs desired, why, fix.
+```
+GET  /api/phd2/audit                  the last audit (arm, PHD2 change or refresh)
+GET  /api/phd2/audit?refresh=1        audit now
+GET  /api/phd2/audit?refresh=1&raw=1  + every observed value and every registry value read
+POST /api/phd2/audit/apply {"ids": ["exposure_ms"], "dry_run": false}
+```
+Apply (also the System page buttons): API rows (guide exposure, picked from
+PHD2's own exposure list; RA min-move from the Guiding Assistant; Dec guide
+mode) only while PHD2 is Stopped or Looping and no other PhotonScript actor
+holds PHD2. Profile rows (bit depth, Max ADU, search region, mass tolerance,
+min HFD, ...) only with `phd2_audit_autofix=true`, the armer DISARMED or
+COMPLETE, phd2.exe closed, a verified registry name and a fresh backup in
+`<data_dir>\phd2_profile_backups\<ts>_<id>.reg` (restore: close PHD2, `reg
+import <file>`). Mount driver, TheSky and NINA rows are report only. Every
+change is logged to `<data_dir>\phd2_audit\changes.jsonl`. The registry value
+names in `scheduler/phd2_profile_store.KEYS` are candidates until checked
+against a `reg export` of the scope PC; until then those rows read "unknown"
+(with the candidate value) and writes to them are refused. `pe_owner`
+(`protrack`) says who corrects periodic error: with ProTrack, PHD2's RA
+algorithm must not be Predictive PEC.
+
+**Guide-star auto-tune (PS-90).** The RC16 agent measures the guide star
+after every settle (and on a filter change: the OAG is assumed to sit behind
+the wheel) from PHD2's `get_star_image` crop plus the GuideStep SNR, HFD and
+ErrorCode: peak and star amplitude as a share of `phd2_guide_full_scale_adu`
+(65535), clipped (a pixel at 98%, or ErrorCode 1), HFD, an 8-bit flag and the
+one-pixel share (PS-91). Target: peak 60 to 80%, never clipped, SNR over 20,
+HFD 2 to 5 px, exposure 1 to 4 s. It never touches PHD2 unless PHD2 is
+Guiding and settled, nothing else holds it (guard recovery, self-test,
+calibration retry, audit apply, hot-pixel map), the PS-93 calibration slot
+is not running and no guard non-star episode is open.
+```
+phd2_tune_mode = observe     measure and record only (default; never set_exposure)
+phd2_tune_mode = exposure    live exposure-only tuning (one change per settle at most)
+phd2_tune_mode = off         not started
+GET /api/phd2/tuning?date=   per filter, changes, last measurement, advice, bin 3 check
+```
+In `exposure` mode it steps down at once on a clipped star, otherwise only
+after 3 readings outside 55 to 85%, and picks the longest listed PHD2
+exposure not over the linear prediction, inside `phd2_tune_exp_ms` and only
+one the PHD2 dark library holds (no library = no change). Changes go under
+`phd2_ops.hold("tuner")` and are logged to `<data_dir>\phd2\tune\<night>.jsonl`
+and the PS-89 `changes.jsonl`. Memory: `<data_dir>\phd2\tune.json`, one entry
+per profile / binning / gain / target / filter; a filter change applies the
+remembered (or L-ratio predicted) exposure first. Gain and binning are not
+API settable: the System page "Guide star" box shows next night's gain advice
+(also the PS-89 audit's gain row) and whether bin 3 would hit the HFD band.
+The armer writes the gain pre-dusk (ARMED, before the dispatch) through the
+PS-89 profile writer only with `phd2_audit_autofix=true`, PHD2 closed, a
+backup and a verified registry name, then re-audits. PHD2's gain is its own
+0 to 100 setting (mapping to sensor gain unverified).
+
+By hand on the scope PC before `exposure` mode: PHD2 16-bit, saturation by
+Max ADU 65535, auto exposure off (so `set_exposure` sticks), and a dark
+library covering every exposure from 1 to 4 s at the chosen gain and binning
+(plus the defect map).
+
 ## Calibration — what an arm captures automatically
 
 Matching is by **camera (INSTRUME) + full epoch** (`EXPTIME|GAIN|OFFSET|SET-TEMP`
@@ -307,6 +391,18 @@ measure points fires one Pushover naming the filter. Empty dir = disabled.
   near **Dec 0 at the meridian** with the Calibration Assistant, enable **Auto
   restore calibration** (Brain → Guiding), and turn **OFF** NINA's Force
   Calibration. Don't recalibrate every target.
+- **PHD2 calibration FAILED alert (PS-93):** read `GET /api/phd2/calibration`.
+  "few steps" means the PHD2 Calibration Step is too long: set it to the
+  recommended step (about 50 to 70 ms here, not 250; Brain > Guiding >
+  Calibration step calculator). "star moved only N px" is the pulse path (run
+  the PS-92 self-test) or a hot-pixel lock (PS-91 guard). Ortho over 5 deg with
+  few steps is the step size again; ortho over 5 deg with 12 steps is backlash
+  or flexure. Ask for a fresh one with "Calibrate at the next dispatch".
+- **"Dec runs away after the meridian flip" alert (PS-93):** PHD2 Advanced >
+  Mount > "Reverse Dec output after meridian flip" does not match the mount.
+  Toggle it only after this alert (leave it alone until the flip check proves
+  it), and keep the Bisque driver's "Can Get Pointing State" ticked so PHD2
+  knows the pier side (the guide log must never show `Pier side = Unknown`).
 - **Mount won't connect / TheSky COM3 "Error 201":** the port is locked. Kill any
   zombie TheSkyX, re-enumerate the USB in Device Manager, and connect in order
   **TheSky → NINA → PHD2** (or a clean reboot). Never let two apps own COM3.

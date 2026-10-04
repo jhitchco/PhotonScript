@@ -373,7 +373,41 @@
             const box = document.getElementById('guiding');
             const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
                 .replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            if (!g || !g.ok) { box.textContent = (g && g.note) || 'no PHD2 guide log for this night'; return; }
+            const gd = g && g.guard;  // PS-91 live guard
+            const guardLine = gd && gd.episodes ? '<br><span class="warn">Guide guard: ' + gd.episodes +
+                ' episode(s) (' + gd.non_star + ' non-star lock, ' + gd.impossible_state + ' impossible state; ' +
+                (gd.auto_recover ? gd.recoveries_ok + ' recovered, ' + gd.recoveries_failed + ' failed' : 'observe-only') +
+                ') <a href="/api/phd2/guard?date=' + encodeURIComponent(date) + '" target="_blank">episodes</a></span>' : '';
+            const st = g && g.selftest;  // PS-92 pulse self-test
+            const stLine = st && (st.runs || (st.passive || []).length) ? '<br><span class="' +
+                ({FAIL: 'bad', WARN: 'warn'}[st.verdict] || '') + '">Pulse self-test: ' + esc(st.verdict || 'none') +
+                ' (' + st.runs + ' run(s)' + ((st.passive || []).length ? ', passive: ' +
+                st.passive.map(p => esc(p.verdict) + ' ' + esc(p.source)).join(', ') : '') +
+                ') <a href="/api/phd2/selftest?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            const cal = g && g.calibration;  // PS-93 calibration manager
+            const calRows = (cal && cal.tonight) || [];
+            const calRec = cal && cal.record;
+            const calLine = calRows.length || (calRec && (cal.stale || cal.poor)) ? '<br><span class="' +
+                ({FAIL: 'bad', WARN: 'warn'}[(calRows.length ? calRows[calRows.length - 1].grade : cal.grade)] || '') +
+                '">PHD2 calibration: ' + (calRows.length ? calRows.map(c => esc(c.grade) + ' (' + esc(c.context) +
+                ', Dec ' + esc(c.dec_deg) + ', ortho ' + esc(c.ortho_err_deg) + ')').join(', ') :
+                'none tonight') + (cal.stale ? '; on record is ' + esc(cal.age_days) + ' d old' : '') +
+                (cal.poor ? '; on record FAILED' : '') +
+                ' <a href="/api/phd2/calibration?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            const au = g && g.audit;  // PS-89 settings audit
+            const auLine = au && au.counts ? '<br><span class="' + (au.counts.fail ? 'bad' : (au.counts.warn ? 'warn' : '')) +
+                '">PHD2 settings at ' + esc(au.reason) + ': ' + esc(au.counts.fail) + ' fail, ' + esc(au.counts.warn) + ' warn' +
+                ((au.fails || []).length ? ' (' + au.fails.map(esc).join('; ') + ')' : '') +
+                ' <a href="/api/phd2/audit" target="_blank">details</a></span>' : '';
+            const tu = g && g.tuning;  // PS-90 guide-star auto-tune
+            const tuRows = tu && tu.by_filter ? Object.entries(tu.by_filter) : [];
+            const tuLine = tuRows.length ? '<br><span>Guide star (' + esc(tu.mode) + '): ' + tuRows.map(([f, v]) =>
+                esc(f) + ' ' + esc(v.exposure_ms) + ' ms, peak ' + esc(v.peak_pct) + '%, SNR ' + esc(v.snr) + ', HFD ' + esc(v.hfd_px) +
+                (v.clipped ? ', <span class="warn">' + esc(v.clipped) + ' clipped</span>' : '')).join('; ') +
+                ((tu.changes || []).length ? ', ' + tu.changes.length + ' change(s)' : '') +
+                (tu.recommend && tu.recommend.bin3 && tu.recommend.bin3.note ? '<br><span style="opacity:.8">' + esc(tu.recommend.bin3.note) + '</span>' : '') +
+                ' <a href="/api/phd2/tuning?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine + tuLine; return; }
             const sev = {critical: 'bad', warning: 'warn', info: ''};
             box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
                 g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
@@ -383,7 +417,7 @@
                 (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
                     esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
-                    '</span>').join('');
+                    '</span>').join('') + guardLine + stLine + calLine + auLine + tuLine;
         }
         function renderOptics(o, date) {  // PS-95
             const box = document.getElementById('optics');

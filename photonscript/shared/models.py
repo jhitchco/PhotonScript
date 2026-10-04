@@ -253,7 +253,10 @@ class GuidingMetrics(BaseModel):
     scale_warning: Optional[str] = None
     snr: float = 0.0
     star_mass: float = 0.0
-    guide_camera_exposure: float = 2.0
+    guide_camera_exposure: float = 2.0    # seconds; PS-90 sets it from get_exposure
+    hfd_px: Optional[float] = None        # PS-90: last GuideStep HFD (guide px)
+    error_code: int = 0                   # last GuideStep ErrorCode (1 = saturated)
+    saturated: bool = False               # PHD2 flagged the star clipped
 
 
 class TelescopeState(BaseModel):
@@ -265,6 +268,9 @@ class TelescopeState(BaseModel):
     mount_ra: Optional[float] = None
     mount_dec: Optional[float] = None
     mount_tracking: bool = False
+    mount_at_park: Optional[bool] = None       # PS-91 guard (D3)
+    mount_slewing: Optional[bool] = None
+    mount_side_of_pier: Optional[str] = None   # "East" | "West" (PS-92 flip watch)
     guiding: GuidingMetrics = Field(default_factory=GuidingMetrics)
     camera_temp_c: Optional[float] = None
     camera_cooling_on: bool = False

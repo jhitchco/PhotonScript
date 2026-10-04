@@ -553,6 +553,38 @@ _CONFIG_FIELDS = [
     ("phd2_pixel_scale_arcsec", "PS_PHD2_PIXEL_SCALE_ARCSEC", "Guide camera scale (\"/px) override; 0 = ask PHD2, else compute from the fields below", "PHD2", "float", False, True),
     ("guide_camera_pixel_um", "PS_GUIDE_CAMERA_PIXEL_UM", "Guide camera pixel size (um), OGMA GP678C = 2.0", "PHD2", "float", False, True),
     ("guide_focal_length_mm", "PS_GUIDE_FOCAL_LENGTH_MM", "Guide focal length (mm); 0 = derive from the imaging pixel scale (OAG on the RC16)", "PHD2", "float", False, True),
+    ("guard_enabled", "PS_GUARD_ENABLED", "Non-star lock guard: watch PHD2 for hot-pixel / non-star locks and guiding a parked scope (PS-91)", "PHD2", "bool", False, True),
+    ("guard_auto_recover", "PS_GUARD_AUTO_RECOVER", "Guard auto-recovery: re-select a vetted star (off = observe-only)", "PHD2", "bool", False, True),
+    ("guard_on_fail", "PS_GUARD_ON_FAIL", "Guard recovery failed: alert | unguided (keep alert until PS-85)", "PHD2", "str", False, True),
+    ("guide_min_star_hfd_px", "PS_GUIDE_MIN_STAR_HFD_PX", "Guard D1: guide star HFD below this (PHD2 px at bin 2) is checked for a one-pixel profile", "PHD2", "float", False, True),
+    ("phd2_hotpix_max_age_days", "PS_PHD2_HOTPIX_MAX_AGE_DAYS", "Guide-camera hot-pixel map: rebuild after N days", "PHD2", "float", False, False),
+    ("phd2_selftest_enabled", "PS_PHD2_SELFTEST_ENABLED", "Pulse-path self-test in the NINA sequence (twilight + before each guided target, PS-92)", "PHD2", "bool", False, False),
+    ("phd2_selftest_script", "PS_PHD2_SELFTEST_SCRIPT", "Self-test script NINA runs (deploy\\phd2-selftest.cmd on the scope PC)", "PHD2", "str", False, False),
+    ("selftest_step_px", "PS_SELFTEST_STEP_PX", "Self-test: aim each pulse at N guide px", "PHD2", "float", False, False),
+    ("selftest_steps", "PS_SELFTEST_STEPS", "Self-test: pulses per direction", "PHD2", "int", False, False),
+    ("selftest_ratio_min", "PS_SELFTEST_RATIO_MIN", "Self-test: moved/expected below this = FAIL", "PHD2", "float", False, False),
+    ("selftest_ratio_max", "PS_SELFTEST_RATIO_MAX", "Self-test: moved/expected above this = WARN (guide-rate mismatch)", "PHD2", "float", False, False),
+    ("selftest_timeout_s", "PS_SELFTEST_TIMEOUT_S", "Self-test: hard timeout (s)", "PHD2", "int", False, False),
+    ("guide_rate_sidereal", "PS_GUIDE_RATE_SIDEREAL", "Fallback guide speed (x sidereal) when NINA and the PHD2 log give none", "PHD2", "float", False, False),
+    ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (keep alert until PS-85)", "PHD2", "str", False, True),
+    ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
+    ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
+    ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
+    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once) | unguided (keep until PS-85)", "PHD2", "str", False, True),
+    ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
+    ("phd2_audit_enabled", "PS_PHD2_AUDIT_ENABLED", "PHD2 settings audit at each guided arm and on a PHD2 configuration change (PS-89; one push only on a FAIL)", "PHD2", "bool", False, False),
+    ("phd2_audit_autofix", "PS_PHD2_AUDIT_AUTOFIX", "Allow PHD2 profile (registry) writes from the audit: PHD2 closed, armer idle, backup first (off until a daytime round trip is checked)", "PHD2", "bool", False, False),
+    ("phd2_desired_file", "PS_PHD2_DESIRED_FILE", "PHD2 desired-state file; empty = config/phd2/desired_oag_rc16.toml", "PHD2", "str", False, False),
+    ("phd2_dark_max_age_days", "PS_PHD2_DARK_MAX_AGE_DAYS", "PHD2 dark library older than N days = WARN", "PHD2", "float", False, False),
+    ("phd2_darks_dir", "PS_PHD2_DARKS_DIR", "PHD2 dark library folder; empty = %LOCALAPPDATA%\\phd2\\darks_defects", "PHD2", "str", False, False),
+    ("pe_owner", "PS_PE_OWNER", "Who corrects periodic error: protrack (PHD2 PPEC must be off) | phd2_ppec | none", "PHD2", "str", False, False),
+    ("phd2_tune_mode", "PS_PHD2_TUNE_MODE", "Guide-star auto-tune (PS-90): off | observe (measure and record, never change) | exposure (live exposure-only tuning)", "PHD2", "str", False, True),
+    ("phd2_tune_peak_lo", "PS_PHD2_TUNE_PEAK_LO", "Auto-tune: guide star peak band, low (fraction of full scale)", "PHD2", "float", False, True),
+    ("phd2_tune_peak_hi", "PS_PHD2_TUNE_PEAK_HI", "Auto-tune: guide star peak band, high (fraction of full scale)", "PHD2", "float", False, True),
+    ("phd2_tune_snr_min", "PS_PHD2_TUNE_SNR_MIN", "Auto-tune: a guide star under this SNR is faint", "PHD2", "float", False, True),
+    ("phd2_tune_hfd_px", "PS_PHD2_TUNE_HFD_PX", "Auto-tune: guide star HFD band (guide px, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_tune_exp_ms", "PS_PHD2_TUNE_EXP_MS", "Auto-tune: guide exposures it may pick (ms, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_guide_full_scale_adu", "PS_PHD2_GUIDE_FULL_SCALE_ADU", "Guide camera full scale (ADU): 65535 for 16-bit", "PHD2", "int", False, True),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -584,6 +616,7 @@ _CONFIG_FIELDS = [
     ("qa_hfr_outlier_factor", "PS_QA_HFR_OUTLIER_FACTOR", "Reject: HFR above x night median", "Quality", "float", False, False),
     ("qa_auto_approve", "PS_QA_AUTO_APPROVE", "Auto-approve all-green subs", "Quality", "bool", False, False),
     ("qa_auto_approve_rigs", "PS_QA_AUTO_APPROVE_RIGS", "Auto-approve only these rigs (comma list, empty = all)", "Quality", "str", False, False),
+    ("qa_guide_lock_mode", "PS_QA_GUIDE_LOCK_MODE", "Sub guided on a non-star lock (PS-91): warn | fail", "Quality", "str", False, True),
     ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
     ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
     ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
@@ -1735,6 +1768,21 @@ def api_run_detail(date: str, backfill: bool = True):
         logger.debug("optics report skipped for %s: %s", date, e)
         d["optics"] = {"ok": False, "note": f"optics report failed: {e}"}
     pending = _syncthing_pending_names()
+    try:  # PS-91 / PS-92: the live guard's episodes and the pulse self-test
+        from photonscript.scheduler.routers.phd2 import guard_summary
+        g = guard_summary(get_config(), date)
+        g.pop("list", None)
+        d["guiding"]["guard"] = g
+        from photonscript.scheduler.routers.phd2 import selftest_summary
+        d["guiding"]["selftest"] = selftest_summary(get_config(), date)  # PS-92
+        from photonscript.scheduler.routers.phd2 import calibration_summary
+        d["guiding"]["calibration"] = calibration_summary(get_config(), date)  # PS-93
+        from photonscript.scheduler.phd2_audit import summary as audit_summary
+        d["guiding"]["audit"] = audit_summary(get_config(), date)  # PS-89
+        from photonscript.scheduler.phd2_tuning import summary as tune_summary
+        d["guiding"]["tuning"] = tune_summary(get_config(), date)  # PS-90
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("guard summary skipped for %s: %s", date, e)
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
             base = Path(s.get("abs_path") or s.get("file") or "").name
@@ -2883,6 +2931,8 @@ from photonscript.scheduler.routers import health as _health_router  # noqa: E40
 app.include_router(_health_router.router)
 from photonscript.scheduler.routers import review as _review_router  # noqa: E402
 app.include_router(_review_router.router)
+from photonscript.scheduler.routers import phd2 as _phd2_router  # noqa: E402
+app.include_router(_phd2_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

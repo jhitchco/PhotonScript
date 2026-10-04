@@ -35,6 +35,17 @@ class TestSequenceLint:
         result = lint(data, guided=True)
         assert result.ok, [f"{f.rule}: {f.detail}" for f in result.findings]
 
+    def test_ps93_force_calibration_only_inside_the_calibration_slot(self):
+        seq = _make_seq(start_guiding=True)
+        data = json.loads(generate_nina_json(seq, cal_field={
+            "name": "M67", "ra_hours": 8.855, "dec_degrees": 11.82}))
+        assert lint(data, guided=True).ok
+        blob = json.dumps(data).replace('"ForceCalibration": false',
+                                        '"ForceCalibration": true')
+        result = lint(json.loads(blob), guided=True)
+        assert not result.ok
+        assert any(f.rule == "phd2-calibration" for f in result.findings)
+
     def test_catches_warm_cooling_setpoint(self):
         data = json.loads(generate_nina_json(_make_seq()))
         blob = json.dumps(data).replace('"Temperature": -10.0', '"Temperature": 5')

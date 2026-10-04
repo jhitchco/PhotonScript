@@ -150,6 +150,24 @@ class TestNinaJsonGeneration:
                   and "StartGuiding" in d.get("$type", "")]
         assert starts and starts[0]["ForceCalibration"] is False
 
+    def test_ps93_calibration_slot_overrides_forced_first_calibration(self, monkeypatch):
+        """With a PHD2_CALIBRATION slot no target forces a calibration, even
+        with the PS-72 switch on; the slot's own StartGuiding does."""
+        monkeypatch.setenv("PS_GUIDING_FORCE_FIRST_CALIBRATION", "true")
+        target = NinaSequenceTarget(
+            name="M 42", ra_hours=5.588, dec_degrees=-5.39, start_guiding=True,
+            exposures=[ExposurePlan(filter_type=FilterType.HA,
+                                    exposure_seconds=300, count=20, gain=200)])
+        seq = build_sequence_for_night("TestSeq", [target])
+        seq.wait_until_local = "21:00:00"
+        data = json.loads(generate_nina_json(seq, cal_field={
+            "name": "NGC 2301", "ra_hours": 6.863, "dec_degrees": 0.47}))
+        starts = [d for d in _walk(data) if isinstance(d, dict)
+                  and "StartGuiding" in d.get("$type", "")]
+        assert [s_["ForceCalibration"] for s_ in starts] == [True, False]
+        from photonscript.scheduler.sequence_lint import lint
+        assert lint(data, guided=True).ok
+
     def test_af_filter_type_resolves(self):
         from photonscript.scheduler.nina_sequence_json import _af_filter_type
         from photonscript.shared.config import PhotonScriptConfig

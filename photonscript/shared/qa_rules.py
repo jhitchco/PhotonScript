@@ -22,8 +22,9 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   hfr (native px), fwhm_arcsec (only when the grader truly measured FWHM),
   ecc (native scale), ecc_bin (2x2-binned, 0.48"/px; PS-94), stars,
   background, exp_s, ccd_temp, set_temp (header SET-TEMP),
-  guide_rms, guide_state, doubled_frac, exposure (ok|under|clipped|sat-stars),
-  clipped_pct, sat_stars_pct, swamp, pointing_offset_arcmin.
+  guide_rms, guide_state, guide_lock (star|non-star, PS-91), doubled_frac,
+  exposure (ok|under|clipped|sat-stars), clipped_pct, sat_stars_pct, swamp,
+  pointing_offset_arcmin.
 """
 
 from __future__ import annotations
@@ -53,6 +54,8 @@ CHECKS: dict[str, tuple[str, str, str]] = {
                "no moon, twilight or cloud glow"),
     "bg_floor": ("Background vs bias floor", "ADU", "sky signal above the bias"),
     "temp": ("Sensor temp vs setpoint", "C", "sensor at the configured setpoint"),
+    "guide_lock": ("Guide star is a star", "",
+                   "PHD2 guiding on a real star, not a hot pixel or artifact"),
     "guide_rms": ("Guiding RMS (snapshot at sub end)", "\"",
                   "guiding under the RMS limit"),
     "tracking_jump": ("Tracking jump (doubled stars)", "",
@@ -140,6 +143,9 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         # the gate stays informational ("info") until that fix lands; then
         # set qa_guide_rms_mode to "fail" (or "warn").
         "guide_rms_mode": str(_f(config, "qa_guide_rms_mode", "info")).lower(),
+        # PS-91: a sub guided on a non-star lock (guard episode overlapping
+        # it): "warn" (default) or "fail"
+        "guide_lock_mode": str(_f(config, "qa_guide_lock_mode", "warn")).lower(),
         "doubled_max": float(_f(config, "qa_tracking_jump_max", 0.25)),
         "offtarget_max_arcmin": float(_f(config, "quality_offtarget_max_arcmin",
                                          5.0)),
@@ -274,6 +280,7 @@ SKIP_TEXT = {
                "the gating scale",
     "tracking_jump": "not measured by this grader",
     "guide_rms": "not judged (unguided, or PS-70 units pending)",
+    "guide_lock": "no guard data for this sub (PS-91)",
     "pointing": "pending PS-67 (pointing data)",
 }
 
@@ -506,10 +513,27 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
                                 f"+ {t['cooling_tol_c']:g}C tolerance"))
         else:
             checks.append(Check("temp", _r(temp, 1), lim_t, PASS))
+    # PS-91: was PHD2 guiding on a real star? A hot-pixel lock has a tiny
+    # RMS, so the RMS of such a sub says nothing and is not judged.
+    lock = str(m.get("guide_lock") or "").lower()
+    nonstar = lock == "non-star"
+    if nonstar:
+        checks.append(Check("guide_lock", lock, "star",
+                            FAIL if t.get("guide_lock_mode") == "fail" else WARN,
+                            "PHD2 was guiding on a non-star (hot pixel or "
+                            "artifact) during this sub: effectively unguided"))
+    elif lock == "star":
+        checks.append(Check("guide_lock", lock, "star", PASS))
+    else:
+        checks.append(Check("guide_lock", None, "star", SKIP,
+                            "no guard data for this sub"))
     # guiding RMS snapshot (only judged while guiding)
     rms = _num(m.get("guide_rms"))
     gstate = str(m.get("guide_state") or "").lower()
-    if rms is None:
+    if nonstar:
+        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
+                            "guided on a non-star lock: the RMS is meaningless"))
+    elif rms is None:
         checks.append(Check("guide_rms", None, t["guide_rms_max"], SKIP,
                             "no guiding data"))
     elif gstate not in ("guiding", "settling"):
@@ -645,9 +669,9 @@ def metrics_from_record(rec: dict) -> dict:
     PS-94: ecc comes back in sqrt form (old 1-b/a records converted)."""
     m = {k: rec.get(k) for k in (
         "hfr", "ecc", "ecc_bin", "stars", "background", "exp_s", "ccd_temp",
-        "set_temp",
-        "guide_rms", "guide_state", "doubled_frac", "exposure", "clipped_pct",
-        "sat_stars_pct", "swamp", "pointing_offset_arcmin")}
+        "set_temp", "guide_rms", "guide_state", "guide_lock", "doubled_frac",
+        "exposure", "clipped_pct", "sat_stars_pct", "swamp",
+        "pointing_offset_arcmin")}
     m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -658,6 +682,7 @@ def record_metrics(**kw) -> dict:
     """The canonical metrics dict both graders build (unknown keys dropped)."""
     keys = ("hfr", "fwhm_arcsec", "ecc", "ecc_bin", "stars", "background",
             "exp_s", "ccd_temp", "set_temp", "guide_rms", "guide_state",
+            "guide_lock",
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin")
     return {k: kw.get(k) for k in keys}

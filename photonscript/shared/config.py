@@ -213,6 +213,8 @@ class PhotonScriptConfig(BaseSettings):
     qa_guide_rms_mode: str = "info"  # guide RMS check: info (recorded, not
                                  # judged) | warn | fail. "info" until PS-70
                                  # puts the PHD2 RMS in real arcsec
+    qa_guide_lock_mode: str = "warn"  # PS-91: a sub guided on a non-star lock
+                                 # (guard episode overlapping it): warn | fail
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
     # PS-94: eccentricity at the 2x2-binned scale (0.48"/px on the RC16,
@@ -328,6 +330,89 @@ class PhotonScriptConfig(BaseSettings):
                                  # Auto-restore reuses a good calibration) to
                                  # break a stuck loop before escalating. Set false
                                  # to warn/escalate only and never touch guiding.
+    # PS-91 non-star lock guard (telescope_agent.guide_guard): the RC16 agent
+    # watches PHD2 live for a hot-pixel / non-star lock, PHD2 guiding a parked
+    # or closed-roof scope, and max pulses that move nothing.
+    guard_enabled: bool = True   # detect, log episodes, mark subs, alert once
+                                 # per night (observe-only unless the next is on)
+    guard_auto_recover: bool = False  # on a non-star lock, re-select a vetted
+                                 # real star and resume guiding (D3: stop PHD2).
+                                 # Off for the first guarded night (observe-only)
+    guard_on_fail: str = "alert"  # recovery failed: "alert" (one push per night)
+                                 # or "unguided" (armer.fallback_unguided: re-
+                                 # dispatch the rest unguided). Keep "alert"
+                                 # until PS-85 caps unguided sub lengths
+    guide_min_star_hfd_px: float = 1.5  # D1: a guide "star" under this HFD
+                                 # (PHD2 px at bin 2; scaled by 2 / binning) is
+                                 # checked for a one-pixel profile
+    # PS-92 pulse-path self-test (telescope_agent.pulse_selftest): does the
+    # mount move on a guide pulse? Run from NINA ExternalScript slots (after
+    # the twilight AF, and before each guided target's StartGuiding).
+    phd2_selftest_enabled: bool = False  # insert the NINA slots + lint them.
+                                 # Off until the first manual twilight run
+                                 # (POST /api/phd2/selftest/run) looks right
+    phd2_selftest_script: str = "C:\\astro\\PhotonScript\\deploy\\phd2-selftest.cmd"
+    selftest_step_px: float = 10.0   # aim each pulse at about this many px
+    selftest_steps: int = 3          # pulses per direction (W, E, N, S)
+    selftest_ratio_min: float = 0.5  # observed/expected below this = FAIL
+    selftest_ratio_max: float = 1.5  # above this = WARN (guide-rate mismatch)
+    selftest_timeout_s: int = 240    # hard stop (INCONCLUSIVE)
+    guide_rate_sidereal: float = 0.5  # fallback guide speed (x sidereal) when
+                                 # neither NINA nor the PHD2 log reports one
+    selftest_on_fail: str = "alert"  # FAIL: "alert" (one push per night) or
+                                 # "unguided" (armer.fallback_unguided). Keep
+                                 # "alert" until PS-85 caps unguided subs
+    phd2_hotpix_max_age_days: float = 7.0  # rebuild the guide-camera hot-pixel
+                                 # map after this (or a binning/exposure change)
+    # PS-93 PHD2 calibration manager (scheduler.phd2_calibration +
+    # telescope_agent.phd2_calmanager): calibrate near Dec +5 by the meridian
+    # in a PHD2_CALIBRATION slot when one is needed, grade it, retry once.
+    phd2_cal_mode: str = "auto"  # auto: a slot only when needs_calibration
+                                 # says so (none on record, FAIL, too old,
+                                 # profile/binning changed, manual request);
+                                 # always: every guided night (~4 min of
+                                 # twilight); never: no slot (the PS-72 behavior)
+    phd2_cal_max_age_days: float = 30.0  # recalibrate after this many days
+    phd2_cal_hold_s: int = 240   # hold after the slot: the agent grades and
+                                 # retries once inside it (needs 150 s left)
+    phd2_cal_fail_action: str = "keep"  # second failed grade: "keep" guiding
+                                 # on the poor calibration and alert once, or
+                                 # "unguided" (armer.fallback_unguided; keep
+                                 # "keep" until PS-85 caps unguided subs)
+    phd2_flip_action: str = "alert"  # Dec runs away after a meridian flip:
+                                 # "alert" (one push per night with the Reverse
+                                 # Dec fix) or "off" (record only). In-place
+                                 # recalibration is not built (PS-93 approval)
+    # PS-89 PHD2 settings audit (scheduler.phd2_audit): compare PHD2, its
+    # stored profile, the guide log, NINA and the dark library with
+    # config/phd2/desired_oag_rc16.toml at every guided arm.
+    phd2_audit_enabled: bool = True   # audit at a guided arm (one push only
+                                 # on a FAIL) and on PHD2 ConfigurationChange
+    phd2_audit_autofix: bool = False  # allow registry profile writes (PHD2
+                                 # closed, armer idle, backup first). Off until
+                                 # one daytime round trip has been checked
+    phd2_desired_file: str = ""  # desired-state TOML; "" = the repo's
+                                 # config/phd2/desired_oag_rc16.toml
+    phd2_dark_max_age_days: float = 30.0  # PHD2 dark library older = WARN
+    phd2_darks_dir: str = ""     # PHD2 dark library folder; "" =
+                                 # %LOCALAPPDATA%\phd2\darks_defects
+    pe_owner: str = "protrack"   # who corrects periodic error: protrack
+                                 # (TheSky; PHD2 PPEC must be off) | phd2_ppec
+                                 # | none
+    # PS-90 guide-star auto-tune (telescope_agent.guide_tuner +
+    # scheduler.phd2_tuning): measure the guide star after each settle and
+    # (mode exposure) step PHD2's exposure toward a bright, unclipped peak.
+    phd2_tune_mode: str = "observe"  # off | observe (measure and record only,
+                                 # never set_exposure) | exposure (live
+                                 # exposure-only tuning). Gain / binning change
+                                 # only pre-dusk via the PS-89 profile writer
+                                 # (behind phd2_audit_autofix)
+    phd2_tune_peak_lo: float = 0.60  # target band for the star's peak as a
+    phd2_tune_peak_hi: float = 0.80  # fraction of full scale (aims at the middle)
+    phd2_tune_snr_min: float = 20.0  # a guide star under this SNR is "faint"
+    phd2_tune_hfd_px: str = "2,5"    # HFD target band (guide px at the binning)
+    phd2_tune_exp_ms: str = "1000,4000"  # exposures the tuner may pick (ms)
+    phd2_guide_full_scale_adu: int = 65535  # guide camera full scale (16-bit)
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

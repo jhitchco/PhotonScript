@@ -541,11 +541,21 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                                          _start + timedelta(seconds=_exp))
     except Exception as e:  # noqa: BLE001
         logger.debug("safety history skipped for %s: %s", path.name, e)
+    # PS-91: guided on a real star? (guard episodes, else the PHD2 guide log)
+    _lock = None
+    _date = (prewarm or stars_to or (None,))[0]
+    if rig == "rc16" and _date and _start is not None and             getattr(config, "guard_enabled", True):
+        try:
+            from photonscript.scheduler.phd2_analysis import sub_guide_lock
+            _lock = sub_guide_lock(config, _date, _start, _exp)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("guide lock skipped for %s: %s", path.name, e)
     metrics = qa_rules.record_metrics(
         hfr=m["hfr"], fwhm_arcsec=None, ecc=ecc, ecc_bin=ecc_bin,
         stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
         ccd_temp=hdr.get("CCD-TEMP"), set_temp=hdr.get("SET-TEMP"),
+        guide_lock=_lock,
         doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
         clipped_pct=m.get("clipped_pct"), sat_stars_pct=m.get("sat_stars_pct"),
         swamp=m.get("swamp"))
@@ -588,6 +598,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "ecc_radial_frac": m.get("ecc_radial_frac"),
         "shape": m.get("shape"),
         "doubled_frac": m.get("doubled_frac"),
+        "guide_lock": _lock,
         "clipped_pct": m.get("clipped_pct"),
         "sat_stars_pct": m.get("sat_stars_pct"),
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),

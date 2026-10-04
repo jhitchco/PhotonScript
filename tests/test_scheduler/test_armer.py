@@ -451,3 +451,75 @@ async def test_cooler_nanny_alerts_when_cool_command_fails(monkeypatch):
     await a._reconcile_cooler(datetime(2026, 9, 25, 3, 0, 0))
     await a._reconcile_cooler(datetime(2026, 9, 25, 3, 1, 0))
     assert len(notes) == 1 and "FAILED" in notes[0] and "500" in notes[0]
+
+
+# ---- PS-91: shutdown paths stop the guider before parking -------------------
+
+def _patch_shutdown_rigs(monkeypatch):
+    import photonscript.shared.rigs as rigs_mod
+    import photonscript.scheduler.runs as runs_mod
+    from types import SimpleNamespace
+
+    async def _ok(base, *args, **kw):
+        return {"ok": True}
+
+    monkeypatch.setattr(rigs_mod, "rig_ids", lambda cfg: ["rc16"])
+    monkeypatch.setattr(rigs_mod, "rig_config", lambda cfg, r:
+                        SimpleNamespace(nina_base_url="http://nina1"))
+    monkeypatch.setattr(rigs_mod, "nina_warm", _ok)
+    monkeypatch.setattr(rigs_mod, "nina_dew_heater", _ok)
+    monkeypatch.setattr(rigs_mod, "nina_sequence_stop", _ok)
+    monkeypatch.setattr(runs_mod, "post_night_warm", lambda cfg: [])
+
+
+async def _no_verify(*_a, **_k):
+    return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["dawn_shutdown", "make_safe"])
+async def test_shutdown_paths_stop_guider_before_park(tmp_path, monkeypatch,
+                                                      path):
+    """2026-09-26 session 21: PHD2 kept guiding after the roof closed because
+    stopping the sequence skips its End-area StopGuiding."""
+    a = _armer(data_dir=tmp_path)
+    _patch_shutdown_rigs(monkeypatch)
+    monkeypatch.setattr(a, "_verify_shutdown", _no_verify)
+    calls = []
+
+    async def _nina(key, *args, **kw):
+        calls.append(key)
+        return {"Success": True}
+
+    monkeypatch.setattr(a, "_nina", _nina)
+    report = await getattr(a, path)()
+    assert "guider_stop" in calls
+    assert calls.index("sequence_stop") < calls.index("guider_stop") \
+        < calls.index("mount_park")
+    assert "guider stop" in report and "guider stop FAILED" not in report \
+        and "guider stop:FAILED" not in report
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["dawn_shutdown", "make_safe"])
+@pytest.mark.parametrize("failure", ["none", "raise"])
+async def test_guider_stop_failure_never_blocks_park(tmp_path, monkeypatch,
+                                                     path, failure):
+    a = _armer(data_dir=tmp_path)
+    _patch_shutdown_rigs(monkeypatch)
+    monkeypatch.setattr(a, "_verify_shutdown", _no_verify)
+    calls = []
+
+    async def _nina(key, *args, **kw):
+        calls.append(key)
+        if key == "guider_stop":
+            if failure == "raise":
+                raise RuntimeError("PHD2 gone")
+            return None
+        return {"Success": True}
+
+    monkeypatch.setattr(a, "_nina", _nina)
+    report = await getattr(a, path)()
+    assert "mount_park" in calls
+    assert "guider stop" in report and "FAILED" in report
+    assert ("park ok" in report) or ("park:ok" in report)

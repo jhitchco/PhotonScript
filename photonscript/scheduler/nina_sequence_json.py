@@ -406,6 +406,22 @@ def _start_guiding(force_calibration: bool = False) -> dict:
                        Attempts=GUIDING_STARTUP_ATTEMPTS)
 
 
+def _external_script(path: str, arg: str = "") -> dict:
+    """NINA ExternalScript: runs a program and waits for it. ErrorBehavior 0 +
+    Attempts 1, so a failed script never blocks the sequence (PS-92)."""
+    script = f'"{path}"' + (f" {arg}" if arg else "")
+    return _make_typed("NINA.Sequencer.SequenceItem.Utility.ExternalScript, "
+                       "NINA.Sequencer", Script=script, ErrorBehavior=0,
+                       Attempts=1)
+
+
+def _selftest_script(cfg) -> str | None:
+    """PS-92: the pulse self-test script path when the slots are enabled."""
+    if not getattr(cfg, "phd2_selftest_enabled", False):
+        return None
+    return str(getattr(cfg, "phd2_selftest_script", "") or "") or None
+
+
 def _stop_guiding() -> dict:
     return _make_typed("NINA.Sequencer.SequenceItem.Guider.StopGuiding, "
                        "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
@@ -755,9 +771,15 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             af_filter: "FilterType | None" = None,
                             narrate: str = "normal",
                             focus_offsets: dict | None = None,
-                            loop_end: tuple | None = None) -> dict:
+                            loop_end: tuple | None = None,
+                            selftest_script: str | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
-    plate solve center -> tracking (defensive) -> [guiding] -> exposures.
+    plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
+    -> exposures.
+
+    selftest_script (PS-92): a guided target runs the pulse-path self-test
+    script (NINA ExternalScript, slot "target") between SetTracking and
+    StartGuiding; the service skips it once tonight passed on this pier side.
 
     af_filter (config.autofocus_filter, e.g. L) is the bright filter the
     start-of-target autofocus runs on so it never focuses through narrowband;
@@ -854,6 +876,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     items.append(_center(target))
     items.append(_set_tracking(0))
     if target.start_guiding:
+        if selftest_script:
+            items.append(_external_script(selftest_script, "target"))
         items.append(_start_guiding(force_calibration))
         if narrate_steps:
             items.append(_pushover("Imaging",
@@ -1298,7 +1322,75 @@ def generate_tracking_test_json(name: str = "Heart Nebula",
     return generate_nina_json(seq)
 
 
-def generate_nina_json(sequence: NinaSequenceFile) -> str:
+# --- PS-93 PHD2 calibration slot ---------------------------------------------
+
+def _start_guiding_calibrate() -> dict:
+    """StartGuiding that forces a fresh PHD2 calibration, one attempt,
+    continue on error: a failed calibration skips only the calibration slot
+    (PhotonScript grades it and retries over PHD2 during the hold)."""
+    return _make_typed("NINA.Sequencer.SequenceItem.Guider.StartGuiding, "
+                       "NINA.Sequencer", ForceCalibration=True,
+                       ErrorBehavior=0, Attempts=1)
+
+
+def _build_phd2_calibration_container(field: dict, hold_s: int = 240) -> dict:
+    """PS-93: calibrate PHD2 on a star field near Dec +5, 0.25 to 1 h from
+    the meridian (phd2_calibration.pick_calibration_field): SetTracking ->
+    SwitchFilter(L, the OAG sits behind the wheel) -> slew -> center ->
+    StartGuiding(ForceCalibration) -> StopGuiding -> hold. Every item
+    continues on error and there is no flip trigger, so a failure skips only
+    this slot. The hold (WaitForTimeSpan hold_s) is the window in which the
+    RC16 agent grades the calibration and retries it once over PHD2. The way
+    back is the first target's own slew, autofocus and center (the PS-64
+    lesson: never assume the mount went back on its own)."""
+    from types import SimpleNamespace
+    from photonscript.scheduler.phd2_calibration import CONTAINER_NAME
+    pt = SimpleNamespace(ra_hours=float(field["ra_hours"]),
+                         dec_degrees=float(field["dec_degrees"]))
+    name = field.get("name") or "calibration field"
+    return _seq_container(CONTAINER_NAME, [
+        _pushover("Guiding", f"PHD2 calibration: slewing to {name} "
+                  f"(Dec {pt.dec_degrees:+.1f}, HA {field.get('ha_hours', 0):+.2f} h)"),
+        _set_tracking(0),
+        _switch_filter(FilterType.LUMINANCE),
+        _slew(pt),
+        _center(pt),
+        _start_guiding_calibrate(),
+        _stop_guiding(),
+        _pushover("Guiding", "PHD2 calibration done: PhotonScript grades it "
+                  f"(and retries once) during a {int(hold_s)} s hold"),
+        _wait_for_timespan(int(hold_s)),
+    ])
+
+
+def generate_phd2_calibration_json(field: dict, hold_s: int = 240,
+                                   name: str = "PhotonScript PHD2 calibration") -> str:
+    """A standalone sequence for a calibration on demand (POST
+    /api/phd2/calibrate now while no night runs; GET
+    /api/phd2/calibration-sequence to load by hand): connect, unpark, the
+    PHD2_CALIBRATION slot, then tracking off."""
+    start = [
+        _connect("Mount"), _connect("Camera"), _connect("Filter Wheel"),
+        _connect("Guider"), _unpark(),
+        _build_phd2_calibration_container(field, hold_s),
+        _set_tracking(5),
+    ]
+    root = _seq_container(
+        name,
+        [_seq_container("Start", [_seq_container("PHD2 calibration", start)],
+                        container_type="NINA.Sequencer.Container."
+                                       "StartAreaContainer, NINA.Sequencer"),
+         _seq_container("Targets", [], container_type="NINA.Sequencer.Container."
+                                                      "TargetAreaContainer, NINA.Sequencer"),
+         _seq_container("End", [], container_type="NINA.Sequencer.Container."
+                                                  "EndAreaContainer, NINA.Sequencer")],
+        container_type="NINA.Sequencer.Container.SequenceRootContainer, "
+                       "NINA.Sequencer")
+    return json.dumps(link_parents(root), indent=2)
+
+
+def generate_nina_json(sequence: NinaSequenceFile,
+                       cal_field: dict | None = None) -> str:
     """Generate an Advanced Sequencer JSON with the full night-loop safety
     architecture (Jerry Macon / Patriot Astro pattern, all core NINA types):
 
@@ -1308,11 +1400,19 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                SAFE_LOOP (while safe): re-arm equipment, run targets
                UNSAFE: park, WaitUntilSafe, loop resumes automatically
     End:     stop guiding, park, warm, disconnect — always runs at dawn
+
+    cal_field (PS-93, from the armer when phd2_calibration.needs_calibration
+    says so): a PHD2_CALIBRATION slot after the twilight autofocus (and the
+    PS-92 twilight self-test), before the imaging gate; on a late arm or a
+    re-dispatch, right after the unpark. With the slot no target sets
+    ForceCalibration (it overrides the PS-72 switch). None = no slot, the
+    sequence is exactly as before.
     """
     from photonscript.shared.config import PhotonScriptConfig
     _cfg = PhotonScriptConfig()
     af_ft = _af_filter_type(_cfg)  # bright AF filter (e.g. L), or None
     guided = any(t.start_guiding for t in sequence.targets)
+    selftest = _selftest_script(_cfg) if guided else None  # PS-92 slots
     temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
     gate_dark = sequence.wait_until_local is not None
 
@@ -1423,6 +1523,10 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
         _set_tracking(5),
         _pushover("Startup", "holding until nautical dusk"),
     ]
+    # PS-93: the PHD2 calibration slot (guided nights that need one only)
+    cal_slot = (_build_phd2_calibration_container(
+        cal_field, int(getattr(_cfg, "phd2_cal_hold_s", 240) or 240))
+        if cal_field and guided else None)
     if gate_dark and sequence.targets:
         # Twilight autofocus: spend twilight, not dark time, on first focus
         first_filter = next((e.filter_type for t in sequence.targets
@@ -1447,14 +1551,29 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
             _pushover("Startup", "twilight autofocus complete "
                       f"(filter {focus_filter.value if focus_filter else '—'}) "
                       "— holding for the imaging gate"),
+        ]
+        if selftest:
+            # PS-92: test the guide-pulse path while the scope tracks at the
+            # twilight slot, before any guided target needs it
+            start_items.append(_external_script(selftest, "twilight"))
+        if cal_slot is not None:
+            start_items.append(cal_slot)   # PS-93: the gate wait follows
+            cal_slot = None
+        start_items += [
             _wait_for_provider(gate_provider, gate_offset),
             _pushover("Startup", gate_msg),
         ]
+
+    if cal_slot is not None:
+        # late arm / re-dispatch: calibrate right after the unpark
+        start_items.append(cal_slot)
 
     # ---- Targets area: the night loop -------------------------------------
     target_containers = []
     first_guided = True
     force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", False))
+    if cal_field and guided:
+        force_first_cal = False   # PS-93: the calibration slot replaces it
     for t in sequence.targets:
         force_cal = first_guided and t.start_guiding and force_first_cal
         c = _build_target_container(t, sequence.wait_for_altitude, force_cal,
@@ -1462,7 +1581,8 @@ def generate_nina_json(sequence: NinaSequenceFile) -> str:
                                     narrate=getattr(_cfg, "pushover_verbosity",
                                                     "normal"),
                                     focus_offsets=_cfg.focus_offset_map(),
-                                    loop_end=(dawn_provider, dawn_offset))
+                                    loop_end=(dawn_provider, dawn_offset),
+                                    selftest_script=selftest)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
