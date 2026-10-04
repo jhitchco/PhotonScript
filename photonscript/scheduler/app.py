@@ -571,6 +571,9 @@ _CONFIG_FIELDS = [
     ("qa_ecc_binned", "PS_QA_ECC_BINNED", "Also measure RC16 subs 2x2 binned (ecc at 0.48\"/px)", "Quality", "bool", False, False),
     ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
     ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
+    ("optics_corner_alert", "PS_OPTICS_CORNER_ALERT", "Daily corner-spread Pushover (off = the persistent optics trend alert replaces it, PS-95)", "Quality", "bool", False, False),
+    ("optics_min_stars_zone", "PS_OPTICS_MIN_STARS_ZONE", "Optics report: min stars per 3x3 zone", "Quality", "int", False, False),
+    ("optics_tilt_warn", "PS_OPTICS_TILT_WARN", "Optics report: corner FWHM ratio that counts as tilt", "Quality", "float", False, False),
     ("quality_hfr_abs_max", "PS_QUALITY_HFR_ABS_MAX", "Max HFR (px, RC16)", "Quality", "float", False, False),
     ("quality_star_min", "PS_QUALITY_STAR_MIN", "Min detected stars", "Quality", "int", False, False),
     ("quality_star_max", "PS_QUALITY_STAR_MAX", "Max detected stars (defocus guard)", "Quality", "int", False, False),
@@ -1704,6 +1707,13 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guiding analysis skipped for %s: %s", date, e)
         d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
+    try:  # PS-95: tilt / collimation from the star sidecars (cached)
+        from photonscript.scheduler import optics_report
+        d["optics"] = optics_report.compact(
+            optics_report.night_optics_cached(get_config(), date))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("optics report skipped for %s: %s", date, e)
+        d["optics"] = {"ok": False, "note": f"optics report failed: {e}"}
     pending = _syncthing_pending_names()
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
@@ -2068,6 +2078,33 @@ def api_tracking_test_report(date: str = "", pa: float | None = None,
     from photonscript.scheduler.tracking_test import build_report
     return build_report(get_config(), date or None, read_headers=headers,
                         pa_override=pa)
+
+
+@app.get("/api/optics/report")
+def api_optics_report(date: str = "", rig: str = "rc16", refresh: bool = False):
+    """PS-95: one night's RC16 tilt / collimation report from the PS-80 star
+    sidecars: per 3x3 zone FWHM-eq (arcsec), eccentricity and stretch
+    direction, the field fit (tilt size and soft side, curvature, sharp
+    spot), per-filter verdicts (tracking / tilt / curvature / collimation /
+    fine) and a plain-language recommendation. date = the runs-page night
+    (default: the night that started last). Cached; refresh=true rebuilds."""
+    from photonscript.scheduler import optics_report
+    from photonscript.scheduler.tracking_test import default_night
+    d = date or default_night(get_config())
+    if refresh:
+        return optics_report.night_optics(get_config(), d, rig or "rc16")
+    return optics_report.night_optics_cached(get_config(), d, rig or "rc16")
+
+
+@app.get("/api/optics/trend")
+def api_optics_trend(nights: int = 30, compute: bool = False):
+    """PS-95: tilt size and direction per night from the cached optics
+    reports, the night the signature changed (a collimation or tilt fix
+    shows up here) and any persistent finding. compute=true first builds
+    missing nights from their sidecars."""
+    from photonscript.scheduler.trends import optics_trend
+    return optics_trend(get_config(), nights=max(1, min(nights, 365)),
+                        compute_missing=compute)
 
 
 @app.get("/api/focus")

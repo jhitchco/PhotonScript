@@ -101,5 +101,34 @@ OAG test, piggyback fallback; record first calibration + typical RMS here:
 - AARO support contact + hours:
 
 ### 7. Optical quirks  [QA threshold tuning]
-- Collimation history, known tilt/corner behavior:
+- Collimation history, known tilt/corner behavior: see the log below.
 - Focuser model, backlash, per-filter focus offsets:
+
+#### Reading the optics report (PS-95)
+Runs page "Optics (tilt / collimation)" section, `GET /api/optics/report?date=`,
+or `photonscript optics-report --date D [--json]`. Passive: it reads the PS-80
+star sidecars, no sky time. Trend: `GET /api/optics/trend?nights=30`.
+- Grid: 3x3 zones as the runs-page thumbnail shows them (row 0 = top of the
+  image). Number = median FWHM-eq in arcsec (2 x HFR x scale); color = that
+  zone's FWHM over the center's (green 1.0, red 1.3 and up); tick = the
+  stars' stretch direction in the zone, longer = more aligned.
+- Subs used: those passing the HFR and star checks; PS-84 tracking-test rungs
+  of 120 s or less first, else the shortest exposure per filter. Longer subs
+  are flagged, since trailing can hide or mimic optics.
+- Verdicts: tracking (one stretch direction everywhere, center included, not
+  radial); tilt (softest corner at least `optics_tilt_warn` 1.20 x the
+  sharpest, sharp spot off center, direction stable across subs: check the
+  tilt plate or spacer on the soft side); curvature (all corners evenly soft:
+  expected on an RC16 with no flattener, not a fault); collimation (center
+  stars elongated with no common direction: weak signal, confirm before
+  touching the secondary); fine (corners within 15% of the center).
+- Gives direction and ratio, not microns. Before a site visit, run the NINA
+  Hocus Focus Aberration Inspector by hand to confirm the direction.
+- The daily "corner FWHM spread" Pushover is off (`optics_corner_alert`);
+  a tilt or collimation finding on most of the last 5 measured nights sends
+  one trend alert instead (again if the tilt direction changes).
+
+#### Collimation / tilt history (add a line per adjustment)
+| Date | What was done | Optics report before -> after |
+|------|---------------|-------------------------------|
+| 2026-09-25/26 | none (baseline; PS-95 offline check, desktop re-grade of the 19 RC16 Library subs) | 900 s / 300 s subs: tracking wins the verdict; underneath, the lower-left / left side is the soft side in all 8 measurable subs (softest / sharpest corner 1.17 to 1.38). Confirm on short PS-84 rungs. |

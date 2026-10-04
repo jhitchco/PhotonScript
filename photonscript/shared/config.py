@@ -156,6 +156,17 @@ class PhotonScriptConfig(BaseSettings):
                                              # anti-trailing gate — watch for drift.
     quality_tracking_rms_max: float = 1.5  # arcsec (0.24"/px scale)
     quality_corner_spread_max: float = 0.35  # corner FWHM spread vs median (collimation watch)
+    optics_corner_alert: bool = False  # PS-95: the daily "corner FWHM spread"
+                                 # Pushover from the live grader. Off: it fired
+                                 # most nights (0.45 to 0.99 on 09-26, trailing
+                                 # inflates it); the persistent tilt/collimation
+                                 # finding from the optics trend replaces it.
+                                 # corner_spread is still stored on records.
+    optics_min_stars_zone: int = 8  # PS-95 optics report: stars needed in a
+                                 # 3x3 zone before it is measured
+    optics_tilt_warn: float = 1.20  # PS-95: softest / sharpest corner FWHM
+                                 # ratio that counts as tilt (with the sharp
+                                 # spot off center)
     # PS-71 parked / roof-closed frame signatures (shared.qa_signatures):
     quality_fwhm_min_arcsec: float = 1.0  # physical floor: no RC16 star is
                                  # sharper than ~1" (seeing + 3248 mm optics;

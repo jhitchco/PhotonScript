@@ -13,6 +13,7 @@ Usage:
     photonscript rename-targets [--apply] [--date D] [--stamp-headers]  # PS-78
     photonscript tracking-test-report [--date D] [--pa DEG] [--json]  # PS-84
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
+    photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -582,6 +583,31 @@ def guiding_report(
     else:
         console.print(format_report(rep), markup=False, highlight=False)
     raise typer.Exit(0 if rep.get("ok") else 1)
+
+
+@app.command("optics-report")
+def optics_report_cmd(
+    date: str = typer.Option("", help="Night (YYYY-MM-DD, the evening date); "
+                                      "default the night that started last"),
+    rig: str = typer.Option("rc16", help="Rig whose sidecars to read"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-95: RC16 tilt and collimation report from the night's star
+    sidecars: 3x3 zone FWHM / eccentricity / stretch direction, the field
+    fit, per-filter verdicts and a recommendation. Reads stored data only
+    (writes the report cache under data_dir/optics).
+
+    photonscript optics-report --date 2026-09-26
+    """
+    import json as _json
+    from photonscript.scheduler.optics_report import format_report, night_optics
+    rep = night_optics(_config_for_repo(Path(__file__).resolve().parents[1]),
+                       date or _last_night(), rig or "rc16")
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+    raise typer.Exit(0 if rep["overall"].get("n_measured") else 1)
 
 
 @app.command("tracking-test-report")

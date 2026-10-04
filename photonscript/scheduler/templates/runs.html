@@ -112,6 +112,8 @@
             <div id="phases" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Guiding <span class="bd">(PHD2 guide log, PS-88)</span></h2>
             <div id="guiding" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Optics (tilt / collimation) <span class="bd">(star sidecars, PS-95)</span></h2>
+            <div id="optics" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Subs
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
@@ -353,6 +355,48 @@
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
                     '</span>').join('');
         }
+        function renderOptics(o, date) {  // PS-95
+            const box = document.getElementById('optics');
+            const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (!o || !o.ok) { box.textContent = (o && o.note) || 'no star sidecars for this night'; return; }
+            // 3x3 grid as the thumbnails show it (row 0 = top), colored by
+            // zone FWHM over the center's; tick = stretch direction, length = R
+            const names = [['TL', 'TC', 'TR'], ['ML', 'C', 'MR'], ['BL', 'BC', 'BR']];
+            const cw = 66, ch = 44, z = o.zones || {};
+            let svg = '<svg width="' + (3 * cw + 2) + '" height="' + (3 * ch + 2) +
+                '" style="float:left;margin:.2rem .8rem .3rem 0;font:10px sans-serif;">';
+            names.forEach((row, r) => row.forEach((n, c) => {
+                const q = z[n] || {}, x = 1 + c * cw, y = 1 + r * ch;
+                const k = q.ratio == null ? null : Math.max(0, Math.min(1, (q.ratio - 1) / 0.3));
+                const fill = k == null ? '#1e293b' : 'hsl(' + Math.round(120 - 120 * k) + ',55%,32%)';
+                svg += '<rect x="' + x + '" y="' + y + '" width="' + (cw - 2) + '" height="' + (ch - 2) +
+                    '" fill="' + fill + '" stroke="#334155"><title>' + n + ': FWHM ' + (q.fwhm ?? '-') +
+                    '&quot; (x' + (q.ratio ?? '-') + ' of center), ecc ' + (q.ecc ?? '-') +
+                    ', axis ' + (q.axis_deg ?? '-') + ' deg, R ' + (q.R ?? '-') + '</title></rect>';
+                svg += '<text x="' + (x + 4) + '" y="' + (y + 12) + '" fill="#e2e8f0">' +
+                    (q.fwhm ?? '-') + '&quot;</text>';
+                if (q.axis_deg != null) {
+                    const L = 14 * Math.max(0.3, q.R || 0), a = q.axis_deg * Math.PI / 180;
+                    const cx = x + cw / 2, cy = y + ch / 2 + 6, dx = L * Math.cos(a), dy = L * Math.sin(a);
+                    svg += '<line x1="' + (cx - dx).toFixed(1) + '" y1="' + (cy - dy).toFixed(1) +
+                        '" x2="' + (cx + dx).toFixed(1) + '" y2="' + (cy + dy).toFixed(1) +
+                        '" stroke="#f8fafc" stroke-width="2"/>';
+                }
+            }));
+            svg += '</svg>';
+            const cls = {tilt: 'warn', collimation: 'warn', tracking: 'warn', fine: '', curvature: ''};
+            box.innerHTML = svg + '<span class="' + (cls[o.verdict] || '') + '"><b>' +
+                esc(String(o.verdict).toUpperCase()) + '</b></span> &middot; ' + o.n_measured +
+                ' subs measured &middot; center FWHM ' + (o.center_fwhm ?? '-') + '&quot; &middot; center ecc ' +
+                (o.center_ecc ?? '-') + ' &middot; corner ratio ' + (o.corner_ratio ?? '-') +
+                ' &middot; <a href="/api/optics/report?date=' + encodeURIComponent(date) +
+                '" target="_blank">full report</a> &middot; <a href="/api/optics/trend" target="_blank">trend</a>' +
+                '<br>' + esc(o.headline) +
+                (o.filters || []).map(f => '<br><span style="opacity:.8">' + esc(f.filter) + ' (' +
+                    esc(f.basis) + '): ' + esc(f.verdict) + ', ' + f.n_measured + ' subs</span>').join('') +
+                '<div style="clear:both"></div>';
+        }
         document.getElementById('phases').innerHTML = Object.keys(d.phases).length
             ? Object.entries(d.phases).map(([k, v]) =>
                 '<b>' + k + '</b>: ' + v.events + ' log events (' +
@@ -360,6 +404,7 @@
               ).join(' · ')
             : 'no phase data found in NINA log';
         renderGuiding(d.guiding, date);
+        renderOptics(d.optics, date);
         renderSubs();
         renderReviewBar(d);
         maybeWarmThumbs(date);
