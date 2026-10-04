@@ -22,6 +22,7 @@ class FilterType(str, enum.Enum):
     HA = "Ha"
     OIII = "OIII"
     SII = "SII"
+    OSC = "OSC"  # PS-30: one-shot color (Piggy-600), no filter wheel
     DARK = "Dark"
     FLAT = "Flat"
     BIAS = "Bias"
@@ -125,6 +126,7 @@ class ExposurePlan(BaseModel):
     hdr_short_seconds: Optional[float] = None  # shorter companion sub length (s)
     hdr_short_count: int = 0  # how many short subs; 0 = no HDR companion set
     hdr_short_acquired: int = 0  # accepted short subs so far (long set uses `acquired`)
+    rig: str = "rc16"  # PS-30: which rig shoots this plan ("rc16" | "piggyback")
 
     def short_remaining(self) -> int:
         if not self.hdr_short_count or not self.hdr_short_seconds:
@@ -160,6 +162,14 @@ class ImagingProject(BaseModel):
     total_integration_hours: float = 0.0
     completion_pct: float = 0.0
     active: bool = True
+    # PS-30 campaign planner v2. driving_rig: which rig the mount centers for
+    # (stored and shown; the centering offset itself is PS-26). min_alt_deg:
+    # per-target altitude floor, None = config.campaign_min_alt_deg.
+    # require_calibration: a goal is only `complete` once matching flats,
+    # darks and bias exist for every rig it uses.
+    driving_rig: str = "rc16"
+    min_alt_deg: Optional[float] = None
+    require_calibration: bool = True
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)

@@ -233,6 +233,8 @@ def plan_night_sequence(
         # Figure out how many exposures we can fit
         remaining_exposures = []
         for plan in proj.exposure_plans:
+            if getattr(plan, "rig", "rc16") != "rc16":
+                continue  # PS-30: a Piggy-600 OSC plan is never an RC16 filter
             remaining = plan.count - plan.acquired
             if remaining > 0:
                 remaining_exposures.append(plan.model_copy(update={"count": remaining}))

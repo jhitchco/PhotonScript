@@ -84,6 +84,11 @@ class PhotonScriptConfig(BaseSettings):
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
+    campaign_min_alt_deg: float = 30.0  # PS-30: campaign planner altitude floor
+    # (deg) for a target's usable 10-min slots; a project's min_alt_deg overrides.
+    # Flat 30 deg at AARO Pier 3 (Jeremy, 2026-09-26: no roof/terrain profile).
+    campaign_notify: bool = True  # PS-30 (absorbs PS-14): Pushover once when a
+    # campaign goal turns `complete` or `lights_done_needs_calibration`
     auto_stale_flats: bool = True  # at dawn, also reshoot flats for filters whose
     # library set has gone stale (>45d) even if tonight didn't image them — keeps
     # broadband flats fresh across runs of narrowband-only nights
@@ -138,6 +143,11 @@ class PhotonScriptConfig(BaseSettings):
     # setup to capture the safety-monitor client's HTTP/exception detail
     # --- Quality gates (per-sub grading) ---
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
+    # PS-81: imaging sensor size (px) for the Targets page field-of-view boxes.
+    # The AP26MC and AP26CC both write NAXIS1 x NAXIS2 = 6224 x 4168 (FITS
+    # headers, 2026-09-26). Display only; nothing is gated on them.
+    sensor_width_px: int = 6224
+    sensor_height_px: int = 4168
     quality_fwhm_max: float = 4.0  # arcsec
     quality_fwhm_soft: bool = False  # False = FWHM is a hard reject gate (RC16).
                                      # True = advisory only (no reject); the OSC
@@ -479,6 +489,8 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_nina_base_url: str = "http://localhost:1889/v2/api"  # NINA #2 API
     piggyback_image_watch_dir: str = ""  # where NINA #2 writes FITS (set once known)
     piggyback_pixel_scale_arcsec: float = 1.29  # 600mm + IMX571 3.76um
+    piggyback_sensor_width_px: int = 0   # PS-81 FOV box; 0 = sensor_width_px
+    piggyback_sensor_height_px: int = 0  # PS-81 FOV box; 0 = sensor_height_px
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
