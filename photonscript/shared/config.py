@@ -200,7 +200,27 @@ class PhotonScriptConfig(BaseSettings):
                                  # median for the same rig/target/filter
     qa_night_min_subs: int = 5    # subs needed before the night-median checks
     qa_tracking_jump_max: float = 0.25  # doubled-star fraction = mount jump
-    quality_offtarget_max_arcmin: float = 5.0  # pointing check (PS-67 data)
+    # PS-67 "On target" check: the sub's position (plate solve, else the
+    # mount position from the header / mount log) vs the named target.
+    # Normal RC16 offsets are 2 to 5'. Approved 2026-09-27: reject when the
+    # target is out of the frame, flag (needs a look) in between.
+    pointing_off_target_flag_arcmin: float = 8.0     # RC16: warn above
+    pointing_off_target_reject_arcmin: float = 15.0  # RC16: reject above
+    piggyback_off_target_flag_arcmin: float = 30.0   # Piggy-600: warn above
+    piggyback_off_target_reject_arcmin: float = 60.0  # Piggy-600: reject above
+    qa_pointing_mode: str = "fail"  # off-target above the reject limit:
+                                 # fail (reject, approved) | warn | info
+    # PS-67 pointing record: mount log, plate-solve sampling at dawn
+    mount_log_enabled: bool = True  # RC16 agent appends runs/<night>_mount.jsonl
+                                 # from the poll it already makes (read-only)
+    mount_log_move_arcmin: float = 1.0  # log a line when the mount moved this far
+    mount_log_heartbeat_s: int = 60  # and at least this often while tracking
+    pointing_solve_policy: str = "sampled"  # dawn ASTAP pass: sampled (every
+                                 # Nth + flagged + first after a slew) |
+                                 # all | off
+    pointing_solve_every: int = 10  # sampled: every Nth sub per rig
+    pointing_solve_budget_min: float = 30.0  # stop the dawn solve pass after
+                                 # this many minutes of ASTAP time
     qa_auto_approve: bool = True  # all-green subs are approved (reviewed)
                                  # automatically; the reviewer can override
     qa_auto_approve_rigs: str = "rc16"  # rigs whose all-green subs auto-

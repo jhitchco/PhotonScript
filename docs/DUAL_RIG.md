@@ -411,3 +411,47 @@ after each night (daytime backfill post-pass), report only:
   (`refresh=true` recomputes from stored solves), `photonscript
   flexure-report --date D [--json] [--no-solve]`, and per-night flags in
   `GET /api/trends` (`flexure`). No Pushover: the piggyback stays silent.
+
+### 9.8 Pointing record, mount log and night timeline (PS-67)
+Where each sub was pointing, how far that was from the target it is filed
+under, and what each rig was doing. Both rigs; most of it is RC16-driven
+because NINA #1 owns the mount.
+- **Rig-tagged state.** Every agent's `TelescopeState` carries `rig`; only
+  the rig whose NINA owns the mount (`rigs.RIG_DEVICES`) polls it. `/api/status`
+  `telescope` is always the RC16's and `rigs` holds each agent's state (NINA
+  #2's zero mount values used to overwrite the RC16's).
+- **Mount log** `runs/<night>_mount.jsonl` (format in `shared/mount_log.py`):
+  the RC16 agent's existing 5 s mount poll, one line on a change (slew start /
+  end, park, tracking, pier side, a move over `mount_log_move_arcmin`) plus a
+  `mount_log_heartbeat_s` heartbeat while tracking. RA/Dec in degrees
+  (ninaAPI RightAscension is hours; confirm on the first night). Readers:
+  `load`, `position_at`, `segments`, `slew_windows` (PS-13 slew gating).
+- **Events** `runs/<night>_events.jsonl` (`shared/night_events.py`): the
+  running NINA instruction per rig (`nina_client` now returns the deepest
+  running item as `Running`), PHD2 state changes and a 60 s RMS sample.
+- **Pointing sidecar** `runs/<night>_pointing.jsonl` (`shared/pointing.py`,
+  last line per rig + file wins): mount position (RC16 header; Piggy-600 from
+  the mount log at mid-exposure, else the covering RC16 header), plate solve
+  when there is one, offset and compass direction from the target, RC16
+  mount vs solve offset (pointing-model error), drift since the previous sub.
+- **On-target check** (scorecard row `pointing`, approved 2026-09-27): RC16
+  flag above 8' and reject above 15' (`PS_POINTING_OFF_TARGET_*`), Piggy-600
+  30' / 60' (`PS_PIGGYBACK_OFF_TARGET_*`); normal RC16 offsets are 2 to 5'.
+  `PS_QA_POINTING_MODE` = fail (default) | warn | info. Off-target rejects are
+  their own category on the runs page (purple), and the accept button
+  overrides them. A solve wins over the mount position.
+- **Dawn pass** (`scheduler/pointing_record.py`): after attribution a
+  header / mount-log pass applies the check before the Library build; after
+  the flexure report a sampled ASTAP pass (`PS_POINTING_SOLVE_POLICY`
+  sampled = every `PS_POINTING_SOLVE_EVERY`-th sub, flagged subs and the
+  first sub after each slew; `all`; `off`) capped by
+  `PS_POINTING_SOLVE_BUDGET_MIN`, through `solve_store` (reuses the flexure
+  solves). Older nights: `photonscript pointing-backfill --since D
+  [--solve]`. Solve cost: `photonscript pointing-bench --date D --n 10`
+  (switch to `all` if a solve costs under ~3 s).
+- **Where:** runs page "Night timeline" (rows Mount, Guider, RC16,
+  Piggy-600, Safety; click a segment to show its subs) with the pointing
+  summary line (off-target count, mount vs solve median by pier / Dec / HA),
+  Alt / Pier / Off target columns and an off-target chip;
+  `GET /api/runs/{date}/pointing`, `GET /api/runs/{date}/timeline`,
+  `GET /api/status/mount-log`, `POST /api/runs/{date}/pointing`.

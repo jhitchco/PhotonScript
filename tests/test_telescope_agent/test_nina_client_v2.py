@@ -67,7 +67,8 @@ def test_reads_use_v2_info_endpoints_and_unwrap():
 
 def test_sequence_status_running_and_current_target():
     assert _sequence_status(TREE_RUNNING) == {
-        "State": "RUNNING", "CurrentTarget": {"Name": "NGC 6543"}}
+        "State": "RUNNING", "CurrentTarget": {"Name": "NGC 6543"},
+        "Running": "Smart Exposure"}   # PS-67: the running instruction
     assert _sequence_status([]) == {"State": "IDLE", "CurrentTarget": None}
 
 

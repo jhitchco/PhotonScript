@@ -49,6 +49,12 @@
         .ok { color:#4ade80; }
         .warn { color:#eab308; }
         .bad { color:#ef4444; }
+        #timeline svg { width:100%; display:block; font:10px sans-serif; }
+        #timeline rect.seg { cursor:pointer; }
+        .ptag { border-radius:4px; padding:0 .35rem; font-size:.75em;
+                white-space:nowrap; }
+        .ptag.off { background:#581c87; color:#e9d5ff; }
+        .ptag.flag { background:#713f12; color:#fde68a; }
         #lightbox[hidden] { display:none; }
         #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
                     display:flex; flex-direction:column; align-items:center;
@@ -116,6 +122,9 @@
             <div id="guiding" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Optics (tilt / collimation) <span class="bd">(star sidecars, PS-95)</span></h2>
             <div id="optics" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Night timeline <span class="bd">(mount log, NINA + PHD2 events, safety; PS-67)</span></h2>
+            <div id="pointingSummary" class="bd"></div>
+            <div id="timeline" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Subs
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
@@ -125,6 +134,7 @@
                 <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
             </div>
             <div id="rigChips" style="margin-bottom:.25rem;"></div>
+            <div id="pointChips" style="margin-bottom:.25rem;"></div>
             <div id="targetChips" style="margin-bottom:.25rem;"></div>
             <div id="filterChips"></div>
             <div class="bd" id="thumbCount"></div>
@@ -148,6 +158,7 @@
     let currentDate = null, currentDetail = null, subFilter = 'ALL';
     let subTarget = 'ALL';
     let subRig = 'ALL';
+    let subOffTarget = false, subWindow = null;   // PS-67 chips
     let showAllThumbs = false;
     async function loadNights() {
         const r = await fetch('/api/runs');
@@ -234,7 +245,8 @@
         currentDate = date;
         // keepView preserves the chosen filters + "show all" across a reload so a
         // verdict or lightbox-close doesn't snap the grid back to the first 24.
-        if (!keepView) { subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL'; showAllThumbs = false; }
+        if (!keepView) { subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL'; showAllThumbs = false;
+                         subOffTarget = false; subWindow = null; }
         try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
         document.querySelectorAll('.night-chip').forEach(el =>
             el.classList.toggle('active', el.dataset.date === date));
@@ -472,6 +484,8 @@
         renderSubs();
         renderReviewBar(d);
         renderFlexure(d.flexure, date);
+        renderPointing(d.pointing, date);
+        loadTimeline(date);
         maybeWarmThumbs(date);
     }
     async function maybeWarmThumbs(date) {
@@ -532,7 +546,8 @@
     }
     function renderReviewBar(d) {
         const subs = d.subs;
-        const rej = subs.filter(s => !s.passed_qa).length;
+        const offT = subs.filter(s => subState(s) === 'offtarget').length;  // PS-67
+        const rej = subs.filter(s => !s.passed_qa).length - offT;
         const rev = subs.filter(s => s.passed_qa && !s.reviewed).length;
         const pend = subs.filter(s => s.transfer === 'pending').length;
         const done = subs.filter(s => s.transfer === 'done').length;
@@ -543,7 +558,8 @@
             (pend ? '<span style="color:#7dd3fc">⇅ ' + pend + ' syncing</span> · ' : '') +
             '<span style="color:#4ade80">✓ ' + done + ' transferred</span>' +
             (appr > 0 ? ' · <span style="color:#4ade80">✓ ' + appr + ' accepted</span>' : '') +
-            ' · <span style="color:#f87171">✗ ' + rej + ' rejected</span>';
+            ' · <span style="color:#f87171">✗ ' + rej + ' rejected</span>' +
+            (offT ? ' · <span style="color:#c084fc">&#8982; ' + offT + ' off target</span>' : '');
         const btn = document.getElementById('approveBtn');
         btn.hidden = rev === 0;
         btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
@@ -605,6 +621,19 @@
                 el.addEventListener('click', () => { subRig = el.dataset.r; renderSubs(); }));
         } else { rBox.innerHTML = ''; subRig = 'ALL'; }
         if (subRig !== 'ALL') all0 = all0.filter(s => rigOf(s) === subRig);
+        // PS-67: off-target chip and a time window picked on the timeline
+        const nOff = all0.filter(s => pointFlag(s)).length;
+        const pBox = document.getElementById('pointChips');
+        pBox.innerHTML = (nOff ? '<span class="fchip' + (subOffTarget ? ' active' : '') +
+            '" id="offChip" title="subs off target or flagged (PS-67)">&#8982; off target ' + nOff + '</span>' : '') +
+            (subWindow ? '<span class="fchip active" id="winChip" title="clear the timeline window">' +
+             subWindow[0].slice(11, 16) + '-' + subWindow[1].slice(11, 16) + ' UTC &#215;</span>' : '');
+        const oc = document.getElementById('offChip');
+        if (oc) oc.onclick = () => { subOffTarget = !subOffTarget; renderSubs(); };
+        const wc = document.getElementById('winChip');
+        if (wc) wc.onclick = () => { subWindow = null; renderSubs(); };
+        if (subOffTarget) all0 = all0.filter(s => pointFlag(s));
+        if (subWindow) all0 = all0.filter(s => inWindow(s, subWindow));
         // Score + plan-vs-actual follow the selected rig
         const scByRig = d.scores_by_rig || {};
         paintScore(subRig !== 'ALL' && scByRig[subRig] ? scByRig[subRig] : d.score);
@@ -660,13 +689,14 @@
                 'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'rejected\')">✗</span>' +
                 '</div>' +
                 '<img loading="lazy" style="cursor:zoom-in;' +
-                (!s.passed_qa ? 'outline:2px solid #f87171;opacity:.55;'
+                (subState(s) === 'offtarget' ? 'outline:2px solid #c084fc;opacity:.55;'
+                 : !s.passed_qa ? 'outline:2px solid #f87171;opacity:.55;'
                  : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" ' +
                 'onclick="openLb(' + i + ')" src="/api/runs/' + currentDate +
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
                 '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
-                Math.round(s.exp_s) + 's' + badge(s) + roofTag(s) +
+                Math.round(s.exp_s) + 's' + badge(s) + roofTag(s) + pointTag(s) +
                 '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
                 ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
             .join('');
@@ -678,7 +708,10 @@
             '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
             '<th>HFR</th><th title="native 0.24&quot;/px, sqrt(1-(b/a)^2)">Ecc</th>' +
             '<th title="2x2 binned, 0.48&quot;/px (PS-94)">Ecc (bin)</th>' +
-            '<th>Stars</th><th>Bkg</th><th>Expo</th><th>QA</th></tr>' +
+            '<th>Stars</th><th>Bkg</th><th>Expo</th>' +
+            '<th title="altitude (deg), mount position">Alt</th><th>Pier</th>' +
+            '<th title="offset of the frame from the named target (plate solve, else the mount position; PS-67)">Off target</th>' +
+            '<th>QA</th></tr>' +
             subs.map(s => '<tr><td>' + (s.time || '').slice(11, 19) + '</td><td>' +
                 s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
                 's</td><td>' + (s.hfr ?? '–') + '</td><td' +
@@ -691,7 +724,7 @@
                 (s.swamp ?? '–') + '×RN² (≥3 ok, ≥10 fully sky-limited) · clipped ' +
                 (s.clipped_pct ?? '–') + '% px · saturated stars ' +
                 (s.sat_stars_pct ?? '–') + '%">' + (s.exposure ?? '–') +
-                '</td><td style="cursor:pointer;color:' +
+                '</td>' + pointCells(s) + '<td style="cursor:pointer;color:' +
                 (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
                  : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
                 ';" title="click to flip pass/reject (manual override)" ' +
@@ -700,7 +733,7 @@
                  : !s.reviewed ? 'review'
                  : s.transfer === 'pending' ? 'accepted · syncing ⇅'
                  : s.transfer === 'done' ? 'transferred ✓' : 'accepted') +
-                (s.manual_qa ? ' ✋' : '') + roofTag(s) + '</td></tr>').join('');
+                (s.manual_qa ? ' ✋' : '') + roofTag(s) + pointTag(s) + '</td></tr>').join('');
     }
     function fmtEta(s) {
         if (s == null) return '';
@@ -762,11 +795,16 @@
         loadDetail(currentDate);
     }
     function subState(s) {
+        // PS-67: an off-target reject is its own category (easy to see and
+        // override with the accept button), distinct from quality rejects
+        if (!s.passed_qa && !s.manual_qa && (s.drivers || []).includes('pointing'))
+            return 'offtarget';
         return !s.passed_qa ? 'rejected' : !s.reviewed ? 'review'
              : s.transfer === 'pending' ? 'syncing' : 'accepted';
     }
     const STATE_ICON = {review: ['👁', '#eab308'], accepted: ['✓', '#4ade80'],
-                        syncing: ['⇅', '#7dd3fc'], rejected: ['✗', '#f87171']};
+                        syncing: ['⇅', '#7dd3fc'], rejected: ['✗', '#f87171'],
+                        offtarget: ['\u2316', '#c084fc']};
     // PS-71: subs graded as shot with the roof closed / mount parked
     function roofTag(s) {
         return s.qa_flag === 'roof-closed'
@@ -774,6 +812,113 @@
               + '(PS-71)" style="background:#7c2d12;color:#fed7aa;border-radius:4px;'
               + 'padding:0 .35rem;font-size:.75em;white-space:nowrap;">roof closed / parked</span>'
             : '';
+    }
+    // PS-67: pointing (per-sub record merged by /api/runs/{date})
+    function fmtOff(x) {
+        return x == null ? '\u2013' : (x < 120 ? x.toFixed(1) + "'" : Math.round(x / 60) + ' deg');
+    }
+    function pointFlag(s) {
+        const p = s.pointing;
+        return p && (p.flag === 'off-target' || p.flag === 'flag') ? p.flag : '';
+    }
+    function pointTag(s) {
+        const f = pointFlag(s), p = s.pointing;
+        if (!f) return '';
+        return ' <span class="ptag ' + (f === 'off-target' ? 'off' : 'flag') + '" title="' +
+            (f === 'off-target' ? 'target outside the frame' : 'off target: worth a look') +
+            ' (PS-67; ' + (p.solved_ra != null ? 'plate solve' : 'mount position') + ')">' +
+            (f === 'off-target' ? 'off target ' : 'flag ') + fmtOff(p.off_target_arcmin) +
+            ' ' + (p.off_target_dir || '') + '</span>';
+    }
+    function pointCells(s) {
+        const p = s.pointing || {};
+        const col = p.flag === 'off-target' ? '#c084fc' : p.flag === 'flag' ? '#eab308' : '';
+        return '<td>' + (p.alt != null ? Math.round(p.alt) : '\u2013') + '</td><td>' +
+            (p.pier ? p.pier.slice(0, 1) : '\u2013') + '</td><td style="color:' + col + '" title="' +
+            (p.model_err_arcmin != null ? 'mount vs solve ' + p.model_err_arcmin + "'" : '') +
+            (p.drift_arcmin != null ? ' drift since previous sub ' + p.drift_arcmin + "'" : '') + '">' +
+            fmtOff(p.off_target_arcmin) + (p.off_target_dir ? ' ' + p.off_target_dir : '') + '</td>';
+    }
+    function subSpan(s) {
+        const exp = (s.exp_s || 0) * 1000, t = String(s.time || '');
+        const ms = Date.parse(t.endsWith('Z') ? t : t + 'Z');
+        if (isNaN(ms)) return null;
+        return t.endsWith('Z') ? [ms - exp, ms] : [ms, ms + exp];  // live = end, backfill = start
+    }
+    function inWindow(s, w) {
+        const sp = subSpan(s);
+        return sp && sp[0] < Date.parse(w[1]) && Date.parse(w[0]) < sp[1];
+    }
+    function renderPointing(pt, date) {
+        const box = document.getElementById('pointingSummary');
+        if (!pt || !pt.rigs || !Object.keys(pt.rigs).length) {
+            box.textContent = 'no pointing record for this night yet'; return;
+        }
+        const m = pt.model;
+        const grp = g => Object.entries(g || {}).map(([k, v]) => k + ' ' + v.median_arcmin + "' (" + v.n + ')').join(', ');
+        box.innerHTML = '<span class="' + (pt.off_target ? 'bad' : '') + '">' + pt.off_target +
+            ' subs off target</span> &middot; ' + pt.flagged + ' flagged &middot; ' +
+            Object.entries(pt.rigs).map(([r, v]) => r + ': ' + v.with_position + '/' + v.subs +
+                ' with a position, ' + v.solved + ' solved').join(' &middot; ') +
+            (m ? '<br>Mount vs plate solve (RC16 pointing model): median ' + m.median_arcmin +
+                "', max " + m.max_arcmin + "' over " + m.n + ' solves &middot; pier ' + grp(m.by_pier) +
+                ' &middot; Dec ' + grp(m.by_dec) + ' &middot; HA ' + grp(m.by_ha) : '') +
+            ' &middot; <a href="/api/runs/' + encodeURIComponent(date) + '/pointing" target="_blank">records</a>';
+    }
+    const TL_COLORS = {slewing: '#f59e0b', centering: '#fbbf24', tracking: '#334155',
+        parked: '#64748b', idle: '#1e293b', 'meridian flip': '#e879f9', guiding: '#16a34a',
+        settling: '#86efac', calibrating: '#38bdf8', 'guider lost': '#ef4444',
+        autofocus: '#a78bfa', exposing: '#2563eb', flats: '#facc15', darks: '#475569',
+        waiting: '#1f2937', dither: '#94a3b8', unsafe: '#b91c1c', guider: '#10b981',
+        cooling: '#0ea5e9', other: '#6b7280'};
+    async function loadTimeline(date) {
+        const box = document.getElementById('timeline');
+        let tl;
+        try { tl = await (await fetch('/api/runs/' + date + '/timeline')).json(); }
+        catch (e) { box.textContent = 'timeline unavailable'; return; }
+        if (currentDate !== date) return;
+        if (!tl || !tl.ok) { box.textContent = (tl && tl.note) || 'no timeline'; return; }
+        const t0 = Date.parse(tl.t0), t1 = Date.parse(tl.t1), span = Math.max(1, t1 - t0);
+        const L = 90, W = 1000, R = 18, top = 14;
+        const x = t => L + (W - L) * (Date.parse(t) - t0) / span;
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const rows = tl.rows.slice();
+        let svg = '<svg viewBox="0 0 ' + W + ' ' + (top + rows.length * R + 4) + '">';
+        for (let h = Math.ceil(t0 / 3600000) * 3600000; h <= t1; h += 3600000) {
+            const xx = L + (W - L) * (h - t0) / span;
+            svg += '<line x1="' + xx + '" y1="10" x2="' + xx + '" y2="' + (top + rows.length * R) +
+                '" stroke="#334155" stroke-width=".5"/><text x="' + (xx + 2) + '" y="9" fill="#94a3b8">' +
+                new Date(h).toISOString().slice(11, 16) + '</text>';
+        }
+        const seen = new Set();
+        rows.forEach((r, i) => {
+            const y = top + i * R;
+            svg += '<text x="0" y="' + (y + 11) + '" fill="#cbd5e1">' + esc(r.label) + '</text>';
+            r.segments.forEach(sg => {
+                seen.add(sg.state);
+                const x0 = x(sg.start), w = Math.max(1, x(sg.end) - x0);
+                svg += '<rect class="seg" data-s="' + sg.start + '" data-e="' + sg.end + '" x="' + x0.toFixed(1) +
+                    '" y="' + y + '" width="' + w.toFixed(1) + '" height="11" fill="' +
+                    (TL_COLORS[sg.state] || '#6b7280') + '"><title>' + esc(sg.state) +
+                    (sg.label ? ': ' + esc(sg.label) : '') + ' ' + sg.start.slice(11, 19) + '-' +
+                    sg.end.slice(11, 19) + ' UTC (click: show these subs)</title></rect>';
+            });
+            (tl.subs[r.id] || []).forEach(sb => {
+                const x0 = x(sb.start), w = Math.max(1, x(sb.end) - x0);
+                svg += '<rect class="seg" data-s="' + sb.start + '" data-e="' + sb.end + '" x="' + x0.toFixed(1) +
+                    '" y="' + (y + 12) + '" width="' + w.toFixed(1) + '" height="3" fill="' +
+                    ({rejected: '#f87171', accepted: '#4ade80'}[sb.verdict] || '#eab308') + '"><title>' +
+                    esc(sb.target) + ' ' + esc(sb.filter) + ' ' + sb.start.slice(11, 19) + ' ' + sb.verdict +
+                    '</title></rect>';
+            });
+        });
+        svg += '</svg>';
+        box.innerHTML = svg + [...seen].map(st => '<span style="display:inline-block;width:.7rem;height:.7rem;background:' +
+            (TL_COLORS[st] || '#6b7280') + ';margin:0 .2rem 0 .6rem;vertical-align:middle"></span>' + esc(st)).join('') +
+            ' &middot; sources: ' + rows.map(r => esc(r.label) + ' ' + esc(r.source || 'none')).join(', ');
+        box.querySelectorAll('rect.seg').forEach(el => el.addEventListener('click', () => {
+            subWindow = [el.dataset.s, el.dataset.e]; renderSubs();
+        }));
     }
     function badge(s) {
         const [ic, col] = STATE_ICON[subState(s)];
@@ -786,7 +931,8 @@
     }
     function nextState(s) {
         const st = subState(s);
-        return st === 'review' ? 'accepted'
+        return st === 'offtarget' ? 'accepted'
+             : st === 'review' ? 'accepted'
              : (st === 'accepted' || st === 'syncing') ? 'rejected' : 'review';
     }
     function applyLocal(s, state) {
@@ -813,7 +959,7 @@
             (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
             ' · expo ' + (s.exposure ?? '–') + ' (' + (s.swamp ?? '–') + '×RN²' +
             (s.sat_stars_pct != null ? ', sat★ ' + s.sat_stars_pct + '%' : '') + ')' +
-            ' ·' + badge(s) + roofTag(s) + ' <span style="opacity:.75">' + subState(s) +
+            ' ·' + badge(s) + roofTag(s) + pointTag(s) + ' <span style="opacity:.75">' + subState(s) +
             (s.reason && !s.passed_qa ? ' — ' + s.reason : '') + '</span>';
         const btn = document.getElementById('lbQaBtn');
         const nx = nextState(s);

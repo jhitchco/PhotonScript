@@ -24,7 +24,8 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   background, exp_s, ccd_temp, set_temp (header SET-TEMP),
   guide_rms, guide_state, guide_lock (star|non-star, PS-91), doubled_frac,
   exposure (ok|under|clipped|sat-stars), clipped_pct, sat_stars_pct, swamp,
-  pointing_offset_arcmin.
+  pointing_offset_arcmin (PS-67, arcmin from the named target),
+  pointing_note (text naming the target and position, for the reason).
 """
 
 from __future__ import annotations
@@ -147,8 +148,13 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         # it): "warn" (default) or "fail"
         "guide_lock_mode": str(_f(config, "qa_guide_lock_mode", "warn")).lower(),
         "doubled_max": float(_f(config, "qa_tracking_jump_max", 0.25)),
-        "offtarget_max_arcmin": float(_f(config, "quality_offtarget_max_arcmin",
-                                         5.0)),
+        # PS-67: off target (per rig through rig_config): warn above flag,
+        # reject above reject (qa_pointing_mode fail | warn | info)
+        "offtarget_flag_arcmin": float(_f(cfg, "pointing_off_target_flag_arcmin",
+                                          8.0)),
+        "offtarget_reject_arcmin": float(_f(
+            cfg, "pointing_off_target_reject_arcmin", 15.0)),
+        "pointing_mode": str(_f(config, "qa_pointing_mode", "fail")).lower(),
         "warn_fraction": float(_f(config, "qa_warn_fraction", 0.10)),
         "auto_approve": bool(_f(config, "qa_auto_approve", True))
         and _rig_auto_approves(config, rig),
@@ -281,7 +287,8 @@ SKIP_TEXT = {
     "tracking_jump": "not measured by this grader",
     "guide_rms": "not judged (unguided, or PS-70 units pending)",
     "guide_lock": "no guard data for this sub (PS-91)",
-    "pointing": "pending PS-67 (pointing data)",
+    "pointing": "no position (no header coordinates, mount log or solve) "
+                "or no known target coordinates",
 }
 
 
@@ -593,19 +600,67 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
             checks.append(Check("roof", "sky", "sky frame", PASS))
     except Exception as e:  # noqa: BLE001 - never lose a grade over this
         checks.append(Check("roof", None, "sky frame", SKIP, f"check error: {e}"))
-    # pointing (PS-67 will supply the offset)
-    off = _num(m.get("pointing_offset_arcmin"))
-    if off is None:
-        checks.append(Check("pointing", None, t["offtarget_max_arcmin"], SKIP,
-                            "pending PS-67 (pointing data)"))
-    elif off > t["offtarget_max_arcmin"]:
-        checks.append(Check("pointing", _r(off, 1), t["offtarget_max_arcmin"],
-                            FAIL, f"off target by {off:.1f}' "
-                            f"(> {t['offtarget_max_arcmin']:g}')"))
-    else:
-        checks.append(Check("pointing", _r(off, 1), t["offtarget_max_arcmin"],
-                            PASS))
+    # pointing (PS-67): offset of the sub from its named target
+    checks.append(pointing_check(_num(m.get("pointing_offset_arcmin")), t,
+                                 m.get("pointing_note")))
     return Scorecard(checks=checks, thresholds=t, qa_flag=qa_flag)
+
+
+def fmt_offset(arcmin) -> str:
+    """12.3' below two degrees, else whole degrees ("66 deg")."""
+    return (f"{arcmin:.1f}'" if arcmin < 120 else f"{arcmin / 60.0:.0f} deg")
+
+
+def pointing_check(off, t: dict, note: str | None = None) -> Check:
+    """PS-67 "On target": above offtarget_reject_arcmin the target is out of
+    the frame (reject, approved 2026-09-27; qa_pointing_mode can soften it to
+    warn or info), above offtarget_flag_arcmin it needs a look. `note` names
+    the target and the position, e.g. "from Cat's Eye Nebula (mount RA
+    12h03m Dec +0.4, pier W)"."""
+    flag = float(t.get("offtarget_flag_arcmin", 8.0))
+    rej = float(t.get("offtarget_reject_arcmin", 15.0))
+    if off is None:
+        return Check("pointing", None, rej, SKIP)
+    what = f"off target {fmt_offset(off)}" + (f" {note}" if note else "")
+    if off > rej:
+        mode = str(t.get("pointing_mode", "fail")).lower()
+        status = FAIL if mode == "fail" else WARN if mode == "warn" else PASS
+        return Check("pointing", _r(off, 1), rej, status,
+                     f"{what} (> {rej:g}')")
+    if off > flag:
+        return Check("pointing", _r(off, 1), rej, WARN,
+                     f"{what} (flag above {flag:g}')")
+    return Check("pointing", _r(off, 1), rej, PASS)
+
+
+def regrade_pointing(rec: dict, off, t: dict, note: str | None = None):
+    """Swap only the pointing row of a stored scorecard (no other check is
+    re-run, so no FITS and no night context are needed) and return the new
+    record fields, or None when the record has no scorecard or nothing
+    changes. Used by the PS-67 dawn pointing pass once a sub has a position
+    (header, mount log or plate solve) and an attributed target."""
+    card = rec.get("scorecard") or {}
+    rows = card.get("rows")
+    if not rows:
+        return None
+    checks = []
+    for r in rows:
+        try:
+            checks.append(Check(*r[:5]))
+        except TypeError:
+            continue
+    new = pointing_check(off, t, note)
+    old = next((c for c in checks if c.id == "pointing"), None)
+    if old is not None and old.row() == new.row():
+        return None
+    checks = ([new if c.id == "pointing" else c for c in checks]
+              if old is not None else checks + [new])
+    sc = Scorecard(checks=checks, thresholds=t, qa_flag=rec.get("qa_flag") or "",
+                   rules_version=card.get("v") or RULES_VERSION)
+    fields = sc.record_fields()
+    fields["pointing_offset_arcmin"] = None if off is None else round(off, 1)
+    fields["pointing_note"] = note or None
+    return fields
 
 
 # ------------------------------------------------- night context / records
@@ -671,7 +726,7 @@ def metrics_from_record(rec: dict) -> dict:
         "hfr", "ecc", "ecc_bin", "stars", "background", "exp_s", "ccd_temp",
         "set_temp", "guide_rms", "guide_state", "guide_lock", "doubled_frac",
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
-        "pointing_offset_arcmin")}
+        "pointing_offset_arcmin", "pointing_note")}
     m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -684,5 +739,5 @@ def record_metrics(**kw) -> dict:
             "exp_s", "ccd_temp", "set_temp", "guide_rms", "guide_state",
             "guide_lock",
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
-            "swamp", "pointing_offset_arcmin")
+            "swamp", "pointing_offset_arcmin", "pointing_note")
     return {k: kw.get(k) for k in keys}
