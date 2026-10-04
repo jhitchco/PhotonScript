@@ -1151,7 +1151,8 @@ def _tracking_test_filters(names) -> list:
                       if k in {ft.value for ft in FilterType}})
     except Exception:  # noqa: BLE001 - NINA names are a convenience only
         pass
-    skip = {FilterType.DARK, FilterType.FLAT, FilterType.BIAS}
+    skip = {FilterType.DARK, FilterType.FLAT, FilterType.BIAS,
+            FilterType.OSC}  # PS-30: OSC is the piggyback, no RC16 wheel slot
     out = []
     for n in [str(x).strip() for x in (names or TRACKING_TEST_FILTERS)]:
         ft = ft_by.get(n.lower())

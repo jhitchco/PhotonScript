@@ -1173,9 +1173,10 @@ def sync_goal_progress(config) -> list:
         store = get_store()
     except Exception:  # noqa: BLE001
         return []
-    # (target key, filter) -> list of accepted sub lengths (s); lengths let an
-    # HDR plan split its short companion subs from the long set. PS-78: keyed
-    # on the canonical target, so container-named subs count toward the goal.
+    # (rig, target key, filter) -> list of accepted sub lengths (s); lengths
+    # let an HDR plan split its short companion subs from the long set. PS-78:
+    # keyed on the canonical target, so container-named subs count toward the
+    # goal. PS-30: and on the rig, so a plan only counts its own rig's subs.
     known = known_target_index(list(store.projects.values()))
     lengths: dict[tuple, list] = {}
     for f in runs_dir(config).glob("*_subs.jsonl"):
@@ -1185,14 +1186,16 @@ def sync_goal_progress(config) -> list:
                 continue
             t = canonical_target(s_.get("target"), known)
             if t:
-                lengths.setdefault((target_key(t), s_.get("filter")),
+                lengths.setdefault((s_.get("rig") or "rc16", target_key(t),
+                                    s_.get("filter")),
                                    []).append(s_.get("exp_s"))
     changed = []
     for p in store.projects.values():
         tname = target_key(p.target.name)
         touched = False
         for e in p.exposure_plans:
-            subs = lengths.get((tname, e.filter_type.value), [])
+            subs = lengths.get((e.rig or "rc16", tname, e.filter_type.value),
+                               [])
             short = sum(1 for x in subs if e.is_short_exposure(x))
             n = min(len(subs) - short, e.count)
             ns = min(short, e.hdr_short_count)
@@ -1205,6 +1208,11 @@ def sync_goal_progress(config) -> list:
     if changed:
         store.save()
         logger.info("Goal progress synced from history: %s", changed)
+        try:  # PS-30 (PS-14): Pushover once when a goal completes
+            from photonscript.scheduler.campaign import check_goal_transitions
+            check_goal_transitions(config, store)
+        except Exception as e:  # noqa: BLE001 - never break the goal sync
+            logger.warning("campaign completion check failed: %s", e)
     return changed
 
 

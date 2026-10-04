@@ -31,10 +31,17 @@ API (keep it stable, PS-30 stacks on it):
         Cached FITS count of one Library folder (projects list, 2 min TTL).
 
 Rigs: RIG_PROFILES maps a rig id to the function that fills a
-CalibrationContext. Only the RC16 ("rc16") is implemented. PS-30 adds the
-"piggyback" branch: its Library subtree (piggyback_library_dir) and OSC dark
-epoch (calibration._pb_gain_offset, piggyback_setpoint_c), by adding one
-profile function here; nothing else needs to change.
+CalibrationContext. "rc16" and (PS-30) "piggyback": the Piggy-600's
+calibration is scanned in its own Library subtree (piggyback_library_dir)
+and its watch dir, darks match its OSC epoch (calibration._pb_gain_offset,
+piggyback_setpoint_c), and every OSC flat counts for the "OSC" filter (no
+wheel). Its lights live in the main Library (<lib>/<target>/OSC) like the
+RC16's. A context only judges the plans of its own rig (ExposurePlan.rig).
+
+    calibration_missing(readiness) -> list[str]
+        PS-30 campaign gate: what calibration one target_readiness() result
+        still lacks for its PLANNED filters and exposures (bias, darks per
+        exposure, flats per filter). [] = calibrated.
 """
 
 from __future__ import annotations
@@ -47,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 RC16 = "rc16"
+PIGGYBACK = "piggyback"
 
 
 @dataclass
@@ -91,9 +99,42 @@ def _rc16_profile(config, ctx: CalibrationContext) -> None:
     ctx.dark_kwargs = {}  # the RC16 epoch is count_matching_darks' default
 
 
+def _piggyback_profile(config, ctx: CalibrationContext) -> None:
+    from photonscript.scheduler.calibration import _pb_gain_offset
+    flat = ctx.health.get("FLAT") or {}
+    n = flat.get("count_latest")
+    if n is None:
+        n = sum((flat.get("detail") or {}).values())
+    ctx.flats = {"OSC": int(n or 0)}
+    ctx.bias = (ctx.health.get("BIAS") or {}).get("count_latest") or 0
+    gain, offset = _pb_gain_offset(config)
+    ctx.dark_kwargs = {"gain": gain, "offset": offset,
+                       "setpoint": float(getattr(config,
+                                                 "piggyback_setpoint_c", 0.0))}
+
+
+def _piggyback_view(config):
+    """The piggyback's config view for calibration scans: its Library subtree
+    and its own watch dir. Without a piggyback watch dir the view would fall
+    back to the RC16's capture tree, so point it at the subtree instead."""
+    from photonscript.shared.rigs import PIGGYBACK as _PB, rig_config
+    view = rig_config(config, _PB)
+    if not getattr(config, "piggyback_image_watch_dir", ""):
+        try:
+            view = view.model_copy(update={"image_watch_dir": view.library_dir})
+        except Exception:  # noqa: BLE001 - non-pydantic config in tests
+            view.image_watch_dir = view.library_dir
+    return view
+
+
 # rig id -> fills ctx.lib / flats / bias / dark_kwargs from ctx.health
 RIG_PROFILES: dict[str, Callable[[Any, CalibrationContext], None]] = {
     RC16: _rc16_profile,
+    PIGGYBACK: _piggyback_profile,
+}
+# rig id -> the config view its calibration is scanned with (default: config)
+RIG_VIEWS: dict[str, Callable[[Any], Any]] = {
+    PIGGYBACK: _piggyback_view,
 }
 
 _ctx_cache: dict[tuple, CalibrationContext] = {}
@@ -116,12 +157,16 @@ def calibration_context(config, rig: str = RC16, *, health: dict | None = None,
             hit = _ctx_cache.get(key)
         if hit is not None and now - hit.built_at < max_age_s:
             return hit
+    view = RIG_VIEWS.get(rig, lambda c: c)(config)
     if health is None:
         from photonscript.scheduler.calibration import calibration_health
-        health = calibration_health(config)
+        health = calibration_health(view)
     ctx = CalibrationContext(rig=rig, lib=Path("."), health=health,
-                             built_at=now, _config=config)
-    profile(config, ctx)
+                             built_at=now, _config=view)
+    profile(view, ctx)
+    if rig != RC16:
+        from photonscript.scheduler.runs import library_root
+        ctx.lib = library_root(config)  # its lights: the main Library
     with _ctx_lock:
         _ctx_cache[key] = ctx
     return ctx
@@ -140,7 +185,8 @@ def library_lights(lib: Path, name: str, filter_name: str,
 def target_readiness(config, project, ctx: CalibrationContext | None = None
                      ) -> dict:
     """Readiness of one project (the shape /api/integration/readiness has
-    always returned per target)."""
+    always returned per target). Only the plans of ctx.rig count; a
+    non-RC16 result also carries "rig"."""
     from photonscript.scheduler.runs import library_target_dirs
     if ctx is None:
         ctx = calibration_context(config)
@@ -149,6 +195,8 @@ def target_readiness(config, project, ctx: CalibrationContext | None = None
     filters: dict[str, dict] = {}
     dark_needs: dict[float, int] = {}
     for plan in project.exposure_plans:
+        if (getattr(plan, "rig", RC16) or RC16) != ctx.rig:
+            continue
         f = plan.filter_type.value
         filters[f] = {"accepted_in_library": library_lights(ctx.lib, name, f,
                                                             tdirs),
@@ -164,7 +212,7 @@ def target_readiness(config, project, ctx: CalibrationContext | None = None
                  and all(n > 0 for e, n in dark_needs.items()
                          if any(v["exposure_s"] == e for v in used.values()))
                  and all(v["flats"] > 0 for v in used.values()))
-    return {
+    out = {
         "target": name,
         "filters": filters,
         "darks_by_exposure": {f"{k:g}s": v for k, v in dark_needs.items()},
@@ -173,16 +221,58 @@ def target_readiness(config, project, ctx: CalibrationContext | None = None
         "ready": ready,
         "command": f'.\\deploy\\prepare-integration.ps1 -Target "{name}"',
     }
+    if ctx.rig != RC16:
+        out["rig"] = ctx.rig
+        out["command"] = (f'.\\deploy\\prepare-integration-osc.ps1 '
+                          f'-Name "{name}"')
+    return out
+
+
+def project_rigs(project) -> list[str]:
+    """Rigs a project's plans use, RC16 first (an empty project: RC16)."""
+    rigs = {getattr(e, "rig", RC16) or RC16 for e in project.exposure_plans}
+    return sorted(rigs or {RC16}, key=lambda r: (r != RC16, r))
+
+
+def calibration_missing(r: dict) -> list[str]:
+    """What calibration a target_readiness() result lacks for its planned
+    filters and exposures; [] = calibrated (the PS-30 `complete` gate)."""
+    miss = []
+    if not r.get("bias"):
+        miss.append("bias")
+    for exp, n in (r.get("darks_by_exposure") or {}).items():
+        if not n:
+            miss.append(f"darks {exp}")
+    for f, v in (r.get("filters") or {}).items():
+        if not v.get("flats"):
+            miss.append(f"flats {f}")
+    return miss
 
 
 def readiness_report(config, projects: Iterable,
                      ctx: CalibrationContext | None = None) -> dict:
-    """Every active project's readiness (GET /api/integration/readiness)."""
+    """Every active project's readiness (GET /api/integration/readiness).
+    PS-30: a project with Piggy-600 plans gets one more entry for that rig
+    (with "rig"); its RC16 entry is listed only if it has RC16 plans."""
     if ctx is None:
         ctx = calibration_context(config)
-    return {"targets": [target_readiness(config, p, ctx)
-                        for p in projects if p.active],
-            "library_dir": str(ctx.lib)}
+    targets = []
+    others: dict[str, CalibrationContext] = {}
+    for p in projects:
+        if not p.active:
+            continue
+        for rig in project_rigs(p):
+            if rig == ctx.rig:
+                targets.append(target_readiness(config, p, ctx))
+                continue
+            try:
+                if rig not in others:
+                    others[rig] = calibration_context(config, rig,
+                                                      max_age_s=300)
+                targets.append(target_readiness(config, p, others[rig]))
+            except ValueError:
+                continue  # no readiness profile for that rig
+    return {"targets": targets, "library_dir": str(ctx.lib)}
 
 
 # --- Library folder counts (projects list) ----------------------------------
