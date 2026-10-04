@@ -271,6 +271,7 @@ class GuidingMetrics(BaseModel):
 
 class TelescopeState(BaseModel):
     """Current state snapshot from the telescope agent."""
+    rig: str = "rc16"   # PS-67: which agent sent it (piggyback owns no mount)
     session_state: SessionState = SessionState.IDLE
     current_target: Optional[str] = None
     current_filter: Optional[FilterType] = None

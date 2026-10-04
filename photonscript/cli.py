@@ -766,6 +766,114 @@ def flexure_report(
     raise typer.Exit(0 if rep.get("ok") else 1)
 
 
+@app.command("pointing-backfill")
+def pointing_backfill(
+    since: str = typer.Option("", help="First night (YYYY-MM-DD); with no "
+                                       "--date, every night from here on"),
+    date: str = typer.Option("", help="One night only (YYYY-MM-DD)"),
+    solve: bool = typer.Option(False, "--solve/--no-solve",
+                               help="Also run the sampled ASTAP solves "
+                                    "(pointing_solve_policy, budget-capped)"),
+    apply: bool = typer.Option(True, "--apply/--dry-run",
+                               help="Apply the On-target check to the stored "
+                                    "scorecards (human verdicts never change)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-67: fill runs/<night>_pointing.jsonl from FITS headers (RC16), the
+    mount log or the RC16 neighbours (Piggy-600), and apply the off-target
+    check. Header-only reads: milliseconds per sub. Stop PhotonScript or run
+    in daytime: it rewrites the subs log when a verdict changes.
+
+    photonscript pointing-backfill --since 2026-09-18
+    """
+    import json as _json
+    from photonscript.scheduler.pointing_record import night_pass
+    from photonscript.scheduler.runs import runs_dir
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if date:
+        nights = [date]
+    else:
+        nights = sorted(p.name[:10] for p in runs_dir(cfg).glob("*_subs.jsonl")
+                        if p.name[:10] >= (since or "0000"))
+    results = []
+    for d in nights:
+        r = night_pass(cfg, d, solve=solve, apply=apply)
+        results.append(r)
+        if not as_json:
+            sm = r.get("summary") or {}
+            m = sm.get("model") or {}
+            console.print(
+                f"{d}: {r['subs']} subs, {r['with_position']} with a position, "
+                f"{r['written']} records written, {sm.get('off_target', 0)} off "
+                f"target, {sm.get('flagged', 0)} flagged, "
+                f"{r['verdicts_changed']} verdicts changed "
+                f"({r['newly_rejected']} newly rejected)"
+                + (f", solved {r['solved']}/{r['solve_attempts']}" if solve else "")
+                + (f", mount vs solve median {m['median_arcmin']}' (n={m['n']})"
+                   if m else ""), markup=False, highlight=False)
+    if as_json:
+        print(_json.dumps(results, indent=2, default=str))
+
+
+@app.command("slew-backfill")
+def slew_backfill(
+    since: str = typer.Option("", help="First night (YYYY-MM-DD); with no "
+                                       "--date, every night from here on"),
+    date: str = typer.Option("", help="One night only (YYYY-MM-DD)"),
+    apply: bool = typer.Option(True, "--apply/--dry-run",
+                               help="Apply the Clear-of-RC16-moves check to "
+                                    "the stored scorecards (human verdicts "
+                                    "never change)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-13: judge every Piggy-600 sub against the night's RC16 moves (the
+    mount log, else the RC16 frames' header RA/Dec) and apply the
+    slew_straddle check. Stop PhotonScript or run in daytime: it rewrites
+    the subs log when a verdict changes.
+
+    photonscript slew-backfill --since 2026-09-18 --dry-run
+    """
+    import json as _json
+    from photonscript.scheduler.runs import runs_dir
+    from photonscript.scheduler.slew_gate import night_pass
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if date:
+        nights = [date]
+    else:
+        nights = sorted(p.name[:10] for p in runs_dir(cfg).glob("*_subs.jsonl")
+                        if p.name[:10] >= (since or "0000"))
+    results = []
+    for d in nights:
+        r = night_pass(cfg, d, apply=apply)
+        results.append(r)
+        if not as_json and r["subs"]:
+            rate = r.get("split_rate")
+            console.print(
+                f"{d}: {r['subs']} Piggy subs, {r['judged']} judged "
+                f"({', '.join(f'{k} {v}' for k, v in r['src'].items()) or 'no data'}), "
+                f"{r['straddled']} straddle an RC16 move"
+                + (f" ({rate:.0%})" if rate is not None else "")
+                + f", {r['verdicts_changed']} verdicts changed "
+                f"({r['newly_rejected']} newly rejected)",
+                markup=False, highlight=False)
+    if as_json:
+        print(_json.dumps(results, indent=2, default=str))
+
+
+@app.command("pointing-bench")
+def pointing_bench(
+    date: str = typer.Option("", help="Night (YYYY-MM-DD); default last night"),
+    n: int = typer.Option(10, help="Subs per rig to solve"),
+):
+    """PS-67: seconds per ASTAP solve and success rate on N RC16 and N
+    Piggy-600 subs of one night (decides the dawn solve policy: switch
+    PS_POINTING_SOLVE_POLICY=all if a solve costs under ~3 s)."""
+    import json as _json
+    from photonscript.scheduler.pointing_record import bench
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    print(_json.dumps(bench(cfg, date or _last_night(), n=n), indent=2))
+
+
 @app.command()
 def preflight():
     """Run the full daytime system test (config, dirs, NINA, PHD2, lint, Pushover)."""

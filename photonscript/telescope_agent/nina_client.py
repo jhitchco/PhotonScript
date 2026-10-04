@@ -29,18 +29,24 @@ def _unwrap(body):
 
 def _sequence_status(tree: list) -> dict:
     """Walk a /sequence/json tree: RUNNING if any item is running; the current
-    target is the innermost running container under Targets_Container."""
+    target is the innermost running container under Targets_Container.
+    PS-67: "Running" is the name of the deepest running instruction (an item
+    with no Items of its own, e.g. "Slew and center", "Run Autofocus",
+    "Smart Exposure"), for the night timeline."""
     running = False
     target = None
     flip = False
+    leaf = (-1, None)
 
-    def walk(node, under_targets):
-        nonlocal running, target, flip
+    def walk(node, under_targets, depth=0):
+        nonlocal running, target, flip, leaf
         if not isinstance(node, dict):
             return
         is_running = str(node.get("Status", "")).upper() == "RUNNING"
         if is_running:
             running = True
+            if node.get("Items") is None and depth > leaf[0]:
+                leaf = (depth, node.get("Name"))
             # PS-91: a running meridian flip (trigger or item) blocks the
             # guard's recovery; best effort, by name
             if "meridian" in str(node.get("Name", "")).lower():
@@ -50,7 +56,8 @@ def _sequence_status(tree: list) -> dict:
                 target = node.get("Name") or target
         name = node.get("Name", "")
         for child in node.get("Items") or []:
-            walk(child, under_targets or name == TARGETS_AREA_CONTAINER)
+            walk(child, under_targets or name == TARGETS_AREA_CONTAINER,
+                 depth + 1)
         for trig in node.get("Triggers") or []:
             if isinstance(trig, dict) and "meridian" in str(trig.get("Name", "")).lower()                     and str(trig.get("Status", "")).upper() == "RUNNING":
                 flip = True
@@ -61,6 +68,8 @@ def _sequence_status(tree: list) -> dict:
            "CurrentTarget": {"Name": target} if target else None}
     if flip:
         out["MeridianFlip"] = True
+    if leaf[1]:
+        out["Running"] = leaf[1]
     return out
 
 

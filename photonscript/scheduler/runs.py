@@ -550,7 +550,30 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
             _lock = sub_guide_lock(config, _date, _start, _exp)
         except Exception as e:  # noqa: BLE001
             logger.debug("guide lock skipped for %s: %s", path.name, e)
+    _point = {}
+    try:  # PS-67: header mount position vs the named target
+        from photonscript.shared.pointing import assess, from_header
+        _pos = from_header(hdr)
+        if _pos is not None:
+            _point = assess(config, rig, _pos, target)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("pointing skipped for %s: %s", path.name, e)
+    _slew = {}
+    if _date and _start is not None:
+        try:  # PS-13: a rig riding the RC16 mount, exposed through a move?
+            from photonscript.scheduler.slew_gate import NightWindows, gated_rigs
+            if rig in gated_rigs(config):
+                from photonscript.shared import mount_log
+                _slew = NightWindows(
+                    config, lines=mount_log.load(config, _date),
+                    records=_load_subs(config, _date)).assess(
+                        _start, _start + timedelta(seconds=_exp))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("slew straddle skipped for %s: %s", path.name, e)
     metrics = qa_rules.record_metrics(
+        pointing_offset_arcmin=_point.get("off_target_arcmin"),
+        pointing_note=_point.get("note"),
+        slew_overlap_s=_slew.get("overlap_s"), slew_note=_slew.get("note"),
         hfr=m["hfr"], fwhm_arcsec=None, ecc=ecc, ecc_bin=ecc_bin,
         stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
@@ -604,7 +627,11 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
         "noise": m.get("noise"),
         "graded_by": m["graded_by"],
+        "pointing_offset_arcmin": _point.get("off_target_arcmin"),
+        "pointing_note": _point.get("note"),
     }
+    if _slew.get("overlap_s") is not None:   # PS-13
+        rec.update(slew_overlap_s=_slew["overlap_s"], slew_note=_slew.get("note"))
     # passed_qa, reason, qa_flag, scorecard, auto_verdict, auto_reason,
     # drivers (+ reviewed / review_source when all green)
     rec.update(card.record_fields())
@@ -771,6 +798,26 @@ def start_backfill(config, date: str) -> None:
                     sync_goal_progress(config)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Auto-attribute failed for %s: %s", date, e)
+            try:  # PS-67: pointing record from headers / the mount log and
+                # the off-target check on the attributed targets (before the
+                # library build, so an off-target sub is never filed)
+                from photonscript.scheduler.pointing_record import night_pass
+                pr = night_pass(config, date, solve=False)
+                if pr.get("verdicts_changed"):
+                    logger.info("Pointing %s: %s", date, pr)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Pointing pass failed for %s: %s", date, e)
+            try:  # PS-13: Piggy-600 subs that exposed through an RC16 move
+                # (mount log, else the RC16 frames), before the library build
+                from photonscript.scheduler.slew_gate import night_pass as _slew_pass
+                sp = _slew_pass(config, date)
+                if sp.get("subs"):
+                    logger.info("Slew gate %s: %s of %s judged Piggy subs "
+                                "straddle an RC16 move (%s newly rejected)",
+                                date, sp["straddled"], sp["judged"],
+                                sp["newly_rejected"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Slew gate pass failed for %s: %s", date, e)
             try:
                 n_out = flag_hfr_outliers(config, date)
                 if n_out:
@@ -842,6 +889,17 @@ def start_backfill(config, date: str) -> None:
                                    or fx["summary"].get("max_excess_arcsec_min"))
             except Exception as e:  # noqa: BLE001
                 logger.warning("Flexure report failed for %s: %s", date, e)
+            try:  # PS-67: sampled ASTAP solves (every Nth, flagged, first
+                # after a slew; reuses the flexure solves), budget-capped
+                from photonscript.scheduler.pointing_record import night_pass
+                pr = night_pass(config, date, solve=True)
+                logger.info("Pointing solves %s: %s solved of %s tried in "
+                            "%.0fs", date, pr.get("solved"),
+                            pr.get("solve_attempts"), pr.get("solve_s") or 0)
+                if pr.get("verdicts_changed"):
+                    build_library(config, date)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Pointing solve pass failed for %s: %s", date, e)
         finally:
             st["running"] = False
             st["current"] = None
@@ -1039,14 +1097,24 @@ def rescore_night(config, date: str, apply: bool = False,
     diffs, moves = [], []
     changed = 0
     lib = library_root(config)
+    try:  # PS-67: the pointing sidecar (solve wins over the header)
+        from photonscript.shared.pointing import load as _load_pointing
+        pts = {} if records is not None else _load_pointing(config, date)
+    except Exception:  # noqa: BLE001
+        pts = {}
     for rec in subs:
         key = qa_rules.group_key(rec)
         try:
             start = _start_of(rec)
         except Exception:  # noqa: BLE001
             start = None
+        _m = qa_rules.metrics_from_record(rec)
+        _p = pts.get((key[0], rec.get("file")))
+        if _p and _p.get("off_target_arcmin") is not None:
+            _m["pointing_offset_arcmin"] = _p["off_target_arcmin"]
+            _m["pointing_note"] = _p.get("note")
         card = qa_rules.evaluate(
-            qa_rules.metrics_from_record(rec),
+            _m,
             qa_rules.context(config, key[0], key[1], key[2],
                              night=ctxs.get(key), unsafe_windows=wins,
                              start_utc=start))

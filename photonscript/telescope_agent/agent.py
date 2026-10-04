@@ -64,7 +64,10 @@ class TelescopeAgent:
         self.phd2 = PHD2Client(config.phd2_host, config.phd2_port, config=config)
         self._rms_logged_at: float | None = None  # PS-70 RMS log rate limit
         self.bus = get_message_bus()
-        self.state = TelescopeState()
+        self.state = TelescopeState(rig=rig)
+        self._mount_log = None        # PS-67 mount log (RC16, owns the mount)
+        self._events = None           # PS-67 night events (both rigs)
+        self._last_pointing: dict = {}  # PS-67: previous sub's position
         self._running = False
         self._watch_dir = Path(config.image_watch_dir)
         # Nanny / escalation state
@@ -641,15 +644,20 @@ class TelescopeAgent:
                 # poll can never skip the safety reconnect (2026-09-13 lesson:
                 # the monitor dropped at 01:33 and nothing reattempted it).
 
-                # Get mount info
-                mount = await self.nina.get_mount_info()
-                self.state.mount_ra = mount.get("RightAscension")
-                self.state.mount_dec = mount.get("Declination")
-                self.state.mount_tracking = mount.get("Tracking", False)
-                # PS-91 / PS-92: park, slew and pier side for the guard
-                self.state.mount_at_park = mount.get("AtPark")
-                self.state.mount_slewing = mount.get("Slewing")
-                self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
+                # Get mount info. PS-67: only the rig whose NINA owns the
+                # mount reads it (NINA #2 has none, and its zeros used to
+                # overwrite the RC16's position in /api/status).
+                from photonscript.shared.rigs import rig_devices
+                if "mount" in rig_devices(getattr(self, "rig", "rc16")):
+                    mount = await self.nina.get_mount_info()
+                    self.state.mount_ra = mount.get("RightAscension")
+                    self.state.mount_dec = mount.get("Declination")
+                    self.state.mount_tracking = mount.get("Tracking", False)
+                    # PS-91 / PS-92: park, slew and pier side for the guard
+                    self.state.mount_at_park = mount.get("AtPark")
+                    self.state.mount_slewing = mount.get("Slewing")
+                    self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
+                    self._log_mount(mount)
 
                 if getattr(self, "rig", "rc16") == "rc16":
                     await self._poll_filter()   # PS-90
@@ -671,6 +679,7 @@ class TelescopeAgent:
                 }
                 self.state.session_state = state_map.get(status, SessionState.IDLE)
                 self._flip_running = bool(seq.get("MeridianFlip", False))
+                self._log_event("nina", "instruction", seq.get("Running") or "")
 
                 # Current target from sequence
                 current = seq.get("CurrentTarget")
@@ -683,6 +692,31 @@ class TelescopeAgent:
                 logger.debug("NINA poll error (may not be running): %s", e)
 
             await asyncio.sleep(5)
+
+    def _log_mount(self, mount: dict) -> None:
+        """PS-67: append a mount-log line on a change (never raises)."""
+        if not getattr(self.config, "mount_log_enabled", True):
+            return
+        try:
+            if getattr(self, "_mount_log", None) is None:
+                from photonscript.shared.mount_log import MountLogger
+                self._mount_log = MountLogger(self.config, getattr(self, "rig", "rc16"))
+            self._mount_log.observe(mount)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("mount log skipped: %s", e)
+
+    def _log_event(self, src: str, kind: str, value, **extra) -> None:
+        """PS-67: append a night-timeline event on a change (never raises)."""
+        try:
+            if getattr(self, "_events", None) is None:
+                from photonscript.shared.night_events import EventLog
+                self._events = EventLog(self.config, getattr(self, "rig", "rc16"))
+            if kind == "rms":
+                self._events.rms(value, extra.get("units") or "px")
+            else:
+                self._events.change(src, kind, value, **extra)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("night event skipped: %s", e)
 
     async def _phd2_monitor(self):
         """Connect to PHD2 and monitor guiding events."""
@@ -717,6 +751,15 @@ class TelescopeAgent:
         self.state.guiding = metrics
         if getattr(self, "rig", "rc16") != "rc16":
             return
+        # PS-67: guider state changes and a 60 s RMS sample for the timeline
+        _gs = str(getattr(metrics.state, "value", metrics.state) or "").lower()
+        self._log_event("phd2", "guider", _gs)
+        if _gs == "guiding" and metrics.samples:
+            if metrics.units == "arcsec" and metrics.rms_total_arcsec is not None:
+                self._log_event("phd2", "rms", metrics.rms_total_arcsec,
+                                units="arcsec")
+            else:
+                self._log_event("phd2", "rms", metrics.rms_total_px, units="px")
         if str(getattr(metrics.state, "value", metrics.state)).lower() != "guiding":
             return
         if metrics.samples < self.RMS_MIN_SAMPLES:
@@ -1321,12 +1364,18 @@ class TelescopeAgent:
             except Exception as e:  # noqa: BLE001
                 logger.debug("night context skipped: %s", e)
         guide_lock = self._guide_lock_for(start, exposure_seconds, guide_state)
+        point = self._sub_pointing(hdr, start, exposure_seconds, target_name)
+        slew = self._slew_straddle(start, exposure_seconds, night)
         metrics = image_metrics(quality)
         metrics.update(exp_s=exposure_seconds,
                        ccd_temp=self.state.camera_temp_c,
                        set_temp=hdr.get("SET-TEMP"),
                        guide_rms=quality.tracking_rms_arcsec,
-                       guide_state=guide_state, guide_lock=guide_lock)
+                       guide_state=guide_state, guide_lock=guide_lock,
+                       pointing_offset_arcmin=point.get("off_target_arcmin"),
+                       pointing_note=point.get("note"),
+                       slew_overlap_s=slew.get("overlap_s"),
+                       slew_note=slew.get("note"))
         card = qa_rules.evaluate(metrics, qa_rules.context(
             self.config, self.rig, target_name, rec_filter, night=night_ctx,
             unsafe_windows=wins, start_utc=start))
@@ -1386,11 +1435,24 @@ class TelescopeAgent:
                 "sat_stars_pct": quality.sat_star_pct,
                 "swamp": quality.swamp_factor,
                 "exposure": quality.exposure_flag,
+                # PS-67: offset from the named target (sidecar has the rest)
+                "pointing_offset_arcmin": point.get("off_target_arcmin"),
+                "pointing_note": point.get("note"),
             }
+            if slew:   # PS-13: rigs riding the RC16 mount only
+                rec.update(slew_overlap_s=slew.get("overlap_s"),
+                           slew_note=slew.get("note"))
             # passed_qa, reason, qa_flag, scorecard, auto_verdict,
             # auto_reason, drivers (+ reviewed / review_source when all green)
             rec.update(card.record_fields())
             append_sub_record(self.config, night, rec)
+            try:  # PS-67: where the sub was pointing (runs/<night>_pointing.jsonl)
+                from photonscript.shared.pointing import append_record
+                if point.get("src") is not None or point.get("target"):
+                    append_record(self.config, night,
+                                  {**point, "file": rel_in_night})
+            except Exception as pe:  # noqa: BLE001
+                logger.debug("pointing record skipped: %s", pe)
             try:  # PS-80: the stars behind the medians, for the overlay
                 from photonscript.shared.star_table import write as _w_stars
                 _w_stars(self.config, night, rel_in_night, quality.star_table,
@@ -1471,6 +1533,52 @@ class TelescopeAgent:
                 "quality": quality.model_dump(mode="json"),
             },
         ))
+
+    def _slew_straddle(self, start, exp_s, night) -> dict:
+        """PS-13: did this sub expose through an RC16 move? Only for a rig
+        riding the RC16 mount (its NINA has no mount). The mount log the RC16
+        agent writes, else the night's RC16 frames so far (header RA/Dec).
+        The dawn pass (slew_gate.night_pass) re-judges it with the whole
+        night. Never raises: {} = not judged (the check skips)."""
+        try:
+            from photonscript.shared.rigs import rig_devices
+            if start is None or "mount" in rig_devices(getattr(self, "rig", "rc16")):
+                return {}
+            from photonscript.scheduler.slew_gate import NightWindows
+            from photonscript.shared import mount_log
+            from photonscript.shared.phd2_store import night_of
+            lines = mount_log.load(self.config, night_of(self.config, start))
+            recs = None
+            if night:   # RC16 frames are read only when the log misses it
+                from photonscript.scheduler.runs import _load_subs
+                recs = _load_subs(self.config, night)
+            nw = NightWindows(self.config, lines=lines, records=recs)
+            a = nw.assess(start, start + timedelta(seconds=float(exp_s or 0)))
+            return a if a.get("overlap_s") is not None else {}
+        except Exception as e:  # noqa: BLE001 - never lose a sub over this
+            logger.debug("slew straddle skipped: %s", e)
+            return {}
+
+    def _sub_pointing(self, hdr: dict, start, exp_s, target) -> dict:
+        """PS-67: this sub's pointing record and target offset. RC16 from its
+        header; the Piggy-600 (no coordinates in its frames) from the mount
+        log the RC16 agent writes. Never raises: {} when unknown."""
+        try:
+            from photonscript.shared import pointing
+            lines = None
+            if pointing.from_header(hdr) is None and start is not None:
+                from photonscript.shared import mount_log
+                from photonscript.shared.phd2_store import night_of
+                lines = mount_log.load(self.config, night_of(self.config, start))
+            rig = getattr(self, "rig", "rc16")
+            prev = getattr(self, "_last_pointing", {}) or {}
+            rec = pointing.sub_pointing(self.config, rig, hdr, start, exp_s,
+                                        target, mount_lines=lines, prev=prev)
+            self._last_pointing = rec
+            return rec
+        except Exception as e:  # noqa: BLE001 - never lose a sub over this
+            logger.debug("pointing skipped: %s", e)
+            return {}
 
     async def _state_broadcast_loop(self):
         """Periodically broadcast telescope state to the scheduler."""

@@ -76,6 +76,11 @@ def rig_config(config, rig: str):
         # PS-71: the sub-physical star-size floor is scale-dependent too.
         "quality_fwhm_min_arcsec": getattr(config, "piggyback_fwhm_min_arcsec",
                                            2.0),
+        # PS-67: 1.29"/px over a much wider field: off target only far out
+        "pointing_off_target_flag_arcmin": getattr(
+            config, "piggyback_off_target_flag_arcmin", 30.0),
+        "pointing_off_target_reject_arcmin": getattr(
+            config, "piggyback_off_target_reject_arcmin", 60.0),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
         # NINA #2 has its own safety driver (a shared one deadlocks on the

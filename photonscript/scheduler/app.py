@@ -61,6 +61,10 @@ async def favicon():
 _config: Optional[PhotonScriptConfig] = None
 _projects: dict[str, ImagingProject] = {}
 _telescope_state: TelescopeState = TelescopeState()
+# PS-67: every agent's latest state by rig. _telescope_state is always the
+# RC16's (it owns the mount): the piggyback's broadcast, which carries no
+# mount, used to overwrite it (/api/status mount_ra 0 on 2026-09-26).
+_rig_states: dict[str, TelescopeState] = {}
 _ws_clients: list[WebSocket] = []
 
 
@@ -214,7 +218,10 @@ async def on_agent_message(msg: AgentMessage):
     global _telescope_state
 
     if msg.msg_type == "telescope_state_update":
-        _telescope_state = TelescopeState(**msg.payload)
+        st = TelescopeState(**msg.payload)
+        _rig_states[st.rig or "rc16"] = st
+        if (st.rig or "rc16") == "rc16":
+            _telescope_state = st
         await broadcast_state()
 
     elif msg.msg_type == "image_captured":
@@ -300,6 +307,7 @@ async def dashboard(request: Request):
 async def api_status():
     return {
         "telescope": _telescope_state.model_dump(mode="json"),
+        "rigs": {r: st.model_dump(mode="json") for r, st in _rig_states.items()},
         "active_projects": len([p for p in _projects.values() if p.active]),
         "total_projects": len(_projects),
     }
@@ -631,6 +639,18 @@ _CONFIG_FIELDS = [
     ("qa_auto_approve", "PS_QA_AUTO_APPROVE", "Auto-approve all-green subs", "Quality", "bool", False, False),
     ("qa_auto_approve_rigs", "PS_QA_AUTO_APPROVE_RIGS", "Auto-approve only these rigs (comma list, empty = all)", "Quality", "str", False, False),
     ("qa_guide_lock_mode", "PS_QA_GUIDE_LOCK_MODE", "Sub guided on a non-star lock (PS-91): warn | fail", "Quality", "str", False, True),
+    ("pointing_off_target_flag_arcmin", "PS_POINTING_OFF_TARGET_FLAG_ARCMIN", "RC16 off target: flag for a look above (arcmin, PS-67)", "Quality", "float", False, False),
+    ("pointing_off_target_reject_arcmin", "PS_POINTING_OFF_TARGET_REJECT_ARCMIN", "RC16 off target: reject above (arcmin; target out of the frame)", "Quality", "float", False, False),
+    ("piggyback_off_target_flag_arcmin", "PS_PIGGYBACK_OFF_TARGET_FLAG_ARCMIN", "Piggy-600 off target: flag above (arcmin)", "Quality", "float", False, False),
+    ("piggyback_off_target_reject_arcmin", "PS_PIGGYBACK_OFF_TARGET_REJECT_ARCMIN", "Piggy-600 off target: reject above (arcmin)", "Quality", "float", False, False),
+    ("qa_pointing_mode", "PS_QA_POINTING_MODE", "Off target above the reject limit: fail (reject) | warn | info", "Quality", "str", False, True),
+    ("qa_slew_straddle_mode", "PS_QA_SLEW_STRADDLE_MODE", "Piggy-600 sub exposed through an RC16 slew / flip / park (PS-13): fail (reject) | warn | info", "Quality", "str", False, True),
+    ("slew_gate_pad_s", "PS_SLEW_GATE_PAD_S", "RC16 move window padding from the mount log (s, each side)", "Quality", "float", False, False),
+    ("slew_gate_min_move_arcmin", "PS_SLEW_GATE_MIN_MOVE_ARCMIN", "RC16 move from its frames (nights without a mount log): pointing change above (arcmin)", "Quality", "float", False, False),
+    ("pointing_solve_policy", "PS_POINTING_SOLVE_POLICY", "Dawn plate solves (PS-67): sampled (every Nth + flagged + first after a slew) | all | off", "Quality", "str", False, True),
+    ("pointing_solve_every", "PS_POINTING_SOLVE_EVERY", "Dawn plate solves: every Nth sub per rig (sampled)", "Quality", "int", False, False),
+    ("pointing_solve_budget_min", "PS_POINTING_SOLVE_BUDGET_MIN", "Dawn plate solves: stop after N min of ASTAP time", "Quality", "float", False, False),
+    ("mount_log_enabled", "PS_MOUNT_LOG_ENABLED", "Mount log runs/<night>_mount.jsonl from the RC16 agent's poll (PS-67)", "Quality", "bool", False, True),
     ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
     ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
     ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
@@ -1801,6 +1821,11 @@ def api_run_detail(date: str, backfill: bool = True):
         if s.get("passed_qa") and s.get("reviewed"):
             base = Path(s.get("abs_path") or s.get("file") or "").name
             s["transfer"] = _transfer_state(base, pending)
+    try:  # PS-67: per-sub pointing + the night's pointing summary
+        from photonscript.scheduler.routers.pointing import merge_night
+        merge_night(get_config(), date, d)
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("pointing merge skipped for %s: %s", date, e)
     try:  # PS-96: Piggy-600 vs RC16 differential flexure (cached report)
         from photonscript.scheduler.flexure import compact as fx_compact
         from photonscript.scheduler.flexure import fresh_report
@@ -2826,6 +2851,8 @@ from photonscript.scheduler.routers import thesky as _thesky_router  # noqa: E40
 app.include_router(_thesky_router.router)
 from photonscript.scheduler.routers import targets as _targets_router  # noqa: E402
 app.include_router(_targets_router.router)
+from photonscript.scheduler.routers import pointing as _pointing_router  # noqa: E402
+app.include_router(_pointing_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
