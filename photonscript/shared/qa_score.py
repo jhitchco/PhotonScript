@@ -4,6 +4,7 @@
     score(checks, metrics, t) -> Score         pure: no FITS, no I/O beyond
                                                the (cached) weights file
     panel_rows(rec, t) -> list[dict]           the runs-page side panel
+                                               (sorted by points lost, PS-115)
 
 Each judged check (pass / warn / fail; skip is not judged) gets a grade q
 from 0 to 1 by how far inside or outside its gate the value sits, weighted
@@ -403,12 +404,15 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
     out = []
     by_id = {r["id"]: r for r in card_rows}
 
-    def add(id_, label, value, gate, status, frac=None, note="", unit=""):
+    def add(id_, label, value, gate, status, frac=None, note="", unit="",
+            skipped=False):
         out.append({"id": id_, "label": label,
                     "value": (_fmt(value) + (unit if _num(value) is not None
                                              else "")),
                     "gate": gate, "status": status, "frac": frac,
-                    "lost": lost.get(id_), "note": note})
+                    "lost": lost.get(id_), "note": note,
+                    # PS-115: n/a and skipped rows fold into one line
+                    "measured": not skipped and value not in (None, "")})
 
     def check_row(cid, label=None, unit=""):
         r = by_id.get(cid)
@@ -440,7 +444,8 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
             frac = _frac(r.get("value"), lim)
         add(cid, label or r.get("name") or cid, r.get("value"), gate,
             _RAG.get(r.get("status"), "none"), frac,
-            note, unit if cid not in ("roof",) else "")
+            note, unit if cid not in ("roof",) else "",
+            skipped=r.get("status") == "skip")
 
     check_row("stars", "Stars")
     check_row("hfr", "HFR", " px")
@@ -516,4 +521,16 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
         out[-1]["note"] = (note + " " + tag) if note else tag
     check_row("slew_straddle", "Clear of RC16 moves", " s")
     check_row("roof", "Roof open / not parked")
-    return out
+    return sort_rows(out)
+
+
+def sort_rows(rows: list[dict]) -> list[dict]:
+    """PS-115: the rows that cost points first (most points lost first),
+    then the other measured rows in their usual order, then the n/a and
+    skipped ones (the page folds those into one "not measured" line)."""
+    def key(r):
+        pts = _num(r.get("lost")) or 0.0
+        if pts > 0:
+            return (0, -pts)
+        return (1, 0.0) if r.get("measured", True) else (2, 0.0)
+    return sorted(rows, key=key)

@@ -2,7 +2,8 @@
 
 GET  /api/qa/thresholds?rig=&target=&filter=   limits in force (legend)
 GET  /api/runs/{date}/scorecard?file=          one sub's labeled scorecard,
-                                               PS-108 score + side-panel rows
+                                               PS-108 score + side-panel rows,
+                                               PS-115 target / pointing block
 GET  /api/runs/{date}/rescore                  dry-run verdict diff
 POST /api/runs/{date}/rescore                  {"apply": true} to write
 GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (stored)
@@ -90,6 +91,7 @@ def api_sub_scorecard(date: str, file: str):
             # PS-108: the score, what it would do, and the side-panel rows
             "score": sc, "today": today_state(hit),
             "panel": panel_rows(hit, rows, t, sc),
+            "target": target_block(cfg, date, hit),       # PS-115
             "rules_version": card.get("v"), "verdict": card.get("verdict"),
             "scored_on_read": bool(hit.get("scored_on_read")),
             "passed_qa": hit.get("passed_qa"), "reason": hit.get("reason"),
@@ -100,6 +102,63 @@ def api_sub_scorecard(date: str, file: str):
             "review_source": hit.get("review_source"),
             "checks": sorted(rows, key=lambda r: order.get(r["status"], 9)),
             "thresholds": t}
+
+
+def _src_label(src) -> tuple[str, bool]:
+    """PS-107 source tag: only a plate solve confirms where a sub pointed."""
+    from photonscript.shared.qa_rules import _SRC_LABEL, pointing_confirmed
+    if pointing_confirmed(src):
+        return "plate solve", True
+    return _SRC_LABEL.get(str(src or ""), "header") + ", unconfirmed", False
+
+
+def target_block(cfg, date: str, rec: dict) -> dict:
+    """PS-115: what the sub was filed under and where the scope pointed, for
+    the side panel's Target section: name (Targets page link, PS-81),
+    filter / exposure, this rig's frame (refimage.rig_fov), and from the
+    PS-67 pointing record the offset, direction and source, alt, pier, HA
+    and the pointed position (plate solve center when solved, else the
+    mount position). Never raises; pointing is None without a record."""
+    from urllib.parse import quote
+
+    from photonscript.scheduler.refimage import rig_fov
+    rig = rec.get("rig") or "rc16"
+    name = rec.get("target") or ""
+    named = bool(name) and name != "?"
+    out = {"name": name if named else None,
+           "link": f"/target?name={quote(name)}" if named else None,
+           "rig": rig, "filter": rec.get("filter"), "exp_s": rec.get("exp_s"),
+           "frame": None, "pointing": None}
+    try:
+        f = rig_fov(cfg, rig)
+        out["frame"] = {k: f[k] for k in ("label", "w_arcmin", "h_arcmin")}
+    except Exception:  # noqa: BLE001 - the section still shows the text
+        pass
+    p: dict = {}
+    try:
+        from photonscript.shared import pointing
+        p = pointing.load(cfg, date).get((rig, rec.get("file"))) or {}
+    except Exception:  # noqa: BLE001
+        p = {}
+    src = p.get("src") or rec.get("pointing_src")
+    off = p.get("off_target_arcmin")
+    if off is None:
+        off = rec.get("pointing_offset_arcmin")
+    solved = p.get("solved_ra") is not None and p.get("solved_dec") is not None
+    if not p and off is None:
+        return out
+    label, confirmed = _src_label(src)
+    out["pointing"] = {
+        "src": src, "src_label": label, "confirmed": confirmed,
+        "off_arcmin": off, "off_dir": p.get("off_target_dir"),
+        "off_pa": p.get("off_target_pa"), "flag": p.get("flag") or "",
+        "alt": p.get("alt"), "pier": p.get("pier"), "ha_h": p.get("ha_h"),
+        "ra": p.get("solved_ra") if solved else p.get("mount_ra"),
+        "dec": p.get("solved_dec") if solved else p.get("mount_dec"),
+        "at": "solve" if solved else ("mount" if p.get("mount_ra") is not None
+                                      else None),
+        "target_ra": p.get("target_ra"), "target_dec": p.get("target_dec")}
+    return out
 
 
 def _sub_score(cfg, subs: list, hit: dict, card: dict) -> dict | None:

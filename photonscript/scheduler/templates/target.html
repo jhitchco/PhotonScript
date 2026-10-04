@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
+    <script src="/static/js/sky_geom.js?v={{ version }}"></script>
     <style>
         main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
         .top { display:grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
@@ -269,18 +270,8 @@ async function loadReady() {
 }
 
 // --- reference image + field of view (phase 2) -------------------------------
-function tanPx(ra, dec, ra0, dec0, fov, W, H) {
-    // gnomonic about (ra0, dec0), fov = width in deg, north up, east left
-    // (same math as refimage.gnomonic_px, which the tests check)
-    const r = Math.PI / 180;
-    const cosc = Math.sin(dec0 * r) * Math.sin(dec * r) +
-        Math.cos(dec0 * r) * Math.cos(dec * r) * Math.cos((ra - ra0) * r);
-    if (cosc <= 0) return null;
-    const x = Math.cos(dec * r) * Math.sin((ra - ra0) * r) / cosc;
-    const y = (Math.cos(dec0 * r) * Math.sin(dec * r) -
-               Math.sin(dec0 * r) * Math.cos(dec * r) * Math.cos((ra - ra0) * r)) / cosc;
-    return [W / 2 - (x / r) * W / fov, H / 2 - (y / r) * W / fov];
-}
+// gnomonic projection: static/js/sky_geom.js (Python mirror refimage.gnomonic_px)
+const tanPx = SkyGeom.tanPx;
 const RIG_COL = {rc16: '#38bdf8', piggyback: '#c084fc'};
 let META = null, LIVE = null;
 function drawRef() {

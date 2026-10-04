@@ -7,6 +7,7 @@
     <title>PhotonScript - Imaging Runs</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
+    <script src="/static/js/sky_geom.js?v={{ version }}"></script>
     <style>
         .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
         main { max-width: 1560px; margin: 0 auto; display: grid;
@@ -72,6 +73,19 @@
                    background:#0b1220; border:1px solid #1e293b;
                    border-radius:8px; padding:.5rem .65rem; }
         #lbPanel .sc { font-size:1.6rem; font-weight:700; }
+        /* PS-115: target section on top, one header line, then the bars */
+        #lbTarget { border-bottom:1px solid #1e293b; padding-bottom:.35rem;
+                    margin-bottom:.3rem; }
+        #lbTarget a { color:#7dd3fc; text-decoration:none; font-weight:700; }
+        #lbRef { position:relative; width:100%; aspect-ratio:1000/667;
+                 background:#020617; border-radius:4px; overflow:hidden;
+                 margin-top:.3rem; }
+        #lbMain #lbRefImg { position:absolute; inset:0; width:100%; height:100%;
+                            max-width:100% !important; max-height:none;
+                            border-radius:0; cursor:default; }
+        #lbRefSvg { position:absolute; inset:0; width:100%; height:100%; }
+        #lbHead { margin-bottom:.25rem; }
+        #lbPanel .nm { padding:.25rem 0; }
         #lbPanel .mrow { display:grid; grid-template-columns:8.5rem 1fr;
                          gap:.1rem .5rem; padding:.18rem 0;
                          border-bottom:1px solid #111827; }
@@ -169,7 +183,17 @@
     <div id="lightbox" hidden>
         <div id="lbMain">
             <img id="lbImg" src="">
-            <aside id="lbPanel" title="PS-108 sub score and metrics"></aside>
+            <aside id="lbPanel">
+                <section id="lbTarget" title="where the scope pointed (PS-115)">
+                    <div id="lbTargetText"></div>
+                    <div id="lbRef"><img id="lbRefImg" alt="" hidden><svg id="lbRefSvg" viewBox="0 0 1000 667"></svg></div>
+                    <div id="lbRefNote" class="none"></div>
+                </section>
+                <div id="lbHead"></div>
+                <div id="lbRows"></div>
+                <canvas id="lbHist" width="330" height="110" title="histogram (click: log / linear)"></canvas>
+                <div id="lbHistNote" class="none"></div>
+            </aside>
         </div>
         <div id="lbBar">
             <button class="btn btn-secondary" onclick="lbNav(-1)">◀ prev</button>
@@ -1009,16 +1033,14 @@
             (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
         const _n = (window._shownSubs || []).length;
         document.getElementById('lbCount').textContent = (i + 1) + ' / ' + _n;
+        // PS-115: date / time, target, filter / exposure and the verdict
+        // only; every metric lives in the side panel
         document.getElementById('lbCaption').innerHTML =
-            '<b>' + currentDate + '</b> · ' +
-            ((s.target && s.target !== '?') ? s.target + ' · ' : '') +
-            '<b>' + (s.time || '').slice(11, 19) + ' UTC</b> · ' + s.filter + ' ' +
-            Math.round(s.exp_s) + 's · HFR ' + (s.hfr ?? '–') + ' · ★' +
-            (s.stars ?? '–') + ' · bkg ' + (s.background ?? '–') +
-            ' · expo ' + (s.exposure ?? '–') + ' (' + (s.swamp ?? '–') + '×RN²' +
-            (s.sat_stars_pct != null ? ', sat★ ' + s.sat_stars_pct + '%' : '') + ')' +
-            ' ·' + badge(s) + roofTag(s) + pointTag(s) + ' <span style="opacity:.75">' + subState(s) +
-            (s.reason && !s.passed_qa ? ' — ' + s.reason : '') + '</span>';
+            '<b>' + currentDate + ' ' + escH((s.time || '').slice(11, 19)) + ' UTC</b> \u00b7 ' +
+            ((s.target && s.target !== '?') ? escH(s.target) + ' \u00b7 ' : '') +
+            escH(s.filter) + ' ' + Math.round(s.exp_s) + 's \u00b7' + badge(s) +
+            ' <span style="opacity:.75">' + subState(s) +
+            (s.reason && !s.passed_qa ? ': ' + escH(s.reason) : '') + '</span>';
         const btn = document.getElementById('lbQaBtn');
         const nx = nextState(s);
         btn.textContent = 'X → ' + STATE_ICON[nx][0] + ' ' + nx;
@@ -1035,58 +1057,174 @@
     let lbHistLog = true;
     try { lbHistLog = localStorage.getItem('lbHistLog') !== '0'; } catch (e) { /* no storage */ }
     function escH(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+    // PS-115: target section, one header line, then the bars sorted by
+    //      points lost (server side, qa_score.sort_rows); n/a and skipped
+    //      rows fold into one "not measured" line. No metric is repeated as
+    //      text: values, gates and points lost are on the bars, notes are
+    //      tooltips.
     async function loadLbPanel(s, i, n) {
-        const box = document.getElementById('lbPanel');
         const file = s.file, date = currentDate;
-        box.innerHTML = '<span class="none">loading score&hellip;</span>';
+        const head = document.getElementById('lbHead');
+        head.innerHTML = '<span class="none">loading score&hellip;</span>';
+        head.title = '';
+        document.getElementById('lbRows').innerHTML = '';
+        renderLbTarget(s, null, true);
+        clearLbHist();
         let r;
         try {
             r = await (await fetch('/api/runs/' + date + '/scorecard?file=' +
                                    encodeURIComponent(file))).json();
-        } catch (e) { box.textContent = 'scorecard unavailable'; return; }
+        } catch (e) { head.textContent = 'scorecard unavailable'; return; }
         const cur = window._shownSubs && window._shownSubs[lbIdx];
         if (!cur || cur.file !== file || currentDate !== date) return;
+        renderLbTarget(s, r.target || null, false);
         const sc = r.score || null;
         const today = r.today || subState(s);
         const d = sc ? (DEC[sc.decision] || [sc.decision, '#94a3b8']) : null;
-        let h = '';
         if (sc) {
-            h += '<div><span class="sc" style="color:' + d[1] + '">' + sc.score +
+            head.innerHTML = '<span class="sc" style="color:' + d[1] + '">' + sc.score +
                 '</span><span class="none"> / 100</span> &nbsp;' +
                 (sc.mode === 'on' ? '<b style="color:' + d[1] + '">' + d[0] + '</b>'
                  : 'would <b style="color:' + d[1] + '">' + d[0] + '</b> <span class="none">(preview)</span>') +
                 ' &middot; today <b>' + escH(today) + '</b>' +
-                (sc.on_read ? ' <span class="none" title="graded before PS-108: scored from the stored metrics now, nothing written">(scored on read)</span>' : '') + '</div>';
-            // the line to sanity-check against the lightbox caption / a screenshot
-            h += '<div class="none" style="margin:.15rem 0 .3rem">' + (i + 1) + '/' + n + ' &middot; ' +
-                escH(s.filter) + ' ' + Math.round(s.exp_s) + ' s &middot; HFR ' + (s.hfr ?? '&ndash;') +
-                ' &middot; ' + (s.stars ?? '&ndash;') + ' stars &middot; bkg ' + (s.background ?? '&ndash;') +
-                (s.sat_stars_pct != null ? ' &middot; sat&#9733; ' + s.sat_stars_pct + '%' : '') +
-                ' &rarr; score ' + sc.score + ': ' + d[0] + ' (approve &ge; ' + sc.approve_at +
-                ', reject &lt; ' + sc.reject_below + ')</div>';
-            if (sc.cap) h += '<div class="red">capped at ' + sc.cap.cap + ' by ' + escH(sc.cap.check) +
-                ' (' + escH(sc.cap.name) + ')</div>';
-            const ded = (sc.deductions || []).slice(0, 4);
-            h += '<div style="margin-bottom:.3rem"><b>Top deductions:</b> ' + (ded.length
-                ? ded.map(x => escH(x.id) + ' &minus;' + x.points + (x.note ? ' <span class="none">(' + escH(x.note) + ')</span>' : '')).join(', ')
-                : '<span class="green">none</span>') + '</div>';
+                (sc.cap ? ' <span class="red">capped</span>' : '') +
+                (sc.on_read ? ' <span class="none">&#9432;</span>' : '');
+            head.title = 'approve >= ' + sc.approve_at + ', reject < ' + sc.reject_below +
+                (sc.cap ? '\ncapped at ' + sc.cap.cap + ' by ' + sc.cap.check + ' (' + sc.cap.name + ')' : '') +
+                (sc.on_read ? '\nscored on read: graded before PS-108, scored from the stored metrics now, nothing written' : '');
         } else {
-            h += '<div class="none">no score for this sub</div>';
+            head.innerHTML = '<span class="none">no score for this sub</span> &middot; today <b>' +
+                escH(today) + '</b>';
         }
-        h += '<canvas id="lbHist" width="330" height="110" title="histogram (click: log / linear)"></canvas>' +
-             '<div id="lbHistNote" class="none" style="margin-bottom:.3rem">histogram loading&hellip;</div>';
-        h += (r.panel || []).map(m => {
+        const rows = r.panel || [];
+        const nm = rows.filter(m => m.measured === false);
+        document.getElementById('lbRows').innerHTML = rows.filter(m => m.measured !== false).map(m => {
             const col = RAG[m.status] || RAG.none;
-            return '<div class="mrow"><span title="' + escH(m.note) + '">' + escH(m.label) + '</span>' +
+            return '<div class="mrow" title="' + escH(m.note) + '"><span>' + escH(m.label) + '</span>' +
                 '<span><b class="' + escH(m.status) + '">' + escH(m.value) + '</b>' +
                 (m.gate ? ' <span class="none">' + escH(m.gate) + '</span>' : '') +
                 (m.lost ? ' <span class="red">&minus;' + m.lost + '</span>' : '') +
-                (m.note && m.status !== 'none' ? '<br><span class="none">' + escH(m.note) + '</span>' : '') +
                 '</span>' + (m.frac != null ? '<div class="mbar"><div style="width:' +
                 Math.round(m.frac * 100) + '%;background:' + col + '"></div></div>' : '') + '</div>';
-        }).join('');
-        box.innerHTML = h;
+        }).join('') + (nm.length ? '<div class="none nm" title="' +
+            escH(nm.map(m => m.label + (m.note ? ': ' + m.note : '')).join('\n')) +
+            '">not measured: ' + nm.map(m => escH(m.label)).join(', ') + '</div>' : '');
         loadLbHist(date, file);
+    }
+    // ---- PS-115 target section: name (Targets page, PS-81), filter and
+    //      exposure, the PS-67 / PS-107 pointing (offset, direction, source,
+    //      alt, pier, HA) and the PS-81 reference image with this rig's frame
+    //      box and a marker at the pointed position (SkyGeom.tanPx, the same
+    //      projection as the Targets page). One meta fetch per target.
+    const REF_META = {};
+    function refMeta(name, view) {
+        const k = name + '|' + view;
+        if (!REF_META[k]) REF_META[k] = fetch('/api/targets/refimage/meta?name=' +
+            encodeURIComponent(name) + '&view=' + view)
+            .then(rr => rr.ok ? rr.json() : null).catch(() => null);
+        return REF_META[k];
+    }
+    function fmtHA(h) {
+        if (h == null) return '\u2013';
+        const a = Math.abs(h);
+        let hh = Math.floor(a), mm = Math.round((a - hh) * 60);
+        if (mm === 60) { hh += 1; mm = 0; }
+        return (h < 0 ? '-' : '+') + hh + 'h' + String(mm).padStart(2, '0') + 'm';
+    }
+    function lbTargetName(s, tb) {
+        if (s.target && s.target !== '?') return s.target;
+        return (tb && tb.name) || null;
+    }
+    function renderLbTarget(s, tb, loading) {
+        const name = lbTargetName(s, tb);
+        const p = tb && tb.pointing;
+        let h = '<div>' + (name ? '<a href="/target?name=' + encodeURIComponent(name) +
+                '" title="Targets page (PS-81)">' + escH(name) + '</a>'
+                : '<span class="none">no target</span>') +
+            ' <span class="none">&middot;</span> ' + escH(s.filter) + ' ' +
+            Math.round(s.exp_s || 0) + ' s</div>';
+        if (loading) {
+            h += '<div class="none">pointing&hellip;</div>';
+        } else if (p) {
+            const cls = p.flag === 'off-target' ? 'red' : p.flag === 'flag' ? 'amber' : '';
+            h += '<div>pointed <b class="' + cls + '">' + (p.off_arcmin != null
+                    ? fmtOff(p.off_arcmin) + (p.off_dir ? ' ' + escH(p.off_dir) : '') : '\u2013') +
+                '</b> from the target <span class="' + (p.confirmed ? 'green' : 'none') +
+                '" title="PS-107: only a plate solve confirms an offset">(' + escH(p.src_label) + ')</span></div>' +
+                '<div class="none">alt ' + (p.alt != null ? Math.round(p.alt) + '&deg;' : '\u2013') +
+                ' &middot; pier ' + escH(p.pier || '\u2013') + ' &middot; HA ' + fmtHA(p.ha_h) + '</div>';
+        } else {
+            h += '<div class="none">no pointing record for this sub (PS-67 dawn pass)</div>';
+        }
+        document.getElementById('lbTargetText').innerHTML = h;
+        if (!loading) { drawLbRef(name, tb, s.file); return; }
+        document.getElementById('lbRef').hidden = true;
+        document.getElementById('lbRefNote').textContent = '';
+    }
+    async function drawLbRef(name, tb, file) {
+        const box = document.getElementById('lbRef'), img = document.getElementById('lbRefImg');
+        const svg = document.getElementById('lbRefSvg'), note = document.getElementById('lbRefNote');
+        img.hidden = true; svg.innerHTML = '';
+        if (!name) { box.hidden = true; note.textContent = ''; return; }
+        note.textContent = 'reference image loading\u2026';
+        const fr = tb && tb.frame;
+        let m = await refMeta(name, 'close');
+        // the Piggy-600 frame (2.2 deg) does not fit the close view: go wide
+        if (m && fr && m.fov_deg && fr.w_arcmin / 60 > m.fov_deg * 0.9) m = await refMeta(name, 'wide');
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (!cur || cur.file !== file) return;
+        if (!m || !m.fov_deg) {
+            box.hidden = true;
+            note.textContent = (m && m.note) || 'no reference image';
+            return;
+        }
+        box.hidden = false;
+        const W = 1000, H = Math.round(W * (m.aspect || 0.667));
+        box.style.aspectRatio = W + '/' + H;
+        svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+        if (m.image_url) {
+            if (img.getAttribute('src') !== m.image_url) img.src = m.image_url;
+            img.hidden = false;
+        }
+        const k = W / m.fov_deg;  // px per degree
+        const p = tb && tb.pointing;
+        let at = null;
+        if (p && p.ra != null && p.dec != null && m.ra_deg != null)
+            at = SkyGeom.tanPx(p.ra, p.dec, m.ra_deg, m.dec_deg, m.fov_deg, W, H);
+        const off = at && (at[0] < 0 || at[0] > W || at[1] < 0 || at[1] > H);
+        if (at) at = [Math.min(W - 12, Math.max(12, at[0])), Math.min(H - 12, Math.max(12, at[1]))];
+        const col = !at ? '#94a3b8' : p.at === 'solve' ? '#4ade80' : '#facc15';
+        let g = '<circle cx="' + W / 2 + '" cy="' + H / 2 + '" r="16" fill="none" stroke="#e2e8f0" ' +
+            'stroke-width="4" opacity=".85"/><text x="' + (W / 2 + 22) + '" y="' + (H / 2 - 18) +
+            '" fill="#e2e8f0" font-size="34" font-family="sans-serif">target</text>';
+        if (fr) {
+            const c = at || [W / 2, H / 2], w = fr.w_arcmin / 60 * k, hh = fr.h_arcmin / 60 * k;
+            g += '<rect x="' + (c[0] - w / 2).toFixed(1) + '" y="' + (c[1] - hh / 2).toFixed(1) +
+                '" width="' + w.toFixed(1) + '" height="' + hh.toFixed(1) + '" fill="none" stroke="' + col +
+                '" stroke-width="5"' + (at && p.confirmed ? '' : ' stroke-dasharray="18 10"') + '/>';
+        }
+        if (at) {
+            g += '<g stroke="' + col + '" stroke-width="5"><line x1="' + (at[0] - 26) + '" y1="' + at[1] +
+                '" x2="' + (at[0] + 26) + '" y2="' + at[1] + '"/><line x1="' + at[0] + '" y1="' + (at[1] - 26) +
+                '" x2="' + at[0] + '" y2="' + (at[1] + 26) + '"/></g><text x="' +
+                Math.max(10, Math.min(W - 400, at[0] + 30)) + '" y="' + Math.min(H - 10, at[1] + 44) +
+                '" fill="' + col + '" font-size="34" font-family="sans-serif">' +
+                (p.at === 'solve' ? 'solve center' : 'mount position') +
+                (off ? ' (off the image)' : '') + '</text>';
+        }
+        svg.innerHTML = g;
+        const src = m.source === 'dss2' ? 'DSS2 / CDS'
+            : m.source === 'own_sub' ? 'own sub (offline fallback, approximate)'
+            : 'no image: frame only';
+        note.textContent = (fr ? fr.label + ' frame ' + fr.w_arcmin + "' x " + fr.h_arcmin + "'" +
+            (at ? '' : ' (no pointed position: drawn on the target)') + ' \u00b7 ' : '') +
+            Math.round(m.fov_deg * 100) / 100 + '\u00b0 wide \u00b7 north up, east left, frame not rotated \u00b7 ' + src;
+    }
+    function clearLbHist() {
+        const cv = document.getElementById('lbHist');
+        cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+        cv.onclick = null;
+        document.getElementById('lbHistNote').innerHTML = 'histogram loading&hellip;';
     }
     async function loadLbHist(date, file) {
         let hd = null;

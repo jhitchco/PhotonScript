@@ -190,7 +190,7 @@ def reference(config, name: str, ra_deg: float, dec_deg: float,
         return side
 
 
-# --- geometry (mirrored in target.html; kept here so it is tested) -------------
+# --- geometry (mirrored in static/js/sky_geom.js; kept here so it is tested) --
 
 def gnomonic_px(ra_deg: float, dec_deg: float, ra0_deg: float, dec0_deg: float,
                 fov_deg: float, width: int = WIDTH, height: int = HEIGHT
