@@ -1377,6 +1377,7 @@ class TelescopeAgent:
                        guide_state=guide_state, guide_lock=guide_lock,
                        pointing_offset_arcmin=point.get("off_target_arcmin"),
                        pointing_note=point.get("note"),
+                       pointing_src=point.get("src"),
                        slew_overlap_s=slew.get("overlap_s"),
                        slew_note=slew.get("note"))
         card = qa_rules.evaluate(metrics, qa_rules.context(
@@ -1441,6 +1442,7 @@ class TelescopeAgent:
                 # PS-67: offset from the named target (sidecar has the rest)
                 "pointing_offset_arcmin": point.get("off_target_arcmin"),
                 "pointing_note": point.get("note"),
+                "pointing_src": point.get("src"),   # PS-107
             }
             if slew:   # PS-13: rigs riding the RC16 mount only
                 rec.update(slew_overlap_s=slew.get("overlap_s"),

@@ -23,6 +23,15 @@ scorecard check to the attributed targets:
    (qa_rules.regrade_pointing); human verdicts are never touched. A sub that
    becomes rejected leaves the Library (links move to Library/_rejected/,
    as the PS-21 rescore does).
+
+PS-107: the check is source-aware. Without a plate solve (header, mount
+log, rc16-correlated) only a gross miss above pointing_header_reject_deg
+rejects; a sub rejected earlier by a header-only offset under that limit
+returns to its other checks' verdict (un_rejected) and is filed again.
+Those header "flag" subs lead the solve queue (pick_solves), so the solve
+pass confirms or clears them. apply=False (CLI --dry-run) writes nothing
+and reports what would change (written, verdicts_changed, newly_rejected,
+un_rejected).
 """
 
 from __future__ import annotations
@@ -123,8 +132,10 @@ def _first_after_slew(frames: list[dict], windows) -> set:
 
 def pick_solves(frames: list[dict], policy: str, every: int,
                 windows=None, done: set | None = None) -> list[dict]:
-    """The frames to solve, most useful first: flagged / off-target, then
-    the first after each slew, then every Nth. Skips files in `done`."""
+    """The frames to solve, most useful first: flagged / off-target (PS-107:
+    including the header-only "flag" subs, so a solve confirms or clears
+    them), then the first after each slew, then every Nth. Skips files in
+    `done`."""
     done = done or set()
     policy = (policy or "sampled").lower()
     if policy == "off" or not frames:
@@ -182,7 +193,8 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
     out = {"date": date, "subs": len(subs), "written": 0, "with_position": 0,
            "solve_attempts": 0, "solved": 0, "solve_s": 0.0,
            "records_updated": 0, "verdicts_changed": 0, "newly_rejected": 0,
-           "library_moves": 0, "budget_hit": False, "mount_log_lines": len(lines)}
+           "un_rejected": 0, "library_moves": 0, "dry_run": not apply,
+           "budget_hit": False, "mount_log_lines": len(lines)}
     sols = {rig: solve_store.lookup(config, date, rig) for rig in frames}
 
     def compute(rig, f, prev):
@@ -252,7 +264,7 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
         if out["solve_attempts"]:
             all_points()
 
-    # 3. write changed records
+    # 3. write changed records (a dry run only counts them)
     for rig, fr in frames.items():
         for f in fr:
             p = f["point"]
@@ -262,41 +274,54 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
                 continue
             if pointing.same_record(stored.get((rig, line["file"])), line):
                 continue
-            pointing.append_record(config, date, line)
+            if apply:
+                pointing.append_record(config, date, line)
             out["written"] += 1
 
-    # 4. the "On target" check on the stored scorecards
-    if apply:
-        changed = 0
-        for rig, fr in frames.items():
-            for f in fr:
-                r, p = f["rec"], f["point"]
-                if _human_verdict(r):
-                    continue
-                t = qa_rules.thresholds(config, rig, r.get("target"),
-                                        r.get("filter"))
-                fields = qa_rules.regrade_pointing(
-                    r, p.get("off_target_arcmin"), t, p.get("note"))
-                if fields is None:
-                    continue
-                was = bool(r.get("passed_qa"))
-                was_verdict = r.get("auto_verdict")
-                if not fields.get("reviewed") and r.get("review_source") == "auto":
-                    fields.update(reviewed=False, review_source=None)
-                r.update(fields)
-                if r.get("review_source") is None:
-                    r.pop("review_source", None)
-                changed += 1
-                if was_verdict != r.get("auto_verdict"):
-                    out["verdicts_changed"] += 1
-                if was and not r.get("passed_qa"):
-                    out["newly_rejected"] += 1
-                    out["library_moves"] += len(_move_out_of_library(config, r))
-        if changed:
-            _rewrite_subs(config, date, subs)
-            if out["verdicts_changed"]:
-                sync_goal_progress(config)
-        out["records_updated"] = changed
+    # 4. the "On target" check on the stored scorecards (PS-107: by source;
+    # a dry run reports what would change and writes nothing)
+    changed = 0
+    for rig, fr in frames.items():
+        for f in fr:
+            r, p = f["rec"], f["point"]
+            if _human_verdict(r):
+                continue
+            t = qa_rules.thresholds(config, rig, r.get("target"),
+                                    r.get("filter"))
+            fields = qa_rules.regrade_pointing(
+                r, p.get("off_target_arcmin"), t, p.get("note"),
+                pointing.judged_src(p))
+            if fields is None:
+                continue
+            was = bool(r.get("passed_qa"))
+            was_verdict = r.get("auto_verdict")
+            changed += 1
+            out["verdicts_changed"] += int(
+                was_verdict != fields.get("auto_verdict"))
+            if was and not fields.get("passed_qa"):
+                out["newly_rejected"] += 1
+            elif not was and fields.get("passed_qa"):
+                out["un_rejected"] += 1
+            if not apply:
+                continue
+            if not fields.get("reviewed") and r.get("review_source") == "auto":
+                fields.update(reviewed=False, review_source=None)
+            r.update(fields)
+            if r.get("review_source") is None:
+                r.pop("review_source", None)
+            if was and not r.get("passed_qa"):
+                out["library_moves"] += len(_move_out_of_library(config, r))
+    if apply and changed:
+        _rewrite_subs(config, date, subs)
+        if out["verdicts_changed"]:
+            sync_goal_progress(config)
+        if out["un_rejected"]:
+            try:  # PS-107: subs back from a header-only reject are filed
+                from photonscript.scheduler.runs import build_library
+                build_library(config, date)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("pointing %s: library update failed: %s", date, e)
+    out["records_updated"] = changed
     out["summary"] = pointing.summarize(
         [f["point"] for fr in frames.values() for f in fr])
     return out

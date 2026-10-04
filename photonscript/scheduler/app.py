@@ -657,6 +657,7 @@ _CONFIG_FIELDS = [
     ("pointing_off_target_reject_arcmin", "PS_POINTING_OFF_TARGET_REJECT_ARCMIN", "RC16 off target: reject above (arcmin; target out of the frame)", "Quality", "float", False, False),
     ("piggyback_off_target_flag_arcmin", "PS_PIGGYBACK_OFF_TARGET_FLAG_ARCMIN", "Piggy-600 off target: flag above (arcmin)", "Quality", "float", False, False),
     ("piggyback_off_target_reject_arcmin", "PS_PIGGYBACK_OFF_TARGET_REJECT_ARCMIN", "Piggy-600 off target: reject above (arcmin)", "Quality", "float", False, False),
+    ("pointing_header_reject_deg", "PS_POINTING_HEADER_REJECT_DEG", "Off target with no plate solve (header / mount log only): reject above (deg, PS-107; below it warns, unconfirmed)", "Quality", "float", False, False),
     ("qa_pointing_mode", "PS_QA_POINTING_MODE", "Off target above the reject limit: fail (reject) | warn | info", "Quality", "str", False, True),
     ("qa_slew_straddle_mode", "PS_QA_SLEW_STRADDLE_MODE", "Piggy-600 sub exposed through an RC16 slew / flip / park (PS-13): fail (reject) | warn | info", "Quality", "str", False, True),
     ("slew_gate_pad_s", "PS_SLEW_GATE_PAD_S", "RC16 move window padding from the mount log (s, each side)", "Quality", "float", False, False),

@@ -570,7 +570,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         from photonscript.shared.pointing import assess, from_header
         _pos = from_header(hdr)
         if _pos is not None:
-            _point = assess(config, rig, _pos, target)
+            _point = {**assess(config, rig, _pos, target), "src": _pos["src"]}
     except Exception as e:  # noqa: BLE001
         logger.debug("pointing skipped for %s: %s", path.name, e)
     _slew = {}
@@ -588,6 +588,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     metrics = qa_rules.record_metrics(
         pointing_offset_arcmin=_point.get("off_target_arcmin"),
         pointing_note=_point.get("note"),
+        pointing_src=_point.get("src"),
         slew_overlap_s=_slew.get("overlap_s"), slew_note=_slew.get("note"),
         hfr=m["hfr"], fwhm_arcsec=None, ecc=ecc, ecc_bin=ecc_bin,
         stars=m["stars"],
@@ -644,6 +645,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "graded_by": m["graded_by"],
         "pointing_offset_arcmin": _point.get("off_target_arcmin"),
         "pointing_note": _point.get("note"),
+        "pointing_src": _point.get("src"),   # PS-107
     }
     if _slew.get("overlap_s") is not None:   # PS-13
         rec.update(slew_overlap_s=_slew["overlap_s"], slew_note=_slew.get("note"))
@@ -1067,6 +1069,16 @@ def _human_verdict(rec: dict) -> bool:
         or (bool(rec.get("reviewed")) and rec.get("review_source") != "auto")
 
 
+def header_pointing_reject(rec: dict) -> bool:
+    """PS-107: an automatic reject whose only driver is the On-target check
+    judged without a plate solve (header, mount log, RC16-correlated, or a
+    pre-PS-107 record that does not say)."""
+    from photonscript.shared.qa_rules import pointing_confirmed
+    return (not rec.get("passed_qa") and not _human_verdict(rec)
+            and list(rec.get("drivers") or []) == ["pointing"]
+            and not pointing_confirmed(rec.get("pointing_src")))
+
+
 def _old_verdict(rec: dict) -> str:
     if not rec.get("passed_qa"):
         return "rejected"
@@ -1126,8 +1138,10 @@ def rescore_night(config, date: str, apply: bool = False,
         _m = qa_rules.metrics_from_record(rec)
         _p = pts.get((key[0], rec.get("file")))
         if _p and _p.get("off_target_arcmin") is not None:
+            from photonscript.shared.pointing import judged_src
             _m["pointing_offset_arcmin"] = _p["off_target_arcmin"]
             _m["pointing_note"] = _p.get("note")
+            _m["pointing_src"] = judged_src(_p) or _p.get("src")
         card = qa_rules.evaluate(
             _m,
             qa_rules.context(config, key[0], key[1], key[2],
@@ -1150,12 +1164,18 @@ def rescore_night(config, date: str, apply: bool = False,
         transitions[f"{old} -> {new}"] += 1
         action = None
         if not rec.get("passed_qa") and card.passed:
-            if not allow_unreject:
-                counts["kept_rejected"] += 1
-                action = "kept rejected (no --allow-unreject)"
-            else:
+            if allow_unreject:
                 counts["unrejected"] += 1
                 action = "un-rejected"
+            elif header_pointing_reject(rec):
+                # PS-107: rejected only by an unconfirmed header offset now
+                # under the gross limit: every other check already passed
+                counts["unrejected"] += 1
+                counts["unrejected_pointing"] += 1
+                action = "un-rejected (header-only pointing, PS-107)"
+            else:
+                counts["kept_rejected"] += 1
+                action = "kept rejected (no --allow-unreject)"
         elif rec.get("passed_qa") and not card.passed:
             counts["newly_rejected"] += 1
             action = "rejected"

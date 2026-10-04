@@ -24,6 +24,11 @@ line, the LAST line for a (rig, file) wins):
   flag ("" | "flag" | "off-target"), drift_arcmin (since the rig's previous
   sub), at (when written).
 
+PS-107: only a plate solve confirms an offset. Without one (header, mount
+log, rc16-correlated) "off-target" means a gross miss above
+pointing_header_reject_deg; anything between the rig's flag limit and that
+is a "flag" (header only, unconfirmed) that jumps the dawn solve queue.
+
 The off-target limits come from shared.qa_rules.thresholds (per rig), so the
 "On target" scorecard check and this record always agree. Nothing here
 writes a FITS file.
@@ -203,6 +208,19 @@ def judged_position(rec: dict) -> tuple | None:
     return None
 
 
+def judged_src(rec: dict) -> str | None:
+    """Where the judged position came from (PS-107): "solve" when a plate
+    solve is used, else the mount source (header | mount-log |
+    rc16-correlated)."""
+    pos = judged_position(rec)
+    if pos is None:
+        return None
+    if pos[2] == "solved":
+        return "solve"
+    src = rec.get("mount_src") or rec.get("src")
+    return None if src == "solve" else src
+
+
 def assess(config, rig: str, rec: dict, target) -> dict:
     """Target, offset and flag for one pointing record (does not modify it):
     {target, target_ra, target_dec, off_target_arcmin, off_target_pa,
@@ -219,10 +237,13 @@ def assess(config, rig: str, rec: dict, target) -> dict:
     name, tra, tdec = tc
     off = sep_arcmin(tra, tdec, pos[0], pos[1])
     pa, comp = bearing(tra, tdec, pos[0], pos[1])
-    from photonscript.shared.qa_rules import thresholds
+    from photonscript.shared.qa_rules import pointing_limits, thresholds
     t = thresholds(config, rig or "rc16")
-    flag = ("off-target" if off > t["offtarget_reject_arcmin"]
-            else "flag" if off > t["offtarget_flag_arcmin"] else "")
+    # PS-107: a header / mount-log offset is "off-target" only past the
+    # gross limit; below it a "flag" (unconfirmed) the dawn solves check
+    lim_flag, lim_rej = pointing_limits(t, judged_src(rec))
+    flag = ("off-target" if off > lim_rej
+            else "flag" if off > lim_flag else "")
     out.update(target=name, target_ra=round(tra, 5), target_dec=round(tdec, 5),
                off_target_arcmin=round(off, 2), off_target_pa=pa,
                off_target_dir=comp, flag=flag,
