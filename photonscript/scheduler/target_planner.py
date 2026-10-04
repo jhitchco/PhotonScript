@@ -113,6 +113,25 @@ def _fit_by_moon(exposures, available_seconds, moon_tag):
     return exposures
 
 
+def remaining_copy(plan: ExposurePlan) -> ExposurePlan:
+    """PS-105: tonight's copy of a plan carries only what is still owed.
+
+    count = long subs still owed, hdr_short_count = short subs still owed,
+    and every acquired field is reset to 0, so the planner is the ONE owner
+    of "remaining": the sequence generator's `count - acquired`, the plan
+    snapshot, the night plan text and cap_unguided all read the copy as is.
+    The old copy kept `acquired`, so the generator subtracted it a second
+    time: 30 planned with 10 accepted shot 10, and a project at least half
+    done dropped out of the night."""
+    return plan.model_copy(update={
+        "count": max(0, plan.count - plan.acquired),
+        "acquired": 0,
+        "acquired_s": 0.0,
+        "hdr_short_count": plan.short_remaining(),
+        "hdr_short_acquired": 0,
+    })
+
+
 def cap_unguided(targets, cap_s) -> list[str]:
     """PS-66: cap sub length on every UNGUIDED target (start_guiding False) at
     cap_s seconds (config unguided_max_exposure_s; 0 or None = off), keeping
@@ -138,7 +157,7 @@ def cap_unguided(targets, cap_s) -> list[str]:
             upd = {}
             owed = e.count - e.acquired
             if e.exposure_seconds > cap and owed > 0:
-                upd.update(exposure_seconds=cap, acquired=0,
+                upd.update(exposure_seconds=cap, acquired=0, acquired_s=0.0,
                            count=math.ceil(owed * e.exposure_seconds / cap - 1e-9))
                 notes.append(f"{t.name} {e.filter_type.value}: {owed}x"
                              f"{e.exposure_seconds:.0f}s -> {upd['count']}x{cap:.0f}s")
@@ -276,9 +295,8 @@ def plan_night_sequence(
         for plan in proj.exposure_plans:
             if getattr(plan, "rig", "rc16") != "rc16":
                 continue  # PS-30: a Piggy-600 OSC plan is never an RC16 filter
-            remaining = plan.count - plan.acquired
-            if remaining > 0:
-                remaining_exposures.append(plan.model_copy(update={"count": remaining}))
+            if plan.count - plan.acquired > 0:
+                remaining_exposures.append(remaining_copy(plan))
 
         if not remaining_exposures:
             continue
