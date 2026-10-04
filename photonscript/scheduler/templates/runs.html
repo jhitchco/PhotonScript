@@ -64,6 +64,29 @@
         #lightbox img.zoomed { cursor:move; border-radius:0; }
         #lbCount { font-weight:700; opacity:.9; }
         #lbBar { display:flex; gap:1rem; align-items:center; font-size:.85rem; }
+        /* PS-108: metrics side panel to the right of the image */
+        #lbMain { display:flex; gap:.8rem; align-items:flex-start;
+                  max-width:98vw; }
+        #lbMain img { max-width:calc(97vw - 370px) !important; }
+        #lbPanel { width:350px; max-height:80vh; overflow:auto; font-size:.74rem;
+                   background:#0b1220; border:1px solid #1e293b;
+                   border-radius:8px; padding:.5rem .65rem; }
+        #lbPanel .sc { font-size:1.6rem; font-weight:700; }
+        #lbPanel .mrow { display:grid; grid-template-columns:8.5rem 1fr;
+                         gap:.1rem .5rem; padding:.18rem 0;
+                         border-bottom:1px solid #111827; }
+        #lbPanel .mbar { grid-column:1 / span 2; height:4px;
+                         background:#1f2937; border-radius:2px; overflow:hidden; }
+        #lbPanel .mbar > div { height:100%; }
+        #lbPanel .green { color:#4ade80; } #lbPanel .amber { color:#eab308; }
+        #lbPanel .red { color:#f87171; } #lbPanel .none { color:#94a3b8; }
+        #lbHist { width:100%; height:110px; background:#020617; cursor:pointer;
+                  border-radius:4px; }
+        @media (max-width: 900px) {
+            #lbMain { flex-direction:column; align-items:center; }
+            #lbMain img { max-width:96vw !important; }
+            #lbPanel { width:92vw; max-height:30vh; }
+        }
         #backfillBox { margin-top:.8rem; }
         .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
                 overflow:hidden; margin:.3rem 0; }
@@ -128,6 +151,7 @@
             <h2 style="margin-top:1.2rem;">Subs
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
+            <div class="bd" id="scoreReportLine" title="PS-108: what the 0-100 score would do vs today's verdicts (photonscript score-report)"></div>
             <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
                 <span class="bd" id="reviewCounts"></span>
                 <button class="btn btn-primary" id="approveShownBtn" hidden>Approve shown</button>
@@ -143,7 +167,10 @@
         </section>
     </main>
     <div id="lightbox" hidden>
-        <img id="lbImg" src="">
+        <div id="lbMain">
+            <img id="lbImg" src="">
+            <aside id="lbPanel" title="PS-108 sub score and metrics"></aside>
+        </div>
         <div id="lbBar">
             <button class="btn btn-secondary" onclick="lbNav(-1)">◀ prev</button>
             <span id="lbCount"></span>
@@ -489,7 +516,27 @@
         renderFlexure(d.flexure, date);
         renderPointing(d.pointing, date);
         loadTimeline(date);
+        loadScoreReport(date);
         maybeWarmThumbs(date);
+    }
+    // PS-108: one line, what the score would do tonight vs today's verdicts
+    async function loadScoreReport(date) {
+        const box = document.getElementById('scoreReportLine');
+        let r;
+        try { r = await (await fetch('/api/runs/' + date + '/score-report')).json(); }
+        catch (e) { box.textContent = ''; return; }
+        if (currentDate !== date || !r || !r.subs) { box.textContent = ''; return; }
+        const t = r.today || {}, sc = r.score || {}, h = r.human || {};
+        box.innerHTML = 'Score (' + r.mode + ', approve &ge; ' + r.approve_at +
+            ', reject &lt; ' + r.reject_below + '): <span style="color:#4ade80">' +
+            (sc.approve || 0) + ' approve</span> / <span style="color:#eab308">' +
+            (sc.review || 0) + ' review</span> / <span style="color:#f87171">' +
+            (sc.reject || 0) + ' reject</span> &middot; today ' + (t.approved || 0) +
+            ' / ' + (t.review || 0) + ' / ' + (t.rejected || 0) + ' &middot; <b>' +
+            r.would_move + '</b> would move' +
+            (r.would_move ? ' (' + Object.entries(r.moves).map(([k, v]) =>
+                k.replace('->', '&rarr;') + ' ' + v).join(', ') + ')' : '') +
+            (h.n ? ' &middot; ' + h.n + ' human verdicts kept' : '');
     }
     async function maybeWarmThumbs(date) {
         try {
@@ -969,6 +1016,121 @@
         btn.textContent = 'X → ' + STATE_ICON[nx][0] + ' ' + nx;
         btn.onclick = () => lbToggle();
         document.getElementById('lightbox').hidden = false;
+        loadLbPanel(s, i, _n);
+    }
+    // ---- PS-108 side panel: score, every metric vs its gate, histogram.
+    //      Rows come from /scorecard ready to draw (the page never compares a
+    //      number with a limit). Keyboard flow is unchanged.
+    const RAG = {green: '#4ade80', amber: '#eab308', red: '#f87171', none: '#475569'};
+    const DEC = {approve: ['approve', '#4ade80'], review: ['review', '#eab308'],
+                 reject: ['reject', '#f87171']};
+    let lbHistLog = true;
+    try { lbHistLog = localStorage.getItem('lbHistLog') !== '0'; } catch (e) { /* no storage */ }
+    function escH(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+    async function loadLbPanel(s, i, n) {
+        const box = document.getElementById('lbPanel');
+        const file = s.file, date = currentDate;
+        box.innerHTML = '<span class="none">loading score&hellip;</span>';
+        let r;
+        try {
+            r = await (await fetch('/api/runs/' + date + '/scorecard?file=' +
+                                   encodeURIComponent(file))).json();
+        } catch (e) { box.textContent = 'scorecard unavailable'; return; }
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (!cur || cur.file !== file || currentDate !== date) return;
+        const sc = r.score || null;
+        const today = r.today || subState(s);
+        const d = sc ? (DEC[sc.decision] || [sc.decision, '#94a3b8']) : null;
+        let h = '';
+        if (sc) {
+            h += '<div><span class="sc" style="color:' + d[1] + '">' + sc.score +
+                '</span><span class="none"> / 100</span> &nbsp;' +
+                (sc.mode === 'on' ? '<b style="color:' + d[1] + '">' + d[0] + '</b>'
+                 : 'would <b style="color:' + d[1] + '">' + d[0] + '</b> <span class="none">(preview)</span>') +
+                ' &middot; today <b>' + escH(today) + '</b>' +
+                (sc.on_read ? ' <span class="none" title="graded before PS-108: scored from the stored metrics now, nothing written">(scored on read)</span>' : '') + '</div>';
+            // the line to sanity-check against the lightbox caption / a screenshot
+            h += '<div class="none" style="margin:.15rem 0 .3rem">' + (i + 1) + '/' + n + ' &middot; ' +
+                escH(s.filter) + ' ' + Math.round(s.exp_s) + ' s &middot; HFR ' + (s.hfr ?? '&ndash;') +
+                ' &middot; ' + (s.stars ?? '&ndash;') + ' stars &middot; bkg ' + (s.background ?? '&ndash;') +
+                (s.sat_stars_pct != null ? ' &middot; sat&#9733; ' + s.sat_stars_pct + '%' : '') +
+                ' &rarr; score ' + sc.score + ': ' + d[0] + ' (approve &ge; ' + sc.approve_at +
+                ', reject &lt; ' + sc.reject_below + ')</div>';
+            if (sc.cap) h += '<div class="red">capped at ' + sc.cap.cap + ' by ' + escH(sc.cap.check) +
+                ' (' + escH(sc.cap.name) + ')</div>';
+            const ded = (sc.deductions || []).slice(0, 4);
+            h += '<div style="margin-bottom:.3rem"><b>Top deductions:</b> ' + (ded.length
+                ? ded.map(x => escH(x.id) + ' &minus;' + x.points + (x.note ? ' <span class="none">(' + escH(x.note) + ')</span>' : '')).join(', ')
+                : '<span class="green">none</span>') + '</div>';
+        } else {
+            h += '<div class="none">no score for this sub</div>';
+        }
+        h += '<canvas id="lbHist" width="330" height="110" title="histogram (click: log / linear)"></canvas>' +
+             '<div id="lbHistNote" class="none" style="margin-bottom:.3rem">histogram loading&hellip;</div>';
+        h += (r.panel || []).map(m => {
+            const col = RAG[m.status] || RAG.none;
+            return '<div class="mrow"><span title="' + escH(m.note) + '">' + escH(m.label) + '</span>' +
+                '<span><b class="' + escH(m.status) + '">' + escH(m.value) + '</b>' +
+                (m.gate ? ' <span class="none">' + escH(m.gate) + '</span>' : '') +
+                (m.lost ? ' <span class="red">&minus;' + m.lost + '</span>' : '') +
+                (m.note && m.status !== 'none' ? '<br><span class="none">' + escH(m.note) + '</span>' : '') +
+                '</span>' + (m.frac != null ? '<div class="mbar"><div style="width:' +
+                Math.round(m.frac * 100) + '%;background:' + col + '"></div></div>' : '') + '</div>';
+        }).join('');
+        box.innerHTML = h;
+        loadLbHist(date, file);
+    }
+    async function loadLbHist(date, file) {
+        let hd = null;
+        try {
+            const resp = await fetch('/api/runs/' + date + '/hist?file=' + encodeURIComponent(file));
+            if (resp.ok) hd = await resp.json();
+        } catch (e) { /* offline */ }
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (!cur || cur.file !== file) return;
+        const note = document.getElementById('lbHistNote');
+        if (!hd) { if (note) note.textContent = 'no histogram (FITS not on this PC)'; return; }
+        drawLbHist(hd);
+        const cv = document.getElementById('lbHist');
+        if (cv) cv.onclick = (e) => {
+            e.stopPropagation(); lbHistLog = !lbHistLog;
+            try { localStorage.setItem('lbHistLog', lbHistLog ? '1' : '0'); } catch (er) { /* no storage */ }
+            drawLbHist(hd);
+        };
+    }
+    function drawLbHist(hd) {
+        const cv = document.getElementById('lbHist');
+        if (!cv) return;
+        const g = cv.getContext('2d'), W = cv.width, H = cv.height;
+        g.clearRect(0, 0, W, H);
+        const cols = {L: '#e2e8f0', R: '#f87171', G: '#4ade80', B: '#60a5fa'};
+        const f = v => lbHistLog ? Math.log10(1 + v) : v;
+        let top = 1;
+        Object.values(hd.channels).forEach(c => c.counts.forEach(v => { top = Math.max(top, f(v)); }));
+        const span = Math.max(1, hd.hi - hd.lo);
+        const xAt = adu => (adu - hd.lo) / span * W;
+        Object.entries(hd.channels).forEach(([k, c]) => {
+            g.strokeStyle = cols[k] || '#e2e8f0'; g.beginPath();
+            c.counts.forEach((v, j) => {
+                const x = (j + 0.5) / c.counts.length * W, y = H - 2 - f(v) / top * (H - 14);
+                if (j) g.lineTo(x, y); else g.moveTo(x, y);
+            });
+            g.stroke();
+        });
+        const mark = (adu, col) => {
+            if (adu == null || adu < hd.lo || adu > hd.hi) return;
+            g.strokeStyle = col; g.beginPath(); g.moveTo(xAt(adu), 0); g.lineTo(xAt(adu), H); g.stroke();
+        };
+        mark(hd.bias_floor, '#a78bfa'); mark(hd.median, '#eab308'); mark(hd.sat_adu, '#f87171');
+        g.fillStyle = '#94a3b8'; g.font = '10px sans-serif';
+        g.fillText(hd.lo + ' ADU', 2, 10); g.fillText(hd.hi + ' ADU', W - 64, 10);
+        g.fillText(lbHistLog ? 'log' : 'linear', W / 2 - 12, 10);
+        const note = document.getElementById('lbHistNote');
+        if (note) note.innerHTML = 'median ' + hd.median + ' ADU &middot; black clip ' +
+            hd.black_clip_pct + '% &middot; white clip (&ge;' + hd.sat_adu + ') ' + hd.white_clip_pct + '%' +
+            (hd.at_bias_floor_pct != null ? ' &middot; at bias floor ' + hd.at_bias_floor_pct + '%' : '') +
+            (hd.bayer ? ' &middot; ' + hd.bayer + (hd.bayer_assumed ? ' (assumed)' : '') : '') +
+            ' <span title="purple: bias floor, yellow: median, red: saturation">&#9432;</span>';
     }
     function closeLb() { document.getElementById('lightbox').hidden = true; }
     function lbNav(d) {

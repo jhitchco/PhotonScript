@@ -112,6 +112,29 @@ Check a pending update on the scope without switching: `photonscript self-update
    (review/accepted-syncing/transferred/rejected; X key cycles states,
    thumbnail corner buttons give one-click verdicts). **Approve night** queues
    accepted subs into the Library -> Syncthing carries them to the desktop.
+   **Sub score (PS-108).** Every sub also gets a 0 to 100 score from its
+   PS-21 scorecard: each judged check graded by how far inside or outside
+   its gate it sits, weighted per rig (`config/qa/score_weights.toml`, a
+   "why" per weight), capped by hard fails (roof closed / parked 0,
+   solve-confirmed off target 20, slew straddle 20, non-star guiding at
+   FAIL / warm sensor / doubled stars / star count 40; any other failed gate
+   79, or 59 when far past it). Approved 2026-10-04: 80 and up approve on
+   both rigs, 60 to 79 review, under 60 reject (`qa_score_approve`,
+   `qa_score_reject`). `qa_score_mode=preview` (default) records the score
+   and shows what it WOULD do (lightbox side panel, runs-page line,
+   `photonscript score-report --date D [--json]`) and changes no verdict:
+   the PS-21 rule stays in force (all-green auto-approve on the RC16 only,
+   any failed check rejects). Transition to `on` (System page): from then on
+   new subs take their verdict from the score on both rigs and the all-green
+   rule (`qa_auto_approve`, `qa_auto_approve_rigs`) is no longer used; a
+   failed gate near its limit now waits for review instead of rejecting.
+   Past nights keep their verdicts until `photonscript qa-rescore --date D
+   --apply` (add `--allow-unreject` to let the score move rejected subs back
+   to review). Human verdicts always win, in both modes. The lightbox also
+   shows the full-resolution histogram (PS-5, cached under
+   `<data_dir>/hist/`) and the new pixel counts both graders record:
+   saturated pixels (>= `qa_saturation_adu` 65000, FITS SATURATE wins),
+   pixels at 0, max ADU, background median and MAD.
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 

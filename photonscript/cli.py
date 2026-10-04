@@ -559,6 +559,37 @@ def qa_rescore(
     console.print_json(_json.dumps(res, default=str))
 
 
+@app.command("score-report")
+def score_report_cmd(
+    date: str = typer.Option(..., help="Night (YYYY-MM-DD, the runs page date)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    records: str = typer.Option(
+        "", help="Report on a copy instead: a <date>_subs.jsonl or a saved "
+                 "/api/runs/<date> JSON"),
+):
+    """PS-108: how many subs the 0 to 100 score would approve / send to
+    review / reject vs today's verdicts, per rig, plus the subs that would
+    move. Re-grades the stored metrics (no FITS) and writes nothing."""
+    import json as _json
+    from pathlib import Path as _P
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.runs import format_score_report, score_report
+
+    recs = None
+    if records:
+        text = _P(records).read_text(encoding="utf-8")
+        try:
+            doc = _json.loads(text)
+            recs = doc["subs"] if isinstance(doc, dict) else doc
+        except ValueError:
+            recs = [_json.loads(x) for x in text.splitlines() if x.strip()]
+    rep = score_report(PhotonScriptConfig(), date, records=recs)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(format_score_report(rep), markup=False, highlight=False)
+
+
 @app.command("ecc-scale-report")
 def ecc_scale_report(
     date: list[str] = typer.Option(..., "--date",
