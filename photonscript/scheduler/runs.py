@@ -558,9 +558,22 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
             _point = assess(config, rig, _pos, target)
     except Exception as e:  # noqa: BLE001
         logger.debug("pointing skipped for %s: %s", path.name, e)
+    _slew = {}
+    if _date and _start is not None:
+        try:  # PS-13: a rig riding the RC16 mount, exposed through a move?
+            from photonscript.scheduler.slew_gate import NightWindows, gated_rigs
+            if rig in gated_rigs(config):
+                from photonscript.shared import mount_log
+                _slew = NightWindows(
+                    config, lines=mount_log.load(config, _date),
+                    records=_load_subs(config, _date)).assess(
+                        _start, _start + timedelta(seconds=_exp))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("slew straddle skipped for %s: %s", path.name, e)
     metrics = qa_rules.record_metrics(
         pointing_offset_arcmin=_point.get("off_target_arcmin"),
         pointing_note=_point.get("note"),
+        slew_overlap_s=_slew.get("overlap_s"), slew_note=_slew.get("note"),
         hfr=m["hfr"], fwhm_arcsec=None, ecc=ecc, ecc_bin=ecc_bin,
         stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
@@ -617,6 +630,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "pointing_offset_arcmin": _point.get("off_target_arcmin"),
         "pointing_note": _point.get("note"),
     }
+    if _slew.get("overlap_s") is not None:   # PS-13
+        rec.update(slew_overlap_s=_slew["overlap_s"], slew_note=_slew.get("note"))
     # passed_qa, reason, qa_flag, scorecard, auto_verdict, auto_reason,
     # drivers (+ reviewed / review_source when all green)
     rec.update(card.record_fields())
@@ -792,6 +807,17 @@ def start_backfill(config, date: str) -> None:
                     logger.info("Pointing %s: %s", date, pr)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Pointing pass failed for %s: %s", date, e)
+            try:  # PS-13: Piggy-600 subs that exposed through an RC16 move
+                # (mount log, else the RC16 frames), before the library build
+                from photonscript.scheduler.slew_gate import night_pass as _slew_pass
+                sp = _slew_pass(config, date)
+                if sp.get("subs"):
+                    logger.info("Slew gate %s: %s of %s judged Piggy subs "
+                                "straddle an RC16 move (%s newly rejected)",
+                                date, sp["straddled"], sp["judged"],
+                                sp["newly_rejected"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Slew gate pass failed for %s: %s", date, e)
             try:
                 n_out = flag_hfr_outliers(config, date)
                 if n_out:

@@ -1365,6 +1365,7 @@ class TelescopeAgent:
                 logger.debug("night context skipped: %s", e)
         guide_lock = self._guide_lock_for(start, exposure_seconds, guide_state)
         point = self._sub_pointing(hdr, start, exposure_seconds, target_name)
+        slew = self._slew_straddle(start, exposure_seconds, night)
         metrics = image_metrics(quality)
         metrics.update(exp_s=exposure_seconds,
                        ccd_temp=self.state.camera_temp_c,
@@ -1372,7 +1373,9 @@ class TelescopeAgent:
                        guide_rms=quality.tracking_rms_arcsec,
                        guide_state=guide_state, guide_lock=guide_lock,
                        pointing_offset_arcmin=point.get("off_target_arcmin"),
-                       pointing_note=point.get("note"))
+                       pointing_note=point.get("note"),
+                       slew_overlap_s=slew.get("overlap_s"),
+                       slew_note=slew.get("note"))
         card = qa_rules.evaluate(metrics, qa_rules.context(
             self.config, self.rig, target_name, rec_filter, night=night_ctx,
             unsafe_windows=wins, start_utc=start))
@@ -1436,6 +1439,9 @@ class TelescopeAgent:
                 "pointing_offset_arcmin": point.get("off_target_arcmin"),
                 "pointing_note": point.get("note"),
             }
+            if slew:   # PS-13: rigs riding the RC16 mount only
+                rec.update(slew_overlap_s=slew.get("overlap_s"),
+                           slew_note=slew.get("note"))
             # passed_qa, reason, qa_flag, scorecard, auto_verdict,
             # auto_reason, drivers (+ reviewed / review_source when all green)
             rec.update(card.record_fields())
@@ -1527,6 +1533,31 @@ class TelescopeAgent:
                 "quality": quality.model_dump(mode="json"),
             },
         ))
+
+    def _slew_straddle(self, start, exp_s, night) -> dict:
+        """PS-13: did this sub expose through an RC16 move? Only for a rig
+        riding the RC16 mount (its NINA has no mount). The mount log the RC16
+        agent writes, else the night's RC16 frames so far (header RA/Dec).
+        The dawn pass (slew_gate.night_pass) re-judges it with the whole
+        night. Never raises: {} = not judged (the check skips)."""
+        try:
+            from photonscript.shared.rigs import rig_devices
+            if start is None or "mount" in rig_devices(getattr(self, "rig", "rc16")):
+                return {}
+            from photonscript.scheduler.slew_gate import NightWindows
+            from photonscript.shared import mount_log
+            from photonscript.shared.phd2_store import night_of
+            lines = mount_log.load(self.config, night_of(self.config, start))
+            recs = None
+            if night:   # RC16 frames are read only when the log misses it
+                from photonscript.scheduler.runs import _load_subs
+                recs = _load_subs(self.config, night)
+            nw = NightWindows(self.config, lines=lines, records=recs)
+            a = nw.assess(start, start + timedelta(seconds=float(exp_s or 0)))
+            return a if a.get("overlap_s") is not None else {}
+        except Exception as e:  # noqa: BLE001 - never lose a sub over this
+            logger.debug("slew straddle skipped: %s", e)
+            return {}
 
     def _sub_pointing(self, hdr: dict, start, exp_s, target) -> dict:
         """PS-67: this sub's pointing record and target offset. RC16 from its

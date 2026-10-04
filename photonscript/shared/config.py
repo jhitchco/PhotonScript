@@ -210,6 +210,13 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_off_target_reject_arcmin: float = 60.0  # Piggy-600: reject above
     qa_pointing_mode: str = "fail"  # off-target above the reject limit:
                                  # fail (reject, approved) | warn | info
+    # PS-13 "Clear of RC16 moves": a Piggy-600 sub exposing through an RC16
+    # slew, meridian flip or park (mount log, else the RC16 frames)
+    qa_slew_straddle_mode: str = "fail"  # fail (reject) | warn | info
+    slew_gate_pad_s: float = 10.0  # padding each side of a mount-log move
+    slew_gate_min_move_arcmin: float = 5.0  # RC16 frames (older nights): a
+                                 # pointing change this big between frames
+                                 # is a move
     # PS-67 pointing record: mount log, plate-solve sampling at dawn
     mount_log_enabled: bool = True  # RC16 agent appends runs/<night>_mount.jsonl
                                  # from the poll it already makes (read-only)

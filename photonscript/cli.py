@@ -765,6 +765,51 @@ def pointing_backfill(
         print(_json.dumps(results, indent=2, default=str))
 
 
+@app.command("slew-backfill")
+def slew_backfill(
+    since: str = typer.Option("", help="First night (YYYY-MM-DD); with no "
+                                       "--date, every night from here on"),
+    date: str = typer.Option("", help="One night only (YYYY-MM-DD)"),
+    apply: bool = typer.Option(True, "--apply/--dry-run",
+                               help="Apply the Clear-of-RC16-moves check to "
+                                    "the stored scorecards (human verdicts "
+                                    "never change)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-13: judge every Piggy-600 sub against the night's RC16 moves (the
+    mount log, else the RC16 frames' header RA/Dec) and apply the
+    slew_straddle check. Stop PhotonScript or run in daytime: it rewrites
+    the subs log when a verdict changes.
+
+    photonscript slew-backfill --since 2026-09-18 --dry-run
+    """
+    import json as _json
+    from photonscript.scheduler.runs import runs_dir
+    from photonscript.scheduler.slew_gate import night_pass
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if date:
+        nights = [date]
+    else:
+        nights = sorted(p.name[:10] for p in runs_dir(cfg).glob("*_subs.jsonl")
+                        if p.name[:10] >= (since or "0000"))
+    results = []
+    for d in nights:
+        r = night_pass(cfg, d, apply=apply)
+        results.append(r)
+        if not as_json and r["subs"]:
+            rate = r.get("split_rate")
+            console.print(
+                f"{d}: {r['subs']} Piggy subs, {r['judged']} judged "
+                f"({', '.join(f'{k} {v}' for k, v in r['src'].items()) or 'no data'}), "
+                f"{r['straddled']} straddle an RC16 move"
+                + (f" ({rate:.0%})" if rate is not None else "")
+                + f", {r['verdicts_changed']} verdicts changed "
+                f"({r['newly_rejected']} newly rejected)",
+                markup=False, highlight=False)
+    if as_json:
+        print(_json.dumps(results, indent=2, default=str))
+
+
 @app.command("pointing-bench")
 def pointing_bench(
     date: str = typer.Option("", help="Night (YYYY-MM-DD); default last night"),

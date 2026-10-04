@@ -245,7 +245,9 @@ passes, the rest of Phase 0 is just software.
 - **Phase 4 — Slew/flip gating** to reclaim lost subs. Promoted from optional
   after 2026-09-21 (50% of M31 piggyback subs split across two pointings):
   pause NINA #2 while the RC16 slews/centers, or tag subs that overlap an RC16
-  slew window so staging can drop them without image analysis.
+  slew window so staging can drop them without image analysis. Tagging is
+  built (PS-13, section 9.9); PS-25 (resume debounce) covers part of the
+  pause side.
 
 ---
 
@@ -455,3 +457,26 @@ because NINA #1 owns the mount.
   Alt / Pier / Off target columns and an off-target chip;
   `GET /api/runs/{date}/pointing`, `GET /api/runs/{date}/timeline`,
   `GET /api/status/mount-log`, `POST /api/runs/{date}/pointing`.
+
+### 9.9 Slew gating: Piggy-600 subs through an RC16 move (PS-13)
+The after-the-fact backstop for Phase 4 (PS-25's resume debounce keeps NINA
+#2 from exposing while the RC16 unparks and slews; this catches the rest).
+- **Windows** (`scheduler/slew_gate.py`): from the mount log when the night
+  has one (`windows_from_mount_log`: every slewing segment, plus every pier
+  change, park and unpark, plus a "move" line that jumped 5' or more since the
+  line before it, padded `PS_SLEW_GATE_PAD_S` = 10 s each side); a sub the
+  log does not cover (poll stopped) and nights before PS-67 use the RC16
+  frames instead (`infer_slew_windows` over `flexure.frames_from_records`:
+  a pointing change over `PS_SLEW_GATE_MIN_MOVE_ARCMIN` = 5' or a target
+  change between consecutive frames, 30 s settle).
+- **Check** (scorecard row `slew_straddle`, "Clear of RC16 moves"): any
+  overlap rejects the sub, reason "exposed through an RC16 move for N s: RC16
+  move HH:MM:SS to HH:MM:SS UTC (mount log)". `PS_QA_SLEW_STRADDLE_MODE` =
+  fail (default) | warn | info. Only rigs whose NINA has no mount are judged;
+  the RC16 row always skips.
+- **Live**: the piggyback agent judges each sub at readout against the mount
+  log so far. **Dawn**: `slew_gate.night_pass` runs in the backfill right
+  after the pointing pass (before the Library build) with the whole night,
+  swaps only that scorecard row and never touches a human verdict; it logs
+  the night's split rate (straddled / judged). Older nights:
+  `photonscript slew-backfill --since D [--dry-run]`.
