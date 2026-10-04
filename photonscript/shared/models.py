@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -122,9 +122,45 @@ class ExposurePlan(BaseModel):
     offset: int = 50
     binning: int = 1
     acquired: int = 0  # how many already captured
+    # PS-66: accepted long-set integration in seconds. `acquired` follows it
+    # (floor(acquired_s / exposure_seconds)), so two capped 300 s unguided subs
+    # make one 600 s sub. Old projects.json files have no acquired_s: it is
+    # seeded from acquired x exposure_seconds on load.
+    acquired_s: float = 0.0
     hdr_short_seconds: Optional[float] = None  # shorter companion sub length (s)
     hdr_short_count: int = 0  # how many short subs; 0 = no HDR companion set
     hdr_short_acquired: int = 0  # accepted short subs so far (long set uses `acquired`)
+
+    @model_validator(mode="after")
+    def _seed_acquired_s(self):
+        # never below what `acquired` already says (old files, or a plan
+        # rebuilt by allocate_exposures with only the count carried over)
+        floor_s = self.acquired * self.exposure_seconds
+        if self.acquired_s < floor_s:
+            self.acquired_s = float(floor_s)
+        return self
+
+    def credit_seconds(self, seconds=None, by_seconds: bool = False) -> float:
+        """PS-66: seconds one accepted long-set sub is worth. by_seconds (a
+        sub shot on an unguided, capped target) = its own length; otherwise
+        (guided nights, history from before PS-66, a record without exp_s)
+        one full sub of this plan's length, exactly as before."""
+        try:
+            s = float(seconds) if (by_seconds and seconds) else 0.0
+        except (TypeError, ValueError):
+            s = 0.0
+        return s if s > 0 else float(self.exposure_seconds)
+
+    def credit_long(self, seconds=None, by_seconds: bool = False) -> None:
+        """PS-66: credit one accepted long-set sub (see credit_seconds)."""
+        self.acquired_s += self.credit_seconds(seconds, by_seconds)
+        self.acquired = max(self.acquired, self.subs_from_seconds(self.acquired_s))
+
+    def subs_from_seconds(self, seconds: float) -> int:
+        """Whole long subs' worth of `seconds` (1e-6 slack for float sums)."""
+        if not self.exposure_seconds or self.exposure_seconds <= 0:
+            return 0
+        return int(seconds / self.exposure_seconds + 1e-6)
 
     def short_remaining(self) -> int:
         if not self.hdr_short_count or not self.hdr_short_seconds:
@@ -137,6 +173,11 @@ class ExposurePlan(BaseModel):
         if not self.hdr_short_seconds or not self.hdr_short_count or not seconds:
             return False
         s = float(seconds)
+        # PS-66: a capped unguided long sub (e.g. 300 s on a 600 s plan with
+        # 120 s shorts) can sit nearer the short length; anything 1.5x the
+        # short length or more is a long sub.
+        if s >= 1.5 * float(self.hdr_short_seconds):
+            return False
         return abs(s - self.hdr_short_seconds) < abs(s - self.exposure_seconds)
 
 

@@ -95,3 +95,211 @@ def test_api_arm_normalizes_and_rejects_junk(monkeypatch):
     assert client.post("/api/arm", json={"armed": True,
                                          "guiding": "guided"}).status_code == 200
     assert seen == ["unguided", None, "guided"]
+
+
+# ---- 2. unguided exposure cap and time-weighted crediting ---------------------
+
+from photonscript.scheduler.target_planner import cap_unguided  # noqa: E402
+from photonscript.shared.models import (  # noqa: E402
+    CelestialTarget, ExposurePlan, FilterType, NinaSequenceTarget)
+
+
+def _plan(f=FilterType.HA, exp=600, count=30, acquired=0, **kw):
+    return ExposurePlan(filter_type=f, exposure_seconds=exp, count=count,
+                        acquired=acquired, gain=200, offset=256, **kw)
+
+
+def _tgt(name="Heart Nebula", guided=False, exposures=None):
+    return NinaSequenceTarget(name=name, ra_hours=2.55, dec_degrees=61.5,
+                              start_guiding=guided,
+                              exposures=exposures or [_plan()])
+
+
+def test_cap_unguided_keeps_integration():
+    t = _tgt(exposures=[_plan(count=30), _plan(FilterType.OIII, exp=600, count=30,
+                                               acquired=10),
+                        _plan(FilterType.LUMINANCE, exp=180, count=20)])
+    notes = cap_unguided([t], 300)
+    ha, oiii, lum = t.exposures
+    assert (ha.exposure_seconds, ha.count - ha.acquired) == (300, 60)
+    assert (oiii.exposure_seconds, oiii.count - oiii.acquired) == (300, 40)
+    assert (lum.exposure_seconds, lum.count) == (180, 20)     # under the cap
+    assert len(notes) == 2
+
+
+def test_cap_unguided_leaves_guided_hdr_shorts_and_off_alone():
+    g = _tgt(guided=True)
+    cap_unguided([g], 300)
+    assert g.exposures[0].exposure_seconds == 600
+    h = _tgt(exposures=[_plan(count=20, hdr_short_seconds=60, hdr_short_count=12)])
+    cap_unguided([h], 300)
+    e = h.exposures[0]
+    assert (e.exposure_seconds, e.count) == (300, 40)
+    assert (e.hdr_short_seconds, e.short_remaining()) == (60, 12)
+    off = _tgt()
+    cap_unguided([off], 0)
+    assert off.exposures[0].exposure_seconds == 600
+    odd = _tgt(exposures=[_plan(exp=500, count=3)])          # 1500 s owed
+    cap_unguided([odd], 300)
+    assert odd.exposures[0].count == 5
+
+
+def _armer_for_dispatch(tmp_path, monkeypatch, targets, **cfg):
+    from photonscript.scheduler import app as app_mod
+    from photonscript.scheduler import target_planner
+
+    class _Store:
+        projects: dict = {}
+    monkeypatch.setattr(app_mod, "_store", _Store())
+    monkeypatch.setattr(target_planner, "plan_night_sequence",
+                        lambda projects, config, now: targets)
+    monkeypatch.chdir(tmp_path)
+    a = Armer(_cfg(tmp_path, **cfg))
+    a.plan = {"night_of": "2026-10-03", "dusk_utc": "2026-10-04T01:30:00Z",
+              "dawn_utc": "2026-10-04T11:30:00Z"}
+    return a
+
+
+def _exposure_lengths(seq_path):
+    from photonscript.scheduler.sequence_lint import _exec_items
+    seq = json.loads(seq_path.read_text(encoding="utf-8"))
+    return sorted({it["ExposureTime"] for it in _exec_items(seq)
+                   if "TakeExposure" in it.get("$type", "")
+                   and it.get("ImageType") == "LIGHT"})
+
+
+def test_dispatch_caps_unguided_and_snapshots_guided_flag(tmp_path, monkeypatch):
+    a = _armer_for_dispatch(tmp_path, monkeypatch, [_tgt(exposures=[_plan(count=10)])],
+                            guided_default=True)
+    a.guiding_override = "unguided"
+    assert a._dispatch() is True
+    assert _exposure_lengths(a.sequence_path) == [300.0]
+    snap = json.loads((tmp_path / "data" / "runs" / "2026-10-03_plan.json").read_text())
+    assert snap["targets"][0]["guided"] is False
+    assert snap["targets"][0]["exposures"][0] == {"filter": "Ha", "exp_s": 300.0,
+                                                  "planned": 20}
+
+
+def test_dispatch_guided_is_not_capped(tmp_path, monkeypatch):
+    a = _armer_for_dispatch(tmp_path, monkeypatch, [_tgt(exposures=[_plan(count=10)])],
+                            guided_default=True)
+    monkeypatch.setattr(a, "_calibration_slot", lambda targets, now: None)
+    assert a._dispatch() is True
+    assert _exposure_lengths(a.sequence_path) == [600.0]
+    snap = json.loads((tmp_path / "data" / "runs" / "2026-10-03_plan.json").read_text())
+    assert snap["targets"][0]["guided"] is True
+
+
+async def test_fallback_unguided_redispatch_is_capped(tmp_path, monkeypatch):
+    a = _armer_for_dispatch(tmp_path, monkeypatch, [_tgt(exposures=[_plan(count=10)])],
+                            guided_default=True)
+    a.state = "RUNNING"
+
+    async def _nina(key, *x, **k):
+        return {"Success": True}
+    monkeypatch.setattr(a, "_nina", _nina)
+    monkeypatch.setattr(armer_mod, "notify", _noop)
+    assert await a.fallback_unguided("selftest FAIL") is True
+    assert _exposure_lengths(a.sequence_path) == [300.0]
+
+
+def test_exposure_plan_seeds_acquired_s_from_old_records():
+    old = ExposurePlan(**{"filter_type": "Ha", "exposure_seconds": 600,
+                          "count": 30, "acquired": 7})
+    assert old.acquired_s == 4200
+    keep = ExposurePlan(filter_type=FilterType.HA, exposure_seconds=600,
+                        count=30, acquired=1, acquired_s=900)
+    assert keep.acquired_s == 900                         # half a sub kept
+
+
+def _heart(store):
+    return store.add_from_target(CelestialTarget(
+        name="Heart Nebula", catalog_id="IC 1805", ra_hours=2.55,
+        dec_degrees=61.5, object_type="emission nebula"), budget_hours=5.0)
+
+
+def test_two_capped_subs_make_one_plan_sub_guided_subs_count_one(tmp_path):
+    from photonscript.scheduler.project_store import ProjectStore
+    store = ProjectStore(_cfg(tmp_path))
+    proj = _heart(store)
+    ha = next(e for e in proj.exposure_plans if e.filter_type.value == "Ha")
+    assert ha.exposure_seconds == 600 and ha.acquired == 0
+    assert store.record_accepted_sub("Heart Nebula", "Ha", 300, by_seconds=True)
+    assert (ha.acquired, ha.acquired_s) == (0, 300)
+    store.record_accepted_sub("Heart Nebula", "Ha", 300, by_seconds=True)
+    assert (ha.acquired, ha.acquired_s) == (1, 600)
+    # guided (default): one sub is one sub whatever its length, as before
+    store.record_accepted_sub("Heart Nebula", "Ha", 600)
+    store.record_accepted_sub("Heart Nebula", "Ha", 300)
+    store.record_accepted_sub("Heart Nebula", "Ha", None, by_seconds=True)
+    assert ha.acquired == 4
+    # round trip: acquired_s survives save/load
+    again = ProjectStore(_cfg(tmp_path))
+    ha2 = next(e for e in again.projects[proj.id].exposure_plans
+               if e.filter_type.value == "Ha")
+    assert (ha2.acquired, ha2.acquired_s) == (4, 2400)
+
+
+def test_old_projects_json_without_acquired_s_loads(tmp_path):
+    from photonscript.scheduler.project_store import ProjectStore
+    store = ProjectStore(_cfg(tmp_path))
+    proj = _heart(store)
+    raw = json.loads(store.path.read_text(encoding="utf-8"))
+    for e in raw[proj.id]["exposure_plans"]:
+        e.pop("acquired_s")
+        e["acquired"] = 3
+    store.path.write_text(json.dumps(raw), encoding="utf-8")
+    again = ProjectStore(_cfg(tmp_path))
+    p = again.projects[proj.id]
+    assert all(e.acquired == 3 and e.acquired_s == 3 * e.exposure_seconds
+               for e in p.exposure_plans)
+    p.compute_completion()                     # same count-based completion
+    assert p.completion_pct == round(3 * len(p.exposure_plans)
+                                     / sum(e.count for e in p.exposure_plans) * 100, 1)
+
+
+def test_capped_sub_is_not_mistaken_for_an_hdr_short():
+    e = _plan(count=20, hdr_short_seconds=120, hdr_short_count=12)
+    assert e.is_short_exposure(120) and e.is_short_exposure(100)
+    assert not e.is_short_exposure(300)       # nearer 120 than 600, still long
+    assert not e.is_short_exposure(600)
+
+
+def test_resync_credits_seconds_only_for_unguided_nights(tmp_path, monkeypatch):
+    from photonscript.scheduler import app as app_mod
+    from photonscript.scheduler import runs
+    from photonscript.scheduler.project_store import ProjectStore
+    cfg = _cfg(tmp_path)
+    store = ProjectStore(cfg)
+    proj = _heart(store)
+    monkeypatch.setattr(app_mod, "_store", store)
+    rd = runs.runs_dir(cfg)
+    rd.mkdir(parents=True, exist_ok=True)
+
+    def _night(date, guided, n, exp):
+        if guided is not None:
+            (rd / f"{date}_plan.json").write_text(json.dumps({"targets": [
+                {"name": "Heart Nebula", "guided": guided, "exposures": []}]}))
+        with open(rd / f"{date}_subs.jsonl", "w", encoding="utf-8") as fh:
+            for i in range(n):
+                fh.write(json.dumps({
+                    "rig": "rc16", "file": f"LIGHT/{date}_{i}.fits",
+                    "time": f"{date}T03:{i:02d}:00", "target": "Heart Nebula",
+                    "filter": "Ha", "exp_s": exp, "passed_qa": True,
+                    "reviewed": True, "reason": ""}) + "\n")
+    _night("2026-09-20", None, 3, 300)    # pre-PS-66 history: one each
+    _night("2026-09-21", True, 2, 300)    # guided, off-length: still one each
+    _night("2026-10-03", False, 4, 300)   # unguided capped: 4 x 300 = 2 subs
+    runs.sync_goal_progress(cfg)
+    ha = next(e for e in store.projects[proj.id].exposure_plans
+              if e.filter_type.value == "Ha")
+    assert ha.acquired == 3 + 2 + 2
+    assert ha.acquired_s == (3 + 2) * 600 + 4 * 300
+
+
+def test_dark_library_adds_the_unguided_cap():
+    from photonscript.scheduler.nina_sequence_json import dark_library_exposures
+    assert dark_library_exposures(_cfg(dark_exposures="600,180")) == [600, 180, 300]
+    assert dark_library_exposures(_cfg(dark_exposures="600,300,180")) == [600, 300, 180]
+    assert dark_library_exposures(_cfg(dark_exposures="600,180",
+                                       unguided_max_exposure_s=0)) == [600, 180]

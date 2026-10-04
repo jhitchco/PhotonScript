@@ -252,6 +252,13 @@ class PhotonScriptConfig(BaseSettings):
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
                                  # to run unguided on the Paramount MX (TPoint +
                                  # ProTrack) by default.
+    unguided_max_exposure_s: float = 300.0  # PS-66: RC16 sub-length cap on every
+                                 # unguided target (armed unguided or the
+                                 # unguided fallback): a 600 s set becomes 300 s
+                                 # x twice the count, same integration. Projects
+                                 # are credited in seconds (ExposurePlan.
+                                 # acquired_s). Set from the PS-84 tracking-test
+                                 # verdict. 0 = no cap.
     guiding_force_first_calibration: bool = False  # PS-72 (2026-09-27): default off;
                                  # a forced cal at a high-Dec first target wrecked
                                  # 2026-09-26. When True, the night's FIRST guided

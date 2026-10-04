@@ -697,23 +697,37 @@ def _time_condition(provider: str, minutes_offset: int = 0) -> dict:
             f"NINA.Sequencer.Utility.DateTimeProvider.{provider}, NINA.Sequencer"))
 
 
+def dark_library_exposures(cfg) -> list[float]:
+    """RC16 dark-library lengths: config dark_exposures, plus PS-66's
+    unguided_max_exposure_s when it is set and not already listed, so the
+    capped unguided subs always have a dark set at quota."""
+    wanted: list[float] = []
+    for tok in str(getattr(cfg, "dark_exposures", "600,180")).split(","):
+        try:
+            wanted.append(float(tok.strip()))
+        except ValueError:
+            continue
+    try:
+        cap = float(getattr(cfg, "unguided_max_exposure_s", 0) or 0)
+    except (TypeError, ValueError):
+        cap = 0.0
+    if cap > 0 and not any(abs(cap - w) < 0.5 for w in wanted):
+        wanted.append(cap)
+    return wanted
+
+
 def _dark_quota_blocks(dawn_provider, dawn_offset):
     """Dark blocks for unsafe time, capped by the library quota: for each
     exposure the current lights use, take only (quota - already on disk),
-    600s first then 180s. Lowest-priority work: any of LoopWhileUnsafe
+    600s first then 180s, then the PS-66 unguided cap (300s) when it
+    is not listed. Lowest-priority work: any of LoopWhileUnsafe
     exit, dawn, or the cap ends the block."""
     cfg = _gen_cfg()
     quota = int(getattr(cfg, "dark_target_count", 30))
     blocks = []
     try:
         from photonscript.scheduler.calibration import count_matching_darks
-        wanted = []
-        for tok in str(getattr(cfg, "dark_exposures", "600,180")).split(","):
-            try:
-                wanted.append(float(tok.strip()))
-            except ValueError:
-                continue
-        for exp_s in wanted:
+        for exp_s in dark_library_exposures(cfg):
             have = count_matching_darks(cfg, exp_s)
             need = max(0, quota - have)
             if need == 0:

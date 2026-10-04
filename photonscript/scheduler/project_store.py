@@ -253,6 +253,10 @@ class ProjectStore:
                         for p in proj.exposure_plans}
             short_acq = {p.filter_type.value: p.hdr_short_acquired
                          for p in proj.exposure_plans}
+            # PS-66: keep partial seconds (a lone capped sub) when the sub
+            # length is unchanged
+            secs = {p.filter_type.value: (p.exposure_seconds, p.acquired_s)
+                    for p in proj.exposure_plans}
             proj.exposure_plans = allocate_exposures(
                 target_kind(proj.target), proj.budget_hours, self.config,
                 acquired, custom_mix=proj.filter_mix,
@@ -260,16 +264,23 @@ class ProjectStore:
             for p in proj.exposure_plans:  # keep short-set progress too
                 p.hdr_short_acquired = min(short_acq.get(p.filter_type.value, 0),
                                            p.hdr_short_count)
+                old_len, old_s = secs.get(p.filter_type.value, (None, 0.0))
+                if old_len == p.exposure_seconds:
+                    p.acquired_s = max(p.acquired_s, old_s)
             proj.total_integration_hours = proj.budget_hours
         proj.compute_completion() if hasattr(proj, "compute_completion") else None
         self.save()
         return proj
 
     def record_accepted_sub(self, target_name: str, filter_class: str,
-                            exposure_seconds: float | None = None) -> bool:
-        """Increment acquired for a QA-passed sub. Returns True if matched.
+                            exposure_seconds: float | None = None,
+                            by_seconds: bool = False) -> bool:
+        """Credit a QA-passed sub. Returns True if matched.
         With HDR, a sub whose length is closer to the short set's counts toward
-        hdr_short_acquired instead of the long set."""
+        hdr_short_acquired instead of the long set. PS-66: by_seconds (the
+        night runs unguided, subs capped) credits a long sub by its length
+        (ExposurePlan.credit_long), so a capped 300 s sub is half of a 600 s
+        plan sub; otherwise one sub counts as one, as before."""
         # PS-78: a container name ("<target> imaging (...)_Container") counts
         # for its target; an OSC loop container names none
         from photonscript.shared.target_names import canonical_target
@@ -285,7 +296,7 @@ class ProjectStore:
                         if plan.is_short_exposure(exposure_seconds):
                             plan.hdr_short_acquired += 1
                         else:
-                            plan.acquired += 1
+                            plan.credit_long(exposure_seconds, by_seconds)
                         self.save()
                         return True
         return False

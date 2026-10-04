@@ -951,7 +951,7 @@ class Armer:
         from photonscript.shared.astronomy import get_seasonal_targets
         from photonscript.shared.localtime import to_local
         from photonscript.scheduler.target_planner import (
-            create_project_from_target, plan_night_sequence)
+            cap_unguided, create_project_from_target, plan_night_sequence)
         from photonscript.scheduler.nina_sequence import build_sequence_for_night
         from photonscript.scheduler.nina_sequence_json import generate_nina_json
         from photonscript.scheduler.sequence_lint import lint
@@ -975,6 +975,10 @@ class Armer:
         use_guiding = self._use_guiding()
         for t in targets:
             t.start_guiding = use_guiding
+        # PS-66: unguided targets get the sub-length cap (same integration).
+        # Here, after guiding is resolved, so fallback_unguided's re-dispatch
+        # is capped too.
+        cap_unguided(targets, getattr(self.config, "unguided_max_exposure_s", 300))
         seq = build_sequence_for_night(
             f"PhotonScript_{self.plan['night_of'].replace('-', '')}", targets)
 

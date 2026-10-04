@@ -399,6 +399,8 @@ def sequence(
     targets = plan_night_sequence(projects, config, now_dt)
     for t in targets:
         t.start_guiding = guided
+    from photonscript.scheduler.target_planner import cap_unguided
+    cap_unguided(targets, getattr(config, "unguided_max_exposure_s", 300))  # PS-66
     seq = build_sequence_for_night(f"PhotonScript_{now_dt.strftime('%Y%m%d')}", targets)
     seq.wait_until_local = None if now else "00:00:00"  # flag: gate on dusk providers
 

@@ -47,6 +47,8 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
         "dark_hours": plan.get("dark_hours"),
         "targets": [{
             "name": t.name,
+            # PS-66: unguided targets' subs are credited in seconds
+            "guided": bool(getattr(t, "start_guiding", False)),
             "exposures": [{"filter": e.filter_type.value,
                            "exp_s": e.exposure_seconds,
                            "planned": e.count - e.acquired}
@@ -391,6 +393,19 @@ def _measure(binned, config) -> dict:
             "clipped_pct": clipped_pct, "sat_stars_pct": None,
             "swamp": swamp, "exposure": exposure,
             "graded_by": "no-sep (install sep-pjw for HFR/ecc)"}
+
+
+def _plan_unguided_targets(config, date: str) -> set:
+    """PS-66: target keys the night's plan snapshot dispatched UNGUIDED
+    ("guided": false). Snapshots from before PS-66 have no such key and
+    yield nothing, so their subs keep counting one per sub."""
+    p = runs_dir(config) / f"{date}_plan.json"
+    try:
+        targets = json.loads(p.read_text(encoding="utf-8")).get("targets") or []
+    except Exception:  # noqa: BLE001 - no snapshot / unreadable
+        return set()
+    return {target_key(t.get("name")) for t in targets
+            if isinstance(t, dict) and t.get("guided") is False and t.get("name")}
 
 
 def _plan_target_names(config, date: str) -> list[str]:
@@ -1176,28 +1191,43 @@ def sync_goal_progress(config) -> list:
     # (target key, filter) -> list of accepted sub lengths (s); lengths let an
     # HDR plan split its short companion subs from the long set. PS-78: keyed
     # on the canonical target, so container-named subs count toward the goal.
+    # PS-66: subs from a target the night dispatched unguided (capped) are
+    # credited by their seconds; every other sub counts as one full sub, as
+    # before (so guided nights and older history never lose progress).
     known = known_target_index(list(store.projects.values()))
     lengths: dict[tuple, list] = {}
+    by_seconds: dict[tuple, list] = {}
     for f in runs_dir(config).glob("*_subs.jsonl"):
         date = f.name.split("_")[0]
+        unguided = None
         for s_ in _load_subs(config, date):
             if not s_.get("passed_qa"):
                 continue
             t = canonical_target(s_.get("target"), known)
             if t:
-                lengths.setdefault((target_key(t), s_.get("filter")),
-                                   []).append(s_.get("exp_s"))
+                if unguided is None:
+                    unguided = _plan_unguided_targets(config, date)
+                key = (target_key(t), s_.get("filter"))
+                lengths.setdefault(key, []).append(s_.get("exp_s"))
+                by_seconds.setdefault(key, []).append(target_key(t) in unguided)
     changed = []
     for p in store.projects.values():
         tname = target_key(p.target.name)
         touched = False
         for e in p.exposure_plans:
             subs = lengths.get((tname, e.filter_type.value), [])
+            secs = by_seconds.get((tname, e.filter_type.value), [])
             short = sum(1 for x in subs if e.is_short_exposure(x))
-            n = min(len(subs) - short, e.count)
+            # PS-66: the same rule as the live record_accepted_sub path
+            long_s = sum(e.credit_seconds(x, by_s)
+                         for x, by_s in zip(subs, secs)
+                         if not e.is_short_exposure(x))
+            n = min(e.subs_from_seconds(long_s), e.count)
             ns = min(short, e.hdr_short_count)
-            if n != e.acquired or ns != e.hdr_short_acquired:
+            if (n != e.acquired or ns != e.hdr_short_acquired
+                    or abs(long_s - e.acquired_s) > 1e-6):
                 e.acquired = n
+                e.acquired_s = long_s
                 e.hdr_short_acquired = ns
                 touched = True
         if touched:
