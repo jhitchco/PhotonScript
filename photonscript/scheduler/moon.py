@@ -39,19 +39,40 @@ def night_moon(config, date_str: str, dark_start: datetime,
     elong = get_sun(times).separation(get_body("moon", times)).deg
     illum = float((1 - np.cos(np.radians(np.median(elong)))) / 2 * 100)
     moon_free = float(np.mean(alt < 0.0) * hours)
-    # BB window: enough moonless dark time, or a faint moon all night
-    if illum < 20 or moon_free >= 2.5:
-        tag = "BB"
-    elif illum < 45:
-        tag = "NB+OIII"
-    else:
-        tag = "NB"
     out = {"illum_pct": round(illum), "moon_free_h": round(moon_free, 1),
-           "tag": tag}
+           "tag": moon_tag(illum, moon_free)}
     if len(_cache) > 64:
         _cache.clear()
     _cache[date_str] = out
     return out
+
+
+def moon_tag(illum: float, moon_free_h: float) -> str:
+    """Night tag: BB window (enough moonless dark time, or a faint moon all
+    night), NB+OIII, or NB."""
+    if illum < 20 or moon_free_h >= 2.5:
+        return "BB"
+    if illum < 45:
+        return "NB+OIII"
+    return "NB"
+
+
+def moon_series(config, times) -> tuple:
+    """PS-30: moon altitude (deg) at each time and illumination (%) at each
+    time, vectorized (one transform each), for the campaign planner's
+    10-minute slots. Geocentric elongation, like night_moon()."""
+    import numpy as np
+    from astropy.coordinates import AltAz, get_body, get_sun
+    from astropy.time import Time
+    from photonscript.shared.astronomy import get_earth_location
+
+    t = times if isinstance(times, Time) else Time(list(times))
+    loc = get_earth_location(config.get_observatory())
+    alt = get_body("moon", t, loc).transform_to(
+        AltAz(obstime=t, location=loc)).alt.deg
+    elong = get_sun(t).separation(get_body("moon", t)).deg
+    illum = (1 - np.cos(np.radians(elong))) / 2 * 100
+    return np.asarray(alt), np.asarray(illum)
 
 
 def moon_window_tonight(config) -> dict:

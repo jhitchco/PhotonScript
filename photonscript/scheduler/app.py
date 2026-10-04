@@ -541,6 +541,8 @@ _CONFIG_FIELDS = [
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
     ("auto_stale_flats", "PS_AUTO_STALE_FLATS", "At dawn, also reshoot flats for filters gone stale (>45d), even if unused tonight", "Imaging", "bool", False, False),
     ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
+    ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
+    ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
@@ -1104,7 +1106,13 @@ async def api_project_update(project_id: str, request: Request):
                            budget_hours=budget, active=body.get("active"),
                            filter_mix=body.get("filter_mix"),
                            hdr=body.get("hdr"),
-                           exposure_overrides=body.get("exposure_overrides"))
+                           exposure_overrides=body.get("exposure_overrides"),
+                           # PS-30: Piggy-600 OSC goal + which rig centers
+                           osc_hours=(float(body["osc_hours"])
+                                      if body.get("osc_hours") is not None
+                                      else None),
+                           driving_rig=body.get("driving_rig"),
+                           drop_rc16=bool(body.get("drop_rc16", False)))
     _projects[project_id] = updated
     return _project_json(updated)
 
@@ -1828,7 +1836,8 @@ async def api_regrade_all_status():
 
 @app.get("/api/campaign")
 async def api_campaign(days: int = 14):
-    """Moon-aware 14-night plan toward goal completion."""
+    """14-night plan toward goal completion (PS-30 v2: 10-min visibility
+    slots, one moon rule, rig-aware goals, season and calibration status)."""
     from photonscript.scheduler.campaign import build_campaign
     from photonscript.scheduler.forecast import get_forecast
     config = get_config()
@@ -1842,6 +1851,11 @@ async def api_campaign(days: int = 14):
     def _build():
         c = build_campaign(config, get_store(), forecast=fc,
                            days=min(max(days, 7), 28))
+        try:  # PS-30 (PS-14): Pushover once when a goal completes
+            from photonscript.scheduler.campaign import notify_transitions
+            notify_transitions(config, c["goals"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("campaign completion check failed: %s", e)
         try:
             c["suggestions"] = suggest_targets(config, get_store(), c)
         except Exception:  # noqa: BLE001

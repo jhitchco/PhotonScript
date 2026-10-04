@@ -1150,18 +1150,30 @@
                     (m.illum_pct ?? '?') + '% · ' + (m.moon_free_h ?? '?') + 'h free<br>' +
                     '~' + Math.round(n.dark_h * n.usable_frac * 10) / 10 + 'h usable (' +
                     (n.frac_source === 'forecast' ? 'fcst' : 'clim') + ')<br>' +
-                    n.assigned.map(a => '<span style="opacity:.85;">' + a.goal.split(' ')[0] +
-                        ' ' + a.kind + ' ' + a.hours + 'h</span>').join('<br>') +
+                    n.assigned.map(a => '<span style="opacity:.85;" title="' +
+                        campaignWindow(a) + '">' + a.goal.split(' ')[0] +
+                        ' ' + a.kind + ' ' + a.hours + 'h' +
+                        (a.passenger ? ' (ride-along)' : '') + '</span>').join('<br>') +
                     '</div>';
             }).join('');
             // Timeline: one row per goal, one column per night, today first
             const days = d.nights.map(n => n.date);
+            // PS-30: a goal can hold several assignments a night (RC16 kind +
+            // Piggy-600 OSC riding along); the cell sums them, colored by the
+            // mount's kind, and the tooltip lists each with its time window.
             const perGoalNight = {};
             d.nights.forEach(n => n.assigned.forEach(a => {
-                (perGoalNight[a.goal] = perGoalNight[a.goal] || {})[n.date] =
-                    {hours: a.hours, kind: a.kind};
+                const row = (perGoalNight[a.goal] = perGoalNight[a.goal] || {});
+                const c = (row[n.date] = row[n.date] || {hours: 0, kind: null, parts: []});
+                if (!a.passenger) { c.hours += a.hours; c.kind = c.kind || a.kind; }
+                c.parts.push(a.kind + ' ' + a.hours + 'h ' + campaignWindow(a) +
+                             (a.passenger ? ' (ride-along)' : ''));
             }));
-            const KCOL = {NB: '#eab308', BB: '#4ade80'};
+            Object.values(perGoalNight).forEach(r => Object.values(r).forEach(c => {
+                if (!c.kind) { c.kind = 'OSC'; }
+                c.hours = Math.round(c.hours * 100) / 100;
+            }));
+            const KCOL = {NB: '#eab308', BB: '#4ade80', OSC: '#f472b6'};
             document.getElementById('campaignGoals').innerHTML =
                 '<div style="display:grid;grid-template-columns:13rem repeat(' + days.length +
                 ',1fr);gap:2px;align-items:center;font-size:.68rem;">' +
@@ -1175,22 +1187,31 @@
                         if (!a) return '<div style="height:16px;border-radius:3px;' +
                             'background:rgba(255,255,255,.04);' +
                             (eta ? 'outline:1px solid #7dd3fc;' : '') + '"></div>';
-                        const op = Math.min(1, 0.25 + a.hours / 3.5);
-                        return '<div title="' + g.name + ' · ' + dt + ' · ' + a.kind +
-                            ' ' + a.hours + 'h" style="height:16px;border-radius:3px;' +
+                        const op = Math.min(1, 0.25 + (a.hours || 0.5) / 3.5);
+                        return '<div title="' + g.name + ' &middot; ' + dt + ' &middot; ' +
+                            a.parts.join(' | ') + '" style="height:16px;border-radius:3px;' +
                             'background:' + KCOL[a.kind] + ';opacity:' + op.toFixed(2) + ';' +
                             (eta ? 'outline:2px solid #7dd3fc;' : '') + '"></div>';
                     }).join('');
-                    return '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' +
-                        '<b>' + g.name + '</b> <span style="opacity:.55">' + g.hours_done +
-                        '/' + g.goal_hours + 'h · ' +
-                        (g.eta ? 'ETA ' + g.eta.slice(5) : '>14d') + '</span></div>' + cells;
+                    const parked = g.status === 'parked';
+                    return '<div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;' +
+                        (parked ? 'opacity:.45;' : '') + '" title="' + campaignGoalTip(g) + '">' +
+                        '<b>' + g.name + '</b> ' + campaignRigChips(g) +
+                        campaignCalBadge(g) + ' <span style="opacity:.55">' + g.hours_done +
+                        '/' + g.goal_hours + 'h &middot; ' +
+                        (parked ? 'parked' + (g.returns ? ', back ' + g.returns.slice(5) : '')
+                         : g.status === 'complete' ? 'complete'
+                         : g.status === 'lights_done_needs_calibration' ? 'lights done'
+                         : g.eta ? 'ETA ' + g.eta.slice(5) : '>14d') +
+                        '</span></div>' + cells;
                 }).join('') +
                 '</div>' +
                 '<div style="font-size:.68rem;opacity:.5;margin-top:.3rem;">' +
                 'cell = planned hours that night (brighter = more) · ' +
                 '<span style="color:#eab308">NB</span> / ' +
-                '<span style="color:#4ade80">BB</span> · blue outline = ETA night · ' +
+                '<span style="color:#4ade80">BB</span> &middot; ' +
+                '<span style="color:#f472b6">OSC</span> (Piggy-600) &middot; blue outline = ETA night &middot; ' +
+                'greyed = parked (off season) &middot; cal = calibration for the goal &middot; ' +
                 d.note + '</div>';
             const t = d.totals || {};
             const nbS = Math.round((t.nb_capacity_h - t.nb_demand_h) * 10) / 10;
@@ -1222,6 +1243,34 @@
         } catch (e) { /* scheduler warming up */ }
     }
     loadCampaign();
+    // PS-30 campaign helpers: slot window, rig chips, calibration badge
+    function campaignWindow(a) {
+        if (!a.start || !a.end) return '';
+        return a.start.slice(11, 16) + '-' + a.end.slice(11, 16) + 'Z';
+    }
+    function campaignRigChips(g) {
+        return Object.entries(g.by_rig || {}).map(([rig, r]) =>
+            '<span style="font-size:.62rem;padding:0 .3rem;border-radius:6px;' +
+            'border:1px solid ' + (rig === 'piggyback' ? '#f472b6' : '#7dd3fc') + ';' +
+            (rig === g.driving_rig ? 'font-weight:700;' : 'opacity:.7;') + '" title="' +
+            (rig === g.driving_rig ? 'drives the mount' : 'rides along') + ': ' +
+            r.done_h + '/' + r.goal_h + 'h ' + (r.filters || []).join('/') + '">' +
+            (rig === 'piggyback' ? 'Piggy' : 'RC16') + '</span>').join(' ');
+    }
+    function campaignCalBadge(g) {
+        const c = g.calibration || {};
+        if (c.ok === true) return ' <span style="color:#4ade80;font-size:.62rem;">cal ok</span>';
+        if (c.ok === false) return ' <span style="color:#eab308;font-size:.62rem;" title="' +
+            (c.missing || []).join(', ') + '">cal missing</span>';
+        return '';
+    }
+    function campaignGoalTip(g) {
+        return g.name + ': ' + g.status + ', ' + g.visible_h_14n + 'h above ' +
+            g.min_alt_deg + ' deg in 14 nights' +
+            (g.returns ? ', returns ' + g.returns : '') +
+            ((g.calibration || {}).missing && g.calibration.missing.length
+             ? ', needs ' + g.calibration.missing.join(', ') : '');
+    }
     async function suggestAdd(name) {
         const r = await fetch('/api/projects2/from_catalog', {method: 'POST',
             headers: {'Content-Type': 'application/json'},

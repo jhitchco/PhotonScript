@@ -84,6 +84,11 @@ class PhotonScriptConfig(BaseSettings):
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
+    campaign_min_alt_deg: float = 30.0  # PS-30: campaign planner altitude floor
+    # (deg) for a target's usable 10-min slots; a project's min_alt_deg overrides.
+    # Flat 30 deg at AARO Pier 3 (Jeremy, 2026-09-26: no roof/terrain profile).
+    campaign_notify: bool = True  # PS-30 (absorbs PS-14): Pushover once when a
+    # campaign goal turns `complete` or `lights_done_needs_calibration`
     auto_stale_flats: bool = True  # at dawn, also reshoot flats for filters whose
     # library set has gone stale (>45d) even if tonight didn't image them — keeps
     # broadband flats fresh across runs of narrowband-only nights

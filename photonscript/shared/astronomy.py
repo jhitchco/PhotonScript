@@ -160,6 +160,72 @@ def compute_visibility_window(
     return _visibility_from_alts(target, obs, date_utc, times, alts, min_altitude)
 
 
+def altitude_grid(
+    targets: list[CelestialTarget],
+    obs: ObservatoryLocation,
+    times,
+) -> np.ndarray:
+    """Altitude (deg) of every target at every time: shape (targets, times),
+    from ONE broadcast AltAz transform (PS-30 campaign planner slots)."""
+    if not len(targets) or not len(times):
+        return np.zeros((len(targets), len(times)))
+    ra = np.array([t.ra_hours * 15 for t in targets])[:, None]
+    dec = np.array([t.dec_degrees for t in targets])[:, None]
+    coords = SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    tt = times if isinstance(times, Time) else Time(list(times))
+    frame = AltAz(obstime=tt[None, :], location=get_earth_location(obs))
+    return np.asarray(coords.transform_to(frame).alt.deg)
+
+
+def altitude_series(
+    target: CelestialTarget,
+    obs: ObservatoryLocation,
+    times,
+) -> np.ndarray:
+    """Altitude (deg) of one target at each time (one vectorized transform;
+    compute_altitude() does one transform per call)."""
+    return altitude_grid([target], obs, times)[0]
+
+
+def dark_windows(
+    obs: ObservatoryLocation,
+    dates: list[datetime],
+    step_min: float = 2.0,
+) -> list[tuple[Optional[datetime], Optional[datetime]]]:
+    """Astronomical dark (sun below -18 deg) for many nights at once.
+
+    Same convention as get_twilight_times(): `dates` are UTC midnights and the
+    scan runs 23:00 UTC that day to 13:00 UTC the next. One sun transform for
+    all nights (get_twilight_times costs ~0.5 s per uncached night), crossings
+    linearly interpolated between `step_min` samples."""
+    if not dates:
+        return []
+    n = int(round(14 * 60 / step_min)) + 1
+    offs = np.arange(n) * step_min / 1440.0
+    base = np.array([Time(d.replace(hour=23, minute=0, second=0,
+                                    microsecond=0)).jd for d in dates])
+    jd = (base[:, None] + offs[None, :]).ravel()
+    t = Time(jd, format="jd")
+    alt = get_sun(t).transform_to(
+        AltAz(obstime=t, location=get_earth_location(obs))
+    ).alt.deg.reshape(len(dates), n)
+    out = []
+    for row, b in zip(alt, base):
+        start = end = None
+        for i in range(n - 1):
+            a0, a1 = row[i], row[i + 1]
+            if start is None and a0 > -18 >= a1:
+                f = (a0 + 18) / (a0 - a1)
+                start = Time(b + (i + f) * step_min / 1440.0,
+                             format="jd").datetime
+            if a0 <= -18 < a1:
+                f = (-18 - a0) / (a1 - a0)
+                end = Time(b + (i + f) * step_min / 1440.0,
+                           format="jd").datetime
+        out.append((start, end))
+    return out
+
+
 def rank_targets_for_night(
     targets: list[CelestialTarget],
     obs: ObservatoryLocation,
