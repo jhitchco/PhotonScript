@@ -49,6 +49,27 @@ TICK_SECONDS = 30
 RESUME_MIN_REMAINING_MIN = 40  # don't resume with < this much dark left
 ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
 
+# PS-66: the unguided mode is "unguided" (Paramount MX, TPoint + ProTrack).
+# "encoders" was its old name and stays accepted everywhere a mode comes in
+# (arm, POST /api/arm, a persisted armer_state.json, auto-arm).
+GUIDING_MODE_ALIASES = {"guided": "guided", "unguided": "unguided",
+                        "encoders": "unguided"}
+
+
+def is_direct_guider(name) -> bool:
+    """PS-66: NINA's built-in Direct Guider (dithers by pulsing the mount,
+    no guide camera). Matches its Name / DisplayName / DeviceId loosely."""
+    s = "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+    return "directguider" in s
+
+
+def norm_guiding_mode(value) -> str | None:
+    """'guided' | 'unguided' for a known mode name (case-insensitive,
+    'encoders' -> 'unguided'), else None (= the config default)."""
+    if not isinstance(value, str):
+        return None
+    return GUIDING_MODE_ALIASES.get(value.strip().lower())
+
 # ninaAPI endpoint candidates (paths vary slightly across plugin versions;
 # we try in order until one doesn't 404)
 NINA_PATHS = {
@@ -84,7 +105,7 @@ class Armer:
         self.detail = ""
         self.plan: dict = {}
         self.sequence_path: Path | None = None
-        self.guiding_override: str | None = None  # "guided" | "encoders" | None
+        self.guiding_override: str | None = None  # "guided" | "unguided" | None
         self._guiding_alerted = False  # once-per-episode "guided but not guiding"
         self._not_locked_ticks = 0     # consecutive watchdog ticks PHD2 not locked
         self._guiding_recovered = False  # auto guider-restart tried this episode
@@ -115,6 +136,7 @@ class Armer:
         self._thesky_task: asyncio.Task | None = None  # PS-104: TheSky audit
         self._tune_night: str | None = None    # PS-90: pre-dusk tune done
         self._tune_note: str | None = None
+        self.guider_name: str | None = None  # PS-66: NINA's guider at arm
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -135,6 +157,7 @@ class Armer:
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
                 "fallback_night": getattr(self, "_fallback_night", None),
                 "recal_night": getattr(self, "_recal_night", None),
+                "guider_name": getattr(self, "guider_name", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -168,7 +191,7 @@ class Armer:
         self.plan = saved.get("plan", {})
         # Preserve the armed guiding mode across restarts, so a mid-night
         # dashboard restart doesn't silently revert to the config default.
-        self.guiding_override = saved.get("guiding_override")
+        self.guiding_override = norm_guiding_mode(saved.get("guiding_override"))
         self.sequence_path = (Path(saved["sequence_path"])
                               if saved.get("sequence_path") else None)
         # PS-77: an armer safety stop survives a restart, so the resume still
@@ -176,6 +199,7 @@ class Armer:
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
         self._fallback_night = saved.get("fallback_night")
         self._recal_night = saved.get("recal_night")
+        self.guider_name = saved.get("guider_name")
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -210,7 +234,7 @@ class Armer:
             except Exception:  # noqa: BLE001
                 cooler_on_utc = None
         return {"state": self.state, "detail": self.detail,
-                "guiding": "guided" if self._use_guiding() else "encoders",
+                "guiding": "guided" if self._use_guiding() else "unguided",
                 "night_of": self.plan.get("night_of"),
                 "preconfig_utc": self.plan.get("preconfig_utc"),
                 "dusk_utc": self.plan.get("dusk_utc"),
@@ -235,7 +259,7 @@ class Armer:
         enabled = bool(getattr(self.config, "noon_arm_enabled", False))
         out = {"enabled": enabled,
                "guiding": ("guided" if getattr(self.config, "noon_arm_guided",
-                                                True) else "encoders")}
+                                                True) else "unguided")}
         if not enabled:
             return out
         try:
@@ -253,21 +277,23 @@ class Armer:
 
     def _use_guiding(self) -> bool:
         """Resolve this night's guiding mode. An explicit arm-time choice
-        ('guided' / 'encoders') wins; otherwise fall back to config default."""
-        override = getattr(self, "guiding_override", None)
+        ('guided' / 'unguided', alias 'encoders') wins; otherwise fall back to
+        config default."""
+        override = norm_guiding_mode(getattr(self, "guiding_override", None))
         if override == "guided":
             return True
-        if override == "encoders":
+        if override == "unguided":
             return False
         return bool(self.config.guided_default)
 
     async def arm(self, guiding: str | None = None) -> dict:
-        """guiding: 'guided' (PHD2) or 'encoders' (unguided, on the Paramount
-        MX's encoders). None => use config.guided_default. A guided arm also
+        """guiding: 'guided' (PHD2) or 'unguided' (Paramount MX on TPoint +
+        ProTrack; 'encoders' is the old name and still accepted). None or an
+        unknown value => use config.guided_default. A guided arm also
         runs the PS-89 PHD2 settings audit in the background (never blocks
         the arm; one push only on a FAIL)."""
         from photonscript.scheduler.night_plan import build_night_plan
-        self.guiding_override = guiding
+        self.guiding_override = norm_guiding_mode(guiding)
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
         self._guiding_gate = GuidingAlertGate(self.config)  # fresh flap history
         self.shutdown = None  # a fresh arm starts a new night — clear the chip
@@ -275,7 +301,8 @@ class Armer:
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
-        mode = "guided (PHD2)" if self._use_guiding() else "unguided (encoders)"
+        mode = ("guided (PHD2)" if self._use_guiding()
+                else "unguided (TPoint + ProTrack)")
         self.last_raw = None; self._set_state("ARMED",
                         f"Pre-config at {self.plan['preconfig_utc']}, "
                         f"{len(self.plan['targets'])} targets, "
@@ -292,6 +319,9 @@ class Armer:
                 conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
+        # PS-66: which guider NINA has (Direct Guider vs PHD2), for the
+        # unguided dither choice and a guided-arm sanity alert.
+        await self._check_guider_at_arm()
         # PS-89: audit PHD2's settings against the desired state now that the
         # equipment is connected. In the background: it never blocks the arm.
         if self._use_guiding() and getattr(self.config, "phd2_audit_enabled", True):
@@ -314,6 +344,47 @@ class Armer:
                      f"{self.plan['dark_hours']}h dark window.{conn}",
                      title="PhotonScript armed")
         return self.status()
+
+    def _unguided_dither(self) -> bool:
+        """PS-66: dither the unguided targets tonight? Only on an unguided
+        night with config unguided_dither on and NINA's guider (read at arm)
+        being Direct Guider. A guided night's unguided fallback never does."""
+        return (not self._use_guiding()
+                and bool(getattr(self.config, "unguided_dither", False))
+                and is_direct_guider(getattr(self, "guider_name", None)))
+
+    async def _check_guider_at_arm(self) -> None:
+        """PS-66: read NINA's guider name. Unguided arm with unguided_dither
+        on but no Direct Guider: dithers stay off, one note. Guided arm with
+        Direct Guider connected: one priority-1 alert (PHD2 StartGuiding,
+        the calibration slot and the self-test would all fail). Never raises."""
+        detail = self.detail          # _nina overwrites it on a failure
+        try:
+            data = await self._nina("guider")
+        except Exception:  # noqa: BLE001
+            data = None
+        self.detail = detail
+        payload = (data or {}).get("Response", data or {}) if isinstance(data, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        name = (payload.get("Name") or payload.get("DisplayName")
+                or payload.get("DeviceId") or None)
+        self.guider_name = str(name) if name else None
+        self._persist()
+        direct = is_direct_guider(self.guider_name)
+        if self._use_guiding():
+            if direct:
+                await notify(self.config,
+                             "Armed GUIDED but NINA's guider is Direct Guider: "
+                             "StartGuiding (PHD2) will fail tonight. Switch "
+                             "NINA's guider back to PHD2, or re-arm unguided.",
+                             title="PhotonScript guider", priority=1)
+        elif getattr(self.config, "unguided_dither", False) and not direct:
+            await notify(self.config,
+                         f"Unguided dithers are OFF tonight: NINA's guider is "
+                         f"{self.guider_name or 'unknown'}, not Direct Guider "
+                         f"(unguided_dither needs it).",
+                         title="PhotonScript guider")
 
     async def _phd2_audit_at_arm(self) -> None:
         """PS-89 settings audit at arm. Never raises."""
@@ -949,7 +1020,7 @@ class Armer:
         from photonscript.shared.astronomy import get_seasonal_targets
         from photonscript.shared.localtime import to_local
         from photonscript.scheduler.target_planner import (
-            create_project_from_target, plan_night_sequence)
+            cap_unguided, create_project_from_target, plan_night_sequence)
         from photonscript.scheduler.nina_sequence import build_sequence_for_night
         from photonscript.scheduler.nina_sequence_json import generate_nina_json
         from photonscript.scheduler.sequence_lint import lint
@@ -973,6 +1044,10 @@ class Armer:
         use_guiding = self._use_guiding()
         for t in targets:
             t.start_guiding = use_guiding
+        # PS-66: unguided targets get the sub-length cap (same integration).
+        # Here, after guiding is resolved, so fallback_unguided's re-dispatch
+        # is capped too.
+        cap_unguided(targets, getattr(self.config, "unguided_max_exposure_s", 300))
         seq = build_sequence_for_night(
             f"PhotonScript_{self.plan['night_of'].replace('-', '')}", targets)
 
@@ -982,8 +1057,11 @@ class Armer:
             seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
         cal_field = self._calibration_slot(targets, now) if use_guiding else None
-        content = generate_nina_json(seq, cal_field=cal_field)
-        result = lint(json.loads(content), guided=use_guiding)
+        u_dither = self._unguided_dither()   # PS-66: Direct Guider dithers
+        content = generate_nina_json(seq, cal_field=cal_field,
+                                     unguided_dither=u_dither)
+        result = lint(json.loads(content), guided=use_guiding,
+                      unguided_dither=u_dither)
         if not result.ok:
             self.detail = "; ".join(f.detail for f in result.findings
                                     if f.level == "ERROR")
@@ -1057,6 +1135,11 @@ class Armer:
         if self.state != "RUNNING" or not night or self._recal_night == night:
             return False
         if pc.cfg_mode(self.config) == "never":
+            return False
+        if not self._use_guiding():
+            # PS-66: an unguided night has no PHD2 calibration to fix; a
+            # re-dispatch would only cost 5 to 10 min of dark
+            logger.info("recalibration (%s) skipped: night is unguided", reason)
             return False
         now = datetime.utcnow()
         left_h = (self._dawn() - now).total_seconds() / 3600.0
@@ -1353,7 +1436,7 @@ class Armer:
 
     async def fallback_unguided(self, reason: str) -> bool:
         """Switch the rest of tonight to unguided (PS-91 recovery failure /
-        PS-92 self-test FAIL): guiding_override="encoders", stop the sequence
+        PS-92 self-test FAIL): guiding_override="unguided", stop the sequence
         and the guider, re-dispatch the remainder (companion untouched).
         Once per night, RUNNING only.
 
@@ -1363,8 +1446,13 @@ class Armer:
         night = self.plan.get("night_of")
         if self.state != "RUNNING" or not night or self._fallback_night == night:
             return False
+        if not self._use_guiding():
+            # PS-66: already unguided, nothing to fall back from
+            logger.info("unguided fallback (%s) skipped: night is already "
+                        "unguided", reason)
+            return False
         self._fallback_night = night
-        self.guiding_override = "encoders"
+        self.guiding_override = "unguided"
         self._persist()
         steps = []
         for label, key in (("stop", "sequence_stop"), ("guider stop", "guider_stop")):
@@ -1530,6 +1618,33 @@ class Armer:
                     await self._maybe_stop_stuck_imaging(now)
                     # PS-91: opportunistic map refresh while the roof is shut
                     await self._maybe_hotpix_map(now, "paused unsafe")
+
+
+def armer_guided_now(config) -> bool:
+    """PS-66: True when a night is armed (ARMED / RUNNING / PAUSED_UNSAFE)
+    and it is guided. Asks the scheduler's armer when it runs in this
+    process, else reads its persisted armer_state.json (any run mode), where
+    an unset override means config.guided_default. False when nothing is
+    armed or the state is unreadable."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is not None:
+        try:
+            return armer.state in ACTIVE_STATES and bool(armer._use_guiding())
+        except Exception:  # noqa: BLE001
+            return False
+    p = Path(getattr(config, "data_dir", ".")) / "armer_state.json"
+    try:
+        saved = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no file / unreadable = not armed
+        return False
+    if saved.get("state") not in ACTIVE_STATES:
+        return False
+    mode = norm_guiding_mode(saved.get("guiding_override"))
+    if mode is not None:
+        return mode == "guided"
+    return bool(getattr(config, "guided_default", True))
 
 
 async def request_recalibration(config, reason: str) -> bool:

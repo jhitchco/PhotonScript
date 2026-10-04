@@ -281,8 +281,11 @@ def _check_selftest(seq: dict, r: LintResult) -> None:
                                     "machine (NINA would skip it)")
 
 
-def lint(seq: dict, guided: bool | None = None) -> LintResult:
-    """Validate a parsed sequence. guided=None auto-detects from content."""
+def lint(seq: dict, guided: bool | None = None,
+         unguided_dither: bool = False) -> LintResult:
+    """Validate a parsed sequence. guided=None auto-detects from content.
+    unguided_dither (PS-66): an unguided run may carry active dithers (NINA
+    Direct Guider); StartGuiding is still an error."""
     r = LintResult()
 
     if guided is None:
@@ -349,7 +352,7 @@ def lint(seq: dict, guided: bool | None = None) -> LintResult:
         # ACTIVE dither (AfterExposures>0) or a StartGuiding is wrong here.
         bad = (_find_type(seq, "StartGuiding")
                + [d for d in _find_type(seq, "DitherAfterExposures")
-                  if d.get("AfterExposures", 0) > 0])
+                  if d.get("AfterExposures", 0) > 0 and not unguided_dither])
         if bad:
             kinds = sorted({d["$type"].split(",")[0].split(".")[-1] for d in bad})
             r.error("guiding", f"Unguided run contains guiding elements: {kinds}")

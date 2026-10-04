@@ -279,5 +279,8 @@ def test_plan_seconds_honors_accepted_seconds_when_present():
     p = osc_plan(1.0, PhotonScriptConfig(_env_file=None), acquired=10)
     assert campaign.plan_seconds(p) == (3600.0, 1200.0)
     from types import SimpleNamespace
-    q = SimpleNamespace(**p.model_dump(), acquired_s=900.0)
+    # merge PS-30/PS-66: acquired_s is now a model field (>= acquired x
+    # length), so the partial-seconds case is 7 subs plus a capped half sub
+    q = SimpleNamespace(**{**p.model_dump(), "acquired": 7,
+                           "acquired_s": 900.0})
     assert campaign.plan_seconds(q) == (3600.0, 900.0)

@@ -229,10 +229,18 @@ async def on_agent_message(msg: AgentMessage):
         # name (the agent never knows project ids)
         quality = msg.payload.get("quality") or {}
         if quality.get("passed_qa") or msg.payload.get("status") == "validated":
+            # PS-66: on an unguided (capped) night credit subs by seconds
+            try:
+                from photonscript.scheduler.armer import ACTIVE_STATES
+                _a = get_armer()
+                by_s = _a.state in ACTIVE_STATES and not _a._use_guiding()
+            except Exception:  # noqa: BLE001
+                by_s = False
             matched = get_store().record_accepted_sub(
                 msg.payload.get("target_name", ""),
                 msg.payload.get("filter_type", ""),
-                msg.payload.get("exposure_seconds"))
+                msg.payload.get("exposure_seconds"),
+                rig=msg.payload.get("rig"), by_seconds=by_s)
             if matched:
                 logger.info("Progress: %s %s +1 accepted",
                             msg.payload.get("target_name"),
@@ -435,20 +443,24 @@ async def api_tonight_sequence_json(now_mode: bool = False):
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     targets = plan_night_sequence(projects, config, now)
-    # Honor the ARMED guiding mode (encoders/guided) so the preview matches
+    # Honor the ARMED guiding mode (guided/unguided) so the preview matches
     # what will actually be dispatched, not just the config default.
     preview_guided = get_armer()._use_guiding()
     for t in targets:
         t.start_guiding = preview_guided
+    from photonscript.scheduler.target_planner import cap_unguided
+    cap_unguided(targets, getattr(config, "unguided_max_exposure_s", 300))  # PS-66
+    preview_dither = get_armer()._unguided_dither()                       # PS-66
     sequence = build_sequence_for_night(
         name=f"PhotonScript_{now.strftime('%Y%m%d')}",
         targets=targets,
     )
     # Dusk/safety gating ON unless explicitly generating a daytime test
     sequence.wait_until_local = None if now_mode else "00:00:00"
-    json_content = generate_nina_json(sequence)
+    json_content = generate_nina_json(sequence, unguided_dither=preview_dither)
 
-    result = _lint(json.loads(json_content), guided=preview_guided)
+    result = _lint(json.loads(json_content), guided=preview_guided,
+                   unguided_dither=preview_dither)
     if not result.ok:
         return JSONResponse(status_code=500, content={
             "detail": "Lint FAILED — refusing to serve sequence",
@@ -609,6 +621,8 @@ _CONFIG_FIELDS = [
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("unguided_dither", "PS_UNGUIDED_DITHER", "Dither on unguided nights through NINA's Direct Guider (switch NINA's guider first; checked at arm)", "Imaging", "bool", False, False),
+    ("unguided_max_exposure_s", "PS_UNGUIDED_MAX_EXPOSURE_S", "Unguided (TPoint + ProTrack) RC16 max sub length (s); longer subs are split, same integration (0 = no cap)", "Imaging", "float", False, False),
     ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale", "Imaging", "bool", False, False),
     ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
     ("sensor_width_px", "PS_SENSOR_WIDTH_PX", "Sensor width (px), Targets page field-of-view box", "Imaging", "int", False, False),
@@ -1007,8 +1021,15 @@ async def api_arm(request: Request):
     body = await request.json()
     armer = get_armer()
     if body.get("armed"):
-        # guiding: "guided" (PHD2) | "encoders" (unguided) | None (config default)
-        return await armer.arm(guiding=body.get("guiding"))
+        # guiding: "guided" (PHD2) | "unguided" (TPoint + ProTrack; alias
+        # "encoders") | None (config default). PS-66: junk is a 400, not a
+        # silent fall back to the default mode.
+        from photonscript.scheduler.armer import norm_guiding_mode
+        guiding = body.get("guiding")
+        if guiding is not None and norm_guiding_mode(guiding) is None:
+            return JSONResponse(status_code=400, content={
+                "detail": f"unknown guiding mode {guiding!r}: use 'guided' or 'unguided'"})
+        return await armer.arm(guiding=norm_guiding_mode(guiding))
     return await armer.disarm()
 
 
@@ -2369,9 +2390,13 @@ async def api_calibration_capture(payload: dict = Body(default={})):
         darks = [(float(e), int(c)) for e, c in payload["darks"]]
     else:
         count = int(getattr(config, "dark_target_count", 30))
-        darks = [(float(t.strip()), count)
-                 for t in str(getattr(config, "dark_exposures", "600,180")).split(",")
-                 if t.strip()]
+        if rig == RC16:   # PS-66: plus the unguided cap length (300 s)
+            from photonscript.scheduler.nina_sequence_json import dark_library_exposures
+            darks = [(e, count) for e in dark_library_exposures(config)]
+        else:
+            darks = [(float(t.strip()), count)
+                     for t in str(getattr(config, "dark_exposures", "600,180")).split(",")
+                     if t.strip()]
     bias = int(payload.get("bias", 50))
     seq_text, minutes = generate_darks_json(config, darks, bias)
     seq_dir = Path.cwd() / "sequences"

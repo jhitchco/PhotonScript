@@ -113,6 +113,47 @@ def _fit_by_moon(exposures, available_seconds, moon_tag):
     return exposures
 
 
+def cap_unguided(targets, cap_s) -> list[str]:
+    """PS-66: cap sub length on every UNGUIDED target (start_guiding False) at
+    cap_s seconds (config unguided_max_exposure_s; 0 or None = off), keeping
+    the same integration: a long set over the cap becomes cap_s x
+    ceil(owed * old / cap_s). HDR short sets under the cap are untouched.
+    Guided targets, focus-calibration and tracking-test targets are left
+    alone. Edits the targets' exposure lists in place (they are per-night
+    copies from plan_night_sequence) and returns one note per capped set."""
+    import math
+    try:
+        cap = float(cap_s or 0)
+    except (TypeError, ValueError):
+        cap = 0.0
+    notes: list[str] = []
+    if cap <= 0:
+        return notes
+    for t in targets or []:
+        if (getattr(t, "start_guiding", False) or getattr(t, "focus_calibration", False)
+                or getattr(t, "tracking_test", False)):
+            continue
+        capped = []
+        for e in t.exposures:
+            upd = {}
+            owed = e.count - e.acquired
+            if e.exposure_seconds > cap and owed > 0:
+                upd.update(exposure_seconds=cap, acquired=0,
+                           count=math.ceil(owed * e.exposure_seconds / cap - 1e-9))
+                notes.append(f"{t.name} {e.filter_type.value}: {owed}x"
+                             f"{e.exposure_seconds:.0f}s -> {upd['count']}x{cap:.0f}s")
+            short_owed = e.short_remaining()
+            if e.hdr_short_seconds and e.hdr_short_seconds > cap and short_owed > 0:
+                upd.update(hdr_short_seconds=cap, hdr_short_acquired=0,
+                           hdr_short_count=math.ceil(
+                               short_owed * e.hdr_short_seconds / cap - 1e-9))
+            capped.append(e.model_copy(update=upd) if upd else e)
+        t.exposures = capped
+    if notes:
+        logger.info("Unguided cap %.0fs: %s", cap, "; ".join(notes))
+    return notes
+
+
 def meridian_safe_order(pairs, dark_start, guard_min: int = 20):
     """Transit-order targets west->east, but push any target crossing the
     meridian within `guard_min` minutes of dark-start PAST the meridian so the

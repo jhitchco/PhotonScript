@@ -1002,7 +1002,8 @@ async def on_config_change(config, *, push: bool = True, **kw) -> dict:
 class ReAuditor:
     """RC16 agent listener: re-audit DEBOUNCE_S after the last PHD2
     ConfigurationChange (PHD2 sends a burst of them for one profile edit).
-    Pushes only while a night is armed (armed_fn); the System page shows the
+    Pushes only while a night is armed (armed_fn; PS-66: the agent passes
+    "armed and guided", so an unguided night stays quiet); the System page shows the
     new audit either way. Never awaits PHD2 from the event (runs as a task)."""
 
     def __init__(self, config, armed_fn=None, debounce_s: float = DEBOUNCE_S):

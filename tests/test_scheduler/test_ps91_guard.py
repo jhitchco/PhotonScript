@@ -123,9 +123,9 @@ async def test_fallback_unguided_once_per_night_keeps_the_companion(tmp_path, mo
     assert await a.fallback_unguided("selftest FAIL") is True
     assert calls == ["sequence_stop", "guider_stop"]
     assert dispatched == [(False, None)]
-    assert a.guiding_override == "encoders" and not a._use_guiding()
+    assert a.guiding_override == "unguided" and not a._use_guiding()
     saved = json.loads((tmp_path / "data" / "armer_state.json").read_text())
-    assert saved["guiding_override"] == "encoders" and saved["fallback_night"] == "2026-10-02"
+    assert saved["guiding_override"] == "unguided" and saved["fallback_night"] == "2026-10-02"
     assert await a.fallback_unguided("again") is False      # once per night
     assert len(dispatched) == 1
     b = Armer(_cfg(tmp_path / "b"))

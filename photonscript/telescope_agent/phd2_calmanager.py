@@ -343,10 +343,19 @@ class CalManager:
         if reason is None:
             self._invalid = None
             return None
+        from photonscript.scheduler.armer import (armer_guided_now,
+                                                  request_recalibration)
+        if not armer_guided_now(self.config):
+            # PS-66: no guided night armed (unguided or idle): nothing to
+            # recalibrate for, and never a re-dispatch of an unguided night
+            if reason != getattr(self, "_invalid", None):
+                self._invalid = reason
+                logger.info("PHD2 calibration invalid (%s, after %s); no "
+                            "guided night armed, no recalibration", reason, why)
+            return reason
         if reason != getattr(self, "_invalid", None):   # PHD2 sends many changes
             self._invalid = reason
             logger.warning("PHD2 calibration invalid (%s, after %s)", reason, why)
-        from photonscript.scheduler.armer import request_recalibration
         await request_recalibration(self.config, reason)
         return reason
 

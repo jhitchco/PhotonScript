@@ -72,12 +72,12 @@ def plan_seconds(e) -> tuple[float, float]:
     it, seconds = sub length x count, which is what PS-66 derives too."""
     short = (e.hdr_short_seconds or 0) if e.hdr_short_count else 0
     goal = e.count * e.exposure_seconds + e.hdr_short_count * short
-    acq_s = getattr(e, "acquired_s", None)
-    if acq_s is None:
-        done = (min(e.acquired, e.count) * e.exposure_seconds
-                + min(e.hdr_short_acquired, e.hdr_short_count) * short)
-    else:
-        done = float(acq_s)
+    long_goal = e.count * e.exposure_seconds
+    # acquired_s is the LONG set only (PS-66) and never below acquired x
+    # length, so the larger of the two counts and the short set is added
+    long_done = min(max(float(getattr(e, "acquired_s", 0) or 0),
+                        e.acquired * e.exposure_seconds), long_goal)
+    done = long_done + min(e.hdr_short_acquired, e.hdr_short_count) * short
     return float(goal), float(min(done, goal))
 
 

@@ -370,7 +370,8 @@ def sequence(
     output: str = typer.Option("", help="Output file path"),
     month: int = typer.Option(0, help="Month (1-12), 0 = current"),
     fmt: str = typer.Option("json", "--format", help="json (Advanced Sequencer) or xml"),
-    guided: bool = typer.Option(False, help="Guided run (default: unguided, Paramount MX encoders)"),
+    guided: bool = typer.Option(False, help="Guided run (default: unguided, Paramount MX, TPoint + ProTrack)"),
+    guiding: str = typer.Option("", help="guided | unguided (alias encoders); overrides --guided"),
     now: bool = typer.Option(False, "--now",
                              help="No dusk gate — starts immediately (daytime testing)"),
 ):
@@ -386,12 +387,21 @@ def sequence(
     now_dt = datetime.utcnow()
     if month == 0:
         month = now_dt.month
+    if guiding:
+        from photonscript.scheduler.armer import norm_guiding_mode
+        mode = norm_guiding_mode(guiding)
+        if mode is None:
+            console.print(f"[red]Unknown --guiding {guiding!r}: use guided or unguided.[/red]")
+            raise typer.Exit(2)
+        guided = mode == "guided"
 
     seasonal = get_seasonal_targets(month)
     projects = [create_project_from_target(t) for t in seasonal]
     targets = plan_night_sequence(projects, config, now_dt)
     for t in targets:
         t.start_guiding = guided
+    from photonscript.scheduler.target_planner import cap_unguided
+    cap_unguided(targets, getattr(config, "unguided_max_exposure_s", 300))  # PS-66
     seq = build_sequence_for_night(f"PhotonScript_{now_dt.strftime('%Y%m%d')}", targets)
     seq.wait_until_local = None if now else "00:00:00"  # flag: gate on dusk providers
 
@@ -402,11 +412,12 @@ def sequence(
         from photonscript.scheduler.nina_sequence_json import generate_nina_json
         from photonscript.scheduler.sequence_lint import lint as lint_seq, format_result
 
-        content = generate_nina_json(seq)
+        u_dither = (not guided) and bool(getattr(config, "unguided_dither", False))
+        content = generate_nina_json(seq, unguided_dither=u_dither)
         default_path = f"PhotonScript_{now_dt.strftime('%Y%m%d')}.json"
 
         # Lint gate — refuse to write a sequence that would fail at 3 AM
-        result = lint_seq(json.loads(content), guided=guided)
+        result = lint_seq(json.loads(content), guided=guided, unguided_dither=u_dither)
         console.print(format_result(result))
         if not result.ok:
             console.print("[red]REFUSING to write sequence: lint failed.[/red]")

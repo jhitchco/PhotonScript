@@ -546,6 +546,7 @@ def _armer(tmp_path, monkeypatch, notes, **kw):
     monkeypatch.setattr(a, "_run", _noop)
     monkeypatch.setattr(a, "connect_all_rigs", _noop)
     monkeypatch.setattr(a, "_cooler_dew_off_all", _noop)
+    monkeypatch.setattr(a, "_check_guider_at_arm", _noop)   # PS-66, no NINA here
     return a
 
 

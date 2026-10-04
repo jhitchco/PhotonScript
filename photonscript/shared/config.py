@@ -287,8 +287,20 @@ class PhotonScriptConfig(BaseSettings):
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
-                                 # to fall back to the Paramount MX encoders (+TPoint/
-                                 # ProTrack) unguided.
+                                 # to run unguided on the Paramount MX (TPoint +
+                                 # ProTrack) by default.
+    unguided_dither: bool = False  # PS-66: keep dithering on unguided nights
+                                 # through NINA's Direct Guider (mount pulses).
+                                 # Off until NINA's guider is switched to Direct
+                                 # Guider; the armer checks the connected guider
+                                 # at arm and drops dithers (one note) otherwise.
+    unguided_max_exposure_s: float = 300.0  # PS-66: RC16 sub-length cap on every
+                                 # unguided target (armed unguided or the
+                                 # unguided fallback): a 600 s set becomes 300 s
+                                 # x twice the count, same integration. Projects
+                                 # are credited in seconds (ExposurePlan.
+                                 # acquired_s). Set from the PS-84 tracking-test
+                                 # verdict. 0 = no cap.
     guiding_force_first_calibration: bool = False  # PS-72 (2026-09-27): default off;
                                  # a forced cal at a high-Dec first target wrecked
                                  # 2026-09-26. When True, the night's FIRST guided
@@ -670,10 +682,11 @@ class PhotonScriptConfig(BaseSettings):
                                    # OFF, so a missed dawn shutdown is corrected at
                                    # noon at the latest.
     noon_arm_guided: bool = True  # auto/noon re-arm uses PHD2 guiding when set;
-    # uncheck to have the hands-off re-arm run UNGUIDED (encoders). Replaces the
+    # uncheck to have the hands-off re-arm run UNGUIDED (TPoint + ProTrack). Replaces the
     # old tri-state noon_arm_guiding string with a plain checkbox.
     noon_arm_guiding: str = "guided"  # (legacy) guiding mode for noon auto-arms:
-                                      # "guided" | "encoders" | "default" (config)
+                                      # "guided" | "unguided" (alias "encoders") |
+                                      # "default" (config). Not read anywhere now.
     # --- TheSky64 direct hook (EXPERIMENTAL, 2026-09-21) ---
     # PhotonScript normally reaches the Paramount through NINA's ASCOM pass-through
     # (TheSky's connector), which does NOT expose TPoint/ProTrack. TheSky also runs

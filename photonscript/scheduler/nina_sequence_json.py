@@ -498,7 +498,8 @@ def _dither_trigger(after_exposures: int) -> dict:
 def _smart_exposure(exp: ExposurePlan, guided: bool,
                     dither_every_n: int,
                     guard_conditions: list | None = None,
-                    extra_triggers: list | None = None) -> dict:
+                    extra_triggers: list | None = None,
+                    unguided_dither: bool = False) -> dict:
     """SmartExposure: LoopCondition(count) wrapping SwitchFilter+TakeExposure.
 
     guard_conditions (PS-77) are appended AFTER the LoopCondition, which must
@@ -509,7 +510,11 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     exactly what kept the Piggy-600 light loop honest on 2026-09-26 while the
     RC16 SmartExposure, guarded only by its ancestors, shot 38 min into a
     closed roof. extra_triggers go after the dither trigger, which must stay
-    at Triggers[0] (GetDitherAfterExposures)."""
+    at Triggers[0] (GetDitherAfterExposures).
+
+    unguided_dither (PS-66): an unguided target dithers too, through NINA's
+    Direct Guider (mount pulses, no guide camera). The armer sets it only
+    when config unguided_dither is on and NINA's guider is Direct Guider."""
     remaining = exp.count - exp.acquired
     # NINA's SmartExposure ALWAYS expects a DitherAfterExposures trigger at
     # Triggers[0]. Its Validate() calls GetDitherAfterExposures(), which in the
@@ -519,7 +524,8 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     # emit the trigger; AfterExposures=0 disables dithering — NINA's Execute()
     # early-returns and Validate() adds no "guider not connected" issue — so an
     # unguided run is unaffected while the crash is avoided.
-    after = dither_every_n if (guided and dither_every_n > 0) else 0
+    after = (dither_every_n if (dither_every_n > 0 and (guided or unguided_dither))
+             else 0)
     triggers = [_dither_trigger(after)] + list(extra_triggers or [])
     smart = _seq_container(
         SMART_EXPOSURE_NAME,
@@ -697,23 +703,37 @@ def _time_condition(provider: str, minutes_offset: int = 0) -> dict:
             f"NINA.Sequencer.Utility.DateTimeProvider.{provider}, NINA.Sequencer"))
 
 
+def dark_library_exposures(cfg) -> list[float]:
+    """RC16 dark-library lengths: config dark_exposures, plus PS-66's
+    unguided_max_exposure_s when it is set and not already listed, so the
+    capped unguided subs always have a dark set at quota."""
+    wanted: list[float] = []
+    for tok in str(getattr(cfg, "dark_exposures", "600,180")).split(","):
+        try:
+            wanted.append(float(tok.strip()))
+        except ValueError:
+            continue
+    try:
+        cap = float(getattr(cfg, "unguided_max_exposure_s", 0) or 0)
+    except (TypeError, ValueError):
+        cap = 0.0
+    if cap > 0 and not any(abs(cap - w) < 0.5 for w in wanted):
+        wanted.append(cap)
+    return wanted
+
+
 def _dark_quota_blocks(dawn_provider, dawn_offset):
     """Dark blocks for unsafe time, capped by the library quota: for each
     exposure the current lights use, take only (quota - already on disk),
-    600s first then 180s. Lowest-priority work: any of LoopWhileUnsafe
+    600s first then 180s, then the PS-66 unguided cap (300s) when it
+    is not listed. Lowest-priority work: any of LoopWhileUnsafe
     exit, dawn, or the cap ends the block."""
     cfg = _gen_cfg()
     quota = int(getattr(cfg, "dark_target_count", 30))
     blocks = []
     try:
         from photonscript.scheduler.calibration import count_matching_darks
-        wanted = []
-        for tok in str(getattr(cfg, "dark_exposures", "600,180")).split(","):
-            try:
-                wanted.append(float(tok.strip()))
-            except ValueError:
-                continue
-        for exp_s in wanted:
+        for exp_s in dark_library_exposures(cfg):
             have = count_matching_darks(cfg, exp_s)
             need = max(0, quota - have)
             if need == 0:
@@ -772,7 +792,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             narrate: str = "normal",
                             focus_offsets: dict | None = None,
                             loop_end: tuple | None = None,
-                            selftest_script: str | None = None) -> dict:
+                            selftest_script: str | None = None,
+                            unguided_dither: bool = False) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> exposures.
@@ -887,7 +908,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         if narrate_steps:
             items.append(_pushover("Imaging",
                                    f"{target.name}: focused, centered, unguided "
-                                   "on encoders — capturing"))
+                                   "(TPoint + ProTrack), capturing"))
     if bb_deferred_note is not None:
         items.append(_pushover(
             "Imaging",
@@ -954,12 +975,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             out.append(_smart_exposure(short_exp, target.start_guiding,
                                        target.dither_every_n,
                                        guard_conditions=_guards(),
-                                       extra_triggers=_af_triggers()))
+                                       extra_triggers=_af_triggers(),
+                                       unguided_dither=unguided_dither))
         if exp.count - exp.acquired > 0:
             out.append(_smart_exposure(exp, target.start_guiding,
                                        target.dither_every_n,
                                        guard_conditions=_guards(),
-                                       extra_triggers=_af_triggers()))
+                                       extra_triggers=_af_triggers(),
+                                       unguided_dither=unguided_dither))
         if chatty_block:
             out.append(_pushover(
                 "Imaging",
@@ -1391,7 +1414,8 @@ def generate_phd2_calibration_json(field: dict, hold_s: int = 240,
 
 
 def generate_nina_json(sequence: NinaSequenceFile,
-                       cal_field: dict | None = None) -> str:
+                       cal_field: dict | None = None,
+                       unguided_dither: bool = False) -> str:
     """Generate an Advanced Sequencer JSON with the full night-loop safety
     architecture (Jerry Macon / Patriot Astro pattern, all core NINA types):
 
@@ -1408,6 +1432,10 @@ def generate_nina_json(sequence: NinaSequenceFile,
     re-dispatch, right after the unpark. With the slot no target sets
     ForceCalibration (it overrides the PS-72 switch). None = no slot, the
     sequence is exactly as before.
+
+    unguided_dither (PS-66): unguided targets keep their dither trigger
+    active (NINA Direct Guider). False (default) = AfterExposures 0 on
+    every unguided SmartExposure, as before.
     """
     from photonscript.shared.config import PhotonScriptConfig
     _cfg = PhotonScriptConfig()
@@ -1583,7 +1611,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                                     "normal"),
                                     focus_offsets=_cfg.focus_offset_map(),
                                     loop_end=(dawn_provider, dawn_offset),
-                                    selftest_script=selftest)
+                                    selftest_script=selftest,
+                                    unguided_dither=unguided_dither)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
