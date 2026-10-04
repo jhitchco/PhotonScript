@@ -827,10 +827,18 @@
     function pointTag(s) {
         const f = pointFlag(s), p = s.pointing;
         if (!f) return '';
+        // PS-107: only a plate solve confirms; header / mount-log offsets
+        // reject only gross misses and otherwise wait for the dawn solve
+        const solved = p.solved_ra != null;
+        const tip = f === 'off-target'
+            ? (solved ? 'target outside the frame (plate solve)'
+                      : 'gross miss above the header-only reject limit (mount position, no plate solve)')
+            : (solved ? 'off target: worth a look (plate solve)'
+                      : 'header only, unconfirmed: mount model error up to about 1 deg; the dawn plate solve confirms or clears it');
+        const label = solved ? (f === 'off-target' ? 'off target (solved) ' : 'flag ')
+                             : 'off target (header, unconfirmed) ';
         return ' <span class="ptag ' + (f === 'off-target' ? 'off' : 'flag') + '" title="' +
-            (f === 'off-target' ? 'target outside the frame' : 'off target: worth a look') +
-            ' (PS-67; ' + (p.solved_ra != null ? 'plate solve' : 'mount position') + ')">' +
-            (f === 'off-target' ? 'off target ' : 'flag ') + fmtOff(p.off_target_arcmin) +
+            tip + ' (PS-67)">' + label + fmtOff(p.off_target_arcmin) +
             ' ' + (p.off_target_dir || '') + '</span>';
     }
     function pointCells(s) {

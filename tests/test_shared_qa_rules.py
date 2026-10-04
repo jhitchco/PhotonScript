@@ -251,8 +251,11 @@ def test_pointing_check_ps67():
     assert q.expand(_card().compact())[-1]["reason"].startswith("no position")
     assert _row(_card({"pointing_offset_arcmin": 9.0}),
                 "pointing").status == q.WARN      # 8 to 15': a look
-    assert _row(_card({"pointing_offset_arcmin": 16.0}),
+    assert _row(_card({"pointing_offset_arcmin": 16.0,
+                       "pointing_src": "solve"}),
                 "pointing").status == q.FAIL      # target out of the frame
+    assert _row(_card({"pointing_offset_arcmin": 16.0}),
+                "pointing").status == q.WARN      # PS-107: unconfirmed
 
 
 def test_nan_and_garbage_inputs_skip_instead_of_crashing():

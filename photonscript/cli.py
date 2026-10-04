@@ -787,15 +787,20 @@ def pointing_backfill(
                                     "(pointing_solve_policy, budget-capped)"),
     apply: bool = typer.Option(True, "--apply/--dry-run",
                                help="Apply the On-target check to the stored "
-                                    "scorecards (human verdicts never change)"),
+                                    "scorecards (human verdicts never change); "
+                                    "--dry-run writes nothing and reports what "
+                                    "would change"),
     as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
 ):
     """PS-67: fill runs/<night>_pointing.jsonl from FITS headers (RC16), the
     mount log or the RC16 neighbours (Piggy-600), and apply the off-target
     check. Header-only reads: milliseconds per sub. Stop PhotonScript or run
-    in daytime: it rewrites the subs log when a verdict changes.
+    in daytime: it rewrites the subs log when a verdict changes. PS-107:
+    without a plate solve only a gross miss (pointing_header_reject_deg)
+    rejects; subs rejected earlier by a header-only offset under it flip
+    back ("back from a header reject").
 
-    photonscript pointing-backfill --since 2026-09-18
+    photonscript pointing-backfill --since 2026-09-18 --dry-run
     """
     import json as _json
     from photonscript.scheduler.pointing_record import night_pass
@@ -813,17 +818,29 @@ def pointing_backfill(
         if not as_json:
             sm = r.get("summary") or {}
             m = sm.get("model") or {}
+            would = "would be " if not apply else ""
             console.print(
-                f"{d}: {r['subs']} subs, {r['with_position']} with a position, "
-                f"{r['written']} records written, {sm.get('off_target', 0)} off "
+                f"{d}{' (dry run)' if not apply else ''}: {r['subs']} subs, "
+                f"{r['with_position']} with a position, "
+                f"{r['written']} records {would}written, "
+                f"{sm.get('off_target', 0)} off "
                 f"target, {sm.get('flagged', 0)} flagged, "
-                f"{r['verdicts_changed']} verdicts changed "
-                f"({r['newly_rejected']} newly rejected)"
+                f"{r['verdicts_changed']} verdicts {would}changed "
+                f"({r['newly_rejected']} newly rejected, "
+                f"{r.get('un_rejected', 0)} back from a header reject)"
                 + (f", solved {r['solved']}/{r['solve_attempts']}" if solve else "")
                 + (f", mount vs solve median {m['median_arcmin']}' (n={m['n']})"
                    if m else ""), markup=False, highlight=False)
     if as_json:
         print(_json.dumps(results, indent=2, default=str))
+    elif results:
+        console.print(
+            f"Total: {sum(r['verdicts_changed'] for r in results)} verdicts "
+            f"{'would change' if not apply else 'changed'}, "
+            f"{sum(r['newly_rejected'] for r in results)} newly rejected, "
+            f"{sum(r.get('un_rejected', 0) for r in results)} "
+            f"{'would flip' if not apply else 'flipped'} back from a "
+            "header-only reject", markup=False, highlight=False)
 
 
 @app.command("slew-backfill")

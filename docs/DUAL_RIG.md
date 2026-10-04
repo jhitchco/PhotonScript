@@ -446,6 +446,17 @@ because NINA #1 owns the mount.
   `PS_QA_POINTING_MODE` = fail (default) | warn | info. Off-target rejects are
   their own category on the runs page (purple), and the accept button
   overrides them. A solve wins over the mount position.
+- **Header-only offsets (PS-107).** NINA centers by offset re-slews (TheSky
+  refuses its sync), so the header / mount log is where the mount believes
+  it points, off by up to about 1 deg. Those bands apply only to a plate
+  solve; without one (header, mount log, rc16-correlated) a sub rejects only
+  above `PS_POINTING_HEADER_REJECT_DEG` (5 deg: the Dec 0 calibration spot, a
+  wrong target label) and between the flag limit and that it warns "header
+  only, unconfirmed". Those subs lead the dawn solve queue. Re-verdict:
+  `pointing-backfill --since D --dry-run` writes nothing and reports how many
+  header-only rejects would flip back; without `--dry-run` they do (human
+  verdicts never change). The runs page tags them "off target (header,
+  unconfirmed)" vs "off target (solved)".
 - **Dawn pass** (`scheduler/pointing_record.py`): after attribution a
   header / mount-log pass applies the check before the Library build; after
   the flexure report a sampled ASTAP pass (`PS_POINTING_SOLVE_POLICY`

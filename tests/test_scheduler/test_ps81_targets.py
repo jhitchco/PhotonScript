@@ -112,7 +112,9 @@ def _failing_reasons():
              dict(fwhm_arcsec=9.0), dict(stars=2), dict(stars=99999),
              dict(ccd_temp=30.0), dict(guide_lock="non-star"),
              dict(guide_rms=9.0, guide_state="guiding"),
-             dict(doubled_frac=0.9), dict(pointing_offset_arcmin=30.0)]
+             dict(doubled_frac=0.9),
+             dict(pointing_offset_arcmin=30.0, pointing_src="solve"),
+             dict(pointing_offset_arcmin=4000.0)]   # PS-107: header gross miss
     out = []
     for kw in cases:
         m = {"hfr": 2.0, "stars": 300, "ecc": 0.3, **kw}

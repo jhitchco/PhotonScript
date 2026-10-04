@@ -26,6 +26,9 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   exposure (ok|under|clipped|sat-stars), clipped_pct, sat_stars_pct, swamp,
   pointing_offset_arcmin (PS-67, arcmin from the named target),
   pointing_note (text naming the target and position, for the reason),
+  pointing_src (PS-107, where the offset came from: solve | header |
+  mount-log | rc16-correlated; anything but "solve", or None, is
+  unconfirmed and rejects only above pointing_header_reject_deg),
   slew_overlap_s (PS-13, seconds of the exposure inside an RC16 move window;
   0 = clear, None = not judged: the RC16 itself, or no data),
   slew_note (which move, from the mount log or the RC16 frames).
@@ -161,6 +164,10 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         "offtarget_reject_arcmin": float(_f(
             cfg, "pointing_off_target_reject_arcmin", 15.0)),
         "pointing_mode": str(_f(config, "qa_pointing_mode", "fail")).lower(),
+        # PS-107: an offset not confirmed by a plate solve (header, mount log,
+        # RC16-correlated) rejects only above this gross limit (degrees)
+        "pointing_header_reject_deg": float(_f(
+            config, "pointing_header_reject_deg", 5.0)),
         # PS-13: a sub exposing through an RC16 move holds two fields
         # (qa_slew_straddle_mode fail | warn | info)
         "slew_straddle_mode": str(_f(config, "qa_slew_straddle_mode",
@@ -616,8 +623,10 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     checks.append(slew_straddle_check(_num(m.get("slew_overlap_s")), t,
                                       m.get("slew_note")))
     # pointing (PS-67): offset of the sub from its named target
+    # (PS-107: rejects only gross misses unless a plate solve confirms it)
     checks.append(pointing_check(_num(m.get("pointing_offset_arcmin")), t,
-                                 m.get("pointing_note")))
+                                 m.get("pointing_note"),
+                                 m.get("pointing_src")))
     return Scorecard(checks=checks, thresholds=t, qa_flag=qa_flag)
 
 
@@ -626,25 +635,54 @@ def fmt_offset(arcmin) -> str:
     return (f"{arcmin:.1f}'" if arcmin < 120 else f"{arcmin / 60.0:.0f} deg")
 
 
-def pointing_check(off, t: dict, note: str | None = None) -> Check:
+UNCONFIRMED_WHY = "unconfirmed (mount model error up to about 1 deg)"
+_SRC_LABEL = {"mount-log": "mount log", "rc16-correlated": "RC16 header"}
+
+
+def pointing_confirmed(src) -> bool:
+    """PS-107: only a plate solve confirms where a sub pointed. NINA centers
+    by offset re-slews (TheSky refuses its sync), so the header / mount log
+    is where the mount believes it points, off by up to about 1 deg."""
+    return str(src or "").lower() == "solve"
+
+
+def pointing_limits(t: dict, src=None) -> tuple[float, float]:
+    """(flag, reject) arcmin for an offset from `src`: a solve keeps the rig
+    bands (RC16 8' / 15', Piggy-600 30' / 60'); anything else rejects only
+    above pointing_header_reject_deg (gross misses: the Dec 0 calibration
+    spot, a sub filed under the wrong target)."""
+    flag = float(t.get("offtarget_flag_arcmin", 8.0))
+    rej = float(t.get("offtarget_reject_arcmin", 15.0))
+    if not pointing_confirmed(src):
+        rej = max(rej, float(t.get("pointing_header_reject_deg", 5.0)) * 60.0)
+    return flag, rej
+
+
+def pointing_check(off, t: dict, note: str | None = None,
+                   src: str | None = None) -> Check:
     """PS-67 "On target": above offtarget_reject_arcmin the target is out of
     the frame (reject, approved 2026-09-27; qa_pointing_mode can soften it to
     warn or info), above offtarget_flag_arcmin it needs a look. `note` names
     the target and the position, e.g. "from Cat's Eye Nebula (mount RA
-    12h03m Dec +0.4, pier W)"."""
-    flag = float(t.get("offtarget_flag_arcmin", 8.0))
-    rej = float(t.get("offtarget_reject_arcmin", 15.0))
+    12h03m Dec +0.4, pier W)". PS-107: `src` is where the offset came from;
+    without a plate solve (header, mount log, RC16-correlated, unknown) only
+    a gross miss above pointing_header_reject_deg rejects, the rest warns
+    as unconfirmed until the dawn solves confirm or clear it."""
+    flag, rej = pointing_limits(t, src)
     if off is None:
         return Check("pointing", None, rej, SKIP)
     what = f"off target {fmt_offset(off)}" + (f" {note}" if note else "")
+    confirmed = pointing_confirmed(src)
+    only = _SRC_LABEL.get(str(src or ""), "header") + " only"
     if off > rej:
         mode = str(t.get("pointing_mode", "fail")).lower()
         status = FAIL if mode == "fail" else WARN if mode == "warn" else PASS
-        return Check("pointing", _r(off, 1), rej, status,
-                     f"{what} (> {rej:g}')")
+        lim = f"{rej:g}'" if confirmed else f"{rej / 60.0:g} deg, {only}"
+        return Check("pointing", _r(off, 1), rej, status, f"{what} (> {lim})")
     if off > flag:
-        return Check("pointing", _r(off, 1), rej, WARN,
-                     f"{what} (flag above {flag:g}')")
+        why = (f"flag above {flag:g}'" if confirmed
+               else f"{only}, {UNCONFIRMED_WHY}")
+        return Check("pointing", _r(off, 1), rej, WARN, f"{what} ({why})")
     return Check("pointing", _r(off, 1), rej, PASS)
 
 
@@ -696,16 +734,18 @@ def _swap_row(rec: dict, new: Check, t: dict) -> dict | None:
     return sc.record_fields()
 
 
-def regrade_pointing(rec: dict, off, t: dict, note: str | None = None):
+def regrade_pointing(rec: dict, off, t: dict, note: str | None = None,
+                     src: str | None = None):
     """Swap only the pointing row of a stored scorecard and return the new
     record fields (None: no scorecard or nothing changes). Used by the PS-67
     dawn pointing pass once a sub has a position (header, mount log or
-    plate solve) and an attributed target."""
-    fields = _swap_row(rec, pointing_check(off, t, note), t)
+    plate solve) and an attributed target; `src` as in pointing_check."""
+    fields = _swap_row(rec, pointing_check(off, t, note, src), t)
     if fields is None:
         return None
     fields["pointing_offset_arcmin"] = None if off is None else round(off, 1)
     fields["pointing_note"] = note or None
+    fields["pointing_src"] = src or None
     return fields
 
 
@@ -784,8 +824,8 @@ def metrics_from_record(rec: dict) -> dict:
         "hfr", "ecc", "ecc_bin", "stars", "background", "exp_s", "ccd_temp",
         "set_temp", "guide_rms", "guide_state", "guide_lock", "doubled_frac",
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
-        "pointing_offset_arcmin", "pointing_note", "slew_overlap_s",
-        "slew_note")}
+        "pointing_offset_arcmin", "pointing_note", "pointing_src",
+        "slew_overlap_s", "slew_note")}
     m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -798,6 +838,6 @@ def record_metrics(**kw) -> dict:
             "exp_s", "ccd_temp", "set_temp", "guide_rms", "guide_state",
             "guide_lock",
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
-            "swamp", "pointing_offset_arcmin", "pointing_note",
+            "swamp", "pointing_offset_arcmin", "pointing_note", "pointing_src",
             "slew_overlap_s", "slew_note")
     return {k: kw.get(k) for k in keys}

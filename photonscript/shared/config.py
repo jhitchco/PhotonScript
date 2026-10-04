@@ -220,6 +220,10 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_off_target_reject_arcmin: float = 60.0  # Piggy-600: reject above
     qa_pointing_mode: str = "fail"  # off-target above the reject limit:
                                  # fail (reject, approved) | warn | info
+    pointing_header_reject_deg: float = 5.0  # PS-107: an offset with no
+                                 # plate solve (header, mount log) rejects
+                                 # only above this (gross miss); between
+                                 # the flag limit and this it warns
     # PS-13 "Clear of RC16 moves": a Piggy-600 sub exposing through an RC16
     # slew, meridian flip or park (mount log, else the RC16 frames)
     qa_slew_straddle_mode: str = "fail"  # fail (reject) | warn | info

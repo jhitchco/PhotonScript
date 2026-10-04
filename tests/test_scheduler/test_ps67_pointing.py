@@ -100,13 +100,15 @@ def test_pointing_check_bands_per_rig(tmp_path):
     rc, pb = q.thresholds(cfg, "rc16"), q.thresholds(cfg, "piggyback")
     assert (rc["offtarget_flag_arcmin"], rc["offtarget_reject_arcmin"]) == (8, 15)
     assert (pb["offtarget_flag_arcmin"], pb["offtarget_reject_arcmin"]) == (30, 60)
-    assert q.pointing_check(4.6, rc).status == q.PASS   # 09-26 container Ha
-    assert q.pointing_check(9.0, rc).status == q.WARN
-    assert q.pointing_check(16.0, rc).status == q.FAIL
-    assert q.pointing_check(16.0, pb).status == q.PASS
-    assert q.pointing_check(45.0, pb).status == q.WARN
-    assert q.pointing_check(61.0, pb).status == q.FAIL
-    assert q.pointing_check(None, rc).status == q.SKIP
+    # the PS-67 bands hold for a plate-solved offset (PS-107)
+    S = "solve"
+    assert q.pointing_check(4.6, rc, src=S).status == q.PASS   # 09-26 container Ha
+    assert q.pointing_check(9.0, rc, src=S).status == q.WARN
+    assert q.pointing_check(16.0, rc, src=S).status == q.FAIL
+    assert q.pointing_check(16.0, pb, src=S).status == q.PASS
+    assert q.pointing_check(45.0, pb, src=S).status == q.WARN
+    assert q.pointing_check(61.0, pb, src=S).status == q.FAIL
+    assert q.pointing_check(None, rc, src=S).status == q.SKIP
     soft = q.thresholds(_cfg(tmp_path, qa_pointing_mode="warn"), "rc16")
     assert q.pointing_check(400.0, soft).status == q.WARN
 
