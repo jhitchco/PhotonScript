@@ -66,7 +66,7 @@
         <section class="panel" id="armPanel">
             <h2>Tonight's Run</h2>
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem 1rem;margin-bottom:.8rem;">
-                <button class="btn btn-secondary" id="armBtn" title="Arm tonight UNGUIDED (encoders only) — for short subs or when guiding is down. Guiding is the default; unguided long subs trail at 3248mm.">Arm (Encoders)</button>
+                <button class="btn btn-secondary" id="armBtn" title="Arm tonight UNGUIDED (Paramount MX on TPoint + ProTrack, no PHD2). RC16 subs are capped at the unguided max exposure (300 s default). Guiding is the default.">Arm (Unguided: TPoint + ProTrack)</button>
                 <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding — the default. Corrects tracking drift for long subs at 3248mm.">Arm (Guiding) — default</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
@@ -227,7 +227,7 @@
         const active = ['ARMED','RUNNING','PAUSED_UNSAFE'].includes(d.state);
         btn.textContent = active
             ? ('Disarm' + (d.guiding ? ' (' + d.guiding + ')' : ''))
-            : 'Arm (Encoders)';
+            : 'Arm (Unguided: TPoint + ProTrack)';
         btn.dataset.armed = active ? '1' : '0';
         if (gbtn) gbtn.style.display = active ? 'none' : '';
         const lr = d.last_raw;
@@ -638,10 +638,10 @@
         }
         // Guard: unguided is the exception now. Unguided long subs at 3248mm
         // trail (the 2026-09-24 donut/smear night ran unguided).
-        if (!confirm('Arm UNGUIDED (encoders only)?\n\nGuiding is the default — ' +
-                     'unguided 900s subs at 3248mm trail badly. Use this only for ' +
-                     'short subs or when PHD2 is down.')) return;
-        return postArm({armed: true, guiding: 'encoders'});
+        if (!confirm('Arm UNGUIDED (TPoint + ProTrack, no PHD2)?\n\nGuiding is the default. ' +
+                     'RC16 subs are capped at 300 s (unguided max exposure) and ' +
+                     'the nanny skips guiding checks tonight.')) return;
+        return postArm({armed: true, guiding: 'unguided'});
     });
     document.getElementById('armGuidedBtn').addEventListener('click', async () => {
         return postArm({armed: true, guiding: 'guided'});

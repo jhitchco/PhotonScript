@@ -20,8 +20,10 @@ Controls (config / .env):
                                  tonight's plan right then. Doubles as cooler
                                  belt #2 — arm() forces cooler + dew OFF, so a
                                  missed dawn shutdown is corrected by noon.
-  PS_NOON_ARM_GUIDING            guiding mode for noon arms:
-                                 guided (default) | encoders | default
+  PS_NOON_ARM_GUIDED             noon arms guided (default True) or unguided
+                                 (TPoint + ProTrack). PS_NOON_ARM_GUIDING is the
+                                 unused legacy string (guided | unguided, alias
+                                 encoders | default)
 
 Safety model: by default it ARMS AND NOTIFIES even when preflight fails
 (Jeremy's call). The AARO site roof controller closes on weather independently
@@ -256,7 +258,7 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                 # single checkbox: guided when set, else unguided
                                 guiding = ("guided"
                                            if getattr(config, "noon_arm_guided",
-                                                      True) else "encoders")
+                                                      True) else "unguided")
                             await armer.arm(guiding=guiding)  # sends its own ARMED Pushover
                             last_armed_night = night
                             if not pf.get("go", False):

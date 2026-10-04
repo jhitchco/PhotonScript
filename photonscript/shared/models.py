@@ -323,7 +323,7 @@ class NinaSequenceTarget(BaseModel):
     auto_focus_interval_minutes: int = 60
     meridian_flip: bool = True
     dither_every_n: int = 5
-    start_guiding: bool = False  # CEM70G encoders: unguided default
+    start_guiding: bool = False  # unguided (Paramount MX, TPoint + ProTrack) unless set
     cool_camera: bool = True
     camera_temp_c: float = -10.0
     # PS-76: a focus-offset calibration target. Instead of imaging, it runs a

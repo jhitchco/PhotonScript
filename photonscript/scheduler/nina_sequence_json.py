@@ -887,7 +887,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         if narrate_steps:
             items.append(_pushover("Imaging",
                                    f"{target.name}: focused, centered, unguided "
-                                   "on encoders — capturing"))
+                                   "(TPoint + ProTrack), capturing"))
     if bb_deferred_note is not None:
         items.append(_pushover(
             "Imaging",

@@ -427,7 +427,7 @@ async def api_tonight_sequence_json(now_mode: bool = False):
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     targets = plan_night_sequence(projects, config, now)
-    # Honor the ARMED guiding mode (encoders/guided) so the preview matches
+    # Honor the ARMED guiding mode (guided/unguided) so the preview matches
     # what will actually be dispatched, not just the config default.
     preview_guided = get_armer()._use_guiding()
     for t in targets:
@@ -970,8 +970,15 @@ async def api_arm(request: Request):
     body = await request.json()
     armer = get_armer()
     if body.get("armed"):
-        # guiding: "guided" (PHD2) | "encoders" (unguided) | None (config default)
-        return await armer.arm(guiding=body.get("guiding"))
+        # guiding: "guided" (PHD2) | "unguided" (TPoint + ProTrack; alias
+        # "encoders") | None (config default). PS-66: junk is a 400, not a
+        # silent fall back to the default mode.
+        from photonscript.scheduler.armer import norm_guiding_mode
+        guiding = body.get("guiding")
+        if guiding is not None and norm_guiding_mode(guiding) is None:
+            return JSONResponse(status_code=400, content={
+                "detail": f"unknown guiding mode {guiding!r}: use 'guided' or 'unguided'"})
+        return await armer.arm(guiding=norm_guiding_mode(guiding))
     return await armer.disarm()
 
 
