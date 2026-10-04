@@ -633,6 +633,49 @@ def tracking_test_report(
         console.print(format_report(rep), markup=False, highlight=False)
 
 
+@app.command("flexure-report")
+def flexure_report(
+    date: str = typer.Option("", help="Night (YYYY-MM-DD, the evening date); "
+                                      "default the night that started last"),
+    solve: bool = typer.Option(True, "--solve/--no-solve",
+                               help="Plate-solve missing sampled subs with "
+                                    "ASTAP (first/middle/last Piggy sub and "
+                                    "one RC16 sub per block)"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Ask a running PhotonScript (GET /api/flexure) "
+                                 "instead of reading this machine's data"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-96: Piggy-600 vs RC16 differential flexure for one night: drift
+    rates of both rigs ("/min), their difference, per-pair shape comparison
+    and the hardware causes the pattern points to. Report only.
+
+    photonscript flexure-report --date 2026-09-25
+    """
+    import json as _json
+    from photonscript.scheduler.flexure import build_report, format_report
+    d = date or _last_night()
+    if url:
+        import urllib.parse
+        import urllib.request
+        q = urllib.parse.urlencode({"date": d, "refresh": "true"})
+        try:
+            with urllib.request.urlopen(url.rstrip("/") + "/api/flexure?" + q,
+                                        timeout=170) as r:
+                rep = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not read {url}: {e}[/red]")
+            raise typer.Exit(2)
+    else:
+        rep = build_report(_config_for_repo(Path(__file__).resolve().parents[1]),
+                           d, solve=solve)
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+    raise typer.Exit(0 if rep.get("ok") else 1)
+
+
 @app.command()
 def preflight():
     """Run the full daytime system test (config, dirs, NINA, PHD2, lint, Pushover)."""

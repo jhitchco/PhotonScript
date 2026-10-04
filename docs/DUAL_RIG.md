@@ -378,3 +378,36 @@ they differ. Nothing here deploys until `deploy.ps1`; the dev clone is
 - Keep `PS_PIGGYBACK_DARK_EXPOSURES` matched to the OSC sub length
   (`PS_PIGGYBACK_EXPOSURE_S`, default 120 s), and set the **NINA #2 camera offset
   to 256** so lights match the generated darks.
+
+### 9.7 Differential flexure report (PS-96)
+The Piggy-600 rides the RC16 mount unguided, so anything that moves the 600 mm
+relative to the RC16 (rings, dovetail, bracket, cable drag, focuser) trails
+its subs while the OAG-guided RC16 holds. `scheduler/flexure.py` measures it
+after each night (daytime backfill post-pass), report only:
+- **Measure first.** Since PS-96 the live grader measures OSC frames on a 2x2
+  superpixel (`image_validator._detect_stars_osc`) instead of the raw RGGB
+  mosaic; `scripts/ps96_osc_measure_check.py` compares the two on any Piggy
+  FITS (read-only). Backfill grades from before PS-94 stored ecc as 1-b/a
+  (newer ones are sqrt(1-(b/a)^2) like the live grader), so the report
+  compares axis ratios, not raw ecc numbers.
+- **Pairing.** Each Piggy sub is paired with the RC16 sub covering at least
+  80% of its exposure (pointing and pier side come from that RC16 header).
+  Subs straddling an RC16 move or a PHD2 dither are tagged and not fitted.
+- **Tracks.** Per target block and pier side, each sub's stars are registered
+  to the block's reference from the PS-80 sidecars (`shared/star_match.py`), and
+  turned into sky arcsec with plate solutions from `scheduler/solve_store.py`
+  (`<data_dir>/solves/<night>/<rig>.jsonl`; first, middle, last Piggy sub and
+  one RC16 sub per block, or every Piggy sub with `PS_FLEXURE_SOLVE_ALL`).
+  ASTAP is run with `-o` into a temp folder and never with `-update`.
+- **Rates.** Linear fits per dither-free segment; differential = Piggy minus
+  RC16 ("/min), which cancels dithers and common drift. Without both solves
+  only drift magnitudes are compared. A night is flagged when a block exceeds
+  `PS_FLEXURE_WARN_ARCSEC_MIN` (0.5"/min, about 0.8 px per 120 s sub).
+- **Causes** (ranked 0..1): rate follows d(alt)/dt and flips across the
+  meridian = rings / dovetail / bracket; step jumps = clamp slip or cable drag;
+  drift with rising ecc and changing HFR = focuser sag; field rotation the
+  same on both pier sides = polar error through the RC16 guide axis (PS-84).
+- Where: the night page section "Piggy-600 vs RC16", `GET /api/flexure?date=`
+  (`refresh=true` recomputes from stored solves), `photonscript
+  flexure-report --date D [--json] [--no-solve]`, and per-night flags in
+  `GET /api/trends` (`flexure`). No Pushover: the piggyback stays silent.

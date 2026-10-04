@@ -233,6 +233,29 @@ def analyze_trends(config, nights: int = 14) -> dict:
             "findings": findings}
 
 
+def flexure_nights(config, nights: int = 14) -> list[dict]:
+    """PS-96: per-night Piggy-600 vs RC16 flexure flag from the cached
+    flexure reports (written by the daytime backfill). Report only: no
+    Pushover (the piggyback stays silent, DUAL_RIG section 2)."""
+    from photonscript.scheduler.flexure import cached_report
+    from photonscript.scheduler.runs import list_runs
+    out = []
+    try:
+        dates = [r["date"] for r in list_runs(config)][:nights]
+    except Exception:  # noqa: BLE001
+        return out
+    for d in dates:
+        rep = cached_report(config, d)
+        if not rep or not rep.get("ok"):
+            continue
+        sm = rep.get("summary") or {}
+        out.append({"date": d, "flagged": bool(rep.get("flagged")),
+                    "max_diff_rate_arcsec_min": sm.get("max_diff_rate_arcsec_min"),
+                    "max_excess_arcsec_min": sm.get("max_excess_arcsec_min"),
+                    "top_cause": (rep.get("causes") or [{}])[0].get("cause")})
+    return out
+
+
 def _alert_state_path(config) -> Path:
     return Path(config.data_dir) / "trend_alerts.json"
 

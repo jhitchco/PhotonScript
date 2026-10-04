@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import math
-import subprocess
 from datetime import datetime
 from pathlib import Path
 
@@ -77,28 +76,15 @@ def radec_from_header(hdr) -> tuple[float, float] | None:
 
 
 def _astap_solve(config, path: Path) -> tuple[float, float] | None:
-    exe = getattr(config, "astap_exe",
-                  r"C:\Program Files\astap\astap.exe")
-    if not Path(exe).exists():
+    """(ra, dec) deg of one frame by ASTAP (-r 30, no FOV hint), via the
+    PS-96 solve store's runner (which never rewrites the FITS and keeps
+    ASTAP's .ini/.wcs out of the capture folder). Attribution only: not
+    stored."""
+    from photonscript.scheduler.solve_store import solve
+    sol = solve(config, path)
+    if sol is None:
         return None
-    try:
-        subprocess.run([exe, "-f", str(path), "-r", "30"],
-                       capture_output=True, timeout=120)
-        ini = path.with_suffix(".ini")
-        if not ini.exists():
-            return None
-        kv = {}
-        for line in ini.read_text(errors="replace").splitlines():
-            if "=" in line:
-                k, v = line.split("=", 1)
-                kv[k.strip().upper()] = v.strip()
-        ini.unlink(missing_ok=True)
-        path.with_suffix(".wcs").unlink(missing_ok=True)
-        if kv.get("PLTSOLVD", "").upper().startswith("T") or "CRVAL1" in kv:
-            return float(kv["CRVAL1"]) % 360, float(kv["CRVAL2"])
-    except Exception as e:  # noqa: BLE001
-        logger.warning("ASTAP solve failed for %s: %s", path.name, e)
-    return None
+    return sol["ra"], sol["dec"]
 
 
 def _sep_deg(ra1, dec1, ra2, dec2) -> float:

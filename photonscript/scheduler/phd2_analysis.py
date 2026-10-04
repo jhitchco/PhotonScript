@@ -1016,10 +1016,17 @@ class GuideTimeline:
 
     def __init__(self, sessions_raw, config):
         self.frames, self.spans = [], []
+        self.dithers = []  # PS-96: UTC of every dither (after the frame before it)
         for sec, scale in sessions_raw:
             st = to_utc(config, sec["start_local"])
             if st is None:
                 continue
+            for e in sec.get("events") or ():
+                if e[0] == "dither":
+                    i = int(e[1] or 0)
+                    fr = sec["frames"]
+                    t = fr[min(i, len(fr)) - 1]["t"] if i > 0 and fr else 0.0
+                    self.dithers.append(st + timedelta(seconds=t))
             last = sec["frames"][-1]["t"] if sec["frames"] else 0.0
             en = to_utc(config, sec["end_local"]) if sec["end_local"] and \
                 sec["closed"] in ("ended", "aborted") else None
@@ -1029,6 +1036,13 @@ class GuideTimeline:
                                     id(sec)))
         self.frames.sort(key=lambda x: x[0])
         self._keys = [x[0] for x in self.frames]
+        self.dithers.sort()
+
+    def dithers_between(self, start_utc: datetime, end_utc: datetime) -> list:
+        """PS-96: dither times inside [start_utc, end_utc]."""
+        lo = bisect.bisect_left(self.dithers, start_utc)
+        hi = bisect.bisect_right(self.dithers, end_utc)
+        return self.dithers[lo:hi]
 
     def stats(self, start_utc: datetime, exp_s: float) -> dict:
         end = start_utc + timedelta(seconds=float(exp_s or 0))

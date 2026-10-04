@@ -462,6 +462,14 @@ class PhotonScriptConfig(BaseSettings):
                                          # can't see the RC16's meridian flip or a bad
                                          # AF (HFR trigger baselines on it), so this is
                                          # the in-sequence repair. 0 = off.
+    flexure_warn_arcsec_min: float = 0.5  # PS-96: flag a night when the Piggy-600
+                                      # drifts this much faster than the RC16
+                                      # ("/min; 0.5 = ~0.8 px per 120 s OSC sub).
+                                      # Report only: no sub is rejected by it.
+    flexure_solve_all: bool = False  # PS-96: plate-solve EVERY Piggy sub in the
+                                     # daytime flexure pass (absolute track + PS-67
+                                     # data, a few s of scope-PC CPU each). Off =
+                                     # first/middle/last per block + one RC16 sub.
     arm_preconfig_lead_min: int = 30  # dispatch the sequence this many min before dusk
     cool_lead_minutes: int = 30  # the night sequence turns the cooler + dew heater ON
                                  # this many min before astro dark (and not before),

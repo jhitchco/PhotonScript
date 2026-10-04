@@ -110,6 +110,8 @@
             <div id="calibration" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
             <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Piggy-600 vs RC16 <span class="bd">(differential flexure, PS-96)</span></h2>
+            <div id="flexure" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Guiding <span class="bd">(PHD2 guide log, PS-88)</span></h2>
             <div id="guiding" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Optics (tilt / collimation) <span class="bd">(star sidecars, PS-95)</span></h2>
@@ -339,6 +341,34 @@
                 : 'no calibration frames captured this night') +
             (cal.advice.length ? '<br>' + cal.advice.map(a =>
                 '<span class="warn">⚠ ' + a + '</span>').join('<br>') : '');
+        function renderFlexure(fx, date) {  // PS-96
+            const box = document.getElementById('flexure');
+            const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (!fx || !fx.ok) { box.textContent = (fx && fx.note) || 'no flexure report for this night'; return; }
+            const s = fx.summary, v = x => x == null ? '-' : x;
+            const head = (fx.flagged ? '<span class="bad"><b>FLAGGED</b></span> ' : '<span>ok</span> ') +
+                s.piggy_subs + ' Piggy subs, ' + s.paired + ' paired &middot; ' + s.straddled_slew +
+                ' straddle an RC16 move, ' + s.straddled_dither + ' a dither &middot; warn above ' +
+                fx.warn_arcsec_min + '&quot;/min &middot; <a href="/api/flexure?date=' + encodeURIComponent(date) +
+                '" target="_blank">full report</a>';
+            const rows = fx.blocks.map(b => '<tr' + (b.flagged ? ' class="bad"' : '') + '><td>' +
+                esc(b.target || '?') + '</td><td>' + esc(b.pier_side || '?') + '</td><td>' +
+                esc((b.start_utc || '').slice(11, 16)) + '-' + esc((b.end_utc || '').slice(11, 16)) + 'Z</td><td>' +
+                v(b.alt_start) + '&rarr;' + v(b.alt_end) + '</td><td>' + v(b.piggy_rate_arcsec_min) +
+                '</td><td>' + v(b.rc16_rate_arcsec_min) + (b.rc16_assumed_still ? '*' : '') + '</td><td><b>' +
+                (b.diff_rate_arcsec_min != null ? b.diff_rate_arcsec_min
+                    : (b.excess_arcsec_min != null ? '~' + b.excess_arcsec_min : '-')) + '</b></td><td>' + v(b.rotation_deg_h) + '</td><td>' +
+                v(b.steps) + '</td><td>' + esc(b.frame) + '</td></tr>').join('');
+            box.innerHTML = head + '<table class="runs" style="margin-top:.3rem;"><tr><th>target</th>' +
+                '<th>pier</th><th>UTC</th><th>alt</th><th>Piggy &quot;/min</th><th>RC16 &quot;/min</th>' +
+                '<th>diff &quot;/min</th><th>rot deg/h</th><th>steps</th><th>frame</th></tr>' + rows + '</table>' +
+                (fx.blocks.some(b => b.rc16_assumed_still) ? '<span style="opacity:.7">* no RC16 track: taken as held by guiding</span><br>' : '') +
+                (fx.blocks.some(b => b.diff_rate_arcsec_min == null && b.excess_arcsec_min != null) ? '<span style="opacity:.7">~ no plate solution for both rigs: Piggy drift minus RC16 drift (magnitudes)</span><br>' : '') +
+                (fx.causes || []).map(c => 'Likely: <b>' + esc(c.cause) + '</b> (' + esc(c.score) + ') ' +
+                    esc(c.evidence) + '<br><span style="opacity:.8">Check: ' + esc(c.check) + '</span>').join('<br>') +
+                (fx.notes || []).map(n => '<br><span class="warn">' + esc(n) + '</span>').join('');
+        }
         function renderGuiding(g, date) {  // PS-88
             const box = document.getElementById('guiding');
             const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
@@ -407,6 +437,7 @@
         renderOptics(d.optics, date);
         renderSubs();
         renderReviewBar(d);
+        renderFlexure(d.flexure, date);
         maybeWarmThumbs(date);
     }
     async function maybeWarmThumbs(date) {

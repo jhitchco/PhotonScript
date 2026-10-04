@@ -820,6 +820,17 @@ def start_backfill(config, date: str) -> None:
                                 "stored)", date, fm["added"], fm["total"])
             except Exception as e:  # noqa: BLE001
                 logger.warning("Focus-model ingest failed for %s: %s", date, e)
+            try:  # PS-96: Piggy-600 vs RC16 differential flexure (report
+                # only; sampled ASTAP solves, cached for the night page)
+                from photonscript.scheduler.flexure import build_report
+                fx = build_report(config, date, solve=True)
+                if fx.get("flagged"):
+                    logger.warning("Flexure %s: Piggy-600 drifts %s\"/min more "
+                                   "than the RC16", date,
+                                   fx["summary"].get("max_diff_rate_arcsec_min")
+                                   or fx["summary"].get("max_excess_arcsec_min"))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Flexure report failed for %s: %s", date, e)
         finally:
             st["running"] = False
             st["current"] = None

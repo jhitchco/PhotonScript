@@ -147,6 +147,103 @@ def _detect_stars(data: np.ndarray, background: float, noise: float, threshold: 
         return stars
 
 
+# --- PS-96 step 0: one-shot-color (Piggy-600) measure -----------------------
+# The OSC rig was graded on the RAW RGGB mosaic through the RC16's 3x3 median.
+# Its stars are only ~2 to 3 px FWHM at 1.29"/px, so the Bayer pattern (green
+# on a checkerboard, R and B on every other row/column) and the median bend
+# their second moments. Measuring on a 2x2 superpixel (R+G+G+B summed, so each
+# output pixel is one full color cell) removes the pattern; the median is kept
+# only when the stars are big enough not to notice it (on the superpixel grid
+# a focused Piggy star has an HFR of ~1.6 px, which a 3x3 median visibly
+# widens and squares). Coordinates, HFR and
+# FWHM go back out in native pixels so sidecars, corner spread and saturation
+# checks stay on the native grid.
+
+OSC_MEDIAN_MIN_HFR_PX = 2.5  # SUPERPIXEL px (5 native): below this the 3x3
+                             # median is skipped
+
+
+def is_osc_frame(file_path: str, rig: str = "rc16") -> bool:
+    """True for a one-shot-color frame: the piggyback rig, or a FITS header
+    that carries BAYERPAT (any rig, so a mislabeled OSC frame still gets the
+    color-safe measure)."""
+    if rig == "piggyback":
+        return True
+    if Path(file_path).suffix.lower() not in (".fits", ".fit", ".fts"):
+        return False
+    try:
+        from astropy.io import fits
+        return bool(str(fits.getheader(file_path).get("BAYERPAT") or "").strip())
+    except Exception:  # noqa: BLE001 - unreadable header = not OSC
+        return False
+
+
+def superpixel(data: np.ndarray) -> np.ndarray:
+    """2x2 sum of the Bayer mosaic (odd last row/column dropped)."""
+    h, w = (data.shape[0] // 2) * 2, (data.shape[1] // 2) * 2
+    d = np.asarray(data[:h, :w], dtype=np.float32)
+    return d[0::2, 0::2] + d[0::2, 1::2] + d[1::2, 0::2] + d[1::2, 1::2]
+
+
+def _sep_stars_superpixel(sp: np.ndarray, median: bool,
+                          threshold: float = 5.0) -> list[dict]:
+    """sep on a superpixel image; returns stars in NATIVE pixels. The
+    real-star cuts are the native ones scaled by the 2x bin (area / 4,
+    lengths / 2)."""
+    try:
+        import sep
+    except ImportError:
+        import sep_pjw as sep
+    d = np.ascontiguousarray(sp, dtype=np.float32)
+    if median:
+        from scipy import ndimage as _ndi
+        d = _ndi.median_filter(d, size=3)
+    bkg = sep.Background(d)
+    sub = d - bkg
+    objects = sep.extract(sub, threshold, err=bkg.globalrms, minarea=3)
+    objects = objects[(objects["npix"] >= 3) & (objects["b"] > 0.35)]
+    if len(objects) > 400:
+        objects = objects[np.argsort(objects["flux"])[::-1][:400]]
+    stars = []
+    for obj in objects:
+        fr, _ = sep.flux_radius(sub, [obj["x"]], [obj["y"]],
+                                [6.0 * obj["a"]], 0.5)
+        a, b = float(obj["a"]), float(obj["b"])
+        stars.append({
+            # superpixel i covers native 2i and 2i+1: its center is 2i+0.5
+            "x": 2.0 * float(obj["x"]) + 0.5,
+            "y": 2.0 * float(obj["y"]) + 0.5,
+            "flux": float(obj["flux"]),
+            "a": 2.0 * a, "b": 2.0 * b,
+            "theta": float(obj["theta"]),
+            "fwhm": 2.0 * a * 2.355,
+            "hfr": 2.0 * (float(fr[0]) if len(fr) > 0 else a),
+            "eccentricity": float(np.sqrt(max(1.0 - (b / a) ** 2, 0.0)))
+            if a > 0 else 0.0,
+        })
+    return stars
+
+
+def _detect_stars_osc(data: np.ndarray) -> list[dict]:
+    """PS-96: superpixel star measure for one-shot-color frames. First pass
+    with the 3x3 median (robust to hot pixels); if the stars are small
+    (median HFR under OSC_MEDIAN_MIN_HFR_PX superpixels) measure again without
+    it, since the median would widen and square them. Hot pixels stay out
+    either way: a single hot photosite is a 1-superpixel spike, below the
+    npix cut."""
+    try:
+        sp = superpixel(data)
+        stars = _sep_stars_superpixel(sp, median=True)
+        hfrs = [s["hfr"] for s in stars if s["hfr"] > 0]
+        if hfrs and float(np.median(hfrs)) / 2.0 < OSC_MEDIAN_MIN_HFR_PX:
+            raw = _sep_stars_superpixel(sp, median=False)
+            if raw:
+                stars = raw
+        return stars
+    except ImportError:
+        return _detect_stars(data, *_estimate_background_and_noise(data[::4, ::4]))
+
+
 def _corner_spread(stars: list[dict], shape: tuple[int, int],
                    median_fwhm: float) -> Optional[float]:
     """Corner FWHM spread relative to the frame median.
@@ -273,7 +370,9 @@ def validate_image(
     background, noise = _estimate_background_and_noise(data[::4, ::4])
     snr = background / noise if noise > 0 else 0
 
-    stars = _detect_stars(data, background, noise)
+    osc = is_osc_frame(file_path, rig)
+    stars = (_detect_stars_osc(data) if osc
+             else _detect_stars(data, background, noise))
     exposure = _exposure_metrics(data, stars, noise, config)
 
     median_fwhm_px = median_hfr_px = median_ecc = None
@@ -302,7 +401,8 @@ def validate_image(
                 theta=[s.get("theta") for s in stars],
                 flux=[s.get("flux") for s in stars],
                 w=data.shape[1], h=data.shape[0], limit=n_max,
-                grader="live-sep", rig=rig, ecc_def="sqrt(1-(b/a)^2)")
+                grader="live-sep-superpixel" if osc else "live-sep",
+                rig=rig, ecc_def="sqrt(1-(b/a)^2)")
     except Exception as e:  # noqa: BLE001
         logger.debug("star table skipped: %s", e)
 
