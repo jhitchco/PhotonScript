@@ -566,10 +566,14 @@
         };
         document.getElementById('subTable').innerHTML =
             '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
-            '<th>HFR</th><th>Ecc</th><th>Stars</th><th>Bkg</th><th>Expo</th><th>QA</th></tr>' +
+            '<th>HFR</th><th title="native 0.24&quot;/px, sqrt(1-(b/a)^2)">Ecc</th>' +
+            '<th title="2x2 binned, 0.48&quot;/px (PS-94)">Ecc (bin)</th>' +
+            '<th>Stars</th><th>Bkg</th><th>Expo</th><th>QA</th></tr>' +
             subs.map(s => '<tr><td>' + (s.time || '').slice(11, 19) + '</td><td>' +
                 s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
-                's</td><td>' + (s.hfr ?? '–') + '</td><td>' + (s.ecc ?? '–') +
+                's</td><td>' + (s.hfr ?? '–') + '</td><td' +
+                (s.ecc_raw != null ? ' title="stored as 1-b/a ' + s.ecc_raw + '"' : '') +
+                '>' + (s.ecc ?? '–') + '</td><td>' + (s.ecc_bin ?? '\u2013') +
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
                 '</td><td style="color:' + (s.exposure === 'ok' ? '#4ade80'
                     : s.exposure === 'under' ? '#eab308'

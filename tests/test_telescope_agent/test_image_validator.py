@@ -103,3 +103,57 @@ class TestFwhmSoftGate:
         # advisory, so the sub is kept and FWHM never appears as a rejection.
         assert m.passed_qa is True
         assert "FWHM" not in (m.rejection_reason or "")
+
+
+def _write_rc16_field(path, seed=0):
+    """FWHM 8 px stars (the RC16 at 0.24"/px in 2" seeing), stretched 5:4."""
+    from astropy.io import fits
+    rng = np.random.default_rng(seed)
+    data = rng.normal(600, 9, (300, 300)).astype(np.float32)
+    yy, xx = np.mgrid[-15:16, -15:16]
+    g = np.exp(-0.5 * (xx ** 2 / 3.8 ** 2 + yy ** 2 / 3.04 ** 2))
+    for cy in range(30, 280, 40):
+        for cx in range(30, 280, 40):
+            data[cy - 15:cy + 16, cx - 15:cx + 16] += (6000.0 * g).astype(
+                np.float32)
+    fits.PrimaryHDU(data.astype(np.uint16)).writeto(path, overwrite=True)
+    return str(path)
+
+
+class TestBinnedMeasurePS94:
+    """PS-94: RC16 subs also get ecc / HFR on a 2x2-binned copy; the
+    Piggy-600 does not; qa_ecc_binned=False turns it off."""
+
+    def _cfg(self, **kw):
+        return PhotonScriptConfig(_env_file=None, camera_read_noise_adu=8.0,
+                                  **kw)
+
+    def test_rc16_gets_ecc_bin(self, tmp_path):
+        pytest.importorskip("sep")
+        m = validate_image(_write_rc16_field(tmp_path / "a.fits"), self._cfg(),
+                           pixel_scale=0.24, rig="rc16")
+        assert m.ecc_bin is not None and m.stars_bin and m.stars_bin >= 30
+        assert m.hfr_bin_px == pytest.approx(m.hfr_pixels, rel=0.2)
+        # both sqrt form, near the true 0.6 (b/a 0.8)
+        assert m.eccentricity == pytest.approx(0.6, abs=0.04)
+        assert m.ecc_bin == pytest.approx(0.6, abs=0.08)
+
+    def test_piggyback_and_switch_off_have_none(self, tmp_path):
+        p = _write_rc16_field(tmp_path / "b.fits")
+        m = validate_image(p, self._cfg(), pixel_scale=1.29, rig="piggyback")
+        assert m.ecc_bin is None and m.hfr_bin_px is None and m.stars_bin is None
+        m = validate_image(p, self._cfg(qa_ecc_binned=False), pixel_scale=0.24,
+                           rig="rc16")
+        assert m.ecc_bin is None
+
+    def test_ecc_bin_is_info_only_by_default(self, tmp_path):
+        pytest.importorskip("sep")
+        from photonscript.shared import qa_rules
+        from photonscript.telescope_agent.image_validator import image_metrics
+        m = validate_image(_write_rc16_field(tmp_path / "c.fits"), self._cfg(),
+                           pixel_scale=0.24, rig="rc16")
+        card = qa_rules.evaluate(image_metrics(m),
+                                 qa_rules.context(self._cfg(), "rc16"))
+        rows = {c.id: c for c in card.checks}
+        assert rows["ecc_bin"].status == "skip" and rows["ecc_bin"].value is not None
+        assert rows["ecc"].status in ("pass", "warn", "fail")

@@ -20,7 +20,8 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
 
 ``metrics`` keys (all optional; a missing input makes its check "skip"):
   hfr (native px), fwhm_arcsec (only when the grader truly measured FWHM),
-  ecc, stars, background, exp_s, ccd_temp, set_temp (header SET-TEMP),
+  ecc (native scale), ecc_bin (2x2-binned, 0.48"/px; PS-94), stars,
+  background, exp_s, ccd_temp, set_temp (header SET-TEMP),
   guide_rms, guide_state, doubled_frac, exposure (ok|under|clipped|sat-stars),
   clipped_pct, sat_stars_pct, swamp, pointing_offset_arcmin.
 """
@@ -33,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-RULES_VERSION = "ps21.1"
+RULES_VERSION = "ps21.2"   # ps21.2 (PS-94): sqrt-form ecc everywhere + ecc_bin
 
 PASS, WARN, FAIL, SKIP = "pass", "warn", "fail", "skip"
 APPROVED, NEEDS_LOOK, REJECTED = "approved", "needs-look", "rejected"
@@ -41,6 +42,8 @@ APPROVED, NEEDS_LOOK, REJECTED = "approved", "needs-look", "rejected"
 # id -> (label, unit, "what I want to see"); order = scorecard order
 CHECKS: dict[str, tuple[str, str, str]] = {
     "ecc": ("Eccentricity", "", "round stars (no trailing, wind or drift)"),
+    "ecc_bin": ("Eccentricity at 0.48\"/px", "",
+                "round stars at the 2x2-binned integration scale"),
     "hfr": ("HFR (focus)", "px", "tight stars (autofocus held)"),
     "hfr_rel": ("HFR vs night median", "px",
                 "as sharp as the night's other subs of this target + filter"),
@@ -92,6 +95,11 @@ def _rig_auto_approves(config, rig: str) -> bool:
     return str(rig or "rc16").lower() in rigs
 
 
+def _ecc_scale(config) -> str:
+    s = str(_f(config, "qa_ecc_scale", "native") or "native").strip().lower()
+    return s if s in ("native", "binned") else "native"
+
+
 def thresholds(config, rig: str = "rc16", target: str | None = None,
                filter: str | None = None) -> dict:  # noqa: A002
     """Every limit the rules use, resolved for one rig (and target/filter).
@@ -108,6 +116,11 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         "rig": rig,
         "pixel_scale": float(_f(cfg, "pixel_scale_arcsec", 1.0)),
         "ecc_max": float(_f(cfg, "quality_eccentricity_max", 0.70)),
+        # PS-94: the 2x2-binned gate (defaults to the native one) and which
+        # scale gates: "native" (default) or "binned"; the other is info only
+        "ecc_max_bin": float(_f(cfg, "quality_eccentricity_max_binned", 0)
+                             or _f(cfg, "quality_eccentricity_max", 0.70)),
+        "ecc_scale": _ecc_scale(config),
         "hfr_max": float(_f(cfg, "quality_hfr_abs_max", 10.0)),
         "hfr_rel_factor": float(_f(config, "qa_hfr_outlier_factor", 1.4)),
         "hfr_rel_min_subs": int(_f(config, "qa_night_min_subs", 5)),
@@ -257,6 +270,8 @@ SKIP_TEXT = {
     "hfr_rel": "needs enough subs of this target + filter tonight",
     "bg_rel": "needs enough subs of this target + filter tonight",
     "fwhm": "not measured by this grader",
+    "ecc_bin": "info only, or not measured (RC16 only); qa_ecc_scale picks "
+               "the gating scale",
     "tracking_jump": "not measured by this grader",
     "guide_rms": "not judged (unguided, or PS-70 units pending)",
     "pointing": "pending PS-67 (pointing data)",
@@ -371,11 +386,31 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     bg = _num(m.get("background"))
     exp_s = _num(m.get("exp_s"))
 
-    # ecc
-    checks.append(_max_check(
-        "ecc", ecc, t["ecc_max"], wf,
-        f"Eccentricity {ecc:.2f} > {t['ecc_max']:g} (trailing/drift)"
-        if ecc is not None else ""))
+    # ecc at native scale and at 0.48"/px (PS-94): one of them gates
+    # (qa_ecc_scale), the other is recorded as info only. With no binned
+    # value (Piggy-600, older records) the native one gates whatever the
+    # setting, so a sub is never left ungated.
+    ecc_bin = _num(m.get("ecc_bin"))
+    lim_b = t.get("ecc_max_bin", t["ecc_max"])
+    gate_bin = t.get("ecc_scale") == "binned" and ecc_bin is not None
+    if gate_bin:
+        checks.append(Check("ecc", _r(ecc), t["ecc_max"], SKIP,
+                            "info only: gating at 0.48\"/px"))
+    else:
+        checks.append(_max_check(
+            "ecc", ecc, t["ecc_max"], wf,
+            f"Eccentricity {ecc:.2f} > {t['ecc_max']:g} (trailing/drift)"
+            if ecc is not None else ""))
+    if ecc_bin is None:
+        checks.append(Check("ecc_bin", None, lim_b, SKIP, "not measured"))
+    elif gate_bin:
+        checks.append(_max_check(
+            "ecc_bin", ecc_bin, lim_b, wf,
+            f"Eccentricity at 0.48\"/px {ecc_bin:.2f} > {lim_b:g} "
+            "(trailing/drift)"))
+    else:
+        checks.append(Check("ecc_bin", _r(ecc_bin), lim_b, SKIP,
+                            "info only: gating at native scale"))
     # hfr absolute
     checks.append(_max_check(
         "hfr", hfr, t["hfr_max"], wf,
@@ -580,21 +615,49 @@ def night_context(records: list[dict]) -> dict[tuple, dict]:
             for k, v in groups.items()}
 
 
+def record_ecc(rec: dict, key: str = "ecc"):
+    """A stored eccentricity in sqrt(1-(b/a)^2) form (PS-94). Pre-PS-94
+    backfill records ("sep-binned", no ecc_def) hold 1-b/a and are converted
+    with star_shape.lin_to_sqrt; everything else is already sqrt form."""
+    from photonscript.shared.star_shape import LIN_DEF, to_sqrt
+    v = _num(rec.get(key))
+    if v is None:
+        return None
+    d = rec.get("ecc_def")
+    if d is None and rec.get("graded_by") == "sep-binned":
+        d = LIN_DEF
+    return to_sqrt(v, d)
+
+
+def gating_ecc(rec: dict, t: dict) -> tuple:
+    """(eccentricity, limit) the gate judges for a stored record under
+    thresholds `t`: the binned pair when qa_ecc_scale is "binned" and the
+    record has ecc_bin, else the native pair. Sqrt form."""
+    eb = record_ecc(rec, "ecc_bin")
+    if t.get("ecc_scale") == "binned" and eb is not None:
+        return eb, float(t.get("ecc_max_bin", t["ecc_max"]))
+    return record_ecc(rec), float(t["ecc_max"])
+
+
 def metrics_from_record(rec: dict) -> dict:
     """Stored sub record -> evaluate() metrics. Backfill records (graded_by
-    set) carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped."""
+    set) carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped.
+    PS-94: ecc comes back in sqrt form (old 1-b/a records converted)."""
     m = {k: rec.get(k) for k in (
-        "hfr", "ecc", "stars", "background", "exp_s", "ccd_temp", "set_temp",
+        "hfr", "ecc", "ecc_bin", "stars", "background", "exp_s", "ccd_temp",
+        "set_temp",
         "guide_rms", "guide_state", "doubled_frac", "exposure", "clipped_pct",
         "sat_stars_pct", "swamp", "pointing_offset_arcmin")}
     m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
+    m["ecc"] = record_ecc(rec)
+    m["ecc_bin"] = record_ecc(rec, "ecc_bin")
     return m
 
 
 def record_metrics(**kw) -> dict:
     """The canonical metrics dict both graders build (unknown keys dropped)."""
-    keys = ("hfr", "fwhm_arcsec", "ecc", "stars", "background", "exp_s",
-            "ccd_temp", "set_temp", "guide_rms", "guide_state",
+    keys = ("hfr", "fwhm_arcsec", "ecc", "ecc_bin", "stars", "background",
+            "exp_s", "ccd_temp", "set_temp", "guide_rms", "guide_state",
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin")
     return {k: kw.get(k) for k in keys}

@@ -23,7 +23,8 @@ from statistics import median
 
 logger = logging.getLogger(__name__)
 
-# Thresholds tuned to the code's ecc / PA conventions (ecc 0=round..1=line;
+# Thresholds tuned to the code's ecc / PA conventions (ecc 0=round..1=line,
+# sqrt(1-(b/a)^2) form: PS-94 converts old 1-b/a backfill records on read;
 # ecc_pa_R 0=random direction..1=one direction; ecc_radial_frac = fraction of
 # elongation aligned with the radial vector).
 _ECC_ELONG = 0.60      # median eccentricity above this = elongated
@@ -62,7 +63,14 @@ def analyze_trends(config, nights: int = 14) -> dict:
         xs = [float(s[key]) for s in subs if s.get(key) is not None]
         return round(median(xs), 3) if xs else None
 
-    m_ecc, m_pa = med("ecc"), med("ecc_pa_R")
+    # PS-94: the gating-scale ecc in sqrt form (old "sep-binned" records
+    # held 1-b/a, which read far rounder than the same stars graded live)
+    from photonscript.shared import qa_rules
+    t = qa_rules.thresholds(config, "rc16")
+    eccs = [e for e in (qa_rules.gating_ecc(s, t)[0] for s in subs)
+            if e is not None]
+    m_ecc = round(median(eccs), 3) if eccs else None
+    m_pa = med("ecc_pa_R")
     m_rad, m_hfr = med("ecc_radial_frac"), med("hfr")
     nights_span = len({s["_night"] for s in subs})
     findings: list[dict] = []

@@ -215,10 +215,36 @@ def image_metrics(quality: ImageQualityMetrics) -> dict:
     from photonscript.shared.qa_rules import record_metrics
     return record_metrics(
         hfr=quality.hfr_pixels, fwhm_arcsec=quality.fwhm_arcsec,
-        ecc=quality.eccentricity, stars=quality.star_count,
+        ecc=quality.eccentricity, ecc_bin=quality.ecc_bin,
+        stars=quality.star_count,
         background=quality.background_adu, exposure=quality.exposure_flag,
         clipped_pct=quality.clipped_pct, sat_stars_pct=quality.sat_star_pct,
         swamp=quality.swamp_factor)
+
+
+def _binned_metrics(data: np.ndarray, config, rig: str) -> dict:
+    """PS-94: eccentricity and HFR on a 2x2-binned copy (0.48"/px on the
+    RC16, the scale the _bin2 masters integrate at), recorded next to the
+    native measure. RC16 only, and only while qa_ecc_binned is on. Which
+    scale gates is qa_rules' business (qa_ecc_scale). Never costs a grade."""
+    if rig != "rc16" or not bool(getattr(config, "qa_ecc_binned", True)):
+        return {}
+    import time
+    t0 = time.monotonic()
+    try:
+        from photonscript.shared import star_shape
+        res = star_shape.measure(star_shape.bin2x2_mean(data), binned=True)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("binned measure skipped: %s", e)
+        return {}
+    if res is None:
+        return {}
+    logger.debug("binned measure: %d stars in %.2fs", res["n"],
+                 time.monotonic() - t0)
+    return {"ecc_bin": round(res["ecc"], 3) if res["ecc"] is not None else None,
+            "hfr_bin_px": round(res["hfr_px"], 2)
+            if res["hfr_px"] is not None else None,
+            "stars_bin": res["n"]}
 
 
 def validate_image(
@@ -280,6 +306,8 @@ def validate_image(
     except Exception as e:  # noqa: BLE001
         logger.debug("star table skipped: %s", e)
 
+    binned = _binned_metrics(data, config, rig)
+
     quality = ImageQualityMetrics(
         fwhm_arcsec=round(fwhm_arcsec, 2) if fwhm_arcsec is not None else None,
         hfr_pixels=round(median_hfr_px, 2) if median_hfr_px is not None else None,
@@ -290,6 +318,7 @@ def validate_image(
         snr=round(snr, 1),
         corner_spread=round(corner_spread, 3) if corner_spread is not None else None,
         star_table=star_table,
+        **binned,
         **exposure,
     )
     from photonscript.shared.qa_rules import context, evaluate

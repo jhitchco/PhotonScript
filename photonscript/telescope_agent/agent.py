@@ -948,6 +948,9 @@ class TelescopeAgent:
                 "ccd_temp": self.state.camera_temp_c,
                 "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,
                 "stars": quality.star_count, "ecc": quality.eccentricity,
+                # PS-94: 2x2-binned measure (RC16), both ecc in sqrt form
+                "ecc_bin": quality.ecc_bin, "hfr_bin": quality.hfr_bin_px,
+                "ecc_def": "sqrt(1-(b/a)^2)",
                 "background": quality.background_adu,
                 # PS-21: measured inputs live grading used to drop
                 "noise": quality.noise_adu,

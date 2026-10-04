@@ -212,7 +212,8 @@ def test_live_and_backfill_parity_on_the_same_metrics(tmp_path, monkeypatch,
     def fake_validate(path, config, pixel_scale=None, rig="rc16"):
         return ImageQualityMetrics(
             hfr_pixels=mets["hfr"], fwhm_arcsec=None, star_count=mets["stars"],
-            eccentricity=mets["ecc"], background_adu=mets["background"],
+            eccentricity=mets["ecc"], ecc_bin=mets["ecc"],
+            background_adu=mets["background"],
             noise_adu=mets["noise"], clipped_pct=mets["clipped_pct"],
             sat_star_pct=mets["sat_stars_pct"], swamp_factor=mets["swamp"],
             exposure_flag=mets["exposure"])
@@ -222,6 +223,9 @@ def test_live_and_backfill_parity_on_the_same_metrics(tmp_path, monkeypatch,
     monkeypatch.setattr(runs, "_measure", lambda b, c: {
         **mets, "doubled_frac": None, "graded_by": "sep-binned",
         "_stars": None})
+    # PS-94: no native re-measure here (it would read the real 64 px frame);
+    # the backfill then keeps the binned value for both ecc and ecc_bin
+    monkeypatch.setattr(runs, "_measure_native", lambda p: None)
 
     back = runs._fast_grade(f, cfg, [])
     asyncio.run(_agent(cfg, temp=0.4)._process_new_image(f))
@@ -448,3 +452,151 @@ def test_api_exposes_the_scorecard(tmp_path, monkeypatch):
     assert r.status_code == 200 and r.json()["mode"] == "dry-run"
     r = client.get(f"/api/runs/{NIGHT}/stars", params={"file": "x.fits"})
     assert r.status_code == 404
+
+
+# ------------------------------------------- PS-94: formula + binned scale
+
+def test_ps94_old_backfill_records_convert_to_sqrt_form(tmp_path):
+    """A pre-PS-94 'sep-binned' record holds 1-b/a: 0.20 is the same star as
+    sqrt-form 0.60. Live records and records with ecc_def are left alone."""
+    old = _rec("old", ecc=0.20, graded_by="sep-binned")
+    assert q.metrics_from_record(old)["ecc"] == pytest.approx(0.60)
+    assert q.record_ecc(old) == pytest.approx(0.60)
+    live = _rec("live", ecc=0.20)
+    assert q.metrics_from_record(live)["ecc"] == 0.20
+    new = _rec("new", ecc=0.20, graded_by="sep-binned",
+               ecc_def="sqrt(1-(b/a)^2)")
+    assert q.metrics_from_record(new)["ecc"] == 0.20
+    assert q.record_ecc(_rec("n", ecc=None, graded_by="sep-binned")) is None
+
+
+def test_ps94_rescore_tightens_old_backfill_records_dry_run(tmp_path):
+    """lin 0.25 (b/a 0.75) passed the 0.60 gate before; in sqrt form it is
+    0.66 and fails. Dry run: nothing is written."""
+    from photonscript.scheduler.runs import rescore_night, runs_dir
+    cfg = _cfg(tmp_path)
+    _seed(cfg, [_rec("old", ecc=0.25, graded_by="sep-binned"),
+                _rec("live", ecc=0.25)])
+    p = runs_dir(cfg) / f"{NIGHT}_subs.jsonl"
+    before = p.read_text()
+    res = rescore_night(cfg, NIGHT)
+    assert p.read_text() == before
+    assert res["counts"]["newly_rejected"] == 1
+    (d,) = [x for x in res["diffs"] if x["action"] == "rejected"]
+    assert d["file"] == "LIGHT/old.fits" and d["drivers"] == ["ecc"]
+
+
+def test_ps94_native_gate_by_default_binned_info_only(tmp_path):
+    cfg = _cfg(tmp_path)
+    t = q.thresholds(cfg, "rc16")
+    assert t["ecc_scale"] == "native" and t["ecc_max_bin"] == 0.6
+    card = q.evaluate({"ecc": 0.66, "ecc_bin": 0.55, "stars": 100},
+                      q.context(cfg, "rc16"))
+    rows = {c.id: c for c in card.checks}
+    assert rows["ecc"].status == "fail" and rows["ecc_bin"].status == "skip"
+    assert rows["ecc_bin"].value == 0.55
+    assert card.drivers == ["ecc"]
+    # the compact row keeps the value; expand() explains the skip
+    exp = {r["id"]: r for r in q.expand(card.compact())}
+    assert "info only" in exp["ecc_bin"]["reason"]
+
+
+def test_ps94_binned_gate_when_chosen(tmp_path):
+    cfg = _cfg(tmp_path, qa_ecc_scale="binned",
+               quality_eccentricity_max_binned=0.55)
+    t = q.thresholds(cfg, "rc16")
+    assert t["ecc_scale"] == "binned" and t["ecc_max_bin"] == 0.55
+    card = q.evaluate({"ecc": 0.66, "ecc_bin": 0.45, "stars": 100},
+                      q.context(cfg, "rc16"))
+    rows = {c.id: c for c in card.checks}
+    assert rows["ecc"].status == "skip" and rows["ecc"].value == 0.66
+    assert rows["ecc_bin"].status == "pass" and "ecc" not in card.drivers
+    card = q.evaluate({"ecc": 0.40, "ecc_bin": 0.58, "stars": 100},
+                      q.context(cfg, "rc16"))
+    assert card.drivers == ["ecc_bin"]
+    assert card.reason.startswith("Eccentricity at 0.48\"/px 0.58 > 0.55")
+    # no binned value (Piggy-600, older record): native gates anyway
+    card = q.evaluate({"ecc": 0.66, "stars": 100}, q.context(cfg, "rc16"))
+    assert card.drivers == ["ecc"]
+    # gating_ecc follows the same choice
+    assert q.gating_ecc({"ecc": 0.66, "ecc_bin": 0.5}, t) == (0.5, 0.55)
+    assert q.gating_ecc({"ecc": 0.66}, t) == (0.66, 0.6)
+    assert q.gating_ecc({"ecc": 0.66, "ecc_bin": 0.5},
+                        q.thresholds(_cfg(tmp_path), "rc16")) == (0.66, 0.6)
+
+
+def test_ps94_bad_scale_setting_falls_back_to_native(tmp_path):
+    assert q.thresholds(_cfg(tmp_path, qa_ecc_scale="Bin2"),
+                        "rc16")["ecc_scale"] == "native"
+
+
+def test_ps94_backfill_records_both_scales_in_sqrt_form(tmp_path):
+    from photonscript.scheduler.runs import _fast_grade
+    from photonscript.shared import star_table
+    _need_sep()
+    cfg = _cfg(tmp_path)
+    rel = "LIGHT/e_Ha_300s_0001.fits"
+    f = _write_light(tmp_path / "fits" / NIGHT / rel, sigma=3.4)
+    rec = _fast_grade(f, cfg, [], stars_to=(NIGHT, rel))
+    assert rec["ecc_def"] == "sqrt(1-(b/a)^2)" and rec["ecc_at"] == "native"
+    assert rec["ecc"] is not None and rec["ecc_bin"] is not None
+    assert rec["hfr_bin"] == rec["hfr"]
+    # round synthetic stars read round at both scales
+    assert rec["ecc"] < 0.25 and rec["ecc_bin"] < 0.3
+    assert _rescored(cfg, rec) == rec["scorecard"]
+    assert star_table.read(cfg, NIGHT, rel, "rc16")["ecc_def"] == \
+        "sqrt(1-(b/a)^2)"
+    # native=False (or a MemoryError) keeps the binned value as ecc
+    rec2 = _fast_grade(f, cfg, [], native=False)
+    assert rec2["ecc"] == rec2["ecc_bin"] and rec2["ecc_at"] == "binned"
+
+
+def test_ps94_backfill_survives_memory_error_on_native(tmp_path, monkeypatch):
+    from photonscript.scheduler import runs
+    _need_sep()
+    cfg = _cfg(tmp_path)
+    f = _write_light(tmp_path / "fits" / NIGHT / "LIGHT" / "m_Ha_300s_0001.fits")
+
+    def boom(p):
+        raise MemoryError
+    monkeypatch.setattr(runs, "_load_native", boom)
+    rec = runs._fast_grade(f, cfg, [])
+    assert rec["ecc_at"] == "binned" and rec["ecc"] == rec["ecc_bin"]
+
+
+def test_ps94_live_record_carries_ecc_bin(tmp_path):
+    _need_sep()
+    cfg = _cfg(tmp_path)
+    f = _write_light(tmp_path / "fits" / NIGHT / "LIGHT" / "k_Ha_300s_0001.fits",
+                     sigma=3.4)
+    asyncio.run(_agent(cfg)._process_new_image(f))
+    (rec,) = _records(cfg)
+    assert rec["ecc_def"] == "sqrt(1-(b/a)^2)"
+    assert rec["ecc_bin"] is not None and rec["hfr_bin"] is not None
+    rows = {r[0]: r for r in rec["scorecard"]["rows"]}
+    assert rows["ecc_bin"][3] == "skip" and rows["ecc_bin"][1] == rec["ecc_bin"]
+    assert _rescored(cfg, rec) == rec["scorecard"]
+
+
+def test_ps94_runs_page_shows_old_records_in_sqrt_form(tmp_path):
+    from photonscript.scheduler.runs import night_detail
+    cfg = _cfg(tmp_path)
+    _seed(cfg, [_rec("old", ecc=0.2, graded_by="sep-binned"),
+                _rec("live", ecc=0.2)])
+    d = night_detail(cfg, NIGHT, backfill=False)
+    by = {s["file"]: s for s in d["subs"]}
+    assert by["LIGHT/old.fits"]["ecc"] == 0.6
+    assert by["LIGHT/old.fits"]["ecc_raw"] == 0.2
+    assert by["LIGHT/live.fits"]["ecc"] == 0.2
+    assert "ecc_raw" not in by["LIGHT/live.fits"]
+
+
+def test_ps94_config_fields_exposed():
+    from photonscript.scheduler.app import _CONFIG_FIELDS
+    from photonscript.shared.config import PhotonScriptConfig
+    by_env = {f[1]: f for f in _CONFIG_FIELDS}
+    c = PhotonScriptConfig(_env_file=None)
+    assert by_env["PS_QA_ECC_SCALE"][4] == "str" and c.qa_ecc_scale == "native"
+    assert by_env["PS_QA_ECC_BINNED"][4] == "bool" and c.qa_ecc_binned is True
+    assert by_env["PS_QUALITY_ECCENTRICITY_MAX_BINNED"][4] == "float"
+    assert c.quality_eccentricity_max_binned == 0.0
