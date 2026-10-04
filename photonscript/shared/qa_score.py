@@ -370,6 +370,27 @@ def _frac(value, limit):
     return None if r is None else round(max(0.0, min(r, 1.5)) / 1.5, 3)
 
 
+# PS-114: scorecard check -> the thresholds key(s) that are its gate (checks
+# whose limit depends on the night or the offset source keep the stored one)
+_GATE_OF = {"ecc": "ecc_max", "ecc_bin": "ecc_max_bin", "hfr": "hfr_max",
+            "fwhm": "fwhm_max", "stars": ("star_min", "star_max"),
+            "guide_rms": "guide_rms_max", "tracking_jump": "doubled_max",
+            "bg_floor": "bias_floor"}
+
+
+def _gate_now(cid: str, t: dict):
+    key = _GATE_OF.get(cid)
+    if key is None or not t:
+        return None
+    if isinstance(key, tuple):
+        lo, hi = t.get(key[0]), t.get(key[1])
+        return None if lo is None or hi is None else [lo, hi]
+    v = t.get(key)
+    if cid == "bg_floor" and not v:
+        return None
+    return v
+
+
 def panel_rows(rec: dict, card_rows: list[dict], t: dict,
                sc: dict | None = None) -> list[dict]:
     """Every metric for the lightbox side panel: label, value, gate, a
@@ -394,6 +415,18 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
         if not r:
             return
         lim = r.get("limit")
+        # PS-114: show the rig's gate in force now; when the stored card was
+        # graded against another value, say so (a rescore updates the score)
+        now = _gate_now(cid, t)
+        note = r.get("reason") or ""
+        if now is not None and r.get("status") != "skip" and lim != now:
+            was = (f"{_fmt(lim[0])} to {_fmt(lim[1])}"
+                   if isinstance(lim, list) and len(lim) == 2 else
+                   _fmt(lim) + unit)
+            stale = f"graded against {was}; qa-rescore updates the score"
+            note = f"{note} ({stale})" if note else stale
+        if now is not None:
+            lim = now
         if isinstance(lim, list) and len(lim) == 2:
             gate = f"{_fmt(lim[0])} to {_fmt(lim[1])}"
             frac = _frac(r.get("value"), lim[1])
@@ -407,7 +440,7 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
             frac = _frac(r.get("value"), lim)
         add(cid, label or r.get("name") or cid, r.get("value"), gate,
             _RAG.get(r.get("status"), "none"), frac,
-            r.get("reason") or "", unit if cid not in ("roof",) else "")
+            note, unit if cid not in ("roof",) else "")
 
     check_row("stars", "Stars")
     check_row("hfr", "HFR", " px")

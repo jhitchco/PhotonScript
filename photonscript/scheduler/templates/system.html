@@ -315,6 +315,58 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="gatesPanel">
+            <h2>QA gates per rig (PS-114)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">The limit each rig's subs are graded (and scored) against, and the key that sets it (Configuration below, or .env). A Piggy-600 key left blank uses the RC16 value. Baselines: median + k x sigma of each rig's accepted subs, a proposal only; gates never change from here.</p>
+            <div id="gatesBody" class="bd">loading...</div>
+            <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;margin-top:.6rem;">
+                <input id="blNights" value="14" size="4" title="last N nights" style="width:4rem;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.35rem .5rem;">
+                <button class="btn btn-secondary" id="blBtn">Compute baselines</button>
+                <a class="bd" id="blJson" href="/api/qa/baselines" target="_blank">JSON</a>
+            </div>
+            <div id="blOut" style="margin-top:.6rem;"></div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            fetch('/api/qa/gates').then(function (r) { return r.json(); }).then(function (d) {
+                var rigs = d.rigs || [];
+                var head = '<tr><th>gate</th>' + rigs.map(function (r) { return '<th>' + esc(r.name) + '</th>'; }).join('') + '</tr>';
+                var rows = (d.rows || []).map(function (g) {
+                    return '<tr><td>' + esc(g.label) + (g.unit ? ' (' + esc(g.unit) + ')' : '') + '</td>' + rigs.map(function (r) {
+                        return '<td title="' + esc(g[r.id + '_env']) + '"><b>' + esc(g[r.id]) + '</b> <span style="opacity:.6;font-size:.75em;">' + esc(g[r.id + '_key']) + '</span></td>';
+                    }).join('') + '</tr>';
+                }).join('');
+                document.getElementById('gatesBody').innerHTML = '<table class="tbl" style="font-size:.8rem;">' + head + rows + '</table>';
+            }).catch(function (e) { document.getElementById('gatesBody').textContent = 'error: ' + e; });
+            document.getElementById('blBtn').onclick = async function () {
+                var n = parseInt(document.getElementById('blNights').value, 10) || 14;
+                var url = '/api/qa/baselines?nights=' + n;
+                document.getElementById('blJson').href = url;
+                var out = document.getElementById('blOut');
+                out.textContent = 'loading...';
+                try {
+                    var d = await (await fetch(url)).json();
+                    var html = '<p class="bd">k = ' + esc(d.k) + ', sigma = ' + esc(d.sigma) + '; proposals need ' + esc(d.min_subs) + ' accepted subs. ' + esc(d.caveat) + '</p>';
+                    (d.rigs || []).forEach(function (rg) {
+                        (rg.filters || []).forEach(function (fl) {
+                            var rows = Object.keys(fl.metrics).map(function (m) {
+                                var s = fl.metrics[m];
+                                if (!s.n) { return ''; }
+                                return '<tr><td>' + esc(m) + '</td><td>' + esc(s.n) + '</td><td>' + esc(s.median) + '</td><td>' + esc(s.mad) +
+                                    '</td><td><b>' + esc(s.proposed) + '</b></td><td>' + esc(s.current) + '</td><td>' + esc(s.gate_key || '(info)') + '</td></tr>';
+                            }).join('');
+                            html += '<p><b>' + esc(rg.name) + ' filter ' + esc(fl.filter) + '</b>: ' + esc(fl.subs) + ' subs, ' + esc(fl.nights) + ' nights</p>' +
+                                '<table class="tbl" style="font-size:.8rem;"><tr><th>metric</th><th>n</th><th>median</th><th>MAD</th><th>proposed</th><th>current</th><th>gate</th></tr>' + rows + '</table>';
+                        });
+                    });
+                    if (!(d.rigs || []).length) { html += '<p>No accepted subs in that window.</p>'; }
+                    out.innerHTML = html;
+                } catch (e) { out.textContent = 'error: ' + e; }
+            };
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Configuration</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Edits are written to

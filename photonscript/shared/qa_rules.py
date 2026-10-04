@@ -140,9 +140,13 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
     """Every limit the rules use, resolved for one rig (and target/filter).
 
     The rig view comes from shared.rigs.rig_config, so the Piggy-600's own
-    HFR / FWHM / ecc / setpoint / offset apply to its subs. Values are the
-    ones actually in force (env on the scope PC wins over code defaults: on
-    2026-09-27 PS_QUALITY_ECCENTRICITY_MAX=0.6 while the code default is 0.70).
+    gates (every row of rigs.PIGGYBACK_GATES: HFR, FWHM, ecc, star range,
+    background, HFR outlier, guide RMS, tracking jump, corner spread, bias
+    margin, pointing bands; PS-114) plus its setpoint and offset apply to its
+    subs. Policy keys (warn band, modes, score approve / reject, temperature
+    margins) stay shared by both rigs. Values are the ones actually in force
+    (env on the scope PC wins over code defaults: on 2026-09-27
+    PS_QUALITY_ECCENTRICITY_MAX=0.6 while the code default is 0.70).
     """
     from photonscript.shared.rigs import rig_config, rig_setpoint
     rig = rig or "rc16"
@@ -157,13 +161,13 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
                              or _f(cfg, "quality_eccentricity_max", 0.70)),
         "ecc_scale": _ecc_scale(config),
         "hfr_max": float(_f(cfg, "quality_hfr_abs_max", 10.0)),
-        "hfr_rel_factor": float(_f(config, "qa_hfr_outlier_factor", 1.4)),
+        "hfr_rel_factor": float(_f(cfg, "qa_hfr_outlier_factor", 1.4)),
         "hfr_rel_min_subs": int(_f(config, "qa_night_min_subs", 5)),
         "fwhm_max": float(_f(cfg, "quality_fwhm_max", 4.0)),
         "fwhm_soft": bool(_f(cfg, "quality_fwhm_soft", False)),
-        "star_min": int(_f(config, "quality_star_min", 5)),
-        "star_max": int(_f(config, "quality_star_max", 5000)),
-        "bg_rel_max": float(_f(config, "qa_background_rel_max", 2.0)),
+        "star_min": int(_f(cfg, "quality_star_min", 5)),
+        "star_max": int(_f(cfg, "quality_star_max", 5000)),
+        "bg_rel_max": float(_f(cfg, "qa_background_rel_max", 2.0)),
         "bias_floor": float(_f(cfg, "default_offset", 0) or 0)
         + float(_f(cfg, "quality_bias_floor_margin_adu", 6.0)),
         "setpoint_c": float(rig_setpoint(config, rig)),
@@ -178,7 +182,7 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         # PS-91: a sub guided on a non-star lock (guard episode overlapping
         # it): "warn" (default) or "fail"
         "guide_lock_mode": str(_f(config, "qa_guide_lock_mode", "warn")).lower(),
-        "doubled_max": float(_f(config, "qa_tracking_jump_max", 0.25)),
+        "doubled_max": float(_f(cfg, "qa_tracking_jump_max", 0.25)),
         # PS-67: off target (per rig through rig_config): warn above flag,
         # reject above reject (qa_pointing_mode fail | warn | info)
         "offtarget_flag_arcmin": float(_f(cfg, "pointing_off_target_flag_arcmin",
@@ -223,6 +227,55 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         if applied:
             t["override"] = sorted(set(applied))
     return t
+
+
+# PS-114: the per-rig gates as the System page lists them: (thresholds key,
+# label, unit, RC16 config key). The Piggy-600 key is rigs.gate_key().
+GATES: tuple = (
+    ("fwhm_max", "Max FWHM", "\"", "quality_fwhm_max"),
+    ("fwhm_soft", "FWHM advisory only (no reject)", "", "quality_fwhm_soft"),
+    ("hfr_max", "Max HFR", "px", "quality_hfr_abs_max"),
+    ("hfr_rel_factor", "Reject HFR above x night median", "x",
+     "qa_hfr_outlier_factor"),
+    ("ecc_max", "Max eccentricity", "", "quality_eccentricity_max"),
+    ("star_min", "Min stars", "", "quality_star_min"),
+    ("star_max", "Max stars", "", "quality_star_max"),
+    ("bg_rel_max", "Warn: background above x night median", "x",
+     "qa_background_rel_max"),
+    ("bias_floor", "Bias floor (offset + margin)", "ADU",
+     "quality_bias_floor_margin_adu"),
+    ("guide_rms_max", "Max guide RMS", "\"", "quality_tracking_rms_max"),
+    ("doubled_max", "Tracking jump: doubled-star fraction", "",
+     "qa_tracking_jump_max"),
+    ("corner_spread_max", "Max corner FWHM spread (info)", "",
+     "quality_corner_spread_max"),
+    ("offtarget_flag_arcmin", "Off target: flag above", "'",
+     "pointing_off_target_flag_arcmin"),
+    ("offtarget_reject_arcmin", "Off target: reject above (solved)", "'",
+     "pointing_off_target_reject_arcmin"),
+    ("setpoint_c", "Sensor setpoint", "C", "camera_setpoint_c"),
+)
+
+
+def rig_gates(config, rigs: list[str] | None = None) -> dict:
+    """PS-114: every per-rig gate side by side, with the config key (and
+    env var) that sets it on each rig. {"rigs": [...], "rows": [{"gate",
+    "label", "unit", "<rig>": value, "<rig>_key": key, "<rig>_env": env}]}"""
+    from photonscript.shared.rigs import PIGGYBACK, RC16, gate_key, rig_label
+    rigs = rigs or [RC16, PIGGYBACK]
+    ts = {r: thresholds(config, r) for r in rigs}
+    rows = []
+    for gid, label, unit, key in GATES:
+        row = {"gate": gid, "label": label, "unit": unit}
+        for r in rigs:
+            k = ("piggyback_setpoint_c" if key == "camera_setpoint_c"
+                 and r == PIGGYBACK else gate_key(r, key))
+            row[r] = ts[r].get(gid)
+            row[r + "_key"] = k
+            row[r + "_env"] = "PS_" + k.upper()
+        rows.append(row)
+    return {"rigs": [{"id": r, "name": rig_label(config, r)} for r in rigs],
+            "rows": rows}
 
 
 # ------------------------------------------------------------------ model

@@ -577,11 +577,21 @@ class PhotonScriptConfig(BaseSettings):
                                          # monitor on NINA #2 to gate it). Off =
                                          # calibration companion only (old behavior).
     piggyback_hfr_abs_max: float = 4.5  # focused star ~2px at 1.29"/px (8px gate is wrong here)
-    piggyback_fwhm_max: float = 6.0   # arcsec. The RC16's 4.0" gate is wrong for a
-                                      # 1.29"/px wide-field OSC (a focused star is ~2.6"
-                                      # FWHM; average seeing lands 4-6"). Applying 4.0"
-                                      # rejected the entire piggyback set on 2026-09-19
-                                      # ("FWHM 6.5\" > 4.0\""). Tune against real OSC subs.
+    piggyback_fwhm_max: float = 15.0  # arcsec (PS-114; was 6.0). The RC16's 4.0" gate
+                                      # rejected every piggyback sub on 2026-09-19 and the
+                                      # 6.0" one cost every normal Piggy sub score points
+                                      # ("FWHM 11.3\" > 6\"", -4.9). The live OSC measure
+                                      # (sep second moments on 2x2 superpixels, 2.58"/px)
+                                      # reads the 190 accepted Piggy-600 Library subs
+                                      # (2026-09-21 to 10-04, re-measured on the desktop)
+                                      # at median 7.5" (120 s) and 9.5 to 10.9" (M 31,
+                                      # 400 s), 95th percentile 10.6", normal max 12.0".
+                                      # 15" = 12" / 0.8: the score gives full marks up to
+                                      # 80% of a gate, so normal 8 to 12" stars cost
+                                      # nothing. It also matches the 4.5 px HFR gate
+                                      # (FWHM reads ~1.2 x 2 x HFR x 1.29 = 13.8").
+                                      # Every accepted sub above 14" had ecc 0.87+
+                                      # (trailing). Advisory on this rig.
     piggyback_fwhm_min_arcsec: float = 2.0  # PS-71 physical floor at 1.29"/px
                                       # (focused OSC stars read 4.8-5.7")
     piggyback_ecc_max: float = 0.75   # OSC wide-field tolerates a touch more elongation
@@ -592,6 +602,23 @@ class PhotonScriptConfig(BaseSettings):
                                       # large FWHM and still be sharp. HFR + ecc are the
                                       # real gates for this rig; FWHM stays a score factor.
                                       # Sets quality_fwhm_soft on the piggyback rig view.
+    # PS-114: the rest of the Piggy-600's QA gates (shared.rigs.PIGGYBACK_GATES).
+    # None (blank) = same as the RC16 key, so nothing changes until a value
+    # is set; `photonscript qa-baselines --rig piggyback` proposes one.
+    piggyback_star_min: Optional[int] = None    # RC16: quality_star_min
+    piggyback_star_max: Optional[int] = None    # RC16: quality_star_max (the
+                                      # OSC measure keeps at most 400 stars,
+                                      # so this max cannot trip on this rig)
+    piggyback_background_rel_max: Optional[float] = None  # qa_background_rel_max
+    piggyback_hfr_outlier_factor: Optional[float] = None  # qa_hfr_outlier_factor
+    piggyback_tracking_rms_max: Optional[float] = None    # quality_tracking_rms_max
+    piggyback_tracking_jump_max: Optional[float] = None   # qa_tracking_jump_max
+    piggyback_corner_spread_max: Optional[float] = None   # quality_corner_spread_max
+    piggyback_bias_floor_margin_adu: Optional[float] = None  # quality_bias_floor_margin_adu
+    qa_baseline_k: float = 3.0  # PS-114 qa-baselines: proposed gate = median
+                                # + k x robust sigma (1.4826 x MAD) of the
+                                # rig's accepted subs; 3 keeps ~99.7% of a
+                                # normal night inside the gate. Report only.
     piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs

@@ -48,7 +48,7 @@ def test_thresholds_are_per_rig():
     cfg = _cfg(camera_setpoint_c=-10.0, piggyback_setpoint_c=0.0)
     rc, pb = q.thresholds(cfg, "rc16"), q.thresholds(cfg, "piggyback")
     assert rc["hfr_max"] == 10.0 and pb["hfr_max"] == 4.5
-    assert rc["fwhm_max"] == 4.0 and pb["fwhm_max"] == 6.0
+    assert rc["fwhm_max"] == 4.0 and pb["fwhm_max"] == 15.0   # PS-114
     assert rc["fwhm_soft"] is False and pb["fwhm_soft"] is True
     assert rc["ecc_max"] == 0.6 and pb["ecc_max"] == 0.75
     assert rc["setpoint_c"] == -10.0 and pb["setpoint_c"] == 0.0
@@ -151,7 +151,7 @@ def test_hfr_vs_night_median():
 
 def test_fwhm_hard_on_rc16_advisory_on_piggyback():
     assert _row(_card({"fwhm_arcsec": 4.3}), "fwhm").status == q.FAIL
-    pb = _card({"fwhm_arcsec": 7.8, "hfr": 2.7, "ecc": 0.4}, rig="piggyback")
+    pb = _card({"fwhm_arcsec": 17.8, "hfr": 2.7, "ecc": 0.4}, rig="piggyback")  # PS-114: past the 15" gate
     assert _row(pb, "fwhm").status == q.WARN and pb.passed
     assert _row(_card({"fwhm_arcsec": None}), "fwhm").status == q.SKIP
 

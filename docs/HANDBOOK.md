@@ -135,6 +135,19 @@ Check a pending update on the scope without switching: `photonscript self-update
    `<data_dir>/hist/`) and the new pixel counts both graders record:
    saturated pixels (>= `qa_saturation_adu` 65000, FITS SATURATE wins),
    pixels at 0, max ADU, background median and MAD.
+   **Gates per rig (PS-114).** Every QA gate has an RC16 key and a
+   Piggy-600 override (`shared/rigs.py` PIGGYBACK_GATES, env
+   `PS_PIGGYBACK_...`; a blank Piggy key uses the RC16 value). The System
+   page "QA gates per rig" table shows both rigs side by side
+   (`GET /api/qa/gates`). The Piggy-600 FWHM gate is 15" (its live OSC
+   measure reads normal stars at 8 to 12"; the score gives full marks up to
+   80% of a gate). `photonscript qa-baselines [--rig R] [--nights N] [--k K]
+   [--json]` (or the System page button, `GET /api/qa/baselines`) gives each
+   rig's median and MAD per filter of FWHM, HFR, ecc, stars and background
+   over its accepted subs and proposes gates (median + k x 1.4826 x MAD,
+   `qa_baseline_k` 3) next to the gates in force. Report only: change a gate
+   by hand, then `qa-rescore --date D` (dry run) shows how many verdicts and
+   scores move (`score_changed`, `score_up`, `score_down`).
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 

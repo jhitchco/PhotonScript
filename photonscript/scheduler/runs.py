@@ -1167,6 +1167,12 @@ def rescore_night(config, date: str, apply: bool = False,
         counts[f"new_{new}"] += 1
         if card.score is not None:
             counts[f"score_{card.score.decision}"] += 1
+            # PS-114: how many stored scores the current gates move
+            was = rec.get("score")
+            if isinstance(was, (int, float)) and was != card.score.value:
+                counts["score_changed"] += 1
+                counts["score_up" if card.score.value > was
+                       else "score_down"] += 1
         for d in card.drivers:
             drivers[d] += 1
         if _human_verdict(rec):

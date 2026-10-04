@@ -46,12 +46,62 @@ def rig_devices(rig: str) -> tuple:
     return RIG_DEVICES.get(rig, RIG_DEVICES[RC16])
 
 
+# PS-114: every QA gate per rig, one mechanism. Each row is
+# (RC16 config key, Piggy-600 override key, fallback when the config has no
+# override key at all). The RC16 reads the plain key (env PS_<KEY>); the
+# Piggy-600 view gets the override (env PS_PIGGYBACK_<...>) under the plain
+# key's name, so shared.qa_rules.thresholds() reads one key per gate
+# whatever the rig. A fallback of None means "same as the RC16 key". The
+# values and the why of each live in shared/config.py; the System page
+# shows both rigs side by side (GET /api/qa/gates).
+PIGGYBACK_GATES = (
+    ("quality_hfr_abs_max", "piggyback_hfr_abs_max", 4.5),
+    # The FWHM + eccentricity gates are scale-dependent too: the RC16's
+    # 4.0" FWHM gate rejected every piggyback sub on 2026-09-19 ("FWHM
+    # 6.5\" > 4.0\"") because a 1.29"/px wide-field star is legitimately
+    # larger in arcsec. PS-114: set from the Piggy-600's own subs.
+    ("quality_fwhm_max", "piggyback_fwhm_max", 15.0),
+    # OSC FWHM is advisory, not a hard reject: it's inflated by extended
+    # bright objects, so a tight-HFR sub can read a large FWHM and still be
+    # sharp. HFR + ecc stay the hard gates for this rig (2026-09-20).
+    ("quality_fwhm_soft", "piggyback_fwhm_soft", True),
+    ("quality_eccentricity_max", "piggyback_ecc_max", 0.75),
+    # PS-71: the sub-physical star-size floor is scale-dependent too.
+    ("quality_fwhm_min_arcsec", "piggyback_fwhm_min_arcsec", 2.0),
+    # PS-67: 1.29"/px over a much wider field: off target only far out
+    ("pointing_off_target_flag_arcmin", "piggyback_off_target_flag_arcmin",
+     30.0),
+    ("pointing_off_target_reject_arcmin", "piggyback_off_target_reject_arcmin",
+     60.0),
+    # PS-114: the rest of the gates, same values as the RC16 until the
+    # Piggy-600's own baseline (photonscript qa-baselines) says otherwise
+    ("quality_star_min", "piggyback_star_min", None),
+    ("quality_star_max", "piggyback_star_max", None),
+    ("qa_background_rel_max", "piggyback_background_rel_max", None),
+    ("qa_hfr_outlier_factor", "piggyback_hfr_outlier_factor", None),
+    ("quality_tracking_rms_max", "piggyback_tracking_rms_max", None),
+    ("qa_tracking_jump_max", "piggyback_tracking_jump_max", None),
+    ("quality_corner_spread_max", "piggyback_corner_spread_max", None),
+    ("quality_bias_floor_margin_adu", "piggyback_bias_floor_margin_adu", None),
+)
+
+
+def gate_key(rig: str, key: str) -> str:
+    """The config key that holds gate `key` (an RC16 key) for `rig`."""
+    if rig == PIGGYBACK:
+        for base, pb, _ in PIGGYBACK_GATES:
+            if base == key:
+                return pb
+    return key
+
+
 def rig_config(config, rig: str):
     """Return a config whose device-facing fields target `rig`.
 
     RC16 -> the config itself. PIGGYBACK -> a copy overriding nina_base_url,
-    pixel_scale_arcsec, default_gain/offset, and (if set) image_watch_dir and
-    the HFR gate, so shared code hits the 2nd NINA with the right scale.
+    pixel_scale_arcsec, default_gain/offset, (if set) image_watch_dir, and
+    every QA gate in PIGGYBACK_GATES, so shared code hits the 2nd NINA with
+    the right scale and grades with the Piggy-600's own limits.
     """
     if rig != PIGGYBACK:
         return config
@@ -61,26 +111,6 @@ def rig_config(config, rig: str):
         "pixel_scale_arcsec": getattr(config, "piggyback_pixel_scale_arcsec", 1.29),
         "default_gain": getattr(config, "piggyback_default_gain", 100),
         "default_offset": getattr(config, "piggyback_default_offset", 256),
-        "quality_hfr_abs_max": getattr(config, "piggyback_hfr_abs_max", 4.5),
-        # The FWHM + eccentricity gates are scale-dependent too: the RC16's
-        # 4.0" FWHM gate rejected every piggyback sub on 2026-09-19 ("FWHM
-        # 6.5\" > 4.0\"") because a 1.29"/px wide-field star is legitimately
-        # larger in arcsec. Override both so the OSC rig is graded on its own
-        # scale, not the RC16's.
-        "quality_fwhm_max": getattr(config, "piggyback_fwhm_max", 6.0),
-        # OSC FWHM is advisory, not a hard reject: it's inflated by extended
-        # bright objects, so a tight-HFR sub can read a large FWHM and still be
-        # sharp. HFR + ecc stay the hard gates for this rig (2026-09-20).
-        "quality_fwhm_soft": getattr(config, "piggyback_fwhm_soft", True),
-        "quality_eccentricity_max": getattr(config, "piggyback_ecc_max", 0.75),
-        # PS-71: the sub-physical star-size floor is scale-dependent too.
-        "quality_fwhm_min_arcsec": getattr(config, "piggyback_fwhm_min_arcsec",
-                                           2.0),
-        # PS-67: 1.29"/px over a much wider field: off target only far out
-        "pointing_off_target_flag_arcmin": getattr(
-            config, "piggyback_off_target_flag_arcmin", 30.0),
-        "pointing_off_target_reject_arcmin": getattr(
-            config, "piggyback_off_target_reject_arcmin", 60.0),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
         # NINA #2 has its own safety driver (a shared one deadlocks on the
@@ -88,6 +118,12 @@ def rig_config(config, rig: str):
         "safety_monitor_device_id": getattr(
             config, "piggyback_safety_monitor_device_id", ""),
     }
+    for base, pb, fallback in PIGGYBACK_GATES:
+        v = getattr(config, pb, None)
+        if v is None:
+            v = fallback if fallback is not None else getattr(config, base, None)
+        if v is not None:
+            updates[base] = v
     wd = getattr(config, "piggyback_image_watch_dir", "")
     if wd:
         updates["image_watch_dir"] = wd

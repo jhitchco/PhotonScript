@@ -9,6 +9,8 @@ GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (stored)
 GET  /api/qa/ecc-scale?date=&refresh=          PS-94 native vs binned ecc report
 GET  /api/runs/{date}/score-report             PS-108 score vs today's verdicts
 GET  /api/runs/{date}/hist?file=&refresh=      PS-5 histogram (cached)
+GET  /api/qa/gates                             PS-114 every gate per rig
+GET  /api/qa/baselines?rig=&nights=&k=         PS-114 proposed gates (report)
 
 Kept out of app.py (PS-8 router split). Handlers lazily import get_config
 to avoid an import cycle.
@@ -34,6 +36,23 @@ def api_qa_thresholds(rig: str = "rc16", target: str = "", filter: str = ""):  #
                                               filter or None),
             "checks": [{"id": k, "name": v[0], "unit": v[1], "why": v[2]}
                        for k, v in qa_rules.CHECKS.items()]}
+
+
+@router.get("/api/qa/gates")
+def api_qa_gates():
+    """PS-114: every QA gate for both rigs side by side, with the config key
+    (and env var) that sets it on each rig (System page table)."""
+    from photonscript.shared import qa_rules
+    return qa_rules.rig_gates(_cfg())
+
+
+@router.get("/api/qa/baselines")
+def api_qa_baselines(rig: str = "", nights: int = 14, k: float | None = None):
+    """PS-114: each rig's baseline per filter over its accepted subs of the
+    last N nights and the gates it proposes, next to the gates in force.
+    Report only: never changes a gate."""
+    from photonscript.scheduler.qa_baselines import baselines
+    return baselines(_cfg(), rig or None, max(1, min(int(nights), 365)), k)
 
 
 @router.get("/api/qa/ecc-scale")

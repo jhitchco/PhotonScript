@@ -590,6 +590,45 @@ def score_report_cmd(
         console.print(format_score_report(rep), markup=False, highlight=False)
 
 
+@app.command("qa-baselines")
+def qa_baselines_cmd(
+    rig: str = typer.Option("", help="rc16 or piggyback (default: both)"),
+    nights: int = typer.Option(14, help="Last N nights with a subs log"),
+    k: float = typer.Option(None, help="Proposed gate = median + k x sigma "
+                                       "(default qa_baseline_k, 3)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    records: str = typer.Option(
+        "", help="Report on copies instead: <date>_subs.jsonl files or a "
+                 "folder of them (comma list)"),
+):
+    """PS-114: each rig's baseline per filter (median and MAD of FWHM, HFR,
+    ecc, stars, background over its accepted subs) with the proposed gate
+    next to the gate in force. Writes nothing and never changes a gate."""
+    import json as _json
+    from pathlib import Path as _P
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.qa_baselines import baselines, format_baselines
+
+    recs = None
+    if records:
+        recs = []
+        files = []
+        for part in records.split(","):
+            p = _P(part.strip())
+            files += sorted(p.glob("*_subs.jsonl")) if p.is_dir() else [p]
+        for f in files[-nights:] if nights else files:
+            for line in f.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    r = _json.loads(line)
+                    r.setdefault("_night", f.name[:10])
+                    recs.append(r)
+    rep = baselines(PhotonScriptConfig(), rig or None, nights, k, records=recs)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(format_baselines(rep), markup=False, highlight=False)
+
+
 @app.command("ecc-scale-report")
 def ecc_scale_report(
     date: list[str] = typer.Option(..., "--date",
