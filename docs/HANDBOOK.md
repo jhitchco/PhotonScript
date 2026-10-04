@@ -369,7 +369,7 @@ or "ERROR: ...". Masters in `out\master\`.
   ForceCalibration, StopGuiding, `phd2_cal_hold_s` hold) only when there is no
   calibration on record, the last one FAILED, it is older than
   `phd2_cal_max_age_days`, the PHD2 profile / binning / scale changed, or one
-  was asked for (System page or `POST /api/phd2/calibrate`). The slot sits after
+  was asked for (Guiding tab or `POST /api/phd2/calibrate`). The slot sits after
   the twilight AF and the PS-92 twilight self-test, before the imaging gate (on
   a late arm or re-dispatch: right after the unpark); with it no target forces
   a calibration. A FAIL inside the slot is retried once over PHD2 during the
@@ -380,12 +380,12 @@ or "ERROR: ...". Masters in `out\master\`.
   runaway; a runaway alerts with the "Reverse Dec output after meridian flip"
   fix (`phd2_flip_action=alert`), a clean pass marks the pier side verified.
   Record: `<data_dir>/phd2/calibration.json` (+ `calibrations.jsonl`),
-  `GET /api/phd2/calibration`, the System page panel and the runs page line.
+  `GET /api/phd2/calibration`, the Guiding tab section and the runs page line.
   On an empty store the newest guide-log calibration is seeded and graded.
 - PHD2 SETTINGS AUDIT (PS-89): `config/phd2/desired_oag_rc16.toml` holds the
   desired PHD2 / NINA / mount-driver state with a "why" per setting. Every
   guided arm audits it in the background (one push only on a FAIL) and the
-  RC16 agent re-audits after a PHD2 configuration change. System page panel
+  RC16 agent re-audits after a PHD2 configuration change. Guiding tab section
   "PHD2 Settings Audit", `GET /api/phd2/audit`, runs page line, preflight
   line. Apply: API keys (exposure, RA min-move, Dec guide mode) while PHD2 is
   Stopped or Looping; profile (registry) writes only behind
@@ -399,7 +399,7 @@ or "ERROR: ...". Masters in `out\master\`.
   only). Gain advice for the next night (also the audit's gain row) is
   written pre-dusk only behind `phd2_audit_autofix`; binning stays at 2 and
   the report says from the measured HFD whether bin 3 would hit 2 to 5 px.
-  `GET /api/phd2/tuning`, System page "Guide star", runs page line.
+  `GET /api/phd2/tuning`, Guiding tab "Guide Star Tuner", runs page line.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
@@ -413,6 +413,12 @@ or "ERROR: ...". Masters in `out\master\`.
   OSC (piggyback) calibration now auto-captured on arm.
 - Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout, one goal
   per panel.
+- Guiding tab at `/guiding` (PS-103): the working surface for PHD2. Live state
+  (`GET /api/phd2/live`: app state, RMS, SNR, HFD, exposure, binning, scale,
+  lock position, phd2_ops owner), then the PS-89 audit (Refresh, per-row dry
+  run then Apply), PS-92 self-test, PS-93 calibration, PS-91 guard and
+  hot-pixel map, PS-90 tuner and tonight's PS-88 guide-log summary. Panel JS
+  is static/js/phd2_panels.js; the System page keeps one status line each.
 - OPEN THREADS: `gradual_warm_minutes` change is staged in the desktop repo but
   NOT yet deployed (deploy after a dawn shutdown, never mid-run - deploy 409s
   while armed). Confirm the OSC dark library has matching 120s @0C darks.

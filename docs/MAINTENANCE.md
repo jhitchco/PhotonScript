@@ -204,7 +204,7 @@ on a stale/absent calibration.
 **PHD2 calibration manager (PS-93).** With `phd2_cal_mode=auto` (default)
 the night's sequence gets a `PHD2_CALIBRATION` slot only when it is needed (no
 calibration on record, the last one FAILED, older than `phd2_cal_max_age_days`
-(30), PHD2 profile / binning / scale changed, or a request from the System page
+(30), PHD2 profile / binning / scale changed, or a request from the Guiding tab
 "Calibrate at the next dispatch" / `POST /api/phd2/calibrate?mode=next`).
 `always` adds it every guided night (about 4 min of twilight), `never` keeps the
 PS-72 behavior above. The slot calibrates on a field near Dec +5 by the
@@ -234,7 +234,7 @@ GET  /api/phd2/audit?refresh=1        audit now
 GET  /api/phd2/audit?refresh=1&raw=1  + every observed value and every registry value read
 POST /api/phd2/audit/apply {"ids": ["exposure_ms"], "dry_run": false}
 ```
-Apply (also the System page buttons): API rows (guide exposure, picked from
+Apply (also the Guiding tab buttons): API rows (guide exposure, picked from
 PHD2's own exposure list; RA min-move from the Guiding Assistant; Dec guide
 mode) only while PHD2 is Stopped or Looping and no other PhotonScript actor
 holds PHD2. Profile rows (bit depth, Max ADU, search region, mass tolerance,
@@ -273,7 +273,7 @@ one the PHD2 dark library holds (no library = no change). Changes go under
 and the PS-89 `changes.jsonl`. Memory: `<data_dir>\phd2\tune.json`, one entry
 per profile / binning / gain / target / filter; a filter change applies the
 remembered (or L-ratio predicted) exposure first. Gain and binning are not
-API settable: the System page "Guide star" box shows next night's gain advice
+API settable: the Guiding tab "Guide Star Tuner" section shows next night's gain advice
 (also the PS-89 audit's gain row) and whether bin 3 would hit the HFD band.
 The armer writes the gain pre-dusk (ARMED, before the dispatch) through the
 PS-89 profile writer only with `phd2_audit_autofix=true`, PHD2 closed, a

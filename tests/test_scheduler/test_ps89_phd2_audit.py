@@ -695,8 +695,10 @@ async def test_routes_config_fields_preflight_and_pages(tmp_path, monkeypatch):
         True, False, "", 30.0, "", "protrack")
     tpl = Path(app.__file__).parent / "templates"
     sysh = (tpl / "system.html").read_text(encoding="utf-8")
-    assert sysh.index('id="auditPanel"') < sysh.index("<h2>Preflight Check</h2>")
-    assert "/api/phd2/audit/apply" in sysh
+    assert sysh.index('id="phd2Panel"') < sysh.index("<h2>Preflight Check</h2>")
+    assert 'id="auditSec"' in (tpl / "guiding.html").read_text(encoding="utf-8")   # PS-103
+    js = (Path(app.__file__).parent / "static" / "js" / "phd2_panels.js").read_text(encoding="utf-8")
+    assert "/api/phd2/audit/apply" in js
     assert "PS-89 settings audit" in (tpl / "runs.html").read_text(encoding="utf-8")
 
 
