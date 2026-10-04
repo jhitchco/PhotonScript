@@ -456,7 +456,10 @@ def _kv(scale_arcsec, pa=10.0, parity=-1):
 
 
 def _night_with_subs(cfg, tmp_path, night=None, filters=("H", "L")):
-    night = night or datetime.now().strftime("%Y-%m-%d")
+    # the noon-to-noon night (store.night_of), not the calendar date: before
+    # local noon "tonight" is still yesterday's night
+    from photonscript.shared import phd2_store
+    night = night or phd2_store.night_of(cfg)
     runs = Path(cfg.data_dir) / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     caps = tmp_path / "caps"
