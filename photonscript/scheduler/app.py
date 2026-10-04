@@ -678,6 +678,7 @@ _CONFIG_FIELDS = [
     ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
+    ("piggyback_resume_grace_s", "PS_PIGGYBACK_RESUME_GRACE_S", "Piggyback resume hold after safe: confirm hold + this before AF/lights (s)", "Piggyback", "int", False, False),
     ("flexure_warn_arcsec_min", "PS_FLEXURE_WARN_ARCSEC_MIN", "Flexure report: flag Piggy drift above the RC16's by this (\"/min, PS-96)", "Piggyback", "float", False, False),
     ("flexure_solve_all", "PS_FLEXURE_SOLVE_ALL", "Flexure report: plate-solve every Piggy sub (default: first/middle/last per block)", "Piggyback", "bool", False, False),
 ]

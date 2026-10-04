@@ -368,6 +368,10 @@ they differ. Nothing here deploys until `deploy.ps1`; the dev clone is
   that isn't in the profile). Once it is, PhotonScript connects it on arm, the
   dashboard Roof row goes green, and the companion switches darks/bias on by
   itself.
+- **Owner rule (PS-25):** NINA #1 is the only instance that acts on the mount
+  (park, unpark, slew, center). NINA #2 only pauses its own exposures, and on
+  safe it holds `safety_confirm_seconds` + `piggyback_resume_grace_s` (120 + 300 s)
+  before its AF and lights, ending at nautical dawn; one "roof open" push a night.
 
 ### 9.6 Follow-ups / watch-items
 - **RC16 broadband flats** (L/R/G/B) went 541 d stale while narrowband stayed

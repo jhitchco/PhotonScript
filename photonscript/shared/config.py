@@ -547,6 +547,11 @@ class PhotonScriptConfig(BaseSettings):
                                          # can't see the RC16's meridian flip or a bad
                                          # AF (HFR trigger baselines on it), so this is
                                          # the in-sequence repair. 0 = off.
+    piggyback_resume_grace_s: int = 300  # PS-25: after NINA #2 reads safe it holds
+                                         # safety_confirm_seconds + this before its
+                                         # AF and lights, so the OSC does not shoot
+                                         # while NINA #1 unparks, slews, focuses and
+                                         # centers. Ends early at nautical dawn.
     flexure_warn_arcsec_min: float = 0.5  # PS-96: flag a night when the Piggy-600
                                       # drifts this much faster than the RC16
                                       # ("/min; 0.5 = ~0.8 px per 120 s OSC sub).

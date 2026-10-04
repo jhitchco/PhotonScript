@@ -83,13 +83,19 @@ def test_light_loop_waits_are_bounded_and_passes_gated():
     root = _companion()
     lights = next(n for n in _walk(root)
                   if n.get("Name") == "OSC_LIGHTS_UNTIL_DAWN")
-    first, image_pass = _items(lights)
+    first, hold, confirm, image_pass = _items(lights)  # PS-25 resume hold
     # bounded wait: loops a short timespan while unsafe AND before naut. dawn
     assert first["Name"] == "WAIT_SAFE_OR_NAUTICAL_DAWN"
     kinds = [_short(c["$type"]) for c in _conds(first)]
     assert kinds == ["LoopWhileUnsafe", "TimeCondition"]
     assert "NauticalDawnProvider" in _conds(first)[1]["SelectedProvider"]["$type"]
     assert [_short(i["$type"]) for i in _items(first)] == ["WaitForTimeSpan"]
+    assert confirm["Name"] == "WAIT_SAFE_CONFIRM_OR_NAUTICAL_DAWN"
+    assert [_short(c["$type"]) for c in _conds(confirm)] == kinds
+    assert hold["Name"].startswith("OSC_RESUME_HOLD")
+    assert [_short(c["$type"]) for c in _conds(hold)] == [
+        "LoopCondition", "TimeCondition"]
+    assert "NauticalDawnProvider" in _conds(hold)[1]["SelectedProvider"]["$type"]
     # image pass: skipped when unsafe, runs once per outer pass, ends at dawn
     assert image_pass["Name"] == "OSC_IMAGE_PASS"
     assert [_short(c["$type"]) for c in _conds(image_pass)] == [
