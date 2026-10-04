@@ -205,6 +205,91 @@ def test_osc_lights_no_seed_leaves_focuser_untouched():
     assert any(n.get("$type", "").startswith(_RUN_AF) for n in _walk(root))
 
 
+# ---- PS-25: NINA #2 resume debounce + one roof-open push --------------------
+
+_WAIT_TS = "NINA.Sequencer.SequenceItem.Utility.WaitForTimeSpan"
+_PUSHOVER = "DaleGhent.NINA.GroundStation.SendToPushover.SendToPushover"
+
+
+def _short(t):
+    return t.split(",")[0].split(".")[-1]
+
+
+def _named(root, name):
+    return next(n for n in _walk(root) if n.get("Name") == name)
+
+
+def _hold_seconds(hold):
+    """Total hold of a LoopCondition(n) x WaitForTimeSpan(step) container."""
+    loop = next(c for c in hold["Conditions"]["$values"]
+                if _short(c["$type"]) == "LoopCondition")
+    step = hold["Items"]["$values"][0]
+    assert step["$type"].startswith(_WAIT_TS)
+    return loop["Iterations"] * step["Time"]
+
+
+def test_osc_resume_hold_orders_wait_hold_wait_before_autofocus():
+    # Each pass: bounded wait safe, the hold, bounded wait safe again, and only
+    # then the image pass that runs AF and lights (mirrors NINA #1's resume).
+    root = _osc_lights_root(piggyback_focus_seed=0)
+    lights = _named(root, "OSC_LIGHTS_UNTIL_DAWN")
+    items = lights["Items"]["$values"]
+    names = [i.get("Name") for i in items]
+    assert names[0] == "WAIT_SAFE_OR_NAUTICAL_DAWN"
+    assert names[1].startswith("OSC_RESUME_HOLD")
+    assert names[2] == "WAIT_SAFE_CONFIRM_OR_NAUTICAL_DAWN"
+    assert names[3] == "OSC_IMAGE_PASS"
+    for wait in (items[0], items[2]):
+        assert [_short(c["$type"]) for c in wait["Conditions"]["$values"]] == [
+            "LoopWhileUnsafe", "TimeCondition"]
+    # the first AF of a pass is a direct item of the image pass, after the
+    # hold (the refocus triggers inside the light loop carry their own AF)
+    assert any(i.get("$type", "").startswith(_RUN_AF)
+               for i in items[3]["Items"]["$values"])
+    assert not any(n.get("$type", "").startswith(_RUN_AF)
+                   for i in items[:3] for n in _walk(i))
+
+
+def test_osc_resume_hold_is_confirm_plus_grace_and_ends_at_dawn():
+    root = _osc_lights_root(piggyback_focus_seed=0)
+    hold = next(n for n in _walk(root)
+                if str(n.get("Name", "")).startswith("OSC_RESUME_HOLD"))
+    cfg = PhotonScriptConfig()
+    assert cfg.piggyback_resume_grace_s == 300
+    assert _hold_seconds(hold) >= cfg.safety_confirm_seconds + 300
+    assert _hold_seconds(hold) < cfg.safety_confirm_seconds + 300 + 30
+    # bounded by nautical dawn so it cannot push lights or flats past dawn
+    tc = next(c for c in hold["Conditions"]["$values"]
+              if _short(c["$type"]) == "TimeCondition")
+    assert "NauticalDawnProvider" in tc["SelectedProvider"]["$type"]
+    assert tc["MinutesOffset"] == 0
+    # configurable
+    root = _osc_lights_root(piggyback_focus_seed=0, safety_confirm_seconds=60,
+                            piggyback_resume_grace_s=240)
+    hold = next(n for n in _walk(root)
+                if str(n.get("Name", "")).startswith("OSC_RESUME_HOLD"))
+    assert _hold_seconds(hold) == 300
+
+
+def test_osc_roof_open_push_fires_once_before_the_light_loop():
+    root = _osc_lights_root(piggyback_focus_seed=0)
+    roof = [n for n in _walk(root) if n.get("$type", "").startswith(_PUSHOVER)
+            and "roof open" in n.get("Message", "")]
+    assert len(roof) == 1
+    # not inside the looping container (it resets on every safe re-entry)
+    lights = _named(root, "OSC_LIGHTS_UNTIL_DAWN")
+    assert not any(n is roof[0] for n in _walk(lights))
+    notice = _named(root, "OSC_ROOF_OPEN_NOTICE")
+    assert [_short(c["$type"]) for c in notice["Conditions"]["$values"]] == [
+        "SafetyMonitorCondition", "LoopCondition", "TimeCondition"]
+    targets = next(n for n in _walk(root) if n.get("$type", "").startswith(
+        "NINA.Sequencer.Container.TargetAreaContainer"))
+    names = [i.get("Name") for i in targets["Items"]["$values"]]
+    i = names.index("OSC_ROOF_OPEN_NOTICE")
+    assert names[i - 1] == "WAIT_SAFE_FOR_FIRST_OSC_LIGHTS"
+    assert names[i + 1] == "OSC_LIGHTS_UNTIL_DAWN"
+
+
 def test_dusk_flats_only_filters_refreshes_just_broadband():
     # only_filters lets the RC16 re-shoot a subset (e.g. the stale LRGB masters)
     # without re-doing fresh narrowband: exactly 4 SkyFlat blocks, still slews.
