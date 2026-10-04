@@ -316,7 +316,29 @@ def image_metrics(quality: ImageQualityMetrics) -> dict:
         stars=quality.star_count,
         background=quality.background_adu, exposure=quality.exposure_flag,
         clipped_pct=quality.clipped_pct, sat_stars_pct=quality.sat_star_pct,
-        swamp=quality.swamp_factor)
+        swamp=quality.swamp_factor, sat_px_pct=quality.sat_px_pct,
+        zero_px_pct=quality.zero_px_pct, max_adu=quality.max_adu)
+
+
+def _pixel_stats(data: np.ndarray, file_path: str, config) -> dict:
+    """PS-108: saturated / zero pixel counts, max ADU and background median
+    + MAD on the full-resolution frame (shared.pixel_stats, same function
+    the backfill grader uses). Never costs a grade."""
+    try:
+        from photonscript.shared.pixel_stats import frame_stats, saturation_level
+        hdr = None
+        if Path(file_path).suffix.lower() in (".fits", ".fit", ".fts"):
+            try:
+                from astropy.io import fits
+                hdr = fits.getheader(file_path)
+            except Exception:  # noqa: BLE001
+                hdr = None
+        st = frame_stats(data, saturation_level(hdr, config))
+        st.pop("n_px", None)
+        return st
+    except Exception as e:  # noqa: BLE001
+        logger.debug("pixel stats skipped: %s", e)
+        return {}
 
 
 def _binned_metrics(data: np.ndarray, config, rig: str) -> dict:
@@ -407,6 +429,7 @@ def validate_image(
         logger.debug("star table skipped: %s", e)
 
     binned = _binned_metrics(data, config, rig)
+    pixels = _pixel_stats(data, file_path, config)
 
     quality = ImageQualityMetrics(
         fwhm_arcsec=round(fwhm_arcsec, 2) if fwhm_arcsec is not None else None,
@@ -420,6 +443,7 @@ def validate_image(
         star_table=star_table,
         **binned,
         **exposure,
+        **pixels,
     )
     from photonscript.shared.qa_rules import context, evaluate
     card = evaluate(image_metrics(quality), context(config, rig))

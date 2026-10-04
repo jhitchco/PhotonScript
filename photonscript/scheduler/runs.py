@@ -153,11 +153,17 @@ def _light_files(root: Path) -> list[Path]:
             if not _is_calibration(f.relative_to(root).parts)]
 
 
-def _load_binned(path: Path):
+def _load_binned(path: Path, stats: dict | None = None,
+                 sat_adu: float | None = None):
     """Header + 2x2-binned float32 frame, built without a full-res float copy.
 
     Peak memory ~65 MB for a 26 MP frame vs ~210 MB for a naive
     data.astype(float64) — the scope PC was hitting MemoryError.
+
+    PS-108: with `stats` (a dict, filled in place) also counts saturated and
+    zero pixels, max ADU and the background median + MAD on the raw
+    full-resolution frame in row chunks (shared.pixel_stats.frame_stats).
+    `sat_adu` is qa_saturation_adu; a FITS SATURATE keyword wins.
     """
     import numpy as np
     from astropy.io import fits as _fits
@@ -175,6 +181,19 @@ def _load_binned(path: Path):
         binned += raw[1:h2:2, 1:w2:2]
         binned *= 0.25 * float(hdr.get("BSCALE", 1))
         binned += float(hdr.get("BZERO", 0))
+        if stats is not None:
+            try:
+                from types import SimpleNamespace
+                from photonscript.shared.pixel_stats import (frame_stats,
+                                                             saturation_level)
+                lvl = saturation_level(hdr, SimpleNamespace(
+                    qa_saturation_adu=sat_adu or 65000.0))
+                st = frame_stats(raw, lvl, float(hdr.get("BZERO", 0)),
+                                 float(hdr.get("BSCALE", 1)))
+                st.pop("n_px", None)
+                stats.update(st)
+            except Exception as e:  # noqa: BLE001 - never costs a grade
+                logger.debug("pixel stats skipped for %s: %s", path.name, e)
     return hdr, binned
 
 
@@ -510,8 +529,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     rescore_night post-pass). stars_to=(date, rel_file) also writes the PS-80
     star sidecar from the stars already in memory.
     """
+    px: dict = {}   # PS-108 full-resolution pixel counts
     with _HEAVY:
-        hdr, binned = _load_binned(path)
+        hdr, binned = _load_binned(path, stats=px, sat_adu=getattr(
+            config, "qa_saturation_adu", 65000.0))
         m = _measure(binned, config)
         if prewarm is not None:
             try:
@@ -597,7 +618,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         guide_lock=_lock,
         doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
         clipped_pct=m.get("clipped_pct"), sat_stars_pct=m.get("sat_stars_pct"),
-        swamp=m.get("swamp"))
+        swamp=m.get("swamp"), sat_px_pct=px.get("sat_px_pct"),
+        zero_px_pct=px.get("zero_px_pct"), max_adu=px.get("max_adu"))
     card = qa_rules.evaluate(metrics, qa_rules.context(
         config, rig, target, flt, night=night, unsafe_windows=_wins,
         start_utc=_start, image_type=str(hdr.get("IMAGETYP", "LIGHT"))))
@@ -642,6 +664,9 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "sat_stars_pct": m.get("sat_stars_pct"),
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
         "noise": m.get("noise"),
+        # PS-108: sat_px, sat_px_pct, zero_px, zero_px_pct, max_adu, sat_adu,
+        # bg_median, bg_mad (full resolution, same function as live)
+        **px,
         "graded_by": m["graded_by"],
         "pointing_offset_arcmin": _point.get("off_target_arcmin"),
         "pointing_note": _point.get("note"),
@@ -1104,56 +1129,49 @@ def rescore_night(config, date: str, apply: bool = False,
     runs on a copy); apply is refused then."""
     from collections import Counter
     from photonscript.shared import qa_rules
-    from photonscript.scheduler.qa_backfill import _library_links, _start_of
+    from photonscript.scheduler.qa_backfill import _library_links
     if records is not None and apply:
         raise ValueError("apply needs the night's own records")
     subs = records if records is not None else _load_subs(config, date)
-    ctxs = qa_rules.night_context(subs)
-    wins, source = None, None
-    try:
-        from photonscript.shared.safety_history import unsafe_windows
-        day = datetime.fromisoformat(date)
-        wins, source = unsafe_windows(config, day + timedelta(hours=12),
-                                      day + timedelta(hours=40),
-                                      extra=extra_unsafe)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("rescore %s: no safety history (%s)", date, e)
     counts: Counter = Counter()
     transitions: Counter = Counter()
     drivers: Counter = Counter()
     diffs, moves = [], []
     changed = 0
     lib = library_root(config)
-    try:  # PS-67: the pointing sidecar (solve wins over the header)
-        from photonscript.shared.pointing import load as _load_pointing
-        pts = {} if records is not None else _load_pointing(config, date)
-    except Exception:  # noqa: BLE001
-        pts = {}
-    for rec in subs:
+    graded, source = _night_cards(config, date, subs,
+                                  extra_unsafe=extra_unsafe,
+                                  sidecars=records is None)
+
+    def _keep_score(rec, card):
+        """PS-108: a kept verdict still gets the current score."""
+        nonlocal changed
+        sf = card.score_fields()
+        if not apply or not sf:
+            return
+        card_c = dict(rec.get("scorecard") or {})
+        if card.score is not None and card_c.get("rows"):
+            card_c["score"] = card.score.compact()
+        if all(rec.get(k) == v for k, v in sf.items()) \
+                and (rec.get("scorecard") or {}) == card_c:
+            return
+        rec.update(sf)
+        if card_c.get("rows"):
+            rec["scorecard"] = card_c
+        changed += 1
+
+    for rec, card in graded:
         key = qa_rules.group_key(rec)
-        try:
-            start = _start_of(rec)
-        except Exception:  # noqa: BLE001
-            start = None
-        _m = qa_rules.metrics_from_record(rec)
-        _p = pts.get((key[0], rec.get("file")))
-        if _p and _p.get("off_target_arcmin") is not None:
-            from photonscript.shared.pointing import judged_src
-            _m["pointing_offset_arcmin"] = _p["off_target_arcmin"]
-            _m["pointing_note"] = _p.get("note")
-            _m["pointing_src"] = judged_src(_p) or _p.get("src")
-        card = qa_rules.evaluate(
-            _m,
-            qa_rules.context(config, key[0], key[1], key[2],
-                             night=ctxs.get(key), unsafe_windows=wins,
-                             start_utc=start))
         old = _old_verdict(rec)
         new = card.verdict
         counts[f"new_{new}"] += 1
+        if card.score is not None:
+            counts[f"score_{card.score.decision}"] += 1
         for d in card.drivers:
             drivers[d] += 1
         if _human_verdict(rec):
             counts["human_kept"] += 1
+            _keep_score(rec, card)
             if (new == "rejected") == bool(rec.get("passed_qa")):
                 diffs.append({"file": rec.get("file"), "rig": key[0],
                               "old": "human " + ("accepted" if rec.get(
@@ -1190,7 +1208,10 @@ def rescore_night(config, date: str, apply: bool = False,
                           "warnings": card.warnings,
                           "old_reason": rec.get("reason") or "",
                           "new_reason": card.reason})
-        if not apply or (action or "").startswith("kept"):
+        if (action or "").startswith("kept"):
+            _keep_score(rec, card)
+            continue
+        if not apply:
             continue
         was_passed = bool(rec.get("passed_qa"))
         fields = card.record_fields()
@@ -1225,6 +1246,7 @@ def rescore_night(config, date: str, apply: bool = False,
         sync_goal_progress(config)
     result = {"date": date, "mode": "apply" if apply else "dry-run",
               "rules_version": qa_rules.RULES_VERSION, "subs": len(subs),
+              "score_mode": qa_rules.thresholds(config)["score_mode"],
               "counts": dict(counts), "transitions": dict(transitions),
               "records_changed": changed,
               "drivers": dict(drivers),
@@ -1233,6 +1255,155 @@ def rescore_night(config, date: str, apply: bool = False,
     logger.info("PS-21 rescore %s (%s): %s", date, result["mode"],
                 dict(counts))
     return result
+
+
+def _night_cards(config, date: str, subs: list[dict],
+                 extra_unsafe: list[tuple] | None = None,
+                 sidecars: bool = True) -> tuple[list, str | None]:
+    """Re-grade stored records with the current rules (no FITS): the night
+    medians per rig + target + filter, the safety history and (sidecars)
+    the PS-67 pointing sidecar, where a plate solve wins over the header.
+    Returns ([(record, Scorecard)], safety source). Shared by rescore_night
+    and score_report (PS-108) so both judge a sub the same way."""
+    from photonscript.shared import qa_rules
+    from photonscript.scheduler.qa_backfill import _start_of
+    ctxs = qa_rules.night_context(subs)
+    wins, source = None, None
+    try:
+        from photonscript.shared.safety_history import unsafe_windows
+        day = datetime.fromisoformat(date)
+        wins, source = unsafe_windows(config, day + timedelta(hours=12),
+                                      day + timedelta(hours=40),
+                                      extra=extra_unsafe)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("rescore %s: no safety history (%s)", date, e)
+    try:  # PS-67: the pointing sidecar (solve wins over the header)
+        from photonscript.shared.pointing import load as _load_pointing
+        pts = _load_pointing(config, date) if sidecars else {}
+    except Exception:  # noqa: BLE001
+        pts = {}
+    out = []
+    for rec in subs:
+        key = qa_rules.group_key(rec)
+        try:
+            start = _start_of(rec)
+        except Exception:  # noqa: BLE001
+            start = None
+        _m = qa_rules.metrics_from_record(rec)
+        _p = pts.get((key[0], rec.get("file")))
+        if _p and _p.get("off_target_arcmin") is not None:
+            from photonscript.shared.pointing import judged_src
+            _m["pointing_offset_arcmin"] = _p["off_target_arcmin"]
+            _m["pointing_note"] = _p.get("note")
+            _m["pointing_src"] = judged_src(_p) or _p.get("src")
+        out.append((rec, qa_rules.evaluate(
+            _m, qa_rules.context(config, key[0], key[1], key[2],
+                                 night=ctxs.get(key), unsafe_windows=wins,
+                                 start_utc=start))))
+    return out, source
+
+
+def today_state(rec: dict) -> str:
+    """The sub's verdict as it stands: approved (passed and reviewed, by a
+    person or the auto rule), review (passed, waiting) or rejected."""
+    if not rec.get("passed_qa"):
+        return "rejected"
+    return "approved" if rec.get("reviewed") else "review"
+
+
+_SCORE_TO_STATE = {"approve": "approved", "review": "review",
+                   "reject": "rejected"}
+
+
+def score_report(config, date: str, records: list[dict] | None = None) -> dict:
+    """PS-108: per night, how many subs the score would approve / send to
+    review / reject vs today's verdicts. Re-grades the stored metrics with
+    the current rules and weights (same path as qa-rescore, no FITS, writes
+    nothing). Human verdicts are counted apart: the score never moves them.
+    `records` reports on a copy instead of the night's jsonl."""
+    from collections import Counter
+    from photonscript.shared import qa_rules
+    subs = records if records is not None else _load_subs(config, date)
+    graded, _src = _night_cards(config, date, subs, sidecars=records is None)
+    t = qa_rules.thresholds(config)
+    today: Counter = Counter()
+    by_score: Counter = Counter()
+    moves: Counter = Counter()
+    human: Counter = Counter()
+    by_rig: dict = {}
+    rows = []
+    hist: Counter = Counter()
+    for rec, card in graded:
+        rig = rec.get("rig") or "rc16"
+        now = today_state(rec)
+        sc = card.score
+        dec = sc.decision if sc is not None else None
+        would = _SCORE_TO_STATE.get(dec, now)
+        today[now] += 1
+        if dec:
+            by_score[dec] += 1
+            hist[min(9, int(sc.value) // 10)] += 1
+        r = by_rig.setdefault(rig, {"subs": 0, "today": Counter(),
+                                    "score": Counter(), "move": 0})
+        r["subs"] += 1
+        r["today"][now] += 1
+        if dec:
+            r["score"][dec] += 1
+        if _human_verdict(rec):
+            human["n"] += 1
+            human["agree" if would == now else "disagree"] += 1
+            continue
+        if would != now:
+            moves[f"{now} -> {would}"] += 1
+            r["move"] += 1
+            rows.append({"file": rec.get("file"), "rig": rig,
+                         "target": rec.get("target"),
+                         "filter": rec.get("filter"), "today": now,
+                         "score": sc.value if sc else None, "would": would,
+                         "why": sc.top_text() if sc else ""})
+    return {"date": date, "mode": t["score_mode"],
+            "approve_at": t["score_approve"], "reject_below": t["score_reject"],
+            "rules_version": qa_rules.RULES_VERSION, "subs": len(subs),
+            "today": dict(today), "score": dict(by_score),
+            "moves": dict(moves), "would_move": sum(moves.values()),
+            "human": dict(human),
+            "histogram": [hist.get(i, 0) for i in range(10)],
+            "by_rig": {k: {"subs": v["subs"], "today": dict(v["today"]),
+                           "score": dict(v["score"]), "would_move": v["move"]}
+                       for k, v in by_rig.items()},
+            "rows": sorted(rows, key=lambda x: (x["score"] is None,
+                                                x["score"] or 0))}
+
+
+def format_score_report(rep: dict) -> str:
+    """Plain-text score report (CLI)."""
+    t, s = rep.get("today", {}), rep.get("score", {})
+    lines = [
+        f"{rep['date']}: {rep['subs']} subs; score mode {rep['mode']} "
+        f"(approve >= {rep['approve_at']:g}, reject < {rep['reject_below']:g})",
+        f"  today:    {t.get('approved', 0)} approved / {t.get('review', 0)} "
+        f"review / {t.get('rejected', 0)} rejected",
+        f"  by score: {s.get('approve', 0)} approve / {s.get('review', 0)} "
+        f"review / {s.get('reject', 0)} reject",
+        f"  would move: {rep['would_move']} "
+        + (", ".join(f"{k} {v}" for k, v in sorted(rep['moves'].items()))
+           or "(none)"),
+    ]
+    h = rep.get("human") or {}
+    if h.get("n"):
+        lines.append(f"  human verdicts kept: {h['n']} (score agrees with "
+                     f"{h.get('agree', 0)})")
+    hist = rep.get("histogram") or []
+    if any(hist):
+        lines.append("  score histogram: " + " ".join(
+            f"{i * 10}-{i * 10 + 9}:{n}" for i, n in enumerate(hist) if n))
+    for rig, v in sorted((rep.get("by_rig") or {}).items()):
+        lines.append(f"  {rig}: {v['subs']} subs, today {v['today']}, score "
+                     f"{v['score']}, would move {v['would_move']}")
+    for r in rep.get("rows", [])[:30]:
+        lines.append(f"    {r['today']:>8} -> {r['would']:<8} {r['score']!s:>3} "
+                     f"{r['rig']} {r['filter']} {r['file']}  {r['why']}")
+    return "\n".join(lines)
 
 
 def flag_hfr_outliers(config, date: str, factor: float | None = None) -> int:
@@ -2339,6 +2510,69 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
     except Exception as e:  # noqa: BLE001
         logger.warning("Thumbnail failed for %s: %s", src, e)
         return None
+
+
+def _sub_source(config, date: str, rel_file: str) -> tuple[Path | None, dict]:
+    """(FITS path, record) for one sub: the watch dir, else the record's
+    abs_path (other-rig frames), as thumbnail() resolves it."""
+    rec = next((s for s in _load_subs(config, date)
+                if s.get("file") == rel_file), {}) or {}
+    if ".." in rel_file:
+        return None, rec
+    src = Path(config.image_watch_dir) / date / rel_file
+    if not src.exists() and rec.get("abs_path"):
+        cand = Path(rec["abs_path"])
+        if cand.is_file():
+            src = cand
+    return (src if src.exists() else None), rec
+
+
+def histogram(config, date: str, rel_file: str, refresh: bool = False) -> dict | None:
+    """PS-5 (folded into PS-108): exact full-resolution 16-bit histogram of
+    one sub (shared.pixel_stats.histogram), mono "L" or per Bayer channel
+    R / G / B for OSC frames (BAYERPAT, RGGB assumed on the Piggy-600 when
+    the header has none). Cached as JSON under <data_dir>/hist/<date>/;
+    computed on a miss under _HEAVY (one full-frame read, row-chunked).
+    None when the FITS cannot be found."""
+    from photonscript.shared.pixel_stats import histogram as _hist
+    from photonscript.shared.pixel_stats import saturation_level
+    from photonscript.shared.rigs import rig_config
+    out = (Path(config.data_dir) / "hist" / date
+           / (rel_file.replace("\\", "_").replace("/", "_") + ".json"))
+    if out.exists() and not refresh:
+        try:
+            return json.loads(out.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            pass
+    src, rec = _sub_source(config, date, rel_file)
+    if src is None:
+        return None
+    import time as _time
+    from astropy.io import fits as _fits
+    rig = rec.get("rig") or "rc16"
+    t0 = _time.monotonic()
+    with _HEAVY:
+        with _fits.open(src, memmap=True, do_not_scale_image_data=True) as hdul:
+            hdr = hdul[0].header.copy()
+            hdr_bayer = str(hdr.get("BAYERPAT") or "").strip()
+            bayer = hdr_bayer or ("RGGB" if rig == "piggyback" else None)
+            res = _hist(hdul[0].data, float(hdr.get("BZERO", 0)),
+                        float(hdr.get("BSCALE", 1)), bayer=bayer,
+                        sat_adu=saturation_level(hdr, config),
+                        offset=float(getattr(rig_config(config, rig),
+                                             "default_offset", 0) or 0))
+    gc.collect()
+    res.update(file=rel_file, rig=rig,
+               compute_s=round(_time.monotonic() - t0, 2),
+               bayer_assumed=bool(bayer) and not hdr_bayer)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        tmp = out.with_suffix(".tmp")
+        tmp.write_text(json.dumps(res), encoding="utf-8")
+        os.replace(tmp, out)
+    except OSError as e:
+        logger.debug("histogram cache write failed for %s: %s", rel_file, e)
+    return res
 
 
 _thumbwarm_state: dict[str, dict] = {}

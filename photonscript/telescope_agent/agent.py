@@ -1439,6 +1439,11 @@ class TelescopeAgent:
                 "sat_stars_pct": quality.sat_star_pct,
                 "swamp": quality.swamp_factor,
                 "exposure": quality.exposure_flag,
+                # PS-108: full-resolution pixel counts + background spread
+                "sat_px": quality.sat_px, "sat_px_pct": quality.sat_px_pct,
+                "zero_px": quality.zero_px, "zero_px_pct": quality.zero_px_pct,
+                "max_adu": quality.max_adu, "sat_adu": quality.sat_adu,
+                "bg_median": quality.bg_median, "bg_mad": quality.bg_mad,
                 # PS-67: offset from the named target (sidecar has the rest)
                 "pointing_offset_arcmin": point.get("off_target_arcmin"),
                 "pointing_note": point.get("note"),

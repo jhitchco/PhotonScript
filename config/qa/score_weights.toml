@@ -1,0 +1,213 @@
+# PS-108: the 0 to 100 sub score. shared/qa_score.py reads this file (path
+# override: PS_QA_SCORE_WEIGHTS_FILE) and turns the PS-21 scorecard into one
+# number per sub.
+#
+# How a score is made
+#   1. Every judged scorecard check (status pass / warn / fail; a "skip" is
+#      not judged and takes no weight) gets a grade q from 0 to 1 by how far
+#      inside or outside its gate the measured value sits:
+#        max gates (ecc, HFR, FWHM, ...): r = value / limit. Full marks up to
+#        r = good, zero at r = zero, a straight line between (so at the
+#        limit itself q is about 0.56 with the defaults below).
+#        star count: zero at the minimum, full marks from min x star_good_x
+#        up to star_full_max of the maximum, zero at the maximum.
+#        temperature: full marks within cooling_tolerance_c of the setpoint,
+#        zero at the reject limit (setpoint + sub_temp_over_setpoint_c).
+#        exposure: the worse of saturated star cores vs 5% and saturated
+#        pixels vs 0.05% (the PS-21 exposure gates), same max-gate curve.
+#        pass / fail checks (roof, guide lock, slew straddle, bias floor):
+#        1 or 0.
+#   2. score = 100 x sum(weight x q) / sum(weight) over the judged checks of
+#      the sub's rig (so a check a rig never measures does not drag it down).
+#   3. Caps: a failed gate caps the score (see [caps]); the lowest cap wins.
+#   4. Decision: score >= qa_score_approve (80) approve, below
+#      qa_score_reject (60) reject, in between wait for review. In
+#      qa_score_mode = "preview" (default) this is only shown; "on" applies
+#      it. A human verdict always wins.
+#
+# Every weight carries a "why". Weights are relative (they need not add to
+# 100). Change a weight, then run `photonscript qa-rescore --date D` (dry run)
+# and `photonscript score-report --date D` to see what moves.
+
+version = "score1"
+
+[curve]
+good = 0.80
+zero = 1.25
+star_good_x = 4.0
+star_full_max = 0.80
+why = "Full marks well inside a gate, half marks right at it, nothing a quarter past it: a sub just under a limit is not as good as one far under it."
+
+# ------------------------------------------------------------------- caps
+# A failed check caps the score. hard caps put the sub below the reject line
+# whatever else is good; out_of_gate keeps any sub that fails a gate out of
+# auto-approve (a person looks first); far_out_of_gate rejects a sub whose
+# value is past the zero point of the curve.
+
+[caps.roof]
+cap = 0
+why = "Closed roof or parked mount (PS-71): the frame has no sky in it."
+
+[caps.pointing_solved]
+cap = 20
+why = "Plate solve confirms the target is outside the frame (PS-67): nothing to stack. Without a solve (pointing_src header / mount-log / rc16-correlated, PS-107) an offset only fails above pointing_header_reject_deg and then falls to out_of_gate or far_out_of_gate by how far, since mount positions can be wrong by about 1 deg."
+
+[caps.slew_straddle]
+cap = 20
+why = "Piggy-600 exposed through an RC16 slew, flip or park (PS-13): two fields in one sub."
+
+[caps.guide_lock]
+cap = 40
+why = "Guided on a hot pixel or artifact (PS-91, only when qa_guide_lock_mode = fail): effectively unguided at 3248 mm."
+
+[caps.temp]
+cap = 40
+why = "Sensor far off the setpoint (cooler failure): the darks will not match."
+
+[caps.tracking_jump]
+cap = 40
+why = "Mount jump doubled the stars: every star is two stars."
+
+[caps.stars]
+cap = 40
+why = "Too few stars (cloud, no sky) or a defocus flood: not a usable light."
+
+[caps.far_out_of_gate]
+cap = 59
+why = "Any other gate failed past the zero point of the curve (for example ecc 0.75 against 0.60): clearly bad, reject."
+
+[caps.out_of_gate]
+cap = 79
+why = "Any other gate failed but close to its limit: never auto-approved, a person decides."
+
+# ------------------------------------------------------------- RC16 weights
+
+[rc16.ecc]
+weight = 25
+why = "Trailing, wind and drift are the most common RC16 loss at 3248 mm (0.24\"/px), and round stars are what the stack is judged on."
+
+[rc16.ecc_bin]
+weight = 25
+why = "Same job as ecc; only one of the two is judged (qa_ecc_scale), the other is info."
+
+[rc16.hfr]
+weight = 20
+why = "Focus: an HFR past the limit means autofocus slipped or failed."
+
+[rc16.hfr_rel]
+weight = 10
+why = "Softer than the night's other subs of the same target and filter: seeing or focus drift that the absolute gate misses."
+
+[rc16.fwhm]
+weight = 10
+why = "Star size within the seeing budget; overlaps HFR, so a lower weight."
+
+[rc16.stars]
+weight = 10
+why = "Enough real stars (thin cloud shows here first)."
+
+[rc16.bg_rel]
+weight = 5
+why = "Background well above the night's median: moon, twilight or cloud glow. A warning, not a reject."
+
+[rc16.bg_floor]
+weight = 3
+why = "Background at the bias floor: little sky signal. Normal for short narrowband, so small."
+
+[rc16.temp]
+weight = 5
+why = "Sensor near the setpoint so the darks match."
+
+[rc16.guide_lock]
+weight = 5
+why = "PHD2 guiding on a real star (PS-91)."
+
+[rc16.guide_rms]
+weight = 10
+why = "Guiding RMS under the limit; only judged once qa_guide_rms_mode is warn or fail (PS-70 arcsec units)."
+
+[rc16.tracking_jump]
+weight = 10
+why = "No mount jump doubling the stars."
+
+[rc16.exposure]
+weight = 8
+why = "No blown star cores or clipped pixels; mono narrowband rarely clips, so moderate."
+
+[rc16.roof]
+weight = 10
+why = "A real sky frame (capped to 0 when it fails)."
+
+[rc16.slew_straddle]
+weight = 0
+why = "The RC16 moves the mount itself; never judged on this rig."
+
+[rc16.pointing]
+weight = 10
+why = "Frame centered on the target (PS-67)."
+
+# -------------------------------------------------------- Piggy-600 weights
+
+[piggyback.ecc]
+weight = 20
+why = "1.29\"/px wide field is more forgiving of small tracking errors than the RC16, but trailing still ruins color stars."
+
+[piggyback.ecc_bin]
+weight = 0
+why = "Not measured on the Piggy-600 (RC16 only, PS-94)."
+
+[piggyback.hfr]
+weight = 25
+why = "HFR is this rig's main hard focus gate (FWHM is advisory on OSC)."
+
+[piggyback.hfr_rel]
+weight = 10
+why = "Softer than the night's other Piggy-600 subs of the target: focus drift."
+
+[piggyback.fwhm]
+weight = 5
+why = "Advisory on OSC: galaxies and bright extended objects inflate it."
+
+[piggyback.stars]
+weight = 10
+why = "Enough real stars."
+
+[piggyback.bg_rel]
+weight = 5
+why = "Moon, twilight or cloud glow (warning only)."
+
+[piggyback.bg_floor]
+weight = 3
+why = "Little sky signal (warning only)."
+
+[piggyback.temp]
+weight = 5
+why = "Sensor near the setpoint so the 120 s darks match."
+
+[piggyback.guide_lock]
+weight = 0
+why = "The Piggy-600 has no guider of its own."
+
+[piggyback.guide_rms]
+weight = 0
+why = "The Piggy-600 has no guider of its own."
+
+[piggyback.tracking_jump]
+weight = 10
+why = "No mount jump doubling the stars."
+
+[piggyback.exposure]
+weight = 10
+why = "OSC star color dies when cores clip, and 400 s broadband subs saturate bright stars, so it counts more than on the mono RC16."
+
+[piggyback.roof]
+weight = 10
+why = "A real sky frame (capped to 0 when it fails)."
+
+[piggyback.slew_straddle]
+weight = 10
+why = "Rides the RC16 mount: a sub through an RC16 move holds two fields (capped when it fails)."
+
+[piggyback.pointing]
+weight = 5
+why = "Wide field: the target is rarely out of frame, but a solve that says so is final."
