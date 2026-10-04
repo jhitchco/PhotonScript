@@ -138,6 +138,11 @@ class PhotonScriptConfig(BaseSettings):
     # setup to capture the safety-monitor client's HTTP/exception detail
     # --- Quality gates (per-sub grading) ---
     pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
+    # PS-81: imaging sensor size (px) for the Targets page field-of-view boxes.
+    # The AP26MC and AP26CC both write NAXIS1 x NAXIS2 = 6224 x 4168 (FITS
+    # headers, 2026-09-26). Display only; nothing is gated on them.
+    sensor_width_px: int = 6224
+    sensor_height_px: int = 4168
     quality_fwhm_max: float = 4.0  # arcsec
     quality_fwhm_soft: bool = False  # False = FWHM is a hard reject gate (RC16).
                                      # True = advisory only (no reject); the OSC
@@ -479,6 +484,8 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_nina_base_url: str = "http://localhost:1889/v2/api"  # NINA #2 API
     piggyback_image_watch_dir: str = ""  # where NINA #2 writes FITS (set once known)
     piggyback_pixel_scale_arcsec: float = 1.29  # 600mm + IMX571 3.76um
+    piggyback_sensor_width_px: int = 0   # PS-81 FOV box; 0 = sensor_width_px
+    piggyback_sensor_height_px: int = 0  # PS-81 FOV box; 0 = sensor_height_px
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)

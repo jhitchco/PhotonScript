@@ -1,6 +1,5 @@
 """PS-78: subs named after NINA containers count for their real target."""
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -241,7 +240,7 @@ def test_target_history_and_library_dirs(tmp_path, monkeypatch):
     dirs = runs.library_target_dirs(lib, "Heart Nebula")
     assert [d.name for d in dirs] == ["Heart Nebula", HEART_C]
     for name in ("Heart Nebula", HEART_C):
-        h = asyncio.run(app.api_target_history(name))
+        h = app.api_target_history(name)  # PS-81: plain def
         assert h["target"] == "Heart Nebula"
         assert h["totals"]["accepted"] == 2 and h["totals"]["rejected"] == 1
         assert h["totals"]["in_library"] == 2

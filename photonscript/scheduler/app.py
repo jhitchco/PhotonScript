@@ -591,6 +591,8 @@ _CONFIG_FIELDS = [
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
     ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale", "Imaging", "bool", False, False),
     ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
+    ("sensor_width_px", "PS_SENSOR_WIDTH_PX", "Sensor width (px), Targets page field-of-view box", "Imaging", "int", False, False),
+    ("sensor_height_px", "PS_SENSOR_HEIGHT_PX", "Sensor height (px), Targets page field-of-view box", "Imaging", "int", False, False),
     ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
     ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
     ("focus_model_rc16_match", "PS_FOCUS_MODEL_RC16_MATCH", "Focus model: which AF reports are the RC16's (empty = RC16 filter name + EAF 4000-7000; e.g. any~AP26MC)", "Imaging", "str", False, False),
@@ -665,6 +667,8 @@ _CONFIG_FIELDS = [
     ("piggyback_nina_base_url", "PS_PIGGYBACK_NINA_BASE_URL", "Piggyback NINA Advanced API URL", "Piggyback", "str", False, False),
     ("piggyback_image_watch_dir", "PS_PIGGYBACK_IMAGE_WATCH_DIR", "Piggyback NINA image output dir", "Piggyback", "str", False, False),
     ("piggyback_pixel_scale_arcsec", "PS_PIGGYBACK_PIXEL_SCALE_ARCSEC", "Piggyback pixel scale (\"/px)", "Piggyback", "float", False, False),
+    ("piggyback_sensor_width_px", "PS_PIGGYBACK_SENSOR_WIDTH_PX", "Piggyback sensor width (px; 0 = same as the RC16)", "Piggyback", "int", False, False),
+    ("piggyback_sensor_height_px", "PS_PIGGYBACK_SENSOR_HEIGHT_PX", "Piggyback sensor height (px; 0 = same as the RC16)", "Piggyback", "int", False, False),
     ("piggyback_default_gain", "PS_PIGGYBACK_DEFAULT_GAIN", "Piggyback camera gain", "Piggyback", "int", False, False),
     ("piggyback_default_offset", "PS_PIGGYBACK_DEFAULT_OFFSET", "Piggyback camera offset", "Piggyback", "int", False, False),
     ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
@@ -1049,21 +1053,10 @@ def _project_json(p) -> dict:
     return d
 
 
-_lib_count_cache: dict = {}  # library folder -> (monotonic t, count)
-_LIB_COUNT_TTL_S = 120.0
-
-
 def _library_fits_count(lib: Path) -> int:
-    """FITS count for one target's Library folder, cached 2 min: the projects
-    list rglob'd every project's library on every poll."""
-    import time as _time
-    now = _time.monotonic()
-    hit = _lib_count_cache.get(str(lib))
-    if hit is not None and now - hit[0] < _LIB_COUNT_TTL_S:
-        return hit[1]
-    n = sum(1 for _ in lib.rglob("*.fits")) if lib.exists() else 0
-    _lib_count_cache[str(lib)] = (now, n)
-    return n
+    """Cached FITS count of one Library folder (PS-81: readiness.py)."""
+    from photonscript.scheduler.readiness import library_fits_count
+    return library_fits_count(lib)
 
 
 @app.get("/api/projects2")
@@ -2686,149 +2679,18 @@ def api_run_bundle(date: str):
                         filename=f"night_bundle_{date}.zip")
 
 
-@app.get("/target", response_class=HTMLResponse)
-async def target_page(request: Request):
-    return templates.TemplateResponse(request, "target.html",
-                                      {"version": VERSION})
-
-
-@app.get("/api/target/history")
-async def api_target_history(name: str):
-    """Every sub ever recorded for one target, grouped by night, with QA
-    state and whether each accepted light made it into the Library.
-    PS-78: names are canonicalized, so subs recorded under a container name
-    ("Heart Nebula imaging (repeats while safe and up)_Container") count for
-    the target, and a container name as `name` shows the real target."""
-    from photonscript.scheduler.runs import _load_subs, library_target_dirs, runs_dir
-    from photonscript.shared.target_names import canonical_target, known_target_index, target_key
-    cfg = get_config()
-    lib = Path(cfg.library_dir) if cfg.library_dir \
-        else Path(cfg.data_dir) / "Library"
-    try:
-        known = known_target_index(list(get_store().projects.values()))
-    except Exception:  # noqa: BLE001
-        known = None
-    name = canonical_target(name, known) or name
-    key = target_key(name)
-    tdirs = library_target_dirs(lib, name, known)
-    tdir = tdirs[0]
-    lib_files = set()
-    for d_ in tdirs:
-        if d_.exists():
-            lib_files |= {f.name for f in d_.rglob("*.fits")}
-
-    nights = []
-    totals = {"accepted": 0, "rejected": 0, "in_library": 0,
-              "by_filter": {}}
-    for p in sorted(runs_dir(cfg).glob("*_subs.jsonl"), reverse=True):
-        date = p.name[:10]
-        subs = [s for s in _load_subs(cfg, date)
-                if target_key(canonical_target(s.get("target"), known))
-                == key]
-        if not subs:
-            continue
-        rows = []
-        n_acc = n_rej = 0
-        for s in subs:
-            passed = bool(s.get("passed_qa"))
-            base = Path(str(s.get("file") or "")).name
-            in_lib = base in lib_files
-            if passed:
-                n_acc += 1
-                totals["accepted"] += 1
-                if in_lib:
-                    totals["in_library"] += 1
-            else:
-                n_rej += 1
-                totals["rejected"] += 1
-            f = s.get("filter") or "?"
-            bf = totals["by_filter"].setdefault(f, {"accepted": 0,
-                                                    "rejected": 0})
-            bf["accepted" if passed else "rejected"] += 1
-            rows.append({
-                "time": (s.get("time") or "")[11:16],
-                "filter": f,
-                "exp_s": s.get("exp_s"),
-                "hfr": s.get("hfr"), "ecc": s.get("ecc"),
-                "stars": s.get("stars"),
-                "passed": passed,
-                "reviewed": bool(s.get("reviewed")),
-                "reason": s.get("reason") or "",
-                "in_library": in_lib,
-                "file": base,
-                "target_raw": s.get("target_raw") or s.get("target"),
-            })
-        nights.append({"date": date, "accepted": n_acc,
-                       "rejected": n_rej, "subs": rows})
-    return {"target": name, "nights": nights, "totals": totals,
-            "library_dir": str(tdir),
-            "desktop_path": str(Path(cfg.desktop_library_dir) / name),
-            "desktop_hint": "desktop copy appears once /api/sync shows "
-                            "library_synced"}
+# --- /target and /api/target/history moved to routers/targets.py (PS-81) ---
 
 
 @app.get("/api/integration/readiness")
-async def api_integration_readiness():
+def api_integration_readiness():
     """Everything the DESKTOP needs to integrate a target, answered from the
     scope's Library: accepted lights per filter, epoch-matched darks, bias,
-    flats. Combine with /api/sync library_synced for 'it is on the desktop'."""
-    from photonscript.scheduler.calibration import (calibration_health,
-                                                    count_matching_darks)
-    cfg = get_config()
-    lib = Path(cfg.library_dir) if cfg.library_dir \
-        else Path(cfg.data_dir) / "Library"
-    health = calibration_health(cfg)
-    try:
-        rev = cfg.reverse_filter_map()
-    except Exception:  # noqa: BLE001
-        rev = {}
-    flats: dict[str, int] = {}
-    for k, v in ((health.get("FLAT") or {}).get("detail") or {}).items():
-        canon = rev.get(k, k)
-        flats[canon] = flats.get(canon, 0) + v
-    bias_n = (health.get("BIAS") or {}).get("count_latest") or 0
-
-    from photonscript.scheduler.runs import library_target_dirs
-    targets = []
-    for p in _projects.values():
-        if not p.active:
-            continue
-        name = p.target.name
-        # PS-78: count container-named folders too until they are merged
-        tdirs = library_target_dirs(lib, name)
-        filters: dict[str, dict] = {}
-        dark_needs: dict[float, int] = {}
-        for plan in p.exposure_plans:
-            f = plan.filter_type.value
-            n = sum(len(list((td / f).glob("*.fits")))
-                    for td in tdirs if (td / f).exists())
-            filters[f] = {"accepted_in_library": n,
-                          "planned": plan.count,
-                          "exposure_s": plan.exposure_seconds,
-                          "flats": flats.get(f, 0)}
-            e = float(plan.exposure_seconds)
-            if e not in dark_needs:
-                try:
-                    dark_needs[e] = count_matching_darks(cfg, e)
-                except Exception:  # noqa: BLE001
-                    dark_needs[e] = 0
-        lights_total = sum(v["accepted_in_library"] for v in filters.values())
-        used = {f: v for f, v in filters.items()
-                if v["accepted_in_library"] > 0}
-        ready = bool(lights_total and bias_n
-                     and all(n > 0 for e, n in dark_needs.items()
-                             if any(v["exposure_s"] == e for v in used.values()))
-                     and all(v["flats"] > 0 for v in used.values()))
-        targets.append({
-            "target": name,
-            "filters": filters,
-            "darks_by_exposure": {f"{k:g}s": v for k, v in dark_needs.items()},
-            "bias": bias_n,
-            "lights_in_library": lights_total,
-            "ready": ready,
-            "command": f'.\\deploy\\prepare-integration.ps1 -Target "{name}"',
-        })
-    return {"targets": targets, "library_dir": str(lib)}
+    flats. Combine with /api/sync library_synced for 'it is on the desktop'.
+    PS-81: the counting lives in scheduler/readiness.py (shared with the
+    Targets page and the campaign planner)."""
+    from photonscript.scheduler.readiness import readiness_report
+    return readiness_report(get_config(), list(_projects.values()))
 
 
 @app.post("/api/camera/cooler")
@@ -2933,8 +2795,11 @@ from photonscript.scheduler.routers import review as _review_router  # noqa: E40
 app.include_router(_review_router.router)
 from photonscript.scheduler.routers import phd2 as _phd2_router  # noqa: E402
 app.include_router(_phd2_router.router)
+from photonscript.scheduler.routers import targets as _targets_router  # noqa: E402
+app.include_router(_targets_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
     _latest_ascom_log)
+from photonscript.scheduler.routers.targets import api_target_history  # noqa: E402,F401
 
