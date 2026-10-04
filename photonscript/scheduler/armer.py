@@ -56,6 +56,13 @@ GUIDING_MODE_ALIASES = {"guided": "guided", "unguided": "unguided",
                         "encoders": "unguided"}
 
 
+def is_direct_guider(name) -> bool:
+    """PS-66: NINA's built-in Direct Guider (dithers by pulsing the mount,
+    no guide camera). Matches its Name / DisplayName / DeviceId loosely."""
+    s = "".join(ch for ch in str(name or "").lower() if ch.isalnum())
+    return "directguider" in s
+
+
 def norm_guiding_mode(value) -> str | None:
     """'guided' | 'unguided' for a known mode name (case-insensitive,
     'encoders' -> 'unguided'), else None (= the config default)."""
@@ -128,6 +135,7 @@ class Armer:
         self._audit_task: asyncio.Task | None = None  # PS-89: audit at arm
         self._tune_night: str | None = None    # PS-90: pre-dusk tune done
         self._tune_note: str | None = None
+        self.guider_name: str | None = None  # PS-66: NINA's guider at arm
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -148,6 +156,7 @@ class Armer:
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
                 "fallback_night": getattr(self, "_fallback_night", None),
                 "recal_night": getattr(self, "_recal_night", None),
+                "guider_name": getattr(self, "guider_name", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -189,6 +198,7 @@ class Armer:
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
         self._fallback_night = saved.get("fallback_night")
         self._recal_night = saved.get("recal_night")
+        self.guider_name = saved.get("guider_name")
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -308,6 +318,9 @@ class Armer:
                 conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
+        # PS-66: which guider NINA has (Direct Guider vs PHD2), for the
+        # unguided dither choice and a guided-arm sanity alert.
+        await self._check_guider_at_arm()
         # PS-89: audit PHD2's settings against the desired state now that the
         # equipment is connected. In the background: it never blocks the arm.
         if self._use_guiding() and getattr(self.config, "phd2_audit_enabled", True):
@@ -327,6 +340,47 @@ class Armer:
                      f"{self.plan['dark_hours']}h dark window.{conn}",
                      title="PhotonScript armed")
         return self.status()
+
+    def _unguided_dither(self) -> bool:
+        """PS-66: dither the unguided targets tonight? Only on an unguided
+        night with config unguided_dither on and NINA's guider (read at arm)
+        being Direct Guider. A guided night's unguided fallback never does."""
+        return (not self._use_guiding()
+                and bool(getattr(self.config, "unguided_dither", False))
+                and is_direct_guider(getattr(self, "guider_name", None)))
+
+    async def _check_guider_at_arm(self) -> None:
+        """PS-66: read NINA's guider name. Unguided arm with unguided_dither
+        on but no Direct Guider: dithers stay off, one note. Guided arm with
+        Direct Guider connected: one priority-1 alert (PHD2 StartGuiding,
+        the calibration slot and the self-test would all fail). Never raises."""
+        detail = self.detail          # _nina overwrites it on a failure
+        try:
+            data = await self._nina("guider")
+        except Exception:  # noqa: BLE001
+            data = None
+        self.detail = detail
+        payload = (data or {}).get("Response", data or {}) if isinstance(data, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        name = (payload.get("Name") or payload.get("DisplayName")
+                or payload.get("DeviceId") or None)
+        self.guider_name = str(name) if name else None
+        self._persist()
+        direct = is_direct_guider(self.guider_name)
+        if self._use_guiding():
+            if direct:
+                await notify(self.config,
+                             "Armed GUIDED but NINA's guider is Direct Guider: "
+                             "StartGuiding (PHD2) will fail tonight. Switch "
+                             "NINA's guider back to PHD2, or re-arm unguided.",
+                             title="PhotonScript guider", priority=1)
+        elif getattr(self.config, "unguided_dither", False) and not direct:
+            await notify(self.config,
+                         f"Unguided dithers are OFF tonight: NINA's guider is "
+                         f"{self.guider_name or 'unknown'}, not Direct Guider "
+                         f"(unguided_dither needs it).",
+                         title="PhotonScript guider")
 
     async def _phd2_audit_at_arm(self) -> None:
         """PS-89 settings audit at arm. Never raises."""
@@ -988,8 +1042,11 @@ class Armer:
             seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
         cal_field = self._calibration_slot(targets, now) if use_guiding else None
-        content = generate_nina_json(seq, cal_field=cal_field)
-        result = lint(json.loads(content), guided=use_guiding)
+        u_dither = self._unguided_dither()   # PS-66: Direct Guider dithers
+        content = generate_nina_json(seq, cal_field=cal_field,
+                                     unguided_dither=u_dither)
+        result = lint(json.loads(content), guided=use_guiding,
+                      unguided_dither=u_dither)
         if not result.ok:
             self.detail = "; ".join(f.detail for f in result.findings
                                     if f.level == "ERROR")

@@ -411,11 +411,12 @@ def sequence(
         from photonscript.scheduler.nina_sequence_json import generate_nina_json
         from photonscript.scheduler.sequence_lint import lint as lint_seq, format_result
 
-        content = generate_nina_json(seq)
+        u_dither = (not guided) and bool(getattr(config, "unguided_dither", False))
+        content = generate_nina_json(seq, unguided_dither=u_dither)
         default_path = f"PhotonScript_{now_dt.strftime('%Y%m%d')}.json"
 
         # Lint gate — refuse to write a sequence that would fail at 3 AM
-        result = lint_seq(json.loads(content), guided=guided)
+        result = lint_seq(json.loads(content), guided=guided, unguided_dither=u_dither)
         console.print(format_result(result))
         if not result.ok:
             console.print("[red]REFUSING to write sequence: lint failed.[/red]")

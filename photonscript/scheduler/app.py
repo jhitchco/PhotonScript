@@ -441,15 +441,17 @@ async def api_tonight_sequence_json(now_mode: bool = False):
         t.start_guiding = preview_guided
     from photonscript.scheduler.target_planner import cap_unguided
     cap_unguided(targets, getattr(config, "unguided_max_exposure_s", 300))  # PS-66
+    preview_dither = get_armer()._unguided_dither()                       # PS-66
     sequence = build_sequence_for_night(
         name=f"PhotonScript_{now.strftime('%Y%m%d')}",
         targets=targets,
     )
     # Dusk/safety gating ON unless explicitly generating a daytime test
     sequence.wait_until_local = None if now_mode else "00:00:00"
-    json_content = generate_nina_json(sequence)
+    json_content = generate_nina_json(sequence, unguided_dither=preview_dither)
 
-    result = _lint(json.loads(json_content), guided=preview_guided)
+    result = _lint(json.loads(json_content), guided=preview_guided,
+                   unguided_dither=preview_dither)
     if not result.ok:
         return JSONResponse(status_code=500, content={
             "detail": "Lint FAILED — refusing to serve sequence",
@@ -598,6 +600,7 @@ _CONFIG_FIELDS = [
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("unguided_dither", "PS_UNGUIDED_DITHER", "Dither on unguided nights through NINA's Direct Guider (switch NINA's guider first; checked at arm)", "Imaging", "bool", False, False),
     ("unguided_max_exposure_s", "PS_UNGUIDED_MAX_EXPOSURE_S", "Unguided (TPoint + ProTrack) RC16 max sub length (s); longer subs are split, same integration (0 = no cap)", "Imaging", "float", False, False),
     ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale", "Imaging", "bool", False, False),
     ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),

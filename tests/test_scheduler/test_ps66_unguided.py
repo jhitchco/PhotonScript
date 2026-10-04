@@ -1,6 +1,9 @@
 """PS-66 part 1: the unguided (TPoint + ProTrack) mode.
 
 1. "unguided" name with the old "encoders" accepted as an alias.
+2. Unguided sub-length cap and time-weighted crediting.
+3. Nanny quiet in unguided mode.
+4. Unguided dither through NINA's Direct Guider.
 """
 import json
 
@@ -63,6 +66,11 @@ async def test_arm_accepts_encoders_alias(tmp_path, monkeypatch):
                                      "preconfig_utc": "2026-10-04T00:30:00Z",
                                      "dark_hours": 8.0})
     monkeypatch.setattr(a, "_run", _noop)
+
+    async def _nina_down(key, *x, **k):          # NINA unreachable at arm
+        a.detail = f"{key}: All connection attempts failed"
+        return None
+    monkeypatch.setattr(a, "_nina", _nina_down)
     st = await a.arm("encoders")
     assert a.guiding_override == "unguided"
     assert st["guiding"] == "unguided"
@@ -400,3 +408,101 @@ async def test_reauditor_quiet_when_armed_unguided(tmp_path, monkeypatch):
         await handlers[0]({"Event": "ConfigurationChange"})
         await asyncio.sleep(0.1)
     assert pushes == [False, True]          # recorded both times, pushed guided only
+
+
+# ---- 4. unguided dither through Direct Guider --------------------------------
+
+def _dither_afters(seq):
+    from photonscript.scheduler.sequence_lint import _find_type
+    return [d["AfterExposures"] for d in _find_type(seq, "DitherAfterExposures")]
+
+
+def test_smart_exposure_dithers_unguided_only_with_the_flag():
+    from photonscript.scheduler.nina_sequence_json import _smart_exposure
+    e = _plan(count=10)
+
+    def after(n=5, **kw):
+        return _dither_afters(_smart_exposure(e, dither_every_n=n, **kw))
+    assert after(guided=True) == [5]
+    assert after(guided=False) == [0]
+    assert after(guided=False, unguided_dither=True) == [5]
+    assert after(0, guided=False, unguided_dither=True) == [0]
+
+
+def test_lint_allows_unguided_dithers_only_with_the_flag():
+    from photonscript.scheduler.nina_sequence import build_sequence_for_night
+    from photonscript.scheduler.nina_sequence_json import generate_nina_json
+    from photonscript.scheduler.sequence_lint import lint
+    seq = build_sequence_for_night("PS66", [_tgt(exposures=[_plan(count=10)])])
+    data = json.loads(generate_nina_json(seq, unguided_dither=True))
+    assert set(_dither_afters(data)) == {5}
+    assert not lint(data, guided=False).ok
+    assert lint(data, guided=False, unguided_dither=True).ok
+    plain = json.loads(generate_nina_json(seq))
+    assert set(_dither_afters(plain)) == {0}
+    assert lint(plain, guided=False).ok
+    g = build_sequence_for_night("PS66", [_tgt(guided=True,
+                                               exposures=[_plan(count=10)])])
+    guided = json.loads(generate_nina_json(g))
+    res = lint(guided, guided=False, unguided_dither=True)  # StartGuiding still bad
+    assert not res.ok and any("StartGuiding" in f.detail for f in res.findings)
+
+
+def _guider_armer(tmp_path, monkeypatch, override, name, **cfg):
+    a = Armer(_cfg(tmp_path, **cfg))
+    a.guiding_override = override
+    notes = []
+
+    async def _notify(cfg_, msg, **k):
+        notes.append((msg, k.get("priority", 0)))
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+
+    async def _nina(key, *x, **k):
+        assert key == "guider"
+        return None if name is None else {"Success": True, "Response": {
+            "Connected": True, "Name": name, "State": "Idle"}}
+    monkeypatch.setattr(a, "_nina", _nina)
+    return a, notes
+
+
+async def test_guider_check_at_arm(tmp_path, monkeypatch):
+    a, notes = _guider_armer(tmp_path, monkeypatch, "unguided", "Direct Guider",
+                             unguided_dither=True)
+    await a._check_guider_at_arm()
+    assert a._unguided_dither() is True and notes == []
+    a, notes = _guider_armer(tmp_path / "b", monkeypatch, "unguided", "PHD2",
+                             unguided_dither=True)
+    await a._check_guider_at_arm()
+    assert a._unguided_dither() is False
+    assert len(notes) == 1 and "Unguided dithers are OFF" in notes[0][0]
+    a, notes = _guider_armer(tmp_path / "c", monkeypatch, "unguided", None,
+                             unguided_dither=True)            # NINA unreachable
+    await a._check_guider_at_arm()
+    assert a._unguided_dither() is False and "unknown" in notes[0][0]
+    a, notes = _guider_armer(tmp_path / "d", monkeypatch, "unguided", "PHD2")
+    await a._check_guider_at_arm()                            # flag off: silent
+    assert a._unguided_dither() is False and notes == []
+    a, notes = _guider_armer(tmp_path / "e", monkeypatch, "guided", "Direct Guider",
+                             unguided_dither=True)
+    await a._check_guider_at_arm()
+    assert a._unguided_dither() is False                      # guided night
+    assert len(notes) == 1 and notes[0][1] == 1 and "Direct Guider" in notes[0][0]
+    a, notes = _guider_armer(tmp_path / "f", monkeypatch, "guided", "PHD2")
+    await a._check_guider_at_arm()
+    assert notes == []
+    saved = json.loads((tmp_path / "f" / "data" / "armer_state.json").read_text())
+    assert saved["guider_name"] == "PHD2"
+
+
+def test_dispatch_dithers_unguided_only_with_direct_guider(tmp_path, monkeypatch):
+    a = _armer_for_dispatch(tmp_path, monkeypatch, [_tgt(exposures=[_plan(count=10)])],
+                            unguided_dither=True)
+    a.guiding_override = "unguided"
+    a.guider_name = "Direct Guider"
+    assert a._dispatch() is True
+    seq = json.loads(a.sequence_path.read_text(encoding="utf-8"))
+    assert set(_dither_afters(seq)) == {5}
+    a.guider_name = "PHD2"
+    assert a._dispatch() is True
+    seq = json.loads(a.sequence_path.read_text(encoding="utf-8"))
+    assert set(_dither_afters(seq)) == {0}

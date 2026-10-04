@@ -252,6 +252,11 @@ class PhotonScriptConfig(BaseSettings):
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
                                  # to run unguided on the Paramount MX (TPoint +
                                  # ProTrack) by default.
+    unguided_dither: bool = False  # PS-66: keep dithering on unguided nights
+                                 # through NINA's Direct Guider (mount pulses).
+                                 # Off until NINA's guider is switched to Direct
+                                 # Guider; the armer checks the connected guider
+                                 # at arm and drops dithers (one note) otherwise.
     unguided_max_exposure_s: float = 300.0  # PS-66: RC16 sub-length cap on every
                                  # unguided target (armed unguided or the
                                  # unguided fallback): a 600 s set becomes 300 s
