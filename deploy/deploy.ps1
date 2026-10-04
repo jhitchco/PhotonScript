@@ -76,7 +76,9 @@ if ($dirty.Count -gt 0) {
 }
 
 # --- 2. Rebase onto origin/main (tree is clean: no autostash needed) ---------
-git -C $repo pull --rebase origin main
+# --rebase=merges keeps merged ticket branches intact. A plain --rebase
+# flattens them and replays every branch commit, which conflicts.
+git -C $repo pull --rebase=merges origin main
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Pull/rebase hit a conflict - resolve it (or git rebase --abort), then rerun." -ForegroundColor Red
     exit 1
