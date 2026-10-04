@@ -112,6 +112,7 @@ class Armer:
         self._recal_night: str | None = None  # PS-93: mid-night recalibration done
         self._cal_force: str | None = None     # PS-93: reason forcing the slot
         self._audit_task: asyncio.Task | None = None  # PS-89: audit at arm
+        self._thesky_task: asyncio.Task | None = None  # PS-104: TheSky audit
         self._tune_night: str | None = None    # PS-90: pre-dusk tune done
         self._tune_note: str | None = None
         self._task: asyncio.Task | None = None
@@ -295,6 +296,9 @@ class Armer:
         # equipment is connected. In the background: it never blocks the arm.
         if self._use_guiding() and getattr(self.config, "phd2_audit_enabled", True):
             self._audit_task = asyncio.create_task(self._phd2_audit_at_arm())
+        # PS-104: read-only TheSky / TPoint audit (no push, report only)
+        if getattr(self.config, "thesky_audit_enabled", True):
+            self._thesky_task = asyncio.create_task(self._thesky_audit_at_arm())
         # Pre-imaging state: force the cooler + dew heater OFF now, so they stay
         # off from arm until the sequence turns them on cool_lead min before dark.
         # ONLY here in the fresh-arm path — never in connect_all/restore, which
@@ -319,6 +323,17 @@ class Armer:
             logger.info("PHD2 settings audit at arm: %s", a.get("counts"))
         except Exception as e:  # noqa: BLE001
             logger.warning("PHD2 settings audit at arm failed: %s", e)
+
+    async def _thesky_audit_at_arm(self) -> None:
+        """PS-104 TheSky / TPoint audit at arm (read only, no push). Never
+        raises."""
+        try:
+            from photonscript.scheduler import thesky_audit
+            a = await asyncio.wait_for(
+                thesky_audit.at_arm(self.config, armer_state=str(self.state or "")), 180)
+            logger.info("TheSky audit at arm: %s", (a or {}).get("counts"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TheSky audit at arm failed: %s", e)
 
     async def disarm(self) -> dict:
         prev = self.state

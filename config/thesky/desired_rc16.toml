@@ -1,0 +1,542 @@
+# PS-104 desired TheSky / TPoint state for the RC16 on the Paramount MX.
+# scheduler/thesky_audit.py reads this file (GET /api/thesky/audit?refresh=1,
+# at arm, `photonscript thesky-audit`) and compares every row with what TheSky's
+# TCP scripting, the ASTAP Image Link check, the NINA Center log and the manual
+# TPoint record say. REPORT ONLY: nothing ever writes TheSky, moves the mount
+# or takes an image.
+#
+# Row fields (the PS-89 format, config/phd2/desired_oag_rc16.toml)
+#   id, group, label   identity and display
+#   sources            where the current value is read, first one with a
+#                      value wins: thesky-script (TCP 3040, read-only
+#                      scripts in telescope_agent/thesky_client.py), astap
+#                      (the newest Image Link check), pointing-log (NINA
+#                      Center log, PS-67 record), manual (the TPoint record
+#                      entered on the Guiding tab)
+#   key                observed key (default: id)
+#   one desired form   equals (match = "contains" for a substring) | min /
+#                      max | near + tol (sign_free = true compares absolute
+#                      values) | computed = "<name>" (thesky_audit.COMPUTED)
+#                      | report = true (shown, never judged)
+#   severity           fail | warn (status when the value misses)
+#   confidence         High | Med | Low: how sure we are the read works on
+#                      the site's TheSky 10.5 build (Med = documented call,
+#                      not yet run on-site)
+#   why, fix           plain-language reason and the manual fix
+# Thresholds that are config keys (tpoint_*, pointing_first_slew_*) are read
+# from config by the computed rows, not repeated here.
+
+rig = "rc16"
+title = "TheSky / TPoint: RC16 on the Paramount MX"
+
+# ---------------------------------------------------------------- TheSky link
+
+[[check]]
+id = "thesky_scripting"
+group = "TheSky link"
+label = "TheSky TCP scripting reachable"
+sources = ["thesky-script"]
+equals = true
+severity = "warn"
+confidence = "High"
+why = "Every TheSky row below is read through TheSky's TCP server; without it they read unknown."
+fix = "TheSky: Tools > TCP Server: listen for connections (port 3040), and allow scripting."
+
+[[check]]
+id = "thesky_version"
+group = "TheSky link"
+label = "TheSky version / build"
+sources = ["thesky-script"]
+report = true
+severity = "warn"
+confidence = "Med"
+why = "Property names in the scripting API change between builds; the version tells which reference applies."
+fix = "None (information)."
+
+# ---------------------------------------------------------------- mount
+
+[[check]]
+id = "mount_selected"
+group = "Mount"
+label = "Mount selected in TheSky"
+sources = ["thesky-script"]
+equals = "Paramount MX"
+match = "contains"
+severity = "fail"
+confidence = "High"
+why = "TPoint, ProTrack and the ASCOM connector NINA uses all hang off TheSky's selected mount."
+fix = "TheSky: Telescope > Telescope Setup: Mount = Paramount MX (Software Bisque)."
+
+[[check]]
+id = "mount_connected"
+group = "Mount"
+label = "Mount connected"
+sources = ["thesky-script"]
+computed = "mount_connected"
+severity = "fail"
+confidence = "High"
+why = "NINA drives the mount through TheSky; a disconnected mount while a night is armed means no slews."
+fix = "Connect the mount in NINA (Equipment > Mount); TheSky connects with it. PhotonScript never connects it."
+
+[[check]]
+id = "mount_tracking"
+group = "Mount"
+label = "Tracking / parked"
+sources = ["thesky-script"]
+computed = "mount_tracking"
+severity = "warn"
+confidence = "High"
+why = "Tracking while imaging, parked by day: shown so a stuck state is visible."
+fix = "None (information)."
+
+# ---------------------------------------------------------------- site and time
+
+[[check]]
+id = "site_latitude"
+group = "Site and time"
+label = "Site latitude"
+sources = ["thesky-script"]
+near = 31.906944
+tol = 0.0167
+severity = "fail"
+confidence = "High"
+why = "TPoint and every slew use TheSky's site: a wrong latitude tilts the whole model (31d54'25\" N from the Bisque driver)."
+fix = "TheSky: Input > Location: latitude 31d54'25\" N."
+
+[[check]]
+id = "site_longitude"
+group = "Site and time"
+label = "Site longitude"
+sources = ["thesky-script"]
+near = -109.021111
+tol = 0.0167
+sign_free = true
+severity = "fail"
+confidence = "High"
+why = "A wrong longitude shifts every hour angle (109d01'16\" W, east-positive -109.02; TheSky may store west as positive, both signs are accepted)."
+fix = "TheSky: Input > Location: longitude 109d01'16\" W."
+
+[[check]]
+id = "site_elevation"
+group = "Site and time"
+label = "Site elevation (m)"
+sources = ["thesky-script"]
+near = 1300
+tol = 50
+severity = "warn"
+confidence = "High"
+why = "Elevation feeds refraction; 1300 m is what the Bisque driver reports for Pier 3."
+fix = "TheSky: Input > Location: elevation 1300 m."
+
+[[check]]
+id = "use_computer_clock"
+group = "Site and time"
+label = "Use computer clock"
+sources = ["thesky-script"]
+equals = true
+severity = "fail"
+confidence = "High"
+why = "A frozen or manual TheSky time puts every slew off by 15\" per second of error."
+fix = "TheSky: Input > Date and Time: Use Computer Clock on."
+
+[[check]]
+id = "site_clock"
+group = "Site and time"
+label = "TheSky time vs the scope PC (s)"
+sources = ["thesky-script"]
+computed = "site_clock"
+max_s = 2.0
+severity = "warn"
+confidence = "Med"
+why = "TheSky's Julian date should match the scope PC's UTC; the script round trip is measured and subtracted."
+fix = "Turn Use Computer Clock on; check the scope PC's time sync."
+
+[[check]]
+id = "time_zone_dst"
+group = "Site and time"
+label = "Time zone / DST index"
+sources = ["thesky-script"]
+report = true
+severity = "warn"
+confidence = "Med"
+why = "Shown for the record; with the computer clock on it does not change pointing."
+fix = "None (information)."
+
+# ---------------------------------------------------------------- camera
+
+[[check]]
+id = "camera_selected"
+group = "Camera (TheSky camera add-on)"
+label = "Camera selected in TheSky"
+sources = ["thesky-script"]
+computed = "camera_selected"
+want = ""
+severity = "warn"
+confidence = "High"
+why = "Take And Image Link Photo uses TheSky's own camera, not NINA's; it must be the RC16 camera (the AP26MC). Desired value: Question 2 on PS-104 (set want = \"...\" here)."
+fix = "TheSky: Camera > Camera Setup: select the AP26MC driver; disconnect it in NINA #1 for the pointing run."
+
+[[check]]
+id = "camera_status"
+group = "Camera (TheSky camera add-on)"
+label = "TheSky camera status"
+sources = ["thesky-script"]
+report = true
+severity = "warn"
+confidence = "Med"
+why = "\"Not connected\" is expected while NINA #1 owns the AP26MC (the camera opens exclusively); read without Connect."
+fix = "None (information)."
+
+[[check]]
+id = "filter_wheel_selected"
+group = "Camera (TheSky camera add-on)"
+label = "Filter wheel selected in TheSky"
+sources = ["thesky-script"]
+report = true
+severity = "warn"
+confidence = "High"
+why = "TheSky has no filter wheel here: the pointing run uses whatever filter NINA left in the beam."
+fix = "None (information)."
+
+[[check]]
+id = "autosave_path"
+group = "Camera (TheSky camera add-on)"
+label = "Camera AutoSave folder"
+sources = ["thesky-script"]
+computed = "autosave_path"
+severity = "warn"
+confidence = "Med"
+why = "Image Link solves saved images only; an empty or missing AutoSave folder fails the link."
+fix = "TheSky: Camera > Setup > AutoSave: pick an existing folder."
+
+[[check]]
+id = "filter_in_beam"
+group = "Camera (TheSky camera add-on)"
+label = "Filter NINA left in the beam"
+sources = ["pointing-log"]
+key = "last_filter"
+computed = "filter_in_beam"
+severity = "warn"
+confidence = "Med"
+why = "A pointing run needs L or a broadband filter: 10 s at bin 2 through a 3 nm filter at f/8 shows too few stars for Image Link."
+fix = "Before the TPoint run, have NINA move to L (Equipment > Filter Wheel), then disconnect the camera in NINA."
+
+# ---------------------------------------------------------------- automated Image Link settings
+
+[[check]]
+id = "ails_exposure_s"
+group = "Automated Image Link settings"
+label = "Exposure (s)"
+sources = ["thesky-script"]
+min = 5
+max = 30
+severity = "warn"
+confidence = "Med"
+why = "Long enough for stars through L at bin 2 (10 s works), short enough to keep the run fast."
+fix = "Automated Pointing Calibration Run > Setup: exposure 10 s."
+
+[[check]]
+id = "ails_image_scale"
+group = "Automated Image Link settings"
+label = "Image scale (\"/px)"
+sources = ["thesky-script"]
+computed = "ails_image_scale"
+default_bin = 2
+tol_pct = 2.0
+severity = "fail"
+confidence = "Med"
+why = "Must be the ASTAP-measured native scale times the run's binning (0.239 x 2 = 0.478); the old 4x4 model used 0.942."
+fix = "Automated Pointing Calibration Run > Setup: image scale = native x binning (0.478 at 2x2)."
+
+[[check]]
+id = "ails_fovs"
+group = "Automated Image Link settings"
+label = "Search area (FOVs)"
+sources = ["thesky-script"]
+min = 4
+severity = "warn"
+confidence = "Med"
+why = "A 25' x 17' field and a pointing error of a few arcmin need a few fields of search without All Sky."
+fix = "Setup: search 8 FOV."
+
+[[check]]
+id = "ails_retries"
+group = "Automated Image Link settings"
+label = "Retries"
+sources = ["thesky-script"]
+min = 2
+severity = "warn"
+confidence = "Med"
+why = "One retry absorbs a passing cloud or a satellite trail."
+fix = "Setup: retries 2."
+
+[[check]]
+id = "ails_filter"
+group = "Automated Image Link settings"
+label = "Filter (greyed: no filter wheel)"
+sources = ["thesky-script"]
+report = true
+severity = "warn"
+confidence = "Med"
+why = "Greyed out because TheSky has no filter wheel; see the filter NINA left in the beam."
+fix = "None (information)."
+
+[[check]]
+id = "ails_position_angle"
+group = "Automated Image Link settings"
+label = "Position angle hint vs ASTAP"
+sources = ["thesky-script"]
+computed = "ails_position_angle"
+severity = "warn"
+confidence = "Med"
+why = "Only a hint for Image Link; shown next to the ASTAP-measured camera angle."
+fix = "None (information)."
+
+[[check]]
+id = "allsky_automated"
+group = "Automated Image Link settings"
+label = "Use All Sky Image Link (automated runs)"
+sources = ["thesky-script", "manual"]
+equals = true
+severity = "warn"
+confidence = "Low"
+why = "All Sky solves without a pointing guess; it needs the All Sky database installed. Read through DoCommand 13 only after the on-site check (thesky_audit_allsky_read), else from the manual record."
+fix = "Automated Pointing Calibration Run > Setup: Use All Sky Image Link on (and the All Sky database installed)."
+
+[[check]]
+id = "allsky_scripted"
+group = "Automated Image Link settings"
+label = "All Sky Image Link (scripted)"
+sources = ["thesky-script"]
+report = true
+severity = "warn"
+confidence = "Low"
+why = "DoCommand 12 read form, shown only once the on-site check confirmed it."
+fix = "None (information)."
+
+[[check]]
+id = "run_binning"
+group = "Automated Image Link settings"
+label = "Binning in the run setup"
+sources = ["manual"]
+equals = 2
+severity = "warn"
+confidence = "Med"
+why = "Not in the scripting API. The image scale above assumes this binning."
+fix = "Setup: binning 2x2; enter it in the manual record below."
+
+[[check]]
+id = "imagelink_selftest"
+group = "Automated Image Link settings"
+label = "TheSky Image Link on a known-good frame"
+sources = ["astap"]
+computed = "imagelink_selftest"
+tol_pct = 1.0
+severity = "fail"
+confidence = "Med"
+why = "Runs TheSky's own solver on a copy of the newest RC16 L frame: splits \"TheSky cannot take the picture\" from \"TheSky cannot solve the picture\", without the camera or the mount."
+fix = "If it fails: install / point TheSky at the All Sky database (or UCAC4 / Gaia with All Sky off); check the error text."
+
+# ---------------------------------------------------------------- image truth (ASTAP)
+
+[[check]]
+id = "true_scale"
+group = "Image truth (ASTAP)"
+label = "Native image scale (\"/px)"
+sources = ["astap"]
+computed = "true_scale"
+tol_pct = 1.0
+severity = "warn"
+confidence = "High"
+why = "ASTAP measures the real scale of an RC16 frame; config says 0.239, the 4x4 model implied 0.2355."
+fix = "If it differs, update pixel_scale_arcsec and the TheSky image scale."
+
+[[check]]
+id = "camera_pa_stable"
+group = "Image truth (ASTAP)"
+label = "Camera angle vs the model date"
+sources = ["astap"]
+computed = "camera_pa_stable"
+max_deg = 1.0
+severity = "warn"
+confidence = "High"
+why = "A camera rotated since the TPoint run means the model was built on a different setup (compared modulo 180 deg: a meridian flip turns the image)."
+fix = "Rebuild the TPoint model after a camera rotation."
+
+[[check]]
+id = "parity"
+group = "Image truth (ASTAP)"
+label = "Image parity"
+sources = ["astap"]
+computed = "parity"
+severity = "warn"
+confidence = "High"
+why = "Shown against the first stored check: a flip means a mirror diagonal or a reader change."
+fix = "None (information)."
+
+[[check]]
+id = "solve_stars"
+group = "Image truth (ASTAP)"
+label = "Stars used by ASTAP"
+sources = ["astap"]
+report = true
+severity = "warn"
+confidence = "High"
+why = "A low count means the test frame is the problem, not the settings."
+fix = "None (information)."
+
+# ---------------------------------------------------------------- catalogs (manual: no scripting call)
+
+[[check]]
+id = "allsky_db_installed"
+group = "Catalogs"
+label = "All Sky Image Link database installed"
+sources = ["manual"]
+equals = true
+severity = "warn"
+confidence = "Med"
+why = "\"Use All Sky Image Link\" is on, so a missing All Sky database fails every link."
+fix = "Install the All Sky Image Link database from Bisque (TheSky's Database Manager)."
+
+[[check]]
+id = "ucac4_installed"
+group = "Catalogs"
+label = "UCAC4 installed"
+sources = ["manual"]
+report = true
+severity = "warn"
+confidence = "Med"
+why = "With All Sky off, a 25' x 17' field needs a deep catalog."
+fix = "None (information)."
+
+[[check]]
+id = "gaia_installed"
+group = "Catalogs"
+label = "Gaia installed"
+sources = ["manual"]
+report = true
+severity = "warn"
+confidence = "Med"
+why = "With All Sky off, a 25' x 17' field needs a deep catalog."
+fix = "None (information)."
+
+# ---------------------------------------------------------------- TPoint and ProTrack (manual: not scriptable)
+
+[[check]]
+id = "tpoint_model_active"
+group = "TPoint and ProTrack"
+label = "TPoint model on"
+sources = ["manual"]
+equals = true
+severity = "fail"
+confidence = "Med"
+why = "Without the model on, pointing and ProTrack fall back to the raw mount."
+fix = "TheSky: Telescope > Bisque TCS / TPoint: Use TPoint model on."
+
+[[check]]
+id = "tpoint_points"
+group = "TPoint and ProTrack"
+label = "Model points"
+sources = ["manual"]
+computed = "tpoint_threshold"
+cfg = "tpoint_min_points"
+op = "min"
+severity = "warn"
+confidence = "Med"
+why = "ProTrack needs at least 50 points (Bisque)."
+fix = "Run a longer Automated Pointing Calibration (100 points is typical)."
+
+[[check]]
+id = "tpoint_rms_arcsec"
+group = "TPoint and ProTrack"
+label = "Model RMS (arcsec)"
+sources = ["manual"]
+computed = "tpoint_threshold"
+cfg = "tpoint_rms_max_arcsec"
+op = "max"
+severity = "warn"
+confidence = "Med"
+why = "A large RMS means a poor model (bad points or flexure)."
+fix = "Rebuild after fixing the cause; remove outliers in TPoint."
+
+[[check]]
+id = "tpoint_polar_error_arcmin"
+group = "TPoint and ProTrack"
+label = "Polar alignment error (arcmin)"
+sources = ["manual"]
+computed = "tpoint_threshold"
+cfg = "tpoint_polar_max_arcmin"
+op = "max"
+severity = "warn"
+confidence = "Med"
+why = "TPoint measures it precisely; above 2' field rotation shows in long subs (the 2026-09 drift was 5 to 8')."
+fix = "Adjust the Paramount's azimuth / altitude knobs per TPoint's Polar Alignment Report, then rebuild."
+
+[[check]]
+id = "tpoint_model_age_days"
+group = "TPoint and ProTrack"
+label = "Model age (days)"
+sources = ["manual"]
+key = "tpoint_model_date"
+computed = "tpoint_age"
+severity = "warn"
+confidence = "Med"
+why = "Models drift with the seasons and with any change on the mount."
+fix = "Rebuild the TPoint model."
+
+[[check]]
+id = "protrack_on"
+group = "TPoint and ProTrack"
+label = "ProTrack on"
+sources = ["manual"]
+equals = true
+severity = "warn"
+confidence = "Med"
+why = "ProTrack corrects tracking rates from the model (pe_owner=protrack); reading it is not documented in the scripting API."
+fix = "TheSky: Bisque TCS: ProTrack on."
+
+[[check]]
+id = "tpoint_rebuild"
+group = "TPoint and ProTrack"
+label = "Rebuild the model?"
+sources = ["manual"]
+computed = "tpoint_rebuild"
+severity = "fail"
+confidence = "Med"
+why = "Rebuild when the model is old, the equipment changed after it (camera angle, scale, a rig added or removed), or NINA's first slews miss by more than the fail limit."
+fix = "Run a new Automated Pointing Calibration (camera free of NINA, L in the beam), then enter the new record."
+
+# ---------------------------------------------------------------- pointing
+
+[[check]]
+id = "first_slew_error"
+group = "Pointing"
+label = "NINA first-slew error (14-night median)"
+sources = ["pointing-log"]
+computed = "first_slew_error"
+severity = "fail"
+confidence = "Med"
+why = "How far NINA's first slew lands from the target before centering; a good model lands within 1 to 2'."
+fix = "Rebuild the TPoint model; a constant offset in one direction can also be a sync / home problem."
+
+[[check]]
+id = "first_slew_pattern"
+group = "Pointing"
+label = "First-slew pattern by Dec and HA"
+sources = ["pointing-log"]
+computed = "first_slew_pattern"
+severity = "warn"
+confidence = "Med"
+why = "A constant offset says sync / home; one that changes with Dec or HA says model terms or flexure."
+fix = "None (information)."
+
+[[check]]
+id = "mount_vs_solve"
+group = "Pointing"
+label = "Mount vs plate solve (PS-67)"
+sources = ["pointing-log"]
+computed = "mount_vs_solve"
+severity = "warn"
+confidence = "Med"
+why = "PS-67's per-sub mount position vs the ASTAP solve, after centering: a free check of the model."
+fix = "None (information)."

@@ -11,6 +11,8 @@ GET  /api/phd2/calibration-sequence       the standalone calibration sequence
 GET  /api/phd2/audit?refresh=&raw=        settings audit vs the desired state (PS-89)
 POST /api/phd2/audit/apply {ids, dry_run}  apply audit rows (API / gated profile)
 GET  /api/phd2/tuning?date=       guide-star auto-tune: per filter, changes, advice (PS-90)
+GET  /api/phd2/live?probe=         live PHD2 state for the Guiding tab (PS-103)
+GET  /guiding                      the Guiding tab page (PS-103)
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
 stay in routers/triage.py. Handlers lazily import get_config to avoid an
@@ -18,10 +20,12 @@ import cycle with app.py.
 """
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 router = APIRouter()
 
@@ -330,3 +334,91 @@ def api_phd2_tuning(date: str = ""):
     out = tn.summary(cfg, date)
     out["phd2_ops"] = phd2_ops.status()
     return out
+
+
+# ---- PS-103 Guiding tab -----------------------------------------------------
+
+_PROBE_TTL_S = 20.0      # one PHD2 read per 20 s, however many tabs poll
+_PROBE_TIMEOUT_S = 8.0
+_probe: dict = {"t": 0.0, "out": None, "client": None, "lock": None}
+
+
+async def _probe_phd2(cfg) -> dict:
+    """One short read-only look at PHD2 itself: its own app state, guide
+    exposure, binning, pixel scale and lock position. Cached for
+    _PROBE_TTL_S. The client is kept between probes (connected only during
+    one) so a closed PHD2 logs one warning per outage, not one per poll.
+    Never raises."""
+    from photonscript.telescope_agent.phd2_client import PHD2Client
+    if _probe["lock"] is None:
+        _probe["lock"] = asyncio.Lock()
+    async with _probe["lock"]:
+        age = time.monotonic() - _probe["t"]
+        if _probe["out"] is not None and age < _PROBE_TTL_S:
+            return dict(_probe["out"], age_s=round(age, 1))
+        c = _probe["client"]
+        if c is None or (c.host, c.port) != (cfg.phd2_host, cfg.phd2_port):
+            c = _probe["client"] = PHD2Client(cfg.phd2_host, cfg.phd2_port, config=cfg)
+
+        async def read() -> dict:
+            if not await c.connect():
+                return {"ok": False, "note": "PHD2 not reachable"}
+            o: dict = {"ok": True}
+            try:
+                o["app_state"] = await c.get_app_state()
+                for key, fn in (("exposure_ms", c.get_exposure),
+                                ("binning", c.get_camera_binning),
+                                ("pixel_scale", c.get_pixel_scale),
+                                ("lock_position", c.get_lock_position)):
+                    try:
+                        o[key] = await fn()
+                    except Exception:  # noqa: BLE001 - e.g. no lock set
+                        o[key] = None
+            finally:
+                await c.disconnect()
+            return o
+        try:
+            out = await asyncio.wait_for(read(), _PROBE_TIMEOUT_S)
+        except Exception as e:  # noqa: BLE001
+            try:
+                await c.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            out = {"ok": False, "note": f"PHD2 read failed: {e or type(e).__name__}"}
+        out["t_utc"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+        _probe["t"], _probe["out"] = time.monotonic(), out
+        return dict(out, age_s=0.0)
+
+
+@router.get("/api/phd2/live")
+async def api_phd2_live(probe: bool = True):
+    """Live PHD2 state for the Guiding tab in one read: the RC16 agent's
+    guiding snapshot (state, RMS in arcsec or px, SNR, HFD, exposure,
+    binning, pixel scale), who holds PHD2 (phd2_ops), the armer state, the
+    night date the other /api/phd2/* reads default to, and (probe=1, the
+    default) a cached read-only look at PHD2 itself for its app state and
+    lock position."""
+    from photonscript.scheduler import app as _app
+    from photonscript.shared import phd2_store as store
+    from photonscript.telescope_agent import phd2_ops
+    cfg = _cfg()
+    ts = _app._telescope_state
+    return {"night": store.night_of(cfg, datetime.utcnow()),
+            "armer_state": _armer_state() or None,
+            "phd2_ops": phd2_ops.status(),
+            "session_state": getattr(ts.session_state, "value", ts.session_state),
+            "target": ts.current_target,
+            "filter": getattr(ts.current_filter, "value", ts.current_filter),
+            "guiding": ts.guiding.model_dump(mode="json"),
+            "phd2": await _probe_phd2(cfg) if probe else None}
+
+
+@router.get("/guiding", response_class=HTMLResponse)
+async def guiding_page(request: Request):
+    """The Guiding tab: every PHD2 panel in one place (PS-103)."""
+    from photonscript.scheduler.app import VERSION, templates
+    from photonscript.shared import phd2_store as store
+    cfg = _cfg()
+    return templates.TemplateResponse(request, "guiding.html", {
+        "version": VERSION, "observatory": cfg.get_observatory(),
+        "night": store.night_of(cfg, datetime.utcnow())})

@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Guiding</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        main { display: block; max-width: 1400px; }
+        main > section.panel { margin-bottom: 1.5rem; scroll-margin-top: 1rem; }
+        .badge { display: inline-block; padding: .12rem .5rem; border-radius: 4px;
+                 font-size: .72rem; font-weight: 700; min-width: 42px; text-align: center; }
+        .g-intro { opacity: .7; margin-bottom: .6rem; font-size: .88rem; }
+        .g-bar { display: flex; align-items: center; flex-wrap: wrap; gap: .5rem; margin-top: .6rem; }
+        .g-jump { display: flex; flex-wrap: wrap; gap: .4rem 1rem; margin-bottom: 1.2rem; font-size: .85rem; }
+        .g-jump a { color: #7dd3fc; text-decoration: none; }
+        .btn-sm { padding: .2rem .6rem; font-size: .75rem; }
+        button[disabled] { opacity: .5; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Guiding: PHD2 state, settings and checks" %}
+    {% set active_page = "guiding" %}
+    {% include "_header.html" %}
+
+    <main>
+        <nav class="g-jump">
+            <a href="#liveSec">Live</a>
+            <a href="#auditSec">Settings audit</a>
+            <a href="#selftestSec">Pulse self-test</a>
+            <a href="#calSec">Calibration</a>
+            <a href="#guardSec">Guide guard</a>
+            <a href="#tuneSec">Guide star</a>
+            <a href="#glogSec">Tonight's guide log</a>
+            <a href="#tpointSec">TheSky / TPoint</a>
+        </nav>
+
+        <section class="panel" id="liveSec">
+            <h2>Live PHD2</h2>
+            <div class="bd" id="liveInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="liveRefresh">Refresh</button>
+                <span class="bd g-dim" id="liveStatus"></span>
+            </div>
+            <div class="g-dim" style="margin-top:.4rem;font-size:.75rem;">Refreshes every 15 s. RMS, SNR and HFD are the RC16 agent's PHD2 snapshot (arcsec when the guide pixel scale is known); app state, exposure, binning, scale and lock position are read from PHD2 itself (at most every 20 s).</div>
+        </section>
+
+        <section class="panel" id="auditSec">
+            <h2>PHD2 Settings Audit (PS-89)</h2>
+            <p class="g-intro">PHD2, its stored profile, the newest guide log, NINA's guider settings, the mount driver, TheSky and the PHD2 dark library against config/phd2/desired_oag_rc16.toml. Runs at every guided arm (one push only on a FAIL) and 60 s after a PHD2 configuration change. Apply does a dry run first and asks before changing anything: API rows (exposure, RA min-move, Dec guide mode) only while PHD2 is Stopped or Looping; profile rows need PS_PHD2_AUDIT_AUTOFIX, PHD2 closed and the armer idle; mount driver, TheSky and NINA rows are report only. Unknown = no source could read it.</p>
+            <div class="bd" id="auditInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="auditRefresh">Refresh (run audit now)</button>
+                <span class="bd" id="auditStatus"></span>
+            </div>
+            <div id="auditRows" style="margin-top:.4rem;"></div>
+        </section>
+
+        <section class="panel" id="selftestSec">
+            <h2>PHD2 Pulse Self-Test (PS-92)</h2>
+            <p class="g-intro">Does the mount move on a guide pulse? PHD2 loops while PhotonScript pulses W, E, N, S (3 each) and measures how far the star field moved against the guide speed. PASS: every direction 0.5 to 1.5x of expected and opposite pairs oppose; WARN above 1.5x (guide-rate mismatch); FAIL under 0.5x or not opposing. With PS_PHD2_SELFTEST_ENABLED on, NINA runs it after the twilight autofocus and before each guided target. Run it by hand only with the scope tracking on a star field and PHD2 not guiding.</p>
+            <div class="bd" id="stLast">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="stRefresh">Refresh</button>
+                <button class="btn btn-primary" id="stRun" title="Runs the test now (1.5 to 4 min). Refused while PHD2 is guiding.">Run self-test now</button>
+                <span class="bd" id="stStatus"></span>
+            </div>
+            <div id="stTrend"></div>
+        </section>
+
+        <section class="panel" id="calSec">
+            <h2>PHD2 Calibration (PS-93)</h2>
+            <p class="g-intro">The calibration PHD2 uses now, graded. PASS: axes within 5 deg of perpendicular, RA/Dec rate ratio within 30% of cos(Dec), 8 or more steps per axis, taken near Dec 0 and the meridian. FAIL: failed, no motion, ortho over 5 deg, ratio off, parity changed. With PS_PHD2_CAL_MODE=auto a guided night calibrates (NINA slot PHD2_CALIBRATION after the twilight autofocus) only when this is missing, FAILED, older than PS_PHD2_CAL_MAX_AGE_DAYS, the PHD2 profile or binning changed, or you ask for it below.</p>
+            <div class="bd" id="pcInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="pcRefresh">Refresh</button>
+                <button class="btn btn-secondary" id="pcNext" title="The next dispatch (tonight's arm, or the next) includes a calibration slot.">Calibrate at the next dispatch</button>
+                <button class="btn btn-primary" id="pcNow" title="While a night runs: one re-dispatch with a calibration slot (once per night, 1 h of dark left). Otherwise: sends the calibration sequence to NINA now (roof open, dark sky only).">Calibrate now</button>
+                <span class="bd" id="pcStatus"></span>
+            </div>
+            <div id="pcHist"></div>
+        </section>
+
+        <section class="panel" id="guardSec">
+            <h2>PHD2 Guide Guard (PS-91)</h2>
+            <p class="g-intro">Watches PHD2 live for a lock on a hot pixel or other non-star, PHD2 guiding a parked or closed-roof scope, and max-length pulses that move nothing. Subs guided on a non-star are marked guide_lock WARN. The hot-pixel map is rebuilt automatically while the roof is closed before dusk; build it by hand only with the roof closed or the guide camera capped. Capture is refused while a night runs, while PHD2 guides, or while another PHD2 job holds it.</p>
+            <div class="bd" id="guardInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="guardRefresh">Refresh</button>
+                <button class="btn btn-secondary" id="hotpixCapture" title="Loops PHD2 for 8 frames at its guide exposure and maps hot pixels. Roof closed / camera capped only.">Capture hot-pixel map now</button>
+                <span class="bd" id="guardStatus"></span>
+            </div>
+            <div id="guardOut" style="margin-top:.6rem;"></div>
+        </section>
+
+        <section class="panel" id="tuneSec">
+            <h2>Guide Star Tuner (PS-90)</h2>
+            <p class="g-intro">The RC16 agent measures the guide star after each settle and on a filter change (get_star_image plus PHD2's SNR, HFD and ErrorCode). Target: peak 60 to 80% of full scale, never clipped, SNR over 20, HFD 2 to 5 px, exposure 1 to 4 s. Mode observe records only; exposure steps PHD2's exposure (only to exposures the dark library has). Gain and binning are recommended for the next night and written pre-dusk only with PS_PHD2_AUDIT_AUTOFIX.</p>
+            <div class="bd" id="tuneInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="tuneRefresh">Refresh</button>
+            </div>
+            <div id="tuneRows"></div>
+        </section>
+
+        <section class="panel" id="glogSec">
+            <h2>Tonight's Guide Log (PS-88)</h2>
+            <p class="g-intro">The night's PHD2 guide log analysed: RMS (all and settled), dropped and saturated frames, dithers, and the top findings with a fix each. Read on load and on Refresh only (it parses the whole log).</p>
+            <div class="bd" id="glogInfo" data-night="{{ night }}">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="glogRefresh">Refresh</button>
+            </div>
+            <div id="glogFindings"></div>
+        </section>
+
+        <section class="panel" id="tpointSec">
+            <h2>TheSky / TPoint Audit (PS-104)</h2>
+            <p class="g-intro">Report only: TheSky's settings (read through its TCP scripting with read-only scripts), the ASTAP Image Link check on the newest RC16 L frame, NINA's first-slew error from its Center log, and the TPoint record you enter below, against config/thesky/desired_rc16.toml. Nothing here writes TheSky, moves the mount or takes an image. Runs at arm and on Refresh. TPoint numbers, ProTrack, catalogs and the run binning are not in TheSky's scripting API: enter them after each TPoint session. Unknown = no source could read it.</p>
+            <div class="bd" id="tsInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="tsRefresh">Refresh (run audit now)</button>
+                <a class="btn btn-secondary btn-sm" href="/api/thesky/onsite-script" target="_blank" title="The read-only script for TheSky's Tools &gt; Run Java Script window (the 2-minute on-site check)">On-site check script</a>
+                <span class="bd" id="tsStatus"></span>
+            </div>
+            <div id="tsRows" style="margin-top:.4rem;"></div>
+
+            <h3 class="g-group">Image Link check</h3>
+            <div class="bd" id="tsImagelink">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="tsAstap" title="Plate-solves the newest RC16 L frame with ASTAP and compares the true scale and angle with TheSky's Image Link settings.">ASTAP check now</button>
+                <button class="btn btn-secondary" id="tsThesky" title="Runs TheSky's own Image Link on a temporary copy of the same frame (no camera, no mount). Only while the armer is idle.">TheSky Image Link on a temp copy</button>
+                <span class="bd" id="tsIlStatus"></span>
+            </div>
+
+            <h3 class="g-group">First-slew error (NINA Center log, 14 nights)</h3>
+            <div id="tsPointing">loading...</div>
+
+            <h3 class="g-group">TPoint record (manual)</h3>
+            <form id="tsManualForm" onsubmit="return false;">
+                <div class="g-stats" id="tsManualFields"></div>
+                <div class="g-bar">
+                    <button class="btn btn-primary" id="tsManualSave" type="button">Save TPoint record</button>
+                    <span class="bd" id="tsManualStatus"></span>
+                </div>
+            </form>
+        </section>
+    </main>
+
+    <script src="/static/js/phd2_panels.js?v={{ version }}"></script>
+    <script src="/static/js/thesky_panels.js?v={{ version }}"></script>
+    <script>PHD2.initGuidingPage(); THESKY.init();</script>
+    {% include "_footer.html" %}
+</body>
+</html>

@@ -1,24 +1,30 @@
-"""Experimental TheSky64 TCP client — pointing status and a ProTrack toggle.
+"""TheSky64 TCP client: read-only status reads (PS-104).
 
 Why this exists: PhotonScript reaches the Paramount MX through NINA's ASCOM
-pass-through (TheSky's ASCOM connector), which does NOT expose TPoint or
-ProTrack. TheSky64 also runs a "TheSky TCP Server" (default port 3040) that
-executes JavaScript sent over the socket and returns the value of the script's
-`Out` variable, followed by ``|`` and an error string. Talking to that server
-lets us read pointing state and — once the exact call is confirmed on-site —
-flip ProTrack, the Bisque-native fix for the ~7.8"/min Dec drift.
+pass-through (TheSky's ASCOM connector), which does NOT expose TPoint, Image
+Link or the camera add-on. TheSky64 also runs a "TheSky TCP Server" (default
+port 3040) that executes JavaScript sent over the socket and returns the value
+of the script's `Out` variable, followed by ``|`` and an error string.
 
-STATUS: experimental. NOTHING in the nightly flow calls this; it is opt-in
-(`thesky_enabled`, off by default). The status reads use documented TheSkyX
-script objects and should work as-is. ``set_protrack`` is best-effort and
-MARKED so — confirm the ProTrack scripting call against the site's TheSky build
-(see the NOTE in that method) before wiring it into automation. Use
-``run_script`` as an escape hatch to try the exact API your build exposes.
+STATUS: report only. ``ping`` is used by the PS-92 fail alert (behind
+`thesky_enabled`); the PS-104 TheSky / TPoint audit (scheduler.thesky_audit)
+uses the read methods below. Every script lives in READ_ONLY_JS (or comes
+from imagelink_script) and a test greps all of them for a denylist: nothing
+here connects, unparks, parks, slews, syncs, jogs, changes tracking, takes
+an image or writes a TheSky setting.
+
+PS-104 removed two latent traps (neither had a caller):
+- get_mount_status used sky6RASCOMTele.Connect(), which may unpark the mount
+  (Bisque documents a separate ConnectAndDoNotUnpark). It now reads
+  IsConnected and reads the position only when already connected.
+- set_protrack used DoCommandStr, which is not in Bisque's sky6RASCOMTele
+  reference. Removed: ProTrack is a manual row in the audit.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import socket
 
 logger = logging.getLogger(__name__)
@@ -87,45 +93,227 @@ class TheSkyClient:
     def ping(self) -> bool:
         """True if the TCP server answers and runs a trivial script."""
         try:
-            return self.run_script("var Out; Out = 'ok';") == "ok"
+            return self.run_script(READ_ONLY_JS["ping"]) == "ok"
         except TheSkyError as e:
             logger.debug("TheSky ping failed: %s", e)
             return False
 
-    # --- documented reads ----------------------------------------------------
+    # --- documented reads (never connect) ------------------------------------
     def get_mount_status(self) -> dict:
-        """RA (hours), Dec (deg), tracking flag via sky6RASCOMTele."""
-        js = ("var Out;"
-              "sky6RASCOMTele.Connect();"
-              "sky6RASCOMTele.GetRaDec();"
-              "Out = sky6RASCOMTele.dRa + ',' + sky6RASCOMTele.dDec + ',' + "
-              "sky6RASCOMTele.IsTracking;")
-        raw = self.run_script(js)
+        """RA (hours), Dec (deg) and tracking via sky6RASCOMTele, without
+        connecting: the script reads IsConnected first and reads the position
+        only when the mount is already connected. {"connected": False, ...}
+        otherwise."""
+        raw = self.run_script(READ_ONLY_JS["mount_status"])
         try:
-            ra_h, dec_d, trk = raw.split(",")
-            return {"ra_hours": float(ra_h), "dec_deg": float(dec_d),
-                    "tracking": bool(int(float(trk)))}
+            conn, ra_h, dec_d, trk = raw.split(",")
+        except ValueError as e:
+            raise TheSkyError(f"unexpected status reply: {raw!r}") from e
+        if not _truthy(conn):
+            return {"connected": False, "ra_hours": None, "dec_deg": None,
+                    "tracking": None}
+        try:
+            return {"connected": True, "ra_hours": float(ra_h),
+                    "dec_deg": float(dec_d), "tracking": _truthy(trk)}
         except ValueError as e:
             raise TheSkyError(f"unexpected status reply: {raw!r}") from e
 
-    # --- experimental write --------------------------------------------------
-    def set_protrack(self, on: bool) -> str:
-        """EXPERIMENTAL: enable/disable ProTrack.
+    def _kv(self, name: str) -> dict:
+        return parse_kv(self.run_script(READ_ONLY_JS[name]))
 
-        NOTE: TPoint/ProTrack is not exposed through one stable, documented
-        TheSkyX script property across builds. The call below is a best-effort
-        CANDIDATE. Confirm it against the site's TheSky version first — open
-        TheSkyX's Script window, run a one-liner, and check the result — before
-        wiring this into automation. If it errors, use run_script() to try the
-        exact API your build exposes and update this method. It intentionally
-        raises TheSkyError (via run_script) so a wrong call fails loudly rather
-        than silently pretending ProTrack changed.
-        """
-        val = "true" if on else "false"
-        js = (f"var Out; sky6RASCOMTele.Connect();"
-              f"sky6RASCOMTele.DoCommandStr(\"ProTrack\", \"{val}\");"
-              f"Out = \"protrack={val}\";")
-        return self.run_script(js)
+    def selected_hardware(self) -> dict:
+        """SelectedHardware: camera / mount / filter wheel / focuser /
+        autoguider model names as TheSky shows them."""
+        return self._kv("selected_hardware")
+
+    def mount_flags(self) -> dict:
+        """IsConnected; only when connected IsParked, IsTracking, the
+        position and LastSlewError. Never Connect()."""
+        return self._kv("mount_flags")
+
+    def site(self) -> dict:
+        """sky6StarChart.DocumentProperty 0 to 5 and 9 (latitude, longitude,
+        time zone, elevation m, DST index, use computer clock, JD now)."""
+        return self._kv("site")
+
+    def ails(self) -> dict:
+        """AutomatedImageLinkSettings (the Automated Pointing Calibration
+        Run's Image Link fields; binning is not among them)."""
+        return self._kv("ails")
+
+    def camera_flags(self) -> dict:
+        """ccdsoftCamera Status, BinX, BinY, AutoSavePath, ImageReduction.
+        Never ccdsoftCamera.Connect(): that would try to take the AP26MC
+        from NINA #1."""
+        return self._kv("camera_flags")
+
+    def version(self) -> dict:
+        return self._kv("version")
+
+    def allsky_flags(self) -> dict:
+        """All Sky Image Link flags through DoCommand 12 / 13 in their read
+        form (empty argument). Called only with thesky_audit_allsky_read,
+        after the on-site check confirmed the read form changes nothing."""
+        return self._kv("allsky_flags")
+
+    def imagelink_file(self, path: str, scale: float) -> dict:
+        """TheSky's own Image Link on a FITS file (a copy PhotonScript made):
+        sets the scripted ImageLink object's inputs (file, scale), executes,
+        reads ImageLinkResults. No camera, no mount, no sync."""
+        return parse_kv(self.run_script(imagelink_script(path, scale)))
+
+
+# --------------------------------------------------------------------------
+# Every script the client sends. Each one only READS TheSky state (the Image
+# Link self-test sets the solver's own inputs, see IMAGELINK_INPUTS).
+# Replies are "k=v;k=v": s() strips | ; = and newlines from values (a | would
+# end TheSky's reply early) and g() wraps each read in a try, so a property a
+# build lacks reads "?ERR" instead of failing the whole script.
+# --------------------------------------------------------------------------
+
+_JS_HELPERS = ("var Out;"
+               "function s(v){return String(v).replace(/[|;=\\r\\n]/g,'_');}"
+               "function g(f){try{return s(f());}catch(e){return '?ERR';}}")
+
+
+def _js_kv(pairs: list[tuple[str, str]], pre: str = "") -> str:
+    body = " + ';' + ".join(f"'{k}=' + g(function(){{return {expr};}})"
+                            for k, expr in pairs)
+    return _JS_HELPERS + pre + "Out = " + body + ";"
+
+
+def _doc(n: int) -> str:
+    return f"(sky6StarChart.DocumentProperty({n}), sky6StarChart.DocPropOut)"
+
+
+_MOUNT_PRE = "var c = false; try { c = sky6RASCOMTele.IsConnected; } catch (e) {}"
+
+# name -> ([(key, JS expression)], prelude). The TCP reads and the on-site
+# check script (onsite_script) are both built from this one list.
+READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
+    "version": ([("version", "Application.version"),
+                 ("build", "Application.build")], ""),
+    "selected_hardware": ([
+        ("camera", "SelectedHardware.cameraModel"),
+        ("mount", "SelectedHardware.mountModel"),
+        ("filter_wheel", "SelectedHardware.filterWheelModel"),
+        ("focuser", "SelectedHardware.focuserModel"),
+        ("autoguider", "SelectedHardware.autoguiderCameraModel")], ""),
+    "mount_flags": ([
+        ("connected", "c"),
+        ("parked", "c ? sky6RASCOMTele.IsParked() : ''"),
+        ("tracking", "c ? sky6RASCOMTele.IsTracking : ''"),
+        ("ra_h", "c ? (sky6RASCOMTele.GetRaDec(), sky6RASCOMTele.dRa) : ''"),
+        ("dec_d", "c ? sky6RASCOMTele.dDec : ''"),
+        ("last_slew_error", "c ? sky6RASCOMTele.LastSlewError : ''")], _MOUNT_PRE),
+    "site": ([
+        ("latitude", _doc(0)), ("longitude", _doc(1)), ("time_zone", _doc(2)),
+        ("elevation_m", _doc(3)), ("dst_index", _doc(4)),
+        ("use_computer_clock", _doc(5)), ("jd_now", _doc(9))], ""),
+    "ails": ([
+        ("image_scale", "AutomatedImageLinkSettings.imageScale"),
+        ("position_angle", "AutomatedImageLinkSettings.positionAngle"),
+        ("exposure_s", "AutomatedImageLinkSettings.exposureTimeAILS"),
+        ("fovs", "AutomatedImageLinkSettings.fovsToSearch"),
+        ("retries", "AutomatedImageLinkSettings.retries"),
+        ("filter", "AutomatedImageLinkSettings.filterNameAILS")], ""),
+    "camera_flags": ([
+        ("status", "ccdsoftCamera.Status"),
+        ("bin_x", "ccdsoftCamera.BinX"),
+        ("bin_y", "ccdsoftCamera.BinY"),
+        ("autosave_path", "ccdsoftCamera.AutoSavePath"),
+        ("image_reduction", "ccdsoftCamera.ImageReduction")], ""),
+    # read form only (empty argument); behind thesky_audit_allsky_read
+    "allsky_flags": ([
+        ("allsky_scripted",
+         "(sky6RASCOMTele.DoCommand(12, ''), sky6RASCOMTele.DoCommandOutput)"),
+        ("allsky_automated",
+         "(sky6RASCOMTele.DoCommand(13, ''), sky6RASCOMTele.DoCommandOutput)")],
+        _MOUNT_PRE),
+}
+
+READ_ONLY_JS: dict[str, str] = {
+    "ping": "var Out; Out = 'ok';",
+    "mount_status": (
+        "var Out; var c = sky6RASCOMTele.IsConnected;"
+        "if (c) { sky6RASCOMTele.GetRaDec();"
+        "Out = '1,' + sky6RASCOMTele.dRa + ',' + sky6RASCOMTele.dDec + ',' + "
+        "sky6RASCOMTele.IsTracking; } else { Out = '0,,,'; }"),
+    **{name: _js_kv(pairs, pre) for name, (pairs, pre) in READ_PAIRS.items()},
+}
+
+
+def onsite_script() -> str:
+    """The read-only script for TheSky's Tools > Run Java Script window (the
+    2-minute on-site check, MAINTENANCE.md): every read the audit makes, one
+    line each, so the property names can be confirmed on the site's build.
+    The All Sky DoCommand reads are left out on purpose: they are tried by
+    hand (see MAINTENANCE.md) before thesky_audit_allsky_read is turned on."""
+    lines = ["var lines = [];",
+             "function g(f){try{return String(f());}catch(e){return '?ERR ' + e;}}"]
+    for name, (pairs, pre) in READ_PAIRS.items():
+        if name == "allsky_flags":
+            continue
+        if pre:
+            lines.append(pre)
+        for k, expr in pairs:
+            lines.append(f"lines.push('{name}.{k} = ' + g(function(){{return {expr};}}));")
+    lines += ["var Out = lines.join('\\n');",
+              "try { RunJavaScriptOutput.writeLine(Out); } catch (e) {}"]
+    return "\n".join(lines) + "\n"
+
+# The only TheSky properties any script may assign: the scripted Image
+# Link's own inputs (which file, which scale), for the self-test.
+IMAGELINK_INPUTS = ("ImageLink.pathToFITS", "ImageLink.scale",
+                    "ImageLink.unknownScale")
+
+_SAFE_PATH = re.compile(r"^[A-Za-z0-9 _.:\\/()-]+$")
+
+
+def imagelink_script(path: str, scale: float) -> str:
+    """The Image Link self-test script for one file. Refuses a path with
+    characters that could break out of the JS string."""
+    p = str(path)
+    if not p.isascii() or not _SAFE_PATH.match(p):
+        raise TheSkyError(f"refusing an unusual path for Image Link: {p!r}")
+    p = p.replace("\\", "/")
+    sc = float(scale)
+    if not 0.01 < sc < 100:
+        raise TheSkyError(f"implausible Image Link scale {sc}")
+    pre = (f"ImageLink.pathToFITS = '{p}';"
+           f"ImageLink.scale = {sc:.5f};"
+           "ImageLink.unknownScale = 0;"
+           "var err = '';"
+           "try { ImageLink.execute(); } catch (e) { err = String(e.message || e); }")
+    return _js_kv([
+        ("exec_error", "err"),
+        ("succeeded", "ImageLinkResults.succeeded"),
+        ("error_code", "ImageLinkResults.errorCode"),
+        ("error_text", "ImageLinkResults.errorText"),
+        ("image_scale", "ImageLinkResults.imageScale"),
+        ("position_angle", "ImageLinkResults.imagePositionAngle"),
+        ("mirrored", "ImageLinkResults.imageIsMirrored"),
+        ("image_stars", "ImageLinkResults.imageStarCount"),
+        ("solution_rms", "ImageLinkResults.solutionRMS"),
+        ("solution_stars", "ImageLinkResults.solutionStarCount"),
+        ("catalog_stars", "ImageLinkResults.catalogStarCount")], pre=pre)
+
+
+def parse_kv(raw: str) -> dict:
+    """'a=1;b=x' -> {'a': '1', 'b': 'x'}. '?ERR' (property missing on this
+    build), 'undefined' and '' read as None."""
+    out: dict = {}
+    for part in (raw or "").split(";"):
+        k, sep, v = part.partition("=")
+        if not sep or not k.strip():
+            continue
+        v = v.strip()
+        out[k.strip()] = None if v in ("", "?ERR", "undefined") else v
+    return out
+
+
+def _truthy(v) -> bool:
+    return str(v).strip().lower() in ("1", "true", "yes", "on", "-1")
 
 
 def client_from_config(config) -> "TheSkyClient":

@@ -639,11 +639,29 @@ class PhotonScriptConfig(BaseSettings):
     # PhotonScript normally reaches the Paramount through NINA's ASCOM pass-through
     # (TheSky's connector), which does NOT expose TPoint/ProTrack. TheSky also runs
     # a TCP "TheSky TCP Server" (default :3040) that executes JavaScript; the
-    # thesky_client module talks to it for pointing status and a (best-effort)
-    # ProTrack toggle. Nothing in the nightly flow uses this yet — opt-in only.
+    # thesky_client module talks to it with read-only scripts (PS-104).
+    # thesky_enabled stays the gate for anything that would write.
     thesky_enabled: bool = False
     thesky_tcp_host: str = "localhost"
     thesky_tcp_port: int = 3040
+    # PS-104 TheSky / TPoint audit (scheduler.thesky_audit): report only, it
+    # never writes TheSky, moves the mount or takes an image.
+    thesky_audit_enabled: bool = True   # read-only audit (on demand, at arm,
+                                 # night report); independent of thesky_enabled
+    thesky_audit_imagelink_thesky: bool = False  # TheSky Image Link on a copied
+                                 # frame from the CLI too (the Guiding tab
+                                 # button runs it while the armer is idle)
+    thesky_audit_allsky_read: bool = False  # read the All Sky flags through
+                                 # DoCommand 12 / 13 (read form); on only after
+                                 # the on-site script check (MAINTENANCE.md)
+    tpoint_max_age_days: float = 90.0   # TPoint model older = rebuild
+    tpoint_min_points: int = 50         # ProTrack's minimum per Bisque
+    tpoint_rms_max_arcsec: float = 30.0
+    tpoint_polar_max_arcmin: float = 2.0
+    pointing_first_slew_warn_arcmin: float = 2.0  # NINA first-solve median
+    pointing_first_slew_fail_arcmin: float = 5.0  # (14 nights, per side)
+    thesky_manual_max_age_days: float = 30.0  # manual TPoint record older
+                                 # reads unknown (re-enter after a session)
     # Filter names as they appear in the NINA profile, mapped from our classes.
     # AARO wheel names its filters with single letters.
     nina_filter_names: str = "Ha:H,OIII:O,SII:S,L:L,R:R,G:G,B:B"
