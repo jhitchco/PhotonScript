@@ -7,6 +7,7 @@
     <title>PhotonScript - Imaging Runs</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
+    <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
     <script src="/static/js/sky_geom.js?v={{ version }}"></script>
     <style>
         .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
@@ -14,7 +15,19 @@
                grid-template-columns: 215px 1fr; gap: 1.2rem;
                align-items: start; }
         @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
-        #subTable { display:block; max-height: 460px; overflow-y:auto; }
+        /* PS-116: one subs view, Grid or Table */
+        #detailPanel { min-width:0; }   /* let the wide table scroll inside */
+        #subTable { display:block; max-height:72vh; max-width:100%; overflow:auto; }
+        #subTable th { position:sticky; top:0; z-index:1; background:#0b1220;
+                       cursor:pointer; white-space:nowrap; user-select:none; }
+        #subTable th.nosort { cursor:default; }
+        #subTable tr.srow { cursor:pointer; }
+        #subTable tr.srow:hover td { background:rgba(255,255,255,.04); }
+        #subTable td.tthumb { padding:.15rem .3rem; }
+        #subTable td.tthumb img { width:72px; min-height:40px; display:block;
+                                  border-radius:4px; background:#0b1220; }
+        #viewToggle .btn { padding:.2rem .7rem; font-size:.8rem; }
+        #viewToggle .btn.on { background:#1d4ed8; color:#fff; }
         .night-chip { display:block; padding:.4rem .8rem; border-radius:8px;
                       background:rgba(255,255,255,.05); margin:0 0 .4rem 0;
                       cursor:pointer; white-space:nowrap; }
@@ -175,9 +188,16 @@
             <div id="pointChips" style="margin-bottom:.25rem;"></div>
             <div id="targetChips" style="margin-bottom:.25rem;"></div>
             <div id="filterChips"></div>
-            <div class="bd" id="thumbCount"></div>
-            <div class="thumbs" id="thumbStrip"></div>
-            <table class="runs" id="subTable"></table>
+            <div style="display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin:.35rem 0 .2rem;">
+                <span id="viewToggle" role="group" aria-label="subs view (PS-116)">
+                    <button type="button" class="btn btn-secondary" id="viewGridBtn" data-v="grid">Grid</button>
+                    <button type="button" class="btn btn-secondary" id="viewTableBtn" data-v="table">Table</button>
+                </span>
+                <span class="bd" id="thumbCount"></span>
+            </div>
+            <div class="bd warn" id="scoreHint" hidden></div>
+            <div id="gridView"><div class="thumbs" id="thumbStrip"></div></div>
+            <div id="tableView" hidden><table class="runs" id="subTable"></table></div>
         </section>
     </main>
     <div id="lightbox" hidden>
@@ -739,11 +759,24 @@
             '<span class="fchip' + (subFilter === f ? ' active' : '') +
             '" data-f="' + f + '">' + f +
             (f === 'ALL' ? ' ' + all.length : ' ' + counts[f]) + '</span>').join('');
-        document.querySelectorAll('.fchip').forEach(el =>
+        document.querySelectorAll('#filterChips .fchip').forEach(el =>  // only the filter chips (PS-116)
             el.addEventListener('click', () => { subFilter = el.dataset.f; renderSubs(); }));
         const subs = subFilter === 'ALL' ? all
                      : all.filter(s => s.filter === subFilter);
         window._filteredSubs = subs;  // everything the chips select (not just the tiles drawn)
+        // PS-116: one subs view, Grid or Table; the chips above apply to both
+        const isTable = subView === 'table';
+        document.getElementById('gridView').hidden = isTable;
+        document.getElementById('tableView').hidden = !isTable;
+        document.querySelectorAll('#viewToggle .btn').forEach(b =>
+            b.classList.toggle('on', b.dataset.v === subView));
+        if (isTable) {
+            renderSubTable(subs);
+            renderReviewBar(d);
+            return;
+        }
+        document.getElementById('scoreHint').hidden = true;
+        document.getElementById('subTable').innerHTML = '';
         const step = showAllThumbs ? 1 : Math.max(1, Math.ceil(subs.length / 24));
         const shown = subs.filter((s, i) => i % step === 0);
         document.getElementById('thumbCount').innerHTML = step > 1
@@ -778,36 +811,146 @@
         if (allLink) allLink.onclick = (e) => {
             e.preventDefault(); showAllThumbs = !showAllThumbs; renderSubs();
         };
-        document.getElementById('subTable').innerHTML =
-            '<tr><th>Time (UTC)</th><th>Target</th><th>Filter</th><th>Exp</th>' +
-            '<th>HFR</th><th title="native 0.24&quot;/px, sqrt(1-(b/a)^2)">Ecc</th>' +
-            '<th title="2x2 binned, 0.48&quot;/px (PS-94)">Ecc (bin)</th>' +
-            '<th>Stars</th><th>Bkg</th><th>Expo</th>' +
-            '<th title="altitude (deg), mount position">Alt</th><th>Pier</th>' +
-            '<th title="offset of the frame from the named target (plate solve, else the mount position; PS-67)">Off target</th>' +
-            '<th>QA</th></tr>' +
-            subs.map(s => '<tr><td>' + (s.time || '').slice(11, 19) + '</td><td>' +
-                s.target + '</td><td>' + s.filter + '</td><td>' + Math.round(s.exp_s) +
-                's</td><td>' + (s.hfr ?? '–') + '</td><td' +
-                (s.ecc_raw != null ? ' title="stored as 1-b/a ' + s.ecc_raw + '"' : '') +
-                '>' + (s.ecc ?? '–') + '</td><td>' + (s.ecc_bin ?? '\u2013') +
+    }
+    // ---- PS-116: the Table view. Every sub the chips select, sortable (score
+    //      first by default, lowest first), small lazy thumbnails (SubTiles,
+    //      at most 2 in flight), a click opens the same lightbox in table
+    //      order. Scores come from the record (stored, or scored on read
+    //      from the scorecard): no per-row API call.
+    let subView = 'grid';
+    try { const v = localStorage.getItem('runsSubView'); if (v === 'grid' || v === 'table') subView = v; }
+    catch (e) { /* no storage */ }
+    let subSort = {key: 'score', dir: 1};
+    function setSubView(v) {
+        subView = v;
+        try { localStorage.setItem('runsSubView', v); } catch (e) { /* no storage */ }
+        renderSubs();
+    }
+    document.querySelectorAll('#viewToggle .btn').forEach(b =>
+        b.addEventListener('click', () => setSubView(b.dataset.v)));
+    function subScore(s) {
+        if (s.score != null) return s.score;
+        const c = s.scorecard && s.scorecard.score;
+        return c && c.s != null ? c.s : null;
+    }
+    function subDecision(s) {
+        if (s.score_decision) return s.score_decision;
+        const c = s.scorecard && s.scorecard.score;
+        return c ? c.d : null;
+    }
+    function subOff(s) {
+        const p = s.pointing;
+        return p && p.off_target_arcmin != null ? p.off_target_arcmin
+             : (s.pointing_offset_arcmin ?? null);
+    }
+    const SRC_SHORT = {solve: 'solve', header: 'header', 'mount-log': 'mount log',
+                       'rc16-correlated': 'RC16 hdr'};
+    // [key, header, tooltip, sort value]
+    const SUB_COLS = [
+        ['thumb', '', '', null],
+        ['time', 'Time (UTC)', '', s => s.time || ''],
+        ['target', 'Target', '', s => s.target || ''],
+        ['filter', 'Filter', '', s => s.filter || ''],
+        ['exp', 'Exp', '', s => s.exp_s],
+        ['score', 'Score', 'PS-108 score 0-100 (stored when graded, or scored on read)', subScore],
+        ['verdict', 'Verdict', 'click a verdict to flip pass / reject (manual override)', s => subState(s)],
+        ['hfr', 'HFR', '', s => s.hfr],
+        ['fwhm', 'FWHM', 'arcsec', s => s.fwhm_arcsec],
+        ['ecc', 'Ecc', 'native 0.24"/px, sqrt(1-(b/a)^2)', s => s.ecc],
+        ['ecc_bin', 'Ecc (bin)', '2x2 binned, 0.48"/px (PS-94)', s => s.ecc_bin],
+        ['stars', 'Stars', '', s => s.stars],
+        ['bkg', 'Bkg', '', s => s.background],
+        ['sat', 'Sat\u2605 %', 'saturated star cores (%)', s => s.sat_stars_pct],
+        ['expo', 'Expo', '', s => s.exposure],
+        ['rms', 'Guide RMS', 'arcsec', s => s.guide_rms],
+        ['alt', 'Alt', 'altitude (deg), mount position', s => (s.pointing || {}).alt],
+        ['pier', 'Pier', '', s => (s.pointing || {}).pier],
+        ['off', 'Off target', 'offset of the frame from the named target and its source (plate solve, else the mount position; PS-67 / PS-107)', subOff],
+    ];
+    function sortSubs(list) {
+        const col = SUB_COLS.find(c => c[0] === subSort.key && c[3]) || SUB_COLS[5];
+        const f = col[3];
+        return list.map((s, i) => [s, i]).sort((a, b) => {
+            const x = f(a[0]), y = f(b[0]);
+            if (x == null && y == null) return a[1] - b[1];
+            if (x == null) return 1;           // missing values last either way
+            if (y == null) return -1;
+            const c = x < y ? -1 : x > y ? 1 : 0;
+            return c * subSort.dir || a[1] - b[1];
+        }).map(p => p[0]);
+    }
+    function scoreCell(s) {
+        const v = subScore(s);
+        if (v == null) return '<td title="no stored score: run qa-rescore for this night">\u2013</td>';
+        const dc = subDecision(s);
+        const col = (DEC[dc] || [null, ''])[1];
+        return '<td title="' + escH(dc || '') + '"><b style="color:' + col + '">' + v + '</b></td>';
+    }
+    function verdictCell(s) {
+        const dc = subDecision(s);
+        const st = subState(s);
+        const would = {approve: 'accepted', review: 'review', reject: 'rejected'}[dc];
+        const differs = would && !(would === st || (would === 'accepted' && st === 'syncing') ||
+                                   (would === 'rejected' && st === 'offtarget'));
+        return '<td style="cursor:pointer;color:' +
+            (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
+             : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
+            ';" title="click to flip pass/reject (manual override)" ' +
+            'onclick="event.stopPropagation();toggleQa(\'' + encodeURIComponent(s.file) + '\')">' +
+            (!s.passed_qa ? escH(s.reason || 'reject')
+             : !s.reviewed ? 'review'
+             : s.transfer === 'pending' ? 'accepted \u00b7 syncing \u21c5'
+             : s.transfer === 'done' ? 'transferred \u2713' : 'accepted') +
+            (s.manual_qa ? ' \u270b' : '') + roofTag(s) + pointTag(s) +
+            (differs ? ' <span class="bd" title="what the score would do (PS-108)">would ' +
+             escH(dc) + '</span>' : '') + '</td>';
+    }
+    function renderSubTable(subs) {
+        const rows = sortSubs(subs);
+        window._shownSubs = rows;   // the lightbox walks the table order
+        const noScore = rows.filter(s => subScore(s) == null).length;
+        const hint = document.getElementById('scoreHint');
+        hint.hidden = !noScore;
+        hint.innerHTML = noScore ? noScore + ' of ' + rows.length + ' subs have no stored score ' +
+            '(graded before PS-108): <code>photonscript qa-rescore --date ' + escH(currentDate) +
+            '</code> previews, <code>--apply</code> stores the scores (preview mode changes no verdict)' : '';
+        document.getElementById('thumbCount').textContent = rows.length + ' subs';
+        const ann = document.getElementById('annotateToggle').checked ? '&annotate=true' : '';
+        const tbl = document.getElementById('subTable');
+        tbl.innerHTML = '<tr>' + SUB_COLS.map(c => '<th data-k="' + c[0] + '"' +
+                (c[3] ? '' : ' class="nosort"') + (c[2] ? ' title="' + escH(c[2]) + '"' : '') + '>' +
+                c[1] + (subSort.key === c[0] ? (subSort.dir > 0 ? ' \u25b2' : ' \u25bc') : '') +
+                '</th>').join('') + '</tr>' +
+            rows.map((s, i) => '<tr class="srow" onclick="openLb(' + i + ')">' +
+                '<td class="tthumb"><img alt="" style="' +
+                (subState(s) === 'offtarget' ? 'outline:2px solid #c084fc;'
+                 : !s.passed_qa ? 'outline:2px solid #f87171;'
+                 : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" data-src="/api/runs/' +
+                currentDate + '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' + ann + '"></td>' +
+                '<td>' + (s.time || '').slice(11, 19) + '</td><td>' + escH(s.target) + '</td><td>' +
+                escH(s.filter) + '</td><td>' + Math.round(s.exp_s) + 's</td>' + scoreCell(s) +
+                verdictCell(s) + '<td>' + (s.hfr ?? '\u2013') + '</td><td>' + (s.fwhm_arcsec ?? '\u2013') +
+                '</td><td' + (s.ecc_raw != null ? ' title="stored as 1-b/a ' + s.ecc_raw + '"' : '') +
+                '>' + (s.ecc ?? '\u2013') + '</td><td>' + (s.ecc_bin ?? '\u2013') +
                 '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
+                '</td><td>' + (s.sat_stars_pct ?? '\u2013') +
                 '</td><td style="color:' + (s.exposure === 'ok' ? '#4ade80'
                     : s.exposure === 'under' ? '#eab308'
                     : s.exposure ? '#f87171' : '') + ';" title="swamp ' +
                 (s.swamp ?? '–') + '×RN² (≥3 ok, ≥10 fully sky-limited) · clipped ' +
                 (s.clipped_pct ?? '–') + '% px · saturated stars ' +
-                (s.sat_stars_pct ?? '–') + '%">' + (s.exposure ?? '–') +
-                '</td>' + pointCells(s) + '<td style="cursor:pointer;color:' +
-                (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
-                 : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
-                ';" title="click to flip pass/reject (manual override)" ' +
-                'onclick="toggleQa(\'' + encodeURIComponent(s.file) + '\')">' +
-                (!s.passed_qa ? (s.reason || 'reject')
-                 : !s.reviewed ? 'review'
-                 : s.transfer === 'pending' ? 'accepted · syncing ⇅'
-                 : s.transfer === 'done' ? 'transferred ✓' : 'accepted') +
-                (s.manual_qa ? ' ✋' : '') + roofTag(s) + pointTag(s) + '</td></tr>').join('');
+                (s.sat_stars_pct ?? '\u2013') + '%">' + escH(s.exposure ?? '\u2013') +
+                '</td><td>' + (s.guide_rms != null ? s.guide_rms + '&quot;' : '\u2013') + '</td>' +
+                pointCells(s) + '</tr>').join('');
+        tbl.querySelectorAll('th[data-k]').forEach(th => {
+            const k = th.dataset.k;
+            if (!(SUB_COLS.find(c => c[0] === k) || [])[3]) return;
+            th.onclick = () => {
+                subSort = subSort.key === k ? {key: k, dir: -subSort.dir} : {key: k, dir: 1};
+                renderSubs();
+            };
+        });
+        SubTiles.lazy(tbl, 2);
     }
     function fmtEta(s) {
         if (s == null) return '';
@@ -914,12 +1057,16 @@
     }
     function pointCells(s) {
         const p = s.pointing || {};
+        const src = p.src || s.pointing_src;
         const col = p.flag === 'off-target' ? '#c084fc' : p.flag === 'flag' ? '#eab308' : '';
         return '<td>' + (p.alt != null ? Math.round(p.alt) : '\u2013') + '</td><td>' +
             (p.pier ? p.pier.slice(0, 1) : '\u2013') + '</td><td style="color:' + col + '" title="' +
             (p.model_err_arcmin != null ? 'mount vs solve ' + p.model_err_arcmin + "'" : '') +
             (p.drift_arcmin != null ? ' drift since previous sub ' + p.drift_arcmin + "'" : '') + '">' +
-            fmtOff(p.off_target_arcmin) + (p.off_target_dir ? ' ' + p.off_target_dir : '') + '</td>';
+            fmtOff(subOff(s)) + (p.off_target_dir ? ' ' + p.off_target_dir : '') +
+            (subOff(s) != null && src ? ' <span class="bd" title="source (PS-107: only a plate solve confirms)">' +
+             (SRC_SHORT[src] || escH(src)) + (src === 'solve' ? '' : '?') + '</span>' : '') +
+            '</td>';
     }
     function subSpan(s) {
         const exp = (s.exp_s || 0) * 1000, t = String(s.time || '');

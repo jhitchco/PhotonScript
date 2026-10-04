@@ -112,6 +112,15 @@ Check a pending update on the scope without switching: `photonscript self-update
    (review/accepted-syncing/transferred/rejected; X key cycles states,
    thumbnail corner buttons give one-click verdicts). **Approve night** queues
    accepted subs into the Library -> Syncthing carries them to the desktop.
+   The subs show as a Grid or a Table (PS-116, remembered per browser): the
+   table has a small thumbnail, score, verdict and the core stats per sub,
+   sortable (lowest score first by default), and the rig / target / filter /
+   off-target / timeline chips apply to both. The lightbox side panel
+   (PS-115) shows a Target section on top (target, filter / exposure, the
+   offset from the target with its source, alt, pier, HA, and the reference
+   image with this rig's frame and the pointed position), one score line,
+   then the metric bars sorted by points lost; unmeasured rows fold into one
+   "not measured" line.
    **Sub score (PS-108).** Every sub also gets a 0 to 100 score from its
    PS-21 scorecard: each judged check graded by how far inside or outside
    its gate it sits, weighted per rig (`config/qa/score_weights.toml`, a
