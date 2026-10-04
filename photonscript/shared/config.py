@@ -264,6 +264,19 @@ class PhotonScriptConfig(BaseSettings):
     quality_eccentricity_max_binned: float = 0.0  # gate at 0.48"/px when
                                  # qa_ecc_scale=binned; 0 = same as
                                  # quality_eccentricity_max
+    # PS-108: 0 to 100 sub score (shared.qa_score, weights per rig in
+    # config/qa/score_weights.toml). Approved 2026-10-04: approve at 80 and
+    # up on both rigs, review 60 to 79, reject under 60; shipped in preview.
+    qa_score_mode: str = "preview"  # preview (record + show what it would do,
+                                 # change no verdict) | on (the score sets the
+                                 # verdict and replaces qa_auto_approve /
+                                 # qa_auto_approve_rigs). Human verdicts win.
+    qa_score_approve: float = 80.0  # auto-approve at this score and above
+    qa_score_reject: float = 60.0   # reject below this score
+    qa_score_weights_file: str = ""  # empty = config/qa/score_weights.toml
+    qa_saturation_adu: float = 65000.0  # a pixel at or above this counts as
+                                 # saturated (FITS SATURATE wins when present);
+                                 # same level as the PS-21 clipping gates
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200

@@ -28,7 +28,16 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   pointing_note (text naming the target and position, for the reason),
   slew_overlap_s (PS-13, seconds of the exposure inside an RC16 move window;
   0 = clear, None = not judged: the RC16 itself, or no data),
-  slew_note (which move, from the mount log or the RC16 frames).
+  slew_note (which move, from the mount log or the RC16 frames),
+  sat_px_pct, zero_px_pct, max_adu (PS-108: full-resolution pixel counts,
+  shared.pixel_stats; sat_px_pct feeds the score's exposure grade).
+
+PS-108: evaluate() also scores the sub 0 to 100 (shared.qa_score, weights
+per rig in config/qa/score_weights.toml). qa_score_mode "preview" (default)
+records the score and what it would do and changes nothing; "on" lets the
+score set the verdict (>= qa_score_approve approved on both rigs, below
+qa_score_reject rejected, between: needs a look), replacing the all-green
+auto-approve (qa_auto_approve / qa_auto_approve_rigs are then not used).
 """
 
 from __future__ import annotations
@@ -39,7 +48,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-RULES_VERSION = "ps21.2"   # ps21.2 (PS-94): sqrt-form ecc everywhere + ecc_bin
+RULES_VERSION = "ps21.3"   # ps21.2 (PS-94): sqrt-form ecc everywhere + ecc_bin
+                           # ps21.3 (PS-108): 0 to 100 score on every card
 
 PASS, WARN, FAIL, SKIP = "pass", "warn", "fail", "skip"
 APPROVED, NEEDS_LOOK, REJECTED = "approved", "needs-look", "rejected"
@@ -110,6 +120,18 @@ def _ecc_scale(config) -> str:
     return s if s in ("native", "binned") else "native"
 
 
+def _score_mode(config) -> str:
+    m = str(_f(config, "qa_score_mode", "preview") or "preview").strip().lower()
+    return m if m in ("preview", "on") else "preview"
+
+
+def _score_weights(t: dict) -> dict:
+    from types import SimpleNamespace
+    from photonscript.shared import qa_score
+    return qa_score.weights(SimpleNamespace(
+        qa_score_weights_file=t.get("score_weights_file", "")))
+
+
 def thresholds(config, rig: str = "rc16", target: str | None = None,
                filter: str | None = None) -> dict:  # noqa: A002
     """Every limit the rules use, resolved for one rig (and target/filter).
@@ -168,6 +190,13 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         "warn_fraction": float(_f(config, "qa_warn_fraction", 0.10)),
         "auto_approve": bool(_f(config, "qa_auto_approve", True))
         and _rig_auto_approves(config, rig),
+        # PS-108: the 0 to 100 score (shared.qa_score)
+        "score_mode": _score_mode(config),
+        "score_approve": float(_f(config, "qa_score_approve", 80.0)),
+        "score_reject": float(_f(config, "qa_score_reject", 60.0)),
+        "score_weights_file": str(_f(config, "qa_score_weights_file", "") or ""),
+        "saturation_adu": float(_f(config, "qa_saturation_adu", 65000.0)),
+        "corner_spread_max": float(_f(cfg, "quality_corner_spread_max", 0.35)),
     }
     ov = _target_overrides(config)
     if ov and target:
@@ -225,12 +254,21 @@ class Check:
                 "reason": self.reason, "why": self.why}
 
 
+_SCORE_VERDICT = {"approve": APPROVED, "review": NEEDS_LOOK, "reject": REJECTED}
+
+
 @dataclass
 class Scorecard:
     checks: list[Check] = field(default_factory=list)
     thresholds: dict = field(default_factory=dict)
     qa_flag: str = ""
     rules_version: str = RULES_VERSION
+    score: Any = None                # PS-108 qa_score.Score (None: unscored)
+
+    @property
+    def score_on(self) -> bool:
+        """qa_score_mode = on: the score sets the verdict (PS-108)."""
+        return self.score is not None and self.score.mode == "on"
 
     @property
     def drivers(self) -> list[str]:
@@ -242,10 +280,14 @@ class Scorecard:
 
     @property
     def passed(self) -> bool:
+        if self.score_on:
+            return self.score.decision != "reject"
         return not self.drivers
 
     @property
     def verdict(self) -> str:
+        if self.score_on:
+            return _SCORE_VERDICT[self.score.decision]
         if self.drivers:
             return REJECTED
         return NEEDS_LOOK if self.warnings else APPROVED
@@ -254,20 +296,43 @@ class Scorecard:
     def reasons(self) -> list[str]:
         return [c.reason for c in self.checks if c.status == FAIL and c.reason]
 
+    def _score_reason(self) -> str:
+        s = self.score
+        top = s.top_text()
+        return f"score {s.value} < {s.reject_below:g}" + (f" ({top})" if top else "")
+
+    @property
+    def auto_reason(self) -> str:
+        """Every failing check; with the score on, plus the score when it
+        rejects."""
+        rs = list(self.reasons)
+        if self.score_on and self.score.decision == "reject":
+            rs.append(self._score_reason())
+        return "; ".join(rs)
+
     @property
     def reason(self) -> str:
-        """Backward-compatible `reason` string: every failing check."""
-        return "; ".join(self.reasons)
+        """Backward-compatible `reason` string: every failing check. With
+        the score on, empty for a sub that is not rejected (a failed gate
+        then only holds it for review)."""
+        if self.score_on and self.passed:
+            return ""
+        return self.auto_reason
 
     @property
     def auto_approved(self) -> bool:
+        if self.score_on:    # PS-108: both rigs, replaces the all-green rule
+            return self.score.decision == "approve"
         return self.verdict == APPROVED and bool(
             self.thresholds.get("auto_approve", True))
 
     def compact(self) -> dict:
-        """What the jsonl record stores (about 400-700 bytes)."""
-        return {"v": self.rules_version, "verdict": self.verdict,
-                "rows": [c.row() for c in self.checks]}
+        """What the jsonl record stores (about 500-800 bytes)."""
+        out = {"v": self.rules_version, "verdict": self.verdict,
+               "rows": [c.row() for c in self.checks]}
+        if self.score is not None:
+            out["score"] = self.score.compact()
+        return out
 
     def as_dict(self) -> dict:
         return {"rules_version": self.rules_version, "verdict": self.verdict,
@@ -275,14 +340,23 @@ class Scorecard:
                 "warnings": self.warnings, "reason": self.reason,
                 "qa_flag": self.qa_flag,
                 "checks": [c.as_dict() for c in self.checks],
+                "score": self.score.as_dict() if self.score else None,
                 "thresholds": self.thresholds}
+
+    def score_fields(self) -> dict:
+        """PS-108 score fields alone (also written on subs whose verdict a
+        rescore keeps: human verdicts, kept rejects)."""
+        if self.score is None:
+            return {}
+        return {"score": self.score.value,
+                "score_decision": self.score.decision}
 
     def record_fields(self) -> dict:
         """Fields both graders merge into a sub record."""
         out = {"passed_qa": self.passed, "reason": self.reason,
                "qa_flag": self.qa_flag, "scorecard": self.compact(),
-               "auto_verdict": self.verdict, "auto_reason": self.reason,
-               "drivers": self.drivers}
+               "auto_verdict": self.verdict, "auto_reason": self.auto_reason,
+               "drivers": self.drivers, **self.score_fields()}
         if self.auto_approved:
             out.update(reviewed=True, review_source="auto")
         return out
@@ -618,7 +692,20 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     # pointing (PS-67): offset of the sub from its named target
     checks.append(pointing_check(_num(m.get("pointing_offset_arcmin")), t,
                                  m.get("pointing_note")))
-    return Scorecard(checks=checks, thresholds=t, qa_flag=qa_flag)
+    return Scorecard(checks=checks, thresholds=t, qa_flag=qa_flag,
+                     score=score_checks(checks, m, t))
+
+
+def score_checks(checks, metrics: dict, t: dict):
+    """PS-108: the 0 to 100 score of a graded card (None if it cannot be
+    computed; a score never costs a grade)."""
+    try:
+        from photonscript.shared import qa_score
+        return qa_score.score(checks, metrics or {}, t, _score_weights(t))
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).exception("PS-108 score failed")
+        return None
 
 
 def fmt_offset(arcmin) -> str:
@@ -693,6 +780,11 @@ def _swap_row(rec: dict, new: Check, t: dict) -> dict | None:
         checks.insert(i, new)
     sc = Scorecard(checks=checks, thresholds=t, qa_flag=rec.get("qa_flag") or "",
                    rules_version=card.get("v") or RULES_VERSION)
+    if t.get("score_mode"):  # PS-108: re-score with the swapped row
+        m = metrics_from_record(rec)
+        if new.id == "pointing":
+            m["pointing_note"] = new.reason
+        sc.score = score_checks(checks, m, t)
     return sc.record_fields()
 
 
@@ -785,7 +877,7 @@ def metrics_from_record(rec: dict) -> dict:
         "set_temp", "guide_rms", "guide_state", "guide_lock", "doubled_frac",
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
         "pointing_offset_arcmin", "pointing_note", "slew_overlap_s",
-        "slew_note")}
+        "slew_note", "sat_px_pct", "zero_px_pct", "max_adu")}
     m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -799,5 +891,6 @@ def record_metrics(**kw) -> dict:
             "guide_lock",
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin", "pointing_note",
-            "slew_overlap_s", "slew_note")
+            "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
+            "max_adu")
     return {k: kw.get(k) for k in keys}

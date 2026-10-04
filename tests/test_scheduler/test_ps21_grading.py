@@ -219,7 +219,7 @@ def test_live_and_backfill_parity_on_the_same_metrics(tmp_path, monkeypatch,
             exposure_flag=mets["exposure"])
     monkeypatch.setattr(agent_mod, "validate_image", fake_validate)
     monkeypatch.setattr(runs, "_load_binned",
-                        lambda p: (hdr, np.zeros((8, 8), np.float32)))
+                        lambda p, **kw: (hdr, np.zeros((8, 8), np.float32)))
     monkeypatch.setattr(runs, "_measure", lambda b, c: {
         **mets, "doubled_frac": None, "graded_by": "sep-binned",
         "_stars": None})

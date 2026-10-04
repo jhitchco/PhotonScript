@@ -247,6 +247,15 @@ class ImageQualityMetrics(BaseModel):
     ecc_bin: Optional[float] = None        # sqrt(1-(b/a)^2), like eccentricity
     hfr_bin_px: Optional[float] = None     # binned HFR in native px (x2)
     stars_bin: Optional[int] = None
+    # PS-108: full-resolution pixel counts (shared.pixel_stats.frame_stats)
+    sat_px: Optional[int] = None           # pixels >= sat_adu
+    sat_px_pct: Optional[float] = None
+    zero_px: Optional[int] = None          # pixels at 0 (black clip)
+    zero_px_pct: Optional[float] = None
+    max_adu: Optional[float] = None
+    sat_adu: Optional[float] = None        # saturation level used
+    bg_median: Optional[float] = None      # median of every 4th px
+    bg_mad: Optional[float] = None         # its median absolute deviation
     passed_qa: bool = True
     rejection_reason: str = ""
     # PS-80 star sidecar (shared.star_table.build); kept out of bus payloads
