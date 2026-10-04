@@ -2242,10 +2242,15 @@ def build_library(config, date: str | None = None) -> dict:
 
 
 def _link_calibration_night(config, watch_dir: Path, lib: Path,
-                            d: str) -> tuple[int, int]:
+                            d: str, rig: str = "rc16") -> tuple[int, int]:
     """Hardlink (else copy) one night's BIAS/DARK/FLAT frames from a NINA
     output dir into <lib>/Calibration/<TYPE>/<date>/. Returns (linked,
-    already_there). Nights older than library_cal_days are skipped."""
+    already_there). Nights older than library_cal_days are skipped.
+
+    PS-113: the night's frames are QA'd first (calibration_qa.file_night).
+    With calibration_qa_mode=quarantine a failing frame is linked into
+    Calibration/_quarantine/ instead of the Library (or moved there if it
+    was linked before). A QA error files everything as before."""
     import os
     import shutil
     from datetime import datetime as _dt
@@ -2260,6 +2265,7 @@ def _link_calibration_night(config, watch_dir: Path, lib: Path,
         return 0, 0
     from photonscript.scheduler.library_archive import archived_kinds
     gone = archived_kinds(config, d)  # archived calibration stays archived
+    frames = []
     for f in root.rglob("*.fits"):
         parts = f.relative_to(root).parts
         if not _is_calibration(parts):
@@ -2268,6 +2274,19 @@ def _link_calibration_night(config, watch_dir: Path, lib: Path,
                     if p.upper() in _CAL_DIRS), "CAL")
         if typ in gone:
             continue
+        frames.append((typ, f))
+    held: set = set()
+    try:
+        from photonscript.scheduler import calibration_qa
+        held = calibration_qa.file_night(
+            config, rig, lib, d,
+            [(t, d, f) for t, f in frames if t in ("BIAS", "DARK", "FLAT")])
+    except Exception as e:  # noqa: BLE001 - QA never blocks filing
+        logger.warning("calibration QA (%s %s) failed, filing unchecked: %s",
+                       rig, d, e)
+    for typ, f in frames:
+        if str(f) in held:
+            continue  # quarantined (PS-113)
         dest = lib / "Calibration" / typ / d / f.name
         if dest.exists():
             skipped += 1
@@ -2308,7 +2327,7 @@ def _build_piggyback_calibration(config, date: str | None = None) -> dict | None
                         if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name))
     linked = skipped = 0
     for d in nights:
-        n_l, n_s = _link_calibration_night(pcfg, watch, lib, d)
+        n_l, n_s = _link_calibration_night(pcfg, watch, lib, d, rig=PIGGYBACK)
         linked += n_l
         skipped += n_s
     return {"library": str(lib), "nights": len(nights), "linked": linked,

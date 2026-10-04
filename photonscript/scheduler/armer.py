@@ -1173,6 +1173,11 @@ class Armer:
         if self.state in ("RUNNING", "PAUSED_UNSAFE"):
             self.detail = f"armer is {self.state} — not interrupting"
             return False
+        # PS-113: never stop a calibration capture job's sequence on NINA #1
+        from photonscript.scheduler.calibration_capture import busy as _cal_busy
+        if _cal_busy("rc16"):
+            self.detail = "a calibration capture job is running on the RC16"
+            return False
         await self._nina("sequence_stop")
         loaded = await self._nina("sequence_load", method="POST",
                                   json_body=seq)

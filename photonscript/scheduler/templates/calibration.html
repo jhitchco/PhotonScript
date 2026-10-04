@@ -60,6 +60,14 @@
     {% include "_header.html" %}
     <main>
         <div style="display:flex;align-items:baseline;gap:1rem;margin:.2rem 0 1rem;">
+            <h2 style="margin:0;">Needs vs have (QA-passed)</h2>
+            <span class="muted" id="needUpdated">loading...</span>
+            <span class="muted" style="margin-left:auto;">darks + bias: Capture now (roof closed, armer DISARMED or COMPLETE) &middot; flats: dusk / dawn only</span>
+        </div>
+        <div class="focus-grid" id="needCards"></div>
+        <p class="muted" style="margin-top:.6rem;">Every calibration frame is checked (sensor temperature, header, level vs bias, light leak, stars, set outliers; flats: level, saturation, vignetting). Failing frames go to Calibration/_quarantine with the reason and never reach a master. CLI: <code>photonscript calibration-plan</code>, <code>calibration-capture --rig R</code>, <code>calibration-qa --backfill --dry-run</code>.</p>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
             <h2 style="margin:0;">Calibration masters on disk</h2>
             <span class="muted" id="updated">loading…</span>
             <span class="muted" style="margin-left:auto;">auto-refreshes every 60s · flats stale after 45d · darks 90d · bias 180d</span>
@@ -263,6 +271,116 @@
     }
     loadFocus();
     setInterval(loadFocus, 60000);
+
+    // ---- PS-113: needs vs have, capture jobs, QA ----------------------
+    const ACTIVE_JOB = ['starting', 'cooling', 'running', 'stopping'];
+    let needData = null, jobData = {jobs: {}}, qaData = {rigs: {}};
+    const refusals = {};
+
+    function needCard(r) {
+        const job = (jobData.jobs || {})[r.rig];
+        const qa = (qaData.rigs || {})[r.rig] || {};
+        const rows = r.sets.map(s => {
+            const cls = s.gap > 0 ? ' class="thin"' : '';
+            return '<tr' + cls + '><td>' + esc(s.label) +
+                (s.capturable ? '' : ' <span class="muted">(dusk/dawn)</span>') +
+                '</td><td>' + s.need + '</td><td>' + s.have + '</td><td>' +
+                (s.bad == null ? '-' : s.bad) + '</td><td>' + s.gap +
+                '</td><td style="text-align:left;" class="muted">' +
+                esc((s.sources || []).slice(0, 2).join('; ')) + '</td></tr>';
+        }).join('');
+        const c = r.capture || {};
+        const plan = (c.darks || []).map(x => x[0] + ' s x ' + x[1]).join(' + ') +
+            (c.bias ? ((c.darks || []).length ? ' + ' : '') + c.bias + ' bias' : '');
+        const day = (r.daytime || {}).status || 'untested';
+        const dayCls = day === 'disabled' ? 'p-disabled' : (day === 'ok' ? 'p-harvest' : 'p-static');
+        let jobTxt = '';
+        if (job) {
+            const v = job.verdicts || {};
+            jobTxt = '<div style="margin-top:.5rem;"><b>Job ' + esc(job.state) + '</b>: ' +
+                esc(job.detail || '') + ' <span class="muted">(' + job.landed + ' of ' +
+                job.expected + ' frames, ' + ((v.pass || 0) + (v.warn || 0)) + ' passed, ' +
+                (v.fail || 0) + ' quarantined)</span>' +
+                (ACTIVE_JOB.includes(job.state) ? ' <button class="btn" onclick="cancelJob(\'' +
+                    r.rig + '\')">Cancel</button>' : '') + '</div>';
+        }
+        const ref = refusals[r.rig];
+        const refTxt = !ref ? '' : (ref.length
+            ? '<div style="margin-top:.4rem;color:#fca5a5;">Refused:<br>' +
+              ref.map(x => '&middot; ' + esc(x)).join('<br>') + '</div>'
+            : '<div style="margin-top:.4rem;color:#86efac;">No refusals right now.</div>');
+        const badList = (qa.bad || []).slice(0, 8).map(b =>
+            '<div class="muted" style="word-break:break-all;">' + esc(b.key) + ': ' +
+            esc((b.reasons || [])[0] || '') + '</div>').join('');
+        return '<div class="focus-card' + (r.rig === 'rc16' ? '' : ' osc') + '"><h3>' +
+            esc(r.name) + ' <span class="pill ' + dayCls + '" style="float:right;">daytime ' +
+            esc(day) + '</span></h3><div class="muted">gain ' + r.epoch.gain + ' offset ' +
+            r.epoch.offset + ' setpoint ' + r.epoch.setpoint + ' C &middot; ' + r.qa_checked +
+            ' frames QA\'d, ' + r.unchecked + ' not yet (calibration-qa --backfill)</div>' +
+            '<table class="cal"><thead><tr><th>Set</th><th>need</th><th>have</th><th>bad</th>' +
+            '<th>gap</th><th style="text-align:left;">from</th></tr></thead><tbody>' + rows +
+            '</tbody></table><div style="margin-top:.5rem;">' + (plan
+                ? 'Capture plan: <b>' + esc(plan) + '</b> (about ' +
+                  Math.round((c.minutes || 0) + 10) + ' min with cooling' +
+                  (c.trimmed ? ', trimmed to the budget' : '') + ')'
+                : 'Darks and bias at quota.') + '</div>' +
+            '<div style="margin-top:.5rem;"><button class="btn" onclick="checkJob(\'' + r.rig +
+            '\')">Check</button> <button class="btn" onclick="captureNow(\'' + r.rig + '\')"' +
+            (plan ? '' : ' disabled') + '>Capture now</button></div>' + refTxt + jobTxt +
+            (qa.fail ? '<details style="margin-top:.5rem;"><summary class="muted">' + qa.fail +
+                ' failing frames (quarantined or to be)</summary>' + badList + '</details>' : '') +
+            '</div>';
+    }
+
+    function renderNeeds() {
+        if (!needData) return;
+        document.getElementById('needCards').innerHTML = needData.rigs.map(needCard).join('');
+    }
+
+    async function loadNeeds() {
+        try {
+            const [p, j, q] = await Promise.all([
+                fetch('/api/calibration/plan').then(r => r.json()),
+                fetch('/api/calibration/capture-job').then(r => r.json()),
+                fetch('/api/calibration/qa?limit=20').then(r => r.json())]);
+            needData = p; jobData = j; qaData = q;
+            renderNeeds();
+            document.getElementById('needUpdated').textContent = 'QA mode ' + p.qa_mode +
+                ', armer ' + (j.armer || '?') + ', updated ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            document.getElementById('needUpdated').textContent = 'calibration plan unavailable';
+        }
+    }
+
+    async function checkJob(rig) {
+        const d = await (await fetch('/api/calibration/capture-job?check=1&rig=' +
+            encodeURIComponent(rig))).json();
+        refusals[rig] = ((d.refusals || {})[rig] || {}).refusals || [];
+        renderNeeds();
+    }
+
+    async function captureNow(rig) {
+        if (!confirm('Capture darks + bias now on ' + rig + '?\n\nOnly with the roof CLOSED ' +
+                     'and the armer DISARMED or COMPLETE. The camera cools to its setpoint ' +
+                     'first; the job stops if the roof opens or the sensor drifts. It never ' +
+                     'moves the mount.')) return;
+        const r = await fetch('/api/calibration/capture-job', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({rig: rig, source: 'calibration page'})});
+        const d = await r.json();
+        refusals[rig] = r.ok ? [] : (d.refusals || [d.detail || 'failed']);
+        await loadNeeds();
+    }
+
+    async function cancelJob(rig) {
+        if (!confirm('Cancel the ' + rig + ' capture job? NINA stops and the camera warms.')) return;
+        await fetch('/api/calibration/capture-job/cancel', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rig: rig})});
+        await loadNeeds();
+    }
+
+    loadNeeds();
+    setInterval(loadNeeds, 60000);
     </script>
     {% include "_footer.html" %}
 </body>

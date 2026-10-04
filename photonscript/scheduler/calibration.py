@@ -230,17 +230,25 @@ def calibration_health(config) -> dict:
 
 
 def generate_darks_json(config, darks: list[tuple[float, int]],
-                        bias_count: int = 50) -> tuple[str, float]:
+                        bias_count: int = 50, *, safety_gated: bool = False,
+                        warm_minutes: float = 3.0) -> tuple[str, float]:
     """NINA sequence: cool -> DARK exposures -> BIAS -> warm.
 
     Mount untouched; run only with the roof closed at night (no shutter).
     Returns (json_text, estimated_minutes).
+
+    PS-113 (calibration_capture): safety_gated adds LoopWhileUnsafe to every
+    exposure block, so NINA itself stops shooting darks the moment its
+    safety monitor reads safe (roof open); bias_count 0 leaves the bias
+    block out; warm_minutes is the End-area warm.
     """
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _pushover, _connect,
         _cool_camera, _warm_camera)
 
     def _exposures(name, exp_s, count, image_type):
+        conds = ([_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                              "NINA.Sequencer")] if safety_gated else [])
         return _seq_container(name, [
             _make_typed(
                 "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
@@ -252,7 +260,7 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
                     X=1, Y=1),
                 ImageType=image_type, ExposureCount=0,
                 ErrorBehavior=0, Attempts=1),
-        ], conditions=[_make_typed(
+        ], conditions=conds + [_make_typed(
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=count)])
 
@@ -260,6 +268,8 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
     dark_items = [_exposures(f"DARK {e:g}s x{c}", e, c, "DARK")
                   for e, c in darks]
     plan_txt = ", ".join(f"{e:g}s×{c}" for e, c in darks)
+    bias_items = ([_exposures(f"BIAS x{bias_count}", 0.001, bias_count, "BIAS")]
+                  if bias_count > 0 else [])
 
     root = _seq_container(
         "PhotonScript_Calibration",
@@ -273,14 +283,12 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
             ])], container_type="NINA.Sequencer.Container.StartAreaContainer,"
                 " NINA.Sequencer"),
             _seq_container("Targets",
-                           dark_items
-                           + [_exposures(f"BIAS x{bias_count}", 0.001,
-                                         bias_count, "BIAS")],
+                           dark_items + bias_items,
                            container_type="NINA.Sequencer.Container."
                            "TargetAreaContainer, NINA.Sequencer"),
             _seq_container("End", [_seq_container("Calibration shutdown", [
                 _pushover("Calibration", "darks + bias complete — warming"),
-                _warm_camera(3.0),
+                _warm_camera(warm_minutes),
             ])], container_type="NINA.Sequencer.Container.EndAreaContainer, "
                 "NINA.Sequencer"),
         ],
@@ -313,10 +321,13 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
     cal_days = int(getattr(config, "library_cal_days", 120))
     cutoff = (datetime.now() - __import__("datetime")
               .timedelta(days=cal_days)).strftime("%Y-%m-%d")
+    bad = _qa_failed_keys(config)
     n = 0
     for typ, date, f in iter_calibration_frames(config):
         if typ != "DARK" or date < cutoff:
             continue
+        if f"{typ}/{date}/{f.name}" in bad:
+            continue  # PS-113: QA failed (its watch-dir original still exists)
         try:
             h = _fits.getheader(f)
         except Exception:  # noqa: BLE001
@@ -327,6 +338,25 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
                 and abs(float(h.get("SET-TEMP", 99)) - setpoint) < 1.5):
             n += 1
     return n
+
+
+def _qa_failed_keys(config) -> set:
+    """PS-113: "<TYPE>/<date>/<name>" of every calibration frame QA failed
+    (either rig's store), so the dark quota refills instead of counting a
+    quarantined frame whose NINA original is still in the watch dir. Frames
+    never QA'd still count. Empty with calibration_qa_mode=off."""
+    try:
+        from photonscript.scheduler import calibration_qa as cq
+        if cq.mode(config) == "off":
+            return set()
+        out = set()
+        for rig in ("rc16", "piggyback"):
+            for k, r in cq.load_store(config, rig)["frames"].items():
+                if r.get("verdict") == "fail":
+                    out.add(k)
+        return out
+    except Exception:  # noqa: BLE001 - never break the quota over QA
+        return set()
 
 
 def days_since_last_bias(config) -> int | None:

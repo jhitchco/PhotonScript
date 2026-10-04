@@ -15,6 +15,9 @@ Usage:
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
+    photonscript calibration-plan [--rig R] [--json]              # PS-113
+    photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
+    photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -616,6 +619,191 @@ def ecc_scale_report(
     else:
         console.print(format_report(reps), markup=False, highlight=False)
     raise typer.Exit(0 if all(r["n_measured"] for r in reps) else 1)
+
+
+@app.command("calibration-plan")
+def calibration_plan_cmd(
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: every rig)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-113: calibration needs vs QA-passed frames per rig (darks per
+    exposure from config, active goals, tonight's plan and the Library's
+    lights; bias; flats per filter as needs only) and what a capture job
+    would shoot. Read only.
+
+    photonscript calibration-plan --rig piggyback
+    """
+    import json as _json
+    from photonscript.scheduler.calibration_plan import format_report, gap_report
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    rep = gap_report(cfg, rig or None)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+
+
+@app.command("calibration-capture")
+def calibration_capture_cmd(
+    rig: str = typer.Option(..., "--rig", help="rc16 | piggyback"),
+    exposures: str = typer.Option("", "--exposures",
+                                  help="Dark exposures (s, comma list), e.g. 300,400; "
+                                       "default: the calibration-plan gap"),
+    count: Optional[int] = typer.Option(None, "--count",
+                                        help="Darks per exposure (default: the quota "
+                                             "or the gap)"),
+    bias: Optional[int] = typer.Option(None, "--bias",
+                                       help="Bias frames (default: 0 with --exposures, "
+                                            "else the gap)"),
+    budget: Optional[float] = typer.Option(None, "--budget-min",
+                                           help="Time budget (min, cooling included)"),
+    cancel: bool = typer.Option(False, "--cancel", help="Cancel the rig's running job"),
+    follow: bool = typer.Option(True, "--follow/--no-follow",
+                                help="Print progress until the job ends"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-113: start a guarded darks + bias capture job on one rig's own NINA
+    through the PhotonScript service (POST /api/calibration/capture-job).
+    Refused unless the armer is DISARMED or COMPLETE, the rig's NINA is idle,
+    the roof reads closed and (RC16) PHD2 is idle; cools to the setpoint
+    first; stops if the roof opens or the sensor drifts. Ctrl+C stops
+    following, not the job (use --cancel).
+
+    photonscript calibration-capture --rig piggyback --exposures 300,400 --count 30
+    """
+    import httpx
+    base = url.rstrip("/")
+    if cancel:
+        r = httpx.post(base + "/api/calibration/capture-job/cancel",
+                       json={"rig": rig}, timeout=30)
+        console.print(r.json(), markup=False)
+        raise typer.Exit(0 if r.status_code == 200 else 1)
+    body = {"rig": rig, "source": "cli"}
+    if exposures:
+        body["exposures"] = [float(x) for x in exposures.split(",") if x.strip()]
+    if count is not None:
+        body["count"] = count
+    if bias is not None:
+        body["bias"] = bias
+    if budget is not None:
+        body["budget_min"] = budget
+    try:
+        r = httpx.post(base + "/api/calibration/capture-job", json=body, timeout=180)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"service unreachable ({e}); nothing started", markup=False)
+        raise typer.Exit(2)
+    d = r.json()
+    if r.status_code != 200:
+        console.print("REFUSED:", markup=False)
+        for x in d.get("refusals") or [d.get("detail")]:
+            console.print(f"  - {x}", markup=False)
+        raise typer.Exit(1)
+    plan = " + ".join(f"{e:g} s x {n}" for e, n in d["darks"])
+    if d.get("bias"):
+        plan += f" + {d['bias']} bias"
+    console.print(f"started job {d['id']} on {rig}: {plan}, about "
+                  f"{d['estimated_minutes']:.0f} min + cooling (budget "
+                  f"{d['budget_min']:g} min)", markup=False)
+    if not follow:
+        return
+    import time as _time
+    last = None
+    try:
+        while True:
+            _time.sleep(30)
+            try:
+                st = httpx.get(base + "/api/calibration/capture-job", timeout=30).json()
+            except Exception:  # noqa: BLE001
+                continue
+            j = (st.get("jobs") or {}).get(rig) or {}
+            line = f"{j.get('state')}: {j.get('detail')}"
+            if line != last:
+                console.print(f"{datetime.now():%H:%M} {line}", markup=False)
+                last = line
+            if j.get("state") not in ("starting", "cooling", "running", "stopping"):
+                console.print(f"verdicts {j.get('verdicts')}", markup=False)
+                for b in j.get("bad") or []:
+                    console.print(f"  quarantined {b['file']}: {b['reasons']}",
+                                  markup=False)
+                raise typer.Exit(0 if j.get("state") == "complete" else 1)
+    except KeyboardInterrupt:
+        console.print("stopped following; the job keeps running "
+                      "(--cancel to stop it)", markup=False)
+
+
+@app.command("calibration-qa")
+def calibration_qa_cmd(
+    backfill: bool = typer.Option(False, "--backfill",
+                                  help="QA every calibration frame in the watch dir "
+                                       "and the Library (else: show the stored verdicts)"),
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: every rig)"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Move nothing: list what would be quarantined"),
+    recheck: bool = typer.Option(False, "--recheck", help="Re-measure cached frames"),
+    restore: bool = typer.Option(False, "--restore",
+                                 help="Move the rig's quarantined frames back "
+                                      "(false-positive escape hatch; needs --rig)"),
+    reset_daytime: bool = typer.Option(False, "--reset-daytime",
+                                       help="Re-allow daytime capture on --rig after "
+                                            "fixing a light leak"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    url: str = typer.Option("http://localhost:8100", "--url",
+                            help="Scheduler to ask for the armer state"),
+):
+    """PS-113: calibration frame QA. --backfill reads every BIAS / DARK / FLAT
+    frame (temperature, header, level vs bias, light leak, stars, set
+    outliers; flats: level band, saturation, vignetting) and, unless
+    --dry-run, moves the failing Library links to Calibration/_quarantine/
+    with the reasons. NINA's originals are never touched. Refused while a
+    night is RUNNING (it competes with the grader).
+
+    photonscript calibration-qa --backfill --dry-run
+    """
+    import json as _json
+    from photonscript.scheduler import calibration_qa as cq
+    from photonscript.shared.rigs import rig_ids
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if reset_daytime:
+        if not rig:
+            console.print("--reset-daytime needs --rig", markup=False)
+            raise typer.Exit(2)
+        console.print(cq.set_daytime_state(cfg, rig, "untested", note="reset by hand"),
+                      markup=False)
+        return
+    if restore:
+        if not rig:
+            console.print("--restore needs --rig", markup=False)
+            raise typer.Exit(2)
+        console.print_json(_json.dumps(cq.restore(cfg, rig, dry_run=dry_run)))
+        return
+    if backfill:
+        try:
+            import httpx
+            state = str(httpx.get(url.rstrip("/") + "/api/arm", timeout=10).json()
+                        .get("state") or "")
+        except Exception:  # noqa: BLE001
+            state = ""  # service down: nothing is imaging through it
+        if state in ("RUNNING", "PAUSED_UNSAFE"):
+            console.print(f"armer is {state}: run the backfill in the day", markup=False)
+            raise typer.Exit(2)
+
+        def _prog(i, n, k):
+            if i == 1 or i % 25 == 0 or i == n:
+                console.print(f"  measuring {i}/{n} {k}", markup=False)
+
+        rep = cq.backfill(cfg, rig or None, dry_run=dry_run, recheck=recheck,
+                          progress=None if as_json else _prog)
+    else:
+        rep = {"dry_run": None, "mode": cq.mode(cfg), "rigs": {}}
+        for rg in ([rig] if rig else rig_ids(cfg)):
+            store = cq.load_store(cfg, rg)
+            rep["rigs"][rg] = {**cq.summarize(store["frames"].values()),
+                               "daytime": store.get("daytime")}
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+        return
+    console.print(cq.format_report(rep, cfg), markup=False, highlight=False)
 
 
 def _last_night() -> str:

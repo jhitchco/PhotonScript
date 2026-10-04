@@ -434,6 +434,25 @@ or "ERROR: ...". Masters in `out\master\`.
 - Calibration in library: 32x300s darks @0C/offset256, 50 bias, full flat set
   (verified: darks median ~257-330 ADU = offset floor; flats ~50% full well).
   OSC (piggyback) calibration now auto-captured on arm.
+- CALIBRATION CAPTURE + QA (PS-113): every BIAS / DARK / FLAT frame is QA'd
+  before it may count or reach a master (sensor within SET-TEMP +/- 1 C,
+  header, dark level vs the epoch's bias, center vs corner light leak, no
+  stars, set outliers; flats: 20 to 80 % level, saturation, vignetting).
+  With `calibration_qa_mode=quarantine` (default) a failing frame's Library
+  link moves to `Calibration/_quarantine/<TYPE>/<date>/` with `reasons.json`;
+  NINA's originals are never touched and the desktop scripts never read the
+  quarantine. Readiness and the night dark quota count only QA-passed frames
+  once a rig has a QA store (`<data_dir>/calibration_qa/`). Calibration page
+  "Needs vs have" (needs from config, active goals, tonight's plan and the
+  Library's lights), `photonscript calibration-plan`, `calibration-qa
+  --backfill [--dry-run]`, and the guarded capture job `calibration-capture
+  --rig R` (refused unless the armer is DISARMED / COMPLETE, the rig's NINA
+  idle, the roof closed and PHD2 idle; cools to setpoint +/- 1 C first; stops
+  on roof open, temperature drift, budget, arm, light in the frames; never
+  touches the mount or the other rig's NINA). Daytime darks are compared
+  with night ones; a leak disables daytime capture for that rig until
+  `calibration-qa --rig R --reset-daytime`. `calibration_autofill` (daytime
+  only) is off by default.
 - Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout, one goal
   per panel.
 - Guiding tab at `/guiding` (PS-103): the working surface for PHD2. Live state
