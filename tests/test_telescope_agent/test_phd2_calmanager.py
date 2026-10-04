@@ -229,6 +229,7 @@ async def test_binning_change_mid_night_asks_for_a_recalibration(tmp_path, monke
         asked.append(reason)
         return True
     monkeypatch.setattr(armer_mod, "request_recalibration", _recal)
+    monkeypatch.setattr(armer_mod, "armer_guided_now", lambda cfg: True)
     fake, client, task, mgr, cfg = await _setup(tmp_path, [], plan=False)
     try:
         pc.save_record(cfg, {"t_utc": "2026-10-01T02:00:00Z", "grade": pc.PASS,
@@ -247,6 +248,35 @@ async def test_binning_change_mid_night_asks_for_a_recalibration(tmp_path, monke
     assert asked[:2] == ["guide binning changed (1 -> 2)", "PHD2 has no calibration"]
     assert len(asked) == 3                                # the event re-checks too
     assert pc.load_live(cfg)["binning"] == 2
+
+
+async def test_check_live_never_asks_for_a_recalibration_unguided(tmp_path, monkeypatch):
+    """PS-66: PHD2 open and uncalibrated on an UNGUIDED night (or nothing
+    armed): the invalidation is noted, the armer is never asked."""
+    import json
+    import photonscript.scheduler.armer as armer_mod
+    asked = []
+
+    async def _recal(config, reason):
+        asked.append(reason)
+        return True
+    monkeypatch.setattr(armer_mod, "request_recalibration", _recal)
+    import sys
+    if "photonscript.scheduler.app" in sys.modules:       # read the state file
+        monkeypatch.setattr(sys.modules["photonscript.scheduler.app"], "_armer", None)
+    fake, client, task, mgr, cfg = await _setup(tmp_path, [], plan=False)
+    try:
+        st = tmp_path / "data" / "armer_state.json"
+        st.parent.mkdir(parents=True, exist_ok=True)
+        fake.calibration = {"calibrated": False}
+        assert await mgr.check_live("test") == "PHD2 has no calibration"   # idle
+        st.write_text(json.dumps({"state": "RUNNING", "guiding_override": "encoders"}))
+        assert await mgr.check_live("test") == "PHD2 has no calibration"
+        st.write_text(json.dumps({"state": "RUNNING", "guiding_override": "guided"}))
+        assert await mgr.check_live("test") == "PHD2 has no calibration"
+    finally:
+        await _close(fake, client, task)
+    assert asked == ["PHD2 has no calibration"]          # only the guided night
 
 
 async def test_flip_check_runaway_alerts_and_a_clean_flip_is_verified(tmp_path, pushes):

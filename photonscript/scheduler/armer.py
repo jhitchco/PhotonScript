@@ -1064,6 +1064,11 @@ class Armer:
             return False
         if pc.cfg_mode(self.config) == "never":
             return False
+        if not self._use_guiding():
+            # PS-66: an unguided night has no PHD2 calibration to fix; a
+            # re-dispatch would only cost 5 to 10 min of dark
+            logger.info("recalibration (%s) skipped: night is unguided", reason)
+            return False
         now = datetime.utcnow()
         left_h = (self._dawn() - now).total_seconds() / 3600.0
         if left_h < 1.0:
@@ -1369,6 +1374,11 @@ class Armer:
         night = self.plan.get("night_of")
         if self.state != "RUNNING" or not night or self._fallback_night == night:
             return False
+        if not self._use_guiding():
+            # PS-66: already unguided, nothing to fall back from
+            logger.info("unguided fallback (%s) skipped: night is already "
+                        "unguided", reason)
+            return False
         self._fallback_night = night
         self.guiding_override = "unguided"
         self._persist()
@@ -1536,6 +1546,33 @@ class Armer:
                     await self._maybe_stop_stuck_imaging(now)
                     # PS-91: opportunistic map refresh while the roof is shut
                     await self._maybe_hotpix_map(now, "paused unsafe")
+
+
+def armer_guided_now(config) -> bool:
+    """PS-66: True when a night is armed (ARMED / RUNNING / PAUSED_UNSAFE)
+    and it is guided. Asks the scheduler's armer when it runs in this
+    process, else reads its persisted armer_state.json (any run mode), where
+    an unset override means config.guided_default. False when nothing is
+    armed or the state is unreadable."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is not None:
+        try:
+            return armer.state in ACTIVE_STATES and bool(armer._use_guiding())
+        except Exception:  # noqa: BLE001
+            return False
+    p = Path(getattr(config, "data_dir", ".")) / "armer_state.json"
+    try:
+        saved = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - no file / unreadable = not armed
+        return False
+    if saved.get("state") not in ACTIVE_STATES:
+        return False
+    mode = norm_guiding_mode(saved.get("guiding_override"))
+    if mode is not None:
+        return mode == "guided"
+    return bool(getattr(config, "guided_default", True))
 
 
 async def request_recalibration(config, reason: str) -> bool:

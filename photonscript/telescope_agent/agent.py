@@ -767,7 +767,10 @@ class TelescopeAgent:
         if getattr(self, "rig", "rc16") != "rc16":
             return
         from photonscript.scheduler.phd2_audit import ReAuditor
-        self.reauditor = ReAuditor(self.config, armed_fn=self._armer_active)
+        # PS-66: push only for an armed GUIDED night (still records otherwise)
+        from photonscript.scheduler.armer import armer_guided_now
+        self.reauditor = ReAuditor(self.config,
+                                   armed_fn=lambda: armer_guided_now(self.config))
         self.phd2.on_event(self.reauditor.on_event)
 
     def _tuner_setup(self) -> None:

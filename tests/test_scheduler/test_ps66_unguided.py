@@ -303,3 +303,100 @@ def test_dark_library_adds_the_unguided_cap():
     assert dark_library_exposures(_cfg(dark_exposures="600,300,180")) == [600, 300, 180]
     assert dark_library_exposures(_cfg(dark_exposures="600,180",
                                        unguided_max_exposure_s=0)) == [600, 180]
+
+
+# ---- 3. nanny quiet in unguided mode -----------------------------------------
+
+def _running(tmp_path, override, **cfg):
+    a = Armer(_cfg(tmp_path, **cfg))
+    a.state, a.plan = "RUNNING", {"night_of": "2026-10-03",
+                                  "dawn_utc": "2099-01-01T11:00:00Z"}
+    a.guiding_override = override
+    return a
+
+
+async def test_recalibrate_is_a_no_op_unguided(tmp_path, monkeypatch):
+    a = _running(tmp_path, "encoders")
+    calls = []
+
+    async def _nina(key, *x, **k):
+        calls.append(key)
+        return {"Success": True}
+
+    async def _dispatch(companion=True, fail_state="ERROR"):
+        calls.append("dispatch")
+        return True
+    monkeypatch.setattr(a, "_nina", _nina)
+    monkeypatch.setattr(a, "_dispatch_and_start", _dispatch)
+    monkeypatch.setattr(armer_mod, "notify", _noop)
+    assert await a.recalibrate("PHD2 has no calibration") is False
+    assert calls == [] and a._recal_night is None
+    a.guiding_override = "guided"                      # a guided night still does
+    assert await a.recalibrate("PHD2 has no calibration") is True
+    assert calls == ["sequence_stop", "guider_stop", "dispatch"]
+
+
+async def test_fallback_unguided_no_op_when_already_unguided(tmp_path, monkeypatch):
+    a = _running(tmp_path, "unguided")
+    calls = []
+
+    async def _nina(key, *x, **k):
+        calls.append(key)
+        return {"Success": True}
+    monkeypatch.setattr(a, "_nina", _nina)
+    monkeypatch.setattr(armer_mod, "notify", _noop)
+    assert await a.fallback_unguided("guard") is False
+    assert calls == [] and a._fallback_night is None
+
+
+def test_armer_guided_now_in_process_and_from_the_state_file(tmp_path, monkeypatch):
+    import sys
+    from photonscript.scheduler.armer import armer_guided_now
+    cfg = _cfg(tmp_path, guided_default=True)
+    if "photonscript.scheduler.app" in sys.modules:
+        monkeypatch.setattr(sys.modules["photonscript.scheduler.app"], "_armer", None)
+    assert armer_guided_now(cfg) is False                  # no state file
+    st = tmp_path / "data" / "armer_state.json"
+    st.parent.mkdir(parents=True)
+    for state, override, want in (("RUNNING", "encoders", False),
+                                  ("RUNNING", "unguided", False),
+                                  ("ARMED", "guided", True),
+                                  ("PAUSED_UNSAFE", None, True),   # config default
+                                  ("DISARMED", "guided", False)):
+        st.write_text(json.dumps({"state": state, "guiding_override": override}))
+        assert armer_guided_now(cfg) is want, (state, override)
+    from photonscript.scheduler import app as app_mod
+    monkeypatch.setattr(app_mod, "_armer", _running(tmp_path / "x", "unguided"))
+    assert armer_guided_now(cfg) is False                  # in-process wins
+    app_mod._armer.guiding_override = "guided"
+    assert armer_guided_now(cfg) is True
+
+
+async def test_reauditor_quiet_when_armed_unguided(tmp_path, monkeypatch):
+    import asyncio
+    import sys
+    from types import SimpleNamespace
+    from photonscript.scheduler import phd2_audit as pa
+    from photonscript.telescope_agent.agent import TelescopeAgent
+    if "photonscript.scheduler.app" in sys.modules:
+        monkeypatch.setattr(sys.modules["photonscript.scheduler.app"], "_armer", None)
+    pushes = []
+
+    async def _occ(config, push=True, **kw):
+        pushes.append(push)
+        return {}
+    monkeypatch.setattr(pa, "on_config_change", _occ)
+    monkeypatch.setattr(pa, "DEBOUNCE_S", 0.01)
+    cfg = _cfg(tmp_path, guided_default=True)
+    handlers = []
+    ag = SimpleNamespace(rig="rc16", config=cfg,
+                         phd2=SimpleNamespace(on_event=handlers.append))
+    TelescopeAgent._audit_setup(ag)
+    ag.reauditor.debounce_s = 0.01
+    st = tmp_path / "data" / "armer_state.json"
+    st.parent.mkdir(parents=True)
+    for override in ("unguided", "guided"):
+        st.write_text(json.dumps({"state": "RUNNING", "guiding_override": override}))
+        await handlers[0]({"Event": "ConfigurationChange"})
+        await asyncio.sleep(0.1)
+    assert pushes == [False, True]          # recorded both times, pushed guided only
