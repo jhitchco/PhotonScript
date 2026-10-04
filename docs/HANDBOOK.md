@@ -419,6 +419,30 @@ or "ERROR: ...". Masters in `out\master\`.
   run then Apply), PS-92 self-test, PS-93 calibration, PS-91 guard and
   hot-pixel map, PS-90 tuner and tonight's PS-88 guide-log summary. Panel JS
   is static/js/phd2_panels.js; the System page keeps one status line each.
+- THESKY / TPOINT AUDIT (PS-104): report only. `config/thesky/desired_rc16.toml`
+  holds the desired TheSky state (site and clock, mount, TheSky's camera
+  add-on, Automated Image Link settings, catalogs, TPoint and ProTrack, NINA
+  first-slew error) with a why and a fix per row. Sources: TheSky's TCP
+  scripting (port 3040) with read-only scripts only
+  (`telescope_agent/thesky_client.READ_ONLY_JS`; a test greps them for
+  connect / park / slew / sync / jog / tracking / take image / setting
+  writes), the ASTAP Image Link check on the newest RC16 L frame
+  (solve_store), the NINA Center log (`scheduler/nina_center_log.py`,
+  `<data_dir>/pointing/<night>_center.jsonl`) and the manual TPoint record
+  (`<data_dir>/thesky/manual.json`, entered on the Guiding tab after each
+  TPoint session: TPoint numbers, ProTrack, run binning and catalogs are not
+  scriptable). Runs at arm (no push) and on Refresh; Guiding tab section
+  "TheSky / TPoint", `GET /api/thesky/audit`, `/api/thesky/imagelink-check`,
+  `/api/thesky/pointing`, `POST /api/thesky/manual`, CLI `photonscript
+  thesky-audit`, one runs-page line. The rebuild flag says REBUILD when the
+  model is over `tpoint_max_age_days`, the equipment changed after it
+  (camera angle, scale, the 2026-09-12 dual-rig change) or the 14-night
+  first-slew median exceeds `pointing_first_slew_fail_arcmin`. TheSky's own
+  Image Link runs on a temporary copy only from the button and only while the
+  armer is idle. PS-104 also removed `thesky_client.set_protrack`
+  (undocumented DoCommandStr) and made `get_mount_status` read without
+  `Connect()` (which may unpark). Reading the audit and the on-site check:
+  MAINTENANCE.md.
 - OPEN THREADS: `gradual_warm_minutes` change is staged in the desktop repo but
   NOT yet deployed (deploy after a dawn shutdown, never mid-run - deploy 409s
   while armed). Confirm the OSC dark library has matching 120s @0C darks.

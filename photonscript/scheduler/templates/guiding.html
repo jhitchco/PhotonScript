@@ -116,13 +116,41 @@
         </section>
 
         <section class="panel" id="tpointSec">
-            <h2>TheSky / TPoint</h2>
-            <p class="g-intro">Reserved for the TheSky / TPoint settings audit (PS-104): model age and point count, ProTrack, and the TheSky settings that matter for guiding. Until then the PHD2 audit above reports the TheSky rows it can read.</p>
+            <h2>TheSky / TPoint Audit (PS-104)</h2>
+            <p class="g-intro">Report only: TheSky's settings (read through its TCP scripting with read-only scripts), the ASTAP Image Link check on the newest RC16 L frame, NINA's first-slew error from its Center log, and the TPoint record you enter below, against config/thesky/desired_rc16.toml. Nothing here writes TheSky, moves the mount or takes an image. Runs at arm and on Refresh. TPoint numbers, ProTrack, catalogs and the run binning are not in TheSky's scripting API: enter them after each TPoint session. Unknown = no source could read it.</p>
+            <div class="bd" id="tsInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="tsRefresh">Refresh (run audit now)</button>
+                <a class="btn btn-secondary btn-sm" href="/api/thesky/onsite-script" target="_blank" title="The read-only script for TheSky's Tools &gt; Run Java Script window (the 2-minute on-site check)">On-site check script</a>
+                <span class="bd" id="tsStatus"></span>
+            </div>
+            <div id="tsRows" style="margin-top:.4rem;"></div>
+
+            <h3 class="g-group">Image Link check</h3>
+            <div class="bd" id="tsImagelink">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="tsAstap" title="Plate-solves the newest RC16 L frame with ASTAP and compares the true scale and angle with TheSky's Image Link settings.">ASTAP check now</button>
+                <button class="btn btn-secondary" id="tsThesky" title="Runs TheSky's own Image Link on a temporary copy of the same frame (no camera, no mount). Only while the armer is idle.">TheSky Image Link on a temp copy</button>
+                <span class="bd" id="tsIlStatus"></span>
+            </div>
+
+            <h3 class="g-group">First-slew error (NINA Center log, 14 nights)</h3>
+            <div id="tsPointing">loading...</div>
+
+            <h3 class="g-group">TPoint record (manual)</h3>
+            <form id="tsManualForm" onsubmit="return false;">
+                <div class="g-stats" id="tsManualFields"></div>
+                <div class="g-bar">
+                    <button class="btn btn-primary" id="tsManualSave" type="button">Save TPoint record</button>
+                    <span class="bd" id="tsManualStatus"></span>
+                </div>
+            </form>
         </section>
     </main>
 
     <script src="/static/js/phd2_panels.js?v={{ version }}"></script>
-    <script>PHD2.initGuidingPage();</script>
+    <script src="/static/js/thesky_panels.js?v={{ version }}"></script>
+    <script>PHD2.initGuidingPage(); THESKY.init();</script>
     {% include "_footer.html" %}
 </body>
 </html>

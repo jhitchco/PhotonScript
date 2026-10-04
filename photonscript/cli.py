@@ -14,6 +14,7 @@ Usage:
     photonscript tracking-test-report [--date D] [--pa DEG] [--json]  # PS-84
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
+    photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -648,6 +649,55 @@ def optics_report_cmd(
     else:
         console.print(format_report(rep), markup=False, highlight=False)
     raise typer.Exit(0 if rep["overall"].get("n_measured") else 1)
+
+
+@app.command("thesky-audit")
+def thesky_audit_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    imagelink: bool = typer.Option(False, "--imagelink", help="Also solve the newest "
+                                   "RC16 L frame with ASTAP (the Image Link check)"),
+    thesky_imagelink: bool = typer.Option(False, "--thesky-imagelink", help="Also run "
+                                          "TheSky's own Image Link on a temporary copy "
+                                          "(needs thesky_audit_imagelink_thesky and an "
+                                          "idle armer)"),
+    url: str = typer.Option("http://localhost:8100", "--url",
+                            help="Scheduler to ask for the armer state"),
+):
+    """PS-104: TheSky / TPoint settings audit, REPORT ONLY (read-only TheSky
+    scripts, the stored Image Link check, the NINA Center log, the manual
+    TPoint record). Never writes TheSky, moves the mount or takes an image.
+
+    photonscript thesky-audit --json
+    """
+    import json as _json
+    from photonscript.scheduler import thesky_audit as ta
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    state = ""
+    if thesky_imagelink:
+        if not getattr(cfg, "thesky_audit_imagelink_thesky", False):
+            console.print("--thesky-imagelink needs PS_THESKY_AUDIT_IMAGELINK_THESKY=true "
+                          "(or use the Guiding tab button)", markup=False)
+            raise typer.Exit(2)
+        try:
+            import httpx
+            state = str(httpx.get(url.rstrip("/") + "/api/arm", timeout=10).json()
+                        .get("state") or "")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"cannot confirm the armer is idle ({e}): not running TheSky "
+                          "Image Link", markup=False)
+            raise typer.Exit(2)
+    if imagelink or thesky_imagelink:
+        chk = ta.imagelink_check(cfg, thesky=thesky_imagelink, armer_state=state)
+        if not as_json:
+            console.print(f"Image Link check: {chk.get('file')} "
+                          f"{_json.dumps(chk.get('astap'))} {chk.get('note') or ''}"
+                          + (f"\nTheSky: {_json.dumps(chk.get('thesky'))}"
+                             if chk.get("thesky") else ""), markup=False, highlight=False)
+    audit = ta.run_audit(cfg, "cli", armer_state=state or None)
+    if as_json:
+        print(_json.dumps(audit, indent=2, default=str))
+    else:
+        console.print(ta.format_report(audit), markup=False, highlight=False)
 
 
 @app.command("tracking-test-report")

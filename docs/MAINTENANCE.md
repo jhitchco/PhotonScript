@@ -285,6 +285,60 @@ Max ADU 65535, auto exposure off (so `set_exposure` sticks), and a dark
 library covering every exposure from 1 to 4 s at the chosen gain and binning
 (plus the defect map).
 
+### Reading the TheSky / TPoint audit (PS-104)
+
+Guiding tab, section "TheSky / TPoint" (`GET /api/thesky/audit?refresh=1`,
+`photonscript thesky-audit [--json] [--imagelink]`). Report only: it never
+writes TheSky, never moves / unparks / parks / syncs the mount and never
+takes an image. Each row: status, current value (source), desired, why, fix,
+and a confidence (High / Med / Low: how sure we are the read works on the
+site's TheSky 10.5 build).
+- Unknown with "TheSky TCP ... not reachable": TheSky's TCP server is off
+  (Tools > TCP Server). Unknown with "manual": enter the TPoint record.
+- Rebuild the model?: REBUILD with its reasons (age over
+  `tpoint_max_age_days`, equipment changed after the model, camera angle
+  moved over 1 deg mod 180, scale moved over 1%, first-slew median over
+  `pointing_first_slew_fail_arcmin` on either side); "watch" at 75% of the
+  age limit or a first-slew median over the warn limit.
+- Image Link check: "ASTAP check now" solves the newest RC16 L frame
+  (broadband fallback) and compares the native scale x run binning with
+  TheSky's Automated Image Link scale (0.239 x 2 = 0.478; 0.942 is the old
+  4x4 setting). "TheSky Image Link on a temp copy" runs TheSky's own solver on
+  a copy in `<data_dir>/thesky_audit/tmp/` (deleted after), only while the
+  armer is DISARMED or COMPLETE: success there and a failing "Take And Image
+  Link Photo" means TheSky cannot take the picture (camera held by NINA #1,
+  narrowband filter, AutoSave), not that it cannot solve.
+- First-slew error: NINA's first solve of each Center run vs its target, by
+  side of the meridian (from the hour angle unless the log names the pier),
+  Dec band and HA band, 14 nights. PS-67's mount vs solve median shows beside
+  it once that record exists.
+- After each TPoint session: enter date, points, RMS, polar error, ProTrack,
+  run binning and catalogs in the TPoint record form (and a line in
+  HARDWARE.md "TPoint record"). Older than `thesky_manual_max_age_days` it
+  reads unknown.
+
+### TheSky on-site check (2 minutes, read only)
+
+Once, on the scope PC, with no session running:
+1. Open `/api/thesky/onsite-script` (Guiding tab "On-site check script"),
+   copy it into TheSky's Tools > Run Java Script window and Run. Every line
+   is a read; a "?ERR" names a property this build does not have. Paste the
+   output into PS-104 so the property names can be confirmed (or fixed in
+   `thesky_client.READ_PAIRS`).
+2. All Sky flags (Choice B2, optional): note the "Use All Sky Image Link"
+   checkbox in the Automated Pointing Calibration Run setup, then run
+   `var Out; sky6RASCOMTele.DoCommand(13, ''); Out = sky6RASCOMTele.DoCommandOutput;`
+   and check the checkbox did not change. Only if it stayed put, set
+   `PS_THESKY_AUDIT_ALLSKY_READ=true`.
+3. A folder listing of TheSky's TPoint and Database folders (for a later
+   file reader of the TPoint numbers and catalogs).
+4. Verify the NINA Center-log parser on a real night log: `GET
+   /api/thesky/pointing?nights=14&refresh=1` should show runs, and the first
+   separations should match what NINA's Center log lines say. The parser was
+   written from NINA's documented "Centering Solver - ... Separation ..."
+   message (no real log on the desktop); a format difference shows as zero
+   runs.
+
 ## Calibration — what an arm captures automatically
 
 Matching is by **camera (INSTRUME) + full epoch** (`EXPTIME|GAIN|OFFSET|SET-TEMP`

@@ -407,7 +407,10 @@
                 ((tu.changes || []).length ? ', ' + tu.changes.length + ' change(s)' : '') +
                 (tu.recommend && tu.recommend.bin3 && tu.recommend.bin3.note ? '<br><span style="opacity:.8">' + esc(tu.recommend.bin3.note) + '</span>' : '') +
                 ' <a href="/api/phd2/tuning?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
-            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine + tuLine; return; }
+            const tsk = g && g.thesky;  // PS-104 TheSky / TPoint audit (one line)
+            const tskLine = tsk && tsk.line ? '<br><span class="' + ((tsk.counts || {}).fail ? 'bad' : ((tsk.counts || {}).warn ? 'warn' : '')) +
+                '">' + esc(tsk.line) + ' <a href="/guiding#tpointSec">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine + tuLine + tskLine; return; }
             const sev = {critical: 'bad', warning: 'warn', info: ''};
             box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
                 g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
@@ -417,7 +420,7 @@
                 (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
                     esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
                     esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
-                    '</span>').join('') + guardLine + stLine + calLine + auLine + tuLine;
+                    '</span>').join('') + guardLine + stLine + calLine + auLine + tuLine + tskLine;
         }
         function renderOptics(o, date) {  // PS-95
             const box = document.getElementById('optics');

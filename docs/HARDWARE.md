@@ -28,6 +28,13 @@ get answered; the planner and QA thresholds should eventually read from here.
   corrects tracking rates in software - fully remote, no hands on the mount.
   Site (from driver): 31d54'25" N, -109d01'16", 1300 m.
 - Historically unguided
+
+#### TPoint record (add a line per model; PS-104)
+Enter the same numbers in the Guiding tab's TPoint record form so the
+TheSky / TPoint audit can judge them (model age, points, RMS, polar error).
+| Date | Bin | Image scale ("/px) | Points | RMS (") | Polar error az / alt (') | Notes |
+|------|-----|--------------------|--------|---------|--------------------------|-------|
+| TODO | 4x4 | 0.942 | TODO | TODO | TODO | the model in HANDBOOK section 8; if it predates 2026-09-12 (dual-rig load change) the audit flags a rebuild once the date is entered |
 - Unguided reality at 3248 mm: 300s subs lose 30-60% of frames to trailing
   (SII 9/22 through registration, 2026-07-03)
 - PHD2 installed on scope PC; PS_GUIDED_DEFAULT=true as of 2026-07-07

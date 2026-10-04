@@ -577,6 +577,16 @@ _CONFIG_FIELDS = [
     ("phd2_desired_file", "PS_PHD2_DESIRED_FILE", "PHD2 desired-state file; empty = config/phd2/desired_oag_rc16.toml", "PHD2", "str", False, False),
     ("phd2_dark_max_age_days", "PS_PHD2_DARK_MAX_AGE_DAYS", "PHD2 dark library older than N days = WARN", "PHD2", "float", False, False),
     ("phd2_darks_dir", "PS_PHD2_DARKS_DIR", "PHD2 dark library folder; empty = %LOCALAPPDATA%\\phd2\\darks_defects", "PHD2", "str", False, False),
+    ("thesky_audit_enabled", "PS_THESKY_AUDIT_ENABLED", "TheSky / TPoint settings audit, read only (PS-104): on demand, at arm and in the night report; never writes TheSky or moves the mount", "PHD2", "bool", False, False),
+    ("thesky_audit_imagelink_thesky", "PS_THESKY_AUDIT_IMAGELINK_THESKY", "Allow TheSky's own Image Link on a copied RC16 frame from the CLI too (the Guiding tab button runs it while the armer is idle)", "PHD2", "bool", False, False),
+    ("thesky_audit_allsky_read", "PS_THESKY_AUDIT_ALLSKY_READ", "Read the All Sky Image Link flags (DoCommand 12 / 13 read form); on only after the on-site script check", "PHD2", "bool", False, False),
+    ("tpoint_max_age_days", "PS_TPOINT_MAX_AGE_DAYS", "TPoint model older than N days = rebuild (warn at 75%)", "PHD2", "float", False, False),
+    ("tpoint_min_points", "PS_TPOINT_MIN_POINTS", "TPoint model: at least N points", "PHD2", "int", False, False),
+    ("tpoint_rms_max_arcsec", "PS_TPOINT_RMS_MAX_ARCSEC", "TPoint model: RMS at most N arcsec", "PHD2", "float", False, False),
+    ("tpoint_polar_max_arcmin", "PS_TPOINT_POLAR_MAX_ARCMIN", "TPoint polar alignment error at most N arcmin", "PHD2", "float", False, False),
+    ("pointing_first_slew_warn_arcmin", "PS_POINTING_FIRST_SLEW_WARN_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = warn", "PHD2", "float", False, False),
+    ("pointing_first_slew_fail_arcmin", "PS_POINTING_FIRST_SLEW_FAIL_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = fail / rebuild", "PHD2", "float", False, False),
+    ("thesky_manual_max_age_days", "PS_THESKY_MANUAL_MAX_AGE_DAYS", "Manual TPoint record older than N days reads unknown", "PHD2", "float", False, False),
     ("pe_owner", "PS_PE_OWNER", "Who corrects periodic error: protrack (PHD2 PPEC must be off) | phd2_ppec | none", "PHD2", "str", False, False),
     ("phd2_tune_mode", "PS_PHD2_TUNE_MODE", "Guide-star auto-tune (PS-90): off | observe (measure and record, never change) | exposure (live exposure-only tuning)", "PHD2", "str", False, True),
     ("phd2_tune_peak_lo", "PS_PHD2_TUNE_PEAK_LO", "Auto-tune: guide star peak band, low (fraction of full scale)", "PHD2", "float", False, True),
@@ -1781,6 +1791,8 @@ def api_run_detail(date: str, backfill: bool = True):
         d["guiding"]["audit"] = audit_summary(get_config(), date)  # PS-89
         from photonscript.scheduler.phd2_tuning import summary as tune_summary
         d["guiding"]["tuning"] = tune_summary(get_config(), date)  # PS-90
+        from photonscript.scheduler.thesky_audit import summary as thesky_summary
+        d["guiding"]["thesky"] = thesky_summary(get_config(), date)  # PS-104
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("guard summary skipped for %s: %s", date, e)
     for s in d["subs"]:
@@ -2933,6 +2945,8 @@ from photonscript.scheduler.routers import review as _review_router  # noqa: E40
 app.include_router(_review_router.router)
 from photonscript.scheduler.routers import phd2 as _phd2_router  # noqa: E402
 app.include_router(_phd2_router.router)
+from photonscript.scheduler.routers import thesky as _thesky_router  # noqa: E402
+app.include_router(_thesky_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
