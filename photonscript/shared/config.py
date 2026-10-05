@@ -47,7 +47,7 @@ class PhotonScriptConfig(BaseSettings):
     observatory_name: str = "AARO Pier 3 (Rodeo, NM)"
     observatory_lat: float = 31.906944
     observatory_lon: float = -109.021367
-    observatory_elev: float = 1250.0
+    observatory_elev: float = 1300.0  # metres; AARO Pier 3 per the Paramount (TheSky) driver, confirmed by Jeremy 2026-10-04
     observatory_tz: str = "America/Denver"
     observatory_bortle: int = 2
 
