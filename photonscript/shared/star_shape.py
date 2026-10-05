@@ -97,11 +97,14 @@ def measure(data, binned: bool = False, threshold: float = 5.0,
             max_stars: int = 400) -> dict | None:
     """Star shape on one frame with the live grader's sep pipeline.
 
-    Returns None without sep. Otherwise {"n", "ecc", "hfr_px", "fwhm_px",
-    "scale", "stars"}: medians over the kept stars (ecc in sqrt form; HFR and
-    FWHM in NATIVE pixels, so x2 when binned) and the per-star arrays
-    (x, y, a, b, theta, flux, hfr, ecc; x, y, a, b, hfr in native pixels).
-    n == 0 gives None medians."""
+    Returns None without sep. Otherwise {"n", "n_detected", "ecc", "hfr_px",
+    "fwhm_px", "scale", "stars"}: medians over the kept stars (ecc in sqrt
+    form; HFR and FWHM in NATIVE pixels, so x2 when binned) and the per-star
+    arrays (x, y, a, b, theta, flux, hfr, fwhm, ecc; x, y, a, b, hfr, fwhm in
+    native pixels). n is the kept stars (at most max_stars, the brightest);
+    n_detected the stars that passed the cuts before that cap. n == 0 gives
+    None medians. PS-83: shared.star_measure builds both graders' metrics
+    on top of this."""
     sep = _sep()
     if sep is None:
         return None
@@ -116,10 +119,11 @@ def measure(data, binned: bool = False, threshold: float = 5.0,
     del data_c
     objs = sep.extract(data_sub, threshold, err=bkg.globalrms, minarea=9)
     objs = objs[(objs["npix"] >= 12) & (objs["b"] > 0.7)]
+    n_detected = int(len(objs))
     if len(objs) > max_stars:
         objs = objs[np.argsort(objs["flux"])[::-1][:max_stars]]
-    empty = {"n": 0, "ecc": None, "hfr_px": None, "fwhm_px": None,
-             "scale": scale, "stars": None}
+    empty = {"n": 0, "n_detected": n_detected, "ecc": None, "hfr_px": None,
+             "fwhm_px": None, "scale": scale, "stars": None}
     if not len(objs):
         return empty
     r, _ = sep.flux_radius(data_sub, objs["x"], objs["y"],
@@ -131,8 +135,9 @@ def measure(data, binned: bool = False, threshold: float = 5.0,
              "a": objs["a"] * scale, "b": objs["b"] * scale,
              "theta": np.asarray(objs["theta"], dtype=np.float64),
              "flux": np.asarray(objs["flux"], dtype=np.float64),
-             "hfr": r * scale, "ecc": e}
-    return {"n": int(len(objs)), "ecc": float(np.median(e)),
+             "hfr": r * scale, "fwhm": fwhm * scale, "ecc": e}
+    return {"n": int(len(objs)), "n_detected": n_detected,
+            "ecc": float(np.median(e)),
             "hfr_px": float(np.median(r)) * scale,
             "fwhm_px": float(np.median(fwhm)) * scale,
             "scale": scale, "stars": stars}

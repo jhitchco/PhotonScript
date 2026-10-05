@@ -963,10 +963,20 @@ def gating_ecc(rec: dict, t: dict) -> tuple:
     return record_ecc(rec), float(t["ecc_max"])
 
 
+def record_fwhm(rec: dict):
+    """A stored FWHM (arcsec) only when it was truly measured. Live records
+    always were; backfill records (graded_by set) from before PS-83 carry
+    HFR x scale instead and give None. PS-83 records say measure_v."""
+    if rec.get("graded_by") and not rec.get("measure_v"):
+        return None
+    return rec.get("fwhm_arcsec")
+
+
 def metrics_from_record(rec: dict) -> dict:
-    """Stored sub record -> evaluate() metrics. Backfill records (graded_by
-    set) carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped.
-    PS-94: ecc comes back in sqrt form (old 1-b/a records converted)."""
+    """Stored sub record -> evaluate() metrics. Pre-PS-83 backfill records
+    carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped
+    (record_fwhm). PS-94: ecc comes back in sqrt form (old 1-b/a records
+    converted)."""
     m = {k: rec.get(k) for k in (
         "hfr", "ecc", "ecc_bin", "stars", "background", "exp_s", "ccd_temp",
         "set_temp", "guide_rms", "guide_state", "guide_lock", "doubled_frac",
@@ -974,7 +984,7 @@ def metrics_from_record(rec: dict) -> dict:
         "pointing_offset_arcmin", "pointing_note", "pointing_src",
         "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
         "max_adu")}
-    m["fwhm_arcsec"] = None if rec.get("graded_by") else rec.get("fwhm_arcsec")
+    m["fwhm_arcsec"] = record_fwhm(rec)
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
     return m

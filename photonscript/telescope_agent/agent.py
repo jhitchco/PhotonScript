@@ -24,6 +24,7 @@ from photonscript.shared.models import (
 )
 from photonscript.shared.messagebus import get_message_bus
 from photonscript.shared.pushover import notify
+from photonscript.shared.star_measure import MEASURE_VERSION
 from photonscript.telescope_agent.nina_client import NinaClient
 from photonscript.telescope_agent.phd2_client import PHD2Client, guide_rms_text
 from photonscript.telescope_agent.image_validator import validate_image
@@ -1430,6 +1431,8 @@ class TelescopeAgent:
                 # PS-94: 2x2-binned measure (RC16), both ecc in sqrt form
                 "ecc_bin": quality.ecc_bin, "hfr_bin": quality.hfr_bin_px,
                 "ecc_def": "sqrt(1-(b/a)^2)",
+                # PS-83: measured by shared.star_measure (both graders)
+                "measure_v": MEASURE_VERSION,
                 "background": quality.background_adu,
                 # PS-21: measured inputs live grading used to drop
                 "noise": quality.noise_adu,

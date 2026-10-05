@@ -271,148 +271,71 @@ def _shape_diagnostics(objs, W, H,
             "ecc_radial_frac": round(radial_frac, 2), "shape": shape}
 
 
-def _measure(binned, config) -> dict:
-    """Star metrics on a 2x2-binned frame. sep gives real HFR/eccentricity;
-    without sep we only report a star count (no fabricated HFR)."""
+def _measure(binned, config=None) -> dict:
+    """Backfill-only diagnostics on the 2x2-binned frame: the tracking-jump
+    (doubled stars) fraction and the per-corner / elongation-direction shape
+    (_shape_diagnostics). PS-83: the graded star metrics (HFR, FWHM, ecc,
+    star count, background, swamp, saturation) are NOT measured here any
+    more; they come from shared.star_measure.measure_frame, the function the
+    live grader uses. {} without sep."""
     import numpy as np
 
-    from photonscript.shared.star_shape import ECC_DEF, ecc_sqrt
     sep = _sep_module()
-    if sep is not None:
-        data = np.ascontiguousarray(binned, dtype=np.float32)
-        bkg = sep.Background(data)
-        data_sub = data - bkg
-        # Local noise map, not the global scalar: on nebula frames the
-        # global rms underestimates noise inside nebulosity, which produced
-        # tens of thousands of false "stars" and sub-pixel HFRs.
-        err = np.maximum(bkg.rms(), max(float(bkg.globalrms) * 0.2, 1e-3))
-        # Detect on a 3x3 median-filtered image: single-pixel hot pixels
-        # (thousands on a 300s uncalibrated CMOS frame) vanish, while real
-        # stars — heavily oversampled at this image scale — survive. This
-        # is what produced 9700 "stars" at HFR 0.84 and the minute-long
-        # segmentation of hot-pixel storms.
-        from scipy import ndimage
-        det_img = ndimage.median_filter(data_sub, size=3)
+    if sep is None:
+        return {}
+    data = np.ascontiguousarray(binned, dtype=np.float32)
+    bkg = sep.Background(data)
+    data_sub = data - bkg
+    # Local noise map, not the global scalar: on nebula frames the global
+    # rms underestimates noise inside nebulosity (tens of thousands of false
+    # "stars"). Detect on a 3x3 median-filtered image so single-pixel hot
+    # pixels vanish while the oversampled stars survive.
+    err = np.maximum(bkg.rms(), max(float(bkg.globalrms) * 0.2, 1e-3))
+    from scipy import ndimage
+    det_img = ndimage.median_filter(data_sub, size=3)
+    del data_sub
+    try:
+        sep.set_extract_pixstack(1_000_000)
+    except Exception:  # noqa: BLE001
+        pass
+    objs = np.empty(0)
+    for thresh in (5.0, 12.0):
         try:
-            sep.set_extract_pixstack(1_000_000)
+            objs = sep.extract(det_img, thresh, err=err, minarea=6,
+                               clean=True)
+        except Exception:  # noqa: BLE001  (pixel buffer overflow etc.)
+            continue
+        if len(objs) <= 6000:  # plausible; else escalate once
+            break
+    del det_img, err
+    # Tracking-jump detector: a mount jump doubles every star - two ROUND
+    # images per star, so ecc/HFR barely move. Signature: many stars have a
+    # nearest neighbor at the SAME offset vector.
+    doubled_frac = 0.0
+    good_all = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)] if len(objs)         else objs
+    if len(good_all) >= 20:
+        try:
+            from scipy.spatial import cKDTree
+            pts = np.column_stack([good_all["x"], good_all["y"]])[:400]
+            dist, idx = cKDTree(pts).query(pts, k=2)
+            vec = pts[idx[:, 1]] - pts
+            close = dist[:, 1] < 25  # binned px
+            if close.sum() >= 10:
+                v = np.round(np.abs(vec[close]) / 1.5)  # 1.5px bins, sign-folded
+                _, counts = np.unique(v, axis=0, return_counts=True)
+                doubled_frac = float(counts.max() / len(pts))
         except Exception:  # noqa: BLE001
             pass
-        objs = np.empty(0)
-        for thresh in (5.0, 12.0):
-            try:
-                objs = sep.extract(det_img, thresh, err=err, minarea=6,
-                                   clean=True)
-            except Exception:  # noqa: BLE001  (pixel buffer overflow etc.)
-                continue
-            if len(objs) <= 6000:  # plausible; else escalate once
-                break
-        del det_img
-        hfr = ecc = None
-        star_arrays = None  # PS-80 sidecar: the stars behind the medians
-        nstars = int(len(objs))
-        if len(objs):
-            good = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
-            nstars = int(len(good))
-            if len(good):
-                top = good[np.argsort(good["flux"])[::-1][:500]]
-                try:
-                    # Radii measured on the ORIGINAL image at the positions
-                    # found on the filtered one
-                    r_all, _ = sep.flux_radius(data_sub, top["x"], top["y"],
-                                               6.0 * top["a"], 0.5)
-                    ok = np.isfinite(r_all) & (r_all > 0.2) & (r_all < 15)
-                    r = r_all[ok]
-                    if len(r):
-                        hfr = round(float(np.median(r)) * 2, 2)  # ->native px
-                    e_all = ecc_sqrt(top["a"], top["b"])
-                    star_arrays = {"x": top["x"][ok], "y": top["y"][ok],
-                                   "hfr": r_all[ok], "ecc": e_all[ok],
-                                   "theta": top["theta"][ok],
-                                   "flux": top["flux"][ok],
-                                   "w": data.shape[1], "h": data.shape[0]}
-                except Exception:  # noqa: BLE001
-                    pass
-                # PS-94: sqrt(1-(b/a)^2) like the live grader (was 1-b/a)
-                e = ecc_sqrt(top["a"], top["b"])
-                e = e[np.isfinite(e)]
-                if len(e):
-                    ecc = round(float(np.median(e)), 3)
-        # Tracking-jump detector: a mount jump doubles every star — two
-        # ROUND images per star, so ecc/HFR barely move. Signature: many
-        # stars have a nearest neighbor at the SAME offset vector.
-        doubled_frac = 0.0
-        if len(objs) and nstars >= 20:
-            try:
-                from scipy.spatial import cKDTree
-                good_all = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
-                pts = np.column_stack([good_all["x"], good_all["y"]])[:400]
-                dist, idx = cKDTree(pts).query(pts, k=2)
-                vec = pts[idx[:, 1]] - pts
-                close = dist[:, 1] < 25  # binned px
-                if close.sum() >= 10:
-                    v = np.round(np.abs(vec[close]) / 1.5)  # 1.5px bins, sign-folded
-                    _, counts = np.unique(v, axis=0, return_counts=True)
-                    doubled_frac = float(counts.max() / len(pts))
-            except Exception:  # noqa: BLE001
-                pass
-        # Exposure scoring (binned frame: mean of 2x2, so full well and mean
-        # sky level are preserved; noise is halved -> x2 to unbinned-equiv)
-        clipped_pct = round(float((data >= 65000).mean() * 100.0), 3)
-        sat_stars_pct = None
-        if len(objs):
-            try:
-                good_pk = objs[(objs["a"] >= 0.6) & (objs["b"] > 0)]
-                if len(good_pk):
-                    sat_stars_pct = round(float(
-                        ((good_pk["peak"] + float(bkg.globalback)) >= 65000)
-                        .mean() * 100.0), 1)
-            except Exception:  # noqa: BLE001
-                pass
-        rn = max(float(getattr(config, "camera_read_noise_adu", 8.0)), 0.1)
-        swamp = round((2.0 * float(bkg.globalrms) / rn) ** 2, 1)
-        exposure = ("sat-stars" if (sat_stars_pct or 0) > 5.0
-                    else "clipped" if clipped_pct > 0.05
-                    else "under" if swamp < 3.0 else "ok")
-        try:
-            shape = _shape_diagnostics(objs, data.shape[1], data.shape[0])
-        except Exception:  # noqa: BLE001
-            shape = {}
-        del data_sub, data, err
-        return {"stars": nstars, "hfr": hfr, "ecc": ecc,
-                "corner_ecc": shape.get("corner_ecc"),
-                "ecc_pa_R": shape.get("ecc_pa_R"),
-                "ecc_radial_frac": shape.get("ecc_radial_frac"),
-                "shape": shape.get("shape"),
-                "doubled_frac": round(doubled_frac, 2),
-                "background": round(float(bkg.globalback), 1),
-                "noise": round(float(bkg.globalrms), 2),
-                "clipped_pct": clipped_pct, "sat_stars_pct": sat_stars_pct,
-                "swamp": swamp, "exposure": exposure,
-                "graded_by": "sep-binned", "ecc_def": ECC_DEF,
-                "_stars": star_arrays}
-
-    # Honest fallback: count stars, don't invent an HFR (the old area-based
-    # estimate quantized to 3.91 px for every frame).
-    from scipy import ndimage
-    sample = binned[::4, ::4]
-    background = float(np.median(sample))
-    noise = float(np.median(np.abs(sample - background))) * 1.4826 or 1.0
-    mask = binned > background + 6 * noise
-    labeled, n = ndimage.label(mask)
-    nstars = 0
-    if n:
-        sizes = ndimage.sum(mask, labeled, range(1, min(n, 2000) + 1))
-        nstars = int((np.atleast_1d(sizes) >= 3).sum())
-    clipped_pct = round(float((binned >= 65000).mean() * 100.0), 3)
-    rn = max(float(getattr(config, "camera_read_noise_adu", 8.0)), 0.1)
-    swamp = round((2.0 * noise / rn) ** 2, 1)
-    exposure = ("clipped" if clipped_pct > 0.05
-                else "under" if swamp < 3.0 else "ok")
-    return {"stars": nstars, "hfr": None, "ecc": None,
-            "background": round(background, 1), "noise": round(noise, 2),
-            "clipped_pct": clipped_pct, "sat_stars_pct": None,
-            "swamp": swamp, "exposure": exposure,
-            "graded_by": "no-sep (install sep-pjw for HFR/ecc)"}
+    try:
+        shape = _shape_diagnostics(objs, data.shape[1], data.shape[0])             if len(objs) else {}
+    except Exception:  # noqa: BLE001
+        shape = {}
+    del data
+    return {"corner_ecc": shape.get("corner_ecc"),
+            "ecc_pa_R": shape.get("ecc_pa_R"),
+            "ecc_radial_frac": shape.get("ecc_radial_frac"),
+            "shape": shape.get("shape"),
+            "doubled_frac": round(doubled_frac, 2)}
 
 
 def _plan_target_names(config, date: str) -> list[str]:
@@ -455,34 +378,31 @@ def sensor_temp_reasons(ccd_temp, header_setpoint, config,
 
 
 def _load_native(path: Path):
-    """Full-resolution float32 frame (BZERO / BSCALE applied) for the PS-94
-    native measure. About 104 MB for a 26 MP frame: callers hold _HEAVY."""
-    import numpy as np
-    from astropy.io import fits as _fits
-    with _fits.open(path, memmap=True,
-                    do_not_scale_image_data=True) as hdul:
-        hdr = hdul[0].header
-        data = np.array(hdul[0].data, dtype=np.float32)
-        bscale, bzero = float(hdr.get("BSCALE", 1)), float(hdr.get("BZERO", 0))
-    if bscale != 1.0:
-        data *= bscale
-    if bzero:
-        data += bzero
-    return data
+    """Full-resolution float32 frame (BZERO / BSCALE applied), the loader
+    both graders use (shared.star_measure.load_native). About 104 MB for a
+    26 MP frame: callers hold _HEAVY."""
+    from photonscript.shared.star_measure import load_native
+    return load_native(path)
 
 
-def _measure_native(path: Path) -> dict | None:
-    """PS-94: eccentricity / HFR at the native 0.24"/px with the live
-    grader's pipeline (shared.star_shape.measure), so backfill records carry
-    the same native ecc the live watcher measures. None without sep or on
-    MemoryError (the scope PC is RAM-tight): the record then keeps the binned
-    measure only. Logs the time it took per sub."""
+BACKFILL_GRADER = "backfill-sep"
+
+
+def _measure_native(path: Path, config, rig: str = "rc16",
+                    osc: bool = False) -> dict | None:
+    """PS-83: every graded star metric on the native frame with
+    shared.star_measure.measure_frame, the function the live grader calls,
+    so a backfill record carries the numbers the live watcher would have
+    recorded. None on MemoryError (the scope PC is RAM-tight): the caller
+    then measures the 2x2-binned frame with the same function. Logs the time
+    it took per sub."""
     import time
-    from photonscript.shared import star_shape
+    from photonscript.shared import star_measure
     t0 = time.monotonic()
     try:
         data = _load_native(path)
-        res = star_shape.measure(data, binned=False)
+        res = star_measure.measure_frame(data, config, rig, osc=osc,
+                                         grader=BACKFILL_GRADER)
         del data
     except MemoryError:
         logger.warning("native measure skipped for %s: MemoryError (binned "
@@ -497,18 +417,21 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                 rig: str = "rc16", night: dict | None = None,
                 stars_to: tuple[str, str] | None = None,
                 native: bool = True) -> dict:
-    """Per-sub metrics for backfill: sep on a 2x2-binned frame.
+    """Per-sub metrics for backfill.
 
-    PS-94: with native=True (RC16 only) it also measures the native frame
-    with the live pipeline. Then `ecc` is the native value (what the native
-    gate judges, as on live records) and `ecc_bin` / `hfr_bin` the binned
-    ones. Without it (MemoryError, no sep, native=False) `ecc` stays the
-    binned value and `ecc_at` says "binned". All ecc in sqrt(1-(b/a)^2)
-    form (`ecc_def`).
+    PS-83: the star and exposure metrics (HFR, FWHM, ecc, star count,
+    background, noise, swamp, saturation, ecc_bin / hfr_bin) come from
+    shared.star_measure.measure_frame on the NATIVE frame, the same function
+    and frame the live grader measures, so both graders record the same
+    numbers for the same sub. native=False (tests) or a MemoryError measures
+    the 2x2-binned frame with that function instead (`ecc_at` / `measure_at`
+    "binned"). The binned frame also feeds the backfill-only diagnostics
+    (tracking jump, corner ecc / shape) and the thumbnails. All ecc in
+    sqrt(1-(b/a)^2) form (`ecc_def`).
 
     prewarm=(date, rel_file): while the frame is already loaded, also render the
     runs-grid thumbnail (w=264) so the runs page never generates it on first
-    view. Reuses the loaded array — just a stretch + resize + PNG write, so it
+    view. Reuses the loaded array: just a stretch + resize + PNG write, so it
     costs a fraction of the grade and never re-opens the FITS. Best-effort: a
     thumbnail failure never blocks grading.
 
@@ -517,11 +440,14 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     rescore_night post-pass). stars_to=(date, rel_file) also writes the PS-80
     star sidecar from the stars already in memory.
     """
+    from photonscript.shared import star_measure
+    from photonscript.shared.rigs import rig_config
+    rcfg = rig_config(config, rig)   # the rig view, as the live grader gets
     px: dict = {}   # PS-108 full-resolution pixel counts
     with _HEAVY:
         hdr, binned = _load_binned(path, stats=px, sat_adu=getattr(
             config, "qa_saturation_adu", 65000.0))
-        m = _measure(binned, config)
+        diag = _measure(binned, config)
         if prewarm is not None:
             try:
                 p_date, p_rel = prewarm
@@ -534,23 +460,27 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                         _stretch_and_save(small, p_out, w)
             except Exception as e:  # noqa: BLE001
                 logger.debug("thumb pre-warm skipped for %s: %s", path.name, e)
+        osc = star_measure.is_osc(rig, hdr)
+        m = None
+        if native:
+            # one full-res frame at a time (_HEAVY); free the binned copy
+            del binned
+            binned = None
+            gc.collect()
+            m = _measure_native(path, rcfg, rig, osc)
+        if m is None:
+            if binned is None:
+                _, binned = _load_binned(path)
+            m = star_measure.measure_frame(binned, rcfg, rig, osc=osc,
+                                           binned_input=True,
+                                           grader=BACKFILL_GRADER)
         del binned
-        gc.collect()
-        # PS-94: the native measure, one full-res frame at a time (_HEAVY)
-        mn = None
-        if native and rig == "rc16" and m.get("ecc") is not None:
-            mn = _measure_native(path)
     gc.collect()
-    ecc_bin, hfr_bin = m.get("ecc"), m.get("hfr")
-    if mn and mn.get("ecc") is not None:
-        ecc, ecc_at = round(mn["ecc"], 3), "native"
-    else:
-        ecc, ecc_at = ecc_bin, "binned"
-    # PS-21: one set of rules for live and backfill (shared.qa_rules). This
-    # grader has no true FWHM (its fwhm_arcsec is HFR x scale), so FWHM is
-    # not judged here, and the PS-71 star-size signature runs on HFR only.
+    m.update(diag)
+    # PS-21: one set of rules for live and backfill (shared.qa_rules); PS-83:
+    # one measure too, so FWHM is a true measured FWHM and is judged here.
     from photonscript.shared import qa_rules
-    star_arrays = m.pop("_stars", None)
+    m.pop("_stars", None)
     target = _resolve_target(hdr.get("OBJECT"), path.name, plan_names or [])
     flt = (lambda f: {**{}, **getattr(config, "reverse_filter_map",
                       lambda: {})()}.get(f, f))(hdr.get("FILTER", "?"))
@@ -599,8 +529,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         pointing_note=_point.get("note"),
         pointing_src=_point.get("src"),
         slew_overlap_s=_slew.get("overlap_s"), slew_note=_slew.get("note"),
-        hfr=m["hfr"], fwhm_arcsec=None, ecc=ecc, ecc_bin=ecc_bin,
-        stars=m["stars"],
+        hfr=m["hfr"], fwhm_arcsec=m["fwhm_arcsec"], ecc=m["ecc"],
+        ecc_bin=m["ecc_bin"], stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
         ccd_temp=hdr.get("CCD-TEMP"), set_temp=hdr.get("SET-TEMP"),
         guide_lock=_lock,
@@ -611,21 +541,13 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     card = qa_rules.evaluate(metrics, qa_rules.context(
         config, rig, target, flt, night=night, unsafe_windows=_wins,
         start_utc=_start, image_type=str(hdr.get("IMAGETYP", "LIGHT"))))
-    if stars_to is not None and star_arrays is not None:
+    if stars_to is not None and m.get("star_table"):
         try:
             from photonscript.shared import star_table
-            n_max = int(getattr(config, "qa_star_sidecar_max", 500) or 0)
-            tbl = star_table.build(
-                star_arrays["x"], star_arrays["y"], star_arrays["hfr"],
-                star_arrays["ecc"], theta=star_arrays["theta"],
-                flux=star_arrays["flux"], w=star_arrays["w"],
-                h=star_arrays["h"], scale=2.0, limit=n_max,
-                grader="sep-binned", rig=rig,
-                ecc_def=m.get("ecc_def") or "")
-            star_table.write(config, stars_to[0], stars_to[1], tbl, rig=rig)
+            star_table.write(config, stars_to[0], stars_to[1],
+                             m["star_table"], rig=rig)
         except Exception as e:  # noqa: BLE001
             logger.debug("star sidecar skipped for %s: %s", path.name, e)
-    hfr = m["hfr"]
     rec = {
         "rig": rig,
         "time": hdr.get("DATE-OBS", ""),
@@ -636,13 +558,15 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "set_temp": hdr.get("SET-TEMP"),
         **_light_epoch(hdr),   # PS-122: gain, offset, xbin, readout
         "setpoint_c": card.thresholds.get("setpoint_c"),
-        "hfr": hfr,
-        "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
-        "stars": m["stars"], "ecc": ecc,
+        # PS-83: shared.star_measure, the live grader's numbers
+        "hfr": m["hfr"], "fwhm_arcsec": m["fwhm_arcsec"],
+        "stars": m["stars"], "ecc": m["ecc"],
         # PS-94: the 0.48"/px measure next to the native one; sqrt form
-        "ecc_bin": ecc_bin, "hfr_bin": hfr_bin, "ecc_at": ecc_at,
-        "ecc_def": m.get("ecc_def"),
+        "ecc_bin": m["ecc_bin"], "hfr_bin": m["hfr_bin"],
+        "ecc_at": m["measure_at"], "ecc_def": m.get("ecc_def"),
+        "measure_v": m.get("measure_v"),
         "background": m["background"],
+        "corner_spread": m.get("corner_spread"),
         "corner_ecc": m.get("corner_ecc"),
         "ecc_pa_R": m.get("ecc_pa_R"),
         "ecc_radial_frac": m.get("ecc_radial_frac"),
@@ -1876,14 +1800,21 @@ def _ecc_display_sqrt(subs: list[dict]) -> int:
     """PS-94: show every sub's ecc in sqrt(1-(b/a)^2) form. Pre-PS-94
     backfill records hold 1-b/a; on these in-memory copies `ecc` is
     converted (the stored value is kept as `ecc_raw`), so the runs page and
-    its medians compare like with like. Nothing is written."""
+    its medians compare like with like. PS-83: the display-only corner_ecc
+    values of those records are converted too. Nothing is written."""
     from photonscript.shared import qa_rules
-    from photonscript.shared.star_shape import ECC_DEF
+    from photonscript.shared.star_shape import ECC_DEF, lin_to_sqrt
     n = 0
     for s_ in subs:
         if s_.get("ecc_def") is not None or s_.get("graded_by") != "sep-binned":
             continue
         e = qa_rules.record_ecc(s_)
+        ce = s_.get("corner_ecc")
+        if isinstance(ce, dict) and "corner_ecc_raw" not in s_:
+            s_["corner_ecc_raw"] = ce
+            s_["corner_ecc"] = {k: None if v is None
+                                else round(lin_to_sqrt(v), 2)
+                                for k, v in ce.items()}
         if e is not None:
             s_["ecc_raw"] = s_.get("ecc")
             s_["ecc"] = round(e, 3)

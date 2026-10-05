@@ -25,9 +25,9 @@ array row 0 / y = 0 is the TOP of the image. Directions are in that view.
 The axial (mod 180 deg) direction math used by the PS-84 tracking test lives
 here too (``axial_stats`` / ``axial_mean``), one formula for both reports.
 
-Eccentricity: live sidecars store sqrt(1-(b/a)^2), backfill sidecars
-1-b/a; ``_ecc_sqrt`` converts by the sidecar's ``ecc_def``. When PS-94 lands
-shared.star_shape (lin_to_sqrt), switch ``_ecc_sqrt`` to it.
+Eccentricity: sidecars store sqrt(1-(b/a)^2) (backfill sidecars from before
+PS-94 held 1-b/a); ``_ecc_sqrt`` converts by the sidecar's ``ecc_def`` with
+shared.star_shape.to_sqrt.
 """
 
 from __future__ import annotations
@@ -97,17 +97,13 @@ def _r(v, nd=2):
 
 
 def _ecc_sqrt(e, ecc_def: str | None):
-    """Sidecar ecc in sqrt(1-(b/a)^2) form. "1-b/a" (backfill) converts;
-    the live form and unknown pass through. Private until PS-94's
-    shared.star_shape.lin_to_sqrt lands, then use that."""
+    """Sidecar ecc in sqrt(1-(b/a)^2) form. "1-b/a" (old backfill) converts;
+    the live form and unknown pass through (shared.star_shape.to_sqrt)."""
+    from photonscript.shared.star_shape import to_sqrt
     e = _num(e)
     if e is None:
         return None
-    d = str(ecc_def or "").replace(" ", "").lower()
-    if d == "1-b/a":
-        q = min(1.0, max(0.0, 1.0 - e))
-        return math.sqrt(max(0.0, 1.0 - q * q))
-    return e
+    return to_sqrt(e, ecc_def)
 
 
 # ------------------------------------------------------------- axial math

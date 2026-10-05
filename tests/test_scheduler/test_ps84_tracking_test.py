@@ -330,7 +330,7 @@ class TestReport:
             tbl = {"v": 1, "w": 1000, "h": 800, "n": n,
                    "x": [100 + 20 * i for i in range(n)],
                    "y": [400 + (i % 5) for i in range(n)],
-                   "hfr": [3.0] * n, "ecc": [0.5] * n,
+                   "hfr": [3.0] * n, "ecc": [0.8] * n,
                    "theta": [1.5708] * n}  # every star stretched along y
             star_table.write(cfg, "2026-09-27", r["file"], tbl, rig="rc16")
         rep = tt.build_report(cfg, "2026-09-27", records=recs,

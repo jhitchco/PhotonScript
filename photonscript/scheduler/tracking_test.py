@@ -40,7 +40,11 @@ HA_MAX_H = 2.5                         # "near the meridian"
 PASS_RATE = 0.75
 MARGINAL_RATE = 0.5
 ECC_MARGIN = 0.05                      # median must be this far under the gate
-ELONG_FLOOR = 0.30                     # a star counts as elongated above this
+# a star counts as elongated above this, sqrt(1-(b/a)^2) form. PS-83: was
+# 0.30 compared with raw sidecar values (1-b/a on old backfill sidecars,
+# sqrt everywhere else); 0.71 is the sqrt form of lin 0.30 (b/a 0.70), and
+# sidecar values are normalized by their ecc_def first.
+ELONG_FLOOR = 0.71
 DIRECTION_R_MIN = 0.55                 # axial resultant: one common direction
 
 PASS, MARGINAL, FAIL = "pass", "marginal", "fail"
@@ -284,6 +288,22 @@ def _camera_pa(hdr: dict, pa_override: float | None) -> tuple:
     return None, None
 
 
+def _sidecar_ecc_sqrt(tbl: dict, rec: dict) -> list:
+    """PS-83: a sidecar's per-star ecc in sqrt(1-(b/a)^2) form. Its own
+    ecc_def wins; a pre-PS-94 backfill sidecar (grader "sep-binned", no
+    ecc_def) holds 1-b/a; else the record's form (flexure.record_ecc_def)."""
+    from photonscript.shared.star_shape import LIN_DEF, to_sqrt
+    d = tbl.get("ecc_def")
+    if not d:
+        if tbl.get("grader") == "sep-binned":
+            d = LIN_DEF
+        else:
+            from photonscript.scheduler.flexure import record_ecc_def
+            d = record_ecc_def(rec)
+    return [None if e is None else to_sqrt(e, d)
+            for e in (tbl.get("ecc") or [])]
+
+
 def _star_axis(config, date: str, rec: dict) -> dict:
     """Elongation direction of one sub from the PS-80 star sidecar: axis
     angle in the image (deg from +x, 0 to 180), R (0 = random .. 1 = every
@@ -298,7 +318,7 @@ def _star_axis(config, date: str, rec: dict) -> dict:
     # PS-95: the axial math lives in optics_report (one formula for both).
     from photonscript.scheduler.optics_report import axial_stats
     t = tbl or {}
-    ax = axial_stats(t.get("theta") or [], t.get("ecc") or [],
+    ax = axial_stats(t.get("theta") or [], _sidecar_ecc_sqrt(t, rec),
                      t.get("x") or [], t.get("y") or [], t.get("w"),
                      t.get("h"), floor=ELONG_FLOOR)
     if ax:
