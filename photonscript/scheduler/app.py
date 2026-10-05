@@ -2902,6 +2902,8 @@ from photonscript.scheduler.routers import pointing as _pointing_router  # noqa:
 app.include_router(_pointing_router.router)
 from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
 app.include_router(_calibration_router.router)
+from photonscript.scheduler.routers import rotation as _rotation_router  # noqa: E402
+app.include_router(_rotation_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

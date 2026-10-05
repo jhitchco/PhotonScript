@@ -35,6 +35,18 @@ TheSky / TPoint audit can judge them (model age, points, RMS, polar error).
 | Date | Bin | Image scale ("/px) | Points | RMS (") | Polar error az / alt (') | Notes |
 |------|-----|--------------------|--------|---------|--------------------------|-------|
 | TODO | 4x4 | 0.942 | TODO | TODO | TODO | the model in HANDBOOK section 8; if it predates 2026-09-12 (dual-rig load change) the audit flags a rebuild once the date is entered |
+| 2026-10-04 | ? | ? | 250 | 15.77 | MA -2.6 / ME -1.0 (total about 2.8) | TPoint advised no polar adjustment; ProTrack on |
+
+#### Field rotation (PS-97)
+Guiding tab, TheSky / TPoint section "Field rotation", `GET /api/rotation/report?nights=14`
+or `photonscript rotation-report [--split 2026-10-04] [--ma M --me E] [--json]`.
+Measured rate per rig and target block (star-sidecar registration, else stored
+ASTAP angles) against what MA / ME from the TPoint record predict:
+rate = 15.041 deg/h x eps[rad] x cos(H - H0) / cos(Dec), at most
+15.041 x eps / cos(Dec). 2.8' gives at most 0.012 deg/h at Dec 0, 0.016 at
+Dec 38, 0.031 at Dec 67. PS-96's 09-25 rates (0.05 to 0.10 deg/h) would need
+about 9 to 10' at both Decs. Corner cost: 0.1 deg/h is about 1.1 px at an RC16
+corner over a 600 s sub, about 39 px over 6 h (registration crops it).
 - Unguided reality at 3248 mm: 300s subs lose 30-60% of frames to trailing
   (SII 9/22 through registration, 2026-07-03)
 - PHD2 installed on scope PC; PS_GUIDED_DEFAULT=true as of 2026-07-07
