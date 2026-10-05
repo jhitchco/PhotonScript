@@ -419,16 +419,10 @@ async def api_tonight_sequence_xml():
     )
 
 
-@app.get("/api/tonight/sequence.json")
-async def api_tonight_sequence_json(now_mode: bool = False):
-    """Generate and download tonight's Advanced Sequencer JSON (lint-gated).
-
-    Safe to load and START at any time of day: the start area holds at
-    nautical dusk -30 and WaitUntilSafe before touching hardware. Pass
-    ?now_mode=true for an ungated daytime-test version.
-    """
-    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
-
+def _tonight_sequence(now_mode: bool = False):
+    """Tonight's Advanced Sequencer JSON exactly as the download builds
+    it, before the lint: (name, json_text, guided, unguided_dither). The
+    PS-123 sideload splices the tracking test into it."""
     config = get_config()
     now = datetime.utcnow()
 
@@ -458,7 +452,20 @@ async def api_tonight_sequence_json(now_mode: bool = False):
     # Dusk/safety gating ON unless explicitly generating a daytime test
     sequence.wait_until_local = None if now_mode else "00:00:00"
     json_content = generate_nina_json(sequence, unguided_dither=preview_dither)
+    return sequence.name, json_content, preview_guided, preview_dither
 
+
+@app.get("/api/tonight/sequence.json")
+async def api_tonight_sequence_json(now_mode: bool = False):
+    """Generate and download tonight's Advanced Sequencer JSON (lint-gated).
+
+    Safe to load and START at any time of day: the start area holds at
+    nautical dusk -30 and WaitUntilSafe before touching hardware. Pass
+    ?now_mode=true for an ungated daytime-test version.
+    """
+    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
+
+    name, json_content, preview_guided, preview_dither = _tonight_sequence(now_mode)
     result = _lint(json.loads(json_content), guided=preview_guided,
                    unguided_dither=preview_dither)
     if not result.ok:
@@ -468,7 +475,7 @@ async def api_tonight_sequence_json(now_mode: bool = False):
     return HTMLResponse(
         content=json_content,
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={sequence.name}.json"},
+        headers={"Content-Disposition": f"attachment; filename={name}.json"},
     )
 
 
@@ -2906,6 +2913,8 @@ from photonscript.scheduler.routers import pointing as _pointing_router  # noqa:
 app.include_router(_pointing_router.router)
 from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
 app.include_router(_calibration_router.router)
+from photonscript.scheduler.routers import sideload as _sideload_router  # noqa: E402
+app.include_router(_sideload_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

@@ -136,6 +136,21 @@
                 <a href="/api/tonight/sequence.json?now_mode=true" class="btn btn-secondary" download title="No dusk gate — for daytime testing only">Daytime test version</a>
                 <a href="/api/tonight" class="btn btn-secondary">View Plan JSON</a>
             </div>
+            <!-- PS-123: sideload a hand-built night (load only, never start) -->
+            <details id="sideloadBox" style="margin-top:.8rem;">
+                <summary class="bd" style="cursor:pointer;">Sideload a custom night into NINA (load only; Start stays in NINA)</summary>
+                <div style="margin:.5rem 0 0 .8rem;">
+                    <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap;">
+                        <select id="sideloadRecipe" style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.3rem .5rem;">
+                            <option value="tracking_test_then_tonight">Tracking test (auto-picked field), then tonight's targets + Piggy companion with lights</option>
+                        </select>
+                        <button class="btn btn-secondary" id="sideloadPreview">Preview</button>
+                    </div>
+                    <div id="sideloadExclude" class="bd" style="margin-top:.4rem;">Loading tonight's targets...</div>
+                    <div class="bd" style="margin-top:.4rem;">Preview builds and lints; Load refuses while armed, while that NINA runs a sequence, or on lint errors. Nothing is started: press Start in NINA.</div>
+                    <div id="sideloadResult" style="margin-top:.4rem;"></div>
+                </div>
+            </details>
         </section>
         <section class="panel" style="grid-column:1 / -1;" id="campaignPanel">
             <h2>Campaign <span class="bd">(14 nights, moon-aware — BB gets moon-free hours first)</span></h2>
@@ -149,6 +164,7 @@
     {% include "_footer.html" %}
 
     <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/sideload_panel.js"></script>
 
     <script>
     const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
