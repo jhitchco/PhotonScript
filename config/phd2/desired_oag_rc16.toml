@@ -8,15 +8,22 @@
 #   id, group, label   identity and display
 #   sources            where the current value is read, first one that has it
 #                      wins: api (PHD2 JSON-RPC), profile (registry, see
-#                      scheduler/phd2_profile_store.KEYS), log (newest guide
-#                      log header), nina, ascom, thesky, file (dark library),
-#                      calibration (PS-93 record), ga (Guiding Assistant)
+#                      scheduler/phd2_profile_store.KEYS; read live, names
+#                      verified 2026-10-04), log (newest guide log header,
+#                      dated: may be older than a settings change), nina,
+#                      ascom, thesky, file (dark library), calibration (PS-93
+#                      record), ga (Guiding Assistant: the profile's newest
+#                      sane run, else the guide logs). Order: api, profile, log.
 #   key                observed key (default: id)
 #   one desired form   equals | min / max | min_arcsec / max_arcsec (converted
 #                      to px at the live guide scale) | allow_off with min/max
 #                      | computed = "<name>" (see phd2_audit.COMPUTED) |
 #                      report = true (shown, never judged)
 #   severity           fail | warn (status when the value misses)
+#   min_x_dither       min / max rows: also at least this many times NINA's
+#                      dither (px; else the guide log's largest dither)
+#   range_severity     min / max rows, optional: the status when only the
+#                      min / max range misses (a dither miss keeps severity)
 #   apply              api (set live when PHD2 is Stopped or Looping) |
 #                      profile (registry write, PHD2 closed, behind
 #                      phd2_audit_autofix) | manual (report only)
@@ -52,7 +59,7 @@ equals = 16
 severity = "fail"
 apply = "profile"
 why = "In 8-bit mode every star reads saturated (Max ADU 255): on 09-26 100% of frames were flagged saturated at SNR 17 and the centroids were poor."
-fix = "PHD2 camera settings: 16-bit."
+fix = "PHD2 Connect Equipment > camera properties (the gear next to the camera): 16-bit. Not in PHD2's API; a profile write needs phd2_audit_autofix."
 
 [[check]]
 id = "saturation_by_adu"
@@ -70,17 +77,16 @@ id = "saturation_adu"
 group = "Camera"
 label = "Max ADU"
 sources = ["profile"]
-equals = 65535
+computed = "saturation_adu"
 severity = "fail"
 apply = "profile"
-why = "A Max ADU of 255 (an 8-bit leftover) makes every star read saturated."
-fix = "Brain > Camera: Max ADU 65535."
-
+why = "With Max ADU 255 on a 16-bit camera every star reads saturated: the 09-26 cause. It must match the bit depth (65535 at 16-bit)."
+fix = "Brain > Camera: saturation by Max ADU, value 65535 (16-bit)."
 [[check]]
 id = "binning"
 group = "Camera"
 label = "Guide binning"
-sources = ["api", "log"]
+sources = ["api", "profile", "log"]
 equals = 2
 severity = "warn"
 apply = "manual"
@@ -113,7 +119,7 @@ fix = "Brain > Camera: camera gain as recommended (System page > Guide star). Th
 id = "exposure_ms"
 group = "Camera"
 label = "Guide exposure (ms)"
-sources = ["api", "log"]
+sources = ["api", "profile", "log"]
 min = 2000
 max = 4000
 target = 3000
@@ -142,12 +148,13 @@ label = "Search region (px)"
 sources = ["api", "profile", "log"]
 min = 30
 max = 40
-min_x_dither = 2.0
+min_x_dither = 1.0
 target = 35
 severity = "fail"
+range_severity = "warn"
 apply = "profile"
-why = "A star that moves further than the search region between frames is lost: 15 px against 20 to 25 px dithers lost the star after dithers on 09-26."
-fix = "Brain > Guiding: search region 35 px (and at least twice NINA's dither pixels)."
+why = "PHD2 searches this many pixels each side of the star; it must at least cover a dither (09-26 ran 15 px against 20 to 25 px dithers and lost the star)."
+fix = "Brain > Guiding: search region 35 px (30 to 40, and at least NINA's dither pixels)."
 
 [[check]]
 id = "mass_change"
@@ -193,7 +200,7 @@ fix = "Brain > Guiding: use multiple stars."
 id = "ra_algorithm"
 group = "Algorithms"
 label = "RA algorithm vs periodic-error owner"
-sources = ["api", "log"]
+sources = ["api", "profile", "log"]
 computed = "pe_owner"
 severity = "fail"
 apply = "manual"
@@ -204,7 +211,7 @@ fix = "Brain > Algorithms: RA Hysteresis or Lowpass2 when ProTrack owns PE; Pred
 id = "ra_min_move"
 group = "Algorithms"
 label = "RA minimum move (px)"
-sources = ["api", "log"]
+sources = ["api", "profile", "log"]
 computed = "ra_min_move_ga"
 tol_pct = 30
 severity = "warn"
@@ -216,7 +223,7 @@ fix = "Use the Guiding Assistant's RA min-move."
 id = "dec_algorithm"
 group = "Algorithms"
 label = "Dec algorithm"
-sources = ["api", "log"]
+sources = ["api", "profile", "log"]
 equals = "Resist Switch"
 severity = "fail"
 apply = "manual"
@@ -224,10 +231,36 @@ why = "Resist Switch only reverses Dec after a sustained trend, which suits a we
 fix = "Brain > Algorithms: Dec algorithm Resist Switch."
 
 [[check]]
+id = "dec_min_move"
+group = "Algorithms"
+label = "Dec minimum move (px)"
+sources = ["api", "profile", "log"]
+computed = "dec_min_move"
+ga_band = [0.5, 2.0]
+abs_band = [0.5, 3.0]
+default_target = 1.5
+max_px = 5.0
+severity = "fail"
+apply = "api"
+why = "A Dec min-move above a few pixels leaves Dec unguided: 20 px is about 5 arcsec at 0.25\"/px. Near the Guiding Assistant's RA min-move ignores seeing but still corrects drift; far below it chases the seeing."
+fix = "Brain > Algorithms > Dec: minimum move about the Guiding Assistant's RA value (0.5 to 3 px without one)."
+
+[[check]]
+id = "ra_aggressiveness"
+group = "Algorithms"
+label = "RA aggressiveness"
+sources = ["api", "profile", "log"]
+report = true
+severity = "warn"
+apply = "manual"
+why = "Shown for reference: how much of each RA error the algorithm corrects per frame (PHD2 default 70% for Lowpass2 / Hysteresis)."
+fix = "Brain > Algorithms > RA: aggressiveness (change only after a Guiding Assistant run)."
+
+[[check]]
 id = "dec_guide_mode"
 group = "Algorithms"
 label = "Dec guide mode"
-sources = ["api", "log"]
+sources = ["api", "profile", "log"]
 equals = "Auto"
 severity = "warn"
 apply = "api"
@@ -265,10 +298,22 @@ label = "Calibration step (ms)"
 sources = ["profile", "log"]
 computed = "calibration_step"
 tol_pct = 30
+min_steps_fail = 3
 severity = "warn"
 apply = "profile"
 why = "About 12 steps per axis gives a good calibration; 250 ms gave only 3 steps on 09-26."
 fix = "Brain > Guiding > Calibration step calculator (PS-93 recommends the value)."
+
+[[check]]
+id = "stop_guiding_when_slewing"
+group = "Calibration"
+label = "Stop guiding when the mount slews"
+sources = ["profile"]
+equals = true
+severity = "warn"
+apply = "profile"
+why = "PHD2 stops guiding when the mount slews instead of chasing the star across the sky (NINA also stops guiding before a slew, this is the safety net)."
+fix = "Advanced > Mount: stop guiding when mount slews."
 
 [[check]]
 id = "auto_restore_cal"
@@ -352,6 +397,17 @@ severity = "fail"
 apply = "manual"
 why = "The defect map removes hot pixels for good; the guide logs say 'no defect map'."
 fix = "Tools > Bad-pixel map: build one at the final gain and binning."
+
+[[check]]
+id = "darks_or_defects"
+group = "Darks"
+label = "Dark library or defect map auto-loaded"
+sources = ["profile"]
+computed = "darks_or_defects"
+severity = "warn"
+apply = "manual"
+why = "PHD2 loads the dark library or the defect map when it connects; either one keeps hot pixels out of the guide frames."
+fix = "Darks menu: auto-load the dark library (or the bad-pixel map)."
 
 [[check]]
 id = "have_dark"

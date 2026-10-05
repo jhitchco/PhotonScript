@@ -23,7 +23,9 @@ This module:
                               binning, scale, calibrated)
         cal_request.json      a pending manual request (POST /api/phd2/calibrate)
     seed_from_logs() fills an empty store from the newest PS-88 guide-log
-    calibration on the first deploy.
+    calibration on the first deploy; seed_from_registry() (PS-119) grades
+    the calibration PHD2 stored in its profile (scope/calibration) when
+    there is no record or it is newer than the one on record.
 
 The live half (grade on CalibrationComplete, retry once during the hold,
 the flip record) is telescope_agent/phd2_calmanager.py; the NINA slot is
@@ -49,6 +51,7 @@ ORTHO_MAX_DEG = 5.0       # PHD2 wants the axes within 5 deg of perpendicular
 RATIO_TOL = 0.30          # RA/Dec rate ratio vs cos(Dec) x speed ratio
 RATE_TOL = 0.30           # absolute rate vs guide speed / scale (WARN only)
 MIN_STEPS = 8             # per axis; PHD2 aims for about 12
+MIN_STEPS_FAIL = 3        # PS-119: fewer steps than this cannot measure an axis
 TARGET_STEPS = 12
 MIN_MOVE_PX = 3.0         # an axis that moved less than this did not move
 RATIO_DEC_MAX = 60.0      # the RA rate is poorly measured above this |Dec|
@@ -130,6 +133,85 @@ def record_from_log(c: dict, header: dict | None = None) -> dict:
         "scale_arcsec_px": h.get("pixel_scale"),
         "focal_length_mm": h.get("focal_length_mm"),
         "ra_speed": h.get("ra_guide_speed"), "dec_speed": h.get("dec_guide_speed"),
+    }
+
+
+def _local_mdy(config, text) -> str | None:
+    """PHD2's profile timestamp "10/2/2026 00:28:55" (scope-PC local) as UTC Z."""
+    from photonscript.scheduler.phd2_analysis import to_utc
+    try:
+        loc = datetime.strptime(str(text).strip(), "%m/%d/%Y %H:%M:%S")
+    except (TypeError, ValueError):
+        return None
+    return store.iso_z(to_utc(config, loc))
+
+
+def _moved(steps_text, n) -> float | None:
+    """Distance (px) after n steps from PHD2's "{dx dy}, {dx dy}, ..." list."""
+    import re as _re
+    pts = [(float(a), float(b)) for a, b in
+           _re.findall(r"\{\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\}", str(steps_text or ""))]
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return None
+    if not pts or n <= 0 or n >= len(pts):
+        return None
+    return round(math.hypot(pts[n][0] - pts[0][0], pts[n][1] - pts[0][1]), 1)
+
+
+def _dword(x) -> int | None:
+    """A registry DWORD as a signed int (winreg reads 0xffffffff unsigned)."""
+    f = _f(x)
+    if f is not None and f >= 2 ** 31:
+        f -= 2 ** 32
+    return int(f) if f is not None else None
+
+
+def record_from_registry(config, cal: dict, values: dict | None = None) -> dict:
+    """PS-119: a record from the calibration PHD2 keeps in its profile
+    (phd2_profile_store.stored_calibration: angles and declination in
+    radians, rates in px/ms, guide rates in deg/s), with the profile's
+    calibration step and distance."""
+    v = {k: (x or {}).get("value") for k, x in (values or {}).items()}
+    xa, ya = _f(cal.get("xAngle")), _f(cal.get("yAngle"))
+    xa = math.degrees(xa) if xa is not None else None
+    ya = math.degrees(ya) if ya is not None else None
+    dec = _f(cal.get("declination"))
+    dec = math.degrees(dec) if dec is not None and abs(dec) <= math.pi / 2 + 1e-6 else None
+    xr, yr = _f(cal.get("xRate")), _f(cal.get("yRate"))
+    _i = _dword
+    pier = {0: "East", 1: "West"}.get(_i(cal.get("pierSide")))
+    par = {1: "+", -1: "-"}
+    rs, ds = cal.get("ra_step_count"), cal.get("dec_step_count")
+    try:
+        issue = int(cal.get("last_issue") or 0)
+    except (TypeError, ValueError):
+        issue = 0
+    from photonscript.scheduler.phd2_profile_store import CAL_ISSUES
+    rg, dg = _f(cal.get("ra_guide_rate")), _f(cal.get("dec_guide_rate"))
+    return {
+        "t_utc": _local_mdy(config, cal.get("timestamp")), "source": "registry",
+        "result": "complete", "pier_side": pier,
+        "dec_deg": _r(dec, 1), "ha_hr": None, "alt_deg": None,
+        "ra": {"angle_deg": _r(xa, 2), "rate_px_s": _r(xr * 1000.0, 3) if xr else None,
+               "parity": par.get(_i(cal.get("raGuideParity")))},
+        "dec": {"angle_deg": _r(ya, 2), "rate_px_s": _r(yr * 1000.0, 3) if yr else None,
+                "parity": par.get(_i(cal.get("decGuideParity")))},
+        "steps": {k: int(n) for k, n in (("West", rs), ("North", ds)) if _f(n) is not None},
+        "moved_px": {k: m for k, m in (("West", _moved(cal.get("ra_steps"), rs)),
+                                       ("North", _moved(cal.get("dec_steps"), ds)))
+                     if m is not None},
+        "step_ms": _f(v.get("calibration_step_ms")),
+        "distance_px": _f(v.get("calibration_distance_px")),
+        "ortho_err_deg": _r(_f(cal.get("ortho_error")), 2),
+        "message": CAL_ISSUES.get(issue) and f"PHD2 flagged: {CAL_ISSUES.get(issue)}",
+        "phd2_issue": issue or None,
+        "profile": v.get("name"), "binning": _f(cal.get("binning")),
+        "scale_arcsec_px": _f(cal.get("image_scale")),
+        "focal_length_mm": _f(cal.get("focal_length")),
+        "ra_speed": _r(rg * 3600.0, 3) if rg else None,
+        "dec_speed": _r(dg * 3600.0, 3) if dg else None,
     }
 
 
@@ -263,6 +345,14 @@ def grade(rec: dict, prev: dict | None = None) -> dict:
     rec_ms = recommended_step_ms(rec.get("distance_px"), ra.get("rate_px_s"))
     few = {ax: steps.get(ax) for ax in ("West", "North")
            if steps.get(ax) is not None and steps.get(ax) < MIN_STEPS}
+    too_few = {ax: n for ax, n in few.items() if n < MIN_STEPS_FAIL}
+    if too_few and result == "complete":
+        # PS-119: 2 or 3 steps cannot measure an axis (PHD2 itself flags it)
+        reasons.append("too few steps to measure the axis ("
+                       + ", ".join(f"{k} {v}" for k, v in too_few.items())
+                       + f"; at least {MIN_STEPS_FAIL}, PHD2 aims for about {TARGET_STEPS})"
+                       + (f": set PHD2 Calibration Step to about {rec_ms} ms" if rec_ms else ""))
+        few = {ax: n for ax, n in few.items() if ax not in too_few}
     if few and result == "complete":
         warns.append("few steps (" + ", ".join(f"{k} {v}" for k, v in few.items())
                      + f"; PHD2 aims for about {TARGET_STEPS})"
@@ -498,6 +588,35 @@ def seed_from_logs(config, max_files: int = 5) -> dict | None:
                     rec["grade"], "; ".join(rec["reasons"] + rec["warnings"]))
         return rec
     return None
+
+
+def seed_from_registry(config, cal: dict | None, values: dict | None = None,
+                       min_newer_s: float = 600.0) -> dict | None:
+    """PS-119: grade the calibration PHD2 stored in its profile and make it
+    the active record when there is none, or it is more than min_newer_s
+    newer than the active one (the RC16 agent's live grade of the same
+    calibration stays). Returns the new record, else None. Never raises."""
+    try:
+        if not cal:
+            return None
+        rec = record_from_registry(config, cal, values)
+        t = store.parse_z(rec.get("t_utc"))
+        if t is None:
+            return None
+        cur = load_active(config, seed=False)
+        ct = store.parse_z((cur or {}).get("t_utc"))
+        if cur and ct and (t - ct).total_seconds() <= min_newer_s:
+            return None
+        rec = graded(rec, last_good(config, rec.get("pier_side")))
+        rec["context"] = "registry"
+        rec["night"] = store.night_of(config, t)
+        save_record(config, rec)
+        logger.info("calibration graded from the PHD2 profile: %s %s", rec["grade"],
+                    "; ".join(rec["reasons"] + rec["warnings"]))
+        return rec
+    except Exception as e:  # noqa: BLE001
+        logger.debug("calibration from the registry failed: %s", e)
+        return None
 
 
 def set_flip(config, pier: str | None, ok: bool, detail: str) -> dict | None:

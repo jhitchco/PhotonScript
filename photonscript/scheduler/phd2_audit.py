@@ -68,7 +68,7 @@ DEBOUNCE_S = 60.0
 DEFAULT_FILE = (Path(__file__).resolve().parents[2] / "config" / "phd2"
                 / "desired_oag_rc16.toml")
 # the API setters apply() knows (row id -> what it calls)
-API_SETTERS = ("exposure_ms", "ra_min_move", "dec_guide_mode")
+API_SETTERS = ("exposure_ms", "ra_min_move", "dec_min_move", "dec_guide_mode")
 
 
 # --------------------------------------------------------------------------
@@ -155,6 +155,8 @@ def lint_desired(desired: dict) -> list[str]:
             out.append(f"{rid}: bad sources {srcs}")
         if r.get("severity") not in (FAIL, WARN):
             out.append(f"{rid}: severity must be fail or warn")
+        if "range_severity" in r and r["range_severity"] not in (FAIL, WARN):
+            out.append(f"{rid}: range_severity must be fail or warn")
         if r.get("apply") not in APPLY_KINDS:
             out.append(f"{rid}: apply must be one of {APPLY_KINDS}")
         if not any(k in r for k in FORMS):
@@ -231,17 +233,66 @@ def _c_ra_min_move_ga(row, val, observed, config, ctx):
     return (PASS if _within(v, rec, tol) else row["severity"]), want, rec, None
 
 
+def _c_dec_min_move(row, val, observed, config, ctx):
+    """PS-119: Dec min-move near the Guiding Assistant's RA min-move
+    (ga_band x of it), else an absolute band; above max_px Dec is
+    effectively unguided (FAIL); below the band it chases seeing (WARN)."""
+    ga = _num((observed.get("ga") or {}).get("ra_min_move_rec"))
+    hard = float(row.get("max_px", 5.0))
+    if ga:
+        lo_k, hi_k = (row.get("ga_band") or [0.5, 2.0])[:2]
+        lo, hi = ga * float(lo_k), ga * float(hi_k)
+        target = round(ga, 2)
+        want = (f"{lo:.2f} to {hi:.2f} px ({lo_k:g} to {hi_k:g} x the Guiding Assistant's "
+                f"RA min-move {ga:g}), never over {hard:g} px")
+    else:
+        lo, hi = (float(x) for x in (row.get("abs_band") or [0.5, 3.0])[:2])
+        target = float(row.get("default_target", 1.5))
+        want = f"{lo:g} to {hi:g} px (no Guiding Assistant run), never over {hard:g} px"
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, want, target, None
+    if v > hard:
+        return FAIL, want, target, (f"{v:g} px is about {v * 0.25:.1f} arcsec at 0.25\"/px: "
+                                    "Dec is effectively unguided")
+    if v < lo:
+        return WARN, want, target, "below the band: Dec chases the seeing"
+    if v > hi:
+        return WARN, want, target, "above the band: slow Dec corrections"
+    return PASS, want, target, None
+
+
 def _c_calibration_step(row, val, observed, config, ctx):
-    rec = _num((observed.get("calibration") or {}).get("recommended_step_ms"))
+    """The step that gives about 12 steps over the calibration distance:
+    PS-93's recommended step, else computed from the stored calibration's
+    RA rate. PS-119: a step so long that an axis gets fewer than
+    min_steps_fail steps is a FAIL (750 ms at 19.5 px/s over 25 px is
+    about 2 steps); otherwise a miss is the row's severity."""
+    from photonscript.scheduler.phd2_calibration import recommended_step_ms
+    cal = observed.get("calibration") or {}
+    prof = observed.get("profile") or {}
+    dist = _num(prof.get("calibration_distance_px")) or _num(cal.get("distance_px"))
+    rate = _num(cal.get("ra_rate_px_s"))
+    rec = _num(cal.get("recommended_step_ms"))
+    src = "PS-93"
+    if rec is None and dist and rate:
+        rec, src = _num(recommended_step_ms(dist, rate)), "stored calibration rate"
     if rec is None:
         return UNKNOWN, "the PS-93 recommended step", None, \
             "no graded calibration with a recommended step yet"
     tol = float(row.get("tol_pct", 30))
-    want = f"about {rec:g} ms +/- {tol:g}% (PS-93, about 12 steps)"
+    want = f"about {rec:g} ms +/- {tol:g}% ({src}, about 12 steps)"
     v = _num(val)
     if v is None:
         return UNKNOWN, want, int(rec), None
-    return (PASS if _within(v, rec, tol) else row["severity"]), want, int(rec), None
+    if _within(v, rec, tol):
+        return PASS, want, int(rec), None
+    if dist and rate and v > 0:
+        steps = dist / (v / 1000.0 * rate)
+        if steps < float(row.get("min_steps_fail", 3)):
+            return FAIL, want, int(rec), (f"about {steps:.0f} step(s) over {dist:g} px at "
+                                          f"{rate:.1f} px/s: too few to measure the axis")
+    return row["severity"], want, int(rec), None
 
 
 def _c_calibration_record(row, val, observed, config, ctx):
@@ -273,6 +324,36 @@ def _c_flip(row, val, observed, config, ctx):
         return PASS, want, None, None
     ctx["current"] = "not checked yet"
     return INFO, want, None, "PS-93 checks it on the first minutes after a flip"
+
+
+def _c_saturation_adu(row, val, observed, config, ctx):
+    """PS-119: Max ADU must match the camera bit depth (65535 at 16-bit,
+    255 at 8-bit); 255 on a 16-bit camera reads every star saturated."""
+    bpp = _num((observed.get("profile") or {}).get("bit_depth")
+               or (observed.get("log") or {}).get("bit_depth")) or 16
+    want = 65535 if bpp >= 16 else 255
+    v = _num(val)
+    desired = f"{want} (bit depth {bpp:g})"
+    if v is None:
+        return UNKNOWN, desired, want, None
+    if abs(v - want) < 0.5:
+        return PASS, desired, want, None
+    note = ("every star reads saturated at this ceiling" if v < want else None)
+    return row["severity"], desired, want, note
+
+
+def _c_darks_or_defects(row, val, observed, config, ctx):
+    """PS-119: PHD2 loads the dark library or the defect map at connect;
+    either one is fine, neither leaves hot pixels in the guide frames."""
+    prof = observed.get("profile") or {}
+    d, m = _bool(prof.get("auto_load_darks")), _bool(prof.get("auto_load_defect_map"))
+    want = "dark library or defect map auto-loaded"
+    if d is None and m is None:
+        return UNKNOWN, want, None, None
+    ctx["current"] = f"darks {_g(d)}, defect map {_g(m)}"
+    if d or m:
+        return INFO, want, None, None
+    return row["severity"], want, None, "neither loads when PHD2 connects"
 
 
 def _c_focal_length(row, val, observed, config, ctx):
@@ -360,6 +441,9 @@ def _c_guide_gain(row, val, observed, config, ctx):
 COMPUTED = {
     "pe_owner": _c_pe_owner,
     "ra_min_move_ga": _c_ra_min_move_ga,
+    "dec_min_move": _c_dec_min_move,
+    "saturation_adu": _c_saturation_adu,
+    "darks_or_defects": _c_darks_or_defects,
     "calibration_step": _c_calibration_step,
     "calibration_record": _c_calibration_record,
     "flip": _c_flip,
@@ -459,17 +543,23 @@ def evaluate_row(row: dict, observed: dict, config, scale) -> dict:
                         hi = row["max_arcsec"] / scale if row.get("max_arcsec") is not None else None
                 if v is not None:
                     ok = (lo is None or v >= lo - 1e-9) and (hi is None or v <= hi + 1e-9)
+                    # PS-119: a miss of the min / max range alone may be
+                    # milder than the row's severity (range_severity); a
+                    # miss of the dither floor below keeps the row's severity
+                    sev = row["severity"] if ok else row.get("range_severity", row["severity"])
                     notes = []
                     k = row.get("min_x_dither")
                     if k:
                         dith = _num((observed.get("nina") or {}).get("dither_px")) or \
                             _num((observed.get("log") or {}).get("max_dither_px"))
                         if dith:
-                            desired += f", >= {k:g} x dither ({k * dith:.0f} px)"
-                            if v < k * dith:
-                                ok = False
-                                notes.append(f"under {k:g} x the {dith:.1f} px dither")
-                    status = PASS if ok else row["severity"]
+                            what = "the dither" if k == 1 else f"{k:g} x the dither"
+                            desired += f", >= {what} ({k * dith:.1f} px)"
+                            if v < k * dith - 1e-9:
+                                ok, sev = False, row["severity"]
+                                notes.append(f"under {what} ({dith:.1f} px): the star can "
+                                             "leave the search region on a dither")
+                    status = PASS if ok else sev
                     out["note"] = "; ".join(notes) or None
     if "current" in ctx:
         out["current"] = ctx["current"]
@@ -553,6 +643,7 @@ def log_observed(sections: list, config) -> dict:
          "have_dark": st.get("have_dark"), "defect_map": st.get("defect_map"),
          "ra_algorithm": st.get("ra_algorithm"), "dec_algorithm": st.get("dec_algorithm"),
          "ra_min_move": ra_p.get("minimummove"), "dec_min_move": dec_p.get("minimummove"),
+         "ra_aggressiveness": ra_p.get("aggressiveness"),
          "dec_guide_mode": st.get("dec_mode"),
          "backlash_comp": _bool(st.get("backlash_comp")),
          "ra_guide_speed": st.get("ra_guide_speed"),
@@ -800,13 +891,20 @@ def dark_inventory(config, profile_id=None) -> list[int] | None:
 
 
 def _profile_observed(read: dict) -> tuple[dict, dict]:
-    """Verified registry values as observations; every read value as a
-    candidate (shown in the unknown note)."""
+    """Verified registry values as observations (plus what
+    phd2_profile_store.derived() computes: algorithm names, min-moves, the
+    Dec guide mode, auto exposure); every read value as a candidate (shown
+    in the unknown note)."""
     vals, cands = {}, {}
     for k, v in (read.get("values") or {}).items():
         cands[k] = v
         if v.get("verified") and v.get("value") is not None:
             vals[k] = v["value"]
+    der = {k: v for k, v in (read.get("derived") or {}).items()
+           if k not in ("ga", "calibration") and v is not None}
+    vals.update(der)
+    for k in [k for k in vals if k.endswith("_enum")]:
+        vals.pop(k)
     if "mass_change_enabled" in vals:
         en = _bool(vals.pop("mass_change_enabled"))
         pct = _num(vals.pop("mass_change_pct", None))
@@ -843,6 +941,16 @@ async def collect(config, *, client=None, nina=None, raw: bool = False) -> dict:
         read = await asyncio.to_thread(ps.read, obs["api"].get("profile_id"), name)
         obs["profile"], obs["profile_candidates"] = _profile_observed(read)
         obs["profile_id"] = read.get("profile_id")
+        der = read.get("derived") or {}
+        if der.get("ga"):
+            # PS-119: the newest sane Guiding Assistant run stored in the
+            # profile beats one parsed from the recent guide logs
+            obs["ga"] = dict(der["ga"], source="profile")
+            src["ga"] = {"ok": True, "note": f"Guiding Assistant {der['ga'].get('time_local')} "
+                                             "(PHD2 profile)"}
+        if der.get("calibration"):
+            from photonscript.scheduler import phd2_calibration as pc
+            pc.seed_from_registry(config, der["calibration"], read.get("values") or {})
         if raw:
             obs["profile_raw"] = read.get("raw")
         src["profile"] = {"ok": bool(read.get("available")),
@@ -858,7 +966,10 @@ async def collect(config, *, client=None, nina=None, raw: bool = False) -> dict:
                               "stale": cal.get("stale"), "poor": cal.get("poor"),
                               "recommended_step_ms": cal.get("recommended_step_ms"),
                               "flip": cal.get("flip") or {},
-                              "reasons": rec.get("reasons") or []}
+                              "reasons": rec.get("reasons") or [],
+                              "ra_rate_px_s": (rec.get("ra") or {}).get("rate_px_s"),
+                              "distance_px": rec.get("distance_px"),
+                              "steps": rec.get("steps") or {}}
         src["calibration"] = {"ok": True, "note": f"PS-93 record {cal.get('grade') or 'none'}"}
     except Exception as e:  # noqa: BLE001
         src["calibration"] = {"ok": False, "note": str(e)}
@@ -940,12 +1051,65 @@ async def run_audit(config, reason: str = "manual", *, client=None, nina=None,
              "profile_id": observed["api"].get("profile_id") or observed.get("profile_id"),
              "phd2_state": observed["api"].get("app_state"),
              "sources": observed.get("_sources"), **res,
+             "source_times": source_times(observed, config),
              "fail_ids": [r["id"] for r in res["rows"] if r["status"] == FAIL]}
     if raw:
         audit["observed"] = {k: v for k, v in observed.items() if k != "_sources"}
     if persist:
         save(config, audit)
     return audit
+
+
+def _local_to_z(config, text) -> str | None:
+    """A scope-PC local ISO time (guide log, Guiding Assistant) as UTC Z."""
+    from photonscript.scheduler import phd2_analysis as an
+    try:
+        return store.iso_z(an.to_utc(config, datetime.fromisoformat(str(text)[:19])))
+    except (TypeError, ValueError):
+        return None
+
+
+def source_times(observed: dict, config) -> dict:
+    """PS-119: when each cached reading was taken (UTC Z), so the Guiding
+    tab can say "8 (guide log 2026-09-26)" and flag a reading that may be
+    out of date. Live sources (api, profile, nina, ascom, thesky) are read
+    at the audit's own t_utc and are not listed."""
+    out: dict = {}
+    try:
+        log = observed.get("log") or {}
+        if log.get("session_start_local"):
+            out["log"] = _local_to_z(config, log["session_start_local"])
+            out["log_file"] = log.get("file")
+        ga = observed.get("ga") or {}
+        if ga.get("time_local"):
+            out["ga"] = _local_to_z(config, ga["time_local"])
+        cal = observed.get("calibration") or {}
+        if cal.get("age_days") is not None:
+            out["calibration_age_days"] = cal.get("age_days")
+        lib = (observed.get("file") or {}).get("dark_library") or {}
+        if lib.get("age_days") is not None:
+            out["file_age_days"] = lib.get("age_days")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("audit source times: %s", e)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def config_change_path(config) -> Path:
+    return audit_dir(config) / "config_change.json"
+
+
+def note_config_change(config, when: datetime | None = None) -> None:
+    """PS-119: remember the last PHD2 ConfigurationChange (a guide-log
+    reading older than it may already be fixed)."""
+    try:
+        store.write_json(config_change_path(config),
+                         {"t_utc": store.iso_z(when or datetime.utcnow())})
+    except OSError as e:
+        logger.debug("config change not recorded: %s", e)
+
+
+def last_config_change(config) -> datetime | None:
+    return store.parse_z((store.read_json(config_change_path(config)) or {}).get("t_utc"))
 
 
 def summary(config, date: str) -> dict | None:
@@ -1016,6 +1180,7 @@ class ReAuditor:
     async def on_event(self, ev: dict) -> None:
         if ev.get("Event") != "ConfigurationChange":
             return
+        note_config_change(self.config)
         if not getattr(self.config, "phd2_audit_enabled", True):
             return
         if self._task is not None and not self._task.done():
@@ -1103,6 +1268,18 @@ async def _apply_one_api(config, r, row, client, dry_run) -> dict:
                 ok = abs(float(after) - v) < 1e-3
             else:
                 ok, after = True, None
+        elif rid == "dec_min_move":
+            names = await client.get_algo_param_names("dec")
+            name = next((n for n in names if _norm(n) == "minmove"), None)
+            if name is None:
+                return {"id": rid, "ok": False, "note": "Dec algorithm has no MinMove"}
+            v = round(float(target), 2)
+            if not dry_run:
+                await client.set_algo_param("dec", name, v)
+                after = await client.get_algo_param("dec", name)
+                ok = abs(float(after) - v) < 1e-3
+            else:
+                ok, after = True, None
         elif rid == "dec_guide_mode":
             v = str(target)
             if not dry_run:
@@ -1131,6 +1308,14 @@ def _profile_changes(r: dict) -> dict:
     return {r["id"]: r.get("target")}
 
 
+def profile_row_writable(r: dict) -> bool:
+    """PS-119: every registry value a profile row would write is writable."""
+    try:
+        return all(ps.writable(k) for k in _profile_changes(r))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _apply_profile(config, rows: list[dict], audit: dict, armer_state: str,
                    dry_run: bool) -> list[dict]:
     def refuse(note):
@@ -1147,9 +1332,9 @@ def _apply_profile(config, rows: list[dict], audit: dict, armer_state: str,
     changes = {}
     for r in rows:
         changes.update(_profile_changes(r))
-    unverified = [k for k in changes if not (k in ps.KEYS and ps.KEYS[k][2] and ps.KEYS[k][1])]
+    unverified = [k for k in changes if not ps.writable(k)]
     if unverified:
-        return refuse("registry names unverified: " + ", ".join(sorted(unverified)))
+        return refuse("registry names unverified for writing: " + ", ".join(sorted(unverified)))
     if dry_run:
         return [{"id": r["id"], "ok": True, "kind": "profile", "dry_run": True,
                  "to": _profile_changes(r)} for r in rows]

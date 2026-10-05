@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import shutil
 import time
 from datetime import date, datetime
@@ -256,21 +257,106 @@ def _c_camera_selected(row, val, observed, config, ctx):
     return INFO, desired, "desired camera not set yet (want = in the desired file)"
 
 
+_MONTHS = ("january|february|march|april|may|june|july|august|september|october|"
+           "november|december")
+_DATE_LEAF = re.compile(r"^(?:(?:" + _MONTHS + r")\s+\d{1,2},?\s+\d{4}"
+                        r"|\d{4}[-_. ]?\d{2}[-_. ]?\d{2})$", re.IGNORECASE)
+
+
+def autosave_base(path: str) -> tuple[str, str | None]:
+    """PS-119: (the folder to check, the date leaf stripped). TheSky's
+    "Create a date-based subfolder" adds e.g. "October 04 2026" and creates
+    it only on the first save of the day, so a missing date leaf is normal."""
+    p = str(path).strip().rstrip("\\/")
+    head, _sep, leaf = p.replace("/", "\\").rpartition("\\")
+    if head and _DATE_LEAF.match(leaf.strip()):
+        return head, leaf.strip()
+    return p, None
+
+
 def _c_autosave_path(row, val, observed, config, ctx):
-    want = "set, and the folder exists"
+    want = "set, autosave on, and the folder exists (date subfolder made on the first save)"
+    ts = observed.get("thesky-script") or {}
     if val is None:
         return UNKNOWN, want, None
     p = str(val).strip()
     if not p:
         return row["severity"], want, "empty: Image Link has no saved image to solve"
+    if ts.get("autosave_on") is not None and _bool(ts.get("autosave_on")) is False:
+        return row["severity"], want, ("Automatically save photos is off: Image Link "
+                                       "solves saved images only")
     host = str(getattr(config, "thesky_tcp_host", "localhost") or "localhost").lower()
     if host not in ("localhost", "127.0.0.1", "::1"):
         return INFO, want, f"TheSky runs on {host}: folder not checked from here"
+    base, leaf = autosave_base(p)
     try:
-        ok = Path(p).is_dir()
+        ok = Path(base).is_dir()
     except OSError:
         ok = False
-    return (PASS if ok else row["severity"]), want, None if ok else f"{p} does not exist"
+    checked = f"checked {base}" + (f" (the date subfolder {leaf} is created on the first "
+                                    "save)" if leaf else "")
+    return (PASS if ok else row["severity"]), want, \
+        checked if ok else f"{base} does not exist"
+
+
+def _c_site_longitude(row, val, observed, config, ctx):
+    """PS-119: strict. TheSky's DocumentProperty(1) is EAST-positive: on
+    2026-10-04 the script read +109.021 while TheSky's Location dialog
+    showed 109 01' 16" E and the 19:03 chart showed a morning sky (a site at
+    109 E). AARO is 109 01' 16" WEST, so the desired value is -109.021. If
+    the UI is set to West and the script then reads -109.021, the
+    convention is confirmed."""
+    want_v, tol = float(row["near"]), float(row["tol"])
+    want = f"{want_v:g} (west, east-positive) +/- {tol:g} deg"
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, want, None
+    if abs(v - want_v) <= tol:
+        return PASS, want, None
+    if abs(v + want_v) <= tol:
+        return FAIL, want, (f"TheSky's site longitude is EAST ({v:+.2f}); AARO is "
+                            "109 01' 16\" WEST: every slew and the TPoint model are wrong")
+    return row["severity"], want, None
+
+
+def _utcnow() -> datetime:
+    """Now (UTC); tests pin it to a date on either side of a DST change."""
+    return datetime.utcnow()
+
+
+def _c_time_zone(row, val, observed, config, ctx):
+    """PS-119: TheSky's time zone (DocumentProperty 2) and DST rule
+    (DocumentProperty 4: 0 = not observed, 1 = U.S. and Canada; other
+    indexes are other countries' rules). PASS: the PC zone's standard
+    offset with US DST observed. WARN: a combination that gives the right
+    local time only today (e.g. -6 with DST not observed while New Mexico
+    is on MDT). FAIL: TheSky's local time differs from the PC's now."""
+    from zoneinfo import ZoneInfo
+    ts = observed.get("thesky-script") or {}
+    tz, dst = _num(ts.get("time_zone")), _num(ts.get("dst_index"))
+    if tz is None or dst is None:
+        return UNKNOWN, "the PC's time zone with US daylight saving", None
+    now = _utcnow()
+    try:
+        z = ZoneInfo(config.observatory_tz)
+        aware = now.replace(tzinfo=ZoneInfo("UTC")).astimezone(z)
+        pc_now = aware.utcoffset().total_seconds() / 3600.0
+        std = pc_now - aware.dst().total_seconds() / 3600.0
+        dst_now = bool(aware.dst().total_seconds())
+    except Exception:  # noqa: BLE001
+        pc_now = std = float(getattr(config, "utc_offset_hours", -7.0))
+        dst_now = False
+    want = f"{std:+g} h with U.S. daylight saving (the PC's zone)"
+    ctx["current"] = f"tz {tz:+g}, DST {'not observed' if int(dst) == 0 else f'index {int(dst)}'}"
+    eff = tz + (1.0 if int(dst) != 0 and dst_now else 0.0)
+    if abs(eff - pc_now) * 60.0 > 1.0:
+        return FAIL, want, (f"TheSky's local time is {eff:+g} h from UTC, the PC's is "
+                            f"{pc_now:+g} h: TheSky's local time is off")
+    if abs(tz - std) < 1e-6 and int(dst) == 1:
+        return PASS, want, None
+    return WARN, want, ("correct only while the PC is on daylight time; one hour off "
+                        "after the next DST change" if dst_now else
+                        "correct only until the next DST change")
 
 
 def _c_filter_in_beam(row, val, observed, config, ctx):
@@ -576,6 +662,8 @@ def _c_mount_vs_solve(row, val, observed, config, ctx):
 
 
 COMPUTED = {
+    "site_longitude": _c_site_longitude,
+    "time_zone": _c_time_zone,
     "mount_connected": _c_mount_connected,
     "mount_tracking": _c_mount_tracking,
     "site_clock": _c_site_clock,
@@ -733,6 +821,8 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
             o["site_clock_latency_s"] = round((t1 - t0) * 86400.0 / 2.0, 3)
         if st.get("time_zone") is not None or st.get("dst_index") is not None:
             o["time_zone_dst"] = f"tz {st.get('time_zone')}, DST index {st.get('dst_index')}"
+            o["time_zone"] = _f(st.get("time_zone"))
+            o["dst_index"] = _f(st.get("dst_index"))
     ai = read("ails", cl.ails)
     o["ails_image_scale"] = _f(ai.get("image_scale"))
     o["ails_position_angle"] = _f(ai.get("position_angle"))
@@ -745,6 +835,8 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
     if cf.get("bin_x") is not None:
         o["camera_bin"] = f"{cf.get('bin_x')}x{cf.get('bin_y')}"
     o["autosave_path"] = cf.get("autosave_path") if cf else None
+    if cf.get("autosave_on") not in (None, "", "?ERR"):
+        o["autosave_on"] = _bool(cf.get("autosave_on"))
     if cf and cf.get("autosave_path") is None and "autosave_path" in cf:
         o["autosave_path"] = ""
     if getattr(config, "thesky_audit_allsky_read", False):

@@ -222,6 +222,7 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
         ("bin_x", "ccdsoftCamera.BinX"),
         ("bin_y", "ccdsoftCamera.BinY"),
         ("autosave_path", "ccdsoftCamera.AutoSavePath"),
+        ("autosave_on", "ccdsoftCamera.AutoSaveOn"),
         ("image_reduction", "ccdsoftCamera.ImageReduction")], ""),
     # read form only (empty argument); behind thesky_audit_allsky_read
     "allsky_flags": ([

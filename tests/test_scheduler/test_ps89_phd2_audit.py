@@ -109,7 +109,7 @@ def test_0926_fails_the_settings_the_diagnosis_found():
     assert rows["bit_depth"]["status"] == pa.FAIL
     sr = rows["search_region_px"]
     assert sr["status"] == pa.FAIL and sr["current"] == "15"
-    assert "dither" in sr["note"] and "2 x dither" in sr["desired"]
+    assert "dither" in sr["note"] and ">= the dither (20.1 px)" in sr["desired"]   # PS-119: 1 x
     assert rows["mass_change"]["status"] == pa.FAIL and rows["mass_change"]["current"] == "50"
     assert rows["dec_algorithm"]["status"] == pa.FAIL
     assert rows["dec_algorithm"]["current"] == "Lowpass2"
@@ -317,9 +317,10 @@ def test_profile_store_reads_flat_and_resolves_the_profile(monkeypatch):
     assert r["profile_id"] == "1"
     assert r["raw"]["guider/onestar/SearchRegion"] == 15
     v = r["values"]["search_region_px"]
-    assert v["value"] == 15 and v["verified"] is False         # nothing verified yet
+    assert v["value"] == 15 and v["verified"] is True          # PS-119: read-verified
     vals, cands = pa._profile_observed(r)
-    assert vals == {} and cands["saturation_adu"]["value"] == 255
+    assert vals["saturation_adu"] == 255 and vals["search_region_px"] == 15
+    assert vals["mass_change"] == 50 and cands["saturation_adu"]["value"] == 255
     monkeypatch.setattr(ps, "_winreg", lambda: None)
     assert ps.read(1)["available"] is False
 
@@ -344,8 +345,8 @@ def test_profile_write_refusals_and_a_verified_round_trip(tmp_path, monkeypatch)
     r = ps.write(cfg, "1", {"search_region_px": 35}, backup_path=b["reg"])
     assert not r["ok"] and "unverified" in r["refused"]["search_region_px"]
     assert reg.sets == []
-    monkeypatch.setitem(ps.KEYS, "search_region_px", ("guider/onestar", "SearchRegion", True))
-    monkeypatch.setitem(ps.KEYS, "min_hfd_px", ("guider", "StarMinHFD", True))
+    # PS-119: names are read-verified; writing needs the key in WRITABLE too
+    monkeypatch.setattr(ps, "WRITABLE", frozenset({"search_region_px", "min_hfd_px"}))
     r = ps.write(cfg, "1", {"search_region_px": 35, "min_hfd_px": 1.5}, backup_path=b["reg"])
     assert r["ok"] and r["written"] == {"search_region_px": 35, "min_hfd_px": "1.5"}
     assert (35, FakeWinreg.REG_DWORD) == reg.roots["HKCU"]["keys"]["Software"]["keys"][
@@ -379,10 +380,8 @@ def test_apply_profile_rows_are_gated(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path, phd2_audit_autofix=True)
     assert "armer is RUNNING" in asyncio.run(go(cfg, "RUNNING"))["search_region_px"]["note"]
     assert "unverified" in asyncio.run(go(cfg, "DISARMED"))["mass_change"]["note"]
-    for k, loc in (("search_region_px", ("guider/onestar", "SearchRegion", True)),
-                   ("mass_change_enabled", ("guider/onestar", "MassChangeThresholdEnabled", True)),
-                   ("mass_change_pct", ("guider/onestar", "MassChangeThreshold", True))):
-        monkeypatch.setitem(ps.KEYS, k, loc)
+    monkeypatch.setattr(ps, "WRITABLE", frozenset(
+        {"search_region_px", "mass_change_enabled", "mass_change_pct"}))
     dry = asyncio.run(go(cfg, "DISARMED", dry=True))
     assert dry["mass_change"]["ok"] and dry["mass_change"]["to"] == {"mass_change_enabled": False}
     assert reg.sets == []
@@ -445,7 +444,8 @@ async def test_collect_on_the_fake_phd2_and_nina(tmp_path, monkeypatch):
     assert 2900 < api["focal_length_mm"] < 3300 and api["exposure_durations"]
     rows = {r["id"]: r for r in a["rows"]}
     assert rows["search_region_px"]["source"] == "api"
-    assert rows["search_region_px"]["status"] == pa.FAIL
+    # PS-119: 15 px covers NINA's 5 px dither but is outside 30 to 40: warn
+    assert rows["search_region_px"]["status"] == pa.WARN
     assert rows["ra_min_move"]["target"] == 1.5                     # 09-25 GA
     assert rows["nina_settle_px"]["status"] == pa.WARN
     assert rows["nina_settle_timeout_s"]["status"] == pa.WARN

@@ -9,16 +9,26 @@ not exposed by PHD2's JSON-RPC API; PHD2 keeps them per profile under
 (wxWidgets' registry config: a config path "/profile/1/camera/gain" is the
 value "gain" of the key "profile\\1\\camera").
 
-The exact value names are NOT verified yet: KEYS below is the one table that
-maps each audited setting to its registry location. Every row starts with
-verified=False and the candidate name from PHD2's sources; an unverified row
-is read and shown ("candidate") but the audit reports it as unknown and a
-write to it is refused. To verify: on the scope PC run
+KEYS below is the one table that maps each audited setting to its registry
+location. PS-119: the names were verified for READING against the scope PC's
+`reg export` of 2026-10-04 (PHD2 2.6.14, profile 2 "Primary RC Profile
+(Guider)", currentProfile=2); an unverified row would be read and shown
+("candidate") but reported unknown. Writing is a separate gate: only the
+logical keys in WRITABLE may be written (none yet), on top of
+phd2_audit_autofix, PHD2 closed and a backup. To re-check after a PHD2
+update: on the scope PC run
 
     reg export HKCU\\Software\\StarkLabs\\PHDGuidingV2 phd2.reg
 
-(or GET /api/phd2/audit?refresh=1&raw=1, which lists every value read), fix
-the path / name here and set verified=True.
+(or GET /api/phd2/audit?refresh=1&raw=1, which lists every value read).
+
+derived() turns the raw values into what the audit compares: the camera bit
+depth (camera/<driver>/bpp), the active RA / Dec algorithm names (the
+X/YGuideAlgorithm enum) and their minMove / aggressiveness under
+scope/GuideAlgorithm/<X|Y>/<name>, the Dec guide mode name, auto exposure,
+the mass-change percent, the newest sane Guiding Assistant run (GA/<ts>,
+pa_error under GA_PA_MAX_ARCMIN) and the stored calibration
+(scope/calibration).
 
 read() flattens the whole profile key (so the raw dump shows real names);
 backup() saves `reg export` of the profile to
@@ -41,33 +51,56 @@ logger = logging.getLogger(__name__)
 
 ROOT = r"Software\StarkLabs\PHDGuidingV2"
 
-# logical key -> (sub path under profile\<id>, value name, verified).
-# Candidates from PHD2 2.6 sources; NONE verified on the scope PC yet.
+# logical key -> (sub path under profile\<id>, value name, verified for read).
+# Verified against the scope PC's reg export (2026-10-04, PHD2 2.6.14). A
+# "*" in the sub path matches one key level (the camera driver's own key).
 # A None name = no candidate known (always unknown until filled in).
 KEYS: dict[str, tuple[str, str | None, bool]] = {
-    "name":                   ("", "name", False),
-    "pixel_size_um":          ("camera", "pixelsize", False),
-    "gain":                   ("camera", "gain", False),
-    "binning":                ("camera", "binning", False),
-    "bit_depth":              ("camera", None, False),
-    "saturation_by_adu":      ("camera", "SaturationByADU", False),
-    "saturation_adu":         ("camera", "SaturationADU", False),
-    "exposure_ms":            ("", "ExposureDurationMs", False),
-    "auto_exposure":          ("auto_exp", None, False),
-    "focal_length_mm":        ("frame", "focalLength", False),
-    "search_region_px":       ("guider/onestar", "SearchRegion", False),
-    "mass_change_enabled":    ("guider/onestar", "MassChangeThresholdEnabled", False),
-    "mass_change_pct":        ("guider/onestar", "MassChangeThreshold", False),
-    "min_hfd_px":             ("guider", "StarMinHFD", False),
-    "multi_star":             ("guider/multistar", "enabled", False),
-    "auto_restore_cal":       ("", "AutoLoadCalibration", False),
-    "dec_compensation":       ("scope", "UseDecComp", False),
-    "reverse_dec_after_flip": ("scope", None, False),
-    "calibration_step_ms":    ("scope", "CalibrationDuration", False),
-    "backlash_comp":          ("scope", None, False),
+    "name":                   ("", "name", True),
+    "pixel_size_um":          ("camera", "pixelsize", True),
+    "gain":                   ("camera", "gain", True),
+    "binning":                ("camera", "binning", True),
+    "bit_depth":              ("camera/*", "bpp", True),
+    "saturation_by_adu":      ("camera", "SaturationByADU", True),
+    "saturation_adu":         ("camera", "SaturationADU", True),
+    "auto_load_darks":        ("camera", "AutoLoadDarks", True),
+    "auto_load_defect_map":   ("camera", "AutoLoadDefectMap", True),
+    "exposure_ms":            ("", "ExposureDurationMs", True),
+    "focal_length_mm":        ("frame", "focalLength", True),
+    "search_region_px":       ("guider/onestar", "SearchRegion", True),
+    "mass_change_enabled":    ("guider/onestar", "MassChangeThresholdEnabled", True),
+    "mass_change_pct":        ("guider/onestar", "MassChangeThreshold", True),
+    "min_hfd_px":             ("guider", "StarMinHFD", True),
+    "min_snr":                ("guider", "StarMinSNR", True),
+    "multi_star":             ("guider/multistar", "enabled", True),
+    "auto_restore_cal":       ("", "AutoLoadCalibration", True),
+    "dec_compensation":       ("scope", "UseDecComp", True),
+    "reverse_dec_after_flip": ("scope", "CalFlipRequiresDecFlip", True),
+    "calibration_step_ms":    ("scope", "CalibrationDuration", True),
+    "calibration_distance_px": ("scope", "CalibrationDistance", True),
+    "backlash_comp":          ("scope", "BacklashCompEnabled", True),
+    "stop_guiding_when_slewing": ("scope", "StopGuidingWhenSlewing", True),
+    "assume_orthogonal":      ("scope", "AssumeOrthogonal", True),
+    "dec_guide_mode_enum":    ("scope", "DecGuideMode", True),
+    "ra_algorithm_enum":      ("scope", "XGuideAlgorithm", True),
+    "dec_algorithm_enum":     ("scope", "YGuideAlgorithm", True),
 }
-# the selected profile id, at the root key (candidate, unverified)
-CURRENT_PROFILE = ("", "currentProfile", False)
+# Logical keys write() may change (behind phd2_audit_autofix, PHD2 closed and
+# a backup). Empty: reading is verified, writing is not enabled yet.
+WRITABLE: frozenset = frozenset()
+# the selected profile id, at the root key
+CURRENT_PROFILE = ("", "currentProfile", True)
+# PHD2 2.6 GUIDE_ALGORITHM enum -> (display name, GuideAlgorithm key name)
+ALGORITHMS = {0: ("None", "None"), 1: ("Hysteresis", "Hysteresis"),
+              2: ("Lowpass", "Lowpass"), 3: ("Lowpass2", "Lowpass2"),
+              4: ("Resist Switch", "ResistSwitch"),
+              5: ("Predictive PEC", "GaussianProcess"), 6: ("ZFilter", "ZFilter")}
+# PHD2 DEC_GUIDE_MODE enum
+DEC_MODES = {0: "Off", 1: "Auto", 2: "North", 3: "South"}
+# PHD2 CalibrationIssueType (scope/calibration/last_issue)
+CAL_ISSUES = {0: None, 1: "too few steps", 2: "axes not orthogonal",
+              3: "RA / Dec rates inconsistent", 4: "differs from the last calibration"}
+GA_PA_MAX_ARCMIN = 60.0   # a Guiding Assistant run with a larger polar error is bad
 # Software Bisque ASCOM telescope driver flags (HKLM, report only, never
 # written). Where the driver keeps them is unknown (ASCOM profile or its own
 # file): no candidate names yet, so these rows read as unknown.
@@ -185,11 +218,108 @@ def resolve_id(profile_id=None, name: str | None = None) -> str | None:
     return None
 
 
-def _loc(logical: str) -> str | None:
+def _loc(logical: str, raw: dict | None = None) -> str | None:
+    """The flat path of a logical key; a "*" level resolves against raw."""
     sub, name, _v = KEYS[logical]
     if name is None:
         return None
-    return f"{sub}/{name}" if sub else name
+    loc = f"{sub}/{name}" if sub else name
+    if "*" in loc and raw is not None:
+        import fnmatch
+        hits = sorted(k for k in raw if fnmatch.fnmatchcase(k, loc)
+                      and k.count("/") == loc.count("/"))
+        return hits[0] if hits else loc
+    return loc
+
+
+def writable(logical: str) -> bool:
+    """True when write() may change this key (verified name, in WRITABLE)."""
+    k = KEYS.get(logical)
+    return bool(k and k[1] and k[2] and logical in WRITABLE and "*" not in k[0])
+
+
+def _fnum(v):
+    try:
+        return float(str(v).strip().split()[0])
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _ga_runs(raw: dict) -> list[dict]:
+    """Every Guiding Assistant run stored under GA/<timestamp>, oldest first."""
+    runs: dict[str, dict] = {}
+    for k, v in raw.items():
+        parts = k.split("/")
+        if len(parts) == 3 and parts[0] == "GA":
+            runs.setdefault(parts[1], {})[parts[2]] = v
+    out = []
+    for ts, r in sorted(runs.items()):
+        out.append({"time_local": str(r.get("timestamp") or ts).replace(" ", "T"),
+                    "ra_min_move_rec": _fnum(r.get("rec_ra_minmove")),
+                    "dec_min_move_rec": _fnum(r.get("rec_dec_minmove")),
+                    "pa_error_arcmin": _fnum(r.get("pa_error")),
+                    "snr": _fnum(r.get("snr"))})
+    return out
+
+
+def newest_sane_ga(raw: dict) -> dict | None:
+    """The newest GA run with a polar error under GA_PA_MAX_ARCMIN (a run
+    with a wild polar error measured nothing useful)."""
+    ok = [g for g in _ga_runs(raw) if g["ra_min_move_rec"] is not None and
+          (g["pa_error_arcmin"] is None or g["pa_error_arcmin"] < GA_PA_MAX_ARCMIN)]
+    return ok[-1] if ok else None
+
+
+def stored_calibration(raw: dict) -> dict | None:
+    """scope/calibration as stored (angles rad, rates px/ms, declination
+    rad, guide rates deg/s) plus the step counts and last_issue."""
+    c = {k.split("/", 2)[2]: v for k, v in raw.items()
+         if k.startswith("scope/calibration/") and k.count("/") == 2}
+    if not c or c.get("xRate") is None:
+        return None
+    return c
+
+
+def derived(raw: dict, values: dict) -> dict:
+    """{logical: value} computed from the raw profile (see the module doc)."""
+    out: dict = {}
+
+    def val(k):
+        return (values.get(k) or {}).get("value")
+    for axis, key in (("ra", "ra_algorithm_enum"), ("dec", "dec_algorithm_enum")):
+        try:
+            name, folder = ALGORITHMS[int(val(key))]
+        except (TypeError, ValueError, KeyError):
+            continue
+        out[f"{axis}_algorithm"] = name
+        base = f"scope/GuideAlgorithm/{'X' if axis == 'ra' else 'Y'}/{folder}/"
+        mm = _fnum(raw.get(base + "minMove"))
+        if mm is not None:
+            out[f"{axis}_min_move"] = mm
+        ag = _fnum(raw.get(base + "Aggressiveness"))
+        if ag is None:
+            ag = _fnum(raw.get(base + "aggression"))
+            ag = ag * 100.0 if ag is not None and ag <= 1.0 else ag
+        if ag is not None:
+            out[f"{axis}_aggressiveness"] = ag
+    try:
+        out["dec_guide_mode"] = DEC_MODES[int(val("dec_guide_mode_enum"))]
+    except (TypeError, ValueError, KeyError):
+        pass
+    exp = _fnum(val("exposure_ms"))
+    if exp is not None:
+        # PHD2 keeps a fixed exposure in ms; a negative value is "Auto"
+        out["auto_exposure"] = exp < 0
+    pct = _fnum(val("mass_change_pct"))
+    if pct is not None:
+        out["mass_change_pct"] = pct * 100.0 if pct <= 1.0 else pct
+    ga = newest_sane_ga(raw)
+    if ga:
+        out["ga"] = ga
+    cal = stored_calibration(raw)
+    if cal:
+        out["calibration"] = cal
+    return out
 
 
 def read(profile_id=None, name: str | None = None) -> dict:
@@ -211,11 +341,17 @@ def read(profile_id=None, name: str | None = None) -> dict:
                 "values": {}, "raw": {}}
     values = {}
     for logical, (_sub, _name, verified) in KEYS.items():
-        loc = _loc(logical)
+        loc = _loc(logical, raw)
         values[logical] = {"value": raw.get(loc) if loc else None,
                            "verified": bool(verified and loc),
                            "location": loc}
-    return {"available": True, "profile_id": pid, "values": values, "raw": raw}
+    try:
+        der = derived(raw, values)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("PHD2 profile derive failed: %s", e)
+        der = {}
+    return {"available": True, "profile_id": pid, "values": values,
+            "derived": der, "raw": raw}
 
 
 def read_ascom() -> dict:
@@ -279,6 +415,9 @@ def write(config, profile_id, changes: dict, *, backup_path: str | None) -> dict
         sub, name, verified = KEYS[logical]
         if not (verified and name):
             refused[logical] = "registry name unverified"
+            continue
+        if not writable(logical):
+            refused[logical] = "registry name unverified for writing (not in WRITABLE)"
             continue
         path = f"{ROOT}\\profile\\{profile_id}" + (
             "\\" + sub.replace("/", "\\") if sub else "")

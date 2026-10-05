@@ -108,13 +108,13 @@ id = "site_longitude"
 group = "Site and time"
 label = "Site longitude"
 sources = ["thesky-script"]
+computed = "site_longitude"
 near = -109.021111
 tol = 0.0167
-sign_free = true
 severity = "fail"
 confidence = "High"
-why = "A wrong longitude shifts every hour angle (109d01'16\" W, east-positive -109.02; TheSky may store west as positive, both signs are accepted)."
-fix = "TheSky: Input > Location: longitude 109d01'16\" W."
+why = "A wrong longitude shifts every hour angle and the TPoint model (109d01'16\" W). TheSky's script value is east-positive (2026-10-04: +109.021 read while the Location dialog showed 109 01' 16\" E), so West reads -109.021."
+fix = "TheSky: Input > Location > Longitude 109d01'16\" W (West, not East)."
 
 [[check]]
 id = "site_elevation"
@@ -154,13 +154,13 @@ fix = "Turn Use Computer Clock on; check the scope PC's time sync."
 [[check]]
 id = "time_zone_dst"
 group = "Site and time"
-label = "Time zone / DST index"
+label = "Time zone and daylight saving"
 sources = ["thesky-script"]
-report = true
-severity = "warn"
+computed = "time_zone"
+severity = "fail"
 confidence = "Med"
-why = "Shown for the record; with the computer clock on it does not change pointing."
-fix = "None (information)."
+why = "TheSky turns the computer clock into UTC with its own time zone and DST rule: -6 with DST not observed matches New Mexico only while it is on MDT and is an hour off after 2026-11-01."
+fix = "TheSky: Input > Location: time zone -7.00, daylight saving U.S. and Canada."
 
 # ---------------------------------------------------------------- camera
 

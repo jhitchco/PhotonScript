@@ -282,13 +282,14 @@ def _eval(observed, cfg=None):
     return {r["id"]: r for r in res["rows"]}, res
 
 
-def test_site_rows_accept_either_longitude_sign():
+def test_site_rows_and_a_strict_longitude():
+    # PS-119: TheSky's script longitude is east-positive; +109.02 is 109 E
     rows, _ = _eval({"thesky-script": {"site_latitude": 31.9069, "site_longitude": 109.0212,
                                        "site_elevation": 1300, "use_computer_clock": True,
                                        "site_clock": 0.4}})
     assert rows["site_latitude"]["status"] == "pass"
-    assert rows["site_longitude"]["status"] == "pass"
-    assert "opposite sign" in rows["site_longitude"]["note"]
+    assert rows["site_longitude"]["status"] == "fail"
+    assert "EAST" in rows["site_longitude"]["note"] and "WEST" in rows["site_longitude"]["note"]
     assert rows["site_clock"]["status"] == "pass"
     rows, _ = _eval({"thesky-script": {"site_latitude": 32.5, "site_longitude": -109.0212,
                                        "site_clock": 5.0, "use_computer_clock": False}})
