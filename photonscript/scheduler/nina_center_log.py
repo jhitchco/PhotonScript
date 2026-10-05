@@ -361,16 +361,20 @@ def _nights(end_night: str, n: int) -> list[str]:
 
 
 def summary(config, nights: int = 14, end_night: str | None = None,
-            refresh: bool = False, parse_missing: bool = True) -> dict:
+            refresh: bool = False, parse_missing: bool = True,
+            since_utc: datetime | None = None) -> dict:
     """First-slew error over the last `nights` nights (newest first). Nights
     with no stored center file are parsed from the NINA logs when the logs
     folder exists (parse_missing); the two newest nights are re-parsed when
-    their logs are newer than the stored file. Never raises."""
+    their logs are newer than the stored file. PS-120: with since_utc only
+    runs at or after it count (a run without a time is left out); the
+    stored files keep every run. Never raises."""
     from photonscript.shared import phd2_store as store
     end_night = end_night or store.night_of(config, datetime.utcnow())
     nights = max(1, min(int(nights or 14), 60))
     logs_ok = Path(str(getattr(config, "nina_logs_dir", "") or "")).is_dir()
     runs, per_night, ps67 = [], [], []
+    before = 0
     for i, n in enumerate(_nights(end_night, nights)):
         rs = None if refresh else load_night(config, n)
         stale = False
@@ -384,6 +388,10 @@ def summary(config, nights: int = 14, end_night: str | None = None,
         if (rs is None or stale) and parse_missing and logs_ok:
             rs = night_pass(config, n).get("runs")
         rs = rs or []
+        if since_utc is not None:
+            keep = [r for r in rs if _after(r.get("t_utc"), since_utc)]
+            before += len(rs) - len(keep)
+            rs = keep
         for r in rs:
             r["night"] = n
         runs += rs
@@ -407,4 +415,14 @@ def summary(config, nights: int = 14, end_night: str | None = None,
             "ps67": {"n": len(ps67), "median_arcmin": _pct([x["err"] for x in ps67], 0.5),
                      "by_pier": {p: _pct([x["err"] for x in ps67 if x["pier"] == p], 0.5)
                                  for p in ("E", "W")}},
-            "runs": len(runs)}
+            "runs": len(runs),
+            "since_utc": (since_utc.replace(microsecond=0).isoformat() + "Z"
+                          if since_utc is not None else None),
+            "before_since": before}
+
+
+def _after(t_utc, since: datetime) -> bool:
+    try:
+        return datetime.fromisoformat(str(t_utc).strip().rstrip("Z")) >= since
+    except (TypeError, ValueError):
+        return False

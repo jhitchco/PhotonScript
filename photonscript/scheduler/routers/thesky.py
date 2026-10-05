@@ -82,7 +82,7 @@ async def api_thesky_imagelink_check(refresh: bool = False, thesky: bool = False
     obs = {r["id"]: r for r in latest.get("rows") or []}
     ails = {"ails_image_scale": (obs.get("ails_image_scale") or {}).get("current"),
             "ails_position_angle": (obs.get("ails_position_angle") or {}).get("current")}
-    rb = (latest.get("manual") or {}).get("run_binning") or 2
+    rb = (latest.get("manual") or {}).get("run_binning") or 1     # PS-120: 1x1 run
     out["compare"] = ta.compare_settings(out, ails, int(rb))
     out["armer_state_now"] = st or None
     return out

@@ -524,8 +524,12 @@ or "ERROR: ...". Masters in `out\master\`.
   fail / warn counts. Never runs an audit itself. With it: the search region
   must cover 1 x NINA's dither (not 2 x), a Dec min-move row (FAIL over
   5 px), the stored calibration (profile scope/calibration) graded by PS-93,
-  TheSky's site longitude is strict (script value east-positive: West reads
-  -109.021) and a time zone / DST row.
+  TheSky's site longitude is strict and a time zone / DST row. PS-120: the
+  scripted longitude reads +109.021 for both E and W, so the row checks its
+  magnitude and takes E / W from TheSky's own sidereal time (unknown, verify
+  by eye, when that read is missing); DST index 17 = U.S. and Canada;
+  first slews count only after the TPoint model; run binning 1 or 2; All
+  Sky off is fine with a catalog solve; polar limit 3'.
 - OPEN THREADS: `gradual_warm_minutes` change is staged in the desktop repo but
   NOT yet deployed (deploy after a dawn shutdown, never mid-run - deploy 409s
   while armed). Confirm the OSC dark library has matching 120s @0C darks.

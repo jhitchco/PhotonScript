@@ -559,18 +559,18 @@ def _ts(observed, cfg=None):
 
 
 def test_site_longitude_is_strict():
+    # PS-120: E / W from TheSky's sidereal time (test_ps120 has the LST cases)
     r = _ts({"thesky-script": {"site_longitude": 109.021}})["site_longitude"]
-    assert r["status"] == "fail" and "EAST" in r["note"] and "TPoint" in r["note"]
-    r = _ts({"thesky-script": {"site_longitude": -109.021}})["site_longitude"]
-    assert r["status"] == "pass"
+    assert r["status"] == "unknown" and "verify by eye" in r["note"]
     r = _ts({"thesky-script": {"site_longitude": -105.0}})["site_longitude"]
     assert r["status"] == "fail"
 
 
 @pytest.mark.parametrize("now,tz,dst,status", [
     (datetime(2026, 10, 5, 2, 50), -6, 0, "warn"),     # MDT: right today only
-    (datetime(2026, 10, 5, 2, 50), -7, 1, "pass"),     # MST + US DST
-    (datetime(2026, 12, 1, 3, 0), -7, 1, "pass"),
+    (datetime(2026, 10, 5, 2, 50), -7, 17, "pass"),    # MST + US DST (PS-120: 17)
+    (datetime(2026, 12, 1, 3, 0), -7, 17, "pass"),
+    (datetime(2026, 10, 5, 2, 50), -7, 1, "warn"),     # another country's rule
     (datetime(2026, 12, 1, 3, 0), -6, 0, "fail"),      # after 11-01: an hour off
     (datetime(2026, 10, 5, 2, 50), -7, 0, "fail"),
 ])
@@ -579,7 +579,7 @@ def test_time_zone_and_dst(monkeypatch, now, tz, dst, status):
     r = _ts({"thesky-script": {"time_zone": tz, "dst_index": dst}})["time_zone_dst"]
     assert r["status"] == status, r
     if status == "warn":
-        assert "one hour off" in r["note"]
+        assert "one hour off" in r["note"] or "not U.S. and Canada" in r["note"]
 
 
 def test_autosave_base_folder(tmp_path):
