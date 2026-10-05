@@ -81,6 +81,14 @@
                  padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
                  background:rgba(125,211,252,.06);white-space:normal;"></div>
 
+            <!-- PS-122: "Calibration owed" badge, a count per rig from
+                 /api/calibration/owed; links to the Calibration page card. -->
+            <a id="calOwedBadge" href="/calibration" hidden
+               style="display:inline-block;margin-bottom:.8rem;font-size:.85rem;
+               padding:.3rem .6rem;border-radius:6px;text-decoration:none;
+               border:1px solid rgba(251,191,36,.35);background:rgba(251,191,36,.08);
+               color:#fcd34d;"></a>
+
             <!-- Equipment: one pane per rig (RC16 + piggyback), rendered
                  consistently by refreshEquip() from /api/rigs. Each pane shows
                  camera + focuser rows with cooler/dew-heater toggles; the RC16
@@ -871,6 +879,45 @@
 
     refreshEquip();
     setInterval(refreshEquip, 15000);
+    // PS-122: calibration owed badge (both rigs). Refreshes every 5 min; the
+    // report scans the subs logs, so it is not polled with the 15 s loop.
+    async function refreshCalOwed() {
+        const el = document.getElementById('calOwedBadge');
+        if (!el) return;
+        try {
+            const r = await fetch('/api/calibration/owed');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            const parts = [];
+            let total = 0;
+            for (const rg of (d.rigs || [])) {
+                const n = (rg.items || []).length;
+                total += n;
+                if (n) parts.push((rg.name || rg.rig) + ' ' + n);
+            }
+            if (!total) {
+                el.textContent = 'Calibration: nothing owed';
+                el.style.color = '#86efac';
+                el.style.borderColor = 'rgba(134,239,172,.35)';
+                el.style.background = 'rgba(134,239,172,.06)';
+            } else {
+                el.textContent = 'Calibration owed: ' + total + ' item' +
+                    (total === 1 ? '' : 's') + ' (' + parts.join(', ') + ') ->';
+                el.style.color = '#fcd34d';
+                el.style.borderColor = 'rgba(251,191,36,.35)';
+                el.style.background = 'rgba(251,191,36,.08)';
+            }
+            el.title = (d.rigs || []).flatMap(rg => (rg.items || []).map(
+                t => (rg.name || rg.rig) + ': ' + t)).join('
+') || 'Nothing owed';
+            el.hidden = false;
+        } catch (e) {
+            el.hidden = true;
+        }
+    }
+    refreshCalOwed();
+    setInterval(refreshCalOwed, 300000);
+
     </script>
 
     <script>

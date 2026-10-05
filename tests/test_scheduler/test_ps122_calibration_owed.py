@@ -262,3 +262,19 @@ def test_lookback_window(tmp_path, days, expect):
     cfg, *_ = _piggy_setup(tmp_path, calibration_owed_lookback_days=days)
     r = co.owed_report(cfg, "piggyback", projects=[_m31()])["rigs"][0]
     assert set(_by_exp(r)) == expect
+
+
+def test_dashboard_owed_badge_wiring():
+    """The main dashboard shows an owed count badge linking to /calibration,
+    fed by /api/calibration/owed on a slow (5 min) refresh. ASCII only."""
+    from pathlib import Path
+    p = (Path(__file__).resolve().parents[2] / "photonscript" / "scheduler"
+         / "templates" / "dashboard.html")
+    s = p.read_text(encoding="utf-8")
+    i = s.index("PS-122: \"Calibration owed\" badge")
+    s[i:s.index("<!-- Equipment: one pane", i)].encode("ascii")   # markup
+    k = s.index("async function refreshCalOwed")
+    s[k:s.index("setInterval(refreshCalOwed", k)].encode("ascii")  # script
+    assert 'id="calOwedBadge"' in s and 'href="/calibration"' in s
+    assert "fetch('/api/calibration/owed')" in s
+    assert "setInterval(refreshCalOwed, 300000)" in s
