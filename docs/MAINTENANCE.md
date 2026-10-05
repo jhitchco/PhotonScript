@@ -311,7 +311,9 @@ site's TheSky 10.5 build).
   narrowband filter, AutoSave), not that it cannot solve.
 - First-slew error: NINA's first solve of each Center run vs its target, by
   side of the meridian (from the hour angle unless the log names the pier),
-  Dec band and HA band, 14 nights. PS-67's mount vs solve median shows beside
+  Dec band and HA band, 14 nights, counting only runs after the TPoint model
+  (PS-120: the earlier of the record's entry time and the end of the model
+  night; none yet reads "no slews since the model (n=0)", unknown). PS-67's mount vs solve median shows beside
   it once that record exists.
 - After each TPoint session: enter date, points, RMS, polar error, ProTrack,
   run binning and catalogs in the TPoint record form (and a line in

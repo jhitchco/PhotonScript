@@ -133,7 +133,8 @@ class TheSkyClient:
 
     def site(self) -> dict:
         """sky6StarChart.DocumentProperty 0 to 5 and 9 (latitude, longitude,
-        time zone, elevation m, DST index, use computer clock, JD now)."""
+        time zone, elevation m, DST index, use computer clock, JD now) and
+        sky6Utils' local sidereal time (PS-120)."""
         return self._kv("site")
 
     def ails(self) -> dict:
@@ -209,7 +210,11 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
     "site": ([
         ("latitude", _doc(0)), ("longitude", _doc(1)), ("time_zone", _doc(2)),
         ("elevation_m", _doc(3)), ("dst_index", _doc(4)),
-        ("use_computer_clock", _doc(5)), ("jd_now", _doc(9))], ""),
+        ("use_computer_clock", _doc(5)), ("jd_now", _doc(9)),
+        # PS-120: TheSky's own local sidereal time (hours), read right after
+        # its Julian date: the E / W verdict for the longitude (the
+        # DocumentProperty(1) sign reads the same for 109 E and 109 W)
+        ("lst_h", "(sky6Utils.ComputeLocalSiderealTime(), sky6Utils.dOut0)")], ""),
     "ails": ([
         ("image_scale", "AutomatedImageLinkSettings.imageScale"),
         ("position_angle", "AutomatedImageLinkSettings.positionAngle"),

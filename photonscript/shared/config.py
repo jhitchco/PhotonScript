@@ -771,7 +771,7 @@ class PhotonScriptConfig(BaseSettings):
     tpoint_max_age_days: float = 90.0   # TPoint model older = rebuild
     tpoint_min_points: int = 50         # ProTrack's minimum per Bisque
     tpoint_rms_max_arcsec: float = 30.0
-    tpoint_polar_max_arcmin: float = 2.0
+    tpoint_polar_max_arcmin: float = 3.0  # PS-120: TPoint advised leaving 2.79'
     pointing_first_slew_warn_arcmin: float = 2.0  # NINA first-solve median
     pointing_first_slew_fail_arcmin: float = 5.0  # (14 nights, per side)
     thesky_manual_max_age_days: float = 30.0  # manual TPoint record older

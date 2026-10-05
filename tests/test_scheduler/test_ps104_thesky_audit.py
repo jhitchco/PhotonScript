@@ -283,27 +283,32 @@ def _eval(observed, cfg=None):
 
 
 def test_site_rows_and_a_strict_longitude():
-    # PS-119: TheSky's script longitude is east-positive; +109.02 is 109 E
+    # PS-120: the script's sign cannot tell E from W; without TheSky's LST
+    # the row is unknown (verify by eye), never a false FAIL
     rows, _ = _eval({"thesky-script": {"site_latitude": 31.9069, "site_longitude": 109.0212,
                                        "site_elevation": 1300, "use_computer_clock": True,
                                        "site_clock": 0.4}})
     assert rows["site_latitude"]["status"] == "pass"
-    assert rows["site_longitude"]["status"] == "fail"
-    assert "EAST" in rows["site_longitude"]["note"] and "WEST" in rows["site_longitude"]["note"]
+    assert rows["site_longitude"]["status"] == "unknown"
+    assert "verify by eye" in rows["site_longitude"]["note"]
     assert rows["site_clock"]["status"] == "pass"
-    rows, _ = _eval({"thesky-script": {"site_latitude": 32.5, "site_longitude": -109.0212,
+    rows, _ = _eval({"thesky-script": {"site_latitude": 32.5, "site_longitude": -105.0,
                                        "site_clock": 5.0, "use_computer_clock": False}})
     assert rows["site_latitude"]["status"] == "fail"
-    assert rows["site_longitude"]["status"] == "pass" and not rows["site_longitude"]["note"]
+    assert rows["site_longitude"]["status"] == "fail"
     assert rows["site_clock"]["status"] == "warn"
     assert rows["use_computer_clock"]["status"] == "fail"
 
 
 def test_image_scale_pass_at_bin2_and_fail_in_the_4x4_era():
     astap = {"astap": {"true_scale": 0.239}}
-    rows, _ = _eval({"thesky-script": {"ails_image_scale": 0.480}, **astap})
+    rows, _ = _eval({"thesky-script": {"ails_image_scale": 0.480}, **astap,
+                     "manual": {"run_binning": 2}})
     assert rows["ails_image_scale"]["status"] == "pass"
     assert "0.478" in rows["ails_image_scale"]["desired"]
+    # PS-120: no record: 1x1 assumed (the 2026-10-04 run)
+    rows, _ = _eval({"thesky-script": {"ails_image_scale": 0.239}, **astap})
+    assert rows["ails_image_scale"]["status"] == "pass"
     assert "assumed" in rows["ails_image_scale"]["desired"]
     rows, _ = _eval({"thesky-script": {"ails_image_scale": 0.942}, **astap})
     r = rows["ails_image_scale"]
@@ -313,7 +318,7 @@ def test_image_scale_pass_at_bin2_and_fail_in_the_4x4_era():
     assert rows["ails_image_scale"]["status"] == "pass"
     assert "manual record" in rows["ails_image_scale"]["desired"]
     # no ASTAP check yet: config pixel scale stands in
-    rows, _ = _eval({"thesky-script": {"ails_image_scale": 0.480}})
+    rows, _ = _eval({"thesky-script": {"ails_image_scale": 0.480}, "manual": {"run_binning": 2}})
     assert rows["ails_image_scale"]["status"] == "pass"
     assert "config" in rows["ails_image_scale"]["desired"]
 
@@ -709,7 +714,7 @@ def test_config_defaults_are_report_only():
     assert (d.tpoint_max_age_days, d.tpoint_min_points, d.tpoint_rms_max_arcsec,
             d.tpoint_polar_max_arcmin, d.pointing_first_slew_warn_arcmin,
             d.pointing_first_slew_fail_arcmin, d.thesky_manual_max_age_days) == (
-        90.0, 50, 30.0, 2.0, 2.0, 5.0, 30.0)
+        90.0, 50, 30.0, 3.0, 2.0, 5.0, 30.0)                  # PS-120: polar 3'
     from photonscript.scheduler.app import _CONFIG_FIELDS as CONFIG_FIELDS
     keys = {f[0] for f in CONFIG_FIELDS}
     for k in ("thesky_audit_enabled", "thesky_audit_imagelink_thesky", "thesky_audit_allsky_read",

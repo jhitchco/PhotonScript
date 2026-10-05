@@ -111,9 +111,10 @@ sources = ["thesky-script"]
 computed = "site_longitude"
 near = -109.021111
 tol = 0.0167
+lst_tol_deg = 1.0
 severity = "fail"
-confidence = "High"
-why = "A wrong longitude shifts every hour angle and the TPoint model (109d01'16\" W). TheSky's script value is east-positive (2026-10-04: +109.021 read while the Location dialog showed 109 01' 16\" E), so West reads -109.021."
+confidence = "Med"
+why = "A wrong longitude shifts every hour angle and the TPoint model (109d01'16\" W, near is east-positive). The scripted value read +109.021 with the dialog on E (2026-10-04) and on W (2026-10-05), so only its magnitude is checked; E / W comes from TheSky's own sidereal time vs GMST (109 E is 14.5 h of LST away)."
 fix = "TheSky: Input > Location > Longitude 109d01'16\" W (West, not East)."
 
 [[check]]
@@ -160,7 +161,7 @@ computed = "time_zone"
 severity = "fail"
 confidence = "Med"
 why = "TheSky turns the computer clock into UTC with its own time zone and DST rule: -6 with DST not observed matches New Mexico only while it is on MDT and is an hour off after 2026-11-01."
-fix = "TheSky: Input > Location: time zone -7.00, daylight saving U.S. and Canada."
+fix = "TheSky: Input > Location: time zone -7.00, daylight saving U.S. and Canada (index 17 on build 14139)."
 
 # ---------------------------------------------------------------- camera
 
@@ -241,12 +242,12 @@ group = "Automated Image Link settings"
 label = "Image scale (\"/px)"
 sources = ["thesky-script"]
 computed = "ails_image_scale"
-default_bin = 2
+default_bin = 1
 tol_pct = 2.0
 severity = "fail"
 confidence = "Med"
-why = "Must be the ASTAP-measured native scale times the run's binning (0.239 x 2 = 0.478); the old 4x4 model used 0.942."
-fix = "Automated Pointing Calibration Run > Setup: image scale = native x binning (0.478 at 2x2)."
+why = "Must be the ASTAP-measured native scale times the run's binning from the manual record (1x1 on 2026-10-04: 0.236; 0.478 at 2x2); the old 4x4 model used 0.942."
+fix = "Automated Pointing Calibration Run > Setup: image scale = native x binning (0.236 at 1x1)."
 
 [[check]]
 id = "ails_fovs"
@@ -297,11 +298,11 @@ id = "allsky_automated"
 group = "Automated Image Link settings"
 label = "Use All Sky Image Link (automated runs)"
 sources = ["thesky-script", "manual"]
-equals = true
+computed = "allsky"
 severity = "warn"
 confidence = "Low"
-why = "All Sky solves without a pointing guess; it needs the All Sky database installed. Read through DoCommand 13 only after the on-site check (thesky_audit_allsky_read), else from the manual record."
-fix = "Automated Pointing Calibration Run > Setup: Use All Sky Image Link on (and the All Sky database installed)."
+why = "Optional: All Sky solves without a pointing guess but needs its database; off is fine when a catalog-based solve (UCAC4 / Gaia) works, as for the 2026-10-04 model. Read through DoCommand 13 only after the on-site check (thesky_audit_allsky_read), else from the manual record."
+fix = "Either leave All Sky off with UCAC4 / Gaia installed (and record it), or install the All Sky database before turning it on."
 
 [[check]]
 id = "allsky_scripted"
@@ -319,11 +320,12 @@ id = "run_binning"
 group = "Automated Image Link settings"
 label = "Binning in the run setup"
 sources = ["manual"]
-equals = 2
+min = 1
+max = 2
 severity = "warn"
 confidence = "Med"
-why = "Not in the scripting API. The image scale above assumes this binning."
-fix = "Setup: binning 2x2; enter it in the manual record below."
+why = "Not in the scripting API. 1x1 (the 2026-10-04 run: TheSky's camera ignored 2x2) or 2x2; the image scale above expects native x this binning."
+fix = "Enter the run's binning in the manual record below; set the image scale to native x binning."
 
 [[check]]
 id = "imagelink_selftest"
@@ -392,10 +394,10 @@ id = "allsky_db_installed"
 group = "Catalogs"
 label = "All Sky Image Link database installed"
 sources = ["manual"]
-equals = true
+computed = "allsky_db"
 severity = "warn"
 confidence = "Med"
-why = "\"Use All Sky Image Link\" is on, so a missing All Sky database fails every link."
+why = "Needed only while \"Use All Sky Image Link\" is on: then a missing All Sky database fails every link."
 fix = "Install the All Sky Image Link database from Bisque (TheSky's Database Manager)."
 
 [[check]]
@@ -469,7 +471,7 @@ cfg = "tpoint_polar_max_arcmin"
 op = "max"
 severity = "warn"
 confidence = "Med"
-why = "TPoint measures it precisely; above 2' field rotation shows in long subs (the 2026-09 drift was 5 to 8')."
+why = "TPoint measures it precisely; above 3' field rotation shows in long subs (the 2026-09 drift was 5 to 8'; TPoint advised leaving 2.79' on 2026-10-04)."
 fix = "Adjust the Paramount's azimuth / altitude knobs per TPoint's Polar Alignment Report, then rebuild."
 
 [[check]]

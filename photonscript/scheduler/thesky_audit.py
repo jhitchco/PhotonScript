@@ -38,7 +38,7 @@ import math
 import re
 import shutil
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from photonscript.scheduler.phd2_audit import (
@@ -197,7 +197,7 @@ def run_binning(observed, row) -> tuple[int, str]:
     b = _num((observed.get("manual") or {}).get("run_binning"))
     if b:
         return int(b), "manual record"
-    return int(row.get("default_bin", 2)), "assumed (enter it in the manual record)"
+    return int(row.get("default_bin", 1)), "assumed (enter it in the manual record)"
 
 
 # --------------------------------------------------------------------------
@@ -299,24 +299,78 @@ def _c_autosave_path(row, val, observed, config, ctx):
         checked if ok else f"{base} does not exist"
 
 
+def gmst_deg(jd_ut: float) -> float:
+    """Greenwich mean sidereal time in degrees (the nina_center_log formula;
+    good to a second of time, far finer than the E / W verdict needs)."""
+    return (280.46061837 + 360.98564736629 * (jd_ut - 2451545.0)) % 360.0
+
+
+def _wrap180(a: float) -> float:
+    return (a + 180.0) % 360.0 - 180.0
+
+
+def lst_longitude(observed) -> float | None:
+    """PS-120: the east-positive longitude TheSky is really using, from its
+    own local sidereal time and its own Julian date (both read in one
+    script): LST - GMST. None when either read is missing."""
+    ts = observed.get("thesky-script") or {}
+    lst, jd = _num(ts.get("site_lst_h")), _num(ts.get("site_jd"))
+    if lst is None or jd is None:
+        return None
+    if lst > 24.0:                       # a build that answers in degrees
+        lst /= 15.0
+    return _wrap180(15.0 * lst - gmst_deg(jd))
+
+
+def _ew(lon_east: float) -> str:
+    return f"{abs(lon_east):.2f} {'W' if lon_east < 0 else 'E'}"
+
+
 def _c_site_longitude(row, val, observed, config, ctx):
-    """PS-119: strict. TheSky's DocumentProperty(1) is EAST-positive: on
-    2026-10-04 the script read +109.021 while TheSky's Location dialog
-    showed 109 01' 16" E and the 19:03 chart showed a morning sky (a site at
-    109 E). AARO is 109 01' 16" WEST, so the desired value is -109.021. If
-    the UI is set to West and the script then reads -109.021, the
-    convention is confirmed."""
-    want_v, tol = float(row["near"]), float(row["tol"])
-    want = f"{want_v:g} (west, east-positive) +/- {tol:g} deg"
+    """PS-120: the sign of TheSky's DocumentProperty(1) cannot tell E from
+    W: it read +109.021 on 2026-10-04 while the Location dialog showed
+    109 01' 16" E and on 2026-10-05 after Jeremy set it to W (TheSky's
+    convention is west-positive, the E / W box did not change the scripted
+    value). So the script value is checked for its MAGNITUDE only, and the
+    E / W verdict comes from TheSky's own local sidereal time against GMST
+    at TheSky's own Julian date: a site at 109 E is 218 deg (14.5 h of LST)
+    away from 109 W. Without the LST read the row is unknown (verify by
+    eye), never a false FAIL."""
+    want_v, tol = float(row["near"]), float(row["tol"])      # east-positive
+    lst_tol = float(row.get("lst_tol_deg", 1.0))
+    want = f"{_ew(want_v)} (|script| {abs(want_v):g} +/- {tol:g} deg; E / W from TheSky's LST)"
     v = _num(val)
     if v is None:
         return UNKNOWN, want, None
-    if abs(v - want_v) <= tol:
-        return PASS, want, None
-    if abs(v + want_v) <= tol:
-        return FAIL, want, (f"TheSky's site longitude is EAST ({v:+.2f}); AARO is "
-                            "109 01' 16\" WEST: every slew and the TPoint model are wrong")
-    return row["severity"], want, None
+    if abs(abs(v) - abs(want_v)) > tol:
+        return row["severity"], want, (f"TheSky's site longitude {v:+.3f} is not "
+                                       f"{abs(want_v):.3f} either way: the site is wrong")
+    lon = lst_longitude(observed)
+    if lon is None:
+        ctx["current"] = f"{v:g} (E or W? the sign does not tell)"
+        return UNKNOWN, want, ("verify by eye: TheSky Input > Location shows 109 01' 16\" W "
+                               "(the scripted value reads the same for E and W, and "
+                               "TheSky's sidereal time was not readable)")
+    ctx["current"] = f"{v:g}; LST says {_ew(lon)}"
+    if abs(_wrap180(lon - want_v)) <= lst_tol:
+        return PASS, want, f"TheSky's sidereal time puts the site at {_ew(lon)}"
+    if abs(_wrap180(lon + want_v)) <= lst_tol:
+        return FAIL, want, (f"TheSky's sidereal time puts the site at {_ew(lon)} (EAST); AARO "
+                            "is 109 01' 16\" WEST: every slew and the TPoint model are wrong")
+    return row["severity"], want, (f"TheSky's sidereal time implies {_ew(lon)}: check "
+                                   "TheSky's location and clock")
+
+
+# TheSky's daylight saving list (Input > Location): index -> name. Only the
+# two seen on the site's build are named; 17 was read on 2026-10-05 with
+# "U.S. and Canada" selected (PS-119 had guessed 1).
+DST_US_CANADA = (17,)
+DST_NAMES = {0: "not observed", 17: "U.S. and Canada"}
+
+
+def dst_name(dst) -> str:
+    i = int(dst)
+    return f"{DST_NAMES[i]} (index {i})" if i in DST_NAMES else f"index {i}"
 
 
 def _utcnow() -> datetime:
@@ -325,12 +379,15 @@ def _utcnow() -> datetime:
 
 
 def _c_time_zone(row, val, observed, config, ctx):
-    """PS-119: TheSky's time zone (DocumentProperty 2) and DST rule
-    (DocumentProperty 4: 0 = not observed, 1 = U.S. and Canada; other
+    """PS-119 / PS-120: TheSky's time zone (DocumentProperty 2) and DST rule
+    (DocumentProperty 4, an index into TheSky's daylight saving list: 0 =
+    not observed, 17 = U.S. and Canada on TheSky 10.5 build 14139, seen
+    2026-10-05 with the Location dialog set to U.S. and Canada; other
     indexes are other countries' rules). PASS: the PC zone's standard
-    offset with US DST observed. WARN: a combination that gives the right
-    local time only today (e.g. -6 with DST not observed while New Mexico
-    is on MDT). FAIL: TheSky's local time differs from the PC's now."""
+    offset with U.S. and Canada DST. WARN: another rule, or a combination
+    that gives the right local time only today (e.g. -6 with DST not
+    observed while New Mexico is on MDT). FAIL: TheSky's local time differs
+    from the PC's now."""
     from zoneinfo import ZoneInfo
     ts = observed.get("thesky-script") or {}
     tz, dst = _num(ts.get("time_zone")), _num(ts.get("dst_index"))
@@ -347,13 +404,16 @@ def _c_time_zone(row, val, observed, config, ctx):
         pc_now = std = float(getattr(config, "utc_offset_hours", -7.0))
         dst_now = False
     want = f"{std:+g} h with U.S. daylight saving (the PC's zone)"
-    ctx["current"] = f"tz {tz:+g}, DST {'not observed' if int(dst) == 0 else f'index {int(dst)}'}"
+    ctx["current"] = f"tz {tz:+g}, DST {dst_name(dst)}"
     eff = tz + (1.0 if int(dst) != 0 and dst_now else 0.0)
     if abs(eff - pc_now) * 60.0 > 1.0:
         return FAIL, want, (f"TheSky's local time is {eff:+g} h from UTC, the PC's is "
                             f"{pc_now:+g} h: TheSky's local time is off")
-    if abs(tz - std) < 1e-6 and int(dst) == 1:
+    if abs(tz - std) < 1e-6 and int(dst) in DST_US_CANADA:
         return PASS, want, None
+    if int(dst) != 0 and int(dst) not in DST_US_CANADA:
+        return WARN, want, (f"DST rule index {int(dst)} is not U.S. and Canada "
+                            f"(index {DST_US_CANADA[0]}): its change dates may differ")
     return WARN, want, ("correct only while the PC is on daylight time; one hour off "
                         "after the next DST change" if dst_now else
                         "correct only until the next DST change")
@@ -436,6 +496,65 @@ def _c_imagelink_selftest(row, val, observed, config, ctx):
     if _within_pct(sc, ref, tol):
         return PASS, want, None
     return WARN, want, f"TheSky {sc:.4f} vs ASTAP {ref:.4f}\"/px"
+
+
+def _allsky_on(observed) -> bool | None:
+    for src in ("thesky-script", "manual"):
+        v = (observed.get(src) or {}).get("allsky_automated")
+        if v is not None and _bool(v) is not None:
+            return _bool(v)
+    return None
+
+
+def catalog_solve_evidence(observed) -> str | None:
+    """PS-120: why a solve without All Sky is known to work, or None."""
+    m = observed.get("manual") or {}
+    if m.get("allsky_automated") is not None and _bool(m["allsky_automated"]) is False:
+        return "the manual record says the model was built with All Sky off"
+    if ((observed.get("imagelink") or {}).get("thesky") or {}).get("succeeded"):
+        return "TheSky's Image Link self-test solved a frame"
+    cats = [n for k, n in (("ucac4_installed", "UCAC4"), ("gaia_installed", "Gaia"))
+            if m.get(k) is not None and _bool(m[k])]
+    if cats:
+        return f"{' and '.join(cats)} installed (manual record)"
+    return None
+
+
+def _c_allsky(row, val, observed, config, ctx):
+    """PS-120: All Sky Image Link is optional. Off is fine when a
+    catalog-based solve works (UCAC4 / Gaia: the 2026-10-04 model was built
+    that way, the All Sky database is not installed); on is a problem only
+    without its database."""
+    want = "on with the All Sky database, or off with a catalog-based solve"
+    on = None if val is None else _bool(val)
+    if on is None:
+        return UNKNOWN, want, None
+    db = (observed.get("manual") or {}).get("allsky_db_installed")
+    db = None if db is None else _bool(db)
+    if on:
+        if db:
+            return PASS, want, None
+        if db is False:
+            return row["severity"], want, ("All Sky is on but its database is not installed: "
+                                           "every automated link fails")
+        return UNKNOWN, want, "on: enter whether the All Sky database is installed"
+    why = catalog_solve_evidence(observed)
+    if why:
+        return PASS, want, f"off; {why}"
+    return row["severity"], want, ("off and no catalog-based solve confirmed yet: run the "
+                                   "TheSky Image Link self-test or record UCAC4 / Gaia")
+
+
+def _c_allsky_db(row, val, observed, config, ctx):
+    want = "installed while All Sky Image Link is on"
+    b = None if val is None else _bool(val)
+    if b is None:
+        return UNKNOWN, want, None
+    if b:
+        return PASS, want, None
+    if _allsky_on(observed) is False:
+        return INFO, want, "not needed: All Sky Image Link is off"
+    return row["severity"], want, None
 
 
 def _c_true_scale(row, val, observed, config, ctx):
@@ -591,6 +710,12 @@ def _c_tpoint_rebuild(row, val, observed, config, ctx):
     if not (observed.get("manual_record") or {}).get("model_date"):
         ctx["current"] = "unknown"
         return UNKNOWN, want, "no model date: enter the TPoint record below"
+    pl = observed.get("pointing-log") or {}
+    if pl.get("since_utc") and not pl.get("runs"):
+        # PS-120: slews from before the model say nothing about it
+        ctx["current"] = "pending"
+        return UNKNOWN, want, ("model fresh, same equipment; no NINA first slews since the "
+                               "model yet (n=0): judged after the next imaging night")
     ctx["current"] = "no"
     return PASS, want, None
 
@@ -611,8 +736,12 @@ def _c_first_slew_error(row, val, observed, config, ctx):
     meds = [(s, _num(st.get("median_arcmin")), st.get("n")) for s, st in sides.items()
             if st and st.get("n")]
     if not meds:
+        if pl.get("since_utc"):
+            ctx["current"] = "no slews since the model (n=0)"
         return UNKNOWN, want, pl.get("note") or "no NINA Center runs in the last 14 nights"
     ctx["current"] = " / ".join(f"{m:.1f}' {s} (n={n})" for s, m, n in meds)
+    if pl.get("since_utc"):
+        ctx["current"] += f" since the model ({pl.get('model_date')})"
     worst = max(m for _s, m, _n in meds)
     src = ", ".join(pl.get("side_src") or [])
     note = "side from the hour angle (no pier side in the log)" if src == "ha" else None
@@ -632,7 +761,7 @@ def _c_first_slew_pattern(row, val, observed, config, ctx):
             if st and st.get("n"):
                 bands.append((name, st))
     if not bands:
-        return UNKNOWN, want, "no NINA Center runs in the last 14 nights"
+        return UNKNOWN, want, pl.get("note") or "no NINA Center runs in the last 14 nights"
     ctx["current"] = "; ".join(
         f"{n}: {_g(st.get('median_arcmin'))}' (E {_g(st.get('median_east_arcmin'))}, "
         f"N {_g(st.get('median_north_arcmin'))})" for n, st in bands)
@@ -673,6 +802,8 @@ COMPUTED = {
     "ails_image_scale": _c_ails_image_scale,
     "ails_position_angle": _c_ails_position_angle,
     "imagelink_selftest": _c_imagelink_selftest,
+    "allsky": _c_allsky,
+    "allsky_db": _c_allsky_db,
     "true_scale": _c_true_scale,
     "camera_pa_stable": _c_camera_pa_stable,
     "parity": _c_parity,
@@ -816,6 +947,8 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
         uc = st.get("use_computer_clock")
         o["use_computer_clock"] = _bool(uc) if uc is not None else None
         jd = _f(st.get("jd_now"))
+        o["site_jd"] = jd
+        o["site_lst_h"] = _f(st.get("lst_h"))
         if jd:
             o["site_clock"] = round((jd - (t0 + t1) / 2.0) * 86400.0, 2)
             o["site_clock_latency_s"] = round((t1 - t0) * 86400.0 / 2.0, 3)
@@ -900,9 +1033,33 @@ def astap_observed(config) -> tuple[dict, list[dict], dict, dict]:
     return o, hist, latest, {"ok": True, "note": f"check {latest.get('t_utc')} on {latest.get('file')}"}
 
 
-def pointing_observed(config) -> tuple[dict, dict]:
+def model_cutoff_utc(rec: dict | None, config) -> datetime | None:
+    """PS-120: first slews older than the TPoint model say nothing about it.
+    The cutoff is the earlier of the record's entered_at and the end of the
+    model night (local noon after model_date), so no slew from before the
+    model is counted; a few slews between the build and the entry may be
+    left out (conservative). None without a model date."""
+    from photonscript.shared.localtime import utc_offset_hours
+    rec = rec or {}
+    md = _parse_date(rec.get("model_date"))
+    if not md:
+        return None
+    noon = datetime(md.year, md.month, md.day, 12) + timedelta(days=1)
+    try:
+        off = utc_offset_hours(config, noon + timedelta(hours=7))
+    except Exception:  # noqa: BLE001
+        off = float(getattr(config, "utc_offset_hours", -7.0))
+    end = noon - timedelta(hours=off)
+    ent = store.parse_z(rec.get("entered_at"))
+    if ent is None or ent < datetime(md.year, md.month, md.day):
+        return end                       # no (or an implausible) entry time
+    return min(end, ent)
+
+
+def pointing_observed(config, rec: dict | None = None) -> tuple[dict, dict]:
     from photonscript.scheduler import nina_center_log as ncl
-    s = ncl.summary(config, 14)
+    since = model_cutoff_utc(rec, config)
+    s = ncl.summary(config, 14, since_utc=since)
     o = dict(s)
     # the newest night that has a filter change in its NINA log
     for n in ncl._nights(s["end_night"], 3):
@@ -919,6 +1076,13 @@ def pointing_observed(config) -> tuple[dict, dict]:
     note = (f"{s['runs']} NINA Center runs in {s['nights']} nights" if ok else
             ("no NINA Center runs found" if s.get("logs_dir_found") else
              f"NINA logs folder {getattr(config, 'nina_logs_dir', '')} not found"))
+    if since is not None:
+        o["model_date"] = (rec or {}).get("model_date")
+        cut = f"since the TPoint model ({o['model_date']}, counted from {store.iso_z(since)})"
+        skipped = (f"; {s.get('before_since')} older run(s) ignored"
+                   if s.get("before_since") else "")
+        note = (f"{s['runs']} NINA Center runs {cut}{skipped}" if ok else
+                f"no slews since the model (n=0): first slews are counted {cut}{skipped}")
     o["note"] = note
     return o, {"ok": ok, "note": note}
 
@@ -952,16 +1116,17 @@ def collect(config, *, client=None, armer_state: str | None = None) -> dict:
         obs["astap"], obs["astap_history"], obs["imagelink"], src["astap"] = astap_observed(config)
     except Exception as e:  # noqa: BLE001
         src["astap"] = {"ok": False, "note": str(e)}
-    try:
-        obs["pointing-log"], src["pointing-log"] = pointing_observed(config)
-    except Exception as e:  # noqa: BLE001
-        src["pointing-log"] = {"ok": False, "note": str(e)}
+    rec = None
     try:
         rec = load_manual(config)
         obs["manual_record"] = rec or {}
         obs["manual"], src["manual"] = manual_observed(rec, config)
     except Exception as e:  # noqa: BLE001
         src["manual"] = {"ok": False, "note": str(e)}
+    try:
+        obs["pointing-log"], src["pointing-log"] = pointing_observed(config, rec)
+    except Exception as e:  # noqa: BLE001
+        src["pointing-log"] = {"ok": False, "note": str(e)}
     try:
         from photonscript.shared.rigs import rig_ids
         obs["rigs"] = rig_ids(config)
@@ -1264,7 +1429,7 @@ def _store_check(config, rec: dict, persist: bool) -> dict:
     return rec
 
 
-def compare_settings(check: dict, observed_ails: dict | None, run_bin: int = 2) -> dict:
+def compare_settings(check: dict, observed_ails: dict | None, run_bin: int = 1) -> dict:
     """The Image Link card: ASTAP truth next to TheSky's settings."""
     a = (check or {}).get("astap") or {}
     ns = a.get("native_scale")
