@@ -390,6 +390,7 @@ def test_tonight_sequence_helper_matches_download(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "get_config", lambda: _cfg(tmp_path))
     monkeypatch.setattr(app, "get_armer", lambda: _Armer())
     monkeypatch.setattr(app, "_projects", {})
+    monkeypatch.setattr(app, "_store", None)   # PS-126: readers load the store
     monkeypatch.setattr(app, "rank_targets_for_night", lambda *a, **k: [])
     monkeypatch.setattr(app, "plan_night_sequence", lambda *a, **k: s.targets)
     name, text, guided, dither = app._tonight_sequence(False)

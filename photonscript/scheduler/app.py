@@ -75,6 +75,19 @@ def get_config() -> PhotonScriptConfig:
     return _config
 
 
+def _stored_projects() -> dict[str, ImagingProject]:
+    """PS-126: `_projects` with the project store loaded first. get_store()
+    fills `_projects` lazily, so right after a restart a reader that came
+    first saw {} and planned from the seasonal fallback (2026-10-05:
+    Andromeda / Pacman / Owl instead of Heart / Cat's Eye). Every reader goes
+    through here; the startup hook also loads the store eagerly."""
+    try:
+        get_store()
+    except Exception as e:  # noqa: BLE001 (never break a page over the store)
+        logger.warning("project store load failed: %s", e)
+    return _projects
+
+
 # ---------------------------------------------------------------------------
 # WebSocket for live updates
 # ---------------------------------------------------------------------------
@@ -97,7 +110,8 @@ _bg_tasks: set = set()   # strong refs so background tasks are not GC'd
 def _state_payload() -> dict:
     return {
         "telescope": _telescope_state.model_dump(mode="json"),
-        "projects": {pid: p.model_dump(mode="json") for pid, p in _projects.items()},
+        "projects": {pid: p.model_dump(mode="json")
+                     for pid, p in _stored_projects().items()},
         "timestamp": datetime.utcnow().isoformat(),
     }
 
@@ -191,7 +205,8 @@ async def websocket_endpoint(ws: WebSocket):
         # every other send
         state = {
             "telescope": _telescope_state.model_dump(mode="json"),
-            "projects": {pid: p.model_dump(mode="json") for pid, p in _projects.items()},
+            "projects": {pid: p.model_dump(mode="json")
+                         for pid, p in _stored_projects().items()},
         }
         if await _send_ws(ws, json.dumps(state, default=str)) is not None:
             await _close_quietly(ws)
@@ -294,7 +309,7 @@ async def dashboard(request: Request):
     return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,
         "telescope_state": _telescope_state,
-        "projects": list(_projects.values()),
+        "projects": list(_stored_projects().values()),
         "twilight": twilight,
         "tonight_targets": ranked[:60],  # picker list — show everything well-placed tonight, not just the top 10
         "month": now.strftime("%B"),
@@ -310,14 +325,14 @@ async def api_status():
     return {
         "telescope": _telescope_state.model_dump(mode="json"),
         "rigs": {r: st.model_dump(mode="json") for r, st in _rig_states.items()},
-        "active_projects": len([p for p in _projects.values() if p.active]),
-        "total_projects": len(_projects),
+        "active_projects": len([p for p in _stored_projects().values() if p.active]),
+        "total_projects": len(_stored_projects()),
     }
 
 
 @app.get("/api/projects")
 async def api_list_projects():
-    return [p.model_dump(mode="json") for p in _projects.values()]
+    return [p.model_dump(mode="json") for p in _stored_projects().values()]
 
 
 @app.post("/api/projects")
@@ -329,22 +344,24 @@ async def api_create_project(request: Request):
         project.exposure_plans = [ExposurePlan(**ep) for ep in data["exposure_plans"]]
     if "priority" in data:
         project.priority = data["priority"]
-    _projects[project.id] = project
+    _stored_projects()[project.id] = project
     await broadcast_state()
     return project.model_dump(mode="json")
 
 
 @app.get("/api/projects/{project_id}")
 async def api_get_project(project_id: str):
-    if project_id not in _projects:
+    projects = _stored_projects()
+    if project_id not in projects:
         return JSONResponse({"error": "Project not found"}, status_code=404)
-    return _projects[project_id].model_dump(mode="json")
+    return projects[project_id].model_dump(mode="json")
 
 
 @app.delete("/api/projects/{project_id}")
 async def api_delete_project(project_id: str):
-    if project_id in _projects:
-        del _projects[project_id]
+    projects = _stored_projects()
+    if project_id in projects:
+        del projects[project_id]
         await broadcast_state()
     return {"status": "deleted"}
 
@@ -359,8 +376,9 @@ async def api_tonight_plan():
     month = now.month
 
     # Use existing projects if available, otherwise suggest seasonal
-    if _projects:
-        projects = list(_projects.values())
+    stored = _stored_projects()
+    if stored:
+        projects = list(stored.values())
     else:
         seasonal = get_seasonal_targets(month)
         ranked = rank_targets_for_night(seasonal, obs, now)
@@ -392,8 +410,9 @@ async def api_tonight_sequence_xml():
     config = get_config()
     now = datetime.utcnow()
 
-    if _projects:
-        projects = list(_projects.values())
+    stored = _stored_projects()
+    if stored:
+        projects = list(stored.values())
     else:
         obs = config.get_observatory()
         seasonal = get_seasonal_targets(now.month)
@@ -420,10 +439,7 @@ def _tonight_sequence(now_mode: bool = False):
     config = get_config()
     now = datetime.utcnow()
 
-    if _projects:
-        projects = [p for p in _projects.values() if p.active]
-    else:
-        projects = []
+    projects = [p for p in _stored_projects().values() if p.active]
     if not projects:
         obs = config.get_observatory()
         seasonal = get_seasonal_targets(now.month)
@@ -512,6 +528,13 @@ async def api_telescope_command(request: Request):
         payload=data,
     ))
     return {"status": "sent", "command": data.get("action")}
+
+
+@app.on_event("startup")
+async def _load_project_store():
+    """PS-126: load the project store at startup so nothing plans from the
+    seasonal fallback before the first get_store() call."""
+    await asyncio.to_thread(_stored_projects)
 
 
 @app.on_event("startup")
@@ -2203,7 +2226,8 @@ def _tracking_test_field(name: str, ra: float | None, dec: float | None,
                 tzinfo=None)
         except ValueError:
             when = None
-    projects = [p for p in _projects.values() if getattr(p, "active", False)]
+    projects = [p for p in _stored_projects().values()
+                if getattr(p, "active", False)]
     pick = tt.pick_target(get_config(), when, dur, projects)
     if name:  # a name with no coordinates: keep the name only if it is known
         for c in tt._candidates(projects):
@@ -2810,7 +2834,7 @@ def api_integration_readiness():
     PS-81: the counting lives in scheduler/readiness.py (shared with the
     Targets page and the campaign planner)."""
     from photonscript.scheduler.readiness import readiness_report
-    return readiness_report(get_config(), list(_projects.values()))
+    return readiness_report(get_config(), list(_stored_projects().values()))
 
 
 @app.post("/api/camera/cooler")
