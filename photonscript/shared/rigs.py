@@ -252,6 +252,24 @@ def rig_setpoint(config, rig: str) -> float:
     return float(getattr(config, "camera_setpoint_c", 0.0))
 
 
+def light_epoch_fields(hdr) -> dict:
+    """PS-122: the dark-matching epoch of a light from its FITS header (gain,
+    offset, binning, readout mode) for the subs log, so the Calibration owed
+    view can give off-epoch lights their own dark bucket. Missing keys -> None."""
+    def _int(v):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return None
+    get = getattr(hdr, "get", None)
+    if get is None:
+        return {"gain": None, "offset": None, "xbin": None, "readout": None}
+    ro = get("READOUTM")
+    return {"gain": _int(get("GAIN")), "offset": _int(get("OFFSET")),
+            "xbin": _int(get("XBINNING")),
+            "readout": str(ro).strip() if ro not in (None, "") else None}
+
+
 async def nina_sequence_stop(base_url: str) -> dict:
     """Stop whatever sequence a rig's NINA is running (ninaAPI GET
     sequence/stop; harmless if idle). The armer's dawn shutdown uses it on

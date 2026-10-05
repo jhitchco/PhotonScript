@@ -1,6 +1,8 @@
 """PS-113 calibration capture + QA endpoints (Calibration page).
 
 GET  /api/calibration/plan?rig=              needs vs have vs bad per rig
+GET  /api/calibration/owed?rig=              PS-122: calibration owed for the
+                                             lights already shot + tonight
 GET  /api/calibration/qa?rig=&limit=         QA summary + failing frames
 POST /api/calibration/qa/backfill            {"rig", "dry_run"}: QA the whole
                                              library in the background
@@ -52,6 +54,18 @@ def api_calibration_plan(rig: str = ""):
     if rig and rig not in rig_ids(cfg):
         return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
     return gap_report(cfg, rig or None)
+
+
+@router.get("/api/calibration/owed")
+def api_calibration_owed(rig: str = ""):
+    """PS-122: per rig, darks owed by epoch (the night quota's own count),
+    flats per filter, bias, uncalibrated nights, config fixes, constraints."""
+    from photonscript.scheduler.calibration_owed import owed_report
+    from photonscript.shared.rigs import rig_ids
+    cfg = _cfg()
+    if rig and rig not in rig_ids(cfg):
+        return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
+    return owed_report(cfg, rig or None)
 
 
 @router.get("/api/calibration/qa")

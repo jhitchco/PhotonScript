@@ -147,6 +147,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # darks + bias job per rig per day (ends 2 h
                                  # before sunset). Never at night. Off = only
                                  # the Capture now button / CLI start a job
+    calibration_owed_lookback_days: int = 60  # PS-122: the Calibration owed
+                                 # view reads lights of active goals from the
+                                 # last this many nights (report only)
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as

@@ -478,6 +478,17 @@ or "ERROR: ...". Masters in `out\master\`.
   with night ones; a leak disables daytime capture for that rig until
   `calibration-qa --rig R --reset-daytime`. `calibration_autofill` (daytime
   only) is off by default.
+- CALIBRATION OWED (PS-122): `GET /api/calibration/owed?rig=`, the Calibration
+  page "Calibration owed" cards and `photonscript calibration-owed` list, per
+  rig, the frames still needed for the lights of active goals over the last
+  `calibration_owed_lookback_days` (60) nights plus tonight's plan: darks per
+  (exposure, gain, offset, set temp) with have / need, flats per filter (last
+  set, count, age vs 45 d, lights since), bias, uncalibrated nights, and a
+  config fix when a light length is missing from the night quota list (e.g.
+  `PS_PIGGYBACK_DARK_EXPOSURES=120,300,400`). Darks are counted by
+  `calibration.dark_quota`, the same function the RC16 unsafe darks and the
+  Piggy-600 companion size their blocks with (QA-passed only once a rig has a
+  QA store). Lights logged since PS-122 carry gain / offset / xbin / readout.
 - Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout, one goal
   per panel.
 - Guiding tab at `/guiding` (PS-103): the working surface for PHD2. Live state

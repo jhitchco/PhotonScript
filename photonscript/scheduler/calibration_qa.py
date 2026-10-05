@@ -929,13 +929,21 @@ def count_passed_darks(config, rig: str, exp_s: float, *, gain, offset,
 def count_passed_bias(config, rig: str, *, gain, offset,
                       store: dict | None = None) -> int:
     """QA-passed bias of the epoch in its newest session that has any."""
+    by_date = passed_bias_sessions(config, rig, gain=gain, offset=offset,
+                                   store=store)
+    return by_date[max(by_date)] if by_date else 0
+
+
+def passed_bias_sessions(config, rig: str, *, gain, offset,
+                         store: dict | None = None) -> dict:
+    """PS-122: {date: QA-passed bias of the epoch} per session."""
     store = store or load_store(config, rig)
     by_date: dict[str, int] = {}
     for r in store["frames"].values():
         if r.get("type") == "BIAS" and passed(r) and r.get("gain") == gain \
                 and r.get("offset") == offset:
             by_date[r["date"]] = by_date.get(r["date"], 0) + 1
-    return by_date[max(by_date)] if by_date else 0
+    return by_date
 
 
 def count_passed_flats(config, rig: str, *, gain=None, offset=None,
@@ -944,6 +952,17 @@ def count_passed_flats(config, rig: str, *, gain=None, offset=None,
     """{canonical filter: QA-passed flats in that filter's newest session},
     only sessions within stale_days when given. The Piggy-600 (no wheel)
     counts everything as OSC."""
+    per = passed_flat_sessions(config, rig, gain=gain, offset=offset,
+                               stale_days=stale_days, store=store)
+    return {f: d[max(d)] for f, d in per.items()}
+
+
+def passed_flat_sessions(config, rig: str, *, gain=None, offset=None,
+                         stale_days: int | None = None,
+                         store: dict | None = None) -> dict:
+    """PS-122: {canonical filter: {date: QA-passed flats}}, only sessions
+    within stale_days when given. The Piggy-600 (no wheel) files everything
+    as OSC."""
     store = store or load_store(config, rig)
     try:
         rev = config.reverse_filter_map()
@@ -962,7 +981,7 @@ def count_passed_flats(config, rig: str, *, gain=None, offset=None,
         f = "OSC" if rig != "rc16" else rev.get(r.get("filter") or "?", r.get("filter") or "?")
         per.setdefault(f, {})
         per[f][r["date"]] = per[f].get(r["date"], 0) + 1
-    return {f: d[max(d)] for f, d in per.items()}
+    return per
 
 
 def format_report(rep: dict, config=None) -> str:
