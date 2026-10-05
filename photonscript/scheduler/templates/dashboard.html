@@ -661,16 +661,32 @@
         return on ? '<b style="color:#4ade80;">●</b>'
                   : '<span style="color:#f87171;">○</span>';
     }
-    function _fmtRa(ra) {
-        if (ra == null) return '';
-        const h = Math.floor(ra), m = Math.round((ra - h) * 60);
-        return h + 'h' + String(m).padStart(2, '0');
+    // PS-121: where the mount points. The strings come preformatted from
+    // /api/rigs devices.mount.view (shared/mount_view.py, RA from ninaAPI
+    // hours): '-' for every value when NINA #1's mount is not connected.
+    const _MOUNT_STATE_COL = {parked: '#4ade80', slewing: '#fbbf24',
+                              tracking: '#7dd3fc', stopped: '#94a3b8'};
+    function _mountState(v) {
+        const st = v.state || '-';
+        return '<b style="color:' + (_MOUNT_STATE_COL[st] || '#94a3b8') + ';">' +
+            st + '</b>';
     }
-    function _fmtDec(dec) {
-        if (dec == null) return '';
-        const s = dec < 0 ? '−' : '+', a = Math.abs(dec);
-        const d = Math.floor(a), m = Math.round((a - d) * 60);
-        return s + d + '°' + String(m).padStart(2, '0') + '′';
+    function _mountRows(v) {
+        const kv = (k, val) => '<span style="white-space:nowrap;"><span style="opacity:.6;">' +
+            k + '</span> ' + val + '</span>';
+        const ep = v.connected ? (v.epoch || 'epoch ?') : '-';
+        let out = _equipRow('Pointing',
+            kv('RA', v.ra || '-') + kv('Dec', v.dec || '-') +
+            '<span style="opacity:.6;font-size:.78rem;">(' + ep + ')</span>');
+        out += _equipRow('',
+            kv('Alt', (v.alt || '-') + (v.alt && v.alt !== '-' ? '&#176;' : '')) +
+            kv('Az', (v.az || '-') + (v.az && v.az !== '-' ? '&#176;' : '')) +
+            kv('Pier', v.pier || '-') + kv('HA', v.ha || '-'));
+        if (!v.connected && v.hint) {
+            out += _equipRow('', '<span style="opacity:.6;font-size:.78rem;">' +
+                v.hint + '</span>');
+        }
+        return out;
     }
     function _toggleBtn(id, label, state) {
         // state: 'on' (green) | 'off' (red) | 'unknown' (grey) | 'disabled'
@@ -749,19 +765,20 @@
             pane += _equipRow('Focuser ' + idx,
                 '<span style="white-space:nowrap;">' + _dot(!!foc.connected) + ' ' +
                 (foc.connected ? ('connected' + focPos) : 'not connected') + '</span>');
-            // Mount (RC16 owns it; shared with the piggyback) — what it points at
+            // Mount (RC16 owns it; shared with the piggyback): state, target,
+            // then where it points (PS-121: RA/Dec + epoch, Alt/Az, pier, HA)
             if (mnt) {
+                const v = mnt.view || {connected: !!mnt.connected};
                 let m;
                 if (!mnt.connected) m = _dot(false) + ' not connected';
-                else if (mnt.parked) m = _dot(true) + ' Parked — home';
-                else if (r.target) m = '<b style="color:#7dd3fc;white-space:nowrap;">&#8594; ' +
-                    r.target + '</b>';
-                else if (mnt.tracking) m = '<b style="color:#7dd3fc;">&#8594; tracking</b> ' +
-                    '<span style="opacity:.7;white-space:nowrap;">' +
-                    _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
-                else m = _dot(true) + ' <span style="opacity:.7;white-space:nowrap;">idle ' +
-                    _fmtRa(mnt.ra) + ' ' + _fmtDec(mnt.dec) + '</span>';
+                else if (mnt.parked) m = _dot(true) + ' Parked &#8212; home';
+                else {
+                    m = _dot(true) + ' ' + _mountState(v);
+                    if (r.target) m += ' <b style="color:#7dd3fc;white-space:nowrap;">&#8594; ' +
+                        r.target + '</b>';
+                }
                 pane += _equipRow('Mount', '<span>' + m + '</span>');
+                pane += _mountRows(v);
             }
             // Roof (piggyback only): does NINA #2 see the shared safety monitor?
             // That's what lets the companion shoot roof-closed darks/bias on arm.

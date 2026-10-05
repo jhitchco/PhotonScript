@@ -843,6 +843,12 @@ async def api_rigs():
                 entry["dec"] = payload.get("Declination")
                 entry["alt"] = payload.get("Altitude")
                 entry["az"] = payload.get("Azimuth")
+            if dev == "mount":
+                # PS-121: formatted pointing for the dashboard Mount row
+                # (RA in hours from ninaAPI; "-" values when not connected)
+                from photonscript.shared.mount_view import mount_view
+                entry["view"] = mount_view(payload if conn else None, conn,
+                                           lon_deg=cfg.observatory_lon, error=err)
             if dev == "safetymonitor" and conn and payload:
                 entry["safe"] = payload.get("IsSafe")
             if err:

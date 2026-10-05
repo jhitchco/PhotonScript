@@ -326,8 +326,11 @@ class TelescopeState(BaseModel):
     current_target: Optional[str] = None
     current_filter: Optional[FilterType] = None
     current_exposure_progress: float = 0.0  # 0-1
-    mount_ra: Optional[float] = None
-    mount_dec: Optional[float] = None
+    mount_ra: Optional[float] = None    # HOURS, as ninaAPI reports (not x15)
+    mount_dec: Optional[float] = None   # degrees
+    mount_alt: Optional[float] = None   # PS-121: degrees (None = not reported)
+    mount_az: Optional[float] = None    # PS-121: degrees
+    mount_connected: Optional[bool] = None  # PS-121: NINA #1 mount Connected
     mount_tracking: bool = False
     mount_at_park: Optional[bool] = None       # PS-91 guard (D3)
     mount_slewing: Optional[bool] = None

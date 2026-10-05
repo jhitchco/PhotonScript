@@ -657,6 +657,11 @@ class TelescopeAgent:
                     self.state.mount_at_park = mount.get("AtPark")
                     self.state.mount_slewing = mount.get("Slewing")
                     self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
+                    # PS-121: alt / az and Connected for /api/status
+                    self.state.mount_alt = mount.get("Altitude")
+                    self.state.mount_az = mount.get("Azimuth")
+                    conn = mount.get("Connected")
+                    self.state.mount_connected = None if conn is None else bool(conn)
                     self._log_mount(mount)
 
                 if getattr(self, "rig", "rc16") == "rc16":
