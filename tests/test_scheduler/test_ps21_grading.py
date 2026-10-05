@@ -132,11 +132,13 @@ def test_backfill_record_carries_scorecard_and_rescore_reproduces_it(tmp_path):
     cfg = _cfg(tmp_path)
     f = _write_light(tmp_path / "fits" / NIGHT / "LIGHT" / "b_Ha_300s_0001.fits")
     rec = _fast_grade(f, cfg, [], stars_to=(NIGHT, "LIGHT/b_Ha_300s_0001.fits"))
-    assert rec["rig"] == "rc16" and rec["graded_by"] == "sep-binned"
+    assert rec["rig"] == "rc16" and rec["graded_by"] == "backfill-sep"
     assert rec["setpoint_c"] == 0.0 and rec["set_temp"] == 0.0
     assert _rescored(cfg, rec) == rec["scorecard"]
+    # PS-83: the shared measure gives a true FWHM, judged like live
+    assert rec["measure_v"] and rec["fwhm_arcsec"] is not None
     fw = next(r for r in rec["scorecard"]["rows"] if r[0] == "fwhm")
-    assert fw[3] == "skip"          # no true FWHM in this grader
+    assert fw[3] != "skip"
 
 
 def test_hot_sensor_rejected_the_same_way_by_both_graders(tmp_path):
@@ -171,7 +173,7 @@ def test_both_graders_write_the_star_sidecar(tmp_path):
     star_table.sidecar_path(cfg, NIGHT, rel, "rc16").unlink()
     back = _fast_grade(f, cfg, [], stars_to=(NIGHT, rel))
     t = star_table.read(cfg, NIGHT, rel, "rc16")
-    assert t and t["grader"] == "sep-binned" and t["w"] == 420
+    assert t and t["grader"] == "backfill-sep" and t["w"] == 420
     assert abs(float(np.median(t["hfr"])) - back["hfr"]) < 0.1
     assert max(t["x"]) > 300          # native coordinates, not binned
     assert len(json.dumps(t)) < 40_000
@@ -220,12 +222,14 @@ def test_live_and_backfill_parity_on_the_same_metrics(tmp_path, monkeypatch,
     monkeypatch.setattr(agent_mod, "validate_image", fake_validate)
     monkeypatch.setattr(runs, "_load_binned",
                         lambda p, **kw: (hdr, np.zeros((8, 8), np.float32)))
-    monkeypatch.setattr(runs, "_measure", lambda b, c: {
-        **mets, "doubled_frac": None, "graded_by": "sep-binned",
-        "_stars": None})
-    # PS-94: no native re-measure here (it would read the real 64 px frame);
-    # the backfill then keeps the binned value for both ecc and ecc_bin
-    monkeypatch.setattr(runs, "_measure_native", lambda p: None)
+    monkeypatch.setattr(runs, "_measure", lambda b, c=None: {
+        "doubled_frac": None})
+    # PS-83: the shared measure returns the same metrics to the backfill
+    monkeypatch.setattr(runs, "_measure_native", lambda p, *a, **k: {
+        **mets, "fwhm_arcsec": None, "ecc_bin": mets["ecc"], "hfr_bin": None,
+        "stars_bin": None, "corner_spread": None, "measure_at": "native",
+        "ecc_def": "sqrt(1-(b/a)^2)", "measure_v": "test",
+        "graded_by": "backfill-sep", "star_table": None, "_stars": None})
 
     back = runs._fast_grade(f, cfg, [])
     asyncio.run(_agent(cfg, temp=0.4)._process_new_image(f))
@@ -540,7 +544,8 @@ def test_ps94_backfill_records_both_scales_in_sqrt_form(tmp_path):
     rec = _fast_grade(f, cfg, [], stars_to=(NIGHT, rel))
     assert rec["ecc_def"] == "sqrt(1-(b/a)^2)" and rec["ecc_at"] == "native"
     assert rec["ecc"] is not None and rec["ecc_bin"] is not None
-    assert rec["hfr_bin"] == rec["hfr"]
+    # PS-83: hfr is the native measure, hfr_bin the 0.48"/px one
+    assert rec["hfr_bin"] == pytest.approx(rec["hfr"], rel=0.2)
     # round synthetic stars read round at both scales
     assert rec["ecc"] < 0.25 and rec["ecc_bin"] < 0.3
     assert _rescored(cfg, rec) == rec["scorecard"]

@@ -101,11 +101,19 @@ Check a pending update on the scope without switching: `photonscript self-update
    0.24"/px frame; RC16 subs are also measured on a 2x2-binned copy,
    `ecc_bin` at 0.48"/px, PS-94), skips calibration frames (path part or
    IMAGETYP != LIGHT), applies tracking-RMS rejection only while PHD2 reports
-   guiding/settling. The backfill grader measures the 2x2-binned frame (plus
-   native ecc with the live pipeline). Every ecc is sqrt(1-(b/a)^2); records
-   say so in `ecc_def` (older backfill records held 1-b/a and are converted
-   on read and on rescore). `qa_ecc_scale` (native, default, or binned)
-   picks which scale gates; the other is shown as info only.
+   guiding/settling. PS-83: the live and the backfill grader measure with
+   ONE function, `shared.star_measure.measure_frame`, on the same native
+   frame (HFR, FWHM, ecc, star count capped at the brightest 400,
+   background, noise, swamp, saturation, `ecc_bin`), so the same sub gets
+   the same numbers from either; records say `measure_v`. Backfill records
+   from before PS-83 hold a binned HFR about 2x the live one (13 to 15 px
+   vs 6.5 to 7 px on the 09-26 Crescent Ha subs), an uncapped star count
+   and HFR x scale as FWHM (not judged); re-grade the night to refresh them
+   (`qa-rescore` only re-judges stored numbers). Every ecc is
+   sqrt(1-(b/a)^2); records say so in `ecc_def` (older backfill records held
+   1-b/a and are converted on read and on rescore). `qa_ecc_scale` (native,
+   default, or binned) picks which scale gates; the other is shown as info
+   only.
 4. Morning: runs page `/runs/YYYY-MM-DD` (permalinks work) shows plan vs
    actual, the honest funnel (dark hours -> shutter hours -> accepted hours;
    sky utilization = accepted/dark), 4-state sub review

@@ -71,6 +71,7 @@ def regrade_parked(config, date: str, apply: bool = False,
                    extra_unsafe: list[tuple] | None = None) -> dict:
     from photonscript.scheduler.runs import (_load_subs, _rewrite_subs,
                                              library_root, sync_goal_progress)
+    from photonscript.shared.qa_rules import record_fwhm
     from photonscript.shared.qa_signatures import parked_frame_verdict
     from photonscript.shared.rigs import rig_config
     from photonscript.shared.safety_history import unsafe_windows
@@ -87,8 +88,9 @@ def regrade_parked(config, date: str, apply: bool = False,
         start = _start_of(rec)
         v = parked_frame_verdict(
             cfg, hfr_px=rec.get("hfr"),
-            # live records carry a real FWHM; backfill ones carry HFR x scale
-            fwhm_arcsec=None if rec.get("graded_by") else rec.get("fwhm_arcsec"),
+            # live and PS-83 records carry a real FWHM; older backfill
+            # ones carry HFR x scale (qa_rules.record_fwhm)
+            fwhm_arcsec=record_fwhm(rec),
             background=rec.get("background"), exp_s=rec.get("exp_s"),
             stars=rec.get("stars"), start_utc=start, unsafe_windows=wins)
         if not v.reject:
