@@ -760,6 +760,14 @@
                 (camOn ? 'connected' : 'not connected') + '</span>' +
                 _toggleBtn('cool-' + r.rig, coolLabel, coolState) +
                 _toggleBtn('dew-' + r.rig, dewLabel, dewState));
+            // PS-61 cooler gate: lights held / skipped while off setpoint
+            if (cam.cooler_note) {
+                const note = String(cam.cooler_note).replace(/&/g, '&amp;')
+                    .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                const hot = /^not imaging|WARM/.test(cam.cooler_note);
+                pane += _equipRow('', '<span style="white-space:normal;color:' +
+                    (hot ? '#f87171' : '#fbbf24') + ';">&#10052; ' + note + '</span>');
+            }
             // Focuser N: status + position
             const focPos = (foc.position != null) ? ' @ ' + foc.position : '';
             pane += _equipRow('Focuser ' + idx,

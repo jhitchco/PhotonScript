@@ -486,6 +486,52 @@ def phd2_selftest(
     raise typer.Exit(0 if rep.get("verdict") in ("PASS", "WARN", "SKIPPED") else 1)
 
 
+@app.command("cooler-gate")
+def cooler_gate_cmd(
+    rig: str = typer.Argument("rc16", help="rc16 | piggyback"),
+    setpoint: Optional[float] = typer.Option(
+        None, "--setpoint", help="Setpoint (C) the sequence cooled to "
+                                 "(default: the rig's configured setpoint)"),
+    label: str = typer.Option("", "--label", help="Target + filter, for the "
+                                                  "messages"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA's ExternalScript item "
+                                        "(deploy\\cooler-gate.cmd)"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-61: hold until the rig's sensor is within cooler_gate_tolerance_c
+    of the setpoint (POST /api/cooler/gate), at most cooler_gate_timeout_min.
+    Exit 3 ONLY when the gate says SKIP (deploy\\cooler-gate.cmd turns that
+    into exit 1, and NINA skips the light block); exit 0 on a pass, in warn
+    mode, and on any error (the gate fails open)."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    from photonscript.scheduler.cooler_gate import EXIT_SKIP
+    q = {"rig": rig, "label": label}
+    if setpoint is not None:
+        q["setpoint"] = f"{setpoint:g}"
+    try:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        timeout = float(getattr(cfg, "cooler_gate_timeout_min", 20.0)) * 60 + 120
+    except Exception:  # noqa: BLE001
+        timeout = 1320.0
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/cooler/gate?" + urllib.parse.urlencode(q),
+            data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+        print(f"cooler gate ({rig}{' ' + label if label else ''}"
+              f"{', from NINA' if from_nina else ''}): {rep.get('verdict')} "
+              f"- {rep.get('reason', '')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"cooler gate not run ({e}); imaging anyway")
+        rep = {"verdict": "UNKNOWN"}
+    raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
+
+
 @app.command()
 def report(
     date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),

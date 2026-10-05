@@ -1,0 +1,12 @@
+"""Suite-wide fixtures."""
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _cooler_gate_off(monkeypatch):
+    """PS-61: the cooler gate is emitted only when its script exists on the
+    machine, so a generated sequence would differ between the desktop and
+    the scope PC (where deploy\\cooler-gate.cmd exists). Pin it off for the
+    suite; tests/test_scheduler/test_ps61_cooler_gate.py turns it on."""
+    monkeypatch.setenv("PS_COOLER_GATE_MODE", "off")

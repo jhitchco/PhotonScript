@@ -173,6 +173,82 @@ def _check_light_loop_guards(seq: dict, r: LintResult) -> None:
                                       "starting subs after the night loop's end")
 
 
+def _cooler_gate_wanted() -> tuple[str, str | None]:
+    """PS-61: (mode, script path when the gate should be in the sequence,
+    else None). ("off", None) if the config can't be read."""
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        from photonscript.scheduler.cooler_gate import gate_mode, gate_script
+        c = PhotonScriptConfig()
+        return gate_mode(c), gate_script(c)
+    except Exception:
+        return "off", None
+
+
+def _is_cooler_gate(item: dict) -> bool:
+    from photonscript.scheduler.cooler_gate import GATE_SCRIPT_TOKEN
+    return ("ExternalScript" in item.get("$type", "")
+            and GATE_SCRIPT_TOKEN in str(item.get("Script", "")).lower())
+
+
+def _check_cooler_gate(seq: dict, r: LintResult,
+                       expected: bool | None = None) -> None:
+    """PS-61 rule cooler-gate: with the gate on, every LIGHT TakeExposure
+    must be preceded, in its own or an ancestor container, by the
+    cooler-gate ExternalScript, so no light starts before the sensor is at
+    its setpoint. In skip mode the gate must carry ErrorBehavior 1
+    (SkipInstructionSetOnError) or a timeout would not skip anything.
+    expected=None reads the config (mode on and the script present on this
+    machine); mode on with the script missing is a warning (the generator
+    then emits no gate and says so in the sequence)."""
+    mode, script = _cooler_gate_wanted()
+    if expected is None:
+        if mode != "off" and script is None:
+            r.warn("cooler-gate", "cooler gate is on but its script was not "
+                                  "found on this machine: lights are not held "
+                                  "for the setpoint tonight")
+        expected = script is not None
+    if not expected:
+        return
+    ungated: list[str] = []
+    gates: list[dict] = []
+
+    def visit(node: dict, gated: bool, path: str) -> None:
+        items = (node.get("Items") or {}).get("$values", []) \
+            if isinstance(node.get("Items"), dict) else []
+        here = f"{path}/{node.get('Name')}" if node.get("Name") else path
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if _is_cooler_gate(it):
+                gates.append(it)
+                gated = True
+                continue
+            if ("Imaging.TakeExposure" in it.get("$type", "")
+                    and str(it.get("ImageType", "LIGHT")).upper() == "LIGHT"
+                    and not gated):
+                ungated.append(here or "?")
+            if isinstance(it.get("Items"), dict):
+                visit(it, gated, here)
+
+    visit(seq, False, "")
+    if ungated:
+        uniq = sorted(set(ungated))
+        more = f" (+{len(uniq) - 3} more)" if len(uniq) > 3 else ""
+        r.error("cooler-gate", f"{len(uniq)} light loop(s) start without the "
+                "cooler gate before them, so they can shoot off the setpoint: "
+                + "; ".join(uniq[:3]) + more)
+    if mode == "skip":
+        bad = [g for g in gates if g.get("ErrorBehavior") != 1]
+        if bad:
+            r.error("cooler-gate", f"{len(bad)} cooler gate(s) without "
+                    "ErrorBehavior 1 (SkipInstructionSetOnError): a timeout "
+                    "would not skip the block")
+    if any(int(g.get("Attempts", 1) or 1) > 1 for g in gates):
+        r.warn("cooler-gate", "a cooler gate has Attempts > 1: each retry "
+                              "holds another full timeout")
+
+
 def _force_cal_wanted() -> bool:
     """PS-72: does the config ask the night's first StartGuiding to force a
     PHD2 calibration? Defaults to False if the config can't be read."""
@@ -282,10 +358,12 @@ def _check_selftest(seq: dict, r: LintResult) -> None:
 
 
 def lint(seq: dict, guided: bool | None = None,
-         unguided_dither: bool = False) -> LintResult:
+         unguided_dither: bool = False,
+         cooler_gate: bool | None = None) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content.
     unguided_dither (PS-66): an unguided run may carry active dithers (NINA
-    Direct Guider); StartGuiding is still an error."""
+    Direct Guider); StartGuiding is still an error. cooler_gate (PS-61):
+    require the gate before every light loop (None = from the config)."""
     r = LintResult()
 
     if guided is None:
@@ -304,6 +382,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_focus_moves(seq, r)
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)
+    _check_cooler_gate(seq, r, cooler_gate)
 
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")

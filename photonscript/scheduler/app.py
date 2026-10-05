@@ -728,6 +728,10 @@ _CONFIG_FIELDS = [
     ("unsafe_stop_grace_s", "PS_UNSAFE_STOP_GRACE_S", "Unsafe this long with SAFE_LOOP still running before the armer stops NINA (s)", "Nanny / Alerts", "int", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
     ("cooler_stuck_minutes", "PS_COOLER_STUCK_MINUTES", "Cooler nanny: alert if still warm this many min into the window", "Imaging", "int", False, False),
+    ("cooler_gate_mode", "PS_COOLER_GATE_MODE", "Cooler gate before lights (PS-61): skip (hold, then skip the block) | warn (hold, alert, image anyway) | off", "Imaging", "str", False, False),
+    ("cooler_gate_tolerance_c", "PS_COOLER_GATE_TOLERANCE_C", "Cooler gate: sensor within setpoint +/- this (C) before lights", "Imaging", "float", False, False),
+    ("cooler_gate_timeout_min", "PS_COOLER_GATE_TIMEOUT_MIN", "Cooler gate: hold at most this long (min), then alert + skip", "Imaging", "float", False, False),
+    ("cooler_gate_script", "PS_COOLER_GATE_SCRIPT", "Cooler gate script NINA runs (deploy\\cooler-gate.cmd on the scope PC)", "Imaging", "str", False, False),
     ("sub_temp_over_setpoint_c", "PS_SUB_TEMP_OVER_SETPOINT_C", "Reject subs this many °C above setpoint", "Imaging", "float", False, False),
     ("sub_temp_max_c", "PS_SUB_TEMP_MAX_C", "Reject subs with sensor above (°C)", "Imaging", "float", False, False),
     ("cool_lead_minutes", "PS_COOL_LEAD_MINUTES", "Cooler + dew heater ON this many min before astro dark", "Imaging", "int", False, False),
@@ -832,6 +836,15 @@ async def api_rigs():
                 entry["cooler_power"] = cp
                 # window dew heater (OGMA/ToupTek); some drivers don't report it
                 entry["dew_heater_on"] = payload.get("DewHeaterOn")
+            if dev == "camera":
+                # PS-61: "waiting for cooler: X C -> Y C" / "not imaging"
+                try:
+                    from photonscript.scheduler.cooler_gate import camera_row_note
+                    entry["cooler_note"] = camera_row_note(
+                        cfg, rig, entry.get("temp_c"), entry.get("cooler_on"),
+                        str(getattr(get_armer(), "state", "") or ""))
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("cooler note skipped: %s", e)
             if dev == "focuser" and conn and payload:
                 entry["position"] = payload.get("Position")
                 entry["temp_c"] = payload.get("Temperature")
@@ -2906,6 +2919,8 @@ from photonscript.scheduler.routers import pointing as _pointing_router  # noqa:
 app.include_router(_pointing_router.router)
 from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
 app.include_router(_calibration_router.router)
+from photonscript.scheduler.routers import cooler as _cooler_router  # noqa: E402
+app.include_router(_cooler_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

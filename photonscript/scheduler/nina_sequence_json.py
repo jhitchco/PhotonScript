@@ -50,6 +50,10 @@ TARGET_FOCUS_CAL_SUFFIX = " focus calibration AFs"
 TRACKING_TEST_PREFIX = "Tracking test "
 TARGET_TRACKING_LADDER_SUFFIX = " unguided ladder"
 FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
+# PS-61: with the cooler gate on, each light block is its own container
+# "<target> filter block (cooler-gated)" whose first item is the gate, so a
+# gate SKIP interrupts just that block.
+TARGET_BLOCK_SUFFIX = " filter block (cooler-gated)"
 SAFE_LOOP_NAME = "SAFE_LOOP"
 RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
 TARGETS_LOOP_NAME = "TARGETS_CONTAINER"
@@ -413,6 +417,46 @@ def _external_script(path: str, arg: str = "") -> dict:
     return _make_typed("NINA.Sequencer.SequenceItem.Utility.ExternalScript, "
                        "NINA.Sequencer", Script=script, ErrorBehavior=0,
                        Attempts=1)
+
+
+# PS-61: the cooler gate's ErrorBehavior in "skip" mode. 1 =
+# SkipInstructionSetOnError (ordinals verified above, GUIDING_ERROR_BEHAVIOR):
+# when the gate script exits non-zero (only on a deliberate SKIP, see
+# deploy/cooler-gate.cmd) NINA interrupts the gate's own container, i.e. that
+# one light block or OSC image pass, and the loop above it moves on. Attempts
+# stays 1: a retry would hold another full timeout.
+COOLER_GATE_ERROR_BEHAVIOR = 1
+
+
+def _cooler_gate(gate, rig: str, label: str) -> dict:
+    """PS-61 ExternalScript gate before lights. gate = (script path, setpoint
+    C, mode) from _cooler_gate_spec. In "warn" mode the script never exits
+    non-zero, and ErrorBehavior 0 keeps it harmless either way."""
+    from photonscript.scheduler.cooler_gate import script_args
+    path, setpoint, mode = gate
+    item = _external_script(path, script_args(rig, setpoint, label))
+    item["ErrorBehavior"] = COOLER_GATE_ERROR_BEHAVIOR if mode == "skip" else 0
+    return item
+
+
+def _cooler_gate_spec(cfg, setpoint: float):
+    """(script, setpoint, mode) when the sequences should carry the gate,
+    else None (mode off, or the script missing on this machine)."""
+    from photonscript.scheduler.cooler_gate import gate_mode, gate_script
+    path = gate_script(cfg)
+    return (path, float(setpoint), gate_mode(cfg)) if path else None
+
+
+def _cooler_gate_missing_notice(cfg) -> list:
+    """Mode on but no script here: say so in the sequence and on Pushover,
+    so an ungated night is never silent."""
+    from photonscript.scheduler.cooler_gate import gate_mode
+    if gate_mode(cfg) == "off":
+        return []
+    path = str(getattr(cfg, "cooler_gate_script", "") or "")
+    msg = (f"cooler gate OFF tonight: script {path or '(unset)'} not found, so "
+           "lights are not held for the setpoint (PS-61)")
+    return [_annotation(msg), _pushover("Startup", msg)]
 
 
 def _selftest_script(cfg) -> str | None:
@@ -793,7 +837,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             focus_offsets: dict | None = None,
                             loop_end: tuple | None = None,
                             selftest_script: str | None = None,
-                            unguided_dither: bool = False) -> dict:
+                            unguided_dither: bool = False,
+                            cooler_gate: tuple | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> exposures.
@@ -819,14 +864,21 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     LOOP_ALL_NIGHT TimeCondition). PS-77: every LIGHT SmartExposure carries
     SafetyMonitorCondition + this TimeCondition itself, and the temperature /
     HFR refocus triggers ride on each SmartExposure with the block's own
-    AF-filter + offset recipe instead of on the target container."""
+    AF-filter + offset recipe instead of on the target container.
+
+    cooler_gate (PS-61, _cooler_gate_spec): each light block becomes its own
+    container "<target> filter block (cooler-gated)" that starts with the
+    cooler-gate ExternalScript, so lights wait for the setpoint and a gate
+    SKIP (sensor still off after the timeout) skips only that block; the
+    imaging loop retries it on its next pass. None = the flat block list, as
+    before."""
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets)
     if getattr(target, "tracking_test", False):
         return _build_tracking_test_container(target, min_altitude,
                                               af_filter, focus_offsets,
-                                              loop_end)
+                                              loop_end, cooler_gate)
     chatty_block = narrate == "verbose"          # per-block starting/done pair
     narrate_steps = narrate in ("verbose", "normal")  # per-target step lines
     # PS-105: planner copies arrive with acquired 0 (count = still owed, see
@@ -990,6 +1042,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                 "Imaging",
                 f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
                 f"done ({n}×{exp.exposure_seconds:.0f}s attempted)"))
+        if cooler_gate:
+            # PS-61: gate first (before the AF: no point focusing for a block
+            # that will not shoot), in a container of its own so a SKIP
+            # interrupts this block only.
+            gate = _cooler_gate(cooler_gate, "rc16",
+                                f"{target.name} {exp.filter_type.value}")
+            return [_seq_container(f"{target.name}{TARGET_BLOCK_SUFFIX}",
+                                   [gate] + out)]
         return out
 
     n_blocks = len(ordered)
@@ -1214,7 +1274,8 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
                                    min_altitude: float,
                                    af_filter: "FilterType | None",
                                    focus_offsets: dict | None,
-                                   loop_end: tuple | None) -> dict:
+                                   loop_end: tuple | None,
+                                   cooler_gate: tuple | None = None) -> dict:
     """PS-84 unguided tracking test (TPoint + ProTrack check on the Paramount
     MX): StopGuiding, cool, slew, AF on the reference filter (L), center, then
     for each filter an exposure ladder with `tracking_test_repeats` subs per
@@ -1269,7 +1330,10 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
         _pushover("Imaging", f"{target.name}: focused on {ref.value}, "
                   "centered, guiding stopped - starting the unguided ladder"),
     ]
-    ladder = []
+    # PS-61: one cooler gate in front of the whole ladder; a SKIP interrupts
+    # the ladder container (it runs once per entry anyway).
+    ladder = ([_cooler_gate(cooler_gate, "rc16", f"{target.name} ladder")]
+              if cooler_gate else [])
     for i, f in enumerate(filters):
         off = _focus_offset(ref, f, focus_offsets)
         if i > 0:
@@ -1600,6 +1664,13 @@ def generate_nina_json(sequence: NinaSequenceFile,
         start_items.append(cal_slot)
 
     # ---- Targets area: the night loop -------------------------------------
+    # PS-61: the cooler gate holds every light block until the sensor is
+    # within cooler_gate_tolerance_c of the temperature the Start area cooled
+    # to (`temp`); None when off or the script is missing here (then the
+    # Start area says so).
+    gate = _cooler_gate_spec(_cfg, temp)
+    if gate is None:
+        start_items += _cooler_gate_missing_notice(_cfg)
     target_containers = []
     first_guided = True
     force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", False))
@@ -1614,7 +1685,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     focus_offsets=_cfg.focus_offset_map(),
                                     loop_end=(dawn_provider, dawn_offset),
                                     selftest_script=selftest,
-                                    unguided_dither=unguided_dither)
+                                    unguided_dither=unguided_dither,
+                                    cooler_gate=gate)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
