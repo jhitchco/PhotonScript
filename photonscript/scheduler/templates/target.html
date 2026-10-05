@@ -177,7 +177,9 @@ function renderFacts() {
     if (!g) { document.getElementById('tGoal').textContent = 'no imaging project'; return; }
     document.getElementById('tGoal').innerHTML = '<div>' + g.pct + '% \u00b7 ' + g.hours_done +
         ' of ' + g.hours_goal + ' h</div>' + g.plans.map(p => {
-            const pct = p.count ? Math.min(100, Math.round(p.acquired / p.count * 100)) : 0;
+            // PS-118: the bar follows accepted seconds, not whole subs
+            const pct = p.pct != null ? Math.min(100, p.pct)
+                : (p.count ? Math.min(100, Math.round(p.acquired / p.count * 100)) : 0);
             return '<div style="margin-top:.35rem;"><b style="color:' + (FC[p.filter] || '#94a3b8') +
                 ';">' + esc(p.filter) + '</b> ' + p.acquired + ' / ' + p.count + ' x ' +
                 Math.round(p.exposure_s) + 's \u00b7 ' + p.hours_done + ' / ' + p.hours_goal + ' h' +

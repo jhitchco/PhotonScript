@@ -183,10 +183,15 @@ def test_goal_sync_counts_container_named_subs(tmp_path, monkeypatch):
         dec_degrees=61.5, object_type="emission nebula"), budget_hours=5.0)
     store.update(proj.id, filter_mix={"Ha": 50, "OIII": 50})
     monkeypatch.setattr(app, "_store", store)
-    _write(cfg, [_row(HEART_C, "2026-09-27T02:00:00", filt="OIII"),
-                 _row(HEART_C, "2026-09-27T02:10:00", filt="OIII"),
-                 _row("Heart Nebula", "2026-09-27T02:20:00", filt="OIII"),
-                 _row(HEART_C, "2026-09-27T02:30:00", filt="OIII", ok=False),
+    # PS-118: subs at the plan's length, so seconds and counts agree
+    oiii_s = next(e for e in proj.exposure_plans
+                  if e.filter_type.value == "OIII").exposure_seconds
+    _write(cfg, [_row(HEART_C, "2026-09-27T02:00:00", filt="OIII", exp=oiii_s),
+                 _row(HEART_C, "2026-09-27T02:10:00", filt="OIII", exp=oiii_s),
+                 _row("Heart Nebula", "2026-09-27T02:20:00", filt="OIII",
+                      exp=oiii_s),
+                 _row(HEART_C, "2026-09-27T02:30:00", filt="OIII", ok=False,
+                      exp=oiii_s),
                  _row(OSC_C, "2026-09-27T02:31:00", rig="piggyback",
                       filt="OSC")])
     runs.sync_goal_progress(cfg)

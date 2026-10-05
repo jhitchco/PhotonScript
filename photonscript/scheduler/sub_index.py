@@ -396,30 +396,37 @@ def _top_reasons(rs: list[dict], n: int = 5) -> list[dict]:
 
 
 def _goal(project) -> dict | None:
+    """Goal progress for the Targets pages. PS-118: hours and % come from
+    accepted SECONDS (ExposurePlan.long_seconds_done), so subs longer or
+    shorter than the plan count for what they hold. `acquired` stays the
+    whole plan subs' worth (floor), the number the planner subtracts; % is
+    capped at 100 per plan so an over-done plan does not carry another."""
     if project is None:
         return None
     plans = []
-    total = done = 0
-    h_goal = h_done = 0.0
+    h_goal = h_done = pct_done = 0.0
     for e in project.exposure_plans:
         has_short = bool(e.hdr_short_seconds and e.hdr_short_count)
+        long_goal = e.count * e.exposure_seconds
+        long_done = e.long_seconds_done()
+        short_goal = e.hdr_short_count * e.hdr_short_seconds if has_short else 0
+        short_done = (e.hdr_short_acquired * e.hdr_short_seconds
+                      if has_short else 0)
         plans.append({
             "filter": e.filter_type.value, "count": e.count,
             "acquired": e.acquired, "exposure_s": e.exposure_seconds,
-            "hours_goal": round(e.count * e.exposure_seconds / 3600, 2),
-            "hours_done": round(e.acquired * e.exposure_seconds / 3600, 2),
+            "hours_goal": round(long_goal / 3600, 2),
+            "hours_done": round(long_done / 3600, 2),
+            "pct": round(min(long_done, long_goal) / long_goal * 100)
+            if long_goal else 0,
             "hdr_short": {"exposure_s": e.hdr_short_seconds,
                           "count": e.hdr_short_count,
                           "acquired": e.hdr_short_acquired}
             if has_short else None})
-        total += e.count + (e.hdr_short_count if has_short else 0)
-        done += e.acquired + (min(e.hdr_short_acquired, e.hdr_short_count)
-                              if has_short else 0)
-        h_goal += e.count * e.exposure_seconds + (
-            e.hdr_short_count * e.hdr_short_seconds if has_short else 0)
-        h_done += e.acquired * e.exposure_seconds + (
-            e.hdr_short_acquired * e.hdr_short_seconds if has_short else 0)
-    return {"pct": round(done / total * 100) if total else 0,
+        h_goal += long_goal + short_goal
+        h_done += long_done + short_done
+        pct_done += min(long_done, long_goal) + min(short_done, short_goal)
+    return {"pct": round(pct_done / h_goal * 100) if h_goal else 0,
             "hours_goal": round(h_goal / 3600, 1),
             "hours_done": round(h_done / 3600, 1), "plans": plans}
 

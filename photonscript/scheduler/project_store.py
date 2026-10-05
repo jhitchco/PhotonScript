@@ -137,6 +137,18 @@ def osc_plan(hours: float, config, acquired: int = 0) -> ExposurePlan:
         acquired=min(acquired, count), rig=PIGGYBACK_RIG)
 
 
+def _carry_seconds(new: ExposurePlan, old_len: float, old_s: float) -> None:
+    """Carry accepted long-set seconds onto a rebuilt plan. Same sub length:
+    keep partial seconds (PS-66, a lone capped sub). PS-118: a new sub length
+    keeps the SECONDS, not the sub count (the goal is seconds), so 10 x 600 s
+    accepted is 20 x 300 s on a 300 s plan, not 10."""
+    if old_len == new.exposure_seconds:
+        new.acquired_s = max(new.acquired_s, old_s)
+        return
+    new.acquired_s = float(old_s)
+    new.acquired = min(new.subs_from_seconds(new.acquired_s), new.count)
+
+
 def _norm_cid(cid: str) -> str:
     return (cid or "").replace(" ", "").lower()
 
@@ -344,9 +356,9 @@ class ProjectStore:
             if osc_hours > 0:
                 new = osc_plan(osc_hours, self.config,
                                old.acquired if old else 0)
-                # PS-66: keep accepted seconds when the sub length is unchanged
-                if old and old.exposure_seconds == new.exposure_seconds:
-                    new.acquired_s = max(new.acquired_s, old.acquired_s)
+                if old:
+                    _carry_seconds(new, old.exposure_seconds,
+                                   old.long_seconds_done())
                 other.append(new)
         if not osc_only and not drop_rc16 and (
                 (budget_hours is not None and budget_hours > 0)
@@ -354,9 +366,10 @@ class ProjectStore:
             acquired = {p.filter_type.value: p.acquired for p in rc16}
             short_acq = {p.filter_type.value: p.hdr_short_acquired
                          for p in rc16}
-            # PS-66: keep partial seconds (a lone capped sub) when the sub
-            # length is unchanged
-            secs = {p.filter_type.value: (p.exposure_seconds, p.acquired_s)
+            # PS-66/PS-118: carry accepted seconds onto the rebuilt plans
+            # (_carry_seconds)
+            secs = {p.filter_type.value: (p.exposure_seconds,
+                                          p.long_seconds_done())
                     for p in rc16}
             rc16 = allocate_exposures(
                 target_kind(proj.target), proj.budget_hours, self.config,
@@ -366,8 +379,8 @@ class ProjectStore:
                 p.hdr_short_acquired = min(short_acq.get(p.filter_type.value, 0),
                                            p.hdr_short_count)
                 old_len, old_s = secs.get(p.filter_type.value, (None, 0.0))
-                if old_len == p.exposure_seconds:
-                    p.acquired_s = max(p.acquired_s, old_s)
+                if old_len:
+                    _carry_seconds(p, old_len, old_s)
             proj.total_integration_hours = proj.budget_hours
         proj.exposure_plans = rc16 + other
         if not rc16 and other:  # piggyback-only: the budget is the OSC goal
@@ -380,16 +393,14 @@ class ProjectStore:
 
     def record_accepted_sub(self, target_name: str, filter_class: str,
                             exposure_seconds: float | None = None,
-                            rig: str | None = None,
-                            by_seconds: bool = False) -> bool:
+                            rig: str | None = None) -> bool:
         """Credit a QA-passed sub. Returns True if matched.
         With HDR, a sub whose length is closer to the short set's counts toward
         hdr_short_acquired instead of the long set. PS-30: only a plan of the
-        sub's rig counts it (None = the RC16). PS-66: by_seconds (the night
-        runs unguided, subs capped) credits a long RC16 sub by its length
-        (ExposurePlan.credit_long), so a capped 300 s sub is half of a 600 s
-        plan sub; otherwise one sub counts as one, as before. The cap is
-        RC16-only, so a piggyback sub always counts as one."""
+        sub's rig counts it (None = the RC16). PS-118: a long sub is credited
+        by its own length (ExposurePlan.credit_long) on both rigs, guided or
+        not, so a 400 s piggyback sub on a 120 s plan is 400 s and a capped
+        300 s sub is half of a 600 s plan sub (PS-66)."""
         # PS-78: a container name ("<target> imaging (...)_Container") counts
         # for its target; an OSC loop container names none
         from photonscript.shared.target_names import canonical_target
@@ -406,8 +417,7 @@ class ProjectStore:
                         if plan.is_short_exposure(exposure_seconds):
                             plan.hdr_short_acquired += 1
                         else:
-                            plan.credit_long(exposure_seconds,
-                                             by_seconds and rig == RC16_RIG)
+                            plan.credit_long(exposure_seconds)
                         self.save()
                         return True
         return False
