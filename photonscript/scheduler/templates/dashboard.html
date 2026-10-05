@@ -74,6 +74,24 @@
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <!-- PS-125: automatic arm switches (saved via POST /api/config,
+                 same as the System page) and the last auto-arm decision.
+                 Filled by static/js/auto_arm_panel.js from /api/auto-arm. -->
+            <div id="autoArmBox" style="margin-bottom:.8rem;font-size:.85rem;
+                 padding:.45rem .6rem;border-radius:6px;border:1px solid #334155;">
+                <label style="display:block;margin-bottom:.25rem;">
+                    <input type="checkbox" id="autoArmEvening" data-env="PS_AUTO_ARM_ENABLED">
+                    <b>Auto-arm every evening</b>
+                    <span id="autoArmEveningNext" style="opacity:.7;"></span></label>
+                <label style="display:inline-block;margin-bottom:.25rem;">
+                    <input type="checkbox" id="autoArmNoon" data-env="PS_NOON_ARM_ENABLED">
+                    <b>Noon re-arm</b>
+                    <span id="autoArmNoonNext" style="opacity:.7;"></span></label>
+                <label style="display:inline-block;margin-left:1rem;">
+                    <input type="checkbox" id="autoArmNoonGuided" data-env="PS_NOON_ARM_GUIDED">
+                    guided (uncheck = unguided)</label>
+                <div id="autoArmChip" style="margin-top:.35rem;opacity:.85;"></div>
+            </div>
             <!-- Lifecycle chips: dawn-shutdown result (with cooler verify)
                  and the next noon auto re-arm countdown. Filled by refreshArm(). -->
             <div id="armLifecycle" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
@@ -173,6 +191,7 @@
 
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/sideload_panel.js"></script>
+    <script src="/static/js/auto_arm_panel.js"></script>
 
     <script>
     const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
@@ -665,9 +684,12 @@
         if (!confirm('Arm UNGUIDED (TPoint + ProTrack, no PHD2)?\n\nGuiding is the default. ' +
                      'RC16 subs are capped at 300 s (unguided max exposure) and ' +
                      'the nanny skips guiding checks tonight.')) return;
+        // PS-125: a sideload loaded tonight would be replaced by the arm
+        if (window.autoArmSideloadOk && !(await window.autoArmSideloadOk())) return;
         return postArm({armed: true, guiding: 'unguided'});
     });
     document.getElementById('armGuidedBtn').addEventListener('click', async () => {
+        if (window.autoArmSideloadOk && !(await window.autoArmSideloadOk())) return;
         return postArm({armed: true, guiding: 'guided'});
     });
     loadOutlook(); loadTimeline(); refreshArm();

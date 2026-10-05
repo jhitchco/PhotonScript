@@ -31,6 +31,13 @@ of NINA, so the worst case from a bad preflight is wasted frames that QA
 rejects — not a soaked rig. Flip PS_AUTO_ARM_REQUIRE_PREFLIGHT=true to have it
 skip-and-notify instead. Manual disarm always wins: the loop never touches an
 armer that is ARMED / RUNNING / PAUSED_UNSAFE.
+
+PS-125 guard: before any automatic arm (evening window or noon re-arm) the
+loop reads NINA's /sequence/state and tonight's events. A sideload loaded
+tonight (PS-123), a RUNNING item on NINA #1, or an unreadable NINA #1 skips
+the arm (one Pushover per night per reason). Every decision (armed / skipped,
+why) is logged as kind "auto_arm" in runs/<night>_events.jsonl and shown in
+the dashboard chip.
 """
 
 from __future__ import annotations
@@ -90,6 +97,205 @@ def _fail_summary(preflight: dict) -> str:
     fails = [c["name"] for c in preflight.get("checks", [])
              if c.get("status") == "fail"]
     return ", ".join(fails) if fails else "unknown"
+
+
+# ---------------------------------------------------------------------------
+# PS-125: never auto-arm over a sideloaded or running NINA sequence
+# ---------------------------------------------------------------------------
+# arm() stops, loads and starts its own sequence on NINA. A PS-123 sideload
+# (loaded by hand, not started) or anything NINA is running would be replaced.
+# The guard runs before every automatic arm (evening window and noon re-arm);
+# a manual Arm is never blocked (the dashboard confirms first instead).
+
+SKIP_SIDELOAD = "sideload"
+SKIP_NINA_RUNNING = "nina_running"
+SKIP_NINA_UNREADABLE = "nina_unreadable"
+SKIP_PREFLIGHT = "preflight"
+EVENT_KIND = "auto_arm"
+
+SKIP_TITLES = {
+    SKIP_SIDELOAD: "a sideloaded sequence is loaded",
+    SKIP_NINA_RUNNING: "NINA is running",
+    SKIP_NINA_UNREADABLE: "NINA state unreadable",
+    SKIP_PREFLIGHT: "preflight failed",
+}
+
+
+def _night_key(config, now: datetime) -> str:
+    from photonscript.shared.phd2_store import night_of
+    return night_of(config, now)
+
+
+def sideload_tonight(config, now: datetime | None = None) -> dict | None:
+    """The latest successful PS-123 sideload ("sideload" event, ok=true) that
+    belongs to tonight, else None. Tonight = runs/<night>_events.jsonl for the
+    current noon-to-noon night, plus a load made the same morning (06:00 local
+    or later), which night_of() still files under the previous night."""
+    from photonscript.shared.localtime import to_local
+    from photonscript.shared.night_events import events_path
+    from photonscript.shared.phd2_store import parse_z, read_jsonl
+    now = now or datetime.utcnow()
+    night = datetime.strptime(_night_key(config, now), "%Y-%m-%d")
+    cutoff = night + timedelta(hours=6)  # local
+    best = None
+    for n in (night - timedelta(days=1), night):
+        for r in read_jsonl(events_path(config, n.strftime("%Y-%m-%d"))):
+            if r.get("kind") != "sideload" or not r.get("ok"):
+                continue
+            t = parse_z(r.get("t"))
+            if t is None or t > now or to_local(config, t) < cutoff:
+                continue
+            if best is None or t >= best[0]:
+                best = (t, r)
+    return dict(best[1]) if best else None
+
+
+async def auto_arm_guard(config, now: datetime | None = None,
+                         reader=None) -> tuple[str | None, str]:
+    """(skip_kind, message) before an automatic arm; skip_kind None = clear.
+
+    Skips when a sideload was loaded tonight, when NINA #1's sequence state
+    cannot be read (never arm blind), or when NINA #1 has a RUNNING item.
+    NINA #2 (when enabled) is read too and named in the message, but only
+    NINA #1 blocks: the armer dispatches the RC16 night there.
+    reader(base_url) -> (tree, error) defaults to sideload.read_sequence_state.
+    """
+    from photonscript.scheduler import sideload as sd
+    from photonscript.shared.rigs import PIGGYBACK, RC16, rig_config, rig_ids
+    now = now or datetime.utcnow()
+    reader = reader or sd.read_sequence_state
+    sl = sideload_tonight(config, now)
+    if sl:
+        return SKIP_SIDELOAD, (
+            f"a sideloaded sequence is loaded in NINA ({sl.get('value')} on "
+            f"{sl.get('rig')}, {str(sl.get('t', ''))[11:16]} UTC); arming "
+            "would replace it")
+    tree, err = await reader(rig_config(config, RC16).nina_base_url)
+    if err:
+        return SKIP_NINA_UNREADABLE, (
+            f"NINA #1 sequence state unreadable ({err}); not arming blind")
+    running = sd.nina_running(tree)
+    if running:
+        return SKIP_NINA_RUNNING, (
+            "NINA #1 is running a sequence (" + ", ".join(running[:3]) + ")")
+    note = ""
+    if PIGGYBACK in rig_ids(config):
+        t2, e2 = await reader(rig_config(config, PIGGYBACK).nina_base_url)
+        r2 = [] if e2 else sd.nina_running(t2)
+        note = (f"; NINA #2 unreadable ({e2})" if e2 else
+                f"; NINA #2 running ({', '.join(r2[:3])})" if r2 else
+                "; NINA #2 idle")
+    return None, "NINA #1 idle, no sideload tonight" + note
+
+
+def decisions_tonight(config, now: datetime | None = None) -> list[dict]:
+    """Tonight's logged auto-arm decisions (oldest first)."""
+    from photonscript.shared.night_events import events_path
+    from photonscript.shared.phd2_store import read_jsonl
+    now = now or datetime.utcnow()
+    return [r for r in read_jsonl(events_path(config, _night_key(config, now)))
+            if r.get("kind") == EVENT_KIND]
+
+
+def log_decision(config, decision: str, skip: str | None, detail: str,
+                 trigger: str = "", now: datetime | None = None,
+                 notified: bool = False) -> dict | None:
+    """Append one auto-arm decision (kind "auto_arm", value "armed" or
+    "skipped") to tonight's events file. A skip identical to the last logged
+    decision is not repeated (the loop re-checks every 5 minutes). Returns the
+    line, or None when deduped."""
+    from photonscript.shared.night_events import events_path
+    from photonscript.shared.phd2_store import append_jsonl, iso_z
+    now = now or datetime.utcnow()
+    prior = decisions_tonight(config, now)
+    if prior and decision == "skipped":
+        last = prior[-1]
+        if last.get("value") == "skipped" and last.get("skip") == skip:
+            return None
+    line = {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+            "kind": EVENT_KIND, "value": decision, "skip": skip,
+            "trigger": trigger, "detail": detail, "notified": bool(notified)}
+    append_jsonl(events_path(config, _night_key(config, now)), line)
+    return line
+
+
+def skip_notified_tonight(config, skip: str, now: datetime | None = None) -> bool:
+    """True when tonight's events already carry a pushed skip of this kind:
+    one Pushover per night per reason, across restarts."""
+    return any(r.get("value") == "skipped" and r.get("skip") == skip
+               and r.get("notified") for r in decisions_tonight(config, now))
+
+
+async def skip_and_notify(config, skip: str, detail: str, trigger: str,
+                          notifier, now: datetime | None = None) -> dict | None:
+    """Log a skip; push it once per night per reason."""
+    now = now or datetime.utcnow()
+    push = not skip_notified_tonight(config, skip, now)
+    line = log_decision(config, "skipped", skip, detail, trigger, now,
+                        notified=push)
+    if line is not None and push:
+        await notifier(config,
+                       f"Auto-arm skipped: {SKIP_TITLES.get(skip, skip)}. "
+                       f"{detail}. A manual Arm still works.",
+                       title="PhotonScript auto-arm skipped", priority=1)
+    return line
+
+
+def decision_chip(last: dict | None, offset_hours: float = 0.0) -> str:
+    """Dashboard chip text for the last auto-arm decision tonight."""
+    if not last:
+        return "No auto-arm decision yet tonight"
+    from photonscript.shared.phd2_store import parse_z
+    t = parse_z(last.get("t"))
+    when = (t + timedelta(hours=offset_hours)).strftime("%H:%M") if t else "?"
+    if last.get("value") == "armed":
+        return f"Auto-armed at {when} local ({last.get('trigger') or 'auto'})"
+    reason = SKIP_TITLES.get(last.get("skip"), last.get("skip") or "?")
+    return f"Auto-arm skipped at {when} local: {reason} ({last.get('detail', '')})"
+
+
+def next_actions(config, preconfig_utc: str | None, now: datetime | None = None,
+                 armer_state: str = "DISARMED") -> dict:
+    """What each automatic arm does next, for the dashboard checkboxes: the
+    evening window opens at pre-config minus auto_arm_lead_hours, the noon
+    re-arm fires at 12:00 local. UTC ISO times plus a short text."""
+    from photonscript.shared.localtime import utc_offset_hours
+    now = now or datetime.utcnow()
+    off = utc_offset_hours(config, now)
+
+    def hhmm(dt):
+        return (dt + timedelta(hours=off)).strftime("%H:%M")
+
+    lead = float(getattr(config, "auto_arm_lead_hours", 3.0))
+    ev = {"enabled": bool(getattr(config, "auto_arm_enabled", False)),
+          "lead_hours": lead, "window_open_utc": None,
+          "preconfig_utc": preconfig_utc}
+    if not ev["enabled"]:
+        ev["next"] = "off"
+    elif not preconfig_utc:
+        ev["next"] = "no plan tonight"
+    if preconfig_utc:
+        wo = datetime.fromisoformat(preconfig_utc.rstrip("Z")) - timedelta(hours=lead)
+        ev["window_open_utc"] = wo.isoformat() + "Z"
+        if ev["enabled"]:
+            if armer_state not in TERMINAL_STATES:
+                ev["next"] = f"armer is {armer_state}: nothing to do tonight"
+            elif now < wo:
+                ev["next"] = f"next auto-arm window opens {hhmm(wo)} local"
+            else:
+                ev["next"] = (f"auto-arm window open since {hhmm(wo)} local "
+                              "(checks every 5 min)")
+    local = now + timedelta(hours=off)
+    noon = local.replace(hour=12, minute=0, second=0, microsecond=0)
+    if local >= noon:
+        noon += timedelta(days=1)
+    na = {"enabled": bool(getattr(config, "noon_arm_enabled", False)),
+          "guided": bool(getattr(config, "noon_arm_guided", True)),
+          "at_utc": (noon - timedelta(hours=off)).isoformat() + "Z"}
+    na["next"] = (f"next noon re-arm {noon:%a} 12:00 local "
+                  f"({'guided' if na['guided'] else 'unguided'})"
+                  if na["enabled"] else "off")
+    return {"auto_arm": ev, "noon_arm": na}
 
 
 async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECONDS):
@@ -240,11 +446,21 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                         arm_now = False
                         reason = "holding for auto dusk flats to finish"
                     logger.debug("auto-arm tick: %s (%s)", arm_now, reason)
+                    skip = None
                     if arm_now:
+                        # PS-125: never over a sideload or a running NINA
+                        skip, why = await auto_arm_guard(config)
+                        if skip:
+                            await skip_and_notify(config, skip, why, reason, notify)
+                            logger.info("auto-arm skipped (%s): %s", skip, why)
+                    if arm_now and not skip:
                         night = plan["night_of"]
                         pf = await run_preflight(config)
                         require = bool(getattr(config, "auto_arm_require_preflight", False))
                         if require and not pf.get("go", False):
+                            log_decision(config, "skipped", SKIP_PREFLIGHT,
+                                         f"preflight go=false ({_fail_summary(pf)})",
+                                         reason, notified=last_skip_night != night)
                             if last_skip_night != night:
                                 await notify(
                                     config,
@@ -261,6 +477,9 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                                       True) else "unguided")
                             await armer.arm(guiding=guiding)  # sends its own ARMED Pushover
                             last_armed_night = night
+                            log_decision(config, "armed", None,
+                                         f"armer {armer.state}, preflight "
+                                         f"go={bool(pf.get('go', False))}", reason)
                             if not pf.get("go", False):
                                 await notify(
                                     config,
