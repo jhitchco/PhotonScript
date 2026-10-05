@@ -82,6 +82,12 @@ def _floats(csv) -> list[float]:
 def _tonight_plan_exposures(config) -> list[tuple[float, str]]:
     """(exp_s, label) of tonight's RC16 plan snapshot (runs/<night>_plan.json,
     the newest one from the last two days)."""
+    return [(e, label) for e, _f, label in tonight_plan_rows(config)]
+
+
+def tonight_plan_rows(config) -> list[tuple[float, str, str]]:
+    """(exp_s, filter, label) of tonight's RC16 plan snapshot (PS-122: the
+    Calibration owed view needs the filter too)."""
     from photonscript.scheduler.runs import runs_dir
     try:
         snaps = sorted(runs_dir(config).glob("*_plan.json"))
@@ -99,7 +105,7 @@ def _tonight_plan_exposures(config) -> list[tuple[float, str]]:
     for t in snap.get("targets") or []:
         for e in t.get("exposures") or []:
             if e.get("exp_s"):
-                out.append((float(e["exp_s"]),
+                out.append((float(e["exp_s"]), str(e.get("filter") or "?"),
                             f"tonight {snap.get('night_of')}: {t.get('name')}"))
     return out
 
@@ -239,7 +245,7 @@ def _unchecked(config, rig: str, store: dict) -> int:
 
 def gap_report(config, rig: str | None = None, projects=None) -> dict:
     from photonscript.scheduler import calibration_qa as cq
-    from photonscript.scheduler.calibration import STALE_DAYS
+    from photonscript.scheduler.calibration import STALE_DAYS, darks_have
     from photonscript.shared.rigs import rig_ids, rig_label
     rigs = [rig] if rig else rig_ids(config)
     if projects is None:
@@ -257,9 +263,10 @@ def gap_report(config, rig: str | None = None, projects=None) -> dict:
         sets = []
         for s in rig_needs(config, rg, projects):
             if s["type"] == "DARK":
-                have = cq.count_passed_darks(view, rg, s["exp_s"], gain=ep["gain"],
-                                             offset=ep["offset"],
-                                             setpoint=ep["setpoint"], store=store)
+                # PS-122: the night quota's own count (calibration.darks_have)
+                have = darks_have(view, rg, s["exp_s"], gain=ep["gain"],
+                                  offset=ep["offset"], setpoint=ep["setpoint"],
+                                  store=store)
                 label = f"dark {s['exp_s']:g} s"
                 nbad = bad.get(("DARK", s["exp_s"]), 0)
             elif s["type"] == "BIAS":

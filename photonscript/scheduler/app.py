@@ -562,6 +562,7 @@ _CONFIG_FIELDS = [
     ("calibration_temp_tol_c", "PS_CALIBRATION_TEMP_TOL_C", "Calibration: sensor within setpoint +/- this (C) for darks/bias and capture jobs", "Imaging", "float", False, False),
     ("calibration_capture_budget_min", "PS_CALIBRATION_CAPTURE_BUDGET_MIN", "Calibration capture job time budget (min, cooling included)", "Imaging", "float", False, False),
     ("calibration_autofill", "PS_CALIBRATION_AUTOFILL", "Daytime calibration auto-fill (sun up, armer idle, once a day per rig; never at night)", "Imaging", "bool", False, False),
+    ("calibration_owed_lookback_days", "PS_CALIBRATION_OWED_LOOKBACK_DAYS", "Calibration owed: lights lookback (nights, report only)", "Imaging", "int", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),

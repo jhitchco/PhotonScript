@@ -634,6 +634,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "exp_s": float(hdr.get("EXPTIME", 0)),
         "ccd_temp": hdr.get("CCD-TEMP"),
         "set_temp": hdr.get("SET-TEMP"),
+        **_light_epoch(hdr),   # PS-122: gain, offset, xbin, readout
         "setpoint_c": card.thresholds.get("setpoint_c"),
         "hfr": hfr,
         "fwhm_arcsec": round(hfr * config.pixel_scale_arcsec, 2) if hfr else None,
@@ -666,6 +667,11 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     # drivers (+ reviewed / review_source when all green)
     rec.update(card.record_fields())
     return rec
+
+
+def _light_epoch(hdr) -> dict:
+    from photonscript.shared.rigs import light_epoch_fields
+    return light_epoch_fields(hdr)
 
 
 _backfill_state: dict[str, dict] = {}

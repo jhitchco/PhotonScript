@@ -60,6 +60,13 @@
     {% include "_header.html" %}
     <main>
         <div style="display:flex;align-items:baseline;gap:1rem;margin:.2rem 0 1rem;">
+            <h2 style="margin:0;">Calibration owed</h2>
+            <span class="muted" id="owedUpdated">loading...</span>
+            <span class="muted" style="margin-left:auto;">lights of active goals + tonight's plan; darks counted the way the night quota counts them</span>
+        </div>
+        <div class="focus-grid" id="owedCards"></div>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
             <h2 style="margin:0;">Needs vs have (QA-passed)</h2>
             <span class="muted" id="needUpdated">loading...</span>
             <span class="muted" style="margin-left:auto;">darks + bias: Capture now (roof closed, armer DISARMED or COMPLETE) &middot; flats: dusk / dawn only</span>
@@ -381,6 +388,62 @@
 
     loadNeeds();
     setInterval(loadNeeds, 60000);
+
+    // ---- PS-122: Calibration owed ---------------------------------------
+    function owedCard(r) {
+        const s = r.summary || {};
+        const ep = r.epoch || {};
+        const counts = s.dark_sets_owed + ' dark set(s) (' + s.dark_frames_owed +
+            ' frames) &middot; ' + s.flats_owed + ' flat filter(s) &middot; bias ' +
+            (s.bias_owed ? 'owed' : 'ok') + ' &middot; ' + s.uncalibrated_nights +
+            ' uncalibrated night(s)';
+        const items = (r.items || []).map(t =>
+            '<li>' + esc(t) + '</li>').join('');
+        const fixes = (r.config_fixes || []).map(f =>
+            '<div style="margin-top:.4rem;color:#fcd34d;">Config fix: <code>' +
+            esc(f.set) + '</code><div class="muted">' + esc(f.text) + '</div></div>').join('');
+        const unc = (r.nights || []).filter(n => n.uncalibrated).slice(0, 6).map(n =>
+            '<div class="muted">' + esc(n.night) + ': ' + n.lights + ' lights, missing ' +
+            esc(n.missing.join(', ')) + '</div>').join('');
+        const darkRows = (r.darks || []).filter(d => d.lights || d.planned.length || d.owed)
+            .map(d => '<tr' + (d.owed ? ' class="thin"' : '') + '><td>' + esc(d.label) +
+                '</td><td>' + d.have + '</td><td>' + d.need + '</td><td>' + d.owed +
+                '</td><td>' + d.lights + '</td></tr>').join('');
+        const flatRows = (r.flats || []).map(f => '<tr' + (f.owed ? ' class="thin"' : '') +
+            '><td>' + esc(f.filter) + '</td><td>' + esc(f.last || 'none') + '</td><td>' +
+            f.count + ' of ' + f.need + '</td><td>' + (f.age_days == null ? '-' : f.age_days + ' d') +
+            '</td><td>' + f.lights_since.length + '</td></tr>').join('');
+        const cons = (r.constraints || []).map(c => '<div class="muted">' + esc(c) + '</div>').join('');
+        return '<div class="focus-card' + (r.rig === 'rc16' ? '' : ' osc') + '"><h3>' +
+            esc(r.name) + ' <span class="pill ' + ((r.items || []).length ? 'p-disabled' : 'p-harvest') +
+            '" style="float:right;">' + (r.items || []).length + ' owed</span></h3>' +
+            '<div class="muted">gain ' + ep.gain + ' offset ' + ep.offset + ' ' + ep.setpoint +
+            ' C &middot; ' + r.lights + ' lights' + (r.lights_assumed_epoch ? ' (' +
+            r.lights_assumed_epoch + ' logged before PS-122: epoch assumed)' : '') +
+            ' &middot; ' + esc(r.counted) + '</div><div style="margin:.4rem 0;">' + counts + '</div>' +
+            (items ? '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0;">' + items + '</ul>'
+                   : '<div style="color:#86efac;">Nothing owed.</div>') + fixes +
+            (unc ? '<div style="margin-top:.4rem;"><b>Uncalibrated nights</b>' + unc + '</div>' : '') +
+            '<details style="margin-top:.5rem;"><summary class="muted">Darks and flats detail</summary>' +
+            '<table class="cal"><thead><tr><th>Darks</th><th>have</th><th>need</th><th>owed</th>' +
+            '<th>lights</th></tr></thead><tbody>' + darkRows + '</tbody></table>' +
+            '<table class="cal"><thead><tr><th>Flats</th><th>last set</th><th>count</th><th>age</th>' +
+            '<th>nights since</th></tr></thead><tbody>' + flatRows + '</tbody></table></details>' +
+            '<div style="margin-top:.5rem;">' + cons + '</div></div>';
+    }
+
+    async function loadOwed() {
+        try {
+            const d = await (await fetch('/api/calibration/owed')).json();
+            document.getElementById('owedCards').innerHTML = d.rigs.map(owedCard).join('');
+            document.getElementById('owedUpdated').textContent = d.total_items + ' item(s), last ' +
+                d.lookback_days + ' nights, updated ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            document.getElementById('owedUpdated').textContent = 'calibration owed unavailable';
+        }
+    }
+    loadOwed();
+    setInterval(loadOwed, 120000);
     </script>
     {% include "_footer.html" %}
 </body>

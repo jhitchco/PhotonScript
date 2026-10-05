@@ -17,6 +17,7 @@ Usage:
     photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
     photonscript guiding-status [--json]                          # PS-119
     photonscript calibration-plan [--rig R] [--json]              # PS-113
+    photonscript calibration-owed [--rig R] [--json]              # PS-122
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript supervise [--mode full]      # keep it running (PS-44)
@@ -677,6 +678,28 @@ def calibration_plan_cmd(
     from photonscript.scheduler.calibration_plan import format_report, gap_report
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     rep = gap_report(cfg, rig or None)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+
+
+@app.command("calibration-owed")
+def calibration_owed_cmd(
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: every rig)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-122: which calibration frames each rig still owes for the lights of
+    active goals (last calibration_owed_lookback_days nights) and tonight's
+    plan: darks per epoch with the night quota's own count, flats per filter,
+    bias, uncalibrated nights and config fixes. Read only.
+
+    photonscript calibration-owed --rig piggyback
+    """
+    import json as _json
+    from photonscript.scheduler.calibration_owed import format_report, owed_report
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    rep = owed_report(cfg, rig or None)
     if as_json:
         print(_json.dumps(rep, indent=1, default=str))
     else:

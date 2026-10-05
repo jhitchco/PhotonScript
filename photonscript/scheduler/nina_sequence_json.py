@@ -732,10 +732,11 @@ def _dark_quota_blocks(dawn_provider, dawn_offset):
     quota = int(getattr(cfg, "dark_target_count", 30))
     blocks = []
     try:
-        from photonscript.scheduler.calibration import count_matching_darks
-        for exp_s in dark_library_exposures(cfg):
-            have = count_matching_darks(cfg, exp_s)
-            need = max(0, quota - have)
+        # PS-122: one quota rule with the companion and the Calibration owed
+        # view (QA-passed darks once the rig has a QA store)
+        from photonscript.scheduler.calibration import dark_quota, quota_exposures
+        for exp_s in quota_exposures(cfg, "rc16"):
+            need = dark_quota(cfg, "rc16", exp_s)["need"]
             if need == 0:
                 continue
             blocks.append(_seq_container(

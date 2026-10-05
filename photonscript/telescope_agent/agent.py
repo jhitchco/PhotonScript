@@ -1347,6 +1347,7 @@ class TelescopeAgent:
         except ValueError:
             pass
         from photonscript.shared import qa_rules
+        from photonscript.shared.rigs import light_epoch_fields
         from photonscript.telescope_agent.image_validator import image_metrics
         start = wins = None
         try:  # PS-71 inputs: exposure start + UNSAFE safety-monitor windows
@@ -1434,6 +1435,7 @@ class TelescopeAgent:
                 "noise": quality.noise_adu,
                 "setpoint_c": card.thresholds.get("setpoint_c"),
                 "set_temp": hdr.get("SET-TEMP"),
+                **light_epoch_fields(hdr),  # PS-122: dark epoch
                 "guide_rms": (round(quality.tracking_rms_arcsec, 3)
                               if quality.tracking_rms_arcsec is not None
                               else None),

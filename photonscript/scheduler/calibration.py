@@ -340,6 +340,74 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
     return n
 
 
+def dark_epoch(config, rig: str = "rc16") -> dict:
+    """PS-122: gain / offset / setpoint a rig's night dark quota fills at.
+    Reads the rig's own keys, so the base config and the rig view agree
+    (never re-wraps a view: rig_config on a view nests its library dir)."""
+    if rig == "rc16":
+        return {"gain": int(config.default_gain),
+                "offset": int(config.default_offset),
+                "setpoint": float(config.camera_setpoint_c)}
+    gain, offset = _pb_gain_offset(config)
+    return {"gain": gain, "offset": offset,
+            "setpoint": float(getattr(config, "piggyback_setpoint_c", 0.0))}
+
+
+def quota_exposures(config, rig: str = "rc16") -> list[float]:
+    """PS-122: the dark lengths the night quota fills for a rig. RC16: config
+    dark_exposures plus the PS-66 unguided cap (dark_library_exposures);
+    Piggy-600: piggyback_dark_exposures. One list for the armer, the
+    companion and the Calibration owed view."""
+    if rig == "rc16":
+        from photonscript.scheduler.nina_sequence_json import dark_library_exposures
+        return dark_library_exposures(config)
+    out: list[float] = []
+    for tok in str(getattr(config, "piggyback_dark_exposures", "120")).split(","):
+        try:
+            out.append(float(tok.strip()))
+        except ValueError:
+            continue
+    return out
+
+
+def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
+               offset: int | None = None, setpoint: float | None = None,
+               store: dict | None = None) -> int:
+    """PS-122: darks that count toward the quota for one exposure, the one
+    rule the night quota (RC16 armer, Piggy-600 companion), readiness and the
+    Calibration owed view share. Once the rig has a calibration QA store
+    (calibration_qa_mode not off) only QA-passed frames count; without one,
+    the header count minus QA-failed frames (count_matching_darks).
+    `config` is the rig's scan view (the base config for the RC16); the
+    epoch defaults to dark_epoch(rig)."""
+    ep = dark_epoch(config, rig)
+    if gain is not None:
+        ep["gain"] = int(gain)
+    if offset is not None:
+        ep["offset"] = int(offset)
+    if setpoint is not None:
+        ep["setpoint"] = float(setpoint)
+    try:
+        from photonscript.scheduler import calibration_qa as cq
+        if cq.mode(config) != "off":
+            st = store if store is not None else cq.load_store(config, rig)
+            if st["frames"]:
+                return cq.count_passed_darks(config, rig, exp_s, store=st, **ep)
+    except Exception:  # noqa: BLE001 - never break the quota over QA
+        logger.warning("QA dark count failed; using the header count", exc_info=True)
+    return count_matching_darks(config, exp_s, **ep)
+
+
+def dark_quota(config, rig: str, exp_s: float, *, store: dict | None = None,
+               **epoch) -> dict:
+    """PS-122: {"exp_s", "have", "quota", "need"} for one dark length:
+    quota = dark_target_count, need = quota - have (never below 0)."""
+    quota = int(getattr(config, "dark_target_count", 30))
+    have = darks_have(config, rig, exp_s, store=store, **epoch)
+    return {"exp_s": float(exp_s), "have": have, "quota": quota,
+            "need": max(0, quota - have)}
+
+
 def _qa_failed_keys(config) -> set:
     """PS-113: "<TYPE>/<date>/<name>" of every calibration frame QA failed
     (either rig's store), so the dark quota refills instead of counting a
@@ -534,19 +602,13 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
         _seq_container, _make_typed, _time_condition)
     quota = int(getattr(config, "dark_target_count", 30))
     pb_gain, pb_offset = _pb_gain_offset(config)
-    pb_temp = float(getattr(config, "piggyback_setpoint_c", 0.0))
     blocks = []
-    for tok in str(getattr(config, "dark_exposures", "120")).split(","):
+    # PS-122: same lengths and count as the Calibration owed view
+    for exp_s in quota_exposures(config, "piggyback"):
         try:
-            exp_s = float(tok.strip())
-        except ValueError:
-            continue
-        try:
-            have = count_matching_darks(config, exp_s, gain=pb_gain,
-                                        offset=pb_offset, setpoint=pb_temp)
+            need = dark_quota(config, "piggyback", exp_s)["need"]
         except Exception:  # noqa: BLE001
-            have = 0
-        need = max(0, quota - have)
+            need = quota
         if need == 0:
             continue
         blocks.append(_seq_container(
