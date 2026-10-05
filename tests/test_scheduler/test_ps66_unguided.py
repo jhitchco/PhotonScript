@@ -226,26 +226,26 @@ def _heart(store):
         dec_degrees=61.5, object_type="emission nebula"), budget_hours=5.0)
 
 
-def test_two_capped_subs_make_one_plan_sub_guided_subs_count_one(tmp_path):
+def test_two_300s_subs_make_one_600s_plan_sub(tmp_path):
     from photonscript.scheduler.project_store import ProjectStore
     store = ProjectStore(_cfg(tmp_path))
     proj = _heart(store)
     ha = next(e for e in proj.exposure_plans if e.filter_type.value == "Ha")
     assert ha.exposure_seconds == 600 and ha.acquired == 0
-    assert store.record_accepted_sub("Heart Nebula", "Ha", 300, by_seconds=True)
+    assert store.record_accepted_sub("Heart Nebula", "Ha", 300)
     assert (ha.acquired, ha.acquired_s) == (0, 300)
-    store.record_accepted_sub("Heart Nebula", "Ha", 300, by_seconds=True)
+    store.record_accepted_sub("Heart Nebula", "Ha", 300)
     assert (ha.acquired, ha.acquired_s) == (1, 600)
-    # guided (default): one sub is one sub whatever its length, as before
+    # PS-118: guided or not, a sub counts its own seconds; no length = one sub
     store.record_accepted_sub("Heart Nebula", "Ha", 600)
     store.record_accepted_sub("Heart Nebula", "Ha", 300)
-    store.record_accepted_sub("Heart Nebula", "Ha", None, by_seconds=True)
-    assert ha.acquired == 4
+    store.record_accepted_sub("Heart Nebula", "Ha", None)
+    assert (ha.acquired, ha.acquired_s) == (3, 2100)
     # round trip: acquired_s survives save/load
     again = ProjectStore(_cfg(tmp_path))
     ha2 = next(e for e in again.projects[proj.id].exposure_plans
                if e.filter_type.value == "Ha")
-    assert (ha2.acquired, ha2.acquired_s) == (4, 2400)
+    assert (ha2.acquired, ha2.acquired_s) == (3, 2100)
 
 
 def test_old_projects_json_without_acquired_s_loads(tmp_path):
@@ -273,7 +273,7 @@ def test_capped_sub_is_not_mistaken_for_an_hdr_short():
     assert not e.is_short_exposure(600)
 
 
-def test_resync_credits_seconds_only_for_unguided_nights(tmp_path, monkeypatch):
+def test_resync_credits_seconds_for_every_night(tmp_path, monkeypatch):
     from photonscript.scheduler import app as app_mod
     from photonscript.scheduler import runs
     from photonscript.scheduler.project_store import ProjectStore
@@ -295,14 +295,15 @@ def test_resync_credits_seconds_only_for_unguided_nights(tmp_path, monkeypatch):
                     "time": f"{date}T03:{i:02d}:00", "target": "Heart Nebula",
                     "filter": "Ha", "exp_s": exp, "passed_qa": True,
                     "reviewed": True, "reason": ""}) + "\n")
-    _night("2026-09-20", None, 3, 300)    # pre-PS-66 history: one each
-    _night("2026-09-21", True, 2, 300)    # guided, off-length: still one each
-    _night("2026-10-03", False, 4, 300)   # unguided capped: 4 x 300 = 2 subs
+    # PS-118: every night credits seconds, whatever its snapshot says
+    _night("2026-09-20", None, 3, 300)    # pre-PS-66 history
+    _night("2026-09-21", True, 2, 300)    # guided, off-length
+    _night("2026-10-03", False, 4, 300)   # unguided capped
     runs.sync_goal_progress(cfg)
     ha = next(e for e in store.projects[proj.id].exposure_plans
               if e.filter_type.value == "Ha")
-    assert ha.acquired == 3 + 2 + 2
-    assert ha.acquired_s == (3 + 2) * 600 + 4 * 300
+    assert ha.acquired_s == (3 + 2 + 4) * 300
+    assert ha.acquired == 4                       # 2700 s = 4 x 600 s, floor
 
 
 def test_dark_library_adds_the_unguided_cap():

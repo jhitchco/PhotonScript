@@ -36,10 +36,9 @@ def test_unguided_capped_rc16_sub_credits_half(tmp_path):
     store, proj = _mixed(tmp_path)
     ha = _plan(proj, "rc16", "Ha")
     assert ha.exposure_seconds == 600
-    assert store.record_accepted_sub("Heart Nebula", "Ha", 300, rig="rc16",
-                                     by_seconds=True)
+    assert store.record_accepted_sub("Heart Nebula", "Ha", 300, rig="rc16")
     assert (ha.acquired, ha.acquired_s) == (0, 300)
-    store.record_accepted_sub("Heart Nebula", "Ha", 300, by_seconds=True)
+    store.record_accepted_sub("Heart Nebula", "Ha", 300)
     assert (ha.acquired, ha.acquired_s) == (1, 600)
 
 
@@ -49,15 +48,18 @@ def test_piggyback_sub_never_credits_an_rc16_plan(tmp_path):
     osc = _plan(proj, "piggyback", "OSC")
     # a piggyback sub filed under an RC16 filter matches nothing
     assert not store.record_accepted_sub("Heart Nebula", "Ha", 300,
-                                         rig="piggyback", by_seconds=True)
+                                         rig="piggyback")
     assert (ha.acquired, ha.acquired_s) == (0, 0)
     # an OSC sub never matches the RC16 (rig None = RC16)
-    assert not store.record_accepted_sub("Heart Nebula", "OSC", 120,
-                                         by_seconds=True)
-    # the piggyback is never capped: one sub is one sub even unguided
+    assert not store.record_accepted_sub("Heart Nebula", "OSC", 120)
+    # PS-118: a piggyback sub is credited by its own seconds too
+    assert osc.exposure_seconds == 120
     assert store.record_accepted_sub("Heart Nebula", "OSC", 60,
-                                     rig="piggyback", by_seconds=True)
-    assert (osc.acquired, osc.acquired_s) == (1, osc.exposure_seconds)
+                                     rig="piggyback")
+    assert (osc.acquired, osc.acquired_s) == (0, 60)
+    assert store.record_accepted_sub("Heart Nebula", "OSC", 400,
+                                     rig="piggyback")
+    assert (osc.acquired, osc.acquired_s) == (3, 460)
 
 
 def test_sync_keys_on_rig_and_credits_seconds_per_snapshot(tmp_path,
@@ -81,13 +83,14 @@ def test_sync_keys_on_rig_and_credits_seconds_per_snapshot(tmp_path,
     ha = _plan(proj, "rc16", "Ha")
     osc = _plan(proj, "piggyback", "OSC")
     assert (ha.acquired, ha.acquired_s) == (1, 900)
-    assert (osc.acquired, osc.acquired_s) == (4, 4 * osc.exposure_seconds)
+    # PS-118: 4 x 60 s piggyback subs are 240 s (2 x 120 s), not 4 subs
+    assert (osc.acquired, osc.acquired_s) == (2, 240)
 
 
 def test_update_on_mixed_project_keeps_osc_and_rc16_partial_seconds(tmp_path):
     store, proj = _mixed(tmp_path)
     store.record_accepted_sub("Heart Nebula", "Ha", 600)
-    store.record_accepted_sub("Heart Nebula", "Ha", 300, by_seconds=True)
+    store.record_accepted_sub("Heart Nebula", "Ha", 300)
     store.record_accepted_sub("Heart Nebula", "OSC", 120, rig="piggyback")
     osc_before = _plan(proj, "piggyback", "OSC").model_dump()
     store.update(proj.id, budget_hours=8.0)   # RC16 plans rebuilt

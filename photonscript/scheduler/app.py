@@ -229,18 +229,12 @@ async def on_agent_message(msg: AgentMessage):
         # name (the agent never knows project ids)
         quality = msg.payload.get("quality") or {}
         if quality.get("passed_qa") or msg.payload.get("status") == "validated":
-            # PS-66: on an unguided (capped) night credit subs by seconds
-            try:
-                from photonscript.scheduler.armer import ACTIVE_STATES
-                _a = get_armer()
-                by_s = _a.state in ACTIVE_STATES and not _a._use_guiding()
-            except Exception:  # noqa: BLE001
-                by_s = False
+            # PS-118: credited by the sub's own seconds on both rigs
             matched = get_store().record_accepted_sub(
                 msg.payload.get("target_name", ""),
                 msg.payload.get("filter_type", ""),
                 msg.payload.get("exposure_seconds"),
-                rig=msg.payload.get("rig"), by_seconds=by_s)
+                rig=msg.payload.get("rig"))
             if matched:
                 logger.info("Progress: %s %s +1 accepted",
                             msg.payload.get("target_name"),
@@ -1124,13 +1118,15 @@ def _project_json(p) -> dict:
     d = p.model_dump(mode="json")
     d["kind"] = target_kind(p.target)
     d["mix"] = p.filter_mix or default_mix(d["kind"])
-    total = sum(e.count + (e.hdr_short_count if e.hdr_short_seconds else 0)
-                for e in p.exposure_plans) or 1
-    done = sum(e.acquired + (min(e.hdr_short_acquired, e.hdr_short_count)
-                             if e.hdr_short_seconds else 0)
-               for e in p.exposure_plans)
-    d["completion_pct"] = round(done / total * 100)
-    d["hours_done"] = round(sum(e.acquired * e.exposure_seconds
+    # PS-118: % from accepted seconds, each plan capped at its goal (the
+    # campaign's plan_seconds rule)
+    from photonscript.scheduler.campaign import plan_seconds
+    secs = [plan_seconds(e) for e in p.exposure_plans]
+    total = sum(g for g, _ in secs) or 1
+    d["completion_pct"] = round(sum(x for _, x in secs) / total * 100)
+    # PS-118: hours from accepted seconds (a 400 s sub on a 120 s plan is
+    # 400 s), not from the whole-sub count
+    d["hours_done"] = round(sum(e.long_seconds_done()
                                 + (e.hdr_short_acquired * e.hdr_short_seconds
                                    if e.hdr_short_seconds else 0)
                                 for e in p.exposure_plans) / 3600, 1)

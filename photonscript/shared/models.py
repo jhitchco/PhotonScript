@@ -124,8 +124,8 @@ class ExposurePlan(BaseModel):
     binning: int = 1
     acquired: int = 0  # how many already captured
     # PS-66: accepted long-set integration in seconds. `acquired` follows it
-    # (floor(acquired_s / exposure_seconds)), so two capped 300 s unguided subs
-    # make one 600 s sub. Old projects.json files have no acquired_s: it is
+    # (floor(acquired_s / exposure_seconds)), so two 300 s subs make one 600 s
+    # sub and a 400 s sub on a 120 s plan is 3 (PS-118: every sub, both rigs). Old projects.json files have no acquired_s: it is
     # seeded from acquired x exposure_seconds on load.
     acquired_s: float = 0.0
     hdr_short_seconds: Optional[float] = None  # shorter companion sub length (s)
@@ -142,21 +142,28 @@ class ExposurePlan(BaseModel):
             self.acquired_s = float(floor_s)
         return self
 
-    def credit_seconds(self, seconds=None, by_seconds: bool = False) -> float:
-        """PS-66: seconds one accepted long-set sub is worth. by_seconds (a
-        sub shot on an unguided, capped target) = its own length; otherwise
-        (guided nights, history from before PS-66, a record without exp_s)
-        one full sub of this plan's length, exactly as before."""
+    def credit_seconds(self, seconds=None) -> float:
+        """Seconds one accepted long-set sub is worth: its own length, on
+        either rig and whether or not the night was guided (PS-118: the goal
+        is seconds of integration, so a 400 s sub on a 120 s plan is 400 s,
+        not one 120 s sub). A record without a usable length (old history,
+        a missing exp_s) counts as one full sub of this plan's length."""
         try:
-            s = float(seconds) if (by_seconds and seconds) else 0.0
+            s = float(seconds) if seconds else 0.0
         except (TypeError, ValueError):
             s = 0.0
         return s if s > 0 else float(self.exposure_seconds)
 
-    def credit_long(self, seconds=None, by_seconds: bool = False) -> None:
-        """PS-66: credit one accepted long-set sub (see credit_seconds)."""
-        self.acquired_s += self.credit_seconds(seconds, by_seconds)
+    def credit_long(self, seconds=None) -> None:
+        """PS-66/PS-118: credit one accepted long-set sub (see credit_seconds)."""
+        self.acquired_s += self.credit_seconds(seconds)
         self.acquired = max(self.acquired, self.subs_from_seconds(self.acquired_s))
+
+    def long_seconds_done(self) -> float:
+        """PS-118: accepted long-set seconds (never below acquired x length,
+        the same floor the validator keeps). The number goal bars show."""
+        return max(float(self.acquired_s or 0.0),
+                   float(self.acquired * self.exposure_seconds))
 
     def subs_from_seconds(self, seconds: float) -> int:
         """Whole long subs' worth of `seconds` (1e-6 slack for float sums)."""
