@@ -1056,6 +1056,62 @@ def flexure_report(
     raise typer.Exit(0 if rep.get("ok") else 1)
 
 
+@app.command("rotation-report")
+def rotation_report(
+    nights: int = typer.Option(14, help="Nights back from --end"),
+    end: str = typer.Option("", help="Last night (YYYY-MM-DD, the evening "
+                                     "date); default the current night"),
+    split: str = typer.Option("", help="Compare before / after: a night "
+                                       "(YYYY-MM-DD, that night on = after) or "
+                                       "a UTC timestamp; default the TPoint "
+                                       "record's model date"),
+    ma: float = typer.Option(None, help="Polar error MA (arcmin); default "
+                                        "the TPoint record"),
+    me: float = typer.Option(None, help="Polar error ME (arcmin); default "
+                                        "the TPoint record"),
+    night_hours: float = typer.Option(6.0, help="Hours on one target for the "
+                                                "per-night corner cost"),
+    refresh: bool = typer.Option(False, "--refresh",
+                                 help="Re-measure nights (ignore the cache)"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Ask a running PhotonScript (GET "
+                                 "/api/rotation/report) instead"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-97: field rotation measured (solve PAs, star registration) vs the
+    rotation the TPoint polar error predicts, per rig, pier side, Dec and
+    HA, before / after a split, with a verdict and the corner cost. Report
+    only.
+
+    photonscript rotation-report --nights 14 --split 2026-10-04
+    """
+    import json as _json
+    from photonscript.scheduler.field_rotation import format_report, report
+    if url:
+        import urllib.parse
+        import urllib.request
+        q = {"nights": nights, "night_hours": night_hours,
+             "refresh": "true" if refresh else "false"}
+        for k, v in (("end", end), ("split", split), ("ma", ma), ("me", me)):
+            if v not in (None, ""):
+                q[k] = v
+        try:
+            with urllib.request.urlopen(url.rstrip("/") + "/api/rotation/report?"
+                                        + urllib.parse.urlencode(q), timeout=170) as r:
+                rep = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not read {url}: {e}[/red]")
+            raise typer.Exit(2)
+    else:
+        rep = report(_config_for_repo(Path(__file__).resolve().parents[1]),
+                     nights, end or None, split or None, ma, me, refresh, night_hours)
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+    raise typer.Exit(0 if rep.get("ok") else 1)
+
+
 @app.command("pointing-backfill")
 def pointing_backfill(
     since: str = typer.Option("", help="First night (YYYY-MM-DD); with no "

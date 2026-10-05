@@ -6,6 +6,7 @@
  *   audit      GET  /api/thesky/audit[?refresh=1]
  *   imagelink  GET  /api/thesky/imagelink-check[?refresh=1][&thesky=1]
  *   pointing   GET  /api/thesky/pointing?nights=14
+ *   rotation   GET  /api/rotation/report?nights=14 (PS-97, routers/rotation.py)
  *   manual     GET  /api/thesky/manual, POST /api/thesky/manual
  * Row rendering follows PHD2's audit table (status, current, desired, why,
  * fix), without Apply buttons.
@@ -175,6 +176,72 @@
         } catch (e) { setText('tsPointing', 'error: ' + e); }
     }
 
+    // ---- 3b. field rotation (PS-97) ------------------------------------------
+    function rotStat(name, s) {
+        s = s || {};
+        if (!s.n) return '';
+        return '<tr><td>' + esc(name) + '</td><td>' + esc(s.n) + '</td><td>' + esc(s.median_abs_rate_deg_h) +
+            '</td><td>' + esc(s.median_envelope_deg_h) + '</td><td>' + esc(s.median_min_polar_arcmin) +
+            '</td><td>' + esc(s.median_dec) + '</td></tr>';
+    }
+    function costCell(c) {
+        c = c || {};
+        return c.corner_px == null ? '-' : esc(c.corner_px) + ' px (' + esc(c.corner_arcsec) + '")';
+    }
+    function renderRotation(d) {
+        var v = d.verdict || {}, p = d.polar || {};
+        var lvl = {ok: 'PASS', warn: 'WARN'}[v.level] || 'unknown';
+        var html = chip(lvl) + ' <b>' + esc(v.text) + '</b>' +
+            '<div class="g-dim">Polar error ' + (p.source ? 'MA ' + esc(p.ma_arcmin) + '\' ME ' + esc(p.me_arcmin) +
+                '\' = ' + esc(p.total_arcmin) + '\' (' + esc(p.source) + (p.model_date ? ', model ' + esc(p.model_date) : '') + ')'
+                : 'not entered (TPoint record below)') +
+            '; split ' + esc((d.split || {}).value) + '; verdict from ' + esc(d.main_era) + '</div>';
+        var head = '<table class="g-tbl"><tr><th>Group</th><th>Blocks</th><th>Measured |deg/h|</th>' +
+            '<th>Polar predicts up to</th><th>Needs polar error \'</th><th>Dec</th></tr>';
+        ['before', 'after', 'all'].forEach(function (e) {
+            var s = (d.eras || {})[e];
+            if (!s || !s.n || (e === 'all' && (d.eras.before || d.eras.after))) return;
+            var t = rotStat('All', s) + rotStat('RC16', (s.by_rig || {}).rc16) + rotStat('Piggy-600', (s.by_rig || {}).piggyback) +
+                rotStat('Pier East', (s.by_pier || {}).East) + rotStat('Pier West', (s.by_pier || {}).West);
+            ['by_dec', 'by_ha'].forEach(function (k) {
+                Object.keys(s[k] || {}).forEach(function (b) { t += rotStat(b, s[k][b]); });
+            });
+            var a = s.rig_agreement || {}, f = s.polar_fit;
+            html += '<h4>' + esc(e === 'all' ? 'All nights' : e === 'after' ? 'After the split' : 'Before the split') + '</h4>' +
+                head + t + '</table><div class="g-dim">Rigs: ' +
+                (a.n ? (a.agree ? 'agree' : 'DISAGREE') + ' (' + esc(a.n) + ' pairs, median diff ' + esc(a.median_abs_diff_deg_h) + ' deg/h)' : 'no overlapping pairs') +
+                (f ? '; polar fit ' + esc(f.total_arcmin) + '\' (MA ' + esc(f.ma_arcmin) + ' ME ' + esc(f.me_arcmin) +
+                    ', resid ' + esc(f.resid_rms_deg_h) + ' deg/h)' : '') + '</div>';
+        });
+        var rows = (d.blocks || []).filter(function (b) { return b.rate_deg_h != null; }).map(function (b) {
+            return '<tr><td>' + esc(b.night) + '</td><td>' + esc(b.rig === 'piggyback' ? 'Piggy' : 'RC16') + '</td><td>' +
+                esc(b.target) + '</td><td>' + esc(b.pier) + '</td><td>' + esc(b.dec) + '</td><td>' + esc(b.ha_start_h) +
+                ' to ' + esc(b.ha_end_h) + '</td><td>' + esc(b.rate_deg_h) + ' +/- ' + esc(b.err_deg_h) +
+                '</td><td>' + esc(b.resid_deg) + '</td><td>' + esc(b.pred_deg_h) + ' / ' + esc(b.pred_env_deg_h) +
+                '</td><td>' + esc(b.source) + '</td></tr>';
+        }).join('');
+        if (rows) html += '<table class="g-tbl"><tr><th>Night</th><th>Rig</th><th>Target</th><th>Pier</th><th>Dec</th>' +
+            '<th>HA h</th><th>deg/h</th><th>Resid deg</th><th>Predicted / max</th><th>From</th></tr>' + rows + '</table>';
+        var cost = d.cost || {};
+        var crow = Object.keys(cost).map(function (rig) {
+            var c = cost[rig] || {}, m = c.measured || {}, pr = c.predicted || {};
+            return '<tr><td>' + esc(rig === 'piggyback' ? 'Piggy-600' : 'RC16') + ' (' + esc(c.scale_arcsec) + '"/px)</td><td>' +
+                esc(c.sub_s) + ' s: ' + costCell(m.sub) + '</td><td>' + esc(c.night_h) + ' h: ' + costCell(m.night) +
+                '</td><td>' + costCell(pr.sub) + ' / ' + costCell(pr.night) + '</td></tr>';
+        }).join('');
+        if (crow) html += '<table class="g-tbl"><tr><th>Corner cost</th><th>Measured, one sub</th><th>Measured, a night</th>' +
+            '<th>Predicted sub / night</th></tr>' + crow + '</table>' +
+            '<div class="g-dim">Arc a corner star moves about the frame center; a pivot at the OAG guide star off the frame edge doubles it.</div>';
+        (d.notes || []).forEach(function (n) { html += '<div class="g-dim">' + esc(n) + '</div>'; });
+        setHTML('tsRotation', html);
+    }
+    async function loadRotation() {
+        if (!$('tsRotation')) return;
+        try {
+            renderRotation(await getJSON('/api/rotation/report?nights=14'));
+        } catch (e) { setText('tsRotation', 'error: ' + e); }
+    }
+
     // ---- 4. the manual TPoint record ----------------------------------------
     var FIELDS = [
         ['model_date', 'Model date (YYYY-MM-DD)', 'date'], ['points', 'Points', 'number'],
@@ -235,6 +302,7 @@
         loadAudit(false);
         loadImagelink('');
         loadPointing();
+        loadRotation();
         loadManual();
         // the stored audit every 60 s (never re-run on a timer, never while
         // an action is in flight or the tab is hidden)
@@ -245,5 +313,6 @@
     }
 
     window.THESKY = {init: init, loadAudit: loadAudit, loadImagelink: loadImagelink,
-                     loadPointing: loadPointing, loadManual: loadManual};
+                     loadPointing: loadPointing, loadRotation: loadRotation,
+                     loadManual: loadManual};
 })();
