@@ -15,6 +15,7 @@ Usage:
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
+    photonscript guiding-status [--json]                          # PS-119
     photonscript calibration-plan [--rig R] [--json]              # PS-113
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
@@ -967,6 +968,26 @@ def thesky_audit_cmd(
         print(_json.dumps(audit, indent=2, default=str))
     else:
         console.print(ta.format_report(audit), markup=False, highlight=False)
+
+
+@app.command("guiding-status")
+def guiding_status_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-119: the Guiding tab's "What to change" list from the cached
+    records (PHD2 and TheSky audits, calibration, self-test, guard, tuner):
+    every fail then warn with the fix and where to do it, old readings that
+    may already be fixed, and what is not checked yet. Never runs an audit.
+
+    photonscript guiding-status --json
+    """
+    import json as _json
+    from photonscript.scheduler import guiding_attention as ga
+    s = ga.safe_build(_config_for_repo(Path(__file__).resolve().parents[1]))
+    if as_json:
+        print(_json.dumps(s, indent=2, default=str))
+    else:
+        console.print(ga.format_text(s), markup=False, highlight=False)
 
 
 @app.command("tracking-test-report")

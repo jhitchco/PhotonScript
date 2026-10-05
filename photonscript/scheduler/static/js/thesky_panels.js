@@ -49,21 +49,29 @@
             if (!groups[r.group]) { groups[r.group] = []; order.push(r.group); }
             groups[r.group].push(r);
         });
-        var html = '';
+        // PS-119: fails / warns keep a left border, pass / info rows fold
+        // behind "N passing" (PHD2.passing from phd2_panels.js)
+        var pp = (window.PHD2 && PHD2.passing) || null;
+        var html = '', nOk = 0;
         order.forEach(function (g) {
-            html += '<h3 class="g-group">' + esc(g) + '</h3><table class="g-tbl"><tr><th></th><th>Setting</th>' +
+            var allOk = pp && groups[g].every(function (r) { return pp.isOk(r.status); });
+            html += '<div class="g-grp' + (allOk ? ' g-grp-ok' : '') + '"><h3 class="g-group">' + esc(g) +
+                '</h3><table class="g-tbl"><tr><th></th><th>Setting</th>' +
                 '<th>Current (source)</th><th>Desired</th><th>Why</th><th>Fix / note</th></tr>';
             groups[g].forEach(function (r) {
-                html += '<tr><td>' + chip(r.status) + '</td><td>' + esc(r.label) +
+                if (pp && pp.isOk(r.status)) nOk += 1;
+                html += '<tr id="ts-' + esc(r.id) + '" class="' + (pp ? pp.rowClass(r.status) : '') + '"><td>' +
+                    chip(r.status) + '</td><td>' + esc(r.label) +
                     ' <span class="g-dim" title="how sure the read is on the site build">' + esc(r.confidence) + '</span></td><td>' +
-                    esc(r.current) + ' <span class="g-dim">(' + esc(r.source) + ')</span></td><td>' + esc(r.desired) +
+                    esc(r.current) + ' <span class="g-dim">(' + esc(r.source_text || r.source) + ')</span></td><td>' + esc(r.desired) +
                     '</td><td class="g-why">' + esc(r.why) + '</td><td>' + esc(r.note || (r.status === 'pass' ? '' : r.fix)) +
                     (r.note && r.status !== 'pass' && r.status !== 'info' ? '<br><span class="g-dim">Fix: ' + esc(r.fix) + '</span>' : '') +
                     '</td></tr>';
             });
-            html += '</table>';
+            html += '</table></div>';
         });
-        setHTML('tsRows', html);
+        setHTML('tsRows', html + (pp ? pp.html('tpointSec', nOk) : ''));
+        if (pp) pp.wire('tsRows', 'tpointSec');
     }
     async function loadAudit(refresh) {
         if (!$('tsInfo')) return;
@@ -71,7 +79,10 @@
         if (refresh) setText('tsStatus', ' auditing (read only)...');
         try {
             renderAudit(await getJSON('/api/thesky/audit' + (refresh ? '?refresh=1' : '')));
-            if (refresh) setText('tsStatus', ' done ' + stamp());
+            if (refresh) {
+                setText('tsStatus', ' done ' + stamp());
+                if (window.PHD2 && PHD2.loadAttention) PHD2.loadAttention();
+            }
         } catch (e) { setText('tsInfo', 'error: ' + e); }
         busy.audit = false;
     }

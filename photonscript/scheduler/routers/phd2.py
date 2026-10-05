@@ -12,6 +12,7 @@ GET  /api/phd2/audit?refresh=&raw=        settings audit vs the desired state (P
 POST /api/phd2/audit/apply {ids, dry_run}  apply audit rows (API / gated profile)
 GET  /api/phd2/tuning?date=       guide-star auto-tune: per filter, changes, advice (PS-90)
 GET  /api/phd2/live?probe=         live PHD2 state for the Guiding tab (PS-103)
+GET  /api/guiding/attention        the "What to change" list from cached records (PS-119)
 GET  /guiding                      the Guiding tab page (PS-103)
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
@@ -295,6 +296,8 @@ async def api_phd2_audit(refresh: bool = False, raw: bool = False):
     else:
         out["cached"] = True
     out["phd2_ops"] = phd2_ops.status()
+    from photonscript.scheduler import guiding_attention
+    guiding_attention.annotate_phd2(out, cfg)      # PS-119: source age, stale, Apply
     return out
 
 
@@ -411,6 +414,17 @@ async def api_phd2_live(probe: bool = True):
             "filter": getattr(ts.current_filter, "value", ts.current_filter),
             "guiding": ts.guiding.model_dump(mode="json"),
             "phd2": await _probe_phd2(cfg) if probe else None}
+
+
+@router.get("/api/guiding/attention")
+def api_guiding_attention():
+    """PS-119: the Guiding tab's "What to change" list from the cached
+    records only (PHD2 and TheSky audits, PS-93 calibration, PS-92
+    self-test, PS-91 guard, PS-90 tuner): fails then warns with the fix,
+    where to do it and the audit row to Apply; stale readings in their own
+    group; unknown rows grouped by why. Never runs an audit, never raises."""
+    from photonscript.scheduler import guiding_attention
+    return guiding_attention.safe_build(_cfg())
 
 
 @router.get("/guiding", response_class=HTMLResponse)

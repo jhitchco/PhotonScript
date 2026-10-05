@@ -12,6 +12,11 @@
  *   guard       GET  /api/phd2/guard, /api/phd2/hotpix, POST /api/phd2/hotpix/capture (PS-91)
  *   tuner       GET  /api/phd2/tuning                     (PS-90)
  *   guide log   GET  /api/phd2/analysis?date=&subs=false  (PS-88)
+ *   attention   GET  /api/guiding/attention               (PS-119)
+ * PS-119: the "What to change" card (#attention), the nav counts, and the
+ * per-section "N passing" collapse (PHD2.passing, shared with
+ * thesky_panels.js): fails and warns stay visible with a left border in the
+ * chip color, pass and info rows fold behind a toggle remembered per section.
  */
 (function () {
     "use strict";
@@ -48,6 +53,53 @@
     }
     function setText(id, txt) { var el = $(id); if (el) el.textContent = txt; }
     function stamp() { return new Date().toLocaleTimeString(); }
+
+    // ---- PS-119 "N passing" collapse -----------------------------------------
+    // Row class by status: fail / warn get a left border in the chip color,
+    // pass / info fold away while the section is collapsed.
+    function rowClass(status, stale) {
+        var s = String(status || '').toLowerCase();
+        var c = s === 'fail' ? 'g-row-fail' : s === 'warn' ? 'g-row-warn' :
+            (s === 'pass' || s === 'info') ? 'g-row-ok' : 'g-row-unknown';
+        return c + (stale ? ' g-row-stale' : '');
+    }
+    function isOk(status) {
+        var s = String(status || '').toLowerCase();
+        return s === 'pass' || s === 'info';
+    }
+    var openKey = 'ps119.passing.';
+    function isOpen(key) {
+        try { return window.localStorage.getItem(openKey + key) === '1'; } catch (e) { return false; }
+    }
+    function setOpen(key, v) {
+        try { window.localStorage.setItem(openKey + key, v ? '1' : '0'); } catch (e) { /* private window */ }
+    }
+    // The toggle under a section's rows; wirePassing() applies the remembered state.
+    function passingHTML(key, n) {
+        if (!n) return '';
+        return '<button type="button" class="btn btn-secondary btn-sm g-passing" data-passing="' + esc(key) +
+            '" data-n="' + esc(n) + '">' + esc(n) + ' passing</button>';
+    }
+    function wirePassing(boxId, key) {
+        var box = $(boxId);
+        if (!box) return;
+        var open = isOpen(key);
+        box.classList.toggle('g-hide-ok', !open);
+        Array.prototype.forEach.call(box.querySelectorAll('[data-passing]'), function (b) {
+            var n = b.getAttribute('data-n');
+            b.textContent = open ? 'hide ' + n + ' passing' : n + ' passing';
+            b.onclick = function () { setOpen(key, !isOpen(key)); wirePassing(boxId, key); };
+        });
+    }
+    // "stale: may already be fixed" for a reading older than a PHD2
+    // configuration change or STALE_HOURS (guiding_attention.annotate_phd2).
+    function staleTag(r) {
+        if (!r.stale) return '';
+        var st = r.status || r.severity;
+        var bad = st === 'fail' || st === 'warn';
+        return ' <span class="badge badge-stale" title="' + esc(r.stale_why || 'old reading') + '">' +
+            (bad ? 'stale: may already be fixed' : 'old reading') + '</span>';
+    }
 
     // ---- 1. live PHD2 state --------------------------------------------------
     function tile(k, v, title) {
@@ -111,23 +163,34 @@
             if (!groups[r.group]) { groups[r.group] = []; order.push(r.group); }
             groups[r.group].push(r);
         });
-        var html = '';
+        var html = '', nOk = 0;
         order.forEach(function (g) {
-            html += '<h3 class="g-group">' + esc(g) + '</h3><table class="g-tbl"><tr><th></th><th>Setting</th>' +
+            var allOk = groups[g].every(function (r) { return isOk(r.status); });
+            html += '<div class="g-grp' + (allOk ? ' g-grp-ok' : '') + '"><h3 class="g-group">' + esc(g) +
+                '</h3><table class="g-tbl"><tr><th></th><th>Setting</th>' +
                 '<th>Current (source)</th><th>Desired</th><th>Why</th><th>Fix</th><th></th></tr>';
             groups[g].forEach(function (r) {
-                var btn = r.applicable ? '<button class="btn btn-secondary btn-sm" data-apply="' + esc(r.id) +
-                    '" title="dry run, then apply ' + esc(r.target) + ' (' + esc(r.apply) + ')">Apply</button>' : '';
-                html += '<tr><td>' + chip(r.status) + '</td><td>' + esc(r.label) + '</td><td>' + esc(r.current) +
-                    ' <span class="g-dim">(' + esc(r.source) + ')</span></td><td>' + esc(r.desired) +
+                if (isOk(r.status)) nOk += 1;
+                // Apply only where the audit can set it live (API rows, or
+                // profile rows with profile writes on); a payload without
+                // apply_live falls back to API rows only.
+                var live = r.apply_live != null ? r.apply_live : (r.applicable && r.apply === 'api');
+                var btn = live ? '<button class="btn btn-secondary btn-sm" data-apply="' + esc(r.id) +
+                    '" title="dry run, then apply ' + esc(r.target) + ' (' + esc(r.apply) + ')">Apply</button>' :
+                    (r.manual_hint ? '<span class="g-dim">' + esc(r.manual_hint) + '</span>' : '');
+                html += '<tr id="pa-' + esc(r.id) + '" class="' + rowClass(r.status, r.stale) + '"><td>' + chip(r.status) +
+                    '</td><td>' + esc(r.label) + '</td><td>' + esc(r.current) +
+                    ' <span class="g-dim">(' + esc(r.source_text || r.source) + ')</span>' + staleTag(r) +
+                    '</td><td>' + esc(r.desired) +
                     '</td><td class="g-why">' + esc(r.why) + '</td><td>' + esc(r.note || (r.status === 'pass' ? '' : r.fix)) +
                     '</td><td>' + btn + '</td></tr>';
             });
-            html += '</table>';
+            html += '</table></div>';
         });
-        setHTML('auditRows', html);
+        setHTML('auditRows', html + passingHTML('auditSec', nOk));
+        wirePassing('auditRows', 'auditSec');
         Array.prototype.forEach.call(document.querySelectorAll('#auditRows [data-apply]'), function (b) {
-            b.onclick = function () { applyAudit(b.getAttribute('data-apply')); };
+            b.onclick = function () { applyAudit(b.getAttribute('data-apply'), 'auditStatus'); };
         });
     }
     function setHTML(id, html) { var el = $(id); if (el) el.innerHTML = html; }
@@ -136,7 +199,7 @@
         if (refresh) setText('auditStatus', ' auditing...');
         try {
             renderAudit(await getJSON('/api/phd2/audit' + (refresh ? '?refresh=1' : '')));
-            if (refresh) setText('auditStatus', ' done ' + stamp());
+            if (refresh) { setText('auditStatus', ' done ' + stamp()); loadAttention(); }
         } catch (e) { setText('auditInfo', 'error: ' + e); }
     }
     function fmtResults(r) {
@@ -144,22 +207,24 @@
             return x.id + ': ' + (x.ok ? 'ok' : 'not done') + (x.note ? ' (' + x.note + ')' : '');
         }).join('; ') || (r.note || 'no result');
     }
-    // Dry run first; only a clean dry run offers the real apply.
-    async function applyAudit(id) {
+    // Dry run first; only a clean dry run offers the real apply. statusId:
+    // where to report (the audit section or the What to change card).
+    async function applyAudit(id, statusId) {
+        var sid = statusId || 'auditStatus';
         state.busy.audit = true;
         try {
-            setText('auditStatus', ' dry run for ' + id + '...');
+            setText(sid, ' dry run for ' + id + '...');
             var dry = await post('/api/phd2/audit/apply', {ids: [id], dry_run: true});
             var lines = fmtResults(dry);
-            setText('auditStatus', ' dry run: ' + lines);
+            setText(sid, ' dry run: ' + lines);
             if (!dry.ok) return;
             if (!confirm('Dry run for ' + id + ':\n' + lines + '\n\nApply it to PHD2 now?')) return;
-            setText('auditStatus', ' applying ' + id + '...');
+            setText(sid, ' applying ' + id + '...');
             var r = await post('/api/phd2/audit/apply', {ids: [id], dry_run: false});
-            setText('auditStatus', ' applied: ' + fmtResults(r));
+            setText(sid, ' applied: ' + fmtResults(r));
             await loadAudit(true);
         } catch (e) {
-            setText('auditStatus', ' error: ' + e);
+            setText(sid, ' error: ' + e);
         } finally { state.busy.audit = false; }
     }
 
@@ -178,13 +243,17 @@
                     return d + ' <b>' + esc(((last.directions || {})[d] || {}).ratio) + '</b>';
                 }).join(', ') + ((last.reasons || []).length ? '<br>' + esc(last.reasons.join('; ')) : '') :
                 'No self-test in the last 30 nights.');
+            var stOk = 0;
             var rows = (t.nights || []).map(function (n) {
-                return '<tr><td>' + esc(n.night) + '</td><td>' + chip(n.verdict) + '</td><td>' + esc(n.pier_side) +
+                if (isOk(n.verdict)) stOk += 1;
+                return '<tr class="' + rowClass(n.verdict) + '"><td>' + esc(n.night) + '</td><td>' + chip(n.verdict) +
+                    '</td><td>' + esc(n.pier_side) +
                     '</td><td>' + DIRS.map(function (d) { return esc((n.ratios || {})[d]); }).join(' / ') +
                     '</td><td>' + esc((n.reasons || []).join('; ')) + '</td></tr>';
             }).join('');
             setHTML('stTrend', rows ? '<table class="g-tbl"><tr><th>Night</th><th>Worst</th><th>Pier</th>' +
-                '<th>W / E / N / S ratio</th><th>Why</th></tr>' + rows + '</table>' : '');
+                '<th>W / E / N / S ratio</th><th>Why</th></tr>' + rows + '</table>' + passingHTML('selftestSec', stOk) : '');
+            wirePassing('stTrend', 'selftestSec');
         } catch (e) { setText('stLast', 'error: ' + e); }
     }
     async function runSelftest() {
@@ -219,13 +288,17 @@
                 '<br>After the flip: ' + (flip ? esc(flip) : 'not checked yet') +
                 (c.plan ? '<br>Plan: ' + esc(c.plan.status) + ' at ' + esc((c.plan.field || {}).name) + ' (' + esc(c.plan.reason) + ')' : '') +
                 (c.request ? '<br>Requested: ' + esc(c.request.mode) + ' at ' + esc(c.request.t_utc) : ''));
+            var pcOk = 0;
             var rows = (c.history || []).slice(-15).reverse().map(function (h) {
-                return '<tr><td>' + esc(h.t_utc) + '</td><td>' + chip(h.grade) + '</td><td>' + esc(h.context) +
+                if (isOk(h.grade)) pcOk += 1;
+                return '<tr class="' + rowClass(h.grade) + '"><td>' + esc(h.t_utc) + '</td><td>' + chip(h.grade) +
+                    '</td><td>' + esc(h.context) +
                     '</td><td>' + esc(h.dec_deg) + ' / ' + esc(h.ha_hr) + '</td><td>' + esc(h.pier_side) + '</td><td>' + esc(h.ortho_err_deg) +
                     '</td><td>' + esc((h.reasons || []).concat(h.warnings || []).join('; ')) + '</td></tr>';
             }).join('');
             setHTML('pcHist', rows ? '<table class="g-tbl"><tr><th>UTC</th><th>Grade</th><th>Context</th><th>Dec / HA</th>' +
-                '<th>Pier</th><th>Ortho deg</th><th>Why</th></tr>' + rows + '</table>' : '');
+                '<th>Pier</th><th>Ortho deg</th><th>Why</th></tr>' + rows + '</table>' + passingHTML('calSec', pcOk) : '');
+            wirePassing('pcHist', 'calSec');
         } catch (e) { setText('pcInfo', 'error: ' + e); }
     }
     async function askCalibration(mode) {
@@ -335,6 +408,57 @@
         } catch (e) { box.textContent = 'error: ' + e; }
     }
 
+    // ---- 8. PS-119 What to change -------------------------------------------
+    function attnLine(it) {
+        var act = it.apply_id ? '<button class="btn btn-primary btn-sm" data-attn-apply="' + esc(it.apply_id) +
+            '" title="dry run, then confirm">Apply</button>' :
+            (it.manual_hint ? '<span class="g-dim">' + esc(it.manual_hint) + '</span>' : '');
+        return '<div class="g-attn ' + rowClass(it.severity, it.stale) + '">' + chip(it.severity) + staleTag(it) +
+            ' <b>' + esc(it.setting) + '</b>: ' + esc(it.current) +
+            (it.source_text ? ' <span class="g-dim">(' + esc(it.source_text) + ')</span>' : '') +
+            ' -&gt; ' + esc(it.desired) + '. ' + esc(it.fix) +
+            ' <span class="g-where">' + esc(it.where) + '</span>' +
+            ' <a href="#' + esc(it.row_anchor || it.anchor) + '">' + esc(it.section) + '</a> ' + act +
+            (it.detail ? '<br><span class="g-dim">' + esc(it.detail) + '</span>' : '') + '</div>';
+    }
+    function navCounts(sections) {
+        Array.prototype.forEach.call(document.querySelectorAll('[data-navc]'), function (el) {
+            var c = (sections || {})[el.getAttribute('data-navc')];
+            if (!c || !(c.fail || c.warn)) { el.innerHTML = ''; el.title = ''; return; }
+            el.innerHTML = '<span class="g-nf">' + esc(c.fail || 0) + '</span> / <span class="g-nw">' +
+                esc(c.warn || 0) + '</span>';
+            el.title = (c.fail || 0) + ' fail, ' + (c.warn || 0) + ' warn';
+        });
+    }
+    async function loadAttention() {
+        if (!$('attnItems')) return;
+        try {
+            var s = await getJSON('/api/guiding/attention');
+            var src = s.sources || {};
+            setHTML('attnLine', '<b>' + esc(s.line) + '</b> <span class="g-dim">| from the cached audits: PHD2 ' +
+                esc((src.phd2_audit || {}).t_utc || 'none') + ', TheSky ' + esc((src.thesky_audit || {}).t_utc || 'none') +
+                '</span>' + ((s.problems || []).length ? '<br><span class="g-dim">' + esc(s.problems.join('; ')) + '</span>' : ''));
+            setHTML('attnItems', (s.items || []).length ? s.items.map(attnLine).join('') :
+                '<div class="g-dim">Nothing to change in the cached records.</div>');
+            setHTML('attnStale', (s.stale_items || []).length ?
+                '<h3 class="g-group">May already be fixed (old reading)</h3><div class="g-dim">' + esc(s.stale_hint) +
+                '</div>' + s.stale_items.map(attnLine).join('') : '');
+            setHTML('attnNotChecked', (s.not_checked || []).length ?
+                '<h3 class="g-group">Not checked yet</h3>' + s.not_checked.map(function (g) {
+                    return '<div class="g-attn g-row-unknown">' + chip('unknown') + ' <b>' + esc(g.count) + ' ' + esc(g.title) +
+                        '</b>: ' + esc(g.action) + ' <a href="#' + esc(g.anchor) + '">go</a>' +
+                        '<br><span class="g-dim">' + esc((g.rows || []).join(', ')) + '</span></div>';
+                }).join('') : '');
+            Array.prototype.forEach.call(document.querySelectorAll('#attention [data-attn-apply]'), function (b) {
+                b.onclick = async function () {
+                    await applyAudit(b.getAttribute('data-attn-apply'), 'attnStatus');
+                    loadAttention();
+                };
+            });
+            navCounts(s.sections);
+        } catch (e) { setText('attnLine', 'error: ' + e); }
+    }
+
     // ---- System page: one line per panel, linking to the Guiding tab --------
     async function systemSummary(id) {
         var box = $(id);
@@ -344,12 +468,17 @@
         }
         async function safe(url) { try { return await getJSON(url); } catch (e) { return null; } }
         var r = await Promise.all([safe('/api/phd2/audit'), safe('/api/phd2/selftest'), safe('/api/phd2/calibration'),
-                                   safe('/api/phd2/guard'), safe('/api/phd2/hotpix'), safe('/api/phd2/tuning')]);
-        var a = r[0], s = r[1], c = r[2], g = r[3], h = r[4], t = r[5];
+                                   safe('/api/phd2/guard'), safe('/api/phd2/hotpix'), safe('/api/phd2/tuning'),
+                                   safe('/api/guiding/attention')]);
+        var a = r[0], s = r[1], c = r[2], g = r[3], h = r[4], t = r[5], w = r[6];
+        var wc = (w && w.counts) || {};
         var na = '<span class="g-dim">unavailable</span>';
         var ac = (a && a.counts) || {};
         var rec = c && c.record;
         box.innerHTML =
+            '<div class="g-sumline">' + (w ? (wc.fail ? chip('FAIL') : wc.warn ? chip('WARN') : chip('PASS')) +
+                ' <a href="/guiding#attention">' + esc(w.line) + '</a>' :
+                '<a href="/guiding#attention">Guiding</a>: ' + na) + '</div>' +
             line('auditSec', 'Settings audit (PS-89)', a ? (ac.fail ? chip('FAIL') : ac.warn ? chip('WARN') : chip('PASS')) + ' ' +
                 esc(ac.fail) + ' fail, ' + esc(ac.warn) + ' warn, ' + esc(ac.unknown) + ' unknown (' + esc(a.reason) + ' ' + esc(a.t_utc) + ')' : na) +
             line('selftestSec', 'Pulse self-test (PS-92)', s ? (s.verdict ? chip(s.verdict) + ' tonight, ' + esc(s.runs) + ' run(s)' : 'not run tonight') : na) +
@@ -377,6 +506,8 @@
         on('hotpixCapture', captureHotpix);
         on('tuneRefresh', loadTuning);
         on('glogRefresh', loadGuideLog);
+        on('attnRefresh', loadAttention);
+        loadAttention();
         loadLive().then(loadGuideLog);
         loadAudit(false);
         loadSelftest();
@@ -389,7 +520,7 @@
         setInterval(function () { if (!document.hidden) loadLive(); }, 15000);
         setInterval(function () {
             if (document.hidden) return;
-            if (!state.busy.audit) loadAudit(false);
+            if (!state.busy.audit) { loadAudit(false); loadAttention(); }
             if (!state.busy.selftest) loadSelftest();
             loadCalibration();
             if (!state.busy.guard) loadGuard();
@@ -401,6 +532,7 @@
         esc: esc, initGuidingPage: initGuidingPage, systemSummary: systemSummary,
         loadLive: loadLive, loadAudit: loadAudit, loadSelftest: loadSelftest,
         loadCalibration: loadCalibration, loadGuard: loadGuard, loadTuning: loadTuning,
-        loadGuideLog: loadGuideLog
+        loadGuideLog: loadGuideLog, loadAttention: loadAttention,
+        passing: {rowClass: rowClass, isOk: isOk, html: passingHTML, wire: wirePassing, staleTag: staleTag}
     };
 })();

@@ -54,6 +54,8 @@ async def api_thesky_audit(refresh: bool = False):
         out["cached"] = True
     out["armer_state_now"] = _armer_state() or None
     out["imagelink_thesky_allowed"] = ta.armer_idle(_armer_state())
+    from photonscript.scheduler import guiding_attention
+    guiding_attention.annotate_thesky(out)         # PS-119: source and its age
     return out
 
 

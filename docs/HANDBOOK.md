@@ -435,8 +435,11 @@ or "ERROR: ...". Masters in `out\master\`.
   line. Apply: API keys (exposure, RA min-move, Dec guide mode) while PHD2 is
   Stopped or Looping; profile (registry) writes only behind
   `phd2_audit_autofix` (off) with PHD2 closed and a backup; ASCOM, TheSky and
-  NINA rows report only. Registry names are unverified until a `reg export`
-  from the scope PC (MAINTENANCE.md). `pe_owner=protrack`: PHD2 PPEC off.
+  NINA rows report only. Registry names were verified for reading against
+  the scope PC's 2026-10-04 `reg export` (PS-119): the profile is read live
+  (source order PHD2 API > PHD2 profile > guide log); nothing is writable
+  yet (`phd2_profile_store.WRITABLE` is empty). `pe_owner=protrack`: PHD2
+  PPEC off.
 - GUIDE-STAR AUTO-TUNE (PS-90): the RC16 agent measures the guide star after
   each settle and filter change (peak % of full scale, clipped, SNR, HFD).
   `phd2_tune_mode=observe` (default) records only; `exposure` steps PHD2's
@@ -507,6 +510,22 @@ or "ERROR: ...". Masters in `out\master\`.
   (undocumented DoCommandStr) and made `get_mount_status` read without
   `Connect()` (which may unpark). Reading the audit and the on-site check:
   MAINTENANCE.md.
+- GUIDING "WHAT TO CHANGE" (PS-119): the top of `/guiding` lists every fail,
+  then every warn, from the cached PHD2 and TheSky audits, the PS-93
+  calibration, the PS-92 self-test, the PS-91 guard / hot-pixel map and the
+  PS-90 tuner (scheduler/guiding_attention.py, `GET /api/guiding/attention`,
+  CLI `photonscript guiding-status [--json]`, one System page line). Each
+  line: current (source and age) -> desired, the fix, where (PHD2 / NINA /
+  TheSky / mount driver / PhotonScript), and Apply (dry run, then confirm)
+  only where the audit can set it live. A guide-log reading older than the
+  last PHD2 ConfigurationChange or 12 h is "stale: may already be fixed" in
+  its own group; unknown rows are grouped by the one action that clears
+  them. Passing rows fold behind "N passing" per section; the nav shows
+  fail / warn counts. Never runs an audit itself. With it: the search region
+  must cover 1 x NINA's dither (not 2 x), a Dec min-move row (FAIL over
+  5 px), the stored calibration (profile scope/calibration) graded by PS-93,
+  TheSky's site longitude is strict (script value east-positive: West reads
+  -109.021) and a time zone / DST row.
 - OPEN THREADS: `gradual_warm_minutes` change is staged in the desktop repo but
   NOT yet deployed (deploy after a dawn shutdown, never mid-run - deploy 409s
   while armed). Confirm the OSC dark library has matching 120s @0C darks.

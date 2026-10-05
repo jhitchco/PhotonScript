@@ -243,9 +243,10 @@ COMPLETE, phd2.exe closed, a verified registry name and a fresh backup in
 `<data_dir>\phd2_profile_backups\<ts>_<id>.reg` (restore: close PHD2, `reg
 import <file>`). Mount driver, TheSky and NINA rows are report only. Every
 change is logged to `<data_dir>\phd2_audit\changes.jsonl`. The registry value
-names in `scheduler/phd2_profile_store.KEYS` are candidates until checked
-against a `reg export` of the scope PC; until then those rows read "unknown"
-(with the candidate value) and writes to them are refused. `pe_owner`
+names in `scheduler/phd2_profile_store.KEYS` were checked for reading against
+the scope PC's `reg export` of 2026-10-04 (PHD2 2.6.14, profile 2; PS-119);
+writes stay refused until a key is added to `WRITABLE`. Re-run the export
+after a PHD2 update and compare. `pe_owner`
 (`protrack`) says who corrects periodic error: with ProTrack, PHD2's RA
 algorithm must not be Predictive PEC.
 
