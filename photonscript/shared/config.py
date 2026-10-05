@@ -705,6 +705,18 @@ class PhotonScriptConfig(BaseSettings):
                                  # ON (wrong setpoint that won't take, weak TEC).
                                  # Re-asserting silently all night is how the
                                  # 2026-09-26 20°C night went unnoticed.
+    # PS-61 cooler gate: before each light block (RC16) and each OSC image
+    # pass (Piggy-600) NINA runs deploy\cooler-gate.cmd, which holds until the
+    # sensor is within cooler_gate_tolerance_c of the setpoint, at most
+    # cooler_gate_timeout_min. On timeout it sends "not imaging" and, in
+    # "skip" mode, NINA skips that block (retried on the next pass); "warn"
+    # alerts and images anyway; "off" emits no gate. Every unknown (sensor
+    # unreadable, service down, script missing) fails OPEN, never skips.
+    cooler_gate_mode: str = "skip"
+    cooler_gate_tolerance_c: float = 1.0
+    cooler_gate_timeout_min: float = 20.0
+    cooler_gate_poll_s: float = 15.0
+    cooler_gate_script: str = "C:\\astro\\PhotonScript\\deploy\\cooler-gate.cmd"
     sub_temp_over_setpoint_c: float = 5.0  # grading: reject a sub whose sensor
                                  # was more than this above the CONFIGURED rig
                                  # setpoint (never the header SET-TEMP, which is

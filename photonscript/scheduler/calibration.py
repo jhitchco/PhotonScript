@@ -694,10 +694,17 @@ def _osc_light_loop(config) -> dict:
     safety_confirm_seconds + piggyback_resume_grace_s. The hold is short
     WaitForTimeSpan steps under a nautical-dawn TimeCondition, so it can not
     push the OSC past dawn or delay the dawn flats. The "roof open" Pushover
-    is not in here (it would fire on every pass): see _osc_roof_open_notice."""
+    is not in here (it would fire on every pass): see _osc_roof_open_notice.
+
+    PS-61 cooler gate: when on (nina_sequence_json._cooler_gate_spec), the
+    image pass starts with the cooler-gate ExternalScript. A SKIP (sensor
+    still off setpoint after the timeout) interrupts the image pass, and
+    OSC_LIGHTS_UNTIL_DAWN loops back through the waits and the resume hold
+    to gate again, so the OSC never shoots off its setpoint and never wedges."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _move_focuser,
-        _safety_condition, _time_condition, _loop_once)
+        _safety_condition, _time_condition, _loop_once, _cooler_gate,
+        _cooler_gate_spec)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     gain = int(getattr(config, "piggyback_default_gain", 100))
     offset = int(getattr(config, "piggyback_default_offset", 256))
@@ -724,8 +731,12 @@ def _osc_light_loop(config) -> dict:
         OSC_LIGHT_LOOP_NAME, [take],
         conditions=[_safety_condition(), _time_condition(*dawn)],
         triggers=_osc_af_triggers(config))
+    # config is the Piggy-600 view (rig_config), so camera_setpoint_c is the
+    # piggyback setpoint the Start area cooled to
+    gate = _cooler_gate_spec(config, float(getattr(config, "camera_setpoint_c", 0.0)))
+    gate_items = [_cooler_gate(gate, "piggyback", "OSC lights")] if gate else []
     image_pass = _seq_container(
-        OSC_IMAGE_PASS_NAME, [*pre_af, _autofocus(), inner],
+        OSC_IMAGE_PASS_NAME, [*gate_items, *pre_af, _autofocus(), inner],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
@@ -904,6 +915,10 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         # instead of wedging in an unbounded WaitUntilSafe (PS-36, 2026-09-26).
         target_items += _osc_roof_open_notice(config)
         target_items.append(_osc_light_loop(config))
+        from photonscript.scheduler.nina_sequence_json import (
+            _cooler_gate_spec, _cooler_gate_missing_notice)
+        if _cooler_gate_spec(config, setpoint) is None:
+            start_items += _cooler_gate_missing_notice(config)   # PS-61
 
     # Dawn flats: the RC16's flat window opens at nautical dawn +5 (its End
     # area slews to alt 85 / az 200); give that slew 90 s to land, then one OSC

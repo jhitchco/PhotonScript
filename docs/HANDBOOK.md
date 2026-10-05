@@ -97,6 +97,23 @@ Check a pending update on the scope without switching: `photonscript self-update
    lowest priority) -> bias one-shot if still unsafe -> dawn sky flats
    (SafetyMonitorCondition-wrapped so a closed roof is skipped; order
    BB first -> NB last as sky brightens).
+   **Cooler gate (PS-61).** Each RC16 light block is its own container
+   "<target> filter block (cooler-gated)" that starts with a NINA
+   ExternalScript running `deploy\cooler-gate.cmd` (the Piggy-600's OSC
+   image pass starts with the same gate). It holds until the sensor is
+   within `cooler_gate_tolerance_c` (1.0 C) of the temperature the sequence
+   cooled to, at most `cooler_gate_timeout_min` (20). On timeout one
+   priority Pushover "RC16: not imaging <target> <filter>, sensor at X C vs
+   setpoint Y C after N min; check the cooler" (a reminder hourly, a
+   "back at setpoint" notice on recovery), and in `cooler_gate_mode=skip`
+   the script exits 1 so ErrorBehavior 1 skips that block only; the
+   imaging loop retries it next pass. `warn` alerts and images anyway,
+   `off` emits no gate. Fails open: sensor unreadable, service down or
+   script missing never skip (a missing script is announced at dusk and is
+   a lint warning). The dashboard camera row shows "waiting for cooler:
+   X C -> Y C" / "not imaging: ..."; `GET /api/cooler/gate` has the live
+   state and recent results (`<data_dir>/cooler_gate.jsonl`). Lint rule
+   `cooler-gate`: every light loop must have the gate before it.
 3. **Live watcher** grades each sub (sep HFR/ecc/FWHM on the NATIVE
    0.24"/px frame; RC16 subs are also measured on a 2x2-binned copy,
    `ecc_bin` at 0.48"/px, PS-94), skips calibration frames (path part or
