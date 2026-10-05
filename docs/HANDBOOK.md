@@ -177,6 +177,37 @@ Check a pending update on the scope without switching: `photonscript self-update
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 
+### Sideload a custom night (PS-123)
+
+For a night the armer cannot plan (e.g. a tracking test first, then
+tonight's targets), the dashboard's Target Goals card has a **Sideload** box:
+pick a recipe, tick targets to exclude, **Preview** (lint + container tree
+for each rig), then **Load into RC16 / Piggy-600** (confirm dialog). It LOADS
+the sequence into that NINA and never starts it: press Start in NINA. The
+armer is not involved and stays DISARMED.
+
+- Recipe `tracking_test_then_tonight`: RC16 = tonight's sequence (same as
+  the download: start area waits for dusk) with TARGETS_CONTAINER replaced by
+  the PS-84 tracking test on an auto-picked field (`?at=<UTC>` picks for a
+  later time) followed by tonight's targets minus the excluded ones; ids and
+  Parent links rebuilt (PS-77). Piggy-600 = the companion with
+  `has_safety=True` and lights (`piggyback_image_lights`), generated on the
+  scope so its dark quotas see the real library.
+- API: `GET /api/sequence/sideload/preview?recipe=&exclude=&exclude=&at=`;
+  `POST /api/sequence/sideload?rig=rc16|piggyback&recipe=...` or a JSON body
+  (the sequence, or `{"sequence": {...}}`). Refusals: lint errors 422 (the
+  Piggy companion uses its own lint: no mount moves, cold setpoint, Parent
+  links, guarded light loops); armer ARMED / RUNNING / PAUSED_UNSAFE 409;
+  that NINA's sequence state unreadable 502 or anything RUNNING 409 (`GET
+  /sequence/state`, falls back to `/sequence/json`); Piggy recipe while NINA
+  #2 does not report the safety monitor connected 409.
+- Every load saves `sequences/Sideload_<rig>_<name>_<stamp>.json` and logs
+  a `kind: "sideload"` line in `runs/<night>_events.jsonl` plus an entry in
+  the notification audit (`/api/notifications`, sent=false).
+- The tracking test sits inside the night loop, so after an unsafe pause the
+  loop re-enters TARGETS_CONTAINER and may run the tracking test again.
+  Stop and re-sideload without it if that matters.
+
 ## 5. File transfer: Syncthing
 
 How images get from the scope to the desktop - the bridge between capture
