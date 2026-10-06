@@ -805,6 +805,10 @@ _CONFIG_FIELDS = [
     ("piggyback_resume_grace_s", "PS_PIGGYBACK_RESUME_GRACE_S", "Piggyback resume hold after safe: confirm hold + this before AF/lights (s)", "Piggyback", "int", False, False),
     ("flexure_warn_arcsec_min", "PS_FLEXURE_WARN_ARCSEC_MIN", "Flexure report: flag Piggy drift above the RC16's by this (\"/min, PS-96)", "Piggyback", "float", False, False),
     ("flexure_solve_all", "PS_FLEXURE_SOLVE_ALL", "Flexure report: plate-solve every Piggy sub (default: first/middle/last per block)", "Piggyback", "bool", False, False),
+    ("piggy_center_mode", "PS_PIGGY_CENTER_MODE", "Piggy-600-driven targets (PS-26): on = center the RC16 so the target lands mid Piggy frame | preview = annotate the shift only | off", "Piggyback", "str", False, False),
+    ("piggy_center_nights", "PS_PIGGY_CENTER_NIGHTS", "Piggy boresight offset: nights of solve pairs measured (PS-26)", "Piggyback", "int", False, False),
+    ("piggy_center_min_pairs", "PS_PIGGY_CENTER_MIN_PAIRS", "Piggy boresight offset: solve pairs a pier side needs before it is applied (PS-26)", "Piggyback", "int", False, False),
+    ("piggy_center_max_shift_arcmin", "PS_PIGGY_CENTER_MAX_SHIFT_ARCMIN", "Piggy centering: never shift the RC16 center by more than this (arcmin, PS-26)", "Piggyback", "float", False, False),
 ]
 
 _MASK = "••••••••"
@@ -2977,6 +2981,8 @@ from photonscript.scheduler.routers import auto_arm as _auto_arm_router  # noqa:
 app.include_router(_auto_arm_router.router)
 from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E402
 app.include_router(_catalog_router.router)
+from photonscript.scheduler.routers import piggy_offset as _piggy_offset_router  # noqa: E402
+app.include_router(_piggy_offset_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

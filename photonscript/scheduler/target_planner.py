@@ -339,6 +339,12 @@ def plan_night_sequence(
             dither_every_n=5,
             auto_focus_interval_minutes=60,
             camera_temp_c=config.camera_setpoint_c,
+            # PS-26: a Piggy-600-driven target centers for the 600 mm frame
+            driving_rig=getattr(proj, "driving_rig", "rc16") or "rc16",
+            frame_center_ra_hours=getattr(proj, "frame_center_ra_hours", None),
+            frame_center_dec_degrees=getattr(proj, "frame_center_dec_degrees",
+                                             None),
+            transit_utc=vp["visibility"].get("transit_time"),
         )
         sequence_targets.append(
             (vp["visibility"].get("transit_time") or datetime.max, seq_target))

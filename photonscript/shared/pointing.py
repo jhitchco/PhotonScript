@@ -235,6 +235,17 @@ def assess(config, rig: str, rec: dict, target) -> dict:
     if pos is None or tc is None:
         return out
     name, tra, tdec = tc
+    shifted = None
+    if (rig or "rc16") == "rc16":
+        # PS-26: a Piggy-600-driven target centers the RC16 off target on
+        # purpose; judge the RC16 against where it was sent
+        try:
+            from photonscript.scheduler.piggy_offset import expected_rc16_center
+            shifted = expected_rc16_center(config, name, rec.get("pier"))
+        except Exception:  # noqa: BLE001
+            shifted = None
+    if shifted is not None:
+        tra, tdec = shifted
     off = sep_arcmin(tra, tdec, pos[0], pos[1])
     pa, comp = bearing(tra, tdec, pos[0], pos[1])
     from photonscript.shared.qa_rules import pointing_limits, thresholds
@@ -248,6 +259,8 @@ def assess(config, rig: str, rec: dict, target) -> dict:
                off_target_arcmin=round(off, 2), off_target_pa=pa,
                off_target_dir=comp, flag=flag,
                note=f"{comp} from {name} ({fmt_pos(pos[0], pos[1], rec.get('pier'), pos[2])})")
+    if shifted is not None:
+        out["note"] += " vs the PS-26 shifted RC16 center"
     return out
 
 

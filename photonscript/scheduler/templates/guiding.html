@@ -172,6 +172,14 @@
             <p class="g-intro">Measured field rotation per rig and target block (star-sidecar registration, else stored plate-solve angles) against what the TPoint polar error below predicts at that Dec and hour angle. Both rigs ride one mount: a common rotation the polar error explains needs no action; one it cannot explain, or one the rigs do not share, points at a camera turning in its adapter or flexure. Before / after splits at the TPoint model date. Report only.</p>
             <div id="tsRotation">loading...</div>
 
+            <h3 class="g-group">Piggy-600 boresight offset (PS-26)</h3>
+            <p class="g-intro">Where the Piggy-600 frame center sits relative to the RC16's, from simultaneous plate solves (a Piggy sub and the RC16 sub nearest in time, both solved by the dawn pass), per pier side, with the pair scatter and the night-to-night spread. For a Piggy-driven target (driving rig piggyback, e.g. M31) the RC16 sequence centers on the target moved back by this offset, so the target lands mid Piggy frame and the RC16 frame sits off-center. Mode on applies it, preview only annotates the sequence, off does nothing (System page, Piggyback group). A pier side without enough pairs is inferred from the other (a meridian flip turns both OTAs 180 deg).</p>
+            <div id="poInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="poRefresh" title="Re-measure from the stored solves in the pointing sidecars (no ASTAP run)">Re-measure</button>
+                <span class="bd" id="poStatus"></span>
+            </div>
+
             <h3 class="g-group">TPoint record (manual)</h3>
             <form id="tsManualForm" onsubmit="return false;">
                 <div class="g-stats" id="tsManualFields"></div>
@@ -185,7 +193,8 @@
 
     <script src="/static/js/phd2_panels.js?v={{ version }}"></script>
     <script src="/static/js/thesky_panels.js?v={{ version }}"></script>
-    <script>PHD2.initGuidingPage(); THESKY.init();</script>
+    <script src="/static/js/piggy_offset_panel.js?v={{ version }}"></script>
+    <script>PHD2.initGuidingPage(); THESKY.init(); PIGGYOFFSET.init();</script>
     {% include "_footer.html" %}
 </body>
 </html>

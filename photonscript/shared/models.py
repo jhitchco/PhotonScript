@@ -218,6 +218,10 @@ class ImagingProject(BaseModel):
     driving_rig: str = "rc16"
     min_alt_deg: Optional[float] = None
     require_calibration: bool = True
+    # PS-26: where the driving Piggy-600 frame is centered (e.g. between M31
+    # and M110); None = the target. Only used when driving_rig is piggyback.
+    frame_center_ra_hours: Optional[float] = None
+    frame_center_dec_degrees: Optional[float] = None
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)
@@ -413,6 +417,14 @@ class NinaSequenceTarget(BaseModel):
     tracking_test_filters: list[str] = Field(default_factory=list)
     tracking_test_exposures: list[float] = Field(default_factory=list)
     tracking_test_repeats: int = 2
+    # PS-26: the rig the mount centers for (the project's driving_rig), its
+    # frame-center option and tonight's transit (UTC, from the planner). A
+    # "piggyback" target centers the RC16 so the target lands mid Piggy-600
+    # frame (scheduler/piggy_offset.py, config piggy_center_mode).
+    driving_rig: str = "rc16"
+    frame_center_ra_hours: Optional[float] = None
+    frame_center_dec_degrees: Optional[float] = None
+    transit_utc: Optional[datetime] = None
 
 
 class NinaSequenceFile(BaseModel):

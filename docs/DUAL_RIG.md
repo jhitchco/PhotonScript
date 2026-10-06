@@ -495,3 +495,58 @@ The after-the-fact backstop for Phase 4 (PS-25's resume debounce keeps NINA
   swaps only that scorecard row and never touches a human verdict; it logs
   the night's split rate (straddled / judged). Older nights:
   `photonscript slew-backfill --since D [--dry-run]`.
+
+### 9.10 Piggy-600 centering for Piggy-driven targets (PS-26)
+NINA #1 centers by plate solving the RC16 frame, and the Piggy-600 boresight
+sits a fixed angle away, so a target the Piggy-600 drives (project
+`driving_rig` piggyback, e.g. M31) landed off-center in the 600 mm frame.
+- **Measure** (`scheduler/piggy_offset.py`): pairs a Piggy-600 plate solve
+  with the RC16 solve nearest in time (mid-exposure within 450 s, same
+  target) from the PS-67 pointing sidecars, so the offset is free of the
+  mount's pointing-model error and of dithers. Mount-position pairs are not
+  used (the header is off by up to 1 deg, PS-107). Per pier side: median
+  east / north (arcmin, Piggy center about the RC16 center), 1.4826 x MAD
+  scatter with 3 sigma clipping, per-night medians and their spread, and
+  the camera rotation difference (report only). A side with fewer than
+  `PS_PIGGY_CENTER_MIN_PAIRS` (6) pairs is inferred by negating the other
+  (a meridian flip turns both OTAs 180 deg on the sky). Store
+  `<data_dir>/piggy_offset.json`, re-measured by the generator when older
+  than 12 h. More pairs: `PS_POINTING_SOLVE_POLICY=all` or
+  `PS_FLEXURE_SOLVE_ALL=true` solves more subs at dawn.
+- **Center** (`nina_sequence_json._piggy_centering`): for a Piggy-driven
+  target with `PS_PIGGY_CENTER_MODE=on` the RC16 centers on the target moved
+  back by the offset. The target container, its slew and its Center use the
+  pier-East coordinates (after the transit, and what NINA's meridian flip
+  re-centers on); a nested DeepSkyObjectContainer "<target> Piggy-600
+  center, pier West (before transit)" re-centers on the pier-West
+  coordinates, once, only before the transit time (TimeCondition at the
+  local transit). Before the transit that costs one extra center. The RC16
+  frame then sits off-center by design, and the PS-67 "On target" check
+  judges RC16 subs of that target against the shifted center. RC16-driven
+  targets never change. `preview` (default) only annotates the sequence with
+  the shift it would apply; no offset measured yet = no shift and an
+  annotation saying so; an offset over `PS_PIGGY_CENTER_MAX_SHIFT_ARCMIN`
+  (90') is not applied. Lint rule `piggy-center` repeats the annotation and
+  checks the nested container (LoopCondition + TimeCondition, a Center, no
+  exposures).
+- **Frame center option:** a project's `frame_center_ra_hours` /
+  `frame_center_dec_degrees` centers the Piggy-600 frame on that point
+  instead of the target (Guiding tab panel, or
+  `PUT /api/piggy-offset/frame-center/{project_id}`, `{}` clears).
+- **Where:** Guiding tab "Piggy-600 boresight offset (PS-26)" (per pier
+  table, pair scatter, per-night medians, Piggy-driven targets with tonight's
+  plan), `GET /api/piggy-offset[?refresh=true]`, `photonscript piggy-offset
+  [--nights N] [--save] [--json]`.
+- **Unverified in NINA (first night):** that a Center inside the nested
+  DeepSkyObjectContainer takes that container's coordinates, that the
+  meridian flip re-centers on the outer container's coordinates, and that
+  the fixed-time TimeCondition treats a morning transit as tomorrow (the
+  moonrise condition relies on the same rule).
+- **First look (2026-10-05, desktop, read-only, no plate solver):** a
+  star-pattern match of the 2026-09-26 Crescent RC16 Ha sub 01:52 with the
+  five Piggy-600 subs it covers (pier East) puts the Piggy-600 center
+  (+44, -174) Piggy px from the RC16 center, about 3.9' (3% of the 134'
+  frame), the two cameras turned 179.4 deg to each other, scale ratio
+  0.1827 (Piggy 1.292"/px). The 10-03/04 M31 Piggy subs (both pier sides)
+  have the M31 core within 0.3' of the frame center. So the boresight offset
+  is small; framing (the frame center option) is the bigger lever.
