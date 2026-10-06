@@ -415,13 +415,19 @@ def _goal(project) -> dict | None:
         plans.append({
             "filter": e.filter_type.value, "count": e.count,
             "acquired": e.acquired, "exposure_s": e.exposure_seconds,
+            "rig": getattr(e, "rig", "rc16") or "rc16",
             "hours_goal": round(long_goal / 3600, 2),
             "hours_done": round(long_done / 3600, 2),
             "pct": round(min(long_done, long_goal) / long_goal * 100)
             if long_goal else 0,
+            # PS-63: the short set's own hours and bar
             "hdr_short": {"exposure_s": e.hdr_short_seconds,
                           "count": e.hdr_short_count,
-                          "acquired": e.hdr_short_acquired}
+                          "acquired": e.hdr_short_acquired,
+                          "hours_goal": round(short_goal / 3600, 2),
+                          "hours_done": round(short_done / 3600, 2),
+                          "pct": round(min(short_done, short_goal)
+                                       / short_goal * 100)}
             if has_short else None})
         h_goal += long_goal + short_goal
         h_done += long_done + short_done

@@ -175,17 +175,28 @@ function renderFacts() {
                                     : esc(v)) + '</dd>').join('');
     const g = D.goal;
     if (!g) { document.getElementById('tGoal').textContent = 'no imaging project'; return; }
-    document.getElementById('tGoal').innerHTML = '<div>' + g.pct + '% \u00b7 ' + g.hours_done +
-        ' of ' + g.hours_goal + ' h</div>' + g.plans.map(p => {
+    document.getElementById('tGoal').innerHTML = '<div title="long and HDR short subs">' + g.pct +
+        '% \u00b7 ' + g.hours_done + ' of ' + g.hours_goal + ' h</div>' + g.plans.map(p => {
             // PS-118: the bar follows accepted seconds, not whole subs
             const pct = p.pct != null ? Math.min(100, p.pct)
                 : (p.count ? Math.min(100, Math.round(p.acquired / p.count * 100)) : 0);
+            // PS-63: the HDR short set gets its own line and bar under the
+            // long set; Piggy-600 plans say so (their OSC subs are not RC16)
+            const hs = p.hdr_short;
+            const hsPct = !hs ? 0 : (hs.pct != null ? Math.min(100, hs.pct)
+                : (hs.count ? Math.min(100, Math.round(hs.acquired / hs.count * 100)) : 0));
             return '<div style="margin-top:.35rem;"><b style="color:' + (FC[p.filter] || '#94a3b8') +
-                ';">' + esc(p.filter) + '</b> ' + p.acquired + ' / ' + p.count + ' x ' +
+                ';">' + esc(p.filter) + '</b>' +
+                (p.rig && p.rig !== 'rc16' ? ' <span class="dim">Piggy-600</span>' : '') +
+                ' ' + p.acquired + ' / ' + p.count + ' x ' +
                 Math.round(p.exposure_s) + 's \u00b7 ' + p.hours_done + ' / ' + p.hours_goal + ' h' +
-                (p.hdr_short ? '<br><span class="dim">HDR short: ' + p.hdr_short.acquired + ' / ' +
-                    p.hdr_short.count + ' x ' + p.hdr_short.exposure_s + 's</span>' : '') +
-                '<div class="bar"><i style="width:' + pct + '%"></i></div></div>';
+                '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
+                (hs ? '<div class="dim hdr-short" style="margin-top:.15rem;">HDR short ' +
+                    Math.min(hs.acquired, hs.count) + ' / ' + hs.count + ' x ' +
+                    Math.round(hs.exposure_s) + 's' +
+                    (hs.hours_goal != null ? ' \u00b7 ' + hs.hours_done + ' / ' + hs.hours_goal + ' h' : '') +
+                    '</div><div class="bar"><i style="width:' + hsPct + '%;opacity:.6"></i></div>' : '') +
+                '</div>';
         }).join('');
 }
 function renderTotals() {

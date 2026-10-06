@@ -1188,20 +1188,24 @@ def _project_json(p) -> dict:
                                    if e.hdr_short_seconds else 0)
                                 for e in p.exposure_plans) / 3600, 1)
     try:
+        from photonscript.scheduler.readiness import library_fits_by_rig
         from photonscript.scheduler.runs import library_root, library_target_dirs
+        from photonscript.shared.rigs import rig_label
         # PS-78: include not-yet-merged container-named folders
-        d["library_files"] = sum(
-            _library_fits_count(x) for x in library_target_dirs(
-                library_root(get_config()), p.target.name))
+        by_rig: dict = {}
+        for x in library_target_dirs(library_root(get_config()), p.target.name):
+            for rg, n in library_fits_by_rig(x).items():
+                by_rig[rg] = by_rig.get(rg, 0) + n
+        d["library_files"] = sum(by_rig.values())
+        # PS-63: split by rig so Piggy-600 OSC lights are not read as
+        # progress on RC16 filters (RC16 first)
+        d["library_by_rig"] = [
+            {"rig": rg, "label": rig_label(get_config(), rg), "n": by_rig[rg]}
+            for rg in sorted(by_rig, key=lambda r: (r != "rc16", r))]
     except Exception:  # noqa: BLE001
         d["library_files"] = 0
+        d["library_by_rig"] = []
     return d
-
-
-def _library_fits_count(lib: Path) -> int:
-    """Cached FITS count of one Library folder (PS-81: readiness.py)."""
-    from photonscript.scheduler.readiness import library_fits_count
-    return library_fits_count(lib)
 
 
 @app.get("/api/projects2")
