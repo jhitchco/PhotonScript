@@ -1875,20 +1875,8 @@ def api_library_archive(payload: dict = Body(default={})):
 def api_run_detail(date: str, backfill: bool = True):
     from photonscript.scheduler.runs import night_detail
     d = night_detail(get_config(), date, backfill=backfill)
-    try:  # goal context: campaign totals per target+filter
-        rev = get_config().reverse_filter_map()
-        by = {}
-        for p in get_store().projects.values():
-            for e in p.exposure_plans:
-                by[(p.target.name.strip().lower(),
-                    e.filter_type.value)] = e
-        for row in d["table"]:
-            fclass = rev.get(row["filter"], row["filter"])
-            e = by.get((str(row["target"]).strip().lower(), fclass))
-            row["goal_total"] = e.count if e else None
-            row["done_total"] = e.acquired if e else None
-    except Exception:  # noqa: BLE001
-        pass
+    from photonscript.scheduler.routers.review import add_goal_totals
+    add_goal_totals(d["table"])  # goal context: campaign totals per target+filter
     try:  # PS-88: the night's guiding from PHD2's guide log, top findings
         from photonscript.scheduler.phd2_analysis import compact, night_analysis
         d["guiding"] = compact(night_analysis(get_config(), date=date,
@@ -2677,34 +2665,8 @@ def api_library_reset():
         return JSONResponse(status_code=400, content={"detail": str(e)})
 
 
-@app.post("/api/runs/{date}/approve")
-async def api_run_approve(date: str, payload: dict | None = Body(default=None)):
-    """Approve QA-passing subs awaiting review -> library -> Syncthing.
-    Body {"files": [...]} limits it to those subs (the Runs page sends the
-    subs its chips are showing); no body = the whole night."""
-    from photonscript.scheduler.runs import approve_night
-    from photonscript.scheduler import sync_batch
-    files = (payload or {}).get("files")
-    res = approve_night(get_config(), date,
-                        files=list(files) if isinstance(files, list) else None)
-    sync_batch.mark_reset(get_config())  # approved subs queued → fresh batch
-    return res
-
-
-@app.post("/api/runs/{date}/qa")
-async def api_run_manual_qa(date: str, payload: dict = Body(...)):
-    """Manual pass/reject for one sub (wins over automatic grading)."""
-    from photonscript.scheduler.runs import set_manual_qa
-    hit = set_manual_qa(get_config(), date, payload.get("file", ""),
-                        passed=payload.get("passed"),
-                        state=payload.get("state"),
-                        why=payload.get("why"))
-    if hit is None:
-        return JSONResponse(status_code=404, content={"detail": "sub not found"})
-    logger.info("Manual QA %s: %s -> %s", date, payload.get("file"),
-                payload.get("state") or
-                ("accepted" if payload.get("passed") else "rejected"))
-    return hit
+# PS-24: POST /api/runs/{date}/approve, /qa and /qa-batch live in
+# routers/review.py (plain def, per-night lock, atomic subs log).
 
 
 @app.post("/api/runs/{date}/identify")
@@ -2781,12 +2743,12 @@ async def api_projects_recount():
 def api_run_thumb(date: str, file: str, w: int = 360,
                   annotate: bool = False):
     from fastapi.responses import FileResponse
-    from photonscript.scheduler.runs import thumbnail
+    from photonscript.scheduler.runs import thumb_media_type, thumbnail
     p = thumbnail(get_config(), date, file, width=min(max(w, 96), 1600),
                   annotate=annotate)
     if p is None:
         return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
-    return FileResponse(p, media_type="image/png", headers={
+    return FileResponse(p, media_type=thumb_media_type(p), headers={
         "Cache-Control": "public, max-age=604800"})
 
 

@@ -2,7 +2,10 @@
 // PS-80 plans the same tile for the runs grid: whichever lands second adopts
 // this file instead of keeping its own copy in runs.html.
 //
-//   SubTiles.html(row, {best: bool, canonical: "Heart Nebula"}) -> HTML string
+//   SubTiles.html(row, {best: bool, canonical: "Heart Nebula", review: bool})
+//       -> HTML string; review adds the accept / reject corner buttons
+//       (data-qa="accepted" / "rejected", PS-24) and the figure carries
+//       data-key = row.key for the page's click handler
 //   SubTiles.lazy(container, maxInFlight = 2)  starts loading the container's
 //       <img data-src> tiles as they scroll into view, at most maxInFlight
 //       thumbnail requests at a time (thumbnails serialize on the scope PC).
@@ -35,9 +38,13 @@
             tip.push('recorded as: ' + r.target_raw);
         }
         const fc = FILTER_COLORS[r.filter] || '#94a3b8';
-        return '<figure class="sub-tile v-' + esc(r.verdict) + '">' +
+        return '<figure class="sub-tile v-' + esc(r.verdict) + '" data-key="' + esc(r.key) + '">' +
             (opts.best ? '<span class="best-star" title="best sub for ' +
              esc(r.rig + ' ' + r.filter) + ' (lowest HFR, round stars)">&#9733;</span>' : '') +
+            (opts.review ? '<div class="qa-btns">' +
+             '<span class="y" data-qa="accepted" title="approve (accept + queue transfer)">&#10003;</span>' +
+             '<span class="n" data-qa="rejected" title="reject (kept on disk, excluded from library)">&#10007;</span>' +
+             '</div>' : '') +
             '<a href="/runs/' + esc(r.date) + '" title="' + esc(tip.join('\n')) + '">' +
             '<img alt="" data-src="' + esc(r.thumb) + '" style="' +
             (VERDICT_STYLE[r.verdict] || '') + '"></a>' +
@@ -87,5 +94,6 @@
         }, {rootMargin: '200px'});
         imgs.forEach(i => io.observe(i));
     }
-    window.SubTiles = {html: html, lazy: lazy, esc: esc, FILTER_COLORS: FILTER_COLORS};
+    window.SubTiles = {html: html, lazy: lazy, esc: esc, FILTER_COLORS: FILTER_COLORS,
+                       VERDICT_STYLE: VERDICT_STYLE};
 })();

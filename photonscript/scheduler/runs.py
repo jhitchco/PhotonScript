@@ -78,12 +78,30 @@ def _sanitize_floats(obj):
     return obj
 
 
+_night_locks: dict = {}
+_night_locks_guard = threading.Lock()
+
+
+def subs_lock(config, date: str):
+    """PS-24: one re-entrant lock per night's subs log, shared by the live
+    appender (both rig agents run in this process, orchestrator.py), every
+    _rewrite_subs caller and the verdict endpoints. Hold it across a
+    load -> change -> rewrite so a sub graded meanwhile is never lost."""
+    key = str(runs_dir(config) / f"{date}_subs.jsonl")
+    with _night_locks_guard:
+        lk = _night_locks.get(key)
+        if lk is None:
+            lk = _night_locks[key] = threading.RLock()
+    return lk
+
+
 def append_sub_record(config, night_of: str, record: dict) -> None:
     """Called by the telescope agent for every graded sub."""
     try:
-        with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",
-                  encoding="utf-8") as f:
-            f.write(json.dumps(_sanitize_floats(record)) + "\n")
+        with subs_lock(config, night_of):
+            with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",
+                      encoding="utf-8") as f:
+                f.write(json.dumps(_sanitize_floats(record)) + "\n")
     except OSError as e:
         logger.error("Could not append sub record: %s", e)
 
@@ -909,11 +927,61 @@ def attribute_night(config, date: str, solve: bool = False) -> dict:
     return out
 
 
+def _record_key(r: dict) -> tuple:
+    return (r.get("rig") or "rc16", r.get("file") or r.get("time") or "")
+
+
+def _write_text_atomic(p: Path, text: str) -> None:
+    """PS-24 (PS-59 for the subs log): write a temp file beside `p` and
+    os.replace it in, so a crash mid-write leaves the old log intact. On
+    Windows the replace is refused while a reader holds the file open:
+    retry briefly, then fall back to the old in-place write (logged)."""
+    import time as _time
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        for attempt in range(6):
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:
+                _time.sleep(0.05 * (attempt + 1))
+        logger.warning("subs log %s busy: rewrote it in place", p.name)
+        p.write_text(text, encoding="utf-8")
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
 def _rewrite_subs(config, date: str, records: list[dict]) -> None:
+    """Replace the night's subs log with `records` (atomic, under the night
+    lock). PS-24: a record appended since the caller loaded the log (a sub
+    graded live or by the backfill meanwhile) is kept, not dropped: no
+    caller removes records, they all load, change and rewrite."""
     p = runs_dir(config) / f"{date}_subs.jsonl"
-    p.write_text("".join(json.dumps(_sanitize_floats(r)) + "\n"
-                         for r in records),
-                 encoding="utf-8")
+    with subs_lock(config, date):
+        extra = []
+        try:
+            have = {_record_key(r) for r in records}
+            for line in p.read_text(encoding="utf-8").splitlines():
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                k = _record_key(r) if isinstance(r, dict) else None
+                if k is not None and k not in have:
+                    extra.append(r)
+                    have.add(k)
+        except OSError:
+            pass
+        if extra:
+            logger.info("subs log %s: kept %d record(s) appended during a "
+                        "rewrite", date, len(extra))
+        _write_text_atomic(p, "".join(json.dumps(_sanitize_floats(r)) + "\n"
+                                      for r in [*records, *extra]))
     # A same-size rewrite inside one coarse NTFS mtime tick would keep the
     # cache signature, so drop the entry explicitly.
     _invalidate_subs_cache(p)
@@ -1455,28 +1523,143 @@ def approve_night(config, date: str, files: list[str] | None = None) -> dict:
     files: approve only these subs (the Runs page passes the subs currently
     shown by its rig/target/filter chips, e.g. just Cat's Eye OIII). None =
     the whole night. Rejected subs are never approved by this path."""
-    subs = _load_subs(config, date)
     only = set(files) if files is not None else None
     n = 0
-    for s_ in subs:
-        if only is not None and s_.get("file") not in only:
-            continue
-        if s_.get("passed_qa") and not s_.get("reviewed"):
-            s_["reviewed"] = True
-            n += 1
-    if n:
-        _rewrite_subs(config, date, subs)
+    with subs_lock(config, date):   # PS-24: no sub graded meanwhile is lost
+        subs = _load_subs(config, date)
+        for s_ in subs:
+            if only is not None and s_.get("file") not in only:
+                continue
+            if s_.get("passed_qa") and not s_.get("reviewed"):
+                s_["reviewed"] = True
+                n += 1
+        if n:
+            _rewrite_subs(config, date, subs)
     res = build_library(config, date)
     logger.info("Night %s approved: %d subs -> library (%s new links)",
                 date, n, res.get("linked"))
     sync_goal_progress(config)
-    return {"approved": n, **res}
+    return {"approved": n, **res, "counts": night_counts(_load_subs(config, date))}
+
+
+VERDICT_STATES = ("accepted", "rejected", "review")
+
+
+def night_counts(subs: list[dict]) -> dict:
+    """PS-24: the review bar's numbers for one night (today_state)."""
+    out = {"total": len(subs), "approved": 0, "review": 0, "rejected": 0}
+    for s_ in subs:
+        out[today_state(s_)] += 1
+    return out
+
+
+def _apply_verdict(s_: dict, state: str, why: str | None, now: str) -> None:
+    if "auto_verdict" not in s_ and not s_.get("manual_qa"):
+        s_["auto_verdict"] = ("rejected" if not s_.get("passed_qa")
+                              else "passed (legacy)")
+        s_["auto_reason"] = s_.get("reason") or ""
+    if state == "accepted":
+        s_.update(passed_qa=True, reviewed=True, manual_qa=True,
+                  reason="", review_source="manual", reviewed_at=now)
+    elif state == "rejected":
+        s_.update(passed_qa=False, reviewed=True, manual_qa=True,
+                  reason="rejected manually" + (f": {why}" if why else ""),
+                  review_source="manual", reviewed_at=now)
+    else:  # review
+        # review_source stays "manual": a rescore must not
+        # auto-approve a sub a person sent back to review
+        s_.update(passed_qa=True, reviewed=False, manual_qa=False,
+                  reason="", review_source="manual", reviewed_at=now)
+    if state in ("accepted", "rejected") and why:
+        s_["manual_reason"] = str(why)[:120]
+    else:
+        s_.pop("manual_reason", None)
+
+
+def _library_follow(config, date: str, rec: dict, state: str,
+                    plan_names=None) -> None:
+    """PS-24: keep the Library in step with one verdict, touching only that
+    sub's own links (no build_library, no attribute_night, no rglob of the
+    whole Library). Accepted: hardlink (else copy) it to
+    <Target>/<Filter>/<name> by the build_library path rule unless a link
+    already exists under some target folder (a later Approve / rebuild
+    retags it). Otherwise: remove its links from every target folder."""
+    import shutil
+
+    from photonscript.scheduler.qa_backfill import _library_links
+    links = _library_links(config, rec)
+    if state != "accepted":
+        for f in links:
+            f.unlink(missing_ok=True)
+        return
+    if links:
+        return
+    from photonscript.scheduler.library_archive import archived_kinds
+    if "lights" in archived_kinds(config, date):
+        return
+    src = Path(rec.get("abs_path") or "")
+    if not rec.get("abs_path") or not src.is_file():
+        return
+    if plan_names is None:
+        plan_names = _plan_target_names(config, date)
+    target = _safe_name(_resolve_target(rec.get("target"), rec.get("file", ""),
+                                        plan_names))
+    dest = (library_root(config) / target / _safe_name(rec.get("filter", "?"))
+            / src.name)
+    if dest.exists():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(src, dest)
+    except OSError:  # cross-volume or FS without hardlinks
+        shutil.copy2(src, dest)
+
+
+def set_verdicts(config, date: str, files: list[str], state: str,
+                 why: str | None = None, defer_goal_sync: bool = False) -> dict:
+    """PS-24: human verdict for one or many subs in one locked load ->
+    change -> atomic rewrite, then each sub's own Library links, then the
+    goal progress (now, or debounced with defer_goal_sync for the review
+    endpoints). Returns {"subs": changed records, "missing": files not in
+    the log, "counts": night_counts}."""
+    if state not in VERDICT_STATES:
+        raise ValueError(f"state must be one of {VERDICT_STATES}")
+    want = [str(f) for f in files or []]
+    wanted = set(want)
+    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    hits: list[dict] = []
+    with subs_lock(config, date):
+        subs = _load_subs(config, date)
+        for s_ in subs:
+            if s_.get("file") in wanted:
+                _apply_verdict(s_, state, why, now)
+                hits.append(s_)
+        if hits:
+            _rewrite_subs(config, date, subs)
+    found = {h.get("file") for h in hits}
+    if hits:
+        plan_names = None
+        for h in hits:
+            try:  # keep the library consistent with the verdict
+                if state == "accepted" and plan_names is None:
+                    plan_names = _plan_target_names(config, date)
+                _library_follow(config, date, h, state, plan_names)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("library update after manual QA failed for "
+                               "%s: %s", h.get("file"), e)
+        if defer_goal_sync:
+            schedule_goal_sync(config)
+        else:
+            sync_goal_progress(config)
+    return {"subs": hits, "missing": [f for f in want if f not in found],
+            "counts": night_counts(subs)}
 
 
 def set_manual_qa(config, date: str, rel_file: str,
                   passed: bool | None = None,
                   state: str | None = None,
-                  why: str | None = None) -> dict | None:
+                  why: str | None = None,
+                  defer_goal_sync: bool = False) -> dict | None:
     """Human verdict for one sub: 'accepted' | 'rejected' | 'review'.
 
     'review' hands the sub back to the automatic pipeline (pass, not yet
@@ -1486,56 +1669,64 @@ def set_manual_qa(config, date: str, rel_file: str,
     `auto_reason` / `scorecard` / `drivers` stay on the record (captured from
     passed_qa / reason first for records graded before PS-21); `why` (a check
     id such as 'ecc', or 'visual') lands in `manual_reason`.
+    PS-24: one sub through set_verdicts (locked, atomic, its own Library
+    links only).
     """
     if state is None:
         state = "accepted" if passed else "rejected"
-    subs = _load_subs(config, date)
-    hit = None
-    now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
-    for s_ in subs:
-        if s_.get("file") == rel_file:
-            if "auto_verdict" not in s_ and not s_.get("manual_qa"):
-                s_["auto_verdict"] = ("rejected" if not s_.get("passed_qa")
-                                      else "passed (legacy)")
-                s_["auto_reason"] = s_.get("reason") or ""
-            if state == "accepted":
-                s_.update(passed_qa=True, reviewed=True, manual_qa=True,
-                          reason="", review_source="manual",
-                          reviewed_at=now)
-            elif state == "rejected":
-                s_.update(passed_qa=False, reviewed=True, manual_qa=True,
-                          reason="rejected manually" + (f": {why}" if why
-                                                        else ""),
-                          review_source="manual", reviewed_at=now)
-            else:  # review
-                # review_source stays "manual": a rescore must not
-                # auto-approve a sub a person sent back to review
-                s_.update(passed_qa=True, reviewed=False, manual_qa=False,
-                          reason="", review_source="manual",
-                          reviewed_at=now)
-            if state in ("accepted", "rejected"):
-                if why:
-                    s_["manual_reason"] = str(why)[:120]
-                else:
-                    s_.pop("manual_reason", None)
-            else:
-                s_.pop("manual_reason", None)
-            hit = s_
-    if hit is None:
-        return None
-    _rewrite_subs(config, date, subs)
-    try:  # keep the library consistent with the verdict
-        if state == "accepted":
-            build_library(config, date)
-        else:
-            name = Path(hit.get("abs_path") or "").name
-            if name:
-                for f in library_root(config).rglob(name):
-                    f.unlink(missing_ok=True)
-    except Exception as e:  # noqa: BLE001
-        logger.warning("library update after manual QA failed: %s", e)
-    sync_goal_progress(config)
-    return hit
+    res = set_verdicts(config, date, [rel_file], state, why=why,
+                       defer_goal_sync=defer_goal_sync)
+    return res["subs"][-1] if res["subs"] else None
+
+
+# PS-24: goal progress after a verdict, debounced. sync_goal_progress reads
+# every night's log; a burst of review clicks runs it once, about 2 s after
+# the last one. flush_goal_sync() runs a pending one now (the review summary
+# endpoint calls it before it reports goal totals).
+GOAL_SYNC_DELAY_S = 2.0
+_goal_sync_lock = threading.Lock()
+_goal_sync_run = threading.Lock()
+_goal_sync_state: dict = {"timer": None, "config": None}
+
+
+def schedule_goal_sync(config, delay: float | None = None) -> None:
+    with _goal_sync_lock:
+        t = _goal_sync_state["timer"]
+        if t is not None:
+            t.cancel()
+        t = threading.Timer(GOAL_SYNC_DELAY_S if delay is None else delay,
+                            _run_goal_sync)
+        t.daemon = True
+        _goal_sync_state.update(timer=t, config=config)
+        t.start()
+
+
+def _run_goal_sync() -> list:
+    with _goal_sync_run:
+        with _goal_sync_lock:
+            cfg = _goal_sync_state["config"]
+            _goal_sync_state.update(timer=None, config=None)
+        if cfg is None:
+            return []
+        try:
+            return sync_goal_progress(cfg)
+        except Exception as e:  # noqa: BLE001 - never break a verdict
+            logger.warning("deferred goal sync failed: %s", e)
+            return []
+
+
+def flush_goal_sync() -> list:
+    """Run a pending debounced goal sync now (or wait for a running one)."""
+    with _goal_sync_lock:
+        t = _goal_sync_state["timer"]
+        if t is not None:
+            t.cancel()
+    return _run_goal_sync()
+
+
+def goal_sync_pending() -> bool:
+    with _goal_sync_lock:
+        return _goal_sync_state["timer"] is not None
 
 
 _PHASE_PATTERNS = {
@@ -1881,7 +2072,55 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     score_legacy_on_read(config, subs)
     _ecc_display_sqrt(subs)
 
-    # Plan vs actual per rig/target/filter (rig separates the two scopes)
+    planned, table = _plan_vs_actual(plan, subs)
+    cal_tonight, report = _cached_night_extras(config, date, len(subs))
+    table += _calibration_rows(cal_tonight)
+
+    accepted = sum(1 for s in subs if s.get("passed_qa"))
+    total_planned = sum(planned.values())
+    # the honest funnel
+    from photonscript.shared.astronomy import get_twilight_times
+    try:
+        base = datetime.strptime(date, "%Y-%m-%d")
+        tw = get_twilight_times(config.get_observatory(), base)
+        dark_h = ((tw["astro_dark_end"] - tw["astro_dark_start"])
+                  .total_seconds() / 3600
+                  if tw.get("astro_dark_start") else 0.0)
+    except Exception:  # noqa: BLE001
+        dark_h = 0.0
+    return _night_detail_rest(config, date, plan, status, subs, planned,
+                              table, report, accepted, total_planned, dark_h)
+
+
+def review_summary(config, date: str) -> dict:
+    """PS-24: what the runs page repaints after verdicts without reloading
+    the night: the review counts and the plan-vs-actual rows (accepted per
+    rig / target / filter, plus the cached calibration rows). The goal
+    totals are added by the router (routers/review.py add_goal_totals)."""
+    plan_path = runs_dir(config) / f"{date}_plan.json"
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8")) \
+            if plan_path.exists() else None
+    except (OSError, ValueError):
+        plan = None
+    subs = _load_subs(config, date)
+    plan_names = _plan_target_names(config, date)
+    for s_ in subs:
+        s_["target"] = _resolve_target(s_.get("target"),
+                                       s_.get("file", ""), plan_names)
+    _ecc_display_sqrt(subs)
+    _planned, table = _plan_vs_actual(plan, subs)
+    try:
+        cal_tonight, _report = _cached_night_extras(config, date, len(subs))
+        table += _calibration_rows(cal_tonight)
+    except Exception as e:  # noqa: BLE001 - the counts still come back
+        logger.debug("review summary calibration rows skipped: %s", e)
+    return {"date": date, "counts": night_counts(subs), "table": table}
+
+
+def _plan_vs_actual(plan, subs: list[dict]) -> tuple[dict, list]:
+    """Plan vs actual per rig/target/filter (rig separates the two scopes):
+    (planned counts, table rows)."""
     planned: dict[tuple, int] = {}
     if plan:
         for t in plan["targets"]:
@@ -1919,29 +2158,24 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
             "median_ecc": med(a.get("eccs", [])),
             "median_background": med(a.get("bgs", [])),
         })
+    return planned, table
 
-    cal_tonight, report = _cached_night_extras(config, date, len(subs))
+
+def _calibration_rows(cal_tonight: dict) -> list[dict]:
+    rows = []
     for typ, g in sorted(cal_tonight.get("frames", {}).items()):
         exps = ", ".join(f"{k}×{v}" for k, v in
                          sorted(g.get("exposures", {}).items()))
-        table.append({"rig": "rc16", "target": f"Calibration · {typ}",
-                      "filter": exps or "—",
-                      "planned": 0, "attempted": g["count"],
-                      "accepted": g["count"], "median_hfr": None,
-                      "median_ecc": None, "median_background": None})
+        rows.append({"rig": "rc16", "target": f"Calibration \u00b7 {typ}",
+                     "filter": exps or "\u2014",
+                     "planned": 0, "attempted": g["count"],
+                     "accepted": g["count"], "median_hfr": None,
+                     "median_ecc": None, "median_background": None})
+    return rows
 
-    accepted = sum(1 for s in subs if s.get("passed_qa"))
-    total_planned = sum(planned.values())
-    # the honest funnel
-    from photonscript.shared.astronomy import get_twilight_times
-    try:
-        base = datetime.strptime(date, "%Y-%m-%d")
-        tw = get_twilight_times(config.get_observatory(), base)
-        dark_h = ((tw["astro_dark_end"] - tw["astro_dark_start"])
-                  .total_seconds() / 3600
-                  if tw.get("astro_dark_start") else 0.0)
-    except Exception:  # noqa: BLE001
-        dark_h = 0.0
+
+def _night_detail_rest(config, date, plan, status, subs, planned, table,
+                       report, accepted, total_planned, dark_h) -> dict:
     light_h = sum(s.get("exp_s") or 0 for s in subs) / 3600
     accepted_h = sum(s.get("exp_s") or 0 for s in subs
                      if s.get("passed_qa")) / 3600
@@ -2360,7 +2594,17 @@ def _thumb_out_path(config, date: str, rel_file: str, width: int,
     grade-time pre-warm so they share one cache (a warmed file is a route hit)."""
     out_dir = Path(config.data_dir) / "thumbs" / date
     stem = rel_file.replace("\\", "_").replace("/", "_")
-    return out_dir / f"{stem}.w{width}{'.ann' if annotate else ''}.png"
+    # PS-24: the lightbox preview is a JPEG (q85, about 150 to 250 KB vs a
+    # 1.1 MB PNG over Starlink); the new suffix lets the old PNGs age out
+    ext = "jpg" if (width >= PREVIEW_THUMB_WIDTH and not annotate) else "png"
+    return out_dir / f"{stem}.w{width}{'.ann' if annotate else ''}.{ext}"
+
+
+PREVIEW_JPEG_QUALITY = 85
+
+
+def thumb_media_type(p: Path) -> str:
+    return "image/jpeg" if p.suffix.lower() == ".jpg" else "image/png"
 
 
 def _decimate(binned, target_w: int = 1400):
@@ -2375,12 +2619,17 @@ def _save_png_atomic(img, out: Path) -> None:
     hard kill mid-write (supervisor restart, 15 s update fallback) can never
     leave a truncated PNG that the ``out.exists()`` cache then serves forever.
     If two writers race (same thumbnail, identical bytes) and Windows refuses
-    the replace because a reader holds the file, the existing file wins."""
+    the replace because a reader holds the file, the existing file wins.
+    PS-24: a .jpg `out` is written as JPEG (the lightbox preview)."""
     import os
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f"{out.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
-        img.save(tmp, format="PNG")
+        if out.suffix.lower() == ".jpg":
+            img.convert("RGB").save(tmp, format="JPEG",
+                                    quality=PREVIEW_JPEG_QUALITY)
+        else:
+            img.save(tmp, format="PNG")
         try:
             os.replace(tmp, out)
         except OSError:
@@ -2570,11 +2819,14 @@ def thumb_warm_status(config, date: str) -> dict:
             "current": st.get("current")}
 
 
-def start_thumb_warm(config, date: str) -> None:
+def start_thumb_warm(config, date: str, hist: bool = False) -> None:
     """Background-generate every missing grid thumbnail for the night so the
     Runs page fills in with local feedback instead of blocking on first view.
     Serialized through the same _HEAVY lock as grading, so it never blows the
-    scope PC's RAM; safe to call repeatedly (no-op while already running)."""
+    scope PC's RAM; safe to call repeatedly (no-op while already running).
+    PS-5: hist=True (the dawn post-night warm only, never a page view) also
+    caches each sub's histogram, so the lightbox panel opens without a
+    full-frame read."""
     import threading
 
     st = _thumbwarm_state.setdefault(date, {})
@@ -2597,6 +2849,11 @@ def start_thumb_warm(config, date: str) -> None:
                                   fill_prewarm=True)
                     except Exception as e:  # noqa: BLE001
                         logger.debug("warm thumb failed for %s: %s", rel, e)
+                    if hist:
+                        try:
+                            histogram(config, date, rel)
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("warm hist failed for %s: %s", rel, e)
                 done += 1
                 st["done"] = done
         finally:
@@ -2634,7 +2891,7 @@ def post_night_warm(config, hours: float = 30.0) -> list[str]:
         try:
             if (root / d).exists() and backfill_status(config, d)["pending"]:
                 start_backfill(config, d)
-            start_thumb_warm(config, d)
+            start_thumb_warm(config, d, hist=True)
         except Exception as e:  # noqa: BLE001
             logger.warning("post-night warm for %s failed: %s", d, e)
     if nights:

@@ -15,21 +15,126 @@ GET  /api/runs/{date}/score-report             PS-108 score vs today's verdicts
 GET  /api/runs/{date}/hist?file=&refresh=      PS-5 histogram (cached)
 GET  /api/qa/gates                             PS-114 every gate per rig
 GET  /api/qa/baselines?rig=&nights=&k=         PS-114 proposed gates (report)
+POST /api/runs/{date}/qa                       PS-24 one verdict {file, state,
+                                               why?} -> {ok, sub, counts}
+POST /api/runs/{date}/qa-batch                 PS-24 {files, state, why?}: one
+                                               locked write for many subs
+POST /api/runs/{date}/approve                  approve passing subs ({files}
+                                               limits it), returns counts
+GET  /api/runs/{date}/review-summary           PS-24 counts + plan-vs-actual
+                                               rows with goal totals (repaint
+                                               after verdicts, no reload)
 
 Kept out of app.py (PS-8 router split). Handlers lazily import get_config
-to avoid an import cycle.
+to avoid an import cycle. The verdict handlers are plain def (threadpool):
+the subs log rewrite, the Library links and the goal sync are disk work
+that must not hold up the event loop (PS-24).
 """
 from __future__ import annotations
+
+import logging
 
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
 def _cfg():
     from photonscript.scheduler.app import get_config
     return get_config()
+
+
+def add_goal_totals(table: list) -> None:
+    """Campaign totals per target + filter on plan-vs-actual rows
+    (goal_total / done_total from the goal store). Never raises."""
+    try:
+        from photonscript.scheduler.app import get_store
+        rev = _cfg().reverse_filter_map()
+        by = {}
+        for p in get_store().projects.values():
+            for e in p.exposure_plans:
+                by[(p.target.name.strip().lower(), e.filter_type.value)] = e
+        for row in table:
+            fclass = rev.get(row["filter"], row["filter"])
+            e = by.get((str(row["target"]).strip().lower(), fclass))
+            row["goal_total"] = e.count if e else None
+            row["done_total"] = e.acquired if e else None
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _state_of(payload: dict) -> str | None:
+    st = payload.get("state")
+    if st is None and payload.get("passed") is not None:   # legacy body
+        st = "accepted" if payload.get("passed") else "rejected"
+    from photonscript.scheduler.runs import VERDICT_STATES
+    return st if st in VERDICT_STATES else None
+
+
+@router.post("/api/runs/{date}/qa")
+def api_run_manual_qa(date: str, payload: dict = Body(...)):
+    """Manual verdict for one sub (wins over automatic grading). PS-24: the
+    page applies it at once and rolls back on a non-2xx; this answers with
+    the stored record and the night's counts. Goal progress follows about
+    2 s after the last verdict (debounced)."""
+    from photonscript.scheduler.runs import set_verdicts
+    st = _state_of(payload)
+    file = str(payload.get("file") or "")
+    if st is None or not file:
+        return JSONResponse(status_code=400, content={
+            "detail": "file and state (accepted / rejected / review) required"})
+    res = set_verdicts(_cfg(), date, [file], st, why=payload.get("why"),
+                       defer_goal_sync=True)
+    if not res["subs"]:
+        return JSONResponse(status_code=404, content={"detail": "sub not found"})
+    logger.info("Manual QA %s: %s -> %s", date, file, st)
+    return {"ok": True, "sub": res["subs"][-1], "counts": res["counts"]}
+
+
+@router.post("/api/runs/{date}/qa-batch")
+def api_run_manual_qa_batch(date: str, payload: dict = Body(...)):
+    """PS-24: one verdict for many subs (shift-click / select all in the
+    filter): one lock, one rewrite, each sub's own Library links."""
+    from photonscript.scheduler.runs import set_verdicts
+    st = _state_of(payload)
+    files = payload.get("files")
+    if st is None or not isinstance(files, list) or not files:
+        return JSONResponse(status_code=400, content={
+            "detail": "files (a list) and state required"})
+    res = set_verdicts(_cfg(), date, [str(f) for f in files], st,
+                       why=payload.get("why"), defer_goal_sync=True)
+    logger.info("Manual QA batch %s: %d subs -> %s (%d not found)", date,
+                len(res["subs"]), st, len(res["missing"]))
+    return {"ok": True, "updated": len(res["subs"]), "missing": res["missing"],
+            "subs": res["subs"], "counts": res["counts"]}
+
+
+@router.post("/api/runs/{date}/approve")
+def api_run_approve(date: str, payload: dict | None = Body(default=None)):
+    """Approve QA-passing subs awaiting review -> library -> Syncthing.
+    Body {"files": [...]} limits it to those subs (the Runs page sends the
+    subs its chips are showing); no body = the whole night."""
+    from photonscript.scheduler import sync_batch
+    from photonscript.scheduler.runs import approve_night
+    files = (payload or {}).get("files")
+    res = approve_night(_cfg(), date,
+                        files=list(files) if isinstance(files, list) else None)
+    sync_batch.mark_reset(_cfg())  # approved subs queued: fresh batch
+    return res
+
+
+@router.get("/api/runs/{date}/review-summary")
+def api_review_summary(date: str):
+    """PS-24: the review counts and plan-vs-actual rows with goal totals, so
+    the runs page repaints them after verdicts without reloading the night.
+    Runs a pending debounced goal sync first, so the totals are current."""
+    from photonscript.scheduler.runs import flush_goal_sync, review_summary
+    flush_goal_sync()
+    out = review_summary(_cfg(), date)
+    add_goal_totals(out["table"])
+    return out
 
 
 @router.get("/api/qa/thresholds")
