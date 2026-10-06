@@ -28,6 +28,8 @@ OPTIONAL = [
     "Gaia",
     "BlurXTerminator",
     "NoiseXTerminator",
+    "MultiscaleLinearTransform",
+    "ExternalProcess",
 ]
 
 
@@ -85,7 +87,7 @@ def test_js_is_ascii_and_has_no_block_comment_opener_in_line_comments():
     for n, ln in enumerate(s.splitlines(), 1):
         if "//" in ln:
             assert "/*" not in ln.split("//", 1)[1], f"line {n}: slash-star inside a // comment"
-    assert "—" not in s
+    assert chr(0x2014) not in s   # no em dashes
 
 
 def test_ps1_is_ascii():
@@ -112,6 +114,9 @@ def test_every_placeholder_is_filled_by_the_launcher():
 def test_every_optional_process_is_detected_before_use():
     s = _read(JS)
     for p in OPTIONAL:
+        if p == "ExternalProcess":   # core PJSR object; GRAXPERT != "" is the guard
+            assert "if (GRAXPERT)" in s
+            continue
         if re.search(r"new " + p + r"\b", s):
             assert f'typeof {p} !== "undefined"' in s or f"typeof {p} === \"undefined\"" in s, p
 
@@ -190,3 +195,59 @@ def test_ps1_explicit_outdir_never_overwrites():
     assert "already has files - pick a new folder" in ps1
     assert '"--automation-mode", "--run=$runjs", "--force-exit"' in ps1
     assert "PixInsight is already running" in ps1
+
+
+# --- PS-41: noise reduction + deconvolution ---------------------------------
+
+def _func(s: str, name: str) -> str:
+    a, b = _functions(s)[name]
+    return s[a:b]
+
+
+def test_deconv_then_denoise_on_the_linear_image_before_the_stretch():
+    s = _read(JS)
+    main = _func(s, "main")
+    order = [main.index(x) for x in ("colorCalibrate(v, solved)", "_linear.xisf", "deconvolve(v)",
+                                     "denoise(v)", "stretch(")]
+    assert order == sorted(order)
+
+
+def test_tool_order_rc_then_graxpert_then_builtin():
+    s = _read(JS)
+    d = _func(s, "deconvolve")
+    assert d.index("BlurXTerminator") < d.index("graxpert(view") < d.index("no built-in fallback")
+    n = _func(s, "denoise")
+    assert n.index("NoiseXTerminator") < n.index('graxpert(view, "denoising"') < n.index("mltDenoise(view")
+    assert 'typeof MultiscaleLinearTransform === "undefined"' in n
+    assert "if (GRAXPERT)" in d and "if (GRAXPERT)" in n
+
+
+def test_graxpert_cli_call_is_bounded_and_checked():
+    g = _func(_read(JS), "graxpert")
+    assert '"-cli", "-cmd", cmd, "-output", outBase, "-strength"' in g
+    assert "GRAXPERT_TIMEOUT_MIN * 60000" in g and "P.kill()" in g
+    assert "P.exitCode !== 0" in g
+    assert "a.width !== b.width" in g          # size check before replacing pixels
+    assert "not applied" in g                  # background sanity check
+    assert "finally" in g and "removeQuiet(inF)" in g
+
+
+def test_ps1_noise_and_deconv_params():
+    ps1 = _read(PS1)
+    assert "[double]$Denoise = 0.5" in ps1
+    assert "[ValidateSet('on','off')][string]$Deconv = 'on'" in ps1
+    assert "[double]$DeconvStrength = 0.5" in ps1
+    assert '[string]$GraXpert = ""' in ps1
+    assert "[switch]$NoGraXpert" in ps1
+    assert "[int]$GraXpertTimeoutMin = 30" in ps1
+    assert "$env:PS_GRAXPERT" in ps1
+    assert "@('Denoise', $Denoise, 0, 1)" in ps1
+
+
+def test_steps_record_tool_and_settings():
+    s = _read(JS)
+    for rec in ('step("deconvolution", "GraXpert", "ran"', 'step("deconvolution", "BlurXTerminator", "ran"',
+                'step("noise_reduction", "GraXpert", "ran"', 'step("noise_reduction", "MLT", "ran"',
+                'step("noise_reduction", "NoiseXTerminator", "ran"', 'step("deconvolution", "none", "skipped"'):
+        assert rec in s, rec
+    assert "version: GRAXPERT_VERSION" in s

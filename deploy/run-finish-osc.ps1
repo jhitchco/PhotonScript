@@ -1,6 +1,8 @@
 # Finish an OSC master in PixInsight: crop -> gradient -> plate solve
 # -> SPCC with Gaia DR3/SP (fallback BN + ColorCalibration) -> SCNR
-# -> [BlurX/NoiseXTerminator if installed] -> stretch -> saturation -> core HDR -> save.
+# -> deconvolution (BlurXTerminator, else GraXpert, else skipped)
+# -> noise reduction (NoiseXTerminator, else GraXpert, else built-in MLT)
+# -> stretch -> saturation -> core HDR -> save.
 # Run AFTER run-integration-osc.ps1 (needs out\master\masterOSC.xisf).
 #   .\deploy\run-finish-osc.ps1 -Name "M31_OSC2"                 # target guessed from Name
 #   .\deploy\run-finish-osc.ps1 -Name "X" -RaDeg 10.685 -DecDeg 41.269
@@ -39,6 +41,15 @@ param(
     [int]$HdrLayers = 7,           # core HDRMultiscaleTransform layers (0 = off)
     [string]$Frame = "",           # framing crop "left,top,right,bottom" fractions of the master; "" = none
     [switch]$NoRC,                 # don't use BlurXTerminator / NoiseXTerminator even if installed
+    # PS-41 noise reduction + deconvolution on the linear image
+    [double]$Denoise = 0.5,        # 0..1 strength (NXT denoise / GraXpert strength / MLT amount); 0 = off
+    [ValidateSet('on','off')][string]$Deconv = 'on',   # needs BlurXTerminator or GraXpert; no built-in
+    [double]$DeconvStrength = 0.5, # GraXpert deconv-obj strength (deconv-stellar gets half)
+    [string]$GraXpert = "",        # GraXpert executable; "" = $env:PS_GRAXPERT, then the usual install paths
+    [switch]$NoGraXpert,           # never use GraXpert even if found
+    [string]$GraXpertAiVersion = "",   # passed as -ai_version; "" = GraXpert's default (latest downloaded)
+    [ValidateSet('','true','false')][string]$GraXpertGpu = '',  # passed as -gpu; '' = GraXpert's default
+    [int]$GraXpertTimeoutMin = 30, # per GraXpert command
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
     [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal'
 )
@@ -62,7 +73,8 @@ if ($OutDir) {
     $logDir = "$stage\out"
 }
 foreach ($pair in @(@('BgTarget', $BgTarget, 0.01, 0.5), @('ShadowSigma', $ShadowSigma, 0, 10),
-                    @('Scnr', $Scnr, 0, 1), @('SatMid', $SatMid, 0.3, 0.9))) {
+                    @('Scnr', $Scnr, 0, 1), @('SatMid', $SatMid, 0.3, 0.9),
+                    @('Denoise', $Denoise, 0, 1), @('DeconvStrength', $DeconvStrength, 0, 1))) {
     if ($pair[1] -lt $pair[2] -or $pair[1] -gt $pair[3]) {
         Write-Error "-$($pair[0]) $($pair[1]) out of range $($pair[2])..$($pair[3])"; exit 1
     }
@@ -130,6 +142,23 @@ if ($missing.Count -eq 0) {
 Write-Host "Optional tools:"
 Write-Host ("  Gaia module:        " + $(if (Test-Path "$piBin\Gaia-pxm.dll") { "present (database selection is checked in PixInsight)" } else { "MISSING" }))
 
+# GraXpert (free, https://graxpert.com): an external program, called through
+# its command line from inside the PixInsight script.
+$gxExe = ""; $gxVer = ""
+if (-not $NoGraXpert) {
+    $gxCands = @($GraXpert, $env:PS_GRAXPERT,
+                 "$env:ProgramFiles\GraXpert\GraXpert-win64.exe", "$env:ProgramFiles\GraXpert\GraXpert.exe",
+                 "$env:LOCALAPPDATA\Programs\GraXpert\GraXpert.exe", "$env:LOCALAPPDATA\Programs\GraXpert\GraXpert-win64.exe",
+                 "$env:USERPROFILE\GraXpert\GraXpert-win64.exe", "$env:USERPROFILE\GraXpert\GraXpert.exe")
+    foreach ($c in $gxCands) { if ($c -and (Test-Path $c -PathType Leaf)) { $gxExe = (Resolve-Path $c).Path; break } }
+    if ($GraXpert -and -not $gxExe) { Write-Warning "-GraXpert $GraXpert not found - falling back to the built-in noise reduction." }
+    if ($gxExe) {
+        try { $gxVer = (Get-Item $gxExe).VersionInfo.ProductVersion } catch {}
+        if (-not $gxVer) { $gxVer = "unknown" }
+    }
+}
+Write-Host ("  GraXpert:           " + $(if ($gxExe) { "$gxExe ($gxVer)" } elseif ($NoGraXpert) { "disabled (-NoGraXpert)" } else { "not found (built-in noise reduction, no deconvolution)" }))
+
 $js = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "finish_osc.js"))
 $js = $js.Replace('//__SOLVER_INCLUDE__', $include)
 $js = $js.Replace('__STAGING__', (JsStr $stage))
@@ -147,12 +176,17 @@ $js = $js.Replace('__SPCC_WHITE__', (JsStr $SpccWhite))
 $js = $js.Replace('__BG_TARGET__', (JsNum $BgTarget)).Replace('__SHADOW_SIGMA__', (JsNum $ShadowSigma))
 $js = $js.Replace('__SCNR__', (JsNum $Scnr)).Replace('__SAT_MID__', (JsNum $SatMid))
 $js = $js.Replace('__HDR_LAYERS__', [string]$HdrLayers).Replace('__FRAME__', $frameJs)
+$js = $js.Replace('__DENOISE__', (JsNum $Denoise)).Replace('__DECONV__', $Deconv)
+$js = $js.Replace('__DECONV_STRENGTH__', (JsNum $DeconvStrength))
+$js = $js.Replace('__GRAXPERT__', (JsStr $gxExe)).Replace('__GRAXPERT_VERSION__', (JsStr $gxVer))
+$js = $js.Replace('__GRAXPERT_AI__', (JsStr $GraXpertAiVersion)).Replace('__GRAXPERT_GPU__', $GraXpertGpu)
+$js = $js.Replace('__GRAXPERT_TIMEOUT_MIN__', [string]$GraXpertTimeoutMin)
 $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
 [System.IO.File]::WriteAllText($runjs, $js)
 
 Write-Host "Launching PixInsight OSC finish for '$Name'..."
-Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> $(if ($NoRC) {'(no RC tools)'} else {'[BXT/NXT if installed]'}) -> stretch -> save"
+Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> deconv($Deconv) -> denoise($Denoise)$(if ($NoRC) {' (no RC tools)'}) -> stretch -> save"
 Write-Host "Script: $runjs"
 $logFile = Join-Path $logDir "finish.log"
 if ($Wait) {

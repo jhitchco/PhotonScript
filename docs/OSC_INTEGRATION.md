@@ -65,7 +65,7 @@ twilight sub after a 44-min gap (+20% background).
 with PixInsight's ImageSolver, seeded from `-Target`/`-RaDeg -DecDeg` (guessed
 from the name, e.g. M31) and spiralling out to ~1.2 deg because Piggy-600 frames
 rarely center on the target -> color -> SCNR green (`-Scnr`, 0.6) ->
-BlurXTerminator / NoiseXTerminator if installed (`-NoRC` to skip) -> linked
+deconvolution -> noise reduction (`-NoRC` skips the RC Astro tools) -> linked
 stretch (`-BgTarget` 0.12, `-ShadowSigma` 2.0) + saturation (`-SatMid` 0.64) ->
 core HDR blend (`-HdrLayers` 7) -> optional framing crop (`-Frame l,t,r,b`).
 Output in `out\final\` (or a new `-OutDir`): `<Name>_linear.xisf`
@@ -86,6 +86,22 @@ Color Sensor R/G/B-UVIRcut`, white `Average Spiral Galaxy` (`-SpccQE`,
 `color: <reason> -> BN + ColorCalibration fallback`. One-time setup: download
 Gaia DR3/SP from the PixInsight software distribution (needs the PixInsight
 account), then Process > Gaia > wrench icon > select the DR3/SP files.
+
+Deconvolution and noise reduction (PS-41) run on the LINEAR image after color
+calibration, deconvolution first: deconvolution inverts a linear blur, which
+no longer holds after the stretch, and should sharpen real detail rather than
+noise-reduction smoothing; noise is still uniform before the stretch
+amplifies the faint background. Tool order: deconvolution = BlurXTerminator,
+else GraXpert `deconv-obj` (`-DeconvStrength`, 0.5) then `deconv-stellar` at
+half strength, else skipped (no built-in: classic Deconvolution needs a
+measured PSF). Noise reduction (`-Denoise 0..1`, 0.5; 0 = off) =
+NoiseXTerminator, else GraXpert `denoising`, else MultiscaleLinearTransform
+(4 layers, thresholds 3/2/1/0.5, inverted linear mask). GraXpert is found via
+`-GraXpert <exe>`, `$env:PS_GRAXPERT`, or `C:\Program Files\GraXpert\`
+(`GraXpert-win64.exe` / `GraXpert.exe`); `-NoGraXpert` turns it off,
+`-GraXpertAiVersion`, `-GraXpertGpu true|false`, `-GraXpertTimeoutMin` (30)
+pass through. Its output replaces the image only when the size matches and the
+background level is plausible; otherwise the next tool runs.
 
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`

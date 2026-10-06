@@ -6,8 +6,18 @@
 //   -> plate solve (ImageSolver, spiral search around the target)
 //   -> color: SPCC against Gaia DR3/SP when that database is configured
 //      (fallback: BackgroundNeutralization + ColorCalibration) -> SCNR green
-//   -> [BlurXTerminator] -> [NoiseXTerminator] -> linked stretch
-//   -> gentle saturation -> core HDR blend -> [framing crop]
+//   -> deconvolution: BlurXTerminator, else GraXpert CLI, else skipped
+//   -> noise reduction: NoiseXTerminator, else GraXpert CLI, else built-in
+//      MultiscaleLinearTransform through a linear mask
+//   -> linked stretch -> gentle saturation -> core HDR blend -> [framing crop]
+//
+// Why deconvolution and noise reduction sit here (PS-41): both model the
+// LINEAR signal. Deconvolution inverts a convolution, which only holds before
+// the non-linear stretch; it goes first so it sharpens real detail and not
+// the smoothing left by noise reduction. Noise reduction on linear data sees
+// noise that is still uniform and unamplified; after a stretch the faint
+// background noise is boosted far more than the bright core. Both run after
+// color calibration so SPCC measures untouched star photometry.
 //   -> <Final>/<Name>_final.{xisf,tif,jpg} + <Name>_linear.xisf
 //   + <Name>_final_steps.json (which step ran with which tool and settings)
 //
@@ -44,6 +54,15 @@ var FOCAL_MM  = __FOCAL__;
 var PIXEL_UM  = __PIXEL__;
 var GRADIENT  = "__GRADIENT__";  // auto | abe | none
 var USE_RC    = __USE_RC__;      // true: use BlurX/NoiseXTerminator if installed
+// Noise reduction + deconvolution (PS-41)
+var DENOISE         = __DENOISE__;          // 0..1 strength; 0 = off
+var DECONV          = "__DECONV__";         // on | off
+var DECONV_STRENGTH = __DECONV_STRENGTH__;  // 0..1 (GraXpert object strength; stellar gets half)
+var GRAXPERT        = "__GRAXPERT__";       // GraXpert executable; "" = not found / disabled
+var GRAXPERT_VERSION = "__GRAXPERT_VERSION__";
+var GRAXPERT_AI     = "__GRAXPERT_AI__";    // -ai_version passed to GraXpert; "" = its default
+var GRAXPERT_GPU    = "__GRAXPERT_GPU__";   // -gpu true|false; "" = its default
+var GRAXPERT_TIMEOUT_MIN = __GRAXPERT_TIMEOUT_MIN__;
 // Color (PS-46): auto = SPCC when solved and Gaia DR3/SP is configured, else
 // BN + ColorCalibration; spcc = try SPCC even if the Gaia probe says no;
 // basic = always BN + ColorCalibration.
@@ -284,7 +303,7 @@ function colorCalibrate(view, solved) {
    else if (typeof SpectrophotometricColorCalibration === "undefined") why = "SPCC process not installed";
    if (!why) {
       var g = gaiaDr3SpReady();
-      log("color: " + g.why);
+      if (g.ok) log("color: " + g.why);
       if (!g.ok && COLOR !== "spcc") why = g.why;
    }
    if (!why) {
@@ -324,27 +343,185 @@ function removeGreen(view) {
    } catch (e) { log("SCNR skipped (" + e + ")"); step("scnr", "SCNR", "failed", { error: "" + e }); }
 }
 
-function rcTools(view) {
-   if (!USE_RC) { log("RC Astro tools: disabled (-NoRC)"); return; }
-   if (typeof BlurXTerminator !== "undefined") {
+// A float copy of a view in a new hidden window (caller closes it).
+function dupWindow(view, id) {
+   var img = view.image;
+   var w = new ImageWindow(img.width, img.height, img.numberOfChannels, 32, true,
+                           img.isColor, id);
+   w.mainView.beginProcess(UndoFlag_NoSwapFile);
+   w.mainView.image.assign(img);
+   w.mainView.endProcess();
+   return w;
+}
+
+function removeQuiet(path) { try { if (File.exists(path)) File.remove(path); } catch (e) {} }
+
+// Run one GraXpert CLI command on the view, in place:
+//   GraXpert <in.fits> -cli -cmd <cmd> -output <base> -strength <s> [-ai_version v] [-gpu b]
+// Throws on any failure; the view is only replaced when GraXpert returned 0
+// and its output has the same size and a plausible background level.
+function graxpert(view, cmd, strength) {
+   var tmp = FINAL + "/_graxpert_tmp";
+   ensureDir(tmp);
+   var inF = tmp + "/in_" + cmd + ".fits", outBase = tmp + "/out_" + cmd;
+   var cands = [outBase + ".fits", outBase + ".fit", outBase + ".xisf", outBase + ".tif", outBase + ".tiff",
+                tmp + "/in_" + cmd + "_GraXpert.fits"];
+   var dup = null, res = null;
+   try {
+      dup = dupWindow(view, "PS_GX_IN");
+      if (!dup.saveAs(inF, false, false, false, false)) throw new Error("could not write " + inF);
+      dup.forceClose(); dup = null;
+      for (var c = 0; c < cands.length; ++c) removeQuiet(cands[c]);
+      var args = [inF, "-cli", "-cmd", cmd, "-output", outBase, "-strength", strength.toFixed(2)];
+      if (GRAXPERT_AI) args.push("-ai_version", GRAXPERT_AI);
+      if (GRAXPERT_GPU) args.push("-gpu", GRAXPERT_GPU);
+      log("  GraXpert " + cmd + " (strength " + strength.toFixed(2) + ")...");
+      var P = new ExternalProcess;
+      P.start(GRAXPERT, args);
+      if (!P.waitForStarted()) throw new Error("did not start");
+      var t0 = Date.now();
+      while (!P.waitForFinished(1000)) {
+         processEvents();
+         if (Date.now() - t0 > GRAXPERT_TIMEOUT_MIN * 60000) {
+            try { P.kill(); } catch (ek) { try { P.terminate(); } catch (et) {} }
+            throw new Error("timed out after " + GRAXPERT_TIMEOUT_MIN + " min");
+         }
+      }
+      if (P.exitCode !== 0) {
+         var err = "";
+         try { err = ("" + P.stderr).replace(/\s+/g, " ").slice(-200); } catch (es) {}
+         throw new Error("exit code " + P.exitCode + (err ? ": " + err : ""));
+      }
+      var outF = "";
+      for (c = 0; c < cands.length && !outF; ++c) if (File.exists(cands[c])) outF = cands[c];
+      if (!outF) throw new Error("no output file next to " + outBase);
+      var ws = ImageWindow.open(outF);
+      if (!ws.length) throw new Error("could not open " + outF);
+      res = ws[0];
+      var a = view.image, b = res.mainView.image;
+      if (a.width !== b.width || a.height !== b.height || a.numberOfChannels !== b.numberOfChannels)
+         throw new Error("output is " + b.width + "x" + b.height + "x" + b.numberOfChannels +
+                         ", expected " + a.width + "x" + a.height + "x" + a.numberOfChannels);
+      var m0 = a.median(), m1 = b.median();
+      if (!(m1 > 0.5 * m0 - 1e-4 && m1 < 2 * m0 + 1e-4))
+         throw new Error("output background " + m1.toFixed(5) + " vs input " + m0.toFixed(5) + "; not applied");
+      view.beginProcess(UndoFlag_NoSwapFile);
+      view.image.assign(b);
+      view.endProcess();
+      return (Date.now() - t0) / 1000;
+   } finally {
+      if (dup) try { dup.forceClose(); } catch (e1) {}
+      if (res) try { res.forceClose(); } catch (e2) {}
+      removeQuiet(inF);
+      for (var k = 0; k < cands.length; ++k) removeQuiet(cands[k]);
+      try { File.removeDirectory(tmp); } catch (e3) {}
+   }
+}
+
+// Deconvolution (linear): BlurXTerminator if installed, else GraXpert
+// (deconv-obj, then deconv-stellar at half strength), else skipped. There is
+// no built-in fallback on purpose: classic Deconvolution needs a measured PSF
+// and a tuned deringing mask, and a wrong guess rings around every star.
+function deconvolve(view) {
+   if (DECONV !== "on") {
+      log("deconvolution: off (-Deconv off)");
+      step("deconvolution", "none", "skipped", { reason: "-Deconv off" });
+      return;
+   }
+   if (USE_RC && typeof BlurXTerminator !== "undefined") {
       try {
          var BX = new BlurXTerminator;
          try { BX.correct_only = false; BX.sharpen_stars = 0.25;
                BX.sharpen_nonstellar = 0.50; BX.adjust_halos = 0.0; } catch (e1) {}
          BX.executeOn(view, false);
-         log("BlurXTerminator: applied (stars 0.25, nonstellar 0.50)");
+         log("deconvolution: BlurXTerminator (stars 0.25, nonstellar 0.50)");
          step("deconvolution", "BlurXTerminator", "ran", { stars: 0.25, nonstellar: 0.50 });
+         return;
       } catch (e) { log("BlurXTerminator failed (" + e + ")"); }
-   } else log("BlurXTerminator: not installed");
-   if (typeof NoiseXTerminator !== "undefined") {
+   } else log(USE_RC ? "BlurXTerminator: not installed" : "RC Astro tools: disabled (-NoRC)");
+   if (GRAXPERT) {
+      var done = [];
+      var jobs = [["deconv-obj", DECONV_STRENGTH], ["deconv-stellar", DECONV_STRENGTH / 2]];
+      for (var j = 0; j < jobs.length; ++j) {
+         try {
+            var sec = graxpert(view, jobs[j][0], jobs[j][1]);
+            log("deconvolution: GraXpert " + jobs[j][0] + " strength " + jobs[j][1].toFixed(2) +
+                " (" + sec.toFixed(0) + " s)");
+            done.push(jobs[j][0]);
+         } catch (e2) { log("GraXpert " + jobs[j][0] + " failed (" + e2 + ")"); }
+      }
+      if (done.length) {
+         step("deconvolution", "GraXpert", "ran",
+              { commands: done, strength: DECONV_STRENGTH, version: GRAXPERT_VERSION });
+         return;
+      }
+      step("deconvolution", "GraXpert", "failed", { version: GRAXPERT_VERSION });
+      log("deconvolution: skipped (GraXpert failed; no built-in fallback)");
+      return;
+   }
+   log("deconvolution: skipped (no BlurXTerminator, GraXpert not found; no built-in fallback)");
+   step("deconvolution", "none", "skipped", { reason: "no BlurXTerminator or GraXpert" });
+}
+
+// Built-in noise reduction: MultiscaleLinearTransform on the linear image,
+// 4 starlet layers, through an inverted linear mask so the galaxy and stars
+// are protected and the background gets the full amount.
+function mltDenoise(view, amount) {
+   var M = new MultiscaleLinearTransform;
+   // enabled, biasEnabled, bias, noiseReductionEnabled, threshold, amount, iterations
+   var rows = [[true, true, 0.0, true, 3.0, amount, 3],
+               [true, true, 0.0, true, 2.0, amount, 2],
+               [true, true, 0.0, true, 1.0, amount, 2],
+               [true, true, 0.0, true, 0.5, amount, 1],
+               [true, true, 0.0, false, 3.0, 1.0, 1]];
+   M.layers = rows;
+   try { M.transform = MultiscaleLinearTransform.prototype.StarletTransform; } catch (e1) {}
+   try { M.linearMask = true; M.linearMaskAmpFactor = 100; M.linearMaskSmoothness = 1.0;
+         M.linearMaskInverted = true; M.linearMaskPreview = false; } catch (e2) { log("  MLT linear mask not set (" + e2 + ")"); }
+   if (!M.executeOn(view, false)) throw new Error("returned false");
+}
+
+// Noise reduction (linear): NoiseXTerminator if installed, else GraXpert
+// denoising, else the built-in MultiscaleLinearTransform.
+function denoise(view) {
+   if (!(DENOISE > 0)) {
+      log("noise reduction: off (-Denoise 0)");
+      step("noise_reduction", "none", "skipped", { reason: "-Denoise 0" });
+      return;
+   }
+   if (USE_RC && typeof NoiseXTerminator !== "undefined") {
       try {
          var NX = new NoiseXTerminator;
-         try { NX.denoise = 0.80; NX.detail = 0.15; } catch (e2) {}
+         try { NX.denoise = DENOISE; NX.detail = 0.15; } catch (e1) {}
          NX.executeOn(view, false);
-         log("NoiseXTerminator: applied (denoise 0.80)");
-         step("noise_reduction", "NoiseXTerminator", "ran", { denoise: 0.80 });
+         log("noise reduction: NoiseXTerminator (denoise " + DENOISE + ")");
+         step("noise_reduction", "NoiseXTerminator", "ran", { denoise: DENOISE, detail: 0.15 });
+         return;
       } catch (e) { log("NoiseXTerminator failed (" + e + ")"); }
-   } else log("NoiseXTerminator: not installed");
+   } else log(USE_RC ? "NoiseXTerminator: not installed" : "RC Astro tools: disabled (-NoRC)");
+   if (GRAXPERT) {
+      try {
+         var sec = graxpert(view, "denoising", DENOISE);
+         log("noise reduction: GraXpert denoising strength " + DENOISE + " (" + sec.toFixed(0) + " s)");
+         step("noise_reduction", "GraXpert", "ran", { strength: DENOISE, version: GRAXPERT_VERSION });
+         return;
+      } catch (e2) { log("GraXpert denoising failed (" + e2 + "); using the built-in"); }
+   } else log("GraXpert: not found (pass -GraXpert <exe>); using the built-in noise reduction");
+   if (typeof MultiscaleLinearTransform === "undefined") {
+      log("noise reduction: skipped (MultiscaleLinearTransform not available)");
+      step("noise_reduction", "none", "skipped", { reason: "no tool" });
+      return;
+   }
+   try {
+      var amt = Math.min(1, DENOISE);
+      mltDenoise(view, amt);
+      log("noise reduction: MultiscaleLinearTransform (4 layers, thresholds 3/2/1/0.5, amount " +
+          amt.toFixed(2) + ", inverted linear mask)");
+      step("noise_reduction", "MLT", "ran", { amount: amt, thresholds: [3, 2, 1, 0.5], linear_mask: true });
+   } catch (e3) {
+      log("noise reduction skipped: MultiscaleLinearTransform failed (" + e3 + ")");
+      step("noise_reduction", "MLT", "failed", { error: "" + e3 });
+   }
 }
 
 // Linked stretch after color calibration (unlinked would undo the color work).
@@ -490,7 +667,8 @@ function main() {
    removeGreen(v);
    trySave(w, FINAL + "/" + NAME + "_linear.xisf", "linear (color-calibrated)");
 
-   rcTools(v);
+   deconvolve(v);
+   denoise(v);
    stretch(v);
    recoverCore(v);
    frameCrop(v, EDGE_FRAC);
