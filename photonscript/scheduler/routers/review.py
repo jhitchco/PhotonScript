@@ -183,7 +183,8 @@ def api_sub_scorecard(date: str, file: str):
     from photonscript.scheduler.runs import _load_subs, score_legacy_on_read
     cfg = _cfg()
     subs = _load_subs(cfg, date)
-    hit = next((s for s in subs if s.get("file") == file), None)
+    from photonscript.shared.sub_file import norm_file
+    hit = next((s for s in subs if s.get("file") == norm_file(file)), None)
     if hit is None:
         return JSONResponse(status_code=404, content={"detail": "sub not found"})
     if not hit.get("scorecard"):

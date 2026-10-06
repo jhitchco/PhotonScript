@@ -1419,8 +1419,9 @@ class TelescopeAgent:
             rel = file_path.relative_to(watch)
             night = rel.parts[0] if rel.parts and \
                 rel.parts[0][:2] == "20" else datetime.utcnow().strftime("%Y-%m-%d")
-            rel_in_night = str(Path(*rel.parts[1:])) if len(rel.parts) > 1 \
-                else file_path.name
+            # PS-147: "/" separators (the subs log's canonical form)
+            rel_in_night = Path(*rel.parts[1:]).as_posix() \
+                if len(rel.parts) > 1 else file_path.name
         except ValueError:
             pass
         from photonscript.shared import qa_rules

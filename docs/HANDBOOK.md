@@ -187,6 +187,13 @@ Check a pending update on the scope without switching: `photonscript self-update
    changed, and a verdict given meanwhile keeps every verdict field.
    PS-141: the pointing pass decides its Library moves from the merged
    log under the lock, so a sub accepted during the pass keeps its link.
+   PS-147: so does Piggy attribution (`piggy-attribution --apply`): a sub
+   whose target a person changed during the pass keeps its links. A sub
+   accepted after a move put its link in Library/_rejected loses that
+   stale copy (only the same file as its original or its live link; never
+   in the desktop mirror); build_library cleans the same way. A sub's
+   `file` is stored with "/" (shared.sub_file); every reader normalizes, so
+   older logs with the OS separator still match.
    The subs show as a Grid or a Table (PS-116, remembered per browser): the
    table has a small thumbnail, score, verdict and the core stats per sub,
    sortable (lowest score first by default), and the rig / target / filter /

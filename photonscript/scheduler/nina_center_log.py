@@ -43,6 +43,8 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.sub_file import norm_file
+
 logger = logging.getLogger(__name__)
 
 _TS = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?)\|(\w+)\|([^|]*)\|")
@@ -320,7 +322,7 @@ def ps67_model_errors(config, night: str) -> list[dict]:
                 continue
             if (r.get("rig") or "rc16") != "rc16":
                 continue
-            by[r.get("file")] = r
+            by[norm_file(r.get("file"))] = r   # PS-147: either separator
     except OSError:
         return []
     out = []

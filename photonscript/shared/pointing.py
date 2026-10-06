@@ -294,7 +294,8 @@ _KEEP = ("rig", "file", "t", "src", "mount_src", "mount_ra", "mount_dec",
 def append_record(config, night: str, rec: dict) -> dict:
     """Append one pointing record (only the documented keys); returns what
     was written."""
-    line = {k: rec.get(k) for k in _KEEP}
+    from photonscript.shared.sub_file import norm_record
+    line = norm_record({k: rec.get(k) for k in _KEEP})   # PS-147: "/" file
     line["rig"] = line["rig"] or "rc16"
     line["at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     p = sidecar_path(config, night)
@@ -309,7 +310,9 @@ def append_record(config, night: str, rec: dict) -> dict:
 
 
 def load(config, night: str) -> dict[tuple[str, str], dict]:
-    """(rig, file) -> the latest record. Never raises."""
+    """(rig, file) -> the latest record. Never raises. PS-147: the file is
+    in the canonical "/" form (shared.sub_file), whatever the line holds."""
+    from photonscript.shared.sub_file import norm_record
     out: dict = {}
     try:
         text = sidecar_path(config, night).read_text(encoding="utf-8")
@@ -321,6 +324,7 @@ def load(config, night: str) -> dict[tuple[str, str], dict]:
         except ValueError:
             continue
         if isinstance(r, dict) and r.get("file"):
+            norm_record(r)
             out[(r.get("rig") or "rc16", r["file"])] = r
     return out
 

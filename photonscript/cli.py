@@ -1796,6 +1796,9 @@ def piggy_attribution_cmd(
         console.print(f"  [yellow]collision (left in place): {c['from']} -> "
                       f"{c['to']}{' ' + c['error'] if c.get('error') else ''}"
                       "[/yellow]")
+    for c in r.get("library_skipped") or []:   # PS-147
+        console.print(f"  links kept: {c['date']} {c['file']} is now "
+                      f"{c['now'] or 'gone from the log'} (not {c['to']})")
     if r["applied"]:
         console.print("[green]Done. Now resync goals: POST "
                       "/api/projects2/recount[/green]")

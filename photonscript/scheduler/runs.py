@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.sub_file import norm_file, norm_record
 from photonscript.shared.target_names import (canonical_target,
                                               known_target_index, target_key)
 
@@ -108,7 +109,9 @@ def subs_lock(config, date: str):
 
 
 def append_sub_record(config, night_of: str, record: dict) -> None:
-    """Called by the telescope agent for every graded sub."""
+    """Called by the telescope agent for every graded sub. PS-147: the
+    `file` is stored with "/" (shared.sub_file)."""
+    record = norm_record(dict(record))
     try:
         with subs_lock(config, night_of):
             with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",
@@ -161,7 +164,7 @@ def _load_subs(config, date: str) -> list[dict]:
         f = r.get("filter")
         if f in rev:
             r["filter"] = rev[f]
-        out.append(r)
+        out.append(norm_record(r))   # PS-147: older lines hold "\\"
     with _subs_cache_lock:
         _subs_cache[key] = (sig, out)
     return [dict(r) for r in out]
@@ -670,7 +673,8 @@ REGRADE_FLUSH_N = 25
 
 
 def _file_key(f) -> str:
-    return str(f or "").replace("\\", "/")
+    """PS-147: shared.sub_file.norm_file (kept for the PS-141 callers)."""
+    return norm_file(f)
 
 
 def _add_counts(acc: dict, more: dict) -> None:
@@ -859,8 +863,8 @@ def start_backfill(config, date: str, regrade: bool = False) -> None:
         st.update(current=None, rate=None, last_error=None)
         started, done = time.monotonic(), 0
         try:
-            # PS-141: matched with either path separator (the backfill
-            # writes the OS one, a copied or test log may hold "/")
+            # PS-141 / PS-147: matched in the canonical "/" form (older
+            # logs hold the OS separator)
             existing = {_file_key(r.get("file"))
                         for r in _load_subs(config, date)}
             plan_names = _plan_target_names(config, date)
@@ -874,7 +878,7 @@ def start_backfill(config, date: str, regrade: bool = False) -> None:
                     st.pop(k, None)
             try:
                 for f in files:
-                    rel = str(f.relative_to(root))
+                    rel = f.relative_to(root).as_posix()   # PS-147
                     if _file_key(rel) in existing and not regrade:
                         continue
                     st["current"] = rel
@@ -1098,7 +1102,8 @@ def attribute_night(config, date: str, solve: bool = False) -> dict:
 
 
 def _record_key(r: dict) -> tuple:
-    return (r.get("rig") or "rc16", r.get("file") or r.get("time") or "")
+    return (r.get("rig") or "rc16",
+            norm_file(r.get("file")) or r.get("time") or "")
 
 
 def _write_text_atomic(p: Path, text: str) -> None:
@@ -1144,15 +1149,17 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
                     continue
                 k = _record_key(r) if isinstance(r, dict) else None
                 if k is not None and k not in have:
-                    extra.append(r)
+                    extra.append(norm_record(r))
                     have.add(k)
         except OSError:
             pass
         if extra:
             logger.info("subs log %s: kept %d record(s) appended during a "
                         "rewrite", date, len(extra))
-        _write_text_atomic(p, "".join(json.dumps(_sanitize_floats(r)) + "\n"
-                                      for r in [*records, *extra]))
+        # PS-147: every record leaves with the canonical "/" file
+        _write_text_atomic(p, "".join(
+            json.dumps(_sanitize_floats(norm_record(r))) + "\n"
+            for r in [*records, *extra]))
     # A same-size rewrite inside one coarse NTFS mtime tick would keep the
     # cache signature, so drop the entry explicitly.
     _invalidate_subs_cache(p)
@@ -1842,7 +1849,7 @@ def approve_night(config, date: str, files: list[str] | None = None) -> dict:
     files: approve only these subs (the Runs page passes the subs currently
     shown by its rig/target/filter chips, e.g. just Cat's Eye OIII). None =
     the whole night. Rejected subs are never approved by this path."""
-    only = set(files) if files is not None else None
+    only = {norm_file(f) for f in files} if files is not None else None
     n = 0
     with edit_subs(config, date) as subs:   # PS-24 / PS-140: under the lock
         for s_ in subs:
@@ -1899,17 +1906,25 @@ def _library_follow(config, date: str, rec: dict, state: str,
     whole Library). Accepted: hardlink (else copy) it to
     <Target>/<Filter>/<name> by the build_library path rule unless a link
     already exists under some target folder (a later Approve / rebuild
-    retags it). Otherwise: remove its links from every target folder."""
-    import shutil
-
+    retags it). Otherwise: remove its links from every target folder.
+    PS-147: once an accepted sub has its link, a copy of it a pointing /
+    attribution / PS-71 move left in Library/_rejected is removed
+    (_drop_rejected_copies)."""
     from photonscript.scheduler.qa_backfill import _library_links
     links = _library_links(config, rec)
     if state != "accepted":
         for f in links:
             f.unlink(missing_ok=True)
         return
-    if links:
-        return
+    if not links:
+        _link_accepted(config, date, rec, plan_names)
+    _drop_rejected_copies(config, rec)
+
+
+def _link_accepted(config, date: str, rec: dict, plan_names=None) -> None:
+    """_library_follow's link of an accepted sub with no Library link."""
+    import shutil
+
     from photonscript.scheduler.library_archive import archived_kinds
     if "lights" in archived_kinds(config, date):
         return
@@ -1931,6 +1946,75 @@ def _library_follow(config, date: str, rec: dict, state: str,
         shutil.copy2(src, dest)
 
 
+def _is_desktop_mirror(config, lib: Path) -> bool:
+    """PS-147: True when `lib` is (inside) the desktop's receive-only
+    ninashare mirror (desktop_library_dir): nothing is ever removed there."""
+    mirror = str(getattr(config, "desktop_library_dir", "") or "")
+    if not mirror:
+        return False
+    a = os.path.normcase(os.path.abspath(str(lib)))
+    b = os.path.normcase(os.path.abspath(mirror))
+    return a == b or a.startswith(b.rstrip("\\/") + os.sep)
+
+
+def _drop_rejected_copies(config, rec: dict, live=None,
+                          rejected_dirs=None) -> list[str]:
+    """PS-147: remove the stale Library/_rejected/<any target>/<Filter>/<name>
+    copies of a sub that is accepted and linked again. Only a file that IS
+    this sub's frame goes: the same file (os.path.samefile, i.e. a hardlink)
+    as its original FITS or as its live Library link. Nothing happens when
+    the sub has no live link (the _rejected copy is then its only Library
+    presence), outside library_root/_rejected, or in the desktop mirror.
+    Originals and anything outside the Library link tree are never touched.
+    `live` (its current links) and `rejected_dirs` (the target folders of
+    _rejected) may be passed by a caller that already has them. Returns the
+    removed paths."""
+    from photonscript.scheduler.qa_backfill import _library_links
+    lib = library_root(config)
+    rej = lib / "_rejected"
+    name = Path(norm_file(rec.get("abs_path") or rec.get("file"))).name
+    if not name or _is_desktop_mirror(config, lib):
+        return []
+    if rejected_dirs is None:
+        try:
+            rejected_dirs = [d for d in rej.iterdir() if d.is_dir()]
+        except OSError:
+            return []
+    if not rejected_dirs:
+        return []
+    fdir = _safe_name(rec.get("filter", "?"))
+    cands = [d / fdir / name for d in rejected_dirs]
+    cands = [c for c in cands if c.is_file()]
+    if not cands:
+        return []
+    live = _library_links(config, rec) if live is None else live
+    if not live:
+        return []
+    refs = list(live)
+    if rec.get("abs_path") and Path(rec["abs_path"]).is_file():
+        refs.append(Path(rec["abs_path"]))
+    out = []
+    for c in cands:
+        try:
+            same = any(os.path.samefile(c, r) for r in refs)
+        except OSError:
+            same = False
+        if not same:
+            logger.info("Library: %s kept (not the same file as the accepted "
+                        "sub's link or original)", c)
+            continue
+        try:
+            c.unlink()
+            out.append(str(c))
+        except OSError as e:
+            logger.warning("Library: stale _rejected copy %s not removed: %s",
+                           c, e)
+    if out:
+        logger.info("Library: removed %d stale _rejected cop%s of %s",
+                    len(out), "y" if len(out) == 1 else "ies", name)
+    return out
+
+
 def set_verdicts(config, date: str, files: list[str], state: str,
                  why: str | None = None, defer_goal_sync: bool = False) -> dict:
     """PS-24: human verdict for one or many subs in one locked load ->
@@ -1941,7 +2025,7 @@ def set_verdicts(config, date: str, files: list[str], state: str,
     if state not in VERDICT_STATES:
         raise ValueError(f"state must be one of {VERDICT_STATES}")
     want = [str(f) for f in files or []]
-    wanted = set(want)
+    wanted = {norm_file(f) for f in want}   # PS-147: either separator
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     hits: list[dict] = []
     with edit_subs(config, date) as subs:   # PS-140
@@ -1964,7 +2048,8 @@ def set_verdicts(config, date: str, files: list[str], state: str,
             schedule_goal_sync(config)
         else:
             sync_goal_progress(config)
-    return {"subs": hits, "missing": [f for f in want if f not in found],
+    return {"subs": hits,
+            "missing": [f for f in want if norm_file(f) not in found],
             "counts": night_counts(subs)}
 
 
@@ -2622,7 +2707,8 @@ def stage_for_analysis(config, date: str, files=None, which: str = "") -> dict:
     by_file = {s.get("file"): s for s in subs}
     picked: list[dict] = []
     if files:
-        picked = [by_file[f] for f in files if f in by_file]
+        picked = [by_file[norm_file(f)] for f in files
+                  if norm_file(f) in by_file]
     elif which:
         for s in subs:
             st = "accepted" if s.get("passed_qa") else "rejected"
@@ -2696,6 +2782,12 @@ def build_library(config, date: str | None = None) -> dict:
     target_dirs = ([x for x in lib.iterdir()
                     if x.is_dir() and x.name.lower() not in _not_targets]
                    if lib.exists() else [])
+    # PS-147: an accepted sub's stale copies in Library/_rejected go
+    rej_root = lib / "_rejected"
+    rej_dirs = ([x for x in rej_root.iterdir() if x.is_dir()]
+                if rej_root.is_dir() and not _is_desktop_mirror(config, lib)
+                else [])
+    dropped = 0
     from photonscript.scheduler.library_archive import archived_kinds
     for d in dates:
         # PS-51: name every '?' sub before linking, so lights land under their
@@ -2744,16 +2836,19 @@ def build_library(config, date: str | None = None) -> dict:
                     logger.warning("Library retag %s -> %s failed: %s",
                                    stale, dest, e)
             if moved:
-                continue
-            if dest.exists():
+                pass
+            elif dest.exists():
                 skipped += 1
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                os.link(src, dest)
-            except OSError:  # cross-volume or FS without hardlinks
-                shutil.copy2(src, dest)
-            linked += 1
+            else:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    os.link(src, dest)
+                except OSError:  # cross-volume or FS without hardlinks
+                    shutil.copy2(src, dest)
+                linked += 1
+            if rej_dirs and dest.exists():
+                dropped += len(_drop_rejected_copies(
+                    config, s_, live=[dest], rejected_dirs=rej_dirs))
         # Calibration: only recent sessions — old darks/flats rarely match
         # current gain/offset/exposures and were flooding the transfer queue
         if "lights" in gone:
@@ -2766,7 +2861,8 @@ def build_library(config, date: str | None = None) -> dict:
               "archived_nights_skipped": archived,
               "already_there": skipped, "rejected_excluded": rejected,
               "pending_review": pending_review, "missing_files": missing,
-              "attributed": attributed, "retagged": retagged}
+              "attributed": attributed, "retagged": retagged,
+              "rejected_copies_removed": dropped}
     pb = _build_piggyback_calibration(config, date)
     if pb is not None:
         result["piggyback_calibration"] = pb
@@ -3039,7 +3135,8 @@ def thumbnail(config, date: str, rel_file: str, width: int = 360,
         # abs_path, which points at the frame wherever its rig wrote it.
         try:
             for s in _load_subs(config, date):
-                if s.get("file") == rel_file and s.get("abs_path"):
+                if s.get("file") == norm_file(rel_file) \
+                        and s.get("abs_path"):
                     cand = Path(s["abs_path"])
                     if cand.is_file():
                         src = cand
@@ -3090,7 +3187,7 @@ def _sub_source(config, date: str, rel_file: str) -> tuple[Path | None, dict]:
     """(FITS path, record) for one sub: the watch dir, else the record's
     abs_path (other-rig frames), as thumbnail() resolves it."""
     rec = next((s for s in _load_subs(config, date)
-                if s.get("file") == rel_file), {}) or {}
+                if s.get("file") == norm_file(rel_file)), {}) or {}
     if ".." in rel_file:
         return None, rec
     src = Path(config.image_watch_dir) / date / rel_file
