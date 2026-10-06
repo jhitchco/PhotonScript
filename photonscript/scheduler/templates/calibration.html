@@ -87,6 +87,12 @@
             <span class="muted">FOCPOS vs focuser temp — the cold-start position each rig seeds before its first AF. The two rigs are separate focusers.</span>
         </div>
         <div class="focus-grid" id="focusCards"></div>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
+            <h2 style="margin:0;">Focus model &middot; lookup table</h2>
+            <span class="muted">Best focus vs focuser temp learned from NINA's own autofocus reports (PS-76): one temperature slope, a per-filter intercept, the table it gives and how far the last AFs landed from it.</span>
+        </div>
+        <div class="focus-grid" id="modelCards"></div>
     </main>
     <script>
     const STALE_COLORS = {fresh:'#22c55e', soon:'#eab308', stale:'#ef4444'};
@@ -190,7 +196,12 @@
         g+='<text x="'+m.l+'" y="'+(m.t-2)+'" >FOCPOS</text>';
         for (const s of series){
             const sp=s.points.filter(p=>typeof p.x==='number'&&typeof p.y==='number');
-            if (s.fit && sp.length>=2){ // least-squares fit line
+            if (s.line){ // PS-76: the model's own line (shared slope)
+                const sl=s.line.slope, ic=s.line.intercept;
+                g+='<line x1="'+px(x0)+'" y1="'+py(sl*x0+ic)+'" x2="'+px(x1)+
+                   '" y2="'+py(sl*x1+ic)+'" stroke="'+s.color+
+                   '" stroke-width="1.4" opacity=".8"/>';
+            } else if (s.fit && sp.length>=2){ // least-squares fit line
                 const n=sp.length, sx=sp.reduce((a,p)=>a+p.x,0),
                     sy=sp.reduce((a,p)=>a+p.y,0),
                     sxx=sp.reduce((a,p)=>a+p.x*p.x,0),
@@ -271,10 +282,123 @@
             (rigs.rigs||[]).forEach(r => dev[r.rig]=(r.devices||{}).focuser||null);
             document.getElementById('focusCards').innerHTML =
                 rc16Card(f.rc16||{}, dev.rc16) + oscCard(f.piggyback||{}, dev.piggyback);
+            document.getElementById('modelCards').innerHTML =
+                modelCard((f.rc16||{}).model||{}, 'RC16', false, f.rc16||{}) +
+                modelCard((f.piggyback||{}).model||{}, 'Piggy-600', true, null);
         } catch (e) {
             document.getElementById('focusCards').innerHTML =
                 '<div class="focus-card"><div class="muted">focus data unreachable</div></div>';
         }
+    }
+
+    // ---- PS-76 part 2: focus model lookup table -------------------------
+    function fmt(v, d) { return (typeof v==='number') ? v.toFixed(d||0) : '&mdash;'; }
+
+    function ingestLine(ing, enabled) {
+        if (!enabled) return '<div class="muted">AF reports folder not set '+
+            '(nina_autofocus_reports_dir): nothing is learned yet.</div>';
+        if (!ing) return '<div class="muted">No ingest has run yet (the '+
+            'service ingests at startup and after each new AF report).</div>';
+        let t = 'Last ingest '+esc(ing.at)+' ('+esc(ing.trigger)+'): '+
+            (ing.files||0)+' file(s), '+(ing.read||0)+' report(s) read';
+        if (ing.parse_errors) t += ', <b>'+ing.parse_errors+' unparseable</b>';
+        if (ing.dir_exists===false) t += ', <b>folder not found</b>';
+        t += ', RC16 +'+(ing.added||0)+' ('+(ing.total||0)+' stored)';
+        if (ing.piggyback) t += ', Piggy-600 +'+(ing.piggyback.added||0)+
+            ' ('+(ing.piggyback.total||0)+')';
+        if (ing.unclassified) t += ', '+ing.unclassified+' unclassified';
+        const rr = ing.reject_reasons||{};
+        const rk = Object.keys(rr);
+        if (rk.length) t += '; rejected: '+rk.map(k => esc(k)+' x'+rr[k]).join(', ');
+        if (ing.error) t += '; <b>error: '+esc(ing.error)+'</b>';
+        return '<div class="muted">'+t+'</div>';
+    }
+
+    function modelCard(s, title, osc, rc) {
+        const m = s.model||{};
+        const filts = m.filters||{};
+        const names = Object.keys(filts);
+        const slope = m.slope_steps_per_c;
+        const ref = m.ref_filter||'L';
+        const color = f => osc ? '#c084fc' : (FILTER_COLORS[f]||'#a3a3a3');
+        const byF = {};
+        (s.points||[]).forEach(p => (byF[p.f] = byF[p.f]||[]).push(
+            {x:p.t, y:p.p, date:p.time}));
+        const series = names.map(f => ({label:f, color:color(f),
+            points:byF[f]||[], line:{slope:slope||0, intercept:filts[f].intercept}}));
+        let head = '<div class="seedline">'+(m.n_points||0)+' AF point(s)';
+        if (m.n_rejected) head += ' &middot; '+m.n_rejected+' rejected as outliers';
+        head += '</div><div class="muted">Slope '+(slope!=null ?
+            '<b>'+fmt(slope,1)+'</b>'+(m.slope_se!=null?' &plusmn; '+fmt(m.slope_se,1):'')+
+            ' steps/&deg;C' : 'not fitted yet (needs a 3&deg;C spread in one filter)')+
+            ' &middot; scatter '+fmt(m.sigma_steps,1)+' steps'+
+            (m.temp_range?' &middot; '+fmt(m.temp_range[0],1)+' to '+
+             fmt(m.temp_range[1],1)+'&deg;C':'')+'</div>';
+        let trust = '';
+        if (!osc && s.trust) {
+            const tr = s.trust;
+            const pill = tr.mode==='drive' ? '<span class="pill p-harvest">drive</span>'
+                : (tr.trusted ? '<span class="pill p-static">trusted, advisory</span>'
+                   : '<span class="pill p-disabled">not trusted</span>');
+            trust = '<div class="muted">Table '+pill+' CFZ '+
+                (tr.cfz_steps!=null ? tr.cfz_steps+' steps ('+esc(tr.cfz_source)+')' : 'unknown')+
+                ', scatter limit '+fmt(tr.sigma_limit,0)+
+                (tr.reasons&&tr.reasons.length ? '; '+tr.reasons.map(esc).join('; ') : '')+
+                (tr.drive_enabled ? '' : ' &middot; focus_model_drive off')+'</div>';
+        }
+        let exp = '';
+        if (!osc) {
+            const et = s.expected_temp;
+            const seeds = (rc && rc.filters) ? rc.filters : {};
+            const sl = Object.keys(seeds).map(f => esc(f)+' '+seeds[f].seed).join(', ');
+            exp = '<div class="muted">Seeds now'+(et ? ' (at '+fmt(et.temp,1)+
+                '&deg;C, '+esc(et.basis)+')' : ' (no temperature known)')+': '+
+                (sl||'&mdash;')+'</div>';
+        }
+        // lookup table: rows = whole-degree temps, cols = filters
+        let table = '';
+        if (names.length) {
+            const tr = m.temp_range || [0, 30];
+            const lo = Math.max(-10, Math.floor((tr[0]-4)/2)*2),
+                  hi = Math.min(40, Math.ceil((tr[1]+4)/2)*2);
+            const temps = [];
+            for (let t=hi; t>=lo; t-=2) temps.push(t);
+            table = '<table class="cal"><thead><tr><th>Temp</th>'+
+                names.map(f=>'<th>'+esc(f)+'</th>').join('')+'</tr></thead><tbody>'+
+                temps.map(t => '<tr><td>'+t+'&deg;C</td>'+names.map(f =>
+                    '<td>'+Math.round(filts[f].intercept+(slope||0)*t)+'</td>').join('')+
+                    '</tr>').join('')+
+                '<tr><td>AFs</td>'+names.map(f=>'<td>'+filts[f].n+'</td>').join('')+'</tr>'+
+                (osc ? '' : '<tr><td>Offset vs '+esc(ref)+'</td>'+names.map(f => {
+                    const o = (m.offsets||{})[f];
+                    return '<td>'+(f===ref ? '0' : (o ? (o.steps>0?'+':'')+o.steps+
+                        (o.se!=null?' &plusmn;'+fmt(o.se,0):'') : '&mdash;'))+'</td>';
+                }).join('')+'</tr>')+
+                '<tr><td>Scatter</td>'+names.map(f=>'<td>'+fmt(filts[f].scatter,0)+'</td>').join('')+'</tr>'+
+                '</tbody></table>';
+        }
+        const res = (s.residuals||[]).slice().reverse();
+        const resT = res.length ? '<table class="cal"><thead><tr><th>Last AFs</th>'+
+            '<th>Filter</th><th>Temp</th><th>AF best</th><th>Start</th>'+
+            '<th>Table</th><th>Residual</th></tr></thead><tbody>'+
+            res.map(r => '<tr'+(r.outlier?' class="thin"':'')+'><td>'+
+                esc(String(r.time||'').slice(0,16).replace('T',' '))+'</td><td>'+
+                esc(r.filter)+'</td><td>'+fmt(r.temp,1)+'</td><td>'+r.position+
+                '</td><td>'+(r.initial!=null?r.initial:'&mdash;')+'</td><td>'+
+                (r.predicted!=null?r.predicted:'&mdash;')+'</td><td>'+
+                (r.residual!=null?(r.residual>0?'+':'')+r.residual:'&mdash;')+
+                '</td></tr>').join('')+'</tbody></table>' : '';
+        const moves = (s.moves||[]).slice().reverse();
+        const movesT = moves.length ? '<div class="muted" style="margin-top:.4rem;">Model moves: '+
+            moves.slice(0,5).map(mv => esc(String(mv.at||'').slice(5,16))+' '+
+                esc(mv.filter)+' '+esc(mv.verdict)+(mv.position!=null?' '+mv.position:''))
+                .join(' &middot; ')+'</div>' : '';
+        return '<div class="focus-card'+(osc?' osc':'')+'"><h3>'+esc(title)+
+            ' &mdash; focus model</h3>'+head+trust+exp+
+            (osc ? '<div class="muted">Read-only: nothing seeds from it yet. '+
+                   'Ingest status is on the RC16 card.</div>'
+                 : ingestLine(s.ingest, s.enabled))+
+            scatter(series, null)+table+resT+movesT+'</div>';
     }
     loadFocus();
     setInterval(loadFocus, 60000);

@@ -24,6 +24,8 @@ Usage:
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
+    photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
+    photonscript focus-move <filter> [--dry-run]                  # PS-76
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -489,6 +491,97 @@ def phd2_selftest(
     if from_nina:
         raise typer.Exit(0)
     raise typer.Exit(0 if rep.get("verdict") in ("PASS", "WARN", "SKIPPED") else 1)
+
+
+@app.command("focus-ingest")
+def focus_ingest_cmd(
+    reports_dir: str = typer.Option("", "--dir", help="AF reports folder "
+                                    "(default: nina_autofocus_reports_dir)"),
+    local: bool = typer.Option(False, "--local",
+                               help="Ingest in this process instead of "
+                                    "asking the running service"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw result"),
+):
+    """PS-76: read NINA's autofocus reports into the RC16 / Piggy-600 focus
+    models now (POST /api/focus/ingest; --local runs it here against this
+    checkout's config). Re-reading is safe: stored points are de-duplicated,
+    so this also backfills every report still in the folder."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    if local:
+        from photonscript.scheduler.focus_model import ingest_af_reports
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        res = ingest_af_reports(cfg, reports_dir or None, "cli")
+    else:
+        q = urllib.parse.urlencode({"dir": reports_dir, "trigger": "cli"})
+        try:
+            req = urllib.request.Request(
+                url.rstrip("/") + "/api/focus/ingest?" + q, data=b"",
+                method="POST")
+            with urllib.request.urlopen(req, timeout=300) as r:
+                res = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            print(f"focus ingest: service not reachable ({e}); try --local")
+            raise typer.Exit(1)
+    if as_json:
+        print(_json.dumps(res, indent=1))
+    elif not res.get("enabled"):
+        print("focus ingest: nina_autofocus_reports_dir is not set "
+              "(or pass --dir)")
+    else:
+        pb = res.get("piggyback") or {}
+        print(f"focus ingest from {res.get('dir')}: {res.get('files', 0)} "
+              f"file(s), {res.get('parse_errors', 0)} unparseable, "
+              f"{res.get('read', 0)} report(s); RC16 +{res.get('added', 0)} "
+              f"({res.get('total', 0)} stored, {res.get('rejected', 0)} "
+              f"rejected), Piggy-600 +{pb.get('added', 0)} "
+              f"({pb.get('total', 0)} stored), {res.get('unclassified', 0)} "
+              "unclassified")
+        for why, n in (res.get("reject_reasons") or {}).items():
+            print(f"  rejected {n}x: {why}")
+        if res.get("error"):
+            print(f"  error: {res['error']}")
+    raise typer.Exit(1 if res.get("error") else 0)
+
+
+@app.command("focus-move")
+def focus_move_cmd(
+    filter_name: str = typer.Argument("L", help="Filter the block images in"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA's ExternalScript item "
+                                        "(deploy\\focus-model-move.cmd)"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Say where it would move, do not move"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-76 part 2: move the RC16 focuser to the focus-model lookup-table
+    position for this filter at the focuser's current temperature (POST
+    /api/focus/model-move). Only moves with focus_model_drive on and the
+    model trusted. Always exits 0 from NINA: a failed move never stops
+    imaging."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    q = urllib.parse.urlencode({"filter": filter_name,
+                                "dry_run": "true" if dry_run else "false"})
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/focus/model-move?" + q, data=b"",
+            method="POST")
+        with urllib.request.urlopen(req, timeout=180) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+        print(f"focus model move ({filter_name}): {rep.get('verdict')} "
+              f"{rep.get('position', '')} - {rep.get('reason', '')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"focus model move not run: {e}")
+        rep = {"verdict": "ERROR"}
+    if from_nina:
+        raise typer.Exit(0)
+    raise typer.Exit(0 if rep.get("verdict") != "ERROR" else 1)
 
 
 @app.command("cooler-gate")

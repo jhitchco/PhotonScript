@@ -448,6 +448,24 @@ class PhotonScriptConfig(BaseSettings):
     focus_model_piggyback_match: str = ""
     focus_model_piggyback: bool = True  # also keep a (read-only) Piggy-600
                                  # focus model from its AF reports
+    # PS-76 part 2: when the AF reports are read. The service ingests at
+    # startup and then whenever the reports folder changes, checked every
+    # this many seconds (so within a couple of minutes of each NINA AF), plus
+    # once a day. 0 = no background ingest (backfill + API only).
+    focus_model_ingest_poll_s: int = 120
+    # PS-76 part 2: model-driven focus. Off (default) = advisory: GET
+    # /api/focus says whether the table is trusted, the sequence keeps every
+    # AF. On, and only while the model is trusted (>= 8 L AFs, a fitted
+    # slope, fit scatter <= half the critical focus zone), each RC16 filter
+    # block with >= 5 AFs of its own moves the focuser to the table position
+    # (ExternalScript focus_model_move_script -> POST /api/focus/model-move)
+    # instead of AF on L + offset, the temperature trigger runs the same
+    # move, and a verify AF runs every focus_model_verify_af_min.
+    focus_model_drive: bool = False
+    focus_model_verify_af_min: float = 120.0
+    focus_cfz_steps: int = 0  # RC16 critical focus zone in EAF steps; 0 =
+                                 # use the median AF step size as the proxy
+    focus_model_move_script: str = "C:\\astro\\PhotonScript\\deploy\\focus-model-move.cmd"
     guiding_auto_recover: bool = True  # when the watchdog sees guiding stay down
                                  # (idle OR stuck calibrating/looping) well past
                                  # the grace, attempt ONE automatic PHD2 guider

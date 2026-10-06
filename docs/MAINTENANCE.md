@@ -452,6 +452,35 @@ report folder (e.g. `%LOCALAPPDATA%/NINA/AutoFocus`) and the nightly backfill
 grades each AF run; a run with fit R² below `af_min_r2` (default 0.7) or <3
 measure points fires one Pushover naming the filter. Empty dir = disabled.
 
+**Focus model / lookup table (PS-76).** The same reports feed the RC16 focus
+model (one temperature slope, a per-filter intercept, measured offsets vs L)
+and a read-only Piggy-600 model. Calibration page, "Focus model - lookup
+table": the table, the fit, the last ingest and how far the last AFs landed
+from the table.
+- When it reads: at service start, then within `focus_model_ingest_poll_s`
+  (120 s) of each new report, plus once a day and in the night backfill.
+  On demand: `photonscript focus-ingest` (or `--local`, `--dir D`, `--json`)
+  or POST `/api/focus/ingest`. Re-reading is safe (de-duplicated), so this
+  also backfills every report still in the folder.
+- Which rig: the matchers when set, else a camera name in the report
+  (AP26MC / AP26CC), else filter + EAF range (RC16 = an RC16 filter name and
+  4000 to 7000; empty filter or ~11000 = Piggy-600). NINA's reports normally
+  carry no camera name, so leave `PS_FOCUS_MODEL_*_MATCH` empty unless
+  `/api/focus` shows `unclassified` reports.
+- Seeds: confident model first; else the L temperature line through the
+  July table + ingested AFs, narrowband = L line + `focus_filter_offsets`.
+  With no live focuser temperature at build time the first AF temperature of
+  the last night stands in (`expected_temp` in `/api/focus`).
+- Drive mode (`focus_model_drive`, default **off** = advisory): once
+  `/api/focus` `rc16.model.trust.trusted` is true (>= 8 L AFs, a fitted
+  slope, scatter <= half the CFZ; `focus_cfz_steps`, else the AF step size),
+  turning it on makes each RC16 filter block with >= 5 AFs of its own move to
+  the table position (`deploy\focus-model-move.cmd` -> POST
+  `/api/focus/model-move`) instead of AF on L + offset; the temperature
+  trigger runs the same move (1 C), the HFR trigger keeps the full AF, and a
+  verify AF runs every `focus_model_verify_af_min` (120). Moves are logged to
+  `focus_model_moves.jsonl` and shown on the card.
+
 ## OSC (AP26CC) calibration facts — verified 2026-09-26
 
 - **AP26CC saves raw Bayer CFA** (`NAXIS=2`, `BAYERPAT=RGGB`), even when the OGMA
