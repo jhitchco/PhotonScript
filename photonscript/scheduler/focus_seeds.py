@@ -220,25 +220,63 @@ def add_record(filter_name: str, focpos: float, foctemp: float | None,
     p.write_text(json.dumps(existing, indent=1), encoding="utf-8")
 
 
-def harvest_night(config, date: str, max_hfr_px: float = 4.0) -> int:
+LEGACY_HARVEST_MAX_HFR_PX = 4.0   # the old one-size gate, kept for non-RC16 rigs
+
+
+def harvest_limit_arcsec(config, rig: str | None) -> tuple[float, float]:
+    """(max sub HFR in arcsec, the rig's pixel scale) for the focus-seed
+    harvest. RC16: focus_harvest_max_hfr_arcsec. The old gate was 4.0 px for
+    every rig, which at the RC16's 0.236"/px is 0.94": in-focus RC16 subs
+    run 7-8 px (1.7-1.9"), so no RC16 record was ever harvested. Other rigs
+    keep the old gate (4.0 px at their own scale, e.g. 5.2" at 1.29"/px)."""
+    from photonscript.shared.rigs import rig_config
+    rig = rig or "rc16"
+    try:
+        scale = float(getattr(rig_config(config, rig), "pixel_scale_arcsec", 0)
+                      or 0)
+    except Exception:  # noqa: BLE001
+        scale = 0.0
+    if scale <= 0:
+        scale = float(getattr(config, "pixel_scale_arcsec", 0.236) or 0.236)
+    if rig == "rc16":
+        lim = float(getattr(config, "focus_harvest_max_hfr_arcsec", 2.2) or 0)
+    else:
+        lim = LEGACY_HARVEST_MAX_HFR_PX * scale
+    return lim, scale
+
+
+def harvest_night(config, date: str, max_hfr_px: float | None = None) -> int:
     """After a night, read FOCPOS/FOCTEMP from that night's in-focus accepted
     subs and append one record per filter (the median position of the best
     frames). Returns how many filter-records were added.
 
     Reads the graded sub records (which carry the abs_path) and pulls the two
     focus keywords straight from the FITS header. Only frames that actually
-    focused well (real HFR below max_hfr_px) contribute — so a bad night never
-    poisons the table.
+    focused well contribute, so a bad night never poisons the table: the gate
+    is per rig and in arcsec (harvest_limit_arcsec: HFR px x the rig's pixel
+    scale), since one pixel gate cannot fit 0.236"/px and 1.29"/px.
+    max_hfr_px, when given, overrides it with the old pixel gate.
     """
     from photonscript.scheduler.runs import _load_subs
 
+    limits: dict = {}
     by_filter: dict[str, list[tuple[float, float]]] = {}
     for s in _load_subs(config, date):
         if not s.get("passed_qa"):
             continue
         hfr = s.get("hfr")
-        if hfr is None or hfr > max_hfr_px:
+        if hfr is None:
             continue
+        if max_hfr_px is not None:
+            if hfr > max_hfr_px:
+                continue
+        else:
+            rig = s.get("rig") or "rc16"
+            if rig not in limits:
+                limits[rig] = harvest_limit_arcsec(config, rig)
+            lim, scale = limits[rig]
+            if hfr * scale > lim:
+                continue
         path = s.get("abs_path")
         if not path:
             continue

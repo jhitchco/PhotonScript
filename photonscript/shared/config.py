@@ -458,6 +458,12 @@ class PhotonScriptConfig(BaseSettings):
                                  # is fine. Unlisted filters (R/G/B) get 0. Set it
                                  # EMPTY if NINA's own profile filter offsets are
                                  # turned on, so the offset is not applied twice.
+    focus_harvest_max_hfr_arcsec: float = 2.2  # focus-seed harvest (RC16):
+                                 # only accepted subs with HFR x pixel scale at
+                                 # or under this feed focus_seeds (in-focus
+                                 # RC16 subs run 7-8 px = 1.7-1.9" at 0.236"/px;
+                                 # a soft night, Ha 10-12 px = 2.4-2.8", stays
+                                 # out). Other rigs keep the old 4.0 px gate.
     focus_calibration_tonight: bool = False  # PS-144: one-shot. When on, the
                                  # armer's next night sequence starts with a
                                  # PS-76 focus-offset calibration (AF in

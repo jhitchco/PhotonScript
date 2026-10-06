@@ -735,6 +735,7 @@ _CONFIG_FIELDS = [
     ("focus_model_verify_af_min", "PS_FOCUS_MODEL_VERIFY_AF_MIN", "Focus model drive: verify AF every N min", "Imaging", "float", False, False),
     ("focus_cfz_steps", "PS_FOCUS_CFZ_STEPS", "RC16 critical focus zone (EAF steps; 0 = AF step size as proxy)", "Imaging", "int", False, False),
     ("focus_filter_offsets", "PS_FOCUS_FILTER_OFFSETS", "Focus offsets from L per filter (EAF steps, e.g. Ha:120,OIII:120,SII:120; PS-144)", "Imaging", "str", False, False),
+    ("focus_harvest_max_hfr_arcsec", "PS_FOCUS_HARVEST_MAX_HFR_ARCSEC", "Focus-seed harvest (RC16): max sub HFR in arcsec (HFR px x pixel scale)", "Imaging", "float", False, False),
     ("focus_calibration_tonight", "PS_FOCUS_CALIBRATION_TONIGHT", "Run a focus-offset calibration at the start of tonight (one-shot: turns itself off after the dispatch; PS-144)", "Imaging", "bool", False, False),
     ("focus_model_move_script", "PS_FOCUS_MODEL_MOVE_SCRIPT", "Focus model drive: NINA ExternalScript for the table move (deploy\\focus-model-move.cmd)", "Imaging", "str", False, False),
     ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
