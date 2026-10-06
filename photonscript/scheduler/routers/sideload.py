@@ -12,6 +12,9 @@ POST /api/sequence/sideload?rig=rc16|piggyback&recipe=&exclude=&at=
      own validation (nina_validation.check_loaded): a Validate error is
      ok False / 422 (NINA would refuse Start), Issues are reported with
      ok True; both push once ("validation" in the body).
+     PS-139: a JSON body on rig piggyback is linted as hand-built (rule
+     piggy-mount: a mount instruction inside a loop or a trigger is an
+     error, one outside any loop a warning).
 
 Pure helpers live in scheduler/sideload.py. Kept out of app.py (PS-8).
 """
@@ -168,8 +171,8 @@ async def api_sideload(rig: str = "rc16", recipe: str = "",
             return JSONResponse(status_code=400, content={
                 "detail": "body is not a NINA sequence (no $type)"})
         built = {"name": str(seq.get("Name") or "custom"), "seq": seq,
-                 "lint": sd.lint_companion(seq) if rig == PIGGYBACK
-                 else lint(seq, guided=None)}
+                 "lint": sd.lint_companion(seq, hand_built=True)
+                 if rig == PIGGYBACK else lint(seq, guided=None)}
         recipe = None
     elif recipe in sd.RECIPES:
         try:

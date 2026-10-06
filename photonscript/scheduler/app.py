@@ -829,6 +829,7 @@ _CONFIG_FIELDS = [
     ("piggyback_frame_attribution", "PS_PIGGYBACK_FRAME_ATTRIBUTION", "Piggy subs named after the goal their frame holds (PS-137): off | report (record only) | on (rename and refile)", "Piggyback", "str", False, False),
     ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
     ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
+    ("piggyback_mount_check", "PS_PIGGYBACK_MOUNT_CHECK", "NINA #2 mount check (PS-139): at arm and watch, read NINA #2's loaded sequence for slew / center / park instructions: alert (push + chip, read only) | off", "Piggyback", "str", False, False),
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
     ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
     ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),

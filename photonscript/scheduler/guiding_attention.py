@@ -15,6 +15,9 @@ and never talks to PHD2, NINA or TheSky):
     guard             guide_hotpix.status() and tonight's guard episodes (PS-91)
     tuner             phd2_tuning.summary() (PS-90): a clipped or 8-bit guide
                       star only (the gain advice is the audit's gain row)
+    NINA #2 mount     nina2_mount_check.tonight() (PS-139): tonight's NINA #2
+                      sequence holds slew / center / park instructions (fail
+                      inside a loop, warn outside)
 
 Each item: severity, section + anchor, setting, current -> desired (with the
 reading's source and age), a one-sentence fix, where to do it, and the
@@ -434,6 +437,19 @@ def _tuner_items(config, night: str, skip_bit8: bool) -> tuple[list[dict], dict]
     return out, {WARN: len(out)} if out else {}
 
 
+def _nina2_mount_items(config, now: datetime) -> tuple[list[dict], dict]:
+    """PS-139: NINA #2 holds mount instructions tonight (the record the
+    arm / watch check wrote; nothing is read from NINA here)."""
+    from photonscript.scheduler.nina2_mount_check import attention_item
+    a = attention_item(config, now)
+    if not a:
+        return [], {}
+    it = _item(a["severity"], "NINA #2 mount check (PS-139)", "liveSec",
+               a["setting"], a["current"], a["desired"], a["fix"], a["where"],
+               0, id="nina2_mount")
+    return [it], {it["severity"]: 1}
+
+
 def _classify_unknown(r: dict, which: str) -> str:
     note = str(r.get("note") or "").lower()
     if "registry name" in note:
@@ -565,6 +581,9 @@ def build(config, now: datetime | None = None, *, phd2: dict | None = None,
     if tune is not None:
         items += tune[0]
         sections["tuneSec"] = tune[1]
+    n2 = guarded("NINA #2 mount", lambda: _nina2_mount_items(config, now))
+    if n2 is not None:
+        items += n2[0]
 
     order = sorted(range(len(items)), key=lambda i: _sort_key(items[i], i))
     items = [items[i] for i in order]

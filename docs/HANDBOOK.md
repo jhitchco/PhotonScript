@@ -279,7 +279,9 @@ armer is not involved and stays DISARMED.
   `POST /api/sequence/sideload?rig=rc16|piggyback&recipe=...` or a JSON body
   (the sequence, or `{"sequence": {...}}`). Refusals: lint errors 422 (the
   Piggy companion uses its own lint: no mount moves, cold setpoint, Parent
-  links, guarded light loops); armer ARMED / RUNNING / PAUSED_UNSAFE 409;
+  links, guarded light loops; PS-139: a hand-built JSON body on rig
+  piggyback is graded, a mount instruction inside a loop or a trigger is
+  an error, one outside any loop a warning); armer ARMED / RUNNING / PAUSED_UNSAFE 409;
   that NINA's sequence state unreadable 502 or anything RUNNING 409 (`GET
   /sequence/state`, falls back to `/sequence/json`); Piggy recipe while NINA
   #2 does not report the safety monitor connected 409.
@@ -298,6 +300,40 @@ armer is not involved and stays DISARMED.
   parks and resumes tonight's targets. Unsafe when the Targets area starts:
   the test is skipped; re-sideload another night. The standalone tracking-test
   download keeps its park-and-hold after the ladder.
+
+### A safe hand-built NINA #2 sequence (PS-139)
+
+The Piggy-600 rides the RC16 mount and NINA #1 owns that mount (PS-25).
+NINA's stock deep-sky template is NOT safe for NINA #2: on 2026-10-03 its
+Telescope Center sat inside the per-sub loop, so every sub ran a slew, a
+plate solve, a sync TheSky refused, a ~58' offset slew and a second solve
+(34.6 s median gap, ~150 s with an HFR autofocus). On a dual-rig night each
+of those would pull the RC16 off its target. Prefer PhotonScript's
+companion (the sideload Piggy recipe); when building one by hand:
+
+- No Slew to Ra/Dec or Alt/Az, Slew and center, Center and rotate, Solve and
+  sync, Set tracking, Park / Unpark, Find home or Connect (mount) anywhere in
+  a loop, and no Meridian Flip or Center After Drift trigger at all
+  (triggers fire between exposures). Delete them from the template's target
+  container before adding exposures.
+- Center once, before the loop, at most, and only when the RC16 is not
+  imaging (it moves the RC16 too). While the RC16 images, NINA #2 only
+  cools, focuses and exposes: the RC16's own centering aims both scopes.
+- Keep the companion's guards: CoolCamera at or below 0 C, a
+  SafetyMonitorCondition and a dawn TimeCondition on the light loop itself,
+  the settle gate before each light (PS-27).
+- Load it with the sideload (rig piggyback, JSON body) so the lint runs:
+  rule `piggy-mount` refuses a mount instruction inside a loop or a trigger
+  (422) and warns on one outside any loop. `rigs.nina_dispatch` (companion,
+  Piggy dusk flats, calibration capture) refuses a looped one on NINA #2
+  before any stop or load.
+- A sequence loaded by hand in NINA #2 is checked read-only at arm and when
+  the armer starts WATCHING (PS-136): `GET /sequence/state` on NINA #2, one
+  Pushover a night ("PhotonScript NINA #2 mount"), a red / amber chip in
+  Tonight's Run and a Guiding "What to change" item. At arm the push says
+  when the companion replaces it at pre-config (`piggyback_calibrate_on_arm`).
+  `PS_PIGGYBACK_MOUNT_CHECK` = alert (default) | off. The live tree has no
+  `$type`, so it matches NINA's display names (best effort).
 
 ### Watch a sideloaded night (PS-136)
 
@@ -905,6 +941,11 @@ open for a meaningful stretch but few/no good lights resulted.
   `rigs.rig_has_filter_wheel`), in the night lint, the companion lint
   (sideload) and before the armer dispatches the companion (a lint error
   there = no dispatch + Pushover). And load validation (below).
+- **Center inside the Piggy-600 loop** (2026-10-03, PS-139): a NINA #2 M31
+  sequence built from NINA's stock deep-sky template centered before every
+  sub (slew, solve, refused sync, ~58' offset slew, solve). See "A safe
+  hand-built NINA #2 sequence" above; lint rule `piggy-mount` and the arm /
+  watch check of NINA #2's loaded sequence catch it.
 - **Load validation** (PS-132): NINA refuses a manual Start silently when a
   validator throws. After every ninaAPI `/sequence/load` (sideload, and
   `rigs.nina_dispatch`: Piggy companion, Piggy dusk flats, calibration

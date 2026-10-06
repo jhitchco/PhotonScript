@@ -427,10 +427,22 @@ async def nina_dispatch(base_url: str, seq: dict, config=None,
     validation is read between the load and the start (scheduler/
     nina_validation.py): problems are pushed and added to the detail (plus
     "validation"); in "refuse" mode a Validate error means no Start
-    (ok False). The start keeps skipValidation=true either way."""
+    (ok False). The start keeps skipValidation=true either way.
+
+    PS-139: rig piggyback (NINA #2) refuses, before any stop or load, a
+    sequence with a mount instruction inside a loop or a trigger
+    (sequence_lint rule piggy-mount): it would move the RC16's mount on
+    every pass. PhotonScript's generators never emit one."""
     from datetime import datetime as _dt
     base = base_url.rstrip("/")
     validation = None
+    if rig == PIGGYBACK:
+        from photonscript.scheduler.sequence_lint import mount_items, mount_summary
+        looped = [i for i in mount_items(seq) if i["in_loop"]]
+        if looped:
+            return {"ok": False, "detail": "refused (PS-139): mount "
+                    "instruction(s) inside a loop of a NINA #2 sequence: "
+                    + mount_summary(looped)}
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             await client.get(base + "/sequence/stop")  # harmless if idle

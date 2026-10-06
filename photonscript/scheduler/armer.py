@@ -158,6 +158,7 @@ class Armer:
         self.watch: dict | None = None        # PS-136: the watched sideload
         self._watch_declined: str | None = None  # PS-136: sideload "t" stopped by hand
         self.last_validation: dict | None = None  # PS-132 check in dispatch_raw
+        self._nina2_task: asyncio.Task | None = None  # PS-139 NINA #2 mount check
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -270,7 +271,26 @@ class Armer:
                 "shutdown": getattr(self, "shutdown", None),
                 "watch": (getattr(self, "watch", None)
                           if self.state == WATCH_STATE else None),
+                "nina2_mount": self._nina2_mount_status(),
                 "noon_arm": self._noon_arm_status()}
+
+    def _nina2_mount_status(self) -> dict | None:
+        """PS-139: tonight's NINA #2 mount-instruction finding (chip)."""
+        try:
+            from photonscript.scheduler.nina2_mount_check import tonight
+            return tonight(self.config)
+        except Exception:  # noqa: BLE001 (cosmetic, never fatal)
+            return None
+
+    def _start_nina2_mount_check(self, reason: str) -> None:
+        """PS-139: read-only check of NINA #2's loaded sequence for mount
+        instructions, in the background (never blocks the arm / watch)."""
+        try:
+            from photonscript.scheduler.nina2_mount_check import check, enabled
+            if enabled(self.config):
+                self._nina2_task = asyncio.create_task(check(self.config, reason))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("NINA #2 mount check not started: %s", e)
 
     def _shutdown_due_iso(self) -> str | None:
         """Planned dawn-shutdown time for the dashboard (None when unarmed)."""
@@ -355,6 +375,9 @@ class Armer:
         # PS-66: which guider NINA has (Direct Guider vs PHD2), for the
         # unguided dither choice and a guided-arm sanity alert.
         await self._check_guider_at_arm()
+        # PS-139: does NINA #2 hold slew / center / park instructions while
+        # the RC16 is about to image? Read only, in the background.
+        self._start_nina2_mount_check("arm")
         # PS-89: audit PHD2's settings against the desired state now that the
         # equipment is connected. In the background: it never blocks the arm.
         if self._use_guiding() and getattr(self.config, "phd2_audit_enabled", True):
@@ -1530,6 +1553,7 @@ class Armer:
             self._task = asyncio.create_task(self._run())
         self._watch_event("start", detail, now, trigger=trigger, sequence=name,
                           guided_targets=gt)
+        self._start_nina2_mount_check("watch")   # PS-139
         guide_txt = ("guiding watchdog on " + ", ".join(gt) if gt else
                      "no guided targets: guiding watchdog off" if gt is not None
                      else "guiding per config (sequence file not read)")
