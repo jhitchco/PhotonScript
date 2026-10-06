@@ -63,7 +63,13 @@ MEASURED = (("hfr", "hfr"), ("fwhm_arcsec", "fwhm_arcsec"),
             # PS-117 (b): the sky rate fields
             ("sky_adu", "sky_adu"), ("sky_e_s", "sky_e_s"),
             ("sky_e_s_ch", "sky_e_s_ch"),
-            ("rn_penalty_pct", "rn_penalty_pct"))
+            ("rn_penalty_pct", "rn_penalty_pct"),
+            # PS-146: what the judged ecc / FWHM came from
+            ("ecc_all", "ecc_all"), ("ecc_bright", "ecc_bright"),
+            ("ecc_bright_n", "ecc_bright_n"), ("ecc_src", "ecc_src"),
+            ("ecc_why", "ecc_why"), ("ecc_bin_all", "ecc_bin_all"),
+            ("fwhm_moment_arcsec", "fwhm_moment_arcsec"),
+            ("fwhm_src", "fwhm_src"), ("fwhm_unreliable", "fwhm_unreliable"))
 
 # the old numbers kept on the record for the audit trail
 KEPT_OLD = ("hfr", "fwhm_arcsec", "stars", "ecc", "ecc_bin", "ecc_def",

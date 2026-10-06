@@ -158,7 +158,23 @@ Check a pending update on the scope without switching: `photonscript self-update
    sqrt(1-(b/a)^2); records say so in `ecc_def` (older backfill records held
    1-b/a and are converted on read and on rescore). `qa_ecc_scale` (native,
    default, or binned) picks which scale gates; the other is shown as info
-   only.
+   only. **Narrowband grading (PS-146, measure_v ps83.2).** On 3 nm subs
+   faint stars read 0.03 to 0.15 more elongated than the bright ones, so
+   the judged ecc is the median of the brightest `qa_ecc_bright_n` (50)
+   stars (or every star at peak SNR >= `qa_ecc_bright_snr` when set) when
+   `qa_ecc_bright_rule` says so (auto: a narrowband filter in
+   `qa_ecc_bright_filters`, an "under" exposure or fewer than
+   `qa_ecc_bright_min_stars` 150 stars; always; off). `ecc_all` keeps the
+   all-star median, `ecc_src` / `ecc_why` say which was judged, and the
+   scorecard row reads "brightest 50 stars, narrowband (all stars 0.71)".
+   The FWHM is 2.355 x sep's threshold moment, which reads faint defocused
+   stars far too small (Ha 2026-10-05: 1.6 to 2.8" with HFR 10.5 px, about
+   5"): when it is under `qa_fwhm_hfr_ratio` (1.2) x HFR the sub is flagged
+   `fwhm_unreliable` and the judged FWHM is 2 x HFR (`qa_fwhm_method` auto;
+   moment = the old value, hfr = always), `fwhm_moment_arcsec` keeps the
+   moment, the row says "from 2 x HFR". Plain `qa-rescore` derives both for
+   older PS-83 and live records from their stored numbers and star sidecar
+   (`shape_from` "stored", by rank only), dry run first.
 4. Morning: runs page `/runs/YYYY-MM-DD` (permalinks work) shows plan vs
    actual, the honest funnel (dark hours -> shutter hours -> accepted hours;
    sky utilization = accepted/dark), 4-state sub review

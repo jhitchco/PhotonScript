@@ -569,7 +569,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
         clipped_pct=m.get("clipped_pct"), sat_stars_pct=m.get("sat_stars_pct"),
         swamp=m.get("swamp"), sat_px_pct=px.get("sat_px_pct"),
-        zero_px_pct=px.get("zero_px_pct"), max_adu=px.get("max_adu"))
+        zero_px_pct=px.get("zero_px_pct"), max_adu=px.get("max_adu"),
+        **{k: m.get(k) for k in qa_rules.SHAPE_KEYS})   # PS-146 row notes
     card = qa_rules.evaluate(metrics, qa_rules.context(
         config, rig, target, flt, night=night, unsafe_windows=_wins,
         start_utc=_start, image_type=str(hdr.get("IMAGETYP", "LIGHT"))))
@@ -597,6 +598,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "ecc_bin": m["ecc_bin"], "hfr_bin": m["hfr_bin"],
         "ecc_at": m["measure_at"], "ecc_def": m.get("ecc_def"),
         "measure_v": m.get("measure_v"),
+        # PS-146: what the judged ecc / FWHM came from
+        **{k: m.get(k) for k in star_measure.SHAPE_RECORD_KEYS},
         "background": m["background"],
         "corner_spread": m.get("corner_spread"),
         "corner_ecc": m.get("corner_ecc"),
@@ -1429,6 +1432,12 @@ def rescore_night(config, date: str, apply: bool = False,
         n_sky = _backfill_sky_fields(config, subs, apply)
         if n_sky:
             counts["sky_backfilled"] = n_sky
+        # PS-146: records measured before ps83.2 get the bright-star ecc and
+        # the robust FWHM from their stored numbers + star sidecar (in
+        # memory: a dry run shows the verdicts they move, apply writes them)
+        n_shape = _backfill_shape_fields(config, date, subs)
+        if n_shape:
+            counts["shape_backfilled"] = n_shape
         changed = 0
         lib = library_root(config)
         graded, source = _night_cards(config, date, subs,
@@ -1536,7 +1545,7 @@ def rescore_night(config, date: str, apply: bool = False,
                     except OSError as e:
                         logger.warning("rescore library move %s failed: %s",
                                        src, e)
-    if apply and (changed or n_sky):
+    if apply and (changed or n_sky or n_shape):
         try:
             build_library(config, date)
         except Exception as e:  # noqa: BLE001
@@ -1576,6 +1585,33 @@ def _backfill_sky_fields(config, subs: list[dict], apply: bool) -> int:
             n += 1
             if apply:
                 rec.update(fields)
+    return n
+
+
+def _backfill_shape_fields(config, date: str, subs: list[dict]) -> int:
+    """PS-146: the judged ecc / FWHM fields (star_measure.
+    record_shape_fields) for records measured before ps83.2, merged in place.
+    Returns how many records got them."""
+    from photonscript.shared import star_table
+    from photonscript.shared.rigs import rig_config
+    from photonscript.shared.star_measure import record_shape_fields
+    n = 0
+    for rec in subs:
+        if rec.get("ecc_src"):
+            continue
+        rig = rec.get("rig") or "rc16"
+        try:
+            table = star_table.read(config, date, str(rec.get("file") or ""),
+                                    rig) if rec.get("file") else None
+            fields = record_shape_fields(
+                rec, rig_config(config, rig), table)
+        except Exception as e:  # noqa: BLE001 - never costs a rescore
+            logger.debug("shape backfill skipped for %s: %s",
+                         rec.get("file"), e)
+            continue
+        if fields:
+            rec.update(fields)
+            n += 1
     return n
 
 

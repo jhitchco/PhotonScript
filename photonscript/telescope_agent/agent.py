@@ -1509,6 +1509,8 @@ class TelescopeAgent:
                 "ecc_def": "sqrt(1-(b/a)^2)",
                 # PS-83: measured by shared.star_measure (both graders)
                 "measure_v": MEASURE_VERSION,
+                # PS-146: what the judged ecc / FWHM came from
+                **(quality.shape or {}),
                 "background": quality.background_adu,
                 # PS-21: measured inputs live grading used to drop
                 "noise": quality.noise_adu,

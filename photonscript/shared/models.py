@@ -283,6 +283,9 @@ class ImageQualityMetrics(BaseModel):
     ecc_bin: Optional[float] = None        # sqrt(1-(b/a)^2), like eccentricity
     hfr_bin_px: Optional[float] = None     # binned HFR in native px (x2)
     stars_bin: Optional[int] = None
+    # PS-146: what the judged ecc / FWHM came from (star_measure
+    # SHAPE_RECORD_KEYS: ecc_all, ecc_bright, ecc_src, fwhm_src, ...)
+    shape: Optional[dict] = None
     # PS-108: full-resolution pixel counts (shared.pixel_stats.frame_stats)
     sat_px: Optional[int] = None           # pixels >= sat_adu
     sat_px_pct: Optional[float] = None

@@ -33,7 +33,10 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   0 = clear, None = not judged: the RC16 itself, or no data),
   slew_note (which move, from the mount log or the RC16 frames),
   sat_px_pct, zero_px_pct, max_adu (PS-108: full-resolution pixel counts,
-  shared.pixel_stats; sat_px_pct feeds the score's exposure grade).
+  shared.pixel_stats; sat_px_pct feeds the score's exposure grade),
+  ecc_src, ecc_bright_n, ecc_all, fwhm_src, fwhm_moment_arcsec,
+  fwhm_unreliable (PS-146: what the judged ecc and FWHM came from; notes on
+  the ecc and FWHM rows only, the gates judge ecc and fwhm_arcsec as given).
 
 PS-108: evaluate() also scores the sub 0 to 100 (shared.qa_score, weights
 per rig in config/qa/score_weights.toml). qa_score_mode "preview" (default)
@@ -641,6 +644,42 @@ def _temp_reasons(t, hdr_sp, sp, over, ceiling) -> list[str]:
     return []
 
 
+def ecc_note(m: dict, binned: bool = False) -> str:
+    """PS-146: the ecc row says when the brightest stars were judged, e.g.
+    "brightest 50 stars, narrowband (all stars 0.71)". Empty otherwise."""
+    if (m or {}).get("ecc_src") != "bright":
+        return ""
+    n = m.get("ecc_bright_n")
+    why = m.get("ecc_why")
+    txt = (f"brightest {int(n)} stars" if n else "bright stars") \
+        + (f", {why}" if why else "")
+    allv = _num(m.get("ecc_bin_all" if binned else "ecc_all"))
+    if allv is not None:
+        txt += f" (all stars {allv:.2f})"
+    return txt
+
+
+def fwhm_note(m: dict) -> str:
+    """PS-146: the FWHM row says when it is 2 x HFR because the threshold
+    moment under-read the stars, or warns when the moment is kept."""
+    m = m or {}
+    mom = _num(m.get("fwhm_moment_arcsec"))
+    mom_txt = f" {mom:.1f}\"" if mom is not None else ""
+    if m.get("fwhm_src") == "hfr":
+        return (f"from 2 x HFR (threshold FWHM{mom_txt} under-reads faint "
+                "or defocused stars)")
+    if m.get("fwhm_unreliable"):
+        return "threshold FWHM may under-read (under 1.2 x HFR)"
+    return ""
+
+
+def _with_note(c: Check, note: str) -> Check:
+    """Append a PS-146 note to a row (never to a skip's generic text)."""
+    if note and c.status != SKIP:
+        c.reason = f"{c.reason}, {note}" if c.reason else note
+    return c
+
+
 def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     """Grade one sub. Pure function of the metrics and the context."""
     m = metrics or {}
@@ -662,21 +701,23 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     ecc_bin = _num(m.get("ecc_bin"))
     lim_b = t.get("ecc_max_bin", t["ecc_max"])
     gate_bin = t.get("ecc_scale") == "binned" and ecc_bin is not None
+    e_note = ecc_note(m)          # PS-146: "brightest 50 stars (...)"
     if gate_bin:
         checks.append(Check("ecc", _r(ecc), t["ecc_max"], SKIP,
                             "info only: gating at 0.47\"/px"))
     else:
-        checks.append(_max_check(
+        checks.append(_with_note(_max_check(
             "ecc", ecc, t["ecc_max"], wf,
             f"Eccentricity {ecc:.2f} > {t['ecc_max']:g} (trailing/drift)"
-            + override_note(t, "ecc") if ecc is not None else ""))
+            + override_note(t, "ecc") if ecc is not None else ""), e_note))
     if ecc_bin is None:
         checks.append(Check("ecc_bin", None, lim_b, SKIP, "not measured"))
     elif gate_bin:
-        checks.append(_max_check(
+        checks.append(_with_note(_max_check(
             "ecc_bin", ecc_bin, lim_b, wf,
             f"Eccentricity at 0.47\"/px {ecc_bin:.2f} > {lim_b:g} "
-            "(trailing/drift)" + override_note(t, "ecc_bin")))
+            "(trailing/drift)" + override_note(t, "ecc_bin")),
+            ecc_note(m, binned=True)))
     else:
         checks.append(Check("ecc_bin", _r(ecc_bin), lim_b, SKIP,
                             "info only: gating at native scale"))
@@ -704,20 +745,22 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
         else:
             checks.append(Check("hfr_rel", _r(hfr, 2), lim, PASS))
     # fwhm (hard on RC16, advisory where quality_fwhm_soft)
+    f_note = fwhm_note(m)         # PS-146: "from 2 x HFR (...)"
     if fwhm is None:
         checks.append(Check("fwhm", None, t["fwhm_max"], SKIP,
                             "not measured by this grader"))
     elif t["fwhm_soft"]:
-        checks.append(Check("fwhm", _r(fwhm, 2), t["fwhm_max"],
-                             WARN if fwhm > t["fwhm_max"] else PASS,
-                             f"FWHM {fwhm:.1f}\" > {t['fwhm_max']:g}\" "
-                             "(advisory on this rig)"
-                             if fwhm > t["fwhm_max"] else ""))
+        checks.append(_with_note(Check(
+            "fwhm", _r(fwhm, 2), t["fwhm_max"],
+            WARN if fwhm > t["fwhm_max"] else PASS,
+            f"FWHM {fwhm:.1f}\" > {t['fwhm_max']:g}\" "
+            "(advisory on this rig)" if fwhm > t["fwhm_max"] else ""),
+            f_note))
     else:
-        checks.append(_max_check(
+        checks.append(_with_note(_max_check(
             "fwhm", fwhm, t["fwhm_max"], wf,
             f"FWHM {fwhm:.1f}\" > {t['fwhm_max']:g}\""
-            + override_note(t, "fwhm"), nd=2))
+            + override_note(t, "fwhm"), nd=2), f_note))
     # star count
     lim_s = [t["star_min"], t["star_max"]]
     if stars is None:
@@ -1082,6 +1125,11 @@ def record_fwhm(rec: dict):
     return rec.get("fwhm_arcsec")
 
 
+# PS-146: what the judged ecc / FWHM came from (row notes only)
+SHAPE_KEYS = ("ecc_src", "ecc_why", "ecc_bright_n", "ecc_all", "ecc_bin_all",
+              "fwhm_src", "fwhm_moment_arcsec", "fwhm_unreliable")
+
+
 def metrics_from_record(rec: dict) -> dict:
     """Stored sub record -> evaluate() metrics. Pre-PS-83 backfill records
     carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped
@@ -1093,7 +1141,7 @@ def metrics_from_record(rec: dict) -> dict:
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
         "pointing_offset_arcmin", "pointing_note", "pointing_src",
         "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-        "max_adu")}
+        "max_adu") + SHAPE_KEYS}
     m["fwhm_arcsec"] = record_fwhm(rec)
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -1108,5 +1156,5 @@ def record_metrics(**kw) -> dict:
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin", "pointing_note", "pointing_src",
             "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-            "max_adu")
+            "max_adu") + SHAPE_KEYS
     return {k: kw.get(k) for k in keys}

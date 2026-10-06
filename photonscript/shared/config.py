@@ -336,6 +336,24 @@ class PhotonScriptConfig(BaseSettings):
     quality_eccentricity_max_binned: float = 0.0  # gate at 0.47"/px when
                                  # qa_ecc_scale=binned; 0 = same as
                                  # quality_eccentricity_max
+    # PS-146: judged ecc and FWHM (shared.star_measure). On 3 nm subs faint
+    # stars read 0.03 to 0.15 more elongated than the bright ones, and the
+    # threshold-moment FWHM under-reads faint defocused stars (RC16 Ha
+    # 2026-10-05: 1.6 to 2.8" reported, about 5" true).
+    qa_ecc_bright_rule: str = "auto"  # when the bright-star ecc is judged:
+                                 # auto (narrowband filter, "under" exposure
+                                 # or fewer than qa_ecc_bright_min_stars) |
+                                 # always | off (ecc of every star, as before)
+    qa_ecc_bright_n: int = 50    # bright stars = the brightest N by flux
+    qa_ecc_bright_snr: float = 0.0  # > 0: the stars at peak SNR >= this
+                                 # instead (when 5+ qualify); 0 = by rank
+    qa_ecc_bright_filters: str = "Ha,OIII,SII"  # narrowband filter classes
+    qa_ecc_bright_min_stars: int = 150  # auto: fewer stars than this
+    qa_fwhm_method: str = "auto"  # auto (2 x HFR when the moment FWHM is
+                                 # under qa_fwhm_hfr_ratio x HFR, else the
+                                 # moment) | moment (as before) | hfr
+    qa_fwhm_hfr_ratio: float = 1.2  # moment FWHM px < this x HFR px =
+                                 # unreliable (fwhm_unreliable)
     # PS-108: 0 to 100 sub score (shared.qa_score, weights per rig in
     # config/qa/score_weights.toml). Approved 2026-10-04: approve at 80 and
     # up on both rigs, review 60 to 79, reject under 60; shipped in preview.
