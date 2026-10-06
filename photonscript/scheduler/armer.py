@@ -1806,15 +1806,15 @@ class Armer:
         """Run the guiding watchdog this tick? Only while a target that has
         a StartGuiding in the sideloaded file is RUNNING (so the unguided
         tracking test and unsafe waits never trip it). Without the file:
-        config guided_default, and never during a tracking test."""
+        config guided_default, and never during a tracking test, an optics
+        test or a focus calibration (PS-152: is_test_target)."""
         names = {_norm_item(n) for n in running}
         gt = (self.watch or {}).get("guided_targets")
         if gt is None:
-            from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PREFIX
-            pre = _norm_item(TRACKING_TEST_PREFIX)
+            from photonscript.shared.target_names import is_test_target
             return (bool(getattr(self.config, "guided_default", True))
                     and bool(names)
-                    and not any(n.startswith(pre) for n in names))
+                    and not any(is_test_target(n) for n in names))
         return any(_norm_item(t) in names for t in gt)
 
     async def _watch_tick(self, now: datetime) -> None:

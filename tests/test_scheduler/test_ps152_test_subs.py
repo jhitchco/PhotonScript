@@ -54,3 +54,34 @@ def test_agent_streak_skips_every_test_target():
     branch = src[i:min(j, k)]
     assert "pass" in branch and "_consecutive_rejects" not in branch
     assert "is_optics_test(target_name)" not in src
+
+
+# ---- 2. watch guiding fallback -------------------------------------------------
+
+def _cfg(tmp_path, **kw):
+    from photonscript.shared.config import PhotonScriptConfig
+    kw.setdefault("connect_all_on_arm", False)
+    return PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path), **kw)
+
+
+@pytest.mark.parametrize("running", [
+    ["Tracking test M 2_Container"],
+    ["Optics test M 2_Container", "Optics test M 2 L -300 through-focus step_Container"],
+    ["Focus calibration M52_Container"],
+    ["Targets_Container", "Focus calibration M52 focus calibration AFs_Container"],
+    ["NGC 7789 focus calibration AFs_Container"],
+])
+def test_watch_fallback_skips_test_containers(tmp_path, running):
+    from photonscript.scheduler.armer import Armer
+    a = Armer(_cfg(tmp_path, guided_default=True))
+    a.watch = {"guided_targets": None}
+    assert a._watch_guiding_active(running) is False
+    assert a._watch_guiding_active(["Targets_Container", "M 31_Container"]) is True
+
+
+def test_watch_with_file_is_unchanged(tmp_path):
+    from photonscript.scheduler.armer import Armer
+    a = Armer(_cfg(tmp_path))
+    a.watch = {"guided_targets": ["M 31"]}
+    assert a._watch_guiding_active(["M 31_Container"]) is True
+    assert a._watch_guiding_active(["Optics test M 2_Container"]) is False
