@@ -200,9 +200,9 @@ def test_watch_needed_follows_armer_and_sun(tmp_path, monkeypatch):
 
 
 def test_armer_active_states_in_sync():
-    from photonscript.scheduler.armer import ACTIVE_STATES
+    from photonscript.scheduler.armer import LIVE_STATES   # PS-152
     from photonscript.telescope_agent.agent import TelescopeAgent
-    assert tuple(TelescopeAgent._ARMER_ACTIVE_STATES) == tuple(ACTIVE_STATES)
+    assert tuple(TelescopeAgent._ARMER_ACTIVE_STATES) == tuple(LIVE_STATES)
 
 
 def test_nina_client_uses_v2_info_endpoint_and_to_param():

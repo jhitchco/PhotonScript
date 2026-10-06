@@ -139,8 +139,10 @@ def baselines(config, rig: str | None = None, nights: int = 14,
     k = float(getattr(config, "qa_baseline_k", 3.0) if k is None else k)
     min_subs = MIN_SUBS if min_subs is None else int(min_subs)
     recs = list(records) if records is not None else _load(config, nights)
+    # PS-152: test and calibration subs (tracking / optics test, focus
+    # calibration) are not imaging and never shape a baseline
     lights = [r for r in recs if str(r.get("image_type") or "LIGHT").upper()
-              == "LIGHT"]
+              == "LIGHT" and not qa_rules.is_test_record(r)]
     # night medians per (night, rig, target, filter), over every sub of the
     # group (as qa_rules.night_context does), for the ratio metrics
     groups: dict = defaultdict(lambda: {"hfr": [], "bg": []})

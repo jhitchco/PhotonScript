@@ -286,8 +286,12 @@ class TelescopeAgent:
             await asyncio.sleep(self.SAFETY_POLL_S)
 
     # Armer states in which a night is in progress (mirrors
-    # photonscript.scheduler.armer.ACTIVE_STATES; a test keeps them in sync).
-    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR")
+    # photonscript.scheduler.armer.LIVE_STATES; a test keeps them in sync).
+    # PS-152: LIVE, not ACTIVE: a watched sideloaded night (PS-136 WATCHING)
+    # is a night too, so the cooler / dew / safety watchdogs and the guide
+    # guard's "no night armed" check treat it as one.
+    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR",
+                            "WATCHING")
 
     def _armer_state(self) -> str | None:
         """The armer's persisted state, or None when there is no readable
@@ -1570,6 +1574,9 @@ class TelescopeAgent:
                 "file": rel_in_night, "abs_path": str(file_path),
                 "time": datetime.utcnow().isoformat() + "Z",
                 "target": target_name, "filter": rec_filter,
+                # PS-152: a test / calibration sub, kept out of medians
+                **({"test": True} if qa_rules.is_test_record(
+                    {"target": target_name}) else {}),
                 "exp_s": exposure_seconds,
                 "ccd_temp": self.state.camera_temp_c,
                 "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,
@@ -1655,9 +1662,10 @@ class TelescopeAgent:
         # Nanny: consecutive rejects mean something systemic (clouds, dew,
         # focus loss, tracking) — a single bad sub is just a bad sub.
         # PS-148: through-focus optics-test subs are defocused on purpose;
-        # they neither count toward nor reset the streak.
-        from photonscript.scheduler.optics_test import is_optics_test
-        if is_optics_test(target_name):
+        # PS-152: unguided tracking-test rungs are expected to fail too. Test
+        # and calibration subs neither count toward nor reset the streak.
+        from photonscript.shared.target_names import is_test_target
+        if is_test_target(target_name):
             pass
         elif quality.passed_qa:
             self._consecutive_rejects = 0

@@ -1785,10 +1785,11 @@ def _syncthing_settings():
 
 
 def _armer_active() -> bool:
+    """A night in progress, a watched sideloaded one included (PS-152)."""
     try:
-        from photonscript.scheduler.armer import ACTIVE_STATES
+        from photonscript.scheduler.armer import LIVE_STATES
         return (_armer is not None
-                and getattr(_armer, "state", "DISARMED") in ACTIVE_STATES)
+                and getattr(_armer, "state", "DISARMED") in LIVE_STATES)
     except Exception:  # noqa: BLE001
         return False
 

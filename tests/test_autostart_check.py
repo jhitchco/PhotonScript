@@ -223,8 +223,8 @@ def test_verdict_exit_codes():
 
 
 def test_armer_active_states_match_the_armer():
-    from photonscript.scheduler.armer import ACTIVE_STATES
-    assert tuple(ACTIVE_STATES) == ac.ARMER_ACTIVE
+    from photonscript.scheduler.armer import LIVE_STATES   # PS-152
+    assert tuple(LIVE_STATES) == ac.ARMER_ACTIVE
 
 
 # --- scheduled task ------------------------------------------------------------------

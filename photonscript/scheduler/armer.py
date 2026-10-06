@@ -191,6 +191,9 @@ class Armer:
         self._pause_task: asyncio.Task | None = None
         self.last_restart: dict | None = None      # PS-143: last restart result
         self.last_dispatch_targets: list[str] = []  # PS-143: names in the push
+        # PS-152: tonight's dusk focus calibration (PS-144) once dispatched:
+        # {"night", "container", "status": "dispatched" | "done", "field"}
+        self.focus_cal: dict | None = None
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -216,6 +219,7 @@ class Armer:
                 "watch": getattr(self, "watch", None),
                 "watch_declined": getattr(self, "_watch_declined", None),
                 "pause": getattr(self, "pause_info", None),
+                "focus_cal": getattr(self, "focus_cal", None),   # PS-152
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -264,6 +268,7 @@ class Armer:
         self.guider_name = saved.get("guider_name")
         self.watch = saved.get("watch")  # PS-136: a watched night reattaches too
         self.pause_info = saved.get("pause")  # PS-64
+        self.focus_cal = saved.get("focus_cal")  # PS-152
         self._task = asyncio.create_task(self._run())
         if (self.state == PAUSE_STATE
                 and (self.pause_info or {}).get("phase") == "stopping"):
@@ -1292,9 +1297,18 @@ class Armer:
         self._focus_cal_field = None
         seq_targets = list(targets)
         if bool(getattr(self.config, "focus_calibration_tonight", False)):
-            cal = self._focus_calibration_target(now)
-            if cal is not None:
-                seq_targets.insert(0, cal)
+            done = self._focus_cal_tonight()
+            if done:
+                # PS-152: one calibration per night. A re-dispatch (unsafe
+                # pause, resume, recalibration, restart) never repeats it,
+                # even if the flag is back on (e.g. the .env reset failed and
+                # the service restarted)
+                logger.info("Focus calibration already %s tonight (%s): not "
+                            "repeated", done.get("status"), done.get("container"))
+            else:
+                cal = self._focus_calibration_target(now)
+                if cal is not None:
+                    seq_targets.insert(0, cal)
         seq = build_sequence_for_night(
             f"PhotonScript_{self.plan['night_of'].replace('-', '')}", seq_targets)
 
@@ -1336,6 +1350,7 @@ class Armer:
         else the highest). Records the field in self._focus_cal_field.
         Never raises: a planning error means no calibration tonight."""
         try:
+            from photonscript.scheduler.nina_sequence_json import FOCUS_CAL_PREFIX
             from photonscript.scheduler.tracking_test import altitude
             from photonscript.shared.models import NinaSequenceTarget
             dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
@@ -1358,7 +1373,7 @@ class Armer:
             logger.info("Focus calibration first tonight: %s (%.0f deg up at "
                         "%s)", name, alt, when)
             return NinaSequenceTarget(
-                name=f"Focus calibration {name}", ra_hours=ra,
+                name=f"{FOCUS_CAL_PREFIX}{name}", ra_hours=ra,
                 dec_degrees=dec, focus_calibration=True,
                 focus_calibration_rounds=1,
                 focus_calibration_filters=list(FOCUS_CAL_FILTERS))
@@ -1376,6 +1391,13 @@ class Armer:
             return
         self._focus_cal_field = None
         self.config.focus_calibration_tonight = False
+        from photonscript.scheduler.nina_sequence_json import FOCUS_CAL_PREFIX
+        # PS-152: remember it for the night (persisted), so no re-dispatch
+        # carries it again; marked "done" once its container finished
+        self.focus_cal = {"night": (self.plan or {}).get("night_of"),
+                          "container": f"{FOCUS_CAL_PREFIX}{field['name']}",
+                          "status": "dispatched", "field": field}
+        self._persist()
         saved = True
         try:
             from photonscript.shared import envfile
@@ -1404,6 +1426,56 @@ class Armer:
             await notify(self.config, msg, title="PhotonScript focus calibration")
         except Exception as e:  # noqa: BLE001
             logger.warning("focus calibration note not sent: %s", e)
+
+    def _focus_cal_tonight(self) -> dict | None:
+        """PS-152: tonight's focus-calibration record (dispatched or done),
+        or None when none was dispatched for this plan's night."""
+        fc = getattr(self, "focus_cal", None)
+        if (isinstance(fc, dict) and fc.get("night")
+                and fc.get("night") == (self.plan or {}).get("night_of")):
+            return fc
+        return None
+
+    def _note_focus_cal_progress(self, tree) -> bool:
+        """PS-152: mark tonight's dispatched focus calibration "done" when
+        NINA's sequence state shows its container FINISHED: log a
+        focus_calibration "done" event and persist. True when it did."""
+        fc = self._focus_cal_tonight()
+        if not fc or fc.get("status") != "dispatched" or tree is None:
+            return False
+        want = _norm_item(fc.get("container"))
+        if _nina_item_status(tree, want) != "FINISHED":
+            return False
+        now = datetime.utcnow()
+        fc["status"] = "done"
+        fc["done_utc"] = now.isoformat(timespec="seconds") + "Z"
+        self._persist()
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "focus_calibration", "value": "done",
+                          "detail": f"{fc['container']} finished",
+                          "field": fc.get("field")})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("focus calibration done event not logged: %s", e)
+        logger.info("Focus calibration finished tonight: %s", fc["container"])
+        return True
+
+    async def _check_focus_cal_before_redispatch(self) -> None:
+        """PS-152: before a re-dispatch stops NINA, read its sequence state
+        once so a finished calibration is recorded as done. Best-effort
+        (the re-dispatch leaves the calibration out either way)."""
+        fc = self._focus_cal_tonight()
+        if not fc or fc.get("status") != "dispatched":
+            return
+        try:
+            tree, err = await asyncio.wait_for(self._watch_read_state(), 15)
+            if not err:
+                self._note_focus_cal_progress(tree)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("focus calibration state check skipped: %s", e)
 
     def _calibration_slot(self, targets, now: datetime) -> dict | None:
         """PS-93: the PHD2 calibration field when tonight needs a calibration
@@ -1560,6 +1632,8 @@ class Armer:
             await notify(self.config, f"Dispatch FAILED: {self.detail}",
                          title="PhotonScript ERROR", priority=1)
             return False
+        # PS-152: note a finished dusk calibration before the stop clears it
+        await self._check_focus_cal_before_redispatch()
         # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the
         # request body; load 400s if a sequence is running, so stop first.
         await self._nina("sequence_stop")  # harmless if nothing running
@@ -1806,15 +1880,15 @@ class Armer:
         """Run the guiding watchdog this tick? Only while a target that has
         a StartGuiding in the sideloaded file is RUNNING (so the unguided
         tracking test and unsafe waits never trip it). Without the file:
-        config guided_default, and never during a tracking test."""
+        config guided_default, and never during a tracking test, an optics
+        test or a focus calibration (PS-152: is_test_target)."""
         names = {_norm_item(n) for n in running}
         gt = (self.watch or {}).get("guided_targets")
         if gt is None:
-            from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PREFIX
-            pre = _norm_item(TRACKING_TEST_PREFIX)
+            from photonscript.shared.target_names import is_test_target
             return (bool(getattr(self.config, "guided_default", True))
                     and bool(names)
-                    and not any(n.startswith(pre) for n in names))
+                    and not any(is_test_target(n) for n in names))
         return any(_norm_item(t) in names for t in gt)
 
     async def _watch_tick(self, now: datetime) -> None:
@@ -2907,6 +2981,32 @@ class Armer:
 
 
 # -- PS-136 helpers -------------------------------------------------------------
+
+def _nina_item_status(state, norm_name: str) -> str | None:
+    """PS-152: the Status (upper case) of the first item in a ninaAPI
+    sequence tree whose _norm_item name is norm_name, else None."""
+    from photonscript.scheduler.sideload import _state_payload
+    found: list[str] = []
+
+    def walk(n):
+        if found:
+            return
+        if isinstance(n, list):
+            for x in n:
+                walk(x)
+            return
+        if not isinstance(n, dict):
+            return
+        if _norm_item(n.get("Name")) == norm_name:
+            found.append(str(n.get("Status", "")).upper())
+            return
+        for key in ("Items", "Conditions", "Triggers"):
+            v = n.get(key)
+            walk(v.get("$values") if isinstance(v, dict) else v)
+
+    walk(_state_payload(state))
+    return found[0] if found else None
+
 
 def _norm_item(name) -> str:
     """A NINA item name for matching: ninaAPI's '_Container' suffix off,

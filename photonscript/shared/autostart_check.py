@@ -32,9 +32,11 @@ from typing import Callable, Optional
 
 PASS, WARN, FAIL, SKIP, INFO = "pass", "warn", "fail", "skip", "info"
 
-# Same as photonscript.scheduler.armer.ACTIVE_STATES (a test keeps them equal);
-# copied so this module does not import the scheduler.
-ARMER_ACTIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR")
+# Same as photonscript.scheduler.armer.LIVE_STATES (a test keeps them equal);
+# copied so this module does not import the scheduler. PS-152: includes the
+# PS-136 WATCHING state (never kill the service under a watched night).
+ARMER_ACTIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR",
+                "WATCHING")
 
 DEFAULT_TAILSCALE_URL = "https://teles-feb25.lobster-bleak.ts.net"
 WINLOGON_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"

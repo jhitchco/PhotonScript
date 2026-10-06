@@ -44,6 +44,10 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
 # rename a container here and the mapping follows.
 TARGET_IMAGING_SUFFIX = " imaging (repeats while safe and up)"
 TARGET_FOCUS_CAL_SUFFIX = " focus calibration AFs"
+# PS-144: the armer's dusk calibration target (and the standalone download's
+# night) is "Focus calibration <field>" (PS-152: a test target, see
+# shared/target_names.is_test_target).
+FOCUS_CAL_PREFIX = "Focus calibration "
 # PS-84: the unguided tracking test. Its DeepSkyObjectContainer (and so every
 # sub's OBJECT) is "Tracking test <field>", a name that never matches a
 # project, so test subs stay out of goal sync and project stacks. The ladder
@@ -1492,7 +1496,7 @@ def generate_focus_calibration_json(name: str = "NGC 7789",
                            dec_degrees=dec_degrees, focus_calibration=True,
                            focus_calibration_rounds=rounds,
                            focus_calibration_filters=list(filters or []))
-    seq = build_sequence_for_night(f"Focus calibration {name}", [t])
+    seq = build_sequence_for_night(f"{FOCUS_CAL_PREFIX}{name}", [t])
     return generate_nina_json(seq)
 
 

@@ -365,6 +365,17 @@ and AF. A standalone download (park and hold after the sweep) is
 `GET /api/optics-test/sequence`; `GET /api/optics-test/target` shows the
 field it would pick.
 
+Test subs (PS-152): tracking-test, optics-test and focus-calibration subs
+(`target_names.is_test_target`) are recorded with `"test": true` but never
+count toward or reset the consecutive-reject alert, never feed the night
+medians (`hfr_rel` / `bg_rel` skip for them) or the QA baselines, and stay
+out of the night score (`report.test_hours` shows their time). The PS-144
+dusk focus calibration runs once per night: the armer records it at the
+dispatch (`armer_state.json` `focus_cal`), marks it done when NINA shows its
+container FINISHED (event `focus_calibration` / `done`), and no re-dispatch
+that night carries it again. `focus_seeds.harvest_night` skips filters with
+a `focus_filter_offsets` entry (their FOCPOS is the L AF plus the offset).
+
 Config (System page, Quality group): `optics_test_offsets` ("-300,-150,150,300"
 EAF steps; 0 is always shot first), `optics_test_filters` ("L"; "L,Ha" adds a
 narrowband pass after the Ha focus offset), `optics_test_exposure_s` (45),

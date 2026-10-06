@@ -589,6 +589,9 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "time": hdr.get("DATE-OBS", ""),
         "target": target,
         "filter": flt,
+        # PS-152: a test / calibration sub, kept out of medians and score
+        **({"test": True} if qa_rules.is_test_record({"target": target})
+           else {}),
         "exp_s": float(hdr.get("EXPTIME", 0)),
         "ccd_temp": hdr.get("CCD-TEMP"),
         "set_temp": hdr.get("SET-TEMP"),
@@ -2532,12 +2535,13 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
                                        s_.get("file", ""), plan_names)
     score_legacy_on_read(config, subs)
     _ecc_display_sqrt(subs)
+    _flag_test_subs(subs)   # PS-152
 
     planned, table = _plan_vs_actual(plan, subs)
     cal_tonight, report = _cached_night_extras(config, date, len(subs))
     table += _calibration_rows(cal_tonight)
 
-    accepted = sum(1 for s in subs if s.get("passed_qa"))
+    accepted = sum(1 for s in subs if s.get("passed_qa") and not s.get("test"))
     total_planned = sum(planned.values())
     # the honest funnel
     from photonscript.shared.astronomy import get_twilight_times
@@ -2582,6 +2586,7 @@ def review_summary(config, date: str) -> dict:
 def _plan_vs_actual(plan, subs: list[dict]) -> tuple[dict, list]:
     """Plan vs actual per rig/target/filter (rig separates the two scopes):
     (planned counts, table rows)."""
+    from photonscript.shared.target_names import is_test_target
     planned: dict[tuple, int] = {}
     if plan:
         for t in plan["targets"]:
@@ -2618,6 +2623,8 @@ def _plan_vs_actual(plan, subs: list[dict]) -> tuple[dict, list]:
             "median_hfr": med(a.get("hfrs", [])),
             "median_ecc": med(a.get("eccs", [])),
             "median_background": med(a.get("bgs", [])),
+            # PS-152: a test / calibration row (tracking / optics test)
+            **({"test": True} if is_test_target(key[1]) else {}),
         })
     return planned, table
 
@@ -2635,8 +2642,22 @@ def _calibration_rows(cal_tonight: dict) -> list[dict]:
     return rows
 
 
+def _flag_test_subs(subs: list[dict]) -> None:
+    """PS-152: mark tracking-test, optics-test and focus-calibration subs
+    "test": True (records written before the flag existed included)."""
+    from photonscript.shared import qa_rules
+    for s in subs:
+        if qa_rules.is_test_record(s):
+            s["test"] = True
+
+
 def _night_detail_rest(config, date, plan, status, subs, planned, table,
                        report, accepted, total_planned, dark_h) -> dict:
+    # PS-152: test subs are listed but are not imaging: they stay out of the
+    # shutter / accepted hours and so out of the night score (keep rate,
+    # utilization); their time is reported as test_hours
+    test_h = sum(s.get("exp_s") or 0 for s in subs if s.get("test")) / 3600
+    subs_all, subs = subs, [s for s in subs if not s.get("test")]
     light_h = sum(s.get("exp_s") or 0 for s in subs) / 3600
     accepted_h = sum(s.get("exp_s") or 0 for s in subs
                      if s.get("passed_qa")) / 3600
@@ -2670,6 +2691,7 @@ def _night_detail_rest(config, date, plan, status, subs, planned, table,
             "dark_hours": round(dark_h, 1),
             "light_hours": round(light_h, 1),
             "accepted_hours": round(accepted_h, 1),
+            "test_hours": round(test_h, 1),   # PS-152
             "safe_hours": report.safe_hours,
             "shutter_hours": report.shutter_hours,
             "integrating_hours": report.integrating_hours,
@@ -2677,7 +2699,7 @@ def _night_detail_rest(config, date, plan, status, subs, planned, table,
             "photon_efficiency_pct": round(report.photon_efficiency_pct),
         },
         "table": table,
-        "subs": subs,
+        "subs": subs_all,
         "calibration": calibration_inventory(config, date),
         "phases": _phase_stats(config, date),
         "score": score,
