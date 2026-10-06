@@ -82,7 +82,8 @@ def altitude(ra_hours: float, dec_deg: float, when_utc: datetime,
 
 def _candidates(projects: Iterable[Any] | None = None) -> list[dict]:
     """Active projects first (a field Jeremy cares about), then the seasonal
-    catalog. Each: name, ra_hours, dec_degrees, type."""
+    catalog (built-in plus the user catalog, PS-135). Each: name, ra_hours,
+    dec_degrees, type."""
     out, seen = [], set()
     for p in projects or []:
         t = getattr(p, "target", None) or p
@@ -95,11 +96,12 @@ def _candidates(projects: Iterable[Any] | None = None) -> list[dict]:
                         "dec_degrees": float(dec),
                         "type": str(getattr(t, "object_type", "") or ""),
                         "source": "project"})
-    try:
-        from photonscript.shared.astronomy import SEASONAL_TARGETS
+    try:  # PS-135: the catalog get_seasonal_targets reads (user catalog too)
+        from photonscript.shared.astronomy import catalog_entries
+        entries = catalog_entries()
     except Exception:  # noqa: BLE001
-        SEASONAL_TARGETS = []
-    for e in SEASONAL_TARGETS:
+        entries = []
+    for e in entries:
         if e["name"].lower() in seen:
             continue
         seen.add(e["name"].lower())
