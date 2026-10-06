@@ -181,7 +181,7 @@ def test_local_state_matches_aliases_and_queued(tmp_path):
 class Fakes:
     def __init__(self, cands, *, pi=(), down=False):
         self.cands, self.pi, self.down = cands, list(pi), down
-        self.runs, self.posts = [], []
+        self.runs, self.posts, self.marks = [], [], []
 
     def get(self, url):
         if self.down:
@@ -190,6 +190,9 @@ class Fakes:
         return {"candidates": self.cands, "thresholds": THR}
 
     def post(self, url, body, timeout):
+        if url.endswith("/api/integrations/processing"):     # PS-142 notice
+            self.marks.append((body["campaign"], body["rig"], body["state"]))
+            return 200, {"ok": True}
         self.posts.append(body["run"])
         return 200, {"ok": True, "version": body["version"]}
 
@@ -214,6 +217,8 @@ def test_cycle_runs_one_integrate_and_posts_its_ledger(tmp_path):
                       pi_running=lambda: [], echo=lambda s: None, now=NOW)
     assert len(fk.runs) == 1 and fk.runs[0][2].startswith("goal met")
     assert out["ran"]["posted"] and fk.posts == ["new_run"]
+    assert fk.marks == [("Andromeda Galaxy", "piggyback", "start"),      # PS-142
+                        ("Andromeda Galaxy", "piggyback", "end")]
     assert L.load(o.staging_root / "new_run" / "ledger.json").reported
     assert not (o.staging_root / watch.LOCK_NAME).exists()          # lock released
 

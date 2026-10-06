@@ -20,6 +20,9 @@ or let it loop):
      calibration is missing;
   5. run at most ONE `photonscript integrate` (pipeline.run) into a NEW
      staging folder, then post its ledger (queued when the scope is down).
+     PS-142: around the run it posts a processing notice (POST
+     /api/integrations/processing, state start / end; best effort) so the
+     goal's campaign status reads "Processing" while PixInsight works.
 
 The AstroBin side is the packet draft the pipeline writes; nothing uploads.
 --dry-run prints the decisions and runs nothing (no integrate, no post).
@@ -207,6 +210,21 @@ def release_lock(lock: Path | None) -> None:
 
 # --- one cycle -------------------------------------------------------------------
 
+def post_processing(o: WatchOptions, dec: Decision, state: str, *, post=report.http_post_json,
+                    echo=print) -> bool:
+    """PS-142: tell the scheduler a run of this goal + rig started / ended.
+    Best effort: a down scope or an older scheduler (404) only skips it."""
+    url = o.base_url.rstrip("/") + "/api/integrations/processing"
+    body = {"campaign": dec.target, "rig": dec.rig, "state": state,
+            "reason": dec.reason if state == "start" else ""}
+    try:
+        status, _b = post(url, body, report.DEFAULT_TIMEOUT_S)
+    except (OSError, ValueError) as e:
+        echo(f"  (processing notice not sent: {e})")
+        return False
+    return status == 200
+
+
 def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
           post=report.http_post_json, pi_running=runner.pixinsight_running,
           echo=print, now: datetime | None = None, alive=_pid_alive) -> dict:
@@ -253,19 +271,23 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
             out["would_run"] = {"target": chosen.target, "rig": chosen.rig}
             return out
         echo(f"== integrate {chosen.target} [{chosen.rig}]: {chosen.reason}")
+        post_processing(o, chosen, "start", post=post, echo=echo)
         try:
-            res = run_integrate(chosen.target, chosen.rig, trigger_of(chosen, thr))
-        except Exception:
-            record_failure(o.staging_root, chosen.target, chosen.rig)
-            raise
-        out["ran"] = {"target": chosen.target, "rig": chosen.rig, "run_dir": res.get("run_dir"),
-                      "ledger": res.get("ledger"),
-                      "ok": res.get("integration", {}).get("ok")}
-        if res.get("ledger"):
-            r = report.post_ledger(Path(res["ledger"]), o.base_url, post=post)
-            out["ran"]["posted"] = r["ok"]
-            echo(("  ledger posted: " + r.get("detail", "")) if r["ok"]
-                 else f"  WARNING: ledger queued, not posted ({r['detail']})")
+            try:
+                res = run_integrate(chosen.target, chosen.rig, trigger_of(chosen, thr))
+            except Exception:
+                record_failure(o.staging_root, chosen.target, chosen.rig)
+                raise
+            out["ran"] = {"target": chosen.target, "rig": chosen.rig,
+                          "run_dir": res.get("run_dir"), "ledger": res.get("ledger"),
+                          "ok": res.get("integration", {}).get("ok")}
+            if res.get("ledger"):
+                r = report.post_ledger(Path(res["ledger"]), o.base_url, post=post)
+                out["ran"]["posted"] = r["ok"]
+                echo(("  ledger posted: " + r.get("detail", "")) if r["ok"]
+                     else f"  WARNING: ledger queued, not posted ({r['detail']})")
+        finally:
+            post_processing(o, chosen, "end", post=post, echo=echo)
         return out
     finally:
         release_lock(lock)
