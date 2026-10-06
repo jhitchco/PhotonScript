@@ -583,6 +583,16 @@ and integration.
   = what the desktop still needs (`/rest/db/remoteneed`, grouped by folder).
   This drives the 4-state sub lifecycle on the runs page:
   review -> accepted (syncing) -> transferred -> rejected.
+- **Sync hygiene (PS-43, observe only):** `GET /api/sync/hygiene` = the whole
+  backlog by top-level folder (an hourly background census pages
+  remoteneed fully but keeps only counts; never while armed), each folder
+  tagged astro or other, Syncthing folder errors (e.g. OneDrive cloud
+  placeholders it cannot read) and a diagnosis. Shown on the dashboard sync
+  strip and the System page. `GET /api/sync/ignore-suggestion[?format=text]`
+  generates the ignore patterns for the non-astronomy folders (e.g.
+  `/OneDrive`) for review; it never applies them. To apply: Syncthing UI on
+  the scope PC, Folders > NINAShare > Edit > Ignore Patterns. Ignoring
+  deletes nothing; the paths just stop being offered to the desktop.
 - **Approve night** queues that night's accepted subs into the Library;
   **Reset library** (approved nights only) rebuilds it from scratch after
   bookkeeping changes.

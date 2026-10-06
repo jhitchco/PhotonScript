@@ -2201,6 +2201,15 @@ def api_sync_queue():
     out = sorted(groups.values(), key=lambda g: -g["bytes"])
     capped = bool(_remoteneed_cache.get("capped"))
     listed = len(entries)
+    # PS-43: the hourly background census (kicked by /api/sync/hygiene)
+    # pages the WHOLE backlog, counts only; when it is complete the folder
+    # breakdown is too.
+    from photonscript.scheduler import sync_hygiene as _sh
+    census = _sh._cache.get("census")
+    folders_from = "walk"
+    if census and census.get("complete"):
+        out, folders_from = _sh.queue_groups(census), "census"
+        listed = int(census.get("listed_files") or 0)
     need = _remoteneed_cache.get("need_items")
     # PS-75: the true total comes from /rest/db/completion; the folder
     # breakdown only covers the files the (capped) walk listed.
@@ -2209,11 +2218,14 @@ def api_sync_queue():
             "more_groups": max(0, len(out) - 20),
             "total_files": total,
             "listed_files": listed,
-            "partial": capped,
+            "partial": capped and folders_from != "census",
             "total_bytes": (_remoteneed_cache.get("need_bytes")
-                            if capped and _remoteneed_cache.get("need_bytes")
+                            if ((capped or folders_from == "census")
+                                and _remoteneed_cache.get("need_bytes"))
                             else sum(s for _, s in entries)),
-            "walked_at": _remoteneed_cache.get("t") or None}
+            "walked_at": _remoteneed_cache.get("t") or None,
+            "folders_from": folders_from,
+            "census_at": census.get("t") if census else None}
 
 
 @app.get("/api/calibration/health")
@@ -3018,6 +3030,8 @@ from photonscript.scheduler.routers import pause as _pause_router  # noqa: E402
 app.include_router(_pause_router.router)   # PS-64
 from photonscript.scheduler.routers import where as _where_router  # noqa: E402
 app.include_router(_where_router.router)   # PS-64
+from photonscript.scheduler.routers import sync as _sync_router  # noqa: E402
+app.include_router(_sync_router.router)   # PS-43
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

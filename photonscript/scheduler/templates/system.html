@@ -54,6 +54,13 @@
             <div class="bd" id="updStatus" style="margin-top:.4rem;"></div>
         </section>
 
+        <section class="panel" id="syncHygienePanel" style="margin-bottom:1.5rem;">
+            <h2>Desktop Sync Hygiene (PS-43)</h2>
+            <div class="bd" style="opacity:.75;margin-bottom:.4rem;">What the Syncthing backlog is made of, folder errors, and ignore patterns to review. Observe only: PhotonScript never changes Syncthing.
+                <button class="btn btn-secondary" type="button" onclick="window.loadSyncHygiene &amp;&amp; window.loadSyncHygiene()">Refresh</button></div>
+            <div class="sync-hygiene" data-mode="full"></div>
+        </section>
+
         <section class="panel" id="sysLoadPanel" style="margin-bottom:1.5rem;">
             <h2>Host Load</h2>
             <div class="bd" id="sysLoad">loading…</div>
@@ -257,6 +264,7 @@
             <div id="phd2Summary" class="bd">loading...</div>
         </section>
         <script src="/static/js/phd2_panels.js?v={{ version }}"></script>
+        <script src="/static/js/sync_hygiene_panel.js?v={{ version }}"></script>
         <script>PHD2.systemSummary('phd2Summary');</script>
 
         <section class="panel" style="margin-top:1.5rem;">
