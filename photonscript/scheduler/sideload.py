@@ -240,13 +240,16 @@ def splice_name(date: str, field: str, kept: list[str]) -> str:
 
 # ------------------------------------------------------------------------ lint
 
-def lint_companion(seq: dict, filter_wheel: bool | None = None):
+def lint_companion(seq: dict, filter_wheel: bool | None = None,
+                   settle_gate: bool | None = None):
     """Lint for the Piggy-600 companion (camera + focuser only). Errors: a
     warm or missing setpoint, missing $id / Parent links (PS-77), a light
     loop without its own Safety + Time condition, a stale focus seed, any
     mount / guiding instruction, or (PS-132) a flat without its SwitchFilter
     or a SwitchFilter selecting a filter on a rig without a wheel.
     filter_wheel None = the Piggy-600's (rigs.rig_has_filter_wheel).
+    settle_gate (PS-27): the settle-gate rule for the OSC light loop (None =
+    from the config, as in sequence_lint.lint).
     Returns a sequence_lint.LintResult."""
     from photonscript.scheduler import sequence_lint as sl
     from photonscript.shared.rigs import PIGGYBACK, rig_has_filter_wheel
@@ -266,6 +269,7 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None):
     sl._check_light_loop_guards(seq, r)
     sl._check_readout_mode(seq, r)   # PS-128
     sl._check_flat_filters(seq, r, filter_wheel)   # PS-132
+    sl._check_settle_gate(seq, r, settle_gate)   # PS-27
     mount = sorted({_short(d["$type"]) for frag in MOUNT_TYPES
                     for d in sl._find_type(seq, frag)})
     if mount:

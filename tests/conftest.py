@@ -17,3 +17,11 @@ def _load_validation_no_settle(monkeypatch):
     """PS-132: the post-load NINA validation check waits a few seconds for
     NINA to validate; no test should sleep for it."""
     monkeypatch.setenv("PS_NINA_LOAD_VALIDATION_SETTLE_S", "0")
+
+
+@pytest.fixture(autouse=True)
+def _settle_gate_off(monkeypatch):
+    """PS-27: like the cooler gate, pin the Piggy-600 settle gate off
+    (deploy\\settle-gate.cmd);
+    tests/test_scheduler/test_ps27_split_guard.py turns it on."""
+    monkeypatch.setenv("PS_PIGGYBACK_SETTLE_GATE", "false")

@@ -533,6 +533,41 @@ def cooler_gate_cmd(
     raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
 
 
+@app.command("settle-gate")
+def settle_gate_cmd(
+    label: str = typer.Option("", "--label", help="For the log"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA #2's ExternalScript "
+                                        "item (deploy\\settle-gate.cmd)"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-27: hold the Piggy-600's next OSC light until the RC16 mount is
+    still and PHD2 is not settling (POST /api/piggyback/settle-gate), at
+    most piggyback_settle_timeout_s. Always exits 0: the gate can delay a
+    sub, never skip one, and fails open when the service is down."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    try:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        timeout = float(getattr(cfg, "piggyback_settle_timeout_s", 90.0)) + 30
+    except Exception:  # noqa: BLE001
+        timeout = 120.0
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/piggyback/settle-gate?"
+            + urllib.parse.urlencode({"label": label}), data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+        print(f"settle gate{' (from NINA)' if from_nina else ''}: "
+              f"{rep.get('verdict')} after {rep.get('waited_s')} s - "
+              f"{rep.get('reason', '')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"settle gate not run ({e}); shooting anyway")
+    raise typer.Exit(0)
+
+
 @app.command()
 def report(
     date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),

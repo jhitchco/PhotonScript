@@ -331,6 +331,87 @@ def _check_cooler_gate(seq: dict, r: LintResult,
                               "holds another full timeout")
 
 
+def _settle_gate_wanted() -> tuple[bool, str | None]:
+    """PS-27: (gate on, script path when it should be in the OSC light loop
+    else None). (False, None) if the config can't be read."""
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        from photonscript.scheduler.split_guard import gate_enabled, gate_script
+        c = PhotonScriptConfig()
+        return gate_enabled(c), gate_script(c)
+    except Exception:
+        return False, None
+
+
+def _check_settle_gate(seq: dict, r: LintResult,
+                       expected: bool | None = None) -> None:
+    """PS-27 rule settle-gate: in the Piggy-600 companion, OSC_LIGHT_LOOP
+    must come right after the settle-gate ExternalScript in its parent, and
+    every LIGHT TakeExposure in it must be followed right away by the gate
+    (the gate sits after the light so the loop's dawn TimeCondition sees the
+    exposure next), so each OSC sub starts on a still mount. The gate must
+    never skip (ErrorBehavior 0). expected=None reads the config (on and the
+    script present on this machine); on with the script missing is a
+    warning. Sequences without an OSC light loop (the RC16) are not
+    checked."""
+    from photonscript.scheduler.calibration import OSC_LIGHT_LOOP_NAME
+    from photonscript.scheduler.split_guard import GATE_SCRIPT_TOKEN
+    def kids(node):
+        return [i for i in (node.get("Items") or {}).get("$values", [])
+                if isinstance(i, dict)] if isinstance(node.get("Items"), dict) else []
+
+    parents = [(d, k) for d in _walk_dicts(seq) for k, i in enumerate(kids(d))
+               if i.get("Name") == OSC_LIGHT_LOOP_NAME]
+    loops = [kids(d)[k] for d, k in parents]
+    if not loops:
+        return
+    on, script = _settle_gate_wanted()
+    if expected is None:
+        if on and script is None:
+            r.warn("settle-gate", "settle gate is on but its script was not "
+                                  "found on this machine: OSC lights do not "
+                                  "wait for a still mount tonight")
+        expected = script is not None
+    if not expected:
+        return
+
+    def is_gate(it):
+        return (isinstance(it, dict) and "ExternalScript" in it.get("$type", "")
+                and GATE_SCRIPT_TOKEN in str(it.get("Script", "")).lower())
+
+    ungated = skipping = 0
+    for parent, k in parents:
+        if not (k > 0 and is_gate(kids(parent)[k - 1])):
+            ungated += 1                       # first light of the loop
+    gates = [i for d in _walk_dicts(seq) for i in kids(d) if is_gate(i)]
+    skipping = sum(1 for g in gates if g.get("ErrorBehavior", 0) != 0)
+    for loop in loops:
+        items = kids(loop)
+        for k, it in enumerate(items):
+            if ("Imaging.TakeExposure" in it.get("$type", "")
+                    and str(it.get("ImageType", "LIGHT")).upper() == "LIGHT"
+                    and not (k + 1 < len(items) and is_gate(items[k + 1]))):
+                ungated += 1
+    if ungated:
+        r.error("settle-gate", f"{ungated} place(s) in {OSC_LIGHT_LOOP_NAME} "
+                "where an OSC light can start without passing the settle "
+                "gate (missing before the loop or after a light): it can "
+                "start while the RC16 mount moves")
+    if skipping:
+        r.error("settle-gate", f"{skipping} settle gate(s) with ErrorBehavior "
+                "other than 0: the gate must never skip a Piggy-600 light")
+
+
+def _walk_dicts(node):
+    if isinstance(node, dict):
+        yield node
+        for v in node.values():
+            yield from _walk_dicts(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _walk_dicts(v)
+
+
 def _force_cal_wanted() -> bool:
     """PS-72: does the config ask the night's first StartGuiding to force a
     PHD2 calibration? Defaults to False if the config can't be read."""
@@ -442,12 +523,15 @@ def _check_selftest(seq: dict, r: LintResult) -> None:
 def lint(seq: dict, guided: bool | None = None,
          unguided_dither: bool = False,
          cooler_gate: bool | None = None,
-         filter_wheel: bool = True) -> LintResult:
+         filter_wheel: bool = True,
+         settle_gate: bool | None = None) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content.
     unguided_dither (PS-66): an unguided run may carry active dithers (NINA
     Direct Guider); StartGuiding is still an error. cooler_gate (PS-61):
     require the gate before every light loop (None = from the config).
-    filter_wheel (PS-132): False for a rig without a wheel."""
+    filter_wheel (PS-132): False for a rig without a wheel.
+    settle_gate (PS-27): require the settle gate before every OSC light in
+    the Piggy-600 light loop (None = from the config)."""
     r = LintResult()
 
     if guided is None:
@@ -467,6 +551,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)
     _check_cooler_gate(seq, r, cooler_gate)
+    _check_settle_gate(seq, r, settle_gate)
     _check_readout_mode(seq, r)
     _check_flat_filters(seq, r, filter_wheel)   # PS-132
 

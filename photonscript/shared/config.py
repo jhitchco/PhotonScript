@@ -706,6 +706,28 @@ class PhotonScriptConfig(BaseSettings):
                                          # AF and lights, so the OSC does not shoot
                                          # while NINA #1 unparks, slews, focuses and
                                          # centers. Ends early at nautical dawn.
+    # PS-27 part 2 (scheduler/split_guard.py): the Piggy-600 never spends a
+    # whole sub on a mount move, and the RC16 keeps the timing (nothing here
+    # writes to NINA #1). Settle gate: before each OSC light NINA #2 runs
+    # deploy\settle-gate.cmd, which holds until the mount is not slewing,
+    # has not moved for piggyback_settle_still_s and PHD2 is not settling,
+    # at most piggyback_settle_timeout_s; it never skips a sub and fails
+    # open (NINA #1 unreadable, service down, script missing).
+    piggyback_settle_gate: bool = True
+    piggyback_settle_timeout_s: float = 90.0
+    piggyback_settle_still_s: float = 6.0
+    piggyback_settle_poll_s: float = 2.0
+    piggyback_settle_script: str = "C:\\astro\\PhotonScript\\deploy\\settle-gate.cmd"
+    piggyback_abort_on_move: bool = False  # abort NINA #2's current OSC light
+                                 # (ninaAPI camera/abort-exposure on NINA #2
+                                 # only) when the RC16 mount slews, flips or
+                                 # jumps. Off until a night shows NINA #2's
+                                 # sequencer recovers cleanly from it.
+    piggyback_abort_move_arcmin: float = 0.5  # a jump this big between mount
+                                 # polls is a move (an RC16 dither is ~2")
+    piggyback_split_alert_pct: float = 5.0  # the dawn "Night complete" push
+                                 # carries the Piggy-600 split rate; above
+                                 # this (%) it goes out at priority 1
     flexure_warn_arcsec_min: float = 0.5  # PS-96: flag a night when the Piggy-600
                                       # drifts this much faster than the RC16
                                       # ("/min; 0.5 = ~0.8 px per 120 s OSC sub).

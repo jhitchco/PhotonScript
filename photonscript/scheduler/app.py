@@ -815,6 +815,13 @@ _CONFIG_FIELDS = [
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
     ("piggyback_resume_grace_s", "PS_PIGGYBACK_RESUME_GRACE_S", "Piggyback resume hold after safe: confirm hold + this before AF/lights (s)", "Piggyback", "int", False, False),
+    ("piggyback_settle_gate", "PS_PIGGYBACK_SETTLE_GATE", "Piggy-600 settle gate (PS-27): before each OSC light, wait (bounded) until the RC16 mount is still and PHD2 is not settling; never skips, fails open", "Piggyback", "bool", False, False),
+    ("piggyback_settle_timeout_s", "PS_PIGGYBACK_SETTLE_TIMEOUT_S", "Settle gate: hold at most this long (s), then shoot anyway", "Piggyback", "float", False, False),
+    ("piggyback_settle_still_s", "PS_PIGGYBACK_SETTLE_STILL_S", "Settle gate: mount still this long (s) before an OSC light", "Piggyback", "float", False, False),
+    ("piggyback_settle_script", "PS_PIGGYBACK_SETTLE_SCRIPT", "Settle gate script NINA #2 runs (deploy\\settle-gate.cmd on the scope PC)", "Piggyback", "str", False, False),
+    ("piggyback_abort_on_move", "PS_PIGGYBACK_ABORT_ON_MOVE", "Abort the Piggy-600's current OSC light when the RC16 mount slews / flips / jumps (NINA #2 only; off until night-tested)", "Piggyback", "bool", False, False),
+    ("piggyback_abort_move_arcmin", "PS_PIGGYBACK_ABORT_MOVE_ARCMIN", "Abort on move / settle gate: a mount jump above this (arcmin) between polls is a move", "Piggyback", "float", False, False),
+    ("piggyback_split_alert_pct", "PS_PIGGYBACK_SPLIT_ALERT_PCT", "Piggy-600 split rate (%) above which the dawn Night complete push goes out at priority 1", "Piggyback", "float", False, False),
     ("flexure_warn_arcsec_min", "PS_FLEXURE_WARN_ARCSEC_MIN", "Flexure report: flag Piggy drift above the RC16's by this (\"/min, PS-96)", "Piggyback", "float", False, False),
     ("flexure_solve_all", "PS_FLEXURE_SOLVE_ALL", "Flexure report: plate-solve every Piggy sub (default: first/middle/last per block)", "Piggyback", "bool", False, False),
 ]
@@ -1968,6 +1975,12 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("flexure report skipped for %s: %s", date, e)
         d["flexure"] = {"ok": False, "note": f"flexure report failed: {e}"}
+    try:  # PS-27: Piggy-600 split-pointing rate (straddled / attempted)
+        from photonscript.scheduler.split_guard import night_split_summary
+        d["split_pointing"] = night_split_summary(get_config(), date,
+                                                  subs=d.get("subs"))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("split summary skipped for %s: %s", date, e)
     return d
 
 
@@ -2996,6 +3009,8 @@ from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E
 app.include_router(_catalog_router.router)
 from photonscript.scheduler.routers import watch as _watch_router  # noqa: E402
 app.include_router(_watch_router.router)
+from photonscript.scheduler.routers import split_guard as _split_guard_router  # noqa: E402
+app.include_router(_split_guard_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

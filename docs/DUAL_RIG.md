@@ -495,3 +495,29 @@ The after-the-fact backstop for Phase 4 (PS-25's resume debounce keeps NINA
   swaps only that scorecard row and never touches a human verdict; it logs
   the night's split rate (straddled / judged). Older nights:
   `photonscript slew-backfill --since D [--dry-run]`.
+
+### 9.10 Live split guard: settle gate and abort on move (PS-27 part 2)
+The live side of Phase 4 (section 9.9 is the after-the-fact backstop). The
+RC16 keeps full control of the timing; everything acts on NINA #2.
+- **Motion tracker** (`shared/mount_motion.py`, in memory): fed by the RC16
+  agent's 5 s mount poll, the gate's own 2 s polls (read-only GET of NINA
+  #1 `/equipment/mount/info`) and PHD2 SettleBegin / SettleDone.
+- **Settle gate** (`scheduler/split_guard.py`, `POST
+  /api/piggyback/settle-gate`, `deploy\settle-gate.cmd`): before
+  OSC_LIGHT_LOOP and after each OSC light (after, not before, so the loop's
+  dawn TimeCondition sees the 120 s exposure next instead of a 0 s script
+  and does not spin through the last minutes of night). Holds while the
+  mount slews, moved less than `PS_PIGGYBACK_SETTLE_STILL_S` ago, or PHD2
+  settles; at most `PS_PIGGYBACK_SETTLE_TIMEOUT_S`. Never skips a sub.
+- **Abort on move** (`PS_PIGGYBACK_ABORT_ON_MOVE`, default off): only when
+  NINA #2's `/sequence/json` shows OSC_LIGHT_LOOP running an exposure item
+  with no refocus trigger running and its camera `IsExposing`; one abort per
+  move (60 s debounce); dithers never abort. Route verified in the ninaAPI
+  V2 Camera controller; what NINA #2's sequencer does after an outside
+  abort is the night test.
+- **Split rate** per night: runs page and `GET /api/runs/{date}/split`.
+  The dawn "Night complete" Pushover adds a line such as `Piggy split 3.1%
+  (2 of 64; 4 saved by gate)` (skipped when the Piggy took no lights); over
+  `PS_PIGGYBACK_SPLIT_ALERT_PCT` (default 5.0) the push goes out at
+  priority 1 with a hint (check RC16 dither/center cadence; consider
+  `PS_PIGGYBACK_ABORT_ON_MOVE`).
