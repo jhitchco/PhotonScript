@@ -159,6 +159,29 @@ class PhotonScriptConfig(BaseSettings):
     calibration_owed_lookback_days: int = 60  # PS-122: the Calibration owed
                                  # view reads lights of active goals from the
                                  # last this many nights (report only)
+    # --- Integration ledger + watcher (PS-33 / PS-31, desktop integrate) ---
+    # Scope side: the thresholds the desktop watcher reads from
+    # GET /api/integrations/candidates (editable on the System page).
+    integrate_watch_rigs: str = "piggyback"  # rigs the watcher integrates
+                                 # (comma list: piggyback, rc16)
+    integrate_watch_new_data_h: float = 1.0  # re-integrate a goal once this
+                                 # many approved hours arrived since the
+                                 # last ledger
+    integrate_watch_first_h: float = 0.0  # first integration of a goal once
+                                 # this many approved hours exist; 0 = only
+                                 # when the rig's goal is met
+    integrate_watch_min_interval_h: float = 12.0  # never re-run a goal + rig
+                                 # sooner than this after its last run
+    integrate_watch_require_calibration: bool = False  # True = wait while
+                                 # readiness says darks / flats / bias are
+                                 # missing; False = integrate anyway, the
+                                 # ledger records what was missing
+    # Desktop side (repo .env on the desktop): where ledgers go and runs land.
+    integration_report_url: str = "http://100.94.189.77:8100"  # scheduler the
+                                 # desktop posts ledgers to and polls; "" =
+                                 # ledgers stay queued in their run folders
+    integration_staging_root: str = ""  # run folders; "" = D:/Astrophotography/Staging
+                                 # if it exists, else ~/Astrophotography/Staging
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as

@@ -616,6 +616,13 @@ _CONFIG_FIELDS = [
     ("calibration_capture_budget_min", "PS_CALIBRATION_CAPTURE_BUDGET_MIN", "Calibration capture job time budget (min, cooling included)", "Imaging", "float", False, False),
     ("calibration_autofill", "PS_CALIBRATION_AUTOFILL", "Daytime calibration auto-fill (sun up, armer idle, once a day per rig; never at night)", "Imaging", "bool", False, False),
     ("calibration_owed_lookback_days", "PS_CALIBRATION_OWED_LOOKBACK_DAYS", "Calibration owed: lights lookback (nights, report only)", "Imaging", "int", False, False),
+    ("integrate_watch_rigs", "PS_INTEGRATE_WATCH_RIGS", "Integrate watcher (PS-31, desktop): rigs it integrates (comma list: piggyback, rc16)", "Integration", "str", False, False),
+    ("integrate_watch_new_data_h", "PS_INTEGRATE_WATCH_NEW_DATA_H", "Integrate watcher: re-integrate after this many new approved hours", "Integration", "float", False, False),
+    ("integrate_watch_first_h", "PS_INTEGRATE_WATCH_FIRST_H", "Integrate watcher: first integration at this many approved hours (0 = only when the goal is met)", "Integration", "float", False, False),
+    ("integrate_watch_min_interval_h", "PS_INTEGRATE_WATCH_MIN_INTERVAL_H", "Integrate watcher: at least this many hours between runs of one goal + rig", "Integration", "float", False, False),
+    ("integrate_watch_require_calibration", "PS_INTEGRATE_WATCH_REQUIRE_CALIBRATION", "Integrate watcher: wait while darks / flats / bias are missing (off = integrate, the ledger notes it)", "Integration", "bool", False, False),
+    ("integration_report_url", "PS_INTEGRATION_REPORT_URL", "Desktop .env: scheduler URL the integrator posts ledgers to and polls", "Integration", "str", False, False),
+    ("integration_staging_root", "PS_INTEGRATION_STAGING_ROOT", "Desktop .env: staging root for integrate runs (blank = D:/Astrophotography/Staging)", "Integration", "str", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
@@ -2972,6 +2979,8 @@ from photonscript.scheduler.routers import viewer as _viewer_router  # noqa: E40
 app.include_router(_viewer_router.router)
 from photonscript.scheduler.routers import focus as _focus_router  # noqa: E402
 app.include_router(_focus_router.router)
+from photonscript.scheduler.routers import integrations as _integrations_router  # noqa: E402
+app.include_router(_integrations_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

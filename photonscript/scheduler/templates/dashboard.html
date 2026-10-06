@@ -195,6 +195,7 @@
     <script src="/static/js/sideload_panel.js"></script>
     <script src="/static/js/auto_arm_panel.js"></script>
     <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
+    <script src="/static/js/integrations.js?v={{ version }}"></script>
 
     <script>
     const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
@@ -1454,9 +1455,12 @@
                        '</a> <span style="opacity:.7">' + nightCounts(n) + '</span>')
                        .join(' · ') + '</div>'
                  : '') +
+                // PS-33: the desktop integrator's ledger (latest version, new data since)
+                '<div id="integ-' + p.id + '" style="font-size:.76rem;margin-top:.35rem;"></div>' +
                 '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
                 '</div>';
         }).join('');
+        if (window.Integrations) Integrations.load().then(m => Integrations.fill(m, 'integ-'));
 
         // goal input: commit on Enter/blur
         document.querySelectorAll('input[data-goal]').forEach(inp => {

@@ -65,6 +65,32 @@ class Options:
     tz: str = "America/Denver"
     rig_label: str = ""
     thresholds: star_qa.Thresholds = field(default_factory=star_qa.Thresholds)
+    trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
+
+
+def default_staging_root(cfg=None) -> Path:
+    """integration_staging_root, else D:/Astrophotography/Staging when it
+    exists, else ~/Astrophotography/Staging."""
+    root = str(getattr(cfg, "integration_staging_root", "") or "") if cfg is not None else ""
+    if root:
+        return Path(root)
+    d = Path(r"D:\Astrophotography\Staging")
+    return d if d.is_dir() else Path.home() / "Astrophotography" / "Staging"
+
+
+def config_options(cfg, rig: str) -> dict:
+    """Options fields that come from the PhotonScript config (site, readout,
+    labels): shared by `photonscript integrate` and integrate-watch."""
+    from photonscript.shared.rigs import rig_label, rig_readout
+    return dict(
+        library=Path(getattr(cfg, "desktop_library_dir", "") or
+                     (Path.home() / "ninashare" / "Library")),
+        default_readout=rig_readout(cfg, rig),
+        bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
+        rig_label=rig_label(cfg, rig),
+        site={"name": cfg.observatory_name, "lat": round(cfg.observatory_lat, 3),
+              "lon": round(cfg.observatory_lon, 3), "elev": int(cfg.observatory_elev),
+              "bortle": cfg.observatory_bortle})
 
 
 def safe_name(s: str) -> str:
@@ -418,8 +444,8 @@ def run(o: Options, echo=print) -> dict:
         ab = run_dir / "astrobin"
         ab.mkdir(exist_ok=True)
         tname = safe_name(o.target)
-        (ab / f"{tname}_{stamp}_astrobin_acquisition.csv").write_bytes(
-            astrobin.csv_text(rows_csv).encode("ascii"))
+        csv_path = ab / f"{tname}_{stamp}_astrobin_acquisition.csv"
+        csv_path.write_bytes(astrobin.csv_text(rows_csv).encode("ascii"))
         issues = []
         if not any(fc.frames for fc in plan.flats.values()):
             issues.append("No flats: vignetting and dust shadows remain.")
@@ -463,8 +489,8 @@ def run(o: Options, echo=print) -> dict:
             "timing": [(r[0], r[3]) for r in timer.rows],
             "known_issues": issues,
         }
-        (ab / f"{tname}_{stamp}_astrobin_packet.md").write_bytes(
-            astrobin.packet_md(info).encode("ascii"))
+        md_path = ab / f"{tname}_{stamp}_astrobin_packet.md"
+        md_path.write_bytes(astrobin.packet_md(info).encode("ascii"))
     timer.flush()
     man = manifest.read(run_dir)
     man["timing"] = timer.rows
@@ -472,5 +498,17 @@ def run(o: Options, echo=print) -> dict:
     man["dropped_in_pixinsight"] = sorted(dropped)
     manifest.write(run_dir, man)
     result["timing"] = timer.rows
+
+    # PS-33: the machine half of the integrator ledger (report.py posts it)
+    from photonscript.integration import ledger as ledger_writer
+    led = ledger_writer.build(
+        target=o.target, rig=o.rig, run_dir=run_dir, options=run_info["options"],
+        selected=sel.lights, staged=lights, integrated=integrated, dropped=dropped,
+        qa=qa_summary, calibration=calib_summary, integration=result.get("integration"),
+        finish=result.get("finish"), timing=timer.rows, packet=str(md_path), csv=str(csv_path),
+        final=final_img, trigger=o.trigger or None)
+    result["ledger"] = str(ledger_writer.write_for_run(led, run_dir, o.staging_root))
+    result["ledger_version"] = led.version
+    result["hours_integrated"] = round(led.hours, 3)
     echo(f"done: {run_dir}")
     return result
