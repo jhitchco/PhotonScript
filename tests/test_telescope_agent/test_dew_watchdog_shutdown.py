@@ -58,7 +58,10 @@ def _agent(tmp_path, monkeypatch, state):
     a._alerted = set()
     a._cool_bad_since = None
     a._cool_fix_attempts = 0
-    a._dew_last_set = 0.0
+    # "never set": 0.0 read as "set at boot", so on a PC up for less than
+    # the 900 s re-assert window the heater was skipped (failed right after
+    # a Windows-update reboot, 2026-10-06).
+    a._dew_last_set = float("-inf")
     a._dew_api_broken = False
     if state is not None:
         (tmp_path / "armer_state.json").write_text(json.dumps({"state": state}))
