@@ -516,3 +516,8 @@ RC16 keeps full control of the timing; everything acts on NINA #2.
   V2 Camera controller; what NINA #2's sequencer does after an outside
   abort is the night test.
 - **Split rate** per night: runs page and `GET /api/runs/{date}/split`.
+  The dawn "Night complete" Pushover adds a line such as `Piggy split 3.1%
+  (2 of 64; 4 saved by gate)` (skipped when the Piggy took no lights); over
+  `PS_PIGGYBACK_SPLIT_ALERT_PCT` (default 5.0) the push goes out at
+  priority 1 with a hint (check RC16 dither/center cadence; consider
+  `PS_PIGGYBACK_ABORT_ON_MOVE`).

@@ -34,6 +34,8 @@ or holds the RC16 sequence. Two pieces, both on NINA #2's side:
 night_split_summary() is the per-night split-pointing rate for the run
 page (PS-27 item 7): PS-13 straddlers / (judged Piggy-600 lights + aborted
 subs), with the aborts and the gate holds that kept a sub off a move.
+morning_split_note() puts that rate into the armer's "Night complete"
+Pushover; over piggyback_split_alert_pct the push goes out at priority 1.
 """
 
 from __future__ import annotations
@@ -373,3 +375,50 @@ def night_split_summary(cfg, date: str, subs: list[dict] | None = None) -> dict:
             "passed": None if rate is None else rate < PASS_LINE,
             "saves": saves, "holds": holds, "timeouts": timeouts,
             "gate": gate_enabled(cfg), "abort": abort_enabled(cfg)}
+
+
+ALERT_HINT = "check RC16 dither/center cadence"
+ABORT_HINT = "consider PS_PIGGYBACK_ABORT_ON_MOVE"
+
+
+def split_alert_pct(cfg) -> float:
+    try:
+        return float(getattr(cfg, "piggyback_split_alert_pct", 5.0))
+    except (TypeError, ValueError):
+        return 5.0
+
+
+def split_push_line(cfg, s: dict) -> tuple[str | None, bool]:
+    """The morning-push line for one night_split_summary(), and whether it
+    is over piggyback_split_alert_pct. (None, False) when the Piggy-600 took
+    no lights (and aborted none), e.g. a night without the companion."""
+    lights, attempted = int(s.get("lights") or 0), int(s.get("attempted") or 0)
+    if not lights and not attempted:
+        return None, False
+    if not attempted:
+        return f"Piggy split n/a ({lights} lights, none judged)", False
+    straddled = int(s.get("straddled") or 0)
+    pct = 100.0 * straddled / attempted
+    parts = [f"{straddled} of {attempted}"]
+    if s.get("aborted"):
+        parts.append(f"{int(s['aborted'])} aborted")
+    if s.get("gate") or s.get("saves"):
+        parts.append(f"{int(s.get('saves') or 0)} saved by gate")
+    line = f"Piggy split {pct:.1f}% ({'; '.join(parts)})"
+    limit = split_alert_pct(cfg)
+    if pct <= limit:
+        return line, False
+    hint = ALERT_HINT if s.get("abort") else f"{ALERT_HINT}; {ABORT_HINT}"
+    return f"{line}. Over {limit:g}%: {hint}.", True
+
+
+def morning_split_note(cfg, date: str | None) -> tuple[str | None, bool]:
+    """split_push_line() for a night, for the dawn "Night complete" push.
+    Never raises: (None, False) on any error or without a night."""
+    if not date:
+        return None, False
+    try:
+        return split_push_line(cfg, night_split_summary(cfg, date))
+    except Exception as e:  # noqa: BLE001 - never block the morning push
+        logger.debug("split push line skipped for %s: %s", date, e)
+        return None, False

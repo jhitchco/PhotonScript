@@ -809,6 +809,7 @@ _CONFIG_FIELDS = [
     ("piggyback_settle_script", "PS_PIGGYBACK_SETTLE_SCRIPT", "Settle gate script NINA #2 runs (deploy\\settle-gate.cmd on the scope PC)", "Piggyback", "str", False, False),
     ("piggyback_abort_on_move", "PS_PIGGYBACK_ABORT_ON_MOVE", "Abort the Piggy-600's current OSC light when the RC16 mount slews / flips / jumps (NINA #2 only; off until night-tested)", "Piggyback", "bool", False, False),
     ("piggyback_abort_move_arcmin", "PS_PIGGYBACK_ABORT_MOVE_ARCMIN", "Abort on move / settle gate: a mount jump above this (arcmin) between polls is a move", "Piggyback", "float", False, False),
+    ("piggyback_split_alert_pct", "PS_PIGGYBACK_SPLIT_ALERT_PCT", "Piggy-600 split rate (%) above which the dawn Night complete push goes out at priority 1", "Piggyback", "float", False, False),
     ("flexure_warn_arcsec_min", "PS_FLEXURE_WARN_ARCSEC_MIN", "Flexure report: flag Piggy drift above the RC16's by this (\"/min, PS-96)", "Piggyback", "float", False, False),
     ("flexure_solve_all", "PS_FLEXURE_SOLVE_ALL", "Flexure report: plate-solve every Piggy sub (default: first/middle/last per block)", "Piggyback", "bool", False, False),
 ]

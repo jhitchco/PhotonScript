@@ -580,10 +580,12 @@ def test_config_defaults_and_system_fields(monkeypatch):
     assert c.piggyback_settle_gate is True and c.piggyback_abort_on_move is False
     assert (c.piggyback_settle_timeout_s, c.piggyback_settle_still_s,
             c.piggyback_abort_move_arcmin) == (90.0, 6.0, 0.5)
+    assert c.piggyback_split_alert_pct == 5.0
     by_attr = {f[0]: f for f in _CONFIG_FIELDS}
     for k in ("piggyback_settle_gate", "piggyback_settle_timeout_s",
               "piggyback_settle_still_s", "piggyback_settle_script",
-              "piggyback_abort_on_move", "piggyback_abort_move_arcmin"):
+              "piggyback_abort_on_move", "piggyback_abort_move_arcmin",
+              "piggyback_split_alert_pct"):
         assert by_attr[k][1] == "PS_" + k.upper() and by_attr[k][3] == "Piggyback"
 
 
@@ -640,3 +642,99 @@ def test_rc16_agent_feeds_phd2_settling(tmp_path, monkeypatch):
     ag.phd2._settling = False
     asyncio.run(ag._on_guiding_update(GuidingMetrics()))
     assert tr.settling is False
+
+
+# --- the split rate in the dawn "Night complete" push ------------------------------------------
+
+def _summary(**kw):
+    base = {"lights": 64, "judged": 64, "straddled": 2, "aborted": 0,
+            "attempted": 64, "saves": 4, "gate": True, "abort": False}
+    base.update(kw)
+    return base
+
+
+def test_split_push_line_under_threshold(tmp_path):
+    line, alert = sg.split_push_line(_cfg(tmp_path), _summary())
+    assert line == "Piggy split 3.1% (2 of 64; 4 saved by gate)" and alert is False
+    line, _ = sg.split_push_line(_cfg(tmp_path), _summary(
+        straddled=1, aborted=3, attempted=67, gate=False, saves=0))
+    assert line == "Piggy split 1.5% (1 of 67; 3 aborted)"
+
+
+def test_split_push_line_over_threshold_alerts_with_hint(tmp_path):
+    line, alert = sg.split_push_line(_cfg(tmp_path), _summary(straddled=5))
+    assert alert is True and line.startswith("Piggy split 7.8% (5 of 64;")
+    assert "Over 5%: check RC16 dither/center cadence" in line
+    assert "PS_PIGGYBACK_ABORT_ON_MOVE" in line
+    # abort already on: only the cadence hint
+    line, alert = sg.split_push_line(_cfg(tmp_path), _summary(straddled=5, abort=True))
+    assert alert is True and "ABORT_ON_MOVE" not in line
+    # the threshold is the config key, and exactly at it is not over
+    cfg = _cfg(tmp_path, piggyback_split_alert_pct=10.0)
+    assert sg.split_push_line(cfg, _summary(straddled=5))[1] is False
+    assert sg.split_push_line(_cfg(tmp_path), _summary(
+        straddled=1, attempted=20, lights=20))[1] is False   # 5.0%: not over
+    assert all(ord(ch) < 128 for ch in line)
+
+
+def test_split_push_line_skips_a_night_without_piggy_lights(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert sg.split_push_line(cfg, sg.night_split_summary(
+        cfg, "2026-10-07", subs=[{"rig": "rc16", "slew_overlap_s": 9.0}])) == (None, False)
+    line, alert = sg.split_push_line(cfg, _summary(lights=3, judged=0, straddled=0,
+                                                   attempted=0))
+    assert line == "Piggy split n/a (3 lights, none judged)" and alert is False
+
+
+def test_morning_split_note_never_raises(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    assert sg.morning_split_note(cfg, None) == (None, False)
+
+    def boom(*a, **k):
+        raise RuntimeError("bad night")
+    monkeypatch.setattr(sg, "night_split_summary", boom)
+    assert sg.morning_split_note(cfg, "2026-10-06") == (None, False)
+
+
+def _complete_armer(tmp_path, monkeypatch, subs, **cfg_kw):
+    from photonscript.scheduler import armer as armer_mod
+    from photonscript.scheduler.armer import Armer
+    from photonscript.scheduler import runs
+    sent = []
+
+    async def _notify(cfg, msg, title="PhotonScript", priority=0, **kw):
+        sent.append((msg, title, priority))
+    monkeypatch.setattr(armer_mod, "notify", _notify)
+    monkeypatch.setattr(runs, "_load_subs", lambda cfg, date: subs)
+    a = Armer(_cfg(tmp_path, **cfg_kw))
+    a.plan = {"night_of": "2026-10-06"}
+    return a, sent
+
+
+@pytest.mark.asyncio
+async def test_night_complete_push_carries_the_split_line(tmp_path, monkeypatch):
+    subs = ([{"rig": "piggyback", "slew_overlap_s": 0.0}] * 62
+            + [{"rig": "piggyback", "slew_overlap_s": 30.0}] * 2)
+    a, sent = _complete_armer(tmp_path, monkeypatch, subs)
+    await a._notify_complete("Night complete: dawn shutdown ran.")
+    msg, title, prio = sent[0]
+    assert title == "PhotonScript complete" and prio == 0
+    assert msg == ("Night complete: dawn shutdown ran.\n"
+                   "Piggy split 3.1% (2 of 64; 0 saved by gate)")
+
+
+@pytest.mark.asyncio
+async def test_night_complete_push_priority_1_over_threshold(tmp_path, monkeypatch):
+    subs = ([{"rig": "piggyback", "slew_overlap_s": 0.0}] * 18
+            + [{"rig": "piggyback", "slew_overlap_s": 30.0}] * 2)
+    a, sent = _complete_armer(tmp_path, monkeypatch, subs)
+    await a._notify_complete("Night complete.")
+    msg, _, prio = sent[0]
+    assert prio == 1 and "Piggy split 10.0% (2 of 20" in msg and "Over 5%" in msg
+
+
+@pytest.mark.asyncio
+async def test_night_complete_push_without_piggy_lights_is_unchanged(tmp_path, monkeypatch):
+    a, sent = _complete_armer(tmp_path, monkeypatch, [{"rig": "rc16", "slew_overlap_s": 5.0}])
+    await a._notify_complete("Night complete.")
+    assert sent == [("Night complete.", "PhotonScript complete", 0)]

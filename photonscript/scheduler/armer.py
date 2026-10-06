@@ -583,6 +583,17 @@ class Armer:
         logger.warning("dawn shutdown (%s): %s", reason, report)
         return report
 
+    async def _notify_complete(self, msg: str) -> None:
+        """The dawn "Night complete" push. PS-27: adds the Piggy-600 split
+        rate when the Piggy took lights; over piggyback_split_alert_pct the
+        push goes out at priority 1 with a short hint."""
+        from photonscript.scheduler.split_guard import morning_split_note
+        line, alert = morning_split_note(self.config, self.plan.get("night_of"))
+        if line:
+            msg = f"{msg}\n{line}"
+        await notify(self.config, msg, title="PhotonScript complete",
+                     priority=1 if alert else 0)
+
     def _shutdown_verify_delay_s(self) -> int:
         """When to check that every cooler really went off after a warm.
 
@@ -1570,11 +1581,9 @@ class Armer:
                 self._set_state("COMPLETE", "Night over — running dawn shutdown")
                 report = await self.dawn_shutdown(reason=reason)
                 self._set_state("COMPLETE", f"Dawn shutdown: {report}")
-                await notify(self.config,
-                             f"Night complete: dawn shutdown ran ({reason}; "
-                             f"{report}). Cooler check in 5 min; morning "
-                             "report at 9.",
-                             title="PhotonScript complete")
+                await self._notify_complete(
+                    f"Night complete: dawn shutdown ran ({reason}; "
+                    f"{report}). Cooler check in 5 min; morning report at 9.")
                 return
             safe = await self._is_safe()
             self._record_safety(safe, now)
@@ -1612,10 +1621,9 @@ class Armer:
                                 "Dawn while paused — running dawn shutdown")
                 report = await self.dawn_shutdown(reason="dawn while paused")
                 self._set_state("COMPLETE", f"Dawn shutdown: {report}")
-                await notify(self.config,
-                             "Night ended while paused — dawn shutdown "
-                             f"stopped the night loop and shut down: {report}",
-                             title="PhotonScript complete")
+                await self._notify_complete(
+                    "Night ended while paused: dawn shutdown "
+                    f"stopped the night loop and shut down: {report}")
                 return
             safe = await self._is_safe()
             self._record_safety(safe, now)

@@ -716,6 +716,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # sequencer recovers cleanly from it.
     piggyback_abort_move_arcmin: float = 0.5  # a jump this big between mount
                                  # polls is a move (an RC16 dither is ~2")
+    piggyback_split_alert_pct: float = 5.0  # the dawn "Night complete" push
+                                 # carries the Piggy-600 split rate; above
+                                 # this (%) it goes out at priority 1
     flexure_warn_arcsec_min: float = 0.5  # PS-96: flag a night when the Piggy-600
                                       # drifts this much faster than the RC16
                                       # ("/min; 0.5 = ~0.8 px per 120 s OSC sub).
