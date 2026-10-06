@@ -664,13 +664,101 @@ def running_jobs() -> list[str]:
     return jobs
 
 
-def start_regrade_all(config, since: str = "") -> dict:
-    """Sequentially wipe + re-grade every night folder (>= since), one night
-    at a time so memory stays flat. Each night's backfill also re-runs
+# PS-141: re-graded records are written in batches (each write rewrites the
+# night's log under the lock; per sub it would be quadratic on a big night)
+REGRADE_FLUSH_N = 25
+
+
+def _file_key(f) -> str:
+    return str(f or "").replace("\\", "/")
+
+
+def _add_counts(acc: dict, more: dict) -> None:
+    for k, v in more.items():
+        acc[k] = acc.get(k, 0) + v
+
+
+def regrade_night(config, date: str, discard_manual: bool = False) -> dict:
+    """PS-141: re-measure and re-judge every sub of a night (POST
+    /api/runs/{date}/regrade, re-grade all, CLI `regrade`). Default: the
+    subs log stays, each record is replaced in place by its fresh grade and
+    a sub a person decided keeps the verdict (replace_graded).
+    discard_manual=True: the old wipe, the log is deleted (manual verdicts
+    included) and the night graded from scratch. Annotated thumbnails embed
+    star detections, so both drop them. Returns what was started (nothing,
+    and nothing deleted, while a grading job runs for the night)."""
+    p = runs_dir(config) / f"{date}_subs.jsonl"
+    n = len(_load_subs(config, date))
+    mode = "discard_manual" if discard_manual else "keep_manual"
+    if _backfill_state.get(date, {}).get("running"):
+        logger.info("Re-grade %s not started: a grading job is running", date)
+        return {"date": date, "records": n, "mode": mode, "started": False,
+                "detail": "a grading job is running for this night"}
+    if discard_manual:
+        logger.info("Re-grade %s (discard manual): deleting %d existing "
+                    "grades", date, n)
+        with subs_lock(config, date):
+            if p.exists():
+                p.unlink()
+            _invalidate_subs_cache(p)
+    else:
+        logger.info("Re-grade %s: %d existing grade(s) re-measured in place, "
+                    "manual verdicts kept", date, n)
+    th = Path(config.data_dir) / "thumbs" / date
+    if th.exists():
+        for f in th.glob("*.ann.png"):
+            f.unlink(missing_ok=True)
+    start_backfill(config, date, regrade=not discard_manual)
+    return {"date": date, "records": n, "mode": mode, "started": True}
+
+
+def replace_graded(config, date: str, fresh: dict[str, dict]) -> dict:
+    """PS-141: write re-graded records over the night's log in place, under
+    the night lock (edit_subs). `fresh` maps the record's file (_file_key:
+    either path separator) to its new grade (runs._fast_grade); the record
+    keeps its own `file` string. A record a person decided (_human_verdict, read
+    under the lock, so a verdict given while the sub was being measured
+    counts) keeps every qa_remeasure.MANUAL_FIELDS field; a target assigned
+    by hand (target_src "manual") is kept too. Every other field is the new
+    grade's: the post passes rebuild attribution, pointing and Library as a
+    wipe-and-backfill did. A record of a file not in `fresh` is left
+    alone."""
+    manual = _manual_fields()
+    out = {"replaced": 0, "manual_kept": 0}
+    if not fresh:
+        return out
+    with edit_subs(config, date) as subs:
+        for rec in subs:
+            new = fresh.get(_file_key(rec.get("file")))
+            if new is None:
+                continue
+            rep = copy.deepcopy(new)
+            rep["file"] = rec.get("file")
+            if _human_verdict(rec):
+                for k in manual:
+                    if k in rec:
+                        rep[k] = rec[k]
+                    else:
+                        rep.pop(k, None)
+                out["manual_kept"] += 1
+            if rec.get("target_src") == "manual":
+                rep["target"] = rec.get("target")
+                rep["target_src"] = "manual"
+            rec.clear()
+            rec.update(rep)
+            out["replaced"] += 1
+    return out
+
+
+def start_regrade_all(config, since: str = "",
+                      discard_manual: bool = False) -> dict:
+    """Sequentially re-grade every night folder (>= since), one night at a
+    time so memory stays flat. Each night's backfill also re-runs
     auto-identify and rebuilds its Library entries, so a metadata/grader fix
-    propagates everywhere with one click. NOTE: deletes manual review
-    verdicts for the affected nights - use 'since' to protect reviewed
-    history."""
+    propagates everywhere with one click. PS-141: every sub is re-measured
+    and re-judged in place and a person's verdict is kept (regrade_night);
+    discard_manual=True is the old wipe (deletes the subs logs, manual
+    review verdicts included)."""
     import re as _re
     import threading
     import time
@@ -682,7 +770,8 @@ def start_regrade_all(config, since: str = "") -> dict:
                    if d.is_dir() and _re.match(r"^\d{4}-\d{2}-\d{2}$", d.name)
                    and d.name >= (since or ""))
     _regrade_all.update(running=True, total=len(dates), done=0,
-                        current=None, since=since, last_error=None)
+                        current=None, since=since, last_error=None,
+                        discard_manual=bool(discard_manual))
     logger.info("Re-grade ALL: %d nights (since %s)", len(dates),
                 since or "beginning")
 
@@ -691,14 +780,9 @@ def start_regrade_all(config, since: str = "") -> dict:
             for d in dates:
                 _regrade_all["current"] = d
                 try:
-                    p = runs_dir(config) / f"{d}_subs.jsonl"
-                    if p.exists():
-                        p.unlink()
-                    th = Path(config.data_dir) / "thumbs" / d
-                    if th.exists():
-                        for f in th.glob("*.ann.png"):
-                            f.unlink(missing_ok=True)
-                    start_backfill(config, d)
+                    while _backfill_state.get(d, {}).get("running"):
+                        time.sleep(2)   # PS-141: a grading job finishes first
+                    regrade_night(config, d, discard_manual=discard_manual)
                     while _backfill_state.get(d, {}).get("running"):
                         time.sleep(2)
                 except Exception as e:  # noqa: BLE001
@@ -725,6 +809,12 @@ def backfill_status(config, date: str) -> dict:
     logged = len(_load_subs(config, date))
     st = _backfill_state.get(date, {})
     pending = max(0, total - logged)
+    if st.get("running") and st.get("regrade_total") is not None:
+        # PS-141: a keep-verdicts re-grade replaces records in place, so the
+        # log length says nothing; report the re-grade's own progress
+        logged = int(st.get("regrade_done") or 0)
+        total = max(total, int(st.get("regrade_total") or 0))
+        pending = max(0, total - logged)
     rate = st.get("rate")  # frames/s this run
     import time
     since = st.get("current_since")
@@ -738,8 +828,13 @@ def backfill_status(config, date: str) -> dict:
             "last_error": st.get("last_error")}
 
 
-def start_backfill(config, date: str) -> None:
-    """Grade missing FITS in a background thread, appending incrementally."""
+def start_backfill(config, date: str, regrade: bool = False) -> None:
+    """Grade missing FITS in a background thread, appending incrementally.
+
+    PS-141 regrade=True: also re-measure and re-judge every sub already in
+    the log; its record is replaced in place (replace_graded, under the
+    night lock) and a person's verdict on it is kept. The post passes
+    (attribution, pointing, Library) then run as on any backfill."""
     import threading
 
     st = _backfill_state.setdefault(date, {})
@@ -764,32 +859,63 @@ def start_backfill(config, date: str) -> None:
         st.update(current=None, rate=None, last_error=None)
         started, done = time.monotonic(), 0
         try:
-            existing = {r.get("file") for r in _load_subs(config, date)}
+            # PS-141: matched with either path separator (the backfill
+            # writes the OS one, a copied or test log may hold "/")
+            existing = {_file_key(r.get("file"))
+                        for r in _load_subs(config, date)}
             plan_names = _plan_target_names(config, date)
-            for f in _light_files(root):
-                rel = str(f.relative_to(root))
-                if rel in existing:
-                    continue
-                st["current"] = rel
-                st["current_since"] = time.monotonic()
-                t0 = time.monotonic()
-                try:
-                    record = _fast_grade(f, config, plan_names,
-                                         prewarm=(date, rel),
-                                         stars_to=(date, rel))
-                    record["file"] = rel
-                    record["abs_path"] = str(f)
-                    append_sub_record(config, date, record)
-                    logger.info("Graded %s in %.1fs: HFR %s ecc %s stars %s",
-                                rel, time.monotonic() - t0,
-                                record.get("hfr"), record.get("ecc"),
-                                record.get("stars"))
-                except Exception as e:  # noqa: BLE001
-                    st["last_error"] = f"{rel}: {e}"
-                    logger.warning("Backfill grade failed for %s: %s", f, e)
-                done += 1
-                st["rate"] = round(done / max(time.monotonic() - started,
-                                              0.001), 2)
+            files = _light_files(root)
+            pending: dict[str, dict] = {}   # PS-141: re-graded, not yet written
+            kept: dict = {"replaced": 0, "manual_kept": 0}
+            if regrade:
+                st.update(regrade_done=0, regrade_total=len(files))
+            else:
+                for k in ("regrade_done", "regrade_total", "regrade_kept"):
+                    st.pop(k, None)
+            try:
+                for f in files:
+                    rel = str(f.relative_to(root))
+                    if _file_key(rel) in existing and not regrade:
+                        continue
+                    st["current"] = rel
+                    st["current_since"] = time.monotonic()
+                    t0 = time.monotonic()
+                    try:
+                        record = _fast_grade(f, config, plan_names,
+                                             prewarm=(date, rel),
+                                             stars_to=(date, rel))
+                        record["file"] = rel
+                        record["abs_path"] = str(f)
+                        if _file_key(rel) in existing:  # PS-141: in place
+                            pending[_file_key(rel)] = record
+                            if len(pending) >= REGRADE_FLUSH_N:
+                                _add_counts(kept, replace_graded(
+                                    config, date, pending))
+                                pending.clear()
+                        else:
+                            append_sub_record(config, date, record)
+                        logger.info("Graded %s in %.1fs: HFR %s ecc %s "
+                                    "stars %s", rel, time.monotonic() - t0,
+                                    record.get("hfr"), record.get("ecc"),
+                                    record.get("stars"))
+                    except Exception as e:  # noqa: BLE001
+                        st["last_error"] = f"{rel}: {e}"
+                        logger.warning("Backfill grade failed for %s: %s",
+                                       f, e)
+                    done += 1
+                    if regrade:
+                        st["regrade_done"] = done
+                    st["rate"] = round(done / max(time.monotonic() - started,
+                                                  0.001), 2)
+            finally:
+                if pending:   # what was graded is written even on an error
+                    _add_counts(kept, replace_graded(config, date, pending))
+            if regrade:
+                st["regrade_done"] = len(files)
+                st["regrade_kept"] = dict(kept)
+                logger.info("Re-grade %s: %d record(s) replaced in place, "
+                            "%d manual verdict(s) kept", date,
+                            kept["replaced"], kept["manual_kept"])
             logger.info("Backfill finished for %s: %d frames graded in "
                         "%.0fs", date, done, time.monotonic() - started)
             try:  # attribute '?' subs: header RA/DEC, piggyback time

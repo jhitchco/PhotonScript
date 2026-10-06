@@ -1538,6 +1538,65 @@ def slew_backfill(
         print(_json.dumps(results, indent=2, default=str))
 
 
+@app.command("regrade")
+def regrade(
+    date: str = typer.Option("", help="One night (YYYY-MM-DD)"),
+    since: str = typer.Option("", help="Every night folder from this date "
+                                       "on (YYYY-MM-DD)"),
+    all_nights: bool = typer.Option(False, "--all",
+                                    help="Every night folder"),
+    discard_manual: bool = typer.Option(
+        False, "--discard-manual",
+        help="The old wipe: delete the subs log, manual accept / reject / "
+             "review verdicts included, and grade from scratch"),
+    yes: bool = typer.Option(False, "--yes",
+                             help="No confirm for --discard-manual"),
+):
+    """PS-141: re-measure and re-judge every sub of a night (the Runs page
+    Re-grade night / Re-grade all), then the backfill post passes
+    (attribution, pointing, Library). A sub a person decided keeps its
+    verdict (and a target assigned by hand) unless --discard-manual. Runs in
+    the foreground; stop PhotonScript or run in daytime (it rewrites the
+    subs log).
+
+    photonscript regrade --date 2026-09-26
+    photonscript regrade --since 2026-07-28 --discard-manual
+    """
+    import time as _time
+    from photonscript.scheduler import runs
+    if bool(date) == bool(since or all_nights):
+        raise typer.BadParameter("give --date D, or --since D / --all")
+    if discard_manual and not yes:
+        typer.confirm("Delete the subs log(s), manual verdicts included, "
+                      "and re-grade from scratch?", abort=True)
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if date:
+        res = runs.regrade_night(cfg, date, discard_manual=discard_manual)
+        if not res["started"]:
+            console.print(f"{date}: not started, {res['detail']}",
+                          markup=False, highlight=False)
+            raise typer.Exit(1)
+        while runs._backfill_state.get(date, {}).get("running"):
+            _time.sleep(2)
+        st = runs._backfill_state.get(date, {})
+        kept = st.get("regrade_kept") or {}
+        console.print(
+            f"{date} ({res['mode']}): {res['records']} record(s) before, "
+            f"{kept.get('replaced', 0)} replaced in place, "
+            f"{kept.get('manual_kept', 0)} manual verdict(s) kept"
+            + (f"; last error: {st['last_error']}" if st.get("last_error")
+               else ""), markup=False, highlight=False)
+        return
+    runs.start_regrade_all(cfg, since=since, discard_manual=discard_manual)
+    while runs._regrade_all.get("running"):
+        _time.sleep(2)
+    s = runs.regrade_all_status()
+    console.print(f"Re-grade all: {s.get('done', 0)} of {s.get('total', 0)} "
+                  "night(s)" + (f"; last error: {s['last_error']}"
+                                if s.get("last_error") else ""),
+                  markup=False, highlight=False)
+
+
 @app.command("pointing-bench")
 def pointing_bench(
     date: str = typer.Option("", help="Night (YYYY-MM-DD); default last night"),
