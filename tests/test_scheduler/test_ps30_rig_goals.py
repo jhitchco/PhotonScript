@@ -80,11 +80,13 @@ def test_m31_decision_applied_once(tmp_path):
     assert [(e.filter_type.value, e.rig) for e in m31.exposure_plans] == [
         ("OSC", "piggyback")]
     osc = m31.exposure_plans[0]
-    assert osc.exposure_seconds == 120 and osc.count == 180  # 6 h
+    # PS-117 (b) runs right after on the same load: 6 h of 120 s became
+    # 20 h of 300 s (test_ps117_light_budget covers that step)
+    assert osc.exposure_seconds == 300 and osc.count == 240  # 20 h
     assert (osc.gain, osc.offset) == (100, 256)
-    assert m31.budget_hours == 6.0
+    assert m31.budget_hours == 20.0
     assert json.loads((tmp_path / "project_migrations.json").read_text()) == {
-        "ps30_m31_osc": True}
+        "ps30_m31_osc": True, "ps117_m31_light_budget": True}
     # a later hand edit is never undone
     store.update("m31", driving_rig="rc16")
     assert ProjectStore(_cfg(tmp_path)).projects["m31"].driving_rig == "rc16"

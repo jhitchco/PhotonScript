@@ -80,6 +80,38 @@ for the swamp factor; the QA thresholds did not change.
 | RC16 AP26MC gain 200, LCG | 4.27 [camera_read_noise_lcg_adu] | 0.79 [camera_gain_lcg_e_adu] | 07-31 bias; 07-04 flat pairs |
 | Piggy-600 AP26CC gain 100, offset 256, LCG, 0 C | 3.27 = 2.4 e- [piggyback_read_noise_adu] | 0.74 [piggyback_gain_e_adu] | 16 bias pair differences; 5 flat pairs |
 
+Light budget (PS-117 part b) also subtracts a bias level and dark current
+from every sub's sky:
+| Rig | Bias (ADU) | Dark at 0 C (e-/s per px) | Source |
+|-----|------------|---------------------------|--------|
+| RC16 AP26MC HCG | 256 [camera_bias_adu] | 0 = not measured [camera_dark_e_s] | offset 256 stands in; HCG bias and darks owed |
+| Piggy-600 AP26CC | 256.5 [piggyback_bias_adu] | 0.023 [piggyback_dark_e_s] | 16-bias master; 120 s dark +3.8 ADU over bias |
+
+Re-measure from the Library calibration frames with
+`photonscript exposure-report --camera-cal` (read-only; prints the keys to
+compare). Run 2026-10-06 on the desktop mirror: Piggy-600 RN 3.28 ADU, gain
+0.72 e-/ADU, dark 0.024 e-/s; RC16 LCG RN 4.20 ADU, gain 0.79 e-/ADU (no
+HCG bias in the Library yet). Change a key on the System page by hand when a
+value moves (Choice E).
+
+#### Light budget: sky, sub length and SNR per target (PS-117 part b)
+- Every graded sub records `sky_e_s` (sky e-/s per pixel: median of the
+  darkest 10% of 64 px block medians, bias and dark removed; the G channel
+  on the Piggy-600, all three in `sky_e_s_ch`) and `rn_penalty_pct` (how
+  much read noise adds to that pixel's per-sub noise). Older subs get them
+  from the stored background with `qa-rescore --date D --apply`
+  (approximate, `sky_src` "background").
+- Targets page "Light budget" (`GET /api/target/light-budget?name=`): per
+  rig + filter the sky spread, measured overhead per sub and acceptance per
+  length, a per-length table (RN penalty, sky / RN^2, SNR per hour, hours
+  to the SNR goal) and an advisory length; with a feature signal, the share
+  of the light the SNR goal needs ((SNR now / goal)^2) next to the hours bar.
+- Per target: `goal_snr` (default `light_budget_goal_snr` 20 per 2x2 pixel
+  at the faintest feature) and `feature_signal_e_s` (e-/s per 2x2 pixel
+  there, measured with `photonscript exposure-report --target T
+  --feature-arcmin R`; set with PATCH /api/projects2/<id>). M31: 0.19 at
+  the outer disk 60' from the core. Advisory only: the goal stays seconds.
+
 ## Desktop processing
 - PixInsight: C:\Program Files\PixInsight\bin\PixInsight.exe
 - Staging: C:\Users\sleep\Astrophotography\Staging\<Target>

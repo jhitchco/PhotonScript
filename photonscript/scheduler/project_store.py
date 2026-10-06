@@ -125,10 +125,13 @@ RC16_RIG = "rc16"
 PIGGYBACK_RIG = "piggyback"
 
 
-def osc_plan(hours: float, config, acquired: int = 0) -> ExposurePlan:
+def osc_plan(hours: float, config, acquired: int = 0,
+             exp_s: float | None = None) -> ExposurePlan:
     """PS-30: a Piggy-600 one-shot-color goal of `hours`, at the piggyback's
-    own sub length and gain/offset (its light epoch, so its darks match)."""
-    exp_s = float(getattr(config, "piggyback_exposure_s", 120.0) or 120.0)
+    own sub length and gain/offset (its light epoch, so its darks match).
+    exp_s overrides the sub length (PS-117: M31 at 300 s)."""
+    exp_s = float(exp_s or getattr(config, "piggyback_exposure_s", 120.0)
+                  or 120.0)
     count = max(1, round(hours * 3600 / exp_s))
     return ExposurePlan(
         filter_type=FilterType.OSC, exposure_seconds=exp_s, count=count,
@@ -172,6 +175,7 @@ class ProjectStore:
                 logger.error("Failed to load projects.json: %s", e)
         self._seed_special_projects()
         self._migrate_m31_to_piggyback()
+        self._migrate_m31_light_budget()
 
     # --- one-time goal decisions (PS-30) ------------------------------------
     MIGRATIONS_FILE = "project_migrations.json"
@@ -219,6 +223,60 @@ class ProjectStore:
         done["ps30_m31_osc"] = True
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(done, indent=2), encoding="utf-8")
+        except OSError as e:
+            logger.warning("could not record project migration: %s", e)
+
+    # PS-117 (b), Jeremy 2026-10-05: M31 Piggy-600 subs go to 300 s and the
+    # goal to 20 h; SNR 20 per 2x2 pixel at the outer disk 60' from the core,
+    # 0.19 e-/s per 2x2 pixel there (the grooming's measured profile).
+    M31_OSC_HOURS_PS117 = 20.0
+    M31_OSC_EXPOSURE_S = 300.0
+    M31_FEATURE = {"goal_snr": 20.0, "feature_signal_e_s": 0.19,
+                   "feature_rig": PIGGYBACK_RIG,
+                   "feature_note": "outer disk 60' from the core (PS-117 "
+                                   "grooming profile, 10-03 400 s subs)"}
+
+    def _migrate_m31_light_budget(self):
+        """Applied ONCE (marker ps117_m31_light_budget), after the PS-30
+        decision: the M31 OSC plan becomes 20 h of 300 s subs (accepted
+        seconds carried, PS-118) and the light-budget fields are seeded
+        unless already set. A later hand edit is never undone."""
+        path = self._migrations_path()
+        try:
+            done = json.loads(path.read_text(encoding="utf-8")) \
+                if path.exists() else {}
+        except Exception:  # noqa: BLE001
+            done = {}
+        if done.get("ps117_m31_light_budget") or not done.get("ps30_m31_osc"):
+            return
+        m31 = next((p for p in self.projects.values()
+                    if _norm_cid(p.target.catalog_id) == "m31"), None)
+        if m31 is None:
+            return
+        old = next((e for e in m31.exposure_plans
+                    if e.rig == PIGGYBACK_RIG
+                    and e.filter_type == FilterType.OSC), None)
+        if old is not None:
+            new = osc_plan(self.M31_OSC_HOURS_PS117, self.config,
+                           exp_s=self.M31_OSC_EXPOSURE_S)
+            _carry_seconds(new, old.exposure_seconds, old.long_seconds_done())
+            m31.exposure_plans = [new if e is old else e
+                                  for e in m31.exposure_plans]
+            if not any(e.rig == RC16_RIG for e in m31.exposure_plans):
+                m31.budget_hours = self.M31_OSC_HOURS_PS117
+                m31.total_integration_hours = m31.budget_hours
+            m31.compute_completion()
+        for k, v in self.M31_FEATURE.items():
+            if getattr(m31, k) in (None, ""):
+                setattr(m31, k, v)
+        logger.warning("PS-117: M31 Piggy-600 goal is now %.0f h of %.0f s "
+                       "subs; light budget seeded (SNR %s at %s e-/s)",
+                       self.M31_OSC_HOURS_PS117, self.M31_OSC_EXPOSURE_S,
+                       m31.goal_snr, m31.feature_signal_e_s)
+        self.save()
+        done["ps117_m31_light_budget"] = True
+        try:
             path.write_text(json.dumps(done, indent=2), encoding="utf-8")
         except OSError as e:
             logger.warning("could not record project migration: %s", e)
@@ -307,7 +365,8 @@ class ProjectStore:
                exposure_overrides: dict | None = None,
                osc_hours: float | None = None,
                driving_rig: str | None = None,
-               drop_rc16: bool = False) -> ImagingProject | None:
+               drop_rc16: bool = False,
+               light_budget: dict | None = None) -> ImagingProject | None:
         """hdr / exposure_overrides: pass {} to clear, a dict to set, None to
         leave unchanged. Either change re-allocates the plans.
 
@@ -316,10 +375,20 @@ class ProjectStore:
         osc_hours: None = leave, 0 = remove the OSC plan, > 0 = set or resize
         it (acquired kept). On a piggyback-only goal (no RC16 plans) the
         budget sizes the OSC plan instead. drop_rc16 removes the RC16 plans
-        (the M31 decision). driving_rig: "rc16" | "piggyback"."""
+        (the M31 decision). driving_rig: "rc16" | "piggyback".
+        light_budget (PS-117): any of goal_snr, feature_signal_e_s,
+        feature_rig, feature_note; None or "" clears a value."""
         proj = self.projects.get(project_id)
         if proj is None:
             return None
+        for k, v in (light_budget or {}).items():
+            if k in ("goal_snr", "feature_signal_e_s"):
+                setattr(proj, k, float(v) if v not in (None, "") and
+                                 float(v) > 0 else None)
+            elif k == "feature_rig":
+                proj.feature_rig = v if v in (RC16_RIG, PIGGYBACK_RIG) else None
+            elif k == "feature_note":
+                proj.feature_note = str(v or "")
         plan_change = False
         if hdr is not None:
             proj.hdr = {k: float(v) for k, v in hdr.items() if v} or None

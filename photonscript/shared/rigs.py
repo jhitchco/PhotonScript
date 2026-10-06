@@ -131,6 +131,12 @@ def rig_config(config, rig: str):
     if g is not None:
         updates["camera_gain_e_adu"] = g
         updates["camera_gain_lcg_e_adu"] = g
+    # PS-117 (b): its bias level and dark current for the sky rate
+    for base, pb in (("camera_bias_adu", "piggyback_bias_adu"),
+                     ("camera_dark_e_s", "piggyback_dark_e_s")):
+        v = getattr(config, pb, None)
+        if v is not None:
+            updates[base] = v
     for base, pb, fallback in PIGGYBACK_GATES:
         v = getattr(config, pb, None)
         if v is None:

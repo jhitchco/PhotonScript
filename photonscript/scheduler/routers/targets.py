@@ -15,6 +15,9 @@ GET /api/targets/refimage/meta?name=&view=wide|close
                                       cached; own best sub as offline fallback)
 GET /api/targets/refimage?name=&view= the cached cutout (JPEG)
 GET /api/targets/live?name=           mount position when the RC16 is on it
+GET /api/target/light-budget?name=&rig=&filter=
+                                      PS-117 (b): sky, sub length advice and
+                                      SNR progress (scheduler/light_budget)
 
 Read-only (approved default, phase 1): verdicts stay on the run page until
 PS-24's review module lands. Every handler is a plain def (threadpool) except
@@ -96,6 +99,16 @@ def api_target_readiness(name: str):
                         "planned filter"}
     out = target_readiness(cfg, p, calibration_context(cfg, max_age_s=300))
     return {**out, "project": True}
+
+
+@router.get("/api/target/light-budget")
+def api_target_light_budget(name: str, rig: str = "",
+                            filter: str = ""):  # noqa: A002
+    """PS-117 (b): sky, per-length table, advisory sub length and SNR
+    progress per rig + filter (scheduler/light_budget). Read-only."""
+    from photonscript.scheduler.light_budget import target_light_budget
+    return target_light_budget(_cfg(), name, _projects(), rig=rig,
+                               filter=filter)
 
 
 @router.get("/api/subs")

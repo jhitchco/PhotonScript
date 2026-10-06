@@ -22,6 +22,8 @@
         .bar { height:7px; border-radius:4px; background:rgba(255,255,255,.08);
                overflow:hidden; margin:.15rem 0 .35rem; }
         .bar > i { display:block; height:100%; background:#38bdf8; }
+        .bar.snr > i { background:#c084fc; }
+        table.t tr.pick td { background:rgba(56,189,248,.10); }
         table.t { width:100%; border-collapse:collapse; font-size:.84rem; }
         table.t th, table.t td { padding:.25rem .5rem; text-align:right;
             border-bottom:1px solid rgba(255,255,255,.07); }
@@ -83,6 +85,10 @@
                 <div id="tGoal" class="muted">loading&hellip;</div>
             </section>
         </div>
+        <section class="panel">
+            <h2>Light budget</h2>
+            <div id="tBudget" class="muted">loading&hellip;</div>
+        </section>
         <section class="panel">
             <h2>Totals</h2>
             <div id="tTotals" class="muted">loading&hellip;</div>
@@ -180,7 +186,8 @@ function renderFacts() {
             // PS-118: the bar follows accepted seconds, not whole subs
             const pct = p.pct != null ? Math.min(100, p.pct)
                 : (p.count ? Math.min(100, Math.round(p.acquired / p.count * 100)) : 0);
-            return '<div style="margin-top:.35rem;"><b style="color:' + (FC[p.filter] || '#94a3b8') +
+            return '<div style="margin-top:.35rem;" id="goalPlan-' + esc(p.filter) +
+                '"><b style="color:' + (FC[p.filter] || '#94a3b8') +
                 ';">' + esc(p.filter) + '</b> ' + p.acquired + ' / ' + p.count + ' x ' +
                 Math.round(p.exposure_s) + 's \u00b7 ' + p.hours_done + ' / ' + p.hours_goal + ' h' +
                 (p.hdr_short ? '<br><span class="dim">HDR short: ' + p.hdr_short.acquired + ' / ' +
@@ -249,6 +256,62 @@ function renderWhere() {
          D.library_dirs.slice(1).map(p => '<code>' + esc(p) + '</code>').join(', ') : '') +
         '<br><span class="dim">paste into Explorer\u2019s address bar or Win+R; the desktop ' +
         'copy appears once /api/sync shows library_synced</span>';
+}
+// --- PS-117 (b): light budget (advisory) --------------------------------------
+function snrBar(pr) {
+    const pct = pr.pct_of_light;
+    return '<div>' + pct + '% of the light needed \u00b7 SNR ' + pr.snr + ' of ' +
+        pr.goal_snr + ' at the feature</div><div class="bar snr"><i style="width:' +
+        Math.min(100, pct) + '%"></i></div>';
+}
+function budgetGroup(g, feature) {
+    const sky = g.sky_e_s, over = g.overhead;
+    let h = '<div style="margin:.5rem 0 .2rem;"><b style="color:' + (FC[g.filter] || '#94a3b8') +
+        ';">' + esc(g.filter) + '</b> ' + esc(g.rig_label) + ' \u00b7 ' + g.subs + ' subs</div>';
+    h += '<div><b>' + esc(g.headline) + '</b></div>';
+    if (!sky) return h;
+    h += '<div class="dim">sky ' + sky.p50 + ' e-/s per px (p10 ' + sky.p10 + ', p90 ' + sky.p90 +
+        ', ' + sky.n + ' subs) \u00b7 read noise ' + g.camera.read_noise_e + ' e- \u00b7 sky-limited from ' +
+        g.sky_limited_s['5'] + ' s (RN adds 5%), ' + g.sky_limited_s['10'] + ' s (10%) \u00b7 overhead ' +
+        over.used_s + ' s per sub (' + (over.source === 'measured' ? 'measured, median ' + over.median_s +
+        ' s, ' + over.n + ' gaps' : 'default') + ')</div>';
+    if (g.progress) h += snrBar(g.progress);
+    const snr = g.table.some(r => r.snr_per_hour != null);
+    const pick = g.recommendation ? g.recommendation.exp_s : null;
+    h += '<table class="t" style="margin-top:.3rem;"><tr><th>Sub</th><th>Data</th>' +
+        '<th>RN adds</th><th>Sky / RN\u00b2</th><th>Sat stars</th><th>Accepted</th>' +
+        (snr ? '<th>SNR/h</th><th>h to SNR ' + g.goal_snr + '</th>' : '') + '</tr>' +
+        g.table.map(r => {
+            const a = g.acceptance[String(r.exp_s)];
+            return '<tr' + (r.exp_s === pick ? ' class="pick"' : '') + '><td>' + r.exp_s +
+                ' s</td><td>' + (r.measured_subs ? r.measured_subs + ' subs' : '<span class="dim">model</span>') +
+                '</td><td>' + r.rn_penalty_pct + '%</td><td>' + r.sky_over_rn2 + '</td><td>' +
+                (r.sat_stars_pct != null ? r.sat_stars_pct + '%' : '\u2013') + '</td><td>' +
+                (a ? Math.round(a.share * 100) + '% of ' + a.n : '\u2013') + '</td>' +
+                (snr ? '<td>' + r.snr_per_hour + '</td><td>' + r.hours_to_goal +
+                    (r.hours_at_acceptance != null ? ' <span class="dim">(' + r.hours_at_acceptance +
+                     ' at its acceptance)</span>' : '') + '</td>' : '') + '</tr>';
+        }).join('') + '</table>';
+    return h;
+}
+async function loadBudget() {
+    const el = document.getElementById('tBudget');
+    try {
+        const b = await (await fetch('/api/target/light-budget?name=' +
+                                     encodeURIComponent(D.target))).json();
+        if (!b.groups.length) { el.textContent = 'no subs yet'; return; }
+        const f = b.feature;
+        el.innerHTML = '<div class="dim">' + (f.signal_e_s
+            ? 'feature: ' + f.signal_e_s + ' e-/s per 2x2 pixel' + (f.note ? ' (' + esc(f.note) + ')' : '') +
+              ' \u00b7 goal SNR ' + b.goal_snr + ' per 2x2 pixel'
+            : 'no feature signal set: SNR per hour and progress need one (photonscript exposure-report)') +
+            ' \u00b7 ' + esc(b.note) + '</div>' + b.groups.map(g => budgetGroup(g, f)).join('');
+        // the second goal bar: share of the light next to the hours bar
+        b.groups.forEach(g => {
+            const p = g.progress && document.getElementById('goalPlan-' + g.filter);
+            if (p) p.insertAdjacentHTML('beforeend', snrBar(g.progress));
+        });
+    } catch (e) { el.textContent = 'light budget unavailable'; }
 }
 async function loadReady() {
     const el = document.getElementById('tReady');
@@ -378,6 +441,7 @@ fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     renderFacts(); renderTotals(); renderReasons(); renderChips(); renderWhere();
     loadGrid();
     loadReady();
+    if (!D.unattributed) loadBudget(); else document.getElementById('tBudget').textContent = 'n/a';
     if (!D.unattributed) { loadRef(); pollLive(); }
     else document.getElementById('refPanel').hidden = true;
 }).catch(() => document.getElementById('tName').textContent = 'unavailable');

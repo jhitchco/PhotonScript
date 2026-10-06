@@ -680,6 +680,9 @@ _CONFIG_FIELDS = [
     ("camera_read_noise_lcg_adu", "PS_CAMERA_READ_NOISE_LCG_ADU", "RC16 read noise, LCG frames (ADU16; READOUTM Low Conversion Gain)", "Quality", "float", False, False),
     ("camera_gain_e_adu", "PS_CAMERA_GAIN_E_ADU", "RC16 conversion gain, HCG (e-/ADU)", "Quality", "float", False, False),
     ("camera_gain_lcg_e_adu", "PS_CAMERA_GAIN_LCG_E_ADU", "RC16 conversion gain, LCG frames (e-/ADU)", "Quality", "float", False, False),
+    ("camera_bias_adu", "PS_CAMERA_BIAS_ADU", "RC16 bias level (ADU16; subtracted for the sky rate, PS-117 light budget)", "Quality", "float", False, False),
+    ("camera_dark_e_s", "PS_CAMERA_DARK_E_S", "RC16 dark current at the setpoint (e-/s per pixel; 0 = not measured)", "Quality", "float", False, False),
+    ("light_budget_goal_snr", "PS_LIGHT_BUDGET_GOAL_SNR", "Light budget: default SNR goal per 2x2 pixel at a target's faintest feature (PS-117)", "Quality", "float", False, False),
     ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
     ("quality_eccentricity_max_binned", "PS_QUALITY_ECCENTRICITY_MAX_BINNED", "Max eccentricity at 0.47\"/px (2x2 binned; 0 = same as Max eccentricity)", "Quality", "float", False, False),
     ("qa_ecc_scale", "PS_QA_ECC_SCALE", "Eccentricity gate scale: native or binned (the other is info only)", "Quality", "str", False, False),
@@ -790,6 +793,8 @@ _CONFIG_FIELDS = [
     ("piggyback_default_offset", "PS_PIGGYBACK_DEFAULT_OFFSET", "Piggyback camera offset", "Piggyback", "int", False, False),
     ("piggyback_read_noise_adu", "PS_PIGGYBACK_READ_NOISE_ADU", "Piggyback read noise (ADU16; floor for the exposure swamp score, PS-117)", "Piggyback", "float", False, False),
     ("piggyback_gain_e_adu", "PS_PIGGYBACK_GAIN_E_ADU", "Piggyback conversion gain (e-/ADU)", "Piggyback", "float", False, False),
+    ("piggyback_bias_adu", "PS_PIGGYBACK_BIAS_ADU", "Piggyback bias level (ADU16; subtracted for the sky rate, PS-117)", "Piggyback", "float", False, False),
+    ("piggyback_dark_e_s", "PS_PIGGYBACK_DARK_E_S", "Piggyback dark current at the setpoint (e-/s per pixel)", "Piggyback", "float", False, False),
     ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
     ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
     ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
@@ -1262,7 +1267,11 @@ async def api_project_update(project_id: str, request: Request):
                                       if body.get("osc_hours") is not None
                                       else None),
                            driving_rig=body.get("driving_rig"),
-                           drop_rc16=bool(body.get("drop_rc16", False)))
+                           drop_rc16=bool(body.get("drop_rc16", False)),
+                           # PS-117 (b): light-budget fields per target
+                           light_budget={k: body[k] for k in (
+                               "goal_snr", "feature_signal_e_s",
+                               "feature_rig", "feature_note") if k in body})
     _projects[project_id] = updated
     return _project_json(updated)
 

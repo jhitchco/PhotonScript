@@ -333,6 +333,15 @@ class PhotonScriptConfig(BaseSettings):
     camera_gain_e_adu: float = 0.25     # HCG e-/ADU: sky noise vs read noise
                                         # on 14 lights (0.249 to 0.259)
     camera_gain_lcg_e_adu: float = 0.79  # LCG e-/ADU: 2026-07-04 flat pairs
+    # PS-117 part (b) light budget: bias level and dark current that the sky
+    # rate (sky_e_s on every graded sub) subtracts. RC16 HCG bias is not
+    # measured yet (HCG bias owed): the offset 256 stands in. Dark current at
+    # 0 C is not measured on HCG either: 0 until an HCG dark set exists.
+    camera_bias_adu: float = 256.0
+    camera_dark_e_s: float = 0.0        # e-/s per pixel at the setpoint
+    light_budget_goal_snr: float = 20.0  # PS-117: default SNR goal per 2x2
+                                        # pixel at a target's faintest feature
+                                        # (ImagingProject.goal_snr overrides)
     auto_dusk_flats: bool = True  # auto-dispatch dusk sky flats for STALE
                                   # filters before auto-arm (the "checkmark")
     evening_forecast_enabled: bool = True  # push a night-viewing forecast a few
@@ -596,6 +605,9 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_read_noise_adu: float = 3.27  # 16 bias, pair differences (2.4 e-)
     piggyback_gain_e_adu: float = 0.74  # flat-pair photon transfer, 5 pairs
                                         # (sky-noise cross-check 0.67 to 0.73)
+    piggyback_bias_adu: float = 256.5   # PS-117 (b): 16-bias master median
+    piggyback_dark_e_s: float = 0.023   # 120 s dark at 0 C is +3.8 ADU over
+                                        # bias (e-/s per pixel)
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
     piggyback_focus_seed: int = 11045  # STATIC cold-start position for the OSC's
                                       # OWN focuser, used as the fallback before the

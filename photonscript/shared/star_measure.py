@@ -37,6 +37,11 @@ PS-21 gates were tuned on them):
                HCG 5.66 ADU, RC16 LCG 4.27, Piggy-600 3.27)
   clipped_pct  pixels >= SATURATION_ADU in every 4th pixel
   sat_stars_pct  kept stars whose 3x3 core peak is >= SATURATION_ADU
+  sky_e_s      PS-117 (b): sky e-/s per pixel (shared.exposure_analysis.
+               frame_sky): median of the darkest 10% of 64 px block medians,
+               bias and dark removed, at the header EXPTIME. OSC: per CFA
+               channel in sky_e_s_ch {R, G, B}, sky_e_s is the G channel
+  rn_penalty_pct  how much read noise adds to that pixel's per-sub noise, %
   corner_spread  (max - min corner median FWHM) / median FWHM
 
 The backfill grader may fall back to a 2x2-binned frame (MemoryError on the
@@ -64,7 +69,8 @@ OSC_MEDIAN_MIN_HFR_PX = 2.5  # SUPERPIXEL px (5 native): below this the 3x3
 PARITY_KEYS = ("stars", "stars_detected", "hfr", "fwhm_px", "fwhm_arcsec",
                "ecc", "ecc_bin", "hfr_bin", "stars_bin", "background",
                "noise", "swamp", "clipped_pct", "sat_stars_pct", "exposure",
-               "corner_spread", "measure_at", "osc")
+               "corner_spread", "measure_at", "osc", "sky_e_s", "sky_e_s_ch",
+               "rn_penalty_pct")
 
 
 # ------------------------------------------------------------------ helpers
@@ -330,6 +336,7 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
     ex = exposure(data, st["x"], st["y"], noise, config,
                   coord_scale=1.0 / k,
                   read_noise=camera_constants(config, header)["read_noise_adu"])
+    sky = _sky_fields(data, config, rig, header, osc, binned_input)
 
     # PS-94: the 0.47"/px measure (RC16 only, qa_ecc_binned)
     ecc_bin = hfr_bin = stars_bin = None
@@ -375,6 +382,7 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
         "snr": round(background / noise, 1) if noise > 0 else 0.0,
         "corner_spread": _r(cs, 3),
         **ex,
+        **sky,
         "measure_at": "binned" if binned_input else "native",
         "osc": bool(osc),
         "ecc_def": ECC_DEF,
@@ -384,6 +392,21 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
         "star_table": table,
         "_stars": st,
     }
+
+
+def _sky_fields(data, config, rig, header, osc, binned_input) -> dict:
+    """PS-117 (b): sky_adu, sky_e_s, sky_e_s_ch, rn_penalty_pct (all None
+    when the measure fails: it never costs a grade). `config` is already
+    the rig's view, so the camera comes from it as given."""
+    from photonscript.shared import exposure_analysis as ea
+    try:
+        cam = ea.CameraModel.from_view(config, rig, header)
+        return ea.frame_sky(data, header, cam, osc=bool(osc),
+                            binned_input=binned_input)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sky measure skipped: %s", e)
+        return {"sky_adu": None, "sky_e_s": None, "sky_e_s_ch": None,
+                "rn_penalty_pct": None}
 
 
 def load_native(path) -> np.ndarray:
