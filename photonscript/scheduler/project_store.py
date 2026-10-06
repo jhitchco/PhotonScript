@@ -307,7 +307,8 @@ class ProjectStore:
                exposure_overrides: dict | None = None,
                osc_hours: float | None = None,
                driving_rig: str | None = None,
-               drop_rc16: bool = False) -> ImagingProject | None:
+               drop_rc16: bool = False,
+               rc16_hours: float | None = None) -> ImagingProject | None:
         """hdr / exposure_overrides: pass {} to clear, a dict to set, None to
         leave unchanged. Either change re-allocates the plans.
 
@@ -316,10 +317,23 @@ class ProjectStore:
         osc_hours: None = leave, 0 = remove the OSC plan, > 0 = set or resize
         it (acquired kept). On a piggyback-only goal (no RC16 plans) the
         budget sizes the OSC plan instead. drop_rc16 removes the RC16 plans
-        (the M31 decision). driving_rig: "rc16" | "piggyback"."""
+        (the M31 decision). driving_rig: "rc16" | "piggyback".
+
+        PS-134: rc16_hours adds, resizes or removes the RC16 plan on any goal,
+        a Piggy-only one included, and leaves driving_rig and the OSC plan as
+        they are. > 0 = the RC16 budget (allocated from filter_mix / hdr /
+        exposure_overrides, budget_hours ignored); 0 = drop the RC16 plans
+        (ValueError when that would leave the goal with no plan). Accepted
+        subs come back from the run history on the next goal sync."""
         proj = self.projects.get(project_id)
         if proj is None:
             return None
+        add_rc16 = rc16_hours is not None and rc16_hours > 0
+        if rc16_hours is not None and not add_rc16:
+            if not any(p.rig != RC16_RIG for p in proj.exposure_plans)                     and not (osc_hours and osc_hours > 0):
+                raise ValueError("removing the RC16 plan would leave the goal "
+                                 "with no plan (add a Piggy-600 goal first)")
+            drop_rc16 = True
         plan_change = False
         if hdr is not None:
             proj.hdr = {k: float(v) for k, v in hdr.items() if v} or None
@@ -340,13 +354,15 @@ class ProjectStore:
                 proj.filter_mix = {k: round(v / total * 100)
                                    for k, v in filter_mix.items()
                                    if v and v > 0}
+        if add_rc16:  # PS-134: the RC16 budget, whatever the goal held
+            budget_hours = rc16_hours
         if budget_hours is not None and budget_hours > 0:
             proj.budget_hours = round(budget_hours, 1)
         rc16 = [p for p in proj.exposure_plans if p.rig == RC16_RIG]
         other = [p for p in proj.exposure_plans if p.rig != RC16_RIG]
         if drop_rc16:
             rc16 = []
-        osc_only = not rc16 and bool(other)
+        osc_only = not rc16 and bool(other) and not add_rc16
         if osc_only and budget_hours is not None and budget_hours > 0                 and osc_hours is None:
             osc_hours = proj.budget_hours
         if osc_hours is not None:

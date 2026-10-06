@@ -132,6 +132,32 @@ def remaining_copy(plan: ExposurePlan) -> ExposurePlan:
     })
 
 
+def piggy_hold_exposure(proj: ImagingProject) -> Optional[ExposurePlan]:
+    """PS-134: a goal the Piggy-600 drives is planned while EITHER rig owes
+    time. The Piggy companion shoots OSC on whatever the mount points at, so
+    once the RC16 plan is done the RC16 keeps the pointing with extra subs of
+    its largest plan (bonus core data), sized to the OSC seconds still owed.
+    None when the RC16 drives, the OSC owes nothing, or the goal has no RC16
+    plan (a Piggy-only goal stays off the RC16 sequence, as before)."""
+    import math
+    if (getattr(proj, "driving_rig", "rc16") or "rc16") == "rc16":
+        return None
+    rc16 = [e for e in proj.exposure_plans
+            if (getattr(e, "rig", "rc16") or "rc16") == "rc16"]
+    owed_s = sum(max(0.0, e.count * e.exposure_seconds - e.long_seconds_done())
+                 for e in proj.exposure_plans
+                 if (getattr(e, "rig", "rc16") or "rc16") != "rc16")
+    if not rc16 or owed_s <= 0:
+        return None
+    base = max(rc16, key=lambda e: e.count * e.exposure_seconds)
+    if not base.exposure_seconds or base.exposure_seconds <= 0:
+        return None
+    return base.model_copy(update={
+        "count": max(1, math.ceil(owed_s / base.exposure_seconds - 1e-9)),
+        "acquired": 0, "acquired_s": 0.0, "hdr_short_seconds": None,
+        "hdr_short_count": 0, "hdr_short_acquired": 0})
+
+
 def cap_unguided(targets, cap_s) -> list[str]:
     """PS-66: cap sub length on every UNGUIDED target (start_guiding False) at
     cap_s seconds (config unguided_max_exposure_s; 0 or None = off), keeping
@@ -297,6 +323,11 @@ def plan_night_sequence(
                 continue  # PS-30: a Piggy-600 OSC plan is never an RC16 filter
             if plan.count - plan.acquired > 0:
                 remaining_exposures.append(remaining_copy(plan))
+        if not remaining_exposures:
+            # PS-134: the Piggy-600 drives and still owes time
+            hold = piggy_hold_exposure(proj)
+            if hold is not None:
+                remaining_exposures.append(hold)
 
         if not remaining_exposures:
             continue
