@@ -2954,6 +2954,8 @@ from photonscript.scheduler.routers import piggy_offset as _piggy_offset_router 
 app.include_router(_piggy_offset_router.router)
 from photonscript.scheduler.routers import mosaic as _mosaic_router  # noqa: E402
 app.include_router(_mosaic_router.router)
+from photonscript.scheduler.routers import viewer as _viewer_router  # noqa: E402
+app.include_router(_viewer_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

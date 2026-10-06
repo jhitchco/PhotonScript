@@ -9,7 +9,8 @@ POST /api/runs/{date}/rescore                  {"apply": true} to write
 GET  /api/runs/{date}/remeasure                PS-130 re-measure job status
 POST /api/runs/{date}/remeasure                PS-130 start it (dry run unless
                                                {"apply": true}; background)
-GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (stored)
+GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (measured
+                                               once on view when missing)
 GET  /api/qa/ecc-scale?date=&refresh=          PS-94 native vs binned ecc report
 GET  /api/runs/{date}/score-report             PS-108 score vs today's verdicts
 GET  /api/runs/{date}/hist?file=&refresh=      PS-5 histogram (cached)
@@ -357,9 +358,13 @@ def api_remeasure(date: str, payload: dict | None = Body(default=None)):
 
 
 @router.get("/api/runs/{date}/stars")
-def api_sub_stars(date: str, file: str, rig: str = "rc16"):
-    from photonscript.shared.star_table import read
-    t = read(_cfg(), date, file, rig)
+def api_sub_stars(date: str, file: str, rig: str = "", compute: bool = True):
+    """PS-80: the sub's star sidecar for the viewer overlay (rig defaults
+    to the record's). A sub without one is measured once on view with the
+    backfill grader's function and cached ("on_view": true); compute=false
+    only reads. Every ecc in sqrt(1-(b/a)^2) form."""
+    from photonscript.scheduler.sub_viewer import stars_for_view
+    t = stars_for_view(_cfg(), date, file, rig or None, compute=compute)
     if t is None:
         return JSONResponse(status_code=404,
                             content={"detail": "no star sidecar for this sub"})

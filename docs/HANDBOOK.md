@@ -235,6 +235,21 @@ Check a pending update on the scope without switching: `photonscript self-update
    scorecard panel shows such a gate as "<= 6 px (target override)" and a
    reject reason ends "(target override)". New subs only: a graded night
    moves after `qa-rescore --date D` (dry run first).
+   **Viewer tools (PS-80, PS-6, PS-17; static/js/viewer.js).** A row under
+   the lightbox bar: **S** star overlay, the grader's own stars from the
+   PS-80 sidecar (`GET /api/runs/{date}/stars`; a sub without one is
+   measured once on view with the backfill measure and cached, labeled
+   "measured on view"), circles about 2 x HFR, **C** colors by HFR or ecc
+   (green under 90% of the rig's gate, yellow to the gate, red past it; ecc
+   draws ellipses along the stretch), hover a star for HFR / ecc / x, y;
+   follows the click / wheel zoom. **L** loupe: hover for a 256 px
+   full-resolution crop under the cursor (`GET /api/runs/{date}/crop`,
+   memmap window, the preview's stretch, OSC as the 2x2 superpixel), click
+   pins it, 1:1 / 2:1, nearest star's HFR / ecc. **M** 3x3: corners, edge
+   midpoints and center at 1:1 in one PNG (`/mosaic`, 128 / 256 px tiles,
+   cached under `<data_dir>/thumbs/`), per tile the median HFR / ecc of the
+   zone's sidecar stars (`/mosaic-info`; else the backfill corner_ecc).
+   Crops never take the grading lock; at most two run at once.
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 
