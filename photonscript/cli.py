@@ -1247,6 +1247,32 @@ def rotation_report(
     raise typer.Exit(0 if rep.get("ok") else 1)
 
 
+@app.command("piggy-offset")
+def piggy_offset_cmd(
+    nights: int = typer.Option(0, help="Nights of pointing sidecars "
+                                       "(0 = config piggy_center_nights)"),
+    save: bool = typer.Option(False, "--save",
+                              help="Store the result (<data_dir>/piggy_offset.json)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-26: the RC16-to-Piggy-600 boresight offset per pier side from
+    simultaneous plate solves in the PS-67 pointing sidecars (stored solves
+    only, never ASTAP). Report only unless --save.
+
+    photonscript piggy-offset --nights 30
+    """
+    import json as _json
+    from photonscript.scheduler import piggy_offset as po
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    rep = po.measure(cfg, nights or None)
+    if save:
+        po.save(cfg, rep)
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+    else:
+        console.print(po.format_report(rep), markup=False, highlight=False)
+
+
 @app.command("pointing-backfill")
 def pointing_backfill(
     since: str = typer.Option("", help="First night (YYYY-MM-DD); with no "

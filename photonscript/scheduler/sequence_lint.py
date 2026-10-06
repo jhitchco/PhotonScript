@@ -520,6 +520,42 @@ def _check_selftest(seq: dict, r: LintResult) -> None:
                                     "machine (NINA would skip it)")
 
 
+PIGGY_CENTER_TAG = "Piggy-600 centering (PS-26)"
+
+
+def _is_piggy_center(d: dict) -> bool:
+    from photonscript.scheduler.nina_sequence_json import PIGGY_WEST_CENTER_SUFFIX
+    return str(d.get("Name") or "").endswith(PIGGY_WEST_CENTER_SUFFIX)
+
+
+def _check_piggy_center(seq: dict, r: LintResult) -> None:
+    """PS-26 rule piggy-center: every Piggy-600-driven target says what its
+    centering does (a WARN carrying the annotation: the applied offset, the
+    preview, or "no offset measured yet"), and a nested pier-West centering
+    container must run once (LoopCondition), only before the transit
+    (TimeCondition), and hold nothing but its Center (no exposures)."""
+    for _p, d in _types_in(seq):
+        if "DeepSkyObjectContainer" not in d["$type"] or _is_piggy_center(d):
+            continue
+        name = (d.get("Target") or {}).get("TargetName") or d.get("Name", "?")
+        for it in (d.get("Items") or {}).get("$values", []) or []:
+            if isinstance(it, dict) and "Annotation" in it.get("$type", "")                     and PIGGY_CENTER_TAG in str(it.get("Text", "")):
+                r.warn("piggy-center", f"[{name}] {it.get('Text')}")
+    for _p, d in _types_in(seq):
+        if "DeepSkyObjectContainer" not in d["$type"] or not _is_piggy_center(d):
+            continue
+        name = d.get("Name", "?")
+        conds = json.dumps(d.get("Conditions", {}))
+        if "LoopCondition" not in conds or "TimeCondition" not in conds:
+            r.error("piggy-center", f"[{name}] needs LoopCondition(1) and the "
+                    "transit TimeCondition (it would re-center every pass or "
+                    "after the flip)")
+        if not _has_type(d, "Platesolving.Center"):
+            r.error("piggy-center", f"[{name}] has no Center")
+        if _has_type(d, "TakeExposure") or _has_type(d, "SmartExposure"):
+            r.error("piggy-center", f"[{name}] must not expose")
+
+
 def lint(seq: dict, guided: bool | None = None,
          unguided_dither: bool = False,
          cooler_gate: bool | None = None,
@@ -608,8 +644,13 @@ def lint(seq: dict, guided: bool | None = None,
             r.error("guiding", f"Unguided run contains guiding elements: {kinds}")
 
     # --- Per-target checks -------------------------------------------------
+    # PS-26: the nested pier-West centering container of a Piggy-600-driven
+    # target is a DeepSkyObjectContainer only so its Center inherits the
+    # shifted coordinates; it is checked by _check_piggy_center, not here.
+    _check_piggy_center(seq, r)
     targets = [(p, d) for p, d in _types_in(seq)
-               if "DeepSkyObjectContainer" in d["$type"]]
+               if "DeepSkyObjectContainer" in d["$type"]
+               and not _is_piggy_center(d)]
     if not targets:
         r.error("targets", "No DeepSkyObjectContainer targets found")
 

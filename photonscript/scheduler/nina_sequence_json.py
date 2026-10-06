@@ -59,6 +59,14 @@ FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
 # "<target> filter block (cooler-gated)" whose first item is the gate, so a
 # gate SKIP interrupts just that block.
 TARGET_BLOCK_SUFFIX = " filter block (cooler-gated)"
+# PS-26: a Piggy-600-driven target (centering mode on) gets a nested
+# DeepSkyObjectContainer "<target> Piggy-600 center, pier West (before
+# transit)" holding one Center on the pier-West coordinates; it runs once,
+# only before the target's transit (the outer container's coordinates are
+# the pier-East ones, which the meridian flip re-centers on).
+PIGGY_WEST_CENTER_SUFFIX = " Piggy-600 center, pier West (before transit)"
+DSO_CONTAINER_TYPE = ("NINA.Sequencer.Container.DeepSkyObjectContainer, "
+                      "NINA.Sequencer")
 SAFE_LOOP_NAME = "SAFE_LOOP"
 RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
 TARGETS_LOOP_NAME = "TARGETS_CONTAINER"
@@ -848,6 +856,69 @@ def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
         ErrorBehavior=0, Attempts=1)
 
 
+# --- PS-26 Piggy-600 centering -------------------------------------------------
+
+def _piggy_store(cfg):
+    """The measured RC16-to-Piggy-600 offset (re-measured when stale).
+    Separate so tests can pin it."""
+    from photonscript.scheduler import piggy_offset as po
+    return po.current(cfg)
+
+
+def _piggy_centering(target):
+    """(center target, nested pier-West container or None, annotation text
+    or None) for one sequence target. RC16-driven targets: (target, None,
+    None), nothing changes. A Piggy-600-driven target in mode "on" with a
+    measured offset centers on the pier-East coordinates (container, slew,
+    center, meridian-flip re-center) and re-centers on the pier-West ones
+    in a nested container that runs once, only before the transit; in
+    preview (or with no offset) only the annotation says what applies."""
+    if getattr(target, "driving_rig", "rc16") != "piggyback":
+        return target, None, None
+    from types import SimpleNamespace
+    from photonscript.scheduler import piggy_offset as po
+    from photonscript.shared.config import PhotonScriptConfig
+    cfg = PhotonScriptConfig()   # fresh: the System page may change the mode
+    if po.mode(cfg) == "off":
+        return target, None, None
+    try:
+        plan = po.center_plan(cfg, target.ra_hours, target.dec_degrees,
+                              _piggy_store(cfg), po.frame_center_of(target))
+    except Exception as e:  # noqa: BLE001 - never break a night over this
+        return target, None, (f"Piggy-600 centering (PS-26): offset "
+                              f"unavailable ({e}); no shift")
+    if not plan["applied"]:
+        return target, None, plan["note"]
+    east, west = plan["by_pier"]["East"], plan["by_pier"]["West"]
+    center_t = SimpleNamespace(name=target.name, ra_hours=east["ra_hours"],
+                               dec_degrees=east["dec_degrees"],
+                               rotation=getattr(target, "rotation", 0.0))
+    west_t = SimpleNamespace(name=target.name, ra_hours=west["ra_hours"],
+                             dec_degrees=west["dec_degrees"],
+                             rotation=getattr(target, "rotation", 0.0))
+    note = plan["note"]
+    transit = getattr(target, "transit_utc", None)
+    if transit is None:
+        return center_t, None, (note + " No transit time for tonight, so "
+                                "only the pier-East center is set (the "
+                                "meridian flip side).")
+    from photonscript.shared.localtime import to_local
+    tl = to_local(cfg, transit)
+    west_c = _seq_container(
+        f"{target.name}{PIGGY_WEST_CENTER_SUFFIX}", [_center(west_t)],
+        conditions=[_loop_once(), _time_condition_at(tl.hour, tl.minute)],
+        container_type=DSO_CONTAINER_TYPE,
+        Target=_make_typed("NINA.Astrometry.InputTarget, NINA.Astrometry",
+                           Expanded=True, TargetName=target.name,
+                           PositionAngle=getattr(target, "rotation", 0.0),
+                           InputCoordinates=_coords(west_t)))
+    note += (f" Pier West center until the transit at {tl:%H:%M} local "
+             f"(RA {west['ra_hours']:.4f}h Dec {west['dec_degrees']:+.3f}); "
+             f"pier East center RA {east['ra_hours']:.4f}h Dec "
+             f"{east['dec_degrees']:+.3f}.")
+    return center_t, west_c, note
+
+
 # --- Containers ---------------------------------------------------------------
 
 def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
@@ -933,6 +1004,9 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if not ordered:
         return None
 
+    # PS-26: where NINA centers (the pier-East shifted coordinates for a
+    # Piggy-600-driven target in mode on, else the target itself)
+    center_t, piggy_west, piggy_note = _piggy_centering(target)
     plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
                           f"@{e.exposure_seconds:.0f}s" for e in active)
     total_h = sum(e.exposure_seconds * max(0, e.count - e.acquired)
@@ -943,8 +1017,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                   f"(RA {target.ra_hours:.2f}h Dec {target.dec_degrees:+.1f}°) "
                   f"— plan {plan_desc} (~{total_h:.1f}h)"),
         _set_tracking(0),
-        _slew(target),
+        _slew(center_t),
     ]
+    if piggy_note:
+        items.insert(0, _annotation(piggy_note))
     # Autofocus on the bright AF filter (L) when configured, else the imaging
     # filter. This AF gets the stars tight for centering and guiding; each
     # filter block below then runs its own AF + measured offset (PS-65). The
@@ -968,7 +1044,9 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                                    f"{target.name}: slew done — autofocusing, "
                                    "then plate solve & center"))
         items.append(_autofocus())
-    items.append(_center(target))
+    items.append(_center(center_t))
+    if piggy_west is not None:
+        items.append(piggy_west)   # PS-26: pier-West center before transit
     items.append(_set_tracking(0))
     if target.start_guiding:
         if selftest_script:
@@ -1123,7 +1201,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             "NINA.Astrometry.InputTarget, NINA.Astrometry",
             Expanded=True, TargetName=target.name,
             PositionAngle=target.rotation,
-            InputCoordinates=_coords(target)),
+            InputCoordinates=_coords(center_t)),
     )
     return container
 

@@ -732,6 +732,19 @@ class PhotonScriptConfig(BaseSettings):
                                       # drifts this much faster than the RC16
                                       # ("/min; 0.5 = ~0.8 px per 120 s OSC sub).
                                       # Report only: no sub is rejected by it.
+    piggy_center_mode: str = "preview"  # PS-26: Piggy-600-driven targets
+                                      # (driving_rig piggyback): on = NINA #1
+                                      # centers the RC16 so the target lands in
+                                      # the middle of the Piggy-600 frame;
+                                      # preview = annotate the shift only (no
+                                      # change); off = nothing
+    piggy_center_nights: int = 30     # PS-26: nights of plate-solve pairs the
+                                      # boresight offset is measured over
+    piggy_center_min_pairs: int = 6   # PS-26: simultaneous Piggy/RC16 solve
+                                      # pairs a pier side needs before its
+                                      # offset is applied
+    piggy_center_max_shift_arcmin: float = 90.0  # PS-26: never shift by more
+                                      # (a larger offset is a bad measurement)
     flexure_solve_all: bool = False  # PS-96: plate-solve EVERY Piggy sub in the
                                      # daytime flexure pass (absolute track + PS-67
                                      # data, a few s of scope-PC CPU each). Off =
