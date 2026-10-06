@@ -440,7 +440,7 @@ def test_config_keys_defaults_and_system_fields():
 def test_agent_skips_optics_test_subs_in_the_reject_streak():
     src = (ROOT / "photonscript/telescope_agent/agent.py").read_text(
         encoding="utf-8")
-    i = src.index("if is_optics_test(target_name)")
+    i = src.index("if is_test_target(target_name)")   # PS-152
     assert src.index("self._consecutive_rejects += 1") > i
 
 

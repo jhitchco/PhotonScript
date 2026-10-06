@@ -213,3 +213,31 @@ def names_for(target: str, raw_names: Iterable[str],
     """Every raw name in raw_names that refers to target (for folder / record
     lookups that must include the old container-named spellings)."""
     return [n for n in raw_names if same_target(n, target, known_targets)]
+
+
+
+# PS-152: test and calibration containers. Their subs (if any) are recorded
+# like any other but are not imaging: they never feed night medians, QA
+# baselines or the night score, and never count toward the reject streak.
+# Matched on target_key() forms, so container names ("..._Container"), OBJECT
+# headers and stored targets all match. The names come from the generator.
+
+@lru_cache(maxsize=1)
+def _test_keys() -> tuple:
+    from photonscript.scheduler import nina_sequence_json as gen
+    prefixes = tuple(target_key(p) for p in (
+        gen.TRACKING_TEST_PREFIX,     # PS-84 "Tracking test <field>"
+        gen.OPTICS_TEST_PREFIX,       # PS-148 "Optics test <field> ..."
+        gen.FOCUS_CAL_PREFIX))        # PS-144 "Focus calibration <field>"
+    inner = (target_key(gen.TARGET_FOCUS_CAL_SUFFIX),)  # PS-76 AF series
+    return prefixes, inner
+
+
+def is_test_target(name: Any) -> bool:
+    """True for a tracking-test, optics-test or focus-calibration target or
+    container name (PS-152)."""
+    k = target_key(name)
+    if not k:
+        return False
+    prefixes, inner = _test_keys()
+    return k.startswith(prefixes) or any(x in k for x in inner)

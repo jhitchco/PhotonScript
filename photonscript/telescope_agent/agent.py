@@ -1586,9 +1586,10 @@ class TelescopeAgent:
         # Nanny: consecutive rejects mean something systemic (clouds, dew,
         # focus loss, tracking) — a single bad sub is just a bad sub.
         # PS-148: through-focus optics-test subs are defocused on purpose;
-        # they neither count toward nor reset the streak.
-        from photonscript.scheduler.optics_test import is_optics_test
-        if is_optics_test(target_name):
+        # PS-152: unguided tracking-test rungs are expected to fail too. Test
+        # and calibration subs neither count toward nor reset the streak.
+        from photonscript.shared.target_names import is_test_target
+        if is_test_target(target_name):
             pass
         elif quality.passed_qa:
             self._consecutive_rejects = 0
