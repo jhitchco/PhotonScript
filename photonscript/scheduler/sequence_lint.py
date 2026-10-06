@@ -402,6 +402,89 @@ def _check_settle_gate(seq: dict, r: LintResult,
                 "other than 0: the gate must never skip a Piggy-600 light")
 
 
+# PS-149: instructions that take time whenever they run. Inside a loop such
+# an item either runs (the pass costs time) or a TimeCondition fails for its
+# estimated duration and ends the loop, so it can never be passed over at no
+# cost. WaitForTime is not one: once its time has passed it returns at once.
+PACING_TYPES = ("Utility.WaitForTimeSpan", "Imaging.TakeExposure",
+                "Autofocus.RunAutofocus")
+
+
+def _cls(d: dict) -> str:
+    return str(d.get("$type") or "").split(",")[0].strip()
+
+
+def _is_loop_condition(c: dict) -> bool:
+    return _cls(c).endswith(".LoopCondition")
+
+
+def _repeats(node: dict) -> bool:
+    """NINA repeats a container while its conditions hold. A LoopCondition
+    bounds it (it runs at most Iterations passes); any other condition
+    alone (Time, Safety, LoopWhileUnsafe, Altitude ...) can hold for
+    ever."""
+    conds = _vals(node.get("Conditions"))
+    return bool(conds) and not any(_is_loop_condition(c) for c in conds)
+
+
+def _may_be_noop(node: dict) -> bool:
+    """A child container is a no-op (finished in no time) when its own
+    conditions fail as it starts: any condition other than a LoopCondition
+    with Iterations >= 1 can."""
+    for c in _vals(node.get("Conditions")):
+        if not _is_loop_condition(c):
+            return True
+        try:
+            if int(c.get("Iterations", 0)) < 1:
+                return True
+        except (TypeError, ValueError):
+            return True
+    return False
+
+
+def _paces(item: dict) -> bool:
+    """Does running this item surely take time (or end the loop)?"""
+    if isinstance(item.get("Items"), dict):
+        if _may_be_noop(item):
+            return False
+        return any(_paces(ch) for ch in _vals(item.get("Items")))
+    cls = _cls(item)
+    if not any(cls.endswith("." + p) for p in PACING_TYPES):
+        return False
+    if cls.endswith(".WaitForTimeSpan"):
+        try:
+            return float(item.get("Time", 0)) >= 1
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+def _check_loop_spin(seq: dict, r: LintResult) -> None:
+    """PS-149 rule loop-spin: a container that repeats (_repeats) must hold,
+    outside any child container that can be a no-op, an item that surely
+    takes time (_paces). NINA re-checks a loop's conditions after a pass
+    with no next item (estimated 0 s), so a loop whose children can all be
+    skipped re-runs at once, thousands of passes a second: NINA #2 on
+    2026-10-06 06:20, OSC_LIGHTS_UNTIL_DAWN in the 30 s before nautical
+    dawn (every child a conditioned wait or pass)."""
+    bad: list[str] = []
+    for d in _walk_dicts(seq):
+        if not (isinstance(d.get("Items"), dict) and "$type" in d):
+            continue
+        if not _repeats(d) or any(_paces(ch) for ch in _vals(d.get("Items"))):
+            continue
+        kinds = ", ".join(_short_type(c.get("$type", ""))
+                          for c in _vals(d.get("Conditions")))
+        bad.append(f"{d.get('Name') or _short_type(d['$type'])} ({kinds})")
+    if bad:
+        more = f" (+{len(bad) - 3} more)" if len(bad) > 3 else ""
+        r.error("loop-spin", f"{len(bad)} loop(s) with no waiting item can "
+                "spin: when every child is skipped NINA repeats the loop at "
+                "once (a busy loop, thousands of passes a second). Add a "
+                "WaitForTimeSpan (30-60 s) to the loop itself: "
+                + "; ".join(bad[:3]) + more)
+
+
 def _walk_dicts(node):
     if isinstance(node, dict):
         yield node
@@ -819,6 +902,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_focus_moves(seq, r)
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)
+    _check_loop_spin(seq, r)   # PS-149
     _check_cooler_gate(seq, r, cooler_gate)
     _check_settle_gate(seq, r, settle_gate)
     _check_readout_mode(seq, r)
@@ -938,10 +1022,17 @@ def lint(seq: dict, guided: bool | None = None,
                    "(TPoint + ProTrack check): guiding stopped, no dithers. "
                    + after)
         if is_focus_cal:
+            # PS-149: followed by other targets it runs its AF series once
+            series = [d for d in _walk_dicts(tgt) if str(d.get("Name") or "")
+                      .endswith("focus calibration AFs")]
+            runs_once = any(_runs_once(c) for s in series
+                            for c in _vals(s.get("Conditions")))
+            how = ("it runs its AF series once, then tonight's targets follow"
+                   if runs_once else "it repeats while safe and above the "
+                   "altitude limit")
             r.warn("focus-calibration", f"[{name}] focus-offset calibration "
-                   "target (AF runs only, no lights); it repeats while safe "
-                   "and above the altitude limit. Turn off NINA's profile "
-                   "Autofocus filter for this run.")
+                   f"target (AF runs only, no lights); {how}. Turn off NINA's "
+                   "profile Autofocus filter for this run.")
         elif not (_has_type(tgt, "TakeExposure") or _has_type(tgt, "SmartExposure")):
             r.error("empty-target", f"[{name}] has no exposures — it would "
                                     "slew, focus and center on every pass")

@@ -33,6 +33,8 @@ PIGGYBACK_LOOP_CONTAINER_NAMES = (OSC_LIGHT_LOOP_NAME, OSC_IMAGE_PASS_NAME,
 OSC_RESUME_HOLD_NAME = "OSC_RESUME_HOLD"
 OSC_WAIT_SAFE_CONFIRM_NAME = "WAIT_SAFE_CONFIRM_OR_NAUTICAL_DAWN"
 OSC_ROOF_OPEN_NOTICE_NAME = "OSC_ROOF_OPEN_NOTICE"
+# PS-149: the unconditional wait that ends every OSC_LIGHTS_UNTIL_DAWN pass
+OSC_PASS_PACE_S = 30
 
 STALE_DAYS = {"FLAT": 45, "DARK": 90, "BIAS": 180}
 _DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}$")
@@ -756,11 +758,19 @@ def _osc_light_loop(config) -> dict:
     piggyback_settle_timeout_s) while the RC16 mount slews, has just moved,
     or PHD2 settles, so a sub starts on a still mount. ErrorBehavior 0 and
     the script always exits 0: it can delay a Piggy-600 light, never skip
-    one, and never touches NINA #1."""
+    one, and never touches NINA #1.
+
+    PS-149 pace: every pass ends with an unconditional
+    WaitForTimeSpan(OSC_PASS_PACE_S). All other items of the pass are
+    conditioned containers, and NINA re-checks the loop's TimeCondition after
+    a pass with no next item (0 s), so in the last 30 s before nautical dawn
+    every child was a no-op and the loop spun thousands of passes a second
+    (NINA #2, 2026-10-06 06:20). The pace makes each pass cost 30 s, and near
+    dawn the TimeCondition sees the 30 s item and ends the loop."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _move_focuser,
         _safety_condition, _time_condition, _loop_once, _cooler_gate,
-        _cooler_gate_spec)
+        _cooler_gate_spec, _wait_for_timespan)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     gain = int(getattr(config, "piggyback_default_gain", 100))
     offset = int(getattr(config, "piggyback_default_offset", 256))
@@ -805,7 +815,8 @@ def _osc_light_loop(config) -> dict:
         [_wait_safe_until(*dawn, name="WAIT_SAFE_OR_NAUTICAL_DAWN"),
          _osc_resume_hold(config, *dawn),
          _wait_safe_until(*dawn, name=OSC_WAIT_SAFE_CONFIRM_NAME),
-         image_pass],
+         image_pass,
+         _wait_for_timespan(OSC_PASS_PACE_S)],   # PS-149 pace
         conditions=[_time_condition(*dawn)])
 
 

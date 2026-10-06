@@ -17,6 +17,7 @@ baked in from that reference:
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Optional
 
@@ -86,6 +87,8 @@ RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
 TARGETS_LOOP_NAME = "TARGETS_CONTAINER"
 NIGHT_LOOP_NAME = "LOOP_ALL_NIGHT"
 UNSAFE_BRANCH_NAME = "UNSAFE"
+SAFE_LOOP_PACE_S = 60   # PS-149: the wait that ends every SAFE_LOOP pass
+TARGET_IMAGING_PACE_S = 60   # PS-149: imaging loops with no AF / exposure
 SMART_EXPOSURE_NAME = "Smart Exposure"
 NIGHT_LOOP_CONTAINER_NAMES = (SAFE_LOOP_NAME, RESET_EQUIPMENT_NAME,
                               TARGETS_LOOP_NAME, NIGHT_LOOP_NAME,
@@ -988,7 +991,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             selftest_script: str | None = None,
                             unguided_dither: bool = False,
                             cooler_gate: tuple | None = None,
-                            focus_drive: dict | None = None) -> dict:
+                            focus_drive: dict | None = None,
+                            followed: bool = False) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> exposures.
@@ -1005,6 +1009,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     filter's best focus to each imaging filter's. Every filter block runs
     SwitchFilter(AF filter) -> RunAutofocus -> MoveFocuserRelative(offset) ->
     exposures, so no block ever images at a stale absolute seed (PS-65).
+
+    followed (PS-149): other targets come after this one tonight, so a
+    focus-offset calibration runs its AF series once instead of repeating it
+    while safe and up (which would hold the mount from the real targets).
 
     narrate (config.pushover_verbosity) controls Pushover chatter: "verbose"
     adds the per-block starting/done pair, "normal" keeps per-target step lines,
@@ -1031,7 +1039,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     verify_min as the verify AF. The start-of-target AF is unchanged."""
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
-                                                  af_filter, focus_offsets)
+                                                  af_filter, focus_offsets,
+                                                  once=followed)
     if getattr(target, "optics_test", False):   # PS-148
         return _build_optics_test_container(target, min_altitude,
                                             af_filter, focus_offsets,
@@ -1322,6 +1331,22 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     once = not getattr(target, "repeat_while_up", True)
     if once:
         inner_conds.append(_loop_once())
+    # PS-149: when every block is broadband capped at moonrise, the target
+    # itself ends at moonrise. Before, the imaging loop (Safety + Altitude +
+    # loop end) held only the "until moonrise" containers, which are no-ops
+    # after moonrise, so it spun until dawn (NINA #1, 2026-10-06 04:19 to
+    # 05:56: M31 LRGB, NGC 604 and the Heart never got their turn). The DSO
+    # container carries it too, so after moonrise the target is skipped
+    # without a slew / AF / center.
+    moon_capped = (bb_condition is not None and bool(ordered) and all(
+        e.filter_type.value not in NB_SET for e in ordered))
+    if moon_capped:
+        inner_conds.append(copy.deepcopy(bb_condition))
+    # PS-149: a loop with no item that surely takes time can spin when its
+    # children are all skipped (focus-model blocks have no AF): pace it.
+    from photonscript.scheduler.sequence_lint import _paces
+    if not any(_paces(i) for i in imaging):
+        imaging.append(_wait_for_timespan(TARGET_IMAGING_PACE_S))
     if getattr(target, "mosaic_note", ""):
         items.insert(0, _annotation(target.mosaic_note))
     items.append(_seq_container(
@@ -1348,7 +1373,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         target.name, items,
         conditions=[_safety_condition(),
                     _altitude_condition(target, min_altitude),
-                    _loop_once()],
+                    _loop_once()]
+        + ([copy.deepcopy(bb_condition)] if moon_capped else []),   # PS-149
         triggers=triggers,
         container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
                        "NINA.Sequencer",
@@ -1383,7 +1409,8 @@ def _focus_cal_steps(filters, rounds: int, ref) -> list:
 def _build_focus_calibration_container(target: NinaSequenceTarget,
                                        min_altitude: float,
                                        af_filter: "FilterType | None",
-                                       focus_offsets: dict | None) -> dict:
+                                       focus_offsets: dict | None,
+                                       once: bool = False) -> dict:
     """PS-76 focus-offset calibration: slew to a rich star field, AF on the
     reference filter (L), center, then run RunAutofocus in every filter of the
     bracketed order. Before each AF the focuser is moved by the configured
@@ -1392,7 +1419,12 @@ def _build_focus_calibration_container(target: NinaSequenceTarget,
     backfill ingests into focus_model.
 
     NINA's profile "Autofocus filter" must be OFF for this run, or every
-    RunAutofocus switches to that filter and only L gets measured."""
+    RunAutofocus switches to that filter and only L gets measured.
+
+    The AF series repeats while safe and up (a whole calibration night).
+    once (PS-149): other targets follow (the PS-144 dusk calibration put
+    first in a real night), so the series runs once (LoopCondition(1)):
+    repeating it held the mount on the calibration field for hours."""
     ref = af_filter or FilterType.LUMINANCE
     steps = _focus_cal_steps(target.focus_calibration_filters,
                              target.focus_calibration_rounds, ref)
@@ -1425,7 +1457,8 @@ def _build_focus_calibration_container(target: NinaSequenceTarget,
         cal.append(_autofocus())
         prev = f
     items.append(_seq_container(f"{target.name}{TARGET_FOCUS_CAL_SUFFIX}", cal,
-                                conditions=[_safety_condition()]))
+                                conditions=[_safety_condition()]
+                                + ([_loop_once()] if once else [])))
     items.append(_pushover("Imaging", f"{target.name}: focus calibration "
                            f"done ({n_af} AF runs)"))
     return _seq_container(
@@ -2168,7 +2201,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     selftest_script=selftest,
                                     unguided_dither=unguided_dither,
                                     cooler_gate=gate,
-                                    focus_drive=focus_drive)
+                                    focus_drive=focus_drive,
+                                    followed=len(sequence.targets) > 1)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
@@ -2206,7 +2240,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
     _safe_confirm_s = int(getattr(_gen_cfg(), "safety_confirm_seconds", 120))
     unsafe_items += [
         _wait_until_safe(),
-        _wait_for_timespan(_safe_confirm_s),
+        # PS-149: at least 1 s, so the night loop always has a pacing item
+        _wait_for_timespan(max(1, _safe_confirm_s)),
         _wait_until_safe(),
         _pushover("Safety", f"SAFE for {max(1, _safe_confirm_s // 60)} min "
                   "straight — unparking and resuming targets"),
@@ -2225,7 +2260,14 @@ def generate_nina_json(sequence: NinaSequenceFile,
                     "dawn ends LOOP_ALL_NIGHT and the End area runs."),
         _pushover("Imaging", "all targets complete — parked, holding until dawn"),
         _park(),
-        _wait_for_provider("DawnProvider", 0),
+        # PS-149: hold until the night loop's OWN end, then a pace wait. The
+        # hold used to be astro dawn, but an all-narrowband night loop ends
+        # at nautical dawn -10: in between, a SAFE_LOOP with its targets done
+        # (set) re-ran unpark / Pushover / park / an instant wait as a busy
+        # loop. The pace makes every pass cost time, and past the loop end
+        # the TimeCondition sees it and ends LOOP_ALL_NIGHT.
+        _wait_for_provider(dawn_provider, dawn_offset),
+        _wait_for_timespan(SAFE_LOOP_PACE_S),
     ], conditions=[_safety_condition()])
 
     night_loop = _seq_container(NIGHT_LOOP_NAME, [
