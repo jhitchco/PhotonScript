@@ -25,3 +25,11 @@ def _settle_gate_off(monkeypatch):
     (deploy\\settle-gate.cmd);
     tests/test_scheduler/test_ps27_split_guard.py turns it on."""
     monkeypatch.setenv("PS_PIGGYBACK_SETTLE_GATE", "false")
+
+
+@pytest.fixture(autouse=True)
+def _safety_crosscheck_off(monkeypatch):
+    """PS-1: the armer's safety cross-check reads NINA #2 over HTTP on an
+    unsafe onset; no test should touch the network for it.
+    tests/test_scheduler/test_ps1_safety_analytics.py turns it on."""
+    monkeypatch.setenv("PS_SAFETY_CROSSCHECK", "off")

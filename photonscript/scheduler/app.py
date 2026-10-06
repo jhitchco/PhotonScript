@@ -824,6 +824,7 @@ _CONFIG_FIELDS = [
     ("safety_confirm_seconds", "PS_SAFETY_CONFIRM_SECONDS", "Confirm-safe hold before resume (s) — safety-flap debounce", "Nanny / Alerts", "int", False, False),
     ("unsafe_stop_enabled", "PS_UNSAFE_STOP_ENABLED", "Armer stops NINA if it is still imaging while unsafe (PS-77)", "Nanny / Alerts", "bool", False, False),
     ("unsafe_stop_grace_s", "PS_UNSAFE_STOP_GRACE_S", "Unsafe this long with SAFE_LOOP still running before the armer stops NINA (s)", "Nanny / Alerts", "int", False, False),
+    ("safety_crosscheck", "PS_SAFETY_CROSSCHECK", "Safety cross-check (PS-1): on NINA #1 reading unsafe, read NINA #2 once; off | log (events file only) | alert (also one push a night when only NINA #1 reads unsafe). Never changes park / resume", "Nanny / Alerts", "str", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
     ("cooler_stuck_minutes", "PS_COOLER_STUCK_MINUTES", "Cooler nanny: alert if still warm this many min into the window", "Imaging", "int", False, False),
     ("cooler_gate_mode", "PS_COOLER_GATE_MODE", "Cooler gate before lights (PS-61): skip (hold, then skip the block) | warn (hold, alert, image anyway) | off", "Imaging", "str", False, False),
@@ -3008,6 +3009,8 @@ from photonscript.scheduler.routers import pause as _pause_router  # noqa: E402
 app.include_router(_pause_router.router)   # PS-64
 from photonscript.scheduler.routers import where as _where_router  # noqa: E402
 app.include_router(_where_router.router)   # PS-64
+from photonscript.scheduler.routers import safety as _safety_router  # noqa: E402
+app.include_router(_safety_router.router)   # PS-1
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

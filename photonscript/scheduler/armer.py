@@ -1096,6 +1096,63 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.debug("safety history: %s", e)
 
+    async def _crosscheck_unsafe(self, now: datetime) -> str | None:
+        """PS-1 cross-check, observe only. Called once when NINA #1 first
+        reads unsafe in an episode: read NINA #2's safety monitor (the same
+        AARO device through its own driver) once. NINA #2 safe while NINA #1
+        reads unsafe = "suspect" (NINA #1's driver or connection, not
+        weather); NINA #2 unsafe = "agree"; unreadable = "unverified".
+        safety_crosscheck: off | log (one events line) | alert (also one push
+        a night on a suspect). Never changes the pause, park or resume.
+        Returns the verdict, or None when off."""
+        mode = str(getattr(self.config, "safety_crosscheck", "log")
+                   or "off").strip().lower()
+        if mode not in ("log", "alert"):
+            return None
+        other = None
+        try:
+            from photonscript.shared.rigs import PIGGYBACK, rig_config
+            base = (rig_config(self.config, PIGGYBACK).nina_base_url
+                    or "").rstrip("/")
+            if base:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    r = await client.get(base + NINA_PATHS["safety"][0])
+                    r.raise_for_status()
+                    data = r.json()
+                payload = data.get("Response", data) if isinstance(data, dict) else {}
+                if isinstance(payload, dict) and payload.get("Connected"):
+                    other = bool(payload.get("IsSafe", False))
+        except Exception as e:  # noqa: BLE001 - NINA #2 down = unverified
+            logger.debug("safety cross-check: NINA #2 unreadable: %s", e)
+        verdict = ("suspect" if other is True else
+                   "agree" if other is False else "unverified")
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "safety",
+                          "kind": "crosscheck", "value": verdict,
+                          "piggyback_safe": other})
+        except Exception as e:  # noqa: BLE001
+            logger.debug("safety cross-check log: %s", e)
+        if verdict == "suspect":
+            logger.warning("safety cross-check: NINA #1 unsafe but NINA #2 "
+                           "safe at %s", now.isoformat())
+            if mode == "alert":
+                from photonscript.shared.phd2_store import night_of
+                night = night_of(self.config, now)
+                if getattr(self, "_crosscheck_alerted", None) != night:
+                    self._crosscheck_alerted = night
+                    await notify(
+                        self.config,
+                        f"Safety cross-check at {now:%H:%M}Z: NINA #1 reads "
+                        "UNSAFE but NINA #2 reads SAFE on the same AARO "
+                        "monitor. Likely NINA #1's driver or connection, not "
+                        "weather. Observe only: nothing was changed. Check "
+                        "/api/safety/night.",
+                        title="PhotonScript safety")
+        return verdict
+
     async def _is_safe(self) -> bool | None:
         data = await self._nina("safety")
         if data is None:
@@ -1692,6 +1749,7 @@ class Armer:
                 w["pauses"] = int(w.get("pauses") or 0) + 1
                 self._unsafe_since = now
                 self._unsafe_check_done = False
+                await self._crosscheck_unsafe(now)   # PS-1, observe only
                 msg = (f"Watching: unsafe at {now:%H:%M}Z. The sideloaded "
                        "sequence should stop imaging, park and wait for safe "
                        "by itself; PhotonScript will not stop or restart it.")
@@ -2696,6 +2754,7 @@ class Armer:
                 self._safe_since = None
                 self._unsafe_check_done = False
                 self._unsafe_tree_misses = 0
+                await self._crosscheck_unsafe(now)   # PS-1, observe only
                 grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
                 self._set_state("PAUSED_UNSAFE",
                                 f"Unsafe at {now:%H:%M}Z — NINA night loop "
