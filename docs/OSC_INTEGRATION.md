@@ -64,12 +64,55 @@ twilight sub after a 44-min gap (+20% background).
 (GradientCorrection, else ABE degree 1; `-Gradient none` to skip) -> plate solve
 with PixInsight's ImageSolver, seeded from `-Target`/`-RaDeg -DecDeg` (guessed
 from the name, e.g. M31) and spiralling out to ~1.2 deg because Piggy-600 frames
-rarely center on the target -> SPCC (fallback BackgroundNeutralization +
-ColorCalibration when unsolved) -> BlurXTerminator / NoiseXTerminator if
-installed (`-NoRC` to skip) -> linked stretch + gentle saturation. Output in
-`out\final\`: `<Name>_linear.xisf` (color-calibrated, for manual work),
-`<Name>_final.xisf`, `_final.tif` (16-bit) and `_final.jpg`. Log:
-`out\finish.log`. Every optional step logs and skips on failure.
+rarely center on the target -> color -> SCNR green (`-Scnr`, 0.6) ->
+deconvolution -> noise reduction (`-NoRC` skips the RC Astro tools) -> linked
+stretch (`-BgTarget` 0.12, `-ShadowSigma` 2.0) + saturation (`-SatMid` 0.64) ->
+core HDR blend (`-HdrLayers` 7) -> optional framing crop (`-Frame l,t,r,b`).
+Output in `out\final\` (or a new `-OutDir`): `<Name>_linear.xisf`
+(color-calibrated, for manual work), `<Name>_final.xisf`, `_final.tif` (16-bit),
+`_final.jpg` and `<Name>_final_steps.json` (every step with tool, status and
+settings; the short tag such as `SPCC` or `BN+CC` is also in the PSFINISH FITS
+keyword). Log: `out\finish.log` (or `<OutDir>\finish.log`). Every optional step
+logs and skips on failure. `-Master <xisf> -OutDir <new folder>` finishes any
+master into a fresh folder (refused if the folder has files); `-Wait` runs
+PixInsight unattended and checks for EXIT OK.
+
+Color (PS-46, `-Color auto|spcc|basic`): SPCC runs when the image solved and
+the Gaia DR3/SP database is selected in PixInsight (probed with Gaia
+`get-info`). Curves come from PixInsight's `library\filters.xspd` and
+`white-references.xspd` by name: QE `Sony IMX411/455/461/533/571`, RGB `Sony
+Color Sensor R/G/B-UVIRcut`, white `Average Spiral Galaxy` (`-SpccQE`,
+`-SpccRed`, `-SpccGreen`, `-SpccBlue`, `-SpccWhite`). Otherwise the log reads
+`color: <reason> -> BN + ColorCalibration fallback`. One-time setup: download
+Gaia DR3/SP from the PixInsight software distribution (needs the PixInsight
+account), then Process > Gaia > wrench icon > select the DR3/SP files.
+
+Deconvolution and noise reduction (PS-41) run on the LINEAR image after color
+calibration, deconvolution first: deconvolution inverts a linear blur, which
+no longer holds after the stretch, and should sharpen real detail rather than
+noise-reduction smoothing; noise is still uniform before the stretch
+amplifies the faint background. Tool order: deconvolution = BlurXTerminator,
+else GraXpert `deconv-obj` (`-DeconvStrength`, 0.5) then `deconv-stellar` at
+half strength, else skipped (no built-in: classic Deconvolution needs a
+measured PSF). Noise reduction (`-Denoise 0..1`, 0.5; 0 = off) =
+NoiseXTerminator, else GraXpert `denoising`, else MultiscaleLinearTransform
+(4 layers, thresholds 3/2/1/0.5, inverted linear mask). GraXpert is found via
+`-GraXpert <exe>`, `$env:PS_GRAXPERT`, or `C:\Program Files\GraXpert\`
+(`GraXpert-win64.exe` / `GraXpert.exe`); `-NoGraXpert` turns it off,
+`-GraXpertAiVersion`, `-GraXpertGpu true|false`, `-GraXpertTimeoutMin` (30)
+pass through. Its output replaces the image only when the size matches and the
+background level is plausible; otherwise the next tool runs.
+
+Star reduction (PS-40, `-StarReduction on|off`, `-StarStrength` 0.7) needs the
+StarNet2 PixInsight module and is skipped (logged) without it. After noise
+reduction, a copy of the linear image gets a reversible midtones-only
+pre-stretch (StarNet2 is trained on stretched data), StarNet2 removes the
+stars, the inverse transform takes the starless image back to linear, and
+stars = linear - starless. The starless image gets the normal stretch (its own
+statistics, so slightly harder), saturation and the core HDR blend, and is
+saved as `<Name>_starless.xisf`; the stars get the same midtones with a floor
+at 2x the linear noise, then are screened back:
+`~(~starless * ~(stars * k))`. Any failure falls back to the normal stretch.
 
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
