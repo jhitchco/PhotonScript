@@ -51,6 +51,7 @@
             <a href="#calSec">Calibration<span class="g-navc" data-navc="calSec"></span></a>
             <a href="#guardSec">Guide guard<span class="g-navc" data-navc="guardSec"></span></a>
             <a href="#tuneSec">Guide star<span class="g-navc" data-navc="tuneSec"></span></a>
+            <a href="#blockSec">Per-block guiding</a>
             <a href="#glogSec">Tonight's guide log</a>
             <a href="#tpointSec">TheSky / TPoint<span class="g-navc" data-navc="tpointSec"></span></a>
         </nav>
@@ -134,6 +135,16 @@
                 <button class="btn btn-secondary" id="tuneRefresh">Refresh</button>
             </div>
             <div id="tuneRows"></div>
+        </section>
+
+        <section class="panel" id="blockSec">
+            <h2>Per-block guiding (PS-85)</h2>
+            <p class="g-intro">The RC16 guide camera looks through the filter wheel, so a 3 nm block may show it no real star. At the start of each guided block the RC16 agent reads PHD2's next guide frames and its star image: viable = SNR at or over the minimum, HFD in band, a star-like profile, few lost frames. A block without a real star runs unguided (TPoint + ProTrack) at the sub length below; while guiding, SNR under the minimum with a non-star profile for N frames (guard D6) does the same. Mode observe records and pushes once per target only; auto stops guiding and re-dispatches the rest with that block unguided (no dithers on those blocks).</p>
+            <div class="bd" id="blockInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="blockRefresh">Refresh</button>
+            </div>
+            <div id="blockRows"></div>
         </section>
 
         <section class="panel" id="glogSec">

@@ -156,6 +156,11 @@ class Armer:
         self._unsafe_tree_misses = 0
         self._hotpix_tried: str | None = None   # PS-91: night of the last map try
         self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
+        # PS-85: tonight's per-block guiding decisions (mode auto) that the
+        # dispatch applies: {"night", "blocks": {"<target>|<filter>": {...}},
+        # "redispatches"}
+        self.block_decisions: dict = {}
+        self._block_alerts: list[tuple] = []   # (target, text) after a dispatch
         self._recal_night: str | None = None  # PS-93: mid-night recalibration done
         self._cal_force: str | None = None     # PS-93: reason forcing the slot
         self._audit_task: asyncio.Task | None = None  # PS-89: audit at arm
@@ -188,6 +193,7 @@ class Armer:
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
                 "fallback_night": getattr(self, "_fallback_night", None),
+                "block_decisions": getattr(self, "block_decisions", None) or {},
                 "recal_night": getattr(self, "_recal_night", None),
                 "guider_name": getattr(self, "guider_name", None),
                 "watch": getattr(self, "watch", None),
@@ -234,6 +240,9 @@ class Armer:
         # re-dispatches instead of waiting on a sequence that is not running.
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
         self._fallback_night = saved.get("fallback_night")
+        bd = saved.get("block_decisions") or {}
+        self.block_decisions = (bd if bd.get("night") == self.plan.get("night_of")
+                                else {})
         self._recal_night = saved.get("recal_night")
         self.guider_name = saved.get("guider_name")
         self.watch = saved.get("watch")  # PS-136: a watched night reattaches too
@@ -371,6 +380,8 @@ class Armer:
         self._cancel_pause_wait()   # PS-64
         self.pause_info = None
         self.plan = build_night_plan(self.config)
+        if (getattr(self, "block_decisions", None) or {}).get("night") != self.plan.get("night_of"):
+            self.block_decisions = {}   # PS-85: decisions belong to one night
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
@@ -1184,6 +1195,11 @@ class Armer:
         use_guiding = self._use_guiding()
         for t in targets:
             t.start_guiding = use_guiding
+        # PS-85: per-block guiding (tonight's decisions plus history); may
+        # turn blocks, or a whole target, unguided
+        if use_guiding:
+            self._apply_block_decisions(targets)
+        use_guiding = any(t.start_guiding for t in targets)
         # PS-66: unguided targets get the sub-length cap (same integration).
         # Here, after guiding is resolved, so fallback_unguided's re-dispatch
         # is capped too.
@@ -1395,6 +1411,7 @@ class Armer:
         # Best-effort — a piggyback problem never fails the RC16 night.
         if companion:
             await self._dispatch_piggyback_companion()
+        await self._send_block_alerts()   # PS-85: history decisions, once per target
         return True
 
     async def _dispatch_piggyback_companion(self) -> None:
@@ -2256,6 +2273,136 @@ class Armer:
                      title="PhotonScript unguided fallback", priority=1)
         return ok
 
+    # -- PS-85: per-block guiding ------------------------------------------------
+
+    def _live_block_decisions(self) -> dict:
+        bd = getattr(self, "block_decisions", None) or {}
+        if bd.get("night") != self.plan.get("night_of"):
+            return {}
+        out = {}
+        for k, v in (bd.get("blocks") or {}).items():
+            tgt, _, flt = k.rpartition("|")
+            out[(tgt, flt)] = v
+        return out
+
+    def _apply_block_decisions(self, targets) -> None:
+        """PS-85, in _dispatch: mode auto applies tonight's live decisions
+        and history (blocks, or a whole target, become unguided at the
+        proven sub length); mode observe only records what history would
+        have done (once per block per night). Never fails a dispatch."""
+        from photonscript.scheduler import guide_blocks as gb
+        mode = gb.block_mode(self.config)
+        if mode == "off":
+            return
+        night = self.plan.get("night_of") or ""
+        try:
+            live = self._live_block_decisions() if mode == "auto" else {}
+            dec = gb.dispatch_decisions(self.config, night, targets, live=live)
+            if not dec:
+                return
+            seen = gb.tonight_decisions(self.config, night)
+            for (tgt, flt), d in dec.items():
+                if d.get("source") != "history" or (tgt, flt) in seen:
+                    continue
+                s_, src = gb.fallback_exposure_s(self.config, flt)
+                rec = gb.append(self.config, night, {
+                    "event": "decision", "target": tgt, "filter": flt,
+                    "decision": "unguided", "source": "history", "mode": mode,
+                    "acted": mode == "auto", "reason": d.get("reason"),
+                    "exposure_s": s_, "exposure_source": src})
+                verb = ("planned unguided" if mode == "auto"
+                        else "would be planned unguided (observe: still guided)")
+                if getattr(self, "_block_alerts", None) is None:
+                    self._block_alerts = []
+                self._block_alerts.append((tgt, (
+                    f"{tgt} {flt} {verb} at {s_:g} s: {rec['reason']}."
+                    if s_ else f"{tgt} {flt} {verb}: {rec['reason']}.")))
+            if mode == "auto":
+                gb.apply_to_targets(self.config, targets, dec)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-85 per-block guiding skipped: %s", e)
+
+    async def _send_block_alerts(self) -> None:
+        from photonscript.scheduler import guide_blocks as gb
+        pending = list(getattr(self, "_block_alerts", None) or [])
+        self._block_alerts = []
+        night = self.plan.get("night_of") or ""
+        for tgt, text in pending:
+            try:
+                await gb.alert_once(self.config, night, tgt, text)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("PS-85 block alert failed: %s", e)
+
+    async def block_unguided(self, target: str, filt: str, reason: str,
+                             source: str = "live", evidence: dict | None = None) -> bool:
+        """PS-85: no real guide star for this target's `filt` block. Records
+        the decision and pushes once per target per night. Mode auto, a
+        RUNNING guided night and under guide_block_max_redispatch: stop the
+        sequence and the guider and re-dispatch the remainder with this block
+        unguided at the proven sub length (companion untouched). Returns True
+        only when it re-dispatched."""
+        from photonscript.scheduler import guide_blocks as gb
+        mode = gb.block_mode(self.config)
+        night = self.plan.get("night_of") or ""
+        if mode == "off" or not target or not filt:
+            return False
+        key = f"{target}|{filt}"
+        bd = getattr(self, "block_decisions", None) or {}
+        if bd.get("night") != night:
+            bd = {"night": night, "blocks": {}, "redispatches": 0}
+        if key in bd["blocks"]:
+            return False                      # already unguided tonight
+        planned = gb.planned_blocks(self.config, night)
+        if planned is not None and (target, filt) not in planned:
+            # e.g. the AF filter (L) between narrowband blocks: not a block
+            logger.info("PS-85: %s %s is not a guided block tonight (%s)",
+                        target, filt, reason)
+            return False
+        exp_s, src = gb.fallback_exposure_s(self.config, filt)
+        rec = {"event": "decision", "target": target, "filter": filt,
+               "decision": "unguided", "source": source, "mode": mode,
+               "acted": False, "reason": reason, "exposure_s": exp_s,
+               "exposure_source": src, "evidence": evidence or {}}
+        length = f" at {exp_s:g} s ({src})" if exp_s else ""
+        why_not = None
+        if mode != "auto":
+            why_not = "guide_block_mode=observe: nothing switched"
+        elif self.state != "RUNNING":
+            why_not = f"armer {self.state}, not RUNNING"
+        elif not self._use_guiding():
+            why_not = "night is unguided"
+        elif bd.get("redispatches", 0) >= int(
+                getattr(self.config, "guide_block_max_redispatch", 3) or 0):
+            why_not = "re-dispatch limit reached tonight"
+        if why_not:
+            rec["note"] = why_not
+            gb.append(self.config, night, rec)
+            await gb.alert_once(self.config, night, target,
+                                f"{target} {filt}: no real guide star ({reason}). "
+                                f"Would run it unguided{length}; {why_not}.")
+            return False
+        bd["blocks"][key] = {"source": source, "reason": reason,
+                             "t_utc": datetime.utcnow().isoformat() + "Z"}
+        bd["redispatches"] = int(bd.get("redispatches", 0)) + 1
+        self.block_decisions = bd
+        self._persist()
+        steps = []
+        for label, nkey in (("stop", "sequence_stop"), ("guider stop", "guider_stop")):
+            ok = await self._nina(nkey) is not None
+            steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        steps.append(f"re-dispatch {'ok' if ok else 'FAILED'}")
+        report = "; ".join(steps)
+        rec.update(acted=True, note=report)
+        gb.append(self.config, night, rec)
+        self._set_state("RUNNING", f"{target} {filt} unguided ({reason}): {report}")
+        logger.warning("PS-85 block %s %s unguided (%s): %s", target, filt, reason, report)
+        await gb.alert_once(self.config, night, target,
+                            f"{target} {filt}: no real guide star ({reason}). The "
+                            f"rest is re-dispatched with {filt} unguided{length}, "
+                            f"TPoint + ProTrack ({report}).")
+        return ok
+
     # -- PS-90: guide-star gain / binning, pre-dusk ----------------------------
 
     async def _maybe_predusk_tune(self) -> None:
@@ -2551,6 +2698,41 @@ async def request_recalibration(config, reason: str) -> bool:
     except Exception as e:  # noqa: BLE001
         logger.warning("recalibration re-dispatch failed: %s", e)
         return False
+
+
+async def request_block_unguided(config, target: str, filt: str, reason: str,
+                                 source: str = "live",
+                                 evidence: dict | None = None) -> bool:
+    """PS-85: ask the scheduler's armer (same process in `start --mode
+    full`) to run this target's `filt` block unguided (Armer.block_unguided).
+    Without an armer here the decision is still recorded and pushed once per
+    target per night, and False is returned."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is not None:
+        try:
+            return await armer.block_unguided(target, filt, reason, source=source,
+                                              evidence=evidence)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-85 block decision failed: %s", e)
+            return False
+    from photonscript.scheduler import guide_blocks as gb
+    from photonscript.shared import phd2_store
+    if gb.block_mode(config) == "off":
+        return False
+    night = phd2_store.night_of(config)
+    s_, src = gb.fallback_exposure_s(config, filt)
+    gb.append(config, night, {"event": "decision", "target": target, "filter": filt,
+                              "decision": "unguided", "source": source,
+                              "mode": gb.block_mode(config), "acted": False,
+                              "reason": reason, "exposure_s": s_,
+                              "exposure_source": src, "evidence": evidence or {},
+                              "note": "no armer in this process"})
+    await gb.alert_once(config, night, target,
+                        f"{target} {filt}: no real guide star ({reason}). Would run "
+                        f"it unguided; no armer in this process.")
+    return False
 
 
 async def request_fallback_unguided(config, reason: str) -> bool:

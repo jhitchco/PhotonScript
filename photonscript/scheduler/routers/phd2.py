@@ -339,6 +339,30 @@ def api_phd2_tuning(date: str = ""):
     return out
 
 
+# ---- PS-85 per-block guiding ------------------------------------------------
+
+@router.get("/api/phd2/blocks")
+def api_phd2_blocks(date: str = ""):
+    """The night's per-block guiding (default: tonight): the mode, the
+    unguided sub length per filter (and where it comes from), every guide-star
+    viability check and the latest decision per target and filter block."""
+    from photonscript.scheduler import guide_blocks as gb
+    from photonscript.shared import phd2_store as store
+    cfg = _cfg()
+    date = date or store.night_of(cfg, datetime.utcnow())
+    out = gb.summary(cfg, date)
+    try:
+        from photonscript.scheduler import app as _app
+        a = getattr(_app, "_armer", None)
+        bd = (getattr(a, "block_decisions", None) or {}) if a is not None else {}
+        out["armer"] = {"night": bd.get("night"),
+                        "blocks": sorted((bd.get("blocks") or {}).keys()),
+                        "redispatches": bd.get("redispatches", 0)}
+    except Exception:  # noqa: BLE001
+        out["armer"] = None
+    return out
+
+
 # ---- PS-103 Guiding tab -----------------------------------------------------
 
 _PROBE_TTL_S = 20.0      # one PHD2 read per 20 s, however many tabs poll

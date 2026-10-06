@@ -58,7 +58,9 @@ def test_record_and_recall_per_filter(tmp_path):
 
 
 def test_recommend_more_gain_when_faint_at_the_longest_exposure(tmp_path):
-    cfg = _cfg(tmp_path)
+    # the PS-90 band (4 s) on every filter; PS-85's narrowband band is tested
+    # in test_ps85_guide_blocks.py
+    cfg = _cfg(tmp_path, phd2_tune_exp_ms_nb="")
     _m(cfg, "M27", "L", 1000, 0.50)
     _m(cfg, "M27", "OIII", 4000, 0.20)     # 0.20 at 4000: faint, wants 3.5x
     rec = tn.recommend(cfg)

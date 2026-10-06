@@ -59,6 +59,11 @@ FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
 # "<target> filter block (cooler-gated)" whose first item is the gate, so a
 # gate SKIP interrupts just that block.
 TARGET_BLOCK_SUFFIX = " filter block (cooler-gated)"
+# PS-85: a guided target with some filter blocks unguided tonight (no real
+# guide star through that filter) wraps each block in its own container
+# "<target> filter block (guiding per block)": an unguided block starts with
+# StopGuiding, a guided one with StartGuiding (a failure skips that block).
+TARGET_GUIDE_BLOCK_SUFFIX = " filter block (guiding per block)"
 # PS-26: a Piggy-600-driven target (centering mode on) gets a nested
 # DeepSkyObjectContainer "<target> Piggy-600 center, pier West (before
 # transit)" holding one Center on the pier-West coordinates; it runs once,
@@ -1109,7 +1114,22 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if piggy_west is not None:
         items.append(piggy_west)   # PS-26: pier-West center before transit
     items.append(_set_tracking(0))
-    if target.start_guiding:
+    # PS-85: blocks decided unguided tonight on a guided target
+    unguided_set = ({str(f) for f in (getattr(target, "unguided_filters", None) or [])}
+                    if target.start_guiding else set())
+    per_block = bool(unguided_set & {e.filter_type.value for e in ordered})
+    if target.start_guiding and per_block:
+        names = ", ".join(e.filter_type.value for e in ordered
+                          if e.filter_type.value in unguided_set)
+        items.append(_annotation(f"PS-85 per-block guiding: {names} unguided "
+                                 "tonight (no real guide star through that "
+                                 "filter); the other blocks start guiding "
+                                 "themselves"))
+        if narrate_steps:
+            items.append(_pushover("Imaging",
+                                   f"{target.name}: focused, centered; guiding per "
+                                   f"block ({names} unguided, TPoint + ProTrack)"))
+    elif target.start_guiding:
         if selftest_script:
             items.append(_external_script(selftest_script, "target"))
         items.append(_start_guiding(force_calibration))
@@ -1129,8 +1149,25 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             f"({bb_deferred_note}%) — RGB/L deferred to a "
             "dark evening; narrowband only tonight"))
 
+    first_guided = [True]   # PS-85: the first per-block StartGuiding
+
+    def _guide_items(block_guided: bool) -> list:
+        """PS-85: what a block runs first on a per-block guided target."""
+        if not per_block:
+            return []
+        if not block_guided:
+            return [_stop_guiding()]
+        out = []
+        if selftest_script:
+            out.append(_external_script(selftest_script, "target"))
+        out.append(_start_guiding(force_calibration and first_guided[0]))
+        first_guided[0] = False
+        return out
+
     def _block(exp, bi, n_blocks, condition=None):
         n = exp.count - exp.acquired
+        block_guided = bool(target.start_guiding
+                            and exp.filter_type.value not in unguided_set)
         block_h = exp.exposure_seconds * n / 3600
         # PS-65: every block focuses for itself. AF on the AF filter (L), or on
         # the block's own filter when no AF filter is configured, then move by
@@ -1202,22 +1239,33 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                 "count": short_n, "acquired": 0,
                 "hdr_short_seconds": None, "hdr_short_count": 0,
                 "hdr_short_acquired": 0})
-            out.append(_smart_exposure(short_exp, target.start_guiding,
+            out.append(_smart_exposure(short_exp, block_guided,
                                        target.dither_every_n,
                                        guard_conditions=_guards(),
                                        extra_triggers=_af_triggers(),
-                                       unguided_dither=unguided_dither))
+                                       unguided_dither=(unguided_dither
+                                                        and not per_block)))
         if exp.count - exp.acquired > 0:
-            out.append(_smart_exposure(exp, target.start_guiding,
+            out.append(_smart_exposure(exp, block_guided,
                                        target.dither_every_n,
                                        guard_conditions=_guards(),
                                        extra_triggers=_af_triggers(),
-                                       unguided_dither=unguided_dither))
+                                       unguided_dither=(unguided_dither
+                                                        and not per_block)))
         if chatty_block:
             out.append(_pushover(
                 "Imaging",
                 f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
                 f"done ({n}×{exp.exposure_seconds:.0f}s attempted)"))
+        # PS-85: an unguided block stops guiding before its AF; a guided one
+        # starts guiding after its AF and offset, right before its lights
+        guide = _guide_items(block_guided)
+        if guide and block_guided:
+            k = next((i for i, it in enumerate(out)
+                      if it.get("Name") == SMART_EXPOSURE_NAME), len(out))
+            out[k:k] = guide
+        elif guide:
+            out = guide + out
         if cooler_gate:
             # PS-61: gate first (before the AF: no point focusing for a block
             # that will not shoot), in a container of its own so a SKIP
@@ -1226,6 +1274,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                                 f"{target.name} {exp.filter_type.value}")
             return [_seq_container(f"{target.name}{TARGET_BLOCK_SUFFIX}",
                                    [gate] + out)]
+        if per_block:
+            # PS-85: its own container, so a failed StartGuiding (ErrorBehavior
+            # skip) skips this block only, not the target's imaging loop
+            return [_seq_container(f"{target.name}{TARGET_GUIDE_BLOCK_SUFFIX}", out)]
         return out
 
     n_blocks = len(ordered)

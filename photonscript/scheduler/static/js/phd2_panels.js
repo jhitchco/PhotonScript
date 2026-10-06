@@ -11,6 +11,7 @@
  *   calibration GET  /api/phd2/calibration, POST /api/phd2/calibrate?mode= (PS-93)
  *   guard       GET  /api/phd2/guard, /api/phd2/hotpix, POST /api/phd2/hotpix/capture (PS-91)
  *   tuner       GET  /api/phd2/tuning                     (PS-90)
+ *   blocks      GET  /api/phd2/blocks                     (PS-85)
  *   guide log   GET  /api/phd2/analysis?date=&subs=false  (PS-88)
  *   attention   GET  /api/guiding/attention               (PS-119)
  * PS-119: the "What to change" card (#attention), the nav counts, and the
@@ -376,6 +377,37 @@
         } catch (e) { setText('tuneInfo', 'error: ' + e); }
     }
 
+    // ---- 6b. PS-85 per-block guiding ----------------------------------------
+    async function loadBlocks() {
+        if (!$('blockInfo')) return;
+        try {
+            var b = await getJSON('/api/phd2/blocks');
+            var fb = b.fallback || {};
+            var lens = Object.keys(fb).map(function (f) {
+                var v = fb[f] || {};
+                return esc(f) + ' ' + (v.exposure_s == null ? '-' : esc(v.exposure_s) + ' s') +
+                    ' <span class="g-dim">(' + esc(v.source) + ')</span>';
+            }).join(', ');
+            setHTML('blockInfo', 'Mode <b>' + esc(b.mode) + '</b> | night ' + esc(b.date) + ', ' + esc(b.checks) +
+                ' check(s), ' + esc(b.redispatches) + ' re-dispatch(es) | viable: SNR at least ' + esc(b.snr_min) +
+                '; guard D6 after ' + esc(b.lowsnr_frames) + ' frames' +
+                '<br>Unguided sub length: ' + lens +
+                (b.test_date ? ' <span class="g-dim">(tracking test ' + esc(b.test_date) + ')</span>' : ''));
+            var badge = {guided: 'badge-pass', unguided: 'badge-warn', pending: 'badge-unknown'};
+            var rows = (b.blocks || []).map(function (r) {
+                return '<tr><td>' + esc(r.target) + '</td><td>' + esc(r.filter) + '</td><td><span class="badge ' +
+                    (badge[r.decision] || 'badge-unknown') + '">' + esc(r.decision) + '</span></td><td>' +
+                    esc(r.source) + (r.acted ? ' (switched)' : '') + '</td><td>' + esc(r.exposure_s) + '</td><td>' +
+                    esc(r.snr) + '</td><td>' + esc(r.hfd_px) + '</td><td>' + esc(r.profile) + '</td><td>' +
+                    esc(r.checks) + '</td><td>' + esc(r.t_utc) + '</td><td>' + esc(r.reason) + '</td></tr>';
+            }).join('');
+            setHTML('blockRows', rows ? '<table class="g-tbl"><tr><th>Target</th><th>Filter</th><th>Decision</th>' +
+                '<th>Source</th><th>Unguided s</th><th>SNR</th><th>HFD px</th><th>Profile</th><th>Checks</th>' +
+                '<th>When (UTC)</th><th>Reason</th></tr>' + rows + '</table>' :
+                '<div class="g-dim">No guided block checked tonight.</div>');
+        } catch (e) { setText('blockInfo', 'error: ' + e); }
+    }
+
     // ---- 7. PS-88 tonight's guide-log summary -------------------------------
     var SEV = {critical: 'badge-fail', warning: 'badge-warn', info: 'badge-unknown'};
     async function loadGuideLog() {
@@ -505,6 +537,7 @@
         on('guardRefresh', loadGuard);
         on('hotpixCapture', captureHotpix);
         on('tuneRefresh', loadTuning);
+        on('blockRefresh', loadBlocks);
         on('glogRefresh', loadGuideLog);
         on('attnRefresh', loadAttention);
         loadAttention();
@@ -514,6 +547,7 @@
         loadCalibration();
         loadGuard();
         loadTuning();
+        loadBlocks();
         // live state every 15 s, the stored records every 60 s; nothing while
         // the tab is hidden or while that section's action is in flight. The
         // guide-log analysis reads whole log files: on load and on Refresh only.
@@ -525,6 +559,7 @@
             loadCalibration();
             if (!state.busy.guard) loadGuard();
             loadTuning();
+            loadBlocks();
         }, 60000);
     }
 
@@ -532,6 +567,7 @@
         esc: esc, initGuidingPage: initGuidingPage, systemSummary: systemSummary,
         loadLive: loadLive, loadAudit: loadAudit, loadSelftest: loadSelftest,
         loadCalibration: loadCalibration, loadGuard: loadGuard, loadTuning: loadTuning,
+        loadBlocks: loadBlocks,
         loadGuideLog: loadGuideLog, loadAttention: loadAttention,
         passing: {rowClass: rowClass, isOk: isOk, html: passingHTML, wire: wirePassing, staleTag: staleTag}
     };

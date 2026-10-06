@@ -288,7 +288,46 @@ backup and a verified registry name, then re-audits. PHD2's gain is its own
 By hand on the scope PC before `exposure` mode: PHD2 16-bit, saturation by
 Max ADU 65535, auto exposure off (so `set_exposure` sticks), and a dark
 library covering every exposure from 1 to 4 s at the chosen gain and binning
-(plus the defect map).
+(plus the defect map). PS-85: on Ha / OIII / SII the band is
+`phd2_tune_exp_ms_nb` (1 to 8 s), so extend the dark library to 8 s for
+narrowband; the next-night advice adds `binning_advice` (up to
+`phd2_tune_bin_max_nb`, advice only) when narrowband is still faint at gain
+100.
+
+**Per-block guiding (PS-85).** The RC16's OAG looks through the filter
+wheel, so a 3 nm block may show the guide camera no real star (2026-10-05:
+PHD2 locked on noise at SNR 21.9 to 30.9). At the start of every guided block
+(a filter change, or a settle) the RC16 agent's `guide_viability.
+ViabilityMonitor` reads PHD2's next `guide_viable_frames` guide frames and
+one star image, read only: viable = SNR median at least
+`guide_viable_snr_min` (30), HFD inside `guide_viable_hfd_px` (1.5 to 10 px
+at bin 2), at most 40% lost frames and a star-like profile (round about its
+peak, not one pixel). While the PS-90 tuner (mode exposure) can still
+lengthen a narrowband exposure, a miss is "pending" and re-checked (3 times
+at most). A final miss asks the armer for that block unguided. Guard D6 does
+the same while guiding: SNR under the minimum for `guide_lowsnr_frames` (10)
+frames AND a non-star profile (a weak but round star is left alone); its
+subs are marked guide_lock WARN like a non-star lock.
+```
+guide_block_mode = observe   decide, record, one push per target per night (default)
+guide_block_mode = auto      stop guiding, re-dispatch the rest with the block
+                             unguided (at most guide_block_max_redispatch a night)
+guide_block_mode = off       none of it (guard D6 still marks subs)
+GET /api/phd2/blocks?date=   checks, decisions, unguided length per filter
+```
+The unguided block runs at the filter's proven length: the
+`guide_fallback_test_date` tracking-test report, only subs after
+`guide_fallback_test_since_utc` (ProTrack on), else `guide_fallback_exposure_s`
+(L/R/G/B 60 s, Ha/OIII/SII 300 s from the 2026-10-05 test), never over
+`unguided_max_exposure_s`. In the sequence each block of such a target gets
+its own container "<target> filter block (guiding per block)": an unguided
+block starts with StopGuiding and has no active dither (NINA has one guider:
+Direct Guider dithers need a night armed unguided, PS-66); a guided block
+runs StartGuiding after its AF (a failure skips that block only). At
+dispatch, a block not viable on a night within `guide_block_history_days`
+(7) at the same guide binning and gain is planned unguided from the start
+(mode auto; observe only records it). Records:
+`<data_dir>\phd2\blocks\<night>.jsonl`; Guiding tab "Per-block guiding".
 
 ### Reading the TheSky / TPoint audit (PS-104)
 

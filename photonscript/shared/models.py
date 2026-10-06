@@ -424,6 +424,10 @@ class NinaSequenceTarget(BaseModel):
     meridian_flip: bool = True
     dither_every_n: int = 5
     start_guiding: bool = False  # unguided (Paramount MX, TPoint + ProTrack) unless set
+    # PS-85: on a guided target, filter blocks that run unguided tonight (no
+    # real guide star through that filter): each block then carries its own
+    # StopGuiding / StartGuiding (nina_sequence_json._build_target_container)
+    unguided_filters: list[str] = Field(default_factory=list)
     cool_camera: bool = True
     camera_temp_c: float = -10.0
     # PS-76: a focus-offset calibration target. Instead of imaging, it runs a

@@ -118,10 +118,11 @@ def guard_episodes(config, night: str) -> list[dict]:
 def nonstar_windows(config, night: str, now: datetime | None = None
                     ) -> list[tuple[datetime, datetime]]:
     """[(start, end)] UTC of the night's non-star lock episodes (an episode
-    still open runs to `now`, or 30 min past its start when now is None)."""
+    still open runs to `now`, or 30 min past its start when now is None).
+    PS-85: a low-SNR episode (guard D6, guiding on noise) counts too."""
     out = []
     for e in guard_episodes(config, night):
-        if e.get("kind") != "non_star":
+        if e.get("kind") not in ("non_star", "low_snr"):
             continue
         a = parse_z(e.get("start_utc"))
         if a is None:
