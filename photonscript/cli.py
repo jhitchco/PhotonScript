@@ -12,6 +12,7 @@ Usage:
     photonscript autostart-check [--watch-restart] [--kill]   # PS-34a
     photonscript rename-targets [--apply] [--date D] [--stamp-headers]  # PS-78
     photonscript tracking-test-report [--date D] [--pa DEG] [--json]  # PS-84
+    photonscript optics-test-report [--date D] [--json]  # PS-148
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
@@ -1297,6 +1298,26 @@ def tracking_test_report(
     from photonscript.scheduler.tracking_test import (build_report,
                                                       format_report)
     rep = build_report(PhotonScriptConfig(), date or None, pa_override=pa)
+    if as_json:
+        console.print_json(_json.dumps(rep, default=str))
+    else:
+        console.print(format_report(rep), markup=False, highlight=False)
+
+
+@app.command("optics-test-report")
+def optics_test_report(
+    date: str = typer.Option("", help="Night (YYYY-MM-DD, the runs page "
+                                      "date); default tonight"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-148: through-focus optics test report: subs named 'Optics test
+    <field> <filter> <offset>' per filter and focuser offset (bright-star
+    ecc, HFR, stretch axis per zone) and the verdict (astigmatism / constant
+    axis / defocus only, tilt). Read-only."""
+    import json as _json
+    from photonscript.shared.config import PhotonScriptConfig
+    from photonscript.scheduler.optics_test import build_report, format_report
+    rep = build_report(PhotonScriptConfig(), date or None)
     if as_json:
         console.print_json(_json.dumps(rep, default=str))
     else:

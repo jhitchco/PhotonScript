@@ -63,7 +63,8 @@
             return '<div style="color:' + (f.level === 'ERROR' ? '#ef4444' : '#eab308') + ';">' +
                 esc(f.level) + ' [' + esc(f.rule) + '] ' + esc(f.detail) + '</div>';
         }).join('');
-        var extra = r.field ? ' Tracking test field: ' + esc(r.field.name) + '.' : '';
+        var extra = r.field ? ' Test field: ' + esc(r.field.name) + ' (alt ' +
+            esc(r.field.alt_deg) + ' deg, ~' + esc(r.field.est_minutes) + ' min).' : '';
         if (r.excluded && r.excluded.length) extra += ' Excluded: ' + esc(r.excluded.join(', ')) + '.';
         return '<div style="margin:.5rem 0;"><b>' + esc(r.label) + '</b> ' + chip + ' (' +
             esc(l.errors) + ' error(s), ' + esc(l.warnings) + ' warning(s)) ' +

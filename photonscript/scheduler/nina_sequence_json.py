@@ -54,6 +54,15 @@ TARGET_TRACKING_LADDER_SUFFIX = " unguided ladder"
 # its own, since tonight's targets follow it there.
 TRACKING_TEST_PARK_NOTE = ("When the ladder is done the scope parks and holds "
                            "until dawn: stop the sequence to image.")
+# PS-148: the through-focus optics test. The test container is "Optics test
+# <field>", its sweep "<that name> through-focus sweep", and every step a
+# nested DeepSkyObjectContainer "<step> through-focus step" whose TargetName
+# (and so each sub's OBJECT) is "Optics test <field> <filter> <offset>".
+OPTICS_TEST_PREFIX = "Optics test "
+TARGET_OPTICS_SWEEP_SUFFIX = " through-focus sweep"
+OPTICS_STEP_SUFFIX = " through-focus step"
+OPTICS_TEST_PARK_NOTE = ("When the sweep is done the scope parks and holds "
+                         "until dawn: stop the sequence to image.")
 FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
 # PS-61: with the cooler gate on, each light block is its own container
 # "<target> filter block (cooler-gated)" whose first item is the gate, so a
@@ -1023,6 +1032,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets)
+    if getattr(target, "optics_test", False):   # PS-148
+        return _build_optics_test_container(target, min_altitude,
+                                            af_filter, focus_offsets,
+                                            loop_end, cooler_gate)
     if getattr(target, "tracking_test", False):
         return _build_tracking_test_container(target, min_altitude,
                                               af_filter, focus_offsets,
@@ -1647,6 +1660,233 @@ def generate_tracking_test_json(name: str = "Heart Nebula",
         tracking_test_exposures=(_tracking_test_exposures(exposures)
                                  if exposures else []),
         tracking_test_repeats=max(1, int(repeats or 1)))
+    seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
+    return generate_nina_json(seq)
+
+
+# --- PS-148 through-focus optics test ----------------------------------------
+
+OPTICS_TEST_OFFSETS = (-300, -150, 150, 300)
+OPTICS_TEST_FILTERS = ("L",)
+OPTICS_TEST_EXPOSURE_S = 45.0
+OPTICS_TEST_NB_EXPOSURE_S = 120.0
+OPTICS_TEST_REPEATS = 2
+_NB_FILTERS = ("Ha", "OIII", "SII")
+
+
+def optics_test_name(field: str) -> str:
+    """'M 2' -> 'Optics test M 2' (idempotent)."""
+    f = str(field or "").strip() or "field"
+    if f.lower().startswith(OPTICS_TEST_PREFIX.lower()):
+        return f
+    return f"{OPTICS_TEST_PREFIX}{f}"
+
+
+def optics_offset_label(offset: int) -> str:
+    """0 -> '0', 150 -> '+150', -300 -> '-300'."""
+    o = int(offset)
+    return "0" if o == 0 else f"{o:+d}"
+
+
+def optics_step_name(test_name: str, filter_value: str, offset: int) -> str:
+    """The OBJECT every sub of one step carries:
+    'Optics test M 2 L -300' (scheduler/optics_test.parse_name reads it)."""
+    return (f"{optics_test_name(test_name)} {filter_value} "
+            f"{optics_offset_label(offset)}")
+
+
+def _optics_test_offsets(values) -> list[int]:
+    """Non-zero integer offsets (EAF steps), ascending and de-duplicated, so
+    the sweep moves the focuser one way only (one backlash direction).
+    None gives the default -300/-150/+150/+300."""
+    out = set()
+    for v in (OPTICS_TEST_OFFSETS if values is None else values):
+        try:
+            x = int(round(float(v)))
+        except (TypeError, ValueError):
+            continue
+        if x and abs(x) <= 5000:
+            out.add(x)
+    return sorted(out)
+
+
+def optics_test_exposure_for(filter_type: FilterType, exposure_s: float,
+                             nb_exposure_s: float) -> float:
+    return float(nb_exposure_s if filter_type.value in _NB_FILTERS
+                 else exposure_s)
+
+
+def optics_test_duration_s(filters, offsets, exposure_s: float,
+                           nb_exposure_s: float, repeats: int) -> float:
+    """Estimated wall-clock length (s): every step's subs plus download,
+    one AF, one center and the first slew."""
+    fts = _tracking_test_filters(filters or OPTICS_TEST_FILTERS)
+    n_steps = len(_optics_test_offsets(offsets)) + 1
+    rep = max(1, int(repeats or 1))
+    shoot = sum(optics_test_exposure_for(f, exposure_s, nb_exposure_s)
+                for f in fts) * n_steps * rep
+    return (shoot + len(fts) * n_steps * rep * _TT_DOWNLOAD_S
+            + _TT_AF_S + _TT_CENTER_S + _TT_SLEW_S)
+
+
+def _build_optics_test_container(target: NinaSequenceTarget,
+                                 min_altitude: float,
+                                 af_filter: "FilterType | None",
+                                 focus_offsets: dict | None,
+                                 loop_end: tuple | None,
+                                 cooler_gate: tuple | None = None) -> dict:
+    """PS-148 through-focus optics test (astigmatism / collimation check):
+    StopGuiding, cool, sidereal tracking, slew, AF on the reference filter
+    (L), center. Then per filter: the filter's focus offset (PS-65), subs at
+    best focus, then at each configured offset in ascending order (inside a
+    sweep the focuser only moves outward, one backlash direction), then back
+    to the L best focus. Every step is its own nested DeepSkyObjectContainer
+    whose TargetName is "Optics test <field> <filter> <offset>", so NINA
+    writes that OBJECT on each sub and the report knows the offset without
+    reading the focuser.
+
+    No autofocus trigger anywhere: an HFR or temperature refocus would fire
+    on the defocused steps and wreck the offsets. No StartGuiding, no active
+    dither. An unsafe spell ends the sweep (Safety conditions) and can leave
+    the focuser off focus; every later target starts with its own seed move
+    and autofocus, so nothing images defocused."""
+    ref = af_filter or FilterType.LUMINANCE
+    filters = _tracking_test_filters(target.optics_test_filters
+                                     or list(OPTICS_TEST_FILTERS))
+    offsets = _optics_test_offsets(target.optics_test_offsets
+                                   if target.optics_test_offsets else None)
+    repeats = max(1, int(target.optics_test_repeats or 1))
+    exp_bb = float(target.optics_test_exposure_s or OPTICS_TEST_EXPOSURE_S)
+    exp_nb = float(target.optics_test_nb_exposure_s
+                   or OPTICS_TEST_NB_EXPOSURE_S)
+    cfg = _gen_cfg()
+    gain = int(getattr(cfg, "default_gain", 100))
+    offset_adu = int(getattr(cfg, "default_offset", 50))
+    temp = float(target.camera_temp_c)
+    est_min = optics_test_duration_s([f.value for f in filters], offsets,
+                                     exp_bb, exp_nb, repeats) / 60
+    sweep_desc = (", ".join(
+        f"{f.value} {optics_test_exposure_for(f, exp_bb, exp_nb):g} s"
+        for f in filters)
+        + " at 0 then " + "/".join(optics_offset_label(o) for o in offsets)
+        + f" steps, {repeats} each")
+
+    def _guards():
+        g = [_safety_condition()]
+        if loop_end:
+            g.append(_time_condition(*loop_end))
+        return g
+
+    def _step(f: FilterType, off: int) -> dict:
+        sname = optics_step_name(target.name, f.value, off)
+        exp = ExposurePlan(filter_type=f,
+                           exposure_seconds=optics_test_exposure_for(
+                               f, exp_bb, exp_nb),
+                           count=repeats, gain=gain, offset=offset_adu)
+        return _seq_container(
+            f"{sname}{OPTICS_STEP_SUFFIX}",
+            [_smart_exposure(exp, False, 0, guard_conditions=_guards())],
+            conditions=[_safety_condition(), _loop_once()],
+            container_type=DSO_CONTAINER_TYPE,
+            Target=_make_typed(
+                "NINA.Astrometry.InputTarget, NINA.Astrometry",
+                Expanded=True, TargetName=sname,
+                PositionAngle=target.rotation,
+                InputCoordinates=_coords(target)))
+
+    items = [
+        _annotation("PS-148 through-focus optics test (astigmatism / "
+                    "collimation). Guiding is stopped, tracking is on, no "
+                    f"autofocus triggers. Sweep: {sweep_desc}. Each step's "
+                    f"subs are named '{target.name} <filter> <offset>'. "
+                    "Afterwards open /api/optics-test/report (or the runs "
+                    "page Optics section). " + OPTICS_TEST_PARK_NOTE),
+        _pushover("Imaging", f"{target.name}: through-focus optics test, "
+                  f"slewing (RA {target.ra_hours:.2f}h Dec "
+                  f"{target.dec_degrees:+.1f} deg) - {sweep_desc} "
+                  f"(~{est_min:.0f} min)"),
+        _stop_guiding(),
+        _cool_camera(temp, 0.0),
+        _set_tracking(0),
+        _slew(target),
+        _switch_filter(ref),
+        _move_focuser(_seed_position(ref)),
+        _autofocus(),
+        _center(target),
+        _set_tracking(0),
+        _pushover("Imaging", f"{target.name}: focused on {ref.value}, "
+                  "centered, guiding stopped - starting the focus sweep"),
+    ]
+    sweep = ([_cooler_gate(cooler_gate, "rc16", f"{target.name} sweep")]
+             if cooler_gate else [])
+    for f in filters:
+        foff = _focus_offset(ref, f, focus_offsets)
+        if foff:
+            sweep.append(_move_focuser_relative(foff))
+        sweep.append(_step(f, 0))
+        cur = 0
+        for o in offsets:
+            sweep.append(_move_focuser_relative(o - cur))
+            cur = o
+            sweep.append(_step(f, o))
+        back = -cur - foff
+        if back:
+            sweep.append(_move_focuser_relative(back))
+        sweep.append(_pushover("Imaging", f"{target.name}: {f.value} sweep "
+                               f"done ({len(offsets) + 1} steps), focuser "
+                               f"back at {ref.value} best focus"))
+    sweep_conds = [_safety_condition(),
+                   _altitude_condition(target, min_altitude)]
+    if loop_end:
+        sweep_conds.append(_time_condition(*loop_end))
+    sweep_conds.append(_loop_once())
+    items.append(_seq_container(f"{target.name}{TARGET_OPTICS_SWEEP_SUFFIX}",
+                                sweep, conditions=sweep_conds))
+    items.append(_pushover("Imaging", f"{target.name}: optics test done - "
+                           "open /api/optics-test/report"))
+    return _seq_container(
+        target.name, items,
+        conditions=[_safety_condition(),
+                    _altitude_condition(target, min_altitude),
+                    _loop_once()],
+        triggers=[_meridian_flip_trigger(), _reconnect_trigger()],
+        container_type=DSO_CONTAINER_TYPE,
+        Target=_make_typed(
+            "NINA.Astrometry.InputTarget, NINA.Astrometry",
+            Expanded=True, TargetName=target.name,
+            PositionAngle=target.rotation,
+            InputCoordinates=_coords(target)),
+    )
+
+
+def generate_optics_test_json(name: str = "Heart Nebula",
+                              ra_hours: float = 2.555,
+                              dec_degrees: float = 61.47,
+                              filters: list[str] | None = None,
+                              offsets: list[int] | None = None,
+                              exposure_s: float = OPTICS_TEST_EXPOSURE_S,
+                              nb_exposure_s: float = OPTICS_TEST_NB_EXPOSURE_S,
+                              repeats: int = OPTICS_TEST_REPEATS,
+                              min_altitude: float = 30.0) -> str:
+    """PS-148: a whole-night NINA sequence (same startup, safety loop and
+    shutdown as a normal night) whose only target is the through-focus
+    optics test on one field. Generated only: nothing is sent to NINA (the
+    sideload recipe optics_through_focus splices it before tonight's
+    targets)."""
+    from photonscript.scheduler.nina_sequence import build_sequence_for_night
+    cfg = _gen_cfg()
+    tname = optics_test_name(name)
+    t = NinaSequenceTarget(
+        name=tname, ra_hours=ra_hours, dec_degrees=dec_degrees,
+        start_guiding=False, dither_every_n=0,
+        camera_temp_c=float(getattr(cfg, "camera_setpoint_c", 0.0)),
+        optics_test=True,
+        optics_test_filters=[str(f) for f in (filters or [])],
+        optics_test_offsets=_optics_test_offsets(offsets),
+        optics_test_exposure_s=float(exposure_s or OPTICS_TEST_EXPOSURE_S),
+        optics_test_nb_exposure_s=float(nb_exposure_s
+                                        or OPTICS_TEST_NB_EXPOSURE_S),
+        optics_test_repeats=max(1, int(repeats or 1)))
     seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
     return generate_nina_json(seq)
 

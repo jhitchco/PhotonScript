@@ -446,6 +446,16 @@ class NinaSequenceTarget(BaseModel):
     tracking_test_filters: list[str] = Field(default_factory=list)
     tracking_test_exposures: list[float] = Field(default_factory=list)
     tracking_test_repeats: int = 2
+    # PS-148: a through-focus optics test target (astigmatism / collimation
+    # check): AF on L, then short subs at best focus and at each focuser
+    # offset in every filter, back to best focus at the end. See
+    # generate_optics_test_json() and scheduler/optics_test.py.
+    optics_test: bool = False
+    optics_test_filters: list[str] = Field(default_factory=list)
+    optics_test_offsets: list[int] = Field(default_factory=list)
+    optics_test_exposure_s: float = 45.0
+    optics_test_nb_exposure_s: float = 120.0
+    optics_test_repeats: int = 2
     # PS-26: the rig the mount centers for (the project's driving_rig), its
     # frame-center option and tonight's transit (UTC, from the planner). A
     # "piggyback" target centers the RC16 so the target lands mid Piggy-600

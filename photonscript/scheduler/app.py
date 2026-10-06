@@ -752,6 +752,11 @@ _CONFIG_FIELDS = [
     ("optics_corner_alert", "PS_OPTICS_CORNER_ALERT", "Daily corner-spread Pushover (off = the persistent optics trend alert replaces it, PS-95)", "Quality", "bool", False, False),
     ("optics_min_stars_zone", "PS_OPTICS_MIN_STARS_ZONE", "Optics report: min stars per 3x3 zone", "Quality", "int", False, False),
     ("optics_tilt_warn", "PS_OPTICS_TILT_WARN", "Optics report: corner FWHM ratio that counts as tilt", "Quality", "float", False, False),
+    ("optics_test_offsets", "PS_OPTICS_TEST_OFFSETS", "Through-focus optics test: focuser offsets from best focus, EAF steps (PS-148)", "Quality", "str", False, False),
+    ("optics_test_filters", "PS_OPTICS_TEST_FILTERS", "Through-focus optics test: filters (L, optionally Ha)", "Quality", "str", False, False),
+    ("optics_test_exposure_s", "PS_OPTICS_TEST_EXPOSURE_S", "Through-focus optics test: broadband sub length (s)", "Quality", "float", False, False),
+    ("optics_test_nb_exposure_s", "PS_OPTICS_TEST_NB_EXPOSURE_S", "Through-focus optics test: narrowband sub length (s)", "Quality", "float", False, False),
+    ("optics_test_repeats", "PS_OPTICS_TEST_REPEATS", "Through-focus optics test: subs per filter and offset", "Quality", "int", False, False),
     ("quality_hfr_abs_max", "PS_QUALITY_HFR_ABS_MAX", "Max HFR (px, RC16)", "Quality", "float", False, False),
     ("quality_star_min", "PS_QUALITY_STAR_MIN", "Min detected stars", "Quality", "int", False, False),
     ("quality_star_max", "PS_QUALITY_STAR_MAX", "Max detected stars (defocus guard)", "Quality", "int", False, False),
@@ -3004,6 +3009,8 @@ from photonscript.scheduler.routers import focus as _focus_router  # noqa: E402
 app.include_router(_focus_router.router)
 from photonscript.scheduler.routers import integrations as _integrations_router  # noqa: E402
 app.include_router(_integrations_router.router)
+from photonscript.scheduler.routers import optics_test as _optics_test_router  # noqa: E402
+app.include_router(_optics_test_router.router)
 from photonscript.scheduler.routers import pause as _pause_router  # noqa: E402
 app.include_router(_pause_router.router)   # PS-64
 from photonscript.scheduler.routers import where as _where_router  # noqa: E402

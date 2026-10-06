@@ -245,6 +245,14 @@ class PhotonScriptConfig(BaseSettings):
     optics_tilt_warn: float = 1.20  # PS-95: softest / sharpest corner FWHM
                                  # ratio that counts as tilt (with the sharp
                                  # spot off center)
+    # PS-148 through-focus optics test (sideload recipe optics_through_focus,
+    # GET /api/optics-test/sequence). Only used when that test is generated.
+    optics_test_offsets: str = "-300,-150,150,300"  # EAF steps from best
+                                 # focus (0 is always shot first)
+    optics_test_filters: str = "L"  # e.g. "L,Ha" to add a narrowband pass
+    optics_test_exposure_s: float = 45.0  # broadband sub length (s)
+    optics_test_nb_exposure_s: float = 120.0  # narrowband sub length (s)
+    optics_test_repeats: int = 2  # subs per (filter, offset) step
     # PS-71 parked / roof-closed frame signatures (shared.qa_signatures):
     quality_fwhm_min_arcsec: float = 1.0  # physical floor: no RC16 star is
                                  # sharper than ~1" (seeing + 3248 mm optics;

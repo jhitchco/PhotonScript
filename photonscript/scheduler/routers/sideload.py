@@ -54,6 +54,11 @@ def _seq_dir() -> Path:
     return Path.cwd() / "sequences"
 
 
+def _active_projects() -> list:
+    return [p for p in _app()._stored_projects().values()
+            if getattr(p, "active", False)]
+
+
 def _excludes(exclude) -> list[str]:
     return [str(x).strip() for x in (exclude or []) if str(x or "").strip()]
 
@@ -66,22 +71,30 @@ def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
     from photonscript.scheduler import sideload as sd
     from photonscript.scheduler.nina_sequence_json import generate_tracking_test_json
     from photonscript.scheduler.sequence_lint import lint
-    if recipe != sd.RECIPE_TT_THEN_TONIGHT:
+    if recipe not in (sd.RECIPE_TT_THEN_TONIGHT, sd.RECIPE_OPTICS_THROUGH_FOCUS):
         raise ValueError(f"unknown recipe {recipe!r}")
     app = _app()
     night_name, night_text, guided, dither = app._tonight_sequence(False)
     night = json.loads(night_text)
-    fl, ex, rep = app._tracking_test_params("L,Ha", "60,120,180,300", 2)
-    field = app._tracking_test_field("", None, None, fl, ex, rep, at)
-    tt = json.loads(generate_tracking_test_json(
-        field["name"], field["ra_hours"], field["dec_degrees"],
-        filters=fl, exposures=ex, repeats=rep))
+    if recipe == sd.RECIPE_OPTICS_THROUGH_FOCUS:   # PS-148
+        from photonscript.scheduler import optics_test as ot
+        cfg = _cfg()
+        field = ot.pick_field(cfg, ot.parse_at(at), _active_projects())
+        test = json.loads(ot.generate_sequence(cfg, field))
+        splice, tag = sd.splice_optics_test, "OT"
+    else:
+        fl, ex, rep = app._tracking_test_params("L,Ha", "60,120,180,300", 2)
+        field = app._tracking_test_field("", None, None, fl, ex, rep, at)
+        test = json.loads(generate_tracking_test_json(
+            field["name"], field["ra_hours"], field["dec_degrees"],
+            filters=fl, exposures=ex, repeats=rep))
+        splice, tag = sd.splice_tracking_test, "TT"
     tonight = sd.target_names(night)
     drop = {" ".join(x.split()).lower() for x in exclude}
     kept = [n for n in tonight if " ".join(n.split()).lower() not in drop]
     date = night_name.rsplit("_", 1)[-1]
-    seq = sd.splice_tracking_test(night, tt, exclude,
-                                  name=sd.splice_name(date, field["name"], kept))
+    seq = splice(night, test, exclude,
+                 name=sd.splice_name(date, field["name"], kept, tag))
     return {"name": seq["Name"], "seq": seq,
             "lint": lint(seq, guided=guided, unguided_dither=dither),
             "field": field, "guided": guided, "tonight_targets": tonight,
@@ -97,7 +110,7 @@ def build_piggyback(recipe: str) -> dict:
     from photonscript.scheduler import sideload as sd
     from photonscript.scheduler.calibration import generate_piggyback_companion_json
     from photonscript.shared.rigs import PIGGYBACK, rig_config
-    if recipe != sd.RECIPE_TT_THEN_TONIGHT:
+    if recipe not in sd.RECIPES:
         raise ValueError(f"unknown recipe {recipe!r}")
     cfg = _cfg()
     with_lights = bool(getattr(cfg, "piggyback_image_lights", True))
