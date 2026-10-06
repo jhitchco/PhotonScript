@@ -63,6 +63,16 @@ corner over a 600 s sub, about 39 px over 6 h (registration crops it).
 - Dark quota: PS_DARK_EXPOSURES x PS_DARK_TARGET_COUNT at the setpoint
 - Flats: dusk NB-first -> L-last; dawn BB-first -> NB-last; target 50% histogram
 
+#### Camera constants (PS-117, measured on Library frames 2026-10-04)
+Config keys in brackets. The graders take the read noise for the frame's rig
+and readout mode (READOUTM: "Low Conversion Gain" = LCG, anything else = HCG)
+for the swamp factor; the QA thresholds did not change.
+| Rig / mode | Read noise (ADU) | Gain (e-/ADU) | Source |
+|------------|------------------|---------------|--------|
+| RC16 AP26MC gain 200, HCG (lights since 09-26) | 5.66 = 1.4 e- [camera_read_noise_adu] | 0.25 [camera_gain_e_adu] | 09-26 180 s HCG dark pairs (upper bound); sky noise vs RN on 14 lights |
+| RC16 AP26MC gain 200, LCG | 4.27 [camera_read_noise_lcg_adu] | 0.79 [camera_gain_lcg_e_adu] | 07-31 bias; 07-04 flat pairs |
+| Piggy-600 AP26CC gain 100, offset 256, LCG, 0 C | 3.27 = 2.4 e- [piggyback_read_noise_adu] | 0.74 [piggyback_gain_e_adu] | 16 bias pair differences; 5 flat pairs |
+
 ## Desktop processing
 - PixInsight: C:\Program Files\PixInsight\bin\PixInsight.exe
 - Staging: C:\Users\sleep\Astrophotography\Staging\<Target>

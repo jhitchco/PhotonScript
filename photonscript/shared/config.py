@@ -309,10 +309,19 @@ class PhotonScriptConfig(BaseSettings):
                                 # the noise floor (bkg 51, sigma 15 -> left tail at 0)
     camera_setpoint_c: float = 0.0
     cooling_tolerance_c: float = 1.0
-    camera_read_noise_adu: float = 4.1  # measured 2026-07-07: 4.07 ADU16 from the
-                                        # library bias (3x50 frames, gain 200 LCG;
-                                        # single-frame and pair-difference agree).
-                                        # Floor for the exposure swamp score.
+    # PS-117: RC16 (AP26MC, gain 200) camera constants per readout mode. The
+    # graders pick the pair from the frame's READOUTM header: "Low Conversion
+    # Gain" uses the _lcg keys, anything else (HCG, or no header) the plain
+    # keys. Read noise is the floor for the exposure swamp score
+    # (shared.star_measure); the gain is kept for the PS-117 light budget.
+    camera_read_noise_adu: float = 5.66  # HCG (all lights since 2026-09-26):
+                                        # 09-26 180 s HCG dark pairs (upper
+                                        # bound, 1.4 e-). Was 4.1 (an LCG bias)
+    camera_read_noise_lcg_adu: float = 4.27  # LCG: 2026-07-31 bias (07-07
+                                        # measured 4.07 in the same mode)
+    camera_gain_e_adu: float = 0.25     # HCG e-/ADU: sky noise vs read noise
+                                        # on 14 lights (0.249 to 0.259)
+    camera_gain_lcg_e_adu: float = 0.79  # LCG e-/ADU: 2026-07-04 flat pairs
     auto_dusk_flats: bool = True  # auto-dispatch dusk sky flats for STALE
                                   # filters before auto-arm (the "checkmark")
     evening_forecast_enabled: bool = True  # push a night-viewing forecast a few
@@ -570,6 +579,12 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_sensor_height_px: int = 0  # PS-81 FOV box; 0 = sensor_height_px
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
+    # PS-117: AP26CC constants at gain 100, offset 256, LCG, 0 C (the mode it
+    # always shoots). rig_config hands them to the Piggy-600 view as
+    # camera_read_noise_adu / camera_gain_e_adu (and the _lcg twins).
+    piggyback_read_noise_adu: float = 3.27  # 16 bias, pair differences (2.4 e-)
+    piggyback_gain_e_adu: float = 0.74  # flat-pair photon transfer, 5 pairs
+                                        # (sky-noise cross-check 0.67 to 0.73)
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
     piggyback_focus_seed: int = 11045  # STATIC cold-start position for the OSC's
                                       # OWN focuser, used as the fallback before the

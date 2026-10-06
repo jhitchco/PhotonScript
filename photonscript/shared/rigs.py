@@ -99,9 +99,10 @@ def rig_config(config, rig: str):
     """Return a config whose device-facing fields target `rig`.
 
     RC16 -> the config itself. PIGGYBACK -> a copy overriding nina_base_url,
-    pixel_scale_arcsec, default_gain/offset, (if set) image_watch_dir, and
-    every QA gate in PIGGYBACK_GATES, so shared code hits the 2nd NINA with
-    the right scale and grades with the Piggy-600's own limits.
+    pixel_scale_arcsec, default_gain/offset, (if set) image_watch_dir, the
+    camera read noise and gain (PS-117), and every QA gate in
+    PIGGYBACK_GATES, so shared code hits the 2nd NINA with the right scale
+    and grades with the Piggy-600's own limits.
     """
     if rig != PIGGYBACK:
         return config
@@ -118,6 +119,17 @@ def rig_config(config, rig: str):
         "safety_monitor_device_id": getattr(
             config, "piggyback_safety_monitor_device_id", ""),
     }
+    # PS-117: the AP26CC's own read noise and gain. It shoots LCG only, so
+    # both readout-mode keys carry the Piggy-600 value (camera_constants
+    # picks the _lcg pair from a "Low Conversion Gain" header).
+    rn = getattr(config, "piggyback_read_noise_adu", None)
+    if rn is not None:
+        updates["camera_read_noise_adu"] = rn
+        updates["camera_read_noise_lcg_adu"] = rn
+    g = getattr(config, "piggyback_gain_e_adu", None)
+    if g is not None:
+        updates["camera_gain_e_adu"] = g
+        updates["camera_gain_lcg_e_adu"] = g
     for base, pb, fallback in PIGGYBACK_GATES:
         v = getattr(config, pb, None)
         if v is None:
@@ -268,6 +280,39 @@ def light_epoch_fields(hdr) -> dict:
     return {"gain": _int(get("GAIN")), "offset": _int(get("OFFSET")),
             "xbin": _int(get("XBINNING")),
             "readout": str(ro).strip() if ro not in (None, "") else None}
+
+
+def is_lcg(readout) -> bool:
+    """PS-117: a READOUTM value that names the low conversion gain mode
+    ("Low Conversion Gain" on the AP26MC / AP26CC). Anything else, or no
+    value, is the high conversion gain mode the RC16 shoots."""
+    return "low" in str(readout or "").lower()
+
+
+def camera_constants(config, header=None) -> dict:
+    """PS-117: read noise (ADU) and gain (e-/ADU) for a frame, from the
+    rig's config view and the frame's READOUTM header (None = HCG keys).
+    The Piggy-600 view carries its own values in both mode keys."""
+    ro = None
+    get = getattr(header, "get", None)
+    if get is not None:
+        try:
+            ro = get("READOUTM")
+        except Exception:  # noqa: BLE001 - odd header = default mode
+            ro = None
+    lcg = is_lcg(ro)
+    rn_hcg = getattr(config, "camera_read_noise_adu", 8.0)
+    g_hcg = getattr(config, "camera_gain_e_adu", None)
+    if lcg:
+        rn = getattr(config, "camera_read_noise_lcg_adu", None)
+        g = getattr(config, "camera_gain_lcg_e_adu", None)
+        rn = rn_hcg if rn is None else rn
+        g = g_hcg if g is None else g
+    else:
+        rn, g = rn_hcg, g_hcg
+    return {"read_noise_adu": float(rn),
+            "gain_e_adu": None if g is None else float(g),
+            "readout": "LCG" if lcg else "HCG"}
 
 
 async def nina_sequence_stop(base_url: str) -> dict:

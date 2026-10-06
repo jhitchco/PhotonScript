@@ -389,7 +389,7 @@ BACKFILL_GRADER = "backfill-sep"
 
 
 def _measure_native(path: Path, config, rig: str = "rc16",
-                    osc: bool = False) -> dict | None:
+                    osc: bool = False, header=None) -> dict | None:
     """PS-83: every graded star metric on the native frame with
     shared.star_measure.measure_frame, the function the live grader calls,
     so a backfill record carries the numbers the live watcher would have
@@ -402,7 +402,8 @@ def _measure_native(path: Path, config, rig: str = "rc16",
     try:
         data = _load_native(path)
         res = star_measure.measure_frame(data, config, rig, osc=osc,
-                                         grader=BACKFILL_GRADER)
+                                         grader=BACKFILL_GRADER,
+                                         header=header)
         del data
     except MemoryError:
         logger.warning("native measure skipped for %s: MemoryError (binned "
@@ -467,13 +468,14 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
             del binned
             binned = None
             gc.collect()
-            m = _measure_native(path, rcfg, rig, osc)
+            m = _measure_native(path, rcfg, rig, osc, header=hdr)
         if m is None:
             if binned is None:
                 _, binned = _load_binned(path)
             m = star_measure.measure_frame(binned, rcfg, rig, osc=osc,
                                            binned_input=True,
-                                           grader=BACKFILL_GRADER)
+                                           grader=BACKFILL_GRADER,
+                                           header=hdr)
         del binned
     gc.collect()
     m.update(diag)
