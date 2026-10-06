@@ -743,7 +743,15 @@ def _osc_light_loop(config) -> dict:
     image pass starts with the cooler-gate ExternalScript. A SKIP (sensor
     still off setpoint after the timeout) interrupts the image pass, and
     OSC_LIGHTS_UNTIL_DAWN loops back through the waits and the resume hold
-    to gate again, so the OSC never shoots off its setpoint and never wedges."""
+    to gate again, so the OSC never shoots off its setpoint and never wedges.
+
+    PS-27 settle gate: when on (_osc_settle_gate), the settle-gate
+    ExternalScript runs right before the light loop and right after every
+    OSC light, so each light starts only after it, which holds (at most
+    piggyback_settle_timeout_s) while the RC16 mount slews, has just moved,
+    or PHD2 settles, so a sub starts on a still mount. ErrorBehavior 0 and
+    the script always exits 0: it can delay a Piggy-600 light, never skip
+    one, and never touches NINA #1."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _move_focuser,
         _safety_condition, _time_condition, _loop_once, _cooler_gate,
@@ -770,8 +778,14 @@ def _osc_light_loop(config) -> dict:
     dawn = ("NauticalDawnProvider", 0)
     # Inner loop: repeat exposures WHILE safe and before dawn (checked between
     # exposures, so the loop ends on its own at dawn); triggers refocus.
+    # PS-27: the settle gate sits AFTER each light (and once before the
+    # loop, below), so every light still starts on a still mount, while the
+    # loop's dawn TimeCondition sees the TakeExposure as the next item: with
+    # the gate first, the 0 s gate would pass the dawn check and the loop
+    # would spin gate, gate, gate through the last exposure-length of night.
+    settle = _osc_settle_gate(config)
     inner = _seq_container(
-        OSC_LIGHT_LOOP_NAME, [take],
+        OSC_LIGHT_LOOP_NAME, [take, *settle],
         conditions=[_safety_condition(), _time_condition(*dawn)],
         triggers=_osc_af_triggers(config))
     # config is the Piggy-600 view (rig_config), so camera_setpoint_c is the
@@ -779,7 +793,7 @@ def _osc_light_loop(config) -> dict:
     gate = _cooler_gate_spec(config, float(getattr(config, "camera_setpoint_c", 0.0)))
     gate_items = [_cooler_gate(gate, "piggyback", "OSC lights")] if gate else []
     image_pass = _seq_container(
-        OSC_IMAGE_PASS_NAME, [*gate_items, *pre_af, _autofocus(), inner],
+        OSC_IMAGE_PASS_NAME, [*gate_items, *pre_af, _autofocus(), *settle, inner],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
@@ -788,6 +802,30 @@ def _osc_light_loop(config) -> dict:
          _wait_safe_until(*dawn, name=OSC_WAIT_SAFE_CONFIRM_NAME),
          image_pass],
         conditions=[_time_condition(*dawn)])
+
+
+def _osc_settle_gate(config) -> list:
+    """PS-27: [the settle-gate ExternalScript] when the gate is on and its
+    script exists on this machine, else []. ErrorBehavior 0, Attempts 1."""
+    from photonscript.scheduler.nina_sequence_json import _external_script
+    from photonscript.scheduler.split_guard import gate_script
+    path = gate_script(config)
+    if not path:
+        return []
+    exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
+    return [_external_script(path, f"--label=\"OSC {exp_s:g}s\"")]
+
+
+def _osc_settle_gate_missing_notice(config) -> list:
+    """Gate on but no script here: say so in the sequence (lint warns too)."""
+    from photonscript.scheduler.nina_sequence_json import _annotation
+    from photonscript.scheduler.split_guard import gate_enabled, gate_script
+    if not gate_enabled(config) or gate_script(config):
+        return []
+    path = str(getattr(config, "piggyback_settle_script", "") or "")
+    return [_annotation(f"settle gate OFF tonight: script {path or '(unset)'} "
+                        "not found, so OSC lights do not wait for a still "
+                        "mount (PS-27)")]
 
 
 def _osc_resume_hold_seconds(config) -> int:
@@ -962,6 +1000,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             _cooler_gate_spec, _cooler_gate_missing_notice)
         if _cooler_gate_spec(config, setpoint) is None:
             start_items += _cooler_gate_missing_notice(config)   # PS-61
+        start_items += _osc_settle_gate_missing_notice(config)   # PS-27
 
     # Dawn flats: the RC16's flat window opens at nautical dawn +5 (its End
     # area slews to alt 85 / az 200); give that slew 90 s to land, then one OSC

@@ -114,6 +114,25 @@ Check a pending update on the scope without switching: `photonscript self-update
    X C -> Y C" / "not imaging: ..."; `GET /api/cooler/gate` has the live
    state and recent results (`<data_dir>/cooler_gate.jsonl`). Lint rule
    `cooler-gate`: every light loop must have the gate before it.
+   **Settle gate (PS-27, Piggy-600 only).** In the companion's OSC light
+   loop NINA #2 runs `deploy\settle-gate.cmd` (ExternalScript, ErrorBehavior
+   0) once before the loop and after every OSC light, so each light starts
+   only when the RC16 mount is not slewing, has been still for
+   `PS_PIGGYBACK_SETTLE_STILL_S` (6 s) and PHD2 is not settling; at most
+   `PS_PIGGYBACK_SETTLE_TIMEOUT_S` (90 s), then it shoots anyway. It reads
+   NINA #1's mount info (GET only) and never writes to NINA #1: the RC16
+   keeps the timing. Always exit 0, fails open (service down, NINA #1
+   unreadable, script missing: annotation + lint warning). Optional
+   `PS_PIGGYBACK_ABORT_ON_MOVE` (default off until night-tested): on a
+   slew, flip or a jump over `PS_PIGGYBACK_ABORT_MOVE_ARCMIN` seen by the
+   RC16 agent's mount poll while NINA #2 exposes an OSC light, PhotonScript
+   calls NINA #2's `/equipment/camera/abort-exposure`; the loop then waits
+   at the gate and starts a fresh sub. Holds and aborts go to
+   `runs/<night>_events.jsonl` (src `photonscript`, kinds `settle_gate`,
+   `split_abort`). The runs page "Piggy-600 split pointing" line (and
+   `GET /api/runs/{date}/split`) gives straddled / (judged + aborted)
+   against the 5% pass line; `GET /api/piggyback/split-guard` shows the
+   live state. Lint rule `settle-gate`.
 3. **Live watcher** grades each sub (sep HFR/ecc/FWHM on the NATIVE
    0.236"/px frame; RC16 subs are also measured on a 2x2-binned copy,
    `ecc_bin` at 0.47"/px, PS-94), skips calibration frames (path part or

@@ -166,6 +166,8 @@
             <div id="calibration" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
             <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Piggy-600 split pointing <span class="bd">(subs through an RC16 move, PS-27; pass under 5%)</span></h2>
+            <div id="splitPointing" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Piggy-600 vs RC16 <span class="bd">(differential flexure, PS-96)</span></h2>
             <div id="flexure" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Guiding <span class="bd">(PHD2 guide log, PS-88)</span></h2>
@@ -559,6 +561,7 @@
         renderReviewBar(d);
         renderFlexure(d.flexure, date);
         renderPointing(d.pointing, date);
+        renderSplit(d.split_pointing, date);
         loadTimeline(date);
         loadScoreReport(date);
         maybeWarmThumbs(date);
@@ -1078,6 +1081,26 @@
         const sp = subSpan(s);
         return sp && sp[0] < Date.parse(w[1]) && Date.parse(w[0]) < sp[1];
     }
+    // PS-27: Piggy-600 split pointing, straddled / (judged + aborted)
+    function renderSplit(sp, date) {
+        const box = document.getElementById('splitPointing');
+        if (!box) return;
+        if (!sp || !sp.attempted) {
+            box.textContent = 'no judged Piggy-600 lights this night' +
+                (sp && sp.lights ? ' (' + sp.lights + ' subs, not judged yet: dawn pass)' : '');
+            return;
+        }
+        const pct = (100 * sp.rate).toFixed(1) + '%';
+        box.innerHTML = '<span class="' + (sp.passed ? '' : 'bad') + '"><b>' + pct +
+            '</b> split</span> (' + sp.straddled + ' of ' + sp.attempted +
+            ' straddle an RC16 move; pass under ' + (100 * sp.pass_line) + '%)' +
+            ' &middot; ' + sp.aborted + ' aborted on a move' +
+            (sp.abort ? '' : ' (abort on move is off)') +
+            ' &middot; settle gate: ' + sp.saves + ' split saves, ' + sp.holds + ' holds, ' +
+            sp.timeouts + ' timed out' + (sp.gate ? '' : ' (gate off)') +
+            ' &middot; <a href="/api/runs/' + encodeURIComponent(date) + '/split" target="_blank">json</a>';
+    }
+
     function renderPointing(pt, date) {
         const box = document.getElementById('pointingSummary');
         if (!pt || !pt.rigs || !Object.keys(pt.rigs).length) {

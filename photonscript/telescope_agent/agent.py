@@ -664,6 +664,7 @@ class TelescopeAgent:
                     conn = mount.get("Connected")
                     self.state.mount_connected = None if conn is None else bool(conn)
                     self._log_mount(mount)
+                    await self._split_guard(mount)   # PS-27
 
                 if getattr(self, "rig", "rc16") == "rc16":
                     await self._poll_filter()   # PS-90
@@ -711,6 +712,17 @@ class TelescopeAgent:
         except Exception as e:  # noqa: BLE001
             logger.debug("mount log skipped: %s", e)
 
+    async def _split_guard(self, mount: dict) -> None:
+        """PS-27: feed the shared motion tracker (the Piggy-600 settle gate
+        reads it) and, with piggyback_abort_on_move on, abort the
+        Piggy-600's current OSC light on a slew / flip / jump. Talks only
+        to NINA #2; never raises."""
+        try:
+            from photonscript.scheduler.split_guard import on_rc16_mount
+            await on_rc16_mount(self.config, mount)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("split guard skipped: %s", e)
+
     def _log_event(self, src: str, kind: str, value, **extra) -> None:
         """PS-67: append a night-timeline event on a change (never raises)."""
         try:
@@ -757,6 +769,13 @@ class TelescopeAgent:
         self.state.guiding = metrics
         if getattr(self, "rig", "rc16") != "rc16":
             return
+        try:  # PS-27: PHD2 settling, for the Piggy-600 settle gate
+            import time as _t
+            from photonscript.shared.mount_motion import TRACKER
+            TRACKER.observe_guider(bool(getattr(self.phd2, "settling", False)),
+                                   _t.time())
+        except Exception:  # noqa: BLE001
+            pass
         # PS-67: guider state changes and a 60 s RMS sample for the timeline
         _gs = str(getattr(metrics.state, "value", metrics.state) or "").lower()
         self._log_event("phd2", "guider", _gs)

@@ -10,3 +10,10 @@ def _cooler_gate_off(monkeypatch):
     the scope PC (where deploy\\cooler-gate.cmd exists). Pin it off for the
     suite; tests/test_scheduler/test_ps61_cooler_gate.py turns it on."""
     monkeypatch.setenv("PS_COOLER_GATE_MODE", "off")
+
+
+@pytest.fixture(autouse=True)
+def _settle_gate_off(monkeypatch):
+    """PS-27: same for the Piggy-600 settle gate (deploy\\settle-gate.cmd);
+    tests/test_scheduler/test_ps27_split_guard.py turns it on."""
+    monkeypatch.setenv("PS_PIGGYBACK_SETTLE_GATE", "false")
