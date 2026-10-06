@@ -566,6 +566,17 @@ async def _start_watch_detector():
 
 
 @app.on_event("startup")
+async def _start_off_target_monitor():
+    """PS-143: off-target alert while RUNNING / WATCHING (observe only).
+    Always started; idle unless a night images and off_target_mode != off."""
+    from photonscript.scheduler.off_target import run_monitor
+    _spawn(run_monitor(
+        get_config, get_armer,
+        lambda: _telescope_state.model_dump(mode="json"),
+        lambda: list(_stored_projects().values())))
+
+
+@app.on_event("startup")
 async def _start_calibration_autofill():
     """PS-113: daytime calibration auto-fill. Always started; each tick is a
     no-op unless config.calibration_autofill (default off)."""
@@ -635,6 +646,12 @@ _CONFIG_FIELDS = [
     ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
     ("watch_sideload_auto", "PS_WATCH_SIDELOAD_AUTO", "Watch a sideloaded night (PS-136): enter WATCHING when tonight's RC16 sideload runs in NINA #1 (never dispatches)", "Imaging", "bool", False, False),
     ("watch_dawn_action", "PS_WATCH_DAWN_ACTION", "Watched night at dawn (PS-136): verify (read-only check + alert) | shutdown (stop, warm, park, then verify)", "Imaging", "str", False, False),
+    ("off_target_mode", "PS_OFF_TARGET_MODE", "Off-target alert (PS-143): alert (panel chip + one Pushover per target per night) | panel (chip only) | off; never commands NINA", "Nanny / Alerts", "str", False, False),
+    ("off_target_arcmin", "PS_OFF_TARGET_ARCMIN", "Off-target: separation from the planned center that counts as off target (arcmin)", "Nanny / Alerts", "float", False, False),
+    ("off_target_subs", "PS_OFF_TARGET_SUBS", "Off-target: alert after more than this many consecutive subs off target", "Nanny / Alerts", "int", False, False),
+    ("off_target_minutes", "PS_OFF_TARGET_MINUTES", "Off-target: ... or after this many minutes off target while imaging", "Nanny / Alerts", "float", False, False),
+    ("off_target_solve_max_age_min", "PS_OFF_TARGET_SOLVE_MAX_AGE_MIN", "Off-target: use the latest RC16 plate solve when it is at most this old (min), else the mount position", "Nanny / Alerts", "float", False, False),
+    ("off_target_mount_epoch", "PS_OFF_TARGET_MOUNT_EPOCH", "Off-target: mount position epoch: auto (NINA's report, else JNow) | jnow | j2000", "Nanny / Alerts", "str", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),

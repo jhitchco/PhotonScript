@@ -418,6 +418,40 @@ Read only; a NINA that cannot be read shows "-".
   watchdog is muted and nothing is sent to NINA (pause the sideload in NINA
   itself); unsafe and stuck-imaging alerts stay on.
 
+### Off-target alert and "Restart tonight from now" (PS-143)
+
+- **On target** cell of the Where is it panel (`off_target` in `GET
+  /api/night/where`, `scheduler/off_target.py`): separation of the mount
+  (NINA #1 mount info; the planned J2000 center is precessed to the date
+  when the mount reports JNow, `off_target_mount_epoch` auto | jnow | j2000)
+  and, when one is at most `off_target_solve_max_age_min` (15) old, the
+  latest RC16 plate solve (`<data_dir>/solves/<night>/rc16.jsonl`, wins over
+  the mount) from the planned center: the goal's coordinates, a PS-111
+  mosaic panel's own center, or for a Piggy-driven target in
+  `piggy_center_mode=on` the PS-26 shifted RC16 center for the pier side.
+- Alert: over `off_target_arcmin` (10') for more than `off_target_subs` (2)
+  consecutive subs or for `off_target_minutes` (5) while imaging (armer
+  RUNNING or WATCHING, NINA #1's leaf an exposure, nothing on the running
+  path a slew, center, AF, flat, dark, bias, calibration or tracking test,
+  mount not slewing). Any non-imaging read restarts the streak. One
+  priority Pushover per target per night, red chip while it holds, events
+  kind `off_target` (alert / clear). A background loop checks every 30 s
+  while a night images. Observe only: nothing is sent to NINA.
+  `off_target_mode` alert (default) | panel (chip only) | off.
+- **Restart tonight from now** (button, confirm; `POST /api/arm/restart
+  {"when": "after_exposure"|"now"}`): re-plans the remainder of tonight from
+  the current goals (added targets, edited priorities, a new mosaic) and
+  re-dispatches it through Resume's path (`_dispatch_and_start(companion=
+  False)`). RUNNING: NINA #1 stops after the current sub as for Pause
+  (PAUSED_OPERATOR, detail "Restarting", survives a PhotonScript restart),
+  then re-dispatches. PAUSED_OPERATOR: re-dispatches at once (or once the
+  pause's stop is done). Never warms, parks or turns a cooler off; the
+  Piggy-600 keeps imaging (a pause that stopped it gets its companion back).
+  Refused (409) while WATCHING (use the sideload preview), while a
+  calibration capture job runs, in ARMED / PAUSED_UNSAFE / other states and
+  with under 40 min of dark. A failed re-dispatch stays paused. Events kind
+  `restart` (request / stopped / dispatched / failed / refused), one push.
+
 ### Add a target (PS-124)
 
 The Target Goals **Add** box takes a catalog name, catalog id or alias

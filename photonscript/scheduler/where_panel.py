@@ -5,6 +5,9 @@ target (and mosaic panel), filter, sub n of N and seconds left, exposure
 progress, the next action from NINA #1's sequence tree, guiding mode and
 PHD2 state, cooler per rig, roof / safety, the Piggy-600 (running item, sub,
 exposure, PS-27 split-guard state) and the dawn / shutdown countdown.
+PS-143 adds "off_target" (off_target.assess: the mount / latest RC16 solve
+vs the planned center, plus the off-target monitor's debounce state) and
+the armer's can_restart / restart (Restart tonight from now).
 
 Read only: ninaAPI GETs (both NINAs, in parallel, short timeouts), the
 telescope agent's state, the armer's status, the cooler gate and split
@@ -305,9 +308,10 @@ def _split(cfg) -> dict:
 
 
 async def collect(cfg, armer, tel: dict | None = None, projects=None,
-                  get=None, now: datetime | None = None) -> dict:
+                  get=None, now: datetime | None = None, piggy: bool = True) -> dict:
     """The panel payload. get(base, path) -> payload|None is injectable for
-    tests (default: ninaAPI GETs). Never raises."""
+    tests (default: ninaAPI GETs). piggy=False skips NINA #2 (the PS-143
+    off-target monitor reads only the RC16 side). Never raises."""
     from photonscript.shared.rigs import PIGGYBACK, rig_config, rig_ids
     get = get or _get
     now = now or datetime.utcnow()
@@ -316,7 +320,8 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
     state = str(status.get("state") or "")
     base1 = cfg.nina_base_url
     rigs = list(rig_ids(cfg))
-    base2 = rig_config(cfg, PIGGYBACK).nina_base_url if PIGGYBACK in rigs else None
+    base2 = (rig_config(cfg, PIGGYBACK).nina_base_url
+             if piggy and PIGGYBACK in rigs else None)
 
     async def seq_tree(base):
         from photonscript.scheduler.sideload import read_sequence_state
@@ -329,13 +334,15 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
     reads = [get(base1, "/equipment/camera/info"),
              get(base1, "/equipment/filterwheel/info"),
              get(base1, "/equipment/safetymonitor/info"),
-             seq_tree(base1)]
+             seq_tree(base1),
+             get(base1, "/equipment/mount/info")]   # PS-143: epoch, position
     if base2:
         reads += [get(base2, "/equipment/camera/info"), seq_tree(base2)]
     res = await asyncio.gather(*reads, return_exceptions=True)
     res = [None if isinstance(r, Exception) else r for r in res]
     cam1, fw, saf, (tree1, err1) = res[0], res[1], res[2], (res[3] or (None, "error"))
-    cam2, (tree2, err2) = (res[4], res[5] or (None, "error")) if base2 else (None, (None, None))
+    mnt = res[4] if isinstance(res[4], dict) else {}
+    cam2, (tree2, err2) = (res[5], res[6] or (None, "error")) if base2 else (None, (None, None))
 
     pos1 = sequence_position(tree1 or [])
     filt = None
@@ -360,7 +367,7 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
             "filter": filt or tel.get("current_filter"), "sub": pos1["sub"],
             "exposure": exp1, "running": pos1["leaf"], "next": pos1["next"],
             "sequence_running": pos1["running"] if tree1 is not None else None,
-            "nina_error": err1,
+            "nina_error": err1, "path": pos1["path"],
             "mount": {"ra_hours": tel.get("mount_ra"), "dec_deg": tel.get("mount_dec"),
                       "alt_deg": tel.get("mount_alt"), "az_deg": tel.get("mount_az"),
                       "pier": tel.get("mount_side_of_pier"),
@@ -379,6 +386,7 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
     plan = _tonight_plan(cfg, getattr(armer, "plan", None))
     pause = status.get("pause")
     watch = status.get("watch") or {}
+    off = _off_target(cfg, rc16, mnt, tel, state, projects, now)
     return {"at": _iso(now),
             "armer": {"state": state, "detail": status.get("detail"),
                       "pause": pause,
@@ -386,7 +394,12 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
                       "can_pause": state == "RUNNING" or (
                           state == "WATCHING" and not watch.get("operator_paused")),
                       "can_resume": state == "PAUSED_OPERATOR" or bool(
-                          state == "WATCHING" and watch.get("operator_paused"))},
+                          state == "WATCHING" and watch.get("operator_paused")),
+                      # PS-143: Restart tonight from now (refusals are the
+                      # armer's; WATCHING shows the button to explain why)
+                      "can_restart": state in ("RUNNING", "PAUSED_OPERATOR",
+                                               "WATCHING"),
+                      "restart": status.get("restart")},
             "rc16": rc16, "guiding": _guiding(status, tel),
             "cooler": {"rc16": _cooler(cfg, "rc16", cam1, state),
                        "piggyback": _cooler(cfg, PIGGYBACK, cam2, state) if base2 else None},
@@ -394,4 +407,32 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
                        "roof": ("open" if is_safe else "closed" if is_safe is False
                                 else "unknown")},
             "piggy": piggy,
+            "off_target": off,
             "dawn": countdowns(plan, status.get("shutdown_due_utc"), now)}
+
+
+def _off_target(cfg, rc16: dict, mnt: dict, tel: dict, state: str, projects,
+                now: datetime) -> dict | None:
+    """PS-143 block: off_target.assess (separation of the mount / latest
+    RC16 solve from the planned center) plus the monitor's debounce state.
+    The mount position comes from NINA #1's mount info (with its epoch),
+    else the telescope agent's state."""
+    try:
+        from photonscript.scheduler import off_target as ot
+        from photonscript.shared.mount_view import epoch_label
+        from photonscript.shared.phd2_store import night_of
+        m = rc16.get("mount") or {}
+        ra = mnt.get("RightAscension") if mnt else None
+        dec = mnt.get("Declination") if mnt else None
+        mount = {"ra_hours": ra if ra is not None else m.get("ra_hours"),
+                 "dec_deg": dec if dec is not None else m.get("dec_deg"),
+                 "epoch": epoch_label(mnt) if mnt else None,
+                 "pier": m.get("pier"),
+                 "slewing": (mnt.get("Slewing") if mnt and "Slewing" in mnt
+                             else m.get("slewing"))}
+        a = ot.assess(cfg, rc16, mount, state, projects, now,
+                      night=night_of(cfg, now))
+        return {**a, **ot.MONITOR.view(a.get("target"), now)}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("where panel: off-target skipped: %s", e)
+        return None

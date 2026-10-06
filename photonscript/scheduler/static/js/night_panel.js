@@ -8,6 +8,10 @@
  * (Piggy-600 keep is the default, stop after the current sub is the
  * default). Resume: POST /api/arm/resume after a confirm. A watched
  * sideloaded night (PS-136) pauses alert-only: nothing is sent to NINA.
+ * PS-143: an "On target" cell (separation of the mount, or a fresh RC16
+ * plate solve, from the planned center; red chip once the off-target alert
+ * condition holds) and Restart tonight from now (POST /api/arm/restart after
+ * a confirm; refused while watching a sideload: use the sideload preview).
  */
 (function () {
     "use strict";
@@ -53,6 +57,27 @@
         return (txt || '-') + ' <span class="wp-dim">(' + esc(e.state || 'idle') + ')</span>';
     }
 
+    function offTargetHtml(o) {
+        if (!o) return '<span class="wp-dim">-</span>';
+        if (o.mode === 'off') return '<span class="wp-dim">off</span>';
+        var e = o.expected || {}, g = o.solve || o.mount;
+        if (!g) return '<span class="wp-dim">' + esc(o.reason || 'no position') + '</span>';
+        var cls = {ok: 'wp-ot-ok', watch: 'wp-ot-watch', off: 'wp-ot-off'}[o.status] || '';
+        var word = {ok: 'on target', watch: 'off, watching', off: 'OFF TARGET'}[o.status] ||
+            (o.imaging ? 'checking' : 'not imaging');
+        var h = Number(o.sep_arcmin).toFixed(1) + '&prime; ' + esc(g.dir || '') +
+            ' <span class="wp-dim">(' + esc(o.source || 'mount') + ', limit ' +
+            esc(o.limit_arcmin) + '&prime;)</span>';
+        h += ' <span class="wp-ot ' + cls + '">' + esc(word) + '</span>';
+        if (o.solve && o.mount) h += '<div class="wp-dim">mount ' + Number(o.mount.arcmin).toFixed(1) +
+            '&prime;, solve ' + esc(o.solve.age_min) + ' min old</div>';
+        if (e.source && e.source !== 'target') h += '<div class="wp-dim">vs ' + esc(e.source) + '</div>';
+        if (o.streak) h += '<div class="wp-warn">' + esc(o.streak.subs) + ' sub(s), ' +
+            esc(o.streak.minutes) + ' min over the limit</div>';
+        if (!o.imaging && o.reason) h += '<div class="wp-dim">' + esc(o.reason) + '</div>';
+        return h;
+    }
+
     function render(d) {
         var box = $('wherePanelBody');
         if (!box) return;
@@ -86,6 +111,8 @@
             cell('RC16 exposure', expHtml(r.exposure, r.sub, 'wpRc')) +
             cell('Now', now) +
             cell('Next', next, 'next items in NINA #1\'s sequence') +
+            cell('On target', offTargetHtml(d.off_target),
+                 'separation of the mount (or a fresh RC16 plate solve) from the planned center (PS-143)') +
             cell('Guiding', gl) +
             cell('Cooler', 'RC16 ' + cool(c.rc16) + (c.piggyback ? '<br>Piggy ' + cool(c.piggyback) : '')) +
             cell('Roof', roof);
@@ -108,6 +135,7 @@
             if (a.state === 'PAUSED_OPERATOR') {
                 var ph = (a.pause || {}).phase;
                 txt = ph === 'stopping' ? 'PAUSING (waiting for the sub to end)' : 'PAUSED';
+                if ((a.restart || {}).pending) txt = 'RESTARTING (waiting for the sub to end)';
             } else if (a.watch_paused) {
                 txt = 'WATCHING, alerts paused';
             }
@@ -119,6 +147,8 @@
         var pb = $('pauseBtn'), rb = $('resumeBtn');
         if (pb) pb.hidden = !a.can_pause;
         if (rb) rb.hidden = !a.can_resume;
+        var xb = $('restartBtn');
+        if (xb) xb.hidden = !a.can_restart;
         tick();
     }
 
@@ -214,12 +244,40 @@
         } finally { busy = false; }
     }
 
+    async function doRestart() {
+        if (busy) return;
+        var a = (last && last.armer) || {};
+        if (a.state === 'WATCHING') {
+            alert('This is a sideloaded night: NINA runs it, PhotonScript never re-dispatches it. ' +
+                  'Use the sideload preview below (Sideload a custom night) to build the rest of tonight.');
+            var sb = $('sideloadBox');
+            if (sb) { sb.open = true; sb.scrollIntoView({behavior: 'smooth'}); }
+            return;
+        }
+        var stopped = a.state === 'PAUSED_OPERATOR' && (a.pause || {}).phase === 'paused';
+        var msg = 'Restart tonight from now? ' +
+            (stopped ? 'NINA #1 is already stopped. '
+                     : 'NINA #1 stops after the current sub. ') +
+            'The rest of tonight is re-planned from the current goals and re-dispatched ' +
+            '(slew, center, AF and guiding start again). Nothing warms, parks or turns a ' +
+            'cooler off; the Piggy-600 keeps imaging.';
+        if (!confirm(msg)) return;
+        busy = true;
+        try {
+            var d = await post('/api/arm/restart', {when: 'after_exposure'});
+            if (d && d.ok === false) return;
+            await load();
+            if (window.refreshArm) window.refreshArm();
+        } finally { busy = false; }
+    }
+
     function init() {
         if (!$('wherePanel')) return;
         $('pauseBtn').addEventListener('click', function () { showPauseBox(true); });
         $('pauseCancel').addEventListener('click', function () { showPauseBox(false); });
         $('pauseGo').addEventListener('click', doPause);
         $('resumeBtn').addEventListener('click', doResume);
+        if ($('restartBtn')) $('restartBtn').addEventListener('click', doRestart);
         load();
     }
 

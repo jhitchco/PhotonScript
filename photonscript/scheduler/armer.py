@@ -80,6 +80,11 @@ GUIDING_MODE_ALIASES = {"guided": "guided", "unguided": "unguided",
                         "encoders": "unguided"}
 
 
+def _iso(dt: datetime) -> str:
+    """Naive UTC -> '2026-10-07T04:00:00Z' (PS-143 records)."""
+    return dt.replace(microsecond=0).isoformat() + "Z"
+
+
 def is_direct_guider(name) -> bool:
     """PS-66: NINA's built-in Direct Guider (dithers by pulsing the mount,
     no guide camera). Matches its Name / DisplayName / DeviceId loosely."""
@@ -174,6 +179,8 @@ class Armer:
         self._nina2_task: asyncio.Task | None = None  # PS-139 NINA #2 mount check
         self.pause_info: dict | None = None        # PS-64: the operator pause
         self._pause_task: asyncio.Task | None = None
+        self.last_restart: dict | None = None      # PS-143: last restart result
+        self.last_dispatch_targets: list[str] = []  # PS-143: names in the push
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -299,6 +306,7 @@ class Armer:
                 "nina2_mount": self._nina2_mount_status(),
                 "pause": (getattr(self, "pause_info", None)
                           if self.state == PAUSE_STATE else None),   # PS-64
+                "restart": self._restart_status(),                  # PS-143
                 "noon_arm": self._noon_arm_status()}
 
     def _nina2_mount_status(self) -> dict | None:
@@ -1189,6 +1197,7 @@ class Armer:
                         for t in get_seasonal_targets(now.month)]
 
         targets = plan_night_sequence(projects, self.config, now)
+        self.last_dispatch_targets = [str(getattr(t, "name", "?")) for t in targets or []]
         if not targets:
             self.detail = "No targets with remaining subs visible tonight"
             return False
@@ -1967,15 +1976,26 @@ class Armer:
             return   # disarmed / dawn while waiting
         if not rc.get("ok"):
             self.pause_info = None
-            msg = (f"Pause FAILED: NINA #1 sequence stop failed ({self.detail}); "
+            what = "Restart" if p.get("restart") else "Pause"
+            msg = (f"{what} FAILED: NINA #1 sequence stop failed ({self.detail}); "
                    "still RUNNING, NINA may still be imaging")
             self._set_state("RUNNING", msg)
             self._pause_event("failed", msg, now, rigs=rigs)
+            if p.get("restart"):
+                self._restart_event("failed", msg, now, step="stop")
+                self.last_restart = {"at": _iso(now), "ok": False, "detail": msg}
             await notify(self.config, msg + ". Use Stop & Make Safe or NINA.",
-                         title="PhotonScript pause FAILED", priority=1)
+                         title=f"PhotonScript {what.lower()} FAILED", priority=1)
             return
         p["phase"] = "paused"
         p["stopped_at"] = now.replace(microsecond=0).isoformat() + "Z"
+        if p.get("restart"):
+            # PS-143: a Restart tonight from now: re-plan and re-dispatch
+            self.pause_info = p
+            self._restart_event("stopped", f"NINA #1 {np_.describe(rc)}", now,
+                                rigs=rigs)
+            await self._restart_dispatch(now, p)
+            return
         pb = rigs.get("piggyback")
         pb_txt = ("Piggy-600 keeps imaging" if pb is None
                   else "Piggy-600 " + np_.describe(pb))
@@ -2096,6 +2116,171 @@ class Armer:
         self._unsafe_since = None
         if safe is True and p.get("phase") == "paused":
             await self._reconcile_cooler(now)
+
+    # -- PS-143: Restart tonight from now ---------------------------------------
+    # Goals changed mid-night (a target added, a priority or filter mix
+    # edited, a mosaic created): re-plan the remainder of tonight from the
+    # current goals and re-dispatch it through the PS-64 resume path
+    # (_dispatch_and_start(companion=False)). From RUNNING it first stops NINA
+    # #1 after the current sub exactly as Pause does (PAUSED_OPERATOR with a
+    # "restart" mark, so a PhotonScript restart mid-wait still finishes it).
+    # Never warms, parks or turns a cooler off: tracking, cooler and PHD2
+    # keep running across the stop; the new sequence's start area connects
+    # and cools (already cool) and its targets slew, center, AF and start
+    # guiding as after any resume. The Piggy-600 keeps imaging (a pause that
+    # had stopped it gets its companion back, as Resume does).
+
+    def _restart_event(self, value: str, detail: str = "",
+                       now: datetime | None = None, **extra) -> None:
+        """One kind "restart" line in runs/<night>_events.jsonl."""
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            now = now or datetime.utcnow()
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "restart", "value": value, "detail": detail,
+                          **extra})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("restart event (%s) not logged: %s", value, e)
+
+    def _restart_status(self) -> dict | None:
+        """The pending restart (waiting for the sub to end), else the last
+        restart result, for the dashboard."""
+        p = getattr(self, "pause_info", None)
+        if self.state == PAUSE_STATE and isinstance(p, dict) and p.get("restart"):
+            return {**p["restart"], "pending": True}
+        return getattr(self, "last_restart", None)
+
+    @staticmethod
+    def _calibration_busy() -> str | None:
+        """The rig a calibration capture job runs on (PS-113), else None."""
+        try:
+            from photonscript.scheduler.calibration_capture import busy
+            for rig in ("rc16", "piggyback"):
+                if busy(rig):
+                    return rig
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    async def restart(self, when: str = "after_exposure",
+                      now: datetime | None = None) -> dict:
+        """Restart tonight from now. RUNNING: stop NINA #1 after the current
+        sub (when="now": at once), then re-plan and re-dispatch.
+        PAUSED_OPERATOR: re-plan and re-dispatch now (or as soon as the
+        pause's stop is done). Refused while WATCHING (the sideload is
+        NINA's), while a calibration capture job runs, in any other state,
+        and with under RESUME_MIN_REMAINING_MIN of dark left. Returns
+        {"ok", "detail", **status}."""
+        now = now or datetime.utcnow()
+        when = "now" if str(when or "").strip().lower() == "now" else "after_exposure"
+
+        def refuse(detail: str) -> dict:
+            self._restart_event("refused", detail, now, state=self.state)
+            return {**self.status(), "ok": False, "detail": detail}
+
+        if self.state == WATCH_STATE:
+            return refuse(
+                "a sideloaded night is NINA's: PhotonScript never re-dispatches "
+                "it. Build the rest of tonight with the sideload preview "
+                "(GET /api/sequence/sideload/preview) and sideload that instead.")
+        cal = self._calibration_busy()
+        if cal:
+            return refuse(f"a calibration capture job is running on the {cal}: "
+                          "restart after it finishes (or cancel it)")
+        if self.state not in ("RUNNING", PAUSE_STATE):
+            hint = {"ARMED": " (not dispatched yet: pre-config plans from the "
+                             "current goals anyway)",
+                    "PAUSED_UNSAFE": " (unsafe: the armer resumes or "
+                                     "re-dispatches by itself once safe)"}
+            return refuse(f"armer is {self.state}: Restart tonight from now "
+                          "needs a running or operator-paused night"
+                          + hint.get(self.state, ""))
+        left_min = (self._dawn() - now).total_seconds() / 60
+        if left_min < RESUME_MIN_REMAINING_MIN:
+            return refuse(f"only {max(0, int(left_min))} min of dark left: not "
+                          "re-dispatching (the dawn shutdown will run)")
+        req = {"requested": _iso(now), "when": when, "from": self.state}
+        if self.state == "RUNNING":
+            self.pause_info = {"since": _iso(now), "phase": "stopping",
+                               "when": when, "piggy": "keep", "rigs": {},
+                               "parked": False, "restart": req}
+            what = "now" if when == "now" else "after the current sub"
+            msg = (f"Restarting tonight from now: NINA #1 stops {what}, then "
+                   "the rest of tonight is re-planned from the current goals "
+                   "and re-dispatched. Cooler, tracking and guiding stay on; "
+                   "nothing parks or warms; the Piggy-600 keeps imaging.")
+            self._set_state(PAUSE_STATE, msg)
+            self._restart_event("request", msg, now, when=when, from_state="RUNNING")
+            self._pause_task = asyncio.create_task(self._finish_pause())
+            return {**self.status(), "ok": True, "detail": msg, "pending": True}
+        p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        p["restart"] = req
+        self.pause_info = p
+        if p.get("phase") == "stopping":
+            msg = ("Restart requested: the pause's stop is still waiting for "
+                   "the sub to end; the rest of tonight is re-planned and "
+                   "re-dispatched as soon as NINA #1 has stopped.")
+            self._set_state(PAUSE_STATE, msg)
+            self._restart_event("request", msg, now, when=when,
+                                from_state=PAUSE_STATE, phase="stopping")
+            return {**self.status(), "ok": True, "detail": msg, "pending": True}
+        self._restart_event("request", "from an operator pause (NINA #1 "
+                            "already stopped)", now, from_state=PAUSE_STATE)
+        res = await self._restart_dispatch(now, p)
+        return {**self.status(), **res}
+
+    async def _restart_dispatch(self, now: datetime, p: dict) -> dict:
+        """NINA #1 is stopped: re-plan and re-dispatch the remainder. A
+        failure stays PAUSED_OPERATOR (stopped, nothing parked): Resume or
+        Restart again. Returns {"ok", "detail", "redispatched"}."""
+        p.pop("restart", None)
+        p["phase"] = "paused"
+        left_min = (self._dawn() - now).total_seconds() / 60
+        if left_min < RESUME_MIN_REMAINING_MIN:
+            self.pause_info = p
+            msg = (f"Restart not dispatched: only {max(0, int(left_min))} min of "
+                   "dark left; staying paused (the dawn shutdown will run)")
+            self._set_state(PAUSE_STATE, msg)
+            self._restart_event("failed", msg, now, step="dark")
+            self.last_restart = {"at": _iso(now), "ok": False, "detail": msg}
+            await notify(self.config, msg + ".", title="PhotonScript restart")
+            return {"ok": False, "detail": msg, "redispatched": False}
+        self._reset_guiding_watchdog()
+        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        if not ok:
+            # _dispatch_and_start already pushed the failure (priority)
+            self.pause_info = p
+            msg = (f"Restart FAILED: re-dispatch failed ({self.detail}); paused "
+                   "with NINA #1 stopped (nothing parked or warmed). Resume or "
+                   "Restart tonight from now again.")
+            self._set_state(PAUSE_STATE, msg)
+            self._restart_event("failed", msg, now, step="dispatch")
+            self.last_restart = {"at": _iso(now), "ok": False, "detail": msg}
+            return {"ok": False, "detail": msg, "redispatched": False}
+        pb = (p.get("rigs") or {}).get("piggyback")
+        pb_txt = "Piggy-600 untouched"
+        if p.get("piggy") == "pause" and isinstance(pb, dict) and pb.get("ok"):
+            await self._dispatch_piggyback_companion()
+            pb_txt = "Piggy-600 companion re-dispatched"
+        self.pause_info = None
+        self._unsafe_since = self._safe_since = None
+        names = list(getattr(self, "last_dispatch_targets", None) or [])
+        tg = ", ".join(names[:6]) + (f" (+{len(names) - 6} more)" if len(names) > 6 else "")
+        msg = (f"Restarted tonight from now: re-planned from the current goals "
+               f"and re-dispatched ({tg or 'plan'}); {pb_txt}")
+        self._set_state("RUNNING", msg)
+        self._restart_event("dispatched", msg, now, targets=names, piggy=pb_txt)
+        self.last_restart = {"at": _iso(now), "ok": True, "detail": msg,
+                             "targets": names}
+        await notify(self.config, f"RESTARTED tonight from now: the remainder is "
+                     f"re-planned from the current goals ({tg or 'plan'}) and "
+                     f"re-dispatched, {left_min / 60:.1f} h of dark left. Cooler "
+                     f"and tracking kept; nothing parked or warmed; {pb_txt}.",
+                     title="PhotonScript restarted")
+        return {"ok": True, "detail": msg, "redispatched": True}
+
 
     # -- state machine loop ----------------------------------------------------
 
