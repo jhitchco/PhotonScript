@@ -946,6 +946,14 @@
     // ---- Imaging project manager -----------------------------------------
     const FILTER_COLORS = {Ha:'#ef4444', OIII:'#22d3ee', SII:'#f59e0b',
                            L:'#e2e8f0', R:'#f87171', G:'#4ade80', B:'#60a5fa'};
+    // PS-118: a plan's % is accepted seconds over goal seconds (a sub longer
+    // than the plan counts for what it holds). PS-129: shared by the RC16
+    // mix rows and the Piggy-600 OSC rows of the goal cards.
+    function planPct(e) {
+        const goalS = (e && e.count) ? e.count * e.exposure_seconds : 0;
+        const doneS = e ? Math.max(e.acquired_s || 0, (e.acquired || 0) * e.exposure_seconds) : 0;
+        return goalS ? Math.min(100, Math.round(doneS / goalS * 100)) : 0;
+    }
 
     function altChartSVG(d) {
         const W = 300, H = 88, PAD_B = 14, n = d.alts.length;
@@ -1075,17 +1083,19 @@
         box.innerHTML = projects.map(p => {
             const hoursPct = Math.min(100, Math.round(p.hours_done / p.budget_hours * 100));
             const ALL_FILTERS = ['Ha', 'OIII', 'SII', 'L', 'R', 'G', 'B'];
+            // PS-129: rows per plan actually present. The RC16 mix rows (all
+            // seven filters with % inputs) only when the goal has an RC16
+            // plan; a Piggy-only goal (M31) shows its OSC plan instead.
+            const piggyPlans = p.exposure_plans.filter(e => e.rig === 'piggyback');
+            const rc16Plans = p.exposure_plans.filter(e => e.rig !== 'piggyback');
+            const showMix = rc16Plans.length > 0 || !piggyPlans.length;
             const plansBy = {};
-            p.exposure_plans.forEach(e => { plansBy[e.filter_type] = e; });
-            const filterRows = ALL_FILTERS.map(f => {
+            rc16Plans.forEach(e => { plansBy[e.filter_type] = e; });
+            const filterRows = !showMix ? '' : ALL_FILTERS.map(f => {
                 const e = plansBy[f];
                 const col = FILTER_COLORS[f] || '#94a3b8';
                 const active = !!e;
-                // PS-118: accepted seconds over goal seconds (a sub longer than
-                // the plan counts for what it holds)
-                const goalS = (e && e.count) ? e.count * e.exposure_seconds : 0;
-                const doneS = e ? Math.max(e.acquired_s || 0, (e.acquired || 0) * e.exposure_seconds) : 0;
-                const pct = goalS ? Math.min(100, Math.round(doneS / goalS * 100)) : 0;
+                const pct = planPct(e);
                 const mixPct = Math.round((p.mix[f] ?? 0));
                 return '<div style="display:flex;align-items:center;gap:.5rem;font-size:.78rem;' +
                     'margin:.25rem 0;' + (active ? '' : 'opacity:.4;') + '">' +
@@ -1102,6 +1112,24 @@
                     ';"></div></div>' +
                     '<span style="width:2.6rem;text-align:right;opacity:.8;">' +
                     (active ? pct + '%' : '—') + '</span>' +
+                    '</div>';
+            }).join('');
+            // PS-129: one row per Piggy-600 plan, its own bar from acquired_s
+            const oscRows = piggyPlans.map(e => {
+                const col = '#f472b6';
+                const pct = planPct(e);
+                return '<div class="osc-plan-row" style="display:flex;align-items:center;gap:.5rem;' +
+                    'font-size:.78rem;margin:.25rem 0;">' +
+                    '<span style="color:' + col + ';width:2.4rem;font-weight:600;">' +
+                    e.filter_type + '</span>' +
+                    '<span style="width:calc(40px + .9rem);font-size:.68rem;color:' + col +
+                    ';opacity:.8;" title="Piggy-600 plan (OSC, no filter mix)">Piggy</span>' +
+                    '<span style="opacity:.7;width:7.5rem;">' +
+                    Math.round(e.exposure_seconds) + 's &times; ' + e.count + '</span>' +
+                    '<span style="width:5.2rem;">' + e.acquired + ' accepted</span>' +
+                    '<div class="fbar"><div style="width:' + pct + '%;background:' + col +
+                    ';"></div></div>' +
+                    '<span style="width:2.6rem;text-align:right;opacity:.8;">' + pct + '%</span>' +
                     '</div>';
             }).join('');
             return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
@@ -1133,14 +1161,16 @@
                 '<div class="fbar"><div style="width:' + hoursPct + '%;background:#7dd3fc;"></div></div>' +
                 '<span style="font-size:.82rem;"><b>' + p.hours_done + 'h</b> / ' +
                 p.budget_hours + 'h (' + hoursPct + '%)</span></div>' +
-                filterRows +
+                filterRows + oscRows +
                 '<div style="display:flex;align-items:center;gap:.6rem;font-size:.75rem;' +
                 'margin-top:.4rem;opacity:.75;">' +
-                '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
-                'onclick="applyMix(\'' + p.id + '\')">Apply mix</button>' +
-                '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
-                'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
-                '<span id="abmix-' + p.id + '"></span>' +
+                (showMix
+                 ? '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                   'onclick="applyMix(\'' + p.id + '\')">Apply mix</button>' +
+                   '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                   'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
+                   '<span id="abmix-' + p.id + '"></span>'
+                 : '<span style="opacity:.7;">Piggy-600 only goal (no RC16 plan)</span>') +
                 '<span style="margin-left:auto;">📁 ' + p.library_files +
                 ' accepted lights in library</span></div>' +
                 (p.nights && p.nights.length

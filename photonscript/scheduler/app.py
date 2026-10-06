@@ -1198,7 +1198,8 @@ def api_projects2():
     out = sorted((_project_json(p) for p in store.projects.values()),
                  key=lambda d: -d["priority"])
     try:
-        nbt = nights_by_target(get_config())
+        # PS-129: match like the goal sync (project names + catalog ids)
+        nbt = nights_by_target(get_config(), store.projects.values())
         for d in out:
             d["nights"] = nbt.get(d["target"]["name"].strip().lower(), [])
     except Exception:  # noqa: BLE001
