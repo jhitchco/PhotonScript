@@ -37,10 +37,11 @@ COOL_ESTIMATE_MIN = 10.0     # typical pull-down to 0 C in the daytime
 
 
 def rig_epoch(config, rig: str) -> dict:
-    from photonscript.shared.rigs import rig_config, rig_setpoint
+    from photonscript.shared.rigs import rig_config, rig_readout, rig_setpoint
     view = rig_config(config, rig)
     return {"gain": int(view.default_gain), "offset": int(view.default_offset),
-            "setpoint": rig_setpoint(config, rig), "binning": 1}
+            "setpoint": rig_setpoint(config, rig), "binning": 1,
+            "readout": rig_readout(config, rig)}   # PS-128
 
 
 def load_projects(config) -> list:

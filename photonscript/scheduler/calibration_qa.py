@@ -33,6 +33,13 @@ reasons.json beside it. NINA's originals in the watch dir are never touched.
 calibration_health / readiness never scan _quarantine, and the desktop's
 prepare-integration scripts read only Calibration\\{DARK,BIAS,FLAT}.
 
+PS-128: every record carries the frame's readout mode ("readout", normalized
+HCG / LCG from READOUTM, raw text in "readout_raw"; None when the header has
+none). Darks and bias count only at the rig's readout (rig_readout); a frame
+with no readout keyword is assumed to be at it (frame_readout says so).
+Records from before PS-128 get the field from a header-only read on the next
+pass (calibration-qa --backfill, --dry-run to move nothing): no re-measuring.
+
 Store: <data_dir>/calibration_qa/<rig>.json, one record per frame keyed
 "<TYPE>/<date>/<name>" (the calibration scan's own dedupe key). Measurements
 are cached by file size and QA_VERSION; verdicts are recomputed on every pass
@@ -218,7 +225,10 @@ def _norm_imagetyp(v) -> str:
 
 
 def header_fields(hdr) -> dict:
+    from photonscript.shared.rigs import header_readout
+    ro, ro_raw = header_readout(hdr)
     return {"imagetyp": _norm_imagetyp(hdr.get("IMAGETYP")),
+            "readout": ro, "readout_raw": ro_raw,
             "exptime": _num(hdr.get("EXPTIME", hdr.get("EXPOSURE"))),
             "gain": _num(hdr.get("GAIN")),
             "offset": _num(hdr.get("OFFSET")),
@@ -294,7 +304,25 @@ def measure(path: Path, config=None) -> dict:
 
 def _epoch(rec: dict) -> tuple:
     return (rec.get("gain"), rec.get("offset"), rec.get("xbin") or 1,
-            rec.get("instrume"))
+            rec.get("instrume"), rec.get("readout"))
+
+
+def frame_readout(rec: dict, default: str | None) -> tuple[str | None, bool]:
+    """PS-128: (readout mode, assumed) of a QA record. A record with no
+    readout (no header keyword, or measured before PS-128 and not
+    backfilled yet) takes the rig default and is flagged assumed."""
+    ro = rec.get("readout")
+    if ro:
+        return ro, False
+    return default, True
+
+
+def readout_matches(rec: dict, want: str | None, default: str | None) -> bool:
+    """PS-128: does a record count at readout `want`? want None = readout
+    not matched (camera_readout_mode blank)."""
+    if not want:
+        return True
+    return frame_readout(rec, default)[0] == want
 
 
 def _set_key(rec: dict) -> tuple:
@@ -339,6 +367,11 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
             if exp_set.get(k) is not None and rec.get(k) is not None \
                     and float(rec[k]) != float(exp_set[k]):
                 bad("header", f"{label} {rec[k]:g} != {exp_set[k]:g} asked")
+        want_ro = exp_set.get("readout")
+        if want_ro and rec.get("readout") and rec["readout"] != want_ro:
+            bad("header", f"READOUTM {rec.get('readout_raw') or rec['readout']} "
+                f"!= {want_ro} asked (NINA's camera readout mode differs from "
+                "the lights')")
         want = exp_set.get("exposures")
         if typ == "DARK" and want and exp is not None \
                 and not any(abs(exp - w) < 0.5 for w in want):
@@ -430,7 +463,12 @@ def _bias_ref(rec: dict, levels: dict):
     lv = levels.get(_epoch(rec))
     if lv is not None:
         return lv
-    # same gain/offset on a camera whose INSTRUME string differs: still close
+    # same gain/offset on a camera whose INSTRUME string differs (or, PS-128,
+    # whose readout mode differs: HCG and LCG bias both sit at the OFFSET
+    # pedestal, 254 to 256 ADU on the AP26MC): still close. Same readout first.
+    for ep, v in levels.items():
+        if ep[:3] == _epoch(rec)[:3] and ep[4] == rec.get("readout"):
+            return v
     for ep, v in levels.items():
         if ep[:3] == _epoch(rec)[:3]:
             return v
@@ -615,6 +653,7 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
     #    long CLI backfill must not block the service's filing hook)
     known = load_store(config, rig)["frames"]
     todo = []
+    hdr_only: list = []   # PS-128: cached records with no readout field yet
     for typ, date, path in frames:
         p = Path(path)
         key = frame_key(typ, date, p.name)
@@ -627,6 +666,8 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
                  and old.get("size") == size and old.get("median") is not None)
         if not fresh:
             todo.append((key, typ, date, p, size, old))
+        elif "readout" not in old:
+            hdr_only.append((key, p))
     measured: dict[str, dict] = {}
     for i, (key, typ, date, p, size, old) in enumerate(todo):
         if progress:
@@ -645,6 +686,7 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
             rec["error"] = f"{type(e).__name__}: {e}"
             rec["median"] = None
         measured[key] = rec
+    readouts = _read_readouts(hdr_only)
     need_sun = [k for k, r in measured.items() if r.get("date_obs")]
     if need_sun:
         try:
@@ -658,6 +700,9 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
         store = load_store(config, rig)
         recs = store["frames"]
         recs.update(measured)
+        for k, ro in readouts.items():
+            if k in recs and k not in measured:
+                recs[k].update(ro)
         for typ, date, path in frames:
             r = recs.get(frame_key(typ, date, Path(path).name))
             if r is not None:
@@ -683,6 +728,22 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
         k = frame_key(typ, date, Path(path).name)
         if k in recs:
             out[k] = recs[k]
+    return out
+
+
+def _read_readouts(items) -> dict:
+    """PS-128: {key: {"readout", "readout_raw"}} from a header-only read of
+    each (key, path): the backfill for records measured before PS-128. An
+    unreadable header records None (the rig default is then assumed)."""
+    from astropy.io import fits as _fits
+    from photonscript.shared.rigs import header_readout
+    out = {}
+    for key, p in items:
+        try:
+            ro, raw = header_readout(_fits.getheader(p))
+        except Exception:  # noqa: BLE001 - one unreadable frame
+            ro, raw = None, None
+        out[key] = {"readout": ro, "readout_raw": raw}
     return out
 
 
@@ -844,10 +905,11 @@ def summarize(recs) -> dict:
         k = (r.get("type"), r.get("date"), None if flat else r.get("exptime"),
              r.get("gain"),
              r.get("offset"), r.get("settemp"), r.get("filter")
-             if r.get("type") == "FLAT" else None)
+             if r.get("type") == "FLAT" else None, r.get("readout"))
         s = sets.setdefault(k, {"type": k[0], "date": k[1], "exptime": k[2],
                                 "gain": k[3], "offset": k[4], "settemp": k[5],
-                                "filter": k[6], "n": 0, "pass": 0, "fail": 0,
+                                "filter": k[6], "readout": k[7],
+                                "n": 0, "pass": 0, "fail": 0,
                                 "ccdtemp": [None, None], "median": [None, None],
                                 "reasons": {}})
         s["n"] += 1
@@ -860,7 +922,8 @@ def summarize(recs) -> dict:
         for c in r.get("codes") or []:
             s["reasons"][c] = s["reasons"].get(c, 0) + 1
     out["sets"] = sorted(sets.values(), key=lambda s: (str(s["type"]), str(s["date"]),
-                                                        s["exptime"] or 0))
+                                                        s["exptime"] or 0,
+                                                        str(s["readout"])))
     return out
 
 
@@ -909,13 +972,28 @@ def _within_days(date: str, days: int) -> bool:
         return False
 
 
+def _readout_want(config, rig: str, readout) -> tuple[str | None, str | None]:
+    """PS-128: (readout to match, default for frames without one). readout
+    None = the rig's (rig_readout); a blank rig setting = not matched."""
+    from photonscript.shared.rigs import normalize_readout, rig_readout
+    default = rig_readout(config, rig)
+    want = default if readout is None else normalize_readout(readout)
+    return want, default
+
+
 def count_passed_darks(config, rig: str, exp_s: float, *, gain, offset,
-                       setpoint: float, store: dict | None = None) -> int:
+                       setpoint: float, readout: str | None = None,
+                       store: dict | None = None) -> int:
+    """QA-passed darks of the epoch (PS-128: at the readout mode, the rig's
+    when None; frames with no readout keyword count as the rig's)."""
     store = store or load_store(config, rig)
     days = int(getattr(config, "library_cal_days", 120))
+    want, default = _readout_want(config, rig, readout)
     n = 0
     for r in store["frames"].values():
         if r.get("type") != "DARK" or not passed(r):
+            continue
+        if not readout_matches(r, want, default):
             continue
         if (abs((r.get("exptime") or -1) - exp_s) < 0.5 and r.get("gain") == gain
                 and r.get("offset") == offset
@@ -926,22 +1004,26 @@ def count_passed_darks(config, rig: str, exp_s: float, *, gain, offset,
     return n
 
 
-def count_passed_bias(config, rig: str, *, gain, offset,
+def count_passed_bias(config, rig: str, *, gain, offset, readout: str | None = None,
                       store: dict | None = None) -> int:
     """QA-passed bias of the epoch in its newest session that has any."""
     by_date = passed_bias_sessions(config, rig, gain=gain, offset=offset,
-                                   store=store)
+                                   readout=readout, store=store)
     return by_date[max(by_date)] if by_date else 0
 
 
 def passed_bias_sessions(config, rig: str, *, gain, offset,
+                         readout: str | None = None,
                          store: dict | None = None) -> dict:
-    """PS-122: {date: QA-passed bias of the epoch} per session."""
+    """PS-122: {date: QA-passed bias of the epoch} per session (PS-128: at
+    the readout mode, the rig's when None)."""
     store = store or load_store(config, rig)
+    want, default = _readout_want(config, rig, readout)
     by_date: dict[str, int] = {}
     for r in store["frames"].values():
         if r.get("type") == "BIAS" and passed(r) and r.get("gain") == gain \
-                and r.get("offset") == offset:
+                and r.get("offset") == offset \
+                and readout_matches(r, want, default):
             by_date[r["date"]] = by_date.get(r["date"], 0) + 1
     return by_date
 
@@ -999,7 +1081,7 @@ def format_report(rep: dict, config=None) -> str:
             lines.append("  fail reasons: " + ", ".join(
                 f"{k} {v}" for k, v in sorted(r["by_reason"].items())))
         lines.append(f"  {'type':<5} {'date':<10} {'exp':>8} {'gain':>4} {'off':>4} "
-                     f"{'set':>5} {'n':>3} {'ok':>3} {'bad':>3}  {'CCD-TEMP':<13} "
+                     f"{'set':>5} {'ro':>3} {'n':>3} {'ok':>3} {'bad':>3}  {'CCD-TEMP':<13} "
                      f"{'median ADU':<15} reasons")
         for s in r.get("sets") or []:
             def rng(v, fmt):
@@ -1011,7 +1093,7 @@ def format_report(rep: dict, config=None) -> str:
             lines.append(
                 f"  {what:<5} {s['date'] or '-':<10} {exp:>8} {s['gain'] or '-':>4} "
                 f"{s['offset'] or '-':>4} {'-' if s['settemp'] is None else s['settemp']:>5} "
-                f"{s['n']:>3} {s['pass']:>3} {s['fail']:>3}  "
+                f"{s.get('readout') or '?':>3} {s['n']:>3} {s['pass']:>3} {s['fail']:>3}  "
                 f"{rng(s['ccdtemp'], '{:g}'):<13} {rng(s['median'], '{:g}'):<15} "
                 + ", ".join(f"{k} {v}" for k, v in sorted(s["reasons"].items())))
         d = r.get("daytime") or {}

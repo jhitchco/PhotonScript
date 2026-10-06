@@ -545,6 +545,27 @@ or "ERROR: ...". Masters in `out\master\`.
   `calibration.dark_quota`, the same function the RC16 unsafe darks and the
   Piggy-600 companion size their blocks with (QA-passed only once a rig has a
   QA store). Lights logged since PS-122 carry gain / offset / xbin / readout.
+- READOUT MODE (PS-128): darks and bias count only at the lights' camera
+  readout mode (AP26MC HCG: 0.25 e-/ADU, RN 5.66 ADU; LCG: 0.79 e-/ADU,
+  RN 4.27 ADU). `camera_readout_mode` (RC16, default HCG: every RC16 light
+  since 2026-09-26) and `piggyback_readout_mode` (default LCG); blank = not
+  matched (pre-PS-128). The mode comes from the FITS READOUTM keyword (NINA
+  writes "High Conversion Gain" / "Low Conversion Gain"; READMODE / READOUT
+  also read); a frame without one is assumed to be at the rig's mode and the
+  owed view says how many were assumed. QA records store it (`readout`);
+  `calibration-qa --backfill --dry-run` fills it on older records from a
+  header-only read (no re-measure, no moves). The night quota (RC16 unsafe
+  darks, Piggy-600 companion), the roof-closed bias age gate, the owed view,
+  the gap report and readiness all count at that mode, so the July LCG bias
+  and LCG 600 s darks no longer satisfy the HCG lights. NINA has no
+  per-exposure readout field in the generated sequences: every LIGHT / DARK
+  / BIAS is shot at the profile's "readout mode for sequence images"
+  (Options > Equipment > Camera), so the RISK is that profile setting
+  changing between the lights and their darks. The capture job refuses when
+  ninaAPI reports a different mode, QA fails a capture-job frame whose
+  READOUTM differs from the asked mode, and the lint rule `readout` errors
+  when a (hand-edited) sequence's "Set readout mode" instructions put
+  darks / bias at another mode than the lights.
 - Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout, one goal
   per panel.
 - Guiding tab at `/guiding` (PS-103): the working surface for PHD2. Live state

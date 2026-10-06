@@ -308,6 +308,14 @@ class PhotonScriptConfig(BaseSettings):
     default_offset: int = 256  # bias floor ~= offset in ADU16; 50 was clipping
                                 # the noise floor (bkg 51, sigma 15 -> left tail at 0)
     camera_setpoint_c: float = 0.0
+    camera_readout_mode: str = "HCG"  # PS-128: RC16 readout mode (HCG / LCG)
+                                # the lights use: darks and bias count toward
+                                # the quota, the owed view and readiness only
+                                # at this mode, and a frame with no READOUTM
+                                # header is assumed to be at it. Every RC16
+                                # light since 2026-09-26 is HCG (NINA profile
+                                # setting; the sequence cannot set it). Blank
+                                # = readout not matched (pre-PS-128)
     cooling_tolerance_c: float = 1.0
     camera_read_noise_adu: float = 4.1  # measured 2026-07-07: 4.07 ADU16 from the
                                         # library bias (3x50 frames, gain 200 LCG;
@@ -641,6 +649,9 @@ class PhotonScriptConfig(BaseSettings):
                                 # rig's accepted subs; 3 keeps ~99.7% of a
                                 # normal night inside the gate. Report only.
     piggyback_setpoint_c: float = 0.0   # AP26CC cooling setpoint (it's a cooled cam)
+    piggyback_readout_mode: str = "LCG"  # PS-128: AP26CC readout mode of the
+                                        # OSC lights (all LCG so far); same rule
+                                        # as camera_readout_mode
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs
     piggyback_calibrate_on_arm: bool = True  # on arm, also dispatch a calibration

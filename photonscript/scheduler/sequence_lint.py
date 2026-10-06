@@ -90,6 +90,44 @@ def _check_focus_moves(seq: dict, r: LintResult) -> None:
             pending = None   # one finding per offending move
 
 
+def _check_readout_mode(seq: dict, r: LintResult) -> None:
+    """PS-128: darks and bias must be shot at the lights' camera readout mode
+    (the AP26MC's HCG vs LCG: 0.25 vs 0.79 e-/ADU, a different bias and dark
+    signal). PhotonScript's generated sequences never set it: NINA shoots
+    every LIGHT / DARK / BIAS at the profile's "readout mode for sequence
+    images", so within one sequence they always match. A hand-edited or
+    sideloaded sequence can carry NINA's "Set readout mode" instruction
+    (Camera category; Mode = index into the camera's readout modes): then
+    every LIGHT and every DARK / BIAS exposure must run at the same mode,
+    the profile's (no instruction before it) counting as its own mode.
+    Flats are not checked."""
+    current = None          # None = the profile's mode (no instruction yet)
+    sets = False
+    light_modes, cal_modes = set(), set()
+    for it in _exec_items(seq):
+        t = it.get("$type", "")
+        if "SetReadoutMode" in t:
+            sets = True
+            current = it.get("Mode")
+        elif "Imaging.TakeExposure" in t:
+            kind = str(it.get("ImageType", "LIGHT")).upper()
+            if kind == "LIGHT":
+                light_modes.add(current)
+            elif kind in ("DARK", "BIAS"):
+                cal_modes.add(current)
+    if not sets or not light_modes or not cal_modes:
+        return
+    if len(light_modes | cal_modes) > 1:
+        def name(m):
+            return "profile" if m is None else f"mode {m}"
+        r.error("readout", "LIGHT exposures run at "
+                + ", ".join(sorted(name(m) for m in light_modes))
+                + " but DARK / BIAS at "
+                + ", ".join(sorted(name(m) for m in cal_modes))
+                + " (Set readout mode): darks and bias must match the lights' "
+                "readout mode (HCG vs LCG)")
+
+
 _ENTITY_LISTS = ("Items", "Conditions", "Triggers")
 
 
@@ -383,6 +421,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)
     _check_cooler_gate(seq, r, cooler_gate)
+    _check_readout_mode(seq, r)
 
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")

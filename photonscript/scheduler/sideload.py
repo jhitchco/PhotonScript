@@ -212,6 +212,7 @@ def lint_companion(seq: dict):
     sl._check_focus_moves(seq, r)
     sl._check_parent_links(seq, r)
     sl._check_light_loop_guards(seq, r)
+    sl._check_readout_mode(seq, r)   # PS-128
     mount = sorted({_short(d["$type"]) for frag in MOUNT_TYPES
                     for d in sl._find_type(seq, frag)})
     if mount:

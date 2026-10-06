@@ -8,13 +8,17 @@ shot (and tonight's plan). Inputs, per rig:
   * lights: the subs logs (runs/<night>_subs.jsonl) of the last
     calibration_owed_lookback_days nights, active goals only, rejected subs
     left out. Each light is bucketed by its dark-matching epoch (exposure,
-    gain, offset, set temp, binning; readout mode is shown, not matched).
-    Records from before PS-122 have no gain / offset / binning: they take the
-    rig's current epoch and are marked "assumed".
+    gain, offset, set temp, binning and, PS-128, readout mode HCG / LCG).
+    Records from before PS-122 have no gain / offset / binning / readout:
+    they take the rig's current epoch (readout: camera_readout_mode /
+    piggyback_readout_mode) and are marked "assumed".
   * tonight's plan: the RC16 plan snapshot (calibration_plan.tonight_plan_rows,
     the same source the gap report uses) and, for the Piggy-600 with OSC
     lights on, piggyback_exposure_s.
-  * the calibration library through PS-113 QA: darks counted by
+  * the calibration library through PS-113 QA (PS-128: darks and bias only
+    at the bucket's readout mode; a frame whose header has no readout
+    keyword is assumed to be at the rig's and counted in
+    "frames_readout_assumed"): darks counted by
     calibration.dark_quota (the very function the armer's unsafe darks and
     the Piggy-600 companion size their blocks with, so this view and the
     night quota always agree); flats and bias from QA-passed sessions (the
@@ -76,7 +80,9 @@ def collect_lights(config, rig: str, projects, *, days: int,
                    now: datetime) -> list[dict]:
     """Lights of active goals for one rig over the lookback window, one dict
     per sub: night, target, filter, exp_s, gain, offset, settemp, xbin,
-    readout, assumed (epoch fields filled from the rig's epoch)."""
+    readout (normalized), assumed (epoch fields filled from the rig's
+    epoch), readout_assumed (no readout logged: the rig's mode)."""
+    from photonscript.shared.rigs import normalize_readout
     from photonscript.scheduler.calibration import dark_epoch
     from photonscript.scheduler.runs import _load_subs
     from photonscript.scheduler.sub_index import REJECTED, verdict_of
@@ -103,6 +109,10 @@ def collect_lights(config, rig: str, projects, *, days: int,
             if exp <= 0.01:
                 continue
             assumed = rec.get("gain") is None or rec.get("offset") is None
+            ro = normalize_readout(rec.get("readout"))
+            ro_assumed = ro is None
+            if ro is None or not ep["readout"]:
+                ro = ep["readout"]
             st = rec.get("set_temp")
             try:
                 st = float(st) if st is not None else ep["setpoint"]
@@ -116,7 +126,8 @@ def collect_lights(config, rig: str, projects, *, days: int,
                 "offset": (int(rec["offset"]) if rec.get("offset") is not None
                            else ep["offset"]),
                 "settemp": st, "xbin": int(rec.get("xbin") or 1),
-                "readout": rec.get("readout"), "assumed": assumed})
+                "readout": ro, "readout_assumed": ro_assumed,
+                "assumed": assumed})
     return out
 
 
@@ -134,13 +145,18 @@ def planned_lights(config, rig: str) -> list[dict]:
                      "tonight: OSC lights (piggyback_exposure_s)"))
     return [{"exp_s": round(float(e), 1), "filter": f, "label": lb,
              "gain": ep["gain"], "offset": ep["offset"],
-             "settemp": ep["setpoint"], "xbin": 1} for e, f, lb in rows]
+             "settemp": ep["setpoint"], "xbin": 1, "readout": ep["readout"]}
+            for e, f, lb in rows]
 
 
 def _on_epoch(b: dict, ep: dict) -> bool:
     return (b["gain"] == ep["gain"] and b["offset"] == ep["offset"]
             and abs(b["settemp"] - ep["setpoint"]) < TEMP_TOL_C
-            and b["xbin"] == 1)
+            and b["xbin"] == 1 and b.get("readout") == ep["readout"])
+
+
+def _ro_txt(ro) -> str:
+    return f", {ro}" if ro else ""
 
 
 def _quota_env(rig: str) -> tuple[str, str]:
@@ -166,21 +182,23 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
 
     def bucket(src: dict) -> dict:
         key = (src["exp_s"], src["gain"], src["offset"],
-               round(src["settemp"] * 2) / 2, src["xbin"])
+               round(src["settemp"] * 2) / 2, src["xbin"], src.get("readout"))
         for k, b in buckets.items():
             if (_same_exp(k[0], key[0]) and k[1:3] == key[1:3]
-                    and abs(k[3] - key[3]) < TEMP_TOL_C and k[4] == key[4]):
+                    and abs(k[3] - key[3]) < TEMP_TOL_C and k[4:] == key[4:]):
                 return b
         return buckets.setdefault(key, {
             "exp_s": src["exp_s"], "gain": src["gain"], "offset": src["offset"],
-            "settemp": src["settemp"], "xbin": src["xbin"], "lights": 0,
+            "settemp": src["settemp"], "xbin": src["xbin"],
+            "readout": src.get("readout"), "lights": 0,
             "nights": set(), "targets": set(), "readouts": set(),
-            "assumed": False, "planned": [], "quota_list": False})
+            "assumed": False, "readout_assumed": 0,
+            "planned": [], "quota_list": False})
 
     for e in qlist:
         bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
                 "offset": ep["offset"], "settemp": ep["setpoint"],
-                "xbin": 1})["quota_list"] = True
+                "xbin": 1, "readout": ep["readout"]})["quota_list"] = True
     for li in lights:
         b = bucket(li)
         b["lights"] += 1
@@ -189,6 +207,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
         if li.get("readout"):
             b["readouts"].add(str(li["readout"]))
         b["assumed"] = b["assumed"] or li["assumed"]
+        b["readout_assumed"] += 1 if li.get("readout_assumed") else 0
     for p in planned:
         b = bucket(p)
         if p["label"] not in b["planned"]:
@@ -199,7 +218,8 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
         on = _on_epoch(b, ep)
         try:
             q = dark_quota(view, rig, b["exp_s"], store=store, gain=b["gain"],
-                           offset=b["offset"], setpoint=b["settemp"])
+                           offset=b["offset"], setpoint=b["settemp"],
+                           readout=b["readout"] or "")
         except Exception:  # noqa: BLE001 - one bad bucket must not hide the rest
             logger.warning("dark count failed for %s", b, exc_info=True)
             q = {"have": 0, "quota": int(getattr(config, "dark_target_count", 30))}
@@ -211,17 +231,21 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
             missing.append(b["exp_s"])
         elif used and not on:
             fix = (f"off-epoch lights (gain {b['gain']}, offset {b['offset']}, "
-                   f"{_fmt(b['settemp'])} C, bin {b['xbin']}): the night quota "
-                   f"only fills gain {ep['gain']} / offset {ep['offset']} / "
-                   f"{_fmt(ep['setpoint'])} C bin 1, so shoot these by hand or "
+                   f"{_fmt(b['settemp'])} C, bin {b['xbin']}{_ro_txt(b['readout'])}"
+                   f"): the night quota only fills gain {ep['gain']} / offset "
+                   f"{ep['offset']} / {_fmt(ep['setpoint'])} C bin 1"
+                   f"{_ro_txt(ep['readout'])}, so shoot these by hand or "
                    "drop the lights")
         owed = q["need"] if (used or b["quota_list"]) else 0
         label = (f"{_fmt(b['exp_s'])} s (gain {b['gain']}, offset {b['offset']}, "
                  f"{_fmt(b['settemp'])} C" + ("" if b["xbin"] == 1
-                                              else f", bin {b['xbin']}") + ")")
+                                              else f", bin {b['xbin']}")
+                 + _ro_txt(b["readout"]) + ")")
         items.append({
             "exp_s": b["exp_s"], "gain": b["gain"], "offset": b["offset"],
             "settemp": b["settemp"], "xbin": b["xbin"],
+            "readout": b["readout"],
+            "lights_readout_assumed": b["readout_assumed"],
             "readouts": sorted(b["readouts"]),
             "have": q["have"], "need": q["quota"], "owed": owed,
             "lights": b["lights"], "nights": sorted(b["nights"]),
@@ -269,7 +293,8 @@ def _bias_sessions(config, view, rig, store, ep) -> dict:
     from photonscript.scheduler import calibration_qa as cq
     if cq.mode(config) != "off" and store["frames"]:
         return cq.passed_bias_sessions(view, rig, gain=ep["gain"],
-                                       offset=ep["offset"], store=store)
+                                       offset=ep["offset"],
+                                       readout=ep["readout"] or "", store=store)
     from photonscript.scheduler.calibration import calibration_health
     h = calibration_health(view).get("BIAS") or {}
     return {h["latest"]: int(h.get("count_latest") or 0)} if h.get("latest") else {}
@@ -321,7 +346,7 @@ def _flat_items(config, rig, sessions, lights, planned, now) -> list[dict]:
     return out
 
 
-def _bias_item(config, rig, sessions, now) -> dict:
+def _bias_item(config, rig, sessions, now, readout=None) -> dict:
     from photonscript.scheduler.calibration import STALE_DAYS
     from photonscript.scheduler.calibration_plan import BIAS_COUNT
     last = max(sessions) if sessions else None
@@ -337,7 +362,8 @@ def _bias_item(config, rig, sessions, now) -> dict:
             reasons.append(f"{age} d old (stale after {STALE_DAYS['BIAS']} d)")
     return {"last": last, "count": count, "need": BIAS_COUNT, "age_days": age,
             "stale_after_days": STALE_DAYS["BIAS"], "owed": bool(reasons),
-            "reasons": reasons, "label": "bias"}
+            "reasons": reasons, "readout": readout,
+            "label": "bias" + (f" ({readout})" if readout else "")}
 
 
 def _night_items(lights, darks, flats, bias) -> list[dict]:
@@ -413,8 +439,30 @@ def _items_text(rig_out: dict) -> list[str]:
             lines.append(txt)
     b = rig_out["bias"]
     if b["owed"]:
-        lines.append("Bias: " + "; ".join(b["reasons"]))
+        lines.append(("Bias" + (f" ({b['readout']})" if b.get("readout") else "")
+                      + ": ") + "; ".join(b["reasons"]))
     return lines
+
+
+def _readout_note(rig_out: dict) -> str | None:
+    """PS-128: a note (not an owed item) when darks / bias were counted at
+    an assumed readout mode."""
+    n = rig_out.get("frames_readout_assumed") or 0
+    if not n:
+        return None
+    return (f"Readout assumed {rig_out['epoch'].get('readout')} for {n} dark / bias "
+            "frame(s) with no readout recorded (run calibration-qa --backfill "
+            "--dry-run to read READOUTM, nothing moves)")
+
+
+def _readout_assumed_frames(store: dict, ep: dict) -> int:
+    """PS-128: QA records (darks / bias of the rig's gain and offset) with no
+    readout recorded: counted as the rig's readout mode (assumed)."""
+    if not ep.get("readout"):
+        return 0
+    return sum(1 for r in store["frames"].values()
+               if r.get("type") in ("DARK", "BIAS") and not r.get("readout")
+               and r.get("gain") == ep["gain"] and r.get("offset") == ep["offset"])
 
 
 def owed_report(config, rig: str | None = None, *, projects=None,
@@ -441,7 +489,8 @@ def owed_report(config, rig: str | None = None, *, projects=None,
         darks, fixes = _dark_items(config, view, rg, store, lights, planned)
         flats = _flat_items(config, rg, _flat_sessions(config, view, rg, store, ep),
                             lights, planned, now)
-        bias = _bias_item(config, rg, _bias_sessions(config, view, rg, store, ep), now)
+        bias = _bias_item(config, rg, _bias_sessions(config, view, rg, store, ep), now,
+                          readout=ep["readout"])
         nights = _night_items(lights, darks, flats, bias)
         r = {"rig": rg, "name": rig_label(config, rg),
              "epoch": {**ep, "binning": 1},
@@ -449,6 +498,10 @@ def owed_report(config, rig: str | None = None, *, projects=None,
                         else "header scan (no QA store yet)",
              "lights": len(lights),
              "lights_assumed_epoch": sum(1 for li in lights if li["assumed"]),
+             "lights_readout_assumed": sum(1 for li in lights
+                                           if li.get("readout_assumed")),
+             "frames_readout_assumed": (_readout_assumed_frames(store, ep)
+                                        if cq.mode(config) != "off" else 0),
              "darks": darks, "flats": flats, "bias": bias,
              "config_fixes": fixes, "nights": nights,
              "constraints": _constraints(config, rg)}
@@ -460,6 +513,7 @@ def owed_report(config, rig: str | None = None, *, projects=None,
             "config_fixes": len(fixes),
             "uncalibrated_nights": sum(1 for n in nights if n["uncalibrated"])}
         r["items"] = _items_text(r)
+        r["readout_note"] = _readout_note(r)
         out["rigs"].append(r)
     out["total_items"] = sum(len(r["items"]) for r in out["rigs"])
     return out
@@ -472,14 +526,17 @@ def format_report(rep: dict) -> str:
         ep, s = r["epoch"], r["summary"]
         lines.append("")
         lines.append(f"{r['name']} ({r['rig']}): gain {ep['gain']} offset {ep['offset']} "
-                     f"{_fmt(ep['setpoint'])} C; {r['lights']} lights; counting "
-                     f"{r['counted']}")
+                     f"{_fmt(ep['setpoint'])} C"
+                     + (f" {ep['readout']}" if ep.get("readout") else "")
+                     + f"; {r['lights']} lights; counting {r['counted']}")
         lines.append(f"  owed: {s['dark_sets_owed']} dark sets ({s['dark_frames_owed']} "
                      f"frames), {s['flats_owed']} flat filters, bias "
                      f"{'yes' if s['bias_owed'] else 'no'}, {s['config_fixes']} config "
                      f"fix(es), {s['uncalibrated_nights']} uncalibrated night(s)")
         for t in r["items"]:
             lines.append(f"  - {t}")
+        if r.get("readout_note"):
+            lines.append(f"  note: {r['readout_note']}")
         for n in r["nights"]:
             if n["uncalibrated"]:
                 lines.append(f"  night {n['night']}: {n['lights']} lights uncalibrated "

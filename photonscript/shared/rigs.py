@@ -112,6 +112,7 @@ def rig_config(config, rig: str):
         "default_gain": getattr(config, "piggyback_default_gain", 100),
         "default_offset": getattr(config, "piggyback_default_offset", 256),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
+        "camera_readout_mode": getattr(config, "piggyback_readout_mode", "LCG"),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
         # NINA #2 has its own safety driver (a shared one deadlocks on the
         # driver's trace-log file lock), so pin its own chooser Id.
@@ -252,10 +253,83 @@ def rig_setpoint(config, rig: str) -> float:
     return float(getattr(config, "camera_setpoint_c", 0.0))
 
 
+# PS-128: FITS keywords that carry the camera readout mode. NINA writes
+# READOUTM (the camera's ReadoutModes[] name; on the OGMA AP26MC / AP26CC
+# "High Conversion Gain" / "Low Conversion Gain", every frame in the Library
+# has it). READMODE / READOUT are what some other capture programs write.
+READOUT_KEYS = ("READOUTM", "READMODE", "READOUT")
+
+
+def normalize_readout(v) -> str | None:
+    """PS-128: one spelling per readout mode: "High Conversion Gain" / "HCG"
+    -> "HCG", "Low Conversion Gain" / "LCG" -> "LCG", anything else upper
+    case and trimmed. None / blank -> None."""
+    if v is None:
+        return None
+    s = " ".join(str(v).split()).upper()
+    if not s:
+        return None
+    if s in ("HCG", "HIGH CONVERSION GAIN", "HIGH GAIN", "HIGHCONVERSIONGAIN"):
+        return "HCG"
+    if s in ("LCG", "LOW CONVERSION GAIN", "LOW GAIN", "LOWCONVERSIONGAIN"):
+        return "LCG"
+    return s
+
+
+def header_readout(hdr) -> tuple[str | None, str | None]:
+    """PS-128: (normalized, raw) readout mode from a FITS header, the first
+    of READOUT_KEYS present; (None, None) when none is."""
+    get = getattr(hdr, "get", None)
+    if get is None:
+        return None, None
+    for k in READOUT_KEYS:
+        raw = get(k)
+        if raw not in (None, ""):
+            return normalize_readout(raw), str(raw).strip()
+    return None, None
+
+
+def rig_readout(config, rig: str) -> str | None:
+    """PS-128: the readout mode a rig's lights use and its darks / bias must
+    match (camera_readout_mode / piggyback_readout_mode, normalized). Also
+    the mode assumed for a frame whose header has no readout keyword. None
+    (key set blank) = readout is not matched (the pre-PS-128 behavior)."""
+    key = "piggyback_readout_mode" if rig == PIGGYBACK else "camera_readout_mode"
+    default = "LCG" if rig == PIGGYBACK else "HCG"
+    return normalize_readout(getattr(config, key, default))
+
+
+def camera_info_readout(info: dict | None) -> tuple[str | None, str | None]:
+    """PS-128: (normalized, raw) readout mode NINA will shoot sequence frames
+    at, from a ninaAPI camera info payload: ReadoutModes[ReadoutModeForNormalImages]
+    (the profile's "readout mode for sequence images"; NINA applies it to
+    every non-snapshot capture, lights, darks and bias alike), else
+    ReadoutModes[ReadoutMode] (the camera's current mode). (None, None) when
+    the payload does not say (fail open: callers treat it as unknown)."""
+    if not isinstance(info, dict):
+        return None, None
+    modes = info.get("ReadoutModes")
+    if isinstance(modes, dict):          # a $values wrapper
+        modes = modes.get("$values")
+    for key in ("ReadoutModeForNormalImages", "ReadoutMode"):
+        idx = info.get(key)
+        if isinstance(idx, str) and not idx.strip().lstrip("-").isdigit():
+            return normalize_readout(idx), idx.strip()
+        try:
+            i = int(idx)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(modes, (list, tuple)) and 0 <= i < len(modes):
+            raw = str(modes[i]).strip()
+            return normalize_readout(raw), raw
+    return None, None
+
+
 def light_epoch_fields(hdr) -> dict:
     """PS-122: the dark-matching epoch of a light from its FITS header (gain,
     offset, binning, readout mode) for the subs log, so the Calibration owed
-    view can give off-epoch lights their own dark bucket. Missing keys -> None."""
+    view can give off-epoch lights their own dark bucket. Missing keys -> None.
+    The readout is the raw header string (normalize_readout when matching)."""
     def _int(v):
         try:
             return int(float(v))
@@ -264,10 +338,9 @@ def light_epoch_fields(hdr) -> dict:
     get = getattr(hdr, "get", None)
     if get is None:
         return {"gain": None, "offset": None, "xbin": None, "readout": None}
-    ro = get("READOUTM")
     return {"gain": _int(get("GAIN")), "offset": _int(get("OFFSET")),
             "xbin": _int(get("XBINNING")),
-            "readout": str(ro).strip() if ro not in (None, "") else None}
+            "readout": header_readout(hdr)[1]}
 
 
 async def nina_sequence_stop(base_url: str) -> dict:
