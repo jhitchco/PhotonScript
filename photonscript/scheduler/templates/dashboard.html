@@ -142,14 +142,15 @@
                 <span class="bd" id="syncChip" style="font-weight:normal;"></span></h2>
             <div style="display:flex;gap:.6rem;margin-bottom:.8rem;">
                 <input id="addTargetName" list="catalogList"
-                       placeholder="Add a target — type or pick from tonight's catalog"
+                       placeholder="Add a target: pick from tonight's catalog, or name + RA/Dec (NGC 604 01:34:33 +30:47)"
                        style="flex:1;background:#0b1220;color:#e2e8f0;border:1px solid #334155;border-radius:5px;padding:.4rem .6rem;">
                 <datalist id="catalogList">
                     {% for r in tonight_targets %}
-                    <option value="{{ r.target.name }}">{{ (r.tier.value if r.tier else 'good') | upper }} · {{ r.target.catalog_id }} · {{ r.visibility.hours }}h visible tonight</option>
+                    <option value="{{ r.target.name }}">{{ (r.tier.value if r.tier else 'good') | upper }} · {{ r.target.catalog_id or 'user catalog' }} · {{ r.visibility.hours }}h visible tonight</option>
                     {% endfor %}
                 </datalist>
                 <button class="btn btn-secondary" id="addTargetBtn">Add</button>
+                <span class="bd" id="addTargetMsg" style="align-self:center;"></span>
                 <button class="btn btn-secondary" id="recountBtn" title="Rebuild accepted counts from every graded night on disk — pulls old-season history into goal progress">Recount from history</button>
             </div>
             <details id="queueBox" style="margin:-.2rem 0 .8rem;" hidden>
@@ -1438,10 +1439,29 @@
     document.getElementById('addTargetBtn').addEventListener('click', async () => {
         const name = document.getElementById('addTargetName').value.trim();
         if (!name) return;
-        const r = await fetch('/api/projects2/from_catalog', {method:'POST',
+        // PS-124: catalog name first (its goal hours / mix / Piggy goal);
+        // not in the catalog -> name + RA/Dec into the user catalog
+        let r = await fetch('/api/projects2/from_catalog', {method:'POST',
             headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({name: name, budget_hours: 8})});
+            body: JSON.stringify({name: name})});
+        if (r.status === 404) {
+            r = await fetch('/api/projects2/custom', {method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({text: name})});
+            if (r.status === 400) {
+                alert("'" + name + "' is not in the catalog.
+" + (await r.json()).detail);
+                return;
+            }
+        }
         if (!r.ok) { alert((await r.json()).detail); return; }
+        const p = await r.json();
+        const d = p.catalog_defaults || {};
+        const rig = {rc16: 'RC16', piggyback: 'Piggy-600', both: 'RC16 + Piggy-600'}[d.rig_hint] || '';
+        document.getElementById('addTargetMsg').textContent = 'Added ' + p.target.name +
+            (rig ? ', rig: ' + rig : '') +
+            (d.osc_hours ? ', Piggy OSC goal ' + d.osc_hours + 'h' : '') +
+            (d.note ? ' (' + d.note + ')' : '');
         document.getElementById('addTargetName').value = '';
         loadProjects();
     });
