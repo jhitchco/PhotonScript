@@ -442,8 +442,11 @@ class ProjectStore:
                        None)
             other = [p for p in other if p is not old]
             if osc_hours > 0:
+                # a resize keeps the plan's own sub length (PS-117: M31
+                # at 300 s); a new plan takes piggyback_exposure_s
                 new = osc_plan(osc_hours, self.config,
-                               old.acquired if old else 0)
+                               old.acquired if old else 0,
+                               exp_s=old.exposure_seconds if old else None)
                 if old:
                     _carry_seconds(new, old.exposure_seconds,
                                    old.long_seconds_done())
