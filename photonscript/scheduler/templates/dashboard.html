@@ -208,6 +208,8 @@
                 <summary class="bd" style="cursor:pointer;" id="queueSummary"></summary>
                 <div id="queueList" class="bd" style="margin:.4rem 0 0 .8rem;"></div>
             </details>
+            <!-- PS-43 sync hygiene: static/js/sync_hygiene_panel.js -->
+            <div class="sync-hygiene" data-mode="compact" style="margin:-.2rem 0 .8rem;" hidden></div>
             <div id="projectManager" class="goals-grid"><p class="empty-state">Loading projects…</p></div>
             <div class="actions" style="margin-top:.9rem;">
                 <a href="/api/tonight/sequence.json" class="btn btn-primary" download>Download NINA Sequence (Advanced Sequencer JSON)</a>
@@ -246,6 +248,7 @@
     <script src="/static/js/auto_arm_panel.js"></script>
     <script src="/static/js/night_panel.js?v={{ version }}"></script>
     <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
+    <script src="/static/js/sync_hygiene_panel.js?v={{ version }}"></script>
     <script src="/static/js/integrations.js?v={{ version }}"></script>
 
     <script>
@@ -1597,9 +1600,11 @@
             document.getElementById('queueSummary').textContent =
                 'Transfer queue: ' + d.total_files + ' files · ' +
                 gb(d.total_bytes) + ' across ' + d.groups.length + ' folder(s)' +
-                (d.partial ? ' (folders from the first ' + d.listed_files + ' listed)' : '');
+                (d.partial ? ' (folders from the first ' + d.listed_files + ' listed)' : '') +
+                (d.folders_from === 'census' ? ' (folders from the full census)' : '');
             document.getElementById('queueList').innerHTML = d.groups.map(g =>
-                '<b>' + g.folder + '</b>: ' + g.files + ' files · ' + gb(g.bytes)
+                '<b>' + g.folder + '</b>: ' + g.files + ' files · ' + gb(g.bytes) +
+                (g['class'] === 'other' ? ' <span style="color:#f87171;">(not astronomy)</span>' : '')
             ).join('<br>') + (d.more_groups ? '<br>… +' + d.more_groups + ' more' : '');
         } catch (e) {}
     }
