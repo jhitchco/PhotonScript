@@ -91,8 +91,9 @@ def test_post_night_warm_starts_recent_nights(tmp_path, monkeypatch):
     started = []
     monkeypatch.setattr(runs_mod, "start_backfill",
                         lambda c, d: started.append(("grade", d)))
-    monkeypatch.setattr(runs_mod, "start_thumb_warm",
-                        lambda c, d: started.append(("thumbs", d)))
+    monkeypatch.setattr(runs_mod, "start_thumb_warm",   # PS-5: + histograms
+                        lambda c, d, hist=False: started.append(
+                            ("thumbs", d) if hist else ("thumbs-no-hist", d)))
     monkeypatch.setattr(runs_mod, "_light_files",
                         lambda root: list(root.rglob("*.fits")))
     nights = runs_mod.post_night_warm(config)

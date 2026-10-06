@@ -185,7 +185,11 @@ Check a pending update on the scope without switching: `photonscript self-update
    --apply` (add `--allow-unreject` to let the score move rejected subs back
    to review). Human verdicts always win, in both modes. The lightbox also
    shows the full-resolution histogram (PS-5, cached under
-   `<data_dir>/hist/`) and the new pixel counts both graders record:
+   `<data_dir>/hist/`, warmed at dawn with the thumbnails; fetched only
+   while its section is open and the sub stays on screen 0.3 s): L for mono,
+   R / G / B Bayer sites for OSC with their medians, log / linear toggle,
+   marks for the bias floor, median and saturation, and a red edge bar for
+   black (0 ADU) or white clipping. Also the new pixel counts both graders record:
    saturated pixels (>= `qa_saturation_adu` 65000, FITS SATURATE wins),
    pixels at 0, max ADU, background median and MAD.
    **Gates per rig (PS-114).** Every QA gate has an RC16 key and a

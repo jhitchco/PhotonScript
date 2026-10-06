@@ -2804,11 +2804,14 @@ def thumb_warm_status(config, date: str) -> dict:
             "current": st.get("current")}
 
 
-def start_thumb_warm(config, date: str) -> None:
+def start_thumb_warm(config, date: str, hist: bool = False) -> None:
     """Background-generate every missing grid thumbnail for the night so the
     Runs page fills in with local feedback instead of blocking on first view.
     Serialized through the same _HEAVY lock as grading, so it never blows the
-    scope PC's RAM; safe to call repeatedly (no-op while already running)."""
+    scope PC's RAM; safe to call repeatedly (no-op while already running).
+    PS-5: hist=True (the dawn post-night warm only, never a page view) also
+    caches each sub's histogram, so the lightbox panel opens without a
+    full-frame read."""
     import threading
 
     st = _thumbwarm_state.setdefault(date, {})
@@ -2831,6 +2834,11 @@ def start_thumb_warm(config, date: str) -> None:
                                   fill_prewarm=True)
                     except Exception as e:  # noqa: BLE001
                         logger.debug("warm thumb failed for %s: %s", rel, e)
+                    if hist:
+                        try:
+                            histogram(config, date, rel)
+                        except Exception as e:  # noqa: BLE001
+                            logger.debug("warm hist failed for %s: %s", rel, e)
                 done += 1
                 st["done"] = done
         finally:
@@ -2868,7 +2876,7 @@ def post_night_warm(config, hours: float = 30.0) -> list[str]:
         try:
             if (root / d).exists() and backfill_status(config, d)["pending"]:
                 start_backfill(config, d)
-            start_thumb_warm(config, d)
+            start_thumb_warm(config, d, hist=True)
         except Exception as e:  # noqa: BLE001
             logger.warning("post-night warm for %s failed: %s", d, e)
     if nights:

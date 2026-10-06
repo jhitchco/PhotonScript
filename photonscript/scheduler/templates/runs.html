@@ -110,6 +110,10 @@
         #lbPanel .red { color:#f87171; } #lbPanel .none { color:#94a3b8; }
         #lbHist { width:100%; height:110px; background:#020617; cursor:pointer;
                   border-radius:4px; }
+        /* PS-5: histogram section, folded = not fetched */
+        #lbHistBox { margin-top:.35rem; }
+        #lbHistBox summary { cursor:pointer; opacity:.8; }
+        #lbHistLogBtn { font-size:.7rem; padding:.05rem .45rem; margin-left:.4rem; }
         /* PS-24: batch selection (shift / ctrl click) */
         .thumbs figure.sel img { box-shadow:0 0 0 3px #38bdf8; }
         #subTable tr.sel td { background:rgba(56,189,248,.14); }
@@ -225,8 +229,13 @@
                 </section>
                 <div id="lbHead"></div>
                 <div id="lbRows"></div>
-                <canvas id="lbHist" width="330" height="110" title="histogram (click: log / linear)"></canvas>
-                <div id="lbHistNote" class="none"></div>
+                <details id="lbHistBox" open>
+                    <summary>Histogram <span class="none">(raw FITS, full resolution)</span>
+                        <button type="button" class="btn btn-secondary" id="lbHistLogBtn"
+                                title="Y axis log / linear (remembered)">log</button></summary>
+                    <canvas id="lbHist" width="330" height="110" title="histogram (click: log / linear)"></canvas>
+                    <div id="lbHistNote" class="none"></div>
+                </details>
             </aside>
         </div>
         <div id="lbBar">
@@ -1459,30 +1468,67 @@
             (at ? '' : ' (no pointed position: drawn on the target)') + ' \u00b7 ' : '') +
             Math.round(m.fov_deg * 100) / 100 + '\u00b0 wide \u00b7 north up, east left, frame not rotated \u00b7 ' + src;
     }
+    // ---- PS-5 histogram (data: GET /api/runs/{date}/hist, PS-108, cached on
+    //      the scope PC). Lazy: fetched only while the section is open and
+    //      only once the sub has stayed on screen HIST_DELAY_MS (arrowing
+    //      through subs never queues full-frame reads); one fetch per sub per
+    //      page (HIST_MEMO). Mono: one L curve; OSC: R, G, B curves (Bayer
+    //      sites counted apart) with their medians. Marks: bias floor,
+    //      median, saturation, and black / white clip at the edges.
+    const HIST_MEMO = {};
+    const HIST_DELAY_MS = 300;
+    let lbHistTimer = null, lbHistData = null;
     function clearLbHist() {
+        clearTimeout(lbHistTimer);
+        lbHistData = null;
         const cv = document.getElementById('lbHist');
         cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
-        cv.onclick = null;
-        document.getElementById('lbHistNote').innerHTML = 'histogram loading&hellip;';
+        document.getElementById('lbHistNote').innerHTML =
+            document.getElementById('lbHistBox').open ? 'histogram loading&hellip;'
+                                                      : 'folded: open to load';
     }
-    async function loadLbHist(date, file) {
-        let hd = null;
-        try {
-            const resp = await fetch('/api/runs/' + date + '/hist?file=' + encodeURIComponent(file));
-            if (resp.ok) hd = await resp.json();
-        } catch (e) { /* offline */ }
-        const cur = window._shownSubs && window._shownSubs[lbIdx];
-        if (!cur || cur.file !== file) return;
-        const note = document.getElementById('lbHistNote');
-        if (!hd) { if (note) note.textContent = 'no histogram (FITS not on this PC)'; return; }
-        drawLbHist(hd);
-        const cv = document.getElementById('lbHist');
-        if (cv) cv.onclick = (e) => {
-            e.stopPropagation(); lbHistLog = !lbHistLog;
-            try { localStorage.setItem('lbHistLog', lbHistLog ? '1' : '0'); } catch (er) { /* no storage */ }
+    function loadLbHist(date, file) {
+        clearTimeout(lbHistTimer);
+        if (!document.getElementById('lbHistBox').open) return;
+        const key = date + '|' + file;
+        const go = async () => {
+            if (!HIST_MEMO[key]) HIST_MEMO[key] = fetch('/api/runs/' + date + '/hist?file=' +
+                    encodeURIComponent(file))
+                .then(resp => resp.ok ? resp.json() : null)
+                .catch(() => null)
+                .then(h => { if (!h) delete HIST_MEMO[key]; return h; });
+            const hd = await HIST_MEMO[key];
+            const cur = window._shownSubs && window._shownSubs[lbIdx];
+            if (!cur || cur.file !== file || currentDate !== date) return;
+            const note = document.getElementById('lbHistNote');
+            if (!hd) { note.textContent = 'no histogram (FITS not on this PC)'; return; }
+            lbHistData = hd;
             drawLbHist(hd);
         };
+        if (HIST_MEMO[key]) go(); else lbHistTimer = setTimeout(go, HIST_DELAY_MS);
     }
+    function setHistLog(v) {
+        lbHistLog = v;
+        try { localStorage.setItem('lbHistLog', lbHistLog ? '1' : '0'); } catch (er) { /* no storage */ }
+        document.getElementById('lbHistLogBtn').textContent = lbHistLog ? 'log' : 'linear';
+        if (lbHistData) drawLbHist(lbHistData);
+    }
+    document.getElementById('lbHist').onclick = (e) => { e.stopPropagation(); setHistLog(!lbHistLog); };
+    document.getElementById('lbHistLogBtn').onclick = (e) => {
+        e.preventDefault(); e.stopPropagation(); setHistLog(!lbHistLog);
+    };
+    document.getElementById('lbHistLogBtn').textContent = lbHistLog ? 'log' : 'linear';
+    document.getElementById('lbHistBox').addEventListener('toggle', () => {
+        const box = document.getElementById('lbHistBox');
+        try { localStorage.setItem('lbHistOpen', box.open ? '1' : '0'); } catch (er) { /* no storage */ }
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (box.open && cur && !document.getElementById('lightbox').hidden && !lbHistData) {
+            document.getElementById('lbHistNote').innerHTML = 'histogram loading&hellip;';
+            loadLbHist(currentDate, cur.file);
+        }
+    });
+    try { if (localStorage.getItem('lbHistOpen') === '0') document.getElementById('lbHistBox').open = false; }
+    catch (er) { /* no storage */ }
     function drawLbHist(hd) {
         const cv = document.getElementById('lbHist');
         if (!cv) return;
@@ -1502,20 +1548,35 @@
             });
             g.stroke();
         });
-        const mark = (adu, col) => {
+        const mark = (adu, col, dash) => {
             if (adu == null || adu < hd.lo || adu > hd.hi) return;
+            g.setLineDash(dash || []);
             g.strokeStyle = col; g.beginPath(); g.moveTo(xAt(adu), 0); g.lineTo(xAt(adu), H); g.stroke();
+            g.setLineDash([]);
         };
+        const chans = Object.entries(hd.channels);
+        if (chans.length > 1) chans.forEach(([k, c]) => mark(c.median, cols[k] || '#e2e8f0', [3, 3]));
         mark(hd.bias_floor, '#a78bfa'); mark(hd.median, '#eab308'); mark(hd.sat_adu, '#f87171');
+        // clip marks: a red bar on the edge when pixels sit at 0 ADU (black
+        // clip) or at / above saturation off the right of the plotted range
+        g.fillStyle = '#ef4444';
+        if (hd.black_clip_pct > 0) {
+            if (0 >= hd.lo) mark(0, '#ef4444'); else g.fillRect(0, 12, 3, H - 12);
+        }
+        if (hd.white_clip_pct > 0 && hd.sat_adu > hd.hi) g.fillRect(W - 3, 12, 3, H - 12);
         g.fillStyle = '#94a3b8'; g.font = '10px sans-serif';
         g.fillText(hd.lo + ' ADU', 2, 10); g.fillText(hd.hi + ' ADU', W - 64, 10);
         g.fillText(lbHistLog ? 'log' : 'linear', W / 2 - 12, 10);
         const note = document.getElementById('lbHistNote');
-        if (note) note.innerHTML = 'median ' + hd.median + ' ADU &middot; black clip ' +
-            hd.black_clip_pct + '% &middot; white clip (&ge;' + hd.sat_adu + ') ' + hd.white_clip_pct + '%' +
+        const clipCls = v => v > 0 ? 'red' : '';
+        note.innerHTML = 'median ' + hd.median + ' ADU' +
+            (chans.length > 1 ? ' (' + chans.map(([k, c]) => k + ' ' + c.median).join(', ') + ')' : '') +
+            ' &middot; <span class="' + clipCls(hd.black_clip_pct) + '">black clip ' +
+            hd.black_clip_pct + '%</span> &middot; <span class="' + clipCls(hd.white_clip_pct) +
+            '">white clip (&ge;' + hd.sat_adu + ') ' + hd.white_clip_pct + '%</span>' +
             (hd.at_bias_floor_pct != null ? ' &middot; at bias floor ' + hd.at_bias_floor_pct + '%' : '') +
             (hd.bayer ? ' &middot; ' + hd.bayer + (hd.bayer_assumed ? ' (assumed)' : '') : '') +
-            ' <span title="purple: bias floor, yellow: median, red: saturation">&#9432;</span>';
+            ' <span title="purple: bias floor, yellow: median, red line: saturation, red edge bar: pixels clipped at 0 ADU (left) or saturated (right); dashed: per-channel medians (OSC)">&#9432;</span>';
     }
     function closeLb() { document.getElementById('lightbox').hidden = true; }
     function lbNav(d) {
