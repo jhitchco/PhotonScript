@@ -696,7 +696,7 @@
         const stop = ev.currentTarget.dataset.watching === '1';
         if (stop && !confirm('Stop watching? NINA keeps running the sequence; ' +
                              'no dawn check, guiding watchdog or update refusal after this.')) return;
-        if (!stop && !confirm('Watch tonight's sideloaded night? Nothing is sent to NINA; ' +
+        if (!stop && !confirm('Watch tonight\'s sideloaded night? Nothing is sent to NINA; ' +
                               'PhotonScript alerts and checks park + coolers at dawn.')) return;
         const r = await fetch(stop ? '/api/arm/watch/stop' : '/api/arm/watch', {method: 'POST'});
         if (!r.ok) {
