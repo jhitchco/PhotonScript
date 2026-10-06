@@ -285,8 +285,12 @@ class TelescopeAgent:
             await asyncio.sleep(self.SAFETY_POLL_S)
 
     # Armer states in which a night is in progress (mirrors
-    # photonscript.scheduler.armer.ACTIVE_STATES; a test keeps them in sync).
-    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR")
+    # photonscript.scheduler.armer.LIVE_STATES; a test keeps them in sync).
+    # PS-152: LIVE, not ACTIVE: a watched sideloaded night (PS-136 WATCHING)
+    # is a night too, so the cooler / dew / safety watchdogs and the guide
+    # guard's "no night armed" check treat it as one.
+    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR",
+                            "WATCHING")
 
     def _armer_state(self) -> str | None:
         """The armer's persisted state, or None when there is no readable
