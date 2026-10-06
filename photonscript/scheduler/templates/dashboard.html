@@ -313,6 +313,20 @@
                     (now ? ' &middot; now: ' + now.replace(/_Container$/, '') : '') +
                     ' &middot; no dispatch; park + cooler check at ' + due + '</div>');
             }
+            // PS-139: NINA #2 holds slew / center / park instructions tonight
+            const nm = d.nina2_mount;
+            if (nm && (nm.items || []).length) {
+                const bad = nm.in_loop > 0;
+                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + (bad ? 'rgba(239,68,68,.7)' : 'rgba(251,191,36,.5)') +
+                    ';background:rgba(239,68,68,.06);">&#9888; <b>NINA #2 holds mount ' +
+                    'instructions</b>' + (bad ? ' (inside a loop: moves the RC16 every pass)' : '') +
+                    ': ' + nm.items.slice(0, 3).map(i => i.label).join(', ') +
+                    (nm.replaced ? ' &middot; the companion replaces it at pre-config'
+                        : ' &middot; remove them in NINA #2 and reload') +
+                    ' <span style="opacity:.6">(' + (nm.reason || '') + ' check, ' +
+                    String(nm.t_utc || '').slice(11, 16) + ' UTC)</span></div>');
+            }
             const sd = d.shutdown;
             if (sd && !active) {
                 const when = sd.at

@@ -725,6 +725,13 @@ class PhotonScriptConfig(BaseSettings):
                                      # see the shared safety monitor. Whether it
                                      # can is AUTO-DETECTED at arm (connect + read
                                      # the NINA #2 safety monitor) — no manual flag.
+    # PS-139: at arm and when the armer starts WATCHING a sideloaded night,
+    # read NINA #2's loaded sequence (GET /sequence/state, read only) for
+    # slew / center / park / tracking / flip instructions, which would move
+    # the mount the RC16 rides. "alert" (default): one Pushover per night
+    # plus the Tonight's Run chip and a Guiding "What to change" item;
+    # "off": no check. Never blocks, never writes to NINA.
+    piggyback_mount_check: str = "alert"
     piggyback_flat_count: int = 25  # PS-36: OSC dawn sky flats per night (20-30
                                     # target), at the OSC gain/offset
     piggyback_flat_wait_min: int = 25  # PS-36: after nautical dawn + 5, wait at most

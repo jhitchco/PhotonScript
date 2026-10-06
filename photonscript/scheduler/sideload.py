@@ -54,9 +54,12 @@ SPLICED_TT_NOTE = ("Sideloaded (PS-127): this test runs once, in the Targets "
                    "runs it again.")
 
 # Instructions a camera-only companion must never carry: the Piggy-600 rides
-# the RC16 mount, which NINA #1 owns.
+# the RC16 mount, which NINA #1 owns. PS-139: the mount list proper lives in
+# sequence_lint.MOUNT_CLASSES (rule piggy-mount); GUIDER_TYPES stay an
+# ERROR anywhere (companion-mount), hand-built or not.
 MOUNT_TYPES = ("SlewScope", "ParkScope", "UnparkScope", "Platesolving.Center",
                "SetTracking", "MeridianFlip", "StartGuiding")
+GUIDER_TYPES = ("StartGuiding",)
 
 
 class SpliceError(ValueError):
@@ -241,7 +244,7 @@ def splice_name(date: str, field: str, kept: list[str]) -> str:
 # ------------------------------------------------------------------------ lint
 
 def lint_companion(seq: dict, filter_wheel: bool | None = None,
-                   settle_gate: bool | None = None):
+                   settle_gate: bool | None = None, hand_built: bool = False):
     """Lint for the Piggy-600 companion (camera + focuser only). Errors: a
     warm or missing setpoint, missing $id / Parent links (PS-77), a light
     loop without its own Safety + Time condition, a stale focus seed, any
@@ -250,6 +253,11 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     filter_wheel None = the Piggy-600's (rigs.rig_has_filter_wheel).
     settle_gate (PS-27): the settle-gate rule for the OSC light loop (None =
     from the config, as in sequence_lint.lint).
+    hand_built (PS-139): a sequence someone built in NINA and sideloads as a
+    JSON body. Rule piggy-mount: a mount instruction inside a loop or a
+    trigger is an ERROR, one outside any loop a WARN (center once before
+    the loop, never while the RC16 images). PhotonScript's own companion
+    (hand_built False) never carries one: any is an ERROR, as before.
     Returns a sequence_lint.LintResult."""
     from photonscript.scheduler import sequence_lint as sl
     from photonscript.shared.rigs import PIGGYBACK, rig_has_filter_wheel
@@ -270,7 +278,9 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     sl._check_readout_mode(seq, r)   # PS-128
     sl._check_flat_filters(seq, r, filter_wheel)   # PS-132
     sl._check_settle_gate(seq, r, settle_gate)   # PS-27
-    mount = sorted({_short(d["$type"]) for frag in MOUNT_TYPES
+    sl._check_piggy_mount(seq, r, strict=not hand_built)   # PS-139
+    mount = sorted({_short(d["$type"])
+                    for frag in (GUIDER_TYPES if hand_built else MOUNT_TYPES)
                     for d in sl._find_type(seq, frag)})
     if mount:
         r.error("companion-mount", f"companion moves the shared mount or guider "

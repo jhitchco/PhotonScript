@@ -520,6 +520,173 @@ def _check_selftest(seq: dict, r: LintResult) -> None:
                                     "machine (NINA would skip it)")
 
 
+# PS-139: instructions that move (or re-point) the shared mount. The
+# Piggy-600 rides the RC16 mount, which NINA #1 owns (PS-25). On 2026-10-03 a
+# hand-built NINA #2 sequence from NINA's stock deep-sky template ran a
+# Center inside its per-sub loop: every sub a slew, a solve, a refused sync
+# and a ~58' offset slew. On a dual-rig night that pulls the RC16 off target
+# for every Piggy sub. Matched on the exact class (namespace.Class) of
+# "$type"; a ninaAPI /sequence/state or /sequence/json tree carries no
+# "$type", so its items match on NINA's display name (MOUNT_DISPLAY_NAMES).
+MOUNT_CLASSES = {
+    "Telescope.SlewScopeToRaDec": "Slew to Ra/Dec",
+    "Telescope.SlewScopeToAltAz": "Slew to Alt/Az",
+    "Platesolving.Center": "Center (slew and center)",
+    "Platesolving.CenterAndRotate": "Center and rotate",
+    "Platesolving.SolveAndSync": "Solve and sync",
+    "Telescope.SetTracking": "Set tracking",
+    "Telescope.ParkScope": "Park scope",
+    "Telescope.UnparkScope": "Unpark scope",
+    "Telescope.FindHome": "Find home",
+    "MeridianFlip.MeridianFlipTrigger": "Meridian flip trigger",
+    "Platesolving.CenterAfterDriftTrigger": "Center after drift trigger",
+}
+MOUNT_CONNECT_LABEL = "Connect mount"
+# NINA's display names (instruction Name), lower case with only letters and
+# digits kept, for trees without "$type". Best effort: confirm against a
+# NINA #2 /sequence/state dump.
+MOUNT_DISPLAY_NAMES = {
+    "slewtoradec": "Slew to Ra/Dec",
+    "slewtoaltaz": "Slew to Alt/Az",
+    "slewandcenter": "Center (slew and center)",
+    "center": "Center (slew and center)",
+    "slewcenterandrotate": "Center and rotate",
+    "centerandrotate": "Center and rotate",
+    "solveandsync": "Solve and sync",
+    "settracking": "Set tracking",
+    "parkscope": "Park scope",
+    "unparkscope": "Unpark scope",
+    "findhome": "Find home",
+    "meridianflip": "Meridian flip trigger",
+    "meridianfliptrigger": "Meridian flip trigger",
+    "centerafterdrift": "Center after drift trigger",
+}
+_MOUNT_DEVICES = ("mount", "telescope")
+
+
+def _vals(v) -> list:
+    """A NINA list as a Python list: {"$values": [...]} (sequence file) or a
+    bare list (ninaAPI tree)."""
+    if isinstance(v, dict):
+        v = v.get("$values")
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+def _key(name) -> str:
+    return "".join(c for c in str(name or "").lower() if c.isalnum())
+
+
+def mount_label(d: dict) -> str | None:
+    """The MOUNT_CLASSES label when d is a mount-moving instruction or
+    trigger, else None. By "$type" when present, else by display name."""
+    t = str(d.get("$type") or "")
+    if t:
+        cls = t.split(",")[0].strip()
+        for frag, label in MOUNT_CLASSES.items():
+            if cls.endswith("." + frag):
+                return label
+        if cls.endswith("Connect.ConnectEquipment"):
+            dev = str(d.get("SelectedDevice") or "").lower()
+            return MOUNT_CONNECT_LABEL if any(m in dev for m in _MOUNT_DEVICES) else None
+        return None
+    name = str(d.get("Name") or "")
+    if not name or name.endswith("_Container") or "Items" in d:
+        return None
+    k = _key(name)
+    if k.startswith("connect") and any(
+            m in str(d.get("SelectedDevice") or "").lower() for m in _MOUNT_DEVICES):
+        return MOUNT_CONNECT_LABEL
+    return MOUNT_DISPLAY_NAMES.get(k)
+
+
+def _runs_once(cond: dict) -> bool:
+    """A LoopCondition with Iterations <= 1 (or a ninaAPI condition that
+    only says Iterations <= 1): the container runs once."""
+    t = str(cond.get("$type") or "")
+    if t and "LoopCondition" not in t:
+        return False
+    try:
+        return int(cond.get("Iterations")) <= 1
+    except (TypeError, ValueError):
+        return False
+
+
+def _loops(node: dict) -> bool:
+    """NINA repeats a container while its conditions hold: any condition
+    other than a single-iteration LoopCondition makes it a loop."""
+    return any(not _runs_once(c) for c in _vals(node.get("Conditions")))
+
+
+def mount_items(tree) -> list[dict]:
+    """Every mount-moving instruction or trigger in a sequence tree (a
+    sequence file or a ninaAPI /sequence/state | /sequence/json payload),
+    document order: {"label", "name", "where", "in_loop", "trigger",
+    "status"}. in_loop: an ancestor container repeats (_loops), or the item
+    is a trigger (triggers fire between exposures)."""
+    out: list[dict] = []
+
+    def visit(node: dict, path: str, in_loop: bool, trigger: bool) -> None:
+        label = mount_label(node)
+        name = str(node.get("Name") or "")
+        if label:
+            out.append({"label": label, "name": name or label,
+                        "where": path or "root", "in_loop": in_loop or trigger,
+                        "trigger": trigger,
+                        "status": str(node.get("Status") or "") or None})
+        if name.endswith("_Container"):
+            name = name[: -len("_Container")]
+        here = (f"{path}/{name}" if path else name) if name else path
+        loops = in_loop or _loops(node)
+        for ch in _vals(node.get("Items")):
+            visit(ch, here, loops, trigger)
+        for ch in _vals(node.get("Triggers")):
+            visit(ch, here, loops, True)
+        runner = node.get("TriggerRunner")
+        if isinstance(runner, dict):
+            visit(runner, here, loops, True)
+
+    if isinstance(tree, dict) and "Response" in tree and "$type" not in tree:
+        tree = tree.get("Response")
+    for root in (tree if isinstance(tree, list) else [tree]):
+        if isinstance(root, dict):
+            visit(root, "", False, False)
+    return out
+
+
+def mount_summary(items: list[dict], limit: int = 4) -> str:
+    """'Center in <where> (in a loop); ...' for alerts and lint details."""
+    parts = [f"{i['label']} in {i['where']}"
+             + (" (trigger)" if i.get("trigger") else
+                " (in a loop)" if i.get("in_loop") else "")
+             for i in items[:limit]]
+    more = f" (+{len(items) - limit} more)" if len(items) > limit else ""
+    return "; ".join(parts) + more
+
+
+def _check_piggy_mount(seq: dict, r: LintResult, strict: bool = False) -> None:
+    """PS-139 rule piggy-mount, for a Piggy-600 (NINA #2) sequence: a mount
+    instruction inside a loop or a trigger is an ERROR (it moves the RC16
+    on every pass); one outside any loop is a WARN (it runs once: only
+    safe when the RC16 is not imaging). strict (PhotonScript's own
+    companion, which never carries one): ERROR everywhere."""
+    items = mount_items(seq)
+    looped = [i for i in items if i["in_loop"]]
+    once = [i for i in items if not i["in_loop"]]
+    if looped:
+        r.error("piggy-mount", f"{len(looped)} mount instruction(s) inside a "
+                "loop of the Piggy-600 sequence: each pass moves the mount the "
+                "RC16 rides (NINA #1 owns it): " + mount_summary(looped))
+    if once:
+        msg = (f"{len(once)} mount instruction(s) outside any loop of the "
+               "Piggy-600 sequence (they run once): only safe while the RC16 "
+               "is not imaging. Center once before the loop at most: "
+               + mount_summary(once))
+        if strict:
+            r.error("piggy-mount", msg)
+        else:
+            r.warn("piggy-mount", msg)
+
+
 PIGGY_CENTER_TAG = "Piggy-600 centering (PS-26)"
 
 
