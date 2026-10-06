@@ -5,8 +5,8 @@ PS-83 made the live and the backfill grader measure with one function
 `graded_by` and no `measure_v`) still hold the old binned HFR (about 2x the
 live one: 13 to 15 px vs 6.5 to 7.2 px on the 09-26 Crescent Ha subs), an
 uncapped star count and HFR x scale as FWHM. `qa-rescore` only re-judges
-stored numbers, and a full re-grade of the night (start_regrade_all) deletes
-the subs log, manual verdicts included.
+stored numbers, and a full re-grade of the night (runs.regrade_night)
+measures every sub again (PS-141: manual verdicts kept).
 
 This pass re-measures only those records, in place:
 

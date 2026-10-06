@@ -141,7 +141,10 @@
             <h2>Nights</h2>
             <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
             <button class="btn btn-secondary" id="regradeAllBtn"
-                    title="Wipe and re-grade every night since a date (sequential, background). Deletes manual review verdicts for those nights.">Re-grade all&hellip;</button>
+                    title="Re-measure and re-judge every night since a date (sequential, background). Manual review verdicts are kept unless the box below is ticked.">Re-grade all&hellip;</button>
+            <label class="bd" style="display:block;font-size:.75rem;opacity:.7;margin-top:.2rem;"
+                   title="PS-141: the old wipe. Deletes the subs logs of those nights, manual review verdicts included.">
+                <input type="checkbox" id="regradeAllDiscard"> discard manual verdicts</label>
             <div class="bd" id="regradeAllStatus" style="margin:.4rem 0 .6rem;"></div>
             <div id="nightList">Loading…</div>
         </aside>
@@ -157,7 +160,9 @@
             </div>
             <div style="margin-top:.8rem;">
                 <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
-                <button class="btn btn-secondary" id="regradeBtn">Re-grade night</button>
+                <button class="btn btn-secondary" id="regradeBtn" title="Re-measure and re-judge every sub. Manual verdicts are kept unless 'discard manual verdicts' is ticked.">Re-grade night</button>
+                <label style="font-size:.75rem;opacity:.7;" title="PS-141: the old wipe. Deletes the night's subs log, manual review verdicts included.">
+                    <input type="checkbox" id="regradeDiscard"> discard manual verdicts</label>
                 <button class="btn btn-secondary" id="libraryBtn" title="Hardlink QA-accepted lights into the Library folder for Syncthing">Rebuild library</button>
                 <button class="btn btn-secondary" id="libResetBtn" title="Empty the library and rebuild with APPROVED subs only — stops bulk transfers queued before the review gate">Reset library (approved only)</button>
             </div>
@@ -364,10 +369,21 @@
         document.getElementById('scoreTotal').textContent = '…';
         document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
         document.getElementById('regradeBtn').onclick = async () => {
-            if (!confirm('Delete grades for ' + date + ' and re-grade all subs?')) return;
+            // PS-141: verdicts kept by default; the wipe needs the box + a confirm
+            const discard = document.getElementById('regradeDiscard').checked;
+            const msg = discard
+                ? 'DISCARD every grade for ' + date + ', manual accept / reject / ' +
+                  'review verdicts included, and re-grade all subs from scratch?\n\n' +
+                  'This cannot be undone.'
+                : 'Re-measure and re-judge every sub of ' + date + '?\n\n' +
+                  'Manual verdicts are kept.';
+            if (!confirm(msg)) return;
             showBackfill({running: true, graded: 0, total_files: 0,
                           current: 'starting…'});
-            await fetch('/api/runs/' + date + '/regrade', {method: 'POST'});
+            await fetch('/api/runs/' + date + '/regrade', {method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({discard_manual: discard})});
+            document.getElementById('regradeDiscard').checked = false;
             pollBackfill(date);
         };
         document.getElementById('libResetBtn').onclick = async () => {
@@ -1861,15 +1877,22 @@
         } catch (e) {}
     }
     document.getElementById('regradeAllBtn').onclick = async () => {
+        const discard = document.getElementById('regradeAllDiscard').checked;
         const since = prompt(
             'Re-grade every night SINCE this date (YYYY-MM-DD).\n' +
             '2026-07-28 = the metadata-bug era. Blank = ALL nights.\n' +
-            'Manual review verdicts for these nights are deleted.',
+            (discard ? 'Manual review verdicts for these nights are DELETED.'
+                     : 'Manual review verdicts are kept.'),
             '2026-07-28');
         if (since === null) return;
+        // PS-141: the wipe asks once more
+        if (discard && !confirm('DISCARD the manual review verdicts of every night ' +
+                (since.trim() ? 'since ' + since.trim() : '(ALL nights)') +
+                '?\n\nThis cannot be undone.')) return;
         await fetch('/api/regrade/all', {method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({since: since.trim()})});
+            body: JSON.stringify({since: since.trim(), discard_manual: discard})});
+        document.getElementById('regradeAllDiscard').checked = false;
         pollRegradeAll(true);
     };
     pollRegradeAll(true);

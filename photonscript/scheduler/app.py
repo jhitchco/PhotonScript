@@ -1983,33 +1983,27 @@ def api_run_detail(date: str, backfill: bool = True):
 
 
 @app.post("/api/runs/{date}/regrade")
-async def api_run_regrade(date: str):
-    """Delete the night's grades and re-run backfill (e.g. after a grading
-    algorithm fix or installing sep)."""
-    from photonscript.scheduler.runs import runs_dir, start_backfill
-    p = runs_dir(get_config()) / f"{date}_subs.jsonl"
-    n = len(p.read_text(encoding="utf-8").splitlines()) if p.exists() else 0
-    logger.info("Re-grade requested for %s: deleting %d existing grades",
-                date, n)
-    if p.exists():
-        p.unlink()
-    # Annotated thumbnails embed star detections — invalidate them too
-    thumbs = Path(get_config().data_dir) / "thumbs" / date
-    if thumbs.exists():
-        for f in thumbs.glob("*.ann.png"):
-            f.unlink(missing_ok=True)
-    start_backfill(get_config(), date)
-    return {"ok": True}
+async def api_run_regrade(date: str, payload: dict = Body(default={}),
+                          discard_manual: bool = False):
+    """Re-measure and re-judge every sub of the night (e.g. after a grading
+    algorithm fix or installing sep). PS-141: a sub a person decided keeps
+    the verdict; {"discard_manual": true} (or ?discard_manual=true) is the
+    old wipe, manual verdicts included."""
+    from photonscript.scheduler.runs import regrade_night
+    dm = bool(discard_manual or (payload or {}).get("discard_manual"))
+    return {"ok": True, **regrade_night(get_config(), date,
+                                        discard_manual=dm)}
 
 
 @app.post("/api/regrade/all")
 async def api_regrade_all(payload: dict = Body(default={})):
-    """Wipe + re-grade every night folder since a date (default: all).
-    Sequential; safe to fire and forget. Deletes manual verdicts for the
-    affected nights."""
+    """Re-grade every night folder since a date (default: all). Sequential;
+    safe to fire and forget. PS-141: manual verdicts are kept unless
+    payload["discard_manual"] (the old wipe)."""
     from photonscript.scheduler.runs import start_regrade_all
     return start_regrade_all(get_config(),
-                             since=str(payload.get("since") or ""))
+                             since=str(payload.get("since") or ""),
+                             discard_manual=bool(payload.get("discard_manual")))
 
 
 @app.get("/api/regrade/all")

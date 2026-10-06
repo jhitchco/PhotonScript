@@ -150,7 +150,11 @@ Check a pending update on the scope without switching: `photonscript self-update
    from their FITS with measure_frame and re-judges the night; human
    verdicts and review fields are never touched, missing FITS are skipped
    and counted, the old numbers stay under `pre_ps83`. Plain `qa-rescore`
-   only re-judges stored numbers; a full re-grade drops manual verdicts. Every ecc is
+   only re-judges stored numbers. A full re-grade (Re-grade night / Re-grade
+   all, `photonscript regrade --date D | --since D`) re-measures every sub;
+   PS-141: it replaces each record in place and keeps a person's verdict
+   (and a target assigned by hand), `--discard-manual` (the tick box on the
+   Runs page) is the old wipe. Every ecc is
    sqrt(1-(b/a)^2); records say so in `ecc_def` (older backfill records held
    1-b/a and are converted on read and on rescore). `qa_ecc_scale` (native,
    default, or binned) picks which scale gates; the other is shown as info
@@ -181,6 +185,8 @@ Check a pending update on the scope without switching: `photonscript self-update
    passes hold the night lock from load to rewrite; passes with slow work
    (identify, Piggy attribution, pointing) merge only the fields they
    changed, and a verdict given meanwhile keeps every verdict field.
+   PS-141: the pointing pass decides its Library moves from the merged
+   log under the lock, so a sub accepted during the pass keeps its link.
    The subs show as a Grid or a Table (PS-116, remembered per browser): the
    table has a small thumbnail, score, verdict and the core stats per sub,
    sortable (lowest score first by default), and the rig / target / filter /
