@@ -6,6 +6,9 @@ GET  /api/runs/{date}/scorecard?file=          one sub's labeled scorecard,
                                                PS-115 target / pointing block
 GET  /api/runs/{date}/rescore                  dry-run verdict diff
 POST /api/runs/{date}/rescore                  {"apply": true} to write
+GET  /api/runs/{date}/remeasure                PS-130 re-measure job status
+POST /api/runs/{date}/remeasure                PS-130 start it (dry run unless
+                                               {"apply": true}; background)
 GET  /api/runs/{date}/stars?file=&rig=         PS-80 star sidecar (stored)
 GET  /api/qa/ecc-scale?date=&refresh=          PS-94 native vs binned ecc report
 GET  /api/runs/{date}/score-report             PS-108 score vs today's verdicts
@@ -225,6 +228,27 @@ def api_rescore(date: str, payload: dict | None = Body(default=None)):
     p = payload or {}
     return rescore_night(_cfg(), date, apply=bool(p.get("apply")),
                          allow_unreject=bool(p.get("allow_unreject")))
+
+
+@router.get("/api/runs/{date}/remeasure")
+def api_remeasure_status(date: str):
+    """PS-130: the night's re-measure job (idle / running / done with the
+    result / error)."""
+    from photonscript.scheduler.qa_remeasure import status
+    return status(date)
+
+
+@router.post("/api/runs/{date}/remeasure")
+def api_remeasure(date: str, payload: dict | None = Body(default=None)):
+    """PS-130: re-measure the night's pre-PS-83 backfill records from their
+    FITS and re-judge the night, in the background (202; poll the GET).
+    Dry run unless {"apply": true}; human verdicts are never touched. 409
+    while armed / running or another grading job is active."""
+    from photonscript.scheduler.qa_remeasure import request
+    p = payload or {}
+    code, body = request(_cfg(), date, apply=bool(p.get("apply")),
+                         allow_unreject=bool(p.get("allow_unreject")))
+    return JSONResponse(status_code=code, content=body)
 
 
 @router.get("/api/runs/{date}/stars")

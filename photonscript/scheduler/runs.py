@@ -620,6 +620,11 @@ def running_jobs() -> list[str]:
     for date, st in list(_backfill_state.items()):
         if st.get("running"):
             jobs.append(f"grading {date}")
+    try:  # PS-130: a re-measure with apply rewrites the subs log too
+        from photonscript.scheduler.qa_remeasure import running
+        jobs.extend(running())
+    except Exception:  # noqa: BLE001
+        pass
     return jobs
 
 
@@ -1031,7 +1036,8 @@ def _old_verdict(rec: dict) -> str:
 def rescore_night(config, date: str, apply: bool = False,
                   allow_unreject: bool = False,
                   extra_unsafe: list[tuple] | None = None,
-                  records: list[dict] | None = None) -> dict:
+                  records: list[dict] | None = None,
+                  sidecars: bool | None = None) -> dict:
     """PS-21: re-grade a night's stored metrics with the current rules and the
     night-median context (HFR and background per rig + target + filter). No
     FITS load. DRY-RUN BY DEFAULT: reports the verdict diff and changes
@@ -1044,7 +1050,9 @@ def rescore_night(config, date: str, apply: bool = False,
     With apply, newly rejected subs leave the stack set (Library links move
     to Library/_rejected/, as PS-71) and newly approved subs are linked.
     `records` grades that list instead of the night's jsonl (offline dry
-    runs on a copy); apply is refused then."""
+    runs on a copy); apply is refused then. `sidecars` reads the night's
+    PS-67 pointing sidecar for such a copy too (default: only without
+    `records`; PS-130 dry-runs the night's own records re-measured)."""
     from collections import Counter
     from photonscript.shared import qa_rules
     from photonscript.scheduler.qa_backfill import _library_links
@@ -1059,7 +1067,8 @@ def rescore_night(config, date: str, apply: bool = False,
     lib = library_root(config)
     graded, source = _night_cards(config, date, subs,
                                   extra_unsafe=extra_unsafe,
-                                  sidecars=records is None)
+                                  sidecars=(records is None
+                                            if sidecars is None else sidecars))
 
     def _keep_score(rec, card):
         """PS-108: a kept verdict still gets the current score."""

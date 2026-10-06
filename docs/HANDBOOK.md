@@ -125,8 +125,13 @@ Check a pending update on the scope without switching: `photonscript self-update
    the same numbers from either; records say `measure_v`. Backfill records
    from before PS-83 hold a binned HFR about 2x the live one (13 to 15 px
    vs 6.5 to 7 px on the 09-26 Crescent Ha subs), an uncapped star count
-   and HFR x scale as FWHM (not judged); re-grade the night to refresh them
-   (`qa-rescore` only re-judges stored numbers). Every ecc is
+   and HFR x scale as FWHM (not judged). PS-130: `photonscript qa-rescore
+   --remeasure --date D` (or `--all-before-ps83`; dry run unless `--apply`,
+   API POST `/api/runs/{date}/remeasure`) re-measures just those records
+   from their FITS with measure_frame and re-judges the night; human
+   verdicts and review fields are never touched, missing FITS are skipped
+   and counted, the old numbers stay under `pre_ps83`. Plain `qa-rescore`
+   only re-judges stored numbers; a full re-grade drops manual verdicts. Every ecc is
    sqrt(1-(b/a)^2); records say so in `ecc_def` (older backfill records held
    1-b/a and are converted on read and on rescore). `qa_ecc_scale` (native,
    default, or binned) picks which scale gates; the other is shown as info

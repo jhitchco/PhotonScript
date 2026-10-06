@@ -575,9 +575,19 @@ def qa_backfill(
 
 @app.command("qa-rescore")
 def qa_rescore(
-    date: str = typer.Option(..., help="Night (YYYY-MM-DD, the runs page date)"),
+    date: str = typer.Option("", help="Night (YYYY-MM-DD, the runs page date)"),
     apply: bool = typer.Option(False, "--apply",
                                help="Write the changes (default: dry run)"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Report only (the default)"),
+    remeasure: bool = typer.Option(
+        False, "--remeasure",
+        help="PS-130: first re-measure pre-PS-83 backfill records (no "
+             "measure_v) from their FITS, then re-judge; human verdicts kept"),
+    all_before_ps83: bool = typer.Option(
+        False, "--all-before-ps83",
+        help="With --remeasure: every night that still has pre-PS-83 "
+             "backfill records (instead of --date)"),
     allow_unreject: bool = typer.Option(
         False, "--allow-unreject",
         help="Let the new rules pass a sub that was rejected before"),
@@ -588,12 +598,33 @@ def qa_rescore(
 ):
     """PS-21: re-grade a night's stored metrics with the unified QA rules and
     show the verdict diff. Dry run unless --apply; human verdicts are never
-    changed."""
+    changed. PS-130 --remeasure: re-measure the pre-PS-83 backfill records
+    from their FITS first (missing FITS are skipped and counted)."""
     import json as _json
     from pathlib import Path as _P
     from photonscript.shared.config import PhotonScriptConfig
     from photonscript.scheduler.runs import rescore_night
 
+    if apply and dry_run:
+        raise typer.BadParameter("--apply and --dry-run exclude each other")
+    if all_before_ps83 and not remeasure:
+        raise typer.BadParameter("--all-before-ps83 needs --remeasure")
+    if remeasure:
+        if records:
+            raise typer.BadParameter("--remeasure reads the FITS, not --records")
+        if bool(date) == all_before_ps83:
+            raise typer.BadParameter("give --date D or --all-before-ps83")
+        from photonscript.scheduler import qa_remeasure
+        rep = qa_remeasure.remeasure(
+            PhotonScriptConfig(), [date] if date else None, apply=apply,
+            allow_unreject=allow_unreject)
+        if full:
+            console.print_json(_json.dumps(rep, default=str))
+        else:
+            print(qa_remeasure.format_report(rep))
+        return
+    if not date:
+        raise typer.BadParameter("--date is required")
     recs = None
     if records:
         text = _P(records).read_text(encoding="utf-8")
