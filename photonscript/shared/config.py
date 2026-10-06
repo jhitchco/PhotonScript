@@ -249,7 +249,7 @@ class PhotonScriptConfig(BaseSettings):
     # GET /api/optics-test/sequence). Only used when that test is generated.
     optics_test_offsets: str = "-300,-150,150,300"  # EAF steps from best
                                  # focus (0 is always shot first)
-    optics_test_filters: str = "L"  # e.g. "L,Ha" to add a narrowband pass
+    optics_test_filters: str = "L,Ha"  # Jeremy 2026-10-06: Ha too (the 10-05 elongation showed most in Ha)
     optics_test_exposure_s: float = 45.0  # broadband sub length (s)
     optics_test_nb_exposure_s: float = 120.0  # narrowband sub length (s)
     optics_test_repeats: int = 2  # subs per (filter, offset) step
@@ -360,7 +360,7 @@ class PhotonScriptConfig(BaseSettings):
     qa_fwhm_method: str = "auto"  # auto (2 x HFR when the moment FWHM is
                                  # under qa_fwhm_hfr_ratio x HFR, else the
                                  # moment) | moment (as before) | hfr
-    qa_fwhm_hfr_ratio: float = 1.2  # moment FWHM px < this x HFR px =
+    qa_fwhm_hfr_ratio: float = 1.5  # moment FWHM px < this x HFR px =
                                  # unreliable (fwhm_unreliable)
     # PS-108: 0 to 100 sub score (shared.qa_score, weights per rig in
     # config/qa/score_weights.toml). Approved 2026-10-04: approve at 80 and

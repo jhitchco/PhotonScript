@@ -177,10 +177,21 @@ def test_judge_fwhm_never_invents_a_fwhm(tmp_path):
     assert sm.judge_fwhm(None, 5.0, cfg)["fwhm_px"] is None
     j = sm.judge_fwhm(5.0, None, cfg)
     assert j["fwhm_px"] == 5.0 and not j["fwhm_unreliable"]
-    j = sm.judge_fwhm(5.9, 5.0, cfg)          # under 1.2 x HFR
+    j = sm.judge_fwhm(7.4, 5.0, cfg)          # under 1.5 x HFR (default)
     assert j["fwhm_px"] == 10.0 and j["fwhm_unreliable"]
-    j = sm.judge_fwhm(6.1, 5.0, cfg)          # just above: kept
-    assert j["fwhm_px"] == 6.1 and not j["fwhm_unreliable"]
+    j = sm.judge_fwhm(7.6, 5.0, cfg)          # just above: kept
+    assert j["fwhm_px"] == 7.6 and not j["fwhm_unreliable"]
+    old = _cfg(tmp_path, qa_fwhm_hfr_ratio=1.2)   # the ratio is a knob
+    assert not sm.judge_fwhm(6.1, 5.0, old)["fwhm_unreliable"]
+    assert sm.judge_fwhm(5.9, 5.0, old)["fwhm_unreliable"]
+
+
+def test_fwhm_ratio_default_is_1_5():
+    """Jeremy 2026-10-06: 1.5 also catches partly under-read stars (a
+    synthetic broad star read 38% low at ratio 1.27); healthy stars sit near
+    2.0."""
+    from photonscript.shared.config import PhotonScriptConfig
+    assert PhotonScriptConfig().qa_fwhm_hfr_ratio == 1.5
 
 
 # ------------------------------------------------------ (3) scorecard
@@ -228,7 +239,10 @@ def test_live_and_backfill_judge_the_same_way(tmp_path, make, flt, ecc_src,
                                               fwhm_src):
     _need_sep()
     from photonscript.scheduler.runs import _fast_grade
-    cfg = _cfg(tmp_path)
+    # Parity of the two graders under one rule: the synthetic stars sit
+    # between ratio 1.2 and 1.5, so pin the original 1.2 to keep the
+    # moment / hfr cases distinct (the 1.5 default has its own tests).
+    cfg = _cfg(tmp_path, qa_fwhm_hfr_ratio=1.2)
     data = np.clip(make(), 0, 65535).astype(np.uint16)
     f = _write(tmp_path / "fits" / NIGHT / "LIGHT" / f"p_{flt}_0001.fits",
                data, FILTER=flt)

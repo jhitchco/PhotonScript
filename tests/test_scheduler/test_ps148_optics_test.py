@@ -423,7 +423,7 @@ def test_config_keys_defaults_and_system_fields():
     from photonscript.scheduler import app
     c = PhotonScriptConfig(_env_file=None)
     assert c.optics_test_offsets == "-300,-150,150,300"
-    assert c.optics_test_filters == "L"
+    assert c.optics_test_filters == "L,Ha"
     assert c.optics_test_exposure_s == 45.0
     assert c.optics_test_nb_exposure_s == 120.0
     assert c.optics_test_repeats == 2
