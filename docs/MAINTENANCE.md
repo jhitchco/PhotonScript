@@ -98,6 +98,10 @@ without deleting anything:
 - **Runs page → "⤓ archive all before 2026-09-01"** collapses old nights.
 - Per-night ⤓ / ⤒ toggles archive / restore one night.
 - "show N archived" reveals them again.
+- PS-20: nights with no images (no graded subs, no RC16 lights, no Piggy-600
+  lights: a plan with 0 frames, or calibration only) are folded under "show N
+  empty nights" (remembered per browser). Nothing is deleted; `/runs/<date>`
+  still opens them.
 - API: `POST /api/runs/{date}/archive {archived: bool}`,
   `POST /api/runs/archive-before {date}`. State in
   `data_dir/archived_nights.json`.
