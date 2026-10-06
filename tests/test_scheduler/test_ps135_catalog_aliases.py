@@ -169,7 +169,6 @@ def test_unknown_name_still_falls_back_to_ra_dec(tmp_path):
 # is a new suspicious row.
 KNOWN_FINDINGS = {
     ("PGC088608", "faint_large"),   # Sextans dSph really is V ~10.4
-    ("NGC 4945", "faint_large"),    # 11.9 looks like a B mag; V ~9
 }
 
 
@@ -216,6 +215,62 @@ def test_fixed_rows():
         assert (find_catalog_entry(cid)["dec"] > 0) == (sign > 0), cid
 
 
+# ------------------------------------------------- rows follow-up (PS-135b)
+
+def test_flame_nebula_row():
+    for n in ("Flame Nebula", "Flame", "NGC 2024", "ngc2024"):
+        e = find_catalog_entry(n)
+        assert e["catalog_id"] == "NGC 2024", n
+    e = find_catalog_entry("Flame Nebula")
+    assert e["type"] == "emission nebula" and e["size"] == 30.0
+    assert e["dec"] < 0 and abs(e["ra"] - 5.698) < 0.01
+    assert set(e["months"]) == set(astronomy.months_for_ra(e["ra"]))
+    assert e["mix"]["Ha"] == max(e["mix"].values())
+    assert find_catalog_entry("IC 434")["catalog_id"] == "IC 434"
+
+
+@pytest.mark.parametrize("old,cid", [
+    ("Eagle Nebula", "M 16"), ("IC 4703", "M 16"),
+    ("Eastern Veil", "NGC 6992"), ("NGC 6995", "NGC 6992"),
+    ("Bear Claw Nebula", "NGC 2537"), ("Bear Paw Galaxy", "NGC 2537"),
+    ("Browning", "IC 2431"), ("Cocoon Galaxy", "NGC 4490"),
+    ("NGC 4990", "NGC 4990"),
+])
+def test_renamed_rows_keep_old_names(old, cid):
+    assert find_catalog_entry(old)["catalog_id"] == cid
+
+
+def test_duplicates_fold_into_one_target():
+    ids = [e["catalog_id"] for e in astronomy.SEASONAL_TARGETS]
+    assert "IC 4703" not in ids  # the M 16 row covers it
+    assert catalog_alias_keys("IC 4703") == catalog_alias_keys("M 16")
+    assert catalog_alias_keys("NGC 6995") == catalog_alias_keys("NGC 6992")
+    assert catalog_alias_keys("Eastern Veil") == catalog_alias_keys("NGC 6992")
+    known = known_target_index([CelestialTarget(
+        name="Veil Nebula (Eastern)", catalog_id="NGC 6992", ra_hours=20.94,
+        dec_degrees=31.72)])
+    for n in ("NGC 6995", "Eastern Veil", "NGC6992"):
+        assert canonical_target(n, known) == "Veil Nebula (Eastern)"
+    known = known_target_index([CelestialTarget(
+        name="Eagle Nebula (Pillars of Creation)", catalog_id="M 16",
+        ra_hours=18.313, dec_degrees=-13.79)])
+    for n in ("IC 4703", "Eagle Nebula", "NGC 6611", "M16"):
+        assert canonical_target(n, known) == "Eagle Nebula (Pillars of Creation)"
+
+
+def test_renamed_row_values():
+    assert find_catalog_entry("NGC 2537")["name"] == "Bear Paw Galaxy"
+    assert find_catalog_entry("IC 2431")["name"] == "IC 2431"
+    assert find_catalog_entry("NGC 4990")["name"] == "NGC 4990"
+    cocoon = find_catalog_entry("NGC 4490")
+    assert cocoon["name"] == "Cocoon Galaxy"
+    assert abs(cocoon["ra"] - 12.51) < 0.01 and abs(cocoon["dec"] - 41.64) < 0.01
+    assert find_catalog_entry("NGC 6995")["catalog_id"] == "NGC 6992"
+    part = find_catalog_entry("NGC 6995 (Eastern Veil, part)")
+    assert part["catalog_id"] == "NGC 6995"
+    assert find_catalog_entry("NGC 4945")["mag"] == 9.3
+
+
 def test_check_script_runs(capsys):
     import importlib.util
     from pathlib import Path
@@ -227,10 +282,10 @@ def test_check_script_runs(capsys):
     old = sys.argv
     sys.argv = ["check_catalog.py"]
     try:
-        assert mod.main() == 1  # the two known findings
+        assert mod.main() == 1  # the known finding
     finally:
         sys.argv = old
-    assert "NGC 4945" in capsys.readouterr().out
+    assert "PGC088608" in capsys.readouterr().out
 
 
 # ------------------------------------------------------- tracking-test picker
