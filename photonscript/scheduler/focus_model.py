@@ -572,6 +572,10 @@ async def ingest_loop(get_config, sleep=None) -> None:
                         logger.info("focus_model: %s ingest: added %s, "
                                     "error %s", trig, res.get("added"),
                                     res.get("error"))
+                    if res.get("added"):
+                        # PS-144: configured offset vs same-night pairs
+                        chk = await asyncio.to_thread(offset_check, cfg)
+                        await offset_alert(cfg, chk)
                     if first or daily:
                         last_full = time.time()
                     first = False
@@ -1010,9 +1014,168 @@ def summary(config) -> dict:
         "ingest": load_ingest_status(config),
         "trust": tr,
         "moves": recent_moves(config),
+        "offset_check": offset_check(config, pts, model),
         "af_skip_readiness": {"ready": tr["trusted"],
                               "reasons": tr["reasons"]},
     }
+
+
+# --------------------------------------------------------------------------
+# Configured vs measured filter offsets (PS-144)
+# --------------------------------------------------------------------------
+# The configured focus_filter_offsets ran at -187 for nine nights while the
+# model put Ha at +123 (every NB sub about 2.8 CFZ inside focus). These read
+# the offset straight from same-night reference/NB AF pairs (the dusk focus
+# calibration produces exactly these) and flag a configured offset more than
+# one CFZ away. Read-only; offset_alert() pushes once per measured night.
+
+PAIR_MAX_GAP_MIN = 90.0    # an NB AF pairs with the nearest ref AF this close
+OFFSET_ALERT_FILE = "focus_offset_alert.json"
+
+
+def _when(p: dict):
+    try:
+        return datetime.strptime(str(p.get("time") or "")[:19],
+                                 "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def pair_offsets(pts: list[dict], ref_filter: str = "L",
+                 slope: float | None = None,
+                 max_gap_min: float = PAIR_MAX_GAP_MIN) -> dict:
+    """Per filter, the offset from the reference filter measured on the most
+    recent night with pairs: each AF in that filter pairs with the ref AFs
+    of the same night just before and just after it (within max_gap_min;
+    the mean of both when bracketed), delta = filter position - ref
+    position, corrected by slope x (temperature difference) when both
+    temperatures and a slope are known. {filter: {steps, n, night, spread,
+    deltas}}; steps is the median delta."""
+    by_night: dict = {}
+    for p in pts or []:
+        t = _when(p)
+        pos = _num(p.get("position"))
+        if t is None or pos is None or not p.get("filter"):
+            continue
+        by_night.setdefault((t - timedelta(hours=12)).date(), []).append(
+            (t, p["filter"], pos, _num(p.get("temp"))))
+    found: dict = {}
+    for night in sorted(by_night):
+        rows = by_night[night]
+        refs = [r for r in rows if r[1] == ref_filter]
+        if not refs:
+            continue
+        per: dict = {}
+        for t, f, pos, temp in rows:
+            if f == ref_filter:
+                continue
+            gap = max_gap_min * 60
+            before = [r for r in refs if 0 <= (t - r[0]).total_seconds() <= gap]
+            after = [r for r in refs if 0 < (r[0] - t).total_seconds() <= gap]
+            near = ([max(before, key=lambda r: r[0])] if before else []) + \
+                   ([min(after, key=lambda r: r[0])] if after else [])
+            if not near:
+                continue
+            # bracketed (the calibration's L,X,L order): the mean of the ref
+            # AF just before and just after; else the one ref AF in reach
+            ds = []
+            for r in near:
+                d = pos - r[2]
+                if slope and temp is not None and r[3] is not None:
+                    d -= slope * (temp - r[3])
+                ds.append(d)
+            per.setdefault(f, []).append(sum(ds) / len(ds))
+        for f, ds in per.items():
+            found[f] = {"steps": round(_median(ds)), "n": len(ds),
+                        "night": night.isoformat(),
+                        "spread": round(max(ds) - min(ds)),
+                        "deltas": [round(d) for d in ds]}
+    return found
+
+
+def offset_check(config, pts: list[dict] | None = None,
+                 model: dict | None = None) -> dict:
+    """Configured focus_filter_offsets vs the same-night pair measurement
+    (pair_offsets) and the model offset, per filter. A filter alerts when it
+    has a pair measurement and |configured - measured| > one CFZ (cfz_steps:
+    focus_cfz_steps, else the AF step size). Unlisted filters are
+    configured 0 (the sequence applies no move). Never raises."""
+    try:
+        pts = _rc16_points(config) if pts is None else pts
+        ref = _ref_filter(config)
+        if model is None:
+            model = fit(pts, ref_filter=ref)
+        cfz, src = cfz_steps(config, pts)
+        try:
+            configured = config.focus_offset_map()
+        except Exception:  # noqa: BLE001
+            configured = {}
+        pairs = pair_offsets(pts, ref, model.get("slope_steps_per_c"))
+        mo = model.get("offsets") or {}
+        out = {}
+        for f in sorted(set(configured) | set(pairs) | set(mo)):
+            if f == ref:
+                continue
+            conf = int(configured.get(f, 0))
+            meas = pairs.get(f)
+            diff = (conf - meas["steps"]) if meas else None
+            out[f] = {"configured": conf, "listed": f in configured,
+                      "measured": meas,
+                      "model": (mo.get(f) or {}).get("steps"),
+                      "model_se": (mo.get(f) or {}).get("se"),
+                      "diff": diff,
+                      "alert": bool(cfz and diff is not None
+                                    and abs(diff) > cfz)}
+        alerts = [f for f, r in out.items() if r["alert"]]
+        return {"ref_filter": ref, "cfz_steps": (round(cfz) if cfz else None),
+                "cfz_source": src, "filters": out, "alerts": alerts,
+                "alert": bool(alerts),
+                "night": max((out[f]["measured"]["night"] for f in alerts),
+                             default=None)}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("focus_model: offset check failed: %s", e)
+        return {"error": str(e), "filters": {}, "alerts": [], "alert": False}
+
+
+def offset_alert_text(chk: dict) -> str:
+    parts = []
+    for f in chk.get("alerts") or []:
+        r = chk["filters"][f]
+        m = r["measured"]
+        parts.append(f"{f}: configured {r['configured']:+d}, measured "
+                     f"{m['steps']:+d} ({m['n']} pair(s), {m['night']})")
+    return ("Focus offset from " + str(chk.get("ref_filter")) + " is off by "
+            "more than one CFZ (" + str(chk.get("cfz_steps")) + " steps): "
+            + "; ".join(parts) + ". Update PS_FOCUS_FILTER_OFFSETS on the "
+            "System page.")
+
+
+async def offset_alert(config, chk: dict | None = None, notify=None) -> bool:
+    """One Pushover per measured night when offset_check() alerts (state in
+    <data_dir>/focus_offset_alert.json). True when a push went out. Never
+    raises."""
+    try:
+        chk = offset_check(config) if chk is None else chk
+        if not chk.get("alert"):
+            return False
+        path = Path(config.data_dir) / OFFSET_ALERT_FILE
+        try:
+            last = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            last = {}
+        if last.get("night") == chk.get("night"):
+            return False
+        if notify is None:
+            from photonscript.shared.pushover import notify
+        msg = offset_alert_text(chk)
+        await notify(config, msg, title="PhotonScript focus offsets")
+        _write_json(path, {"night": chk.get("night"), "alerts": chk["alerts"],
+                           "at": datetime.utcnow().isoformat() + "Z",
+                           "message": msg})
+        return True
+    except Exception as e:  # noqa: BLE001
+        logger.warning("focus_model: offset alert failed: %s", e)
+        return False
 
 
 def piggyback_summary(config) -> dict:

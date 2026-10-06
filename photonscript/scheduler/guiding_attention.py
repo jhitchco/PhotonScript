@@ -450,6 +450,28 @@ def _nina2_mount_items(config, now: datetime) -> tuple[list[dict], dict]:
     return [it], {it["severity"]: 1}
 
 
+def _focus_offset_items(config) -> tuple[list[dict], dict]:
+    """PS-144: a configured filter focus offset more than one CFZ from the
+    same-night L / filter AF pairs (focus_model.offset_check, stored AF
+    points only)."""
+    from photonscript.scheduler import focus_model as fm
+    chk = fm.offset_check(config)
+    out = []
+    for f in chk.get("alerts") or []:
+        r = chk["filters"][f]
+        m = r["measured"]
+        out.append(_item(
+            WARN, "Focus offsets (PS-144)", "liveSec",
+            f"Focus offset {chk.get('ref_filter')} -> {f}",
+            f"{r['configured']:+d} steps configured",
+            f"{m['steps']:+d} (measured {m['night']}, {m['n']} pair(s); "
+            f"CFZ {chk.get('cfz_steps')})",
+            "Set PS_FOCUS_FILTER_OFFSETS on the System page to the measured "
+            "offset; every NB sub is out of focus by the difference.",
+            "System page", 0, id=f"focus_offset_{f}"))
+    return out, ({WARN: len(out)} if out else {})
+
+
 def _classify_unknown(r: dict, which: str) -> str:
     note = str(r.get("note") or "").lower()
     if "registry name" in note:
@@ -584,6 +606,9 @@ def build(config, now: datetime | None = None, *, phd2: dict | None = None,
     n2 = guarded("NINA #2 mount", lambda: _nina2_mount_items(config, now))
     if n2 is not None:
         items += n2[0]
+    fo = guarded("focus offsets", lambda: _focus_offset_items(config))
+    if fo is not None:
+        items += fo[0]
 
     order = sorted(range(len(items)), key=lambda i: _sort_key(items[i], i))
     items = [items[i] for i in order]

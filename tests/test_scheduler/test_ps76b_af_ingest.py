@@ -192,8 +192,8 @@ class TestSeedFallback:
 
     def test_narrowband_is_l_line_plus_offset(self, tmp_path, fs):
         cfg = _cfg(tmp_path)
-        assert fs.seed_for("Ha", 23.29, cfg) == fs.seed_for("L", 23.29, cfg) - 187
-        assert fs.seed_for("SII", 23.29, cfg) == fs.seed_for("L", 23.29, cfg) - 187
+        assert fs.seed_for("Ha", 23.29, cfg) == fs.seed_for("L", 23.29, cfg) + 120
+        assert fs.seed_for("SII", 23.29, cfg) == fs.seed_for("L", 23.29, cfg) + 120
         assert fs.seed_for("R", 23.29, cfg) == fs.seed_for("L", 23.29, cfg)
 
     def test_empty_offsets_keep_own_records(self, tmp_path, fs):
@@ -448,7 +448,7 @@ class TestDriveSequence:
                 steps.append(("expose", None))
         # L is driven (table move, no AF); Ha has no AFs of its own -> AF + offset
         assert steps == [("switch", "L"), ("script", "L"), ("expose", None),
-                         ("switch", "L"), ("af", None), ("rel", -187),
+                         ("switch", "L"), ("af", None), ("rel", 120),
                          ("expose", None)]
         smart = [d for d in _loop(seq)["Items"]["$values"]
                  if "SmartExposure" in d["$type"]][0]

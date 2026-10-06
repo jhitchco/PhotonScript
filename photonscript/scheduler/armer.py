@@ -127,6 +127,16 @@ GUIDING_RECOVER_AFTER_TICKS = 6     # ~3 min unlocked -> one auto guider restart
 GUIDING_ESCALATE_AFTER_TICKS = 10   # ~5 min unlocked -> priority escalation
 SAFETY_NONE_ALERT_TICKS = 6         # ~3 min of an unreadable safety monitor -> alert
 
+# PS-144 dusk focus-offset calibration (focus_calibration_tonight): rich,
+# uncrowded fields in order of preference; the first one FOCUS_CAL_ALT_LO to
+# _HI deg up at dusk is used, else the highest. NGC 7789 first (autumn).
+FOCUS_CAL_FIELDS = (("NGC 7789", 23.957, 56.72), ("M52", 23.405, 61.59),
+                    ("NGC 663", 1.77, 61.23), ("M37", 5.872, 32.55),
+                    ("M35", 6.151, 24.33), ("M67", 8.856, 11.81),
+                    ("M11", 18.851, -6.27))
+FOCUS_CAL_FILTERS = ("L", "Ha", "L", "OIII", "L", "SII", "L")
+FOCUS_CAL_ALT_LO, FOCUS_CAL_ALT_HI = 40.0, 70.0
+
 
 class Armer:
     def __init__(self, config):
@@ -1220,8 +1230,16 @@ class Armer:
         # Here, after guiding is resolved, so fallback_unguided's re-dispatch
         # is capped too.
         cap_unguided(targets, getattr(self.config, "unguided_max_exposure_s", 300))
+        # PS-144: a one-shot focus-offset calibration first, inside the same
+        # night sequence (focus_calibration_tonight; reset after the start)
+        self._focus_cal_field = None
+        seq_targets = list(targets)
+        if bool(getattr(self.config, "focus_calibration_tonight", False)):
+            cal = self._focus_calibration_target(now)
+            if cal is not None:
+                seq_targets.insert(0, cal)
         seq = build_sequence_for_night(
-            f"PhotonScript_{self.plan['night_of'].replace('-', '')}", targets)
+            f"PhotonScript_{self.plan['night_of'].replace('-', '')}", seq_targets)
 
         # Dusk gate in local time (DST-aware); skip if dusk already past
         dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
@@ -1251,6 +1269,84 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.warning("Plan snapshot failed: %s", e)
         return True
+
+    # -- PS-144 dusk focus-offset calibration ---------------------------------
+
+    def _focus_calibration_target(self, now: datetime):
+        """The PS-76 focus_calibration target to put first in tonight's
+        sequence: AF in FOCUS_CAL_FILTERS, one round, on a rich field
+        FOCUS_CAL_ALT_LO to _HI deg up at dusk (first listed field that fits,
+        else the highest). Records the field in self._focus_cal_field.
+        Never raises: a planning error means no calibration tonight."""
+        try:
+            from photonscript.scheduler.tracking_test import altitude
+            from photonscript.shared.models import NinaSequenceTarget
+            dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
+            when = max(now, dusk)
+            lat = float(getattr(self.config, "observatory_lat", 31.9))
+            lon = float(getattr(self.config, "observatory_lon", -109.0))
+            best = None
+            for name, ra, dec in FOCUS_CAL_FIELDS:
+                alt = altitude(ra, dec, when, lat, lon)
+                if FOCUS_CAL_ALT_LO <= alt <= FOCUS_CAL_ALT_HI:
+                    best = (name, ra, dec, alt)
+                    break
+                if best is None or alt > best[3]:
+                    best = (name, ra, dec, alt)
+            name, ra, dec, alt = best
+            self._focus_cal_field = {"name": name, "ra_hours": ra,
+                                     "dec_degrees": dec,
+                                     "alt_deg": round(alt, 1),
+                                     "for_utc": when.isoformat() + "Z"}
+            logger.info("Focus calibration first tonight: %s (%.0f deg up at "
+                        "%s)", name, alt, when)
+            return NinaSequenceTarget(
+                name=f"Focus calibration {name}", ra_hours=ra,
+                dec_degrees=dec, focus_calibration=True,
+                focus_calibration_rounds=1,
+                focus_calibration_filters=list(FOCUS_CAL_FILTERS))
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            logger.warning("focus calibration skipped: %s", e)
+            self._focus_cal_field = None
+            return None
+
+    async def _consume_focus_calibration(self) -> None:
+        """After a successful dispatch that carried the calibration: turn
+        focus_calibration_tonight off (live and in .env, the System page's
+        path), log an event and push a note. Never raises."""
+        field = getattr(self, "_focus_cal_field", None)
+        if not field:
+            return
+        self._focus_cal_field = None
+        self.config.focus_calibration_tonight = False
+        saved = True
+        try:
+            from photonscript.shared import envfile
+            envfile.update_env(envfile.env_path(),
+                               {"PS_FOCUS_CALIBRATION_TONIGHT": "false"})
+        except Exception as e:  # noqa: BLE001
+            saved = False
+            logger.warning("focus_calibration_tonight not reset in .env: %s", e)
+        msg = (f"Focus-offset calibration dispatched first tonight on "
+               f"{field['name']} ({field['alt_deg']:.0f} deg up at dusk; AF in "
+               f"{','.join(FOCUS_CAL_FILTERS)}, about 25-30 min), then the "
+               f"targets. focus_calibration_tonight is now off"
+               + ("" if saved else " (live only: the .env write failed)") + ".")
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            now = datetime.utcnow()
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "focus_calibration", "value": "dispatched",
+                          "detail": msg, "field": field})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("focus calibration event not logged: %s", e)
+        logger.info(msg)
+        try:
+            await notify(self.config, msg, title="PhotonScript focus calibration")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("focus calibration note not sent: %s", e)
 
     def _calibration_slot(self, targets, now: datetime) -> dict | None:
         """PS-93: the PHD2 calibration field when tonight needs a calibration
@@ -1425,6 +1521,7 @@ class Armer:
             return False
         # One arm covers both scopes: fire a calibration companion at NINA #2.
         # Best-effort — a piggyback problem never fails the RC16 night.
+        await self._consume_focus_calibration()   # PS-144: one-shot reset
         if companion:
             await self._dispatch_piggyback_companion()
         await self._send_block_alerts()   # PS-85: history decisions, once per target

@@ -346,6 +346,23 @@
                 (tr.reasons&&tr.reasons.length ? '; '+tr.reasons.map(esc).join('; ') : '')+
                 (tr.drive_enabled ? '' : ' &middot; focus_model_drive off')+'</div>';
         }
+        // PS-144: configured offset vs same-night L / filter AF pairs
+        let offs = '';
+        const oc = (!osc && s.offset_check) ? s.offset_check : null;
+        if (oc && oc.filters && Object.keys(oc.filters).length) {
+            const sg = v => (v>0?'+':'')+v;
+            offs = '<div class="muted"'+(oc.alert?' style="color:#fca5a5;"':'')+
+                '>Offsets vs '+esc(oc.ref_filter||'L')+' (configured / same-night pairs / model): '+
+                Object.keys(oc.filters).map(f => {
+                    const r = oc.filters[f], m = r.measured;
+                    return (r.alert?'<b>':'')+esc(f)+' '+sg(r.configured)+' / '+
+                        (m ? sg(m.steps)+' ('+m.n+', '+esc(m.night)+')' : '&mdash;')+' / '+
+                        (r.model!=null ? sg(r.model) : '&mdash;')+(r.alert?' OFF by '+
+                        Math.abs(r.diff)+'</b>':'');
+                }).join(' &middot; ')+
+                ' &middot; CFZ '+(oc.cfz_steps!=null ? oc.cfz_steps : '?')+
+                (oc.alert ? ' &middot; set PS_FOCUS_FILTER_OFFSETS on the System page' : '')+'</div>';
+        }
         let exp = '';
         if (!osc) {
             const et = s.expected_temp;
@@ -394,7 +411,7 @@
                 esc(mv.filter)+' '+esc(mv.verdict)+(mv.position!=null?' '+mv.position:''))
                 .join(' &middot; ')+'</div>' : '';
         return '<div class="focus-card'+(osc?' osc':'')+'"><h3>'+esc(title)+
-            ' &mdash; focus model</h3>'+head+trust+exp+
+            ' &mdash; focus model</h3>'+head+trust+offs+exp+
             (osc ? '<div class="muted">Read-only: nothing seeds from it yet. '+
                    'Ingest status is on the RC16 card.</div>'
                  : ingestLine(s.ingest, s.enabled))+

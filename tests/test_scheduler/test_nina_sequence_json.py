@@ -606,8 +606,8 @@ class TestFocusBlocksPS65:
         O = _nina_filter_name(FilterType.OIII)
         assert _block_steps(_gen_multi()) == [
             ("switch", L), ("af", None), ("expose", L),               # no offset
-            ("switch", L), ("af", None), ("rel", -187), ("expose", H),
-            ("switch", L), ("af", None), ("rel", -187), ("expose", O),
+            ("switch", L), ("af", None), ("rel", 120), ("expose", H),
+            ("switch", L), ("af", None), ("rel", 120), ("expose", O),
         ]
 
     def test_offsets_come_from_config(self, monkeypatch):

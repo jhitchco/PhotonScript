@@ -445,16 +445,25 @@ class PhotonScriptConfig(BaseSettings):
                                  # AF too and obey NINA's *global* Autofocus Filter
                                  # option — set that to L (+ per-filter offsets) so
                                  # the triggered AFs also focus on broadband.
-    focus_filter_offsets: str = "Ha:-187,OIII:-187,SII:-187"  # EAF steps from
+    focus_filter_offsets: str = "Ha:120,OIII:120,SII:120"  # EAF steps from
                                  # the autofocus_filter's best focus to each
                                  # imaging filter's (PS-65). Every filter block
                                  # autofocuses on autofocus_filter, then applies
-                                 # this as a MoveFocuserRelative. -187 is the
-                                 # 2026-07-03 paired measurement in
-                                 # focus_seeds.json (L 6040 at 28.8C vs NB 5853 at
-                                 # 28.3C). Unlisted filters (R/G/B) get 0. Set it
+                                 # this as a MoveFocuserRelative. Measured by the
+                                 # PS-76 model 2026-10-06 (PS-144): Ha +123 se
+                                 # 6.3 (the old -187, one July pair, put every
+                                 # NB sub about 310 steps inside focus). OIII and
+                                 # SII are provisional (+120) until measured
+                                 # (focus_calibration_tonight). A leading "+"
+                                 # is fine. Unlisted filters (R/G/B) get 0. Set it
                                  # EMPTY if NINA's own profile filter offsets are
                                  # turned on, so the offset is not applied twice.
+    focus_calibration_tonight: bool = False  # PS-144: one-shot. When on, the
+                                 # armer's next night sequence starts with a
+                                 # PS-76 focus-offset calibration (AF in
+                                 # L,Ha,L,OIII,L,SII,L on a rich field, about
+                                 # 25-30 min) before tonight's targets; the key
+                                 # turns itself off after that dispatch.
     nina_autofocus_reports_dir: str = ""  # path to NINA's AutoFocus report *.json
                                  # folder (e.g. %LOCALAPPDATA%/NINA/AutoFocus). Set
                                  # it to enable the post-night AF-quality alert

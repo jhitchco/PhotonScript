@@ -519,6 +519,20 @@ from the table.
   trigger runs the same move (1 C), the HFR trigger keeps the full AF, and a
   verify AF runs every `focus_model_verify_af_min` (120). Moves are logged to
   `focus_model_moves.jsonl` and shown on the card.
+- Filter offsets (PS-144): `focus_filter_offsets` (System page,
+  `PS_FOCUS_FILTER_OFFSETS`) defaults to `Ha:120,OIII:120,SII:120` (Ha
+  measured +123 se 6.3 on 2026-10-06; the old -187 put every NB sub about
+  310 steps inside focus; OIII / SII provisional). A `.env` line overrides
+  the default. The Focus card and `/api/focus` `rc16.offset_check` compare
+  it with the offset measured from same-night L / filter AF pairs (the L AFs
+  just before and after each filter AF); more than one CFZ apart = one
+  Pushover per measured night plus a Guiding "What to change" item.
+- Dusk calibration (PS-144): tick `focus_calibration_tonight` (System page)
+  before arming and tonight's sequence starts with the PS-76 calibration
+  (AF in L,Ha,L,OIII,L,SII,L on NGC 7789, else the first rich field 40 to 70
+  deg up at dusk; about 25 to 30 min), then the targets. The key turns
+  itself off after the dispatch (event + Pushover). NINA's profile
+  Autofocus filter must be OFF that night or every AF runs in L.
 
 ## OSC (AP26CC) calibration facts — verified 2026-09-26
 

@@ -394,7 +394,7 @@ class TestCalibrationSequence:
                 seq.append("AF")
         # acquisition AF already did L, so the series starts at R
         assert seq == ["R", "AF", "G", "AF", "B", "AF", "L", "AF",
-                       "H", -187, "AF", "O", "AF", "S", "AF", "L", 187, "AF"]
+                       "H", 120, "AF", "O", "AF", "S", "AF", "L", -120, "AF"]
 
     def test_rounds_repeat_and_end_on_reference(self):
         items = self._cal_items(self._gen(rounds=2, filters=["L", "Ha"]))
