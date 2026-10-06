@@ -142,6 +142,20 @@ Check a pending update on the scope without switching: `photonscript self-update
    (review/accepted-syncing/transferred/rejected; X key cycles states,
    thumbnail corner buttons give one-click verdicts). **Approve night** queues
    accepted subs into the Library -> Syncthing carries them to the desktop.
+   **Review speed (PS-24).** A verdict repaints at once and never reloads
+   the night (static/js/review.js): the tile, table row, counters
+   ("reviewed N of M") and lightbox change immediately, the POST runs in the
+   background and a refused one rolls back with a red toast. Keys: Enter
+   opens the first sub to review, A accept / R reject (then the next sub to
+   review), U undo, arrows, X, Esc (closing never refetches). Shift / ctrl
+   click or "Select all shown" + Accept / Reject applies one verdict to many
+   subs (`POST /api/runs/{date}/qa-batch`). The grid draws every sub (lazy
+   tiles), the lightbox preview is a JPEG and the next two are prefetched.
+   The Targets page tiles carry the same accept / reject buttons. Server:
+   one lock per night shared with the live appender, atomic subs-log
+   rewrites, only that sub's Library links change, goal progress follows
+   about 2 s after the last verdict (`/review-summary` and the target page
+   flush it first).
    The subs show as a Grid or a Table (PS-116, remembered per browser): the
    table has a small thumbnail, score, verdict and the core stats per sub,
    sortable (lowest score first by default), and the rig / target / filter /

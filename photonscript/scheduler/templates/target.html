@@ -9,6 +9,7 @@
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
     <script src="/static/js/sky_geom.js?v={{ version }}"></script>
+    <script src="/static/js/review.js?v={{ version }}"></script>
     <style>
         main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
         .top { display:grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
@@ -46,6 +47,13 @@
                                line-height:1.3; }
         .best-star { position:absolute; top:2px; left:5px; color:#facc15;
                      font-size:1rem; z-index:2; text-shadow:0 0 3px #000; }
+        /* PS-24: accept / reject on the tile, same buttons as the runs grid */
+        .sub-tile { isolation:isolate; }
+        .qa-btns { position:absolute; top:3px; right:3px; display:flex; gap:3px; z-index:2; }
+        .qa-btns span { cursor:pointer; border-radius:4px; padding:0 5px; font-size:.85rem;
+                        background:rgba(0,0,0,.65); user-select:none; }
+        .qa-btns .y { color:#4ade80; } .qa-btns .n { color:#f87171; }
+        .qa-btns span:hover { background:rgba(0,0,0,.9); }
         .ref { position:relative; width:100%; background:#05080f; border-radius:8px;
                overflow:hidden; }
         .ref img, .ref svg { position:absolute; inset:0; width:100%; height:100%; }
@@ -100,7 +108,8 @@
             <div class="row"><span class="lbl">rig</span><span id="rigChips"></span></div>
             <div class="row"><span class="lbl">sort</span><span id="sortChips"></span>
                 <span class="muted" id="gridCount" style="margin-left:.6rem;"></span></div>
-            <div class="muted">Read-only here: click a tile to review it on its night's run page.
+            <div class="muted">&#10003; / &#10007; on a tile approves or rejects it here (U undoes the last one);
+                click a tile to open its night's run page.
                 &#9733; = best sub per rig + filter (lowest HFR with round stars).</div>
             <div class="grid" id="grid"></div>
             <button class="btn btn-secondary" id="moreBtn" hidden>Show more</button>
@@ -227,8 +236,9 @@ async function loadGrid(append) {
     if (!append) grid.innerHTML = '<span class="dim">loading&hellip;</span>';
     const d = await (await fetch('/api/subs?' + q)).json();
     const best = new Set(Object.values(D.best || {}));
+    d.rows.forEach(r => { ROWS[r.key] = r; });
     const html = d.rows.map(r => SubTiles.html(r, {best: best.has(r.key),
-                                                   canonical: D.target})).join('');
+                                                   canonical: D.target, review: true})).join('');
     if (append) grid.insertAdjacentHTML('beforeend', html); else grid.innerHTML = html ||
         '<span class="dim">no subs match</span>';
     SubTiles.lazy(grid, 2);
@@ -238,6 +248,57 @@ async function loadGrid(append) {
     more.hidden = shown >= d.total;
     more.onclick = () => { offset = shown; loadGrid(true); };
 }
+// --- PS-24: verdicts in place (static/js/review.js) --------------------------
+// A tile's corner button sends the verdict for that sub's night; the tile
+// repaints at once, a refused POST rolls it back with a toast. Totals, the
+// goal bars, the reasons and the chip counts refresh from
+// /api/targets/detail shortly after the last click; the grid is not reloaded.
+const ROWS = {};
+const VERDICT_OF = {accepted: 'approved', rejected: 'rejected', review: 'pending'};
+const STATE_OF = {approved: 'accepted', rejected: 'rejected', pending: 'review'};
+function paintTile(r) {
+    document.querySelectorAll('#grid figure.sub-tile').forEach(fig => {
+        if (fig.dataset.key !== r.key) return;
+        fig.className = 'sub-tile v-' + r.verdict;
+        const img = fig.querySelector('img');
+        if (img) img.style.cssText = SubTiles.VERDICT_STYLE[r.verdict] || '';
+    });
+}
+let detailTimer = null;
+function refreshDetail() {
+    clearTimeout(detailTimer);
+    detailTimer = setTimeout(async () => {
+        try {
+            const r = await fetch('/api/targets/detail?name=' + encodeURIComponent(NAME));
+            if (!r.ok) return;
+            D = await r.json();
+        } catch (e) { return; }
+        renderFacts(); renderTotals(); renderReasons(); renderChips();
+    }, 800);
+}
+function tileVerdict(r, state) {
+    const prev = r.verdict;
+    Review.set(r.date, r.file, state, {
+        prev: STATE_OF[prev],
+        apply: (st) => { r.verdict = VERDICT_OF[st]; r.verdict_by = 'manual'; paintTile(r); },
+        revert: () => { r.verdict = prev; paintTile(r); },
+        saved: () => refreshDetail()});
+}
+document.getElementById('grid').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-qa]');
+    if (!b) return;
+    e.preventDefault(); e.stopPropagation();
+    const fig = b.closest('figure.sub-tile');
+    const r = fig && ROWS[fig.dataset.key];
+    if (r) tileVerdict(r, b.dataset.qa);
+});
+document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (!e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'u' && Review.canUndo()) {
+        Review.undo();
+    }
+});
 function renderWhere() {
     const el = document.getElementById('tWhere');
     if (D.unattributed) { el.textContent = 'not in the Library under a target'; return; }

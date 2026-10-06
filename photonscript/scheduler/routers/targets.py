@@ -16,8 +16,9 @@ GET /api/targets/refimage/meta?name=&view=wide|close
 GET /api/targets/refimage?name=&view= the cached cutout (JPEG)
 GET /api/targets/live?name=           mount position when the RC16 is on it
 
-Read-only (approved default, phase 1): verdicts stay on the run page until
-PS-24's review module lands. Every handler is a plain def (threadpool) except
+PS-24: the per-target page gives verdicts in place through the review
+module (static/js/review.js, POST /api/runs/{date}/qa in routers/review.py);
+these routes stay read-only. Every handler is a plain def (threadpool) except
 /live, and none of them asks Syncthing for transfer state (PS-24 pitfall).
 Kept out of app.py (PS-8 router split); app helpers are imported lazily.
 """
@@ -72,6 +73,8 @@ def api_targets():
 
 @router.get("/api/targets/detail")
 def api_target_detail(name: str):
+    from photonscript.scheduler.runs import flush_goal_sync
+    flush_goal_sync()   # PS-24: goal bars include a verdict just given
     d = sub_index.target_detail(_cfg(), name, _projects())
     if not d["found"]:
         return JSONResponse(status_code=404, content={
