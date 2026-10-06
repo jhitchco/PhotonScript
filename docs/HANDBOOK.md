@@ -231,7 +231,7 @@ Check a pending update on the scope without switching: `photonscript self-update
    POST /api/targets/qa-overrides`); they are stored on the project
    (`qa_overrides` in projects.json, per rig) and `qa_rules.thresholds`
    applies them for both graders, live and rescore, matching the goal by
-   name or catalog id. The ecc override also sets the binned ecc gate. The
+   name, catalog id or a PS-135 catalog alias. The ecc override also sets the binned ecc gate. The
    scorecard panel shows such a gate as "<= 6 px (target override)" and a
    reject reason ends "(target override)". New subs only: a graded night
    moves after `qa-rescore --date D` (dry run first).

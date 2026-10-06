@@ -138,7 +138,9 @@ def test_goal_sync_live_credit_and_nights_resolve_aliases(tmp_path):
                                          rig="piggyback")
     nbt = runs.nights_by_target(cfg, store.projects.values())
     assert nbt == {"andromeda galaxy": [
-        {"date": "2026-10-03", "accepted": 2, "attempted": 3}]}
+        {"date": "2026-10-03", "accepted": 2, "attempted": 3,
+         # PS-63: the per-rig split of the same night
+         "by_rig": {"piggyback": {"accepted": 2, "attempted": 3}}}]}
 
 
 def test_targets_page_groups_alias_subs_under_the_goal(tmp_path):
