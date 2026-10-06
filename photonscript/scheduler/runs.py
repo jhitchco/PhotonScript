@@ -1961,15 +1961,34 @@ def list_runs(config) -> list[dict]:
             if d.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}$", d.name):
                 dates.add(d.name)
     archived = load_archived(config)
+    pb_root = _piggyback_watch_root(config)
     out = []
     for d in sorted(dates, reverse=True):
         subs = _load_subs(config, d)
         n_lights, n_cal = _night_fits_counts(fits_root / d, d)
+        # PS-20: Piggy-600 lights land in their own watch dir, so a night
+        # whose OSC grading failed still counts as a night with images.
+        pb_lights = (_night_fits_counts(pb_root / d, d)[0]
+                     if pb_root is not None else 0)
         out.append({"date": d, "subs_logged": len(subs),
                     "lights": n_lights, "cal_frames": n_cal,
+                    "pb_lights": pb_lights,
                     "has_plan": (runs_dir(config) / f"{d}_plan.json").exists(),
                     "archived": d in archived})
     return out
+
+
+def _piggyback_watch_root(config) -> Path | None:
+    """The Piggy-600 image watch dir, or None when that rig is off/unset."""
+    try:
+        from photonscript.shared.rigs import PIGGYBACK, rig_config, rig_ids
+        if PIGGYBACK not in rig_ids(config):
+            return None
+        if not getattr(config, "piggyback_image_watch_dir", ""):
+            return None
+        return Path(rig_config(config, PIGGYBACK).image_watch_dir)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def nights_by_target(config, projects=None) -> dict:

@@ -91,6 +91,10 @@
                 <dl class="facts" id="tFacts"><dt>loading&hellip;</dt><dd></dd></dl>
                 <h2 style="margin-top:1rem;">Goal</h2>
                 <div id="tGoal" class="muted">loading&hellip;</div>
+                <div id="qaPanel" hidden>
+                    <h2 style="margin-top:1rem;">QA gates for this target</h2>
+                    <div id="tQa" class="muted"></div>
+                </div>
             </section>
         </div>
         <section class="panel">
@@ -374,6 +378,50 @@ async function loadBudget() {
         });
     } catch (e) { el.textContent = 'light budget unavailable'; }
 }
+// PS-48: per-target HFR / FWHM / ecc gates per rig (blank = the rig's gate)
+async function loadQa() {
+    const box = document.getElementById('tQa');
+    let q;
+    try {
+        const r = await fetch('/api/targets/qa-overrides?name=' + encodeURIComponent(D.target));
+        if (!r.ok) return;
+        q = await r.json();
+    } catch (e) { return; }
+    document.getElementById('qaPanel').hidden = false;
+    const fmt = v => v == null ? '' : String(v);
+    box.innerHTML = q.rigs.map(rg =>
+        '<div style="margin-top:.4rem;" data-rig="' + esc(rg.id) + '"><b>' + esc(rg.name) +
+        '</b><table class="t"><tr><th>Gate</th><th>Rig gate</th><th>This target</th></tr>' +
+        rg.gates.map(g => '<tr><td>' + esc(g.label) + '</td><td>' + esc(fmt(g.rig_gate)) +
+            ' ' + esc(g.unit) + '</td><td><input type="number" step="any" min="0" ' +
+            'style="width:5.5rem;" data-k="' + esc(g.key) + '" value="' + esc(fmt(g.override)) +
+            '" placeholder="rig gate"> ' + (g.override != null
+                ? '<span class="pend">target override</span>' : '') + '</td></tr>').join('') +
+        '</table><button class="btn btn-secondary copy" data-save="' + esc(rg.id) +
+        '">Save ' + esc(rg.name) + '</button> <span class="dim" data-msg="' + esc(rg.id) +
+        '"></span></div>').join('') +
+        '<div class="dim" style="margin-top:.35rem;">Blank uses the rig gate. ' + esc(q.note) + '</div>';
+    box.querySelectorAll('button[data-save]').forEach(b => b.onclick = async () => {
+        const rig = b.dataset.save;
+        const gates = {};
+        box.querySelectorAll('div[data-rig="' + rig + '"] input[data-k]').forEach(i => {
+            gates[i.dataset.k] = i.value.trim() === '' ? null : Number(i.value);
+        });
+        const msg = box.querySelector('span[data-msg="' + rig + '"]');
+        const r = await fetch('/api/targets/qa-overrides', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: D.target, rig: rig, gates: gates})});
+        if (!r.ok) {
+            let d = {};
+            try { d = await r.json(); } catch (e) {}
+            msg.textContent = 'not saved: ' + (d.detail || r.status);
+            return;
+        }
+        await loadQa();
+        const m2 = box.querySelector('span[data-msg="' + rig + '"]');
+        if (m2) m2.textContent = 'saved';
+    });
+}
 async function loadReady() {
     const el = document.getElementById('tReady');
     try {
@@ -503,6 +551,7 @@ fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     loadGrid();
     loadReady();
     if (!D.unattributed) loadBudget(); else document.getElementById('tBudget').textContent = 'n/a';
+    if (D.project_id) loadQa();
     if (!D.unattributed) { loadRef(); pollLive(); }
     else document.getElementById('refPanel').hidden = true;
 }).catch(() => document.getElementById('tName').textContent = 'unavailable');

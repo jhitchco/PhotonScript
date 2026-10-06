@@ -1333,7 +1333,13 @@
                 '<div style="opacity:.5;font-size:.75rem;">' + p.target.catalog_id + ' · ' +
                 p.kind + ' · priority ' + p.priority + ' ' +
                 btn(p.id, "{\"priority_delta\":10}", '▲') +
-                btn(p.id, "{\"priority_delta\":-10}", '▼') + '</div></div>' +
+                btn(p.id, "{\"priority_delta\":-10}", '▼') + '</div>' +
+                // PS-48: this goal overrides QA gates (edited on the target page)
+                (p.qa_overrides ? '<a href="/target?name=' + encodeURIComponent(p.target.name) +
+                    '#qaPanel" style="font-size:.72rem;color:#eab308;text-decoration:none;" ' +
+                    'title="' + Object.entries(p.qa_overrides).map(([r, g]) => r + ': ' +
+                    Object.entries(g).map(([k, v]) => k + ' ' + v).join(', ')).join('; ') +
+                    '">QA gates: target override</a>' : '') + '</div>' +
                 '<span style="cursor:pointer;opacity:.55;font-size:.78rem;" onclick="patchProject(\'' +
                 p.id + '\', {active: ' + !p.active + '})">' + (p.active ? 'pause' : 'resume') + '</span>' +
                 '<span style="cursor:pointer;color:#f87171;opacity:.55;font-size:.78rem;" ' +

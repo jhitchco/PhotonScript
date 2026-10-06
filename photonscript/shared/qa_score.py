@@ -442,6 +442,9 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
         else:
             gate = f"<= {_fmt(lim)}{unit}" if _num(lim) is not None else ""
             frac = _frac(r.get("value"), lim)
+        if gate:   # PS-48: this target's goal sets the gate, not the rig
+            from photonscript.shared.qa_rules import override_note
+            gate += override_note(t, cid)
         add(cid, label or r.get("name") or cid, r.get("value"), gate,
             _RAG.get(r.get("status"), "none"), frac,
             note, unit if cid not in ("roof",) else "",

@@ -108,6 +108,105 @@ def _target_overrides(config) -> dict:
         return {}
 
 
+# PS-48: the gates a goal (project) may override per rig, as (thresholds
+# key, label, unit, scorecard checks it sets). Edited on the per-target page
+# (POST /api/targets/qa-overrides), stored on the project as qa_overrides.
+TARGET_GATES: tuple = (
+    ("hfr_max", "Max HFR", "px", ("hfr",)),
+    ("fwhm_max", "Max FWHM", "\"", ("fwhm",)),
+    ("ecc_max", "Max eccentricity", "", ("ecc", "ecc_bin")),
+)
+TARGET_GATE_KEYS = tuple(g[0] for g in TARGET_GATES)
+
+_goal_ov_cache: dict = {"key": None, "index": {}, "gates": {}}
+
+
+def _goal_overrides(config) -> tuple[dict, dict]:
+    """PS-48: ({target_key(alias): goal name}, {goal name: {rig: {gate:
+    value}}}) for the goals in <data_dir>/projects.json that set
+    qa_overrides. Read raw (no ProjectStore: its load seeds and migrates) and
+    cached on the file's mtime and size, so a grader pays one stat per sub."""
+    from pathlib import Path
+    from photonscript.shared.target_names import catalog_aliases, target_key
+    dd = getattr(config, "data_dir", None)
+    if not dd:
+        return {}, {}
+    path = Path(dd) / "projects.json"
+    try:
+        st = path.stat()
+        key = (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {}, {}
+    if _goal_ov_cache["key"] == key:
+        return _goal_ov_cache["index"], _goal_ov_cache["gates"]
+    index: dict = {}
+    gates: dict = {}
+    aliases: list = []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raw = {}
+    for p in (raw.values() if isinstance(raw, dict) else ()):
+        ov = p.get("qa_overrides") if isinstance(p, dict) else None
+        tgt = (p.get("target") or {}) if isinstance(p, dict) else {}
+        name = tgt.get("name") if isinstance(tgt, dict) else None
+        if not ov or not isinstance(ov, dict) or not name:
+            continue
+        clean = {}
+        for rig, g in ov.items():
+            if not isinstance(g, dict):
+                continue
+            vals = {}
+            for k in TARGET_GATE_KEYS:
+                v = _num(g.get(k))
+                if v is not None and v > 0:
+                    vals[k] = v
+            if vals:
+                clean[str(rig).lower()] = vals
+        if not clean:
+            continue
+        gates[name] = clean
+        for alias in (name, tgt.get("catalog_id")):
+            k = target_key(alias)
+            if k and k not in index:
+                index[k] = name
+        aliases.append((name, tgt.get("catalog_id")))
+    # PS-135: catalog aliases ("NGC 224", "Andromeda") reach the goal too; a
+    # given name or catalog id always beats another goal's catalog alias
+    for name, cid in aliases:
+        for alias in (name, cid):
+            for k in (catalog_aliases(alias) if alias else ()):
+                if k not in index:
+                    index[k] = name
+    _goal_ov_cache.update(key=key, index=index, gates=gates)
+    return index, gates
+
+
+def goal_override(config, rig: str, target: str | None) -> tuple | None:
+    """PS-48: (goal name, {gate: value}) when the goal this target resolves
+    to (name or catalog id, container names stripped) overrides gates on this
+    rig; else None."""
+    if not target:
+        return None
+    from photonscript.shared.target_names import canonical_target, target_key
+    index, gates = _goal_overrides(config)
+    if not index:
+        return None
+    name = index.get(target_key(canonical_target(target) or ""))
+    g = (gates.get(name) or {}).get(str(rig or "rc16").lower()) if name else None
+    return (name, dict(g)) if g else None
+
+
+def override_note(t: dict, check_id: str) -> str:
+    """' (target override)' when this check's limit came from a PS-48 goal
+    override, for reasons and the scorecard panel."""
+    ov = t.get("target_override") or {}
+    for key, _l, _u, checks in TARGET_GATES:
+        if check_id in checks and key in (ov.get("gates") or {}):
+            return " (target override)"
+    return ""
+
+
 def _rig_auto_approves(config, rig: str) -> bool:
     """qa_auto_approve_rigs: comma list of rigs whose all-green subs are
     auto-approved; empty means every rig."""
@@ -226,6 +325,16 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
                         applied.append(kk)
         if applied:
             t["override"] = sorted(set(applied))
+    # PS-48: a goal's own gates win over the rig's (PS-114 stays the default)
+    gov = goal_override(config, rig, target) if target else None
+    if gov:
+        name, g = gov
+        for k, v in g.items():
+            t[k] = float(v)
+            if k == "ecc_max":     # the binned ecc gate follows it
+                t["ecc_max_bin"] = float(v)
+        t["target_override"] = {"target": name, "gates": g}
+        t["override"] = sorted(set(t.get("override", [])) | set(g))
     return t
 
 
@@ -560,14 +669,14 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
         checks.append(_max_check(
             "ecc", ecc, t["ecc_max"], wf,
             f"Eccentricity {ecc:.2f} > {t['ecc_max']:g} (trailing/drift)"
-            if ecc is not None else ""))
+            + override_note(t, "ecc") if ecc is not None else ""))
     if ecc_bin is None:
         checks.append(Check("ecc_bin", None, lim_b, SKIP, "not measured"))
     elif gate_bin:
         checks.append(_max_check(
             "ecc_bin", ecc_bin, lim_b, wf,
             f"Eccentricity at 0.47\"/px {ecc_bin:.2f} > {lim_b:g} "
-            "(trailing/drift)"))
+            "(trailing/drift)" + override_note(t, "ecc_bin")))
     else:
         checks.append(Check("ecc_bin", _r(ecc_bin), lim_b, SKIP,
                             "info only: gating at native scale"))
@@ -575,7 +684,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     checks.append(_max_check(
         "hfr", hfr, t["hfr_max"], wf,
         f"HFR {hfr:.1f}px > {t['hfr_max']:g}px (out of focus)"
-        if hfr is not None else "", nd=2))
+        + override_note(t, "hfr") if hfr is not None else "", nd=2))
     # hfr vs night median (rig + target + filter)
     night = ctx.night or {}
     med = _num(night.get("hfr_median"))
@@ -607,7 +716,8 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     else:
         checks.append(_max_check(
             "fwhm", fwhm, t["fwhm_max"], wf,
-            f"FWHM {fwhm:.1f}\" > {t['fwhm_max']:g}\"", nd=2))
+            f"FWHM {fwhm:.1f}\" > {t['fwhm_max']:g}\""
+            + override_note(t, "fwhm"), nd=2))
     # star count
     lim_s = [t["star_min"], t["star_max"]]
     if stars is None:

@@ -264,7 +264,9 @@
         if (!nights.length) { box.textContent = 'No recorded nights yet.'; return; }
         const label = n => {
             if (!n.subs_logged) return n.lights ? n.lights + ' ungraded'
-                : n.cal_frames ? n.cal_frames + ' cal only' : 'empty';
+                : n.pb_lights ? n.pb_lights + ' ungraded (Piggy)'
+                : n.cal_frames ? n.cal_frames + ' cal only'
+                : n.has_plan ? 'plan, 0 frames' : 'empty';
             let l = n.subs_logged + ' subs';
             if (n.review) l += ' <span style="color:#eab308" title="awaiting review">👁' + n.review + '</span>';
             if (n.syncing) l += ' <span style="color:#7dd3fc" title="syncing to desktop">⇅' + n.syncing + '</span>';
@@ -281,13 +283,22 @@
             (isArch ? '⤒' : '⤓') + '</a></span>';
         const live = nights.filter(n => !n.archived);
         const arch = nights.filter(n => n.archived);
-        const real = live.filter(n => n.subs_logged || n.lights || n.has_plan);
+        // PS-20: a night is shown only when it has images (graded subs, RC16
+        // lights or Piggy-600 lights). A saved plan alone no longer counts;
+        // empty and calibration-only nights sit one click away, never deleted.
+        const real = live.filter(n => n.subs_logged > 0 || n.lights > 0 ||
+                                      n.pb_lights > 0);
         const empty = live.filter(n => !real.includes(n));
+        let showEmpty = false;
+        try { showEmpty = localStorage.getItem('runs.showEmpty') === '1'; } catch (e) {}
+        const emptyText = () => showEmpty ? 'hide empty nights'
+            : 'show ' + empty.length + ' empty night' + (empty.length === 1 ? '' : 's');
         box.innerHTML = real.map(n => chip(n)).join('') +
             (empty.length ? '<a href="#" id="moreNights" class="bd" ' +
-                'style="display:block;margin-top:.4rem;">show ' + empty.length +
-                ' nights with no lights</a><div id="emptyNights" hidden>' +
-                empty.map(n => chip(n)).join('') + '</div>' : '') +
+                'style="display:block;margin-top:.4rem;" title="nights with no ' +
+                'light frames (plan only or calibration only); nothing is deleted">' +
+                emptyText() + '</a><div id="emptyNights"' + (showEmpty ? '' : ' hidden') +
+                '>' + empty.map(n => chip(n)).join('') + '</div>' : '') +
             '<a href="#" id="archBefore" class="bd" style="display:block;' +
               'margin-top:.6rem;color:#7dd3fc;text-decoration:none;" ' +
               'title="Hide every run before September from the sidenav (does NOT ' +
@@ -300,10 +311,10 @@
         if (more) more.onclick = (e) => {
             e.preventDefault();
             const d = document.getElementById('emptyNights');
-            d.hidden = !d.hidden;
-            more.textContent = d.hidden
-                ? 'show ' + empty.length + ' nights with no lights'
-                : 'hide nights with no lights';
+            showEmpty = d.hidden;
+            d.hidden = !showEmpty;
+            try { localStorage.setItem('runs.showEmpty', showEmpty ? '1' : '0'); } catch (e2) {}
+            more.textContent = emptyText();
         };
         const moreA = document.getElementById('moreArch');
         if (moreA) moreA.onclick = (e) => {

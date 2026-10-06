@@ -99,3 +99,55 @@ def test_post_night_warm_starts_recent_nights(tmp_path, monkeypatch):
     nights = runs_mod.post_night_warm(config)
     assert nights == ["2026-09-25"]
     assert ("grade", "2026-09-25") in started and ("thumbs", "2026-09-25") in started
+
+
+def test_list_runs_counts_piggyback_lights(tmp_path):
+    """PS-20: Piggy-600 lights live in their own watch dir; list_runs reports
+    them as pb_lights so a night whose OSC grading failed is not hidden."""
+    from photonscript.scheduler import runs as runs_mod
+    runs_mod.invalidate_fits_counts()
+    pb = tmp_path / "pb"
+    config = PhotonScriptConfig(data_dir=tmp_path,
+                                image_watch_dir=str(tmp_path / "fits"),
+                                nina_logs_dir=str(tmp_path / "logs"),
+                                piggyback_enabled=True,
+                                piggyback_image_watch_dir=str(pb))
+    (tmp_path / "fits" / "2026-09-20").mkdir(parents=True)
+    night = pb / "2026-09-20" / "LIGHT"
+    night.mkdir(parents=True)
+    for i in range(3):
+        (night / f"osc_{i}.fits").write_bytes(b"x")
+    (pb / "2026-09-20" / "DARK").mkdir()
+    (pb / "2026-09-20" / "DARK" / "d.fits").write_bytes(b"x")
+    row = {r["date"]: r for r in list_runs(config)}["2026-09-20"]
+    assert row["pb_lights"] == 3
+    assert row["lights"] == 0 and row["subs_logged"] == 0
+    # piggyback off: the field is still there, and zero
+    runs_mod.invalidate_fits_counts()
+    off = PhotonScriptConfig(data_dir=tmp_path,
+                             image_watch_dir=str(tmp_path / "fits"),
+                             nina_logs_dir=str(tmp_path / "logs"),
+                             piggyback_enabled=False,
+                             piggyback_image_watch_dir=str(pb))
+    row = {r["date"]: r for r in list_runs(off)}["2026-09-20"]
+    assert row["pb_lights"] == 0
+    runs_mod.invalidate_fits_counts()
+
+
+def test_runs_page_hides_nights_without_images():
+    """PS-20: a saved plan alone no longer makes a night 'real'; the empty
+    group toggle is remembered per browser and chips say why they are empty."""
+    from pathlib import Path
+    html = (Path(__file__).resolve().parents[2] / "photonscript" / "scheduler"
+            / "templates" / "runs.html").read_text(encoding="utf-8")
+    start = html.index("async function loadNights()")
+    body = html[start:html.index("async function loadDetail(", start)]
+    real = body[body.index("const real ="):]
+    real = real[:real.index(";")]
+    assert "has_plan" not in real
+    for k in ("subs_logged", "n.lights", "pb_lights"):
+        assert k in real
+    assert "'plan, 0 frames'" in body and "' cal only'" in body
+    assert "localStorage.getItem('runs.showEmpty')" in body
+    assert "localStorage.setItem('runs.showEmpty'" in body
+    assert "hide empty nights" in body
