@@ -64,12 +64,28 @@ twilight sub after a 44-min gap (+20% background).
 (GradientCorrection, else ABE degree 1; `-Gradient none` to skip) -> plate solve
 with PixInsight's ImageSolver, seeded from `-Target`/`-RaDeg -DecDeg` (guessed
 from the name, e.g. M31) and spiralling out to ~1.2 deg because Piggy-600 frames
-rarely center on the target -> SPCC (fallback BackgroundNeutralization +
-ColorCalibration when unsolved) -> BlurXTerminator / NoiseXTerminator if
-installed (`-NoRC` to skip) -> linked stretch + gentle saturation. Output in
-`out\final\`: `<Name>_linear.xisf` (color-calibrated, for manual work),
-`<Name>_final.xisf`, `_final.tif` (16-bit) and `_final.jpg`. Log:
-`out\finish.log`. Every optional step logs and skips on failure.
+rarely center on the target -> color -> SCNR green (`-Scnr`, 0.6) ->
+BlurXTerminator / NoiseXTerminator if installed (`-NoRC` to skip) -> linked
+stretch (`-BgTarget` 0.12, `-ShadowSigma` 2.0) + saturation (`-SatMid` 0.64) ->
+core HDR blend (`-HdrLayers` 7) -> optional framing crop (`-Frame l,t,r,b`).
+Output in `out\final\` (or a new `-OutDir`): `<Name>_linear.xisf`
+(color-calibrated, for manual work), `<Name>_final.xisf`, `_final.tif` (16-bit),
+`_final.jpg` and `<Name>_final_steps.json` (every step with tool, status and
+settings; the short tag such as `SPCC` or `BN+CC` is also in the PSFINISH FITS
+keyword). Log: `out\finish.log` (or `<OutDir>\finish.log`). Every optional step
+logs and skips on failure. `-Master <xisf> -OutDir <new folder>` finishes any
+master into a fresh folder (refused if the folder has files); `-Wait` runs
+PixInsight unattended and checks for EXIT OK.
+
+Color (PS-46, `-Color auto|spcc|basic`): SPCC runs when the image solved and
+the Gaia DR3/SP database is selected in PixInsight (probed with Gaia
+`get-info`). Curves come from PixInsight's `library\filters.xspd` and
+`white-references.xspd` by name: QE `Sony IMX411/455/461/533/571`, RGB `Sony
+Color Sensor R/G/B-UVIRcut`, white `Average Spiral Galaxy` (`-SpccQE`,
+`-SpccRed`, `-SpccGreen`, `-SpccBlue`, `-SpccWhite`). Otherwise the log reads
+`color: <reason> -> BN + ColorCalibration fallback`. One-time setup: download
+Gaia DR3/SP from the PixInsight software distribution (needs the PixInsight
+account), then Process > Gaia > wrench icon > select the DR3/SP files.
 
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
