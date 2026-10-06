@@ -95,12 +95,13 @@ def measure_sub(config, path: Path, rig: str = "rc16") -> tuple[dict, dict | Non
     with runs._HEAVY:
         hdr = fits.getheader(path)
         osc = star_measure.is_osc(rig, hdr)
-        m = runs._measure_native(path, rcfg, rig, osc)
+        m = runs._measure_native(path, rcfg, rig, osc, header=hdr)
         if m is None:
             _, binned = runs._load_binned(path)
             m = star_measure.measure_frame(binned, rcfg, rig, osc=osc,
                                            binned_input=True,
-                                           grader=runs.BACKFILL_GRADER)
+                                           grader=runs.BACKFILL_GRADER,
+                                           header=hdr)
             del binned
     gc.collect()
     m.pop("_stars", None)

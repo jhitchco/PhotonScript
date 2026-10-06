@@ -414,3 +414,26 @@ def test_binned_hfr_rejects_come_back_only_with_allow_unreject(tmp_path):
     rm.remeasure_night(cfg, NIGHT, apply=True, allow_unreject=True,
                        measure=_fake())
     assert _night(cfg)["soft2"]["passed_qa"] is True
+
+
+def test_remeasure_passes_the_frame_header_for_read_noise(monkeypatch, tmp_path):
+    """PS-117 x PS-130: the re-measure hands each frame's header to the
+    measure, so an LCG RC16 frame gets the LCG read noise in swamp."""
+    from pathlib import Path
+    from photonscript.scheduler import qa_remeasure, runs
+    seen = {}
+
+    def fake_native(path, config, rig="rc16", osc=False, header=None):
+        seen["header"] = header
+        return {"hfr": 2.0}
+    monkeypatch.setattr(runs, "_measure_native", fake_native)
+    import astropy.io.fits as fits
+    import numpy as np
+    p = Path(tmp_path) / "x.fits"
+    h = fits.Header()
+    h["READOUTM"] = "Low Conversion Gain"
+    fits.writeto(p, np.zeros((8, 8), dtype=np.uint16), h)
+    from photonscript.shared.config import PhotonScriptConfig
+    qa_remeasure.measure_sub(PhotonScriptConfig(), p, "rc16")
+    assert seen["header"] is not None
+    assert seen["header"]["READOUTM"] == "Low Conversion Gain"
