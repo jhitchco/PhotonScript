@@ -70,8 +70,10 @@ def post_ledger(path: Path, base_url: str, *, post=http_post_json,
 
 
 def pending(staging_root: Path) -> list[Path]:
-    """Ledger files the scheduler has not taken yet."""
-    return [f for f, led in writer.local_ledgers(staging_root) if not led.reported]
+    """Ledger files the scheduler has not taken yet (integration ledgers
+    only: a PS-153 blend ledger is a desktop record, never posted)."""
+    return [f for f, led in writer.local_ledgers(staging_root)
+            if not led.reported and led.kind == "integration"]
 
 
 def sweep(staging_root: Path, base_url: str, *, post=http_post_json, echo=print,

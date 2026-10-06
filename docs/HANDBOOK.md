@@ -719,7 +719,9 @@ Published (vN)) and the target page a review panel (verdict, notes, asks with
 Approve / Decline; a plan change shows its diff and goes through PATCH
 /api/projects2 only after a confirm); a new ledger version pings Pushover;
 `photonscript ledger-import` brings in the pre-PS-33 history. OSC_INTEGRATION.md
-section 0b.
+section 0b. Two-rig goals: `photonscript blend --target M31` puts the RC16 L
+core into the Piggy-600 color image (full field + RC16-scale core crop) in a
+new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
 
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block

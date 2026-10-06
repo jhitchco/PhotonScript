@@ -159,6 +159,43 @@ photonscript ledger-import D:\Astrophotography\Staging\M31_OSC4 --variant v4b --
 M31 then reads "Processed (v4); v3 published" with v3's four asks open on
 the target page.
 
+## 0c. Two-rig blend: the RC16 core in the Piggy-600 image (PS-153)
+
+For a two-rig goal (M31, PS-134) both rigs get their own `photonscript
+integrate` run (`--rig piggyback`, `--rig rc16`). Then:
+```
+photonscript blend --target M31 --dry-run     # which masters, script check
+photonscript blend --target M31               # weight 0.7, both products
+```
+Inputs: the newest piggyback run and the newest rc16 run of the target under
+the staging root. Stage `linear` (default) takes the finish's
+`*_linear.xisf` (gradient removed, color calibrated; a finished run beats a
+newer unfinished one) and falls back to the raw `master_*.xisf`; `--stage
+final` takes the stretched `*_final.xisf`. `--osc PATH` / `--rc16 P1,P2`
+override. RC16 luminance = the L master, else the mean of the given masters.
+
+deploy/blend_rc16_osc.js (rendered to `blend_run.js`): plate solve both
+(ImageSolver; an existing solution is kept) -> Resample the RC16 down to
+1.29"/px -> StarAlignment onto the OSC (fallback: affine through both
+astrometric solutions) -> footprint mask (inset `--inset` 0.02 and feather
+`--feather` 0.08 of the footprint's short side; `--lum-mask` adds a
+brightness ramp) -> linear fit of the RC16 to the OSC CIE Y inside the
+footprint -> CIE Lab: L = L_osc (1 - k) + L*(RC16) k with k = weight x mask,
+a and b from the OSC. Product 2 (`--no-core` skips it): the OSC cropped
+around the footprint, Resampled up to 0.236"/px, StarAlignment onto the RC16
+(same WCS fallback), L from the RC16, color from the OSC.
+
+Outputs in `<staging>\Blend\<target>_blend_<time>\out\final\`:
+`<name>_blend_linear.xisf`, `<name>_blend.{xisf,tif,jpg}`, `<name>_osc_ab.jpg`
+(the OSC alone at the same stretch, for A/B), `<name>_blend_mask.xisf`,
+`<name>_core_linear.xisf`, `<name>_core.{xisf,tif,jpg}`,
+`<name>_blend_steps.json`; `out\blend.log`, `out\timing.csv`,
+`out\timing_pi.csv`, `manifest.json`, `ledger.json` (kind `blend`, rig
+piggyback). Blend ledgers live one level below the staging root, so they are
+not integration versions, do not trip integrate-watch and are not posted.
+The stretch is the finish's linked stretch only (no noise reduction,
+deconvolution or star reduction on the blend yet).
+
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
 - `photonscript/image_processor/osc_cull.py`: **runs first** (called by

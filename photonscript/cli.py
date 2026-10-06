@@ -27,6 +27,7 @@ Usage:
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
+    photonscript blend --target T [--osc P] [--rc16 P] [--stage linear|final]  # PS-153
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
@@ -2355,6 +2356,62 @@ def integrate_report_cmd(
                    echo=lambda s: console.print(s, markup=False, highlight=False), dry_run=dry_run)
     console.print(f"{res['pending']} queued, {len(res['posted'])} posted, "
                   f"{len(res['failed'])} still queued", markup=False)
+
+
+@app.command("blend")
+def blend_cmd(
+    target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("M31")'),
+    osc: str = typer.Option("", "--osc", help="Piggy-600 OSC master (default: newest piggyback integrate run)"),
+    rc16: str = typer.Option("", "--rc16", help="RC16 master(s), comma list (default: newest rc16 integrate run)"),
+    stage: str = typer.Option("linear", "--stage", help="linear (finish *_linear / raw masters) | final (stretched)"),
+    weight: float = typer.Option(0.7, "--weight", help="RC16 share of L inside the mask (0..1)"),
+    feather: float = typer.Option(0.08, "--feather", help="Mask feather, fraction of the RC16 footprint's short side"),
+    inset: float = typer.Option(0.02, "--inset", help="Mask inset from the RC16 edge, same unit"),
+    lum_mask: bool = typer.Option(False, "--lum-mask/--no-lum-mask", help="Blend only bright structure"),
+    core: bool = typer.Option(True, "--core/--no-core", help="Also make the RC16-scale core crop with OSC color"),
+    out: str = typer.Option("", "--out", help="Blend folder (NEW or empty; default <staging-root>/Blend/<target>_blend_<time>)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    keep_work: bool = typer.Option(False, "--keep-work", help="Keep the registration work files"),
+    pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Find the inputs and check the script; write nothing"),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+):
+    """PS-153: blend the RC16 luminance core into the Piggy-600 color image
+    (two-rig goals). Registers the RC16 L (else the mean of its LRGB
+    masters) onto the OSC frame, matches background and scale inside a
+    feathered mask of the RC16 footprint and replaces the OSC CIE L there
+    (weight 0.7); also an RC16-scale core crop with the OSC color. Runs in a
+    NEW folder under <staging-root>/Blend, one PixInsight at a time. The
+    ledger (kind blend) stays on the desktop.
+
+    photonscript blend --target M31 --dry-run
+    """
+    import json as _json
+    from photonscript.integration import blend as bl
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration.runner import PixInsightBusy
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    opts = bl.Options(
+        target=target, staging_root=root, out=Path(out) if out else None,
+        osc=Path(osc) if osc else None,
+        rc16=[Path(x.strip()) for x in rc16.split(",") if x.strip()] or None,
+        stage=stage, weight=weight, feather_frac=feather, inset_frac=inset, lum_mask=lum_mask,
+        core=core, keep_work=keep_work, run_pixinsight=pixinsight, dry_run=dry_run,
+        pixinsight=pixinsight_exe,
+        osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
+        rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
+    )
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    try:
+        res = bl.run(opts, echo=say)
+    except (bl.BlendError, pl.PipelineError, PixInsightBusy, FileNotFoundError, ValueError) as e:
+        console.print(f"[red]blend:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+    if as_json:
+        print(_json.dumps(res, indent=1, default=str))
+    raise typer.Exit(0 if res.get("blend", {}).get("ok", True) else 1)
 
 
 @app.command("integrate-watch")

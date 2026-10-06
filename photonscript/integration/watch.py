@@ -110,7 +110,8 @@ def local_state(staging_root: Path, target: str, rig: str) -> dict:
     stamp (a recorded failed run counts) and whether any is still queued
     (not reported)."""
     mine = [led for _f, led in writer.local_ledgers(staging_root)
-            if led.rig == rig and writer.same_campaign(led.campaign, target)]
+            if led.rig == rig and led.kind == "integration"
+            and writer.same_campaign(led.campaign, target)]
     newest = max([led.created_at for led in mine]
                  + [_failures(staging_root).get(f"{target}|{rig}", "")])
     queued = [led.run for led in mine if not led.reported]

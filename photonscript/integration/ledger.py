@@ -53,9 +53,10 @@ def local_ledgers(staging_root: Path) -> list[tuple[Path, L.Ledger]]:
     return out
 
 
-def next_version(staging_root: Path, campaign: str, rig: str, exclude: Path | None = None) -> int:
+def next_version(staging_root: Path, campaign: str, rig: str, exclude: Path | None = None,
+                 kind: str = "integration") -> int:
     vs = [led.version for f, led in local_ledgers(staging_root)
-          if led.rig == rig and (exclude is None or f.parent != Path(exclude))
+          if led.rig == rig and led.kind == kind and (exclude is None or f.parent != Path(exclude))
           and same_campaign(led.campaign, campaign)]
     return max(vs + [0]) + 1
 
@@ -172,5 +173,5 @@ def write_for_run(led: L.Ledger, run_dir: Path, staging_root: Path) -> Path:
         except Exception:  # noqa: BLE001 - unreadable: replace it
             pass
     if not led.version:
-        led.version = next_version(staging_root, led.campaign, led.rig, exclude=run_dir)
+        led.version = next_version(staging_root, led.campaign, led.rig, exclude=run_dir, kind=led.kind)
     return L.save(path, led)

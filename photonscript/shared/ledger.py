@@ -11,6 +11,9 @@ Shape (schema "photonscript.ledger/0.2"):
     campaign      target name as the desktop knows it (resolved to a goal
                   by the scheduler, catalog aliases included)
     rig           "piggyback" | "rc16"
+    kind          "integration" (default) | "blend" (PS-153: `photonscript
+                  blend`, the RC16 core in the Piggy-600 image; rig is
+                  piggyback, the frame of the product)
     run           run folder name (unique per run; the store's key)
     version       1, 2, ... per goal + rig (0 = let the scheduler pick)
     created_at    ISO UTC
@@ -51,7 +54,8 @@ ASK_TYPES = ("more_hours", "need_calibration", "short_subs", "reframe", "rest",
              "fix_blocker")
 ASK_STATUSES = ("open", "approved", "declined", "applied")
 VERDICTS = ("", "keep", "redo_processing", "publish", "needs_more_data")
-_TOP_KEEP = {"schema", "campaign", "run", "version", "rig", "review", "publish",
+KINDS = ("integration", "blend")
+_TOP_KEEP = {"schema", "campaign", "run", "version", "rig", "kind", "review", "publish",
              "created_at", "reported", "reported_at", "machine"}
 
 
@@ -106,6 +110,7 @@ class Ledger(BaseModel):
     schema_: str = Field(default=SCHEMA, alias="schema")
     campaign: str
     rig: str = "piggyback"
+    kind: str = "integration"
     run: str
     version: int = 0
     created_at: str = Field(default_factory=now_iso)
@@ -128,6 +133,14 @@ class Ledger(BaseModel):
         v = str(v or "").strip().lower()
         if v not in ("piggyback", "rc16"):
             raise ValueError(f"unknown rig {v!r}")
+        return v
+
+    @field_validator("kind")
+    @classmethod
+    def _kind(cls, v: str) -> str:
+        v = str(v or "integration").strip().lower()
+        if v not in KINDS:
+            raise ValueError(f"unknown ledger kind {v!r}")
         return v
 
     def dump(self) -> dict:
