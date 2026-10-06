@@ -1187,6 +1187,16 @@ def _project_json(p) -> dict:
                                 + (e.hdr_short_acquired * e.hdr_short_seconds
                                    if e.hdr_short_seconds else 0)
                                 for e in p.exposure_plans) / 3600, 1)
+    # PS-134: per-rig goal / done hours, so a goal with both rigs shows its
+    # RC16 line against the RC16 budget and the Piggy line against its own
+    by_rig: dict = {}
+    for e, (g, x) in zip(p.exposure_plans, secs):
+        r = by_rig.setdefault(e.rig or "rc16", {"goal_h": 0.0, "done_h": 0.0})
+        r["goal_h"] += g / 3600
+        r["done_h"] += x / 3600
+    d["hours_by_rig"] = {k: {"goal_h": round(v["goal_h"], 1),
+                             "done_h": round(v["done_h"], 1)}
+                         for k, v in by_rig.items()}
     try:
         from photonscript.scheduler.runs import library_root, library_target_dirs
         # PS-78: include not-yet-merged container-named folders
@@ -1252,17 +1262,23 @@ async def api_project_update(project_id: str, request: Request):
         if "priority_delta" in body else body.get("priority")
     budget = proj.budget_hours + float(body["budget_delta"]) \
         if "budget_delta" in body else body.get("budget_hours")
-    updated = store.update(project_id, priority=priority,
-                           budget_hours=budget, active=body.get("active"),
-                           filter_mix=body.get("filter_mix"),
-                           hdr=body.get("hdr"),
-                           exposure_overrides=body.get("exposure_overrides"),
-                           # PS-30: Piggy-600 OSC goal + which rig centers
-                           osc_hours=(float(body["osc_hours"])
-                                      if body.get("osc_hours") is not None
-                                      else None),
-                           driving_rig=body.get("driving_rig"),
-                           drop_rc16=bool(body.get("drop_rc16", False)))
+    try:
+        updated = store.update(
+            project_id, priority=priority,
+            budget_hours=budget, active=body.get("active"),
+            filter_mix=body.get("filter_mix"),
+            hdr=body.get("hdr"),
+            exposure_overrides=body.get("exposure_overrides"),
+            # PS-30: Piggy-600 OSC goal + which rig centers
+            osc_hours=(float(body["osc_hours"])
+                       if body.get("osc_hours") is not None else None),
+            driving_rig=body.get("driving_rig"),
+            drop_rc16=bool(body.get("drop_rc16", False)),
+            # PS-134: add / resize (> 0) or remove (0) the RC16 plan
+            rc16_hours=(float(body["rc16_hours"])
+                        if body.get("rc16_hours") is not None else None))
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
     _projects[project_id] = updated
     return _project_json(updated)
 

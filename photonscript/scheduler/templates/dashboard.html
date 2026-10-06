@@ -955,6 +955,42 @@
         const doneS = e ? Math.max(e.acquired_s || 0, (e.acquired || 0) * e.exposure_seconds) : 0;
         return goalS ? Math.min(100, Math.round(doneS / goalS * 100)) : 0;
     }
+    // PS-134: add an RC16 plan to a Piggy-only goal (hours + a mix preset;
+    // fine-tune with the mix rows afterwards), or remove it again. The goal
+    // keeps its driving rig and its Piggy-600 OSC plan either way.
+    const RC16_MIX_PRESETS = {
+        LRGB: {L: 50, R: 17, G: 17, B: 17}, L: {L: 100},
+        SHO: {Ha: 35, OIII: 30, SII: 35}, HOO: {Ha: 50, OIII: 50}};
+    function addRc16Controls(p) {
+        const def = p.kind === 'narrowband' ? 'SHO' : 'LRGB';
+        const opts = Object.keys(RC16_MIX_PRESETS).map(k =>
+            '<option value="' + k + '"' + (k === def ? ' selected' : '') + '>' + k +
+            '</option>').join('');
+        const sty = 'background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                    'border-radius:4px;padding:.05rem .2rem;';
+        return '<span class="add-rc16" style="display:inline-flex;gap:.3rem;align-items:center;">' +
+            '<input id="rc16h-' + p.id + '" value="8" title="RC16 goal hours" ' +
+            'style="width:40px;text-align:center;' + sty + '">h' +
+            '<select id="rc16mix-' + p.id + '" style="' + sty + '">' + opts + '</select>' +
+            '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+            'onclick="addRc16(\'' + p.id + '\')">Add RC16 plan</button></span>';
+    }
+    function removeRc16Button(p) {
+        return '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+            'title="drop the RC16 plan; the Piggy-600 goal stays" ' +
+            'onclick="removeRc16(\'' + p.id + '\')">Remove RC16 plan</button>';
+    }
+    async function addRc16(id) {
+        const h = parseFloat(document.getElementById('rc16h-' + id).value);
+        const mix = RC16_MIX_PRESETS[document.getElementById('rc16mix-' + id).value];
+        if (!(h > 0) || !mix) return;
+        await patchProject(id, {rc16_hours: h, filter_mix: mix});
+    }
+    async function removeRc16(id) {
+        if (!confirm('Remove the RC16 plan? The Piggy-600 goal stays. Accepted ' +
+                     'RC16 subs come back from the run history if you add it again.')) return;
+        await patchProject(id, {rc16_hours: 0});
+    }
 
     function altChartSVG(d) {
         const W = 300, H = 88, PAD_B = 14, n = d.alts.length;
@@ -1082,7 +1118,6 @@
             return;
         }
         box.innerHTML = projects.map(p => {
-            const hoursPct = Math.min(100, Math.round(p.hours_done / p.budget_hours * 100));
             const ALL_FILTERS = ['Ha', 'OIII', 'SII', 'L', 'R', 'G', 'B'];
             // PS-129: rows per plan actually present. The RC16 mix rows (all
             // seven filters with % inputs) only when the goal has an RC16
@@ -1090,6 +1125,12 @@
             const piggyPlans = p.exposure_plans.filter(e => e.rig === 'piggyback');
             const rc16Plans = p.exposure_plans.filter(e => e.rig !== 'piggyback');
             const showMix = rc16Plans.length > 0 || !piggyPlans.length;
+            // PS-134: with both rigs the Goal line is the RC16 budget (RC16
+            // hours only) and each Piggy row carries its own goal hours
+            const bothRigs = rc16Plans.length > 0 && piggyPlans.length > 0;
+            const goalDone = bothRigs
+                ? (((p.hours_by_rig || {}).rc16 || {}).done_h || 0) : p.hours_done;
+            const goalPct = Math.min(100, Math.round(goalDone / p.budget_hours * 100));
             const plansBy = {};
             rc16Plans.forEach(e => { plansBy[e.filter_type] = e; });
             const filterRows = !showMix ? '' : ALL_FILTERS.map(f => {
@@ -1131,6 +1172,13 @@
                     '<div class="fbar"><div style="width:' + pct + '%;background:' + col +
                     ';"></div></div>' +
                     '<span style="width:2.6rem;text-align:right;opacity:.8;">' + pct + '%</span>' +
+                    (bothRigs   // PS-134: the Piggy goal hours, beside the RC16 budget
+                     ? '<input data-osc="' + p.id + '" value="' +
+                       Math.round(e.count * e.exposure_seconds / 360) / 10 + '" ' +
+                       'title="Piggy-600 goal hours" style="width:44px;background:#0b1220;' +
+                       'color:#e2e8f0;border:1px solid #334155;border-radius:4px;' +
+                       'padding:.05rem .2rem;text-align:center;">h'
+                     : '') +
                     '</div>';
             }).join('');
             return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
@@ -1152,16 +1200,16 @@
                 'onclick="deleteProject(\'' + p.id + '\')">remove</span></div>' +
                 // goal line: editable hours + total progress
                 '<div style="display:flex;align-items:center;gap:.6rem;margin:.6rem 0 .3rem;">' +
-                '<span style="font-size:.82rem;">Goal</span>' +
+                '<span style="font-size:.82rem;">' + (bothRigs ? 'RC16 goal' : 'Goal') + '</span>' +
                 btn(p.id, "{\"budget_delta\":-1}", '−') +
                 '<input data-goal="' + p.id + '" value="' + p.budget_hours + '" ' +
                 'style="width:52px;background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
                 'border-radius:4px;padding:.15rem .3rem;text-align:center;font-weight:700;">' +
                 btn(p.id, "{\"budget_delta\":1}", '+') +
                 '<span style="font-size:.82rem;">hours</span>' +
-                '<div class="fbar"><div style="width:' + hoursPct + '%;background:#7dd3fc;"></div></div>' +
-                '<span style="font-size:.82rem;"><b>' + p.hours_done + 'h</b> / ' +
-                p.budget_hours + 'h (' + hoursPct + '%)</span></div>' +
+                '<div class="fbar"><div style="width:' + goalPct + '%;background:#7dd3fc;"></div></div>' +
+                '<span style="font-size:.82rem;"><b>' + goalDone + 'h</b> / ' +
+                p.budget_hours + 'h (' + goalPct + '%)</span></div>' +
                 filterRows + oscRows +
                 '<div style="display:flex;align-items:center;gap:.6rem;font-size:.75rem;' +
                 'margin-top:.4rem;opacity:.75;">' +
@@ -1171,7 +1219,9 @@
                    '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
                    'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
                    '<span id="abmix-' + p.id + '"></span>'
-                 : '<span style="opacity:.7;">Piggy-600 only goal (no RC16 plan)</span>') +
+                 : '<span style="opacity:.7;">Piggy-600 only goal (no RC16 plan)</span>' +
+                   addRc16Controls(p)) +
+                (bothRigs ? removeRc16Button(p) : '') +
                 '<span style="margin-left:auto;">📁 ' + p.library_files +
                 ' accepted lights in library</span></div>' +
                 (p.nights && p.nights.length
@@ -1191,6 +1241,13 @@
             inp.addEventListener('change', () => {
                 const v = parseFloat(inp.value);
                 if (v > 0) patchProject(inp.dataset.goal, {budget_hours: v});
+            });
+        });
+        // PS-134: the Piggy goal hours on a goal with both rigs
+        document.querySelectorAll('input[data-osc]').forEach(inp => {
+            inp.addEventListener('change', () => {
+                const v = parseFloat(inp.value);
+                if (v > 0) patchProject(inp.dataset.osc, {osc_hours: v});
             });
         });
 
