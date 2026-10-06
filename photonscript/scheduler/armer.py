@@ -722,6 +722,13 @@ class Armer:
         line, alert = morning_split_note(self.config, self.plan.get("night_of"))
         if line:
             msg = f"{msg}\n{line}"
+        try:  # PS-142: ledgers the desktop integrator posted in the last 24 h
+            from photonscript.scheduler.integrations import morning_note
+            integ_line = morning_note(self.config)
+            if integ_line:
+                msg = f"{msg}\n{integ_line}"
+        except Exception as e:  # noqa: BLE001 - the dawn push always goes out
+            logger.debug("integration morning note unavailable: %s", e)
         await notify(self.config, msg, title="PhotonScript complete",
                      priority=1 if alert else 0)
 

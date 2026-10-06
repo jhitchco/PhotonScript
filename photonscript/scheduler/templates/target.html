@@ -130,6 +130,11 @@
             <div id="tReady" class="muted">loading&hellip;</div>
             <div id="tInteg" style="margin-top:.5rem;font-size:.82rem;"></div>
         </section>
+        <section class="panel" id="campPanel" hidden>
+            <h2>Campaign review <span id="tCampChip" style="font-size:.8rem;"></span></h2>
+            <div id="tCampDetail" class="dim" style="font-size:.76rem;margin-bottom:.3rem;"></div>
+            <div id="tReview" style="font-size:.82rem;"></div>
+        </section>
         <section class="panel">
             <h2>Library</h2>
             <div id="tWhere" class="muted">loading&hellip;</div>
@@ -463,6 +468,20 @@ async function loadReady() {
     } catch (e) { el.textContent = 'readiness unavailable'; }
 }
 
+// PS-142: campaign status chip + review panel (latest verdict + notes, asks
+// with Approve / Decline; a plan change shows its diff and needs a confirm)
+async function loadCampaign() {
+    if (!window.Integrations || !D.project_id) return;
+    document.getElementById('campPanel').hidden = false;
+    const st = await Integrations.loadStatus(true);
+    const g = st[D.project_id];
+    document.getElementById('tCampChip').innerHTML = Integrations.chip(g);
+    document.getElementById('tCampDetail').textContent =
+        g ? g.rigs.map(s => s.detail).join(' | ') : '';
+    Integrations.review(document.getElementById('tReview'), D.project_id,
+                        {onChange: () => { loadReady(); loadCampaign(); }});
+}
+
 // --- reference image + field of view (phase 2) -------------------------------
 // gnomonic projection: static/js/sky_geom.js (Python mirror refimage.gnomonic_px)
 const tanPx = SkyGeom.tanPx;
@@ -571,7 +590,7 @@ fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     loadGrid();
     loadReady();
     if (!D.unattributed) loadBudget(); else document.getElementById('tBudget').textContent = 'n/a';
-    if (D.project_id) loadQa();
+    if (D.project_id) { loadQa(); loadCampaign(); }
     if (!D.unattributed) { loadRef(); pollLive(); }
     else document.getElementById('refPanel').hidden = true;
 }).catch(() => document.getElementById('tName').textContent = 'unavailable');

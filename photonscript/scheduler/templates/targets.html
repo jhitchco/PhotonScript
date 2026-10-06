@@ -123,7 +123,7 @@ fetch('/api/targets').then(r => r.json()).then(d => {
         .map(g => '<div class="sec">' + esc(g[0]) + '</div><div class="tgrid">' +
              g[1].map(card).join('') + '</div>').join('');
     // PS-33: the integrator ledger line per goal (latest version, new data since)
-    if (window.Integrations) Integrations.load().then(m => Integrations.fill(m, 'integ-'));
+    if (window.Integrations) Integrations.campaign('integ-', null);
     pics();
 }).catch(() => document.getElementById('tSummary').textContent = 'unavailable');
 </script>

@@ -1524,11 +1524,13 @@
                        .join(' · ') + '</div>'
                  : '') +
                 // PS-33: the desktop integrator's ledger (latest version, new data since)
+                // PS-142: campaign status chip + compact review (verdict, open asks)
                 '<div id="integ-' + p.id + '" style="font-size:.76rem;margin-top:.35rem;"></div>' +
+                '<div id="crev-' + p.id + '" style="font-size:.74rem;"></div>' +
                 '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +
                 '</div>';
         }).join('');
-        if (window.Integrations) Integrations.load().then(m => Integrations.fill(m, 'integ-'));
+        if (window.Integrations) Integrations.campaign('integ-', 'crev-', {onChange: loadProjects});
 
         // goal input: commit on Enter/blur
         document.querySelectorAll('input[data-goal]').forEach(inp => {
