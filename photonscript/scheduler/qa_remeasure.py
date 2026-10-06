@@ -119,7 +119,8 @@ def measure_sub(config, path: Path, rig: str = "rc16") -> tuple[dict, dict | Non
 
 
 def _key(rec: dict) -> tuple:
-    return (rec.get("rig") or "rc16", str(rec.get("file") or ""))
+    from photonscript.shared.sub_file import norm_file
+    return (rec.get("rig") or "rc16", norm_file(rec.get("file")))
 
 
 def _med(xs):

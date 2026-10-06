@@ -169,7 +169,8 @@ def solve(config, path, rig: str | None = None, night: str | None = None,
     except Exception as e:  # noqa: BLE001
         logger.warning("ASTAP solve failed for %s: %s", path.name, e)
         sol = None
-    rec = {"file": rel_file or path.name, "rig": rig, "solved": sol is not None,
+    from photonscript.shared.sub_file import norm_file
+    rec = {"file": norm_file(rel_file) or path.name, "rig": rig, "solved": sol is not None,
            "start_utc": start_utc, "solver": "astap",
            "at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            **(sol or {})}
@@ -185,13 +186,15 @@ def solve(config, path, rig: str | None = None, night: str | None = None,
 
 
 def load(config, night: str, rig: str) -> list[dict]:
-    """Every stored attempt for a night and rig (oldest first)."""
+    """Every stored attempt for a night and rig (oldest first). PS-147: the
+    file is in the canonical "/" form (shared.sub_file)."""
+    from photonscript.shared.sub_file import norm_record
     p = store_path(config, night, rig)
     out = []
     try:
         for line in p.read_text(encoding="utf-8").splitlines():
             try:
-                out.append(json.loads(line))
+                out.append(norm_record(json.loads(line)))
             except ValueError:
                 continue
     except OSError:

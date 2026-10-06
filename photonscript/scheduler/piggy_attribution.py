@@ -428,7 +428,8 @@ def attribute_records(config, date: str, subs: list[dict], apply: bool,
             out["kept"] += 1
         else:
             out["changed"].append({
-                "file": s.get("file"), "filter": s.get("filter"),
+                "file": s.get("file"), "rig": s.get("rig"),
+                "filter": s.get("filter"),
                 "from": cur if cur not in (None, "") else UNATTRIBUTED,
                 "to": g["name"], "src": p["src"], "off_arcmin": g["off_arcmin"],
                 "tier": TIERS[g["tier"]], "abs_path": s.get("abs_path"),
@@ -484,42 +485,80 @@ def attribute_piggy_night(config, date: str, solve: bool = False,
 
 # ------------------------------------------------------------------ library
 
+def _move_links(lib: Path, c: dict, apply: bool, res: dict) -> None:
+    """One re-attributed sub's links, old target folder -> new one."""
+    from photonscript.scheduler.runs import _safe_name
+    name = Path(str(c.get("abs_path") or c.get("file") or "")
+                .replace("\\", "/")).name
+    if not name:
+        return
+    old = _safe_name(c["from"] if c["from"] not in ("?", "") else "_")
+    new = _safe_name(c["to"])
+    fdir = _safe_name(c.get("filter") or "?")
+    for root in (lib, lib / "_rejected"):
+        src = root / old / fdir / name
+        if not src.exists():
+            continue
+        dest = root / new / fdir / name
+        rel = (str(src.relative_to(lib)), str(dest.relative_to(lib)))
+        if dest.exists():
+            res["collisions"].append({"from": rel[0], "to": rel[1]})
+            continue
+        if apply:
+            try:
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                os.replace(src, dest)
+            except OSError as e:
+                res["collisions"].append({"from": rel[0], "to": rel[1],
+                                          "error": str(e)})
+                continue
+            res["moved"] += 1
+        res["moves"].append({"from": rel[0], "to": rel[1]})
+
+
 def library_moves(config, changed: list[dict], apply: bool) -> dict:
     """Move the Library links of re-attributed subs from the old target
     folder to the new one (Library root and Library/_rejected), under
     library_root on the scope only. A destination that exists is a
     collision: reported, left in place, nothing overwritten or deleted.
-    Subs not yet linked are left to the next Library build."""
-    from photonscript.scheduler.runs import _safe_name, library_root
+    Subs not yet linked are left to the next Library build.
+
+    PS-147: with apply, a change that carries its night (`date`, as
+    reattribute tags them) is checked against that night's log after the
+    merge and under the night lock (the PS-141 pointing pass pattern): the
+    links move only when the merged record still holds the new name (a
+    target a person assigned meanwhile, or a record a re-grade wiped, keeps
+    its links; counted in `skipped`), and the filter is the merged one."""
+    from photonscript.scheduler.runs import (_load_subs, _record_key,
+                                             library_root, subs_lock)
     lib = library_root(config)
-    res = {"library": str(lib), "moves": [], "collisions": [], "moved": 0}
+    res = {"library": str(lib), "moves": [], "collisions": [], "moved": 0,
+           "skipped": []}
+    by_date: dict = {}
     for c in changed:
-        name = Path(str(c.get("abs_path") or c.get("file") or "")
-                    .replace("\\", "/")).name
-        if not name:
-            continue
-        old = _safe_name(c["from"] if c["from"] not in ("?", "") else "_")
-        new = _safe_name(c["to"])
-        fdir = _safe_name(c.get("filter") or "?")
-        for root in (lib, lib / "_rejected"):
-            src = root / old / fdir / name
-            if not src.exists():
-                continue
-            dest = root / new / fdir / name
-            rel = (str(src.relative_to(lib)), str(dest.relative_to(lib)))
-            if dest.exists():
-                res["collisions"].append({"from": rel[0], "to": rel[1]})
-                continue
-            if apply:
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    os.replace(src, dest)
-                except OSError as e:
-                    res["collisions"].append({"from": rel[0], "to": rel[1],
-                                              "error": str(e)})
+        if apply and c.get("date"):
+            by_date.setdefault(c["date"], []).append(c)
+        else:
+            _move_links(lib, c, apply, res)
+    for date, cs in sorted(by_date.items()):
+        with subs_lock(config, date):
+            now: dict = {}
+            for r in _load_subs(config, date):
+                now.setdefault(_record_key(r), r)
+            for c in cs:
+                cur = now.get(_record_key({"rig": c.get("rig") or PIGGY,
+                                           "file": c.get("file")}))
+                if cur is None or cur.get("target") != c["to"]:
+                    res["skipped"].append({
+                        "date": date, "file": c.get("file"), "to": c["to"],
+                        "now": None if cur is None else cur.get("target")})
                     continue
-                res["moved"] += 1
-            res["moves"].append({"from": rel[0], "to": rel[1]})
+                _move_links(lib, {**c, "filter": cur.get("filter")
+                                  or c.get("filter")}, apply, res)
+    if res["skipped"]:
+        logger.info("Piggy attribution: %d sub(s) kept their Library links "
+                    "(target changed or record gone during the pass)",
+                    len(res["skipped"]))
     return res
 
 
@@ -527,7 +566,8 @@ def reattribute(config, dates: list[str], apply: bool = False,
                 solve: bool = False, runner=None, max_solves: int = 30) -> dict:
     """CLI core: re-attribute past nights' Piggy subs (whatever the mode).
     Dry run unless apply: then the subs files are rewritten and the Library
-    links moved. Goal progress is not synced here (the store belongs to the
+    links moved (PS-147: decided from each night's merged log under its
+    lock, see library_moves). Goal progress is not synced here (the store belongs to the
     server): POST /api/projects2/recount afterwards."""
     from photonscript.scheduler.runs import edit_subs, runs_dir
     all_dates = sorted({f.name.split("_")[0]
@@ -552,11 +592,13 @@ def reattribute(config, dates: list[str], apply: bool = False,
                        "no_position": r["no_position"], "manual": r["manual"],
                        "changes": [{"from": k[0], "to": k[1], "src": k[2],
                                     "subs": n} for k, n in sorted(by.items())]})
-        all_changed.extend(r["changed"])
+        # PS-147: the Library moves are decided from this night's merged log
+        all_changed.extend({**c, "date": d} for c in r["changed"])
     lib = library_moves(config, all_changed, apply)
     return {"applied": bool(apply), "nights_scanned": len(all_dates),
             "nights": nights, "subs_changed": len(all_changed),
             "library": lib["library"], "library_moves": lib["moves"],
             "library_collisions": lib["collisions"],
+            "library_skipped": lib["skipped"],
             "next": ("POST /api/projects2/recount to resync goal progress"
                      if apply else "dry run: nothing written; add --apply")}
