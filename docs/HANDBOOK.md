@@ -633,6 +633,29 @@ section 0b.
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-10-06 (NINA #2 busy loop before nautical dawn, PS-149): after a pass
+  NINA re-checks a loop's conditions with no next item (0 s) and, if they
+  hold, resets and re-runs it. The companion's OSC_LIGHTS_UNTIL_DAWN
+  [TimeCondition nautical dawn] held only conditioned containers, and in the
+  last 30 s before dawn (a 30 s wait no longer fits) every one was a no-op,
+  so it spun thousands of passes a second ("LoopWhileUnsafe /
+  SafetyMonitorCondition finished" lines). RC16 sibling: SAFE_LOOP held until
+  astro dawn while an all-narrowband LOOP_ALL_NIGHT ends at nautical dawn
+  -10, so with its targets set it re-ran unpark / Pushover / park. The same
+  night NINA #1 spun too ("TimeCondition finished", 04:19 to 05:56 local):
+  M31 was LRGB only on a moon-down-at-dusk night, so every block sat in
+  "<filter> until moonrise" and after the 04:17 moonrise its imaging loop
+  held only no-ops; NGC 604 and the Heart never got a turn. Fixed: every
+  repeating loop carries an unconditional WaitForTimeSpan (companion 30 s,
+  SAFE_LOOP 60 s after holding to the loop end, an imaging loop with no AF
+  60 s); an all-broadband moon-capped target ends at moonrise itself (DSO
+  and imaging loop carry the moonrise TimeCondition), so the next target
+  runs; the PS-144 dusk focus calibration runs its AF series once when
+  targets follow (it repeated while safe and up, i.e. all night on a field
+  that stays high); lint rule `loop-spin` (ERROR) flags any loop with no
+  waiting item, in the armer and sideload gates; the PS-77 simulator now
+  models NINA's reset decision, TimeCondition cut-off, wait estimates and
+  clock-time conditions, and counts passes that consume no time.
 - 2026-09-26 (RC16 imaged 38 min into a closed roof, PS-77): the generated
   NINA JSON had no `$id`/`Parent` references, and NINA sets Parent ONLY from
   them, so every item loaded with Parent == null. CanContinue then never

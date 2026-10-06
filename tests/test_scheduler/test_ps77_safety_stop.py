@@ -231,6 +231,7 @@ class _Node:
         self.status = "CREATED"
         self.iterations = 0
         self.completed = 0
+        self.cutoff = None          # TimeCondition.lastCutOffTime
         self.is_container = isinstance(d.get("Items"), dict)
 
 
@@ -239,24 +240,45 @@ TIMES = {"NauticalDuskProvider": -1800, "DuskProvider": 0,
          "DawnProvider": 9 * 3600, "NauticalDawnProvider": 9 * 3600 + 1800}
 LOOP_END = TIMES["NauticalDawnProvider"] - 600       # all-NB: nautical dawn - 10
 HORIZON = TIMES["NauticalDawnProvider"] + 3 * 3600
+DUSK_LOCAL = 20 * 3600 + 18 * 60    # astro dusk 20:18 local (AARO, October)
 
 
 class NinaSim:
-    """Just enough of NINA 3.x to replay a night:
+    """Just enough of NINA 3.x to replay a night (isbeorn/nina master:
+    SequentialStrategy.cs, SequenceContainer.cs, TimeCondition.cs,
+    SafetyMonitorCondition.cs, WaitForTime(Span).cs):
     - Parent comes ONLY from the JSON $ref (SequenceJsonConverter);
-    - CanContinue = own conditions (or Iterations < 1) AND the Parent's, recursively;
+    - CanContinue = ALL own conditions (or Iterations < 1) AND the Parent's,
+      recursively (the Parent only when the own conditions passed);
     - FinishBlock bumps Iterations and LoopCondition.CompletedIterations,
-      and a container resets its items only if it can continue;
+      and a container resets its items only if it can continue with the item
+      that stopped the pass (None when every item ran: estimated 0 s);
     - Safety/LoopWhileUnsafe (5 s) and Time watchdogs interrupt cond.Parent
       only when Parent is set, reaches the root and is running; a SmartExposure
       reroutes an interrupt to its own Parent;
-    - TimeCondition.Check counts the next item's estimated duration."""
+    - TimeCondition.Check counts the next item's estimated duration
+      (TakeExposure, SmartExposure, WaitForTimeSpan, WaitForTime, RunAutofocus;
+      a container's is 0) and, once it failed for an item that takes time,
+      stays failed until reset (lastCutOffTime).
+    PS-149: `tick` is the wall-clock cost of starting any item (0 = the old
+    instant model, where a busy loop trips the step guard); every finished
+    pass of a container that consumed no instruction time is counted in
+    `idle` / `max_idle` (name -> passes, longest run in a row); `alt_until`
+    makes AltitudeCondition fail from that time on (the target set)."""
 
-    def __init__(self, seq, unsafe=()):
+    AF_S = 60.0
+
+    def __init__(self, seq, unsafe=(), tick=0.0, max_steps=200000,
+                 alt_until=None):
         self.unsafe = sorted(unsafe)
         self.t = TIMES["DuskProvider"] - 3600.0
         self.lights, self.darks, self.stack = [], 0, []
         self.steps = 0
+        self.tick, self.max_steps, self.alt_until = tick, max_steps, alt_until
+        self.busy = 0.0                 # instruction time consumed so far
+        self.idle, self.max_idle, self._run = {}, {}, {}
+        self.idle_at = []               # (name, time) of every idle pass
+        self.logs = {"SafetyMonitorCondition": 0, "LoopWhileUnsafe": 0}
         ids = {}
 
         def build(d):
@@ -302,29 +324,58 @@ class NinaSim:
         return t
 
     def ptime(self, cond):
-        return (TIMES[_short(cond.d["SelectedProvider"]["$type"])]
-                + 60 * cond.d.get("MinutesOffset", 0))
+        prov = _short(cond.d["SelectedProvider"]["$type"])
+        if prov == "TimeProvider":
+            # PS-149: a fixed local clock time (moonrise, transit), relative
+            # to astro dusk at DUSK_LOCAL; before noon is the next morning
+            hms = (3600 * cond.d.get("Hours", 0) + 60 * cond.d.get("Minutes", 0)
+                   + cond.d.get("Seconds", 0))
+            if hms < 12 * 3600:
+                hms += 24 * 3600
+            return hms - DUSK_LOCAL + 60 * cond.d.get("MinutesOffset", 0)
+        return TIMES[prov] + 60 * cond.d.get("MinutesOffset", 0)
 
     # conditions
     def duration(self, n):
+        """NINA's GetEstimatedDuration (a container's is 0)."""
         if n is None:
             return 0.0
         if n.type == "TakeExposure":
             return float(n.d.get("ExposureTime", 0))
         if n.type == "SmartExposure":
             return self.duration(n.items[1])
+        if n.type == "WaitForTimeSpan":
+            return float(n.d.get("Time", 0))
+        if n.type == "WaitForTime":
+            return self.ptime(n) - self.t       # negative once passed
+        if n.type == "RunAutofocus":
+            return self.AF_S
         return 0.0
 
     def check(self, c, nxt):
         if c.type == "LoopCondition":
             return c.completed < c.d["Iterations"]
         if c.type == "SafetyMonitorCondition":
-            return self.safe(self.t)
+            ok = self.safe(self.t)
+            if not ok:
+                self.logs["SafetyMonitorCondition"] += 1
+            return ok
         if c.type == "LoopWhileUnsafe":
-            return not self.safe(self.t)
+            ok = not self.safe(self.t)
+            if not ok:
+                self.logs["LoopWhileUnsafe"] += 1
+            return ok
         if c.type == "TimeCondition":
-            return self.t + self.duration(nxt) <= self.ptime(c)
-        return True                                   # Altitude: target up
+            end, dur = self.ptime(c), self.duration(nxt)
+            ok = self.t + dur <= end
+            if c.cutoff is not None and c.cutoff >= end:
+                ok = False
+            if not ok and dur > 0 and nxt is not None:
+                c.cutoff = end + 10
+            return ok
+        if c.type == "AltitudeCondition":
+            return self.alt_until is None or self.t < self.alt_until
+        return True
 
     def can_continue(self, c, nxt):
         ok = all([self.check(x, nxt) for x in c.conds]) if c.conds \
@@ -366,13 +417,18 @@ class NinaSim:
                     best = (f, target)
         return best
 
-    def advance(self, dur):
+    def advance(self, dur, busy=True):
+        t0 = self.t
         t1 = min(self.t + dur, HORIZON)
         hit = self._interrupt_at(self.t, t1) if dur > 0 else None
         if hit:
             self.t = hit[0]
+            if busy:
+                self.busy += self.t - t0
             raise _Interrupt(hit[1])
         self.t = t1
+        if busy:
+            self.busy += self.t - t0
         if self.t >= HORIZON:
             raise _End()
 
@@ -381,38 +437,56 @@ class NinaSim:
         n.status = "CREATED"
         for c in n.conds:
             c.completed = 0
+            c.cutoff = None
         for i in n.items:
             self.reset(i)
 
     def run_item(self, n):
         self.steps += 1
-        assert self.steps < 200000, "runaway loop in the simulated sequence"
+        assert self.steps < self.max_steps, "runaway loop in the simulated sequence"
         n.status = "RUNNING"
+        if self.tick:
+            self.advance(self.tick, busy=False)
         if n.is_container:
             self.run_container(n)
         else:
             self.run_instruction(n)
         n.status = "FINISHED"
 
+    def _next(self, c):
+        nxt = next((i for i in c.items if i.status == "CREATED"), None)
+        return nxt, (nxt is not None and self.can_continue(c, nxt))
+
+    def _finish_block(self, c, busy0):
+        c.iterations += 1
+        for cond in c.conds:
+            if cond.type == "LoopCondition":
+                cond.completed += 1
+        name = str(c.d.get("Name") or c.type)
+        if self.busy > busy0:
+            self._run[id(c)] = 0
+            return
+        self.idle[name] = self.idle.get(name, 0) + 1
+        self._run[id(c)] = self._run.get(id(c), 0) + 1
+        self.max_idle[name] = max(self.max_idle.get(name, 0), self._run[id(c)])
+        self.idle_at.append((name, self.t))
+
     def run_container(self, c):
         self.stack.append(c)
+        self._run[id(c)] = 0
         try:
             c.iterations = 0
-            while True:
-                nxt = next((i for i in c.items if i.status == "CREATED"), None)
-                if nxt is None or not self.can_continue(c, nxt):
-                    break
-                while nxt is not None and self.can_continue(c, nxt):
+            nxt, ok = self._next(c)
+            while nxt is not None and ok:
+                busy0 = self.busy
+                while nxt is not None and ok:
                     self.run_item(nxt)
-                    nxt = next((i for i in c.items if i.status == "CREATED"), None)
-                c.iterations += 1
-                for cond in c.conds:
-                    if cond.type == "LoopCondition":
-                        cond.completed += 1
-                if not self.can_continue(c, None):
-                    break
-                for i in c.items:
-                    self.reset(i)
+                    nxt, ok = self._next(c)
+                self._finish_block(c, busy0)
+                if self.can_continue(c, nxt):
+                    for i in c.items:
+                        self.reset(i)
+                nxt, ok = self._next(c)
         except _Interrupt as e:
             if e.target is not c:
                 raise
@@ -425,7 +499,8 @@ class NinaSim:
             start = self.t
             kind = str(n.d.get("ImageType", "LIGHT")).upper()
             try:
-                self.advance(self.duration(n))
+                # at least the 1 s download: a SkyFlat's 0 s / a 1 ms bias
+                self.advance(max(self.duration(n), 1.0))
             except _Interrupt:
                 if kind == "LIGHT":
                     self.lights.append({"start": start, "end": self.t, "done": False})
@@ -437,14 +512,13 @@ class NinaSim:
         elif ty == "WaitUntilSafe":
             self.advance(self._next_safe(self.t) - self.t)
         elif ty == "WaitForTime":
-            target = TIMES[_short(n.d["SelectedProvider"]["$type"])] \
-                + 60 * n.d.get("MinutesOffset", 0)
+            target = self.ptime(n)
             if target > self.t:
                 self.advance(target - self.t)
         elif ty == "WaitForTimeSpan":
             self.advance(float(n.d.get("Time", 0)))
         elif ty == "RunAutofocus":
-            self.advance(60)
+            self.advance(self.AF_S)
         elif ty == "Center":
             self.advance(30)
 
@@ -454,6 +528,11 @@ class NinaSim:
         except _End:
             pass
         return self
+
+    def spins(self, limit=3):
+        """Containers that finished more than `limit` passes in a row
+        without consuming any instruction time: busy loops."""
+        return {k: v for k, v in self.max_idle.items() if v > limit}
 
 
 UNSAFE_AT = 8.5 * 3600 + 17                         # mid-exposure, like 11:39:44Z

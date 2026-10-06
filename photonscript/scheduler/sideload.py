@@ -247,7 +247,8 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
                    settle_gate: bool | None = None, hand_built: bool = False):
     """Lint for the Piggy-600 companion (camera + focuser only). Errors: a
     warm or missing setpoint, missing $id / Parent links (PS-77), a light
-    loop without its own Safety + Time condition, a stale focus seed, any
+    loop without its own Safety + Time condition, a loop with no waiting
+    item that can busy-spin (PS-149), a stale focus seed, any
     mount / guiding instruction, or (PS-132) a flat without its SwitchFilter
     or a SwitchFilter selecting a filter on a rig without a wheel.
     filter_wheel None = the Piggy-600's (rigs.rig_has_filter_wheel).
@@ -275,6 +276,7 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     sl._check_focus_moves(seq, r)
     sl._check_parent_links(seq, r)
     sl._check_light_loop_guards(seq, r)
+    sl._check_loop_spin(seq, r)   # PS-149
     sl._check_readout_mode(seq, r)   # PS-128
     sl._check_flat_filters(seq, r, filter_wheel)   # PS-132
     sl._check_settle_gate(seq, r, settle_gate)   # PS-27

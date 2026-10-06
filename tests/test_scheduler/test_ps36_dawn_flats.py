@@ -85,7 +85,9 @@ def test_light_loop_waits_are_bounded_and_passes_gated():
     root = _companion()
     lights = next(n for n in _walk(root)
                   if n.get("Name") == "OSC_LIGHTS_UNTIL_DAWN")
-    first, hold, confirm, image_pass = _items(lights)  # PS-25 resume hold
+    # PS-25 resume hold; PS-149 pace wait last
+    first, hold, confirm, image_pass, pace = _items(lights)
+    assert _short(pace["$type"]) == "WaitForTimeSpan" and pace["Time"] == 30
     # bounded wait: loops a short timespan while unsafe AND before naut. dawn
     assert first["Name"] == "WAIT_SAFE_OR_NAUTICAL_DAWN"
     kinds = [_short(c["$type"]) for c in _conds(first)]
