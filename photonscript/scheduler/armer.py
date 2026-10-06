@@ -429,15 +429,38 @@ class Armer:
             logger.warning("PHD2 settings audit at arm failed: %s", e)
 
     async def _thesky_audit_at_arm(self) -> None:
-        """PS-104 TheSky / TPoint audit at arm (read only, no push). Never
-        raises."""
+        """PS-104 TheSky / TPoint audit at arm (read only; the audit itself
+        never pushes). PS-138: on an unguided arm, one ProTrack warning when
+        the audit does not read it on. Never raises."""
         try:
             from photonscript.scheduler import thesky_audit
             a = await asyncio.wait_for(
                 thesky_audit.at_arm(self.config, armer_state=str(self.state or "")), 180)
             logger.info("TheSky audit at arm: %s", (a or {}).get("counts"))
+            if a and not self._use_guiding():
+                await self._warn_protrack_unguided(a)
         except Exception as e:  # noqa: BLE001
             logger.warning("TheSky audit at arm failed: %s", e)
+
+    async def _warn_protrack_unguided(self, audit: dict) -> None:
+        """PS-138: an unguided night depends on ProTrack. One push when the
+        arm-time TheSky audit reads it off (unticked, or greyed because
+        TheSky's mount is not connected / tracking) or cannot confirm it.
+        A warning only: the arm goes ahead. Never raises."""
+        try:
+            from photonscript.scheduler.thesky_audit import protrack_status
+            p = protrack_status(audit)
+            if p["state"] == "on":
+                return
+            head = ("ProTrack is OFF" if p["state"] == "off"
+                    else "ProTrack could not be confirmed on")
+            await notify(self.config,
+                         f"Armed UNGUIDED but {head} in TheSky "
+                         f"({p.get('current') or 'not readable'}): unguided subs "
+                         f"trail without it. {p['fix']}",
+                         title="PhotonScript ProTrack")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("ProTrack check at arm failed: %s", e)
 
     async def disarm(self) -> dict:
         prev = self.state
