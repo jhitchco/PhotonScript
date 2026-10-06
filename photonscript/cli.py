@@ -26,6 +26,7 @@ Usage:
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
+    photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
     photonscript supervise [--mode full]      # keep it running (PS-44)
@@ -2328,6 +2329,67 @@ def integrate_watch_cmd(
     except Exception as e:  # noqa: BLE001
         console.print(f"[red]integrate-watch:[/red] {e}", markup=True)
         raise typer.Exit(1)
+
+
+@app.command("ledger-import")
+def ledger_import_cmd(
+    path: str = typer.Argument(..., help="A ledger.json (0.1 or 0.2), a folder holding one, "
+                                         "or a hand-run staging folder to synthesize from"),
+    variant: str = typer.Option("", "--variant", help="Synthesize: out/<variant> (v4b or "
+                                                     "v4b_noflat; default the newest)"),
+    campaign: str = typer.Option("", "--campaign", help="Override the campaign name"),
+    version: int = typer.Option(0, "--version", help="Override the version"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print only (the default without --apply)"),
+    apply: bool = typer.Option(False, "--apply", help="POST it to the scheduler"),
+    url: str = typer.Option("", "--url", help="Scheduler (default integration_report_url)"),
+    out: str = typer.Option("", "--out", help="Also write the ledger JSON here (never into the "
+                                              "source folder)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the whole ledger as JSON"),
+):
+    r"""PS-142: one-time import of a ledger from before PS-33 (hand-written
+    0.1 ledger, or a ledger synthesized from a hand-run staging folder's
+    manifest / weights.csv / logs / AstroBin packet). Read-only on the
+    source. Posts (POST /api/integrations, idempotent per run, no Pushover
+    for imports) only with --apply.
+
+    photonscript ledger-import C:\Users\sleep\Astrophotography\Staging\M31_OSC3\ledger.json
+    photonscript ledger-import D:\Astrophotography\Staging\M31_OSC4 --variant v4b --apply
+    """
+    import json as _json
+    from photonscript.integration import ledger_import as li
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    try:
+        led, how = li.load_any(Path(path), variant=variant or None, campaign=campaign,
+                               version=version)
+    except (li.LedgerImportError, ValueError, OSError) as e:
+        console.print(f"[red]ledger-import:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+    say(how)
+    for line in li.summary_lines(led):
+        say("  " + line)
+    if as_json:
+        print(_json.dumps(led.dump(), indent=1))
+    if out:
+        src = Path(path).resolve()
+        src_dir = src if src.is_dir() else src.parent
+        dest = Path(out).resolve()
+        if dest == src or src_dir in dest.parents:
+            console.print("[red]ledger-import:[/red] --out must be outside the source folder "
+                          "(it is read-only)", markup=True)
+            raise typer.Exit(2)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(_json.dumps(led.dump(), indent=1), encoding="ascii")
+        say(f"wrote {dest}")
+    if not apply or dry_run:
+        say("dry run: nothing posted (add --apply to post it to the scheduler)")
+        return
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    base = url or getattr(cfg, "integration_report_url", "")
+    r = li.post(led, base)
+    if not r["ok"]:
+        console.print(f"[red]ledger-import:[/red] not posted: {r['detail']}", markup=True)
+        raise typer.Exit(1)
+    say(f"posted to {base}: v{r.get('version')} {r.get('detail', '')}")
 
 
 if __name__ == "__main__":

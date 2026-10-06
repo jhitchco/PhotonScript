@@ -93,6 +93,72 @@ Windows Scheduled Task yourself that runs
 `C:\dev\PhotonScript\.venv\Scripts\photonscript.exe integrate-watch --once`
 every 30 minutes while logged on (PixInsight needs the desktop session).
 
+**Campaign status and review (PS-142).** Every goal card (dashboard and
+Targets page) carries a status chip per rig, the target page a "Campaign
+review" panel (`GET /api/integrations/status`, `scheduler/integrations.py`
+`goal_status`):
+- **Acquiring**: no reason to integrate yet (goal not met, or under
+  `integrate_watch_new_data_h` new since the last ledger).
+- **Ready to process**: the watcher's own rule (goal met with no ledger, the
+  `integrate_watch_first_h` hours, or enough new data); with
+  `integrate_watch_require_calibration` on, missing calibration keeps it
+  Acquiring ("waiting for calibration"), else the chip's tooltip lists it.
+- **Processing**: integrate-watch posted a processing notice (`POST
+  /api/integrations/processing`, state start / end around each run; best
+  effort, ignored after 12 h). A stored ledger ends it.
+- **Processed (vN)**: the latest ledger; **Published (vN)** when that ledger
+  records an AstroBin URL (`publish.astrobin.url`), and the chip links to it.
+  A newer unpublished version reads "Processed (v4); v3 published".
+
+The review panel shows, per rig, the latest ledger, the newest verdict and
+notes (with their version) and every ask of every version, open ones with
+Approve / Decline (`GET /api/integrations/review?project_id=`). The goal
+card shows the compact form (verdict, open asks). Approve of a plan-changing
+ask (more_hours: Piggy-600 OSC goal + hours, or the RC16 budget and mix;
+short_subs on an RC16 filter: an HDR short set; reframe: the driving rig)
+first reads `GET /api/integrations/asks/<id>/proposal` (the PATCH body and
+the exposure-plan diff, computed on a copy of the goal), shows the diff in
+a confirm, and only on OK sends it through `PATCH /api/projects2/<id>`
+(ProjectStore.update), then marks the ask `applied` (the patch is kept on
+the ask). Other asks (need_calibration, rest, fix_blocker) just change
+status. Nothing edits projects.json directly.
+
+**Ready ping.** A NEW ledger version (not a re-post of the same run, not an
+import) sends one Pushover, title "PhotonScript <campaign> integrated":
+"M31 v3 integrated: 9.4 h, packet ready" (or "integration FAILED" /
+"staged ... (not integrated)"). The dawn "Night complete" push adds an
+"Integrations: ..." line for the ledgers posted in the last 24 h.
+
+**Import the history (PS-142, one time).** `photonscript ledger-import
+<path> [--variant v4b] [--campaign M31] [--version N] [--out FILE] [--json]
+[--dry-run | --apply] [--url URL]` reads a hand-written ledger (0.1 or 0.2:
+a `ledger.json` or the folder holding it) or, for a hand-run staging folder
+without one, synthesizes a 0.2 ledger from one processing variant:
+`out\<variant>\weights.csv` (the integrated subs), `manifest.csv` (what was
+staged; calibration counts), `<tag>_*selection.csv` (star QA),
+`out\pipeline_<tag>.log` / `finish_<tag>.log` (ok, minutes, funnel) and
+`astrobin\` (packet, CSV, crop JPG; an AstroBin link in the packet is kept
+as `publish.astrobin.revision_of`, not as published). It never writes into
+the source folder (not even `reported`); `--out` must point elsewhere. The
+default is a dry run that prints the summary; `--apply` POSTs it to
+`/api/integrations` (idempotent per run; imported ledgers carry
+`machine.imported` and send no ping). A hand-written 0.1 file keeps its own
+field names, so the import fills the 0.2 reads where missing (hours from
+subs_by_filter, integration / finish ok from the recorded master and
+outputs, the packet path) and lists them in `machine.imported.filled`; its
+asks get stable ids so a repeat import keeps the decisions.
+
+For Jeremy, once the scope runs PS-142 (desktop, repo venv):
+```
+photonscript ledger-import C:\Users\sleep\Astrophotography\Staging\M31_OSC3\ledger.json
+photonscript ledger-import D:\Astrophotography\Staging\M31_OSC4 --variant v4b
+# both look right? post them, oldest first:
+photonscript ledger-import C:\Users\sleep\Astrophotography\Staging\M31_OSC3\ledger.json --apply
+photonscript ledger-import D:\Astrophotography\Staging\M31_OSC4 --variant v4b --apply
+```
+M31 then reads "Processed (v4); v3 published" with v3's four asks open on
+the target page.
+
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
 - `photonscript/image_processor/osc_cull.py`: **runs first** (called by
