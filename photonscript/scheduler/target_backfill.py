@@ -130,10 +130,9 @@ def rename_backfill(config, apply: bool = False, dates=None,
                     stamp_headers: bool = False) -> dict:
     """Run (or dry-run) the PS-78 rename backfill. See the module doc."""
     from photonscript.scheduler.runs import (
-        _load_subs,
-        _rewrite_subs,
         _safe_name,
         correlate_piggyback_records,
+        edit_subs,
         library_root,
         runs_dir,
     )
@@ -151,9 +150,10 @@ def rename_backfill(config, apply: bool = False, dates=None,
     ambiguous: set = set()
     header_jobs: list[tuple[str, str, str]] = []
     for d in all_dates:
-        subs = _load_subs(config, d)
-        changed = _rewrite_records(subs, known)
-        n_corr, windows, _pending = correlate_piggyback_records(subs)
+        # PS-140: the rewrite holds the night lock from load to write
+        with edit_subs(config, d, write=apply) as subs:
+            changed = _rewrite_records(subs, known)
+            n_corr, windows, _pending = correlate_piggyback_records(subs)
         still_unattributed = sum(
             1 for s in subs if s.get("rig") not in ("rc16", None, "")
             and s.get("target") in (None, "", UNATTRIBUTED)
@@ -183,8 +183,6 @@ def rename_backfill(config, apply: bool = False, dates=None,
                 "piggyback_correlated": dict(windows),
                 "piggyback_still_unattributed": still_unattributed,
             })
-            if apply:
-                _rewrite_subs(config, d, subs)
     for b in ambiguous:
         by_file.pop(b, None)
 

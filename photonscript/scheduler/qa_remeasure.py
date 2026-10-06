@@ -189,23 +189,28 @@ def remeasure_night(config, date: str, apply: bool = False,
     else:
         if _night_busy(date):
             raise RuntimeError(f"a grading job is running for {date}")
-        # re-read: the log may have grown while the FITS were measured
-        fresh = runs._load_subs(config, date)
+        # re-read: the log may have grown while the FITS were measured.
+        # PS-140: the measuring ran unlocked; this re-load, the merge of the
+        # measured fields (never MANUAL_FIELDS) and the rewrite hold the
+        # night lock, so a verdict given during the run survives
         written = 0
-        for rec in fresh:
-            hit = measured.get(_key(rec))
-            if hit and needs_remeasure(rec):
-                _merge(rec, hit[0])
-                written += 1
-                if hit[1]:
-                    try:
-                        from photonscript.shared import star_table
-                        star_table.write(config, date, rec["file"], hit[1],
-                                         rig=rec.get("rig") or "rc16")
-                    except Exception as e:  # noqa: BLE001
-                        logger.debug("star sidecar skipped: %s", e)
-        _refresh_cards(config, date, fresh, set(measured))
-        runs._rewrite_subs(config, date, fresh)
+        tables = []
+        with runs.edit_subs(config, date) as fresh:
+            for rec in fresh:
+                hit = measured.get(_key(rec))
+                if hit and needs_remeasure(rec):
+                    _merge(rec, hit[0])
+                    written += 1
+                    if hit[1]:
+                        tables.append((rec["file"], hit[1],
+                                       rec.get("rig") or "rc16"))
+            _refresh_cards(config, date, fresh, set(measured))
+        for name, table, rig in tables:
+            try:
+                from photonscript.shared import star_table
+                star_table.write(config, date, name, table, rig=rig)
+            except Exception as e:  # noqa: BLE001
+                logger.debug("star sidecar skipped: %s", e)
         res = runs.rescore_night(config, date, apply=True,
                                  allow_unreject=allow_unreject)
         out["records_written"] = written     # new metrics + scorecard
