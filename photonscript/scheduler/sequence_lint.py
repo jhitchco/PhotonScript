@@ -44,6 +44,10 @@ def _walk(node, path=""):
             yield from _walk(v, f"{path}[{i}]")
 
 
+def _short_type(t: str) -> str:
+    return (t or "").split(",")[0].split(".")[-1]
+
+
 def _types_in(node):
     return [(p, d) for p, d in _walk(node) if isinstance(d, dict) and "$type" in d]
 
