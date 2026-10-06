@@ -1911,7 +1911,7 @@ def integrate_cmd(
                                      help=r"Default D:\Astrophotography\Staging, else ~\Astrophotography\Staging"),
     library: str = typer.Option("", "--library", help="Library mirror (read-only; default desktop_library_dir)"),
     filters: str = typer.Option("", "--filters", help="Mono: comma list of filters (default all)"),
-    qa: str = typer.Option("apply", "--qa", help="Star QA: apply (drop rejects) | report (stack all) | off"),
+    qa: str = typer.Option("report", "--qa", help="Star QA: report (stack all, default) | apply (drop rejects) | off"),
     flats: bool = typer.Option(True, "--flats/--no-flats", help="Use matched flats when present"),
     min_darks: int = typer.Option(10, "--min-darks", help="Darks needed to use a dark length"),
     max_cal: int = typer.Option(50, "--max-cal", help="At most this many bias / darks / flats per master"),

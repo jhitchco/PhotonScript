@@ -47,7 +47,7 @@ class Options:
     since: str = ""
     until: str = ""
     filters: list[str] | None = None
-    qa: str = "apply"                 # apply | report | off
+    qa: str = "report"                # report (default, Jeremy 2026-10-06) | apply | off
     flats: bool = True
     min_darks: int = 10
     max_cal: int = 50
