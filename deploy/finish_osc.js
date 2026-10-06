@@ -1,6 +1,11 @@
-// PhotonScript OSC finishing pipeline (PJSR): masterOSC.xisf -> finished image.
-// Launched by run-finish-osc.ps1, which fills the __PLACEHOLDERS__ and, when
-// PixInsight's ImageSolver script exists, the solver include below.
+// PhotonScript finishing pipeline (PJSR): master -> finished image. The ONE
+// finish implementation, with two launchers that fill the __PLACEHOLDERS__
+// and, when PixInsight's ImageSolver script exists, the solver include below:
+//   deploy/run-finish-osc.ps1   one OSC master (MASTERS = null)
+//   photonscript integrate      every master of a run (MASTERS = a list;
+//                               photonscript/integration/pjsr.py render_finish)
+// Mono masters (RC16 per filter) skip the color steps (color calibration,
+// SCNR, core HDR blend, saturation).
 //
 //   crop registration edges -> gradient removal (GradientCorrection, else ABE)
 //   -> plate solve (ImageSolver, spiral search around the target)
@@ -93,6 +98,10 @@ var HDR_SPAN    = 0.35;   // blend is full HDR at HDR_LO + HDR_SPAN
 // after the stretch so gradient removal still sees the whole field. Null = none.
 var FRAME = __FRAME__;
 var EDGE_FRAC = 0.015;
+// null = the one MASTER / NAME above; else [{name, path}, ...], each finished
+// in turn with its own <name>_final_steps.json (log ends EXIT OK only when
+// every master finished).
+var MASTERS = __MASTERS__;
 
 var LOGLINES = [];
 var STEPS = [];   // one record per pipeline step, written to <Name>_final_steps.json
@@ -143,14 +152,14 @@ function mtfv(m, x) { if (x <= 0) return 0; if (x >= 1) return 1;
 
 // A Crop invalidates the WCS; clear it first so PixInsight does not stop on a
 // Yes/No dialog in an unattended run.
-function clearSolution(view) {
+function clearWcs(view) {
    try { view.window.clearAstrometricSolution(); } catch (e) { log("clearAstrometricSolution: " + e); }
 }
 
 // ---------------------------------------------------------------- steps
 
 function cropEdges(view, frac) {
-   clearSolution(view);
+   clearWcs(view);
    var img = view.image;
    var dx = Math.round(img.width * frac), dy = Math.round(img.height * frac);
    var CR = new Crop;
@@ -309,6 +318,11 @@ function spcc(view) {
 }
 
 function colorCalibrate(view, solved) {
+   if (!view.image.isColor) {
+      log("color: mono master, no color calibration");
+      step("color", "none", "skipped", { reason: "mono master" });
+      return;
+   }
    var why = "";
    if (COLOR === "basic") why = "-Color basic";
    else if (!solved) why = "no astrometric solution";
@@ -343,6 +357,7 @@ function colorCalibrate(view, solved) {
 
 function removeGreen(view) {
    if (!(SCNR_AMOUNT > 0)) { step("scnr", "SCNR", "skipped", { amount: 0 }); return; }
+   if (!view.image.isColor) { step("scnr", "SCNR", "skipped", { reason: "mono master" }); return; }
    try {
       var S = new SCNR;
       S.amount = SCNR_AMOUNT;
@@ -556,7 +571,7 @@ function stretch(view, what) {
    log("stretch" + (what ? " (" + what + ")" : "") + ": linked, shadows " + c0.toFixed(5) + ", midtones " + m.toFixed(5));
    step("stretch", "HistogramTransformation", "ran",
         { image: what || "full", shadows: +c0.toFixed(6), midtones: +m.toFixed(6), bg_target: BG_TARGET, shadow_sigma: SHADOW_SIGMA });
-   if (SAT_MID !== 0.5) {
+   if (SAT_MID !== 0.5 && img.isColor) {
       try {
          var CT = new CurvesTransformation;
          CT.S = [[0, 0], [0.5, SAT_MID], [1, 1]];
@@ -573,6 +588,7 @@ function stretch(view, what) {
 // sky keep the normal stretch. If anything fails the target view is untouched.
 function recoverCore(view) {
    if (!(HDR_LAYERS > 0)) { step("core_hdr", "HDRMultiscaleTransform", "skipped", { layers: 0 }); return; }
+   if (!view.image.isColor) { step("core_hdr", "HDRMultiscaleTransform", "skipped", { reason: "mono master" }); return; }
    var dup = null;
    try {
       var img = view.image;
@@ -717,7 +733,7 @@ function starRecombine(view, split) {
 function frameCrop(view, edgeFrac) {
    if (!FRAME) return;
    try {
-      clearSolution(view);
+      clearWcs(view);
       var img = view.image;
       // the edge crop already removed edgeFrac on every side; map FRAME into it
       var W0 = img.width / (1 - 2 * edgeFrac), H0 = img.height / (1 - 2 * edgeFrac);
@@ -757,7 +773,7 @@ function main() {
    console.show();
    log("finish: " + MASTER + "  target=" + NAME + "  RA=" + RA_DEG + " Dec=" + DEC_DEG);
    log("output: " + FINAL);
-   if (!File.exists(MASTER)) throw new Error("no master at " + MASTER + " - run run-integration-osc.ps1 first");
+   if (!File.exists(MASTER)) throw new Error("no master at " + MASTER + " (integration not run or failed)");
    ensureDir(FINAL);
    var ws = ImageWindow.open(MASTER);
    if (!ws.length) throw new Error("could not open " + MASTER);
@@ -781,9 +797,9 @@ function main() {
    frameCrop(v, EDGE_FRAC);
    try {
       var st = v.image, mm = [];
-      for (var q = 0; q < 3; ++q) { st.selectedChannel = q; mm.push(st.mean().toFixed(4)); }
+      for (var q = 0; q < st.numberOfChannels; ++q) { st.selectedChannel = q; mm.push(st.mean().toFixed(4)); }
       st.resetSelections();
-      log("final channel means R/G/B: " + mm.join(" / "));
+      log("final channel means" + (mm.length === 3 ? " R/G/B" : "") + ": " + mm.join(" / "));
    } catch (e) { log("stats skipped (" + e + ")"); }
    log("steps: " + stepTag());
    labelOutput(w);
@@ -801,9 +817,19 @@ function main() {
    log("DONE");
 }
 
-try { main(); writeSteps("ok"); log("EXIT OK"); }
-catch (e) {
-   writeSteps("error: " + e.toString());
-   log("ERROR: " + e.toString()); console.criticalln("[FINISH] FAILED: " + e.toString());
+var RUN = MASTERS ? MASTERS : [{ name: NAME, path: MASTER }];
+var NFAIL = 0;
+for (var mi = 0; mi < RUN.length; ++mi) {
+   NAME = RUN[mi].name; MASTER = RUN[mi].path; STEPS = [];
+   var tf0 = Date.now();
+   if (MASTERS) log("STAGE START " + NAME + " / finish");
+   try { main(); writeSteps("ok"); }
+   catch (e) {
+      ++NFAIL;
+      writeSteps("error: " + e.toString());
+      log("ERROR (" + NAME + "): " + e.toString()); console.criticalln("[FINISH] FAILED: " + e.toString());
+   }
+   if (MASTERS) log("STAGE END   " + NAME + " / finish (" + ((Date.now() - tf0) / 60000).toFixed(2) + " min)");
 }
+log(NFAIL ? ("EXIT WITH " + NFAIL + " FAILED MASTER(S)") : "EXIT OK");
 writeLog();

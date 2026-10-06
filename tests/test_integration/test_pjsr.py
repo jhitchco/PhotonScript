@@ -24,7 +24,53 @@ def test_templates_are_ascii_and_rule_clean(name):
     raw.decode("ascii")
     t = raw.decode("ascii")
     probs = pjsr.check(t)
-    assert probs == ["CONFIG not filled"]          # only the fill-in mark remains
+    if name == pjsr.INTEGRATE_TEMPLATE:
+        assert probs == ["CONFIG not filled"]          # only the fill-in mark remains
+    else:                                              # only the launcher placeholders remain
+        assert len(probs) == 1 and probs[0].startswith("unfilled placeholders:")
+
+
+def test_finish_is_the_one_osc_finish():
+    # PS-22/PS-46: integrate renders deploy/finish_osc.js (the run-finish-osc.ps1
+    # script), not a second copy of the finish.
+    assert pjsr.FINISH_TEMPLATE == "finish_osc.js"
+    assert not (pjsr.DEPLOY / "finish_stack.js").exists()
+
+
+def test_render_finish_fills_what_the_ps1_fills():
+    import re
+    js = pjsr.template(pjsr.FINISH_TEMPLATE)
+    code = "\n".join(l for l in js.splitlines() if not l.lstrip().startswith("//"))
+    used = set(re.findall(r"__[A-Z][A-Z0-9_]*__", code))
+    ps1 = (pjsr.DEPLOY / "run-finish-osc.ps1").read_text(encoding="ascii")
+    filled = set(re.findall(r"Replace\('(__[A-Z][A-Z0-9_]*__)'", ps1))
+    assert used <= filled
+    out = pjsr.render_finish(FCFG)
+    assert pjsr.check(out) == []
+    assert 'var MASTERS = [{"name": "M31_OSC", "path": "D:/X/out/master/master_OSC.xisf"}];' in out
+    assert 'var FINAL      = "D:/X/out/final";' in out and 'var LOGDIR     = "D:/X/out";' in out
+    assert "var RA_DEG    = 10.68;" in out and 'var COLOR       = "auto";' in out
+
+
+def test_render_finish_unknown_coords_are_nan_and_ascii():
+    cfg = dict(FCFG, ra_deg=None, dec_deg=None, out="D:\\X\\Caf" + chr(0xE9))
+    out = pjsr.render_finish(cfg)
+    assert pjsr.check(out) == []
+    assert "var RA_DEG    = NaN;" in out and "D:/X/Caf\\u00e9/final" in out
+
+
+def test_finish_defaults_match_the_ps1():
+    ps1 = (pjsr.DEPLOY / "run-finish-osc.ps1").read_text(encoding="ascii")
+    d = pjsr.FINISH_DEFAULTS
+    for line in ('[double]$BgTarget = %s' % d["bg_target"], '[double]$ShadowSigma = %s' % d["shadow_sigma"],
+                 '[double]$Scnr = %.2f' % d["scnr"], '[double]$SatMid = %s' % d["sat_mid"],
+                 '[int]$HdrLayers = %d' % d["hdr_layers"], '[double]$Denoise = %s' % d["denoise"],
+                 "[string]$Deconv = '%s'" % d["deconv"], '[double]$DeconvStrength = %s' % d["deconv_strength"],
+                 "[string]$StarReduction = '%s'" % d["stars"], '[double]$StarStrength = %s' % d["star_strength"],
+                 "[string]$Color = '%s'" % d["color"], '[string]$SpccQE = "%s"' % d["spcc_qe"],
+                 '[string]$SpccWhite = "%s"' % d["spcc_white"],
+                 '[int]$GraXpertTimeoutMin = %d' % d["graxpert_timeout_min"]):
+        assert line in ps1, line
 
 
 def test_rendered_integrate_passes_and_embeds_config():
@@ -44,7 +90,7 @@ def test_rendered_finish_with_solver_block_keeps_include_order(tmp_path):
         (adp / d).write_text("x")
     block, missing = pjsr.solver_include(exe)
     assert not missing and "ImageSolver.js" in block
-    out = pjsr.render(pjsr.template(pjsr.FINISH_TEMPLATE), FCFG, block)
+    out = pjsr.render_finish(FCFG, block)
     assert pjsr.check(out) == []
     assert out.index("#include <pjsr/SectionBar.jsh>") < out.index('#include "')
 

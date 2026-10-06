@@ -13,7 +13,10 @@
 #         + <Name>_starless.xisf (when StarNet2 ran)
 #         + <Name>_final_steps.json (which step ran, tool, settings; tag also in
 #         the PSFINISH FITS keyword)
-# Log:    Staging\<Name>\out\finish.log (or <OutDir>\finish.log; ends EXIT OK or ERROR: ...)
+# Log:    Staging\<Name>\out\finish.log (or <OutDir>\finish.log; ends EXIT OK, or an
+#         ERROR line then EXIT WITH 1 FAILED MASTER(S))
+# finish_osc.js is the one finish implementation: `photonscript integrate`
+# renders the same script (photonscript/integration/pjsr.py render_finish).
 param(
     [string]$Name = "M31_OSC2",
     [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
@@ -189,6 +192,7 @@ $js = $js.Replace('__GRAXPERT__', (JsStr $gxExe)).Replace('__GRAXPERT_VERSION__'
 $js = $js.Replace('__GRAXPERT_AI__', (JsStr $GraXpertAiVersion)).Replace('__GRAXPERT_GPU__', $GraXpertGpu)
 $js = $js.Replace('__GRAXPERT_TIMEOUT_MIN__', [string]$GraXpertTimeoutMin)
 $js = $js.Replace('__STARS__', $StarReduction).Replace('__STAR_STRENGTH__', (JsNum $StarStrength))
+$js = $js.Replace('__MASTERS__', 'null')   # one master; photonscript integrate passes a list
 $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
 [System.IO.File]::WriteAllText($runjs, $js)

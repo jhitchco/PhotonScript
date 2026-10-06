@@ -132,8 +132,12 @@ def test_every_optional_process_runs_inside_a_try():
 
 def test_main_run_is_wrapped_and_always_writes_log_and_steps():
     s = _read(JS)
-    assert re.search(r'try \{ main\(\); writeSteps\("ok"\); log\("EXIT OK"\); \}', s)
+    assert re.search(r'try \{ main\(\); writeSteps\("ok"\); \}', s)
     assert 'writeSteps("error: "' in s
+    # one master (run-finish-osc.ps1) or every master of an integrate run;
+    # EXIT OK only when all of them finished
+    assert "var RUN = MASTERS ? MASTERS : [{ name: NAME, path: MASTER }];" in s
+    assert 'log(NFAIL ? ("EXIT WITH " + NFAIL + " FAILED MASTER(S)") : "EXIT OK");' in s
 
 
 def test_astrometric_solution_cleared_before_every_crop():
@@ -142,7 +146,7 @@ def test_astrometric_solution_cleared_before_every_crop():
     for m in re.finditer(r"new Crop\b", s):
         name, (a, _b) = next((n, ab) for n, ab in funcs.items() if ab[0] <= m.start() < ab[1])
         body = s[a:m.start()]
-        assert "clearSolution(view)" in body, f"{name}: Crop without clearing the WCS first"
+        assert "clearWcs(view)" in body, f"{name}: Crop without clearing the WCS first"
     assert "clearAstrometricSolution()" in s
 
 
@@ -291,3 +295,12 @@ def test_ps1_star_params():
     assert "[double]$StarStrength = 0.7" in ps1
     assert "@('StarStrength', $StarStrength, 0, 1)" in ps1
     assert 'StarNet2*.dll' in ps1
+
+
+# --- PS-22 integrate uses this finish too: mono masters skip the color steps --
+
+def test_mono_masters_skip_the_color_steps():
+    s = _read(JS)
+    for fn in ("colorCalibrate", "removeGreen", "recoverCore"):
+        assert "!view.image.isColor" in _func(s, fn), fn
+    assert "SAT_MID !== 0.5 && img.isColor" in _func(s, "stretch")

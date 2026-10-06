@@ -370,15 +370,19 @@ def run(o: Options, echo=print) -> dict:
             echo(f"  ImageSolver files missing ({', '.join(missing)}): the finish skips the plate solve")
         ra, dec = catalog_coords(o.target)
         g0 = lights[0]
-        fcfg = {"out": pjsr.fwd(out_dir), "ra_deg": ra, "dec_deg": dec,
+        # PS-22/PS-46: the finish is deploy/finish_osc.js, the same script
+        # run-finish-osc.ps1 runs (SPCC with Gaia DR3/SP, NR + deconvolution,
+        # StarNet2 star reduction, a steps json per master), at its defaults.
+        gx = pjsr.find_graxpert()
+        fcfg = {"out": pjsr.fwd(out_dir), "staging": pjsr.fwd(run_dir), "ra_deg": ra, "dec_deg": dec,
                 "focal_mm": g0.focallen or 600.0, "pixel_um": g0.pixel_um or 3.76,
-                "gradient": o.gradient, "use_rc": o.use_rc, "bg_target": 0.12, "shadow_sigma": 2.0,
-                "scnr": 0.60, "sat_mid": 0.64, "hdr_layers": 7,
+                "gradient": o.gradient, "use_rc": o.use_rc,
+                "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
+                "graxpert": gx, "graxpert_version": "unknown" if gx else "",
                 "masters": [{"name": f"{safe_name(o.target)}_{s['name']}",
                              "path": pjsr.fwd(out_dir / "master" / f"master_{s['name']}.xisf")}
                             for s in stacks]}
-        finish_js = pjsr.write(run_dir / "finish_run.js",
-                               pjsr.render(pjsr.template(pjsr.FINISH_TEMPLATE), fcfg, block))
+        finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
         echo(f"  {integ_js.name}, {finish_js.name}")
     result["scripts"] = [str(integ_js), str(finish_js)]
 

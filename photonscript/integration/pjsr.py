@@ -1,8 +1,12 @@
 """PS-22: generate the PixInsight scripts for a run and check the PJSR rules.
 
-The templates live in deploy/ (integrate_stack.js, finish_stack.js). A run
-gets its own copy with the settings filled in as one `var CONFIG = {...};`
-line (JSON, ASCII-escaped), so the template never needs per-run edits.
+The templates live in deploy/. integrate_stack.js gets its settings as one
+`var CONFIG = {...};` line (JSON, ASCII-escaped), so the template never needs
+per-run edits. The finish is deploy/finish_osc.js, the ONE finish
+implementation (PS-46 SPCC with Gaia, PS-41 noise reduction + deconvolution,
+PS-40 StarNet2 star reduction, a steps json per master): render_finish()
+fills the same __PLACEHOLDERS__ run-finish-osc.ps1 fills, with MASTERS set to
+every master of the run.
 
 check() enforces the rules that each cost a debugging session (HANDBOOK
 sec 6 plus the 2026-09-26 / 10-04 runs):
@@ -18,12 +22,14 @@ sec 6 plus the 2026-09-26 / 10-04 runs):
 from __future__ import annotations
 
 import json
+import math
+import os
 import re
 from pathlib import Path
 
 DEPLOY = Path(__file__).resolve().parents[2] / "deploy"
 INTEGRATE_TEMPLATE = "integrate_stack.js"
-FINISH_TEMPLATE = "finish_stack.js"
+FINISH_TEMPLATE = "finish_osc.js"
 CONFIG_MARK = "//__CONFIG__"
 SOLVER_MARK = "//__SOLVER_INCLUDE__"
 SOLVER_DEPS = ("WCSmetadata.jsh", "AstronomicalCatalogs.jsh", "SearchCoordinatesDialog.js",
@@ -149,3 +155,99 @@ def write(path: Path, text: str) -> Path:
 def fwd(p) -> str:
     """Forward-slash path for PJSR."""
     return str(p).replace("\\", "/")
+
+
+# ------------------------------------------------------------------ finish
+
+# The run-finish-osc.ps1 parameter defaults (the M31_OSC4 v4b look, PS-46 /
+# PS-41 / PS-40). tests/test_integration/test_pjsr.py checks they agree.
+FINISH_DEFAULTS = {
+    "gradient": "auto", "use_rc": True, "color": "auto",
+    "spcc_qe": "Sony IMX411/455/461/533/571",
+    "spcc_red": "Sony Color Sensor R-UVIRcut",
+    "spcc_green": "Sony Color Sensor G-UVIRcut",
+    "spcc_blue": "Sony Color Sensor B-UVIRcut",
+    "spcc_white": "Average Spiral Galaxy",
+    "bg_target": 0.12, "shadow_sigma": 2.0, "scnr": 0.60, "sat_mid": 0.64, "hdr_layers": 7,
+    "frame": None, "denoise": 0.5, "deconv": "on", "deconv_strength": 0.5,
+    "graxpert": "", "graxpert_version": "", "graxpert_ai": "", "graxpert_gpu": "",
+    "graxpert_timeout_min": 30, "stars": "on", "star_strength": 0.7,
+    "focal_mm": 600.0, "pixel_um": 3.76,
+}
+
+
+def find_graxpert() -> str:
+    """GraXpert executable the way run-finish-osc.ps1 looks for it:
+    PS_GRAXPERT, then the usual install paths. "" = not found."""
+    pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+    la = os.environ.get("LOCALAPPDATA", "")
+    home = os.environ.get("USERPROFILE", "")
+    cands = [os.environ.get("PS_GRAXPERT", ""),
+             os.path.join(pf, "GraXpert", "GraXpert-win64.exe"), os.path.join(pf, "GraXpert", "GraXpert.exe")]
+    if la:
+        cands += [os.path.join(la, "Programs", "GraXpert", "GraXpert.exe"),
+                  os.path.join(la, "Programs", "GraXpert", "GraXpert-win64.exe")]
+    if home:
+        cands += [os.path.join(home, "GraXpert", "GraXpert-win64.exe"),
+                  os.path.join(home, "GraXpert", "GraXpert.exe")]
+    for c in cands:
+        if c and Path(c).is_file():
+            return str(Path(c).resolve())
+    return ""
+
+
+def _js_str(v) -> str:
+    """Contents for a "..." JS literal: forward slashes, ASCII-escaped."""
+    return json.dumps(str(v if v is not None else "").replace("\\", "/"), ensure_ascii=True)[1:-1]
+
+
+def _js_num(v) -> str:
+    if v is None or (isinstance(v, float) and math.isnan(v)):
+        return "NaN"
+    return repr(float(v)) if isinstance(v, float) else str(int(v))
+
+
+def render_finish(cfg: dict, solver_block: str = "", deploy_dir: Path | None = None) -> str:
+    """deploy/finish_osc.js with every placeholder filled for a run.
+    cfg: out (run out dir; finals go to out/final, finish.log to out),
+    masters [{name, path}], ra_deg / dec_deg (None = unknown), pi_library,
+    plus any FINISH_DEFAULTS key to override."""
+    c = dict(FINISH_DEFAULTS)
+    c.update({k: v for k, v in cfg.items() if v is not None or k in ("ra_deg", "dec_deg")})
+    masters = list(c.get("masters") or [])
+    if not masters:
+        raise PjsrError("render_finish: no masters")
+    out = str(c["out"]).replace("\\", "/")
+    frame = c.get("frame")
+    vals = {
+        "STAGING": _js_str(c.get("staging", out)), "NAME": _js_str(masters[0]["name"]),
+        "MASTER": _js_str(masters[0]["path"]), "FINAL": _js_str(out + "/final"),
+        "LOGDIR": _js_str(out), "PI_LIBRARY": _js_str(c.get("pi_library", "")),
+        "RA": _js_num(c.get("ra_deg")), "DEC": _js_num(c.get("dec_deg")),
+        "FOCAL": _js_num(float(c["focal_mm"])), "PIXEL": _js_num(float(c["pixel_um"])),
+        "GRADIENT": _js_str(c["gradient"]), "USE_RC": "true" if c["use_rc"] else "false",
+        "COLOR": _js_str(c["color"]),
+        "SPCC_QE": _js_str(c["spcc_qe"]), "SPCC_RED": _js_str(c["spcc_red"]),
+        "SPCC_GREEN": _js_str(c["spcc_green"]), "SPCC_BLUE": _js_str(c["spcc_blue"]),
+        "SPCC_WHITE": _js_str(c["spcc_white"]),
+        "BG_TARGET": _js_num(float(c["bg_target"])), "SHADOW_SIGMA": _js_num(float(c["shadow_sigma"])),
+        "SCNR": _js_num(float(c["scnr"])), "SAT_MID": _js_num(float(c["sat_mid"])),
+        "HDR_LAYERS": str(int(c["hdr_layers"])),
+        "FRAME": "null" if not frame else json.dumps(
+            {k: float(frame[k]) for k in ("left", "top", "right", "bottom")}),
+        "DENOISE": _js_num(float(c["denoise"])), "DECONV": _js_str(c["deconv"]),
+        "DECONV_STRENGTH": _js_num(float(c["deconv_strength"])),
+        "GRAXPERT": _js_str(c["graxpert"]), "GRAXPERT_VERSION": _js_str(c["graxpert_version"]),
+        "GRAXPERT_AI": _js_str(c["graxpert_ai"]), "GRAXPERT_GPU": _js_str(c["graxpert_gpu"]),
+        "GRAXPERT_TIMEOUT_MIN": str(int(c["graxpert_timeout_min"])),
+        "STARS": _js_str(c["stars"]), "STAR_STRENGTH": _js_num(float(c["star_strength"])),
+        "MASTERS": json.dumps([{"name": m["name"], "path": str(m["path"]).replace("\\", "/")}
+                               for m in masters], ensure_ascii=True),
+    }
+    text = template(FINISH_TEMPLATE, deploy_dir).replace(SOLVER_MARK, solver_block)
+    lines = []
+    for line in text.split("\n"):
+        if not line.lstrip().startswith("//"):
+            line = _PLACEHOLDER.sub(lambda m: vals.get(m.group(0)[2:-2], m.group(0)), line)
+        lines.append(line)
+    return "\n".join(lines)

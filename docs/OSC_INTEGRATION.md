@@ -10,7 +10,7 @@ photonscript integrate --target "Andromeda Galaxy" --rig piggyback [--since 2026
 ```
 Run on the desktop from the repo venv. What it does (code in
 `photonscript/integration/`, PJSR templates `deploy/integrate_stack.js` and
-`deploy/finish_stack.js`):
+`deploy/finish_osc.js`, the same finish `run-finish-osc.ps1` runs, section 1b):
 1. **Select**: the approved subs of the target from the Library mirror
    (`desktop_library_dir`, READ-ONLY). A Library target folder only holds
    subs that passed QA and were reviewed, so the folder is the verdict.
@@ -34,7 +34,11 @@ Run on the desktop from the repo venv. What it does (code in
    `reference.txt`.
 5. **PixInsight**: `integrate_run.js` (per exposure group calibration,
    CosmeticCorrection, Debayer, StarAlignment with distortion correction,
-   LocalNormalization, PSF Signal Weight, Winsorized) then `finish_run.js`.
+   LocalNormalization, PSF Signal Weight, Winsorized) then `finish_run.js`
+   (finish_osc.js at the `run-finish-osc.ps1` defaults for every master of
+   the run: SPCC with Gaia DR3/SP, deconvolution + noise reduction, StarNet2
+   star reduction, `<name>_final_steps.json` per master; mono masters skip
+   the color steps; GraXpert is found via `PS_GRAXPERT` or the usual paths).
    Only when no PixInsight is running; one at a time; logs polled with short
    reads (never `tail -F`). `--no-pixinsight` stops after writing the
    scripts and prints the launch line.
