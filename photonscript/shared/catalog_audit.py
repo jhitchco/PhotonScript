@@ -31,6 +31,7 @@ from photonscript.shared.target_names import target_key
 NEAR_EQUATOR_SIGN: dict[str, int] = {
     "B 33": -1,       # Horsehead, -02 27
     "IC 434": -1,     # -02 27
+    "NGC 2024": -1,   # Flame, -01 51
     "NGC 2301": 1,    # +00 27
     "PGC088608": -1,  # Sextans dwarf, -01 37
     "NGC 6741": -1,   # -00 27
