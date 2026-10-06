@@ -63,6 +63,8 @@ function card(t) {
         '<div class="pic" data-name="' + esc(t.unattributed ? '' : t.name) +
         '" data-catalog="' + esc(f.catalog_id || '') + '"><span></span></div>' +
         '<div class="bd2"><h3>' + esc(title) +
+        (t.mosaic ? '<span class="tag" title="mosaic panel, row ' + t.mosaic.row + ', col ' +
+             t.mosaic.col + '">panel ' + t.mosaic.panel + '/' + t.mosaic.of + '</span>' : '') +
         (t.active === false ? '<span class="tag">paused</span>' : '') +
         (t.project_id == null && !t.unattributed ? '<span class="tag">no project</span>' : '') +
         '</h3><div class="muted">' + esc(sub) + '</div>' +
@@ -96,16 +98,26 @@ async function pics() {
 }
 fetch('/api/targets').then(r => r.json()).then(d => {
     const ts = d.targets || [];
-    const groups = [
-        ['Active projects', ts.filter(t => t.active)],
-        ['Other targets', ts.filter(t => !t.active && !t.unattributed)],
-        ['Unattributed', ts.filter(t => t.unattributed)]];
+    // PS-111: mosaic panels group under their mosaic, in capture order
+    const plain = ts.filter(t => !t.mosaic);
+    const mosaics = {};
+    ts.filter(t => t.mosaic).forEach(t => {
+        (mosaics[t.mosaic.id] = mosaics[t.mosaic.id] || []).push(t);
+    });
+    const groups = [['Active projects', plain.filter(t => t.active)]];
+    Object.values(mosaics).forEach(ps => {
+        ps.sort((a, b) => a.mosaic.panel - b.mosaic.panel);
+        const m = ps[0].mosaic;
+        groups.push(['Mosaic: ' + m.name + ' (' + m.of + ' panels, finished in order)', ps]);
+    });
+    groups.push(['Other targets', plain.filter(t => !t.active && !t.unattributed)],
+                ['Unattributed', plain.filter(t => t.unattributed)]);
     const n = ts.reduce((a, t) => a + t.counts.total, 0);
     document.getElementById('tSummary').textContent = ts.length + ' targets \u00b7 ' +
         n + ' subs recorded \u00b7 read-only: review subs on the run page (click a tile on a target)';
     document.getElementById('tSections').innerHTML = groups
         .filter(g => g[1].length)
-        .map(g => '<div class="sec">' + g[0] + '</div><div class="tgrid">' +
+        .map(g => '<div class="sec">' + esc(g[0]) + '</div><div class="tgrid">' +
              g[1].map(card).join('') + '</div>').join('');
     pics();
 }).catch(() => document.getElementById('tSummary').textContent = 'unavailable');

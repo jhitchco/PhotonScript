@@ -221,6 +221,60 @@ def meridian_safe_order(pairs, dark_start, guard_min: int = 20):
     return ordered, deferred
 
 
+def _panel_note(proj, held: list) -> str:
+    m = proj.mosaic
+    note = (f"Mosaic {m.get('name')}: panel {m.get('panel')} of {m.get('of')} "
+            f"(row {m.get('row')}, col {m.get('col')}), finished in order. "
+            "The RC16 centers on this panel; the Piggy-600 rides along, its "
+            "frame shifted by the panel offset from the mosaic center.")
+    if held:
+        note += " Held for a later night: " + ", ".join(
+            p.target.name for p in held) + "."
+    return note
+
+
+def _mosaic_gate(visible_projects: list) -> list:
+    """PS-111: per mosaic, keep the first unfinished panels (capture order)
+    whose owed RC16 hours fill what the night gives the mosaic (its first
+    panel's visible hours x 0.85, the planner's overhead factor), hold the
+    rest. The admitted panels are kept together at the position of the
+    first one; each carries the held names and the shared transit time."""
+    from photonscript.scheduler.mosaic import mosaic_of, tonight_panels
+    groups: dict[str, list] = {}
+    for vp in visible_projects:
+        m = mosaic_of(vp["project"])
+        if m:
+            groups.setdefault(m["id"], []).append(vp)
+    if not groups:
+        return visible_projects
+    keep: dict[str, list] = {}
+    for mid, vps in groups.items():
+        vps.sort(key=lambda vp: int(mosaic_of(vp["project"]).get("panel") or 0))
+        usable = vps[0]["visibility"]["hours"] * 0.85
+        admitted, held = tonight_panels([vp["project"] for vp in vps], usable)
+        ids = {id(p) for p in admitted}
+        kept = [vp for vp in vps if id(vp["project"]) in ids]
+        transit = kept[0]["visibility"].get("transit_time") if kept else None
+        for vp in kept:
+            vp["held"] = held
+            vp["mosaic_transit"] = transit
+        keep[mid] = kept
+        if held:
+            logger.info("Mosaic %s: tonight %s; held for later nights (in "
+                        "order): %s", mosaic_of(vps[0]["project"]).get("name"),
+                        ", ".join(p.target.name for p in admitted),
+                        ", ".join(p.target.name for p in held))
+    out, placed = [], set()
+    for vp in visible_projects:
+        m = mosaic_of(vp["project"])
+        if not m:
+            out.append(vp)
+        elif m["id"] not in placed:
+            placed.add(m["id"])
+            out.extend(keep[m["id"]])
+    return out
+
+
 def plan_night_sequence(
     projects: list[ImagingProject],
     config: PhotonScriptConfig,
@@ -300,6 +354,10 @@ def plan_night_sequence(
             if vis["visible"] and vis["hours"] >= 0.5:
                 visible_projects.append({"project": proj, "visibility": vis})
 
+    # PS-111: mosaic panels are finished in order; only the first unfinished
+    # panels that fill the mosaic's visible time come along tonight.
+    visible_projects = _mosaic_gate(visible_projects)
+
     # Select by PRIORITY (highest wins scarce dark time); the chosen set is
     # transit-ordered at the end to minimize slewing.
     visible_projects.sort(key=lambda vp: -vp["project"].priority)
@@ -377,8 +435,17 @@ def plan_night_sequence(
                                              None),
             transit_utc=vp["visibility"].get("transit_time"),
         )
-        sequence_targets.append(
-            (vp["visibility"].get("transit_time") or datetime.max, seq_target))
+        transit = vp["visibility"].get("transit_time") or datetime.max
+        m = getattr(proj, "mosaic", None)
+        if m and m.get("id"):
+            # PS-111: the panels of one mosaic stay together, in capture
+            # order, at the transit of the mosaic's first panel tonight
+            seq_target.mosaic_id = m["id"]
+            seq_target.mosaic_note = _panel_note(proj, vp.get("held") or [])
+            transit = vp.get("mosaic_transit") or transit
+            if transit != datetime.max:
+                transit = transit + timedelta(seconds=int(m.get("panel") or 0))
+        sequence_targets.append((transit, seq_target))
 
     # Transit-order the selected targets (west-to-east through the night), with
     # a meridian guard so the run doesn't open on an immediate flip (see helper).
@@ -388,6 +455,13 @@ def plan_night_sequence(
     if _deferred:
         logger.info("Meridian guard: deferred %s past the meridian so the run "
                     "doesn't open on an immediate flip", ", ".join(_deferred))
+    # PS-111: every panel but a mosaic's last one tonight shoots its owed
+    # subs once and hands the mount to the next panel
+    last = {t.mosaic_id: i for i, t in enumerate(sequence_targets)
+            if t.mosaic_id}
+    for i, t in enumerate(sequence_targets):
+        if t.mosaic_id and last[t.mosaic_id] != i:
+            t.repeat_while_up = False
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",

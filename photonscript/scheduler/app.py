@@ -1317,65 +1317,7 @@ async def api_project_delete(project_id: str):
     return {"ok": True}
 
 
-@app.get("/mosaic", response_class=HTMLResponse)
-async def mosaic_page(request: Request):
-    return templates.TemplateResponse(request, "mosaic.html",
-                                      {"version": VERSION,
-                                       "observatory": get_config().get_observatory()})
-
-
-@app.get("/api/mosaic/plan")
-async def api_mosaic_plan(name: str = "Mosaic", ra_hours: float = 0.0,
-                          dec_degrees: float = 0.0, rows: int = 2,
-                          cols: int = 2, overlap_pct: float = 15.0,
-                          rotation_deg: float = 0.0,
-                          focal_length_mm: float = 3248.0):
-    """Panel grid + a DSS2 sky cutout (CDS hips2fits) to draw it over.
-
-    Panel FOV is derived from the ASI2600/IMX571 sensor (23.5 x 15.7 mm) at
-    the requested focal length, so native (3248 mm) vs reducer (600 mm) framing
-    can be previewed. Default is the RC16 native focal length.
-    """
-    import math
-    from photonscript.scheduler.mosaic import plan_panels
-    fl = max(50.0, float(focal_length_mm))
-    SENSOR_W_MM, SENSOR_H_MM = 23.5, 15.7
-    fov_w_panel = math.degrees(2 * math.atan(SENSOR_W_MM / (2 * fl)))
-    fov_h_panel = math.degrees(2 * math.atan(SENSOR_H_MM / (2 * fl)))
-    plan = plan_panels(name, ra_hours, dec_degrees, rows, cols,
-                       overlap_pct, rotation_deg,
-                       fov_w=fov_w_panel, fov_h=fov_h_panel)
-    plan["focal_length_mm"] = fl
-    plan["panel_fov_deg"] = {"w": round(fov_w_panel, 4),
-                             "h": round(fov_h_panel, 4)}
-    fov_w = max(plan["span_w_deg"] * 1.35, plan["span_h_deg"] * 1.35 * 4 / 3)
-    plan["preview"] = {
-        "url": ("https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
-                "?hips=CDS%2FP%2FDSS2%2Fcolor&width=800&height=600"
-                f"&fov={fov_w:.4f}&projection=TAN&coordsys=icrs"
-                f"&ra={ra_hours * 15.0:.5f}&dec={dec_degrees:.5f}&format=jpg"),
-        "fov_w_deg": round(fov_w, 4),
-        "fov_h_deg": round(fov_w * 600 / 800, 4),
-    }
-    return plan
-
-
-@app.post("/api/mosaic/create")
-async def api_mosaic_create(request: Request):
-    """Create one imaging project per panel (shows up as goal cards)."""
-    body = await request.json()
-    store = get_store()
-    budget = float(body.get("budget_hours_per_panel", 8.0))
-    created = []
-    for p in body.get("panels", []):
-        target = CelestialTarget(
-            name=p["name"], ra_hours=float(p["ra_hours"]),
-            dec_degrees=float(p["dec_degrees"]),
-            object_type=body.get("object_type", "nebula"))
-        proj = store.add_from_target(target, budget_hours=budget)
-        _projects[proj.id] = proj
-        created.append({"id": proj.id, "name": p["name"]})
-    return {"ok": True, "created": created}
+# PS-111: /mosaic, /api/mosaic/* and /api/mosaics live in routers/mosaic.py
 
 
 @app.get("/api/target/altitude")
@@ -3033,6 +2975,8 @@ from photonscript.scheduler.routers import split_guard as _split_guard_router  #
 app.include_router(_split_guard_router.router)
 from photonscript.scheduler.routers import piggy_offset as _piggy_offset_router  # noqa: E402
 app.include_router(_piggy_offset_router.router)
+from photonscript.scheduler.routers import mosaic as _mosaic_router  # noqa: E402
+app.include_router(_mosaic_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

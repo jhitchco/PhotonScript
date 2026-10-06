@@ -427,19 +427,49 @@ class ProjectStore:
         if not tn:
             return False
         rig = rig or RC16_RIG
-        for proj in self.projects.values():
-            names = {proj.target.name.lower(), proj.target.catalog_id.lower(),
-                     proj.target.catalog_id.replace(" ", "").lower()}
-            if tn in names or any(tn and tn in n for n in names if n):
-                for plan in proj.exposure_plans:
-                    if plan.filter_type.value == filter_class                             and plan.rig == rig:
-                        if plan.is_short_exposure(exposure_seconds):
-                            plan.hdr_short_acquired += 1
-                        else:
-                            plan.credit_long(exposure_seconds)
-                        self.save()
-                        return True
+        # PS-111: an exact name / catalog id match wins over a substring one,
+        # and a mosaic panel ("M31 Core P1") matches only exactly, so an "M31"
+        # sub never lands on a panel and "P1" never on "P10".
+        from photonscript.shared.target_names import target_key
+        key = target_key(tn)
+        for exact in (True, False):
+            for proj in self.projects.values():
+                if exact:
+                    hit = key in {target_key(proj.target.name),
+                                  target_key(proj.target.catalog_id)} - {""}
+                else:
+                    if proj.mosaic:
+                        continue
+                    names = {proj.target.name.lower(),
+                             proj.target.catalog_id.lower(),
+                             proj.target.catalog_id.replace(" ", "").lower()}
+                    hit = tn in names or any(tn and tn in n
+                                             for n in names if n)
+                if not hit:
+                    continue
+                plan = self._plan_for(proj, filter_class, rig)
+                if plan is None and proj.mosaic and rig != RC16_RIG:
+                    # a Piggy-600 sub taken while the RC16 shot a panel
+                    # credits the mosaic's companion goal (M31 OSC)
+                    comp = self.projects.get(proj.mosaic.get("companion")
+                                             or "")
+                    if comp is not None:
+                        plan = self._plan_for(comp, filter_class, rig)
+                if plan is None:
+                    continue
+                if plan.is_short_exposure(exposure_seconds):
+                    plan.hdr_short_acquired += 1
+                else:
+                    plan.credit_long(exposure_seconds)
+                self.save()
+                return True
         return False
+
+    @staticmethod
+    def _plan_for(proj, filter_class: str, rig: str):
+        return next((p for p in proj.exposure_plans
+                     if p.filter_type.value == filter_class and p.rig == rig),
+                    None)
 
     def delete(self, project_id: str) -> bool:
         if project_id in self.projects:

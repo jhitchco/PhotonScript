@@ -1173,11 +1173,23 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                    _altitude_condition(target, min_altitude)]
     if loop_end:
         inner_conds.append(_time_condition(*loop_end))
+    # PS-111: a mosaic panel that is not the mosaic's last one tonight shoots
+    # its owed subs once (LoopCondition(1)) and hands the mount to the next
+    # panel; the last panel keeps the repeat-while-up loop.
+    once = not getattr(target, "repeat_while_up", True)
+    if once:
+        inner_conds.append(_loop_once())
+    if getattr(target, "mosaic_note", ""):
+        items.insert(0, _annotation(target.mosaic_note))
     items.append(_seq_container(
         f"{target.name}{TARGET_IMAGING_SUFFIX}", imaging,
         conditions=inner_conds))
     items.append(_pushover("Imaging", f"{target.name}: leaving target "
                            f"({plan_desc}) — below altitude or unsafe"))
+    if once:
+        items[-1] = _pushover("Imaging", f"{target.name}: leaving panel "
+                              f"({plan_desc}): its subs are done (or unsafe / "
+                              "below altitude), next panel")
 
     # AF triggers (temp drift 2.0 C + HFR creep 10%) moved onto each light
     # SmartExposure with the block's AF filter + offset (PS-77, see _block).
