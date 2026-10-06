@@ -2,6 +2,7 @@
 # -> SPCC with Gaia DR3/SP (fallback BN + ColorCalibration) -> SCNR
 # -> deconvolution (BlurXTerminator, else GraXpert, else skipped)
 # -> noise reduction (NoiseXTerminator, else GraXpert, else built-in MLT)
+# -> star reduction (StarNet2 if installed: starless stretched, stars screened back)
 # -> stretch -> saturation -> core HDR -> save.
 # Run AFTER run-integration-osc.ps1 (needs out\master\masterOSC.xisf).
 #   .\deploy\run-finish-osc.ps1 -Name "M31_OSC2"                 # target guessed from Name
@@ -9,6 +10,7 @@
 #   .\deploy\run-finish-osc.ps1 -Name "M31_OSC2" -Gradient none  # keep the raw background
 #   .\deploy\run-finish-osc.ps1 -Name "M31_OSC4" -Master <xisf> -OutDir <new folder> -Wait
 # Output: Staging\<Name>\out\final\<Name>_final.{xisf,tif,jpg} + <Name>_linear.xisf
+#         + <Name>_starless.xisf (when StarNet2 ran)
 #         + <Name>_final_steps.json (which step ran, tool, settings; tag also in
 #         the PSFINISH FITS keyword)
 # Log:    Staging\<Name>\out\finish.log (or <OutDir>\finish.log; ends EXIT OK or ERROR: ...)
@@ -50,6 +52,9 @@ param(
     [string]$GraXpertAiVersion = "",   # passed as -ai_version; "" = GraXpert's default (latest downloaded)
     [ValidateSet('','true','false')][string]$GraXpertGpu = '',  # passed as -gpu; '' = GraXpert's default
     [int]$GraXpertTimeoutMin = 30, # per GraXpert command
+    # PS-40 star reduction (needs the StarNet2 PixInsight module; skipped if absent)
+    [ValidateSet('on','off')][string]$StarReduction = 'on',
+    [double]$StarStrength = 0.7,   # stars come back at this strength (1 = unchanged)
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
     [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal'
 )
@@ -74,7 +79,8 @@ if ($OutDir) {
 }
 foreach ($pair in @(@('BgTarget', $BgTarget, 0.01, 0.5), @('ShadowSigma', $ShadowSigma, 0, 10),
                     @('Scnr', $Scnr, 0, 1), @('SatMid', $SatMid, 0.3, 0.9),
-                    @('Denoise', $Denoise, 0, 1), @('DeconvStrength', $DeconvStrength, 0, 1))) {
+                    @('Denoise', $Denoise, 0, 1), @('DeconvStrength', $DeconvStrength, 0, 1),
+                    @('StarStrength', $StarStrength, 0, 1))) {
     if ($pair[1] -lt $pair[2] -or $pair[1] -gt $pair[3]) {
         Write-Error "-$($pair[0]) $($pair[1]) out of range $($pair[2])..$($pair[3])"; exit 1
     }
@@ -157,6 +163,7 @@ if (-not $NoGraXpert) {
         if (-not $gxVer) { $gxVer = "unknown" }
     }
 }
+Write-Host ("  StarNet2 module:    " + $(if (Get-ChildItem $piBin -Filter "StarNet2*.dll" -ErrorAction SilentlyContinue) { "present" } else { "not found (star reduction skipped)" }))
 Write-Host ("  GraXpert:           " + $(if ($gxExe) { "$gxExe ($gxVer)" } elseif ($NoGraXpert) { "disabled (-NoGraXpert)" } else { "not found (built-in noise reduction, no deconvolution)" }))
 
 $js = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "finish_osc.js"))
@@ -181,12 +188,13 @@ $js = $js.Replace('__DECONV_STRENGTH__', (JsNum $DeconvStrength))
 $js = $js.Replace('__GRAXPERT__', (JsStr $gxExe)).Replace('__GRAXPERT_VERSION__', (JsStr $gxVer))
 $js = $js.Replace('__GRAXPERT_AI__', (JsStr $GraXpertAiVersion)).Replace('__GRAXPERT_GPU__', $GraXpertGpu)
 $js = $js.Replace('__GRAXPERT_TIMEOUT_MIN__', [string]$GraXpertTimeoutMin)
+$js = $js.Replace('__STARS__', $StarReduction).Replace('__STAR_STRENGTH__', (JsNum $StarStrength))
 $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
 [System.IO.File]::WriteAllText($runjs, $js)
 
 Write-Host "Launching PixInsight OSC finish for '$Name'..."
-Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> deconv($Deconv) -> denoise($Denoise)$(if ($NoRC) {' (no RC tools)'}) -> stretch -> save"
+Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> deconv($Deconv) -> denoise($Denoise)$(if ($NoRC) {' (no RC tools)'}) -> stars($StarReduction, $StarStrength) -> stretch -> save"
 Write-Host "Script: $runjs"
 $logFile = Join-Path $logDir "finish.log"
 if ($Wait) {

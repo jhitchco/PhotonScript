@@ -29,6 +29,7 @@ OPTIONAL = [
     "BlurXTerminator",
     "NoiseXTerminator",
     "MultiscaleLinearTransform",
+    "StarNet2",
     "ExternalProcess",
 ]
 
@@ -251,3 +252,42 @@ def test_steps_record_tool_and_settings():
                 'step("noise_reduction", "NoiseXTerminator", "ran"', 'step("deconvolution", "none", "skipped"'):
         assert rec in s, rec
     assert "version: GRAXPERT_VERSION" in s
+
+
+# --- PS-40: star reduction ---------------------------------------------------
+
+def test_star_reduction_after_denoise_and_falls_back_to_the_normal_stretch():
+    main = _func(_read(JS), "main")
+    assert main.index("denoise(v)") < main.index("starSplit(v)") < main.index("frameCrop(v")
+    assert "if (!split || !starRecombine(v, split)) {" in main
+    assert main.index("starRecombine(v, split)") < main.index("stretch(v)")
+
+
+def test_starnet2_split_is_reversible_and_screen_blend_matches_the_ticket():
+    s = _read(JS)
+    split = _func(s, "starSplit")
+    assert 'typeof StarNet2 === "undefined"' in split
+    assert "applyHT(sl.mainView, 0, mPre)" in split and "applyHT(sl.mainView, 0, 1 - mPre)" in split
+    assert '"max(0, $T - " + sl.mainView.id + ")"' in split
+    rec = _func(s, "starRecombine")
+    assert '"~(~$T * ~(" + stv.id + " * " + k + "))"' in rec
+    assert '_starless.xisf' in rec
+    assert rec.index("stretch(slv") < rec.index("recoverCore(slv)") < rec.index("view.image.assign")
+    assert 'step("star_reduction", "StarNet2", "ran"' in rec
+
+
+def test_mtf_prestretch_is_exactly_invertible():
+    # The split relies on mtf(1 - m, mtf(m, x)) == x (HistogramTransformation midtones).
+    def mtf(m, x):
+        return ((m - 1) * x) / ((2 * m - 1) * x - m)
+    for m in (0.002, 0.05, 0.3):
+        for x in (0.0001, 0.01, 0.2, 0.9):
+            assert abs(mtf(1 - m, mtf(m, x)) - x) < 1e-9
+
+
+def test_ps1_star_params():
+    ps1 = _read(PS1)
+    assert "[ValidateSet('on','off')][string]$StarReduction = 'on'" in ps1
+    assert "[double]$StarStrength = 0.7" in ps1
+    assert "@('StarStrength', $StarStrength, 0, 1)" in ps1
+    assert 'StarNet2*.dll' in ps1

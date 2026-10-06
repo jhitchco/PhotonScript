@@ -103,6 +103,17 @@ NoiseXTerminator, else GraXpert `denoising`, else MultiscaleLinearTransform
 pass through. Its output replaces the image only when the size matches and the
 background level is plausible; otherwise the next tool runs.
 
+Star reduction (PS-40, `-StarReduction on|off`, `-StarStrength` 0.7) needs the
+StarNet2 PixInsight module and is skipped (logged) without it. After noise
+reduction, a copy of the linear image gets a reversible midtones-only
+pre-stretch (StarNet2 is trained on stretched data), StarNet2 removes the
+stars, the inverse transform takes the starless image back to linear, and
+stars = linear - starless. The starless image gets the normal stretch (its own
+statistics, so slightly harder), saturation and the core HDR blend, and is
+saved as `<Name>_starless.xisf`; the stars get the same midtones with a floor
+at 2x the linear noise, then are screened back:
+`~(~starless * ~(stars * k))`. Any failure falls back to the normal stretch.
+
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
 (gain 100 / offset 256 / 0 °C / `dark_exposures="120"`). Three ways to get it:

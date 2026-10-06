@@ -9,7 +9,11 @@
 //   -> deconvolution: BlurXTerminator, else GraXpert CLI, else skipped
 //   -> noise reduction: NoiseXTerminator, else GraXpert CLI, else built-in
 //      MultiscaleLinearTransform through a linear mask
-//   -> linked stretch -> gentle saturation -> core HDR blend -> [framing crop]
+//   -> star reduction if StarNet2 is installed: split the linear image into
+//      starless + stars, stretch the starless image, core HDR blend on it,
+//      screen the gently stretched stars back at -StarStrength
+//      (else: linked stretch -> core HDR blend on the whole image)
+//   -> gentle saturation (part of the stretch) -> [framing crop]
 //
 // Why deconvolution and noise reduction sit here (PS-41): both model the
 // LINEAR signal. Deconvolution inverts a convolution, which only holds before
@@ -63,6 +67,11 @@ var GRAXPERT_VERSION = "__GRAXPERT_VERSION__";
 var GRAXPERT_AI     = "__GRAXPERT_AI__";    // -ai_version passed to GraXpert; "" = its default
 var GRAXPERT_GPU    = "__GRAXPERT_GPU__";   // -gpu true|false; "" = its default
 var GRAXPERT_TIMEOUT_MIN = __GRAXPERT_TIMEOUT_MIN__;
+// Star reduction (PS-40)
+var STARS         = "__STARS__";          // on | off (needs the StarNet2 module)
+var STAR_STRENGTH = __STAR_STRENGTH__;    // k in ~(~starless * ~(stars * k)); 1 = stars unchanged
+var STAR_FLOOR_SIGMA = 2.0;               // stars below this x linear noise are dropped
+var STARNET_PRE_BG   = 0.25;              // background level of StarNet2's reversible pre-stretch
 // Color (PS-46): auto = SPCC when solved and Gaia DR3/SP is configured, else
 // BN + ColorCalibration; spcc = try SPCC even if the Gaia probe says no;
 // basic = always BN + ColorCalibration.
@@ -111,7 +120,10 @@ function stepTag() {
    var t = [];
    for (var i = 0; i < STEPS.length; ++i) {
       var s = STEPS[i];
-      if (LABEL_STEPS[s.step] && (s.status === "ran" || s.status === "fallback")) t.push(s.tool);
+      if (!LABEL_STEPS[s.step] || (s.status !== "ran" && s.status !== "fallback")) continue;
+      var lab = s.tool;
+      if (s.tool === "GraXpert" || s.tool === "MLT") lab += (s.step === "deconvolution") ? "-deconv" : "-NR";
+      t.push(lab);
    }
    return t.length ? t.join("+") : "basic";
 }
@@ -524,21 +536,26 @@ function denoise(view) {
    }
 }
 
+// Linked HistogramTransformation: shadows c0, midtones m, highlights 1.
+function applyHT(view, c0, m) {
+   var HT = new HistogramTransformation;
+   HT.H = [[0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1],
+           [c0, m, 1, 0, 1], [0, 0.5, 1, 0, 1]];
+   if (!HT.executeOn(view, false)) throw new Error("HistogramTransformation returned false");
+}
+
 // Linked stretch after color calibration (unlinked would undo the color work).
 // Returns the shadows/midtones it applied.
-function stretch(view) {
+function stretch(view, what) {
    var img = view.image;
    var med = img.median();
    var mad = img.MAD() * 1.4826;
    var c0 = Math.max(0, Math.min(1, med - SHADOW_SIGMA * mad));
    var m = mtfv(BG_TARGET, Math.max(1.0e-6, med - c0));
-   var HT = new HistogramTransformation;
-   HT.H = [[0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1], [0, 0.5, 1, 0, 1],
-           [c0, m, 1, 0, 1], [0, 0.5, 1, 0, 1]];
-   HT.executeOn(view, false);
-   log("stretch: linked, shadows " + c0.toFixed(5) + ", midtones " + m.toFixed(5));
+   applyHT(view, c0, m);
+   log("stretch" + (what ? " (" + what + ")" : "") + ": linked, shadows " + c0.toFixed(5) + ", midtones " + m.toFixed(5));
    step("stretch", "HistogramTransformation", "ran",
-        { shadows: +c0.toFixed(6), midtones: +m.toFixed(6), bg_target: BG_TARGET, shadow_sigma: SHADOW_SIGMA });
+        { image: what || "full", shadows: +c0.toFixed(6), midtones: +m.toFixed(6), bg_target: BG_TARGET, shadow_sigma: SHADOW_SIGMA });
    if (SAT_MID !== 0.5) {
       try {
          var CT = new CurvesTransformation;
@@ -610,6 +627,93 @@ function recoverCore(view) {
    if (dup) try { dup.forceClose(); } catch (e2) {}
 }
 
+function pixelMath(view, expr) {
+   var PM = new PixelMath;
+   PM.expression = expr;
+   PM.useSingleExpression = true;
+   PM.createNewImage = false;
+   PM.rescale = false;
+   PM.truncate = true;
+   if (!PM.executeOn(view, false)) throw new Error("PixelMath returned false: " + expr);
+}
+
+// Star reduction, part 1 (PS-40): split the LINEAR image into starless and
+// stars with StarNet2. StarNet2 is trained on stretched data, so the copy gets
+// a reversible pre-stretch (midtones only, no clipping), StarNet2 runs, and
+// the inverse midtones transform takes the starless image back to linear.
+// stars = max(0, linear - starless). Returns null (and leaves the view alone)
+// if StarNet2 is missing, disabled or fails.
+function starSplit(view) {
+   if (STARS !== "on") {
+      log("star reduction: off (-StarReduction off)");
+      step("star_reduction", "none", "skipped", { reason: "-StarReduction off" });
+      return null;
+   }
+   if (typeof StarNet2 === "undefined") {
+      log("star reduction: StarNet2 not installed; skipped");
+      step("star_reduction", "StarNet2", "skipped", { reason: "not installed" });
+      return null;
+   }
+   var sl = null, st = null;
+   try {
+      var mPre = mtfv(STARNET_PRE_BG, Math.max(1.0e-6, view.image.median()));
+      sl = dupWindow(view, "PS_starless");
+      applyHT(sl.mainView, 0, mPre);
+      var SN = new StarNet2;
+      try { SN.mask = false; } catch (e1) {}      // replace the target with the starless image
+      try { SN.linear = false; } catch (e2) {}    // input is already pre-stretched
+      if (!SN.executeOn(sl.mainView, false)) throw new Error("StarNet2 returned false");
+      applyHT(sl.mainView, 0, 1 - mPre);          // inverse midtones: back to linear
+      st = dupWindow(view, "PS_stars");
+      pixelMath(st.mainView, "max(0, $T - " + sl.mainView.id + ")");
+      log("star reduction: StarNet2 split (pre-stretch midtones " + mPre.toFixed(5) + ")");
+      return { starless: sl, stars: st, preM: mPre };
+   } catch (e) {
+      log("star reduction skipped: StarNet2 split failed (" + e + ")");
+      step("star_reduction", "StarNet2", "failed", { error: "" + e });
+      if (sl) try { sl.forceClose(); } catch (e3) {}
+      if (st) try { st.forceClose(); } catch (e4) {}
+      return null;
+   }
+}
+
+// Star reduction, part 2: stretch the starless image with the normal knobs
+// (it has no stars, so its own statistics give a slightly harder stretch),
+// recover the core on it, save it, stretch the stars gently (floor at
+// STAR_FLOOR_SIGMA x the linear noise so StarNet2 residue does not come back
+// as grain, same midtones), then screen them back at STAR_STRENGTH:
+//   final = ~(~starless * ~(stars * k))
+// The result replaces the view only at the end; on any failure the view is
+// still linear and the caller does the normal stretch.
+function starRecombine(view, split) {
+   var ok = false;
+   try {
+      var slv = split.starless.mainView, stv = split.stars.mainView;
+      var p = stretch(slv, "starless");
+      recoverCore(slv);
+      trySave(split.starless, FINAL + "/" + NAME + "_starless.xisf", "starless (stretched)");
+      var sigma = view.image.MAD() * 1.4826;
+      var cs = Math.max(0, Math.min(0.5, STAR_FLOOR_SIGMA * sigma));
+      applyHT(stv, cs, p.m);
+      var k = STAR_STRENGTH.toFixed(3);
+      pixelMath(slv, "~(~$T * ~(" + stv.id + " * " + k + "))");
+      view.beginProcess(UndoFlag_NoSwapFile);
+      view.image.assign(slv.image);
+      view.endProcess();
+      log("star reduction: stars screened back at " + k + " (star floor " + cs.toFixed(6) + ")");
+      step("star_reduction", "StarNet2", "ran",
+           { star_strength: STAR_STRENGTH, star_floor: +cs.toFixed(6), prestretch_m: +split.preM.toFixed(6),
+             starless_file: NAME + "_starless.xisf" });
+      ok = true;
+   } catch (e) {
+      log("star reduction skipped: recombine failed (" + e + "); normal stretch instead");
+      step("star_reduction", "StarNet2", "failed", { error: "" + e });
+   }
+   try { split.starless.forceClose(); } catch (e1) {}
+   try { split.stars.forceClose(); } catch (e2) {}
+   return ok;
+}
+
 function frameCrop(view, edgeFrac) {
    if (!FRAME) return;
    try {
@@ -669,8 +773,11 @@ function main() {
 
    deconvolve(v);
    denoise(v);
-   stretch(v);
-   recoverCore(v);
+   var split = starSplit(v);
+   if (!split || !starRecombine(v, split)) {
+      stretch(v);
+      recoverCore(v);
+   }
    frameCrop(v, EDGE_FRAC);
    try {
       var st = v.image, mm = [];
