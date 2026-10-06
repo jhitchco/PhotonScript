@@ -195,10 +195,10 @@ the sequence into that NINA and never starts it: press Start in NINA. The
 armer is not involved and stays DISARMED.
 
 - Recipe `tracking_test_then_tonight`: RC16 = tonight's sequence (same as
-  the download: start area waits for dusk) with TARGETS_CONTAINER replaced by
-  the PS-84 tracking test on an auto-picked field (`?at=<UTC>` picks for a
-  later time) followed by tonight's targets minus the excluded ones; ids and
-  Parent links rebuilt (PS-77). Piggy-600 = the companion with
+  the download: start area waits for dusk) with the PS-84 tracking test on an
+  auto-picked field (`?at=<UTC>` picks for a later time) as the first item of
+  the Targets area, before LOOP_ALL_NIGHT, and tonight's targets minus the
+  excluded ones in TARGETS_CONTAINER; ids and Parent links rebuilt (PS-77). Piggy-600 = the companion with
   `has_safety=True` and lights (`piggyback_image_lights`), generated on the
   scope so its dark quotas see the real library.
 - API: `GET /api/sequence/sideload/preview?recipe=&exclude=&exclude=&at=`;
@@ -212,9 +212,14 @@ armer is not involved and stays DISARMED.
 - Every load saves `sequences/Sideload_<rig>_<name>_<stamp>.json` and logs
   a `kind: "sideload"` line in `runs/<night>_events.jsonl` plus an entry in
   the notification audit (`/api/notifications`, sent=false).
-- The tracking test sits inside the night loop, so after an unsafe pause the
-  loop re-enters TARGETS_CONTAINER and may run the tracking test again.
-  Stop and re-sideload without it if that matters.
+- PS-127: the tracking test runs at most once per night. Inside the night
+  loop its LoopCondition(1) was reset each time LOOP_ALL_NIGHT looped after
+  an unsafe pause, so the ladder ran again (about 1 h); the Targets area runs
+  once and is never reset. Unsafe during the ladder: the rest of the ladder
+  is skipped for tonight (the partial ladder still reports), the night loop
+  parks and resumes tonight's targets. Unsafe when the Targets area starts:
+  the test is skipped; re-sideload another night. The standalone tracking-test
+  download keeps its park-and-hold after the ladder.
 
 ## 5. File transfer: Syncthing
 
