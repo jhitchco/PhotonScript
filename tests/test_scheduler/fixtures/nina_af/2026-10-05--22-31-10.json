@@ -1,0 +1,35 @@
+{
+  "Version": 2,
+  "Filter": null,
+  "AutoFocuserName": "NINA",
+  "StarDetectorName": "NINA",
+  "Timestamp": "2026-10-05T22:31:10.0172210-06:00",
+  "Temperature": 22.8,
+  "Method": "STARHFR",
+  "Fitting": "HYPERBOLIC",
+  "InitialFocusPoint": {"Position": 11045, "Value": 0.0, "Error": 0.0},
+  "CalculatedFocusPoint": {"Position": 11032, "Value": 2.18, "Error": 0.0},
+  "PreviousFocusPoint": {"Position": 11045, "Value": 0.0, "Error": 0.0},
+  "MeasurePoints": [
+    {"Position": 10895, "Value": 3.1, "Error": 0.2},
+    {"Position": 10940, "Value": 2.66, "Error": 0.18},
+    {"Position": 10985, "Value": 2.31, "Error": 0.15},
+    {"Position": 11030, "Value": 2.19, "Error": 0.14},
+    {"Position": 11075, "Value": 2.35, "Error": 0.16},
+    {"Position": 11120, "Value": 2.72, "Error": 0.18},
+    {"Position": 11165, "Value": 3.2, "Error": 0.21}
+  ],
+  "Intersections": {
+    "TrendLineIntersection": {"Position": 11029.0, "Value": 2.1},
+    "HyperbolicMinimum": {"Position": 11032.4, "Value": 2.18},
+    "QuadraticMinimum": {"Position": 11034.0, "Value": 2.2},
+    "GaussianMaximum": {"Position": 0.0, "Value": 0.0}
+  },
+  "Fittings": {"Quadratic": "", "Hyperbolic": "", "Gaussian": "",
+               "LeftTrend": "", "RightTrend": ""},
+  "RSquares": {"Quadratic": 0.981, "Hyperbolic": 0.993, "Gaussian": "NaN",
+               "LeftTrend": 0.97, "RightTrend": 0.98},
+  "BacklashCompensation": {"BacklashCompensationModel": "ABSOLUTE",
+                           "BacklashIN": 0, "BacklashOUT": 0},
+  "Duration": "00:02:05.5541280"
+}

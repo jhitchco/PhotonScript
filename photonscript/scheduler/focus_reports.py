@@ -85,25 +85,40 @@ def _report_date_ok(ts: str, date: str) -> bool:
         return True
 
 
-def load_reports(reports_dir: str, date: str | None = None) -> list[dict]:
+def load_reports(reports_dir: str, date: str | None = None,
+                 stats: dict | None = None) -> list[dict]:
     """Read + parse the AF report JSONs in reports_dir, newest first, optionally
-    filtered to the given local night (evening date or next morning)."""
+    filtered to the given local night (evening date or next morning).
+
+    stats (PS-76 follow-up), when given, is filled with what was seen so an
+    empty result can be explained: dir_exists, files, parse_errors (with the
+    first few file names), not_dict. A UTF-8 BOM is accepted (utf-8-sig)."""
     out: list[dict] = []
+    st = stats if stats is not None else {}
+    st.update(dir_exists=False, files=0, parse_errors=0, not_dict=0,
+              bad_files=[])
     try:
         d = Path(reports_dir)
         if not d.is_dir():
             return out
+        st["dir_exists"] = True
         files = sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime,
                        reverse=True)
     except OSError as e:
         logger.warning("focus_reports: cannot list %s: %s", reports_dir, e)
+        st["error"] = str(e)
         return out
+    st["files"] = len(files)
     for p in files:
         try:
-            rep = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            rep = json.loads(p.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+            st["parse_errors"] += 1
+            if len(st["bad_files"]) < 5:
+                st["bad_files"].append(f"{p.name}: {e}")
             continue
         if not isinstance(rep, dict):
+            st["not_dict"] += 1
             continue
         rep.setdefault("_file", p.name)
         ts = rep.get("Timestamp") or rep.get("Time") or ""

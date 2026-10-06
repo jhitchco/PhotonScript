@@ -22,15 +22,21 @@ and, if present, an override copy in config.data_dir that harvest() appends to.
 Each record: {"filter","focpos","foctemp","date","source"}.
 
 seed_for(filter, foctemp) picks a position:
+  - the PS-76 focus model when it is confident for the filter
+  - a filter with a configured offset (or no records): the AF filter's
+    temperature fit + that offset (PS-76 part 2)
   - >=2 records at different temps for that filter -> linear interp/extrapolate
-    (clamped to observed range +/- a margin)
-  - else nearest-temp record, else most-recent record for the filter
+    (clamped to observed range +/- a margin), at the mean temp if none known
+  - else nearest-temp record, else median record for the filter
   - else a global fallback.
+The ingested NINA AF points count as records, and a missing temperature is
+replaced by focus_model.expected_temp() when one is known.
 """
 from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -69,58 +75,131 @@ def _clamp(pos: float) -> int:
     return int(max(_FOCPOS_MIN, min(_FOCPOS_MAX, round(pos))))
 
 
+def _finite(v) -> float | None:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _af_records(config) -> list[dict]:
+    """PS-76 part 2: ingested RC16 AF points as table records, so even one
+    or two real AFs improve the fallback fit before the model is confident."""
+    try:
+        from photonscript.scheduler.focus_model import _rc16_points
+        return [{"filter": p.get("filter"), "focpos": p.get("position"),
+                 "foctemp": p.get("temp"), "source": "nina_af"}
+                for p in _rc16_points(config)
+                if p.get("position") and _finite(p.get("temp")) is not None]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("focus_seeds: no AF points: %s", e)
+        return []
+
+
+def _expected_temp(config) -> float | None:
+    try:
+        from photonscript.scheduler.focus_model import expected_temp
+        et = expected_temp(config)
+        return _finite(et["temp"]) if et else None
+    except Exception as e:  # noqa: BLE001
+        logger.debug("focus_seeds: no expected temperature: %s", e)
+        return None
+
+
+def _fit_at(pts: list[tuple[float, float]], foctemp: float | None):
+    """Least-squares line through (temp, pos) evaluated at foctemp (or at the
+    points' mean temperature when foctemp is None), clamped to the observed
+    position range +/- 150. None with fewer than two distinct temperatures."""
+    if len({t for t, _ in pts}) < 2:
+        return None
+    n = len(pts)
+    sx = sum(t for t, _ in pts); sy = sum(p for _, p in pts)
+    sxx = sum(t * t for t, _ in pts); sxy = sum(t * p for t, p in pts)
+    denom = n * sxx - sx * sx
+    if denom == 0:
+        return None
+    slope = (n * sxy - sx * sy) / denom
+    intercept = (sy - slope * sx) / n
+    t = foctemp if foctemp is not None else sx / n
+    pos = slope * t + intercept
+    lo = min(p for _, p in pts) - 150
+    hi = max(p for _, p in pts) + 150
+    return max(lo, min(hi, pos))
+
+
 def seed_for(filter_name: str, foctemp: float | None = None,
              config=None) -> int:
     """Best-guess focuser start position for a filter at a given temperature.
 
     PS-76: when config is given and the AF-report focus model is at least
     "med" confidence for this filter, its prediction wins; otherwise the
-    table logic below runs unchanged."""
+    table logic below.
+
+    PS-76 part 2 (the 2026-10-05 seed sat ~280 steps high: no temperature at
+    build time, so the median of the L records picked the 28.8 C point):
+      - no (or a non-finite) temperature: use focus_model.expected_temp()
+        (the first RC16 AF of the last night) when there is one;
+      - the table also holds the ingested RC16 AF points;
+      - a filter with a configured focus_filter_offsets entry (the narrowband
+        records are the parked focuser, not AF results), or with no records
+        of its own, seeds at the AF filter's temperature fit + its offset,
+        the same L + offset recipe the sequence focuses with;
+      - with two or more temperatures but still no temperature, the line is
+        evaluated at its mean temperature instead of taking a median record.
+    """
+    filter_name = str(filter_name)
+    foctemp = _finite(foctemp)
+    if foctemp is None and config is not None:
+        foctemp = _expected_temp(config)
     if config is not None:
         try:
             from photonscript.scheduler.focus_model import seed_position
-            mp = seed_position(config, str(filter_name), foctemp)
+            mp = seed_position(config, filter_name, foctemp)
             if mp is not None:
                 return _clamp(mp)
         except Exception as e:  # noqa: BLE001
             logger.warning("focus_seeds: focus model unavailable: %s", e)
-    recs = [r for r in load_records(config)
-            if str(r.get("filter")) == str(filter_name) and r.get("focpos")]
+    allr = [r for r in load_records(config) if r.get("focpos")]
+    if config is not None:
+        allr += _af_records(config)
+
+    def _pts(f):
+        return [(float(r["foctemp"]), float(r["focpos"])) for r in allr
+                if str(r.get("filter")) == f
+                and _finite(r.get("foctemp")) is not None]
+
+    recs = [r for r in allr if str(r.get("filter")) == filter_name]
+    if config is not None:
+        ref = (getattr(config, "autofocus_filter", "") or "L").strip() or "L"
+        try:
+            offsets = config.focus_offset_map()
+        except Exception:  # noqa: BLE001
+            offsets = {}
+        if filter_name != ref and (filter_name in offsets or not recs):
+            base = _fit_at(_pts(ref), foctemp)
+            if base is not None:
+                return _clamp(base + offsets.get(filter_name, 0)
+                              - offsets.get(ref, 0))
     if not recs:
         # fall back to the whole-table median so we at least start in the ballpark
-        allr = [r for r in load_records(config) if r.get("focpos")]
         if not allr:
             return _GLOBAL_FALLBACK
         vals = sorted(float(r["focpos"]) for r in allr)
         return _clamp(vals[len(vals) // 2])
 
-    pts = [(float(r["foctemp"]), float(r["focpos"]))
-           for r in recs if r.get("foctemp") is not None]
-    temps = sorted({t for t, _ in pts})
-
-    if foctemp is not None and len(temps) >= 2:
-        # linear fit (least squares) across all temp/pos points, then clamp to
-        # the observed position range widened by a small margin.
-        n = len(pts)
-        sx = sum(t for t, _ in pts); sy = sum(p for _, p in pts)
-        sxx = sum(t * t for t, _ in pts); sxy = sum(t * p for t, p in pts)
-        denom = n * sxx - sx * sx
-        if denom != 0:
-            slope = (n * sxy - sx * sy) / denom
-            intercept = (sy - slope * sx) / n
-            pos = slope * foctemp + intercept
-            lo = min(p for _, p in pts) - 150
-            hi = max(p for _, p in pts) + 150
-            return _clamp(max(lo, min(hi, pos)))
+    pts = _pts(filter_name)
+    fitted = _fit_at(pts, foctemp)
+    if fitted is not None:
+        return _clamp(fitted)
 
     if foctemp is not None and pts:
         # nearest temperature record
         _, pos = min(pts, key=lambda tp: abs(tp[0] - foctemp))
         return _clamp(pos)
 
-    # No temperature known: median position for this filter — a neutral
-    # cold-start seed that AF refines. (Avoids favouring the warm or cool
-    # extreme of the table.)
+    # No temperature known and one temperature only: median position for
+    # this filter, a neutral cold-start seed that AF refines.
     vals = sorted(float(r["focpos"]) for r in recs)
     return _clamp(vals[len(vals) // 2])
 

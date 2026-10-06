@@ -377,14 +377,22 @@ def _current_focuser_temp(config) -> float | None:
         return _FOCTEMP_CACHE["v"]
     v = None
     try:
+        import math
+
         import httpx
         base = str(getattr(config, "nina_base_url", "")).rstrip("/")
         if base:
-            r = httpx.get(base + "/equipment/focuser", timeout=4)
+            # PS-76 part 2: ninaAPI v2 serves the focuser at
+            # /equipment/focuser/info; the bare /equipment/focuser 404s, so
+            # this always returned None and every seed fell to the median.
+            r = httpx.get(base + "/equipment/focuser/info", timeout=4)
             d = r.json()
             payload = d.get("Response", d) if isinstance(d, dict) else {}
-            t = payload.get("Temperature")
+            t = payload.get("Temperature") if isinstance(payload, dict) \
+                else None
             v = float(t) if t is not None else None
+            if v is not None and not math.isfinite(v):
+                v = None   # focuser connected without a sensor reading
     except Exception:  # noqa: BLE001
         v = None
     _FOCTEMP_CACHE.update(t=_t.time(), v=v)
@@ -670,15 +678,51 @@ def _block_af_runner(af_filter: FilterType, offset: int) -> list:
     return out
 
 
-def _autofocus_time_trigger(minutes: float = 60.0) -> dict:
+def _autofocus_time_trigger(minutes: float = 60.0,
+                            runner: list | None = None) -> dict:
     """Periodic refocus: AF once `minutes` have passed since the last AF.
     Used on the Piggy-600 (PS-68), where NINA #2 cannot see the RC16's
     meridian flip and the HFR trigger baselines on the last AF (a bad AF
-    never re-triggers it), so a timed AF is the in-sequence repair."""
+    never re-triggers it), so a timed AF is the in-sequence repair. PS-76
+    part 2: the RC16 verify AF in focus-model drive mode (runner = the
+    block's AF filter + offset recipe)."""
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterTimeTrigger, "
         "NINA.Sequencer",
-        Amount=float(minutes), TriggerRunner=_trigger_runner([_autofocus()]))
+        Amount=float(minutes),
+        TriggerRunner=_trigger_runner(runner or [_autofocus()]))
+
+
+def _focus_model_move(script: str, filter_type) -> dict:
+    """PS-76 part 2 (focus_model_drive): ExternalScript that asks the service
+    to move the RC16 focuser to the lookup-table position for this filter
+    at the focuser's current temperature (deploy\\focus-model-move.cmd ->
+    POST /api/focus/model-move). Always exits 0, ErrorBehavior 0: a failed
+    move never stops imaging (the HFR trigger and the verify AF remain)."""
+    return _external_script(script, filter_type.value)
+
+
+def _focus_drive_spec(cfg) -> dict | None:
+    """{script, filters, verify_min} when the sequence should replace the
+    per-block AF with model moves: focus_model_drive on, the move script on
+    this machine, and focus_model.trust() says the model is trusted. The
+    filters are those with enough AFs of their own; every other block keeps
+    its AF. None = today's AF-per-block sequence (the default)."""
+    from pathlib import Path
+    if not bool(getattr(cfg, "focus_model_drive", False)):
+        return None
+    script = str(getattr(cfg, "focus_model_move_script", "") or "").strip()
+    try:
+        if not script or not Path(script).is_file():
+            return None
+        from photonscript.scheduler.focus_model import trust
+        tr = trust(cfg)
+    except Exception:  # noqa: BLE001
+        return None
+    if tr.get("mode") != "drive" or not tr.get("filters"):
+        return None
+    return {"script": script, "filters": set(tr["filters"]),
+            "verify_min": float(tr.get("verify_af_min") or 120.0)}
 
 
 def _meridian_flip_trigger() -> dict:
@@ -844,7 +888,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             loop_end: tuple | None = None,
                             selftest_script: str | None = None,
                             unguided_dither: bool = False,
-                            cooler_gate: tuple | None = None) -> dict:
+                            cooler_gate: tuple | None = None,
+                            focus_drive: dict | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> exposures.
@@ -877,7 +922,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     cooler-gate ExternalScript, so lights wait for the setpoint and a gate
     SKIP (sensor still off after the timeout) skips only that block; the
     imaging loop retries it on its next pass. None = the flat block list, as
-    before."""
+    before.
+
+    focus_drive (PS-76 part 2, _focus_drive_spec; None by default): a block
+    whose filter is in focus_drive["filters"] starts with SwitchFilter(its
+    own filter) + the model-move ExternalScript instead of AF filter + AF +
+    offset; its temperature trigger runs the model move, its HFR trigger
+    keeps the full AF recipe, and a time trigger runs that AF recipe every
+    verify_min as the verify AF. The start-of-target AF is unchanged."""
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets)
@@ -986,20 +1038,29 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         # (2026-09-26), and on every loop pass undid the triggered AFs.
         block_af = af_filter or exp.filter_type
         offset = _focus_offset(block_af, exp.filter_type, focus_offsets)
+        drive = (focus_drive is not None
+                 and exp.filter_type.value in focus_drive["filters"])
         out = []
         if chatty_block:   # per-block "starting/done" pair — the bulk of the noise
             out.append(_pushover(
                 "Imaging",
                 f"{target.name} [{bi}/{n_blocks}]: starting "
                 f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
-                f"(~{block_h:.1f}h) gain {exp.gain}; autofocus on "
-                f"{block_af.value}"
-                + (f" then offset {offset:+d}" if offset else "")
+                f"(~{block_h:.1f}h) gain {exp.gain}; "
+                + ("focus from the lookup table" if drive else
+                   f"autofocus on {block_af.value}"
+                   + (f" then offset {offset:+d}" if offset else ""))
                 + (" (moon-free window)" if condition else "")))
-        out.append(_switch_filter(block_af))
-        out.append(_autofocus())
-        if offset:
-            out.append(_move_focuser_relative(offset))
+        if drive:
+            # PS-76 part 2: table position instead of AF (verify AF below)
+            out.append(_switch_filter(exp.filter_type))
+            out.append(_focus_model_move(focus_drive["script"],
+                                         exp.filter_type))
+        else:
+            out.append(_switch_filter(block_af))
+            out.append(_autofocus())
+            if offset:
+                out.append(_move_focuser_relative(offset))
         # HDR: emit a SHORT companion SmartExposure alongside the long one, same
         # filter/gain/offset/binning, its own (shorter) length + count. Short
         # first (bright cores), then the long set. Dither + AF triggers are
@@ -1022,6 +1083,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
 
         def _af_triggers():
             runner = lambda: _block_af_runner(block_af, offset)  # noqa: E731
+            if drive:
+                # temperature change -> table move (cheap, so 1 C); HFR creep
+                # and the periodic verify keep the full AF recipe
+                return [_autofocus_temp_trigger(1.0, [_focus_model_move(
+                            focus_drive["script"], exp.filter_type)]),
+                        _autofocus_hfr_trigger(10.0, 4, runner()),
+                        _autofocus_time_trigger(focus_drive["verify_min"],
+                                                runner())]
             return [_autofocus_temp_trigger(2.0, runner()),
                     _autofocus_hfr_trigger(10.0, 4, runner())]
 
@@ -1677,6 +1746,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
     gate = _cooler_gate_spec(_cfg, temp)
     if gate is None:
         start_items += _cooler_gate_missing_notice(_cfg)
+    focus_drive = _focus_drive_spec(_cfg)   # PS-76 part 2, None by default
     target_containers = []
     first_guided = True
     force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", False))
@@ -1692,7 +1762,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     loop_end=(dawn_provider, dawn_offset),
                                     selftest_script=selftest,
                                     unguided_dither=unguided_dither,
-                                    cooler_gate=gate)
+                                    cooler_gate=gate,
+                                    focus_drive=focus_drive)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops

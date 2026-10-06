@@ -566,6 +566,15 @@ async def _start_calibration_autofill():
 
 
 @app.on_event("startup")
+async def _start_focus_ingest():
+    """PS-76 part 2: ingest NINA AF reports at startup and whenever the
+    reports folder changes (focus_model.ingest_loop). No-op while
+    nina_autofocus_reports_dir is empty or focus_model_ingest_poll_s is 0."""
+    from photonscript.scheduler.focus_model import ingest_loop
+    _spawn(ingest_loop(get_config))
+
+
+@app.on_event("startup")
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
@@ -675,6 +684,11 @@ _CONFIG_FIELDS = [
     ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
     ("focus_model_rc16_match", "PS_FOCUS_MODEL_RC16_MATCH", "Focus model: which AF reports are the RC16's (empty = RC16 filter name + EAF 4000-7000; e.g. any~AP26MC)", "Imaging", "str", False, False),
     ("focus_model_piggyback_match", "PS_FOCUS_MODEL_PIGGYBACK_MATCH", "Focus model: which AF reports are the Piggy-600's (empty = everything not RC16)", "Imaging", "str", False, False),
+    ("focus_model_ingest_poll_s", "PS_FOCUS_MODEL_INGEST_POLL_S", "Focus model: check the AF reports folder every N s and ingest new reports (0 = backfill/API only)", "Imaging", "int", False, False),
+    ("focus_model_drive", "PS_FOCUS_MODEL_DRIVE", "Focus model drive: move the RC16 focuser to the lookup table instead of per-block AF while the model is trusted (off = advisory)", "Imaging", "bool", False, False),
+    ("focus_model_verify_af_min", "PS_FOCUS_MODEL_VERIFY_AF_MIN", "Focus model drive: verify AF every N min", "Imaging", "float", False, False),
+    ("focus_cfz_steps", "PS_FOCUS_CFZ_STEPS", "RC16 critical focus zone (EAF steps; 0 = AF step size as proxy)", "Imaging", "int", False, False),
+    ("focus_model_move_script", "PS_FOCUS_MODEL_MOVE_SCRIPT", "Focus model drive: NINA ExternalScript for the table move (deploy\\focus-model-move.cmd)", "Imaging", "str", False, False),
     ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
     ("camera_read_noise_adu", "PS_CAMERA_READ_NOISE_ADU", "RC16 read noise, HCG (ADU16; floor for the exposure swamp score, PS-117)", "Quality", "float", False, False),
     ("camera_read_noise_lcg_adu", "PS_CAMERA_READ_NOISE_LCG_ADU", "RC16 read noise, LCG frames (ADU16; READOUTM Low Conversion Gain)", "Quality", "float", False, False),
@@ -2977,6 +2991,8 @@ from photonscript.scheduler.routers import auto_arm as _auto_arm_router  # noqa:
 app.include_router(_auto_arm_router.router)
 from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E402
 app.include_router(_catalog_router.router)
+from photonscript.scheduler.routers import focus as _focus_router  # noqa: E402
+app.include_router(_focus_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

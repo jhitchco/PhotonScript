@@ -50,6 +50,30 @@ name), focus_model_rc16_match / focus_model_piggyback_match take over, e.g.
 "Filter=L|R|G|B|H|O|S;position:4000-7000" or "any~AP26MC". Piggy-600 reports
 feed a separate read-only model (piggyback_focus_af_points.json /
 piggyback_focus_model.json), shown in GET /api/focus; nothing seeds from it.
+
+When ingest runs (PS-76 part 2)
+-------------------------------
+Until part 2 ingest ran only at the tail of the per-night backfill thread,
+and that thread only starts when a night has UNGRADED frames. The live
+grader grades every sub as it lands, so on a normal night the backfill never
+ran and no AF report was ever read (2026-10-06: reports dir set, 0 points).
+Now ingest_loop() (started with the service) ingests at startup and again
+whenever the reports folder changes (polled every
+focus_model_ingest_poll_s, so within a couple of minutes of each NINA AF),
+plus a forced pass once a day; the backfill hook stays. POST
+/api/focus/ingest and `photonscript focus-ingest` run it on demand. Each run
+writes focus_ingest_status.json (what was read, parse failures, why reports
+were rejected or left out) for GET /api/focus.
+
+Model-driven focus (PS-76 part 2, focus_model_drive, default off)
+-----------------------------------------------------------------
+trust() says whether the RC16 model is good enough to replace the per-block
+AF: enough L points, a fitted slope, and a fit scatter well inside the
+critical focus zone (focus_cfz_steps, else the AF step size as a proxy).
+Advisory until Jeremy turns focus_model_drive on; then the sequence moves
+the focuser to the table position on filter and temperature changes
+(ExternalScript -> POST /api/focus/model-move) and keeps a periodic verify
+AF (focus_model_verify_af_min).
 """
 from __future__ import annotations
 
@@ -57,6 +81,10 @@ import json
 import logging
 import math
 import re
+import threading
+import time
+from collections import Counter
+from datetime import datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -65,6 +93,8 @@ POINTS_FILE = "focus_af_points.json"
 MODEL_FILE = "focus_model.json"
 PB_POINTS_FILE = "piggyback_focus_af_points.json"
 PB_MODEL_FILE = "piggyback_focus_model.json"
+INGEST_STATUS_FILE = "focus_ingest_status.json"
+MOVES_FILE = "focus_model_moves.jsonl"
 OSC_FILTER = "OSC"   # the Piggy-600's single channel (reports carry no filter)
 
 # Fit guards
@@ -72,6 +102,20 @@ _MIN_TEMP_SPAN_C = 3.0     # within-filter temperature spread needed for a slope
 _MIN_SIGMA_STEPS = 5.0     # floor on the robust sigma (EAF steps) for clipping
 _CLIP_SIGMA = 3.0
 _EXTRAP_MARGIN_C = 3.0     # predictions this far outside the fitted temps stay "high"
+
+# Trust (model-driven focus): enough reference-filter AFs, and a fit scatter
+# within this fraction of the critical focus zone. Without a CFZ (no config,
+# no AF step data) the old fixed 25-step bar applies.
+_TRUST_MIN_POINTS = 8
+_TRUST_CFZ_FRACTION = 0.5
+_TRUST_FALLBACK_SIGMA = 25.0
+_MOVE_DEADBAND_STEPS = 8   # model-move: closer than this, leave the focuser
+
+# Camera names that settle which rig wrote a report when a report carries
+# them (NINA's AF report JSON normally names no camera; a plugin or a newer
+# NINA may). Checked in the report's top-level text fields only.
+_RC16_NAME_HINTS = ("AP26MC",)
+_PB_NAME_HINTS = ("AP26CC",)
 
 
 # --------------------------------------------------------------------------
@@ -140,6 +184,11 @@ def point_from_report(report: dict, config=None, min_r2: float = 0.7,
     if r2 is not None and r2 < min_r2:
         return None, f"R^2 {r2:.2f} < {min_r2:.2f}"
     cfp = report.get("CalculatedFocusPoint") or {}
+    step = None
+    if isinstance(mp, list):
+        xs = sorted({x for q in mp if (x := _pos(q)) is not None})
+        gaps = [b - a for a, b in zip(xs, xs[1:]) if b > a]
+        step = round(_median(gaps)) if gaps else None
     return ({
         "filter": norm_filter(report.get("Filter")
                               or report.get("AutoFocusFilter"), config),
@@ -152,6 +201,7 @@ def point_from_report(report: dict, config=None, min_r2: float = 0.7,
         "initial": (round(p) if (p := _pos(report.get("InitialFocusPoint")))
                     is not None else None),
         "duration_s": _duration_s(report.get("Duration")),
+        "step": step,
         "time": str(report.get("Timestamp") or report.get("Time") or ""),
         "source": "nina_af_report",
         "file": report.get("_file"),
@@ -245,8 +295,23 @@ def _piggy_ref(config) -> float | None:
     return float(v) if v and float(v) > 0 else None
 
 
+def _name_hint(report: dict) -> str | None:
+    """'rc16' / 'piggyback' when a top-level text field (camera, focuser,
+    profile name, file name) names exactly one rig's camera, else None."""
+    text = " ".join(str(v) for k, v in report.items()
+                    if isinstance(v, str)).upper()
+    rc = any(h in text for h in _RC16_NAME_HINTS)
+    pb = any(h in text for h in _PB_NAME_HINTS)
+    if rc != pb:
+        return "rc16" if rc else "piggyback"
+    return None
+
+
 def classify_report(report: dict, config=None) -> str | None:
-    """'rc16', 'piggyback' or None (unknown: left out of both models)."""
+    """'rc16', 'piggyback' or None (unknown: left out of both models).
+
+    Order: the configured matchers when set; else a camera name in the
+    report (AP26MC / AP26CC); else the filter + EAF range rule."""
     rc = (getattr(config, "focus_model_rc16_match", "") or "").strip()
     pb = (getattr(config, "focus_model_piggyback_match", "") or "").strip()
     if rc or pb:
@@ -257,6 +322,8 @@ def classify_report(report: dict, config=None) -> str | None:
         if rc and pb:
             return None
         return "piggyback" if rc else "rc16"
+    if (hint := _name_hint(report)) is not None:
+        return hint
     from photonscript.scheduler.focus_seeds import _FOCPOS_MAX, _FOCPOS_MIN
     filt = str(_report_field(report, "filter") or "").strip().lower()
     pos = _report_field(report, "position")
@@ -320,22 +387,70 @@ def _write_json(path: Path, obj) -> None:
     tmp.replace(path)
 
 
-def ingest_af_reports(config, reports_dir: str | None = None) -> dict:
+_INGEST_LOCK = threading.Lock()
+
+
+def _status_path(config) -> Path:
+    return Path(config.data_dir) / INGEST_STATUS_FILE
+
+
+def load_ingest_status(config) -> dict | None:
+    """The last ingest's result (focus_ingest_status.json), or None."""
+    p = _status_path(config)
+    try:
+        if p.exists():
+            return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        logger.debug("focus_model: could not read %s: %s", p, e)
+    return None
+
+
+def _save_status(config, out: dict, trigger: str) -> None:
+    try:
+        _write_json(_status_path(config),
+                    dict(out, trigger=trigger,
+                         at=datetime.now().isoformat(timespec="seconds")))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("focus_model: could not write ingest status: %s", e)
+
+
+def _reason_key(rig: str, why: str) -> str:
+    """'R^2 0.41 < 0.70' -> 'rc16: R^2 below af_min_r2' style buckets."""
+    if why.startswith("R^2"):
+        why = "R^2 below af_min_r2"
+    elif why.startswith("only"):
+        why = "too few measure points"
+    return f"{rig}: {why}"
+
+
+def ingest_af_reports(config, reports_dir: str | None = None,
+                      trigger: str = "backfill") -> dict:
     """Read every NINA AF report in the reports dir, sort each by rig, add
     the good ones not already stored, then refit and persist the models.
     Only RC16 reports reach the RC16 model; Piggy-600 reports go to their
-    own store (focus_model_piggyback, default on). Never raises.
+    own store (focus_model_piggyback, default on). Never raises. One ingest
+    at a time (the poller, the backfill and the API share a lock).
 
-    Returns {enabled, read, added, rejected, total, other_rig, unclassified,
-    piggyback: {added, total}}."""
+    Returns {enabled, dir, read, added, rejected, total, other_rig,
+    unclassified, piggyback: {added, total}, files, parse_errors,
+    reject_reasons, bad_files} and saves it as focus_ingest_status.json
+    with the trigger (startup / poll / daily / backfill / api / cli)."""
     rdir = (reports_dir if reports_dir is not None else
             (getattr(config, "nina_autofocus_reports_dir", "") or "")).strip()
     if not rdir:
         return {"enabled": False, "read": 0, "added": 0, "rejected": 0,
                 "total": len(load_points(config))}
+    with _INGEST_LOCK:
+        out = _ingest_locked(config, rdir)
+    _save_status(config, out, trigger)
+    return out
+
+
+def _ingest_locked(config, rdir: str) -> dict:
+    stats: dict = {}
     try:
         from photonscript.scheduler.focus_reports import load_reports
-        reports = load_reports(rdir)
+        reports = load_reports(rdir, stats=stats)
         min_r2 = float(getattr(config, "af_min_r2", 0.7))
         min_pts = int(getattr(config, "focus_model_min_af_points", 5))
         want_pb = bool(getattr(config, "focus_model_piggyback", True))
@@ -355,6 +470,7 @@ def ingest_af_reports(config, reports_dir: str | None = None) -> dict:
         seen = {r: {_key(p) for p in pts} for r, pts in stores.items()}
         added = {"rc16": 0, "piggyback": 0}
         rejected = other = unknown = 0
+        reasons: Counter = Counter()
         for rep in reports:
             rig = classify_report(rep, config)
             if rig is None:
@@ -364,10 +480,11 @@ def ingest_af_reports(config, reports_dir: str | None = None) -> dict:
                 other += 1
                 if not want_pb:
                     continue
-            pt, _why = point_from_report(rep, config, min_r2, min_pts)
+            pt, why = point_from_report(rep, config, min_r2, min_pts)
             if pt is None:
                 if rig == "rc16":
                     rejected += 1
+                reasons[_reason_key(rig, why)] += 1
                 continue
             pt["rig"] = rig
             if rig == "piggyback":
@@ -384,19 +501,87 @@ def ingest_af_reports(config, reports_dir: str | None = None) -> dict:
             _write_json(_model_path(config, rig),
                         fit(pts, ref_filter=(OSC_FILTER if rig == "piggyback"
                                              else _ref_filter(config))))
-        logger.info("focus_model: %d AF report(s) read, RC16 %d added / %d "
-                    "rejected / %d stored, Piggy-600 %d added, %d other-rig, "
-                    "%d unclassified", len(reports), added["rc16"], rejected,
+        logger.info("focus_model: %d AF report(s) read from %d file(s) "
+                    "(%d unparseable), RC16 %d added / %d rejected / %d "
+                    "stored, Piggy-600 %d added, %d other-rig, %d "
+                    "unclassified", len(reports), stats.get("files", 0),
+                    stats.get("parse_errors", 0), added["rc16"], rejected,
                     len(stores["rc16"]), added["piggyback"], other, unknown)
-        return {"enabled": True, "read": len(reports), "added": added["rc16"],
+        return {"enabled": True, "dir": rdir,
+                "dir_exists": stats.get("dir_exists", False),
+                "files": stats.get("files", 0),
+                "parse_errors": stats.get("parse_errors", 0),
+                "bad_files": stats.get("bad_files", []),
+                "read": len(reports), "added": added["rc16"],
                 "rejected": rejected, "total": len(stores["rc16"]),
                 "other_rig": other, "unclassified": unknown,
+                "reject_reasons": dict(reasons),
                 "piggyback": {"added": added["piggyback"],
                               "total": len(stores["piggyback"])}}
     except Exception as e:  # noqa: BLE001
         logger.warning("focus_model: ingest failed: %s", e)
-        return {"enabled": True, "read": 0, "added": 0, "rejected": 0,
-                "total": 0, "error": str(e)}
+        return {"enabled": True, "dir": rdir, "read": 0, "added": 0,
+                "rejected": 0, "total": 0, "error": str(e),
+                "dir_exists": stats.get("dir_exists", False),
+                "files": stats.get("files", 0)}
+
+
+def reports_signature(rdir: str) -> tuple | None:
+    """(file count, newest mtime) of the reports folder: changes when NINA
+    writes a new AF report. None when the folder cannot be read."""
+    try:
+        d = Path(rdir)
+        if not d.is_dir():
+            return None
+        mt = [f.stat().st_mtime for f in d.glob("*.json")]
+        return (len(mt), max(mt) if mt else 0.0)
+    except OSError:
+        return None
+
+
+async def ingest_loop(get_config, sleep=None) -> None:
+    """Background ingest (started with the service): once at startup, then
+    whenever the reports folder changes (a new NINA AF report), checked
+    every focus_model_ingest_poll_s, plus a forced pass every 24 h. A poll
+    of 0 turns the loop off (the backfill hook and the API still ingest).
+    The ingest itself runs in a worker thread. Never raises.
+
+    sleep: test hook (an awaitable taking seconds); when it returns False
+    the loop stops."""
+    import asyncio
+    sleep = sleep or asyncio.sleep
+    last_sig = None
+    last_full = 0.0
+    first = True
+    while True:
+        poll = 120.0
+        try:
+            cfg = get_config()
+            poll = float(getattr(cfg, "focus_model_ingest_poll_s", 120) or 0)
+            rdir = (getattr(cfg, "nina_autofocus_reports_dir", "")
+                    or "").strip()
+            if poll > 0 and rdir:
+                sig = await asyncio.to_thread(reports_signature, rdir)
+                daily = time.time() - last_full >= 86400
+                if first or daily or (sig is not None and sig != last_sig):
+                    trig = "startup" if first else ("daily" if daily
+                                                    else "poll")
+                    res = await asyncio.to_thread(ingest_af_reports, cfg,
+                                                  None, trig)
+                    if res.get("added") or res.get("error"):
+                        logger.info("focus_model: %s ingest: added %s, "
+                                    "error %s", trig, res.get("added"),
+                                    res.get("error"))
+                    if first or daily:
+                        last_full = time.time()
+                    first = False
+                last_sig = sig
+        except Exception as e:  # noqa: BLE001
+            logger.warning("focus_model: ingest loop error: %s", e)
+        if poll <= 0:
+            poll = 600.0   # off: look again later in case it is turned on
+        if await sleep(max(15.0, poll)) is False:
+            return
 
 
 def _ref_filter(config) -> str:
@@ -605,10 +790,11 @@ def seed_position(config, filter_name: str, temp: float | None) -> int | None:
     return pr["position"]
 
 
-def af_skip_readiness(model: dict, min_points: int = 8,
-                      max_sigma: float = 25.0) -> dict:
-    """Does the data support skipping or shortening AF (a phase-2 feature)?
-    Informational only; nothing acts on it yet."""
+def af_skip_readiness(model: dict, min_points: int = _TRUST_MIN_POINTS,
+                      max_sigma: float = _TRUST_FALLBACK_SIGMA) -> dict:
+    """Does the data support replacing AF with model moves? ready = enough
+    reference-filter AF points, a fitted slope and a fit scatter at or below
+    max_sigma. trust() picks max_sigma from the critical focus zone."""
     reasons = []
     if not model or not model.get("filters"):
         return {"ready": False, "reasons": ["no AF reports ingested yet"]}
@@ -626,14 +812,188 @@ def af_skip_readiness(model: dict, min_points: int = 8,
     return {"ready": not reasons, "reasons": reasons}
 
 
+def _rc16_points(config) -> list[dict]:
+    return [p for p in load_points(config) if _point_rig(p, config) == "rc16"]
+
+
+def cfz_steps(config, pts: list[dict] | None = None) -> tuple:
+    """(critical focus zone in EAF steps, source). focus_cfz_steps when set;
+    else the median AF step size of the stored AF runs (NINA's AF step is
+    normally set near one CFZ, so it is a fair proxy); else (None, None)."""
+    v = _num(getattr(config, "focus_cfz_steps", 0))
+    if v and v > 0:
+        return float(v), "config focus_cfz_steps"
+    pts = _rc16_points(config) if pts is None else pts
+    steps = [x for p in pts if (x := _num(p.get("step"))) and x > 0]
+    if steps:
+        return float(_median(steps)), "median AF step size"
+    return None, None
+
+
+def drive_filters(model: dict, min_n: int = 5) -> list[str]:
+    """Filters with enough AF points of their own for a model move."""
+    return sorted(f for f, row in ((model or {}).get("filters") or {}).items()
+                  if row.get("n", 0) >= min_n)
+
+
+def trust(config, model: dict | None = None,
+          pts: list[dict] | None = None) -> dict:
+    """Is the RC16 model good enough to move the focuser instead of running
+    AF (PS-76 part 2)? trusted = af_skip_readiness with the scatter bar at
+    _TRUST_CFZ_FRACTION x CFZ (or 25 steps with no CFZ). mode = "drive" only
+    when focus_model_drive is on AND the model is trusted; otherwise
+    "advisory" (the sequence keeps its AFs)."""
+    pts = _rc16_points(config) if pts is None else pts
+    if model is None:
+        model = fit(pts, ref_filter=_ref_filter(config))
+    cfz, src = cfz_steps(config, pts)
+    limit = (round(_TRUST_CFZ_FRACTION * cfz, 1) if cfz
+             else _TRUST_FALLBACK_SIGMA)
+    rd = af_skip_readiness(model, _TRUST_MIN_POINTS, limit)
+    on = bool(getattr(config, "focus_model_drive", False))
+    return {"trusted": rd["ready"], "reasons": rd["reasons"],
+            "cfz_steps": (round(cfz) if cfz else None), "cfz_source": src,
+            "sigma_steps": model.get("sigma_steps"), "sigma_limit": limit,
+            "drive_enabled": on,
+            "mode": "drive" if (on and rd["ready"]) else "advisory",
+            "filters": drive_filters(model),
+            "verify_af_min": float(getattr(config, "focus_model_verify_af_min",
+                                           120.0) or 0)}
+
+
+def _night_of(ts: str):
+    """Local night (evening date) of a NINA timestamp; None if unparseable.
+    NINA writes local time with an offset; the first 19 chars suffice."""
+    try:
+        t = datetime.strptime(str(ts)[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+    return (t - timedelta(hours=12)).date()
+
+
+def expected_temp(config, today=None, max_age_days: int = 21) -> dict | None:
+    """A stand-in for tonight's focuser temperature when NINA cannot be asked
+    (sequences are built before the focuser is connected): the temperature
+    of the FIRST RC16 AF of the most recent night with AF reports, if that
+    night is at most max_age_days old. {temp, night, basis} or None."""
+    by_night: dict = {}
+    for p in _rc16_points(config):
+        t = _num(p.get("temp"))
+        n = _night_of(p.get("time") or "")
+        if t is None or n is None:
+            continue
+        by_night.setdefault(n, []).append((str(p.get("time")), t))
+    if not by_night:
+        return None
+    night = max(by_night)
+    today = today or datetime.now().date()
+    if (today - night).days > max_age_days:
+        return None
+    first = min(by_night[night])
+    return {"temp": round(first[1], 2), "night": night.isoformat(),
+            "basis": f"first RC16 AF of the night of {night.isoformat()}"}
+
+
+def model_move_target(config, filter_name: str, temp) -> dict:
+    """Where a model-driven move (focus_model_drive) should put the focuser
+    for this filter at this focuser temperature, or why it should not move.
+    {move: bool, position?, reason, confidence?}. Read-only."""
+    if not bool(getattr(config, "focus_model_drive", False)):
+        return {"move": False, "reason": "focus_model_drive is off (advisory)"}
+    t = _num(temp)
+    if t is None:
+        return {"move": False, "reason": "no focuser temperature"}
+    pts = _rc16_points(config)
+    model = fit(pts, ref_filter=_ref_filter(config))
+    tr = trust(config, model, pts)
+    if not tr["trusted"]:
+        return {"move": False, "reason": "model not trusted: "
+                + "; ".join(tr["reasons"])}
+    filt = norm_filter(filter_name, config)
+    if filt not in tr["filters"]:
+        return {"move": False, "reason": f"{filt}: too few AF points of its "
+                "own for a model move"}
+    pr = predict(model, filt, t)
+    if pr is None or pr["confidence"] != "high":
+        return {"move": False, "reason": f"{filt} at {t:.1f} C: prediction "
+                f"confidence {pr and pr['confidence']} (needs high)"}
+    from photonscript.scheduler.focus_seeds import _clamp
+    return {"move": True, "position": _clamp(pr["position"]),
+            "filter": filt, "temp": t, "confidence": pr["confidence"],
+            "reason": f"model {filt} at {t:.1f} C"}
+
+
+def record_move(config, entry: dict) -> None:
+    """Append one model-move outcome to focus_model_moves.jsonl."""
+    try:
+        path = Path(config.data_dir) / MOVES_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(entry, at=datetime.now().isoformat(
+                timespec="seconds"))) + "\n")
+    except OSError as e:
+        logger.debug("focus_model: could not log move: %s", e)
+
+
+def recent_moves(config, n: int = 10) -> list[dict]:
+    path = Path(config.data_dir) / MOVES_FILE
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()[-n:]
+    except OSError:
+        return []
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def residuals(pts: list[dict], model: dict, n: int = 12) -> list[dict]:
+    """The last n AF points with the model's prediction and the residual
+    (measured minus model, EAF steps): how well the table would have done."""
+    slope = model.get("slope_steps_per_c") or 0.0
+    rows = (model.get("filters") or {})
+    sig = model.get("sigma_steps")
+    out = []
+    usable = [p for p in pts if _num(p.get("temp")) is not None
+              and _num(p.get("position")) is not None]
+    for p in sorted(usable, key=lambda q: str(q.get("time") or ""))[-n:]:
+        row = rows.get(p.get("filter"))
+        pred = (round(row["intercept"] + slope * float(p["temp"]))
+                if row else None)
+        res = (int(round(float(p["position"]))) - pred
+               if pred is not None else None)
+        out.append({"time": p.get("time"), "filter": p.get("filter"),
+                    "temp": p.get("temp"), "position": p.get("position"),
+                    "initial": p.get("initial"), "predicted": pred,
+                    "residual": res,
+                    "outlier": bool(res is not None and sig
+                                    and abs(res) > _CLIP_SIGMA
+                                    * max(sig, _MIN_SIGMA_STEPS))})
+    return out
+
+
+def plot_points(pts: list[dict], n: int = 300) -> list[dict]:
+    """The last n AF points, compact, for the dashboard scatter."""
+    use = [p for p in pts if _num(p.get("temp")) is not None
+           and _num(p.get("position")) is not None]
+    use.sort(key=lambda q: str(q.get("time") or ""))
+    return [{"f": p.get("filter"), "t": p.get("temp"), "p": p.get("position"),
+             "time": p.get("time")} for p in use[-n:]]
+
+
 def summary(config) -> dict:
     """Read-only view for GET /api/focus: the fitted model (refit from the
-    stored points, nothing written), AF run stats and phase-2 readiness."""
-    pts = [p for p in load_points(config) if _point_rig(p, config) == "rc16"]
+    stored points, nothing written), AF run stats, the last AF residuals,
+    the last ingest, trust / drive state and phase-2 readiness."""
+    pts = _rc16_points(config)
     model = fit(pts, ref_filter=_ref_filter(config))
     durs = [d for p in pts if (d := _num(p.get("duration_s"))) is not None]
     walks = [abs(p["position"] - p["initial"]) for p in pts
              if p.get("initial") is not None and p.get("position") is not None]
+    tr = trust(config, model, pts)
     return {
         "enabled": bool((getattr(config, "nina_autofocus_reports_dir", "")
                          or "").strip()),
@@ -644,14 +1004,21 @@ def summary(config) -> dict:
             "median_duration_s": (round(_median(durs), 1) if durs else None),
             "median_seed_error_steps": (_median(walks) if walks else None),
         },
-        "af_skip_readiness": af_skip_readiness(model),
+        "residuals": residuals(pts, model),
+        "points": plot_points(pts),
+        "expected_temp": expected_temp(config),
+        "ingest": load_ingest_status(config),
+        "trust": tr,
+        "moves": recent_moves(config),
+        "af_skip_readiness": {"ready": tr["trusted"],
+                              "reasons": tr["reasons"]},
     }
 
 
 def piggyback_summary(config) -> dict:
     """Read-only Piggy-600 model from the AF reports sorted to it: one channel
-    (OSC), its temperature slope once the data spans 3 C, and the lookup
-    table. Informational: nothing seeds from it yet."""
+    (OSC), its temperature slope once the data spans 3 C, the lookup table
+    and the last AF residuals. Informational: nothing seeds from it yet."""
     pts = load_points(config, "piggyback")
     model = fit(pts, ref_filter=OSC_FILTER)
     durs = [d for p in pts if (d := _num(p.get("duration_s"))) is not None]
@@ -663,4 +1030,6 @@ def piggyback_summary(config) -> dict:
         "af_runs": {"stored": len(pts),
                     "median_duration_s": (round(_median(durs), 1) if durs
                                           else None)},
+        "residuals": residuals(pts, model),
+        "points": plot_points(pts),
     }
