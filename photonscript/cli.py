@@ -20,6 +20,7 @@ Usage:
     photonscript calibration-owed [--rig R] [--json]              # PS-122
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
+    photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -1958,6 +1959,76 @@ def autostart_check(
     else:
         console.print(Text(text, style="bold green" if rc == 0 else "bold red"))
     raise typer.Exit(rc)
+
+
+@app.command("integrate")
+def integrate_cmd(
+    target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("Andromeda Galaxy", "M31")'),
+    rig: str = typer.Option("piggyback", "--rig", help="piggyback (Piggy-600 OSC) | rc16 (mono, per filter)"),
+    since: str = typer.Option("", "--since", help="First night (evening date YYYY-MM-DD)"),
+    until: str = typer.Option("", "--until", help="Last night (evening date YYYY-MM-DD)"),
+    out: str = typer.Option("", "--out", help="Run folder (NEW or empty; default <staging-root>/<target>_<rig>_<time>)"),
+    staging_root: str = typer.Option("", "--staging-root",
+                                     help=r"Default D:\Astrophotography\Staging, else ~\Astrophotography\Staging"),
+    library: str = typer.Option("", "--library", help="Library mirror (read-only; default desktop_library_dir)"),
+    filters: str = typer.Option("", "--filters", help="Mono: comma list of filters (default all)"),
+    qa: str = typer.Option("report", "--qa", help="Star QA: report (stack all, default) | apply (drop rejects) | off"),
+    flats: bool = typer.Option(True, "--flats/--no-flats", help="Use matched flats when present"),
+    min_darks: int = typer.Option(10, "--min-darks", help="Darks needed to use a dark length"),
+    max_cal: int = typer.Option(50, "--max-cal", help="At most this many bias / darks / flats per master"),
+    limit: int = typer.Option(0, "--limit", help="At most N subs per filter + exposure (small smoke runs)"),
+    pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight",
+                                    help="Run PixInsight (else stage + scripts only)"),
+    finish: bool = typer.Option(True, "--finish/--no-finish", help="Run the finish script after integrating"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+    gradient: str = typer.Option("auto", "--gradient", help="auto | abe | none"),
+    no_rc: bool = typer.Option(False, "--no-rc", help="Skip BlurXTerminator / NoiseXTerminator"),
+    workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+):
+    """PS-22: stack a target from the PhotonScript library (desktop).
+
+    Selects the approved subs from the Library mirror (read-only), runs the
+    per-sub star QA (incl. the second-star-set check), matches bias / darks
+    / flats, COPIES everything into a new staging run folder with a
+    manifest, generates and runs the PixInsight integration and finish
+    (one instance at a time), and writes an AstroBin CSV + packet draft.
+
+    photonscript integrate --target "Andromeda Galaxy" --rig piggyback
+    """
+    import json as _json
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration.runner import PixInsightBusy
+    from photonscript.shared.rigs import rig_label, rig_readout
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else (
+        Path(r"D:\Astrophotography\Staging") if Path(r"D:\Astrophotography\Staging").is_dir()
+        else Path.home() / "Astrophotography" / "Staging")
+    opts = pl.Options(
+        target=target, rig=rig, since=since, until=until,
+        library=Path(library or getattr(cfg, "desktop_library_dir", "") or
+                     (Path.home() / "ninashare" / "Library")),
+        staging_root=root, out=Path(out) if out else None,
+        filters=[f.strip() for f in filters.split(",") if f.strip()] or None,
+        qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
+        dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
+        default_readout=rig_readout(cfg, rig), gradient=gradient, use_rc=not no_rc,
+        bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
+        rig_label=rig_label(cfg, rig),
+        site={"name": cfg.observatory_name, "lat": round(cfg.observatory_lat, 3),
+              "lon": round(cfg.observatory_lon, 3), "elev": int(cfg.observatory_elev),
+              "bortle": cfg.observatory_bortle},
+    )
+    try:
+        res = pl.run(opts, echo=lambda s: console.print(s, markup=False, highlight=False))
+    except (pl.PipelineError, PixInsightBusy, FileNotFoundError, ValueError) as e:
+        console.print(f"[red]integrate:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+    if as_json:
+        print(_json.dumps(res, indent=1, default=str))
+    ok = res.get("integration", {}).get("ok", True) and res.get("finish", {}).get("ok", True)
+    raise typer.Exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

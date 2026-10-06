@@ -3,6 +3,47 @@
 Covers the 600 mm piggyback rig (AP26CC, IMX571 RGGB, 1.29"/px). Companion to the
 mono RC16 SHO pipeline. Light epoch: **120 s, gain 100, offset 256, 0 °C**.
 
+## 0. One command from the Library (PS-22)
+
+```
+photonscript integrate --target "Andromeda Galaxy" --rig piggyback [--since 2026-09-01] [--until D] [--out DIR]
+```
+Run on the desktop from the repo venv. What it does (code in
+`photonscript/integration/`, PJSR templates `deploy/integrate_stack.js` and
+`deploy/finish_stack.js`):
+1. **Select**: the approved subs of the target from the Library mirror
+   (`desktop_library_dir`, READ-ONLY). A Library target folder only holds
+   subs that passed QA and were reviewed, so the folder is the verdict.
+   Folders under every alias count ("Andromeda Galaxy" + "M 31"). The
+   Piggy-600 takes Bayer frames from `OSC`; `--rig rc16` takes the mono
+   filters (one master per filter, `--filters Ha,OIII` to limit).
+2. **Star QA** on the raw subs (`star_qa.py`, the M31_OSC4 v4b rules): low
+   star count / bright sky / soft vs the 4 neighbours each side in the same
+   exposure group, trailed (ecc > 0.70), doubled stars, not registered, and
+   the **second star set**: stars off the reference AND not shared by other
+   subs (a split-pointing exposure). `qa/star_qa.csv`. `--qa report` stacks
+   everything and only reports; `--qa off` skips it.
+3. **Calibration match** (`calib.py`): bias / darks on camera, gain, offset,
+   binning, temperature and readout mode (PS-128); a missing dark length
+   uses the most plentiful dark length with optimizeDarks (scaling);
+   flats per filter only when cooled like the lights (uncooled flats are
+   reported and skipped), `--no-flats` to skip.
+4. **Stage** by COPY into a NEW run folder
+   (`<staging-root>\<target>_<rig>_<yyyymmdd-hhmm>`, default staging root
+   `D:\Astrophotography\Staging`), `manifest.json` / `manifest.csv`,
+   `reference.txt`.
+5. **PixInsight**: `integrate_run.js` (per exposure group calibration,
+   CosmeticCorrection, Debayer, StarAlignment with distortion correction,
+   LocalNormalization, PSF Signal Weight, Winsorized) then `finish_run.js`.
+   Only when no PixInsight is running; one at a time; logs polled with short
+   reads (never `tail -F`). `--no-pixinsight` stops after writing the
+   scripts and prints the launch line.
+6. **AstroBin draft**: `astrobin\<target>_<date>_astrobin_acquisition.csv`
+   and `..._astrobin_packet.md` (nothing is uploaded).
+
+Timing per stage: `out\timing.csv` (Python stages) and `out\timing_pi.csv`
+(PixInsight stages). Small test run: `--limit 3 --max-cal 15`.
+
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
 - `photonscript/image_processor/osc_cull.py`: **runs first** (called by
