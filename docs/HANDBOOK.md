@@ -226,6 +226,32 @@ armer is not involved and stays DISARMED.
   the test is skipped; re-sideload another night. The standalone tracking-test
   download keeps its park-and-hold after the ladder.
 
+### Add a target (PS-124)
+
+The Target Goals **Add** box takes a catalog name, catalog id or alias
+(case, spaces and punctuation ignored: "M76", "Little Dumbbell", "ngc604"),
+or a name plus RA/Dec for anything else: `NGC 604 01:34:33 +30:47`,
+`NGC 604 1.5758 30.783` (RA hours, or degrees when over 24; Dec degrees),
+`01h34m33s +30d47m`, `Foo 01 34 33 +30 47 00` (spaced form needs the Dec
+sign). No network: names resolve against `SEASONAL_TARGETS` in
+`shared/astronomy.py` plus the user catalog.
+
+- Coordinate adds land in `<data_dir>/user_catalog.json` (same name
+  replaces) and from there in `get_seasonal_targets()`: the seasonal
+  fallback, tonight's picker, campaign suggestions and the identify pass.
+  Months default to four around the midnight transit.
+- Defaults on create: `CATALOG_EXTRAS` (astronomy.py) gives a row its goal
+  hours (else 8 h), narrowband mix and Piggy-600 OSC goal (NGC 604: 10 h
+  Ha 50 / OIII 40 / SII 10 plus a 10 h OSC goal for M33). The response and
+  the dashboard line show the rig hint (RC16 under 15', Piggy-600 over 60',
+  both in between) and the sub lengths (`nb_exposure_s` 600 s on the 3 nm
+  filters, PS-117; `bb_exposure_s` for LRGB). The hint does not change the
+  plans.
+- API: `POST /api/projects2/from_catalog {"name", "budget_hours"?}`,
+  `POST /api/projects2/custom {"text"}` or `{"name", "ra_hours",
+  "dec_degrees", "type"?, "size_arcmin"?, "budget_hours"?}`,
+  `GET /api/catalog/user`, `GET /api/catalog/lookup?q=`.
+
 ## 5. File transfer: Syncthing
 
 How images get from the scope to the desktop - the bridge between capture

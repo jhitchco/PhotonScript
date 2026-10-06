@@ -315,6 +315,15 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": "Bubble Nebula", "catalog_id": "NGC 7635", "ra": 23.345, "dec": 61.20, "type": "emission nebula", "mag": None, "size": 15, "months": [9, 10, 11], "hours": 15},
     {"name": "Cave Nebula", "catalog_id": "Sh2-155", "ra": 22.945, "dec": 62.62, "type": "emission nebula", "mag": None, "size": 50, "months": [9, 10, 11], "hours": 20},
 
+    # PS-124: RC16-scale autumn / winter additions (the rest of the ticket's
+    # list was already here; their goal defaults live in CATALOG_EXTRAS).
+    # NGC 604: giant HII region in M33, J2000 01h34m33s +30d47m (SIMBAD).
+    {"name": "NGC 604", "catalog_id": "NGC 604", "ra": 1.5758, "dec": 30.783, "type": "emission nebula", "mag": None, "size": 2.0, "months": [9, 10, 11, 12, 1], "hours": 10},
+    # IC 410 + NGC 1893: centered on the cluster (J2000 05h22m44s +33d24m42s);
+    # the Tadpoles sit a few arcmin NE of it. Unverified offline: check the
+    # framing on the first night (RC16 field is 24' x 16', IC 410 is ~40').
+    {"name": "Tadpoles Nebula", "catalog_id": "IC 410", "ra": 5.37889, "dec": 33.41167, "type": "emission nebula", "mag": None, "size": 40, "months": [11, 12, 1, 2], "hours": 15},
+
     # --- Expanded catalog (OpenNGC via pyongc, precise J2000; auto-generated 2026-09-18). The curated entries above are kept verbatim for their intentional framing centers; entries below use catalog centers. ---
     {"name": 'Pleiades', "catalog_id": 'M 45', "ra": 3.79128, "dec": 24.10528, "type": 'open cluster', "mag": 1.2, "size": 150.0, "months": [1, 10, 11, 12], "hours": 6},
     {"name": 'Small Sgr Star Cloud', "catalog_id": 'M 24', "ra": 18.28226, "dec": -18.51456, "type": 'association', "mag": 4.5, "size": 120.0, "months": [5, 6, 7, 8], "hours": 12},
@@ -421,7 +430,7 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Little Ghost Nebula', "catalog_id": 'NGC 6369', "ra": 17.48903, "dec": -23.75944, "type": 'planetary nebula', "mag": 11.4, "size": 0.6, "months": [5, 6, 7, 8], "hours": 10},
     {"name": 'Bear Claw Nebula', "catalog_id": 'NGC 2537', "ra": 8.22073, "dec": 45.98981, "type": 'galaxy', "mag": 11.7, "size": 2.1, "months": [1, 2, 3, 12], "hours": 15},
     {"name": 'Box Nebula', "catalog_id": 'NGC 6309', "ra": 17.23453, "dec": -12.91056, "type": 'planetary nebula', "mag": 11.5, "size": 0.3, "months": [5, 6, 7, 8], "hours": 10},
-    {"name": 'Phantom Streak Nebula', "catalog_id": 'NGC 6741', "ra": 19.04361, "dec": 0.44939, "type": 'planetary nebula', "mag": 11.5, "size": 0.1, "months": [6, 7, 8, 9], "hours": 10},
+    {"name": 'Phantom Streak Nebula', "catalog_id": 'NGC 6741', "ra": 19.04361, "dec": -0.44939, "type": 'planetary nebula', "mag": 11.5, "size": 0.1, "months": [6, 7, 8, 9], "hours": 10},  # PS-124: J2000 Dec -00d26'58" (the generator dropped the sign of "-00")
     {"name": 'Rim Nebula', "catalog_id": 'NGC 6188', "ra": 16.66829, "dec": -48.66228, "type": 'nebula', "mag": None, "size": 20.0, "months": [4, 5, 6, 7], "hours": 20},
     {"name": 'Red Spider Nebula', "catalog_id": 'NGC 6537', "ra": 18.08697, "dec": -19.84297, "type": 'planetary nebula', "mag": 11.6, "size": 0.2, "months": [5, 6, 7, 8], "hours": 10},
     {"name": 'Miniature Spiral', "catalog_id": 'NGC 3928', "ra": 11.86323, "dec": 48.68314, "type": 'galaxy', "mag": 12.5, "size": 1.4, "months": [2, 3, 4, 5], "hours": 15},
@@ -467,7 +476,7 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'M 36', "catalog_id": 'M 36', "ra": 5.60493, "dec": 34.14075, "type": 'open cluster', "mag": 6.0, "size": 7.2, "months": [1, 2, 11, 12], "hours": 6},
     {"name": 'M 21', "catalog_id": 'M 21', "ra": 18.0704, "dec": -22.49006, "type": 'open cluster', "mag": 5.9, "size": 6.0, "months": [5, 6, 7, 8], "hours": 6},
     {"name": 'M 38', "catalog_id": 'M 38', "ra": 5.47847, "dec": 35.85492, "type": 'open cluster', "mag": 6.4, "size": 9.6, "months": [1, 2, 11, 12], "hours": 6},
-    {"name": 'M 2', "catalog_id": 'M 2', "ra": 21.5575, "dec": 0.82331, "type": 'globular cluster', "mag": 6.2, "size": 8.4, "months": [7, 8, 9, 10], "hours": 8},
+    {"name": 'M 2', "catalog_id": 'M 2', "ra": 21.5575, "dec": -0.82331, "type": 'globular cluster', "mag": 6.2, "size": 8.4, "months": [7, 8, 9, 10], "hours": 8},  # PS-124: Dec -00d49'24" (sign was lost)
     {"name": 'M 71', "catalog_id": 'M 71', "ra": 19.89614, "dec": 18.77839, "type": 'globular cluster', "mag": 6.1, "size": 6.9, "months": [6, 7, 8, 9], "hours": 8},
     {"name": 'M 52', "catalog_id": 'M 52', "ra": 23.41344, "dec": 61.59317, "type": 'open cluster', "mag": 6.9, "size": 9.9, "months": [8, 9, 10, 11], "hours": 6},
     {"name": 'M 30', "catalog_id": 'M 30', "ra": 21.67278, "dec": -23.17908, "type": 'globular cluster', "mag": 7.1, "size": 9.0, "months": [7, 8, 9, 10], "hours": 8},
@@ -501,7 +510,7 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'M 70', "catalog_id": 'M 70', "ra": 18.72018, "dec": -32.29189, "type": 'globular cluster', "mag": 9.1, "size": 6.6, "months": [5, 6, 7, 8], "hours": 8},
     {"name": 'M 72', "catalog_id": 'M 72', "ra": 20.89109, "dec": -12.53706, "type": 'globular cluster', "mag": 9.0, "size": 4.5, "months": [6, 7, 8, 9], "hours": 8},
     {"name": 'M 90', "catalog_id": 'M 90', "ra": 12.61383, "dec": 13.16294, "type": 'galaxy', "mag": 9.5, "size": 9.1, "months": [2, 3, 4, 5], "hours": 15},
-    {"name": 'M 77', "catalog_id": 'M 77', "ra": 2.71131, "dec": 0.01328, "type": 'galaxy', "mag": 9.3, "size": 6.1, "months": [9, 10, 11, 12], "hours": 15},
+    {"name": 'M 77', "catalog_id": 'M 77', "ra": 2.71131, "dec": -0.01328, "type": 'galaxy', "mag": 9.3, "size": 6.1, "months": [9, 10, 11, 12], "hours": 15},  # PS-124: Dec -00d00'48" (sign was lost)
     {"name": 'M 105', "catalog_id": 'M 105', "ra": 10.79711, "dec": 12.58161, "type": 'galaxy', "mag": 9.3, "size": 4.9, "months": [1, 2, 3, 4], "hours": 15},
     {"name": 'M 100', "catalog_id": 'M 100', "ra": 12.3819, "dec": 15.82181, "type": 'galaxy', "mag": 9.5, "size": 6.1, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'M 84', "catalog_id": 'M 84', "ra": 12.41771, "dec": 12.88697, "type": 'galaxy', "mag": 9.8, "size": 7.4, "months": [2, 3, 4, 5], "hours": 15},
@@ -591,19 +600,118 @@ SEASONAL_TARGETS: list[dict] = [
 ]
 
 
+# PS-124: goal defaults and extra names per catalog_id, merged into the entry
+# at lookup time (the generated rows above stay one line each).
+#   aliases     more names the Add box accepts (matched with target_key, so
+#               case, spaces and punctuation do not matter)
+#   goal_hours  RC16 goal when the Add box gives no budget (else 8 h)
+#   mix         narrowband split {filter: percent} (galaxies keep LRGB)
+#   osc_hours   Piggy-600 OSC goal added with the project (two-rig bonus)
+#   note        one line for the dashboard
+CATALOG_EXTRAS: dict[str, dict] = {
+    "NGC 604": {"aliases": ["NGC604 in M33"], "goal_hours": 10,
+                "mix": {"Ha": 50, "OIII": 40, "SII": 10}, "osc_hours": 10,
+                "note": "HII region in M33; the Piggy-600 frames all of M33 "
+                        "(70' x 40') about 12' off centre"},
+    "IC 410": {"aliases": ["Tadpoles", "Tadpole Nebula", "NGC 1893"],
+               "goal_hours": 15, "osc_hours": 8,
+               "note": "RC16 crops the Tadpoles; the Piggy-600 gets the whole "
+                       "IC 410 region"},
+    "NGC 7331": {"aliases": ["Deer Lick Group", "Deer Lick"], "goal_hours": 15,
+                 "note": "Deer Lick companions fit the RC16 field"},
+    "NGC 891": {"aliases": ["Silver Sliver"], "goal_hours": 15},
+    "HCG092": {"aliases": ["HCG 92"], "goal_hours": 18},
+    "M 76": {"aliases": ["Little Dumbbell", "Little Dumbbell Nebula", "NGC 650"],
+             "goal_hours": 10, "mix": {"Ha": 50, "OIII": 40, "SII": 10}},
+    "NGC 7662": {"aliases": ["Blue Snowball"], "goal_hours": 8,
+                 "mix": {"Ha": 40, "OIII": 50, "SII": 10}},
+    "NGC 40": {"aliases": ["Bow-Tie"], "goal_hours": 10,
+               "mix": {"Ha": 50, "OIII": 30, "SII": 20}},
+    "M 1": {"aliases": ["Crab", "NGC 1952"], "goal_hours": 12,
+            "mix": {"Ha": 40, "OIII": 30, "SII": 30}},
+    "NGC 2392": {"aliases": ["Clownface Nebula"], "goal_hours": 8,
+                 "mix": {"Ha": 40, "OIII": 50, "SII": 10}},
+    "M 74": {"aliases": ["Phantom Galaxy", "NGC 628"], "goal_hours": 15},
+    "M 77": {"aliases": ["Cetus A", "NGC 1068"], "goal_hours": 12},
+    "NGC 7008": {"goal_hours": 10, "mix": {"Ha": 40, "OIII": 50, "SII": 10}},
+}
+
+# PS-124: the user catalog (<data_dir>/user_catalog.json), set by
+# scheduler/catalog.py at startup and after each add. Same row shape as
+# SEASONAL_TARGETS.
+_USER_TARGETS: list[dict] = []
+
+
+def set_user_targets(entries: list[dict]) -> None:
+    global _USER_TARGETS
+    _USER_TARGETS = list(entries or [])
+
+
+def catalog_entries() -> list[dict]:
+    """Every catalog row: the built-in list, then the user catalog, each
+    merged with its CATALOG_EXTRAS (a copy; the lists are not changed)."""
+    out = []
+    for e in (*SEASONAL_TARGETS, *_USER_TARGETS):
+        extra = CATALOG_EXTRAS.get(e.get("catalog_id", ""))
+        out.append({**extra, **e} if extra else dict(e))
+    return out
+
+
+def rig_hint(size_arcmin: float | None) -> str:
+    """PS-124: which rig suits the target: "rc16" under 15', "piggyback" over
+    60', "both" in between (RC16 crop plus a Piggy-600 wide field)."""
+    if size_arcmin is None:
+        return "rc16"
+    if size_arcmin < 15:
+        return "rc16"
+    if size_arcmin > 60:
+        return "piggyback"
+    return "both"
+
+
+def months_for_ra(ra_hours: float) -> list[int]:
+    """Four months around the midnight transit (RA 0h transits at midnight
+    in late September), the rule the generated rows above follow."""
+    start = int(round(7.9 + (ra_hours % 24) / 2))
+    return [((start + i - 1) % 12) + 1 for i in range(4)]
+
+
+def _entry_keys(e: dict) -> set[str]:
+    from photonscript.shared.target_names import target_key
+    names = [e.get("name"), e.get("catalog_id"), *(e.get("aliases") or [])]
+    names += str(e.get("catalog_id") or "").split("/")
+    return {target_key(n) for n in names} - {""}
+
+
+def find_catalog_entry(name: str) -> dict | None:
+    """PS-124: the catalog row for a name, catalog id or alias ("M76",
+    "m 76", "Little Dumbbell" all find M 76). Built-in rows win over the
+    user catalog; None when nothing matches."""
+    from photonscript.shared.target_names import target_key
+    key = target_key(name)
+    if not key:
+        return None
+    for e in catalog_entries():
+        if key in _entry_keys(e):
+            return e
+    return None
+
+
+def entry_to_target(entry: dict) -> CelestialTarget:
+    return CelestialTarget(
+        name=entry["name"],
+        catalog_id=entry.get("catalog_id", ""),
+        ra_hours=entry["ra"],
+        dec_degrees=entry["dec"],
+        object_type=entry.get("type", ""),
+        magnitude=entry.get("mag"),
+        angular_size_arcmin=entry.get("size"),
+        recommended_total_hours=entry.get("hours", 10),
+    )
+
+
 def get_seasonal_targets(month: int) -> list[CelestialTarget]:
-    """Return curated targets appropriate for a given month."""
-    results = []
-    for entry in SEASONAL_TARGETS:
-        if month in entry["months"]:
-            results.append(CelestialTarget(
-                name=entry["name"],
-                catalog_id=entry["catalog_id"],
-                ra_hours=entry["ra"],
-                dec_degrees=entry["dec"],
-                object_type=entry["type"],
-                magnitude=entry.get("mag"),
-                angular_size_arcmin=entry.get("size"),
-                recommended_total_hours=entry.get("hours", 10),
-            ))
-    return results
+    """Return curated targets appropriate for a given month (built-in list
+    plus the PS-124 user catalog)."""
+    return [entry_to_target(e) for e in catalog_entries()
+            if month in (e.get("months") or [])]

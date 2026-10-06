@@ -308,9 +308,9 @@ def best_subs(rows_: Iterable[dict], config) -> dict[str, str]:
 # --- target facts --------------------------------------------------------------
 
 def _catalog_entry(name: str, catalog_id: str = "") -> dict | None:
-    from photonscript.shared.astronomy import SEASONAL_TARGETS
+    from photonscript.shared.astronomy import catalog_entries
     keys = {target_key(name), target_key(catalog_id)} - {""}
-    for t in SEASONAL_TARGETS:
+    for t in catalog_entries():  # PS-124: user catalog too
         if keys & {target_key(t.get("name")), target_key(t.get("catalog_id"))}:
             return t
     return None

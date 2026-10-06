@@ -297,6 +297,12 @@ def _dashboard_targets(obs, now: datetime):
     return twilight, ranked
 
 
+def _picker_targets(ranked):
+    """Top 60 for tonight plus every PS-124 catalog row (scheduler/catalog)."""
+    from photonscript.scheduler.catalog import picker_targets
+    return picker_targets(ranked)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     config = get_config()
@@ -311,7 +317,7 @@ async def dashboard(request: Request):
         "telescope_state": _telescope_state,
         "projects": list(_stored_projects().values()),
         "twilight": twilight,
-        "tonight_targets": ranked[:60],  # picker list — show everything well-placed tonight, not just the top 10
+        "tonight_targets": _picker_targets(ranked),  # picker list: everything well-placed tonight plus the PS-124 rows
         "month": now.strftime("%B"),
     })
 
@@ -1210,16 +1216,22 @@ def api_projects2():
 
 @app.post("/api/projects2/from_catalog")
 async def api_project_from_catalog(request: Request):
+    # PS-124: name, catalog id or alias, case / space / punctuation
+    # insensitive; the row's goal hours, mix and Piggy OSC goal apply unless
+    # the body gives budget_hours. Coordinates go to /api/projects2/custom.
+    from photonscript.scheduler import catalog
+    from photonscript.shared.astronomy import find_catalog_entry
     body = await request.json()
     name = body.get("name", "")
-    store = get_store()
-    for month in range(1, 13):
-        for t in get_seasonal_targets(month):
-            if t.name.lower() == name.lower() or t.catalog_id.lower() == name.lower():
-                proj = store.add_from_target(t, float(body.get("budget_hours", 8.0)))
-                _projects[proj.id] = proj
-                return _project_json(proj)
-    return JSONResponse(status_code=404, content={"detail": f"'{name}' not in catalog"})
+    entry = find_catalog_entry(name)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"detail": f"'{name}' not in catalog"})
+    proj, d = catalog.create_project(get_store(), entry, get_config(),
+                                     body.get("budget_hours"))
+    _projects[proj.id] = proj
+    out = _project_json(proj)
+    out["catalog_defaults"] = d
+    return out
 
 
 @app.patch("/api/projects2/{project_id}")
@@ -2956,6 +2968,8 @@ from photonscript.scheduler.routers import sideload as _sideload_router  # noqa:
 app.include_router(_sideload_router.router)
 from photonscript.scheduler.routers import auto_arm as _auto_arm_router  # noqa: E402
 app.include_router(_auto_arm_router.router)
+from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E402
+app.include_router(_catalog_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
