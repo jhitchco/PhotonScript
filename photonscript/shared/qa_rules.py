@@ -1076,11 +1076,23 @@ def group_key(rec: dict) -> tuple:
             str(rec.get("filter") or "?"))
 
 
+def is_test_record(rec: dict) -> bool:
+    """PS-152: a tracking-test, optics-test or focus-calibration sub (the
+    record's "test" flag, or its target name for records written before)."""
+    if rec.get("test"):
+        return True
+    from photonscript.shared.target_names import is_test_target
+    return is_test_target(rec.get("target"))
+
+
 def night_context(records: list[dict]) -> dict[tuple, dict]:
     """Per (rig, target, filter): median HFR and background of the night's
-    subs (all of them, accepted or not: medians are robust)."""
+    subs (all of them, accepted or not: medians are robust). PS-152: test
+    and calibration subs never feed a median (their hfr_rel / bg_rel skip)."""
     groups: dict[tuple, dict] = {}
     for r in records:
+        if is_test_record(r):
+            continue
         g = groups.setdefault(group_key(r), {"hfr": [], "bg": []})
         h, b = _num(r.get("hfr")), _num(r.get("background"))
         if h:

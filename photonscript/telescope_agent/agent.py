@@ -1501,6 +1501,9 @@ class TelescopeAgent:
                 "file": rel_in_night, "abs_path": str(file_path),
                 "time": datetime.utcnow().isoformat() + "Z",
                 "target": target_name, "filter": rec_filter,
+                # PS-152: a test / calibration sub, kept out of medians
+                **({"test": True} if qa_rules.is_test_record(
+                    {"target": target_name}) else {}),
                 "exp_s": exposure_seconds,
                 "ccd_temp": self.state.camera_temp_c,
                 "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,

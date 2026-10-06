@@ -85,3 +85,80 @@ def test_watch_with_file_is_unchanged(tmp_path):
     a.watch = {"guided_targets": ["M 31"]}
     assert a._watch_guiding_active(["M 31_Container"]) is True
     assert a._watch_guiding_active(["Optics test M 2_Container"]) is False
+
+
+# ---- 3. night medians, baselines, night score ----------------------------------
+
+def _sub(target, hfr, passed=True, flt="L", exp=300.0, **kw):
+    return {"rig": "rc16", "target": target, "filter": flt, "hfr": hfr,
+            "background": 1000.0, "passed_qa": passed, "exp_s": exp,
+            "fwhm_arcsec": hfr * 0.236, "stars": 500, "ecc": 0.4,
+            "file": "2026-10-06/x.fits", **kw}
+
+
+def test_night_context_ignores_test_subs():
+    from photonscript.shared import qa_rules
+    recs = [_sub("M 31", 4.0) for _ in range(5)]
+    recs += [_sub("Tracking test M 31", 9.0) for _ in range(6)]
+    recs += [_sub("Whatever", 9.0, test=True)]       # flag alone is enough
+    ctx = qa_rules.night_context(recs)
+    assert set(ctx) == {("rc16", "M 31", "L")}
+    assert ctx[("rc16", "M 31", "L")]["hfr_median"] == 4.0
+    assert qa_rules.is_test_record({"target": "Optics test M 2 L -300"})
+    assert not qa_rules.is_test_record({"target": "M 2"})
+
+
+def test_baselines_ignore_test_subs(tmp_path):
+    from photonscript.scheduler import qa_baselines
+    cfg = _cfg(tmp_path)
+    real = [_sub("M 31", 4.0, _night="2026-10-06") for _ in range(20)]
+    test = [_sub("Optics test M 2 L -300", 12.0, _night="2026-10-06")
+            for _ in range(20)]
+    a = qa_baselines.baselines(cfg, records=real)
+    b = qa_baselines.baselines(cfg, records=real + test)
+    assert a["rigs"] == b["rigs"]
+    hfr = b["rigs"][0]["filters"][0]["metrics"]["hfr"]
+    assert hfr["n"] == 20 and hfr["median"] == 4.0
+
+
+class _Report:
+    safe_hours = shutter_hours = integrating_hours = 1.0
+    sky_utilization_pct = photon_efficiency_pct = 50.0
+
+
+def test_night_score_and_hours_skip_test_subs(tmp_path, monkeypatch):
+    from photonscript.scheduler import runs
+    monkeypatch.setattr(runs, "calibration_inventory", lambda c, d: {})
+    monkeypatch.setattr(runs, "_phase_stats", lambda c, d: {})
+    real = [_sub("M 31", 4.0, passed=True, exp=360.0) for _ in range(10)]
+    test = [_sub("Tracking test M 31", 9.0, passed=False, exp=360.0)
+            for _ in range(10)]
+    subs = real + test
+    runs._flag_test_subs(subs)
+    assert [s.get("test", False) for s in subs] == [False] * 10 + [True] * 10
+    out = runs._night_detail_rest(_cfg(tmp_path), "2026-10-06", None, {},
+                                  subs, {}, [], _Report(), 10, 0, 8.0)
+    rep = out["report"]
+    assert rep["light_hours"] == 1.0 and rep["accepted_hours"] == 1.0
+    assert rep["test_hours"] == 1.0
+    assert out["score"]["breakdown"]["keep_rate"]["value"] == 100
+    assert len(out["subs"]) == 20          # recorded and listed, flagged
+
+
+def test_plan_vs_actual_flags_test_rows():
+    from photonscript.scheduler import runs
+    _p, table = runs._plan_vs_actual(None, [_sub("M 31", 4.0),
+                                            _sub("Optics test M 2", 9.0)])
+    by = {r["target"]: r for r in table}
+    assert by["Optics test M 2"].get("test") is True
+    assert "test" not in by["M 31"]
+
+
+def test_records_are_flagged_at_write():
+    agent = (ROOT / "photonscript/telescope_agent/agent.py").read_text(
+        encoding="utf-8")
+    runs_src = (ROOT / "photonscript/scheduler/runs.py").read_text(
+        encoding="utf-8")
+    assert '{"test": True} if qa_rules.is_test_record(' in agent
+    assert '{"test": True} if qa_rules.is_test_record({"target": target})' \
+        in runs_src
