@@ -97,7 +97,9 @@ No new code needed; the machinery matches the light epoch via `rig_config(PIGGYB
   POST /api/calibration/capture   {"rig":"piggyback","darks":[[120,30]],"bias":50}
   ```
 - **Flats on demand** — `POST /api/calibration/flats {"rig":"piggyback"}` (dusk) / the
-  companion's dawn set. OSC flats need no filter wheel (`_osc_sky_flat`).
+  companion's dawn set. OSC flats need no filter wheel (`_osc_sky_flat`), but NINA's SkyFlat
+  still needs a SwitchFilter child with `Filter: null` (PS-132: without it NINA #2's
+  validation threw and Start did nothing; see HANDBOOK, failure modes).
 
 What you need banked (per the light epoch):
 - **Darks:** 120 s, gain 100, offset 256, 0 °C — ~20–30.

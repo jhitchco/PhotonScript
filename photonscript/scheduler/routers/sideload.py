@@ -8,7 +8,10 @@ POST /api/sequence/sideload?rig=rc16|piggyback&recipe=&exclude=&at=
      PAUSED_UNSAFE (409), when NINA cannot be read (502) or runs anything
      (409), and (Piggy recipe) when NINA #2 does not see the safety monitor
      (409). Then save a copy under sequences/, POST /sequence/load only, and
-     log a "sideload" event. Start stays in NINA.
+     log a "sideload" event. Start stays in NINA. PS-132: then read NINA's
+     own validation (nina_validation.check_loaded): a Validate error is
+     ok False / 422 (NINA would refuse Start), Issues are reported with
+     ok True; both push once ("validation" in the body).
 
 Pure helpers live in scheduler/sideload.py. Kept out of app.py (PS-8).
 """
@@ -211,10 +214,36 @@ async def api_sideload(rig: str = "rc16", recipe: str = "",
         path = sd.sideload_path(_seq_dir(), rig, built["name"])
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(sd.sequence_text(built["seq"]), encoding="utf-8")
+        t0 = datetime.now()
         res = await sd.load_only(base, built["seq"])
+        validation = None
+        if res["ok"]:
+            validation = await _validate_load(cfg, rig, base, t0)
+            if validation is not None and not validation["ok"]:
+                fatal = bool(validation["errors"])
+                res = {"ok": not fatal, "detail": res["detail"] + (
+                    ". NINA REJECTS it: " if fatal else ". NINA flags: ")
+                    + validation["detail"] + (
+                    ". Start in NINA will do nothing: fix and reload."
+                    if fatal else "")}
         sd.record_event(cfg, rig, built["name"], str(path), recipe,
                         res["ok"], res["detail"])
     body = {"ok": res["ok"], "detail": res["detail"], "file": str(path),
             "loaded_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-            "started": False, "note": NOTE, **view}
-    return body if res["ok"] else JSONResponse(status_code=502, content=body)
+            "started": False, "note": NOTE, "validation": validation, **view}
+    if res["ok"]:
+        return body
+    # PS-132: loaded, but NINA's validation failed (422); else the load failed
+    return JSONResponse(status_code=422 if validation else 502, content=body)
+
+
+async def _validate_load(cfg, rig: str, base: str, since):
+    """PS-132: NINA's validation of the sequence just loaded (None when
+    nina_load_validation is off); pushes once when it finds problems."""
+    from photonscript.scheduler import nina_validation as nv
+    if nv.mode(cfg) == "off":
+        return None
+    v = await nv.check_loaded(base, cfg, rig, since=since)
+    if not v["ok"]:
+        await nv.alert(cfg, rig, v, "sideload")
+    return v

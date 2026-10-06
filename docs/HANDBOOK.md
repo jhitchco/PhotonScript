@@ -214,6 +214,10 @@ armer is not involved and stays DISARMED.
   that NINA's sequence state unreadable 502 or anything RUNNING 409 (`GET
   /sequence/state`, falls back to `/sequence/json`); Piggy recipe while NINA
   #2 does not report the safety monitor connected 409.
+- PS-132: after the load PhotonScript reads NINA's own validation (state
+  Issues + Validate errors in that NINA's log): a Validate error answers 422
+  / ok false (NINA would refuse Start), Issues are reported; both push once.
+  See "Load validation" under failure modes.
 - Every load saves `sequences/Sideload_<rig>_<name>_<stamp>.json` and logs
   a `kind: "sideload"` line in `runs/<night>_events.jsonl` plus an entry in
   the notification audit (`/api/notifications`, sent=false).
@@ -704,6 +708,33 @@ open for a meaningful stretch but few/no good lights resulted.
   Validate stays clean) - see `_smart_exposure` in nina_sequence_json.py. The
   develop branch of NINA added the `Triggers.Count > 0` guard, so a NINA update
   also fixes it.
+- **Piggy-600 SkyFlat validation crash** (2026-10-05, PS-132): NINA #2 logged
+  `InvalidOperationException: Sequence contains no matching element` at
+  `SkyFlat.GetSwitchFilterItem()` from `SkyFlat.Validate()` every 5 s while
+  the companion was loaded; Start did nothing (twice). NINA's SkyFlat finds
+  its filter with `Items.First(x is SwitchFilter)`, and the OSC flat had no
+  SwitchFilter (the Piggy-600 has no wheel). Fix (generator): the OSC SkyFlat
+  carries a SwitchFilter with `Filter: null`, which NINA validates clean
+  without a wheel (SwitchFilter checks the wheel only when a filter is set)
+  and which SkyFlat passes as "no filter" to its captures, so NINA's own
+  auto-exposure (50 % histogram) still runs. Guards: the `flat-filter` lint
+  rule (any flat instruction without its SwitchFilter, any rig) and
+  `no-filter-wheel` (a filter selected on a rig without a wheel,
+  `rigs.rig_has_filter_wheel`), in the night lint, the companion lint
+  (sideload) and before the armer dispatches the companion (a lint error
+  there = no dispatch + Pushover). And load validation (below).
+- **Load validation** (PS-132): NINA refuses a manual Start silently when a
+  validator throws. After every ninaAPI `/sequence/load` (sideload, and
+  `rigs.nina_dispatch`: Piggy companion, Piggy dusk flats, calibration
+  capture) PhotonScript waits `nina_load_validation_settle_s` (8 s), reads
+  the `Issues` lists in `GET /sequence/state` and the ERROR blocks naming a
+  Validate in that rig's NINA log since the load (a validator that throws
+  never sets Issues), and pushes one "PhotonScript NINA validation" alert.
+  Sideload: a Validate error makes the response 422 / ok false ("NINA
+  REJECTS it"), Issues alone are reported with ok true. Dispatch:
+  `nina_load_validation=alert` (default) starts anyway (skipValidation, as
+  before) and says so; `refuse` skips the Start on a Validate error; `off`
+  skips the check. The RC16 armer's own dispatch is not covered.
 - **Plate solve failing 100%** (2026-07-26): ASTAP "Plate solve failed" x82,
   zero successes, so `Center`/`Slew and center` never completes and no target
   is acquired. Cross-check the SOLVE conditions before blaming the sky: last

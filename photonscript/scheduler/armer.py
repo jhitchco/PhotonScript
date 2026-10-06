@@ -1281,7 +1281,26 @@ class Armer:
             seq_dir.mkdir(exist_ok=True)
             path = seq_dir / f"piggyback_companion_{datetime.now():%Y%m%d_%H%M}.json"
             path.write_text(seq_text, encoding="utf-8")
-            res = await nina_dispatch(pcfg.nina_base_url, json.loads(seq_text))
+            # PS-132: the companion's own lint gates the dispatch (no mount
+            # moves, cold setpoint, guarded light loops, and flats NINA #2
+            # can validate without a filter wheel). A sequence NINA cannot
+            # validate does nothing anyway; say so instead of starting it.
+            from photonscript.scheduler.sideload import lint_companion
+            from photonscript.scheduler.sequence_lint import format_result
+            lint_res = lint_companion(json.loads(seq_text))
+            if not lint_res.ok:
+                errs = "; ".join(f"[{f.rule}] {f.detail}"
+                                 for f in lint_res.findings
+                                 if f.level == "ERROR")
+                logger.warning("Piggyback companion NOT dispatched, lint "
+                               "failed: %s", format_result(lint_res))
+                await notify(cfg, "Piggyback companion NOT started: its lint "
+                             f"failed ({errs[:400]}). RC16 night is "
+                             "unaffected.", title="PhotonScript piggyback",
+                             priority=1)
+                return
+            res = await nina_dispatch(pcfg.nina_base_url, json.loads(seq_text),
+                                      config=cfg, rig=PIGGYBACK)
             if res.get("ok"):
                 logger.info("Piggyback companion dispatched to NINA #2 (%s)",
                             ("lights+flats+darks/bias" if want_lights else

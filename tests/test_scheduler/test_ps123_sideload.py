@@ -288,7 +288,10 @@ class TestLoad:
         code, b = _post()
         assert code == 200 and b["ok"] and b["started"] is False
         calls = [c[3] for c in wired["nina"].calls]
-        assert calls == ["/v2/api/sequence/state", "/v2/api/sequence/load"]
+        # PS-132: the state is read again after the load (NINA's validation)
+        assert calls == ["/v2/api/sequence/state", "/v2/api/sequence/load",
+                         "/v2/api/sequence/state"]
+        assert b["validation"]["ok"]
         assert all(c[1] == "nina1" for c in wired["nina"].calls)
         assert not any("start" in c or "stop" in c for c in calls)
         assert sd.target_names(wired["nina"].loaded) == [
@@ -321,7 +324,7 @@ class TestLoad:
         calls = [c[3] for c in wired["nina"].calls]
         assert calls == ["/v2/api/sequence/state",
                          "/v2/api/equipment/safetymonitor/info",
-                         "/v2/api/sequence/load"]
+                         "/v2/api/sequence/load", "/v2/api/sequence/state"]
         assert all(c[1] == "nina2" and c[2] == 1889 for c in wired["nina"].calls)
 
     def test_piggyback_refused_without_safety_monitor(self, wired):

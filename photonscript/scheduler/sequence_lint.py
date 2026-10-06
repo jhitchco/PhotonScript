@@ -211,6 +211,50 @@ def _check_light_loop_guards(seq: dict, r: LintResult) -> None:
                                       "starting subs after the night loop's end")
 
 
+# PS-132: NINA flat instructions that find their filter with
+# Items.First(x is SwitchFilter) (GetSwitchFilterItem): without a SwitchFilter
+# child their Validate throws "Sequence contains no matching element", NINA
+# logs it every few seconds and a manual Start does nothing (NINA #2,
+# 2026-10-05).
+FLAT_FILTER_TYPES = ("FlatDevice.SkyFlat", "FlatDevice.AutoExposureFlat",
+                     "FlatDevice.AutoBrightnessFlat",
+                     "FlatDevice.TrainedFlatExposure",
+                     "FlatDevice.TrainedDarkFlatExposure")
+
+
+def _check_flat_filters(seq: dict, r: LintResult,
+                        filter_wheel: bool = True) -> None:
+    """PS-132 rules. flat-filter (any rig): every NINA flat instruction in
+    FLAT_FILTER_TYPES needs a SwitchFilter among its own Items. On a rig
+    without a filter wheel (filter_wheel=False, rigs.rig_has_filter_wheel)
+    that SwitchFilter must carry no filter (Filter null validates clean with
+    no wheel), and no-filter-wheel flags any SwitchFilter with a filter set:
+    NINA reports "filter wheel not connected" and the step cannot run."""
+    for _p, d in _types_in(seq):
+        t = d["$type"]
+        if not any(f in t for f in FLAT_FILTER_TYPES):
+            continue
+        items = (d.get("Items") or {}).get("$values", [])             if isinstance(d.get("Items"), dict) else (d.get("Items") or [])
+        if not any(isinstance(it, dict) and "SwitchFilter" in it.get("$type", "")
+                   for it in items):
+            kind = t.split(",")[0].split(".")[-1]
+            r.error("flat-filter", f"[{d.get('Name') or kind}] {kind} has no "
+                    "SwitchFilter child: NINA's Validate throws (Sequence "
+                    "contains no matching element) and Start does nothing. "
+                    "Give it a SwitchFilter (Filter null on a rig without a "
+                    "filter wheel)")
+    if filter_wheel:
+        return
+    set_filters = [d for d in _find_type(seq, "FilterWheel.SwitchFilter")
+                   if d.get("Filter") is not None]
+    if set_filters:
+        names = sorted({str((d.get("Filter") or {}).get("_name", "?"))
+                        for d in set_filters})
+        r.error("no-filter-wheel", f"{len(set_filters)} SwitchFilter(s) select "
+                f"a filter ({', '.join(names)}) on a rig without a filter "
+                "wheel: NINA reports the wheel not connected")
+
+
 def _cooler_gate_wanted() -> tuple[str, str | None]:
     """PS-61: (mode, script path when the gate should be in the sequence,
     else None). ("off", None) if the config can't be read."""
@@ -397,11 +441,13 @@ def _check_selftest(seq: dict, r: LintResult) -> None:
 
 def lint(seq: dict, guided: bool | None = None,
          unguided_dither: bool = False,
-         cooler_gate: bool | None = None) -> LintResult:
+         cooler_gate: bool | None = None,
+         filter_wheel: bool = True) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content.
     unguided_dither (PS-66): an unguided run may carry active dithers (NINA
     Direct Guider); StartGuiding is still an error. cooler_gate (PS-61):
-    require the gate before every light loop (None = from the config)."""
+    require the gate before every light loop (None = from the config).
+    filter_wheel (PS-132): False for a rig without a wheel."""
     r = LintResult()
 
     if guided is None:
@@ -422,6 +468,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_light_loop_guards(seq, r)
     _check_cooler_gate(seq, r, cooler_gate)
     _check_readout_mode(seq, r)
+    _check_flat_filters(seq, r, filter_wheel)   # PS-132
 
     if not _has_type(seq, "MeridianFlipTrigger"):
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")

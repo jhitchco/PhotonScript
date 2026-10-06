@@ -67,7 +67,9 @@ def test_osc_flats_default_25_at_osc_gain_offset():
     root = _companion()
     sf = [n for n in _walk(root) if n.get("$type", "").startswith(_SKYFLAT)]
     assert len(sf) == 1
-    loop = _items(sf[0])[0]
+    # PS-132: NINA's SkyFlat needs its SwitchFilter child (Filter null: no wheel)
+    sw, loop = _items(sf[0])
+    assert _short(sw["$type"]) == "SwitchFilter" and sw["Filter"] is None
     assert _conds(loop)[0]["Iterations"] == 25
     take = _items(loop)[0]
     assert (take["ImageType"], take["Gain"], take["Offset"]) == ("FLAT", 100, 256)
@@ -76,7 +78,7 @@ def test_osc_flats_default_25_at_osc_gain_offset():
 def test_osc_flat_count_is_configurable():
     root = _companion(piggyback_flat_count=30)
     sf = next(n for n in _walk(root) if n.get("$type", "").startswith(_SKYFLAT))
-    assert _conds(_items(sf)[0])[0]["Iterations"] == 30
+    assert _conds(_items(sf)[-1])[0]["Iterations"] == 30
 
 
 def test_light_loop_waits_are_bounded_and_passes_gated():

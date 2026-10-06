@@ -121,7 +121,8 @@ class RigIO:
 
     async def dispatch(self, seq: dict) -> dict:
         from photonscript.shared.rigs import nina_dispatch
-        return await nina_dispatch(self.base, seq)
+        return await nina_dispatch(self.base, seq, config=self.config,
+                                   rig=self.rig)   # PS-132
 
     async def sequence_running(self) -> bool | None:
         """True if any item of the loaded sequence is RUNNING; None when the
