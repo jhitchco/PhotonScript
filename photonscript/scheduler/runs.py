@@ -597,6 +597,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "sat_stars_pct": m.get("sat_stars_pct"),
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
         "noise": m.get("noise"),
+        # PS-117 (b): sky rate and read-noise penalty (shared.star_measure)
+        "sky_adu": m.get("sky_adu"), "sky_e_s": m.get("sky_e_s"),
+        "sky_e_s_ch": m.get("sky_e_s_ch"),
+        "rn_penalty_pct": m.get("rn_penalty_pct"),
         # PS-108: sat_px, sat_px_pct, zero_px, zero_px_pct, max_adu, sat_adu,
         # bg_median, bg_mad (full resolution, same function as live)
         **px,
@@ -1133,6 +1137,11 @@ def rescore_night(config, date: str, apply: bool = False,
     transitions: Counter = Counter()
     drivers: Counter = Counter()
     diffs, moves = [], []
+    # PS-117 (b): records graded before the sky fields get them from the
+    # stored background (approximate; a re-grade measures them properly)
+    n_sky = _backfill_sky_fields(config, subs, apply)
+    if n_sky:
+        counts["sky_backfilled"] = n_sky
     changed = 0
     lib = library_root(config)
     graded, source = _night_cards(config, date, subs,
@@ -1240,7 +1249,7 @@ def rescore_night(config, date: str, apply: bool = False,
                 except OSError as e:
                     logger.warning("rescore library move %s failed: %s",
                                    src, e)
-    if apply and changed:
+    if apply and (changed or n_sky):
         _rewrite_subs(config, date, subs)
         try:
             build_library(config, date)
@@ -1258,6 +1267,30 @@ def rescore_night(config, date: str, apply: bool = False,
     logger.info("PS-21 rescore %s (%s): %s", date, result["mode"],
                 dict(counts))
     return result
+
+
+def _backfill_sky_fields(config, subs: list[dict], apply: bool) -> int:
+    """PS-117 (b): sky_e_s / rn_penalty_pct for records that lack them,
+    from the stored background (exposure_analysis.record_sky_fields, marked
+    sky_src "background"). Returns how many records get them; writes them
+    only with apply."""
+    from photonscript.shared.exposure_analysis import (CameraModel,
+                                                       record_sky_fields)
+    cams: dict = {}
+    n = 0
+    for rec in subs:
+        if rec.get("sky_e_s") is not None:
+            continue
+        key = (rec.get("rig") or "rc16", rec.get("readout"))
+        if key not in cams:
+            cams[key] = CameraModel.from_config(config, key[0],
+                                                readout=key[1])
+        fields = record_sky_fields(rec, cams[key])
+        if fields:
+            n += 1
+            if apply:
+                rec.update(fields)
+    return n
 
 
 def _night_cards(config, date: str, subs: list[dict],

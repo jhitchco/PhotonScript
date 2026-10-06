@@ -214,6 +214,9 @@ def validate_image(
         ecc_bin=m["ecc_bin"], hfr_bin_px=m["hfr_bin"], stars_bin=m["stars_bin"],
         clipped_pct=m["clipped_pct"], sat_star_pct=m["sat_stars_pct"],
         swamp_factor=m["swamp"], exposure_flag=m["exposure"],
+        sky_adu=m.get("sky_adu"), sky_e_s=m.get("sky_e_s"),
+        sky_e_s_ch=m.get("sky_e_s_ch"),
+        rn_penalty_pct=m.get("rn_penalty_pct"),
         **pixels,
     )
     from photonscript.shared.qa_rules import context, evaluate

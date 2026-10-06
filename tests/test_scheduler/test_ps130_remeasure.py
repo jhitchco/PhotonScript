@@ -313,8 +313,11 @@ def test_real_measure_matches_measure_frame(tmp_path):
     cfg = _cfg(tmp_path)
     f = _write_light(Path(cfg.image_watch_dir) / NIGHT / "LIGHT" / "r.fits")
     fields, table = rm.measure_sub(cfg, f, "rc16")
+    from astropy.io import fits
+    # the header too: measure_sub passes it (read noise, PS-117 sky rate)
     ref = sm.measure_frame(sm.load_native(f), rig_config(cfg, "rc16"),
-                           "rc16", grader="backfill-sep")
+                           "rc16", grader="backfill-sep",
+                           header=fits.getheader(f))
     for mk, rk in rm.MEASURED:
         assert fields[rk] == ref[mk], rk
     assert fields["measure_v"] == sm.MEASURE_VERSION

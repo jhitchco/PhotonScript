@@ -14,6 +14,9 @@ Usage:
     photonscript tracking-test-report [--date D] [--pa DEG] [--json]  # PS-84
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
+    photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
+        [--library PATH] [--profile] [--feature-arcmin 60] [--json]
+        [--camera-cal]                                            # PS-117
     photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
     photonscript guiding-status [--json]                          # PS-119
     photonscript calibration-plan [--rig R] [--json]              # PS-113
@@ -1055,6 +1058,60 @@ def optics_report_cmd(
     else:
         console.print(format_report(rep), markup=False, highlight=False)
     raise typer.Exit(0 if rep["overall"].get("n_measured") else 1)
+
+
+@app.command("exposure-report")
+def exposure_report_cmd(
+    target: str = typer.Option("", "--target", help="Target name or catalog "
+                               "id (its alias folders are read too)"),
+    rig: str = typer.Option("piggyback", "--rig", help="rc16 | piggyback"),
+    flt: str = typer.Option("", "--filter", help="One filter folder (OSC, "
+                            "Ha, ...); default all"),
+    library: str = typer.Option("", "--library", help="Library root; default "
+                                "the desktop mirror, else the scope Library"),
+    every: int = typer.Option(1, "--every", help="Measure every Nth light"),
+    limit: int = typer.Option(0, "--limit", help="At most N lights (0 = all)"),
+    profile: bool = typer.Option(False, "--profile", help="Signal profile "
+                                 "along the major axis from the core"),
+    feature_arcmin: Optional[float] = typer.Option(
+        None, "--feature-arcmin", help="Feature distance from the core "
+        "(arcmin): its profile signal seeds the SNR model (implies --profile)"),
+    signal: Optional[float] = typer.Option(None, "--signal", help="Feature "
+                                           "signal, e-/s per 2x2 pixel"),
+    goal_snr: Optional[float] = typer.Option(None, "--goal-snr"),
+    camera_cal: bool = typer.Option(False, "--camera-cal", help="Re-measure "
+                                    "read noise, gain and dark current from "
+                                    "the Library bias / flat / dark frames"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-117: how much light a target needs and the best sub length, from
+    its Library lights (read-only): sky per CFA channel, read-noise share,
+    saturation, DATE-OBS overhead, an optional signal profile, and the
+    per-length SNR model. --camera-cal measures the camera constants.
+
+    photonscript exposure-report --target M31 --feature-arcmin 60
+    photonscript exposure-report --camera-cal
+    """
+    import json as _json
+    from photonscript.scheduler import exposure_report as er
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if camera_cal:
+        rep = er.camera_cal(cfg, library)
+        print(_json.dumps(rep, indent=2, default=str) if as_json
+              else er.format_cal(rep))
+        raise typer.Exit(0 if any(rep["rigs"].values()) else 1)
+    if not target:
+        console.print("--target is required (or --camera-cal)")
+        raise typer.Exit(2)
+    rep = er.exposure_report(cfg, target, rig=rig, flt=flt, library=library,
+                             every=max(1, every), profile=profile,
+                             feature_arcmin=feature_arcmin, signal=signal,
+                             goal_snr=goal_snr, limit=limit)
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+    else:
+        print(er.format_report(rep))   # wide tables: no rich wrapping
+    raise typer.Exit(0 if rep["measured"] else 1)
 
 
 @app.command("thesky-audit")

@@ -212,7 +212,14 @@ def _build_row(date: str, rec: dict, known, by_key: dict) -> dict:
             "ccd_temp": _num(rec.get("ccd_temp")),
             "corner_ecc": _num(rec.get("corner_ecc")),
             "doubled_frac": _num(rec.get("doubled_frac")),
+            # PS-117 (b): the light budget's inputs
+            "sky_e_s": _num(rec.get("sky_e_s")),
+            "sky_e_s_ch": rec.get("sky_e_s_ch") or None,
+            "rn_penalty_pct": _num(rec.get("rn_penalty_pct")),
+            "swamp": _num(rec.get("swamp")),
+            "sat_stars_pct": _num(rec.get("sat_stars_pct")),
         },
+        "readout": rec.get("readout"),
         "thumb": f"/api/runs/{date}/thumb?file={quote(file, safe='')}"
                  f"&w={THUMB_W}",
         "pointing": None,  # PS-67

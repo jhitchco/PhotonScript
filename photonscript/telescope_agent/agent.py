@@ -1468,6 +1468,10 @@ class TelescopeAgent:
                 "sat_stars_pct": quality.sat_star_pct,
                 "swamp": quality.swamp_factor,
                 "exposure": quality.exposure_flag,
+                # PS-117 (b): sky rate + read-noise penalty (light budget)
+                "sky_adu": quality.sky_adu, "sky_e_s": quality.sky_e_s,
+                "sky_e_s_ch": quality.sky_e_s_ch,
+                "rn_penalty_pct": quality.rn_penalty_pct,
                 # PS-108: full-resolution pixel counts + background spread
                 "sat_px": quality.sat_px, "sat_px_pct": quality.sat_px_pct,
                 "zero_px": quality.zero_px, "zero_px_pct": quality.zero_px_pct,

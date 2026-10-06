@@ -121,6 +121,10 @@ def test_partly_done_goal_counts_seconds_not_subs(tmp_path, monkeypatch):
 # ---- the live path ----------------------------------------------------------
 
 def test_live_piggyback_sub_credits_its_seconds(tmp_path):
+    # the one-time M31 goal decisions are behind us (PS-117 would turn this
+    # 120 s plan into 300 s on the reload below)
+    (tmp_path / "project_migrations.json").write_text(
+        '{"ps30_m31_osc": true, "ps117_m31_light_budget": true}')
     store = ProjectStore(_cfg(tmp_path))
     p = store.add_from_target(M31, budget_hours=6)
     store.update(p.id, osc_hours=6, drop_rc16=True)

@@ -59,7 +59,11 @@ MEASURED = (("hfr", "hfr"), ("fwhm_arcsec", "fwhm_arcsec"),
             ("corner_spread", "corner_spread"),
             ("clipped_pct", "clipped_pct"),
             ("sat_stars_pct", "sat_stars_pct"), ("swamp", "swamp"),
-            ("exposure", "exposure"), ("graded_by", "graded_by"))
+            ("exposure", "exposure"), ("graded_by", "graded_by"),
+            # PS-117 (b): the sky rate fields
+            ("sky_adu", "sky_adu"), ("sky_e_s", "sky_e_s"),
+            ("sky_e_s_ch", "sky_e_s_ch"),
+            ("rn_penalty_pct", "rn_penalty_pct"))
 
 # the old numbers kept on the record for the audit trail
 KEPT_OLD = ("hfr", "fwhm_arcsec", "stars", "ecc", "ecc_bin", "ecc_def",

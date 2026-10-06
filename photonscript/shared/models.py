@@ -229,6 +229,15 @@ class ImagingProject(BaseModel):
     # plan the passenger subs credit, or None), layout (the mosaic
     # definition, scheduler/mosaic.py). None = an ordinary target.
     mosaic: Optional[dict] = None
+    # PS-117 (b) light budget (advisory; seconds stay the goal unit).
+    # feature_signal_e_s: target signal above sky at the faintest feature to
+    # show, e-/s per 2x2 pixel of feature_rig (None = the driving rig),
+    # measured by `photonscript exposure-report`. goal_snr: SNR wanted there
+    # per 2x2 pixel (None = config light_budget_goal_snr, 20).
+    goal_snr: Optional[float] = None
+    feature_signal_e_s: Optional[float] = None
+    feature_rig: Optional[str] = None
+    feature_note: str = ""
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)
@@ -261,6 +270,11 @@ class ImageQualityMetrics(BaseModel):
     sat_star_pct: Optional[float] = None   # % detected stars with saturated cores
     swamp_factor: Optional[float] = None   # background variance / read-noise variance
     exposure_flag: Optional[str] = None    # under / ok / sat-stars / clipped
+    # PS-117 (b): sky e-/s per pixel (G for OSC), per channel, RN penalty %
+    sky_adu: Optional[dict] = None
+    sky_e_s: Optional[float] = None
+    sky_e_s_ch: Optional[dict] = None
+    rn_penalty_pct: Optional[float] = None
     # PS-94: the same measure on a 2x2-binned copy (RC16 only; 0.47"/px)
     ecc_bin: Optional[float] = None        # sqrt(1-(b/a)^2), like eccentricity
     hfr_bin_px: Optional[float] = None     # binned HFR in native px (x2)
