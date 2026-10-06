@@ -38,6 +38,12 @@ tonight (PS-123), a RUNNING item on NINA #1, or an unreadable NINA #1 skips
 the arm (one Pushover per night per reason). Every decision (armed / skipped,
 why) is logged as kind "auto_arm" in runs/<night>_events.jsonl and shown in
 the dashboard chip.
+
+PS-131: the same guard covers the automatic dusk sky flats (they stop, load
+and start their own sequence too); their decisions carry action "dusk_flats".
+And the noon re-arm's cooler-off (cooler belt #2) runs even when the noon arm
+is skipped: once per night, before the pre-cool time, logged as kind
+"noon_cooler_off".
 """
 
 from __future__ import annotations
@@ -197,17 +203,27 @@ def decisions_tonight(config, now: datetime | None = None) -> list[dict]:
             if r.get("kind") == EVENT_KIND]
 
 
+ACTION_ARM = "arm"
+ACTION_FLATS = "dusk_flats"   # PS-131
+
+
+def _action(r: dict) -> str:
+    return r.get("action") or ACTION_ARM   # PS-125 lines carry no action
+
+
 def log_decision(config, decision: str, skip: str | None, detail: str,
                  trigger: str = "", now: datetime | None = None,
-                 notified: bool = False) -> dict | None:
+                 notified: bool = False,
+                 action: str = ACTION_ARM) -> dict | None:
     """Append one auto-arm decision (kind "auto_arm", value "armed" or
     "skipped") to tonight's events file. A skip identical to the last logged
-    decision is not repeated (the loop re-checks every 5 minutes). Returns the
-    line, or None when deduped."""
+    decision for the same action is not repeated (the loop re-checks every 5
+    minutes). action "dusk_flats" (PS-131) marks the automatic dusk flats.
+    Returns the line, or None when deduped."""
     from photonscript.shared.night_events import events_path
     from photonscript.shared.phd2_store import append_jsonl, iso_z
     now = now or datetime.utcnow()
-    prior = decisions_tonight(config, now)
+    prior = [r for r in decisions_tonight(config, now) if _action(r) == action]
     if prior and decision == "skipped":
         last = prior[-1]
         if last.get("value") == "skipped" and last.get("skip") == skip:
@@ -215,29 +231,95 @@ def log_decision(config, decision: str, skip: str | None, detail: str,
     line = {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
             "kind": EVENT_KIND, "value": decision, "skip": skip,
             "trigger": trigger, "detail": detail, "notified": bool(notified)}
+    if action != ACTION_ARM:
+        line["action"] = action
     append_jsonl(events_path(config, _night_key(config, now)), line)
     return line
 
 
-def skip_notified_tonight(config, skip: str, now: datetime | None = None) -> bool:
-    """True when tonight's events already carry a pushed skip of this kind:
-    one Pushover per night per reason, across restarts."""
+def skip_notified_tonight(config, skip: str, now: datetime | None = None,
+                          action: str = ACTION_ARM) -> bool:
+    """True when tonight's events already carry a pushed skip of this kind
+    for this action: one Pushover per night per reason, across restarts."""
     return any(r.get("value") == "skipped" and r.get("skip") == skip
-               and r.get("notified") for r in decisions_tonight(config, now))
+               and r.get("notified") and _action(r) == action
+               for r in decisions_tonight(config, now))
 
 
 async def skip_and_notify(config, skip: str, detail: str, trigger: str,
-                          notifier, now: datetime | None = None) -> dict | None:
-    """Log a skip; push it once per night per reason."""
+                          notifier, now: datetime | None = None,
+                          action: str = ACTION_ARM) -> dict | None:
+    """Log a skip; push it once per night per reason (per action)."""
     now = now or datetime.utcnow()
-    push = not skip_notified_tonight(config, skip, now)
+    push = not skip_notified_tonight(config, skip, now, action)
     line = log_decision(config, "skipped", skip, detail, trigger, now,
-                        notified=push)
+                        notified=push, action=action)
     if line is not None and push:
-        await notifier(config,
-                       f"Auto-arm skipped: {SKIP_TITLES.get(skip, skip)}. "
-                       f"{detail}. A manual Arm still works.",
-                       title="PhotonScript auto-arm skipped", priority=1)
+        if action == ACTION_FLATS:
+            msg = (f"Auto dusk flats skipped: {SKIP_TITLES.get(skip, skip)}. "
+                   f"{detail}. Shoot flats by hand if you need them.")
+            title = "PhotonScript auto flats skipped"
+        else:
+            msg = (f"Auto-arm skipped: {SKIP_TITLES.get(skip, skip)}. "
+                   f"{detail}. A manual Arm still works.")
+            title = "PhotonScript auto-arm skipped"
+        await notifier(config, msg, title=title, priority=1)
+    return line
+
+
+# ---------------------------------------------------------------------------
+# PS-131: the noon cooler-off runs even when the noon arm is skipped
+# ---------------------------------------------------------------------------
+# arm() forces cooler + dew OFF on every rig (cooler belt #2: a missed dawn
+# shutdown is corrected by noon). When the PS-125 guard (or a required
+# preflight) skips the noon arm, that step still runs: once per night, and
+# never at or after the pre-cool time (dusk minus cool_lead_minutes), so it
+# cannot fight a sequence that is cooling for tonight. A rig with a PS-113
+# calibration capture job active is left alone (darks need the cooler).
+
+COOLER_OFF_KIND = "noon_cooler_off"
+
+
+def noon_cooler_off_tonight(config, now: datetime | None = None) -> dict | None:
+    """Tonight's logged noon cooler-off, else None."""
+    from photonscript.shared.night_events import events_path
+    from photonscript.shared.phd2_store import read_jsonl
+    now = now or datetime.utcnow()
+    rows = [r for r in read_jsonl(events_path(config, _night_key(config, now)))
+            if r.get("kind") == COOLER_OFF_KIND]
+    return rows[-1] if rows else None
+
+
+async def noon_cooler_off(config, armer, plan: dict, skip: str,
+                          now: datetime | None = None) -> dict | None:
+    """Force the coolers + dew heaters off on every rig after a skipped noon
+    arm. Returns the logged line, or None when not run (switched off with
+    cooler_off_until_precool, already done tonight, or past pre-cool)."""
+    from photonscript.scheduler.calibration_capture import busy as cal_busy
+    from photonscript.shared.night_events import events_path
+    from photonscript.shared.phd2_store import append_jsonl, iso_z
+    from photonscript.shared.rigs import rig_ids
+    now = now or datetime.utcnow()
+    if not getattr(config, "cooler_off_until_precool", True):
+        return None
+    if noon_cooler_off_tonight(config, now):
+        return None
+    dusk = plan.get("dusk_utc")
+    if dusk:
+        lead = int(getattr(config, "cool_lead_minutes", 30))
+        precool = (datetime.fromisoformat(str(dusk).rstrip("Z"))
+                   - timedelta(minutes=lead))
+        if now >= precool:
+            return None
+    hold = {r: "calibration capture running" for r in rig_ids(config)
+            if cal_busy(r)}
+    res = await armer.cooler_dew_off(skip_rigs=hold)
+    line = {"t": iso_z(now), "rig": "all", "src": "photonscript",
+            "kind": COOLER_OFF_KIND, "value": "done", "skip": skip,
+            "detail": "; ".join(f"{k}: {v}" for k, v in res.items())}
+    append_jsonl(events_path(config, _night_key(config, now)), line)
+    logger.info("noon cooler-off after skipped arm (%s): %s", skip,
+                line["detail"])
     return line
 
 
@@ -251,6 +333,9 @@ def decision_chip(last: dict | None, offset_hours: float = 0.0) -> str:
     if last.get("value") == "armed":
         return f"Auto-armed at {when} local ({last.get('trigger') or 'auto'})"
     reason = SKIP_TITLES.get(last.get("skip"), last.get("skip") or "?")
+    if _action(last) == ACTION_FLATS:
+        return (f"Auto dusk flats skipped at {when} local: {reason} "
+                f"({last.get('detail', '')})")
     return f"Auto-arm skipped at {when} local: {reason} ({last.get('detail', '')})"
 
 
@@ -389,6 +474,16 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
         if not stale:
             flats_state["night"] = night  # all fresh - done for today
             return
+        # PS-131: dispatch_raw stops, loads and starts its own sequence, so
+        # the PS-125 guard applies (sideload tonight, NINA #1 running or
+        # unreadable): skip, one push per night per reason, retry next tick.
+        skip, why = await auto_arm_guard(config)
+        if skip:
+            await skip_and_notify(config, skip, why,
+                                  f"auto dusk flats ({','.join(stale)})",
+                                  notify, action=ACTION_FLATS)
+            logger.info("auto-flats skipped (%s): %s", skip, why)
+            return
         seq_text, start_local = generate_dusk_flats_json(
             config, only_filters=stale)
         ok = await armer.dispatch_raw(
@@ -453,6 +548,9 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                         if skip:
                             await skip_and_notify(config, skip, why, reason, notify)
                             logger.info("auto-arm skipped (%s): %s", skip, why)
+                            if reason.startswith("noon"):
+                                # PS-131: skip only the arm, not cooler belt #2
+                                await noon_cooler_off(config, armer, plan, skip)
                     if arm_now and not skip:
                         night = plan["night_of"]
                         pf = await run_preflight(config)
@@ -461,6 +559,9 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                             log_decision(config, "skipped", SKIP_PREFLIGHT,
                                          f"preflight go=false ({_fail_summary(pf)})",
                                          reason, notified=last_skip_night != night)
+                            if reason.startswith("noon"):
+                                await noon_cooler_off(config, armer, plan,
+                                                      SKIP_PREFLIGHT)
                             if last_skip_night != night:
                                 await notify(
                                     config,

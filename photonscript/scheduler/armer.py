@@ -489,16 +489,31 @@ class Armer:
         """Force the cooler (warm) + dew heater OFF on every enabled rig. Called
         at fresh arm so both stay off until the night sequence turns them on
         cool_lead min before astro dark. Best-effort per rig; never raises."""
+        await self.cooler_dew_off()
+
+    async def cooler_dew_off(self, skip_rigs: dict | None = None) -> dict:
+        """PS-131: the cooler-off step on its own (no arm), so the noon re-arm
+        can force the coolers off even when the PS-125 guard skips the arm.
+        skip_rigs {rig: why} leaves those rigs alone. Best-effort per rig,
+        never raises; returns {rig: short result text}."""
         from photonscript.shared.rigs import (rig_ids, rig_config, nina_warm,
                                               nina_dew_heater)
         warm_min = float(getattr(self.config, "gradual_warm_minutes", 0.0))
+        out: dict = {}
         for rig in rig_ids(self.config):
+            if skip_rigs and rig in skip_rigs:
+                out[rig] = f"left alone ({skip_rigs[rig]})"
+                continue
             rc = rig_config(self.config, rig)
             try:
-                await nina_warm(rc.nina_base_url, minutes=warm_min)
-                await nina_dew_heater(rc.nina_base_url, False)
+                w = await nina_warm(rc.nina_base_url, minutes=warm_min)
+                d = await nina_dew_heater(rc.nina_base_url, False)
+                out[rig] = (f"cooler {'off' if w.get('ok') else 'FAILED'}, "
+                            f"dew {'off' if d.get('ok') else 'FAILED'}")
             except Exception as e:  # noqa: BLE001
                 logger.warning("cooler/dew off (%s) failed: %s", rig, e)
+                out[rig] = f"FAILED ({type(e).__name__})"
+        return out
 
     async def _stop_guider_best_effort(self) -> str:
         """PS-91: ask NINA to stop the guider. Returns 'ok' or 'FAILED'.
