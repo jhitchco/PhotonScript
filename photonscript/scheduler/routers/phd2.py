@@ -257,7 +257,7 @@ async def api_phd2_calibrate(request: Request, mode: str = ""):
                 "note": "the next dispatch includes a PHD2 calibration slot"}
     from photonscript.scheduler.app import get_armer
     armer = get_armer()
-    if state in ("RUNNING", "PAUSED_UNSAFE"):
+    if state in ("RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR"):   # PS-64
         ok = await armer.recalibrate("manual request")
         return {"ok": ok, "mode": "now",
                 "note": "re-dispatched with a calibration slot" if ok else

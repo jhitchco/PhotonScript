@@ -34,7 +34,7 @@ PASS, WARN, FAIL, SKIP, INFO = "pass", "warn", "fail", "skip", "info"
 
 # Same as photonscript.scheduler.armer.ACTIVE_STATES (a test keeps them equal);
 # copied so this module does not import the scheduler.
-ARMER_ACTIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+ARMER_ACTIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR")
 
 DEFAULT_TAILSCALE_URL = "https://teles-feb25.lobster-bleak.ts.net"
 WINLOGON_KEY = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon"
