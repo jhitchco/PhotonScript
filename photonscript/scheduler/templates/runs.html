@@ -191,6 +191,8 @@
             <h2 style="margin-top:1.2rem;">Night timeline <span class="bd">(mount log, NINA + PHD2 events, safety; PS-67)</span></h2>
             <div id="pointingSummary" class="bd"></div>
             <div id="timeline" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Safety monitor <span class="bd">(NINA #1 vs NINA #2 cross-check, PS-1)</span></h2>
+            <div id="safety" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Subs
                 <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
                 <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
@@ -615,6 +617,7 @@
         renderPointing(d.pointing, date);
         renderSplit(d.split_pointing, date);
         loadTimeline(date);
+        loadSafety(date);
         loadScoreReport(date);
         maybeWarmThumbs(date);
     }
@@ -1300,6 +1303,64 @@
         box.querySelectorAll('rect.seg').forEach(el => el.addEventListener('click', () => {
             subWindow = [el.dataset.s, el.dataset.e]; renderSubs();
         }));
+    }
+    // PS-1: was an unsafe AARO's weather (both NINAs agree) or one driver?
+    const SF_COLORS = {safe: '#16a34a', unsafe: '#b91c1c', offline: '#f59e0b', unknown: '#334155'};
+    async function loadSafety(date) {
+        const box = document.getElementById('safety');
+        let r;
+        try { r = await (await fetch('/api/safety/night?date=' + encodeURIComponent(date))).json(); }
+        catch (e) { box.textContent = 'safety analytics unavailable'; return; }
+        if (currentDate !== date) return;
+        if (!r || !r.ok) { box.textContent = (r && r.note) || 'no safety data'; return; }
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const t0 = Date.parse(r.t0), t1 = Date.parse(r.t1), span = Math.max(1, t1 - t0);
+        const L = 150, W = 1000, R = 18, top = 14;
+        const x = t => L + (W - L) * (Date.parse(t) - t0) / span;
+        const rows = Object.values(r.rigs || {});
+        if (r.armer) rows.push(r.armer);
+        let svg = '<svg viewBox="0 0 ' + W + ' ' + (top + rows.length * R + 4) + '">';
+        for (let h = Math.ceil(t0 / 3600000) * 3600000; h <= t1; h += 3 * 3600000) {
+            const xx = L + (W - L) * (h - t0) / span;
+            svg += '<line x1="' + xx + '" y1="10" x2="' + xx + '" y2="' + (top + rows.length * R) +
+                '" stroke="#334155" stroke-width=".5"/><text x="' + (xx + 2) + '" y="9" fill="#94a3b8">' +
+                new Date(h).toISOString().slice(11, 16) + 'Z</text>';
+        }
+        rows.forEach((row, i) => {
+            const y = top + i * R;
+            svg += '<text x="0" y="' + (y + 11) + '" fill="#cbd5e1">' + esc(row.label) + '</text>';
+            (row.segments || []).forEach(sg => {
+                const x0 = x(sg.start), w = Math.max(1, x(sg.end) - x0);
+                svg += '<rect x="' + x0.toFixed(1) + '" y="' + y + '" width="' + w.toFixed(1) +
+                    '" height="12" fill="' + (SF_COLORS[sg.state] || '#6b7280') + '"' +
+                    (sg.inferred ? ' fill-opacity=".5"' : '') + '><title>' + esc(sg.state) +
+                    (sg.inferred ? ' (inferred after a connect)' : '') + ' ' + sg.start.slice(11, 19) +
+                    '-' + sg.end.slice(11, 19) + ' UTC</title></rect>';
+            });
+        });
+        svg += '</svg>';
+        const xc = r.cross_check || {};
+        const lines = ['<b>' + esc(r.verdict) + '</b>'];
+        Object.entries(r.rigs || {}).forEach(([k, v]) => lines.push(esc(v.label) + ': ' + v.to_unsafe +
+            ' to-unsafe, ' + v.connection_losses + ' connection loss(es), safe ' + v.minutes.safe +
+            ' min, unsafe ' + v.minutes.unsafe + ' min, offline ' + v.minutes.offline + ' min' +
+            (v.flaps.length ? ', flaps: ' + v.flaps.map(f => esc(f.state) + ' ' + f.seconds + ' s at ' +
+                f.start.slice(11, 16) + 'Z').join(', ') : '')));
+        if ((xc.suspects || []).length) lines.push('<span class="bad">Suspect (one NINA only): ' +
+            xc.suspects.map(s => esc(s.rig) + ' ' + esc(s.state) + ' at ' + s.t.slice(11, 19) + 'Z while ' +
+                esc(s.other) + ' read ' + esc(s.other_state)).join('; ') + '</span>');
+        if ((xc.losses || []).length) lines.push('Connection losses (read as unsafe): ' +
+            xc.losses.slice(0, 12).map(l => esc(l.rig) + ' ' + l.t.slice(11, 16) + 'Z' + (l.both ? ' (both)' : '')).join(', ') +
+            (xc.losses.length > 12 ? ' &hellip; +' + (xc.losses.length - 12) : ''));
+        if ((r.unsafe_onsets_local || []).length) lines.push('Unsafe onsets (local): ' + r.unsafe_onsets_local.map(esc).join(', '));
+        if ((r.debounce || []).length) lines.push('Confirm-safe hold vs this night: ' + r.debounce.map(d =>
+            (d.current ? '<b>' : '') + d.hold_s + ' s: ' + d.swallowed + '/' + d.resumes + ' resumes held off, ' +
+            d.safe_min_spent + ' safe min spent' + (d.current ? ' (current)</b>' : '')).join(' &middot; '));
+        (r.notes || []).forEach(n => lines.push('<span style="opacity:.8">' + esc(n) + '</span>'));
+        box.innerHTML = svg + Object.entries(SF_COLORS).map(([st, c]) => '<span style="display:inline-block;width:.7rem;height:.7rem;background:' +
+            c + ';margin:0 .2rem 0 .6rem;vertical-align:middle"></span>' + st).join('') +
+            ' &middot; <a href="/api/safety/night?date=' + encodeURIComponent(date) + '" target="_blank">json</a>' +
+            ' &middot; <a href="/api/safety/summary" target="_blank">14 nights</a><br>' + lines.join('<br>');
     }
     function badge(s) {
         const [ic, col] = STATE_ICON[subState(s)];

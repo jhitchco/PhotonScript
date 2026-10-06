@@ -1027,6 +1027,16 @@ open for a meaningful stretch but few/no good lights resulted.
 ### Triage endpoints (reach via Claude-in-Chrome, not the sandbox)
 - `/api/runs` -> newest night (dates are LOCAL evening date). `/api/runs/DATE`
   -> score, funnel (dark/light/accepted hrs), per target+filter table, HFR.
+- `/api/safety/night?date=DATE` (PS-1, also the runs page "Safety monitor"
+  section) -> both NINAs' safety-monitor timelines from their logs. A change
+  both NINAs log within 60 s is AARO's own state (weather or roof logic), not
+  a driver. "Unsafe" logged right before "Disconnected" is a connection
+  loss, not weather. A change on one NINA while the other stays connected in
+  the opposite state is a suspect. `/api/safety/summary?days=14` gives one row
+  per night. The armer's live cross-check (`safety_crosscheck`: off | log |
+  alert, default log) reads NINA #2 once at each unsafe onset and writes
+  `src: safety, kind: crosscheck` to `runs/<night>_events.jsonl`. It never
+  changes the pause or park.
 - `/api/preflight` (POST) -> config, directories, equipment, disk. The "NINA
   image directory" check catches a missing capture folder. (Sends a Pushover
   test as a side-effect.)

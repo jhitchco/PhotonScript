@@ -712,6 +712,13 @@ class PhotonScriptConfig(BaseSettings):
     # NINA's own interrupt (5 s watchdog) plus the UNSAFE branch's park.
     unsafe_stop_enabled: bool = True
     unsafe_stop_grace_s: int = 120
+    # PS-1 cross-check, observe only: when NINA #1 first reads unsafe in an
+    # episode, read NINA #2's safety monitor once (same AARO device, its own
+    # driver). NINA #2 safe while NINA #1 is unsafe = suspect (driver or
+    # connection on NINA #1, not weather). off | log (runs/<night>_events.jsonl
+    # line, src "safety", kind "crosscheck") | alert (log + one push a night).
+    # Never changes what the armer or NINA do about the unsafe read.
+    safety_crosscheck: str = "log"
     connect_all_on_arm: bool = True  # on arm and on restart, actively connect
                                      # every device (esp. the safety monitor) so
                                      # a dead/slow device surfaces early. Connect
