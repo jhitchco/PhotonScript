@@ -7,6 +7,7 @@
     <title>PhotonScript - Targets</title>
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
+    <script src="/static/js/integrations.js?v={{ version }}"></script>
     <style>
         main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
         .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
@@ -76,6 +77,8 @@ function card(t) {
         '<b class="pend" title="pending review">' + c.pending + ' \u25cb</b>' +
         '<b class="rej" title="rejected">' + c.rejected + ' \u2717</b>' +
         '<span class="muted">' + c.hours.approved + ' h approved</span></div>' +
+        (t.project_id ? '<div class="muted" style="font-size:.74rem;" id="integ-' +
+             esc(t.project_id) + '"></div>' : '') +
         '<div class="muted">' + (t.last_night ? 'last night ' + t.last_night + ' \u00b7 ' +
              t.nights + ' night' + (t.nights === 1 ? '' : 's') : 'no subs yet') +
         (tr ? ' \u00b7 top reject: ' + esc(tr.label) + ' (' + tr.count + ')' : '') +
@@ -119,6 +122,8 @@ fetch('/api/targets').then(r => r.json()).then(d => {
         .filter(g => g[1].length)
         .map(g => '<div class="sec">' + esc(g[0]) + '</div><div class="tgrid">' +
              g[1].map(card).join('') + '</div>').join('');
+    // PS-33: the integrator ledger line per goal (latest version, new data since)
+    if (window.Integrations) Integrations.load().then(m => Integrations.fill(m, 'integ-'));
     pics();
 }).catch(() => document.getElementById('tSummary').textContent = 'unavailable');
 </script>

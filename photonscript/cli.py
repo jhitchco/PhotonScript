@@ -24,6 +24,8 @@ Usage:
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
+    photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
+    photonscript integrate-watch [--once] [--dry-run]             # PS-31
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
     photonscript supervise [--mode full]      # keep it running (PS-44)
@@ -2196,6 +2198,9 @@ def integrate_cmd(
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+    report: bool = typer.Option(True, "--report/--no-report",
+                                help="Post the run's ledger to the scheduler (PS-33; queued when unreachable)"),
+    report_url: str = typer.Option("", "--report-url", help="Scheduler (default integration_report_url)"),
 ):
     """PS-22: stack a target from the PhotonScript library (desktop).
 
@@ -2209,36 +2214,119 @@ def integrate_cmd(
     """
     import json as _json
     from photonscript.integration import pipeline as pl
+    from photonscript.integration import report as rp
     from photonscript.integration.runner import PixInsightBusy
-    from photonscript.shared.rigs import rig_label, rig_readout
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
-    root = Path(staging_root) if staging_root else (
-        Path(r"D:\Astrophotography\Staging") if Path(r"D:\Astrophotography\Staging").is_dir()
-        else Path.home() / "Astrophotography" / "Staging")
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    kw = pl.config_options(cfg, rig)
+    if library:
+        kw["library"] = Path(library)
     opts = pl.Options(
         target=target, rig=rig, since=since, until=until,
-        library=Path(library or getattr(cfg, "desktop_library_dir", "") or
-                     (Path.home() / "ninashare" / "Library")),
         staging_root=root, out=Path(out) if out else None,
         filters=[f.strip() for f in filters.split(",") if f.strip()] or None,
         qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
         dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
-        default_readout=rig_readout(cfg, rig), gradient=gradient, use_rc=not no_rc,
-        bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
-        rig_label=rig_label(cfg, rig),
-        site={"name": cfg.observatory_name, "lat": round(cfg.observatory_lat, 3),
-              "lon": round(cfg.observatory_lon, 3), "elev": int(cfg.observatory_elev),
-              "bortle": cfg.observatory_bortle},
+        gradient=gradient, use_rc=not no_rc, **kw,
     )
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
-        res = pl.run(opts, echo=lambda s: console.print(s, markup=False, highlight=False))
+        res = pl.run(opts, echo=say)
     except (pl.PipelineError, PixInsightBusy, FileNotFoundError, ValueError) as e:
         console.print(f"[red]integrate:[/red] {e}", markup=True)
         raise typer.Exit(1)
+    # PS-33: post the ledger (and any queued one); a down scope only warns
+    if report and res.get("ledger"):
+        url = report_url or getattr(cfg, "integration_report_url", "")
+        say("== report the ledger to the scheduler")
+        rp.sweep(root, url, echo=say)
+        if Path(res["ledger"]).parent.parent != root:
+            r = rp.post_ledger(Path(res["ledger"]), url)
+            say(("  posted " + r.get("detail", "")) if r["ok"]
+                else f"  WARNING: ledger queued, not posted ({r['detail']})")
     if as_json:
         print(_json.dumps(res, indent=1, default=str))
     ok = res.get("integration", {}).get("ok", True) and res.get("finish", {}).get("ok", True)
     raise typer.Exit(0 if ok else 1)
+
+
+@app.command("integrate-report")
+def integrate_report_cmd(
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    url: str = typer.Option("", "--url", help="Scheduler (default integration_report_url)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List the queued ledgers, post nothing"),
+):
+    """PS-33: post every queued ledger (run folders whose ledger.json says
+    reported: false) to the scheduler. Safe to repeat; a down scope only
+    warns and leaves them queued.
+
+    photonscript integrate-report --dry-run
+    """
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import report as rp
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    res = rp.sweep(root, url or getattr(cfg, "integration_report_url", ""),
+                   echo=lambda s: console.print(s, markup=False, highlight=False), dry_run=dry_run)
+    console.print(f"{res['pending']} queued, {len(res['posted'])} posted, "
+                  f"{len(res['failed'])} still queued", markup=False)
+
+
+@app.command("integrate-watch")
+def integrate_watch_cmd(
+    once: bool = typer.Option(False, "--once", help="One cycle, then exit (for a Scheduled Task)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the decisions; integrate and post nothing"),
+    url: str = typer.Option("", "--url", help="Scheduler (default integration_report_url)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    rigs: str = typer.Option("", "--rigs", help="Override the scope's integrate_watch_rigs (comma list)"),
+    new_data_h: float = typer.Option(-1.0, "--new-data-h", help="Override: hours of new data that re-integrate"),
+    first_h: float = typer.Option(-1.0, "--first-h", help="Override: first run at this many hours (0 = at goal)"),
+    min_interval_h: float = typer.Option(-1.0, "--min-interval-h", help="Override: hours between runs of one goal"),
+    require_calibration: Optional[bool] = typer.Option(
+        None, "--require-calibration/--no-require-calibration",
+        help="Override: wait while calibration is missing"),
+    qa: str = typer.Option("report", "--qa", help="Star QA mode for the runs (report | apply | off)"),
+    interval_min: float = typer.Option(30.0, "--interval-min", help="Minutes between cycles without --once"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+):
+    """PS-31: goal to finished image. Polls the scheduler's integration
+    candidates (goal met, new data since the last ledger, calibration
+    missing / owed) and, when a goal is ready, runs `photonscript
+    integrate` into a NEW staging folder (integration, finish, AstroBin
+    packet draft; nothing uploads), then posts its ledger. Never starts
+    while PixInsight is running; one run per cycle. Install it yourself as
+    a Windows Scheduled Task running `photonscript integrate-watch --once`
+    every 30 min (this command installs nothing).
+
+    photonscript integrate-watch --once --dry-run
+    """
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import watch as w
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    o = w.WatchOptions(
+        base_url=url or getattr(cfg, "integration_report_url", ""), staging_root=root,
+        rigs=[r.strip() for r in rigs.split(",") if r.strip()] or None,
+        new_data_h=new_data_h if new_data_h >= 0 else None,
+        first_h=first_h if first_h >= 0 else None,
+        min_interval_h=min_interval_h if min_interval_h >= 0 else None,
+        require_calibration=require_calibration, qa=qa, dry_run=dry_run,
+        interval_min=interval_min)
+    if not o.base_url:
+        console.print("[red]integrate-watch:[/red] no scheduler URL (--url or integration_report_url)")
+        raise typer.Exit(2)
+
+    def run_integrate(target: str, rig: str, trigger: dict) -> dict:
+        opts = pl.Options(target=target, rig=rig, staging_root=root, qa=qa,
+                          pixinsight=pixinsight_exe, trigger=trigger, **pl.config_options(cfg, rig))
+        return pl.run(opts, echo=say)
+
+    try:
+        w.loop(o, once=once, run_integrate=run_integrate, echo=say)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]integrate-watch:[/red] {e}", markup=True)
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

@@ -48,6 +48,51 @@ Run on the desktop from the repo venv. What it does (code in
 Timing per stage: `out\timing.csv` (Python stages) and `out\timing_pi.csv`
 (PixInsight stages). Small test run: `--limit 3 --max-cal 15`.
 
+## 0b. Ledger and the integrate watcher (PS-33, PS-31)
+
+**Ledger (PS-33).** Every `photonscript integrate` run ends by writing
+`<run>\ledger.json` (schema `photonscript.ledger/0.2`,
+`photonscript/shared/ledger.py`): target, rig, version (v1, v2, ... per goal
+and rig), every Library sub the run considered (file, night, filter,
+exposure, used or not), integrated hours and nights, calibration used
+(`calibrated | partial | uncalibrated`), star QA summary, PixInsight
+integration and finish results with the finish steps files, output paths,
+the AstroBin packet and CSV paths (never uploaded), stage timing, and for a
+watcher run the trigger. The `review` block (verdict, notes, asks) is the
+human half: no script writes it and a rewrite keeps it.
+
+The run then POSTs the ledger to the scheduler (`POST /api/integrations`,
+`integration_report_url`, default the scope's tailnet address). When the
+scope is unreachable the file stays `reported: false` in its run folder and
+the next run, the next watcher cycle or `photonscript integrate-report`
+posts it (`--no-report` skips posting). The scheduler keeps one file per
+version under `<data_dir>\ledgers\<goal id>\` and shows the latest on the
+goal card, the Targets cards and the target page: "Integrated 9.4 h on
+2026-10-05 (v2), packet ready" with the paths, plus "new data since:" the
+approved hours not in that ledger's sub list. Asks change status only
+(`POST /api/integrations/asks/<id>`); goals are edited by hand.
+
+**Watcher (PS-31).** `photonscript integrate-watch --once` (desktop):
+1. posts queued ledgers;
+2. does nothing while PixInsight is running;
+3. reads `GET /api/integrations/candidates` (per active goal and rig: goal
+   progress, approved hours, last ledger, new data since it, calibration
+   missing, calibration owed) and the thresholds set on the System page
+   (Integration group): `integrate_watch_rigs` (piggyback),
+   `integrate_watch_new_data_h` (1.0), `integrate_watch_first_h` (0 = first
+   run only when the goal is met), `integrate_watch_min_interval_h` (12),
+   `integrate_watch_require_calibration` (off: integrate anyway and record
+   what was missing). Command line flags override them;
+4. runs at most one `photonscript integrate` (QA report mode) into a new
+   staging folder and posts its ledger.
+
+`--dry-run` prints the decisions only. A lock file in the staging root keeps
+two watchers apart; a run that fails before writing its ledger still counts
+for the minimum interval. Nothing installs a task: to automate it, create a
+Windows Scheduled Task yourself that runs
+`C:\dev\PhotonScript\.venv\Scripts\photonscript.exe integrate-watch --once`
+every 30 minutes while logged on (PixInsight needs the desktop session).
+
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
 - `photonscript/image_processor/osc_cull.py`: **runs first** (called by

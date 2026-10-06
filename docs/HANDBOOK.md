@@ -525,6 +525,9 @@ or "ERROR: ...". Masters in `out\master\`.
 One command for a whole target from the Library (PS-22, see
 docs/OSC_INTEGRATION.md section 0):
 `photonscript integrate --target "Andromeda Galaxy" --rig piggyback`.
+Every run writes `ledger.json` and reports it to the scheduler (PS-33);
+`photonscript integrate-watch --once` starts runs by itself when a goal is
+met or enough new data arrived (PS-31). OSC_INTEGRATION.md section 0b.
 
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block

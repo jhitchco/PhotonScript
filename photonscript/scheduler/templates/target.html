@@ -10,6 +10,7 @@
     <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
     <script src="/static/js/sky_geom.js?v={{ version }}"></script>
     <script src="/static/js/review.js?v={{ version }}"></script>
+    <script src="/static/js/integrations.js?v={{ version }}"></script>
     <style>
         main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
         .top { display:grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
@@ -127,6 +128,7 @@
         <section class="panel">
             <h2>Integration readiness</h2>
             <div id="tReady" class="muted">loading&hellip;</div>
+            <div id="tInteg" style="margin-top:.5rem;font-size:.82rem;"></div>
         </section>
         <section class="panel">
             <h2>Library</h2>
@@ -449,8 +451,15 @@ async function loadReady() {
             r.lights_in_library + ' lights in the Library \u00b7 darks ' + esc(dk) +
             ' \u00b7 bias ' + r.bias + '</div><div style="margin:.3rem 0;">' + fl + '</div>' +
             '<code>' + esc(r.command) + '</code> ' + copyBtn('copy command', r.command) +
-            '<div class="dim" style="margin-top:.3rem;">Run on the desktop (PS-22); PS-31 ' +
-            'will automate it.</div>';
+            '<div class="dim" style="margin-top:.3rem;">Run on the desktop (PS-22), or let ' +
+            'photonscript integrate-watch (PS-31) start it when the goal is met.</div>';
+        // PS-33: the desktop integrator's ledgers for this goal
+        if (window.Integrations && D.project_id) {
+            const m = await Integrations.load();
+            const box = document.getElementById('tInteg');
+            box.innerHTML = Integrations.html(m[D.project_id], {paths: true}) ||
+                '<span class="dim">No integration reported yet.</span>';
+        }
     } catch (e) { el.textContent = 'readiness unavailable'; }
 }
 
