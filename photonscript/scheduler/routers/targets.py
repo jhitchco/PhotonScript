@@ -15,9 +15,12 @@ GET /api/targets/refimage/meta?name=&view=wide|close
                                       cached; own best sub as offline fallback)
 GET /api/targets/refimage?name=&view= the cached cutout (JPEG)
 GET /api/targets/live?name=           mount position when the RC16 is on it
+GET /api/targets/qa-overrides?name=   PS-48 per-target QA gates per rig
+POST /api/targets/qa-overrides        {name, rig, gates: {hfr_max, fwhm_max,
+                                      ecc_max}} set / clear (blank clears)
 
 Read-only (approved default, phase 1): verdicts stay on the run page until
-PS-24's review module lands. Every handler is a plain def (threadpool) except
+PS-24's review module lands. The one write is PS-48's per-target QA gates. Every handler is a plain def (threadpool) except
 /live, and none of them asks Syncthing for transfer state (PS-24 pitfall).
 Kept out of app.py (PS-8 router split); app helpers are imported lazily.
 """
@@ -96,6 +99,63 @@ def api_target_readiness(name: str):
                         "planned filter"}
     out = target_readiness(cfg, p, calibration_context(cfg, max_age_s=300))
     return {**out, "project": True}
+
+
+def _goal_for(name: str):
+    from photonscript.shared.target_names import target_key
+    projects = _projects()
+    k = sub_index._match_target(name, projects)
+    return next((x for x in projects if target_key(x.target.name) == k), None)
+
+
+def _qa_overrides_json(cfg, p) -> dict:
+    """PS-48: each rig's gate in force (PS-114) next to this goal's override."""
+    from photonscript.shared import qa_rules
+    from photonscript.shared.rigs import rig_ids, rig_label
+    ov = p.qa_overrides or {}
+    rigs = []
+    for r in rig_ids(cfg):
+        base = qa_rules.thresholds(cfg, r)     # no target: the rig's gates
+        mine = ov.get(r) or {}
+        rigs.append({"id": r, "name": rig_label(cfg, r), "gates": [
+            {"key": k, "label": label, "unit": unit, "rig_gate": base.get(k),
+             "override": mine.get(k)}
+            for k, label, unit, _c in qa_rules.TARGET_GATES]})
+    return {"target": p.target.name, "project_id": p.id, "rigs": rigs,
+            "note": "Overrides apply to new subs (both graders). Graded "
+                    "nights keep their verdicts until photonscript qa-rescore "
+                    "--date D (dry run first)."}
+
+
+@router.get("/api/targets/qa-overrides")
+def api_target_qa_overrides(name: str):
+    p = _goal_for(name)
+    if p is None:
+        return JSONResponse(status_code=404, content={
+            "detail": f"no imaging project for {name!r}"})
+    return _qa_overrides_json(_cfg(), p)
+
+
+@router.post("/api/targets/qa-overrides")
+async def api_target_qa_overrides_set(request: Request):
+    """PS-48: body {"name", "rig", "gates": {"hfr_max", "fwhm_max",
+    "ecc_max"}}; a blank gate clears it, {} clears the rig."""
+    from photonscript.scheduler.app import get_store
+    body = await request.json()
+    p = _goal_for(str(body.get("name") or ""))
+    if p is None:
+        return JSONResponse(status_code=404, content={
+            "detail": f"no imaging project for {body.get('name')!r}"})
+    gates = body.get("gates")
+    if not isinstance(gates, dict):
+        return JSONResponse(status_code=400, content={
+            "detail": "gates must be an object"})
+    try:
+        p = get_store().set_qa_overrides(p.id, str(body.get("rig") or ""),
+                                         gates)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    return _qa_overrides_json(_cfg(), p)
 
 
 @router.get("/api/subs")

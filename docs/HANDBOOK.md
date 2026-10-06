@@ -187,6 +187,17 @@ Check a pending update on the scope without switching: `photonscript self-update
    `qa_baseline_k` 3) next to the gates in force. Report only: change a gate
    by hand, then `qa-rescore --date D` (dry run) shows how many verdicts and
    scores move (`score_changed`, `score_up`, `score_down`).
+   **Per-target gates (PS-48).** A goal can tighten (or loosen) Max HFR,
+   Max FWHM and Max eccentricity on one rig, e.g. 6 px HFR on the RC16 for
+   a small bright planetary where sharpness is the point. Edit them on the
+   target page ("QA gates for this target", blank = the rig gate; API `GET /
+   POST /api/targets/qa-overrides`); they are stored on the project
+   (`qa_overrides` in projects.json, per rig) and `qa_rules.thresholds`
+   applies them for both graders, live and rescore, matching the goal by
+   name or catalog id. The ecc override also sets the binned ecc gate. The
+   scorecard panel shows such a gate as "<= 6 px (target override)" and a
+   reject reason ends "(target override)". New subs only: a graded night
+   moves after `qa-rescore --date D` (dry run first).
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 

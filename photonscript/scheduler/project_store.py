@@ -391,6 +391,42 @@ class ProjectStore:
         self.save()
         return proj
 
+    def set_qa_overrides(self, project_id: str, rig: str,
+                         gates: dict) -> ImagingProject | None:
+        """PS-48: set (or clear) this goal's QA gate overrides on one rig.
+
+        gates: {"hfr_max", "fwhm_max", "ecc_max"}; a blank / None / 0 value
+        clears that gate, so {} clears the rig. Values must be > 0 (ecc
+        below 1). Raises ValueError on an unknown rig, gate or bad value."""
+        from photonscript.shared.qa_rules import TARGET_GATE_KEYS
+        proj = self.projects.get(project_id)
+        if proj is None:
+            return None
+        rig = str(rig or "").strip().lower()
+        if rig not in (RC16_RIG, PIGGYBACK_RIG):
+            raise ValueError(f"unknown rig {rig!r}")
+        clean: dict[str, float] = {}
+        for k, v in (gates or {}).items():
+            if k not in TARGET_GATE_KEYS:
+                raise ValueError(f"unknown gate {k!r}")
+            if v is None or v == "" or v == 0:
+                continue
+            try:
+                x = float(v)
+            except (TypeError, ValueError):
+                raise ValueError(f"{k}: not a number ({v!r})") from None
+            if not x > 0 or (k == "ecc_max" and x >= 1):
+                raise ValueError(f"{k}: out of range ({v!r})")
+            clean[k] = round(x, 3)
+        ov = dict(proj.qa_overrides or {})
+        if clean:
+            ov[rig] = clean
+        else:
+            ov.pop(rig, None)
+        proj.qa_overrides = ov or None
+        self.save()
+        return proj
+
     def record_accepted_sub(self, target_name: str, filter_class: str,
                             exposure_seconds: float | None = None,
                             rig: str | None = None) -> bool:

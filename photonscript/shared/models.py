@@ -218,6 +218,10 @@ class ImagingProject(BaseModel):
     driving_rig: str = "rc16"
     min_alt_deg: Optional[float] = None
     require_calibration: bool = True
+    # PS-48: per-target QA gate overrides, per rig: {"rc16": {"hfr_max": 6.0,
+    # "fwhm_max": 2.5, "ecc_max": 0.5}, "piggyback": {...}}. None = the rig's
+    # gates (PS-114). Read by shared.qa_rules.thresholds for every grader.
+    qa_overrides: Optional[dict] = None
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)
