@@ -292,3 +292,138 @@ def crop(config, date: str, rel_file: str, *, x: float | None = None,
            "cx": cx, "cy": cy, "scale": scale, "osc": info["osc"]}
     _lru_put(_crop_cache, key, out, _CROP_CACHE_MAX)
     return out
+
+
+# --------------------------------------------------------------- PS-17
+
+def tile_origins(w: int, h: int, size: int, even: bool = False) -> list:
+    """Nine (x0, y0) tile origins, row by row TL, T, TR, L, C, R, BL, B,
+    BR: corners flush with the frame corners, edge tiles centered on the
+    edge midpoints, the center tile centered. Clamped into the frame (all
+    0 on a frame smaller than a tile); even origins for OSC."""
+    def axis(full):
+        return [_clamp_origin(size / 2.0, size, full, even),
+                _clamp_origin(full / 2.0, size, full, even),
+                _clamp_origin(full - size / 2.0, size, full, even)]
+    xs, ys = axis(w), axis(h)
+    return [(xx, yy) for yy in ys for xx in xs]
+
+
+def mosaic_path(config, date: str, rel_file: str, size: int) -> Path:
+    stem = rel_file.replace("\\", "_").replace("/", "_")
+    return Path(config.data_dir) / "thumbs" / date / f"{stem}.mosaic{size}.png"
+
+
+def mosaic(config, date: str, rel_file: str, size: int = 256) -> Path | None:
+    """The 3x3 mosaic PNG (cached on disk). None without the FITS. Raises
+    Busy when two crops are already running."""
+    import numpy as np
+    from PIL import Image
+
+    from photonscript.scheduler.runs import _save_png_atomic, _sub_source
+    size = min(MOSAIC_SIZES, key=lambda s: abs(s - int(size)))
+    out = mosaic_path(config, date, rel_file, size)
+    if out.exists():
+        return out
+    src, rec = _sub_source(config, date, rel_file)
+    if src is None:
+        return None
+    rig = rec.get("rig") or "rc16"
+    if not _SLOTS.acquire(timeout=10):
+        raise Busy("mosaic busy")
+    try:
+        with _open(src) as hdul:
+            info = _frame(src, hdul, rig)
+            edge = 3 * size + 2 * GUTTER_PX
+            canvas = np.full((edge, edge), GUTTER_GRAY, dtype=np.uint8)
+            for i, (x0, y0) in enumerate(tile_origins(info["w"], info["h"],
+                                                      size, info["osc"])):
+                r, c = divmod(i, 3)
+                oy, ox = r * (size + GUTTER_PX), c * (size + GUTTER_PX)
+                canvas[oy:oy + size, ox:ox + size] = to_u8(
+                    _window(hdul[0].data, info, x0, y0, size),
+                    info["lo"], info["hi"])
+    finally:
+        _SLOTS.release()
+    _save_png_atomic(Image.fromarray(canvas, mode="L"), out)
+    return out
+
+
+def zone_stats(table: dict | None, w: int | None = None,
+               h: int | None = None, min_n: int = ZONE_MIN_STARS) -> list | None:
+    """Median HFR (px) and ecc of the sidecar stars in each 3x3 zone, row by
+    row as tile_origins. The zones of runs._shape_diagnostics (thirds of the
+    frame); a zone with fewer than min_n stars has None values. None
+    without star data."""
+    import numpy as np
+    if not table or not table.get("x"):
+        return None
+    w = w or table.get("w")
+    h = h or table.get("h")
+    if not w or not h:
+        return None
+    xs, ys = table.get("x") or [], table.get("y") or []
+    hfr, ecc = table.get("hfr") or [], table.get("ecc") or []
+    zones: list[dict] = [{"n": 0, "hfr": [], "ecc": []} for _ in range(9)]
+    for i in range(min(len(xs), len(ys))):
+        if xs[i] is None or ys[i] is None:
+            continue
+        zx = min(max(int(xs[i] / w * 3), 0), 2)
+        zy = min(max(int(ys[i] / h * 3), 0), 2)
+        z = zones[zy * 3 + zx]
+        z["n"] += 1
+        if i < len(hfr) and hfr[i] is not None and hfr[i] > 0:
+            z["hfr"].append(float(hfr[i]))
+        if i < len(ecc) and ecc[i] is not None:
+            z["ecc"].append(float(ecc[i]))
+    out = []
+    for lbl, z in zip(TILE_LABELS, zones):
+        ok = z["n"] >= min_n
+        out.append({"zone": lbl, "n": z["n"],
+                    "hfr": round(float(np.median(z["hfr"])), 2)
+                    if ok and z["hfr"] else None,
+                    "ecc": round(float(np.median(z["ecc"])), 2)
+                    if ok and z["ecc"] else None})
+    return out
+
+
+def mosaic_info(config, date: str, rel_file: str, size: int = 256,
+                rig: str | None = None) -> dict | None:
+    """Tile origins and per-tile readouts for the 3x3 view. Readouts from
+    the stored star sidecar (never measured here), else the record's
+    corner_ecc (backfill grader, corners and center only), else none."""
+    from astropy.io import fits as _fits
+
+    from photonscript.scheduler.runs import _sub_source
+    from photonscript.shared.star_measure import is_osc
+    size = min(MOSAIC_SIZES, key=lambda s: abs(s - int(size)))
+    src, rec = _sub_source(config, date, rel_file)
+    rig = rig or rec.get("rig") or "rc16"
+    t = stars_for_view(config, date, rel_file, rig, compute=False)
+    w = h = None
+    osc = rig == "piggyback"
+    if src is not None:
+        try:
+            hdr = _fits.getheader(src)
+            w, h = int(hdr["NAXIS1"]), int(hdr["NAXIS2"])
+            osc = is_osc(rig, hdr)
+        except Exception:  # noqa: BLE001
+            w = h = None
+    if (not w or not h) and t:
+        w, h = t.get("w"), t.get("h")
+    if not w or not h:
+        return None
+    zones = zone_stats(t, w, h)
+    source = "stars" if zones else None
+    if zones is None and isinstance(rec.get("corner_ecc"), dict):
+        ce = rec["corner_ecc"]
+        zones = [{"zone": lbl, "n": None, "hfr": None, "ecc": ce.get(lbl)}
+                 for lbl in TILE_LABELS]
+        source = "corner_ecc"
+    return {"file": rel_file, "rig": rig, "w": w, "h": h, "size": size,
+            "osc": osc, "fits": src is not None,
+            "tiles": [{"zone": lbl, "x0": x0, "y0": y0}
+                      for lbl, (x0, y0) in zip(
+                          TILE_LABELS, tile_origins(w, h, size, osc))],
+            "zones": zones, "source": source,
+            "on_view": bool(t and t.get("on_view"))}
