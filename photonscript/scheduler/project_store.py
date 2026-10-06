@@ -402,9 +402,12 @@ class ProjectStore:
         not, so a 400 s piggyback sub on a 120 s plan is 400 s and a capped
         300 s sub is half of a 600 s plan sub (PS-66)."""
         # PS-78: a container name ("<target> imaging (...)_Container") counts
-        # for its target; an OSC loop container names none
-        from photonscript.shared.target_names import canonical_target
-        tn = (canonical_target(target_name) or "").strip().lower()
+        # for its target; an OSC loop container names none. PS-135: catalog
+        # aliases too ("NGC 224" / "Andromeda" credit the M 31 project)
+        from photonscript.shared.target_names import (canonical_target,
+                                                      known_target_index)
+        known = known_target_index(list(self.projects.values()))
+        tn = (canonical_target(target_name, known or None) or "").strip().lower()
         if not tn:
             return False
         rig = rig or RC16_RIG

@@ -17,7 +17,9 @@ canonical_target() maps any of those names back to the target:
   (OSC_LIGHT_LOOP, SAFE_LOOP, "<filter> until moonrise", ...), so the PS-51
   header match / piggyback time correlation names those subs instead;
 * matches the result case- and punctuation-insensitively against known
-  targets (project names, catalog ids) and returns the known spelling.
+  targets (project names, catalog ids) and returns the known spelling;
+* PS-135: a known target's catalog aliases match too (catalog_aliases:
+  "NGC 224", "M31", "Messier 31", "Andromeda" all name the M 31 project).
 
 The suffixes and loop names are imported from the sequence generator
 (nina_sequence_json, calibration) and the NINA client, never duplicated, so a
@@ -104,21 +106,41 @@ class TargetIndex(dict):
     """{target_key(alias): canonical name}; build once, pass many times."""
 
 
+def catalog_aliases(name: Any) -> frozenset:
+    """PS-135: every target_key the catalog knows for this object (catalog
+    id, Messier / NGC / IC cross id, common name, CATALOG_EXTRAS aliases,
+    user catalog); empty when the catalog does not know it. The one alias
+    resolver: known_target_index() expands every known name through it."""
+    try:
+        from photonscript.shared.astronomy import catalog_alias_keys
+        return catalog_alias_keys(name)
+    except Exception:  # noqa: BLE001 - never let the catalog break naming
+        return frozenset()
+
+
 def known_target_index(known: Any) -> TargetIndex:
     """{target_key(alias): canonical name} from any of:
     a Mapping alias -> name; an iterable of names; or an iterable of project /
     target objects (ImagingProject.target, CelestialTarget: name and
-    catalog_id). Earlier entries win on a key clash."""
+    catalog_id). Earlier entries win on a key clash.
+
+    PS-135: after the given names and ids, each target's catalog aliases
+    (catalog_aliases) map to it too, so a sub named "NGC 224", "M31" or
+    "Andromeda" resolves to the "Andromeda Galaxy" project. A given name or
+    id always beats a catalog alias of another target."""
     if isinstance(known, TargetIndex):
         return known
     idx = TargetIndex()
     if not known:
         return idx
+    pairs: list[tuple[Any, str]] = []  # (spelling, canonical name)
 
     def add(alias, name):
         k = target_key(alias)
-        if k and name and k not in idx:
-            idx[k] = str(name)
+        if k and name:
+            pairs.append((alias, str(name)))
+            if k not in idx:
+                idx[k] = str(name)
 
     if isinstance(known, Mapping):
         for alias, name in known.items():
@@ -137,6 +159,10 @@ def known_target_index(known: Any) -> TargetIndex:
             cid = getattr(tgt, "catalog_id", None)
             if cid:
                 add(cid, name)
+    for alias, name in pairs:
+        for k in catalog_aliases(alias):
+            if k not in idx:
+                idx[k] = name
     return idx
 
 

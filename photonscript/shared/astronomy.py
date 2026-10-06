@@ -332,7 +332,7 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Butterfly Cluster', "catalog_id": 'M 6', "ra": 17.67243, "dec": -32.25417, "type": 'open cluster', "mag": 4.2, "size": 15.6, "months": [5, 6, 7, 8], "hours": 6},
     {"name": 'Hercules Globular Cluster', "catalog_id": 'M 13', "ra": 16.6949, "dec": 36.46131, "type": 'globular cluster', "mag": 5.8, "size": 16.5, "months": [4, 5, 6, 7], "hours": 8},
     {"name": "Bode's Galaxy", "catalog_id": 'M 81', "ra": 9.92588, "dec": 69.06531, "type": 'galaxy', "mag": 6.9, "size": 21.6, "months": [1, 2, 3, 4], "hours": 15},
-    {"name": "Amas de l'Ecu de Sobieski", "catalog_id": 'M 11', "ra": 18.85166, "dec": -6.27003, "type": 'open cluster', "mag": 5.8, "size": 9.0, "months": [5, 6, 7, 8], "hours": 6},
+    {"name": 'Wild Duck Cluster', "catalog_id": 'M 11', "ra": 18.85166, "dec": -6.27003, "type": 'open cluster', "mag": 5.8, "size": 9.0, "months": [5, 6, 7, 8], "hours": 6},  # PS-135: was the French "Amas de l'Ecu de Sobieski"
     {"name": 'Southern Pinwheel Galaxy', "catalog_id": 'M 83', "ra": 13.61693, "dec": -29.86542, "type": 'galaxy', "mag": 7.2, "size": 13.6, "months": [3, 4, 5, 6], "hours": 15},
     {"name": "Mairan's Nebula", "catalog_id": 'M 43', "ra": 5.59205, "dec": -5.26747, "type": 'emission nebula', "mag": 9.0, "size": 20.0, "months": [1, 2, 11, 12], "hours": 20},
     {"name": 'Dumbbell Nebula', "catalog_id": 'M 27', "ra": 19.99344, "dec": 22.72103, "type": 'planetary nebula', "mag": 7.4, "size": 6.7, "months": [6, 7, 8, 9], "hours": 10},
@@ -341,13 +341,13 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Black Eye Galaxy', "catalog_id": 'M 64', "ra": 12.94546, "dec": 21.68297, "type": 'galaxy', "mag": 8.5, "size": 10.5, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Virgo Galaxy', "catalog_id": 'M 87', "ra": 12.51373, "dec": 12.39111, "type": 'galaxy', "mag": 9.0, "size": 7.1, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Coma Pinwheel', "catalog_id": 'M 99', "ra": 12.31378, "dec": 14.4165, "type": 'galaxy', "mag": 9.8, "size": 5.0, "months": [2, 3, 4, 5], "hours": 15},
-    {"name": 'Barbell Nebula', "catalog_id": 'M 76', "ra": 1.70547, "dec": 51.57547, "type": 'planetary nebula', "mag": 10.1, "size": 1.1, "months": [9, 10, 11, 12], "hours": 10},
+    {"name": 'Little Dumbbell Nebula', "catalog_id": 'M 76', "ra": 1.70547, "dec": 51.57547, "type": 'planetary nebula', "mag": 10.1, "size": 2.7, "months": [9, 10, 11, 12], "hours": 10},  # PS-135: was "Barbell Nebula", 1.1' (NGC 650 lobe only); M 76 is 2.7' x 1.8'
     {"name": 'Carina Nebula', "catalog_id": 'NGC 3372', "ra": 10.75237, "dec": -59.86669, "type": 'emission nebula', "mag": 3.0, "size": 120.0, "months": [1, 2, 3, 4], "hours": 20},
-    {"name": 'omi Vel Cluster', "catalog_id": 'IC 2391', "ra": 8.67552, "dec": -53.03547, "type": 'open cluster', "mag": 2.5, "size": 29.1, "months": [1, 2, 3, 12], "hours": 6},
+    {"name": 'Omicron Velorum Cluster', "catalog_id": 'IC 2391', "ra": 8.67552, "dec": -53.03547, "type": 'open cluster', "mag": 2.5, "size": 29.1, "months": [1, 2, 3, 12], "hours": 6},
     {"name": '47 Tuc Cluster', "catalog_id": 'NGC 104', "ra": 0.40149, "dec": -72.08144, "type": 'globular cluster', "mag": 4.1, "size": 31.8, "months": [8, 9, 10, 11], "hours": 8},
     {"name": 'Wishing Well Cluster', "catalog_id": 'NGC 3532', "ra": 11.09662, "dec": -58.7705, "type": 'open cluster', "mag": 3.0, "size": 12.0, "months": [2, 3, 4, 5], "hours": 6},
     {"name": 'Omega Centauri', "catalog_id": 'NGC 5139', "ra": 13.44608, "dec": -47.47686, "type": 'globular cluster', "mag": 5.3, "size": 27.0, "months": [3, 4, 5, 6], "hours": 8},
-    {"name": 'lam Cen Nebula', "catalog_id": 'IC 2944', "ra": 11.59637, "dec": -63.01983, "type": 'cluster + nebula', "mag": 4.5, "size": 7.2, "months": [2, 3, 4, 5], "hours": 15},
+    {"name": 'Lambda Centauri Nebula', "catalog_id": 'IC 2944', "ra": 11.59637, "dec": -63.01983, "type": 'cluster + nebula', "mag": 4.5, "size": 7.2, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Flaming Star Nebula', "catalog_id": 'IC 405', "ra": 5.27486, "dec": 34.35617, "type": 'nebula', "mag": 10.0, "size": 50.0, "months": [1, 2, 11, 12], "hours": 20},
     {"name": 'Centaurus A', "catalog_id": 'NGC 5128', "ra": 13.42434, "dec": -43.01911, "type": 'galaxy', "mag": 7.2, "size": 25.9, "months": [3, 4, 5, 6], "hours": 15},
     {"name": 'S Nor Cluster', "catalog_id": 'NGC 6087', "ra": 16.31405, "dec": -57.93458, "type": 'open cluster', "mag": 5.4, "size": 10.2, "months": [4, 5, 6, 7], "hours": 6},
@@ -362,10 +362,10 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Whale Galaxy', "catalog_id": 'NGC 4631', "ra": 12.70223, "dec": 32.5415, "type": 'galaxy', "mag": 9.2, "size": 14.4, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Fireworks Galaxy', "catalog_id": 'NGC 6946', "ra": 20.5812, "dec": 60.15392, "type": 'galaxy', "mag": 9.1, "size": 11.4, "months": [6, 7, 8, 9], "hours": 15},
     {"name": "Jupiter's Ghost Nebula", "catalog_id": 'NGC 3242', "ra": 10.4128, "dec": -18.64222, "type": 'planetary nebula', "mag": 7.7, "size": 0.4, "months": [1, 2, 3, 4], "hours": 10},
-    {"name": 'Sculptor Filament', "catalog_id": 'NGC 253', "ra": 0.79253, "dec": -25.28822, "type": 'galaxy', "mag": 11.1, "size": 26.8, "months": [8, 9, 10, 11], "hours": 15},
+    {"name": 'Sculptor Galaxy', "catalog_id": 'NGC 253', "ra": 0.79253, "dec": -25.28822, "type": 'galaxy', "mag": 7.1, "size": 26.8, "months": [8, 9, 10, 11], "hours": 15},  # PS-135: was "Sculptor Filament", mag 11.1 (V ~7.1)
     {"name": "Barnard's Galaxy", "catalog_id": 'NGC 6822', "ra": 19.74937, "dec": -14.80344, "type": 'galaxy', "mag": 10.1, "size": 17.4, "months": [6, 7, 8, 9], "hours": 15},
     {"name": 'Saturn Nebula', "catalog_id": 'NGC 7009', "ra": 21.06966, "dec": -11.36325, "type": 'planetary nebula', "mag": 8.0, "size": 0.7, "months": [7, 8, 9, 10], "hours": 10},
-    {"name": 'tet Car Cluster', "catalog_id": 'IC 2602', "ra": 10.71596, "dec": -64.39419, "type": 'open cluster', "mag": None, "size": 48.0, "months": [1, 2, 3, 4], "hours": 6},
+    {"name": 'Theta Carinae Cluster', "catalog_id": 'IC 2602', "ra": 10.71596, "dec": -64.39419, "type": 'open cluster', "mag": None, "size": 48.0, "months": [1, 2, 3, 4], "hours": 6},
     {"name": 'Spindle Galaxy', "catalog_id": 'NGC 3115', "ra": 10.08722, "dec": -7.71858, "type": 'galaxy', "mag": 9.1, "size": 7.1, "months": [1, 2, 3, 4], "hours": 15},
     {"name": "Copeland's Blue Snowball", "catalog_id": 'NGC 7662', "ra": 23.43164, "dec": 42.53494, "type": 'planetary nebula', "mag": 8.3, "size": 0.3, "months": [8, 9, 10, 11], "hours": 10},
     {"name": 'Needle Galaxy', "catalog_id": 'NGC 4565', "ra": 12.60577, "dec": 25.98767, "type": 'galaxy', "mag": 10.9, "size": 16.8, "months": [2, 3, 4, 5], "hours": 15},
@@ -376,7 +376,7 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Eskimo Nebula', "catalog_id": 'NGC 2392', "ra": 7.48632, "dec": 20.91183, "type": 'planetary nebula', "mag": 9.6, "size": 0.9, "months": [1, 2, 3, 12], "hours": 10},
     {"name": 'Bug Nebula', "catalog_id": 'NGC 6302', "ra": 17.22906, "dec": -37.10314, "type": 'planetary nebula', "mag": 9.6, "size": 0.7, "months": [5, 6, 7, 8], "hours": 10},
     {"name": "Hubble's Nebula", "catalog_id": 'NGC 2261', "ra": 6.65264, "dec": 8.74433, "type": 'reflection nebula', "mag": 11.8, "size": 2.0, "months": [1, 2, 11, 12], "hours": 15},
-    {"name": 'Bow-Tie nebula', "catalog_id": 'NGC 40', "ra": 0.21695, "dec": 72.52194, "type": 'planetary nebula', "mag": 11.9, "size": 0.8, "months": [8, 9, 10, 11], "hours": 10},
+    {"name": 'Bow-Tie Nebula', "catalog_id": 'NGC 40', "ra": 0.21695, "dec": 72.52194, "type": 'planetary nebula', "mag": 11.9, "size": 0.8, "months": [8, 9, 10, 11], "hours": 10},
     {"name": 'Perseus A', "catalog_id": 'NGC 1275', "ra": 3.33004, "dec": 41.51169, "type": 'galaxy', "mag": 12.2, "size": 2.2, "months": [1, 10, 11, 12], "hours": 15},
     {"name": "Herschel's Jewel Box", "catalog_id": 'NGC 4755', "ra": 12.89363, "dec": -60.35631, "type": 'open cluster', "mag": None, "size": 7.8, "months": [2, 3, 4, 5], "hours": 6},
     {"name": 'Large Magellanic Cloud', "catalog_id": 'ESO056-115', "ra": 5.39292, "dec": -69.75611, "type": 'galaxy', "mag": 0.3, "size": 646.0, "months": [1, 2, 11, 12], "hours": 15},
@@ -384,10 +384,10 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'California Nebula', "catalog_id": 'NGC 1499', "ra": 4.05401, "dec": 36.36747, "type": 'nebula', "mag": 5.0, "size": 160.0, "months": [1, 10, 11, 12], "hours": 20},
     {"name": 'Hyades', "catalog_id": 'C041', "ra": 4.44833, "dec": 15.86667, "type": 'open cluster', "mag": None, "size": 329.0, "months": [1, 10, 11, 12], "hours": 6},
     {"name": 'Coma Star Cluster', "catalog_id": 'Mel111', "ra": 12.41833, "dec": 26.1, "type": 'open cluster', "mag": None, "size": 253.5, "months": [2, 3, 4, 5], "hours": 6},
-    {"name": 'the Witch Head Nebula', "catalog_id": 'NGC 1909', "ra": 5.08207, "dec": -7.26564, "type": 'reflection nebula', "mag": None, "size": 180.0, "months": [1, 2, 11, 12], "hours": 15},
+    {"name": 'Witch Head Nebula', "catalog_id": 'NGC 1909', "ra": 5.08207, "dec": -7.26564, "type": 'reflection nebula', "mag": None, "size": 180.0, "months": [1, 2, 11, 12], "hours": 15},
     {"name": "Brocchi's Cluster", "catalog_id": 'Cl399', "ra": 19.42333, "dec": 20.18333, "type": 'association', "mag": 3.6, "size": 70.0, "months": [6, 7, 8, 9], "hours": 12},
-    {"name": 'rho Oph Nebula', "catalog_id": 'IC 4604', "ra": 16.42532, "dec": -23.43658, "type": 'nebula', "mag": 5.1, "size": 60.0, "months": [4, 5, 6, 7], "hours": 20},
-    {"name": 'Flame Nebula', "catalog_id": 'IC 434', "ra": 5.68358, "dec": -2.45378, "type": 'emission nebula', "mag": 11.0, "size": 90.0, "months": [1, 2, 11, 12], "hours": 20},
+    {"name": 'Rho Ophiuchi Nebula', "catalog_id": 'IC 4604', "ra": 16.42532, "dec": -23.43658, "type": 'nebula', "mag": 5.1, "size": 60.0, "months": [4, 5, 6, 7], "hours": 20},
+    {"name": 'IC 434', "catalog_id": 'IC 434', "ra": 5.68358, "dec": -2.45378, "type": 'emission nebula', "mag": 11.0, "size": 90.0, "months": [1, 2, 11, 12], "hours": 20},  # PS-135: was "Flame Nebula" (that is NGC 2024); IC 434 is the Horsehead's backdrop
     {"name": 'Pelican Nebula', "catalog_id": 'IC 5070', "ra": 20.8502, "dec": 44.4015, "type": 'emission nebula', "mag": 8.0, "size": 60.0, "months": [6, 7, 8, 9], "hours": 20},
     {"name": 'Lower Sword', "catalog_id": 'NGC 1980', "ra": 5.59055, "dec": -5.90989, "type": 'cluster + nebula', "mag": 2.5, "size": 9.3, "months": [1, 2, 11, 12], "hours": 15},
     {"name": 'h Persei Cluster', "catalog_id": 'NGC 869', "ra": 2.31627, "dec": 57.11725, "type": 'open cluster', "mag": 3.7, "size": 14.4, "months": [9, 10, 11, 12], "hours": 6},
@@ -412,18 +412,18 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Wolf-Lundmark-Melotte', "catalog_id": 'PGC000143', "ra": 0.03282, "dec": -15.46092, "type": 'galaxy', "mag": 10.8, "size": 10.5, "months": [8, 9, 10, 11], "hours": 15},
     {"name": 'Circinus Galaxy', "catalog_id": 'ESO097-013', "ra": 14.21943, "dec": -65.33922, "type": 'galaxy', "mag": 10.6, "size": 8.7, "months": [3, 4, 5, 6], "hours": 15},
     {"name": "Hind's Nebula", "catalog_id": 'NGC 1555', "ra": 4.36651, "dec": 19.53517, "type": 'reflection nebula', "mag": 10.0, "size": 1.8, "months": [1, 10, 11, 12], "hours": 15},
-    {"name": 'Eyes', "catalog_id": 'NGC 4438', "ra": 12.46266, "dec": 13.00883, "type": 'galaxy', "mag": 10.9, "size": 9.2, "months": [2, 3, 4, 5], "hours": 15},
+    {"name": 'Eyes (NGC 4438)', "catalog_id": 'NGC 4438', "ra": 12.46266, "dec": 13.00883, "type": 'galaxy', "mag": 10.9, "size": 9.2, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Merope Nebula', "catalog_id": 'NGC 1435', "ra": 3.76947, "dec": 23.76497, "type": 'nebula', "mag": None, "size": 30.0, "months": [1, 10, 11, 12], "hours": 20},
     {"name": 'Pencil Nebula', "catalog_id": 'NGC 2736', "ra": 9.00471, "dec": -45.94806, "type": 'emission nebula', "mag": None, "size": 30.0, "months": [1, 2, 3, 4], "hours": 20},
-    {"name": 'Butterfly Galaxies', "catalog_id": 'NGC 4568', "ra": 12.60952, "dec": 11.23889, "type": 'galaxy', "mag": 10.8, "size": 4.3, "months": [2, 3, 4, 5], "hours": 15},
+    {"name": 'Butterfly Galaxies (NGC 4568)', "catalog_id": 'NGC 4568', "ra": 12.60952, "dec": 11.23889, "type": 'galaxy', "mag": 10.8, "size": 4.3, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Fourcade-Figueroa', "catalog_id": 'ESO270-017', "ra": 13.57981, "dec": -45.5475, "type": 'galaxy', "mag": 11.7, "size": 11.5, "months": [3, 4, 5, 6], "hours": 15},
     {"name": 'Umbrella Galaxy', "catalog_id": 'NGC 4651', "ra": 12.72851, "dec": 16.39339, "type": 'galaxy', "mag": 10.8, "size": 3.9, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Fornax B', "catalog_id": 'NGC 1317', "ra": 3.37897, "dec": -37.10369, "type": 'galaxy', "mag": 10.9, "size": 3.1, "months": [1, 10, 11, 12], "hours": 15},
-    {"name": 'Eyes', "catalog_id": 'NGC 4435', "ra": 12.46125, "dec": 13.07894, "type": 'galaxy', "mag": 11.0, "size": 3.0, "months": [2, 3, 4, 5], "hours": 15},
+    {"name": 'Eyes (NGC 4435)', "catalog_id": 'NGC 4435', "ra": 12.46125, "dec": 13.07894, "type": 'galaxy', "mag": 11.0, "size": 3.0, "months": [2, 3, 4, 5], "hours": 15},
     {"name": "Barnard's Merope Nebula", "catalog_id": 'IC 349', "ra": 3.77225, "dec": 23.93981, "type": 'reflection nebula', "mag": None, "size": 25.7, "months": [1, 10, 11, 12], "hours": 15},
     {"name": 'Helix Galaxy', "catalog_id": 'NGC 2685', "ra": 8.92631, "dec": 58.73439, "type": 'galaxy', "mag": 11.3, "size": 4.3, "months": [1, 2, 3, 12], "hours": 15},
     {"name": 'Sextans B', "catalog_id": 'UGC05373', "ra": 10.00003, "dec": 5.33222, "type": 'galaxy', "mag": 11.5, "size": 4.9, "months": [1, 2, 3, 4], "hours": 15},
-    {"name": 'Butterfly Galaxies', "catalog_id": 'NGC 4567', "ra": 12.60909, "dec": 11.258, "type": 'galaxy', "mag": 11.3, "size": 2.7, "months": [2, 3, 4, 5], "hours": 15},
+    {"name": 'Butterfly Galaxies (NGC 4567)', "catalog_id": 'NGC 4567', "ra": 12.60909, "dec": 11.258, "type": 'galaxy', "mag": 11.3, "size": 2.7, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Blue Flash Nebula', "catalog_id": 'NGC 6905', "ra": 20.37305, "dec": 20.10453, "type": 'planetary nebula', "mag": 11.1, "size": 0.7, "months": [6, 7, 8, 9], "hours": 10},
     {"name": 'Sextans A', "catalog_id": 'PGC029653', "ra": 10.18356, "dec": -4.69278, "type": 'galaxy', "mag": 11.8, "size": 5.2, "months": [1, 2, 3, 4], "hours": 15},
     {"name": 'Little Gem', "catalog_id": 'NGC 6445', "ra": 17.82085, "dec": -20.0095, "type": 'planetary nebula', "mag": 11.2, "size": 0.6, "months": [5, 6, 7, 8], "hours": 10},
@@ -435,18 +435,18 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'Red Spider Nebula', "catalog_id": 'NGC 6537', "ra": 18.08697, "dec": -19.84297, "type": 'planetary nebula', "mag": 11.6, "size": 0.2, "months": [5, 6, 7, 8], "hours": 10},
     {"name": 'Miniature Spiral', "catalog_id": 'NGC 3928', "ra": 11.86323, "dec": 48.68314, "type": 'galaxy', "mag": 12.5, "size": 1.4, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Medusa Galaxy Merger', "catalog_id": 'NGC 4194', "ra": 12.23596, "dec": 54.52683, "type": 'galaxy', "mag": 12.8, "size": 1.6, "months": [2, 3, 4, 5], "hours": 15},
-    {"name": 'the Running Man Nebula', "catalog_id": 'NGC 1977', "ra": 5.58772, "dec": -4.84433, "type": 'cluster + nebula', "mag": None, "size": 10.2, "months": [1, 2, 11, 12], "hours": 15},
-    {"name": 'omi Per Cloud', "catalog_id": 'IC 348', "ra": 3.74283, "dec": 32.16283, "type": 'cluster + nebula', "mag": None, "size": 10.0, "months": [1, 10, 11, 12], "hours": 15},
+    {"name": 'Running Man Nebula', "catalog_id": 'NGC 1977', "ra": 5.58772, "dec": -4.84433, "type": 'cluster + nebula', "mag": None, "size": 10.2, "months": [1, 2, 11, 12], "hours": 15},
+    {"name": 'Omicron Persei Cloud', "catalog_id": 'IC 348', "ra": 3.74283, "dec": 32.16283, "type": 'cluster + nebula', "mag": None, "size": 10.0, "months": [1, 10, 11, 12], "hours": 15},
     {"name": 'Rosette B', "catalog_id": 'NGC 2246', "ra": 6.54272, "dec": 5.12828, "type": 'nebula', "mag": None, "size": 10.0, "months": [1, 2, 11, 12], "hours": 20},
     {"name": 'Polarissima Australis', "catalog_id": 'NGC 2573', "ra": 1.6937, "dec": -89.33453, "type": 'galaxy', "mag": 13.5, "size": 1.9, "months": [9, 10, 11, 12], "hours": 15},
     {"name": 'Toby Jug Nebula', "catalog_id": 'IC 2220', "ra": 7.94749, "dec": -59.12578, "type": 'reflection nebula', "mag": None, "size": 5.0, "months": [1, 2, 3, 12], "hours": 15},
     {"name": 'Fornax Dwarf Cluster 3', "catalog_id": 'NGC 1049', "ra": 2.66337, "dec": -34.25825, "type": 'globular cluster', "mag": 13.6, "size": 1.2, "months": [9, 10, 11, 12], "hours": 8},
     {"name": "Stephan's Quintet", "catalog_id": 'HCG092', "ra": 22.59972, "dec": 33.95833, "type": 'galaxy group', "mag": None, "size": 4.4, "months": [7, 8, 9, 10], "hours": 18},
-    {"name": 'the War and Peace Nebula', "catalog_id": 'NGC 6357', "ra": 17.4121, "dec": -34.20133, "type": 'cluster + nebula', "mag": None, "size": 3.9, "months": [5, 6, 7, 8], "hours": 15},
+    {"name": 'War and Peace Nebula', "catalog_id": 'NGC 6357', "ra": 17.4121, "dec": -34.20133, "type": 'cluster + nebula', "mag": None, "size": 3.9, "months": [5, 6, 7, 8], "hours": 15},
     {"name": 'Mice Galaxy', "catalog_id": 'NGC 4676', "ra": 12.76964, "dec": 30.72722, "type": 'galaxy pair', "mag": None, "size": 3.0, "months": [2, 3, 4, 5], "hours": 18},
     {"name": "Seyfert's Sextet", "catalog_id": 'HCG079', "ra": 15.98664, "dec": 20.75861, "type": 'galaxy group', "mag": None, "size": 2.8, "months": [4, 5, 6, 7], "hours": 18},
     {"name": 'Cocoon Galaxy', "catalog_id": 'NGC 4990', "ra": 13.1548, "dec": -5.27281, "type": 'galaxy', "mag": 13.8, "size": 0.9, "months": [3, 4, 5, 6], "hours": 15},
-    {"name": 'the Guitar', "catalog_id": 'NGC 3561', "ra": 11.187, "dec": 28.69647, "type": 'galaxy', "mag": 14.7, "size": 1.7, "months": [2, 3, 4, 5], "hours": 15},
+    {"name": 'Guitar Galaxy', "catalog_id": 'NGC 3561', "ra": 11.187, "dec": 28.69647, "type": 'galaxy', "mag": 14.7, "size": 1.7, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Polarissima Borealis', "catalog_id": 'NGC 3172', "ra": 11.78722, "dec": 89.09306, "type": 'galaxy', "mag": 15.0, "size": 1.1, "months": [2, 3, 4, 5], "hours": 15},
     {"name": 'Browning', "catalog_id": 'IC 2431', "ra": 9.07631, "dec": 14.59578, "type": 'galaxy', "mag": 14.0, "size": 0.6, "months": [1, 2, 3, 4], "hours": 15},
     {"name": 'M 4', "catalog_id": 'M 4', "ra": 16.39317, "dec": -26.52553, "type": 'globular cluster', "mag": 5.4, "size": 28.2, "months": [4, 5, 6, 7], "hours": 8},
@@ -621,7 +621,7 @@ CATALOG_EXTRAS: dict[str, dict] = {
                  "note": "Deer Lick companions fit the RC16 field"},
     "NGC 891": {"aliases": ["Silver Sliver"], "goal_hours": 15},
     "HCG092": {"aliases": ["HCG 92"], "goal_hours": 18},
-    "M 76": {"aliases": ["Little Dumbbell", "Little Dumbbell Nebula", "NGC 650"],
+    "M 76": {"aliases": ["Little Dumbbell", "Barbell Nebula", "NGC 650"],
              "goal_hours": 10, "mix": {"Ha": 50, "OIII": 40, "SII": 10}},
     "NGC 7662": {"aliases": ["Blue Snowball"], "goal_hours": 8,
                  "mix": {"Ha": 40, "OIII": 50, "SII": 10}},
@@ -645,6 +645,7 @@ _USER_TARGETS: list[dict] = []
 def set_user_targets(entries: list[dict]) -> None:
     global _USER_TARGETS
     _USER_TARGETS = list(entries or [])
+    _ALIAS_CACHE.pop("sig", None)
 
 
 def catalog_entries() -> list[dict]:
@@ -695,6 +696,139 @@ def find_catalog_entry(name: str) -> dict | None:
         if key in _entry_keys(e):
             return e
     return None
+
+
+# PS-135: Messier number -> NGC / IC designation (the standard cross
+# identifications; M 24, M 40, M 45 and M 102 have no single NGC object).
+MESSIER_NGC: dict[int, str] = {
+    1: "NGC 1952", 2: "NGC 7089", 3: "NGC 5272", 4: "NGC 6121",
+    5: "NGC 5904", 6: "NGC 6405", 7: "NGC 6475", 8: "NGC 6523",
+    9: "NGC 6333", 10: "NGC 6254", 11: "NGC 6705", 12: "NGC 6218",
+    13: "NGC 6205", 14: "NGC 6402", 15: "NGC 7078", 16: "NGC 6611",
+    17: "NGC 6618", 18: "NGC 6613", 19: "NGC 6273", 20: "NGC 6514",
+    21: "NGC 6531", 22: "NGC 6656", 23: "NGC 6494", 25: "IC 4725",
+    26: "NGC 6694", 27: "NGC 6853", 28: "NGC 6626", 29: "NGC 6913",
+    30: "NGC 7099", 31: "NGC 224", 32: "NGC 221", 33: "NGC 598",
+    34: "NGC 1039", 35: "NGC 2168", 36: "NGC 1960", 37: "NGC 2099",
+    38: "NGC 1912", 39: "NGC 7092", 41: "NGC 2287", 42: "NGC 1976",
+    43: "NGC 1982", 44: "NGC 2632", 46: "NGC 2437", 47: "NGC 2422",
+    48: "NGC 2548", 49: "NGC 4472", 50: "NGC 2323", 51: "NGC 5194",
+    52: "NGC 7654", 53: "NGC 5024", 54: "NGC 6715", 55: "NGC 6809",
+    56: "NGC 6779", 57: "NGC 6720", 58: "NGC 4579", 59: "NGC 4621",
+    60: "NGC 4649", 61: "NGC 4303", 62: "NGC 6266", 63: "NGC 5055",
+    64: "NGC 4826", 65: "NGC 3623", 66: "NGC 3627", 67: "NGC 2682",
+    68: "NGC 4590", 69: "NGC 6637", 70: "NGC 6681", 71: "NGC 6838",
+    72: "NGC 6981", 73: "NGC 6994", 74: "NGC 628", 75: "NGC 6864",
+    76: "NGC 650", 77: "NGC 1068", 78: "NGC 2068", 79: "NGC 1904",
+    80: "NGC 6093", 81: "NGC 3031", 82: "NGC 3034", 83: "NGC 5236",
+    84: "NGC 4374", 85: "NGC 4382", 86: "NGC 4406", 87: "NGC 4486",
+    88: "NGC 4501", 89: "NGC 4552", 90: "NGC 4569", 91: "NGC 4548",
+    92: "NGC 6341", 93: "NGC 2447", 94: "NGC 4736", 95: "NGC 3351",
+    96: "NGC 3368", 97: "NGC 3587", 98: "NGC 4192", 99: "NGC 4254",
+    100: "NGC 4321", 101: "NGC 5457", 103: "NGC 581", 104: "NGC 4594",
+    105: "NGC 3379", 106: "NGC 4258", 107: "NGC 6171", 108: "NGC 3556",
+    109: "NGC 3992", 110: "NGC 205",
+}
+
+# words a common name may drop ("Andromeda" for "Andromeda Galaxy")
+_GENERIC_WORDS = ("nebula", "galaxy", "galaxies", "cluster")
+_ALIAS_CACHE: dict = {}
+
+
+def _cross_id_keys(key: str) -> set[str]:
+    """Messier <-> NGC/IC keys for one target_key ("m31" -> "ngc224",
+    "messier31"; "ngc224" -> "m31", "messier31")."""
+    import re
+    from photonscript.shared.target_names import target_key
+    m = re.fullmatch(r"(?:m|messier)(\d{1,3})", key)
+    if m:
+        n = int(m.group(1))
+        out = {f"m{n}", f"messier{n}"}
+        if n in MESSIER_NGC:
+            out.add(target_key(MESSIER_NGC[n]))
+        return out
+    if "ngc" not in _ALIAS_CACHE:
+        _ALIAS_CACHE["ngc"] = {target_key(v): k for k, v in MESSIER_NGC.items()}
+    n = _ALIAS_CACHE["ngc"].get(key)
+    return {f"m{n}", f"messier{n}"} if n else set()
+
+
+def _derived_names(e: dict) -> set[str]:
+    """Looser spellings of a row's common name: without a parenthetical,
+    without a leading "The" or catalog id, and without the generic last
+    word ("Andromeda Galaxy" -> "Andromeda")."""
+    import re
+    from photonscript.shared.target_names import target_key
+    out = set()
+    name = str(e.get("name") or "").strip()
+    base = re.sub(r"\s*\(.*?\)\s*", " ", name).strip()
+    cid = str(e.get("catalog_id") or "").strip()
+    for cand in {name, base}:
+        if cid and cand.lower().startswith(cid.lower() + " "):
+            cand = cand[len(cid):].strip()
+        if cand.lower().startswith("the "):
+            cand = cand[4:].strip()
+        out.add(cand)
+        words = cand.split()
+        if len(words) > 1 and words[-1].lower() in _GENERIC_WORDS:
+            out.add(" ".join(words[:-1]))
+    return {target_key(n) for n in out} - {""}
+
+
+def _alias_index() -> dict:
+    """{target_key: frozenset of every key of that object}; built from
+    catalog_entries() once per user-catalog change. A derived spelling
+    (see _derived_names) is kept only when exactly one row has it and no
+    row uses it as a real name, id or alias."""
+    sig = (id(_USER_TARGETS), len(_USER_TARGETS))
+    if _ALIAS_CACHE.get("sig") == sig:
+        return _ALIAS_CACHE["idx"]
+    entries = catalog_entries()
+    direct = [_entry_keys(e) for e in entries]
+    taken = set().union(*direct) if direct else set()
+    derived = [_derived_names(e) - d for e, d in zip(entries, direct)]
+    count: dict[str, int] = {}
+    for ks in derived:
+        for k in ks:
+            count[k] = count.get(k, 0) + 1
+    groups = []
+    for d, extra in zip(direct, derived):
+        g = set(d) | {k for k in extra if count[k] == 1 and k not in taken}
+        for k in list(g):
+            g |= _cross_id_keys(k)
+        groups.append(g)
+    idx: dict = {}
+    for g in groups:  # built-in rows first: the first row to claim a key wins
+        fg = frozenset(g)
+        for k in g:
+            idx.setdefault(k, fg)
+    # one hop: an object listed twice (M 42 and NGC 1976 rows) is one group
+    for k, g in list(idx.items()):
+        merged = set(g)
+        for k2 in g:
+            merged |= idx.get(k2, frozenset())
+        idx[k] = frozenset(merged)
+    _ALIAS_CACHE.update(idx=idx, sig=sig)
+    return idx
+
+
+def catalog_alias_keys(name) -> frozenset:
+    """PS-135: every target_key the catalog knows for the object `name`
+    names (its catalog id, the Messier / NGC / IC cross id with and without
+    a space, its common name and aliases, CATALOG_EXTRAS and the user
+    catalog). "NGC 224", "M31", "m 31", "Messier 31" and "Andromeda" all give
+    the M 31 set. Empty when the catalog does not know the name."""
+    from photonscript.shared.target_names import target_key
+    key = target_key(name)
+    if not key:
+        return frozenset()
+    hit = _alias_index().get(key)
+    if hit is None:
+        cross = _cross_id_keys(key)
+        if not cross:
+            return frozenset()
+        hit = frozenset(cross | {key})
+    return hit
 
 
 def entry_to_target(entry: dict) -> CelestialTarget:
