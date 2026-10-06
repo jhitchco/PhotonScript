@@ -631,7 +631,9 @@
                 '<span style="border:1px solid ' + (FILTER_COLORS[f.f] || '#64748b') +
                 ';color:' + (FILTER_COLORS[f.f] || '#64748b') +
                 ';border-radius:4px;padding:.1rem .45rem;font-size:.74rem;margin-right:.35rem;">' +
-                '● ' + f.f + ' ' + f.exp + 's <span style="opacity:.6;">×' + f.n +
+                '● ' + f.f + ' ' + f.exp + 's' +
+                (f.short ? ' <span style="opacity:.6;" title="HDR short subs">HDR</span>' : '') +
+                ' <span style="opacity:.6;">×' + f.n +
                 '</span></span>').join('');
             return '<div style="border-radius:10px;background:rgba(255,255,255,.03);' +
                 'padding:.85rem 1rem;margin-bottom:.7rem;">' +

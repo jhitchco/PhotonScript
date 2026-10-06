@@ -919,8 +919,17 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if not ordered:
         return None
 
-    plan_desc = ", ".join(f"{e.filter_type.value}×{e.count - e.acquired}"
-                          f"@{e.exposure_seconds:.0f}s" for e in active)
+    # PS-112: name each set still owed, shorts first as shot (a plan can owe
+    # only its HDR shorts once the long set is done)
+    desc = []
+    for e in active:
+        if e.short_remaining() > 0:
+            desc.append(f"{e.filter_type.value}×{e.short_remaining()}"
+                        f"@{e.hdr_short_seconds:.0f}s")
+        if e.count - e.acquired > 0:
+            desc.append(f"{e.filter_type.value}×{e.count - e.acquired}"
+                        f"@{e.exposure_seconds:.0f}s")
+    plan_desc = ", ".join(desc)
     total_h = sum(e.exposure_seconds * max(0, e.count - e.acquired)
                   + (e.hdr_short_seconds or 0) * e.short_remaining()
                   for e in active) / 3600
@@ -1521,7 +1530,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
     # if ALL targets are narrowband, run ~35 min later into morning twilight.
     NB = ("Ha", "SII", "OIII")
     first_exposures = [e for t in sequence.targets for e in t.exposures
-                       if e.count - e.acquired > 0]
+                       if e.count - e.acquired > 0 or e.short_remaining() > 0]
     first_is_nb = bool(first_exposures) and         first_exposures[0].filter_type.value in NB
     all_nb = bool(first_exposures) and all(
         e.filter_type.value in NB for e in first_exposures)

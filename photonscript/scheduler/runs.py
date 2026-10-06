@@ -53,7 +53,13 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
             "exposures": [{"filter": e.filter_type.value,
                            "exp_s": e.exposure_seconds,
                            "planned": e.count - e.acquired}
-                          for e in t.exposures],
+                          for e in t.exposures]
+            # PS-112: the HDR short set still owed, as its own row (the
+            # plan-vs-actual table sums per filter, so shorts count too)
+            + [{"filter": e.filter_type.value,
+                "exp_s": e.hdr_short_seconds,
+                "planned": e.short_remaining(), "hdr_short": True}
+               for e in t.exposures if e.short_remaining() > 0],
         } for t in targets],
     }
     (runs_dir(config) / f"{night_of}_plan.json").write_text(
