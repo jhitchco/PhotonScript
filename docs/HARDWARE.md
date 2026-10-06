@@ -58,8 +58,14 @@ corner over a 600 s sub, about 39 px over 6 h (registration crops it).
 ## Exposure & calibration standards
 - NB 600s, BB 180s, gain 200, offset 256, 0 C ("NEW epoch", 2026-07-05+)
 - OLD epoch (pre-2026-07-05 lights, e.g. Crescent 07-03): 300s, gain 200, offset 50
-- Epoch = EXPTIME+GAIN+OFFSET+SET-TEMP; darks must match temperature,
-  offset drift survivable via the 1000 DN calibration pedestal
+- Epoch = EXPTIME+GAIN+OFFSET+SET-TEMP+readout mode (READOUTM, PS-128);
+  darks must match temperature, offset drift survivable via the 1000 DN
+  calibration pedestal
+- Readout mode: RC16 lights HCG since 2026-09-26 (gain 0.25 e-/ADU, RN
+  5.66 ADU; LCG is 0.79 e-/ADU, RN 4.27 ADU). The bias of 07-08 / 07-31 and
+  the 600 s darks of 07-04 / 07-28 are LCG (READOUTM checked 2026-10-05), so
+  HCG bias and HCG 600 s darks are owed. Set in the NINA profile (readout
+  mode for sequence images), not in the sequence. Piggy-600 AP26CC: LCG.
 - Dark quota: PS_DARK_EXPOSURES x PS_DARK_TARGET_COUNT at the setpoint
 - Flats: dusk NB-first -> L-last; dawn BB-first -> NB-last; target 50% histogram
 

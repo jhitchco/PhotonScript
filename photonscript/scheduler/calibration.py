@@ -309,15 +309,22 @@ def _pb_gain_offset(config) -> tuple[int, int]:
 
 def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
                          offset: int | None = None,
-                         setpoint: float | None = None) -> int:
+                         setpoint: float | None = None,
+                         readout: str | None = None) -> int:
     """Darks on disk (within the library age window) matching the epoch:
-    exposure + gain + offset + setpoint temperature. gain/offset/setpoint
-    default to the mono RC16's; pass the piggyback's for OSC darks so the two
-    cameras' dark libraries don't cross-count (gain 200 vs 100)."""
+    exposure + gain + offset + setpoint temperature + (PS-128) readout mode.
+    gain/offset/setpoint/readout default to the config's (the mono RC16's;
+    a rig_config view carries the piggyback's) so the two cameras' dark
+    libraries don't cross-count (gain 200 vs 100). A dark with no readout
+    keyword is assumed to be at the config's camera_readout_mode; a blank
+    camera_readout_mode matches any readout."""
     from astropy.io import fits as _fits
+    from photonscript.shared.rigs import header_readout, normalize_readout
     gain = config.default_gain if gain is None else gain
     offset = config.default_offset if offset is None else offset
     setpoint = config.camera_setpoint_c if setpoint is None else setpoint
+    ro_default = normalize_readout(getattr(config, "camera_readout_mode", "HCG"))
+    readout = ro_default if readout is None else normalize_readout(readout)
     cal_days = int(getattr(config, "library_cal_days", 120))
     cutoff = (datetime.now() - __import__("datetime")
               .timedelta(days=cal_days)).strftime("%Y-%m-%d")
@@ -335,7 +342,9 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
         if (abs(float(h.get("EXPTIME", -1)) - exp_s) < 0.5
                 and int(h.get("GAIN", -1)) == gain
                 and int(h.get("OFFSET", -1)) == offset
-                and abs(float(h.get("SET-TEMP", 99)) - setpoint) < 1.5):
+                and abs(float(h.get("SET-TEMP", 99)) - setpoint) < 1.5
+                and (not readout
+                     or (header_readout(h)[0] or ro_default) == readout)):
             n += 1
     return n
 
@@ -343,14 +352,18 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
 def dark_epoch(config, rig: str = "rc16") -> dict:
     """PS-122: gain / offset / setpoint a rig's night dark quota fills at.
     Reads the rig's own keys, so the base config and the rig view agree
-    (never re-wraps a view: rig_config on a view nests its library dir)."""
+    (never re-wraps a view: rig_config on a view nests its library dir).
+    PS-128: plus the readout mode (rig_readout; None = not matched)."""
+    from photonscript.shared.rigs import rig_readout
     if rig == "rc16":
         return {"gain": int(config.default_gain),
                 "offset": int(config.default_offset),
-                "setpoint": float(config.camera_setpoint_c)}
+                "setpoint": float(config.camera_setpoint_c),
+                "readout": rig_readout(config, rig)}
     gain, offset = _pb_gain_offset(config)
     return {"gain": gain, "offset": offset,
-            "setpoint": float(getattr(config, "piggyback_setpoint_c", 0.0))}
+            "setpoint": float(getattr(config, "piggyback_setpoint_c", 0.0)),
+            "readout": rig_readout(config, rig)}
 
 
 def quota_exposures(config, rig: str = "rc16") -> list[float]:
@@ -372,6 +385,7 @@ def quota_exposures(config, rig: str = "rc16") -> list[float]:
 
 def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
                offset: int | None = None, setpoint: float | None = None,
+               readout: str | None = None,
                store: dict | None = None) -> int:
     """PS-122: darks that count toward the quota for one exposure, the one
     rule the night quota (RC16 armer, Piggy-600 companion), readiness and the
@@ -379,7 +393,10 @@ def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
     (calibration_qa_mode not off) only QA-passed frames count; without one,
     the header count minus QA-failed frames (count_matching_darks).
     `config` is the rig's scan view (the base config for the RC16); the
-    epoch defaults to dark_epoch(rig)."""
+    epoch defaults to dark_epoch(rig). PS-128: only darks at the readout
+    mode count (the rig's lights' mode by default; a dark whose header has
+    no readout keyword is assumed to be at the rig's)."""
+    from photonscript.shared.rigs import normalize_readout
     ep = dark_epoch(config, rig)
     if gain is not None:
         ep["gain"] = int(gain)
@@ -387,6 +404,10 @@ def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
         ep["offset"] = int(offset)
     if setpoint is not None:
         ep["setpoint"] = float(setpoint)
+    if readout is not None:
+        ep["readout"] = normalize_readout(readout)
+    if ep["readout"] is None:
+        ep["readout"] = ""   # readout not matched ("" = match any, both counters)
     try:
         from photonscript.scheduler import calibration_qa as cq
         if cq.mode(config) != "off":
@@ -427,18 +448,40 @@ def _qa_failed_keys(config) -> set:
         return set()
 
 
-def days_since_last_bias(config) -> int | None:
+def days_since_last_bias(config, rig: str = "rc16") -> int | None:
     """Age (in days) of the newest night folder holding BIAS frames, or None
     if the library has no bias at all. Lightweight: matches on the BIAS
-    directory name only (no FITS header reads), unlike calibration_health."""
+    directory name, plus (PS-128) one header per session for the readout
+    mode: a session shot at another readout than the rig's lights (the
+    RC16's LCG bias of July vs its HCG lights) does not count. A frame with
+    no readout keyword, or an unreadable one, counts as the rig's."""
+    from photonscript.shared.rigs import rig_readout
+    want = rig_readout(config, rig)
+    sessions: dict[str, Path] = {}
+    for typ, date, f in iter_calibration_frames(config):
+        if typ == "BIAS":
+            sessions.setdefault(date, f)
     newest: str | None = None
-    for typ, date, _f in iter_calibration_frames(config):
-        if typ == "BIAS" and date > (newest or ""):
-            newest = date
+    for date in sorted(sessions, reverse=True):
+        if want and _session_readout(sessions[date], want) != want:
+            continue
+        newest = date
+        break
     if newest is None:
         return None
     return (datetime.now().date()
             - datetime.strptime(newest, "%Y-%m-%d").date()).days
+
+
+def _session_readout(f: Path, default: str | None) -> str | None:
+    """PS-128: readout mode of one frame (its session's), the default when
+    the header has none or cannot be read."""
+    try:
+        from astropy.io import fits as _fits
+        from photonscript.shared.rigs import header_readout
+        return header_readout(_fits.getheader(f))[0] or default
+    except Exception:  # noqa: BLE001
+        return default
 
 
 def stale_flat_filters(config) -> list[str]:
@@ -879,7 +922,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     # bias top-up only when due (bias barely ages)
     _bias_refresh_days = int(getattr(config, "bias_refresh_days", 60))
     try:
-        _bias_age = days_since_last_bias(config)
+        _bias_age = days_since_last_bias(config, rig="piggyback")
     except Exception:  # noqa: BLE001
         _bias_age = None
     _bias_due = (_bias_refresh_days <= 0 or _bias_age is None

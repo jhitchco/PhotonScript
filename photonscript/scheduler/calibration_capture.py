@@ -16,6 +16,13 @@ Refused (start) unless ALL hold:
     guiding / calibrating / looping / settling
   * daytime capture is not disabled for the rig (day vs night leak check)
   * the rig's camera connects and the watch dir is known
+  * PS-128: NINA's readout mode for sequence images (ninaAPI camera info:
+    ReadoutModes[ReadoutModeForNormalImages]) is the rig's lights' mode
+    (camera_readout_mode / piggyback_readout_mode). NINA has no per-exposure
+    readout setting in the generated sequence: every dark and bias is shot
+    at the profile's mode, so a profile left at LCG would fill an HCG quota
+    with frames that never count. Unknown (field missing) does not refuse;
+    the frames' READOUTM is checked against the asked mode by QA instead.
 Then the job cools to the setpoint and waits until the sensor reads within
 setpoint +/- calibration_temp_tol_c twice in a row (or aborts after
 COOL_TIMEOUT_MIN) before dispatching the first exposure.
@@ -361,7 +368,31 @@ async def preflight(config, rig: str, armer_state: str, io: RigIO | None = None,
     seen["camera_connected"] = ok
     if not ok:
         refusals.append(f"{label} camera not connected ({err})")
+    else:
+        refusals += await _readout_check(config, rig, io, seen, label,
+                                         cam if not connect else None)
     return refusals, seen
+
+
+async def _readout_check(config, rig: str, io, seen: dict, label: str,
+                         cam: dict | None) -> list[str]:
+    """PS-128: refuse when NINA would shoot the darks / bias at another
+    readout mode than the rig's lights (fail open when NINA does not say)."""
+    from photonscript.shared.rigs import camera_info_readout, rig_readout
+    want = rig_readout(config, rig)
+    if not want:
+        return []
+    if cam is None:
+        cam = await io.camera()
+    have, raw = camera_info_readout(cam)
+    seen["readout"] = {"nina": raw, "want": want}
+    if have is None or have == want:
+        return []
+    key = "piggyback_readout_mode" if rig != "rc16" else "camera_readout_mode"
+    return [f"{label} NINA readout mode for sequence images is {raw}, the lights "
+            f"use {want} ({key}): darks and bias at {have} would not count. Set "
+            "it in NINA Options > Equipment > Camera (readout mode for "
+            "sequence images), or change " + key]
 
 
 def _probe_block(config, rig: str, darks: list) -> list | None:
@@ -476,6 +507,7 @@ async def _start(config, rig, armer_state_fn, io, poll_s, day, seen, *, darks, b
               setpoint=rig_setpoint(config, rig), tol=cq.temp_tol(config),
               daytime=day, probe=probe,
               expect={"gain": ep["gain"], "offset": ep["offset"], "xbin": 1,
+                      "readout": ep.get("readout"),
                       "exposures": sorted({e for e, _n in blocks})})
     if plan["trimmed"]:
         job.log(f"plan trimmed to the {budget:g} min budget")

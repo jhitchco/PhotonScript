@@ -418,9 +418,14 @@
             esc(r.name) + ' <span class="pill ' + ((r.items || []).length ? 'p-disabled' : 'p-harvest') +
             '" style="float:right;">' + (r.items || []).length + ' owed</span></h3>' +
             '<div class="muted">gain ' + ep.gain + ' offset ' + ep.offset + ' ' + ep.setpoint +
-            ' C &middot; ' + r.lights + ' lights' + (r.lights_assumed_epoch ? ' (' +
+            ' C' + (ep.readout ? ' ' + esc(ep.readout) : '') +
+            ' &middot; ' + r.lights + ' lights' + (r.lights_assumed_epoch ? ' (' +
             r.lights_assumed_epoch + ' logged before PS-122: epoch assumed)' : '') +
-            ' &middot; ' + esc(r.counted) + '</div><div style="margin:.4rem 0;">' + counts + '</div>' +
+            (r.lights_readout_assumed ? ' (' + r.lights_readout_assumed +
+             ' with no readout logged: ' + esc(ep.readout || '?') + ' assumed)' : '') +
+            ' &middot; ' + esc(r.counted) + '</div>' +
+            (r.readout_note ? '<div class="muted">' + esc(r.readout_note) + '</div>' : '') +
+            '<div style="margin:.4rem 0;">' + counts + '</div>' +
             (items ? '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0;">' + items + '</ul>'
                    : '<div style="color:#86efac;">Nothing owed.</div>') + fixes +
             (unc ? '<div style="margin-top:.4rem;"><b>Uncalibrated nights</b>' + unc + '</div>' : '') +

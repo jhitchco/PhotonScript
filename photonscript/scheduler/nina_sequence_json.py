@@ -1570,7 +1570,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
     _bias_refresh_days = int(getattr(_gen_cfg(), "bias_refresh_days", 60))
     try:
         from photonscript.scheduler.calibration import days_since_last_bias
-        _bias_age = days_since_last_bias(_gen_cfg())
+        _bias_age = days_since_last_bias(_gen_cfg(), rig="rc16")
     except Exception:  # noqa: BLE001
         _bias_age = None
     _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
@@ -1600,7 +1600,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                 CompletedIterations=0, Iterations=1)])
     else:
         bias_if_still_unsafe = _annotation(
-            f"BIAS_IF_STILL_UNSAFE skipped: library bias is {_bias_age}d old "
+            f"BIAS_IF_STILL_UNSAFE skipped: library bias (at the lights' readout "
+            f"mode) is {_bias_age}d old "
             f"(refresh every {_bias_refresh_days}d)")
     start_items += [
         _connect("Safety Monitor"),
