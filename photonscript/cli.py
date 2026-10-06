@@ -1468,6 +1468,66 @@ def rename_targets(
         console.print("[yellow]Dry run only. Add --apply to write.[/yellow]")
 
 
+@app.command("piggy-attribution")
+def piggy_attribution_cmd(
+    date: list[str] = typer.Option(
+        [], help="Only these nights (YYYY-MM-DD, repeatable; default all)"),
+    apply: bool = typer.Option(False, "--apply",
+                               help="Rename and move Library links "
+                                    "(default: dry run)"),
+    solve: bool = typer.Option(False, "--solve",
+                               help="Plate-solve Piggy subs nothing places "
+                                    "yet (ASTAP, stored for reuse)"),
+    max_solves: int = typer.Option(30, help="Solve cap per night"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-137: name Piggy-600 subs after the goal their own frame holds
+    (plate solve, else the mount position; Piggy-driven goals first) instead
+    of the RC16's target name, e.g. the 2026-09-21 M31 subs filed as
+    "Crescent Nebula". Dry run unless --apply; with --apply the subs logs
+    are rewritten (raw name kept in target_raw) and the Library links move
+    to the new target folder on this machine (collisions reported, nothing
+    deleted, no FITS written). Afterwards: POST /api/projects2/recount.
+
+    photonscript piggy-attribution --date 2026-09-21 --solve
+    """
+    import json as _json
+
+    from photonscript.scheduler.piggy_attribution import reattribute
+    from photonscript.shared.config import PhotonScriptConfig
+
+    r = reattribute(PhotonScriptConfig(), date or [], apply=apply,
+                    solve=solve, max_solves=max_solves)
+    if as_json:
+        console.print_json(_json.dumps(r))
+        return
+    title = "APPLIED" if r["applied"] else "DRY RUN"
+    t = Table(title=f"{title} - PS-137 Piggy attribution "
+                    f"({r['nights_scanned']} nights scanned)")
+    for c in ("Night", "Piggy subs", "Placed", "Kept", "No goal in frame",
+              "No position", "Change"):
+        t.add_column(c)
+    for n in r["nights"]:
+        ch = "; ".join(f"{c['from']} -> {c['to']} ({c['subs']}, {c['src']})"
+                       for c in n["changes"]) or "-"
+        t.add_row(n["date"], str(n["piggy"]), str(n["placed"]), str(n["kept"]),
+                  str(n["no_goal"]), str(n["no_position"]), ch)
+    console.print(t)
+    console.print(f"Subs re-attributed: {r['subs_changed']}; Library "
+                  f"{r['library']}: {len(r['library_moves'])} link(s) "
+                  f"{'moved' if r['applied'] else 'to move'}, "
+                  f"{len(r['library_collisions'])} collision(s)")
+    for c in r["library_collisions"]:
+        console.print(f"  [yellow]collision (left in place): {c['from']} -> "
+                      f"{c['to']}{' ' + c['error'] if c.get('error') else ''}"
+                      "[/yellow]")
+    if r["applied"]:
+        console.print("[green]Done. Now resync goals: POST "
+                      "/api/projects2/recount[/green]")
+    else:
+        console.print("[yellow]Dry run only. Add --apply to write.[/yellow]")
+
+
 @app.command("archive-library")
 def archive_library(
     before: str = typer.Option(..., help="Archive nights before this date (YYYY-MM-DD)"),

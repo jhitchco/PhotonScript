@@ -671,6 +671,13 @@ class PhotonScriptConfig(BaseSettings):
                                         # OSC lights (all LCG so far); same rule
                                         # as camera_readout_mode
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
+    piggyback_frame_attribution: str = "report"  # PS-137: name Piggy subs
+                                     # after the goal their frame holds (solve,
+                                     # else mount position; Piggy-driven goals
+                                     # first): off | report (record the
+                                     # evidence only, nothing renamed or
+                                     # refiled) | on (rename; the Library build
+                                     # moves the links)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs
     piggyback_calibrate_on_arm: bool = True  # on arm, also dispatch a calibration
                                      # companion to NINA #2 so ONE arm covers both

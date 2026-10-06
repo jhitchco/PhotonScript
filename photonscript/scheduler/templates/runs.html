@@ -905,6 +905,22 @@
             (differs ? ' <span class="bd" title="what the score would do (PS-108)">would ' +
              escH(dc) + '</span>' : '') + '</td>';
     }
+    // PS-137: the attributed target, with the raw name (OBJECT / RC16 name)
+    // and the Piggy frame evidence on hover; a report-only attribution that
+    // differs shows as a small "frames X" hint.
+    function targetCell(s) {
+        const a = s.target_attr || null;
+        const tip = [];
+        if (s.target_raw && s.target_raw !== s.target) tip.push('recorded as: ' + s.target_raw);
+        if (a && a.name) tip.push('Piggy frame holds ' + a.name + ' (' + (a.tier || '') + ', ' +
+            (a.off_arcmin != null ? a.off_arcmin + "' from centre, " : '') + (a.src || '') +
+            (a.applied ? '' : ', report only') + ')');
+        const hint = a && a.name && !a.applied && a.name !== s.target
+            ? ' <span class="dim" style="color:#7dd3fc">frames ' + escH(a.name) + '?</span>' : '';
+        const mark = s.target_raw && s.target_raw !== s.target ? ' <span class="dim">*</span>' : '';
+        return '<td' + (tip.length ? ' title="' + escH(tip.join(' \u00b7 ')) + '"' : '') + '>' +
+            escH(s.target) + mark + hint + '</td>';
+    }
     function renderSubTable(subs) {
         const rows = sortSubs(subs);
         window._shownSubs = rows;   // the lightbox walks the table order
@@ -927,7 +943,7 @@
                  : !s.passed_qa ? 'outline:2px solid #f87171;'
                  : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" data-src="/api/runs/' +
                 currentDate + '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' + ann + '"></td>' +
-                '<td>' + (s.time || '').slice(11, 19) + '</td><td>' + escH(s.target) + '</td><td>' +
+                '<td>' + (s.time || '').slice(11, 19) + '</td>' + targetCell(s) + '<td>' +
                 escH(s.filter) + '</td><td>' + Math.round(s.exp_s) + 's</td>' + scoreCell(s) +
                 verdictCell(s) + '<td>' + (s.hfr ?? '\u2013') + '</td><td>' + (s.fwhm_arcsec ?? '\u2013') +
                 '</td><td' + (s.ecc_raw != null ? ' title="stored as 1-b/a ' + s.ecc_raw + '"' : '') +

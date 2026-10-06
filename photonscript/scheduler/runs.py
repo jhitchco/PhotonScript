@@ -867,6 +867,20 @@ def start_backfill(config, date: str) -> None:
                     build_library(config, date)
             except Exception as e:  # noqa: BLE001
                 logger.warning("Pointing solve pass failed for %s: %s", date, e)
+            try:  # PS-137: again with tonight's Piggy solves; a renamed sub
+                # gets its offset re-judged and its Library link moved
+                from photonscript.scheduler.piggy_attribution import (
+                    attribute_piggy_night)
+                from photonscript.scheduler.pointing_record import (
+                    night_pass as _point_pass)
+                pa = attribute_piggy_night(config, date)
+                if pa.get("renamed"):
+                    _point_pass(config, date, solve=False)
+                    build_library(config, date)
+                    sync_goal_progress(config)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Piggy frame attribution failed for %s: %s",
+                               date, e)
         finally:
             st["running"] = False
             st["current"] = None
@@ -884,14 +898,27 @@ def attribute_night(config, date: str, solve: bool = False) -> dict:
     first so the RC16 timeline has names to lend); (3) only with solve=True,
     one ASTAP plate solve per time cluster for anything still unknown. The
     library build runs (1)+(2) on every night it touches; the dawn backfill
-    runs all three. Idempotent: only '?' subs are ever touched."""
+    runs all three. Idempotent: only '?' subs are ever touched.
+    PS-137: between (1) and (2) every Piggy-600 sub with a stored position
+    (solve, else mount) is checked against the goals its frame holds
+    (scheduler.piggy_attribution; renames only in mode "on")."""
     from photonscript.scheduler.identify import identify_night
-    out = {"date": date, "header": 0, "piggyback": 0, "solved": 0}
+    out = {"date": date, "header": 0, "piggy_frame": 0, "piggyback": 0,
+           "solved": 0}
     try:
         out["header"] = identify_night(config, date, solve=False).get(
             "identified", 0)
     except Exception as e:  # noqa: BLE001
         logger.warning("Header attribution failed for %s: %s", date, e)
+    try:  # PS-137: Piggy subs by the goal their own frame holds, before
+        # the time correlation lends them the RC16's name (mode: report
+        # writes only the evidence, on renames; uses stored positions only)
+        from photonscript.scheduler.piggy_attribution import (
+            attribute_piggy_night)
+        out["piggy_frame"] = attribute_piggy_night(config, date).get(
+            "renamed", 0)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Piggy frame attribution failed for %s: %s", date, e)
     try:
         out["piggyback"] = correlate_piggyback_targets(config, date).get(
             "attributed", 0)
@@ -903,7 +930,8 @@ def attribute_night(config, date: str, solve: bool = False) -> dict:
                 "identified", 0)
         except Exception as e:  # noqa: BLE001
             logger.warning("Plate-solve attribution failed for %s: %s", date, e)
-    out["attributed"] = out["header"] + out["piggyback"] + out["solved"]
+    out["attributed"] = (out["header"] + out["piggy_frame"]
+                         + out["piggyback"] + out["solved"])
     if out["attributed"]:
         logger.info("Attribute %s: %s", date, out)
     return out
