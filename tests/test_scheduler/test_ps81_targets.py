@@ -319,7 +319,7 @@ JPEG = b"\xff\xd8\xff\xe0" + b"0" * 64
 def test_rig_fov_matches_headers(tmp_path):
     cfg = _cfg(tmp_path)
     rc, pb = refimage.rig_fovs(cfg)
-    assert (rc["w_arcmin"], rc["h_arcmin"]) == (24.9, 16.7)  # 0.24"/px
+    assert (rc["w_arcmin"], rc["h_arcmin"]) == (24.5, 16.4)  # 0.236"/px
     assert (pb["w_arcmin"], pb["h_arcmin"]) == (133.8, 89.6)  # 1.29"/px
     assert rc["enabled"] and pb["enabled"] is False
     cfg2 = _cfg(tmp_path, piggyback_sensor_width_px=3000, piggyback_enabled=True)
@@ -469,7 +469,7 @@ def test_api_refimage_meta_dss_then_fallbacks(api, monkeypatch):
     assert client.get("/api/targets/refimage",
                       params={"name": "Crescent Nebula"}).status_code == 404
     f = client.get("/api/rigs/fov").json()["rigs"]
-    assert f[0]["w_arcmin"] == 24.9
+    assert f[0]["w_arcmin"] == 24.5
 
 
 def test_api_live_marker(api, monkeypatch):

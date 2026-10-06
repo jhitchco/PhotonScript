@@ -246,7 +246,7 @@ default_bin = 1
 tol_pct = 2.0
 severity = "fail"
 confidence = "Med"
-why = "Must be the ASTAP-measured native scale times the run's binning from the manual record (1x1 on 2026-10-04: 0.236; 0.478 at 2x2); the old 4x4 model used 0.942."
+why = "Must be the ASTAP-measured native scale times the run's binning from the manual record (1x1 on 2026-10-04: 0.236; 0.472 at 2x2); the old 4x4 model used 0.942."
 fix = "Automated Pointing Calibration Run > Setup: image scale = native x binning (0.236 at 1x1)."
 
 [[check]]
@@ -350,7 +350,7 @@ computed = "true_scale"
 tol_pct = 1.0
 severity = "warn"
 confidence = "High"
-why = "ASTAP measures the real scale of an RC16 frame; config says 0.239, the 4x4 model implied 0.2355."
+why = "ASTAP measures the real scale of an RC16 frame; config pixel_scale_arcsec is the plate-solved 0.236 (TPoint run at 1x1, PS-97, PS-120), the 4x4 model implied 0.2355."
 fix = "If it differs, update pixel_scale_arcsec and the TheSky image scale."
 
 [[check]]

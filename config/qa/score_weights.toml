@@ -84,7 +84,7 @@ why = "Any other gate failed but close to its limit: never auto-approved, a pers
 
 [rc16.ecc]
 weight = 25
-why = "Trailing, wind and drift are the most common RC16 loss at 3248 mm (0.24\"/px), and round stars are what the stack is judged on."
+why = "Trailing, wind and drift are the most common RC16 loss at 3248 mm (0.236\"/px), and round stars are what the stack is judged on."
 
 [rc16.ecc_bin]
 weight = 25

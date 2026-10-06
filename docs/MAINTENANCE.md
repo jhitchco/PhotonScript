@@ -303,7 +303,7 @@ site's TheSky 10.5 build).
   age limit or a first-slew median over the warn limit.
 - Image Link check: "ASTAP check now" solves the newest RC16 L frame
   (broadband fallback) and compares the native scale x run binning with
-  TheSky's Automated Image Link scale (0.239 x 2 = 0.478; 0.942 is the old
+  TheSky's Automated Image Link scale (0.236 x 2 = 0.472; 0.942 is the old
   4x4 setting). "TheSky Image Link on a temp copy" runs TheSky's own solver on
   a copy in `<data_dir>/thesky_audit/tmp/` (deleted after), only while the
   armer is DISARMED or COMPLETE: success there and a failing "Take And Image

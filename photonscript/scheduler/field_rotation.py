@@ -671,7 +671,7 @@ def _rig_geom(config, rig):
     if rig == PIGGY:
         w = int(getattr(config, "piggyback_sensor_width_px", 0) or 0) or w
         h = int(getattr(config, "piggyback_sensor_height_px", 0) or 0) or h
-    return float(getattr(rc, "pixel_scale_arcsec", 0.24 if rig == RC16 else 1.29)), w, h
+    return float(getattr(rc, "pixel_scale_arcsec", 0.236 if rig == RC16 else 1.29)), w, h
 
 
 def costs(config, blocks, stats, polar, night_hours, sols_scale=None) -> dict:

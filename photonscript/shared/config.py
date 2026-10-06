@@ -65,8 +65,8 @@ class PhotonScriptConfig(BaseSettings):
     phd2_pixel_scale_arcsec: float = 0.0  # explicit guide "/px override; 0 = compute
     guide_camera_pixel_um: float = 2.0    # OGMA GP678C on the OAG (2.0 um pixels)
     guide_focal_length_mm: float = 0.0    # 0 = derive from pixel_scale_arcsec and
-                                          # imaging_camera_pixel_um (0.24"/px at
-                                          # 3.76 um = about 3230 mm; the OAG
+                                          # imaging_camera_pixel_um (0.236"/px at
+                                          # 3.76 um = about 3290 mm; the OAG
                                           # shares the RC16 focal length)
     imaging_camera_pixel_um: float = 3.76  # RC16 imaging camera (AP26MC / IMX571)
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
@@ -163,7 +163,10 @@ class PhotonScriptConfig(BaseSettings):
     # base (TraceLogger writes dated subfolders here); enable Trace in the driver
     # setup to capture the safety-monitor client's HTTP/exception detail
     # --- Quality gates (per-sub grading) ---
-    pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
+    pixel_scale_arcsec: float = 0.236  # RC16 3248mm + AP26MC native, 1x1.
+                                      # Measured by plate solves (TPoint run
+                                      # at 1x1, PS-97, PS-120); was 0.24, the
+                                      # HANDBOOK said 0.239
     # PS-81: imaging sensor size (px) for the Targets page field-of-view boxes.
     # The AP26MC and AP26CC both write NAXIS1 x NAXIS2 = 6224 x 4168 (FITS
     # headers, 2026-09-26). Display only; nothing is gated on them.
@@ -175,7 +178,7 @@ class PhotonScriptConfig(BaseSettings):
                                      # piggyback sets this via rig_config so its
                                      # galaxy-inflated FWHM never bounces a tight-HFR
                                      # sub. HFR + ecc remain the hard gates.
-    quality_hfr_abs_max: float = 10.0  # px. RC16 at 0.24"/px: 10px ~= 2.4" HFR,
+    quality_hfr_abs_max: float = 10.0  # px. RC16 at 0.236"/px: 10px ~= 2.4" HFR,
                                        # consistent with the 4" FWHM gate. Was an
                                        # implicit 8px (getattr default) that rejected
                                        # soft-but-stackable subs whose stars NINA's own
@@ -185,7 +188,7 @@ class PhotonScriptConfig(BaseSettings):
                                              # mildly-trailed but stackable subs
                                              # (RC16 guided 600-900s). Loosens the
                                              # anti-trailing gate — watch for drift.
-    quality_tracking_rms_max: float = 1.5  # arcsec (0.24"/px scale)
+    quality_tracking_rms_max: float = 1.5  # arcsec (0.236"/px scale)
     quality_corner_spread_max: float = 0.35  # corner FWHM spread vs median (collimation watch)
     optics_corner_alert: bool = False  # PS-95: the daily "corner FWHM spread"
                                  # Pushover from the live grader. Off: it fired
@@ -279,14 +282,14 @@ class PhotonScriptConfig(BaseSettings):
                                  # (guard episode overlapping it): warn | fail
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
-    # PS-94: eccentricity at the 2x2-binned scale (0.48"/px on the RC16,
-    # the scale the _bin2 masters integrate at) next to the native 0.24"/px.
+    # PS-94: eccentricity at the 2x2-binned scale (0.47"/px on the RC16,
+    # the scale the _bin2 masters integrate at) next to the native 0.236"/px.
     # Report-only until the ecc-scale-report numbers are in.
     qa_ecc_binned: bool = True   # live grader also measures a 2x2-binned
                                  # copy of each RC16 sub (ecc_bin, hfr_bin)
     qa_ecc_scale: str = "native"  # which scale gates: native | binned (the
                                  # other is recorded as info only)
-    quality_eccentricity_max_binned: float = 0.0  # gate at 0.48"/px when
+    quality_eccentricity_max_binned: float = 0.0  # gate at 0.47"/px when
                                  # qa_ecc_scale=binned; 0 = same as
                                  # quality_eccentricity_max
     # PS-108: 0 to 100 sub score (shared.qa_score, weights per rig in
@@ -317,10 +320,19 @@ class PhotonScriptConfig(BaseSettings):
                                 # setting; the sequence cannot set it). Blank
                                 # = readout not matched (pre-PS-128)
     cooling_tolerance_c: float = 1.0
-    camera_read_noise_adu: float = 4.1  # measured 2026-07-07: 4.07 ADU16 from the
-                                        # library bias (3x50 frames, gain 200 LCG;
-                                        # single-frame and pair-difference agree).
-                                        # Floor for the exposure swamp score.
+    # PS-117: RC16 (AP26MC, gain 200) camera constants per readout mode. The
+    # graders pick the pair from the frame's READOUTM header: "Low Conversion
+    # Gain" uses the _lcg keys, anything else (HCG, or no header) the plain
+    # keys. Read noise is the floor for the exposure swamp score
+    # (shared.star_measure); the gain is kept for the PS-117 light budget.
+    camera_read_noise_adu: float = 5.66  # HCG (all lights since 2026-09-26):
+                                        # 09-26 180 s HCG dark pairs (upper
+                                        # bound, 1.4 e-). Was 4.1 (an LCG bias)
+    camera_read_noise_lcg_adu: float = 4.27  # LCG: 2026-07-31 bias (07-07
+                                        # measured 4.07 in the same mode)
+    camera_gain_e_adu: float = 0.25     # HCG e-/ADU: sky noise vs read noise
+                                        # on 14 lights (0.249 to 0.259)
+    camera_gain_lcg_e_adu: float = 0.79  # LCG e-/ADU: 2026-07-04 flat pairs
     auto_dusk_flats: bool = True  # auto-dispatch dusk sky flats for STALE
                                   # filters before auto-arm (the "checkmark")
     evening_forecast_enabled: bool = True  # push a night-viewing forecast a few
@@ -578,6 +590,12 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_sensor_height_px: int = 0  # PS-81 FOV box; 0 = sensor_height_px
     piggyback_default_gain: int = 100   # OGMA HCG-ish for OSC broadband
     piggyback_default_offset: int = 256
+    # PS-117: AP26CC constants at gain 100, offset 256, LCG, 0 C (the mode it
+    # always shoots). rig_config hands them to the Piggy-600 view as
+    # camera_read_noise_adu / camera_gain_e_adu (and the _lcg twins).
+    piggyback_read_noise_adu: float = 3.27  # 16 bias, pair differences (2.4 e-)
+    piggyback_gain_e_adu: float = 0.74  # flat-pair photon transfer, 5 pairs
+                                        # (sky-noise cross-check 0.67 to 0.73)
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
     piggyback_focus_seed: int = 11045  # STATIC cold-start position for the OSC's
                                       # OWN focuser, used as the fallback before the

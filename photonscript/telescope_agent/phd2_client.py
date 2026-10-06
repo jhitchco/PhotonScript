@@ -103,8 +103,8 @@ class PHD2RPCError(RuntimeError):
 def guide_focal_length_mm(config) -> float:
     """Guide-path focal length (mm). The OAG sees through the RC16, so unless
     guide_focal_length_mm is set it is derived from the imaging plate scale:
-    206.265 * imaging pixel (um) / pixel_scale_arcsec (0.24"/px at 3.76 um is
-    about 3230 mm)."""
+    206.265 * imaging pixel (um) / pixel_scale_arcsec (0.236"/px at 3.76 um is
+    about 3290 mm)."""
     fl = float(getattr(config, "guide_focal_length_mm", 0) or 0)
     if fl > 0:
         return fl

@@ -20,7 +20,7 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
 
 ``metrics`` keys (all optional; a missing input makes its check "skip"):
   hfr (native px), fwhm_arcsec (only when the grader truly measured FWHM),
-  ecc (native scale), ecc_bin (2x2-binned, 0.48"/px; PS-94), stars,
+  ecc (native scale), ecc_bin (2x2-binned, 0.47"/px; PS-94), stars,
   background, exp_s, ccd_temp, set_temp (header SET-TEMP),
   guide_rms, guide_state, guide_lock (star|non-star, PS-91), doubled_frac,
   exposure (ok|under|clipped|sat-stars), clipped_pct, sat_stars_pct, swamp,
@@ -60,7 +60,7 @@ APPROVED, NEEDS_LOOK, REJECTED = "approved", "needs-look", "rejected"
 # id -> (label, unit, "what I want to see"); order = scorecard order
 CHECKS: dict[str, tuple[str, str, str]] = {
     "ecc": ("Eccentricity", "", "round stars (no trailing, wind or drift)"),
-    "ecc_bin": ("Eccentricity at 0.48\"/px", "",
+    "ecc_bin": ("Eccentricity at 0.47\"/px", "",
                 "round stars at the 2x2-binned integration scale"),
     "hfr": ("HFR (focus)", "px", "tight stars (autofocus held)"),
     "hfr_rel": ("HFR vs night median", "px",
@@ -546,7 +546,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     bg = _num(m.get("background"))
     exp_s = _num(m.get("exp_s"))
 
-    # ecc at native scale and at 0.48"/px (PS-94): one of them gates
+    # ecc at native scale and at 0.47"/px (PS-94): one of them gates
     # (qa_ecc_scale), the other is recorded as info only. With no binned
     # value (Piggy-600, older records) the native one gates whatever the
     # setting, so a sub is never left ungated.
@@ -555,7 +555,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     gate_bin = t.get("ecc_scale") == "binned" and ecc_bin is not None
     if gate_bin:
         checks.append(Check("ecc", _r(ecc), t["ecc_max"], SKIP,
-                            "info only: gating at 0.48\"/px"))
+                            "info only: gating at 0.47\"/px"))
     else:
         checks.append(_max_check(
             "ecc", ecc, t["ecc_max"], wf,
@@ -566,7 +566,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     elif gate_bin:
         checks.append(_max_check(
             "ecc_bin", ecc_bin, lim_b, wf,
-            f"Eccentricity at 0.48\"/px {ecc_bin:.2f} > {lim_b:g} "
+            f"Eccentricity at 0.47\"/px {ecc_bin:.2f} > {lim_b:g} "
             "(trailing/drift)"))
     else:
         checks.append(Check("ecc_bin", _r(ecc_bin), lim_b, SKIP,

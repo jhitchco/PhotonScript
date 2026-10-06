@@ -100,6 +100,18 @@ def is_osc_frame(file_path: str, rig: str = "rc16") -> bool:
         return False
 
 
+def _fits_header(file_path: str):
+    """The FITS header (READOUTM picks the read noise, PS-117), or None
+    for a non-FITS or unreadable file (the config's HCG read noise)."""
+    if Path(file_path).suffix.lower() not in (".fits", ".fit", ".fts"):
+        return None
+    try:
+        from astropy.io import fits
+        return fits.getheader(file_path)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _detect_stars_osc(data: np.ndarray) -> list[dict]:
     """PS-96: superpixel star measure for one-shot-color frames, native px."""
     if _sm._sep() is None:
@@ -185,7 +197,8 @@ def validate_image(
         )
 
     m = _sm.measure_frame(data, config, rig, pixel_scale=pixel_scale,
-                          osc=is_osc_frame(file_path, rig), grader="live-sep")
+                          osc=is_osc_frame(file_path, rig), grader="live-sep",
+                          header=_fits_header(file_path))
     pixels = _pixel_stats(data, file_path, config)
 
     quality = ImageQualityMetrics(

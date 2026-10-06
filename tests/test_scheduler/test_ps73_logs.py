@@ -207,7 +207,7 @@ def test_placeholder_scale_uses_config_optics_or_stays_pixels():
     secs = pl.parse_guide_log(log)
     s = pl.summarize_sections(secs, PhotonScriptConfig(_env_file=None))["sessions"][0]
     assert s["scale_source"] == "config"
-    assert s["pixel_scale_arcsec"] == pytest.approx(2.0 * 0.24 / 3.76, abs=1e-4)
+    assert s["pixel_scale_arcsec"] == pytest.approx(2.0 * 0.236 / 3.76, abs=1e-4)
     s = pl.summarize_sections(
         secs, PhotonScriptConfig(_env_file=None, guide_camera_pixel_um=0))
     assert s["sessions"][0]["units"] == "px"

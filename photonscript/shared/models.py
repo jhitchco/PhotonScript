@@ -250,7 +250,7 @@ class ImageQualityMetrics(BaseModel):
     sat_star_pct: Optional[float] = None   # % detected stars with saturated cores
     swamp_factor: Optional[float] = None   # background variance / read-noise variance
     exposure_flag: Optional[str] = None    # under / ok / sat-stars / clipped
-    # PS-94: the same measure on a 2x2-binned copy (RC16 only; 0.48"/px)
+    # PS-94: the same measure on a 2x2-binned copy (RC16 only; 0.47"/px)
     ecc_bin: Optional[float] = None        # sqrt(1-(b/a)^2), like eccentricity
     hfr_bin_px: Optional[float] = None     # binned HFR in native px (x2)
     stars_bin: Optional[int] = None

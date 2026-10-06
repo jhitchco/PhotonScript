@@ -165,7 +165,7 @@ function autoStretchGray(view) {
    HT.executeOn(view, false);
 }
 
-// downsample a saved master 2x (average). 0.24"/px against 2-3" seeing is
+// downsample a saved master 2x (average). 0.236"/px against 2-3" seeing is
 // oversampled: binning costs no real detail and doubles SNR.
 function makeBin2(id) {
    var mdir = OUT + "/master/";

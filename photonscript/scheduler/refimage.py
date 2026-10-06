@@ -55,7 +55,7 @@ def rig_fov(config, rig: str) -> dict:
     if rig == PIGGYBACK:
         w = int(getattr(config, "piggyback_sensor_width_px", 0) or 0) or w
         h = int(getattr(config, "piggyback_sensor_height_px", 0) or 0) or h
-    scale = float(getattr(rc, "pixel_scale_arcsec", 0.24) or 0.24)
+    scale = float(getattr(rc, "pixel_scale_arcsec", 0.236) or 0.236)
     return {"rig": rig, "label": rig_label(config, rig),
             "pixel_scale_arcsec": scale, "width_px": w, "height_px": h,
             "w_arcmin": round(w * scale / 60.0, 1),

@@ -12,9 +12,10 @@ get answered; the planner and QA thresholds should eventually read from here.
 ## Optical train
 - OTA: RC16 (406 mm) at 3248 mm f/8 (native, no reducer in use)
 - Camera: OGMA AP26MC - IMX571 mono APS-C, 6224 x 4168, 3.76 um
-- Image scale: 0.239"/px · FOV 0.414 x 0.277 deg
+- Image scale: 0.236"/px, measured by plate solves (TPoint run at 1x1 on
+  2026-10-04, PS-97, PS-120; config pixel_scale_arcsec). FOV 0.408 x 0.273 deg
 - Oversampled vs 2-3" seeing -> capture 1x1, software-bin 2x in integration
-  (QA: ecc is measured at both 0.24"/px and the binned 0.48"/px since PS-94;
+  (QA: ecc is measured at both 0.236"/px and the binned 0.47"/px since PS-94;
   the gate stays at native scale until `photonscript ecc-scale-report` on
   real nights says binning changes it. Switch with PS_QA_ECC_SCALE=binned
   and PS_QUALITY_ECCENTRICITY_MAX_BINNED.)
@@ -68,6 +69,16 @@ corner over a 600 s sub, about 39 px over 6 h (registration crops it).
   mode for sequence images), not in the sequence. Piggy-600 AP26CC: LCG.
 - Dark quota: PS_DARK_EXPOSURES x PS_DARK_TARGET_COUNT at the setpoint
 - Flats: dusk NB-first -> L-last; dawn BB-first -> NB-last; target 50% histogram
+
+#### Camera constants (PS-117, measured on Library frames 2026-10-04)
+Config keys in brackets. The graders take the read noise for the frame's rig
+and readout mode (READOUTM: "Low Conversion Gain" = LCG, anything else = HCG)
+for the swamp factor; the QA thresholds did not change.
+| Rig / mode | Read noise (ADU) | Gain (e-/ADU) | Source |
+|------------|------------------|---------------|--------|
+| RC16 AP26MC gain 200, HCG (lights since 09-26) | 5.66 = 1.4 e- [camera_read_noise_adu] | 0.25 [camera_gain_e_adu] | 09-26 180 s HCG dark pairs (upper bound); sky noise vs RN on 14 lights |
+| RC16 AP26MC gain 200, LCG | 4.27 [camera_read_noise_lcg_adu] | 0.79 [camera_gain_lcg_e_adu] | 07-31 bias; 07-04 flat pairs |
+| Piggy-600 AP26CC gain 100, offset 256, LCG, 0 C | 3.27 = 2.4 e- [piggyback_read_noise_adu] | 0.74 [piggyback_gain_e_adu] | 16 bias pair differences; 5 flat pairs |
 
 ## Desktop processing
 - PixInsight: C:\Program Files\PixInsight\bin\PixInsight.exe

@@ -488,10 +488,10 @@ def test_imagelink_check_solves_the_newest_l_frame(tmp_path):
 
     def runner(path, fov, hint, r, t):
         seen.append(Path(path).name)
-        return _kv(0.2391)
+        return _kv(0.2361)    # the plate-solved scale (config 0.236)
     chk = ta.imagelink_check(cfg, runner=runner)
     assert chk["ok"] and seen == ["sub_2_L.fits"]
-    assert chk["astap"]["native_scale"] == pytest.approx(0.2391, abs=1e-4)
+    assert chk["astap"]["native_scale"] == pytest.approx(0.2361, abs=1e-4)
     assert chk["astap"]["parity"] == -1
     assert (Path(cfg.data_dir) / "solves" / night / "rc16.jsonl").exists()   # stored as usual
     a = ta.run_audit(cfg, armer_state="DISARMED")

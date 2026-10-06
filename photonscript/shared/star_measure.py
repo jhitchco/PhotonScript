@@ -27,15 +27,14 @@ PS-21 gates were tuned on them):
                native px; fwhm_arcsec = fwhm x pixel scale
   ecc          median sqrt(1-(b/a)^2) (shared.star_shape.ECC_DEF)
   ecc_bin      RC16 only, qa_ecc_binned on: the same measure on a 2x2-mean
-  hfr_bin      copy (0.48"/px). Known offset (PS-94 synthetic tests): the
+  hfr_bin      copy (0.47"/px). Known offset (PS-94 synthetic tests): the
                binned moments read 0.04 to 0.06 rounder than truth at FWHM
                8 px. qa_ecc_scale stays "native" by default for that reason.
   background,  3-pass 3-sigma clipped median / std of every 4th pixel
   noise
-  swamp        (noise / camera_read_noise_adu)^2. PS-117 measured the read
-               noise per rig (RC16 HCG 5.66 ADU, Piggy-600 3.27 ADU) against
-               the single 4.1 in config: the factor is off by that ratio
-               squared until per-rig read noise exists (follow-up).
+  swamp        (noise / read noise)^2, the read noise of the frame's rig
+               and readout mode (PS-117, shared.rigs.camera_constants: RC16
+               HCG 5.66 ADU, RC16 LCG 4.27, Piggy-600 3.27)
   clipped_pct  pixels >= SATURATION_ADU in every 4th pixel
   sat_stars_pct  kept stars whose 3x3 core peak is >= SATURATION_ADU
   corner_spread  (max - min corner median FWHM) / median FWHM
@@ -206,14 +205,17 @@ def detect_fallback(data: np.ndarray, threshold: float = 5.0) -> dict:
 
 
 def exposure(data: np.ndarray, xs, ys, noise: float, config,
-             coord_scale: float = 1.0) -> dict:
+             coord_scale: float = 1.0,
+             read_noise: float | None = None) -> dict:
     """Is the sub sky-limited without clipping?
 
     swamp = (noise / read-noise floor)^2: >= 10 fully sky-limited, 3 to 10
     fine, < 3 read noise dominates (longer subs pay off). clipped_pct and
     sat_stars_pct catch the other end (blown pixels, saturated cores).
     `noise` is native-equivalent; star coordinates are native px and
-    `coord_scale` maps them onto `data` (0.5 for a binned frame)."""
+    `coord_scale` maps them onto `data` (0.5 for a binned frame).
+    `read_noise` (ADU) is the frame's read noise (PS-117); None = the
+    config view's camera_read_noise_adu."""
     sample = data[::4, ::4]
     clipped_pct = float((sample >= SATURATION_ADU).mean() * 100.0)
     sat_star_pct = None
@@ -227,7 +229,9 @@ def exposure(data: np.ndarray, xs, ys, noise: float, config,
                     float(data[y - 1:y + 2, x - 1:x + 2].max()) >= SATURATION_ADU:
                 sat += 1
         sat_star_pct = round(sat / n * 100.0, 1)
-    rn = max(float(getattr(config, "camera_read_noise_adu", 8.0)), 0.1)
+    if read_noise is None:
+        read_noise = getattr(config, "camera_read_noise_adu", 8.0)
+    rn = max(float(read_noise), 0.1)
     swamp = round((noise / rn) ** 2, 1)
     if sat_star_pct is not None and sat_star_pct > 5.0:
         flag = "sat-stars"
@@ -278,14 +282,16 @@ def _r(v, nd):
 
 def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
                   pixel_scale: float | None = None, osc: bool = False,
-                  binned_input: bool = False, grader: str = "") -> dict:
+                  binned_input: bool = False, grader: str = "",
+                  header=None) -> dict:
     """Every star and exposure metric both graders record, from one frame.
 
     `data`: the full-resolution frame (BZERO / BSCALE applied), or with
     binned_input=True its 2x2 mean (fallback). `config` is the rig's view
     (shared.rigs.rig_config): pixel scale, read noise, qa_ecc_binned,
-    qa_star_sidecar_max. Returns record-named keys (PARITY_KEYS plus
-    graded_by, ecc_def, measure_v, snr) and `star_table` (PS-80 sidecar
+    qa_star_sidecar_max. `header` (the FITS header, optional) picks the
+    read noise for the readout mode (READOUTM, PS-117). Returns
+    record-named keys (PARITY_KEYS plus graded_by, ecc_def, measure_v, snr) and `star_table` (PS-80 sidecar
     dict, or None) and `_stars` (the per-star arrays, native px)."""
     from photonscript.shared.star_shape import ECC_DEF, bin2x2_mean
     if pixel_scale is None:
@@ -320,10 +326,12 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
     fwhm_arcsec = fwhm_px * pixel_scale if fwhm_px is not None else None
     cs = corner_spread(st["x"], st["y"], st["fwhm"], native_shape, fwhm_px) \
         if have_sep else None
+    from photonscript.shared.rigs import camera_constants
     ex = exposure(data, st["x"], st["y"], noise, config,
-                  coord_scale=1.0 / k)
+                  coord_scale=1.0 / k,
+                  read_noise=camera_constants(config, header)["read_noise_adu"])
 
-    # PS-94: the 0.48"/px measure (RC16 only, qa_ecc_binned)
+    # PS-94: the 0.47"/px measure (RC16 only, qa_ecc_binned)
     ecc_bin = hfr_bin = stars_bin = None
     if rig == "rc16" and not osc and have_sep and \
             bool(getattr(config, "qa_ecc_binned", True)):

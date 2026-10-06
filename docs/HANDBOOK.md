@@ -37,7 +37,7 @@ morning. GitHub: github.com/jhitchco/PhotonScript.
 - Integration staging: `C:\Users\sleep\Astrophotography\Staging\<Target>\`
 
 ### Hardware / site facts
-- RC16 (406mm) at 3248mm f/8; scale 0.239"/px; FOV 0.414 x 0.277 deg
+- RC16 (406mm) at 3248mm f/8; scale 0.236"/px (plate-solved; config pixel_scale_arcsec); FOV 0.408 x 0.273 deg
 - OGMA AP26MC (IMX571 mono APS-C, 6224x4168, 3.76um)
 - Software Bisque PARAMOUNT MX (with encoders), driven via the TheSky64 10.5
   ASCOM driver (NINA shows the mount as `ASCOM.SoftwareBisque`). Earlier docs
@@ -115,8 +115,8 @@ Check a pending update on the scope without switching: `photonscript self-update
    state and recent results (`<data_dir>/cooler_gate.jsonl`). Lint rule
    `cooler-gate`: every light loop must have the gate before it.
 3. **Live watcher** grades each sub (sep HFR/ecc/FWHM on the NATIVE
-   0.24"/px frame; RC16 subs are also measured on a 2x2-binned copy,
-   `ecc_bin` at 0.48"/px, PS-94), skips calibration frames (path part or
+   0.236"/px frame; RC16 subs are also measured on a 2x2-binned copy,
+   `ecc_bin` at 0.47"/px, PS-94), skips calibration frames (path part or
    IMAGETYP != LIGHT), applies tracking-RMS rejection only while PHD2 reports
    guiding/settling. PS-83: the live and the backfill grader measure with
    ONE function, `shared.star_measure.measure_frame`, on the same native
@@ -302,7 +302,7 @@ multiplicative/equalize-fluxes) -> ImageCalibration (optimizeDarks,
 **outputPedestal 1000 DN**) -> CosmeticCorrection (auto hot/cold 3.0) ->
 StarAlignment to a shared mid-stack reference (sensitivity raised for
 star-poor narrowband) -> ImageIntegration -> masterLight_<F>.xisf +
-masterLight_<F>_bin2.xisf (2x average downsample; 0.24"/px is oversampled).
+masterLight_<F>_bin2.xisf (2x average downsample; 0.236"/px is oversampled).
 Finally: masterSHO_review.jpg (R=SII,G=Ha,B=OIII) and masterRGB_review.jpg
 (if R/G/B masters exist) - borders cropped 1.5%, channels autostretched to
 ~12% background. Per-frame accounting: every dropped frame is logged with

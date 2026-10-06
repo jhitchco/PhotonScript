@@ -284,7 +284,7 @@ def test_report_cost_uses_rig_scale_and_sub(tmp_path):
     rep = _rep(tmp_path, {"2026-10-05": [_b("2026-10-05", fr.RC16, 0.10),
                                          _b("2026-10-05", fr.PIGGY, 0.10)]})
     c = rep["cost"]
-    assert c["rc16"]["scale_arcsec"] == 0.24 and c["rc16"]["sub_s"] == 600
+    assert c["rc16"]["scale_arcsec"] == 0.236 and c["rc16"]["sub_s"] == 600
     assert c["rc16"]["measured"]["sub"]["corner_px"] == pytest.approx(1.09, abs=0.02)
     assert c["piggyback"]["scale_arcsec"] == 1.29 and c["piggyback"]["sub_s"] == 120
     assert c["piggyback"]["measured"]["night"]["corner_px"] == pytest.approx(39.2, abs=0.3)

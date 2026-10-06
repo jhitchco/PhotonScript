@@ -100,7 +100,7 @@ def test_scorecard_target_block_with_and_without_pointing(tmp_path, monkeypatch)
     t = card("solved")
     assert t["name"] == "M 31" and t["link"] == "/target?name=M%2031"
     assert t["filter"] == "Ha" and t["exp_s"] == 300.0
-    assert t["frame"] == {"label": "RC16", "w_arcmin": 24.9, "h_arcmin": 16.7}
+    assert t["frame"] == {"label": "RC16", "w_arcmin": 24.5, "h_arcmin": 16.4}
     p = t["pointing"]
     assert p["src_label"] == "plate solve" and p["confirmed"] is True
     assert (p["ra"], p["dec"], p["at"]) == (10.69, 41.28, "solve")   # solve center
@@ -114,7 +114,7 @@ def test_scorecard_target_block_with_and_without_pointing(tmp_path, monkeypatch)
     assert t["pointing"]["src_label"] == "mount log, unconfirmed"
     t = card("bare")                                   # no target, no record
     assert t["name"] is None and t["link"] is None and t["pointing"] is None
-    assert t["frame"]["w_arcmin"] == 24.9
+    assert t["frame"]["w_arcmin"] == 24.5
 
 
 def test_target_block_without_a_record_uses_the_graded_offset(tmp_path):
