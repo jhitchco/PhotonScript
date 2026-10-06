@@ -252,6 +252,67 @@ sign). No network: names resolve against `SEASONAL_TARGETS` in
   "dec_degrees", "type"?, "size_arcmin"?, "budget_hours"?}`,
   `GET /api/catalog/user`, `GET /api/catalog/lookup?q=`.
 
+### Mosaic goals (PS-111)
+
+A mosaic is ONE goal made of RC16 panel goals: each panel is its own project
+(own coordinates, filter plan, PS-118 seconds crediting) carrying `mosaic`
+{id, name, panel, row, col, of, companion, layout}. The dashboard shows one
+card per mosaic (panel progress in capture order, the next panel, the
+companion goal, a small preview of the panel outlines and the Piggy-600
+frame); the Targets page groups the panels under the mosaic. Code:
+`scheduler/mosaic.py`, API `routers/mosaic.py`, page `/mosaic`.
+
+- **Layout.** Gnomonic tangent plane around the mosaic center; panels step
+  by the RC16 frame (24.5' x 16.4' at 0.236"/px, PS-133) x (1 - overlap),
+  default 15%. P1 is row 1 col 1 (top-left in a north-up, east-left view at
+  PA 0), numbered row by row; that is the capture order. 2 x 2 at 15% =
+  45.3' x 30.3'.
+- **Rotation.** Neither rig has a rotator, so every panel is shot at the
+  camera's fixed angle and the grid must use it. `rotation: "camera"`
+  (default) = the circular median of the RC16 plate-solve PAs
+  (`<data_dir>/solves/*/rc16.jsonl`, mod 180), else 0 (north up) with a
+  warning. A requested angle that differs by more than 2 deg is kept but
+  flagged (turn the camera by hand first). `major_axis_pa` is information:
+  the camera angle that lays the long side along it is major + 90 (M31 PA
+  35 needs the camera at 125 deg).
+- **Order: finished in order** (not balanced): complete panels are usable
+  on their own, each panel's data comes from fewer nights, and there is at
+  most about one panel move a night. The night planner admits the first
+  unfinished panels while the earlier ones (owed hours x 1.15) end before the
+  mosaic's usable time (first panel's visible hours x 0.85); the rest are
+  held (logged). All but the last admitted panel get LoopCondition(1) on
+  their imaging loop (shoot the owed subs, then the next panel); the last
+  keeps repeat-while-safe-and-up. An unsafe pause re-runs a panel's owed
+  subs (the same reset as every target, PS-127); the next night re-plans
+  from the credited seconds. The 14-night campaign gives a panel slots only
+  once every earlier panel has no RC16 hours left.
+- **Sequence.** One DeepSkyObjectContainer per panel, Slew + Center on the
+  panel coordinates, an annotation naming the panel; panels of one mosaic
+  stay together at the first panel's transit time.
+- **Piggy-600.** It rides along: its frame moves with each panel (up to
+  half the mosaic span from the mosaic center, 12.5' for the M31 2 x 2).
+  `companion` names the goal its subs credit (M31's OSC plan): live and in
+  the goal sync, a piggyback sub named after a panel credits the
+  companion. Interplay: PS-26 (center the target in the 600 mm frame) only
+  applies when the piggyback drives; on a mosaic night the RC16 drives, so
+  the Piggy frame sits at the panel center plus the fixed boresight offset.
+  PS-27 / PS-13: a panel move is an RC16 slew + center, so the Piggy sub
+  exposing through it is split and rejected by the slew gate; in-order
+  capture keeps that to about one sub per move. The Piggy subs are still
+  filed under the panel's name in the runs table and the Library (proposed
+  follow-up).
+- **API.** `GET /api/mosaics`, `GET /api/mosaics/suggest?name=M31`,
+  `GET /api/mosaics/preview?...`, `POST /api/mosaics` (definition +
+  `companion` + `dry_run`), `PATCH /api/mosaics/{id}` (hours_per_panel,
+  filter_mix, priority, active on every panel), `DELETE /api/mosaics/{id}`
+  (panel goals only; subs and Library untouched). v1 `GET /api/mosaic/plan`
+  and `POST /api/mosaic/create` remain for old links.
+- **M31 (approved 2026-10-05).** 2 x 2 RC16 panels over the core and inner
+  dust lanes, LRGB 50 / 17 / 17 / 17 at 300 s, 4 h per panel, companion
+  "M 31" (the Piggy-600 shoots the whole galaxy). Create it with the
+  suggestion (`/api/mosaics/suggest?name=M31`, then POST it with
+  `dry_run: true` first).
+
 ## 5. File transfer: Syncthing
 
 How images get from the scope to the desktop - the bridge between capture
@@ -602,8 +663,8 @@ or "ERROR: ...". Masters in `out\master\`.
   READOUTM differs from the asked mode, and the lint rule `readout` errors
   when a (hand-edited) sequence's "Set readout mode" instructions put
   darks / bias at another mode than the lights.
-- Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout, one goal
-  per panel.
+- Mosaic planner at `/mosaic`: panel grid over a DSS2 hips2fits cutout; since
+  PS-111 one mosaic goal made of in-order panel goals (section 4).
 - Guiding tab at `/guiding` (PS-103): the working surface for PHD2. Live state
   (`GET /api/phd2/live`: app state, RMS, SNR, HFD, exposure, binning, scale,
   lock position, phd2_ops owner), then the PS-89 audit (Refresh, per-row dry

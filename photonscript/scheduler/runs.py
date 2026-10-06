@@ -1390,6 +1390,19 @@ def sync_goal_progress(config) -> list:
     # guided or not; the goal is seconds), so a 400 s M31 sub on the 120 s
     # piggyback plan is 400 s. A record without exp_s counts as one full sub.
     known = known_target_index(list(store.projects.values()))
+    # PS-111: Piggy-600 subs taken while the RC16 shot a mosaic panel are
+    # named after the panel; they credit the mosaic's companion goal (the
+    # M31 OSC plan) for every rig the panel itself has no plan for.
+    passenger: dict[tuple, str] = {}
+    for p in store.projects.values():
+        m = getattr(p, "mosaic", None) or {}
+        comp = store.projects.get(m.get("companion") or "")
+        if comp is None:
+            continue
+        own = {e.rig or "rc16" for e in p.exposure_plans}
+        for rig in {e.rig or "rc16" for e in comp.exposure_plans} - own:
+            key = (rig, target_key(p.target.name))
+            passenger[key] = target_key(comp.target.name)
     lengths: dict[tuple, list] = {}
     for f in runs_dir(config).glob("*_subs.jsonl"):
         date = f.name.split("_")[0]
@@ -1399,7 +1412,9 @@ def sync_goal_progress(config) -> list:
             t = canonical_target(s_.get("target"), known)
             if t:
                 rig = s_.get("rig") or "rc16"
-                key = (rig, target_key(t), s_.get("filter"))
+                tk = target_key(t)
+                tk = passenger.get((rig, tk), tk)
+                key = (rig, tk, s_.get("filter"))
                 lengths.setdefault(key, []).append(s_.get("exp_s"))
     changed = []
     for p in store.projects.values():

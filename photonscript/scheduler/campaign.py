@@ -111,6 +111,27 @@ def _goal(config, p) -> dict:
             "eta": None, "_rem": rem, "_by_rig": by_rig, "_p": p}
 
 
+def _link_mosaics(goals: list[dict]) -> None:
+    """PS-111: g["_prev"] = indices of the earlier panels of the same mosaic
+    (capture order), g["_companion"] = index of the goal whose Piggy-600
+    plan the panel's passenger subs credit (None when not an active goal)."""
+    idx = {g["id"]: gi for gi, g in enumerate(goals)}
+    seen: dict[str, list] = {}
+    for gi, g in enumerate(goals):
+        m = getattr(g["_p"], "mosaic", None) or {}
+        if not m.get("id"):
+            continue
+        g["_prev"] = list(seen.get(m["id"], []))
+        seen.setdefault(m["id"], []).append(gi)
+        g["_companion"] = idx.get(m.get("companion"))
+
+
+def _panel_turn(goals: list[dict], g: dict) -> bool:
+    """PS-111 in-order rule: a panel may take a slot only once every earlier
+    panel of its mosaic has no RC16 hours left (in the simulation)."""
+    return all(_rig_rem(goals[k], RC16) < 1e-9 for k in g.get("_prev", ()))
+
+
 def _rig_rem(g: dict, rig: str) -> float:
     if rig == RC16:
         return g["_rem"]["NB"] + g["_rem"]["BB"]
@@ -239,9 +260,14 @@ def build_campaign(config, store, forecast: dict | None = None,
     obs = config.get_observatory()
     fc_by_date = {n["date"]: n for n in (forecast or {}).get("nights", [])}
 
+    # PS-111: mosaic panels sort together in capture order (P2 before P10)
+    def _order(x):
+        m = getattr(x, "mosaic", None) or {}
+        return (-x.priority, m.get("name") or x.target.name,
+                int(m.get("panel") or 0), x.target.name)
     goals = [_goal(config, p) for p in sorted(
-        store.projects.values(), key=lambda x: (-x.priority, x.target.name))
-        if p.active]
+        store.projects.values(), key=_order) if p.active]
+    _link_mosaics(goals)
 
     # Nights: dark windows for all of them in one sun transform; slots that
     # already ended are dropped (night 0 may be under way).
@@ -335,12 +361,14 @@ def build_campaign(config, store, forecast: dict | None = None,
             if bb_ok[i]:
                 pick = next((gi for gi, g in enumerate(goals)
                              if not g["_parked"] and g["_vis"][j]
+                             and _panel_turn(goals, g)
                              and (g["_rem"]["BB"] > 1e-9
                                   or (g["driving_rig"] != RC16
                                       and g["_rem"]["OSC"] > 1e-9))), None)
             if pick is None:
                 pick = next((gi for gi, g in enumerate(goals)
                              if not g["_parked"] and g["_vis"][j]
+                             and _panel_turn(goals, g)
                              and g["_rem"]["NB"] > 1e-9), None)
             if pick is None and bb_ok[i]:  # passenger OSC left on its own
                 pick = next((gi for gi, g in enumerate(goals)
@@ -356,16 +384,24 @@ def build_campaign(config, store, forecast: dict | None = None,
             elif g["_rem"]["NB"] > 1e-9:
                 shot.append(("NB", RC16))
             if bb_ok[i] and g["_rem"]["OSC"] > 1e-9:
-                shot.append(("OSC", PIGGYBACK))
+                shot.append(("OSC", PIGGYBACK, pick))
+            elif (bb_ok[i] and g.get("_companion") is not None
+                  and goals[g["_companion"]]["_rem"]["OSC"] > 1e-9):
+                # PS-111: the Piggy-600 rides a mosaic panel and credits the
+                # mosaic's companion goal (M31 OSC)
+                shot.append(("OSC", PIGGYBACK, g["_companion"]))
+            shot = [s if len(s) == 3 else (*s, pick) for s in shot]
             s0 = n["slots"][i]
-            for kind, rig in shot:
-                take = min(credit, g["_rem"][kind])
-                g["_rem"][kind] -= take
-                a = runs.get((pick, kind))
+            for kind, rig, gi_ in shot:
+                gg = goals[gi_]
+                take = min(credit, gg["_rem"][kind])
+                gg["_rem"][kind] -= take
+                passenger = rig != g["driving_rig"]
+                a = runs.get((gi_, kind, passenger))
                 if a is None:
-                    a = runs[(pick, kind)] = {
-                        "goal": g["name"], "kind": kind, "rig": rig,
-                        "passenger": rig != g["driving_rig"],
+                    a = runs[(gi_, kind, passenger)] = {
+                        "goal": gg["name"], "kind": kind, "rig": rig,
+                        "passenger": passenger,
                         "hours": 0.0, "start": s0,
                         "_order": len(runs)}
                 a["hours"] += take

@@ -218,6 +218,13 @@ class ImagingProject(BaseModel):
     driving_rig: str = "rc16"
     min_alt_deg: Optional[float] = None
     require_calibration: bool = True
+    # PS-111: a mosaic panel. One mosaic goal = the panels sharing mosaic
+    # "id"; each panel is its own project (own coordinates, plans, seconds
+    # crediting). Keys: id, name, panel (1-based capture order), row, col,
+    # of (panel count), companion (project id of the goal whose Piggy-600
+    # plan the passenger subs credit, or None), layout (the mosaic
+    # definition, scheduler/mosaic.py). None = an ordinary target.
+    mosaic: Optional[dict] = None
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)
@@ -413,6 +420,13 @@ class NinaSequenceTarget(BaseModel):
     tracking_test_filters: list[str] = Field(default_factory=list)
     tracking_test_exposures: list[float] = Field(default_factory=list)
     tracking_test_repeats: int = 2
+    # PS-111: a mosaic panel. repeat_while_up False = shoot tonight's owed
+    # subs once, then hand the mount to the next panel (the imaging loop gets
+    # LoopCondition(1)); the last panel of a mosaic tonight keeps the usual
+    # repeat-while-safe-and-up loop. mosaic_note is shown as an annotation.
+    repeat_while_up: bool = True
+    mosaic_id: Optional[str] = None
+    mosaic_note: str = ""
 
 
 class NinaSequenceFile(BaseModel):

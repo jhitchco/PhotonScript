@@ -193,6 +193,7 @@
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/sideload_panel.js"></script>
     <script src="/static/js/auto_arm_panel.js"></script>
+    <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
 
     <script>
     const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};
@@ -931,8 +932,7 @@
                 el.style.background = 'rgba(251,191,36,.08)';
             }
             el.title = (d.rigs || []).flatMap(rg => (rg.items || []).map(
-                t => (rg.name || rg.rig) + ': ' + t)).join('
-') || 'Nothing owed';
+                t => (rg.name || rg.rig) + ': ' + t)).join('\n') || 'Nothing owed';
             el.hidden = false;
         } catch (e) {
             el.hidden = true;
@@ -1072,6 +1072,90 @@
         if (n >= 1e3) return (n / 1e3).toFixed(0) + ' KB';
         return n + ' B';
     }
+    // PS-111: one card per mosaic goal (its panels are child goals): panel
+    // progress in capture order, the companion Piggy-600 goal, and a small
+    // preview of the panel outlines over the RC16 / Piggy-600 footprints.
+    function mosaicCard(m) {
+        const pct = Math.min(100, m.pct || 0);
+        const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+        const rows = m.panels.map(pn => {
+            const st = pn.complete ? 'done' : (pn.name === m.next_panel ? 'next'
+                       : (pn.active ? 'queued' : 'paused'));
+            const stCol = {done: '#4ade80', next: '#fbbf24', queued: '#94a3b8',
+                           paused: '#64748b'}[st];
+            const fl = pn.filters.filter(f => f.rig !== 'piggyback').map(f =>
+                '<span style="color:' + (FILTER_COLORS[f.filter] || '#94a3b8') + ';">' +
+                f.filter + '</span> ' + f.done_h.toFixed(1) + '/' + f.goal_h.toFixed(1))
+                .join(' &middot; ');
+            return '<div class="mosaic-panel-row" style="display:flex;align-items:center;gap:.5rem;' +
+                'font-size:.78rem;margin:.25rem 0;">' +
+                '<a href="/target?name=' + encodeURIComponent(pn.name) + '" style="width:2.2rem;' +
+                'font-weight:700;color:#7dd3fc;text-decoration:none;" title="' + esc(pn.name) +
+                ' (row ' + pn.row + ', col ' + pn.col + ')">P' + pn.panel + '</a>' +
+                '<span style="width:3.4rem;color:' + stCol + ';">' + st + '</span>' +
+                '<div class="fbar"><div style="width:' + Math.min(100, pn.pct) +
+                '%;background:#4ade80;"></div></div>' +
+                '<span style="width:6.2rem;text-align:right;">' + pn.done_h.toFixed(1) + ' / ' +
+                pn.goal_h.toFixed(1) + ' h</span>' +
+                '<span style="flex:2;opacity:.7;font-size:.72rem;">' + fl + '</span></div>';
+        }).join('');
+        const comp = m.companion
+            ? '<div style="font-size:.75rem;opacity:.8;margin-top:.35rem;">Piggy-600 rides along: ' +
+              'its subs credit <b>' + esc(m.companion.name) + '</b> OSC (' + m.companion.done_h +
+              ' / ' + m.companion.goal_h + ' h); its frame shifts up to ' +
+              m.preview.piggy.max_shift_arcmin + '&prime; with the panel.</div>'
+            : '<div style="font-size:.75rem;opacity:.6;margin-top:.35rem;">No companion Piggy-600 ' +
+              'goal: passenger subs credit nothing.</div>';
+        const first = m.panels[0] || {};
+        const act = (body, label, extra) => '<span style="cursor:pointer;' + (extra || '') +
+            '" onclick="patchMosaic(\'' + m.id + '\', ' + JSON.stringify(body).replace(/"/g, '&quot;') +
+            ')">' + label + '</span>';
+        return '<div class="mosaic-card" data-mosaic="' + m.id + '" style="padding:.8rem;' +
+            'border-radius:8px;background:rgba(255,255,255,.03);border-left:3px solid #22d3ee;' +
+            (m.active ? '' : 'opacity:.45;') + '">' +
+            '<div style="display:flex;gap:.7rem;align-items:center;">' +
+            '<div style="flex:1;"><b><a href="/mosaic" style="color:inherit;text-decoration:none;' +
+            'border-bottom:1px dotted rgba(125,211,252,.5);" title="Mosaic page">' + esc(m.name) +
+            '</a></b> <span style="font-size:.7rem;color:#22d3ee;">MOSAIC</span>' +
+            '<div style="opacity:.5;font-size:.75rem;">' + m.rows + ' &times; ' + m.cols +
+            ' RC16 panels &middot; ' + m.span_w_arcmin + '&prime; &times; ' + m.span_h_arcmin +
+            '&prime; &middot; overlap ' + m.overlap_pct + '% &middot; PA ' + m.pa_deg +
+            '&deg; &middot; priority ' + m.priority + ' ' +
+            act({priority: Math.min(100, m.priority + 10)}, '&#9650;') + ' ' +
+            act({priority: Math.max(0, m.priority - 10)}, '&#9660;') + '</div></div>' +
+            act({active: !m.active}, m.active ? 'pause' : 'resume', 'opacity:.55;font-size:.78rem;') +
+            '<span style="cursor:pointer;color:#f87171;opacity:.55;font-size:.78rem;" ' +
+            'onclick="deleteMosaic(\'' + m.id + '\')">remove</span></div>' +
+            '<div style="display:flex;align-items:center;gap:.6rem;margin:.6rem 0 .3rem;">' +
+            '<span style="font-size:.82rem;">Goal ' + m.goal_h + ' h (' + m.hours_per_panel +
+            ' h per panel)</span>' +
+            '<div class="fbar"><div style="width:' + pct + '%;background:#7dd3fc;"></div></div>' +
+            '<span style="font-size:.82rem;"><b>' + m.done_h + 'h</b> / ' + m.goal_h + 'h (' +
+            pct + '%)</span></div>' +
+            '<div style="font-size:.74rem;opacity:.75;">Finished in order' +
+            (m.complete ? ': all panels done.' : (m.next_panel ? ': next ' + esc(m.next_panel) + '.'
+             : ': every unfinished panel is paused.')) + '</div>' +
+            rows + comp +
+            '<div style="display:flex;gap:.5rem;margin-top:.45rem;flex-wrap:wrap;">' +
+            (window.MosaicPreview ? MosaicPreview.svg(m, {w: 230, h: 130}) +
+                MosaicPreview.svg(m, {w: 230, h: 130, wide: true}) : '') + '</div>' +
+            '<div style="margin-top:.45rem;" id="alt-m-' + m.id + '" data-ra="' + first.ra_hours +
+            '" data-dec="' + first.dec_degrees + '" data-name="' + esc(first.name) + '"></div>' +
+            '</div>';
+    }
+    async function patchMosaic(id, body) {
+        await fetch('/api/mosaics/' + id, {method: 'PATCH',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+        loadProjects(); loadCampaign();
+    }
+    async function deleteMosaic(id) {
+        if (!confirm('Remove this mosaic goal and all its panel goals? Subs, the Library ' +
+                     'and history stay.')) return;
+        await fetch('/api/mosaics/' + id, {method: 'DELETE'});
+        loadProjects(); loadCampaign();
+    }
+
     async function loadProjects() {
         const r = await fetch('/api/projects2');
         const projects = await r.json();
@@ -1081,7 +1165,21 @@
                 'tonight will auto-select from the seasonal catalog.</p>';
             return;
         }
+        // PS-111: panels fold into one card per mosaic, at the first panel's place
+        let mosaics = [];
+        if (projects.some(p => p.mosaic && p.mosaic.id)) {
+            try { mosaics = (await (await fetch('/api/mosaics')).json()).mosaics || []; }
+            catch (e) { mosaics = []; }
+        }
+        const mosaicById = {};
+        mosaics.forEach(m => { mosaicById[m.id] = m; });
+        const mosaicShown = {};
         box.innerHTML = projects.map(p => {
+            if (p.mosaic && p.mosaic.id && mosaicById[p.mosaic.id]) {
+                if (mosaicShown[p.mosaic.id]) return '';
+                mosaicShown[p.mosaic.id] = true;
+                return mosaicCard(mosaicById[p.mosaic.id]);
+            }
             const hoursPct = Math.min(100, Math.round(p.hours_done / p.budget_hours * 100));
             const ALL_FILTERS = ['Ha', 'OIII', 'SII', 'L', 'R', 'G', 'B'];
             // PS-129: rows per plan actually present. The RC16 mix rows (all
@@ -1194,7 +1292,18 @@
             });
         });
 
+        document.querySelectorAll('[id^="alt-m-"]').forEach(el => {
+            fetch('/api/target/altitude?name=' + encodeURIComponent(el.dataset.name) +
+                  '&ra_hours=' + el.dataset.ra + '&dec_degrees=' + el.dataset.dec)
+                .then(r => r.json()).then(d => {
+                    el.innerHTML = altChartSVG(d) +
+                    '<div style="font-size:.68rem;opacity:.5;">first panel &middot; noon &rarr; noon ' +
+                    '&middot; shaded = astro dark &middot; dashed = 30&deg; &middot; transit ' +
+                    d.transit_alt + '&deg;</div>';
+                }).catch(() => {});
+        });
         for (const p of projects) {
+            if (p.mosaic && p.mosaic.id && mosaicById[p.mosaic.id]) continue;
             fetch('/api/thumbnail?name=' + encodeURIComponent(p.target.name) +
                   '&catalog=' + encodeURIComponent(p.target.catalog_id))
                 .then(r => r.json()).then(t => {
@@ -1479,8 +1588,7 @@
                 headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({text: name})});
             if (r.status === 400) {
-                alert("'" + name + "' is not in the catalog.
-" + (await r.json()).detail);
+                alert("'" + name + "' is not in the catalog.\n" + (await r.json()).detail);
                 return;
             }
         }

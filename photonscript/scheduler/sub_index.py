@@ -432,9 +432,14 @@ def _goal(project) -> dict | None:
 
 
 def _project_meta(p) -> dict:
+    # PS-111: a mosaic panel names its mosaic (the Targets page groups them)
+    m = getattr(p, "mosaic", None) if p is not None else None
     return {"project_id": p.id if p is not None else None,
             "active": bool(p.active) if p is not None else None,
-            "priority": p.priority if p is not None else None}
+            "priority": p.priority if p is not None else None,
+            "mosaic": ({k: m.get(k) for k in ("id", "name", "panel", "row",
+                                              "col", "of")}
+                       if isinstance(m, dict) and m.get("id") else None)}
 
 
 def targets(config, projects: Iterable = ()) -> list[dict]:
