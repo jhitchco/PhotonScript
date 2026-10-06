@@ -96,7 +96,7 @@ def api_calibration_qa_backfill(payload: dict = Body(default={})):
     from photonscript.scheduler import calibration_qa as cq
     cfg = _cfg()
     state = _armer_state()
-    if state in ("RUNNING", "PAUSED_UNSAFE"):
+    if state in ("RUNNING", "PAUSED_UNSAFE", "WATCHING"):   # PS-136
         return JSONResponse(status_code=409, content={
             "detail": f"armer is {state}: the backfill reads every frame and "
                       "would compete with tonight's grading; run it in the day"})

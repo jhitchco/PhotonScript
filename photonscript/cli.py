@@ -924,7 +924,7 @@ def calibration_qa_cmd(
                         .get("state") or "")
         except Exception:  # noqa: BLE001
             state = ""  # service down: nothing is imaging through it
-        if state in ("RUNNING", "PAUSED_UNSAFE"):
+        if state in ("RUNNING", "PAUSED_UNSAFE", "WATCHING"):   # PS-136
             console.print(f"armer is {state}: run the backfill in the day", markup=False)
             raise typer.Exit(2)
 

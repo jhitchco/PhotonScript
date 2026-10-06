@@ -13,6 +13,17 @@ States:
                  night leaves the loop wedged in WaitUntilSafe — 2026-09-15
                  both coolers ran at 0°C all day)
   ERROR          dispatch or lint failure — human needed
+  WATCHING       PS-136: a sideloaded night (PS-123) the armer did not
+                 dispatch is running in NINA #1. The armer tracks it like an
+                 armed night but NEVER loads, starts or re-dispatches:
+                 unsafe pause / resume alerts, guiding watchdog on guided
+                 targets, update refusal, events, and at the dawn shutdown
+                 time a read-only check (park + coolers) and a summary
+                 (watch_dawn_action). Ends at the end of the sequence or at
+                 dawn (-> COMPLETE). Not in ACTIVE_STATES on purpose: the
+                 auto-arm guard, sideload and calibration gates already treat
+                 it as busy, and armer_guided_now (PS-93 recalibration
+                 re-dispatch) must not see it.
 
 Resilience:
   - State persists to <data_dir>/armer_state.json on every transition and is
@@ -48,6 +59,12 @@ logger = logging.getLogger(__name__)
 TICK_SECONDS = 30
 RESUME_MIN_REMAINING_MIN = 40  # don't resume with < this much dark left
 ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+# PS-136: watching a sideloaded night. LIVE_STATES = the tick loop runs.
+WATCH_STATE = "WATCHING"
+LIVE_STATES = ACTIVE_STATES + (WATCH_STATE,)
+WATCH_FROM_STATES = ("DISARMED", "COMPLETE", "ERROR")  # watch may start from
+WATCH_END_IDLE_TICKS = 3   # NINA #1 idle this many ticks running = sequence over
+WATCH_DETECT_SECONDS = 60  # auto-adopt poll while the armer is idle
 
 # PS-66: the unguided mode is "unguided" (Paramount MX, TPoint + ProTrack).
 # "encoders" was its old name and stays accepted everywhere a mode comes in
@@ -80,6 +97,7 @@ NINA_PATHS = {
     "safety": ["/equipment/safetymonitor/info"],
     "guider": ["/equipment/guider/info"],
     "mount_park": ["/equipment/mount/park"],
+    "mount_info": ["/equipment/mount/info"],
     "camera_warm": ["/equipment/camera/warm"],
     "mount_connect": ["/equipment/mount/connect"],
     "camera_connect": ["/equipment/camera/connect"],
@@ -137,6 +155,9 @@ class Armer:
         self._tune_night: str | None = None    # PS-90: pre-dusk tune done
         self._tune_note: str | None = None
         self.guider_name: str | None = None  # PS-66: NINA's guider at arm
+        self.watch: dict | None = None        # PS-136: the watched sideload
+        self._watch_declined: str | None = None  # PS-136: sideload "t" stopped by hand
+        self.last_validation: dict | None = None  # PS-132 check in dispatch_raw
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -158,6 +179,8 @@ class Armer:
                 "fallback_night": getattr(self, "_fallback_night", None),
                 "recal_night": getattr(self, "_recal_night", None),
                 "guider_name": getattr(self, "guider_name", None),
+                "watch": getattr(self, "watch", None),
+                "watch_declined": getattr(self, "_watch_declined", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -173,7 +196,8 @@ class Armer:
         # Keep the last dawn-shutdown record across restarts regardless of
         # state, so the dashboard chip survives a morning dashboard restart.
         self.shutdown = saved.get("shutdown")
-        if saved.get("state") not in ACTIVE_STATES:
+        self._watch_declined = saved.get("watch_declined")
+        if saved.get("state") not in LIVE_STATES:
             return False
         dawn = saved.get("plan", {}).get("dawn_utc")
         if dawn:
@@ -200,6 +224,7 @@ class Armer:
         self._fallback_night = saved.get("fallback_night")
         self._recal_night = saved.get("recal_night")
         self.guider_name = saved.get("guider_name")
+        self.watch = saved.get("watch")  # PS-136: a watched night reattaches too
         self._task = asyncio.create_task(self._run())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
@@ -243,11 +268,13 @@ class Armer:
                 "cool_lead_min": cool_lead,
                 "cooler_on_utc": cooler_on_utc,
                 "shutdown": getattr(self, "shutdown", None),
+                "watch": (getattr(self, "watch", None)
+                          if self.state == WATCH_STATE else None),
                 "noon_arm": self._noon_arm_status()}
 
     def _shutdown_due_iso(self) -> str | None:
         """Planned dawn-shutdown time for the dashboard (None when unarmed)."""
-        if self.state not in ACTIVE_STATES or not self.plan.get("dawn_utc"):
+        if self.state not in LIVE_STATES or not self.plan.get("dawn_utc"):
             return None
         try:
             return self._shutdown_due_at().isoformat() + "Z"
@@ -293,6 +320,12 @@ class Armer:
         runs the PS-89 PHD2 settings audit in the background (never blocks
         the arm; one push only on a FAIL)."""
         from photonscript.scheduler.night_plan import build_night_plan
+        if self.state == WATCH_STATE:
+            # PS-136: arming would stop the watched sideload at pre-config
+            # and load PhotonScript's own night over it. Stop watching first.
+            return {**self.status(), "refused": (
+                "armer is WATCHING a sideloaded night: stop watching first "
+                "(arming would replace the sequence NINA is running)")}
         self.guiding_override = norm_guiding_mode(guiding)
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
         self._guiding_gate = GuidingAlertGate(self.config)  # fresh flap history
@@ -408,9 +441,20 @@ class Armer:
 
     async def disarm(self) -> dict:
         prev = self.state
+        if prev == WATCH_STATE:
+            # PS-136: stop watching only. The sideloaded sequence is NINA's
+            # and keeps running; no make-safe. Never auto-adopt it again.
+            self._watch_declined = str(((self.watch or {}).get("sideload")
+                                        or {}).get("t") or "") or None
+            self._watch_event("stop", "stopped watching by hand")
         self._set_state("DISARMED", "")
         if self._task and not self._task.done():
             self._task.cancel()
+        if prev == WATCH_STATE:
+            await notify(self.config, "Stopped watching the sideloaded night. "
+                         "NINA keeps running it; no dawn check, guiding "
+                         "watchdog or update refusal from the armer now.",
+                         title="PhotonScript watching")
         if prev in ("RUNNING", "PAUSED_UNSAFE"):
             report = await self.make_safe()
             await notify(self.config, f"Disarmed — {report}",
@@ -756,7 +800,9 @@ class Armer:
         warn_ready = (not working) or ticks >= GUIDING_WORKING_WARN_TICKS
         if warn_ready and not self._guiding_alerted:
             self._guiding_alerted = True
-            msg = (f"Armed GUIDED but PHD2 is {what}, {mins} min into "
+            lead = ("Watching a guided sideloaded target" if self.state == WATCH_STATE
+                    else "Armed GUIDED")   # PS-136
+            msg = (f"{lead} but PHD2 is {what}, {mins} min into "
                    "dark, subs are likely trailing.")
             # PS-66: first loss pushes; repeats inside the window are held
             # (audited) and a flap turns into one "flapping: N losses" push.
@@ -1184,9 +1230,12 @@ class Armer:
 
     async def dispatch_raw(self, seq: dict, label: str) -> bool:
         """Load + start an arbitrary sequence (calibration). Refused while a
-        night is active."""
-        if self.state in ("RUNNING", "PAUSED_UNSAFE"):
-            self.detail = f"armer is {self.state} — not interrupting"
+        night is active, or watched (PS-136). Between the load and the start
+        it reads NINA's own validation (PS-132 nina_validation): problems are
+        pushed; nina_load_validation=refuse also skips the start when a
+        validator threw."""
+        if self.state in ("RUNNING", "PAUSED_UNSAFE", WATCH_STATE):
+            self.detail = f"armer is {self.state}: not interrupting"
             return False
         # PS-113: never stop a calibration capture job's sequence on NINA #1
         from photonscript.scheduler.calibration_capture import busy as _cal_busy
@@ -1194,8 +1243,15 @@ class Armer:
             self.detail = "a calibration capture job is running on the RC16"
             return False
         await self._nina("sequence_stop")
+        t0 = datetime.now()   # local, like NINA's log lines
         loaded = await self._nina("sequence_load", method="POST",
                                   json_body=seq)
+        if loaded is not None:
+            refused = await self._validate_load(t0, label)
+            if refused:
+                self.detail = refused
+                logger.warning("dispatch_raw %s: %s", label, refused)
+                return False
         started = await self._nina("sequence_start", skipValidation="true")
         ok = loaded is not None and started is not None
         if ok:
@@ -1204,6 +1260,30 @@ class Armer:
         logger.info("dispatch_raw %s: %s", label, "started" if ok
                     else f"FAILED ({self.detail})")
         return ok
+
+    async def _validate_load(self, since: datetime, label: str) -> str | None:
+        """PS-132 load validation for the RC16 dispatch_raw (same module and
+        config as nina_dispatch: nina_load_validation alert | refuse | off).
+        Pushes once on a problem. Returns the refusal text when refuse mode
+        and a validator threw, else None. Never raises."""
+        try:
+            from photonscript.scheduler import nina_validation as nv
+            from photonscript.shared.rigs import RC16
+            vmode = nv.mode(self.config)
+            if vmode == "off":
+                return None
+            res = await nv.check_loaded(self.config.nina_base_url, self.config,
+                                        RC16, since=since)
+            self.last_validation = res
+            if res["ok"]:
+                return None
+            await nv.alert(self.config, RC16, res, f"armer dispatch: {label}")
+            if vmode == "refuse" and res.get("errors"):
+                return ("loaded but NOT started (NINA validation: "
+                        + str(res.get("detail")) + ")")
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            logger.warning("load validation (%s) failed: %s", label, e)
+        return None
 
     async def _dispatch_and_start(self, companion: bool = True,
                                   fail_state: str | None = "ERROR") -> bool:
@@ -1312,6 +1392,330 @@ class Armer:
                              priority=1)
         except Exception as e:  # noqa: BLE001
             logger.warning("Piggyback companion dispatch error: %s", e)
+
+    # -- PS-136: watch a sideloaded night ---------------------------------------
+    #
+    # 2026-10-05: both NINAs ran hand-sideloaded sequences (PS-123) with the
+    # armer DISARMED, so nothing checked the dawn shutdown, guiding, unsafe
+    # pauses or refused a deploy. WATCHING tracks such a night without ever
+    # loading, starting, stopping or re-dispatching a sequence (the only
+    # commands it can send: the guiding watchdog's one PHD2 restart, as on an
+    # armed night, and watch_dawn_action="shutdown" if chosen).
+
+    def _watch_event(self, value: str, detail: str = "",
+                     now: datetime | None = None, **extra) -> None:
+        """One kind "watch" line in runs/<night>_events.jsonl. Never raises."""
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            now = now or datetime.utcnow()
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "watch", "value": value, "detail": detail,
+                          **extra})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("watch event (%s) not logged: %s", value, e)
+
+    async def _watch_read_state(self):
+        """(tree, error) of NINA #1's sequence state (sideload helper)."""
+        from photonscript.scheduler.sideload import read_sequence_state
+        return await read_sequence_state(self.config.nina_base_url)
+
+    async def start_watch(self, trigger: str = "button", sideload: dict | None = None,
+                    now: datetime | None = None) -> dict:
+        """Start WATCHING tonight's sideloaded night. trigger "auto" (the
+        detector saw NINA #1 run tonight's RC16 sideload) or "button".
+        Refused unless the armer is DISARMED / COMPLETE / ERROR, or once
+        tonight's dawn shutdown time has passed. Sends nothing to NINA.
+        Returns {"ok", "detail", **status}."""
+        now = now or datetime.utcnow()
+        if self.state not in WATCH_FROM_STATES:
+            return {**self.status(), "ok": False,
+                    "detail": f"armer is {self.state}: watch only from "
+                              "DISARMED, COMPLETE or ERROR"}
+        plan = watch_plan(self.config, now)
+        if "error" in plan:
+            return {**self.status(), "ok": False, "detail": plan["error"]}
+        try:
+            due = self._shutdown_due_at(plan)
+        except Exception:  # noqa: BLE001
+            due = datetime.fromisoformat(plan["dawn_utc"].rstrip("Z")) + timedelta(minutes=30)
+        if now >= due:
+            return {**self.status(), "ok": False,
+                    "detail": f"tonight's dawn shutdown time ({due:%H:%M}Z) "
+                              "has passed: nothing to watch"}
+        if sideload is None:
+            from photonscript.scheduler.auto_armer import sideload_tonight
+            sideload = sideload_tonight(self.config, now, rig="rc16")
+        sl = dict(sideload or {})
+        gt = guided_targets_from_file(sl.get("file"))
+        self.plan = plan
+        self.sequence_path = Path(sl["file"]) if sl.get("file") else None
+        self.guiding_override = (None if gt is None
+                                 else ("guided" if gt else "unguided"))
+        self._guiding_alerted = False
+        self._not_locked_ticks = 0
+        self._not_locked_since = None
+        self._guiding_recovered = self._guiding_escalated = False
+        self._guiding_gate = GuidingAlertGate(self.config)
+        self._unsafe_since = self._safe_since = None
+        self._unsafe_check_done = False
+        self.shutdown = None
+        self.last_raw = None
+        name = sl.get("value") or "a hand-loaded sequence"
+        self.watch = {"since": now.replace(microsecond=0).isoformat() + "Z",
+                      "trigger": trigger, "sequence": name,
+                      "sideload": ({k: sl.get(k) for k in ("t", "value", "file", "recipe")}
+                                   if sl else None),
+                      "guided_targets": gt, "paused": False, "pauses": 0,
+                      "idle_ticks": 0, "running": [],
+                      "shutdown_due_utc": due.isoformat() + "Z"}
+        detail = (f"Watching sideloaded night: {name} ({trigger}); dawn check "
+                  f"at {due:%H:%M}Z. No dispatch.")
+        self._set_state(WATCH_STATE, detail)
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run())
+        self._watch_event("start", detail, now, trigger=trigger, sequence=name,
+                          guided_targets=gt)
+        guide_txt = ("guiding watchdog on " + ", ".join(gt) if gt else
+                     "no guided targets: guiding watchdog off" if gt is not None
+                     else "guiding per config (sequence file not read)")
+        await notify(self.config,
+                     f"WATCHING the sideloaded night ({name}, {trigger}). "
+                     f"PhotonScript sends no sequence; it alerts on unsafe "
+                     f"pauses and guiding ({guide_txt}), refuses updates, and "
+                     f"checks park + coolers at {due:%H:%M}Z.",
+                     title="PhotonScript watching")
+        return {**self.status(), "ok": True, "detail": detail}
+
+    async def maybe_adopt(self, now: datetime | None = None,
+                          reader=None) -> dict | None:
+        """The auto path: armer idle, tonight has a successful RC16 sideload
+        (not one stopped by hand), and NINA #1 runs something. Returns the
+        start_watch() result, or None when nothing to adopt. Never raises."""
+        try:
+            if (not getattr(self.config, "watch_sideload_auto", True)
+                    or self.state not in WATCH_FROM_STATES):
+                return None
+            from photonscript.scheduler.auto_armer import sideload_tonight
+            from photonscript.scheduler.sideload import nina_running
+            now = now or datetime.utcnow()
+            sl = sideload_tonight(self.config, now, rig="rc16")
+            if not sl or (self._watch_declined
+                          and str(sl.get("t")) == self._watch_declined):
+                return None
+            if reader is None:
+                tree, err = await self._watch_read_state()
+            else:
+                tree, err = await reader(self.config.nina_base_url)
+            if err or not nina_running(tree):
+                return None
+            res = await self.start_watch("auto", sideload=sl, now=now)
+            return res if res.get("ok") else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("watch auto-adopt check failed: %s", e)
+            return None
+
+    def _watch_guiding_active(self, running: list[str]) -> bool:
+        """Run the guiding watchdog this tick? Only while a target that has
+        a StartGuiding in the sideloaded file is RUNNING (so the unguided
+        tracking test and unsafe waits never trip it). Without the file:
+        config guided_default, and never during a tracking test."""
+        names = {_norm_item(n) for n in running}
+        gt = (self.watch or {}).get("guided_targets")
+        if gt is None:
+            from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PREFIX
+            pre = _norm_item(TRACKING_TEST_PREFIX)
+            return (bool(getattr(self.config, "guided_default", True))
+                    and bool(names)
+                    and not any(n.startswith(pre) for n in names))
+        return any(_norm_item(t) in names for t in gt)
+
+    async def _watch_tick(self, now: datetime) -> None:
+        w = self.watch if isinstance(self.watch, dict) else {}
+        self.watch = w
+        if now >= self._shutdown_due_at():
+            await self._watch_end("dawn", now)
+            return
+        tree, err = await self._watch_read_state()
+        if err is None:
+            from photonscript.scheduler.sideload import nina_running
+            running = nina_running(tree)
+            w["running"] = running[-3:]
+            if running:
+                w["idle_ticks"] = 0
+            else:
+                w["idle_ticks"] = int(w.get("idle_ticks") or 0) + 1
+                if w["idle_ticks"] >= WATCH_END_IDLE_TICKS:
+                    await self._watch_end("sequence ended", now)
+                    return
+        else:
+            running = []   # unreadable: never ends the watch, never alarms
+        safe = await self._is_safe()
+        self._record_safety(safe, now)
+        await self._watch_safety_monitor(now, safe)
+        if safe is False:
+            if not w.get("paused"):
+                w["paused"] = True
+                w["pauses"] = int(w.get("pauses") or 0) + 1
+                self._unsafe_since = now
+                self._unsafe_check_done = False
+                msg = (f"Watching: unsafe at {now:%H:%M}Z. The sideloaded "
+                       "sequence should stop imaging, park and wait for safe "
+                       "by itself; PhotonScript will not stop or restart it.")
+                self._set_state(WATCH_STATE, msg)
+                self._watch_event("pause", msg, now)
+                await notify(self.config, "PAUSED (watching): unsafe. The "
+                             "sideloaded sequence's own safety branch should "
+                             "park and wait; the armer alerts if it keeps "
+                             "imaging.", title="PhotonScript watching",
+                             priority=1)
+            else:
+                await self._watch_stuck_imaging(now, tree)
+            return
+        if safe is True and w.get("paused"):
+            mins = (int((now - self._unsafe_since).total_seconds() // 60)
+                    if self._unsafe_since else 0)
+            w["paused"] = False
+            self._unsafe_since = None
+            msg = f"Watching: safe again after {mins} min; sequence resuming"
+            self._set_state(WATCH_STATE, msg)
+            self._watch_event("resume", msg, now)
+            left = (self._dawn() - now).total_seconds() / 3600
+            await notify(self.config, f"RESUMED (watching): safe again, "
+                         f"{max(0.0, left):.1f} h of dark left. The sideloaded "
+                         "sequence re-enters its targets by itself.",
+                         title="PhotonScript watching")
+        if running and self._watch_guiding_active(running):
+            await self._maybe_warn_not_guiding(now)
+        self._persist()
+
+    async def _watch_stuck_imaging(self, now: datetime, tree) -> None:
+        """PS-77's check, alert only: unsafe for unsafe_stop_grace_s and
+        SAFE_LOOP still RUNNING. The armer cannot re-dispatch a sideloaded
+        night, so it never stops it; one priority push per episode."""
+        if self._unsafe_check_done or self._unsafe_since is None or tree is None:
+            return
+        grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
+        if (now - self._unsafe_since).total_seconds() < grace:
+            return
+        self._unsafe_check_done = True
+        if not self._safe_loop_running(tree):
+            return
+        mins = int((now - self._unsafe_since).total_seconds() // 60)
+        msg = (f"Unsafe {mins} min but the sideloaded sequence is still "
+               "imaging (SAFE_LOOP running). Watch mode does not stop it: "
+               "check NINA, or use Stop & Make Safe.")
+        self._watch_event("stuck_imaging", msg, now)
+        await notify(self.config, msg, title="PhotonScript watching", priority=1)
+
+    async def _watch_end(self, reason: str, now: datetime) -> None:
+        """End of the watched night: the sequence ended, or the dawn
+        shutdown time (PS-36 timing) came. Summary push, events, the
+        lifecycle chip, then a read-only park + cooler check after the warm
+        window. watch_dawn_action="shutdown" runs dawn_shutdown at dawn
+        instead (stop, guider stop, warm, park), whose verify follows."""
+        w = self.watch if isinstance(self.watch, dict) else {}
+        still = []
+        if reason == "dawn":
+            tree, err = await self._watch_read_state()
+            if err is None:
+                from photonscript.scheduler.sideload import nina_running
+                still = nina_running(tree)
+        w["ended"] = {"at": now.replace(microsecond=0).isoformat() + "Z",
+                      "reason": reason, "still_running": still[:5]}
+        action = str(getattr(self.config, "watch_dawn_action", "verify")
+                     or "verify").strip().lower()
+        since = str(w.get("since") or "")[11:16]
+        stats = (f"watched since {since}Z ({w.get('trigger')}), "
+                 f"{int(w.get('pauses') or 0)} unsafe pause(s)")
+        if reason == "dawn" and action == "shutdown":
+            self._set_state("COMPLETE", "Watched night over: running dawn shutdown")
+            report = await self.dawn_shutdown(reason="watched night: dawn")
+            self._set_state("COMPLETE", f"Watched night, dawn shutdown: {report}")
+            self._watch_event("end", report, now, reason=reason, action=action)
+            await notify(self.config, f"Watched night complete ({reason}; "
+                         f"{stats}). Dawn shutdown ran: {report}. Cooler check "
+                         "follows.", title="PhotonScript complete")
+            return
+        steps = ["watch only: no commands sent"]
+        if still:
+            steps.append("NINA #1 still running: " + ", ".join(still[:3]))
+        self.shutdown = {"at": now.replace(microsecond=0).isoformat() + "Z",
+                         "reason": f"watched night: {reason}", "steps": steps,
+                         "verify": None, "watched": True}
+        delay = self._shutdown_verify_delay_s()
+        self._set_state("COMPLETE", f"Watched night over ({reason}): "
+                        f"checking park + coolers in {delay // 60} min")
+        self._watch_event("end", "; ".join(steps), now, reason=reason,
+                          action="verify")
+        asyncio.create_task(self._verify_watched(delay_s=delay))
+        try:
+            from photonscript.scheduler.runs import post_night_warm
+            post_night_warm(self.config)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("post-night grade/thumbnail warm failed: %s", e)
+        if still:
+            await notify(self.config,
+                         f"Watched night at its dawn shutdown time ({stats}) "
+                         "but NINA #1 is STILL running "
+                         f"({', '.join(still[:3])}). Watch mode sends no "
+                         "commands: check NINA, or use Stop & Make Safe.",
+                         title="PhotonScript watching", priority=1)
+        else:
+            await notify(self.config,
+                         f"Watched night complete ({reason}; {stats}). Park "
+                         f"and cooler check in {delay // 60} min.",
+                         title="PhotonScript complete")
+
+    async def _verify_watched(self, delay_s: int = 300) -> dict:
+        """Read-only end-of-night check for a watched night: every rig's
+        cooler OFF and the mount parked. Sends no command (no warm retry,
+        unlike _verify_shutdown); one priority push when anything is wrong.
+        Never raises."""
+        from photonscript.shared.rigs import rig_ids, rig_config, nina_camera_info
+        await asyncio.sleep(delay_s)
+        rigs: dict = {}
+        still_on: list[str] = []
+        for rig in rig_ids(self.config):
+            try:
+                info = await nina_camera_info(rig_config(self.config, rig).nina_base_url)
+            except Exception:  # noqa: BLE001
+                info = None
+            if not info:
+                rigs[rig] = "unreachable"
+                continue
+            on = bool(info.get("CoolerOn", False))
+            rigs[rig] = {"cooler_on": on, "temp_c": info.get("Temperature"),
+                         "dew_on": info.get("DewHeaterOn")}
+            if on:
+                still_on.append(rig)
+        parked = None
+        data = await self._nina("mount_info")
+        if isinstance(data, dict):
+            m = data.get("Response", data)
+            if isinstance(m, dict) and m.get("Connected", True):
+                parked = bool(m.get("AtPark", False))
+        ok = not still_on and parked is not False
+        res = {"at": datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+               "ok": ok, "rigs": rigs, "parked": parked}
+        if self.shutdown is not None:
+            self.shutdown["verify"] = res
+            self._persist()
+        self._watch_event("verify", "ok" if ok else "problem", parked=parked,
+                          cooler_on=still_on)
+        if not ok:
+            bad = []
+            if still_on:
+                bad.append("cooler STILL ON on " + ", ".join(still_on))
+            if parked is False:
+                bad.append("mount NOT parked")
+            await notify(self.config,
+                         "Watched night check: " + " and ".join(bad) + ". "
+                         "Watch mode sends no commands: use Stop & Make Safe "
+                         "or check NINA.",
+                         title="PhotonScript shutdown warning", priority=1)
+        return res
 
     # -- state machine loop ----------------------------------------------------
 
@@ -1523,7 +1927,7 @@ class Armer:
 
     async def _run(self):
         try:
-            while self.state in ACTIVE_STATES:
+            while self.state in LIVE_STATES:
                 await self._tick()
                 await asyncio.sleep(TICK_SECONDS)
         except asyncio.CancelledError:
@@ -1531,6 +1935,10 @@ class Armer:
 
     async def _tick(self):
         now = datetime.utcnow()
+
+        if self.state == WATCH_STATE:
+            await self._watch_tick(now)   # PS-136: observe, never dispatch
+            return
 
         if self.state == "ARMED":
             preconfig = datetime.fromisoformat(
@@ -1638,6 +2046,103 @@ class Armer:
                     await self._maybe_stop_stuck_imaging(now)
                     # PS-91: opportunistic map refresh while the roof is shut
                     await self._maybe_hotpix_map(now, "paused unsafe")
+
+
+# -- PS-136 helpers -------------------------------------------------------------
+
+def _norm_item(name) -> str:
+    """A NINA item name for matching: ninaAPI's '_Container' suffix off,
+    whitespace collapsed, lower case."""
+    s = str(name or "")
+    if s.endswith("_Container"):
+        s = s[: -len("_Container")]
+    return " ".join(s.split()).lower()
+
+
+def guided_targets(seq) -> list[str]:
+    """Names of the DeepSkyObjectContainers in a NINA sequence that carry a
+    StartGuiding instruction somewhere inside (document order)."""
+    out: list[str] = []
+
+    def has_guiding(n) -> bool:
+        if isinstance(n, dict):
+            if "StartGuiding" in str(n.get("$type") or ""):
+                return True
+            return any(has_guiding(v) for v in n.values())
+        if isinstance(n, list):
+            return any(has_guiding(x) for x in n)
+        return False
+
+    def walk(n):
+        if isinstance(n, dict):
+            if "DeepSkyObjectContainer" in str(n.get("$type") or ""):
+                if has_guiding(n) and str(n.get("Name")) not in out:
+                    out.append(str(n.get("Name")))
+                return
+            for v in n.values():
+                walk(v)
+        elif isinstance(n, list):
+            for x in n:
+                walk(x)
+
+    walk(seq)
+    return out
+
+
+def guided_targets_from_file(path) -> list[str] | None:
+    """guided_targets() of a saved sequence file (the PS-123 sideload copy);
+    None when there is no file or it cannot be read."""
+    if not path:
+        return None
+    try:
+        return guided_targets(json.loads(Path(path).read_text(encoding="utf-8")))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("watch: sequence file %s not read: %s", path, e)
+        return None
+
+
+def watch_plan(config, now: datetime | None = None) -> dict:
+    """The watched night's times only (no targets): the noon-to-noon night
+    `now` belongs to, so a watch started after midnight still gets the dawn
+    ahead. Same keys the dawn-shutdown timing reads (PS-36)."""
+    from photonscript.shared.astronomy import get_twilight_times
+    from photonscript.shared.phd2_store import night_of
+    now = now or datetime.utcnow()
+    night = night_of(config, now)
+    base = datetime.strptime(night, "%Y-%m-%d")
+    obs = config.get_observatory()
+    tw = get_twilight_times(obs, base)
+    dusk, dawn = tw.get("astro_dark_start"), tw.get("astro_dark_end")
+    if not dusk or not dawn:
+        return {"error": "Could not compute darkness window"}
+    naut = rise = None
+    try:
+        from photonscript.scheduler.night_plan import compute_night_times
+        tw_all = compute_night_times(obs, base)
+        naut, rise = tw_all.get("naut_dawn"), tw_all.get("sunrise")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("watch plan: twilight lookup failed: %s", e)
+    z = lambda dt: dt.isoformat() + "Z" if dt else None  # noqa: E731
+    return {"night_of": night, "preconfig_utc": None, "dusk_utc": z(dusk),
+            "dawn_utc": z(dawn), "naut_dawn_utc": z(naut), "sunrise_utc": z(rise),
+            "dark_hours": round((dawn - dusk).total_seconds() / 3600, 1),
+            "targets": [], "watch": True}
+
+
+async def run_watch_detector(get_config, get_armer,
+                             tick_seconds: int = WATCH_DETECT_SECONDS) -> None:
+    """PS-136 background loop: while the armer is idle, adopt tonight's RC16
+    sideload once NINA #1 runs it (Armer.maybe_adopt; config
+    watch_sideload_auto). Read-only until it adopts. Never raises."""
+    while True:
+        try:
+            if getattr(get_config(), "watch_sideload_auto", True):
+                await get_armer().maybe_adopt()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("watch detector tick failed: %s", e)
+        await asyncio.sleep(tick_seconds)
 
 
 def armer_guided_now(config) -> bool:

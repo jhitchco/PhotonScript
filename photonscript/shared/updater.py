@@ -70,7 +70,7 @@ SMOKE_TESTS = ("tests/test_supervisor.py", "tests/test_updater.py",
 
 # A sequence is on the mount. ARMED (waiting for dusk) is not listed: the
 # armer restores it after a restart, and POST /api/update decides about it.
-_NIGHT_RUNNING = ("RUNNING", "PAUSED_UNSAFE")
+_NIGHT_RUNNING = ("RUNNING", "PAUSED_UNSAFE", "WATCHING")  # PS-136 watched
 
 
 def _now() -> str:
