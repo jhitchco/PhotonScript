@@ -812,6 +812,7 @@ _CONFIG_FIELDS = [
     ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
     ("piggyback_readout_mode", "PS_PIGGYBACK_READOUT_MODE", "Piggyback readout mode of the OSC lights (HCG / LCG): darks and bias must match it", "Piggyback", "str", False, False),
     ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
+    ("piggyback_frame_attribution", "PS_PIGGYBACK_FRAME_ATTRIBUTION", "Piggy subs named after the goal their frame holds (PS-137): off | report (record only) | on (rename and refile)", "Piggyback", "str", False, False),
     ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
     ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
@@ -2731,6 +2732,7 @@ async def api_run_assign_target(date: str, payload: dict = Body(...)):
         if (canonical_target(s.get("target")) is None
                 or payload.get("force")) and _in_window(s):
             s["target"] = name
+            s["target_src"] = "manual"  # PS-137: the Piggy pass keeps it
             n += 1
     if n:
         _rewrite_subs(config, date, subs)

@@ -584,3 +584,36 @@ sits a fixed angle away, so a target the Piggy-600 drives (project
   0.1827 (Piggy 1.292"/px). The 10-03/04 M31 Piggy subs (both pier sides)
   have the M31 core within 0.3' of the frame center. So the boresight offset
   is small; framing (the frame center option) is the bigger lever.
+
+### 9.12 Piggy-600 subs named by their own frame (PS-137)
+A Piggy sub takes its name from the RC16 (OBJECT, the live target, the PS-51
+time correlation), so when the RC16 shoots a target of another name (a
+mosaic panel, a tracking-test field, an RC16 core plan) the Piggy subs land
+under that name. 2026-09-21: 88 M31 Piggy subs recorded as "Crescent Nebula"
+(29) or "?" (59).
+- **Rule** (`scheduler/piggy_attribution.py`): the Piggy frame centre from
+  its own plate solve (solve store, else the pointing sidecar), else the
+  nearest solved Piggy sub within 10 min when no mount move lies between
+  (mount log, else the RC16 frames), else the sidecar mount position. A goal
+  fits when its target lies inside the Piggy frame (`rig_fov`, about 134' x
+  90', turned by the solve rotation; with no rotation only the circle of
+  half the short side). Piggy-driven goals first, then goals with a Piggy
+  plan, then any goal; nearest the centre within a tier. No goal in the
+  frame: the name stays. RC16 subs and subs assigned by hand
+  (`target_src` "manual", the runs page assign box) are never touched.
+- **Records:** `target` = the attributed goal, `target_raw` = what the sub
+  was called before, `target_src` = "piggy-frame", `target_attr` = {name,
+  src, off_arcmin, tier, from, applied}. The runs table shows the target
+  with the raw name and the evidence on hover ("frames X?" when only
+  reported).
+- **Mode** `piggyback_frame_attribution` (System page, Piggyback): off |
+  report (default: only `target_attr` is written) | on (rename; the Library
+  build moves the links under library_root on the scope). Runs in
+  `attribute_night` (Library build, dawn backfill) and again after the dawn
+  pointing solves. No FITS is written; the desktop ninashare mirror is never
+  written.
+- **Past nights:** `photonscript piggy-attribution --date 2026-09-21
+  [--solve] [--apply] [--json]` (dry run unless --apply; --solve plate-solves
+  the subs nothing places, stored for reuse; --apply rewrites the subs log
+  and moves the Library links, collisions reported and left in place). Then
+  POST /api/projects2/recount.
