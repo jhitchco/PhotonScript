@@ -11,7 +11,7 @@ canonical_target() maps any of those names back to the target:
 
 * strips ninaAPI's "_Container" and the generator's per-target container
   suffixes (" imaging (repeats while safe and up)", " focus calibration AFs",
-  " unguided ladder"),
+  " unguided ladder", " through-focus step" / " through-focus sweep"),
   repeatedly, case-insensitively;
 * returns None ("unattributed") for structural loops that name no target
   (OSC_LIGHT_LOOP, SAFE_LOOP, "<filter> until moonrise", ...), so the PS-51
@@ -58,7 +58,9 @@ def generator_names() -> dict:
                             gen.TARGET_TRACKING_LADDER_SUFFIX,
                             gen.TARGET_BLOCK_SUFFIX,          # PS-61
                             gen.TARGET_GUIDE_BLOCK_SUFFIX,    # PS-85
-                            gen.PIGGY_WEST_CENTER_SUFFIX),    # PS-26
+                            gen.PIGGY_WEST_CENTER_SUFFIX,     # PS-26
+                            gen.OPTICS_STEP_SUFFIX,           # PS-148
+                            gen.TARGET_OPTICS_SWEEP_SUFFIX),  # PS-148
         # suffixes that wrap a FILTER name: the container names no target
         "non_target_suffixes": (gen.FILTER_UNTIL_MOONRISE_SUFFIX,),
         "structural": frozenset(n.lower() for n in structural),

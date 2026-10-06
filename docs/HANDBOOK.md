@@ -330,6 +330,65 @@ armer is not involved and stays DISARMED.
   the test is skipped; re-sideload another night. The standalone tracking-test
   download keeps its park-and-hold after the ladder.
 
+### Through-focus optics test (PS-148)
+
+Answers "astigmatism / collimation, or a mechanical stretch?" when stars
+show one fixed elongation axis (2026-10-05: ~33 deg in every zone of the Ha
+subs, magnified by ~310 steps of defocus). About 16 min with the defaults.
+
+How to run it:
+1. Dashboard, Target Goals card, **Sideload** box: recipe **Through-focus
+   optics test** (`optics_through_focus`), tick targets to exclude, **Preview**
+   (the RC16 row shows the test field, its altitude and length, and lint
+   PASS with an `optics-test` warning that says what it is).
+2. **Load into RC16** (and **Load into Piggy-600** for the companion), confirm.
+   Nothing starts: press **Start in NINA #1** (and NINA #2). The armer stays
+   DISARMED. Load refuses while armed or while that NINA runs anything.
+3. After the sweep, tonight's targets follow (each with its own AF). Open the
+   runs page for the night: the Optics section gets a "Through-focus optics
+   test" block (also `GET /api/optics-test/report?date=` or
+   `photonscript optics-test-report --date D`).
+
+What the sequence does (RC16, spliced into the Targets area before the night
+loop, runs once): StopGuiding, sidereal tracking, slew to a field 50 to 70
+deg up near the meridian (the PS-84 picker; `?at=<UTC>` picks for later),
+AF on L, center, then per filter: subs at best focus, then at each offset in
+ascending order (the focuser only moves outward inside a sweep), then back
+to best focus (the moves add up to zero; lint rule `optics-test` checks it).
+No autofocus triggers and no guiding inside. Each step is a nested
+DeepSkyObjectContainer so every sub's OBJECT is
+`Optics test <field> <filter> <offset>` (e.g. `Optics test M 2 L -300`).
+Those subs are defocused on purpose: the telescope agent leaves them out of
+the consecutive-reject alert. Unsafe mid-sweep ends the test; the focuser
+may be left off focus, but every later target starts with its own seed move
+and AF. A standalone download (park and hold after the sweep) is
+`GET /api/optics-test/sequence`; `GET /api/optics-test/target` shows the
+field it would pick.
+
+Config (System page, Quality group): `optics_test_offsets` ("-300,-150,150,300"
+EAF steps; 0 is always shot first), `optics_test_filters` ("L"; "L,Ha" adds a
+narrowband pass after the Ha focus offset), `optics_test_exposure_s` (45),
+`optics_test_nb_exposure_s` (120), `optics_test_repeats` (2 per step).
+
+Reading the report (per filter; angles from +x in the runs-page thumbnail
+view): per offset the median eccentricity and HFR of the 100 brightest
+stars, the stretch axis and its coherence R, the soft corner, and the axis
+per 3x3 zone.
+- **astigmatism**: the axis flips about 90 deg between the farthest inside and
+  outside steps. If the center zone flips too: on-axis astigmatism, i.e.
+  collimation (secondary tilted / decentered) or a pinched mirror. If only
+  the off-axis zones flip: field astigmatism, normal for an RC without a
+  flattener.
+- **constant-axis**: the same axis (within 25 deg) at every offset: tracking,
+  wind, flexure or a mechanical stretch, not astigmatism. A stretch that
+  shrinks with defocus is a fixed-length smear (tracking / wind); one that
+  grows is a fixed beam deformation (pinched or loose part).
+- **defocus-only**: round at best focus (bright-star ecc under 0.45) and no
+  direction that survives defocus: the optics are fine.
+- **Tilt** line: a soft side that swaps across focus is sensor tilt (camera
+  tilt plate / spacer); a soft corner at best focus that does not swap is not
+  a plain tilt.
+
 ### A safe hand-built NINA #2 sequence (PS-139)
 
 The Piggy-600 rides the RC16 mount and NINA #1 owns that mount (PS-25).

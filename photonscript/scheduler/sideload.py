@@ -11,6 +11,8 @@ pure functions, plus two tiny ninaAPI calls:
                           `exclude` in tonight's own start / night loop /
                           shutdown; ids + Parent links rebuilt with
                           link_parents() (PS-77)
+  splice_optics_test()    PS-148: the same splice for the through-focus
+                          optics test (recipe optics_through_focus)
   lint_companion()        the Piggy companion's own lint (the RC16 night lint
                           wants a mount, targets and a meridian flip, which a
                           camera-only companion never has)
@@ -34,10 +36,15 @@ import httpx
 logger = logging.getLogger(__name__)
 
 RECIPE_TT_THEN_TONIGHT = "tracking_test_then_tonight"
+RECIPE_OPTICS_THROUGH_FOCUS = "optics_through_focus"   # PS-148
 RECIPES = {
     RECIPE_TT_THEN_TONIGHT: (
         "RC16: tracking test on an auto-picked field, then tonight's targets "
         "(minus any excluded). Piggy-600: the companion with lights."),
+    RECIPE_OPTICS_THROUGH_FOCUS: (
+        "RC16: through-focus optics test (astigmatism / collimation) on an "
+        "auto-picked field, then tonight's targets (minus any excluded). "
+        "Piggy-600: the companion with lights."),
 }
 
 TARGETS_CONTAINER = "TARGETS_CONTAINER"
@@ -52,6 +59,10 @@ SPLICED_TT_NOTE = ("Sideloaded (PS-127): this test runs once, in the Targets "
                    "follow. An unsafe spell during the ladder ends the test "
                    "for tonight; after an unsafe pause the night loop never "
                    "runs it again.")
+# PS-148: the same for the through-focus optics test.
+SPLICED_OT_NOTE = ("Sideloaded (PS-148): this test runs once, in the Targets "
+                   "area before the night loop, then tonight's targets "
+                   "follow (each starts with its own autofocus).")
 
 # Instructions a camera-only companion must never carry: the Piggy-600 rides
 # the RC16 mount, which NINA #1 owns. PS-139: the mount list proper lives in
@@ -193,15 +204,39 @@ def splice_tracking_test(night_seq: dict, tt_seq: dict, exclude=(),
     Names in `exclude` match case- and whitespace-insensitively. Returns a
     new tree with fresh $id / Parent links; inputs are untouched. Raises
     SpliceError on an unexpected shape."""
+    from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PARK_NOTE
+    return splice_test(night_seq, tt_seq, exclude, name,
+                       note=(TRACKING_TEST_PARK_NOTE, SPLICED_TT_NOTE),
+                       what="tracking-test")
+
+
+def splice_optics_test(night_seq: dict, ot_seq: dict, exclude=(),
+                       name: str | None = None) -> dict:
+    """PS-148: splice_tracking_test for the through-focus optics test: the
+    test's DeepSkyObjectContainer runs once in the Targets area before the
+    night loop, then tonight's targets (minus `exclude`)."""
+    from photonscript.scheduler.nina_sequence_json import OPTICS_TEST_PARK_NOTE
+    return splice_test(night_seq, ot_seq, exclude, name,
+                       note=(OPTICS_TEST_PARK_NOTE, SPLICED_OT_NOTE),
+                       what="optics-test")
+
+
+def splice_test(night_seq: dict, test_seq: dict, exclude=(),
+                name: str | None = None, note: tuple | None = None,
+                what: str = "test") -> dict:
+    """The splice behind splice_tracking_test / splice_optics_test: the one
+    DeepSkyObjectContainer of `test_seq` goes first in tonight's Targets
+    area, before LOOP_ALL_NIGHT; `note` = (standalone sentence, spliced
+    sentence) swapped in the test's annotation."""
     from photonscript.scheduler.nina_sequence_json import link_parents
-    bad = set(non_parent_refs(night_seq)) | set(non_parent_refs(tt_seq))
+    bad = set(non_parent_refs(night_seq)) | set(non_parent_refs(test_seq))
     if bad:
         raise SpliceError(f"$ref outside Parent ({sorted(map(str, bad))}): "
                           "the splice would leave it dangling")
-    night, tt = strip_ids(night_seq), strip_ids(tt_seq)
+    night, tt = strip_ids(night_seq), strip_ids(test_seq)
     tests = [v for v in _items(_targets_container(tt)) if _is_dso(v)]
     if len(tests) != 1:
-        raise SpliceError(f"tracking-test sequence has {len(tests)} targets, "
+        raise SpliceError(f"{what} sequence has {len(tests)} targets, "
                           "want exactly 1")
     drop = {_norm(x) for x in (exclude or ()) if str(x or "").strip()}
     tc = _targets_container(night)
@@ -216,29 +251,36 @@ def splice_tracking_test(night_seq: dict, tt_seq: dict, exclude=(),
     if loop_at is None:
         raise SpliceError(f"no {NIGHT_LOOP} in the Targets area of "
                           f"{night_seq.get('Name')!r}")
-    vals.insert(loop_at, _spliced_note(tests[0]))
+    vals.insert(loop_at, _spliced_note(tests[0], note))
     if name:
         night["Name"] = name
     return link_parents(night)
 
 
-def _spliced_note(test: dict) -> dict:
+def _spliced_note(test: dict, note: tuple | None = None) -> dict:
     """The test container with the standalone park-and-hold sentence in its
-    annotation replaced by SPLICED_TT_NOTE (the copy is already ours)."""
-    from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PARK_NOTE
+    annotation replaced by the spliced one (default: the tracking test's
+    SPLICED_TT_NOTE). The copy is already ours."""
+    if note is None:
+        from photonscript.scheduler.nina_sequence_json import (
+            TRACKING_TEST_PARK_NOTE)
+        note = (TRACKING_TEST_PARK_NOTE, SPLICED_TT_NOTE)
+    old, new = note
     for v in _items(test):
         text = v.get("Text") if isinstance(v, dict) else None
-        if isinstance(text, str) and TRACKING_TEST_PARK_NOTE in text:
-            v["Text"] = text.replace(TRACKING_TEST_PARK_NOTE, SPLICED_TT_NOTE)
+        if isinstance(text, str) and old in text:
+            v["Text"] = text.replace(old, new)
     return test
 
 
-def splice_name(date: str, field: str, kept: list[str]) -> str:
-    """PhotonScript_<yyyymmdd>_TT_<field>_then_<target | tonight>."""
+def splice_name(date: str, field: str, kept: list[str], tag: str = "TT") -> str:
+    """PhotonScript_<yyyymmdd>_<tag>_<field>_then_<target | tonight>
+    (tag TT = tracking test, OT = optics test, PS-148)."""
     def safe(s):
         return "_".join("".join(c if c.isalnum() else " " for c in str(s)).split())
     tail = safe(kept[0]) if len(kept) == 1 else ("tonight" if kept else "nothing")
-    return f"PhotonScript_{date.replace('-', '')}_TT_{safe(field)}_then_{tail}"
+    return (f"PhotonScript_{date.replace('-', '')}_{tag}_{safe(field)}"
+            f"_then_{tail}")
 
 
 # ------------------------------------------------------------------------ lint

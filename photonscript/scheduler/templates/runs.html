@@ -188,6 +188,7 @@
             <div id="guiding" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Optics (tilt / collimation) <span class="bd">(star sidecars, PS-95)</span></h2>
             <div id="optics" class="bd"></div>
+            <div id="opticsTest" class="bd" style="margin-top:.5rem;"></div>
             <h2 style="margin-top:1.2rem;">Night timeline <span class="bd">(mount log, NINA + PHD2 events, safety; PS-67)</span></h2>
             <div id="pointingSummary" class="bd"></div>
             <div id="timeline" class="bd"></div>
@@ -611,6 +612,7 @@
             : 'no phase data found in NINA log';
         renderGuiding(d.guiding, date);
         renderOptics(d.optics, date);
+        loadOpticsTest(date);
         renderSubs();
         renderReviewBar(d);
         renderFlexure(d.flexure, date);
@@ -620,6 +622,35 @@
         loadSafety(date);
         loadScoreReport(date);
         maybeWarmThumbs(date);
+    }
+    // PS-148: through-focus optics test (only when the night has its subs)
+    async function loadOpticsTest(date) {
+        const box = document.getElementById('opticsTest');
+        box.innerHTML = '';
+        let r;
+        try { r = await (await fetch('/api/optics-test/report?date=' + encodeURIComponent(date))).json(); }
+        catch (e) { return; }
+        if (currentDate !== date || !r || !r.n_subs) return;
+        const esc = t => String(t == null ? '-' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const cls = {astigmatism: 'warn', 'constant-axis': 'warn', unclear: 'warn'};
+        const zn = ['TL', 'TC', 'TR', 'ML', 'C', 'MR', 'BL', 'BC', 'BR'];
+        box.innerHTML = '<b>Through-focus optics test (PS-148)</b>: ' + r.n_subs + ' subs (' +
+            esc((r.fields || []).join(', ')) + ') &middot; <a href="/api/optics-test/report?date=' +
+            encodeURIComponent(date) + '" target="_blank">JSON</a>' +
+            (r.filters || []).map(f => '<div style="margin-top:.3rem;"><span class="' + (cls[f.verdict] || '') +
+                '"><b>' + esc(f.filter) + ': ' + esc(String(f.verdict).toUpperCase()) + '</b></span> ' +
+                esc(f.headline) + (f.detail || []).map(x => '<br><span style="opacity:.8">' + esc(x) + '</span>').join('') +
+                '<table class="tbl" style="font-size:.78rem;margin-top:.2rem;"><tr><th>offset</th><th>n</th><th>ecc (bright)</th>' +
+                '<th>HFR</th><th>axis deg</th><th>R</th><th>soft corner</th><th>zone axes TL TC TR / ML C MR / BL BC BR</th></tr>' +
+                (f.steps || []).map(s => '<tr><td>' + (s.offset > 0 ? '+' : '') + esc(s.offset) + '</td><td>' + esc(s.n) +
+                    '</td><td>' + esc(s.ecc_median) + '</td><td>' + esc(s.hfr_median) + '</td><td>' + esc(s.axis_deg) +
+                    '</td><td>' + esc(s.R) + '</td><td>' + (s.soft_corner ? esc(s.soft_corner) + ' x' + esc(s.corner_ratio) : '-') +
+                    '</td><td style="font-family:monospace;">' + zn.map(n => {
+                        const q = (s.zones || {})[n] || {};
+                        return q.axis_deg == null ? '-' : Math.round(q.axis_deg);
+                    }).join(' ') + '</td></tr>').join('') + '</table></div>').join('') +
+            '<div style="opacity:.7;">' + esc(r.orientation) + '</div>';
     }
     // PS-108: one line, what the score would do tonight vs today's verdicts
     async function loadScoreReport(date) {

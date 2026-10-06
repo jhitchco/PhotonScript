@@ -695,6 +695,72 @@ def _is_piggy_center(d: dict) -> bool:
     return str(d.get("Name") or "").endswith(PIGGY_WEST_CENTER_SUFFIX)
 
 
+def _is_optics_step(d: dict) -> bool:
+    """PS-148: a through-focus step is a nested DeepSkyObjectContainer only so
+    its subs carry the step's OBJECT; _check_optics_test checks it."""
+    from photonscript.scheduler.nina_sequence_json import OPTICS_STEP_SUFFIX
+    return str(d.get("Name") or "").endswith(OPTICS_STEP_SUFFIX)
+
+
+_AF_TRIGGERS = ("AutofocusAfterHFRIncreaseTrigger",
+                "AutofocusAfterTemperatureChangeTrigger",
+                "AutofocusAfterExposures", "AutofocusAfterTimeTrigger",
+                "AutofocusAfterFilterChange")
+
+
+def _check_optics_test(tgt: dict, name: str, followed: bool,
+                       r: LintResult) -> None:
+    """PS-148 rule optics-test, for a target holding a through-focus sweep:
+    no guiding (StartGuiding or an active dither), no autofocus trigger (it
+    would refocus on a defocused step), the relative focuser moves in the
+    sweep add up to zero (it ends at best focus), every step guarded by
+    Safety and free of slews / centering. A WARN says what it is."""
+    from photonscript.scheduler.nina_sequence_json import (
+        TARGET_OPTICS_SWEEP_SUFFIX)
+    guiding = (_find_type(tgt, "StartGuiding")
+               + [d for d in _find_type(tgt, "DitherAfterExposures")
+                  if d.get("AfterExposures", 0) > 0])
+    if guiding:
+        r.error("optics-test", f"[{name}] through-focus optics test contains "
+                "StartGuiding or an active dither")
+    af_trig = sorted({_short_type(d["$type"]) for frag in _AF_TRIGGERS
+                      for d in _find_type(tgt, frag)})
+    if af_trig:
+        r.error("optics-test", f"[{name}] autofocus trigger(s) "
+                f"{', '.join(af_trig)} would refocus on a defocused step")
+    for _p, sw in _types_in(tgt):
+        if not str(sw.get("Name") or "").endswith(TARGET_OPTICS_SWEEP_SUFFIX):
+            continue
+        net = sum(int(d.get("RelativePosition") or 0)
+                  for d in _find_type(sw, "MoveFocuserRelative"))
+        if net:
+            r.error("optics-test", f"[{name}] the sweep's focuser moves add "
+                    f"up to {net:+d} steps: it would end off focus")
+    for _p, st in _types_in(tgt):
+        if "DeepSkyObjectContainer" not in st.get("$type", "") \
+                or not _is_optics_step(st):
+            continue
+        sname = (st.get("Target") or {}).get("TargetName") or st.get("Name")
+        if "SafetyMonitorCondition" not in json.dumps(st.get("Conditions", {})):
+            r.error("optics-test", f"[{sname}] step has no "
+                    "SafetyMonitorCondition")
+        if (_has_type(st, "Platesolving.Center") or _has_type(st, "SlewScope")
+                or _has_type(st, "RunAutofocus")):
+            r.error("optics-test", f"[{sname}] step must only expose (no "
+                    "slew, center or autofocus)")
+    after = ("Tonight's targets follow it; it runs once per night."
+             if followed else
+             "After the sweep the scope parks and holds until dawn; stop "
+             "the sequence to image.")
+    r.warn("optics-test", f"[{name}] through-focus optics test (PS-148): "
+           "guiding stopped, short subs at best focus and at each focuser "
+           "offset, back to best focus at the end. " + after)
+
+
+def _short_type(t: str) -> str:
+    return (t or "").split(",")[0].split(".")[-1]
+
+
 def _check_piggy_center(seq: dict, r: LintResult) -> None:
     """PS-26 rule piggy-center: every Piggy-600-driven target says what its
     centering does (a WARN carrying the annotation: the applied offset, the
@@ -815,14 +881,19 @@ def lint(seq: dict, guided: bool | None = None,
     # target is a DeepSkyObjectContainer only so its Center inherits the
     # shifted coordinates; it is checked by _check_piggy_center, not here.
     _check_piggy_center(seq, r)
+    # PS-148: the nested through-focus steps are checked with their test.
     targets = [(p, d) for p, d in _types_in(seq)
                if "DeepSkyObjectContainer" in d["$type"]
-               and not _is_piggy_center(d)]
+               and not _is_piggy_center(d) and not _is_optics_step(d)]
     if not targets:
         r.error("targets", "No DeepSkyObjectContainer targets found")
 
     for _path, tgt in targets:
         name = (tgt.get("Target") or {}).get("TargetName") or tgt.get("Name", "?")
+        if " through-focus sweep" in json.dumps(tgt):   # PS-148
+            _check_optics_test(
+                tgt, name, any(" through-focus sweep" not in json.dumps(d)
+                               for _p, d in targets), r)
 
         cond_blob = json.dumps(tgt.get("Conditions", {}))
         if "SafetyMonitorCondition" not in cond_blob:
