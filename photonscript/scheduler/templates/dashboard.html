@@ -660,7 +660,9 @@
                 '<span style="border:1px solid ' + (FILTER_COLORS[f.f] || '#64748b') +
                 ';color:' + (FILTER_COLORS[f.f] || '#64748b') +
                 ';border-radius:4px;padding:.1rem .45rem;font-size:.74rem;margin-right:.35rem;">' +
-                '● ' + f.f + ' ' + f.exp + 's <span style="opacity:.6;">×' + f.n +
+                '● ' + f.f + ' ' + f.exp + 's' +
+                (f.short ? ' <span style="opacity:.6;" title="HDR short subs">HDR</span>' : '') +
+                ' <span style="opacity:.6;">×' + f.n +
                 '</span></span>').join('');
             return '<div style="border-radius:10px;background:rgba(255,255,255,.03);' +
                 'padding:.85rem 1rem;margin-bottom:.7rem;">' +
@@ -1033,6 +1035,72 @@
                      'RC16 subs come back from the run history if you add it again.')) return;
         await patchProject(id, {rc16_hours: 0});
     }
+    // PS-63: HDR short sets on the goal cards. A plan with an HDR set gets a
+    // second line under its filter row: short length x count, accepted, and
+    // its own bar (the shorts are shot and counted in the goal hours too).
+    function hdrShortRow(e, col) {
+        if (!e || !e.hdr_short_seconds || !e.hdr_short_count) return '';
+        const acq = Math.min(e.hdr_short_acquired || 0, e.hdr_short_count);
+        const pct = Math.min(100, Math.round(acq / e.hdr_short_count * 100));
+        return '<div class="hdr-short-row" style="display:flex;align-items:center;gap:.5rem;' +
+            'font-size:.72rem;margin:-.1rem 0 .25rem;opacity:.85;">' +
+            '<span style="width:2.4rem;"></span>' +
+            '<span style="width:calc(40px + .9rem);font-size:.68rem;color:' + col +
+            ';opacity:.8;" title="HDR short companion set (bright cores)">short</span>' +
+            '<span style="opacity:.7;width:7.5rem;">' + Math.round(e.hdr_short_seconds) +
+            's &times; ' + e.hdr_short_count + '</span>' +
+            '<span style="width:5.2rem;">' + acq + ' accepted</span>' +
+            '<div class="fbar"><div style="width:' + pct + '%;background:' + col +
+            ';opacity:.6;"></div></div>' +
+            '<span style="width:2.6rem;text-align:right;opacity:.8;">' + pct + '%</span>' +
+            '</div>';
+    }
+    // PS-63: header chip, e.g. "HDR 60s: Ha, OIII" (one chip per short length)
+    function hdrChip(p) {
+        const by = {};
+        Object.entries(p.hdr || {}).forEach(([f, sec]) => {
+            if (sec) (by[Math.round(sec)] = by[Math.round(sec)] || []).push(f);
+        });
+        return Object.entries(by).map(([sec, fs]) =>
+            ' <span class="hdr-chip" style="border:1px solid #c084fc;color:#c084fc;' +
+            'border-radius:4px;padding:0 .35rem;font-size:.68rem;" title="HDR short subs ' +
+            'on these filters (shot and counted toward the goal)">HDR ' + sec + 's: ' +
+            fs.join(', ') + '</span>').join('');
+    }
+    async function editHdr(id) {
+        const b = document.querySelector('[data-hdr-for="' + id + '"]');
+        const cur = b ? b.dataset.hdr : '';
+        const txt = prompt('HDR short subs per filter, e.g. "Ha:60, OIII:60". ' +
+            'Leave empty to clear. Saving re-allocates this goal\'s RC16 plans.', cur);
+        if (txt === null) return;
+        const hdr = {};
+        for (const part of txt.split(',')) {
+            const t = part.trim();
+            if (!t) continue;
+            const m = t.match(/^([A-Za-z]+)\s*[:=]\s*(\d+(\.\d+)?)\s*s?$/);
+            if (!m || !FILTER_COLORS[m[1]]) { alert('Could not read "' + t + '"'); return; }
+            hdr[m[1]] = parseFloat(m[2]);
+        }
+        await patchProject(id, {hdr: hdr});
+    }
+    // PS-63: library count split by rig ("RC16 3 | Piggy-600 47") so OSC
+    // frames are not read as progress on RC16 filters
+    function libraryText(p) {
+        const split = (p.library_by_rig || []).filter(x => x.n);
+        if (!split.length || (split.length === 1 && split[0].rig === 'rc16'))
+            return String(p.library_files);
+        return split.map(x => x.label + ' ' + x.n).join(' | ');
+    }
+    // PS-63: per-night strip, same rig split once a non-RC16 rig shot that night
+    function nightCounts(n) {
+        const one = (a, t) => a + '&#10003;' + (t > a ? '/' + t : '');
+        const rigs = Object.entries(n.by_rig || {});
+        if (!rigs.length || (rigs.length === 1 && rigs[0][0] === 'rc16'))
+            return one(n.accepted, n.attempted);
+        return rigs.sort((a, b) => (a[0] !== 'rc16') - (b[0] !== 'rc16'))
+            .map(([rg, c]) => (rg === 'piggyback' ? 'Piggy' : rg === 'rc16' ? 'RC16' : rg) +
+                 ' ' + one(c.accepted, c.attempted)).join(' | ');
+    }
 
     function altChartSVG(d) {
         const W = 300, H = 88, PAD_B = 14, n = d.alts.length;
@@ -1294,7 +1362,7 @@
                     ';"></div></div>' +
                     '<span style="width:2.6rem;text-align:right;opacity:.8;">' +
                     (active ? pct + '%' : '—') + '</span>' +
-                    '</div>';
+                    '</div>' + (active ? hdrShortRow(e, col) : '');
             }).join('');
             // PS-129: one row per Piggy-600 plan, its own bar from acquired_s
             const oscRows = piggyPlans.map(e => {
@@ -1319,7 +1387,7 @@
                        'color:#e2e8f0;border:1px solid #334155;border-radius:4px;' +
                        'padding:.05rem .2rem;text-align:center;">h'
                      : '') +
-                    '</div>';
+                    '</div>' + hdrShortRow(e, col);
             }).join('');
             return '<div style="padding:.8rem;border-radius:8px;background:rgba(255,255,255,.03);' +
                 (p.active ? '' : 'opacity:.45;') + '">' +
@@ -1331,7 +1399,7 @@
                 '" style="color:inherit;text-decoration:none;border-bottom:1px dotted rgba(125,211,252,.5);" title="full capture history for this target">' +
                 p.target.name + '</a></b>' +
                 '<div style="opacity:.5;font-size:.75rem;">' + p.target.catalog_id + ' · ' +
-                p.kind + ' · priority ' + p.priority + ' ' +
+                p.kind + ' · priority ' + p.priority + hdrChip(p) + ' ' +
                 btn(p.id, "{\"priority_delta\":10}", '▲') +
                 btn(p.id, "{\"priority_delta\":-10}", '▼') + '</div>' +
                 // PS-48: this goal overrides QA gates (edited on the target page)
@@ -1354,7 +1422,8 @@
                 btn(p.id, "{\"budget_delta\":1}", '+') +
                 '<span style="font-size:.82rem;">hours</span>' +
                 '<div class="fbar"><div style="width:' + goalPct + '%;background:#7dd3fc;"></div></div>' +
-                '<span style="font-size:.82rem;"><b>' + goalDone + 'h</b> / ' +
+                '<span style="font-size:.82rem;" title="accepted seconds, long and HDR short ' +
+                'subs (the goal hours include the short sets)"><b>' + goalDone + 'h</b> / ' +
                 p.budget_hours + 'h (' + goalPct + '%)</span></div>' +
                 filterRows + oscRows +
                 '<div style="display:flex;align-items:center;gap:.6rem;font-size:.75rem;' +
@@ -1364,18 +1433,25 @@
                    'onclick="applyMix(\'' + p.id + '\')">Apply mix</button>' +
                    '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
                    'onclick="astrobinMix(\'' + p.id + '\')">AstroBin mix</button>' +
+                   '<button class="btn btn-secondary" style="padding:.05rem .45rem;font-size:.72rem;" ' +
+                   'data-hdr-for="' + p.id + '" data-hdr="' +
+                   Object.entries(p.hdr || {}).map(([f, v]) => f + ':' + Math.round(v)).join(', ') +
+                   '" title="set or clear HDR short subs per filter" ' +
+                   'onclick="editHdr(\'' + p.id + '\')">HDR</button>' +
                    '<span id="abmix-' + p.id + '"></span>'
                  : '<span style="opacity:.7;">Piggy-600 only goal (no RC16 plan)</span>' +
                    addRc16Controls(p)) +
                 (bothRigs ? removeRc16Button(p) : '') +
-                '<span style="margin-left:auto;">📁 ' + p.library_files +
+                '<span style="margin-left:auto;" title="Accepted lights linked into this ' +
+                'target\'s Library folders: every night, long and HDR short subs, both rigs ' +
+                '(Piggy-600 OSC lights file under OSC/). The goal rows above count the ' +
+                'RC16 filters and the Piggy-600 plan separately.">📁 ' + libraryText(p) +
                 ' accepted lights in library</span></div>' +
                 (p.nights && p.nights.length
                  ? '<div style="font-size:.74rem;opacity:.75;margin-top:.35rem;">Nights: ' +
                    p.nights.map(n => '<a href="/runs?night=' + n.date +
                        '" style="color:#7dd3fc;text-decoration:none;">' + n.date.slice(2) +
-                       '</a> <span style="opacity:.7">' + n.accepted + '✓' +
-                       (n.attempted > n.accepted ? '/' + n.attempted : '') + '</span>')
+                       '</a> <span style="opacity:.7">' + nightCounts(n) + '</span>')
                        .join(' · ') + '</div>'
                  : '') +
                 '<div style="margin-top:.45rem;" id="alt-' + p.id + '"></div>' +

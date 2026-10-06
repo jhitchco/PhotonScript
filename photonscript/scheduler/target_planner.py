@@ -70,14 +70,25 @@ BB_SHARE_DARK = 0.5
 
 
 def _scale_group(group, budget_s):
-    """Scale a filter group's counts down to fit budget_s. Returns seconds used."""
+    """Scale a filter group's long counts down to fit budget_s. Returns
+    seconds used. PS-112: a plan whose long set is done (count 0, only HDR
+    shorts owed) stays at 0; the max(1, ...) floor is only for a set that
+    still owes subs."""
     total = sum(e.exposure_seconds * e.count for e in group)
     if total <= budget_s or total == 0:
         return total
     scale = budget_s / total
     for e in group:
-        e.count = max(1, int(e.count * scale))
+        if e.count > 0:
+            e.count = max(1, int(e.count * scale))
     return sum(e.exposure_seconds * e.count for e in group)
+
+
+def owed_seconds(e) -> float:
+    """PS-112: seconds a per-night copy still owes, long set plus HDR shorts
+    (the copy's acquired fields are 0, see remaining_copy)."""
+    return (e.exposure_seconds * max(0, e.count - e.acquired)
+            + (e.hdr_short_seconds or 0) * e.short_remaining())
 
 
 def _fit_by_moon(exposures, available_seconds, moon_tag):
@@ -379,7 +390,9 @@ def plan_night_sequence(
         for plan in proj.exposure_plans:
             if getattr(plan, "rig", "rc16") != "rc16":
                 continue  # PS-30: a Piggy-600 OSC plan is never an RC16 filter
-            if plan.count - plan.acquired > 0:
+            # PS-112: keep a plan while EITHER set is owed; an HDR plan whose
+            # long set is done still has its short subs to shoot
+            if plan.count - plan.acquired > 0 or plan.short_remaining() > 0:
                 remaining_exposures.append(remaining_copy(plan))
         if not remaining_exposures:
             # PS-134: the Piggy-600 drives and still owes time
@@ -417,7 +430,7 @@ def plan_night_sequence(
                                 "moon defers broadband", proj.target.name)
                     continue
 
-        alloc_time = sum(e.exposure_seconds * e.count for e in remaining_exposures) / 3600
+        alloc_time = sum(owed_seconds(e) for e in remaining_exposures) / 3600
         remaining_hours -= alloc_time * 1.15  # account for overhead
 
         seq_target = NinaSequenceTarget(

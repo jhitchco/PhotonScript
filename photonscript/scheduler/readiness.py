@@ -324,17 +324,33 @@ def readiness_report(config, projects: Iterable,
 
 # --- Library folder counts (projects list) ----------------------------------
 
-_lib_count_cache: dict = {}  # library folder -> (monotonic t, count)
+_lib_count_cache: dict = {}  # library folder -> (monotonic t, {rig: count})
 _LIB_COUNT_TTL_S = 120.0
 
 
-def library_fits_count(lib: Path) -> int:
-    """FITS count for one target's Library folder, cached 2 min: the projects
-    list rglob'd every project's library on every poll."""
+def library_fits_by_rig(lib: Path) -> dict:
+    """{rig: FITS count} for one target's Library folder, cached 2 min: the
+    projects list rglob'd every project's library on every poll. PS-63: the
+    Library files lights as <Target>/<Filter>/, and the Piggy-600's one-shot
+    color lights land under OSC/, so that folder is the piggyback's and every
+    other filter folder is the RC16's."""
     now = time.monotonic()
     hit = _lib_count_cache.get(str(lib))
     if hit is not None and now - hit[0] < _LIB_COUNT_TTL_S:
-        return hit[1]
-    n = sum(1 for _ in lib.rglob("*.fits")) if lib.exists() else 0
-    _lib_count_cache[str(lib)] = (now, n)
-    return n
+        return dict(hit[1])
+    out: dict = {}
+    if lib.exists():
+        for f in lib.rglob("*.fits"):
+            try:
+                top = f.relative_to(lib).parts[0]
+            except (ValueError, IndexError):
+                top = ""
+            rig = "piggyback" if top.upper() == "OSC" else "rc16"
+            out[rig] = out.get(rig, 0) + 1
+    _lib_count_cache[str(lib)] = (now, out)
+    return dict(out)
+
+
+def library_fits_count(lib: Path) -> int:
+    """FITS count for one target's Library folder (both rigs, cached)."""
+    return sum(library_fits_by_rig(lib).values())

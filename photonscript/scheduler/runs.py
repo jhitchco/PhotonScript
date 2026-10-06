@@ -53,7 +53,13 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
             "exposures": [{"filter": e.filter_type.value,
                            "exp_s": e.exposure_seconds,
                            "planned": e.count - e.acquired}
-                          for e in t.exposures],
+                          for e in t.exposures]
+            # PS-112: the HDR short set still owed, as its own row (the
+            # plan-vs-actual table sums per filter, so shorts count too)
+            + [{"filter": e.filter_type.value,
+                "exp_s": e.hdr_short_seconds,
+                "planned": e.short_remaining(), "hdr_short": True}
+               for e in t.exposures if e.short_remaining() > 0],
         } for t in targets],
     }
     (runs_dir(config) / f"{night_of}_plan.json").write_text(
@@ -2020,7 +2026,8 @@ def _piggyback_watch_root(config) -> Path | None:
 
 
 def nights_by_target(config, projects=None) -> dict:
-    """{target_lower: [{date, accepted, attempted}]} across all graded nights.
+    """{target_lower: [{date, accepted, attempted, by_rig}]} across all graded
+    nights; by_rig = {rig: {accepted, attempted}} (PS-63).
 
     PS-129: names resolve against the goal projects (names and catalog ids)
     the way sync_goal_progress credits them, so a night logged as "M 31"
@@ -2041,10 +2048,17 @@ def nights_by_target(config, projects=None) -> dict:
             if not t or t == "?":
                 continue
             e = out.setdefault(t, {}).setdefault(
-                date, {"date": date, "accepted": 0, "attempted": 0})
+                date, {"date": date, "accepted": 0, "attempted": 0,
+                       "by_rig": {}})
+            # PS-63: the same counts per rig, so the goal card's night strip
+            # does not read Piggy-600 OSC subs as RC16 progress
+            r = e["by_rig"].setdefault(s_.get("rig") or "rc16",
+                                       {"accepted": 0, "attempted": 0})
             e["attempted"] += 1
+            r["attempted"] += 1
             if s_.get("passed_qa"):
                 e["accepted"] += 1
+                r["accepted"] += 1
     return {t: sorted(d.values(), key=lambda x: x["date"], reverse=True)
             for t, d in out.items()}
 

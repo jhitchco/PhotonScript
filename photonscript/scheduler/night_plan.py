@@ -44,12 +44,31 @@ def compute_night_times(obs, date_utc: datetime) -> dict:
     return out
 
 
+def _owed_sets(t) -> list[dict]:
+    """PS-112: one {f, exp, n} per set a target still owes tonight, the HDR
+    short set as its own entry (short: True) ahead of its long set, the order
+    the sequence shoots them. A plan whose long set is done shows only its
+    shorts."""
+    out = []
+    for e in t.exposures:
+        short_n = e.short_remaining()
+        if short_n > 0:
+            out.append({"f": e.filter_type.value,
+                        "exp": round(e.hdr_short_seconds), "n": short_n,
+                        "short": True})
+        if e.count - e.acquired > 0:
+            out.append({"f": e.filter_type.value,
+                        "exp": round(e.exposure_seconds),
+                        "n": e.count - e.acquired})
+    return out
+
+
 def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     """Compute tonight's timeline. All times UTC ISO + local strings."""
     from photonscript.shared.astronomy import (get_seasonal_targets,
                                                get_twilight_times)
     from photonscript.scheduler.target_planner import (
-        create_project_from_target, plan_night_sequence)
+        create_project_from_target, owed_seconds, plan_night_sequence)
 
     obs = config.get_observatory()
     now = datetime.utcnow()
@@ -108,8 +127,8 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     cursor = dusk
     target_names = []
     for t in targets:
-        total_s = sum(e.exposure_seconds * (e.count - e.acquired)
-                      for e in t.exposures) * 1.15
+        # PS-112: HDR short subs count too (a plan can owe only shorts)
+        total_s = sum(owed_seconds(e) for e in t.exposures) * 1.15
         if total_s <= 0:
             continue
         end = min(cursor + timedelta(seconds=total_s), dawn)
@@ -118,9 +137,8 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         events.append({
             "time": _fmt(cursor), "event": f"Target: {t.name}",
             "detail": ", ".join(
-                f"{e.filter_type.value}×{e.count - e.acquired}@"
-                f"{e.exposure_seconds:.0f}s" for e in t.exposures
-                if e.count - e.acquired > 0) +
+                f"{s['f']}×{s['n']}@{s['exp']}s" + (" HDR short" if s.get("short") else "")
+                for s in _owed_sets(t)) +
             f" (~{(end - cursor).total_seconds() / 3600:.1f}h)"})
         target_names.append(t.name)
         cursor = end
@@ -142,9 +160,10 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     planned_subs = 0
     integ_s = 0.0
     for t in targets:
-        active = [e for e in t.exposures if e.count - e.acquired > 0]
-        total_s = sum(e.exposure_seconds * (e.count - e.acquired)
-                      for e in active) * 1.15
+        active = [e for e in t.exposures
+                  if e.count - e.acquired > 0 or e.short_remaining() > 0]
+        sets = _owed_sets(t)
+        total_s = sum(owed_seconds(e) for e in active) * 1.15
         if total_s <= 0 or cursor2 >= dawn:
             continue
         end = min(cursor2 + timedelta(seconds=total_s), dawn)
@@ -173,13 +192,10 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
             "coords": f"{rah:02d}h{ram:02d}m / {dec_sign}{decd:02d}d{decm:02d}m",
             "ra_hours": t.ra_hours,
             "dec_degrees": t.dec_degrees,
-            "filters": [{"f": e.filter_type.value,
-                         "exp": round(e.exposure_seconds),
-                         "n": e.count - e.acquired} for e in active],
+            "filters": sets,
         })
-        planned_subs += sum(e.count - e.acquired for e in active)
-        integ_s += sum(e.exposure_seconds * (e.count - e.acquired)
-                       for e in active)
+        planned_subs += sum(x["n"] for x in sets)
+        integ_s += sum(owed_seconds(e) for e in active)
         cursor2 = end
 
     return {

@@ -70,8 +70,10 @@ def test_nights_by_target_lists_every_night_that_credited_the_goal(tmp_path):
     # ...and the Nights list now names both of them under the goal
     nbt = runs.nights_by_target(cfg, store.projects.values())
     assert nbt["andromeda galaxy"] == [
-        {"date": "2026-10-03", "accepted": 2, "attempted": 3},
-        {"date": "2026-09-20", "accepted": 1, "attempted": 2}]
+        {"date": "2026-10-03", "accepted": 2, "attempted": 3,
+         "by_rig": {"piggyback": {"accepted": 2, "attempted": 3}}},
+        {"date": "2026-09-20", "accepted": 1, "attempted": 2,
+         "by_rig": {"piggyback": {"accepted": 1, "attempted": 2}}}]
     assert "m 31" not in nbt
 
 
@@ -95,7 +97,8 @@ def test_nights_by_target_project_spelling_wins_over_plan_name(tmp_path):
     # the '?' sub falls back to the night's only plan target, which then
     # resolves to the project like the named one
     assert nbt == {"andromeda galaxy": [
-        {"date": "2026-10-03", "accepted": 2, "attempted": 2}]}
+        {"date": "2026-10-03", "accepted": 2, "attempted": 2,
+         "by_rig": {"piggyback": {"accepted": 2, "attempted": 2}}}]}
 
 
 def test_api_projects2_nights_use_goal_matching(tmp_path, monkeypatch):
