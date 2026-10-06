@@ -264,6 +264,11 @@ def harvest_night(config, date: str, max_hfr_px: float | None = None) -> int:
     for s in _load_subs(config, date):
         if not s.get("passed_qa"):
             continue
+        # The RC16 seed table only: the Piggy-600 has its own focuser range
+        # and harvest (piggyback_focus); its ~11000-step positions must never
+        # land in the RC16 table.
+        if (s.get("rig") or "rc16") != "rc16":
+            continue
         hfr = s.get("hfr")
         if hfr is None:
             continue

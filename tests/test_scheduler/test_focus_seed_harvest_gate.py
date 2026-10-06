@@ -78,8 +78,10 @@ def test_rc16_soft_night_is_rejected(tmp_path, monkeypatch):
                             "2026-10-05") == 0
 
 
-def test_piggyback_gate_unchanged(tmp_path, monkeypatch):
-    """Piggy subs keep the old 4.0 px gate (5.16" at 1.29"/px)."""
+def test_piggyback_subs_never_enter_rc16_table(tmp_path, monkeypatch):
+    """Piggy-600 subs (own focuser range, own harvest in piggyback_focus) are
+    skipped: their ~11000-step positions must not land in the RC16 table.
+    The non-RC16 gate itself stays the old 4.0 px at the rig's scale."""
     cfg = _cfg(tmp_path)
     a = _fits(tmp_path / "a.fits", 11000, 12.0)
     _subs(monkeypatch, [
@@ -87,8 +89,10 @@ def test_piggyback_gate_unchanged(tmp_path, monkeypatch):
          "abs_path": a},
         {"rig": "piggyback", "filter": "OSC", "passed_qa": True, "hfr": 4.1,
          "abs_path": a}])
-    assert fs.harvest_night(cfg, "2026-10-05") == 1
-    assert [r["filter"] for r in _harvested(tmp_path)] == ["?"]
+    assert fs.harvest_night(cfg, "2026-10-05") == 0
+    assert _harvested(tmp_path) == []
+    lim, scale = fs.harvest_limit_arcsec(cfg, "piggyback")
+    assert abs(lim - 4.0 * scale) < 1e-9
 
 
 def test_explicit_pixel_gate_still_works(tmp_path, monkeypatch):
