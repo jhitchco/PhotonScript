@@ -1722,15 +1722,25 @@ def list_runs(config) -> list[dict]:
     return out
 
 
-def nights_by_target(config) -> dict:
-    """{target_lower: [{date, accepted, attempted}]} across all graded nights."""
+def nights_by_target(config, projects=None) -> dict:
+    """{target_lower: [{date, accepted, attempted}]} across all graded nights.
+
+    PS-129: names resolve against the goal projects (names and catalog ids)
+    the way sync_goal_progress credits them, so a night logged as "M 31"
+    lists under "Andromeda Galaxy", the goal it credited. projects: the goal
+    projects (/api/projects2 passes the store's); None = plan names only."""
+    projects = list(projects or ())
     out: dict[str, dict[str, dict]] = {}
     for f in sorted(runs_dir(config).glob("*_subs.jsonl")):
         date = f.name.split("_")[0]
         plan_names = _plan_target_names(config, date)
+        # projects first: a project's spelling wins over a plan's
+        known = known_target_index([*projects, *plan_names])
         for s_ in _load_subs(config, date):
             t = _resolve_target(s_.get("target"), s_.get("file", ""),
-                                plan_names).strip().lower()
+                                plan_names, known)
+            # a filename / only-plan fallback name resolves the same way
+            t = (canonical_target(t, known) or t).strip().lower()
             if not t or t == "?":
                 continue
             e = out.setdefault(t, {}).setdefault(
