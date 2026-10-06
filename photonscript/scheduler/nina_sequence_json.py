@@ -49,6 +49,11 @@ TARGET_FOCUS_CAL_SUFFIX = " focus calibration AFs"
 # container is "<that name> unguided ladder".
 TRACKING_TEST_PREFIX = "Tracking test "
 TARGET_TRACKING_LADDER_SUFFIX = " unguided ladder"
+# PS-84 standalone download: after the ladder the night loop parks and holds.
+# PS-127: a sideloaded test (scheduler/sideload.py) swaps this sentence for
+# its own, since tonight's targets follow it there.
+TRACKING_TEST_PARK_NOTE = ("When the ladder is done the scope parks and holds "
+                           "until dawn: stop the sequence to image.")
 FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
 # PS-61: with the cooler gate on, each light block is its own container
 # "<target> filter block (cooler-gated)" whose first item is the gate, so a
@@ -1313,8 +1318,7 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
                     "Guiding is stopped and never restarted; dithers are off. "
                     f"Ladder: {ladder_desc}. Subs are named '{target.name}'. "
                     "Afterwards open /api/tracking-test/report on the "
-                    "dashboard. When the ladder is done the scope parks and "
-                    "holds until dawn: stop the sequence to image."),
+                    "dashboard. " + TRACKING_TEST_PARK_NOTE),
         _pushover("Imaging", f"{target.name}: unguided tracking test, "
                   f"slewing (RA {target.ra_hours:.2f}h Dec "
                   f"{target.dec_degrees:+.1f} deg) - {ladder_desc} "

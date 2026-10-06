@@ -475,10 +475,18 @@ def lint(seq: dict, guided: bool | None = None,
             if not _find_type(tgt, "StopGuiding"):
                 r.warn("tracking-test", f"[{name}] tracking test does not "
                        "stop guiding first")
+            # PS-127: a sideloaded test is followed by tonight's targets
+            # (and runs once, before the night loop); only the standalone
+            # download parks and holds after it.
+            followed = any(" unguided ladder" not in json.dumps(d)
+                           for _p, d in targets)
+            after = ("Tonight's targets follow it; it runs once per night."
+                     if followed else
+                     "After the ladder the scope parks and holds until "
+                     "dawn; stop the sequence to image.")
             r.warn("tracking-test", f"[{name}] unguided tracking test "
                    "(TPoint + ProTrack check): guiding stopped, no dithers. "
-                   "After the ladder the scope parks and holds until dawn; "
-                   "stop the sequence to image.")
+                   + after)
         if is_focus_cal:
             r.warn("focus-calibration", f"[{name}] focus-offset calibration "
                    "target (AF runs only, no lights); it repeats while safe "

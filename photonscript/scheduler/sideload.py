@@ -5,10 +5,12 @@ targets minus Cat's Eye) and the Piggy-600 companion were spliced on the
 desktop and loaded by hand over ninaAPI. This module is that procedure as
 pure functions, plus two tiny ninaAPI calls:
 
-  splice_tracking_test()  tracking-test DeepSkyObjectContainer first, then
-                          tonight's targets minus `exclude`, in tonight's own
-                          start / night loop / shutdown; ids + Parent links
-                          rebuilt with link_parents() (PS-77)
+  splice_tracking_test()  tracking-test DeepSkyObjectContainer in the
+                          Targets area BEFORE the night loop (PS-127: runs
+                          once per night), then tonight's targets minus
+                          `exclude` in tonight's own start / night loop /
+                          shutdown; ids + Parent links rebuilt with
+                          link_parents() (PS-77)
   lint_companion()        the Piggy companion's own lint (the RC16 night lint
                           wants a mount, targets and a meridian flip, which a
                           camera-only companion never has)
@@ -39,7 +41,17 @@ RECIPES = {
 }
 
 TARGETS_CONTAINER = "TARGETS_CONTAINER"
+TARGET_AREA = "TargetAreaContainer"
+NIGHT_LOOP = "LOOP_ALL_NIGHT"
 DSO = "DeepSkyObjectContainer"
+
+# PS-127: replaces the standalone download's park-and-hold sentence in the
+# spliced test's annotation (tonight's targets follow it here).
+SPLICED_TT_NOTE = ("Sideloaded (PS-127): this test runs once, in the Targets "
+                   "area before the night loop, then tonight's targets "
+                   "follow. An unsafe spell during the ladder ends the test "
+                   "for tonight; after an unsafe pause the night loop never "
+                   "runs it again.")
 
 # Instructions a camera-only companion must never carry: the Piggy-600 rides
 # the RC16 mount, which NINA #1 owns.
@@ -116,14 +128,20 @@ def _targets_container(seq: dict) -> dict:
     return tc
 
 
+def _is_dso(v) -> bool:
+    return isinstance(v, dict) and DSO in (v.get("$type") or "")
+
+
 def target_names(seq: dict) -> list[str]:
-    """DeepSkyObjectContainer names in TARGETS_CONTAINER, in order."""
+    """DeepSkyObjectContainer names in run order: any directly in the
+    Targets area (a spliced tracking test, PS-127), then TARGETS_CONTAINER's."""
     try:
         tc = _targets_container(seq)
     except SpliceError:
         return []
-    return [str(v.get("Name")) for v in _items(tc)
-            if isinstance(v, dict) and DSO in (v.get("$type") or "")]
+    area = find_container(seq, "Targets", TARGET_AREA)
+    first = _items(area) if area else []
+    return [str(v.get("Name")) for v in first + _items(tc) if _is_dso(v)]
 
 
 def container_tree(seq: dict, max_depth: int = 4) -> list[dict]:
@@ -154,34 +172,62 @@ def _norm(s) -> str:
 
 def splice_tracking_test(night_seq: dict, tt_seq: dict, exclude=(),
                          name: str | None = None) -> dict:
-    """Tonight's sequence with its TARGETS_CONTAINER replaced by [the
-    tracking test's DeepSkyObjectContainer] + [tonight's targets not in
-    `exclude`, in tonight's order]. Everything else (start area with the dusk
-    wait, night loop, unsafe darks, shutdown, dawn flats) is tonight's. The
-    tracking test's own park-and-hold (after its TARGETS_CONTAINER) is not
-    taken. Names in `exclude` match case- and whitespace-insensitively.
-    Returns a new tree with fresh $id / Parent links; inputs are untouched.
-    Raises SpliceError on an unexpected shape."""
+    """Tonight's sequence with the tracking test's DeepSkyObjectContainer as
+    the first item of the Targets area, BEFORE LOOP_ALL_NIGHT, and tonight's
+    targets not in `exclude` left in TARGETS_CONTAINER in tonight's order.
+    Everything else (start area with the dusk wait, night loop, unsafe darks,
+    shutdown, dawn flats) is tonight's. The tracking test's own park-and-hold
+    (after its TARGETS_CONTAINER) is not taken, and its annotation says so.
+
+    PS-127: inside the night loop the test's LoopCondition(1) was reset each
+    time LOOP_ALL_NIGHT looped after an unsafe pause, so the ladder ran again
+    (about 1 h). The Targets area runs once and is never reset: the test runs
+    at most once per night. Unsafe during the ladder: its Safety conditions
+    end the test (rest of the ladder skipped), the night loop then parks in
+    its UNSAFE branch and resumes tonight's targets. Unsafe when the Targets
+    area starts: the test is skipped.
+
+    Names in `exclude` match case- and whitespace-insensitively. Returns a
+    new tree with fresh $id / Parent links; inputs are untouched. Raises
+    SpliceError on an unexpected shape."""
     from photonscript.scheduler.nina_sequence_json import link_parents
     bad = set(non_parent_refs(night_seq)) | set(non_parent_refs(tt_seq))
     if bad:
         raise SpliceError(f"$ref outside Parent ({sorted(map(str, bad))}): "
                           "the splice would leave it dangling")
     night, tt = strip_ids(night_seq), strip_ids(tt_seq)
-    tests = [v for v in _items(_targets_container(tt))
-             if isinstance(v, dict) and DSO in (v.get("$type") or "")]
+    tests = [v for v in _items(_targets_container(tt)) if _is_dso(v)]
     if len(tests) != 1:
         raise SpliceError(f"tracking-test sequence has {len(tests)} targets, "
                           "want exactly 1")
     drop = {_norm(x) for x in (exclude or ()) if str(x or "").strip()}
     tc = _targets_container(night)
     kept = [v for v in _items(tc)
-            if not (isinstance(v, dict) and DSO in (v.get("$type") or "")
-                    and _norm(v.get("Name")) in drop)]
-    tc["Items"]["$values"] = [tests[0]] + kept
+            if not (_is_dso(v) and _norm(v.get("Name")) in drop)]
+    tc["Items"]["$values"] = kept
+    area = find_container(night, "Targets", TARGET_AREA)
+    vals = (area.get("Items") or {}).get("$values") if area else None
+    loop_at = next((i for i, v in enumerate(vals or [])
+                    if isinstance(v, dict) and v.get("Name") == NIGHT_LOOP),
+                   None)
+    if loop_at is None:
+        raise SpliceError(f"no {NIGHT_LOOP} in the Targets area of "
+                          f"{night_seq.get('Name')!r}")
+    vals.insert(loop_at, _spliced_note(tests[0]))
     if name:
         night["Name"] = name
     return link_parents(night)
+
+
+def _spliced_note(test: dict) -> dict:
+    """The test container with the standalone park-and-hold sentence in its
+    annotation replaced by SPLICED_TT_NOTE (the copy is already ours)."""
+    from photonscript.scheduler.nina_sequence_json import TRACKING_TEST_PARK_NOTE
+    for v in _items(test):
+        text = v.get("Text") if isinstance(v, dict) else None
+        if isinstance(text, str) and TRACKING_TEST_PARK_NOTE in text:
+            v["Text"] = text.replace(TRACKING_TEST_PARK_NOTE, SPLICED_TT_NOTE)
+    return test
 
 
 def splice_name(date: str, field: str, kept: list[str]) -> str:
