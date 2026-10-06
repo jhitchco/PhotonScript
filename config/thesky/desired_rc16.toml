@@ -56,6 +56,17 @@ confidence = "Med"
 why = "Property names in the scripting API change between builds; the version tells which reference applies."
 fix = "None (information)."
 
+[[check]]
+id = "one_thesky"
+group = "TheSky link"
+label = "One TheSky running"
+sources = ["processes"]
+computed = "one_thesky"
+severity = "fail"
+confidence = "Med"
+why = "Two Bisque sky apps at once (2026-10-05: an older TheSkyX next to TheSky64 10.5) split the setup: PhotonScript reads the one on TCP 3040 while NINA's mount driver may connect through the other, bypassing the TheSky64 TPoint model and ProTrack (first slew 1 deg 14' off, mount read not connected). Read from this PC's process list, the TCP 3040 listener and the Bisque ASCOM driver's registry keys; nothing is ever closed or started."
+fix = "In NINA disconnect the mount; open the mount driver's setup (Driver for telescope connected through TheSky) and point it at TheSky64; close TheSkyX; reconnect the mount in NINA. If TheSkyX keeps relaunching, the driver is configured for it (connecting starts it)."
+
 # ---------------------------------------------------------------- mount
 
 [[check]]

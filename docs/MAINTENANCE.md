@@ -324,6 +324,19 @@ site's TheSky 10.5 build).
   not tracking: that alone reads "OFF (greyed)" (warn by day, fail while a
   night is armed), shows as "ProTrack OFF" on the Guiding tab when it fails,
   and an UNGUIDED arm pushes one warning unless ProTrack reads on.
+- One TheSky running (PS-138, 2026-10-05: an older TheSkyX kept running next
+  to TheSky64 10.5): `scheduler/thesky_procs.py` lists the Bisque sky apps
+  on this PC (psutil, else tasklist; file version when readable), which one
+  listens on TCP 3040 (psutil, else netstat) and which TheSky the Bisque
+  ASCOM driver targets (its ASCOM profile keys under HKCU / HKLM, the
+  Software Bisque keys, and the COM server registered for TheSky's scripting
+  ProgIDs; read only). Two running: FAIL, first on the Guiding tab, with the
+  fix: in NINA disconnect the mount, open the driver setup and point it at
+  TheSky64, close TheSkyX, reconnect. If TheSkyX keeps relaunching, the
+  driver (or the TheSky COM registration) is configured for it. "driver
+  targets unknown (keys: ...)" means the setting's name is not known yet:
+  the note lists the keys that exist (check the audit JSON `thesky_procs`).
+  Only checked when `thesky_tcp_host` is this PC.
 - First slew vs model index terms (PS-138): when the newest night's
   first-slew median is over `pointing_first_slew_fail_arcmin` and matches
   hypot(IH, ID) within x2 (and in direction, |north| / |east| vs |ID| / |IH|

@@ -19,6 +19,10 @@ telescope_agent/thesky_client.py and a test greps them).
         pointing-log      NINA Center log first-slew error (nina_center_log),
                           the last filter NINA moved to, PS-67's mount vs
                           solve when its record is on disk
+        processes         PS-138: the Bisque sky apps running on this PC, the
+                          one listening on TheSky's TCP port and the TheSky
+                          NINA's mount driver targets (thesky_procs; only
+                          when TheSky runs on this PC)
         manual            <data_dir>/thesky/manual.json (TPoint numbers,
                           ProTrack, run binning, catalogs), unknown when
                           older than thesky_manual_max_age_days. PS-138: for
@@ -52,7 +56,7 @@ from photonscript.shared import phd2_store as store
 
 logger = logging.getLogger(__name__)
 
-SOURCES = ("thesky-script", "astap", "pointing-log", "manual")
+SOURCES = ("thesky-script", "astap", "pointing-log", "manual", "processes")
 FORMS = ("equals", "min", "max", "near", "computed", "report")
 CONFIDENCE = ("High", "Med", "Low")
 DEFAULT_FILE = (Path(__file__).resolve().parents[2] / "config" / "thesky"
@@ -93,6 +97,12 @@ PROTRACK_FIX = ("TheSky: with the mount connected and tracking in TheSky, Telesc
                 "Bisque TCS > ProTrack: tick Activate ProTrack and Enable tracking "
                 "adjustments (both are greyed while TheSky's mount is not connected / "
                 "not tracking).")
+# PS-138: two Bisque sky apps at once (2026-10-05: an older TheSkyX next to
+# TheSky64 10.5); shown by the audit row and the Guiding tab
+TWO_THESKY_FIX = ("In NINA disconnect the mount; open the mount driver's setup (Driver for "
+                  "telescope connected through TheSky) and point it at TheSky64; close "
+                  "TheSkyX; reconnect the mount in NINA. If TheSkyX keeps relaunching, the "
+                  "driver is configured for it (connecting starts it).")
 
 
 # --------------------------------------------------------------------------
@@ -886,6 +896,50 @@ def _c_protrack(row, val, observed, config, ctx):
     return UNKNOWN, want, "verify by eye: TheSky Bisque TCS > ProTrack (not readable by script)"
 
 
+def _local_thesky(config) -> bool:
+    host = str(getattr(config, "thesky_tcp_host", "localhost") or "localhost").lower()
+    return host in ("localhost", "127.0.0.1", "::1")
+
+
+def _c_one_thesky(row, val, observed, config, ctx):
+    """PS-138: exactly one Bisque sky app (TheSky64 or TheSkyX) running. Two
+    at once (2026-10-05) split the setup: the audit reads the one on TCP
+    3040 while NINA's mount driver may connect through the other, bypassing
+    its TPoint model and ProTrack. The note says which one listens on the
+    TCP port and which one the driver targets (when the registry tells)."""
+    want = "one TheSky (TheSky64), the one the mount driver targets"
+    sc = observed.get("thesky_procs") or {}
+    if not _local_thesky(config):
+        ctx["current"] = "not checked"
+        return INFO, want, (f"TheSky runs on {getattr(config, 'thesky_tcp_host', '?')}: "
+                            "the process list is read on this PC only")
+    if not sc.get("ok"):
+        ctx["current"] = "not readable"
+        return UNKNOWN, want, ("verify by eye: the taskbar / Task Manager shows one TheSky "
+                               "(process list not readable"
+                               + (f": {sc['note']}" if sc.get("note") else "") + ")")
+    apps = sc.get("apps") or []
+    drv = sc.get("driver") or {}
+    target = drv.get("target")
+    port = sc.get("port") or 3040
+    bits = [f"TCP {port}: {sc.get('tcp_owner') or 'nobody listening'}",
+            "driver targets " + (f"{target} ({drv.get('via')})" if target else
+                                 f"unknown ({drv.get('note') or 'registry not read'})")]
+    ctx["current"] = f"{len(apps)}: {sc.get('text')}" if apps else "none running"
+    if not apps:
+        return INFO, want, "no TheSky running; " + bits[1]
+    if len(apps) > 1:
+        return row["severity"], want, (
+            f"{len(apps)} Bisque sky apps running; " + "; ".join(bits)
+            + ". The audit reads the one on the TCP port; NINA's mount may go through "
+              "the other (its TPoint model and ProTrack are then bypassed)")
+    kind = apps[0].get("kind")
+    if target and kind and target != kind and kind != "TheSky":
+        return WARN, want, (f"{kind} runs but the driver targets {target}: connecting the "
+                            f"mount in NINA starts {target} next to it; " + "; ".join(bits))
+    return PASS, want, "; ".join(bits)
+
+
 def index_terms(observed) -> tuple[float | None, float | None, str]:
     """(IH, ID) in arcsec: TheSky's live read first, then the manual record."""
     ts = observed.get("thesky-script") or {}
@@ -998,6 +1052,7 @@ COMPUTED = {
     "mount_vs_solve": _c_mount_vs_solve,
     "protrack": _c_protrack,
     "index_shift": _c_index_shift,
+    "one_thesky": _c_one_thesky,
 }
 
 
@@ -1346,6 +1401,20 @@ def collect(config, *, client=None, armer_state: str | None = None) -> dict:
         obs["astap"], obs["astap_history"], obs["imagelink"], src["astap"] = astap_observed(config)
     except Exception as e:  # noqa: BLE001
         src["astap"] = {"ok": False, "note": str(e)}
+    try:
+        from photonscript.scheduler import thesky_procs
+        sc = thesky_procs.scan(config) if _local_thesky(config) else {"ok": False}
+        obs["thesky_procs"] = sc
+        if sc.get("ok"):
+            obs["processes"] = {"one_thesky": sc.get("count")}
+            src["processes"] = {"ok": True, "note": f"{sc.get('count')} TheSky running: "
+                                                    f"{sc.get('text')}"}
+        else:
+            src["processes"] = {"ok": False, "note": sc.get("note") or (
+                "process list not readable" if _local_thesky(config) else
+                "TheSky is not on this PC")}
+    except Exception as e:  # noqa: BLE001
+        src["processes"] = {"ok": False, "note": f"{type(e).__name__}: {e}"}
     rec = None
     try:
         rec = load_manual(config)
@@ -1412,6 +1481,7 @@ def run_audit(config, reason: str = "manual", *, client=None,
                                                  "side_src", "runs", "logs_dir_found")},
              "imagelink": observed.get("imagelink") or None,
              "manual": observed.get("manual_record") or None,
+             "thesky_procs": observed.get("thesky_procs") or None,
              "fail_ids": [r["id"] for r in res["rows"] if r["status"] == FAIL]}
     if persist:
         save(config, audit)

@@ -626,7 +626,11 @@ or "ERROR: ...". Masters in `out\master\`.
   TheSky first, the record is only an info fallback "manual (date)", never a
   pass). PS-138 also adds "First slew vs model index terms" (TPoint
   Recalibrate instead of a rebuild when the first slews miss by the model's
-  IH / ID), "ProTrack OFF" on the Guiding tab and an unguided arm warning. Runs at arm (no push) and on Refresh; Guiding tab section
+  IH / ID), "ProTrack OFF" on the Guiding tab and an unguided arm warning,
+  and "One TheSky running" (`scheduler/thesky_procs.py`: the Bisque sky apps
+  in this PC's process list, the TCP 3040 listener and the TheSky the Bisque
+  ASCOM driver targets per the registry; read only, never closes or starts
+  anything; fail and first on the Guiding tab when two run). Runs at arm (no push) and on Refresh; Guiding tab section
   "TheSky / TPoint", `GET /api/thesky/audit`, `/api/thesky/imagelink-check`,
   `/api/thesky/pointing`, `POST /api/thesky/manual`, CLI `photonscript
   thesky-audit`, one runs-page line. The rebuild flag says REBUILD when the

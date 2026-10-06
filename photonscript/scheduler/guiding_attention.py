@@ -22,7 +22,9 @@ audit row id when the Guiding tab can Apply it live.
 
 Order: fail before warn; within each, PRIORITY (lower first):
    -1  first                TheSky's site longitude (a wrong one invalidates
-                            every slew and the TPoint model)
+                            every slew and the TPoint model), two TheSky
+                            apps running (PS-138: NINA's mount may bypass
+                            the TheSky64 model)
     0  ProTrack OFF         PS-138: TheSky's ProTrack read off (unguided
                             nights trail without it), with the fix
     0  guiding tonight      PHD2 settings PHD2 guides with (camera, guiding,
@@ -79,7 +81,9 @@ SECTION_ORDER = {a: i for i, (a, _n) in enumerate(SECTIONS)}
 
 PRIORITY_LABEL = {-1: "first: invalidates pointing and TPoint", 0: "guiding tonight",
                   1: "set up tonight", 2: "when convenient"}
-FIRST_IDS = ("site_longitude",)      # TheSky rows that go above everything
+# TheSky rows that go above everything (PS-138: two TheSky apps at once,
+# NINA's mount may bypass the TheSky64 model)
+FIRST_IDS = ("site_longitude", "one_thesky")
 TONIGHT_IDS = ("protrack_on",)       # PS-138: TheSky rows that matter tonight
 PHD2_TONIGHT_GROUPS = ("Camera", "Guiding", "Algorithms", "Calibration", "Darks", "Mount")
 THESKY_LATER_GROUPS = ("Image truth (ASTAP)", "Catalogs", "TPoint and ProTrack", "Pointing")
@@ -89,8 +93,9 @@ SOURCE_NAMES = {
     "ga": "Guiding Assistant", "nina": "NINA", "ascom": "mount driver",
     "thesky": "TheSky", "file": "dark library files", "calibration": "PS-93 record",
     "thesky-script": "TheSky script", "astap": "ASTAP check",
-    "pointing-log": "NINA Center log", "manual": "manual record"}
-LIVE_SOURCES = ("api", "profile", "nina", "ascom", "thesky", "thesky-script")
+    "pointing-log": "NINA Center log", "manual": "manual record",
+    "processes": "process list"}
+LIVE_SOURCES = ("api", "profile", "nina", "ascom", "thesky", "thesky-script", "processes")
 
 # where a profile-only PHD2 row is changed by hand when profile writes are off
 PHD2_WHERE = {"bit_depth": "Equipment > camera properties (16-bit)"}
@@ -538,6 +543,11 @@ def build(config, now: datetime | None = None, *, phd2: dict | None = None,
                     # PS-138: say it plainly, with the fix
                     from photonscript.scheduler.thesky_audit import PROTRACK_FIX
                     it.update(setting="ProTrack OFF", fix=PROTRACK_FIX)
+                if r.get("id") == "one_thesky" and r.get("status") == FAIL:
+                    # PS-138: two Bisque sky apps; the detail names the TCP
+                    # owner and the driver's target
+                    from photonscript.scheduler.thesky_audit import TWO_THESKY_FIX
+                    it.update(setting="Two TheSky apps running", fix=TWO_THESKY_FIX)
                 items.append(it)
         sections["tpointSec"] = _counts(thesky.get("rows"))
         srcinfo["thesky_audit"] = {"t_utc": thesky.get("t_utc"),
