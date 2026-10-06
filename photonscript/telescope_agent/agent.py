@@ -271,6 +271,7 @@ class TelescopeAgent:
     SAFETY_SLOW_RETRY_S = 3600 # re-ESCALATE (Pushover) every 60 min while down
                                # (config safety_disconnect_repeat_min overrides)
     SAFETY_ABORT_AFTER_S = 300 # persistent-disconnect abort threshold (opt-in)
+    SAFETY_QUIET_RECHECK_S = 300  # PS-151: re-check an unwatched rig every 5 min
 
     async def _safety_loop(self):
         """Run the safety-monitor watchdog on its OWN cadence, isolated from the
@@ -350,6 +351,56 @@ class TelescopeAgent:
         alt = sun_altitude_deg(lat, lon, datetime.now(timezone.utc))
         return alt <= float(getattr(self.config, "safety_watchdog_sun_alt_deg", -3.0))
 
+    def _rig_nina_label(self) -> str:
+        """'NINA #1 (RC16)' / 'NINA #2 (Piggy-600)' for pushes."""
+        from photonscript.shared.rigs import PIGGYBACK, rig_label
+        rig = getattr(self, "rig", "rc16")
+        n = 2 if rig == PIGGYBACK else 1
+        return f"NINA #{n} ({rig_label(self.config, rig)})"
+
+    async def _safety_unwatched_reason(self, nina_down: bool) -> str | None:
+        """PS-151: why this rig's DISCONNECTED push should be a once-a-night
+        note instead of the hourly SEVERE reminder, or None to keep the
+        reminder.
+
+        2026-10-02/03 the nanny pushed "Safety monitor DISCONNECTED" every
+        hour for NINA #2 while NINA #2 was not running at all. The hourly
+        reminder is kept whenever the rig is expected to be imaging:
+          - tonight has a sideload (PS-123) for this rig,
+          - RC16 only: the armer has a night in progress (armed, running,
+            paused or watching), or
+          - this rig's NINA answers and runs a sequence (a hand-started night
+            or the armer's piggyback companion), or its sequence state cannot
+            be read (fail safe).
+        Otherwise (NINA unreachable, or up and idle with nothing planned for
+        this rig) nobody is relying on that monitor tonight."""
+        from photonscript.shared.rigs import RC16
+        rig = getattr(self, "rig", "rc16")
+        try:
+            from photonscript.scheduler.auto_armer import sideload_tonight
+            if sideload_tonight(self.config, rig=rig):
+                return None
+        except Exception:  # noqa: BLE001 - unreadable events: fail safe
+            return None
+        if rig == RC16:
+            st = self._armer_state()
+            if st in self._ARMER_ACTIVE_STATES or st == "WATCHING":
+                return None
+        label = self._rig_nina_label()
+        if nina_down:
+            return f"{label} is not running"
+        # The scheduler's reader (/sequence/state, else /sequence/json), the
+        # one the auto-arm guard and the PS-136 watch already use live.
+        try:
+            from photonscript.scheduler.sideload import (nina_running,
+                                                         read_sequence_state)
+            tree, _err = await read_sequence_state(self.config.nina_base_url)
+        except Exception:  # noqa: BLE001 - can't tell: keep the reminder
+            return None
+        if tree is None or nina_running(tree):
+            return None  # unreadable (fail safe) or imaging
+        return f"{label} is not running a sequence and nothing is planned for it"
+
     def _safety_reset(self) -> None:
         self._safety_bad_since = None
         self._safety_bad_reads = 0
@@ -405,9 +456,11 @@ class TelescopeAgent:
             logger.info("Safety-monitor watchdog active [%s]",
                         getattr(self, "rig", "rc16"))
             self._safety_idle = False
+        nina_down = False
         try:
             info = await self.nina.get_safety_info()
         except Exception as _e:  # noqa: BLE001 - NINA itself unreachable
+            nina_down = True
             # NINA down = we are BLIND to safety — at least as bad as a
             # disconnected monitor. Don't return mute: log (once, on transition)
             # and fall into the same escalation path so sustained blindness
@@ -456,6 +509,22 @@ class TelescopeAgent:
                                       self.SAFETY_SLOW_RETRY_S / 60))
         if now - self._safety_last_escalate >= repeat_s:
             self._safety_last_escalate = now
+            why = await self._safety_unwatched_reason(nina_down)
+        else:
+            why = ""
+        if why:
+            # PS-151: rig not expected to image tonight. One informational
+            # push per night, then re-check every SAFETY_QUIET_RECHECK_S so
+            # the hourly reminder starts promptly if the rig joins the night.
+            self._safety_last_escalate = (now - repeat_s
+                                          + self.SAFETY_QUIET_RECHECK_S)
+            from photonscript.shared.phd2_store import night_of
+            await self._escalate(
+                f"safety-unwatched:{night_of(self.config)}",
+                f"{why}; its safety monitor is not watched tonight "
+                f"(disconnected {int(down_s // 60)} min). No hourly reminders "
+                "unless it starts imaging.")
+        elif why is None:
             self._alerted.discard("safety-disconnected")  # allow re-fire
             await self._escalate(
                 "safety-disconnected",

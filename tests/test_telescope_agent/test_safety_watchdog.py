@@ -69,6 +69,13 @@ def _agent(monkeypatch, nina):
     # the idle gate has its own tests below.
     monkeypatch.setattr(agent_mod.TelescopeAgent, "_safety_watch_needed",
                         lambda self: True)
+    # PS-151 reads NINA's sequence state before a DISCONNECTED push; keep
+    # these tests off the network (unreadable = keep the reminder).
+    from photonscript.scheduler import sideload as sd
+
+    async def no_seq(base_url, client=None):
+        return None, "test: not read"
+    monkeypatch.setattr(sd, "read_sequence_state", no_seq)
     return a, sent
 
 
