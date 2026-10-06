@@ -26,6 +26,11 @@
         .wp-warn { color: #fbbf24; font-weight: normal; font-size: .78rem; }
         .wp-chip { border: 1px solid #a78bfa; color: #c4b5fd; border-radius: 4px;
                    padding: 0 .35rem; font-size: .74rem; }
+        /* PS-143 off-target chip: ok / watch (over the limit, debouncing) / off */
+        .wp-ot { border-radius: 4px; padding: 0 .35rem; font-size: .74rem; border: 1px solid; }
+        .wp-ot-ok { color: #4ade80; border-color: #4ade80; }
+        .wp-ot-watch { color: #fbbf24; border-color: #fbbf24; }
+        .wp-ot-off { color: #fff; background: #dc2626; border-color: #dc2626; }
         .wp-bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.08);
                   overflow: hidden; margin-top: .2rem; }
         .wp-bar > div { height: 100%; background: #7dd3fc; }
@@ -72,6 +77,8 @@
                         title="Stop NINA #1 after the current sub; tracking, cooler and PHD2 stay on, nothing parks. Resume re-dispatches the remainder.">Pause</button>
                 <button class="btn btn-primary" id="resumeBtn" hidden
                         title="Re-dispatch the remainder of tonight (or cancel a pause that has not stopped NINA yet).">Resume</button>
+                <button class="btn btn-secondary" id="restartBtn" hidden
+                        title="PS-143: re-plan the rest of tonight from the current goals and re-dispatch it (after the current sub). Nothing warms, parks or turns a cooler off.">Restart tonight from now</button>
             </h2>
             <div id="pauseConfirm" hidden style="margin-bottom:.7rem;padding:.5rem .7rem;border-radius:6px;
                  border:1px solid rgba(251,191,36,.5);background:rgba(251,191,36,.07);font-size:.85rem;">

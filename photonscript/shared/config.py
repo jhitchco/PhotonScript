@@ -90,6 +90,18 @@ class PhotonScriptConfig(BaseSettings):
     # watching: "verify" = read-only check (mount parked, coolers off) + alert,
     # no commands; "shutdown" = the armed night's dawn_shutdown (stop, guider
     # stop, warm + dew off, park) then the same verify
+    # PS-143: off-target alert on the live "Where is it" panel (observe only:
+    # nothing is sent to NINA). Separation of the mount (or a fresh RC16
+    # plate solve) from the planned center while imaging; one Pushover per
+    # target per night when over off_target_arcmin for more than
+    # off_target_subs consecutive subs or for off_target_minutes.
+    off_target_mode: str = "alert"  # alert | panel (show, never push) | off
+    off_target_arcmin: float = 10.0
+    off_target_subs: int = 2         # alert after MORE than this many subs
+    off_target_minutes: float = 5.0  # ... or this long, whichever first
+    off_target_solve_max_age_min: float = 15.0  # a solve older is not used
+    off_target_mount_epoch: str = "auto"  # auto (NINA's report, else JNow) |
+    # jnow | j2000: the mount position's epoch (the plan is J2000)
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
