@@ -146,6 +146,9 @@
             <!-- Lifecycle chips: dawn-shutdown result (with cooler verify)
                  and the next noon auto re-arm countdown. Filled by refreshArm(). -->
             <div id="armLifecycle" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
+            <!-- PS-150: NINA watchdog chip (not running / API down / up but
+                 silent), one line per rig, from /api/nina/watch. -->
+            <div id="ninaWatchChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
             <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
                  padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
                  background:rgba(125,211,252,.06);white-space:normal;"></div>
@@ -811,8 +814,45 @@
         if (window.autoArmSideloadOk && !(await window.autoArmSideloadOk())) return;
         return postArm({armed: true, guiding: 'guided'});
     });
-    loadOutlook(); loadTimeline(); refreshArm();
+    // PS-150: NINA watchdog chip. Red for not running / up but silent,
+    // amber for API down; a faint OK line while the watchdog is active.
+    async function refreshNinaWatch() {
+        const el = document.getElementById('ninaWatchChip');
+        if (!el) return;
+        let d;
+        try { d = await (await fetch('/api/nina/watch')).json(); } catch (e) { return; }
+        const label = {not_running: 'NOT RUNNING', silent: 'UP BUT SILENT',
+                       api_down: 'API DOWN', ok: 'OK'};
+        const rows = [];
+        let bad = false;
+        for (const [rig, r] of Object.entries(d.rigs || {})) {
+            if (!label[r.state]) continue;
+            const name = (d.names || {})[rig] || rig;
+            const isBad = r.state !== 'ok';
+            bad = bad || isBad;
+            const col = r.state === 'api_down' ? 'rgba(251,191,36,.7)'
+                : (isBad ? 'rgba(239,68,68,.7)' : 'rgba(74,222,128,.3)');
+            const rd = r.reads || {};
+            rows.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                'border:1px solid ' + col + ';background:rgba(148,163,184,.06);">' +
+                (isBad ? '&#9888; ' : '') + '<b>' + name + ': ' + label[r.state] + '</b>' +
+                (isBad ? ' (' + (r.why || '') + ')' : '') +
+                (r.since ? ' <span style="opacity:.6">since ' + String(r.since).slice(11, 16) +
+                    ' UTC</span>' : '') +
+                (isBad && rd.log_file ? ' <span style="opacity:.6">&middot; log ' + rd.log_file +
+                    '</span>' : '') +
+                (r.alerted ? ' &middot; pushed' : '') + '</div>');
+        }
+        el.hidden = rows.length === 0;
+        el.innerHTML = bad ? rows.join('') : (rows.length
+            ? '<div style="opacity:.6;">NINA watch: ' + Object.entries(d.rigs || {})
+                .filter(([k, r]) => r.state === 'ok')
+                .map(([k, r]) => ((d.names || {})[k] || k) + ' OK').join(', ') + '</div>'
+            : '');
+    }
+    loadOutlook(); loadTimeline(); refreshArm(); refreshNinaWatch();
     setInterval(refreshArm, 30000);
+    setInterval(refreshNinaWatch, 30000);
     </script>
 
     <script>

@@ -102,6 +102,14 @@ class PhotonScriptConfig(BaseSettings):
     off_target_solve_max_age_min: float = 15.0  # a solve older is not used
     off_target_mount_epoch: str = "auto"  # auto (NINA's report, else JNow) |
     # jnow | j2000: the mount position's epoch (the plan is J2000)
+    # PS-150: NINA watchdog (observe only, never starts or restarts NINA).
+    # Dusk to dawn, per rig that is expected (armer has a night, or its NINA
+    # runs): API answers / log grows / NINA process alive -> ok | api_down |
+    # silent (up but its log has not grown for nina_watch_silent_minutes) |
+    # not_running. One Pushover per rig and state per night + a recovery.
+    nina_watch_mode: str = "alert"  # alert | panel (chip + events, no push) | off
+    nina_watch_silent_minutes: float = 15.0
+    nina_watch_sun_alt_deg: float = -6.0  # watch while the sun is at/below this
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead

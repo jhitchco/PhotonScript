@@ -749,6 +749,15 @@ section 0b.
   and the shutdown now stops NINA #2 as well. `/api/arm` shows
   `shutdown_due_utc`. Note the "last sub 12:17:45Z" first blamed on the
   piggyback was an RC16 OIII sub.
+- 2026-10-04 (blind night, PS-150): both NINAs were closed by 19:46 local
+  (NINA #2 "requested by user" 19:31 after its safety driver threw "RPC
+  server is unavailable"; NINA #1 closed and restarted twice, last closed
+  19:45:52) and nothing started them until 06:10. The arm at 19:40 hit
+  "ConnectError" and the nanny only pushed "Safety monitor DISCONNECTED"
+  hourly. Not a hang, sleep or Windows update. Now the NINA watchdog
+  (scheduler/nina_watchdog.py, GET /api/nina/watch, dashboard chip) says per
+  rig NOT RUNNING / API DOWN / UP BUT SILENT, once per state per night, dusk
+  to dawn. It never starts NINA: start it by hand on the scope PC.
 - 2026-09-26 (safety watchdog was polling a 404): `NinaClient.get_safety_info`
   hit `/equipment/safetymonitor`, which ninaAPI v2 (2.2.15.2 on the scope)
   does not serve; the real endpoint is `/equipment/safetymonitor/info` (payload

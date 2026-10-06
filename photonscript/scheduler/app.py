@@ -577,6 +577,14 @@ async def _start_off_target_monitor():
 
 
 @app.on_event("startup")
+async def _start_nina_watchdog():
+    """PS-150: NINA not running / API down / up but silent, dusk to dawn.
+    Always started; observe only, idle unless nina_watch_mode != off."""
+    from photonscript.scheduler.nina_watchdog import run_watchdog
+    _spawn(run_watchdog(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_calibration_autofill():
     """PS-113: daytime calibration auto-fill. Always started; each tick is a
     no-op unless config.calibration_autofill (default off)."""
@@ -652,6 +660,9 @@ _CONFIG_FIELDS = [
     ("off_target_minutes", "PS_OFF_TARGET_MINUTES", "Off-target: ... or after this many minutes off target while imaging", "Nanny / Alerts", "float", False, False),
     ("off_target_solve_max_age_min", "PS_OFF_TARGET_SOLVE_MAX_AGE_MIN", "Off-target: use the latest RC16 plate solve when it is at most this old (min), else the mount position", "Nanny / Alerts", "float", False, False),
     ("off_target_mount_epoch", "PS_OFF_TARGET_MOUNT_EPOCH", "Off-target: mount position epoch: auto (NINA's report, else JNow) | jnow | j2000", "Nanny / Alerts", "str", False, False),
+    ("nina_watch_mode", "PS_NINA_WATCH_MODE", "NINA watchdog (PS-150): alert (chip + one Pushover per rig and state per night) | panel (chip only) | off; never starts or restarts NINA", "Nanny / Alerts", "str", False, False),
+    ("nina_watch_silent_minutes", "PS_NINA_WATCH_SILENT_MINUTES", "NINA watchdog: up but silent when its log has not grown for this many minutes (API down, or a non-wait instruction running)", "Nanny / Alerts", "float", False, False),
+    ("nina_watch_sun_alt_deg", "PS_NINA_WATCH_SUN_ALT_DEG", "NINA watchdog: watch while the sun is at or below this altitude (deg)", "Nanny / Alerts", "float", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),
@@ -3042,6 +3053,8 @@ from photonscript.scheduler.routers import sync as _sync_router  # noqa: E402
 app.include_router(_sync_router.router)   # PS-43
 from photonscript.scheduler.routers import safety as _safety_router  # noqa: E402
 app.include_router(_safety_router.router)   # PS-1
+from photonscript.scheduler.routers import nina_watch as _nina_watch_router  # noqa: E402
+app.include_router(_nina_watch_router.router)   # PS-150
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
