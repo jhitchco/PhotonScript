@@ -312,6 +312,10 @@ filter (staged -> calibrated -> cleaned -> registered).
 Log: `Staging\<Target>\out\pipeline.log`, flushed per step; ends "EXIT OK"
 or "ERROR: ...". Masters in `out\master\`.
 
+One command for a whole target from the Library (PS-22, see
+docs/OSC_INTEGRATION.md section 0):
+`photonscript integrate --target "Andromeda Galaxy" --rig piggyback`.
+
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block
   comment. Inside string globs is fine.
