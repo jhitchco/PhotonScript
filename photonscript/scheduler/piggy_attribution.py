@@ -458,19 +458,21 @@ def attribute_piggy_night(config, date: str, solve: bool = False,
     apply follows the mode unless given (off = nothing at all). Rewrites
     the subs file only when a record changed. Returns attribute_records'
     result plus `renamed` (subs whose target changed)."""
-    from photonscript.scheduler.runs import _load_subs, _rewrite_subs
+    from photonscript.scheduler.runs import edit_subs
     m = mode(config)
     if m == "off" and apply is None:
         return {"date": date, "mode": m, "renamed": 0}
     if apply is None:
         apply = m == "on"
-    subs = _load_subs(config, date)
-    res = attribute_records(config, date, subs, apply=apply, solve=solve,
-                            runner=runner, projects=projects)
+    # PS-140: solves (solve=True) run without the night lock; only the
+    # fields this pass changes are merged in under it on exit. Report mode
+    # writes the evidence (target_attr) too, as before.
+    with edit_subs(config, date, hold_lock=False) as subs:
+        res = attribute_records(config, date, subs, apply=apply,
+                                solve=solve, runner=runner,
+                                projects=projects)
     res["mode"] = m
     res["renamed"] = len(res["changed"]) if apply else 0
-    if res["attr_written"] or res["renamed"]:
-        _rewrite_subs(config, date, subs)
     if res["changed"]:
         logger.info("Piggy attribution %s (%s): %d of %d Piggy subs %s %s",
                     date, "applied" if apply else "report",
@@ -527,7 +529,7 @@ def reattribute(config, dates: list[str], apply: bool = False,
     Dry run unless apply: then the subs files are rewritten and the Library
     links moved. Goal progress is not synced here (the store belongs to the
     server): POST /api/projects2/recount afterwards."""
-    from photonscript.scheduler.runs import _load_subs, _rewrite_subs, runs_dir
+    from photonscript.scheduler.runs import edit_subs, runs_dir
     all_dates = sorted({f.name.split("_")[0]
                         for f in runs_dir(config).glob("*_subs.jsonl")})
     if dates:
@@ -535,13 +537,12 @@ def reattribute(config, dates: list[str], apply: bool = False,
         all_dates = [d for d in all_dates if d in want]
     nights, all_changed = [], []
     for d in all_dates:
-        subs = _load_subs(config, d)
-        r = attribute_records(config, d, subs, apply=apply, solve=solve,
-                              runner=runner, max_solves=max_solves)
+        # PS-140: solves run unlocked, changed fields merge in on exit
+        with edit_subs(config, d, hold_lock=False, write=apply) as subs:
+            r = attribute_records(config, d, subs, apply=apply, solve=solve,
+                                  runner=runner, max_solves=max_solves)
         if not r["piggy"]:
             continue
-        if apply and (r["attr_written"] or r["changed"]):
-            _rewrite_subs(config, d, subs)
         by = {}
         for c in r["changed"]:
             k = (c["from"], c["to"], c["src"].split(" ")[0])

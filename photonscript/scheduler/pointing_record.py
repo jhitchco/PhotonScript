@@ -181,138 +181,140 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
     """See the module doc. Returns counts plus the night summary."""
     from photonscript.scheduler import solve_store
     from photonscript.scheduler.runs import (PIGGYBACK_CORRELATE_TOL_MIN,
-                                             _human_verdict, _load_subs,
-                                             _rewrite_subs, sync_goal_progress)
+                                             _human_verdict, edit_subs,
+                                             sync_goal_progress)
     from photonscript.shared import mount_log, pointing, qa_rules
 
-    subs = _load_subs(config, date)
-    stored = pointing.load(config, date)
-    lines = mount_log.load(config, date)
-    windows = mount_log.slew_windows(lines)
-    frames = _frames(config, subs)
-    out = {"date": date, "subs": len(subs), "written": 0, "with_position": 0,
-           "solve_attempts": 0, "solved": 0, "solve_s": 0.0,
-           "records_updated": 0, "verdicts_changed": 0, "newly_rejected": 0,
-           "un_rejected": 0, "library_moves": 0, "dry_run": not apply,
-           "budget_hit": False, "mount_log_lines": len(lines)}
-    sols = {rig: solve_store.lookup(config, date, rig) for rig in frames}
+    # PS-140: headers, mount log and plate solves run without the night
+    # lock; on exit only the fields this pass changed are merged in under
+    # it, and a verdict given meanwhile keeps every verdict field
+    with edit_subs(config, date, hold_lock=False, write=apply) as subs:
+        stored = pointing.load(config, date)
+        lines = mount_log.load(config, date)
+        windows = mount_log.slew_windows(lines)
+        frames = _frames(config, subs)
+        out = {"date": date, "subs": len(subs), "written": 0, "with_position": 0,
+               "solve_attempts": 0, "solved": 0, "solve_s": 0.0,
+               "records_updated": 0, "verdicts_changed": 0, "newly_rejected": 0,
+               "un_rejected": 0, "library_moves": 0, "dry_run": not apply,
+               "budget_hit": False, "mount_log_lines": len(lines)}
+        sols = {rig: solve_store.lookup(config, date, rig) for rig in frames}
 
-    def compute(rig, f, prev):
-        r = f["rec"]
-        s = sols.get(rig, {}).get(r["file"])
-        return pointing.sub_pointing(
-            config, rig, None, f["start"], f["exp_s"], r.get("target"),
-            mount_lines=lines if not f.get("base") else None, prev=prev,
-            solve=s if s and s.get("solved") else None, base=f.get("base"))
-
-    # 1. mount positions (RC16 first: the Piggy-600 may borrow them)
-    for rig in sorted(frames, key=lambda r: r != RC16):
-        for f in frames[rig]:
+        def compute(rig, f, prev):
             r = f["rec"]
-            b = _base_from_stored(stored.get((rig, r["file"])))
-            if b is None and rig == RC16 and r.get("abs_path") \
-                    and Path(r["abs_path"]).exists():
-                b = pointing.from_header(_header(r["abs_path"]))
-            if b is None and rig != RC16:
-                m = mount_log.position_at(lines, f["mid"])
-                if m is not None:
-                    b = {"src": "mount-log", "mount_ra": m.get("ra"),
-                         "mount_dec": m.get("dec"), "alt": m.get("alt"),
-                         "az": m.get("az"), "airmass": None,
-                         "pier": m.get("pier")}
-                else:
-                    b = _correlated(frames.get(RC16, []), f["mid"],
-                                    PIGGYBACK_CORRELATE_TOL_MIN)
-            f["base"] = b
+            s = sols.get(rig, {}).get(r["file"])
+            return pointing.sub_pointing(
+                config, rig, None, f["start"], f["exp_s"], r.get("target"),
+                mount_lines=lines if not f.get("base") else None, prev=prev,
+                solve=s if s and s.get("solved") else None, base=f.get("base"))
 
-    def all_points():
-        for rig, fr in frames.items():
-            prev = None
-            for f in fr:
-                f["point"] = compute(rig, f, prev)
-                prev = f["point"]
-
-    all_points()
-
-    # 2. sampled plate solves
-    policy = str(getattr(config, "pointing_solve_policy", "sampled") or "sampled")
-    if solve and policy.lower() != "off":
-        budget = float(budget_min if budget_min is not None else
-                       getattr(config, "pointing_solve_budget_min", 30.0) or 0) * 60.0
-        every = int(getattr(config, "pointing_solve_every", 10) or 10)
-        t0 = time.monotonic()
-        for rig, fr in frames.items():
-            done = set(sols.get(rig, {}))
-            for f in pick_solves(fr, policy, every, windows, done):
-                if time.monotonic() - t0 > budget:
-                    out["budget_hit"] = True
-                    break
+        # 1. mount positions (RC16 first: the Piggy-600 may borrow them)
+        for rig in sorted(frames, key=lambda r: r != RC16):
+            for f in frames[rig]:
                 r = f["rec"]
-                p = f.get("point") or {}
-                hint = ((p["mount_ra"], p["mount_dec"])
-                        if p.get("mount_ra") is not None else None)
-                res = solve_store.solve(
-                    config, r.get("abs_path") or "", rig=rig, night=date,
-                    hint=hint, rel_file=r["file"],
-                    start_utc=f["start"].isoformat() + "Z", runner=runner,
-                    radius_deg=5.0 if hint else 30.0)
-                out["solve_attempts"] += 1
-                sols.setdefault(rig, {})[r["file"]] = res or {"solved": False}
-                if res:
-                    out["solved"] += 1
-        out["solve_s"] = round(time.monotonic() - t0, 1)
-        if out["solve_attempts"]:
-            all_points()
+                b = _base_from_stored(stored.get((rig, r["file"])))
+                if b is None and rig == RC16 and r.get("abs_path") \
+                        and Path(r["abs_path"]).exists():
+                    b = pointing.from_header(_header(r["abs_path"]))
+                if b is None and rig != RC16:
+                    m = mount_log.position_at(lines, f["mid"])
+                    if m is not None:
+                        b = {"src": "mount-log", "mount_ra": m.get("ra"),
+                             "mount_dec": m.get("dec"), "alt": m.get("alt"),
+                             "az": m.get("az"), "airmass": None,
+                             "pier": m.get("pier")}
+                    else:
+                        b = _correlated(frames.get(RC16, []), f["mid"],
+                                        PIGGYBACK_CORRELATE_TOL_MIN)
+                f["base"] = b
 
-    # 3. write changed records (a dry run only counts them)
-    for rig, fr in frames.items():
-        for f in fr:
-            p = f["point"]
-            line = {**p, "file": f["rec"]["file"]}
-            out["with_position"] += int(pointing.judged_position(p) is not None)
-            if p.get("src") is None and not p.get("target"):
-                continue
-            if pointing.same_record(stored.get((rig, line["file"])), line):
-                continue
-            if apply:
-                pointing.append_record(config, date, line)
-            out["written"] += 1
+        def all_points():
+            for rig, fr in frames.items():
+                prev = None
+                for f in fr:
+                    f["point"] = compute(rig, f, prev)
+                    prev = f["point"]
 
-    # 4. the "On target" check on the stored scorecards (PS-107: by source;
-    # a dry run reports what would change and writes nothing)
-    changed = 0
-    for rig, fr in frames.items():
-        for f in fr:
-            r, p = f["rec"], f["point"]
-            if _human_verdict(r):
-                continue
-            t = qa_rules.thresholds(config, rig, r.get("target"),
-                                    r.get("filter"))
-            fields = qa_rules.regrade_pointing(
-                r, p.get("off_target_arcmin"), t, p.get("note"),
-                pointing.judged_src(p))
-            if fields is None:
-                continue
-            was = bool(r.get("passed_qa"))
-            was_verdict = r.get("auto_verdict")
-            changed += 1
-            out["verdicts_changed"] += int(
-                was_verdict != fields.get("auto_verdict"))
-            if was and not fields.get("passed_qa"):
-                out["newly_rejected"] += 1
-            elif not was and fields.get("passed_qa"):
-                out["un_rejected"] += 1
-            if not apply:
-                continue
-            if not fields.get("reviewed") and r.get("review_source") == "auto":
-                fields.update(reviewed=False, review_source=None)
-            r.update(fields)
-            if r.get("review_source") is None:
-                r.pop("review_source", None)
-            if was and not r.get("passed_qa"):
-                out["library_moves"] += len(_move_out_of_library(config, r))
+        all_points()
+
+        # 2. sampled plate solves
+        policy = str(getattr(config, "pointing_solve_policy", "sampled") or "sampled")
+        if solve and policy.lower() != "off":
+            budget = float(budget_min if budget_min is not None else
+                           getattr(config, "pointing_solve_budget_min", 30.0) or 0) * 60.0
+            every = int(getattr(config, "pointing_solve_every", 10) or 10)
+            t0 = time.monotonic()
+            for rig, fr in frames.items():
+                done = set(sols.get(rig, {}))
+                for f in pick_solves(fr, policy, every, windows, done):
+                    if time.monotonic() - t0 > budget:
+                        out["budget_hit"] = True
+                        break
+                    r = f["rec"]
+                    p = f.get("point") or {}
+                    hint = ((p["mount_ra"], p["mount_dec"])
+                            if p.get("mount_ra") is not None else None)
+                    res = solve_store.solve(
+                        config, r.get("abs_path") or "", rig=rig, night=date,
+                        hint=hint, rel_file=r["file"],
+                        start_utc=f["start"].isoformat() + "Z", runner=runner,
+                        radius_deg=5.0 if hint else 30.0)
+                    out["solve_attempts"] += 1
+                    sols.setdefault(rig, {})[r["file"]] = res or {"solved": False}
+                    if res:
+                        out["solved"] += 1
+            out["solve_s"] = round(time.monotonic() - t0, 1)
+            if out["solve_attempts"]:
+                all_points()
+
+        # 3. write changed records (a dry run only counts them)
+        for rig, fr in frames.items():
+            for f in fr:
+                p = f["point"]
+                line = {**p, "file": f["rec"]["file"]}
+                out["with_position"] += int(pointing.judged_position(p) is not None)
+                if p.get("src") is None and not p.get("target"):
+                    continue
+                if pointing.same_record(stored.get((rig, line["file"])), line):
+                    continue
+                if apply:
+                    pointing.append_record(config, date, line)
+                out["written"] += 1
+
+        # 4. the "On target" check on the stored scorecards (PS-107: by source;
+        # a dry run reports what would change and writes nothing)
+        changed = 0
+        for rig, fr in frames.items():
+            for f in fr:
+                r, p = f["rec"], f["point"]
+                if _human_verdict(r):
+                    continue
+                t = qa_rules.thresholds(config, rig, r.get("target"),
+                                        r.get("filter"))
+                fields = qa_rules.regrade_pointing(
+                    r, p.get("off_target_arcmin"), t, p.get("note"),
+                    pointing.judged_src(p))
+                if fields is None:
+                    continue
+                was = bool(r.get("passed_qa"))
+                was_verdict = r.get("auto_verdict")
+                changed += 1
+                out["verdicts_changed"] += int(
+                    was_verdict != fields.get("auto_verdict"))
+                if was and not fields.get("passed_qa"):
+                    out["newly_rejected"] += 1
+                elif not was and fields.get("passed_qa"):
+                    out["un_rejected"] += 1
+                if not apply:
+                    continue
+                if not fields.get("reviewed") and r.get("review_source") == "auto":
+                    fields.update(reviewed=False, review_source=None)
+                r.update(fields)
+                if r.get("review_source") is None:
+                    r.pop("review_source", None)
+                if was and not r.get("passed_qa"):
+                    out["library_moves"] += len(_move_out_of_library(config, r))
     if apply and changed:
-        _rewrite_subs(config, date, subs)
         if out["verdicts_changed"]:
             sync_goal_progress(config)
         if out["un_rejected"]:

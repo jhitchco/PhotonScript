@@ -168,10 +168,19 @@ def identify_night(config, date: str, solve: bool = True) -> dict:
     per time cluster, and only when solve=True (the library build runs the
     cheap header pass only; runs.attribute_night orders the passes).
     """
-    from photonscript.scheduler.runs import _load_subs, _rewrite_subs
+    from photonscript.scheduler.runs import edit_subs
+    # PS-140: header reads and ASTAP solves run without the night lock; on
+    # exit only the fields this pass changed are merged in under the lock,
+    # so a verdict given meanwhile is never overwritten by this copy
+    with edit_subs(config, date, hold_lock=False) as subs:
+        return _identify_records(config, date, subs, solve)
+
+
+def _identify_records(config, date: str, subs: list[dict],
+                      solve: bool) -> dict:
+    """identify_night on loaded records (mutated in place)."""
     from photonscript.shared.target_names import canonical_target
 
-    subs = _load_subs(config, date)
     # PS-78: a sub named after a structural loop container
     # (OSC_LIGHT_LOOP_Container) is as unknown as '?'
     unknown = [s for s in subs
@@ -255,7 +264,6 @@ def identify_night(config, date: str, solve: bool = True) -> dict:
         for s in subs:
             if s.get("file") in by_file:
                 s["target"] = by_file[s.get("file")]
-        _rewrite_subs(config, date, subs)
     logger.info("Identify %s: %d subs attributed (%d groups)",
                 date, n_assigned, len(results))
     return {"identified": n_assigned, "clusters": results}

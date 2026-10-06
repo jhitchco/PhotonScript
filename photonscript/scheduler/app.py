@@ -2723,12 +2723,11 @@ async def api_run_analysis(date: str, payload: dict = Body(default={})):
 async def api_run_assign_target(date: str, payload: dict = Body(...)):
     """Set the target name on a night's unattributed ('?') subs — for old
     sessions that predate plan snapshots and OBJECT headers."""
-    from photonscript.scheduler.runs import _load_subs, _rewrite_subs
+    from photonscript.scheduler.runs import edit_subs
     name = (payload.get("name") or "").strip()
     if not name:
         return JSONResponse(status_code=400, content={"detail": "name required"})
     config = get_config()
-    subs = _load_subs(config, date)
 
     def _in_window(s):
         w = (payload.get("window") or "").strip()  # "HH:MM-HH:MM" UTC
@@ -2745,15 +2744,14 @@ async def api_run_assign_target(date: str, payload: dict = Body(...)):
 
     from photonscript.shared.target_names import canonical_target
     n = 0
-    for s in subs:
-        # PS-78: an OSC loop container name is as unassigned as '?'
-        if (canonical_target(s.get("target")) is None
-                or payload.get("force")) and _in_window(s):
-            s["target"] = name
-            s["target_src"] = "manual"  # PS-137: the Piggy pass keeps it
-            n += 1
-    if n:
-        _rewrite_subs(config, date, subs)
+    with edit_subs(config, date) as subs:   # PS-140: under the night lock
+        for s in subs:
+            # PS-78: an OSC loop container name is as unassigned as '?'
+            if (canonical_target(s.get("target")) is None
+                    or payload.get("force")) and _in_window(s):
+                s["target"] = name
+                s["target_src"] = "manual"  # PS-137: the Piggy pass keeps it
+                n += 1
     logger.info("Assigned target '%s' to %d subs on %s", name, n, date)
     return {"ok": True, "updated": n}
 

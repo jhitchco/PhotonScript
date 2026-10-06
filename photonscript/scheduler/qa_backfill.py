@@ -69,58 +69,58 @@ def _library_links(config, rec: dict) -> list[Path]:
 
 def regrade_parked(config, date: str, apply: bool = False,
                    extra_unsafe: list[tuple] | None = None) -> dict:
-    from photonscript.scheduler.runs import (_load_subs, _rewrite_subs,
-                                             library_root, sync_goal_progress)
+    from photonscript.scheduler.runs import (edit_subs, library_root,
+                                             sync_goal_progress)
     from photonscript.shared.qa_rules import record_fwhm
     from photonscript.shared.qa_signatures import parked_frame_verdict
     from photonscript.shared.rigs import rig_config
     from photonscript.shared.safety_history import unsafe_windows
 
-    subs = _load_subs(config, date)
     day = datetime.fromisoformat(date)
     span = (day + timedelta(hours=12), day + timedelta(hours=40))
     wins, source = unsafe_windows(config, *span, extra=extra_unsafe)
-    changes, moves = [], []
-    for rec in subs:
-        if not rec.get("passed_qa") or rec.get("manual_qa"):
-            continue
-        cfg = rig_config(config, rec.get("rig") or "rc16")
-        start = _start_of(rec)
-        v = parked_frame_verdict(
-            cfg, hfr_px=rec.get("hfr"),
-            # live and PS-83 records carry a real FWHM; older backfill
-            # ones carry HFR x scale (qa_rules.record_fwhm)
-            fwhm_arcsec=record_fwhm(rec),
-            background=rec.get("background"), exp_s=rec.get("exp_s"),
-            stars=rec.get("stars"), start_utc=start, unsafe_windows=wins)
-        if not v.reject:
-            continue
-        links = _library_links(config, rec)
-        changes.append({"file": rec.get("file"), "rig": rec.get("rig"),
-                        "start_utc": start.isoformat() + "Z" if start else None,
-                        "filter": rec.get("filter"), "exp_s": rec.get("exp_s"),
-                        "reasons": v.reasons, "flag": v.flag,
-                        "library_links": [str(x) for x in links]})
-        if apply:
-            rec["passed_qa"] = False
-            rec["reason"] = "; ".join(filter(None, [rec.get("reason"),
-                                                    *v.reasons]))
-            rec["qa_flag"] = v.flag
-            rec["regraded"] = "PS-71"
-            lib = library_root(config)
-            for src in links:
-                dest = lib / "_rejected" / src.relative_to(lib)
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if dest.exists():
-                        src.unlink()
-                    else:
-                        os.replace(src, dest)
-                    moves.append(f"{src} -> {dest}")
-                except OSError as e:
-                    logger.warning("PS-71 library move %s failed: %s", src, e)
+    # PS-140: a metadata pass, under the night lock from load to rewrite
+    with edit_subs(config, date, write=apply) as subs:
+        changes, moves = [], []
+        for rec in subs:
+            if not rec.get("passed_qa") or rec.get("manual_qa"):
+                continue
+            cfg = rig_config(config, rec.get("rig") or "rc16")
+            start = _start_of(rec)
+            v = parked_frame_verdict(
+                cfg, hfr_px=rec.get("hfr"),
+                # live and PS-83 records carry a real FWHM; older backfill
+                # ones carry HFR x scale (qa_rules.record_fwhm)
+                fwhm_arcsec=record_fwhm(rec),
+                background=rec.get("background"), exp_s=rec.get("exp_s"),
+                stars=rec.get("stars"), start_utc=start, unsafe_windows=wins)
+            if not v.reject:
+                continue
+            links = _library_links(config, rec)
+            changes.append({"file": rec.get("file"), "rig": rec.get("rig"),
+                            "start_utc": start.isoformat() + "Z" if start else None,
+                            "filter": rec.get("filter"), "exp_s": rec.get("exp_s"),
+                            "reasons": v.reasons, "flag": v.flag,
+                            "library_links": [str(x) for x in links]})
+            if apply:
+                rec["passed_qa"] = False
+                rec["reason"] = "; ".join(filter(None, [rec.get("reason"),
+                                                        *v.reasons]))
+                rec["qa_flag"] = v.flag
+                rec["regraded"] = "PS-71"
+                lib = library_root(config)
+                for src in links:
+                    dest = lib / "_rejected" / src.relative_to(lib)
+                    try:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if dest.exists():
+                            src.unlink()
+                        else:
+                            os.replace(src, dest)
+                        moves.append(f"{src} -> {dest}")
+                    except OSError as e:
+                        logger.warning("PS-71 library move %s failed: %s", src, e)
     if apply and changes:
-        _rewrite_subs(config, date, subs)
         sync_goal_progress(config)
     result = {"date": date, "mode": "apply" if apply else "dry-run",
               "unsafe_windows": [(a.isoformat() + "Z", b.isoformat() + "Z")

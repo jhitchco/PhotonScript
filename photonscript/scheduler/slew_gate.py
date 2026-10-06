@@ -276,52 +276,52 @@ def night_pass(config, date: str, apply: bool = True) -> dict:
     the night's split rate (straddled / judged)."""
     from photonscript.scheduler.flexure import frames_from_records
     from photonscript.scheduler.pointing_record import _move_out_of_library
-    from photonscript.scheduler.runs import (_human_verdict, _load_subs,
-                                             _rewrite_subs, sync_goal_progress)
+    from photonscript.scheduler.runs import (_human_verdict, edit_subs,
+                                             sync_goal_progress)
     from photonscript.shared import mount_log, qa_rules
 
-    subs = _load_subs(config, date)
     lines = mount_log.load(config, date)
-    nw = NightWindows(config, lines=lines, records=subs)
-    out = {"date": date, "subs": 0, "judged": 0, "straddled": 0,
-           "unknown": 0, "src": {}, "mount_log_lines": len(lines),
-           "records_updated": 0, "verdicts_changed": 0, "newly_rejected": 0,
-           "library_moves": 0, "split_rate": None}
-    changed = 0
-    for rig in gated_rigs(config):
-        for f in frames_from_records(subs, config, rig, read_headers=False):
-            r = f["rec"]
-            out["subs"] += 1
-            a = nw.assess(f["start"], f["end"])
-            ov = a.get("overlap_s")
-            if ov is None:
-                out["unknown"] += 1
-            else:
-                out["judged"] += 1
-                out["straddled"] += int(ov > 0)
-                out["src"][a["src"]] = out["src"].get(a["src"], 0) + 1
-            if not apply or _human_verdict(r):
-                continue
-            t = qa_rules.thresholds(config, rig, r.get("target"),
-                                    r.get("filter"))
-            fields = qa_rules.regrade_slew_straddle(r, ov, t, a.get("note"))
-            if fields is None:
-                continue
-            was = bool(r.get("passed_qa"))
-            was_verdict = r.get("auto_verdict")
-            if not fields.get("reviewed") and r.get("review_source") == "auto":
-                fields.update(reviewed=False, review_source=None)
-            r.update(fields)
-            if r.get("review_source") is None:
-                r.pop("review_source", None)
-            changed += 1
-            if was_verdict != r.get("auto_verdict"):
-                out["verdicts_changed"] += 1
-            if was and not r.get("passed_qa"):
-                out["newly_rejected"] += 1
-                out["library_moves"] += len(_move_out_of_library(config, r))
+    # PS-140: a metadata pass, under the night lock from load to rewrite
+    with edit_subs(config, date, write=apply) as subs:
+        nw = NightWindows(config, lines=lines, records=subs)
+        out = {"date": date, "subs": 0, "judged": 0, "straddled": 0,
+               "unknown": 0, "src": {}, "mount_log_lines": len(lines),
+               "records_updated": 0, "verdicts_changed": 0, "newly_rejected": 0,
+               "library_moves": 0, "split_rate": None}
+        changed = 0
+        for rig in gated_rigs(config):
+            for f in frames_from_records(subs, config, rig, read_headers=False):
+                r = f["rec"]
+                out["subs"] += 1
+                a = nw.assess(f["start"], f["end"])
+                ov = a.get("overlap_s")
+                if ov is None:
+                    out["unknown"] += 1
+                else:
+                    out["judged"] += 1
+                    out["straddled"] += int(ov > 0)
+                    out["src"][a["src"]] = out["src"].get(a["src"], 0) + 1
+                if not apply or _human_verdict(r):
+                    continue
+                t = qa_rules.thresholds(config, rig, r.get("target"),
+                                        r.get("filter"))
+                fields = qa_rules.regrade_slew_straddle(r, ov, t, a.get("note"))
+                if fields is None:
+                    continue
+                was = bool(r.get("passed_qa"))
+                was_verdict = r.get("auto_verdict")
+                if not fields.get("reviewed") and r.get("review_source") == "auto":
+                    fields.update(reviewed=False, review_source=None)
+                r.update(fields)
+                if r.get("review_source") is None:
+                    r.pop("review_source", None)
+                changed += 1
+                if was_verdict != r.get("auto_verdict"):
+                    out["verdicts_changed"] += 1
+                if was and not r.get("passed_qa"):
+                    out["newly_rejected"] += 1
+                    out["library_moves"] += len(_move_out_of_library(config, r))
     if apply and changed:
-        _rewrite_subs(config, date, subs)
         if out["verdicts_changed"]:
             sync_goal_progress(config)
     out["records_updated"] = changed

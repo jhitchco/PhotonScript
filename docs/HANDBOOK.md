@@ -174,7 +174,13 @@ Check a pending update on the scope without switching: `photonscript self-update
    one lock per night shared with the live appender, atomic subs-log
    rewrites, only that sub's Library links change, goal progress follows
    about 2 s after the last verdict (`/review-summary` and the target page
-   flush it first).
+   flush it first). PS-140: every subs-log writer goes through
+   `runs.edit_subs` (re-score, attribution and identify, pointing and slew
+   passes, PS-71 / PS-78 backfills, re-measure, assign target), so a verdict
+   given while one runs is never overwritten by its stale copy: metadata
+   passes hold the night lock from load to rewrite; passes with slow work
+   (identify, Piggy attribution, pointing) merge only the fields they
+   changed, and a verdict given meanwhile keeps every verdict field.
    The subs show as a Grid or a Table (PS-116, remembered per browser): the
    table has a small thumbnail, score, verdict and the core stats per sub,
    sortable (lowest score first by default), and the rig / target / filter /

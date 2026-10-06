@@ -15,6 +15,8 @@ Night score (0-100):
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import gc
 import json
 import logging
@@ -22,6 +24,7 @@ import math
 import os
 import re
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -90,9 +93,10 @@ _night_locks_guard = threading.Lock()
 
 def subs_lock(config, date: str):
     """PS-24: one re-entrant lock per night's subs log, shared by the live
-    appender (both rig agents run in this process, orchestrator.py), every
-    _rewrite_subs caller and the verdict endpoints. Hold it across a
-    load -> change -> rewrite so a sub graded meanwhile is never lost."""
+    appender (both rig agents run in this process, orchestrator.py) and
+    every rewrite. PS-140: writers change the log through edit_subs (which
+    holds it across load -> change -> rewrite, or merges under it), so
+    neither a sub graded nor a verdict given meanwhile is lost."""
     key = str(runs_dir(config) / f"{date}_subs.jsonl")
     with _night_locks_guard:
         lk = _night_locks.get(key)
@@ -998,7 +1002,8 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
     """Replace the night's subs log with `records` (atomic, under the night
     lock). PS-24: a record appended since the caller loaded the log (a sub
     graded live or by the backfill meanwhile) is kept, not dropped: no
-    caller removes records, they all load, change and rewrite."""
+    caller removes records, they all load, change and rewrite. PS-140: only
+    edit_subs and merge_subs call this; writers use edit_subs."""
     p = runs_dir(config) / f"{date}_subs.jsonl"
     with subs_lock(config, date):
         extra = []
@@ -1023,6 +1028,123 @@ def _rewrite_subs(config, date: str, records: list[dict]) -> None:
     # A same-size rewrite inside one coarse NTFS mtime tick would keep the
     # cache signature, so drop the entry explicitly.
     _invalidate_subs_cache(p)
+
+
+@contextmanager
+def edit_subs(config, date: str, hold_lock: bool = True, write: bool = True):
+    """PS-140: the one way to change a night's subs log. Yields the night's
+    records (fresh dicts, mutate them in place, never reorder or drop) and
+    on a clean exit writes them back atomically when anything changed. An
+    exception inside the block writes nothing.
+
+    hold_lock=True (metadata passes, verdicts): the per-night lock is held
+    from the load to the rewrite, so no verdict or graded sub given
+    meanwhile can be overwritten by a stale copy. Keep slow work (FITS
+    reads, plate solves) out of such a block: the live grader waits on it.
+
+    hold_lock=False (writers with slow work inside the block: identify,
+    pointing pass, Piggy attribution with solves): the records are loaded
+    without the lock, then on exit merge_subs re-loads under the lock and
+    applies only the fields this block changed (see merge_subs: a field
+    changed meanwhile keeps its new value, and a verdict given meanwhile
+    keeps every MANUAL_FIELDS field).
+
+    write=False: a dry run, never writes (and never locks)."""
+    if not write:
+        yield _load_subs(config, date)
+        return
+    if not hold_lock:
+        subs = _load_subs(config, date)
+        base = copy.deepcopy(subs)
+        yield subs
+        merge_subs(config, date, base, subs)
+        return
+    with subs_lock(config, date):
+        subs = _load_subs(config, date)
+        base = copy.deepcopy(subs)
+        yield subs
+        if subs != base:
+            _rewrite_subs(config, date, subs)
+
+
+def _manual_fields() -> tuple:
+    from photonscript.scheduler.qa_remeasure import MANUAL_FIELDS
+    return MANUAL_FIELDS
+
+
+def merge_subs(config, date: str, base: list[dict],
+               edited: list[dict]) -> dict:
+    """PS-140: field-wise three-way merge of a writer's changes into the
+    night's current log, under the per-night lock. `base` is a deep copy of
+    the records as the writer loaded them, `edited` the same records after
+    its (slow, unlocked) work, in the same order. For every record (matched
+    by rig + file, else time) and every field the writer changed:
+
+    * written when the log still holds the base value;
+    * kept as is (the writer's value dropped) when someone changed that
+      field meanwhile: the stale copy never wins;
+    * the verdict fields (qa_remeasure.MANUAL_FIELDS) move as one group: if
+      any of them changed meanwhile (a person's accept / reject / review or
+      approve), none of the writer's verdict changes is applied to that
+      record.
+
+    Records appended meanwhile stay; a record gone from the log (a re-grade
+    wiped it) is not re-added. Returns counts."""
+    manual = set(_manual_fields())
+    out = {"records": 0, "fields": 0, "conflicts": 0, "verdict_kept": 0,
+           "gone": 0}
+    if len(base) != len(edited):
+        raise ValueError("merge_subs: records were added or removed")
+
+    def _keyed(recs):
+        seen: dict = {}
+        res = {}
+        for r in recs:
+            k = _record_key(r)
+            n = seen.get(k, 0)
+            seen[k] = n + 1
+            res[(k, n)] = r
+        return res
+
+    pairs = [(b, e) for b, e in zip(base, edited) if b != e]
+    if not pairs:
+        return out
+    with subs_lock(config, date):
+        fresh = _load_subs(config, date)
+        by_key = _keyed(fresh)
+        base_keys = list(_keyed(base).items())
+        idx = {id(b): k for k, b in base_keys}
+        for b, e in pairs:
+            cur = by_key.get(idx[id(b)])
+            if cur is None:
+                out["gone"] += 1
+                continue
+            changed = {k for k in set(b) | set(e)
+                       if b.get(k, _MISSING) != e.get(k, _MISSING)}
+            verdict_moved = any(cur.get(k, _MISSING) != b.get(k, _MISSING)
+                                for k in manual)
+            n_before = out["fields"]
+            for k in changed:
+                if k in manual and verdict_moved:
+                    out["verdict_kept"] += 1
+                    continue
+                if cur.get(k, _MISSING) != b.get(k, _MISSING):
+                    out["conflicts"] += 1
+                    continue
+                if k in e:
+                    cur[k] = e[k]
+                else:
+                    cur.pop(k, None)
+                out["fields"] += 1
+            out["records"] += int(out["fields"] > n_before)
+        if out["fields"]:
+            _rewrite_subs(config, date, fresh)
+    if out["conflicts"] or out["verdict_kept"] or out["gone"]:
+        logger.info("subs log %s merge: %s", date, out)
+    return out
+
+
+_MISSING = object()
 
 
 # Piggyback subs captured within this margin of an RC16 exposure inherit its
@@ -1100,10 +1222,9 @@ def correlate_piggyback_targets(config, date: str) -> dict:
     metadata pass (no FITS reopened). Idempotent: only touches unattributed
     piggyback subs, so re-running after more RC16 frames land fills in more.
     """
-    subs = _load_subs(config, date)
-    n, windows, pending = correlate_piggyback_records(subs)
+    with edit_subs(config, date) as subs:   # PS-140: under the night lock
+        n, windows, pending = correlate_piggyback_records(subs)
     if n:
-        _rewrite_subs(config, date, subs)
         # best-effort: stamp the OSC FITS OBJECT so the science file carries it
         if getattr(config, "stamp_fits_object", True):
             for s in pending:
@@ -1166,125 +1287,128 @@ def rescore_night(config, date: str, apply: bool = False,
     from photonscript.scheduler.qa_backfill import _library_links
     if records is not None and apply:
         raise ValueError("apply needs the night's own records")
-    subs = records if records is not None else _load_subs(config, date)
-    counts: Counter = Counter()
-    transitions: Counter = Counter()
-    drivers: Counter = Counter()
-    diffs, moves = [], []
-    # PS-117 (b): records graded before the sky fields get them from the
-    # stored background (approximate; a re-grade measures them properly)
-    n_sky = _backfill_sky_fields(config, subs, apply)
-    if n_sky:
-        counts["sky_backfilled"] = n_sky
-    changed = 0
-    lib = library_root(config)
-    graded, source = _night_cards(config, date, subs,
-                                  extra_unsafe=extra_unsafe,
-                                  sidecars=(records is None
-                                            if sidecars is None else sidecars))
+    # PS-140: with apply the night lock is held from the load to the
+    # rewrite (no FITS load here), so a verdict given meanwhile survives
+    ctx = (contextlib.nullcontext(records) if records is not None
+           else edit_subs(config, date, write=apply))
+    with ctx as subs:
+        counts: Counter = Counter()
+        transitions: Counter = Counter()
+        drivers: Counter = Counter()
+        diffs, moves = [], []
+        # PS-117 (b): records graded before the sky fields get them from the
+        # stored background (approximate; a re-grade measures them properly)
+        n_sky = _backfill_sky_fields(config, subs, apply)
+        if n_sky:
+            counts["sky_backfilled"] = n_sky
+        changed = 0
+        lib = library_root(config)
+        graded, source = _night_cards(config, date, subs,
+                                      extra_unsafe=extra_unsafe,
+                                      sidecars=(records is None
+                                                if sidecars is None else sidecars))
 
-    def _keep_score(rec, card):
-        """PS-108: a kept verdict still gets the current score."""
-        nonlocal changed
-        sf = card.score_fields()
-        if not apply or not sf:
-            return
-        card_c = dict(rec.get("scorecard") or {})
-        if card.score is not None and card_c.get("rows"):
-            card_c["score"] = card.score.compact()
-        if all(rec.get(k) == v for k, v in sf.items()) \
-                and (rec.get("scorecard") or {}) == card_c:
-            return
-        rec.update(sf)
-        if card_c.get("rows"):
-            rec["scorecard"] = card_c
-        changed += 1
+        def _keep_score(rec, card):
+            """PS-108: a kept verdict still gets the current score."""
+            nonlocal changed
+            sf = card.score_fields()
+            if not apply or not sf:
+                return
+            card_c = dict(rec.get("scorecard") or {})
+            if card.score is not None and card_c.get("rows"):
+                card_c["score"] = card.score.compact()
+            if all(rec.get(k) == v for k, v in sf.items()) \
+                    and (rec.get("scorecard") or {}) == card_c:
+                return
+            rec.update(sf)
+            if card_c.get("rows"):
+                rec["scorecard"] = card_c
+            changed += 1
 
-    for rec, card in graded:
-        key = qa_rules.group_key(rec)
-        old = _old_verdict(rec)
-        new = card.verdict
-        counts[f"new_{new}"] += 1
-        if card.score is not None:
-            counts[f"score_{card.score.decision}"] += 1
-            # PS-114: how many stored scores the current gates move
-            was = rec.get("score")
-            if isinstance(was, (int, float)) and was != card.score.value:
-                counts["score_changed"] += 1
-                counts["score_up" if card.score.value > was
-                       else "score_down"] += 1
-        for d in card.drivers:
-            drivers[d] += 1
-        if _human_verdict(rec):
-            counts["human_kept"] += 1
-            _keep_score(rec, card)
-            if (new == "rejected") == bool(rec.get("passed_qa")):
+        for rec, card in graded:
+            key = qa_rules.group_key(rec)
+            old = _old_verdict(rec)
+            new = card.verdict
+            counts[f"new_{new}"] += 1
+            if card.score is not None:
+                counts[f"score_{card.score.decision}"] += 1
+                # PS-114: how many stored scores the current gates move
+                was = rec.get("score")
+                if isinstance(was, (int, float)) and was != card.score.value:
+                    counts["score_changed"] += 1
+                    counts["score_up" if card.score.value > was
+                           else "score_down"] += 1
+            for d in card.drivers:
+                drivers[d] += 1
+            if _human_verdict(rec):
+                counts["human_kept"] += 1
+                _keep_score(rec, card)
+                if (new == "rejected") == bool(rec.get("passed_qa")):
+                    diffs.append({"file": rec.get("file"), "rig": key[0],
+                                  "old": "human " + ("accepted" if rec.get(
+                                      "passed_qa") else "rejected"),
+                                  "new": new, "action": "kept (human verdict)",
+                                  "drivers": card.drivers})
+                continue
+            transitions[f"{old} -> {new}"] += 1
+            action = None
+            if not rec.get("passed_qa") and card.passed:
+                if allow_unreject:
+                    counts["unrejected"] += 1
+                    action = "un-rejected"
+                elif header_pointing_reject(rec):
+                    # PS-107: rejected only by an unconfirmed header offset now
+                    # under the gross limit: every other check already passed
+                    counts["unrejected"] += 1
+                    counts["unrejected_pointing"] += 1
+                    action = "un-rejected (header-only pointing, PS-107)"
+                else:
+                    counts["kept_rejected"] += 1
+                    action = "kept rejected (no --allow-unreject)"
+            elif rec.get("passed_qa") and not card.passed:
+                counts["newly_rejected"] += 1
+                action = "rejected"
+            elif (rec.get("reason") or "") != card.reason and not card.passed:
+                counts["reason_changed"] += 1
+                action = "reason updated"
+            if old != new or action:
                 diffs.append({"file": rec.get("file"), "rig": key[0],
-                              "old": "human " + ("accepted" if rec.get(
-                                  "passed_qa") else "rejected"),
-                              "new": new, "action": "kept (human verdict)",
-                              "drivers": card.drivers})
-            continue
-        transitions[f"{old} -> {new}"] += 1
-        action = None
-        if not rec.get("passed_qa") and card.passed:
-            if allow_unreject:
-                counts["unrejected"] += 1
-                action = "un-rejected"
-            elif header_pointing_reject(rec):
-                # PS-107: rejected only by an unconfirmed header offset now
-                # under the gross limit: every other check already passed
-                counts["unrejected"] += 1
-                counts["unrejected_pointing"] += 1
-                action = "un-rejected (header-only pointing, PS-107)"
-            else:
-                counts["kept_rejected"] += 1
-                action = "kept rejected (no --allow-unreject)"
-        elif rec.get("passed_qa") and not card.passed:
-            counts["newly_rejected"] += 1
-            action = "rejected"
-        elif (rec.get("reason") or "") != card.reason and not card.passed:
-            counts["reason_changed"] += 1
-            action = "reason updated"
-        if old != new or action:
-            diffs.append({"file": rec.get("file"), "rig": key[0],
-                          "target": key[1], "filter": key[2], "old": old,
-                          "new": new, "action": action or "verdict updated",
-                          "drivers": card.drivers,
-                          "warnings": card.warnings,
-                          "old_reason": rec.get("reason") or "",
-                          "new_reason": card.reason})
-        if (action or "").startswith("kept"):
-            _keep_score(rec, card)
-            continue
-        if not apply:
-            continue
-        was_passed = bool(rec.get("passed_qa"))
-        fields = card.record_fields()
-        if not card.auto_approved and rec.get("review_source") == "auto":
-            fields.update(reviewed=False, review_source=None)
-        if all(rec.get(k) == v for k, v in fields.items()):
-            continue
-        rec.update(fields)
-        if rec.get("review_source") is None:
-            rec.pop("review_source", None)
-        rec["rescored"] = qa_rules.RULES_VERSION
-        changed += 1
-        if was_passed and not card.passed:
-            for src in _library_links(config, rec):
-                dest = lib / "_rejected" / src.relative_to(lib)
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    if dest.exists():
-                        src.unlink()
-                    else:
-                        os.replace(src, dest)
-                    moves.append(f"{src} -> {dest}")
-                except OSError as e:
-                    logger.warning("rescore library move %s failed: %s",
-                                   src, e)
+                              "target": key[1], "filter": key[2], "old": old,
+                              "new": new, "action": action or "verdict updated",
+                              "drivers": card.drivers,
+                              "warnings": card.warnings,
+                              "old_reason": rec.get("reason") or "",
+                              "new_reason": card.reason})
+            if (action or "").startswith("kept"):
+                _keep_score(rec, card)
+                continue
+            if not apply:
+                continue
+            was_passed = bool(rec.get("passed_qa"))
+            fields = card.record_fields()
+            if not card.auto_approved and rec.get("review_source") == "auto":
+                fields.update(reviewed=False, review_source=None)
+            if all(rec.get(k) == v for k, v in fields.items()):
+                continue
+            rec.update(fields)
+            if rec.get("review_source") is None:
+                rec.pop("review_source", None)
+            rec["rescored"] = qa_rules.RULES_VERSION
+            changed += 1
+            if was_passed and not card.passed:
+                for src in _library_links(config, rec):
+                    dest = lib / "_rejected" / src.relative_to(lib)
+                    try:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        if dest.exists():
+                            src.unlink()
+                        else:
+                            os.replace(src, dest)
+                        moves.append(f"{src} -> {dest}")
+                    except OSError as e:
+                        logger.warning("rescore library move %s failed: %s",
+                                       src, e)
     if apply and (changed or n_sky):
-        _rewrite_subs(config, date, subs)
         try:
             build_library(config, date)
         except Exception as e:  # noqa: BLE001
@@ -1592,16 +1716,13 @@ def approve_night(config, date: str, files: list[str] | None = None) -> dict:
     the whole night. Rejected subs are never approved by this path."""
     only = set(files) if files is not None else None
     n = 0
-    with subs_lock(config, date):   # PS-24: no sub graded meanwhile is lost
-        subs = _load_subs(config, date)
+    with edit_subs(config, date) as subs:   # PS-24 / PS-140: under the lock
         for s_ in subs:
             if only is not None and s_.get("file") not in only:
                 continue
             if s_.get("passed_qa") and not s_.get("reviewed"):
                 s_["reviewed"] = True
                 n += 1
-        if n:
-            _rewrite_subs(config, date, subs)
     res = build_library(config, date)
     logger.info("Night %s approved: %d subs -> library (%s new links)",
                 date, n, res.get("linked"))
@@ -1695,14 +1816,11 @@ def set_verdicts(config, date: str, files: list[str], state: str,
     wanted = set(want)
     now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
     hits: list[dict] = []
-    with subs_lock(config, date):
-        subs = _load_subs(config, date)
+    with edit_subs(config, date) as subs:   # PS-140
         for s_ in subs:
             if s_.get("file") in wanted:
                 _apply_verdict(s_, state, why, now)
                 hits.append(s_)
-        if hits:
-            _rewrite_subs(config, date, subs)
     found = {h.get("file") for h in hits}
     if hits:
         plan_names = None
