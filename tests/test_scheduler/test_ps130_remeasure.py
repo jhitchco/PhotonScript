@@ -67,7 +67,10 @@ NEW = {"hfr": 7.0, "fwhm_arcsec": 1.9, "stars": 400, "ecc": 0.42,
        "ecc_def": "sqrt(1-(b/a)^2)", "measure_v": "ps83.1",
        "background": 401.0, "noise": 12.0, "corner_spread": 0.05,
        "clipped_pct": 0.0, "sat_stars_pct": 0.5, "swamp": 9.0,
-       "exposure": "ok", "graded_by": "backfill-sep"}
+       "exposure": "ok", "graded_by": "backfill-sep",
+       # PS-146: the measure says what its judged ecc / FWHM came from (a
+       # record without these gets them derived by the rescore)
+       "ecc_src": "all", "fwhm_src": "moment"}
 
 
 def _fake(per_file=None, calls=None):
@@ -205,10 +208,20 @@ def test_apply_updates_metrics_and_keeps_every_human_field(tmp_path):
     # not re-measured: missing FITS, live and PS-83 records (the rescore
     # still re-judges them with the night, as qa-rescore does)
     for name in ("missing_one", "live", "ps83"):
-        for k in ("hfr", "fwhm_arcsec", "stars", "ecc", "measure_v",
-                  "graded_by"):
+        for k in ("hfr", "stars", "ecc", "measure_v", "graded_by"):
             assert after[name].get(k) == before[name].get(k), (name, k)
         assert "pre_ps83" not in after[name]
+    # PS-146: the rescore gives the live and PS-83 records the robust FWHM
+    # from their stored numbers (moment 1.8" under 1.2 x HFR: 2 x HFR now),
+    # the moment value kept; the pre-PS-83 record is left to the remeasure
+    assert after["missing_one"]["fwhm_arcsec"] == \
+        before["missing_one"]["fwhm_arcsec"]
+    assert "ecc_src" not in after["missing_one"]
+    for name in ("live", "ps83"):
+        assert after[name]["fwhm_moment_arcsec"] == \
+            before[name]["fwhm_arcsec"]
+        assert after[name]["shape_from"] == "stored"
+        assert after[name]["fwhm_src"] in ("moment", "hfr")
     # the stale binned HFR now stands out against the fresh night median
     assert "HFR outlier" in after["missing_one"]["reason"]
     # a second run has nothing left but the missing FITS

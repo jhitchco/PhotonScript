@@ -100,11 +100,11 @@ def measure(data, binned: bool = False, threshold: float = 5.0,
     Returns None without sep. Otherwise {"n", "n_detected", "ecc", "hfr_px",
     "fwhm_px", "scale", "stars"}: medians over the kept stars (ecc in sqrt
     form; HFR and FWHM in NATIVE pixels, so x2 when binned) and the per-star
-    arrays (x, y, a, b, theta, flux, hfr, fwhm, ecc; x, y, a, b, hfr, fwhm in
-    native pixels). n is the kept stars (at most max_stars, the brightest);
-    n_detected the stars that passed the cuts before that cap. n == 0 gives
-    None medians. PS-83: shared.star_measure builds both graders' metrics
-    on top of this."""
+    arrays (x, y, a, b, theta, flux, snr, hfr, fwhm, ecc; x, y, a, b, hfr,
+    fwhm in native pixels; snr = peak / global sky rms, PS-146). n is the
+    kept stars (at most max_stars, the brightest); n_detected the stars that
+    passed the cuts before that cap. n == 0 gives None medians. PS-83:
+    shared.star_measure builds both graders' metrics on top of this."""
     sep = _sep()
     if sep is None:
         return None
@@ -131,10 +131,13 @@ def measure(data, binned: bool = False, threshold: float = 5.0,
     r = np.where(np.isfinite(r) & (r > 0), r, objs["a"])
     e = ecc_sqrt(objs["a"], objs["b"])
     fwhm = objs["a"] * 2.355
+    # PS-146: peak signal over the global sky rms (bright-star selection)
+    rms = float(bkg.globalrms) or 1.0
     stars = {"x": objs["x"] * scale, "y": objs["y"] * scale,
              "a": objs["a"] * scale, "b": objs["b"] * scale,
              "theta": np.asarray(objs["theta"], dtype=np.float64),
              "flux": np.asarray(objs["flux"], dtype=np.float64),
+             "snr": np.asarray(objs["peak"], dtype=np.float64) / rms,
              "hfr": r * scale, "fwhm": fwhm * scale, "ecc": e}
     return {"n": int(len(objs)), "n_detected": n_detected,
             "ecc": float(np.median(e)),

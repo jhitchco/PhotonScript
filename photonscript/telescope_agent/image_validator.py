@@ -148,7 +148,8 @@ def image_metrics(quality: ImageQualityMetrics) -> dict:
         background=quality.background_adu, exposure=quality.exposure_flag,
         clipped_pct=quality.clipped_pct, sat_stars_pct=quality.sat_star_pct,
         swamp=quality.swamp_factor, sat_px_pct=quality.sat_px_pct,
-        zero_px_pct=quality.zero_px_pct, max_adu=quality.max_adu)
+        zero_px_pct=quality.zero_px_pct, max_adu=quality.max_adu,
+        **(quality.shape or {}))   # PS-146: notes on the ecc / FWHM rows
 
 
 def _pixel_stats(data: np.ndarray, file_path: str, config) -> dict:
@@ -212,6 +213,7 @@ def validate_image(
         corner_spread=m["corner_spread"],
         star_table=m["star_table"],
         ecc_bin=m["ecc_bin"], hfr_bin_px=m["hfr_bin"], stars_bin=m["stars_bin"],
+        shape={k: m.get(k) for k in _sm.SHAPE_RECORD_KEYS},
         clipped_pct=m["clipped_pct"], sat_star_pct=m["sat_stars_pct"],
         swamp_factor=m["swamp"], exposure_flag=m["exposure"],
         sky_adu=m.get("sky_adu"), sky_e_s=m.get("sky_e_s"),

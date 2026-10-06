@@ -24,8 +24,24 @@ PS-21 gates were tuned on them):
                the count before the cap (info only).
   hfr          median sep.flux_radius(0.5) in an aperture of 6a, native px
   fwhm         median 2.355 a (Gaussian sigma from sep's second moments),
-               native px; fwhm_arcsec = fwhm x pixel scale
-  ecc          median sqrt(1-(b/a)^2) (shared.star_shape.ECC_DEF)
+               native px; fwhm_arcsec = fwhm x pixel scale. PS-146: that
+               moment only sees the pixels above the detection threshold,
+               so a faint, flat-topped (defocused) star reads far too small
+               (RC16 Ha 2026-10-05: 1.6 to 2.8" reported, HFR 10.5 px, about
+               5"). When the moment FWHM is under qa_fwhm_hfr_ratio (1.2) x
+               HFR (fwhm_unreliable) the judged FWHM is 2 x HFR, the FWHM of
+               a Gaussian with that HFR (qa_fwhm_method auto; fwhm_src says
+               which). fwhm_moment_arcsec keeps the moment value.
+  ecc          median sqrt(1-(b/a)^2) (shared.star_shape.ECC_DEF). PS-146:
+               faint stars read 0.03 to 0.15 more elongated than the bright
+               ones on 3 nm subs (noise in the moments). ecc_all is the
+               median over every kept star, ecc_bright over the brightest
+               qa_ecc_bright_n (50) by flux (or every star at peak SNR >=
+               qa_ecc_bright_snr when that is set). The judged ecc is
+               ecc_bright when qa_ecc_bright_rule says so (auto: a
+               narrowband filter, an "under" exposure or fewer than
+               qa_ecc_bright_min_stars stars), else ecc_all; ecc_src says
+               which. ecc_bin follows the same choice on the binned stars.
   ecc_bin      RC16 only, qa_ecc_binned on: the same measure on a 2x2-mean
   hfr_bin      copy (0.47"/px). Known offset (PS-94 synthetic tests): the
                binned moments read 0.04 to 0.06 rounder than truth at FWHM
@@ -59,7 +75,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-MEASURE_VERSION = "ps83.1"   # recorded as measure_v on every graded sub
+MEASURE_VERSION = "ps83.2"   # recorded as measure_v on every graded sub
+                             # ps83.2 (PS-146): bright-star ecc, robust FWHM
 MAX_STARS = 400
 SATURATION_ADU = 65000.0
 OSC_MEDIAN_MIN_HFR_PX = 2.5  # SUPERPIXEL px (5 native): below this the 3x3
@@ -70,7 +87,17 @@ PARITY_KEYS = ("stars", "stars_detected", "hfr", "fwhm_px", "fwhm_arcsec",
                "ecc", "ecc_bin", "hfr_bin", "stars_bin", "background",
                "noise", "swamp", "clipped_pct", "sat_stars_pct", "exposure",
                "corner_spread", "measure_at", "osc", "sky_e_s", "sky_e_s_ch",
-               "rn_penalty_pct")
+               "rn_penalty_pct", "ecc_all", "ecc_bright", "ecc_bright_n",
+               "ecc_src", "ecc_bin_all", "fwhm_moment_arcsec", "fwhm_src",
+               "fwhm_unreliable")
+
+# PS-146: the shape fields both graders add to a sub record (and qa_rules
+# reads for the scorecard notes)
+SHAPE_RECORD_KEYS = ("ecc_all", "ecc_bright", "ecc_bright_n", "ecc_src",
+                     "ecc_why", "ecc_bin_all", "fwhm_moment_arcsec",
+                     "fwhm_src", "fwhm_unreliable")
+BRIGHT_MIN = 5          # fewer bright stars than this: ecc_all is judged
+NB_FILTERS_DEFAULT = "Ha,OIII,SII"
 
 
 # ------------------------------------------------------------------ helpers
@@ -111,8 +138,8 @@ def background_noise(sample: np.ndarray) -> tuple[float, float]:
 
 def _empty_arrays() -> dict:
     z = np.zeros(0, dtype=np.float64)
-    return {k: z for k in ("x", "y", "a", "b", "theta", "flux", "hfr",
-                           "fwhm", "ecc")}
+    return {k: z for k in ("x", "y", "a", "b", "theta", "flux", "snr",
+                           "hfr", "fwhm", "ecc")}
 
 
 def _sep_superpixel(sp: np.ndarray, median: bool,
@@ -147,6 +174,8 @@ def _sep_superpixel(sp: np.ndarray, median: bool,
         "a": 2.0 * a, "b": 2.0 * b,
         "theta": np.asarray(objs["theta"], dtype=np.float64),
         "flux": np.asarray(objs["flux"], dtype=np.float64),
+        "snr": np.asarray(objs["peak"], dtype=np.float64)
+        / (float(bkg.globalrms) or 1.0),
         "hfr": 2.0 * np.asarray(r, dtype=np.float64),
         "fwhm": 2.0 * a * 2.355,
         "ecc": ecc_sqrt(a, b),
@@ -180,6 +209,8 @@ def detect_mono(data: np.ndarray, binned: bool = False) -> dict:
     out.update({k: np.asarray(st[k], dtype=np.float64)
                 for k in ("x", "y", "a", "b", "theta", "flux", "hfr",
                           "fwhm", "ecc")})
+    out["snr"] = np.asarray(st.get("snr", np.zeros(len(out["x"]))),
+                            dtype=np.float64)
     return out
 
 
@@ -284,19 +315,216 @@ def _r(v, nd):
     return None if v is None else round(float(v), nd)
 
 
+# ------------------------------------------- PS-146: judged ecc and FWHM
+
+def _cfg_str(config, name, default):
+    v = getattr(config, name, default)
+    return str(default if v is None else v).strip().lower()
+
+
+def frame_filter(config, header=None) -> str:
+    """The frame's filter class ('H' -> 'Ha' through the NINA filter map),
+    from the header FILTER; '' when unknown."""
+    try:
+        name = str((header or {}).get("FILTER") or "").strip()
+    except Exception:  # noqa: BLE001
+        name = ""
+    if not name:
+        return ""
+    try:
+        return config.reverse_filter_map().get(name, name)
+    except Exception:  # noqa: BLE001
+        return name
+
+
+def is_narrowband(config, filt) -> bool:
+    """A narrowband filter class (qa_ecc_bright_filters, default Ha, OIII,
+    SII; case-insensitive)."""
+    f = str(filt or "").strip().lower()
+    if not f:
+        return False
+    raw = getattr(config, "qa_ecc_bright_filters", NB_FILTERS_DEFAULT)
+    nb = {x.strip().lower() for x in str(raw or "").split(",") if x.strip()}
+    return f in nb
+
+
+def bright_rule(config, filt, exposure_flag, stars) -> str | None:
+    """Why the bright-star ecc is judged on this frame (None: ecc_all is).
+    qa_ecc_bright_rule: auto (default) | always | off."""
+    rule = _cfg_str(config, "qa_ecc_bright_rule", "auto")
+    if rule == "off":
+        return None
+    if rule == "always":
+        return "always"
+    if is_narrowband(config, filt):
+        return "narrowband"
+    if exposure_flag == "under":
+        return "under-exposed"
+    try:
+        min_stars = int(getattr(config, "qa_ecc_bright_min_stars", 150) or 0)
+    except (TypeError, ValueError):
+        min_stars = 0
+    if stars is not None and 0 < int(stars) < min_stars:
+        return "few stars"
+    return None
+
+
+def bright_index(flux, snr, config) -> np.ndarray:
+    """Indexes of the bright stars: every star at peak SNR >=
+    qa_ecc_bright_snr when that is set and at least BRIGHT_MIN qualify,
+    else the brightest qa_ecc_bright_n by flux."""
+    flux = np.asarray(flux, dtype=np.float64)
+    n = len(flux)
+    if not n:
+        return np.zeros(0, dtype=int)
+    try:
+        snr_min = float(getattr(config, "qa_ecc_bright_snr", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        snr_min = 0.0
+    if snr_min > 0 and snr is not None and len(snr) == n:
+        idx = np.nonzero(np.asarray(snr, dtype=np.float64) >= snr_min)[0]
+        if len(idx) >= BRIGHT_MIN:
+            return idx
+    try:
+        top = int(getattr(config, "qa_ecc_bright_n", 50) or 50)
+    except (TypeError, ValueError):
+        top = 50
+    f = np.where(np.isfinite(flux), flux, -np.inf)
+    return np.argsort(-f, kind="stable")[:max(top, 1)]
+
+
+def bright_ecc(ecc, flux, snr, config) -> tuple:
+    """(median ecc of the bright stars, how many) or (None, n) when fewer
+    than BRIGHT_MIN have an ecc."""
+    ecc = np.asarray(ecc, dtype=np.float64)
+    if not len(ecc):
+        return None, 0
+    idx = bright_index(flux, snr, config)
+    e = ecc[idx]
+    e = e[np.isfinite(e)]
+    if len(e) < BRIGHT_MIN:
+        return None, int(len(e))
+    return float(np.median(e)), int(len(e))
+
+
+def judge_fwhm(fwhm_moment_px, hfr_px, config) -> dict:
+    """The judged FWHM (native px) from the moment FWHM and the HFR.
+    fwhm_unreliable: moment < qa_fwhm_hfr_ratio x HFR (the threshold moment
+    missed the star's light). qa_fwhm_method: auto (2 x HFR when unreliable,
+    else the moment) | moment | hfr."""
+    method = _cfg_str(config, "qa_fwhm_method", "auto")
+    try:
+        ratio = float(getattr(config, "qa_fwhm_hfr_ratio", 1.2) or 1.2)
+    except (TypeError, ValueError):
+        ratio = 1.2
+    mom = fwhm_moment_px if fwhm_moment_px and fwhm_moment_px > 0 else None
+    hfr = hfr_px if hfr_px and hfr_px > 0 else None
+    unreliable = (mom is not None and hfr is not None and mom < ratio * hfr)
+    if mom is None:     # no moment FWHM, no FWHM (never invented from HFR)
+        return {"fwhm_px": None, "fwhm_src": None, "fwhm_unreliable": False}
+    if hfr is not None and (method == "hfr"
+                            or (method != "moment" and unreliable)):
+        return {"fwhm_px": 2.0 * hfr, "fwhm_src": "hfr",
+                "fwhm_unreliable": unreliable}
+    return {"fwhm_px": mom, "fwhm_src": "moment",
+            "fwhm_unreliable": unreliable}
+
+
+def shape_fields(config, *, ecc_all, ecc_bright, n_bright, fwhm_moment_px,
+                 hfr_px, pixel_scale, filt, exposure_flag, stars) -> dict:
+    """PS-146: the judged ecc and FWHM plus what they came from. Pure (the
+    measure and qa_rescore's stored-record path share it)."""
+    why = bright_rule(config, filt, exposure_flag, stars)
+    use_bright = why is not None and ecc_bright is not None
+    fw = judge_fwhm(fwhm_moment_px, hfr_px, config)
+    fpx = fw["fwhm_px"]
+    return {
+        "ecc": ecc_bright if use_bright else ecc_all,
+        "ecc_all": ecc_all, "ecc_bright": ecc_bright,
+        "ecc_bright_n": n_bright if ecc_bright is not None else None,
+        "ecc_src": "bright" if use_bright else "all",
+        "ecc_why": why if use_bright else None,
+        "fwhm_px": fpx,
+        "fwhm_arcsec": fpx * pixel_scale if fpx is not None else None,
+        "fwhm_moment_arcsec": (fwhm_moment_px * pixel_scale
+                               if fwhm_moment_px is not None else None),
+        "fwhm_src": fw["fwhm_src"],
+        "fwhm_unreliable": bool(fw["fwhm_unreliable"]),
+    }
+
+
+def record_shape_fields(rec: dict, config, table: dict | None = None,
+                        pixel_scale: float | None = None) -> dict | None:
+    """PS-146 for a stored record measured before ps83.2 (no ecc_src): the
+    judged ecc and FWHM from its stored numbers (ecc as ecc_all, fwhm_arcsec
+    as the moment FWHM, hfr, filter, exposure, stars) and its PS-80 star
+    sidecar `table` (brightest first, so the bright stars are its first
+    qa_ecc_bright_n; the SNR selection needs the frame, so this path always
+    goes by rank). Returns the fields to merge (marked shape_from "stored"),
+    or None: the record already has them, or it is a pre-PS-83 backfill
+    record (no true FWHM, binned HFR: qa-rescore --remeasure measures those
+    from the FITS). ecc_bin is kept (the sidecar holds native stars only)."""
+    from photonscript.shared.star_shape import LIN_DEF, to_sqrt
+    if rec.get("ecc_src") or (rec.get("graded_by")
+                              and not rec.get("measure_v")):
+        return None
+
+    def num(v):
+        try:
+            x = float(v)
+        except (TypeError, ValueError):
+            return None
+        return x if np.isfinite(x) else None
+
+    if pixel_scale is None:
+        pixel_scale = float(getattr(config, "pixel_scale_arcsec", 1.0))
+    ecc_all = num(to_sqrt(num(rec.get("ecc")), rec.get("ecc_def")))
+    ecc_br, n_br = None, 0
+    if table and table.get("ecc"):
+        d = table.get("ecc_def") or (LIN_DEF if table.get("grader")
+                                     == "sep-binned" else None)
+        e = np.array([np.nan if v is None else float(to_sqrt(v, d))
+                      for v in table["ecc"]], dtype=np.float64)
+        ecc_br, n_br = bright_ecc(e, -np.arange(len(e), dtype=np.float64),
+                                  None, config)
+    fw = num(rec.get("fwhm_arcsec"))
+    if ecc_all is None and fw is None:
+        return None             # nothing measured (no sep, failed frame)
+    mom_px = fw / pixel_scale if fw is not None and pixel_scale > 0 else None
+    shape = shape_fields(config, ecc_all=ecc_all, ecc_bright=ecc_br,
+                         n_bright=n_br, fwhm_moment_px=mom_px,
+                         hfr_px=num(rec.get("hfr")), pixel_scale=pixel_scale,
+                         filt=rec.get("filter"),
+                         exposure_flag=rec.get("exposure"),
+                         stars=num(rec.get("stars")))
+    return {
+        "ecc": _r(shape["ecc"], 3),
+        "ecc_all": _r(ecc_all, 3), "ecc_bright": _r(ecc_br, 3),
+        "ecc_bright_n": shape["ecc_bright_n"], "ecc_src": shape["ecc_src"],
+        "ecc_why": shape["ecc_why"],
+        "ecc_bin_all": _r(num(rec.get("ecc_bin")), 3),
+        "fwhm_arcsec": _r(shape["fwhm_arcsec"], 2),
+        "fwhm_moment_arcsec": _r(shape["fwhm_moment_arcsec"], 2),
+        "fwhm_src": shape["fwhm_src"],
+        "fwhm_unreliable": shape["fwhm_unreliable"],
+        "shape_from": "stored",
+    }
+
+
 # --------------------------------------------------------------- the measure
 
 def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
                   pixel_scale: float | None = None, osc: bool = False,
                   binned_input: bool = False, grader: str = "",
-                  header=None) -> dict:
+                  header=None, filter_name: str | None = None) -> dict:
     """Every star and exposure metric both graders record, from one frame.
 
     `data`: the full-resolution frame (BZERO / BSCALE applied), or with
     binned_input=True its 2x2 mean (fallback). `config` is the rig's view
     (shared.rigs.rig_config): pixel scale, read noise, qa_ecc_binned,
     qa_star_sidecar_max. `header` (the FITS header, optional) picks the
-    read noise for the readout mode (READOUTM, PS-117). Returns
+    read noise for the readout mode (READOUTM, PS-117) and the filter
+    (FILTER, PS-146; `filter_name` overrides it). Returns
     record-named keys (PARITY_KEYS plus graded_by, ecc_def, measure_v, snr) and `star_table` (PS-80 sidecar
     dict, or None) and `_stars` (the per-star arrays, native px)."""
     from photonscript.shared.star_shape import ECC_DEF, bin2x2_mean
@@ -324,34 +552,53 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
         st = detect_mono(data, binned=binned_input)
 
     n = int(len(st["x"]))
-    hfr = fwhm_px = ecc = None
+    hfr = fwhm_mom = ecc_all = ecc_br = None
+    n_br = 0
     if have_sep and n:
         hfr = _med(st["hfr"], positive=True)
-        fwhm_px = _med(st["fwhm"], positive=True)
-        ecc = _med(st["ecc"])
-    fwhm_arcsec = fwhm_px * pixel_scale if fwhm_px is not None else None
-    cs = corner_spread(st["x"], st["y"], st["fwhm"], native_shape, fwhm_px) \
+        fwhm_mom = _med(st["fwhm"], positive=True)
+        ecc_all = _med(st["ecc"])
+        ecc_br, n_br = bright_ecc(st["ecc"], st["flux"], st.get("snr"),
+                                  config)
+    # corner spread is relative: the per-star moment FWHM against its median
+    cs = corner_spread(st["x"], st["y"], st["fwhm"], native_shape, fwhm_mom) \
         if have_sep else None
     from photonscript.shared.rigs import camera_constants
     ex = exposure(data, st["x"], st["y"], noise, config,
                   coord_scale=1.0 / k,
                   read_noise=camera_constants(config, header)["read_noise_adu"])
     sky = _sky_fields(data, config, rig, header, osc, binned_input)
+    # PS-146: judged ecc (bright stars when the rule says so) and FWHM
+    filt = filter_name if filter_name is not None \
+        else frame_filter(config, header)
+    shape = shape_fields(config, ecc_all=ecc_all, ecc_bright=ecc_br,
+                         n_bright=n_br, fwhm_moment_px=fwhm_mom, hfr_px=hfr,
+                         pixel_scale=pixel_scale, filt=filt,
+                         exposure_flag=ex.get("exposure"), stars=n)
+    ecc, fwhm_px = shape["ecc"], shape["fwhm_px"]
+    fwhm_arcsec = shape["fwhm_arcsec"]
 
     # PS-94: the 0.47"/px measure (RC16 only, qa_ecc_binned)
-    ecc_bin = hfr_bin = stars_bin = None
+    ecc_bin = ecc_bin_all = hfr_bin = stars_bin = None
     if rig == "rc16" and not osc and have_sep and \
             bool(getattr(config, "qa_ecc_binned", True)):
         if binned_input:
-            ecc_bin, hfr_bin, stars_bin = ecc, hfr, n
+            ecc_bin, ecc_bin_all, hfr_bin, stars_bin = ecc, ecc_all, hfr, n
         else:
             try:
                 from photonscript.shared import star_shape
                 rb = star_shape.measure(bin2x2_mean(data), binned=True,
                                         max_stars=MAX_STARS)
                 if rb is not None:
-                    ecc_bin, hfr_bin, stars_bin = (rb["ecc"], rb["hfr_px"],
-                                                   rb["n"])
+                    ecc_bin_all, hfr_bin, stars_bin = (rb["ecc"],
+                                                       rb["hfr_px"], rb["n"])
+                    ecc_bin = ecc_bin_all
+                    sb = rb.get("stars")
+                    if shape["ecc_src"] == "bright" and sb:
+                        eb, _nb = bright_ecc(sb["ecc"], sb["flux"],
+                                             sb.get("snr"), config)
+                        if eb is not None:
+                            ecc_bin = eb
             except Exception as e:  # noqa: BLE001 - never costs a grade
                 logger.debug("binned measure skipped: %s", e)
 
@@ -375,6 +622,14 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
         "fwhm_px": _r(fwhm_px, 2),
         "fwhm_arcsec": _r(fwhm_arcsec, 2),
         "ecc": _r(ecc, 3),
+        # PS-146: what the judged ecc and FWHM came from
+        "ecc_all": _r(ecc_all, 3), "ecc_bright": _r(ecc_br, 3),
+        "ecc_bright_n": shape["ecc_bright_n"], "ecc_src": shape["ecc_src"],
+        "ecc_why": shape["ecc_why"],
+        "ecc_bin_all": _r(ecc_bin_all, 3),
+        "fwhm_moment_arcsec": _r(shape["fwhm_moment_arcsec"], 2),
+        "fwhm_src": shape["fwhm_src"],
+        "fwhm_unreliable": shape["fwhm_unreliable"],
         "ecc_bin": _r(ecc_bin, 3), "hfr_bin": _r(hfr_bin, 2),
         "stars_bin": stars_bin,
         "background": round(background, 1),
