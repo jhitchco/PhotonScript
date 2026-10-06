@@ -22,7 +22,9 @@ scorecard check to the attributed targets:
 3. Verdicts: only the pointing row of each stored scorecard is swapped
    (qa_rules.regrade_pointing); human verdicts are never touched. A sub that
    becomes rejected leaves the Library (links move to Library/_rejected/,
-   as the PS-21 rescore does).
+   as the PS-21 rescore does). PS-141: that move is decided from the merged
+   log under the night lock (_move_rejected), not from this pass's own
+   copy, so a sub a person accepts during the pass keeps its Library link.
 
 PS-107: the check is source-aware. Without a plate solve (header, mount
 log, rc16-correlated) only a gross miss above pointing_header_reject_deg
@@ -176,6 +178,33 @@ def _move_out_of_library(config, rec: dict) -> list[str]:
     return moves
 
 
+def _move_rejected(config, date: str, recs: list[dict]) -> dict:
+    """PS-141: Library moves for the subs this pass newly rejected, decided
+    from the night's log after the merge and under the night lock. A sub
+    whose merged record is not rejected (a person accepted it, or sent it
+    back to review, during the pass) keeps its links. A verdict given after
+    this returns moves the links itself (runs._library_follow)."""
+    from photonscript.scheduler.runs import _load_subs, _record_key, subs_lock
+    out = {"moves": 0, "skipped": 0}
+    if not recs:
+        return out
+    with subs_lock(config, date):
+        now = {}
+        for r in _load_subs(config, date):
+            now.setdefault(_record_key(r), r)
+        for r in recs:
+            cur = now.get(_record_key(r))
+            if cur is None or cur.get("passed_qa"):
+                out["skipped"] += 1
+                continue
+            out["moves"] += len(_move_out_of_library(config, cur))
+    if out["skipped"]:
+        logger.info("pointing %s: %d newly rejected sub(s) kept their Library "
+                    "links (verdict changed during the pass)", date,
+                    out["skipped"])
+    return out
+
+
 def night_pass(config, date: str, solve: bool = False, runner=None,
                apply: bool = True, budget_min: float | None = None) -> dict:
     """See the module doc. Returns counts plus the night summary."""
@@ -196,7 +225,8 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
         out = {"date": date, "subs": len(subs), "written": 0, "with_position": 0,
                "solve_attempts": 0, "solved": 0, "solve_s": 0.0,
                "records_updated": 0, "verdicts_changed": 0, "newly_rejected": 0,
-               "un_rejected": 0, "library_moves": 0, "dry_run": not apply,
+               "un_rejected": 0, "library_moves": 0,
+               "library_moves_skipped": 0, "dry_run": not apply,
                "budget_hit": False, "mount_log_lines": len(lines)}
         sols = {rig: solve_store.lookup(config, date, rig) for rig in frames}
 
@@ -284,6 +314,7 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
         # 4. the "On target" check on the stored scorecards (PS-107: by source;
         # a dry run reports what would change and writes nothing)
         changed = 0
+        rejected = []   # PS-141: Library moves wait for the merged log
         for rig, fr in frames.items():
             for f in fr:
                 r, p = f["rec"], f["point"]
@@ -313,7 +344,11 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
                 if r.get("review_source") is None:
                     r.pop("review_source", None)
                 if was and not r.get("passed_qa"):
-                    out["library_moves"] += len(_move_out_of_library(config, r))
+                    rejected.append(r)
+    if apply and rejected:
+        mv = _move_rejected(config, date, rejected)
+        out["library_moves"] = mv["moves"]
+        out["library_moves_skipped"] = mv["skipped"]
     if apply and changed:
         if out["verdicts_changed"]:
             sync_goal_progress(config)
