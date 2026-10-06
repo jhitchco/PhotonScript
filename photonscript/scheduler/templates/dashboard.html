@@ -931,8 +931,7 @@
                 el.style.background = 'rgba(251,191,36,.08)';
             }
             el.title = (d.rigs || []).flatMap(rg => (rg.items || []).map(
-                t => (rg.name || rg.rig) + ': ' + t)).join('
-') || 'Nothing owed';
+                t => (rg.name || rg.rig) + ': ' + t)).join('\n') || 'Nothing owed';
             el.hidden = false;
         } catch (e) {
             el.hidden = true;
@@ -1479,8 +1478,7 @@
                 headers:{'Content-Type':'application/json'},
                 body: JSON.stringify({text: name})});
             if (r.status === 400) {
-                alert("'" + name + "' is not in the catalog.
-" + (await r.json()).detail);
+                alert("'" + name + "' is not in the catalog.\n" + (await r.json()).detail);
                 return;
             }
         }
