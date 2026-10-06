@@ -2378,6 +2378,16 @@ def _save_png_atomic(img, out: Path) -> None:
             pass
 
 
+def _stretch_points(small) -> tuple[float, float]:
+    """Black and white point of the preview stretch: about 1 sigma above the
+    sky median (MAD) and the 99.7th percentile. The PS-6 / PS-17 crops
+    stretch full-resolution windows with the same points (sub_crops)."""
+    import numpy as np
+    med = float(np.median(small))
+    mad = float(np.median(np.abs(small - med))) or 1.0
+    return med + 1.0 * 1.4826 * mad, float(np.percentile(small, 99.7))
+
+
 def _stretch_and_save(small, out: Path, width: int, stars=None) -> None:
     """Sqrt-stretch a decimated frame to a PNG. Shared by thumbnail() and the
     grade-time pre-warm so both produce a byte-identical stretch.
@@ -2390,10 +2400,7 @@ def _stretch_and_save(small, out: Path, width: int, stars=None) -> None:
     """
     import numpy as np
     from PIL import Image, ImageDraw
-    med = float(np.median(small))
-    mad = float(np.median(np.abs(small - med))) or 1.0
-    lo = med + 1.0 * 1.4826 * mad
-    hi = float(np.percentile(small, 99.7))
+    lo, hi = _stretch_points(small)
     stretched = np.sqrt(np.clip((small - lo) / max(hi - lo, 1e-3), 0, 1))
     img = Image.fromarray((stretched * 255).astype(np.uint8),
                           mode="L").convert("RGB")

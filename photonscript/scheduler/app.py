@@ -2977,6 +2977,8 @@ from photonscript.scheduler.routers import auto_arm as _auto_arm_router  # noqa:
 app.include_router(_auto_arm_router.router)
 from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E402
 app.include_router(_catalog_router.router)
+from photonscript.scheduler.routers import viewer as _viewer_router  # noqa: E402
+app.include_router(_viewer_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
