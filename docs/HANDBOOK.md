@@ -230,6 +230,46 @@ armer is not involved and stays DISARMED.
   the test is skipped; re-sideload another night. The standalone tracking-test
   download keeps its park-and-hold after the ladder.
 
+### Watch a sideloaded night (PS-136)
+
+A sideloaded night is NINA's, but the armer can WATCH it: state `WATCHING`
+(purple chip "Watching sideloaded night" in Tonight's Run). It enters by
+itself when tonight's RC16 sideload (`kind: "sideload"`, rig rc16, ok) is
+loaded and NINA #1's `/sequence/state` shows anything RUNNING (detector
+every 60 s while the armer is DISARMED / COMPLETE / ERROR;
+`PS_WATCH_SIDELOAD_AUTO`, default true), or by the dashboard's **Watch this
+night** button (`POST /api/arm/watch`). The button turns into **Stop
+watching** (`POST /api/arm/watch/stop`): NINA keeps running, and the
+detector never adopts that sideload again. `GET /api/arm/watch` shows the
+watch, tonight's RC16 sideload and what NINA #1 runs.
+
+- Never loads, starts, stops or re-dispatches a sequence. Arm 409s while
+  watching (it would replace the sideload at pre-config), `dispatch_raw`
+  refuses, `POST /api/update` and the boot-time self-update refuse (PS-58),
+  calibration capture / QA backfill / ecc-scale wait. Disarm = stop
+  watching, no make-safe.
+- Unsafe: one priority push "PAUSED (watching)", one "RESUMED" when safe
+  again (kind `watch` events `pause` / `resume`). PS-77's check is alert
+  only: unsafe for `unsafe_stop_grace_s` with SAFE_LOOP still running = one
+  priority push, the sequence is not stopped (the armer could not resume it).
+- Guiding watchdog (same ladder and alert gate as an armed night, including
+  its one PHD2 restart) only while a target that has a StartGuiding in the
+  saved sideload file is RUNNING: never during the unguided tracking test,
+  an unguided target or an unsafe wait. No file: `guided_default`, never
+  during a "Tracking test" container.
+- Ends when NINA #1 has run nothing for 3 ticks (sequence over) or at the
+  dawn shutdown time (PS-36 timing): summary push, lifecycle chip, then
+  after the warm window a READ-ONLY check (every cooler off, mount AtPark)
+  with a priority push on a problem. At dawn with NINA #1 still running:
+  priority push, no command. `PS_WATCH_DAWN_ACTION=shutdown` runs the armed
+  night's `dawn_shutdown` (stop, guider stop, warm + dew off, park) instead.
+- Restart mid-watch: reattaches like an armed night (`armer_state.json`).
+- Not covered while watching: the cooler nanny, PS-93 recalibration and the
+  unguided fallback (both re-dispatch).
+- `dispatch_raw` (RC16 dusk flats) now reads NINA's load validation between
+  load and start (PS-132 `nina_validation`, `PS_NINA_LOAD_VALIDATION`
+  alert / refuse / off, default alert).
+
 ### Add a target (PS-124)
 
 The Target Goals **Add** box takes a catalog name, catalog id or alias

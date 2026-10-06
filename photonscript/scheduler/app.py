@@ -558,6 +558,14 @@ async def _start_auto_arm():
 
 
 @app.on_event("startup")
+async def _start_watch_detector():
+    """PS-136: adopt tonight's running RC16 sideload into WATCHING. Always
+    started; each tick is a no-op unless config.watch_sideload_auto."""
+    from photonscript.scheduler.armer import run_watch_detector
+    asyncio.create_task(run_watch_detector(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_calibration_autofill():
     """PS-113: daytime calibration auto-fill. Always started; each tick is a
     no-op unless config.calibration_autofill (default off)."""
@@ -609,6 +617,8 @@ _CONFIG_FIELDS = [
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
+    ("watch_sideload_auto", "PS_WATCH_SIDELOAD_AUTO", "Watch a sideloaded night (PS-136): enter WATCHING when tonight's RC16 sideload runs in NINA #1 (never dispatches)", "Imaging", "bool", False, False),
+    ("watch_dawn_action", "PS_WATCH_DAWN_ACTION", "Watched night at dawn (PS-136): verify (read-only check + alert) | shutdown (stop, warm, park, then verify)", "Imaging", "str", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),
@@ -1120,7 +1130,11 @@ async def api_arm(request: Request):
         if guiding is not None and norm_guiding_mode(guiding) is None:
             return JSONResponse(status_code=400, content={
                 "detail": f"unknown guiding mode {guiding!r}: use 'guided' or 'unguided'"})
-        return await armer.arm(guiding=norm_guiding_mode(guiding))
+        out = await armer.arm(guiding=norm_guiding_mode(guiding))
+        if out.get("refused"):   # PS-136: WATCHING a sideloaded night
+            return JSONResponse(status_code=409, content={
+                **out, "detail": out["refused"]})
+        return out
     return await armer.disarm()
 
 
@@ -2596,7 +2610,7 @@ def _update_blockers(allow_armed: bool) -> list[str]:
     """Why a restart for an update must wait (PS-58). Empty = go."""
     why = []
     st_name = str(get_armer().state or "").upper()
-    if st_name in ("RUNNING", "PAUSED_UNSAFE"):
+    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING"):   # PS-136
         why.append(f"armer is {st_name}: refusing to restart mid-night. "
                    "Stop the run first.")
     elif st_name == "ARMED" and not allow_armed:
@@ -2980,6 +2994,8 @@ from photonscript.scheduler.routers import auto_arm as _auto_arm_router  # noqa:
 app.include_router(_auto_arm_router.router)
 from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E402
 app.include_router(_catalog_router.router)
+from photonscript.scheduler.routers import watch as _watch_router  # noqa: E402
+app.include_router(_watch_router.router)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

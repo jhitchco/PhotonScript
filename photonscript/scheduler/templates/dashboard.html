@@ -68,6 +68,7 @@
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem 1rem;margin-bottom:.8rem;">
                 <button class="btn btn-secondary" id="armBtn" title="Arm tonight UNGUIDED (Paramount MX on TPoint + ProTrack, no PHD2). RC16 subs are capped at the unguided max exposure (300 s default). Guiding is the default.">Arm (Unguided: TPoint + ProTrack)</button>
                 <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding — the default. Corrects tracking drift for long subs at 3248mm.">Arm (Guiding) — default</button>
+                <button class="btn btn-secondary" id="watchBtn" title="PS-136: watch a sideloaded night PhotonScript did not dispatch. No sequence is sent; unsafe pauses and guiding are alerted, updates are refused, and park + coolers are checked at the dawn shutdown time.">Watch this night</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
             </div>
@@ -258,7 +259,8 @@
     }
 
     const ARM_COLORS = {DISARMED:'#64748b', ARMED:'#eab308', RUNNING:'#22c55e',
-                        PAUSED_UNSAFE:'#f97316', COMPLETE:'#7dd3fc', ERROR:'#ef4444'};
+                        PAUSED_UNSAFE:'#f97316', COMPLETE:'#7dd3fc', ERROR:'#ef4444',
+                        WATCHING:'#a78bfa'};
     async function refreshArm() {
         const r = await fetch('/api/arm');
         const d = await r.json();
@@ -273,7 +275,17 @@
             ? ('Disarm' + (d.guiding ? ' (' + d.guiding + ')' : ''))
             : 'Arm (Unguided: TPoint + ProTrack)';
         btn.dataset.armed = active ? '1' : '0';
-        if (gbtn) gbtn.style.display = active ? 'none' : '';
+        // PS-136: watching a sideloaded night: no Arm (it would replace the
+        // sequence); the watch button stops watching instead.
+        const watching = d.state === 'WATCHING';
+        btn.style.display = watching ? 'none' : '';
+        if (gbtn) gbtn.style.display = (active || watching) ? 'none' : '';
+        const wbtn = document.getElementById('watchBtn');
+        if (wbtn) {
+            wbtn.style.display = active ? 'none' : '';
+            wbtn.textContent = watching ? 'Stop watching' : 'Watch this night';
+            wbtn.dataset.watching = watching ? '1' : '0';
+        }
         const lr = d.last_raw;
         const el2 = document.getElementById('rawDispatch');
         if (el2) el2.innerHTML = lr
@@ -285,6 +297,21 @@
         const lc = document.getElementById('armLifecycle');
         if (lc) {
             const chips = [];
+            const w = d.watch;
+            if (w && d.state === 'WATCHING') {
+                const due = w.shutdown_due_utc
+                    ? new Date(w.shutdown_due_utc).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'})
+                    : '?';
+                const now = (w.running || []).slice(-1)[0] || '';
+                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + (w.paused ? 'rgba(249,115,22,.7)' : 'rgba(167,139,250,.5)') +
+                    ';background:rgba(167,139,250,.08);"><b>Watching sideloaded night</b>: ' +
+                    (w.sequence || '?') + ' (' + (w.trigger || '') + ', since ' +
+                    String(w.since || '').slice(11, 16) + ' UTC)' +
+                    (w.paused ? ' &middot; <b>PAUSED: unsafe</b>' : '') +
+                    (now ? ' &middot; now: ' + now.replace(/_Container$/, '') : '') +
+                    ' &middot; no dispatch; park + cooler check at ' + due + '</div>');
+            }
             const sd = d.shutdown;
             if (sd && !active) {
                 const when = sd.at
@@ -292,7 +319,8 @@
                     : '';
                 let verify = '⏳ verifying coolers…', border = 'rgba(125,211,252,.3)';
                 if (sd.verify && sd.verify.ok) {
-                    verify = '✓ coolers confirmed OFF'; border = 'rgba(74,222,128,.4)';
+                    verify = '&#10003; coolers confirmed OFF' + (sd.watched ? ', mount parked' : '');
+                    border = 'rgba(74,222,128,.4)';
                 } else if (sd.verify && !sd.verify.ok) {
                     verify = '⚠ COOLER STILL ON — check NINA / Stop & Make Safe';
                     border = 'rgba(239,68,68,.7)';
@@ -662,6 +690,20 @@
                 });
         });
     }
+    document.getElementById('watchBtn').addEventListener('click', async (ev) => {
+        // PS-136: watch (or stop watching) a sideloaded night
+        const stop = ev.currentTarget.dataset.watching === '1';
+        if (stop && !confirm('Stop watching? NINA keeps running the sequence; ' +
+                             'no dawn check, guiding watchdog or update refusal after this.')) return;
+        if (!stop && !confirm('Watch tonight's sideloaded night? Nothing is sent to NINA; ' +
+                              'PhotonScript alerts and checks park + coolers at dawn.')) return;
+        const r = await fetch(stop ? '/api/arm/watch/stop' : '/api/arm/watch', {method: 'POST'});
+        if (!r.ok) {
+            const e = await r.json().catch(() => ({}));
+            alert('Refused: ' + (e.detail || r.status));
+        }
+        refreshArm();
+    });
     document.getElementById('makeSafeBtn').addEventListener('click', async () => {
         if (!confirm('Stop the sequence, warm the camera, and park the mount?')) return;
         const r = await fetch('/api/makesafe', {method: 'POST'});

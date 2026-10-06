@@ -81,6 +81,15 @@ class PhotonScriptConfig(BaseSettings):
     # window opens. Astro->nautical dawn is 28-37 min at AARO, so the old astro
     # dawn + 30 shutdown ALWAYS fired before nautical dawn + 5. Unsafe at that
     # point = shut down at once (no flats possible).
+    # PS-136: the armer WATCHES a sideloaded night (PS-123) it did not dispatch:
+    # dawn checks + summary, guiding watchdog where guided, unsafe pause /
+    # resume alerts, update refusal. It never loads, starts or re-dispatches.
+    watch_sideload_auto: bool = True  # enter WATCHING by itself when tonight's
+    # RC16 sideload is loaded and NINA #1 runs it (the dashboard button too)
+    watch_dawn_action: str = "verify"  # at the dawn shutdown time while
+    # watching: "verify" = read-only check (mount parked, coolers off) + alert,
+    # no commands; "shutdown" = the armed night's dawn_shutdown (stop, guider
+    # stop, warm + dew off, park) then the same verify
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead

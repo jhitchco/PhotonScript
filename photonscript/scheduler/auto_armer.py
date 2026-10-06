@@ -132,11 +132,13 @@ def _night_key(config, now: datetime) -> str:
     return night_of(config, now)
 
 
-def sideload_tonight(config, now: datetime | None = None) -> dict | None:
+def sideload_tonight(config, now: datetime | None = None,
+                     rig: str | None = None) -> dict | None:
     """The latest successful PS-123 sideload ("sideload" event, ok=true) that
     belongs to tonight, else None. Tonight = runs/<night>_events.jsonl for the
     current noon-to-noon night, plus a load made the same morning (06:00 local
-    or later), which night_of() still files under the previous night."""
+    or later), which night_of() still files under the previous night. rig
+    (PS-136) keeps only that rig's loads."""
     from photonscript.shared.localtime import to_local
     from photonscript.shared.night_events import events_path
     from photonscript.shared.phd2_store import parse_z, read_jsonl
@@ -147,6 +149,8 @@ def sideload_tonight(config, now: datetime | None = None) -> dict | None:
     for n in (night - timedelta(days=1), night):
         for r in read_jsonl(events_path(config, n.strftime("%Y-%m-%d"))):
             if r.get("kind") != "sideload" or not r.get("ok"):
+                continue
+            if rig is not None and r.get("rig") != rig:
                 continue
             t = parse_z(r.get("t"))
             if t is None or t > now or to_local(config, t) < cutoff:
