@@ -102,9 +102,20 @@ class TuneCfg:
         return self.peak_hi + HYST
 
 
-def tune_cfg(config) -> TuneCfg:
+NB_FILTERS = ("Ha", "OIII", "SII")   # 3 nm: the OAG behind the wheel sees little
+
+
+def tune_cfg(config, filt: str | None = None) -> TuneCfg:
+    """The tuner's band. PS-85: on a 3 nm filter (Ha / OIII / SII) the
+    exposure band is phd2_tune_exp_ms_nb (default 1 to 8 s) when set, so a
+    faint narrowband guide star gets longer exposures before PS-85 calls the
+    block not viable."""
     hfd = _pair(getattr(config, "phd2_tune_hfd_px", "2,5"), (2.0, 5.0))
     exp = _pair(getattr(config, "phd2_tune_exp_ms", "1000,4000"), (1000.0, 4000.0))
+    if str(filt or "") in NB_FILTERS:
+        nb = str(getattr(config, "phd2_tune_exp_ms_nb", "") or "").strip()
+        if nb:
+            exp = _pair(nb, exp)
     return TuneCfg(peak_lo=float(getattr(config, "phd2_tune_peak_lo", 0.60) or 0.60),
                    peak_hi=float(getattr(config, "phd2_tune_peak_hi", 0.80) or 0.80),
                    snr_min=float(getattr(config, "phd2_tune_snr_min", 20.0) or 20.0),
@@ -442,10 +453,10 @@ class GuideStarTuner:
 
     async def _measure(self, why: str) -> dict | None:
         from photonscript.scheduler import phd2_tuning as tn
-        cfg = tune_cfg(self.config)
         info = await self._profile_info()
         cur = await self.phd2.refresh_exposure()
         ctx = self.context_fn() or {}
+        cfg = tune_cfg(self.config, ctx.get("filter") or self._filter)   # PS-85 NB band
         key = self._ctx_key(info, ctx, cur)
         if key != self._key:
             self._key, self.readings = key, []
@@ -526,12 +537,13 @@ class GuideStarTuner:
                 hit = await asyncio.to_thread(
                     tn.recall, self.config, info.get("profile"), info.get("binning"),
                     info.get("gain"), ctx.get("target"), new_filter,
-                    tune_cfg(self.config))
+                    tune_cfg(self.config, new_filter))
                 if hit and hit.get("exposure_ms"):
                     cur = await self.phd2.refresh_exposure()
                     durs = await self.phd2.get_exposure_durations()
                     darks = await self._dark_list(info.get("profile_id"))
-                    ok = _snap(hit["exposure_ms"], durs, tune_cfg(self.config), darks) \
+                    ok = _snap(hit["exposure_ms"], durs, tune_cfg(self.config, new_filter),
+                               darks) \
                         if darks is not None else []
                     if ok:
                         pick = min(ok, key=lambda d: (abs(d - hit["exposure_ms"]), d))

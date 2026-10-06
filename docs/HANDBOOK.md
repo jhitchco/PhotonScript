@@ -712,6 +712,15 @@ docs/OSC_INTEGRATION.md section 0):
   written pre-dusk only behind `phd2_audit_autofix`; binning stays at 2 and
   the report says from the measured HFD whether bin 3 would hit 2 to 5 px.
   `GET /api/phd2/tuning`, Guiding tab "Guide Star Tuner", runs page line.
+- PER-BLOCK GUIDING (PS-85): the OAG sees each filter, so a 3 nm block may
+  have no real guide star (2026-10-05: PHD2 guided on noise, SNR 22 to 31).
+  The RC16 agent checks PHD2's star at the start of each guided block (SNR,
+  HFD, profile; read only) and guard D6 watches for SNR under the minimum
+  with a non-star profile while guiding. A block without a real star runs
+  unguided (TPoint + ProTrack) at the tracking-test length per filter (else
+  L 60 s, NB 300 s), no dithers. `guide_block_mode=observe` (default)
+  records and pushes once per target; `auto` re-dispatches. NB tuner band
+  1 to 8 s. `GET /api/phd2/blocks`, Guiding tab "Per-block guiding".
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard

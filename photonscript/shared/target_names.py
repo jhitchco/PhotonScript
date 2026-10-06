@@ -57,6 +57,7 @@ def generator_names() -> dict:
                             gen.TARGET_FOCUS_CAL_SUFFIX,
                             gen.TARGET_TRACKING_LADDER_SUFFIX,
                             gen.TARGET_BLOCK_SUFFIX,          # PS-61
+                            gen.TARGET_GUIDE_BLOCK_SUFFIX,    # PS-85
                             gen.PIGGY_WEST_CENTER_SUFFIX),    # PS-26
         # suffixes that wrap a FILTER name: the container names no target
         "non_target_suffixes": (gen.FILTER_UNTIL_MOONRISE_SUFFIX,),

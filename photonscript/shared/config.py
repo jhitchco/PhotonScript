@@ -483,8 +483,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # Off for the first guarded night (observe-only)
     guard_on_fail: str = "alert"  # recovery failed: "alert" (one push per night)
                                  # or "unguided" (armer.fallback_unguided: re-
-                                 # dispatch the rest unguided). Keep "alert"
-                                 # until PS-85 caps unguided sub lengths
+                                 # dispatch the rest unguided, capped by
+                                 # unguided_max_exposure_s). Default stays
+                                 # "alert" until Jeremy switches it (PS-85)
     guide_min_star_hfd_px: float = 1.5  # D1: a guide "star" under this HFD
                                  # (PHD2 px at bin 2; scaled by 2 / binning) is
                                  # checked for a one-pixel profile
@@ -503,8 +504,8 @@ class PhotonScriptConfig(BaseSettings):
     guide_rate_sidereal: float = 0.5  # fallback guide speed (x sidereal) when
                                  # neither NINA nor the PHD2 log reports one
     selftest_on_fail: str = "alert"  # FAIL: "alert" (one push per night) or
-                                 # "unguided" (armer.fallback_unguided). Keep
-                                 # "alert" until PS-85 caps unguided subs
+                                 # "unguided" (armer.fallback_unguided, capped).
+                                 # Default stays "alert" until Jeremy switches it
     phd2_hotpix_max_age_days: float = 7.0  # rebuild the guide-camera hot-pixel
                                  # map after this (or a binning/exposure change)
     # PS-93 PHD2 calibration manager (scheduler.phd2_calibration +
@@ -520,8 +521,8 @@ class PhotonScriptConfig(BaseSettings):
                                  # retries once inside it (needs 150 s left)
     phd2_cal_fail_action: str = "keep"  # second failed grade: "keep" guiding
                                  # on the poor calibration and alert once, or
-                                 # "unguided" (armer.fallback_unguided; keep
-                                 # "keep" until PS-85 caps unguided subs)
+                                 # "unguided" (armer.fallback_unguided, capped;
+                                 # default stays "keep" until Jeremy switches it)
     phd2_flip_action: str = "alert"  # Dec runs away after a meridian flip:
                                  # "alert" (one push per night with the Reverse
                                  # Dec fix) or "off" (record only). In-place
@@ -556,6 +557,45 @@ class PhotonScriptConfig(BaseSettings):
     phd2_tune_hfd_px: str = "2,5"    # HFD target band (guide px at the binning)
     phd2_tune_exp_ms: str = "1000,4000"  # exposures the tuner may pick (ms)
     phd2_guide_full_scale_adu: int = 65535  # guide camera full scale (16-bit)
+    phd2_tune_exp_ms_nb: str = "1000,8000"  # PS-85: the tuner's exposure band
+                                 # on 3 nm Ha / OIII / SII (the OAG is behind
+                                 # the wheel); "" = phd2_tune_exp_ms
+    phd2_tune_bin_max_nb: int = 3  # PS-85: next-night advice may suggest guide
+                                 # binning up to this when NB is still faint at
+                                 # gain 100 (advice only, never written)
+    # PS-85 guided + ProTrack: per filter block, guide only on a real star.
+    # The RC16 agent checks PHD2's star (SNR, HFD, profile) at the start of
+    # each guided block; a block without one runs unguided at the proven
+    # unguided sub length instead (ProTrack carries the tracking).
+    guide_block_mode: str = "observe"  # off | observe (decide, record, show,
+                                 # one push per target per night; nothing is
+                                 # switched) | auto (stop guiding and re-
+                                 # dispatch the rest with that block unguided)
+    guide_viable_snr_min: float = 30.0  # a guide star under this SNR is not
+                                 # viable (2026-10-05 noise locks read 21.9 to
+                                 # 30.9; PHD2's own StarMinSNR on the scope: 50)
+    guide_viable_hfd_px: str = "1.5,10"  # viable HFD band (PHD2 px at bin 2,
+                                 # scaled by 2 / binning like the guard's D1)
+    guide_viable_frames: int = 5  # guide frames per viability check
+    guide_lowsnr_frames: int = 10  # PS-91 guard D6: SNR under the viable
+                                 # minimum this many guided frames in a row =
+                                 # guiding on noise (0 = off)
+    guide_fallback_exposure_s: str = "L:60,R:60,G:60,B:60,Ha:300,OIII:300,SII:300"
+                                 # unguided sub length per filter when a block
+                                 # falls back and the tracking test proves
+                                 # nothing longer (set from the 2026-10-05
+                                 # test: L passed only at 60 s, Ha eccentricity
+                                 # was the same from 60 to 300 s). Never over
+                                 # unguided_max_exposure_s
+    guide_fallback_test_date: str = "2026-10-05"  # tracking-test night whose
+                                 # report sets proven lengths ("" = none)
+    guide_fallback_test_since_utc: str = "2026-10-06T04:12:00Z"  # only test
+                                 # subs after this count (ProTrack on)
+    guide_block_history_days: int = 7  # plan a block unguided at dispatch when
+                                 # the same target + filter was not viable on a
+                                 # night this recent at the same guide binning
+                                 # and gain (0 = tonight's checks only)
+    guide_block_max_redispatch: int = 3  # mode auto: re-dispatches per night
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

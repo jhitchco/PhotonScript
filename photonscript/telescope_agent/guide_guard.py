@@ -25,6 +25,14 @@ safety and armer state); it answers with verdicts. Five detectors:
       it is the pulse path (handed to the PS-92 FAIL path, not re-selected).
   D5  the lock position sits within 2 px of a hot-pixel map entry (checked
       on every StarSelected / LockPositionSet).
+  D6  (PS-85) guiding on noise: PHD2's SNR stayed under guide_viable_snr_min
+      for guide_lowsnr_frames guided frames in a row within one lock epoch,
+      confirmed by PHD2's star image not looking like a star (a jagged or
+      one-pixel profile, guide_viability.profile_sanity), so a weak but real
+      star is left alone (2026-10-05: a 3 nm "star" at SNR 21.9 to 30.9 with
+      a jagged profile; 2026-09-26 real OIII / SII stars read SNR 20 to 22).
+      Kind LOW_SNR: the agent stops guiding and switches that filter block to
+      unguided (PS-85 guide_block_mode), instead of re-selecting a star.
 
 Also here: hot-pixel map helpers, star detection on a guide frame and the
 guide-star vetting used by the recovery and the pulse self-test.
@@ -39,6 +47,7 @@ from dataclasses import dataclass, field
 from photonscript.shared import guide_motion as gm
 
 NON_STAR, IMPOSSIBLE, PULSES = "non_star", "impossible_state", "pulses_not_moving"
+LOW_SNR = "low_snr"       # PS-85 D6
 D1_FRAMES = 10
 D1_PEAK_FRAC = 0.5
 D3_PERSIST_S = 120.0
@@ -50,8 +59,8 @@ GUIDING_STATES = ("Guiding", "Calibrating", "LostLock")
 
 @dataclass
 class Verdict:
-    code: str            # D1 .. D5
-    kind: str            # NON_STAR | IMPOSSIBLE | PULSES
+    code: str            # D1 .. D6
+    kind: str            # NON_STAR | IMPOSSIBLE | PULSES | LOW_SNR
     detail: str
     evidence: dict = field(default_factory=dict)
 
@@ -69,6 +78,7 @@ class GuardContext:
     binning: int | None = None
     lock: tuple | None = None                    # lock position (px)
     star_peak_frac: float | None = None          # D1 confirmation
+    star_profile_ok: bool | None = None          # D6 confirmation (PS-85)
     at_park: bool | None = None
     tracking: bool | None = None
     safe: bool | None = None
@@ -275,7 +285,7 @@ class NonStarLockGuard:
     def wants_star_image(self, ctx: GuardContext) -> bool:
         """True when D1's HFD test trips and needs PHD2's star image to
         confirm (the agent then asks get_star_image)."""
-        return self._d1_hfd(ctx) is not None
+        return self._d1_hfd(ctx) is not None or self._d6_snr(ctx) is not None
 
     def _guided(self, ctx: GuardContext, seconds: float | None = None):
         fs = [f for f in ctx.frames if not f.get("drop")]
@@ -365,7 +375,43 @@ class NonStarLockGuard:
             nonstar = any(v.code in ("D1", "D5") for v in out)
             d4.kind = NON_STAR if nonstar else PULSES
             out.append(d4)
+        # D6 (PS-85) guiding on noise
+        d6 = self._d6(ctx) if guiding else None
+        if d6 is not None:
+            out.append(d6)
         return out
+
+    def _d6_snr(self, ctx: GuardContext) -> tuple | None:
+        """(median SNR, frames, floor) when the last guide_lowsnr_frames
+        guided (not lost, not settling) frames of the current lock epoch all
+        read under guide_viable_snr_min; None when off or not so."""
+        n = int(getattr(self.config, "guide_lowsnr_frames", 10) or 0)
+        if n <= 0 or not ctx.frames or ctx.app_state != "Guiding":
+            return None
+        floor = float(getattr(self.config, "guide_viable_snr_min", 30.0) or 30.0)
+        ep = ctx.frames[-1].get("epoch")
+        cur = [f for f in self._guided(ctx) if f.get("epoch") == ep
+               and not f.get("settling")]
+        last = cur[-n:]
+        if len(last) < n or any(f.get("snr") is None for f in last):
+            return None
+        if any(float(f["snr"]) >= floor for f in last):
+            return None
+        return statistics.median(float(f["snr"]) for f in last), n, floor
+
+    def _d6(self, ctx: GuardContext) -> Verdict | None:
+        """D6 when the SNR test holds and PHD2's star image is not star-like
+        (ctx.star_profile_ok False; unknown never trips)."""
+        hit = self._d6_snr(ctx)
+        if hit is None or ctx.star_profile_ok is not False:
+            return None
+        med, n, floor = hit
+        return Verdict(
+            "D6", LOW_SNR,
+            f"guide star SNR {med:.1f} (median of the last {n} frames, all "
+            f"under {floor:g}) and its profile is not a star's: PHD2 is "
+            "guiding on noise",
+            {"snr_median": round(med, 1), "frames": n, "snr_min": floor})
 
     def _d4(self, ctx: GuardContext) -> Verdict | None:
         if not ctx.rates_px_s or not ctx.scale:

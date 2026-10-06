@@ -257,7 +257,9 @@ def recommend(config, nights: int = RECENT_NIGHTS) -> dict:
         by_f.setdefault(e.get("filter") or "?", []).append(e)
     rows = {}
     need_up, need_down = [], []
+    nb_up = []    # PS-85: narrowband filters still faint at the NB band's max
     for f, es in sorted(by_f.items()):
+        fcfg = tune_cfg(config, f)   # PS-85: 3 nm filters get the NB exposure band
         rates = [r for r in (_rate(e) for e in es) if r]
         clipped = sum(1 for e in es if e.get("clipped"))
         bkg = statistics.median([max(0.0, (_num(e.get("peak_frac")) or 0)
@@ -269,11 +271,14 @@ def recommend(config, nights: int = RECENT_NIGHTS) -> dict:
                "peak_frac": _med([e.get("peak_frac") for e in es])}
         if rates:
             r = statistics.median(rates)
-            at_max, at_min = r * cfg.exp_hi, r * cfg.exp_lo
+            at_max, at_min = r * fcfg.exp_hi, r * fcfg.exp_lo
             row["peak_at_max_exp"] = round(at_max + bkg, 3)
             row["peak_at_min_exp"] = round(at_min + bkg, 3)
+            row["exp_band_ms"] = [fcfg.exp_lo, fcfg.exp_hi]
             if at_max + bkg < cfg.peak_lo:
                 need_up.append(target_amp / at_max)
+                if f in ("Ha", "OIII", "SII"):
+                    nb_up.append(target_amp / at_max)
                 row["verdict"] = "faint at the longest exposure"
             elif at_min + bkg > cfg.peak_hi:
                 need_down.append(target_amp / at_min)
@@ -302,6 +307,8 @@ def recommend(config, nights: int = RECENT_NIGHTS) -> dict:
         if gain * k > GAIN_MAX:
             out["note"] += (f"; even gain {GAIN_MAX} is short: bin 3 is the next "
                             "step (approved: stay at bin 2 until decided from data)")
+            out["binning_advice"] = nb_binning_advice(config, setup["binning"], gain,
+                                                      max(nb_up) if nb_up else None)
         if need_down:
             out["note"] += "; some filters are too bright at the shortest exposure (kept: a lost star is worse)"
         out["gain"] = g
@@ -315,6 +322,30 @@ def recommend(config, nights: int = RECENT_NIGHTS) -> dict:
         out["note"] = "exposure alone covers every filter: keep gain and binning"
     out["change"] = out["gain"] != gain
     return out
+
+
+def nb_binning_advice(config, binning, gain, need) -> dict | None:
+    """PS-85: when a 3 nm filter needs more signal than gain GAIN_MAX gives,
+    advise guide binning up to phd2_tune_bin_max_nb (each step adds about
+    (b+1)^2 / b^2 the signal per pixel). Advice only: binning is never
+    written. None when no narrowband filter is short or binning is at the
+    bound."""
+    b = _num(binning)
+    if need is None or b is None or gain is None:
+        return None
+    bmax = int(getattr(config, "phd2_tune_bin_max_nb", 3) or 0)
+    short = need * float(gain) / GAIN_MAX     # signal still missing at max gain
+    if short <= 1.0 or int(b) >= bmax:
+        return None
+    nb_ = int(b)
+    while nb_ < bmax and short > 1.0:
+        short /= ((nb_ + 1) / nb_) ** 2
+        nb_ += 1
+    return {"binning": nb_, "from": int(b), "enough": short <= 1.0,
+            "note": (f"narrowband needs about {need * float(gain) / GAIN_MAX:.1f}x "
+                     f"the signal at gain {GAIN_MAX}: bin {nb_} "
+                     + ("covers it" if short <= 1.0 else "is still short")
+                     + " (advice only; set it in PHD2's profile)")}
 
 
 def _med(xs):

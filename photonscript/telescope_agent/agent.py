@@ -106,6 +106,7 @@ class TelescopeAgent:
         self.calmgr = None                   # PS-93 calibration manager (RC16)
         self.reauditor = None                # PS-89 settings re-audit (RC16)
         self.tuner = None                    # PS-90 guide-star tuner (RC16)
+        self.viability = None                # PS-85 per-block guide-star check
         self._wheel_filter: str | None = None  # PS-90: NINA's filter (canonical)
 
     async def start(self):
@@ -123,6 +124,7 @@ class TelescopeAgent:
         self._calmgr_setup()
         self._audit_setup()
         self._tuner_setup()
+        self._viability_setup()
 
         # Launch monitoring tasks
         tasks = [
@@ -852,6 +854,20 @@ class TelescopeAgent:
         self.tuner = GuideStarTuner(self.config, self.phd2, context_fn=self._tuner_context)
         self.tuner.attach()
 
+    def _viability_setup(self) -> None:
+        """PS-85: the per-block guide-star check runs in the RC16 agent only;
+        guide_block_mode=off leaves it out entirely."""
+        if getattr(self, "rig", "rc16") != "rc16":
+            return
+        from photonscript.scheduler.guide_blocks import block_mode
+        if block_mode(self.config) == "off":
+            return
+        from photonscript.telescope_agent.guide_viability import ViabilityMonitor
+        self.viability = ViabilityMonitor(self.config, self.phd2,
+                                          context_fn=self._tuner_context,
+                                          tuner=getattr(self, "tuner", None))
+        self.viability.attach()
+
     def _tuner_context(self) -> dict:
         """What the tuner needs from the agent (None = unknown)."""
         return {"target": self.state.current_target,
@@ -879,6 +895,8 @@ class TelescopeAgent:
             self._wheel_filter = name
             if getattr(self, "tuner", None) is not None:
                 self.tuner.filter_changed(name)
+            if getattr(self, "viability", None) is not None:
+                self.viability.filter_changed(name)   # PS-85
 
     def _load_hotpix(self):
         """The hot-pixel map, re-read when its file changes."""
@@ -968,8 +986,13 @@ class TelescopeAgent:
         ctx = await self._guard_context()
         if self.guard.wants_star_image(ctx):
             from photonscript.telescope_agent.guide_guard import peak_fraction
+            from photonscript.telescope_agent.guide_viability import profile_sanity
             try:
-                ctx.star_peak_frac = peak_fraction(await self.phd2.get_star_image())
+                img = await self.phd2.get_star_image()
+                ctx.star_peak_frac = peak_fraction(img)
+                prof = profile_sanity(img, int(getattr(
+                    self.config, "phd2_guide_full_scale_adu", 65535) or 65535))
+                ctx.star_profile_ok = None if prof is None else bool(prof["ok"])  # PS-85 D6
             except Exception as e:  # noqa: BLE001
                 logger.debug("guard: get_star_image failed: %s", e)
         await self._guard_act(self.guard.verdicts(ctx), tick=True)
@@ -1038,7 +1061,7 @@ class TelescopeAgent:
         PS-92 pulse-path FAIL record instead."""
         from photonscript.shared import phd2_store as store
         from photonscript.telescope_agent.guide_guard import (
-            IMPOSSIBLE, NON_STAR, PULSES)
+            IMPOSSIBLE, LOW_SNR, NON_STAR, PULSES)
         now = datetime.utcnow()
         night = store.night_of(self.config, now)
         path = store.guard_path(self.config, night)
@@ -1046,7 +1069,7 @@ class TelescopeAgent:
         for v in verdicts:
             if v.kind == PULSES:
                 await self._guard_pulses_not_moving(v, night)
-        for kind in (NON_STAR, IMPOSSIBLE):
+        for kind in (NON_STAR, IMPOSSIBLE, LOW_SNR):
             vs = [v for v in verdicts if v.kind == kind]
             ep = self._guard_ep.get(kind)
             if vs and ep is None:
@@ -1065,7 +1088,11 @@ class TelescopeAgent:
                     "target": self.state.current_target,
                     "app_state": self.phd2.app_state, "observe_only": not auto})
                 logger.warning("GUARD %s episode %s: %s", kind, ep["id"], detail)
-                if not auto:
+                if kind == LOW_SNR:
+                    # PS-85: guiding on noise; the per-block decision pushes
+                    # (once per target per night), so no guard push here
+                    await self._lowsnr_switch(vs[0])
+                elif not auto:
                     what = ("locked on a non-star (hot pixel or artifact)"
                             if kind == NON_STAR else "guiding in an impossible state")
                     await self._guard_alert(
@@ -1090,8 +1117,38 @@ class TelescopeAgent:
                         "reason": f"no verdict for {self.GUARD_CLOSE_TICKS} ticks "
                                   f"(PHD2 {self.phd2.app_state})"})
                     self._guard_ep.pop(kind, None)
-            if vs and auto:
+            if vs and auto and kind != LOW_SNR:
                 await self._guard_recover(kind, vs, night, path)
+
+    async def _lowsnr_switch(self, verdict) -> None:
+        """PS-85 guard D6: PHD2 is guiding on noise. guide_block_mode auto:
+        stop PHD2 (never keep guiding on noise) and ask the armer to run this
+        target's current filter block unguided. observe: the decision is only
+        recorded and pushed (once per target per night). Never raises."""
+        try:
+            from photonscript.scheduler.armer import request_block_unguided
+            from photonscript.scheduler.guide_blocks import block_mode
+            mode = block_mode(self.config)
+            if mode == "off":
+                return
+            ctx = self._tuner_context()
+            target, filt = ctx.get("target"), ctx.get("filter")
+            if mode == "auto":
+                from photonscript.telescope_agent import phd2_ops
+                try:
+                    async with phd2_ops.hold("blocks"):
+                        await self.phd2.stop_capture()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("PS-85: stop guiding on noise failed: %s", e)
+            if getattr(self, "viability", None) is not None and target and filt:
+                self.viability.forget(target, filt)
+            if target and filt:
+                await request_block_unguided(self.config, target, filt,
+                                             f"guard D6: {verdict.detail}",
+                                             source="guard D6",
+                                             evidence=verdict.evidence)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-85 low-SNR switch failed: %s", e)
 
     async def _guard_recover(self, kind, vs, night, path) -> None:
         from photonscript.shared import phd2_store as store

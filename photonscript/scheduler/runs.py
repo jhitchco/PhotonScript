@@ -50,6 +50,8 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
             # PS-66: shown on the night page (goal credit is by seconds
             # for every sub since PS-118, guided or not)
             "guided": bool(getattr(t, "start_guiding", False)),
+            # PS-85: blocks of a guided target that run unguided tonight
+            "unguided_filters": list(getattr(t, "unguided_filters", None) or []),
             "exposures": [{"filter": e.filter_type.value,
                            "exp_s": e.exposure_seconds,
                            "planned": e.count - e.acquired}
