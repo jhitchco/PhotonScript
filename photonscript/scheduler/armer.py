@@ -13,6 +13,11 @@ States:
                  night leaves the loop wedged in WaitUntilSafe — 2026-09-15
                  both coolers ran at 0°C all day)
   ERROR          dispatch or lint failure — human needed
+  PAUSED_OPERATOR PS-64: paused from the dashboard. NINA #1's sequence was
+                 stopped after its current sub (night_pause.py); tracking,
+                 cooler and PHD2 keep running, nothing parks. Resume =
+                 the mid-night re-dispatch of the remainder. In
+                 ACTIVE_STATES: a night in progress for every gate.
   WATCHING       PS-136: a sideloaded night (PS-123) the armer did not
                  dispatch is running in NINA #1. The armer tracks it like an
                  armed night but NEVER loads, starts or re-dispatches:
@@ -58,7 +63,9 @@ logger = logging.getLogger(__name__)
 
 TICK_SECONDS = 30
 RESUME_MIN_REMAINING_MIN = 40  # don't resume with < this much dark left
-ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+# PS-64: paused by the operator (Pause button); a night in progress.
+PAUSE_STATE = "PAUSED_OPERATOR"
+ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", PAUSE_STATE)
 # PS-136: watching a sideloaded night. LIVE_STATES = the tick loop runs.
 WATCH_STATE = "WATCHING"
 LIVE_STATES = ACTIVE_STATES + (WATCH_STATE,)
@@ -98,6 +105,7 @@ NINA_PATHS = {
     "guider": ["/equipment/guider/info"],
     "mount_park": ["/equipment/mount/park"],
     "mount_info": ["/equipment/mount/info"],
+    "camera_info": ["/equipment/camera/info"],   # PS-64 pause wait
     "camera_warm": ["/equipment/camera/warm"],
     "mount_connect": ["/equipment/mount/connect"],
     "camera_connect": ["/equipment/camera/connect"],
@@ -158,6 +166,8 @@ class Armer:
         self.watch: dict | None = None        # PS-136: the watched sideload
         self._watch_declined: str | None = None  # PS-136: sideload "t" stopped by hand
         self.last_validation: dict | None = None  # PS-132 check in dispatch_raw
+        self.pause_info: dict | None = None        # PS-64: the operator pause
+        self._pause_task: asyncio.Task | None = None
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -181,6 +191,7 @@ class Armer:
                 "guider_name": getattr(self, "guider_name", None),
                 "watch": getattr(self, "watch", None),
                 "watch_declined": getattr(self, "_watch_declined", None),
+                "pause": getattr(self, "pause_info", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -225,7 +236,12 @@ class Armer:
         self._recal_night = saved.get("recal_night")
         self.guider_name = saved.get("guider_name")
         self.watch = saved.get("watch")  # PS-136: a watched night reattaches too
+        self.pause_info = saved.get("pause")  # PS-64
         self._task = asyncio.create_task(self._run())
+        if (self.state == PAUSE_STATE
+                and (self.pause_info or {}).get("phase") == "stopping"):
+            # restarted while waiting for the sub to end: finish the stop
+            self._pause_task = asyncio.create_task(self._finish_pause())
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
         # Reconnect everything (esp. safety) after a restart so equipment that
@@ -270,6 +286,8 @@ class Armer:
                 "shutdown": getattr(self, "shutdown", None),
                 "watch": (getattr(self, "watch", None)
                           if self.state == WATCH_STATE else None),
+                "pause": (getattr(self, "pause_info", None)
+                          if self.state == PAUSE_STATE else None),   # PS-64
                 "noon_arm": self._noon_arm_status()}
 
     def _shutdown_due_iso(self) -> str | None:
@@ -330,6 +348,8 @@ class Armer:
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
         self._guiding_gate = GuidingAlertGate(self.config)  # fresh flap history
         self.shutdown = None  # a fresh arm starts a new night — clear the chip
+        self._cancel_pause_wait()   # PS-64
+        self.pause_info = None
         self.plan = build_night_plan(self.config)
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
@@ -470,6 +490,8 @@ class Armer:
             self._watch_declined = str(((self.watch or {}).get("sideload")
                                         or {}).get("t") or "") or None
             self._watch_event("stop", "stopped watching by hand")
+        self._cancel_pause_wait()   # PS-64
+        self.pause_info = None
         self._set_state("DISARMED", "")
         if self._task and not self._task.done():
             self._task.cancel()
@@ -478,7 +500,7 @@ class Armer:
                          "NINA keeps running it; no dawn check, guiding "
                          "watchdog or update refusal from the armer now.",
                          title="PhotonScript watching")
-        if prev in ("RUNNING", "PAUSED_UNSAFE"):
+        if prev in ("RUNNING", "PAUSED_UNSAFE", PAUSE_STATE):
             report = await self.make_safe()
             await notify(self.config, f"Disarmed — {report}",
                          title="PhotonScript disarmed", priority=1)
@@ -1268,7 +1290,7 @@ class Armer:
         it reads NINA's own validation (PS-132 nina_validation): problems are
         pushed; nina_load_validation=refuse also skips the start when a
         validator threw."""
-        if self.state in ("RUNNING", "PAUSED_UNSAFE", WATCH_STATE):
+        if self.state in ("RUNNING", "PAUSED_UNSAFE", WATCH_STATE, PAUSE_STATE):
             self.detail = f"armer is {self.state}: not interrupting"
             return False
         # PS-113: never stop a calibration capture job's sequence on NINA #1
@@ -1639,7 +1661,10 @@ class Armer:
                          f"{max(0.0, left):.1f} h of dark left. The sideloaded "
                          "sequence re-enters its targets by itself.",
                          title="PhotonScript watching")
-        if running and self._watch_guiding_active(running):
+        # PS-64: an operator pause of a watched night mutes the guiding
+        # watchdog only (alert-only: no NINA command is ever sent)
+        if (running and self._watch_guiding_active(running)
+                and not w.get("operator_paused")):
             await self._maybe_warn_not_guiding(now)
         self._persist()
 
@@ -1768,6 +1793,268 @@ class Armer:
                          "or check NINA.",
                          title="PhotonScript shutdown warning", priority=1)
         return res
+
+    # -- PS-64: operator Pause / Resume -----------------------------------------
+    #
+    # 2026-09-26: a PHD2 Calibration Assistant slew left the mount at Dec 0
+    # while the sequence kept shooting "Cat's Eye" subs; the only ways to
+    # stop were Remote Desktop or Stop & Make Safe (warm + park). Pause stops
+    # NINA #1 after its current sub and keeps tracking, cooler and PHD2;
+    # Resume re-dispatches the remainder (the PS-77 / PS-93 path), so goals
+    # and planning stay right. A watched sideload (PS-136) is never
+    # commanded: its pause only mutes the guiding watchdog.
+
+    def _pause_event(self, value: str, detail: str = "",
+                     now: datetime | None = None, **extra) -> None:
+        """One kind "operator_pause" line in runs/<night>_events.jsonl."""
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            now = now or datetime.utcnow()
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "operator_pause", "value": value,
+                          "detail": detail, **extra})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("pause event (%s) not logged: %s", value, e)
+
+    def _cancel_pause_wait(self) -> bool:
+        """Cancel a pending stop-after-exposure wait. True if one was."""
+        t = getattr(self, "_pause_task", None)
+        self._pause_task = None
+        if t is not None and not t.done():
+            t.cancel()
+            return True
+        return False
+
+    def _piggy_enabled(self) -> bool:
+        try:
+            from photonscript.shared.rigs import PIGGYBACK, rig_ids
+            return PIGGYBACK in rig_ids(self.config)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _reset_guiding_watchdog(self) -> None:
+        self._guiding_alerted = False
+        self._not_locked_ticks = 0
+        self._not_locked_since = None
+        self._guiding_recovered = self._guiding_escalated = False
+
+    async def pause(self, piggy: str = "keep", when: str = "after_exposure",
+                    now: datetime | None = None) -> dict:
+        """Operator pause. RUNNING: PAUSED_OPERATOR now, NINA #1's sequence
+        is stopped in the background after its current sub (when="now":
+        at once); piggy="pause" stops the Piggy-600 the same way (default
+        "keep": it keeps imaging). WATCHING: alert-only, the guiding
+        watchdog is muted and nothing is sent to NINA. Returns {"ok",
+        "detail", **status}."""
+        now = now or datetime.utcnow()
+        piggy = "pause" if str(piggy or "").strip().lower() == "pause" else "keep"
+        when = "now" if str(when or "").strip().lower() == "now" else "after_exposure"
+        if self.state == WATCH_STATE:
+            w = self.watch if isinstance(self.watch, dict) else {}
+            self.watch = w
+            if w.get("operator_paused"):
+                return {**self.status(), "ok": False,
+                        "detail": "the watched night is already paused"}
+            w["operator_paused"] = {"since": now.replace(microsecond=0).isoformat() + "Z"}
+            msg = ("Watching, paused by the operator: guiding alerts muted. "
+                   "Nothing was sent to NINA: pause the sideloaded sequence "
+                   "in NINA itself.")
+            self._set_state(WATCH_STATE, msg)
+            self._pause_event("pause", msg, now, mode="watch")
+            await notify(self.config, "PAUSED (watching): guiding alerts muted "
+                         "by the operator. The sideloaded sequence is NINA's: "
+                         "PhotonScript sent no command.",
+                         title="PhotonScript paused")
+            return {**self.status(), "ok": True, "detail": msg}
+        if self.state != "RUNNING":
+            return {**self.status(), "ok": False,
+                    "detail": f"armer is {self.state}: pause only while "
+                              "RUNNING (or WATCHING)"}
+        if piggy == "pause" and not self._piggy_enabled():
+            piggy = "keep"
+        self.pause_info = {"since": now.replace(microsecond=0).isoformat() + "Z",
+                      "phase": "stopping", "when": when, "piggy": piggy,
+                      "rigs": {}, "parked": False}
+        what = ("now" if when == "now" else "after the current sub")
+        msg = (f"Pausing: NINA #1 stops {what}"
+               + ("; Piggy-600 too" if piggy == "pause" else
+                  "; Piggy-600 keeps imaging")
+               + ". Cooler, tracking and guiding stay on.")
+        self._set_state(PAUSE_STATE, msg)
+        self._pause_event("request", msg, now, when=when, piggy=piggy)
+        self._pause_task = asyncio.create_task(self._finish_pause())
+        return {**self.status(), "ok": True, "detail": msg}
+
+    async def _finish_pause(self) -> None:
+        """The background half of pause(): wait for each rig's sub to end,
+        stop its sequence, report. A failed RC16 stop goes back to RUNNING
+        (NINA may still be imaging) with a priority push. Never raises
+        (except CancelledError from resume)."""
+        from photonscript.scheduler import night_pause as np_
+        p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        when = p.get("when", "after_exposure")
+
+        async def rc16_cam():
+            data = await self._nina("camera_info")
+            pl = data.get("Response", data) if isinstance(data, dict) else None
+            return pl if isinstance(pl, dict) else None
+
+        async def rc16_stop():
+            return await self._nina("sequence_stop") is not None
+
+        jobs = {"rc16": np_.stop_after_exposure(rc16_cam, rc16_stop, when=when)}
+        if p.get("piggy") == "pause":
+            try:
+                from photonscript.shared.rigs import PIGGYBACK, rig_config
+                base = rig_config(self.config, PIGGYBACK).nina_base_url
+                jobs["piggyback"] = np_.stop_after_exposure(
+                    lambda: np_.camera_info(base), lambda: np_.sequence_stop(base),
+                    when=when)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("pause: Piggy-600 not stopped: %s", e)
+        results = await asyncio.gather(*jobs.values(), return_exceptions=True)
+        rigs = {}
+        for rig, res in zip(jobs, results):
+            rigs[rig] = (res if isinstance(res, dict)
+                         else {"ok": False, "how": f"error: {res}", "waited_s": 0})
+        now = datetime.utcnow()
+        p["rigs"] = rigs
+        rc = rigs.get("rc16") or {}
+        if self.state != PAUSE_STATE:
+            return   # disarmed / dawn while waiting
+        if not rc.get("ok"):
+            self.pause_info = None
+            msg = (f"Pause FAILED: NINA #1 sequence stop failed ({self.detail}); "
+                   "still RUNNING, NINA may still be imaging")
+            self._set_state("RUNNING", msg)
+            self._pause_event("failed", msg, now, rigs=rigs)
+            await notify(self.config, msg + ". Use Stop & Make Safe or NINA.",
+                         title="PhotonScript pause FAILED", priority=1)
+            return
+        p["phase"] = "paused"
+        p["stopped_at"] = now.replace(microsecond=0).isoformat() + "Z"
+        pb = rigs.get("piggyback")
+        pb_txt = ("Piggy-600 keeps imaging" if pb is None
+                  else "Piggy-600 " + np_.describe(pb))
+        msg = (f"Paused by the operator: RC16 {np_.describe(rc)}; {pb_txt}. "
+               "Cooler, tracking and guiding kept; Resume re-dispatches the "
+               "remainder.")
+        self.pause_info = p
+        self._set_state(PAUSE_STATE, msg)
+        self._pause_event("stopped", msg, now, rigs=rigs)
+        left = (self._dawn() - now).total_seconds() / 3600
+        await notify(self.config, f"PAUSED by the operator: RC16 "
+                     f"{np_.describe(rc)}; {pb_txt}. Cooler, tracking and PHD2 "
+                     f"stay on, nothing parked. {max(0.0, left):.1f} h of dark "
+                     "left; Resume on the dashboard re-dispatches the remainder.",
+                     title="PhotonScript paused",
+                     priority=(1 if pb is not None and not pb.get("ok") else 0))
+
+    async def resume(self, now: datetime | None = None) -> dict:
+        """Undo pause(). Before the stop happened: cancel the wait, RUNNING
+        again (nothing was stopped). After it: the mid-night re-dispatch of
+        the remainder (as after a PS-77 safety stop), plus the Piggy-600
+        companion when this pause stopped it. Refused with under
+        RESUME_MIN_REMAINING_MIN of dark left (the dawn shutdown still runs
+        from PAUSED_OPERATOR). Returns {"ok", "detail", **status}."""
+        now = now or datetime.utcnow()
+        if self.state == WATCH_STATE:
+            w = self.watch if isinstance(self.watch, dict) else {}
+            if not w.get("operator_paused"):
+                return {**self.status(), "ok": False,
+                        "detail": "the watched night is not paused"}
+            w.pop("operator_paused", None)
+            self._reset_guiding_watchdog()
+            msg = "Watching: resumed by the operator, guiding alerts back on"
+            self._set_state(WATCH_STATE, msg)
+            self._pause_event("resume", msg, now, mode="watch")
+            await notify(self.config, "RESUMED (watching): guiding alerts back "
+                         "on.", title="PhotonScript resumed")
+            return {**self.status(), "ok": True, "detail": msg}
+        if self.state != PAUSE_STATE:
+            return {**self.status(), "ok": False,
+                    "detail": f"armer is {self.state}, not paused"}
+        p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        if p.get("phase") == "stopping":
+            self._cancel_pause_wait()
+            self.pause_info = None
+            msg = "Resumed before the stop: the sequence kept running"
+            self._set_state("RUNNING", msg)
+            self._pause_event("resume", msg, now, redispatched=False)
+            await notify(self.config, "RESUMED: the pause was cancelled before "
+                         "NINA was stopped; nothing changed.",
+                         title="PhotonScript resumed")
+            return {**self.status(), "ok": True, "detail": msg,
+                    "redispatched": False}
+        left_min = (self._dawn() - now).total_seconds() / 60
+        if left_min < RESUME_MIN_REMAINING_MIN:
+            return {**self.status(), "ok": False,
+                    "detail": f"only {max(0, int(left_min))} min of dark left: "
+                              "not re-dispatching (the dawn shutdown will run)"}
+        self._reset_guiding_watchdog()
+        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        if not ok:
+            msg = f"Resume FAILED: re-dispatch failed ({self.detail}); still paused"
+            self._set_state(PAUSE_STATE, msg)
+            self._pause_event("resume_failed", msg, now)
+            return {**self.status(), "ok": False, "detail": msg}
+        pb = (p.get("rigs") or {}).get("piggyback")
+        pb_txt = "Piggy-600 untouched"
+        if p.get("piggy") == "pause" and isinstance(pb, dict) and pb.get("ok"):
+            await self._dispatch_piggyback_companion()
+            pb_txt = "Piggy-600 companion re-dispatched"
+        self.pause_info = None
+        self._unsafe_since = self._safe_since = None
+        msg = f"Resumed by the operator: remainder re-dispatched; {pb_txt}"
+        self._set_state("RUNNING", msg)
+        self._pause_event("resume", msg, now, redispatched=True, piggy=pb_txt)
+        await notify(self.config, f"RESUMED by the operator: the remainder is "
+                     f"re-dispatched ({left_min / 60:.1f} h of dark left); "
+                     f"{pb_txt}.", title="PhotonScript resumed")
+        return {**self.status(), "ok": True, "detail": msg, "redispatched": True}
+
+    async def _paused_tick(self, now: datetime) -> None:
+        """PAUSED_OPERATOR tick. Dawn: the normal dawn shutdown (as from
+        PAUSED_UNSAFE). Safety is recorded and watched; unsafe for
+        unsafe_stop_grace_s once stopped = park (PS-77's rule: nothing else
+        would park before the roof closes), one push. Safe: the cooler nanny
+        keeps the setpoint. The guiding watchdog does not run."""
+        if now >= self._dawn() + timedelta(minutes=30):
+            self._cancel_pause_wait()
+            self._set_state("COMPLETE", "Dawn while paused by the operator: "
+                                        "running dawn shutdown")
+            report = await self.dawn_shutdown(reason="dawn while operator-paused")
+            self.pause_info = None
+            self._set_state("COMPLETE", f"Dawn shutdown: {report}")
+            await self._notify_complete(
+                f"Night ended while paused by the operator: dawn shutdown ran: "
+                f"{report}")
+            return
+        safe = await self._is_safe()
+        self._record_safety(safe, now)
+        await self._watch_safety_monitor(now, safe)
+        p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        if safe is False:
+            if self._unsafe_since is None:
+                self._unsafe_since = now
+            grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
+            if (p.get("phase") == "paused" and not p.get("parked")
+                    and (now - self._unsafe_since).total_seconds() >= grace):
+                ok = await self._nina("mount_park") is not None
+                p["parked"] = bool(ok)
+                self.pause_info = p
+                msg = (f"Paused and unsafe: mount park {'ok' if ok else 'FAILED'} "
+                       "(cooler kept on; Resume re-dispatches)")
+                self._set_state(PAUSE_STATE, msg)
+                self._pause_event("park_unsafe", msg, now, ok=ok)
+                await notify(self.config, f"Unsafe while paused: {msg}.",
+                             title="PhotonScript paused", priority=1)
+            return
+        self._unsafe_since = None
+        if safe is True and p.get("phase") == "paused":
+            await self._reconcile_cooler(now)
 
     # -- state machine loop ----------------------------------------------------
 
@@ -2061,6 +2348,9 @@ class Armer:
                 # and that the cooler is actually holding setpoint (nanny).
                 await self._maybe_warn_not_guiding(now)
                 await self._reconcile_cooler(now)
+
+        elif self.state == PAUSE_STATE:
+            await self._paused_tick(now)   # PS-64
 
         elif self.state == "PAUSED_UNSAFE":
             if now >= self._dawn() + timedelta(minutes=30):

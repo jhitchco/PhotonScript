@@ -8,14 +8,27 @@
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
     <style>
-        #allskyPanel { grid-column: 1; grid-row: 1; }
-        #outlookPanel { grid-column: 1; grid-row: 2; }
-        #activityPanel { grid-column: 1; grid-row: 3; }
-        #armPanel { grid-column: 2; grid-row: 1 / span 3; }
+        #wherePanel { grid-column: 1 / -1; grid-row: 1; }
+        #allskyPanel { grid-column: 1; grid-row: 2; }
+        #outlookPanel { grid-column: 1; grid-row: 3; }
+        #activityPanel { grid-column: 1; grid-row: 4; }
+        #armPanel { grid-column: 2; grid-row: 2 / span 3; }
         @media (max-width: 1000px) {
-            #allskyPanel, #outlookPanel, #activityPanel, #armPanel {
+            #wherePanel, #allskyPanel, #outlookPanel, #activityPanel, #armPanel {
                 grid-column: auto; grid-row: auto; }
         }
+        /* PS-64 "Where is it" panel (static/js/night_panel.js) */
+        .wp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+                   gap: .5rem .9rem; font-size: .86rem; }
+        .wp-label { font-size: .62rem; letter-spacing: .08em; opacity: .5; text-transform: uppercase; }
+        .wp-val { font-weight: 600; }
+        .wp-dim { opacity: .6; font-weight: normal; }
+        .wp-warn { color: #fbbf24; font-weight: normal; font-size: .78rem; }
+        .wp-chip { border: 1px solid #a78bfa; color: #c4b5fd; border-radius: 4px;
+                   padding: 0 .35rem; font-size: .74rem; }
+        .wp-bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.08);
+                  overflow: hidden; margin-top: .2rem; }
+        .wp-bar > div { height: 100%; background: #7dd3fc; }
         .goals-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
         @media (max-width: 1300px) { .goals-grid { grid-template-columns: 1fr; } }
         .fbar { height: 7px; border-radius: 4px; background: rgba(255,255,255,.07);
@@ -49,6 +62,36 @@
     </div>
 
     <main>
+        <!-- PS-64: live "where is it" panel + Pause / Resume. Filled by
+             static/js/night_panel.js from /api/night/where on the top-strip
+             poll; Pause asks here (Piggy-600 keep is the default). -->
+        <section class="panel" id="wherePanel">
+            <h2 style="display:flex;align-items:center;gap:.8rem;flex-wrap:wrap;">Where is it
+                <span id="wherePanelState" style="font-size:.85rem;"></span>
+                <button class="btn btn-secondary" id="pauseBtn" hidden
+                        title="Stop NINA #1 after the current sub; tracking, cooler and PHD2 stay on, nothing parks. Resume re-dispatches the remainder.">Pause</button>
+                <button class="btn btn-primary" id="resumeBtn" hidden
+                        title="Re-dispatch the remainder of tonight (or cancel a pause that has not stopped NINA yet).">Resume</button>
+            </h2>
+            <div id="pauseConfirm" hidden style="margin-bottom:.7rem;padding:.5rem .7rem;border-radius:6px;
+                 border:1px solid rgba(251,191,36,.5);background:rgba(251,191,36,.07);font-size:.85rem;">
+                <div id="pauseConfirmText" style="margin-bottom:.4rem;"></div>
+                <div id="pauseOptions">
+                    <div><b>Stop NINA #1:</b>
+                        <label><input type="radio" name="pauseWhen" id="pauseAfter" checked> after the current sub (default)</label>
+                        <label style="margin-left:.6rem;"><input type="radio" name="pauseWhen" id="pauseNow"> now (the sub in progress is lost)</label></div>
+                    <div id="pausePiggyRow"><b>Piggy-600:</b>
+                        <label><input type="radio" name="pausePiggy" id="pausePiggyKeep" checked> keep imaging (default)</label>
+                        <label style="margin-left:.6rem;"><input type="radio" name="pausePiggy" id="pausePiggyPause"> pause it too</label></div>
+                </div>
+                <div style="margin-top:.45rem;">
+                    <button class="btn btn-primary" id="pauseGo">Confirm pause</button>
+                    <button class="btn btn-secondary" id="pauseCancel">Cancel</button>
+                </div>
+            </div>
+            <div id="wherePanelBody" class="wp-grid">Loading...</div>
+        </section>
+
         <!-- 7-Night Outlook + ARM -->
         <section class="panel" id="allskyPanel">
             <h2>All-Sky Camera <span class="bd">(live from AARO, refreshes every 60 s)</span></h2>
@@ -194,6 +237,7 @@
     <script src="/static/js/dashboard.js"></script>
     <script src="/static/js/sideload_panel.js"></script>
     <script src="/static/js/auto_arm_panel.js"></script>
+    <script src="/static/js/night_panel.js?v={{ version }}"></script>
     <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
 
     <script>
@@ -261,7 +305,7 @@
 
     const ARM_COLORS = {DISARMED:'#64748b', ARMED:'#eab308', RUNNING:'#22c55e',
                         PAUSED_UNSAFE:'#f97316', COMPLETE:'#7dd3fc', ERROR:'#ef4444',
-                        WATCHING:'#a78bfa'};
+                        WATCHING:'#a78bfa', PAUSED_OPERATOR:'#fbbf24'};
     async function refreshArm() {
         const r = await fetch('/api/arm');
         const d = await r.json();
@@ -271,7 +315,7 @@
         document.getElementById('armDetail').textContent = d.detail || '';
         const btn = document.getElementById('armBtn');
         const gbtn = document.getElementById('armGuidedBtn');
-        const active = ['ARMED','RUNNING','PAUSED_UNSAFE'].includes(d.state);
+        const active = ['ARMED','RUNNING','PAUSED_UNSAFE','PAUSED_OPERATOR'].includes(d.state);
         btn.textContent = active
             ? ('Disarm' + (d.guiding ? ' (' + d.guiding + ')' : ''))
             : 'Arm (Unguided: TPoint + ProTrack)';
@@ -579,6 +623,8 @@
                 ts.images_captured_tonight ?? 0;
             if (d.scope_local_time) { _clockBase = d.scope_local_time; _clockAt = Date.now(); }
         } catch (e) {}
+        // PS-64: the "Where is it" panel rides this poll
+        if (window.loadWherePanel) window.loadWherePanel();
     }
     setInterval(() => {
         if (_clockBase) {
@@ -591,6 +637,7 @@
         }
         const n = document.getElementById('tsNext');
         n.textContent = _nextAt ? _nextLabel + fmtDur(_nextAt - Date.now()) : '';
+        if (window.tickWherePanel) window.tickWherePanel();   // PS-64 countdowns
         // Cooler + dew heater turn-on countdown
         const cc = document.getElementById('coolerCountdown');
         if (cc) {

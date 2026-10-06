@@ -2601,7 +2601,8 @@ def _update_blockers(allow_armed: bool) -> list[str]:
     """Why a restart for an update must wait (PS-58). Empty = go."""
     why = []
     st_name = str(get_armer().state or "").upper()
-    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING"):   # PS-136
+    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING",   # PS-136
+                   "PAUSED_OPERATOR"):                      # PS-64
         why.append(f"armer is {st_name}: refusing to restart mid-night. "
                    "Stop the run first.")
     elif st_name == "ARMED" and not allow_armed:
@@ -2972,6 +2973,10 @@ from photonscript.scheduler.routers import viewer as _viewer_router  # noqa: E40
 app.include_router(_viewer_router.router)
 from photonscript.scheduler.routers import focus as _focus_router  # noqa: E402
 app.include_router(_focus_router.router)
+from photonscript.scheduler.routers import pause as _pause_router  # noqa: E402
+app.include_router(_pause_router.router)   # PS-64
+from photonscript.scheduler.routers import where as _where_router  # noqa: E402
+app.include_router(_where_router.router)   # PS-64
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

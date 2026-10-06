@@ -70,7 +70,7 @@ other sessions leave unfinished work in this checkout; `-IncludeWorkingTree
 pulls --rebase, runs the test gate on exactly what ships, shows
 `origin/main..HEAD`, pushes, POSTs `/api/update` on the scope, which stops
 gracefully (exit 42), and waits for `GET /api/health` to report the pushed SHA.
-Refused with 409 while RUNNING or PAUSED_UNSAFE, while a grading job writes,
+Refused with 409 while RUNNING, PAUSED_UNSAFE or PAUSED_OPERATOR (PS-64), while a grading job writes,
 and while ARMED unless `-AllowArmed` (the armed night is restored).
 PS-58: the scope wrapper runs `photonscript self-update` with the OLD code:
 fetch, check the new commit out into a staging worktree, import every module
@@ -332,6 +332,49 @@ watch, tonight's RC16 sideload and what NINA #1 runs.
 - `dispatch_raw` (RC16 dusk flats) now reads NINA's load validation between
   load and start (PS-132 `nina_validation`, `PS_NINA_LOAD_VALIDATION`
   alert / refuse / off, default alert).
+
+### Pause / Resume and the "Where is it" panel (PS-64)
+
+The top of the dashboard is a live **Where is it** panel (`GET
+/api/night/where`, `scheduler/where_panel.py`, `static/js/night_panel.js`,
+refreshed by the top strip's 10 s poll): target (and mosaic panel), filter,
+sub n of N with seconds left and a progress bar (NINA #1's sequence tree
+LoopCondition + the camera's ExposureEndTime), what NINA runs now and the
+next items, guiding mode (PHD2 state and RMS, or unguided TPoint +
+ProTrack), cooler per rig (with the PS-61 gate note), roof / safety, the
+Piggy-600 (running item, sub, exposure, PS-27 settle gate / abort-on-move /
+mount still or slewing) and the astro-dark / dawn / shutdown countdown.
+Read only; a NINA that cannot be read shows "-".
+
+- **Pause** (button on that panel, `POST /api/arm/pause {"piggy":
+  "keep"|"pause", "when": "after_exposure"|"now"}`), only while RUNNING:
+  state `PAUSED_OPERATOR` at once, and NINA #1's sequence is stopped
+  (`/sequence/stop`) once the current sub has finished and downloaded
+  (`scheduler/night_pause.py` polls the camera every 2 s; at once when
+  nothing exposes, the camera is unreadable or a new sub started; never
+  longer than the exposure end + 60 s, cap 16 min). Tracking, cooler and
+  PHD2 keep running, nothing parks or warms; dithers stop with the
+  sequence. The Piggy-600 keeps imaging unless "pause it too" was chosen
+  (then NINA #2 is stopped the same way). One Pushover when the stop is
+  done (priority on a failed stop: back to RUNNING), events kind
+  `operator_pause` (request / stopped / failed / resume / resume_failed /
+  park_unsafe) in `runs/<night>_events.jsonl`.
+- While paused: no not-guiding alerts, the cooler nanny keeps the setpoint,
+  safety is recorded; unsafe for `unsafe_stop_grace_s` parks the mount
+  (PS-77's rule, one push); dawn runs the normal dawn shutdown. Deploys,
+  self-update, sideload, calibration capture / QA backfill and dispatch_raw
+  refuse as for RUNNING (PAUSED_OPERATOR is in ACTIVE_STATES); a restart
+  reattaches (and finishes a pending stop).
+- **Resume** (`POST /api/arm/resume`): before the stop happened it only
+  cancels the wait. After it: the armer's mid-night re-dispatch of the
+  remainder (`_dispatch_and_start(companion=False)`, as after a PS-77
+  safety stop: the planner subtracts accepted subs; slew, center, AF and
+  StartGuiding run again), plus the Piggy-600 companion if this pause
+  stopped it. Refused with under 40 min of dark left. A failed re-dispatch
+  stays paused.
+- A watched sideloaded night (PS-136) pauses alert-only: the guiding
+  watchdog is muted and nothing is sent to NINA (pause the sideload in NINA
+  itself); unsafe and stuck-imaging alerts stay on.
 
 ### Add a target (PS-124)
 

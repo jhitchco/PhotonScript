@@ -284,7 +284,7 @@ class TelescopeAgent:
 
     # Armer states in which a night is in progress (mirrors
     # photonscript.scheduler.armer.ACTIVE_STATES; a test keeps them in sync).
-    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE")
+    _ARMER_ACTIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR")
 
     def _armer_state(self) -> str | None:
         """The armer's persisted state, or None when there is no readable

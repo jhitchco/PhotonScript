@@ -240,7 +240,8 @@ def blockers(config=None) -> list[str]:
         st = str(get_armer().state or "").upper()
     except Exception:  # noqa: BLE001
         st = ""
-    if st in ("ARMED", "RUNNING", "PAUSED_UNSAFE", "WATCHING"):   # PS-136
+    if st in ("ARMED", "RUNNING", "PAUSED_UNSAFE", "WATCHING",   # PS-136
+              "PAUSED_OPERATOR"):                                # PS-64
         why.append(f"armer is {st}: run the ecc-scale report in daytime")
     try:
         from photonscript.scheduler.runs import running_jobs
