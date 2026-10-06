@@ -497,9 +497,14 @@ def stale_flat_filters(config) -> list[str]:
 
 
 def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
-    """A SkyFlat block for a one-shot-color rig — no filter wheel / SwitchFilter,
-    just the auto-exposure flat loop (mirrors _sky_flat minus the filter step)."""
-    from photonscript.scheduler.nina_sequence_json import _seq_container, _make_typed
+    """A SkyFlat block for a one-shot-color rig (no filter wheel): NINA's
+    auto-exposure flat loop, mirroring _sky_flat with a filterless
+    SwitchFilter. PS-132: NINA's SkyFlat looks its SwitchFilter child up with
+    First(), so leaving it out made Validate throw on NINA #2 every few
+    seconds and Start did nothing (2026-10-05); Filter null validates clean
+    without a wheel (nina_sequence_json._switch_filter_none)."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _switch_filter_none)
     loop = _seq_container(
         f"{count} flats",
         [_make_typed(
@@ -512,7 +517,7 @@ def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=count)])
     sf = _seq_container(
-        "Sky flats OSC", [loop],
+        "Sky flats OSC", [_switch_filter_none(), loop],
         container_type="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, "
                        "NINA.Sequencer")
     sf["IsExpanded"] = False

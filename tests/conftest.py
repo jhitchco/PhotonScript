@@ -10,3 +10,10 @@ def _cooler_gate_off(monkeypatch):
     the scope PC (where deploy\\cooler-gate.cmd exists). Pin it off for the
     suite; tests/test_scheduler/test_ps61_cooler_gate.py turns it on."""
     monkeypatch.setenv("PS_COOLER_GATE_MODE", "off")
+
+
+@pytest.fixture(autouse=True)
+def _load_validation_no_settle(monkeypatch):
+    """PS-132: the post-load NINA validation check waits a few seconds for
+    NINA to validate; no test should sleep for it."""
+    monkeypatch.setenv("PS_NINA_LOAD_VALIDATION_SETTLE_S", "0")

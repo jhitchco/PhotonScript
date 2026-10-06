@@ -46,6 +46,12 @@ def rig_devices(rig: str) -> tuple:
     return RIG_DEVICES.get(rig, RIG_DEVICES[RC16])
 
 
+def rig_has_filter_wheel(rig: str) -> bool:
+    """PS-132: False for the Piggy-600 (one-shot color, no wheel). Its
+    sequences must not ask NINA for a filter (sequence_lint no-filter-wheel)."""
+    return "filterwheel" in rig_devices(rig)
+
+
 # PS-114: every QA gate per rig, one mechanism. Each row is
 # (RC16 config key, Piggy-600 override key, fallback when the config has no
 # override key at all). The RC16 reads the plain key (env PS_<KEY>); the
@@ -406,18 +412,45 @@ async def nina_sequence_stop(base_url: str) -> dict:
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
 
 
-async def nina_dispatch(base_url: str, seq: dict) -> dict:
+async def nina_dispatch(base_url: str, seq: dict, config=None,
+                        rig: str | None = None) -> dict:
     """Load + start a sequence on a rig's NINA (used for piggyback calibration,
-    which has no armer state machine). Returns {ok, detail}."""
+    which has no armer state machine). Returns {ok, detail}.
+
+    PS-132: with a config (and nina_load_validation not "off"), NINA's own
+    validation is read between the load and the start (scheduler/
+    nina_validation.py): problems are pushed and added to the detail (plus
+    "validation"); in "refuse" mode a Validate error means no Start
+    (ok False). The start keeps skipValidation=true either way."""
+    from datetime import datetime as _dt
     base = base_url.rstrip("/")
+    validation = None
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             await client.get(base + "/sequence/stop")  # harmless if idle
+            t0 = _dt.now()
             ld = await client.post(base + "/sequence/load", json=seq)
             ld.raise_for_status()
+            if config is not None:
+                from photonscript.scheduler import nina_validation as nv
+                vmode = nv.mode(config)
+                if vmode != "off":
+                    validation = await nv.check_loaded(
+                        base, config, rig or RC16, since=t0, client=client)
+                    if not validation["ok"]:
+                        await nv.alert(config, rig or RC16, validation,
+                                       "dispatch")
+                        if vmode == "refuse" and validation["errors"]:
+                            return {"ok": False, "validation": validation,
+                                    "detail": "loaded but NOT started (NINA "
+                                    "validation: " + validation["detail"] + ")"}
             st = await client.get(base + "/sequence/start",
                                   params={"skipValidation": "true"})
             st.raise_for_status()
-        return {"ok": True, "detail": "loaded + started"}
+        out = {"ok": True, "detail": "loaded + started"}
+        if validation is not None and not validation["ok"]:
+            out["detail"] += " (NINA validation: " + validation["detail"] + ")"
+            out["validation"] = validation
+        return out
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "detail": f"{type(e).__name__}: {e}"}

@@ -521,6 +521,20 @@ def _switch_filter(filter_type: FilterType) -> dict:
         Filter=_filter_info(filter_type), ErrorBehavior=0, Attempts=1)
 
 
+def _switch_filter_none() -> dict:
+    """PS-132: a SwitchFilter with no filter, for a rig without a filter
+    wheel. NINA's flat instructions (SkyFlat etc.) find their filter with
+    Items.First(x is SwitchFilter), so one must be there or Validate throws
+    "Sequence contains no matching element" and Start does nothing. With
+    Filter null, SwitchFilter.Validate adds no issue (it checks the wheel
+    only when a filter is set) and SkyFlat passes the null filter to its
+    captures, NINA's normal no-filter path (NINA source, SwitchFilter.cs
+    unchanged since 2024-01, so the same in 3.2.0.9001)."""
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer",
+        Filter=None, ErrorBehavior=0, Attempts=1)
+
+
 def _af_filter_type(config) -> "FilterType | None":
     """Resolve config.autofocus_filter (e.g. 'L') to a FilterType, or None when
     unset/unknown — the filter PhotonScript focuses on for the AFs it emits, so

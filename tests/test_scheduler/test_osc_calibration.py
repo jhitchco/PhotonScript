@@ -73,9 +73,12 @@ def test_osc_flats_single_set_and_never_touches_the_mount():
     txt, start_local = generate_dusk_flats_json(pc, osc=True, owns_mount=False)
     root = json.loads(txt)
     types = _types(root)
-    # the OSC sky-flat block is present, with no filter-wheel switching
+    # the OSC sky-flat block is present, with no filter-wheel switching: its
+    # one SwitchFilter (NINA's SkyFlat needs it, PS-132) selects no filter
     assert "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, NINA.Sequencer" in types
-    assert not any("FilterWheel.SwitchFilter" in t for t in types)
+    switches = [n for n in _walk(root)
+                if "FilterWheel.SwitchFilter" in n.get("$type", "")]
+    assert len(switches) == 1 and switches[0]["Filter"] is None
     # riding the shared mount: no slew / unpark / park / safety-wait
     assert not any("Telescope." in t for t in types)
     assert not any("SafetyMonitor.WaitUntilSafe" in t for t in types)

@@ -767,6 +767,8 @@ _CONFIG_FIELDS = [
     ("cooler_gate_tolerance_c", "PS_COOLER_GATE_TOLERANCE_C", "Cooler gate: sensor within setpoint +/- this (C) before lights", "Imaging", "float", False, False),
     ("cooler_gate_timeout_min", "PS_COOLER_GATE_TIMEOUT_MIN", "Cooler gate: hold at most this long (min), then alert + skip", "Imaging", "float", False, False),
     ("cooler_gate_script", "PS_COOLER_GATE_SCRIPT", "Cooler gate script NINA runs (deploy\\cooler-gate.cmd on the scope PC)", "Imaging", "str", False, False),
+    ("nina_load_validation", "PS_NINA_LOAD_VALIDATION", "After each sequence load, read NINA's validation (PS-132): alert (push, never blocks) | refuse (also no Start on a Validate error) | off", "Imaging", "str", False, False),
+    ("nina_load_validation_settle_s", "PS_NINA_LOAD_VALIDATION_SETTLE_S", "Load validation: wait this long after the load before reading NINA (s)", "Imaging", "float", False, False),
     ("sub_temp_over_setpoint_c", "PS_SUB_TEMP_OVER_SETPOINT_C", "Reject subs this many °C above setpoint", "Imaging", "float", False, False),
     ("sub_temp_max_c", "PS_SUB_TEMP_MAX_C", "Reject subs with sensor above (°C)", "Imaging", "float", False, False),
     ("cool_lead_minutes", "PS_COOL_LEAD_MINUTES", "Cooler + dew heater ON this many min before astro dark", "Imaging", "int", False, False),
@@ -2556,7 +2558,8 @@ async def api_calibration_flats(payload: dict = Body(default={})):
                                             f"dusk flats {path.name}")
         detail = None if ok else get_armer().detail
     else:
-        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text))
+        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text),
+                                  config=config, rig=rig)   # PS-132
         ok, detail = res["ok"], res["detail"]
     if not ok:
         return JSONResponse(status_code=409, content={
