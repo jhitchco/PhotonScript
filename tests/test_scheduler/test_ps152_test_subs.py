@@ -275,3 +275,46 @@ def test_focus_cal_survives_a_restart(tmp_path, monkeypatch):
                         lambda c: (c.close(), None)[1])
     assert b.restore() is True
     assert b.focus_cal == a.focus_cal
+
+
+# ---- 5. focus seed harvest skips offset filters --------------------------------
+
+def _fits(path, focpos, foctemp):
+    def card(k, v):
+        return f"{k:<8}= {v:>20} / x".ljust(80)[:80]
+    cards = [card("SIMPLE", "T"), card("FOCPOS", focpos), card("FOCTEMP", foctemp)]
+    path.write_bytes(("".join(cards) + "END".ljust(80)).ljust(2880).encode("latin-1"))
+    return str(path)
+
+
+def _harvest(tmp_path, monkeypatch, **cfg):
+    from photonscript.scheduler import focus_seeds as fs
+    import photonscript.scheduler.runs as runs
+    subs = []
+    for i, (flt, pos) in enumerate([("L", 5680), ("Ha", 5800), ("H", 5800),
+                                    ("OIII", 5800), ("SII", 5800), ("R", 5690)]):
+        subs.append({"rig": "rc16", "filter": flt, "passed_qa": True,
+                     "hfr": 7.5, "abs_path": _fits(tmp_path / f"{i}.fits",
+                                                   pos, 12.0)})
+    monkeypatch.setattr(runs, "_load_subs", lambda config, date: subs)
+    n = fs.harvest_night(_cfg(tmp_path, **cfg), "2026-10-06")
+    p = tmp_path / "focus_seeds.json"
+    recs = json.loads(p.read_text()) if p.exists() else []
+    return n, sorted({r["filter"] for r in recs})
+
+
+def test_harvest_skips_filters_with_an_offset(tmp_path, monkeypatch):
+    n, filters = _harvest(tmp_path, monkeypatch)    # default Ha/OIII/SII:120
+    assert filters == ["L", "R"] and n == 2
+
+
+def test_harvest_takes_them_without_an_offset(tmp_path, monkeypatch):
+    n, filters = _harvest(tmp_path, monkeypatch, focus_filter_offsets="")
+    assert filters == ["H", "Ha", "L", "OIII", "R", "SII"] and n == 6
+
+
+def test_harvest_never_skips_the_af_filter(tmp_path, monkeypatch):
+    n, filters = _harvest(tmp_path, monkeypatch,
+                          focus_filter_offsets="L:0,Ha:120")
+    assert "L" in filters and "Ha" not in filters and "H" not in filters
+    assert "OIII" in filters

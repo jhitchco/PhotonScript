@@ -245,6 +245,28 @@ def harvest_limit_arcsec(config, rig: str | None) -> tuple[float, float]:
     return lim, scale
 
 
+def _offset_filters(config) -> set:
+    """PS-152: filter names (class and NINA profile name) whose focus comes
+    from focus_filter_offsets (never the AF filter itself)."""
+    ref = (getattr(config, "autofocus_filter", "") or "L").strip() or "L"
+    try:
+        offsets = config.focus_offset_map()
+    except Exception:  # noqa: BLE001
+        return set()
+    try:
+        names = config.filter_name_map()
+    except Exception:  # noqa: BLE001
+        names = {}
+    out = set()
+    for cls in offsets:
+        if cls == ref or names.get(cls) == ref:
+            continue
+        out.add(cls)
+        if names.get(cls):
+            out.add(names[cls])
+    return out
+
+
 def harvest_night(config, date: str, max_hfr_px: float | None = None) -> int:
     """After a night, read FOCPOS/FOCTEMP from that night's in-focus accepted
     subs and append one record per filter (the median position of the best
@@ -259,10 +281,17 @@ def harvest_night(config, date: str, max_hfr_px: float | None = None) -> int:
     """
     from photonscript.scheduler.runs import _load_subs
 
+    # PS-152: a filter with a configured focus_filter_offsets entry focuses
+    # as "AF filter AF + that offset", so its FOCPOS is an echo of the config,
+    # not a measurement: harvesting it would feed the config back into the
+    # table. Skipped while the offset is set (seed_for uses the same rule).
+    skip = _offset_filters(config)
     limits: dict = {}
     by_filter: dict[str, list[tuple[float, float]]] = {}
     for s in _load_subs(config, date):
         if not s.get("passed_qa"):
+            continue
+        if str(s.get("filter") or "?") in skip:
             continue
         # The RC16 seed table only: the Piggy-600 has its own focuser range
         # and harvest (piggyback_focus); its ~11000-step positions must never
