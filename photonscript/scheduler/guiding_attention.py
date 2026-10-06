@@ -23,6 +23,8 @@ audit row id when the Guiding tab can Apply it live.
 Order: fail before warn; within each, PRIORITY (lower first):
    -1  first                TheSky's site longitude (a wrong one invalidates
                             every slew and the TPoint model)
+    0  ProTrack OFF         PS-138: TheSky's ProTrack read off (unguided
+                            nights trail without it), with the fix
     0  guiding tonight      PHD2 settings PHD2 guides with (camera, guiding,
                             algorithms, calibration, darks, focal length),
                             the PS-93 calibration, a failed self-test
@@ -78,6 +80,7 @@ SECTION_ORDER = {a: i for i, (a, _n) in enumerate(SECTIONS)}
 PRIORITY_LABEL = {-1: "first: invalidates pointing and TPoint", 0: "guiding tonight",
                   1: "set up tonight", 2: "when convenient"}
 FIRST_IDS = ("site_longitude",)      # TheSky rows that go above everything
+TONIGHT_IDS = ("protrack_on",)       # PS-138: TheSky rows that matter tonight
 PHD2_TONIGHT_GROUPS = ("Camera", "Guiding", "Algorithms", "Calibration", "Darks", "Mount")
 THESKY_LATER_GROUPS = ("Image truth (ASTAP)", "Catalogs", "TPoint and ProTrack", "Pointing")
 
@@ -108,6 +111,9 @@ NOT_CHECKED = {
              "then Refresh the settings audit.", "auditSec"),
     "astap": ("No ASTAP Image Link check yet",
               "Press ASTAP check now in the TheSky / TPoint section.", "tsImagelink"),
+    "by_eye": ("TheSky state not readable by script",
+               "Check these by eye in TheSky, and run the on-site check script once so "
+               "the property names can be confirmed (MAINTENANCE.md).", "tpointSec"),
     "thesky": ("TheSky not reachable",
                "Refresh the TheSky / TPoint audit with TheSky running (TCP server on).",
                "tpointSec"),
@@ -293,6 +299,8 @@ def _prio_phd2(r: dict) -> int:
 def _prio_thesky(r: dict) -> int:
     if r.get("id") in FIRST_IDS:
         return -1
+    if r.get("id") in TONIGHT_IDS:
+        return 0
     return 2 if r.get("group") in THESKY_LATER_GROUPS else 1
 
 
@@ -428,6 +436,8 @@ def _classify_unknown(r: dict, which: str) -> str:
     if "driver flag" in note:
         return "driver_flags"
     if which == "thesky":
+        if "verify by eye" in note:
+            return "by_eye"
         if ("manual" in note or r.get("source") == "manual"
                 or r.get("group") in ("Catalogs", "TPoint and ProTrack")):
             return "manual_tpoint"
@@ -522,8 +532,13 @@ def build(config, now: datetime | None = None, *, phd2: dict | None = None,
         guarded("TheSky audit", lambda: annotate_thesky(thesky, now))
         for r in thesky.get("rows") or []:
             if r.get("status") in (FAIL, WARN):
-                items.append(_audit_item(r, "TheSky / TPoint audit (PS-104)", "tpointSec",
-                                         "ts", "TheSky", _prio_thesky(r)))
+                it = _audit_item(r, "TheSky / TPoint audit (PS-104)", "tpointSec",
+                                 "ts", "TheSky", _prio_thesky(r))
+                if r.get("id") == "protrack_on" and r.get("protrack") == "off":
+                    # PS-138: say it plainly, with the fix
+                    from photonscript.scheduler.thesky_audit import PROTRACK_FIX
+                    it.update(setting="ProTrack OFF", fix=PROTRACK_FIX)
+                items.append(it)
         sections["tpointSec"] = _counts(thesky.get("rows"))
         srcinfo["thesky_audit"] = {"t_utc": thesky.get("t_utc"),
                                    "reason": thesky.get("reason")}

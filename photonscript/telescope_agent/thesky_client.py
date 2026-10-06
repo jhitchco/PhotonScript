@@ -18,7 +18,17 @@ PS-104 removed two latent traps (neither had a caller):
   (Bisque documents a separate ConnectAndDoNotUnpark). It now reads
   IsConnected and reads the position only when already connected.
 - set_protrack used DoCommandStr, which is not in Bisque's sky6RASCOMTele
-  reference. Removed: ProTrack is a manual row in the audit.
+  reference. Removed.
+
+PS-138: the TPoint / ProTrack state is read live (tpoint_flags) instead of
+trusted from the manual record: on 2026-10-05 the audit passed "ProTrack on"
+from the record while TheSky's ProTrack tab was unticked and greyed. Bisque's
+published scripting reference has no TPoint / ProTrack property that we
+could confirm offline, so tpoint_flags tries CANDIDATE property names, one
+key each, every read in its own try: a name this build lacks reads "?ERR"
+(None) and the audit row reads unknown ("verify by eye"), never a pass. The
+on-site check script prints every candidate, so the real names can be
+confirmed (or fixed here) on the site's build.
 """
 
 from __future__ import annotations
@@ -148,6 +158,13 @@ class TheSkyClient:
         from NINA #1."""
         return self._kv("camera_flags")
 
+    def tpoint_flags(self) -> dict:
+        """PS-138: TPoint "Apply pointing corrections", model points / RMS,
+        the IH / ID index terms and ProTrack "Activate ProTrack" / "Enable
+        tracking adjustments", from candidate property names (see the module
+        doc). Property reads only."""
+        return self._kv("tpoint_flags")
+
     def version(self) -> dict:
         return self._kv("version")
 
@@ -229,6 +246,19 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
         ("autosave_path", "ccdsoftCamera.AutoSavePath"),
         ("autosave_on", "ccdsoftCamera.AutoSaveOn"),
         ("image_reduction", "ccdsoftCamera.ImageReduction")], ""),
+    # PS-138: CANDIDATE names (not confirmed on build 14139; the on-site
+    # check prints each). Property reads only, no method call: a name this
+    # build lacks reads ?ERR, a method reads as its source text (dropped by
+    # parse_kv), and the audit then says unknown / verify by eye.
+    "tpoint_flags": ([
+        ("apply_corrections", "TPoint.ApplyPointingCorrections"),
+        ("points", "TPoint.NumberOfPoints"),
+        ("rms_arcsec", "TPoint.SkyRMS"),
+        ("ih_arcsec", "TPoint.IH"),
+        ("id_arcsec", "TPoint.ID"),
+        ("protrack_active", "TPoint.ProTrackActive"),
+        ("protrack_active_tele", "sky6RASCOMTele.ProTrack"),
+        ("protrack_adjustments", "TPoint.EnableTrackingAdjustments")], ""),
     # read form only (empty argument); behind thesky_audit_allsky_read
     "allsky_flags": ([
         ("allsky_scripted",
@@ -307,14 +337,17 @@ def imagelink_script(path: str, scale: float) -> str:
 
 def parse_kv(raw: str) -> dict:
     """'a=1;b=x' -> {'a': '1', 'b': 'x'}. '?ERR' (property missing on this
-    build), 'undefined' and '' read as None."""
+    build), 'undefined', '' and (PS-138) a method's source text or an
+    "[object ...]" (a candidate name that is not a value) read as None."""
     out: dict = {}
     for part in (raw or "").split(";"):
         k, sep, v = part.partition("=")
         if not sep or not k.strip():
             continue
         v = v.strip()
-        out[k.strip()] = None if v in ("", "?ERR", "undefined") else v
+        if v in ("", "?ERR", "undefined", "null") or v.startswith(("function", "[object")):
+            v = None
+        out[k.strip()] = v
     return out
 
 

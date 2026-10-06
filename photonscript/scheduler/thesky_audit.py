@@ -21,7 +21,11 @@ telescope_agent/thesky_client.py and a test greps them).
                           solve when its record is on disk
         manual            <data_dir>/thesky/manual.json (TPoint numbers,
                           ProTrack, run binning, catalogs), unknown when
-                          older than thesky_manual_max_age_days
+                          older than thesky_manual_max_age_days. PS-138: for
+                          the live-state rows (row field live = true: model
+                          on, points, RMS, ProTrack) the record is only a
+                          fallback, shown "manual (date)" as info, never a
+                          pass: TheSky's own state is read first
     evaluate(desired, observed, config)   pure: pass / warn / fail / unknown
                           / info per row (phd2_audit's helpers and statuses)
     run_audit()           collect + evaluate + save
@@ -76,8 +80,19 @@ MANUAL_FIELDS = {
     "ucac4_installed": ("bool", None, None),
     "gaia_installed": ("bool", None, None),
     "equipment_changed_on": ("date", None, None),
+    # PS-138: the model's index terms from TPoint's Model tab (arcsec), for
+    # "first slew vs model index terms" (IH -3484.63 / ID -2250.28 on the
+    # 2026-10-04 model)
+    "ih_arcsec": ("float", -36000, 36000),
+    "id_arcsec": ("float", -36000, 36000),
     "notes": ("str", None, 500),
 }
+# PS-138: the ProTrack fix, shown by the audit row, the Guiding tab and the
+# unguided arm warning
+PROTRACK_FIX = ("TheSky: with the mount connected and tracking in TheSky, Telescope > "
+                "Bisque TCS > ProTrack: tick Activate ProTrack and Enable tracking "
+                "adjustments (both are greyed while TheSky's mount is not connected / "
+                "not tracking).")
 
 
 # --------------------------------------------------------------------------
@@ -175,8 +190,10 @@ def _parse_date(s) -> date | None:
 
 
 def _today(config) -> date:
+    """The observatory's local date now (PS-138: from _utcnow so tests can
+    pin the clock; a test near local midnight saw two different "todays")."""
     from photonscript.shared.localtime import to_local
-    return to_local(config, datetime.utcnow()).date()
+    return to_local(config, _utcnow()).date()
 
 
 def _is_armed(observed) -> bool:
@@ -686,11 +703,19 @@ def rebuild_reasons(observed, config) -> tuple[list[str], list[str]]:
     warn_l = float(getattr(config, "pointing_first_slew_warn_arcmin", 2) or 2)
     fail_l = float(getattr(config, "pointing_first_slew_fail_arcmin", 5) or 5)
     sides = ((observed.get("pointing-log") or {}).get("by_side") or {})
+    try:
+        shift = bool((index_shift(observed, config) or {}).get("match"))
+    except Exception:  # noqa: BLE001
+        shift = False
+    if shift:
+        # PS-138: the first slews miss by the model's IH / ID: Recalibrate
+        watch.append("first slews match the model's IH / ID: TPoint Recalibrate, "
+                     "not a rebuild")
     for side, st in sides.items():
         m = _num((st or {}).get("median_arcmin"))
         if m is None:
             continue
-        if m > fail_l:
+        if m > fail_l and not shift:
             rebuild.append(f"first-slew median {m:.1f}' on side {side} (fail {fail_l:g}')")
         elif m > warn_l:
             watch.append(f"first-slew median {m:.1f}' on side {side} (warn {warn_l:g}')")
@@ -790,6 +815,164 @@ def _c_mount_vs_solve(row, val, observed, config, ctx):
     return INFO, want, "after centering (PS-67), a different quantity from the first slew"
 
 
+def _manual_tag(observed) -> str:
+    """'manual (2026-10-04)': the record's entry date, for a fallback value."""
+    ent = str((observed.get("manual_record") or {}).get("entered_at") or "")[:10]
+    return f"manual ({ent or 'undated'})"
+
+
+def _live_state(observed) -> tuple[bool | None, bool | None]:
+    """(TheSky's mount connected, tracking) from the live read, None unknown."""
+    ts = observed.get("thesky-script") or {}
+    c = ts.get("mount_connected")
+    c = None if c is None else _bool(c)
+    t = ts.get("mount_tracking")
+    t = None if t is None else _bool(t)
+    if c is False:
+        t = False
+    return c, t
+
+
+def _c_protrack(row, val, observed, config, ctx):
+    """PS-138: ProTrack from TheSky, never from the manual record. ProTrack
+    (Activate ProTrack + Enable tracking adjustments) is greyed while TheSky's
+    mount is not connected / not tracking, so that live state alone says it
+    cannot be working (2026-10-05: the record said on, TheSky had it unticked
+    and greyed, the unguided test trailed). Off: FAIL when TheSky's mount is
+    connected and tracking or a night is armed, else WARN (by day). Nothing
+    live: the record is shown as info (verify by eye), or unknown."""
+    want = "Activate ProTrack and Enable tracking adjustments ticked (read from TheSky)"
+    ts = observed.get("thesky-script") or {}
+    act = ts.get("protrack_on")
+    act = None if act is None else _bool(act)
+    adj = ts.get("protrack_adjustments")
+    adj = None if adj is None else _bool(adj)
+    conn, trk = _live_state(observed)
+    armed = _is_armed(observed)
+    man = (observed.get("manual") or {}).get("protrack_on")
+    hint = (f"; {_manual_tag(observed)} says {'on' if _bool(man) else 'off'} "
+            "(not used for the status)") if man is not None else ""
+    if act is False or adj is False:
+        what = "Activate ProTrack" if act is False else "Enable tracking adjustments"
+        ctx["current"] = "OFF"
+        ctx["protrack"] = "off"
+        if (conn and trk) or armed:
+            return FAIL, want, f"TheSky: {what} is unticked{hint}"
+        return WARN, want, (f"TheSky: {what} is unticked (greyed while the mount is "
+                            f"{'not connected' if conn is False else 'not tracking'} "
+                            f"in TheSky; tick it once it is){hint}")
+    if act:
+        ctx["protrack"] = "on"
+        if adj:
+            ctx["current"] = "on"
+            return PASS, want, None
+        ctx["current"] = "on (tracking adjustments not readable)"
+        return UNKNOWN, want, "verify by eye: Enable tracking adjustments ticked"
+    # nothing live about ProTrack itself: what TheSky's mount state implies
+    if conn is False or (conn and trk is False):
+        why = ("TheSky's mount is not connected" if conn is False else
+               "TheSky's mount is not tracking")
+        ctx["current"] = "OFF (greyed)"
+        ctx["protrack"] = "off"
+        return (FAIL if armed else WARN), want, (
+            f"{why}: ProTrack is greyed and cannot be working (NINA may still drive "
+            f"the mount through the ASCOM driver){hint}")
+    ctx["protrack"] = "unknown"
+    if man is not None:
+        ctx["current"] = f"{_manual_tag(observed)}: {'on' if _bool(man) else 'off'}"
+        return INFO, want, ("from the manual record, not read from TheSky: verify by eye "
+                            "(Bisque TCS > ProTrack)")
+    ctx["current"] = "not readable"
+    return UNKNOWN, want, "verify by eye: TheSky Bisque TCS > ProTrack (not readable by script)"
+
+
+def index_terms(observed) -> tuple[float | None, float | None, str]:
+    """(IH, ID) in arcsec: TheSky's live read first, then the manual record."""
+    ts = observed.get("thesky-script") or {}
+    ih, idd = _num(ts.get("tpoint_ih_arcsec")), _num(ts.get("tpoint_id_arcsec"))
+    if ih is not None and idd is not None:
+        return ih, idd, "TheSky"
+    rec = observed.get("manual_record") or {}
+    ih, idd = _num(rec.get("ih_arcsec")), _num(rec.get("id_arcsec"))
+    if ih is not None and idd is not None:
+        return ih, idd, _manual_tag(observed)
+    return None, None, ""
+
+
+def recent_first_slew(observed) -> tuple[dict | None, str]:
+    """The newest night with first slews (per_night is newest first), else
+    the overall stats."""
+    pl = observed.get("pointing-log") or {}
+    for st in pl.get("per_night") or []:
+        if st and st.get("n") and _num(st.get("median_arcmin")) is not None:
+            return st, f"night {st.get('night')}"
+    st = pl.get("overall") or {}
+    if st.get("n") and _num(st.get("median_arcmin")) is not None:
+        return st, f"{pl.get('nights') or 14} nights"
+    return None, ""
+
+
+INDEX_MATCH_RATIO = 2.0      # first slew within x2 of hypot(IH, ID)
+INDEX_MATCH_DEG = 25.0       # axis ratio angle within this
+
+
+def index_shift(observed, config) -> dict | None:
+    """PS-138: does the recent first-slew error look like the model's index
+    terms (IH / ID), i.e. the mount's index / home moved since the model?
+    2026-10-05: first slew 1 deg 14' off with IH -3484.63", ID -2250.28"
+    (69' together). Then TPoint Recalibrate (IH / ID only) is the fix, not a
+    rebuild. A match: the newest night's median first-slew separation is
+    over pointing_first_slew_fail_arcmin and within INDEX_MATCH_RATIO of
+    hypot(IH, ID); when its east / north medians are known the direction
+    must agree too (the |north| / |east| angle within INDEX_MATCH_DEG of
+    |ID| / |IH|; signs are not compared: TPoint's IH / ID sign convention vs
+    NINA's east / north is not confirmed). None without both the terms and a
+    recent first slew."""
+    ih, idd, src = index_terms(observed)
+    st, when = recent_first_slew(observed)
+    if ih is None or st is None:
+        return None
+    fail_l = float(getattr(config, "pointing_first_slew_fail_arcmin", 5) or 5)
+    mag = math.hypot(ih, idd) / 60.0
+    sep = _num(st.get("median_arcmin"))
+    e, n = _num(st.get("median_east_arcmin")), _num(st.get("median_north_arcmin"))
+    out = {"ih": ih, "id": idd, "src": src, "index_arcmin": round(mag, 1),
+           "sep_arcmin": round(sep, 1), "when": when, "n": st.get("n"),
+           "large": sep > fail_l, "match": False, "direction": None}
+    if not out["large"] or mag <= 0:
+        return out
+    mag_ok = 1.0 / INDEX_MATCH_RATIO <= sep / mag <= INDEX_MATCH_RATIO
+    if e is not None and n is not None and (abs(e) + abs(n)) > 0:
+        a_slew = math.degrees(math.atan2(abs(n), abs(e)))
+        a_idx = math.degrees(math.atan2(abs(idd), abs(ih)))
+        out["direction"] = abs(a_slew - a_idx) <= INDEX_MATCH_DEG
+    out["match"] = bool(mag_ok and out["direction"] is not False)
+    return out
+
+
+def _c_index_shift(row, val, observed, config, ctx):
+    want = "first slews small, or not matching the model's IH / ID"
+    x = index_shift(observed, config)
+    if x is None:
+        ih, _i, _s = index_terms(observed)
+        return UNKNOWN, want, ("no recent NINA first slew" if ih is not None else
+                               "IH / ID not known: enter them in the TPoint record "
+                               "(TPoint Model tab)")
+    ctx["current"] = (f"{x['sep_arcmin']:g}' ({x['when']}, n={x['n']}) vs IH/ID "
+                      f"{x['index_arcmin']:g}' ({x['src']})")
+    if not x["large"]:
+        return PASS, want, None
+    if x["match"]:
+        ctx["current"] += ": MATCH"
+        return row["severity"], want, (
+            f"the first slews miss by about the model's index terms (IH {x['ih']:g}\", ID "
+            f"{x['id']:g}\"): the index / home moved since the model. TPoint Recalibrate "
+            "(IH / ID only), not a rebuild")
+    why = ("direction differs" if x["direction"] is False else
+           f"{x['sep_arcmin']:g}' vs {x['index_arcmin']:g}'")
+    return INFO, want, f"large first slews but not an index shift ({why}): see Rebuild the model?"
+
+
 COMPUTED = {
     "site_longitude": _c_site_longitude,
     "time_zone": _c_time_zone,
@@ -813,6 +996,8 @@ COMPUTED = {
     "first_slew_error": _c_first_slew_error,
     "first_slew_pattern": _c_first_slew_pattern,
     "mount_vs_solve": _c_mount_vs_solve,
+    "protrack": _c_protrack,
+    "index_shift": _c_index_shift,
 }
 
 
@@ -868,6 +1053,15 @@ def evaluate_row(row: dict, observed: dict, config) -> dict:
                     status = PASS if ok else row["severity"]
     if "current" in ctx:
         out["current"] = ctx["current"]
+    if row.get("live") and src == "manual" and row.get("computed") != "protrack":
+        # PS-138: a live-state row answered only by the manual record: a hint
+        # (info), never a pass or a fail; TheSky's own state was not readable
+        out["current"] = f"{_manual_tag(observed)}: {out['current']}"
+        status = INFO
+        out["note"] = ("from the manual record, not read from TheSky: verify by eye"
+                       + (f" ({out['note']})" if out["note"] else ""))
+    if ctx.get("protrack"):
+        out["protrack"] = ctx["protrack"]
     if ctx.get("reasons"):
         out["reasons"] = ctx["reasons"]
     if status == UNKNOWN and not out["note"]:
@@ -972,6 +1166,9 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
         o["autosave_on"] = _bool(cf.get("autosave_on"))
     if cf and cf.get("autosave_path") is None and "autosave_path" in cf:
         o["autosave_path"] = ""
+    tp = read("tpoint_flags", cl.tpoint_flags)
+    if tp:
+        o.update(tpoint_observed(tp))
     if getattr(config, "thesky_audit_allsky_read", False):
         al = read("allsky_flags", cl.allsky_flags)
         for k in ("allsky_automated", "allsky_scripted"):
@@ -979,6 +1176,39 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
                 o[k] = _bool(al[k]) if _bool(al[k]) is not None else al[k]
     o = {k: v for k, v in o.items() if v is not None}
     return o, {"ok": True, "note": "; ".join(errs) or f"TheSky {cl.host}:{cl.port} read"}
+
+
+def tpoint_observed(tp: dict) -> dict:
+    """PS-138: the tpoint_flags reply -> observed keys (only what read)."""
+    def b(*keys):
+        for k in keys:
+            if tp.get(k) is not None and _bool(tp[k]) is not None:
+                return _bool(tp[k])
+        return None
+    o = {"tpoint_model_active": b("apply_corrections"),
+         "tpoint_points": _num(tp.get("points")),
+         "tpoint_rms_arcsec": _num(tp.get("rms_arcsec")),
+         "tpoint_ih_arcsec": _num(tp.get("ih_arcsec")),
+         "tpoint_id_arcsec": _num(tp.get("id_arcsec")),
+         "protrack_on": b("protrack_active", "protrack_active_tele"),
+         "protrack_adjustments": b("protrack_adjustments")}
+    if o["tpoint_points"] is not None:
+        o["tpoint_points"] = int(o["tpoint_points"])
+    return {k: v for k, v in o.items() if v is not None}
+
+
+def protrack_status(audit: dict | None) -> dict:
+    """PS-138: {"state": on | off | unknown, "status", "current", "note",
+    "fix"} from an audit's ProTrack row, for the Guiding tab and the
+    unguided arm warning."""
+    r = next((x for x in (audit or {}).get("rows") or [] if x.get("id") == "protrack_on"),
+             None)
+    if not r:
+        return {"state": "unknown", "status": UNKNOWN, "current": None,
+                "note": "no TheSky audit", "fix": PROTRACK_FIX}
+    st = r.get("protrack") or ("on" if r.get("status") == PASS else "unknown")
+    return {"state": st, "status": r.get("status"), "current": r.get("current"),
+            "note": r.get("note"), "fix": PROTRACK_FIX}
 
 
 def load_manual(config) -> dict | None:

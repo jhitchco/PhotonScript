@@ -23,6 +23,9 @@
 #                      the site's TheSky 10.5 build (Med = documented call,
 #                      not yet run on-site)
 #   why, fix           plain-language reason and the manual fix
+#   live = true        (PS-138) a live TheSky state: when only the manual
+#                      record answers, the row is info "manual (date)",
+#                      never a pass (verify by eye)
 # Thresholds that are config keys (tpoint_*, pointing_first_slew_*) are read
 # from config by the computed rows, not repeated here.
 
@@ -422,24 +425,29 @@ confidence = "Med"
 why = "With All Sky off, a 25' x 17' field needs a deep catalog."
 fix = "None (information)."
 
-# ---------------------------------------------------------------- TPoint and ProTrack (manual: not scriptable)
+# ---------------------------------------------------------------- TPoint and ProTrack
+# PS-138: model on / points / RMS / ProTrack are read live from TheSky
+# (candidate property names, confidence Low until the on-site check); the
+# manual record is only a fallback shown as info, never a pass.
 
 [[check]]
 id = "tpoint_model_active"
 group = "TPoint and ProTrack"
-label = "TPoint model on"
-sources = ["manual"]
+label = "TPoint model on (Apply pointing corrections)"
+sources = ["thesky-script", "manual"]
+live = true
 equals = true
 severity = "fail"
-confidence = "Med"
-why = "Without the model on, pointing and ProTrack fall back to the raw mount."
-fix = "TheSky: Telescope > Bisque TCS / TPoint: Use TPoint model on."
+confidence = "Low"
+why = "Without the model on, pointing and ProTrack fall back to the raw mount. Read from TheSky; the manual record alone is shown as info (verify by eye)."
+fix = "TheSky: TPoint add-on: Apply pointing corrections ticked."
 
 [[check]]
 id = "tpoint_points"
 group = "TPoint and ProTrack"
 label = "Model points"
-sources = ["manual"]
+sources = ["thesky-script", "manual"]
+live = true
 computed = "tpoint_threshold"
 cfg = "tpoint_min_points"
 op = "min"
@@ -452,7 +460,8 @@ fix = "Run a longer Automated Pointing Calibration (100 points is typical)."
 id = "tpoint_rms_arcsec"
 group = "TPoint and ProTrack"
 label = "Model RMS (arcsec)"
-sources = ["manual"]
+sources = ["thesky-script", "manual"]
+live = true
 computed = "tpoint_threshold"
 cfg = "tpoint_rms_max_arcsec"
 op = "max"
@@ -490,12 +499,12 @@ fix = "Rebuild the TPoint model."
 id = "protrack_on"
 group = "TPoint and ProTrack"
 label = "ProTrack on"
-sources = ["manual"]
-equals = true
-severity = "warn"
-confidence = "Med"
-why = "ProTrack corrects tracking rates from the model (pe_owner=protrack); reading it is not documented in the scripting API."
-fix = "TheSky: Bisque TCS: ProTrack on."
+sources = ["thesky-script", "manual"]
+computed = "protrack"
+severity = "fail"
+confidence = "Low"
+why = "ProTrack corrects tracking rates from the model (pe_owner=protrack; unguided nights depend on it). It is greyed while TheSky's mount is not connected or not tracking: on 2026-10-05 the manual record said on, TheSky had it unticked and the unguided test trailed from 120 s. Read live; without a live read it is never a pass."
+fix = "TheSky: with the mount connected and tracking in TheSky, Telescope > Bisque TCS > ProTrack: tick Activate ProTrack and Enable tracking adjustments."
 
 [[check]]
 id = "tpoint_rebuild"
@@ -531,6 +540,17 @@ severity = "warn"
 confidence = "Med"
 why = "A constant offset says sync / home; one that changes with Dec or HA says model terms or flexure."
 fix = "None (information)."
+
+[[check]]
+id = "first_slew_index_terms"
+group = "Pointing"
+label = "First slew vs model index terms"
+sources = ["pointing-log", "manual"]
+computed = "index_shift"
+severity = "warn"
+confidence = "Med"
+why = "Large first slews that match the model's IH / ID index terms in size and direction mean the mount's index / home moved since the model (2026-10-05: 1 deg 14' off with IH -3484.63\", ID -2250.28\"). Recalibrating the index terms fixes that; a full rebuild is not needed."
+fix = "TPoint: take one or two new pointing samples (Image Link), then Recalibrate (refits IH / ID only); check the next first slew. Enter the new IH / ID in the TPoint record."
 
 [[check]]
 id = "mount_vs_solve"

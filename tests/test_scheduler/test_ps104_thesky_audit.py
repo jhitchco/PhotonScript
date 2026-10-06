@@ -13,7 +13,7 @@ import asyncio
 import json
 import re
 import time
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -128,10 +128,10 @@ def test_every_client_method_sends_only_clean_scripts():
     cl.ping()
     cl.get_mount_status()
     for name in ("selected_hardware", "mount_flags", "site", "ails", "camera_flags",
-                 "version", "allsky_flags"):
+                 "version", "allsky_flags", "tpoint_flags"):
         getattr(cl, name)()
     cl.imagelink_file(r"C:\tmp\a.fits", 0.239)
-    assert len(cl.sent) == 10
+    assert len(cl.sent) == 11
     for js in cl.sent:
         assert not _violations(js), js
     # the two latent traps found while grooming are gone
@@ -363,10 +363,12 @@ def test_manual_rows_and_staleness(tmp_path):
     obs, src = ta.manual_observed(ta.load_manual(cfg), cfg)
     assert src["ok"] and obs["tpoint_polar_error_arcmin"] == 2.0
     rows, _ = _eval({"manual": obs, "manual_record": ta.load_manual(cfg)}, cfg)
-    assert rows["tpoint_points"]["status"] == "warn"            # 40 < 50
-    assert rows["tpoint_rms_arcsec"]["status"] == "pass"
+    # PS-138: live-state rows answered only by the record are info, never pass
+    for rid in ("tpoint_points", "tpoint_rms_arcsec", "tpoint_model_active", "protrack_on"):
+        assert rows[rid]["status"] == "info", rid
+        assert rows[rid]["current"].startswith("manual ("), rid
+        assert "verify by eye" in rows[rid]["note"], rid
     assert rows["tpoint_polar_error_arcmin"]["status"] == "pass"  # 2.0 <= 2
-    assert rows["protrack_on"]["status"] == "pass"
     assert rows["allsky_db_installed"]["status"] == "warn"
     assert rows["run_binning"]["status"] == "pass"
     # older than thesky_manual_max_age_days: unknown, re-enter
@@ -390,8 +392,22 @@ def test_manual_validation():
 # TPoint rebuild flag
 # --------------------------------------------------------------------------
 
+# PS-138: a fixed clock. The model age is counted from the observatory's
+# local date (thesky_audit._today); the test used to build dates from the
+# machine's datetime.now(), which failed near local midnight. 05:30 UTC is
+# still 2026-10-05 in Denver: the UTC date would be one day off.
+FIXED_UTC = datetime(2026, 10, 6, 5, 30)
+FIXED_LOCAL_DATE = date(2026, 10, 5)
+
+
+@pytest.fixture
+def fixed_clock(monkeypatch):
+    monkeypatch.setattr(ta, "_utcnow", lambda: FIXED_UTC)
+    return FIXED_UTC
+
+
 def _days_ago(n):
-    return (datetime.now() - timedelta(days=n)).strftime("%Y-%m-%d")
+    return (FIXED_LOCAL_DATE - timedelta(days=n)).strftime("%Y-%m-%d")
 
 
 def _rebuild(observed, cfg=None):
@@ -399,7 +415,8 @@ def _rebuild(observed, cfg=None):
     return rows["tpoint_rebuild"]
 
 
-def test_rebuild_by_age():
+def test_rebuild_by_age(fixed_clock):
+    assert ta._today(_cfg()) == FIXED_LOCAL_DATE         # local, not the UTC date
     r = _rebuild({"manual_record": {"model_date": _days_ago(100)}})
     assert r["status"] == "fail" and r["current"] == "REBUILD" and "100 d old" in r["note"]
     r = _rebuild({"manual_record": {"model_date": _days_ago(70)}})
@@ -409,7 +426,7 @@ def test_rebuild_by_age():
     assert _rebuild({})["status"] == "unknown"
 
 
-def test_rebuild_by_equipment_change():
+def test_rebuild_by_equipment_change(fixed_clock):
     cfg = _cfg(piggyback_enabled=True)
     r = _rebuild({"manual_record": {"model_date": "2026-09-01"}}, cfg)
     assert r["status"] == "fail" and "dual-rig" in r["note"]
@@ -421,7 +438,7 @@ def test_rebuild_by_equipment_change():
     assert r["status"] == "fail" and "rigs changed" in r["note"]
 
 
-def test_rebuild_by_camera_angle_and_scale():
+def test_rebuild_by_camera_angle_and_scale(fixed_clock):
     md = _days_ago(10)
     hist = [{"t_utc": md + "T05:00:00Z", "pa": 90.0, "parity": -1, "native_scale": 0.239}]
     base = {"manual_record": {"model_date": md}, "astap_history": hist}
@@ -435,7 +452,7 @@ def test_rebuild_by_camera_angle_and_scale():
     assert r["status"] == "fail" and "image scale moved" in r["note"]
 
 
-def test_rebuild_by_first_slew_trend():
+def test_rebuild_by_first_slew_trend(fixed_clock):
     pl = {"by_side": {"E": {"n": 20, "median_arcmin": 3.9}, "W": {"n": 18, "median_arcmin": 4.2}},
           "side_src": ["ha"]}
     rows, _ = _eval({"manual_record": {"model_date": _days_ago(10)}, "pointing-log": pl})

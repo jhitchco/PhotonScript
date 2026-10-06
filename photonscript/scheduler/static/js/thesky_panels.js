@@ -250,6 +250,7 @@
         ['model_active', 'TPoint model on', 'bool'], ['protrack_on', 'ProTrack on', 'bool'],
         ['allsky_automated', 'Use All Sky Image Link on', 'bool'], ['allsky_db_installed', 'All Sky database installed', 'bool'],
         ['ucac4_installed', 'UCAC4 installed', 'bool'], ['gaia_installed', 'Gaia installed', 'bool'],
+        ['ih_arcsec', 'IH index term (arcsec)', 'number'], ['id_arcsec', 'ID index term (arcsec)', 'number'],
         ['equipment_changed_on', 'Equipment changed on (YYYY-MM-DD)', 'date'], ['notes', 'Notes', 'text']
     ];
     function fieldHTML(f, rec) {

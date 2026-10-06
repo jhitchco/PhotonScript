@@ -315,7 +315,23 @@ site's TheSky 10.5 build).
   (PS-120: the earlier of the record's entry time and the end of the model
   night; none yet reads "no slews since the model (n=0)", unknown). PS-67's mount vs solve median shows beside
   it once that record exists.
-- After each TPoint session: enter date, points, RMS, polar error, ProTrack,
+- PS-138: TPoint model on (Apply pointing corrections), points, RMS and
+  ProTrack (Activate ProTrack + Enable tracking adjustments) are read live
+  from TheSky (`thesky_client.READ_PAIRS["tpoint_flags"]`, candidate property
+  names, confidence Low until the on-site check confirms them). When only the
+  manual record answers, the row is info "manual (date)", never a pass:
+  verify by eye. ProTrack is greyed while TheSky's mount is not connected or
+  not tracking: that alone reads "OFF (greyed)" (warn by day, fail while a
+  night is armed), shows as "ProTrack OFF" on the Guiding tab when it fails,
+  and an UNGUIDED arm pushes one warning unless ProTrack reads on.
+- First slew vs model index terms (PS-138): when the newest night's
+  first-slew median is over `pointing_first_slew_fail_arcmin` and matches
+  hypot(IH, ID) within x2 (and in direction, |north| / |east| vs |ID| / |IH|
+  within 25 deg), the mount's index / home moved since the model: TPoint
+  Recalibrate (IH / ID only), not a rebuild (the rebuild row then says
+  "watch", not REBUILD). IH / ID come from TheSky if readable, else the
+  TPoint record (TPoint Model tab values, arcsec).
+- After each TPoint session: enter date, points, RMS, polar error, IH / ID, ProTrack,
   run binning and catalogs in the TPoint record form (and a line in
   HARDWARE.md "TPoint record"). Older than `thesky_manual_max_age_days` it
   reads unknown.
@@ -326,7 +342,9 @@ Once, on the scope PC, with no session running:
 1. Open `/api/thesky/onsite-script` (Guiding tab "On-site check script"),
    copy it into TheSky's Tools > Run Java Script window and Run. Every line
    is a read; a "?ERR" names a property this build does not have. Paste the
-   output into PS-104 so the property names can be confirmed (or fixed in
+   output into PS-104 (PS-138: note which `tpoint_flags.*` candidate
+   answers with the real ProTrack / Apply pointing corrections state, and
+   which read ?ERR) so the property names can be confirmed (or fixed in
    `thesky_client.READ_PAIRS`).
 2. All Sky flags (Choice B2, optional): note the "Use All Sky Image Link"
    checkbox in the Automated Pointing Calibration Run setup, then run
