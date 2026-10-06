@@ -563,7 +563,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         # PS-83: shared.star_measure, the live grader's numbers
         "hfr": m["hfr"], "fwhm_arcsec": m["fwhm_arcsec"],
         "stars": m["stars"], "ecc": m["ecc"],
-        # PS-94: the 0.48"/px measure next to the native one; sqrt form
+        # PS-94: the 0.47"/px measure next to the native one; sqrt form
         "ecc_bin": m["ecc_bin"], "hfr_bin": m["hfr_bin"],
         "ecc_at": m["measure_at"], "ecc_def": m.get("ecc_def"),
         "measure_v": m.get("measure_v"),

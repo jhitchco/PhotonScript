@@ -617,7 +617,7 @@ def analyze(config, date: str, records, tables_p: dict, tables_r: dict,
     st = tag_straddles(pairs, rf, dither_times)
     blocks_raw = make_blocks(pairs, st["slew_windows"])
     scale_p = float(getattr(rig_config(config, PIGGY), "pixel_scale_arcsec", 1.29))
-    scale_r = float(getattr(config, "pixel_scale_arcsec", 0.239))
+    scale_r = float(getattr(config, "pixel_scale_arcsec", 0.236))
     solve_all = bool(getattr(config, "flexure_solve_all", False))
     blocks = []
     for i, blk in enumerate(blocks_raw):

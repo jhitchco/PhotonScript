@@ -65,8 +65,8 @@ class PhotonScriptConfig(BaseSettings):
     phd2_pixel_scale_arcsec: float = 0.0  # explicit guide "/px override; 0 = compute
     guide_camera_pixel_um: float = 2.0    # OGMA GP678C on the OAG (2.0 um pixels)
     guide_focal_length_mm: float = 0.0    # 0 = derive from pixel_scale_arcsec and
-                                          # imaging_camera_pixel_um (0.24"/px at
-                                          # 3.76 um = about 3230 mm; the OAG
+                                          # imaging_camera_pixel_um (0.236"/px at
+                                          # 3.76 um = about 3290 mm; the OAG
                                           # shares the RC16 focal length)
     imaging_camera_pixel_um: float = 3.76  # RC16 imaging camera (AP26MC / IMX571)
     image_watch_dir: str = "C:\\Users\\jeremy\\Documents\\N.I.N.A"  # NINA output dir
@@ -163,7 +163,10 @@ class PhotonScriptConfig(BaseSettings):
     # base (TraceLogger writes dated subfolders here); enable Trace in the driver
     # setup to capture the safety-monitor client's HTTP/exception detail
     # --- Quality gates (per-sub grading) ---
-    pixel_scale_arcsec: float = 0.24  # RC16 3248mm + ASI2600 native
+    pixel_scale_arcsec: float = 0.236  # RC16 3248mm + AP26MC native, 1x1.
+                                      # Measured by plate solves (TPoint run
+                                      # at 1x1, PS-97, PS-120); was 0.24, the
+                                      # HANDBOOK said 0.239
     # PS-81: imaging sensor size (px) for the Targets page field-of-view boxes.
     # The AP26MC and AP26CC both write NAXIS1 x NAXIS2 = 6224 x 4168 (FITS
     # headers, 2026-09-26). Display only; nothing is gated on them.
@@ -175,7 +178,7 @@ class PhotonScriptConfig(BaseSettings):
                                      # piggyback sets this via rig_config so its
                                      # galaxy-inflated FWHM never bounces a tight-HFR
                                      # sub. HFR + ecc remain the hard gates.
-    quality_hfr_abs_max: float = 10.0  # px. RC16 at 0.24"/px: 10px ~= 2.4" HFR,
+    quality_hfr_abs_max: float = 10.0  # px. RC16 at 0.236"/px: 10px ~= 2.4" HFR,
                                        # consistent with the 4" FWHM gate. Was an
                                        # implicit 8px (getattr default) that rejected
                                        # soft-but-stackable subs whose stars NINA's own
@@ -185,7 +188,7 @@ class PhotonScriptConfig(BaseSettings):
                                              # mildly-trailed but stackable subs
                                              # (RC16 guided 600-900s). Loosens the
                                              # anti-trailing gate — watch for drift.
-    quality_tracking_rms_max: float = 1.5  # arcsec (0.24"/px scale)
+    quality_tracking_rms_max: float = 1.5  # arcsec (0.236"/px scale)
     quality_corner_spread_max: float = 0.35  # corner FWHM spread vs median (collimation watch)
     optics_corner_alert: bool = False  # PS-95: the daily "corner FWHM spread"
                                  # Pushover from the live grader. Off: it fired
@@ -279,14 +282,14 @@ class PhotonScriptConfig(BaseSettings):
                                  # (guard episode overlapping it): warn | fail
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
-    # PS-94: eccentricity at the 2x2-binned scale (0.48"/px on the RC16,
-    # the scale the _bin2 masters integrate at) next to the native 0.24"/px.
+    # PS-94: eccentricity at the 2x2-binned scale (0.47"/px on the RC16,
+    # the scale the _bin2 masters integrate at) next to the native 0.236"/px.
     # Report-only until the ecc-scale-report numbers are in.
     qa_ecc_binned: bool = True   # live grader also measures a 2x2-binned
                                  # copy of each RC16 sub (ecc_bin, hfr_bin)
     qa_ecc_scale: str = "native"  # which scale gates: native | binned (the
                                  # other is recorded as info only)
-    quality_eccentricity_max_binned: float = 0.0  # gate at 0.48"/px when
+    quality_eccentricity_max_binned: float = 0.0  # gate at 0.47"/px when
                                  # qa_ecc_scale=binned; 0 = same as
                                  # quality_eccentricity_max
     # PS-108: 0 to 100 sub score (shared.qa_score, weights per rig in

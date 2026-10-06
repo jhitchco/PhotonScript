@@ -27,7 +27,7 @@ PS-21 gates were tuned on them):
                native px; fwhm_arcsec = fwhm x pixel scale
   ecc          median sqrt(1-(b/a)^2) (shared.star_shape.ECC_DEF)
   ecc_bin      RC16 only, qa_ecc_binned on: the same measure on a 2x2-mean
-  hfr_bin      copy (0.48"/px). Known offset (PS-94 synthetic tests): the
+  hfr_bin      copy (0.47"/px). Known offset (PS-94 synthetic tests): the
                binned moments read 0.04 to 0.06 rounder than truth at FWHM
                8 px. qa_ecc_scale stays "native" by default for that reason.
   background,  3-pass 3-sigma clipped median / std of every 4th pixel
@@ -331,7 +331,7 @@ def measure_frame(data: np.ndarray, config, rig: str = "rc16", *,
                   coord_scale=1.0 / k,
                   read_noise=camera_constants(config, header)["read_noise_adu"])
 
-    # PS-94: the 0.48"/px measure (RC16 only, qa_ecc_binned)
+    # PS-94: the 0.47"/px measure (RC16 only, qa_ecc_binned)
     ecc_bin = hfr_bin = stars_bin = None
     if rig == "rc16" and not osc and have_sep and \
             bool(getattr(config, "qa_ecc_binned", True)):

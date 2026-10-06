@@ -91,15 +91,15 @@ async def _connected(replies, config=None):
 
 def test_focal_length_derived_from_imaging_scale():
     fl = guide_focal_length_mm(_cfg())
-    assert fl == pytest.approx(206.265 * 3.76 / 0.24)       # ~3231 mm
-    assert 3220 < fl < 3240
+    assert fl == pytest.approx(206.265 * 3.76 / 0.236)      # ~3286 mm
+    assert 3270 < fl < 3300   # 1% over the nominal 3248
     assert guide_focal_length_mm(_cfg(guide_focal_length_mm=3248)) == 3248
 
 
 def test_guide_scale_from_config_gp678c_and_binning():
     c = _cfg()
-    assert guide_scale_from_config(c, 1) == pytest.approx(2.0 * 0.24 / 3.76)  # 0.128
-    assert guide_scale_from_config(c, 2) == pytest.approx(2 * 2.0 * 0.24 / 3.76)
+    assert guide_scale_from_config(c, 1) == pytest.approx(2.0 * 0.236 / 3.76)  # 0.126
+    assert guide_scale_from_config(c, 2) == pytest.approx(2 * 2.0 * 0.236 / 3.76)
     assert guide_scale_from_config(_cfg(phd2_pixel_scale_arcsec=0.5), 2) == 0.5
     assert guide_scale_from_config(_cfg(guide_camera_pixel_um=0), 1) is None
     assert guide_scale_from_config(None, 1) is None
@@ -134,7 +134,7 @@ async def test_null_scale_falls_back_to_config_with_phd2_binning():
         await cl.refresh_pixel_scale()
         assert cl.metrics.scale_source == "config"
         assert cl.metrics.guide_binning == 2
-        assert cl.pixel_scale == pytest.approx(2 * 2.0 * 0.24 / 3.76)
+        assert cl.pixel_scale == pytest.approx(2 * 2.0 * 0.236 / 3.76)
     finally:
         await cl.disconnect()
         await srv.close()
@@ -147,7 +147,7 @@ async def test_scale_of_one_means_unknown_and_binning_error_means_bin1():
     try:
         await cl.refresh_pixel_scale()
         assert cl.metrics.scale_source == "config"
-        assert cl.pixel_scale == pytest.approx(2.0 * 0.24 / 3.76)
+        assert cl.pixel_scale == pytest.approx(2.0 * 0.236 / 3.76)
     finally:
         await cl.disconnect()
         await srv.close()

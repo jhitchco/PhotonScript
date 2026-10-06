@@ -538,7 +538,7 @@ def night_optics(config, date: str, rig: str = "rc16",
         from photonscript.scheduler.runs import _load_subs
         records = _load_subs(config, date)
     rcfg = rig_config(config, rig)
-    scale = float(getattr(rcfg, "pixel_scale_arcsec", 0.24) or 0.24)
+    scale = float(getattr(rcfg, "pixel_scale_arcsec", 0.236) or 0.236)
     min_zone = int(getattr(config, "optics_min_stars_zone", 8) or 8)
     tilt_warn = float(getattr(config, "optics_tilt_warn", 1.20) or 1.20)
     mine = [r for r in records if (r.get("rig") or "rc16") == rig]

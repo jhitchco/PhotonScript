@@ -12,9 +12,10 @@ get answered; the planner and QA thresholds should eventually read from here.
 ## Optical train
 - OTA: RC16 (406 mm) at 3248 mm f/8 (native, no reducer in use)
 - Camera: OGMA AP26MC - IMX571 mono APS-C, 6224 x 4168, 3.76 um
-- Image scale: 0.239"/px · FOV 0.414 x 0.277 deg
+- Image scale: 0.236"/px, measured by plate solves (TPoint run at 1x1 on
+  2026-10-04, PS-97, PS-120; config pixel_scale_arcsec). FOV 0.408 x 0.273 deg
 - Oversampled vs 2-3" seeing -> capture 1x1, software-bin 2x in integration
-  (QA: ecc is measured at both 0.24"/px and the binned 0.48"/px since PS-94;
+  (QA: ecc is measured at both 0.236"/px and the binned 0.47"/px since PS-94;
   the gate stays at native scale until `photonscript ecc-scale-report` on
   real nights says binning changes it. Switch with PS_QA_ECC_SCALE=binned
   and PS_QUALITY_ECCENTRICITY_MAX_BINNED.)

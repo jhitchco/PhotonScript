@@ -689,7 +689,7 @@ def ecc_scale_report(
         [0.60, 0.70], "--gate", help="Eccentricity gates to count (repeat)"),
     as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
 ):
-    """PS-94: eccentricity at the native 0.24"/px vs 2x2-binned 0.48"/px for
+    """PS-94: eccentricity at the native 0.236"/px vs 2x2-binned 0.47"/px for
     every RC16 light of a night, same pipeline and formula at both scales:
     medians per target + filter, pass counts per gate, subs that would flip,
     and which grader produced the stored numbers. Dry run: writes

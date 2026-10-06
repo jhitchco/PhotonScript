@@ -12,7 +12,7 @@ operating procedures are in [§9 Built & operating](#9-built--operating-2026-09-
 
 Image with the 600 mm piggyback (OGMA AP26CC, one-shot color) **at the same
 time** as the RC16 main rig, on the same pointing — free extra data every clear
-night. Each session yields a **tight deep crop** from the RC16 (0.24"/px) *and*
+night. Each session yields a **tight deep crop** from the RC16 (0.236"/px) *and*
 a **wide-field OSC frame** (~1.3"/px) of the surrounding region, from the same
 shutter time and the same mount.
 
@@ -56,8 +56,8 @@ Two OTAs on one **Paramount MX** (TheSky64 ASCOM driver), one scope PC.
 |---|---|---|
 | Optics | 406 mm f/8, **3248 mm** | **600 mm** |
 | Camera | OGMA **AP26MC** (IMX571 mono) | OGMA **AP26CC** (IMX571 **one-shot color**) |
-| Pixel scale | 0.239"/px | ≈ **1.29"/px** |
-| FOV | 0.41° × 0.28° | ≈ **2.2° × 1.5°** |
+| Pixel scale | 0.236"/px (plate-solved) | ≈ **1.29"/px** |
+| FOV | 0.41° × 0.27° | ≈ **2.2° × 1.5°** |
 | Filters | LRGB + 3 nm S/H/O wheel | none (OSC) |
 | Focuser | main focuser | **own motorized focuser** (separate COM/USB port) |
 | Guiding | PHD2 on **OAG GP678C** (~0.13"/px) | none — rides the mount |
@@ -119,9 +119,9 @@ read noise **0.8–1.3 e⁻ (HCG)** / 1.5–3.2 e⁻ (LCG), full well **100 ke�
 gain 1–100×, QE peak >80%.
 
 The piggyback is *massively* sky-rich per pixel: at 1.29"/px it collects
-(1.29/0.239)² ≈ **29× more sky per pixel** than the RC16. The RC16 is already
-background-limited at 180 s broadband (f/8, 0.24"/px, SQM 23.9). Scaling that to
-the piggyback: sky-limited time ≈ 180 × (f_piggy/8)² × (0.239/1.29)² ≈
+(1.29/0.236)² ≈ **30× more sky per pixel** than the RC16. The RC16 is already
+background-limited at 180 s broadband (f/8, 0.236"/px, SQM 23.9). Scaling that to
+the piggyback: sky-limited time ≈ 180 × (f_piggy/8)² × (0.236/1.29)² ≈
 **6 × (f_piggy/8)²** seconds. Even at f/8 that's ~6 s — i.e. the piggyback reaches
 background-limited in **seconds at any realistic f-ratio** for a 600 mm.
 

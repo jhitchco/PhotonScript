@@ -1,7 +1,7 @@
-"""PS-94: eccentricity at the native 0.24"/px vs the 2x2-binned 0.48"/px.
+"""PS-94: eccentricity at the native 0.236"/px vs the 2x2-binned 0.47"/px.
 
-The RC16 samples 0.24"/px against 1.5 to 2" seeing; the integration output
-(the _bin2 masters) is 0.48"/px. This report answers "would grading at the
+The RC16 samples 0.236"/px against 1.5 to 2" seeing; the integration output
+(the _bin2 masters) is 0.47"/px. This report answers "would grading at the
 binned scale pass more subs?" on a real night, with nothing else changed:
 
 * one FITS load per RC16 light, both scales measured with the SAME pipeline

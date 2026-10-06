@@ -518,7 +518,7 @@ def test_ps94_binned_gate_when_chosen(tmp_path):
     card = q.evaluate({"ecc": 0.40, "ecc_bin": 0.58, "stars": 100},
                       q.context(cfg, "rc16"))
     assert card.drivers == ["ecc_bin"]
-    assert card.reason.startswith("Eccentricity at 0.48\"/px 0.58 > 0.55")
+    assert card.reason.startswith("Eccentricity at 0.47\"/px 0.58 > 0.55")
     # no binned value (Piggy-600, older record): native gates anyway
     card = q.evaluate({"ecc": 0.66, "stars": 100}, q.context(cfg, "rc16"))
     assert card.drivers == ["ecc"]

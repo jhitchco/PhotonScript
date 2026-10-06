@@ -58,7 +58,7 @@ def api_qa_baselines(rig: str = "", nights: int = 14, k: float | None = None):
 
 @router.get("/api/qa/ecc-scale")
 def api_qa_ecc_scale(date: str, refresh: bool = False):
-    """PS-94: eccentricity at 0.24"/px vs 0.48"/px for one night's RC16
+    """PS-94: eccentricity at 0.236"/px vs 0.47"/px for one night's RC16
     lights (dry run, never touches the subs log). Runs in the background
     (202 while it works; poll again); a saved report comes back at once
     unless refresh=true. Refused (409) while the armer is armed or running
