@@ -310,6 +310,77 @@ def _cool_camera(temp_c: float, duration_min: float = 0.0) -> dict:
                        Duration=duration_min, ErrorBehavior=0, Attempts=1)
 
 
+# PS-154: cooling never gates the night. NINA's CoolCamera (CameraVM
+# RegulateTemperature, NINA 3.x source) sets the setpoint, then loops while
+# the sensor is warmer than Temperature + 1 C. Its only way out besides
+# success is a 2 min "idle" timeout that counts only while the cooler sits at
+# <1 % or >99 % power with no progress, so a cooler regulating at a warmer
+# setpoint (2026-10-06: item at -10 C, PhotonScript holding the driver at the
+# configured 0 C, sensor 0.9 C) waits forever: no unpark, no lights. Every
+# generated CoolCamera therefore (a) cools to the rig's configured setpoint
+# and (b) sits in its own run-once container with a TimeSpanCondition: that
+# condition's 1 s ConditionWatchdog calls Parent.Interrupt() when the span
+# runs out (needs Parent links, PS-77), the container ends and the sequence
+# moves on. An interrupted CoolCamera sets the driver setpoint to the current
+# sensor temperature; the armer's cooler nanny re-asserts the configured
+# setpoint on its next tick, and the PS-61 gate still holds each light block
+# (bounded too).
+COOL_BOUNDED_PREFIX = "COOL_CAMERA (bounded"   # container name prefix, lint
+
+
+def cool_bound_minutes(cfg=None) -> int:
+    """The bound on a cooling wait: cooler_gate_timeout_min (default 20),
+    whole minutes, at least 1."""
+    cfg = cfg if cfg is not None else _gen_cfg()
+    try:
+        v = float(getattr(cfg, "cooler_gate_timeout_min", 20.0))
+    except (TypeError, ValueError):
+        v = 20.0
+    if v != v:   # NaN
+        v = 20.0
+    return max(1, int(round(v)))
+
+
+def rig_cool_setpoint(cfg=None, rig: str = "rc16", target=None) -> float:
+    """PS-154: the one temperature a generated sequence cools to, the rig's
+    configured setpoint (RC16 camera_setpoint_c, Piggy-600
+    piggyback_setpoint_c, shared.rigs.rig_setpoint; a rig_config view already
+    carries its own setpoint as camera_setpoint_c). A per-target
+    camera_temp_c that differs is ignored with a log line: the dark library,
+    the cooler nanny, the PS-61 gate and grading all key on the configured
+    setpoint, and a per-target value is exactly what stalled 2026-10-06."""
+    import logging
+    from photonscript.shared.rigs import rig_setpoint
+    cfg = cfg if cfg is not None else _gen_cfg()
+    sp = float(rig_setpoint(cfg, rig))
+    t = getattr(target, "camera_temp_c", None) if target is not None else None
+    if t is not None and abs(float(t) - sp) > 0.05:
+        logging.getLogger(__name__).warning(
+            "%s: camera_temp_c %g C ignored, cooling to the configured %s "
+            "setpoint %g C (PS-154)", getattr(target, "name", "target"),
+            float(t), rig, sp)
+    return sp
+
+
+def _cool_camera_bounded(temp_c: float, duration_min: float = 0.0,
+                         cfg=None, bound_min: int | None = None) -> dict:
+    """PS-154: CoolCamera inside a run-once container whose TimeSpanCondition
+    interrupts it after the ramp (duration_min) plus bound_min (default
+    cool_bound_minutes), so the sequence proceeds even if the setpoint is
+    never reached. The ramp is added because the condition also refuses to
+    START an item whose estimated duration (the ramp) exceeds the span."""
+    import math
+    n = int(bound_min if bound_min is not None else cool_bound_minutes(cfg))
+    n += int(math.ceil(max(0.0, float(duration_min or 0.0))))
+    span = _make_typed("NINA.Sequencer.Conditions.TimeSpanCondition, "
+                       "NINA.Sequencer", Hours=n // 60, Minutes=n % 60,
+                       Seconds=0)
+    return _seq_container(
+        f"{COOL_BOUNDED_PREFIX} {n} min, then continue)",
+        [_cool_camera(temp_c, duration_min)],
+        conditions=[_loop_once(), span])
+
+
 def _warm_camera(duration_min: float = 0.0) -> dict:
     # duration_min=0 -> instant warm: cut the TEC now, no gradual ramp (a ramp
     # fights the next arm/precool). See config.gradual_warm_minutes.
@@ -1585,7 +1656,7 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
     cfg = _gen_cfg()
     gain = int(getattr(cfg, "default_gain", 100))
     offset_adu = int(getattr(cfg, "default_offset", 50))
-    temp = float(target.camera_temp_c)
+    temp = rig_cool_setpoint(cfg, "rc16", target)   # PS-154
     est_h = tracking_test_duration_s(len(filters), exposures, repeats) / 3600
     ladder_desc = (", ".join(f.value for f in filters) + " x "
                    + "/".join(f"{e:g}" for e in exposures)
@@ -1608,7 +1679,7 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
                   f"{target.dec_degrees:+.1f} deg) - {ladder_desc} "
                   f"(~{est_h:.1f} h)"),
         _stop_guiding(),
-        _cool_camera(temp, 0.0),
+        _cool_camera_bounded(temp, 0.0, cfg),   # PS-154: never blocks
         _set_tracking(0),
         _slew(target),
         _switch_filter(ref),
@@ -1799,7 +1870,7 @@ def _build_optics_test_container(target: NinaSequenceTarget,
     cfg = _gen_cfg()
     gain = int(getattr(cfg, "default_gain", 100))
     offset_adu = int(getattr(cfg, "default_offset", 50))
-    temp = float(target.camera_temp_c)
+    temp = rig_cool_setpoint(cfg, "rc16", target)   # PS-154
     est_min = optics_test_duration_s([f.value for f in filters], offsets,
                                      exp_bb, exp_nb, repeats) / 60
     sweep_desc = (", ".join(
@@ -1843,7 +1914,7 @@ def _build_optics_test_container(target: NinaSequenceTarget,
                   f"{target.dec_degrees:+.1f} deg) - {sweep_desc} "
                   f"(~{est_min:.0f} min)"),
         _stop_guiding(),
-        _cool_camera(temp, 0.0),
+        _cool_camera_bounded(temp, 0.0, cfg),   # PS-154: never blocks
         _set_tracking(0),
         _slew(target),
         _switch_filter(ref),
@@ -2024,7 +2095,13 @@ def generate_nina_json(sequence: NinaSequenceFile,
     af_ft = _af_filter_type(_cfg)  # bright AF filter (e.g. L), or None
     guided = any(t.start_guiding for t in sequence.targets)
     selftest = _selftest_script(_cfg) if guided else None  # PS-92 slots
-    temp = (sequence.targets[0].camera_temp_c if sequence.targets else 0.0)
+    # PS-154: the configured RC16 setpoint, never a target's camera_temp_c
+    # (2026-10-06: the dusk focus-calibration target carried the old -10 C
+    # model default into the Start area and the night stalled on it)
+    temp = rig_cool_setpoint(_cfg, "rc16",
+                             sequence.targets[0] if sequence.targets else None)
+    for _t in sequence.targets[1:]:
+        rig_cool_setpoint(_cfg, "rc16", _t)   # logs an ignored override
     gate_dark = sequence.wait_until_local is not None
 
     # Filter-aware imaging gate: narrowband rejects twilight glow, so an
@@ -2118,7 +2195,9 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _connect("Safety Monitor"),
         _connect("Camera"),
         _dew_heater(True),
-        _cool_camera(temp, float(getattr(_cfg, "cool_ramp_minutes", 0.0))),
+        # PS-154: bounded (cooler_gate_timeout_min), never blocks the unpark
+        _cool_camera_bounded(temp, float(getattr(_cfg, "cool_ramp_minutes", 0.0)),
+                             _cfg),
         _connect("Filter Wheel"),
         _connect("Focuser"),
         _connect("Mount"),

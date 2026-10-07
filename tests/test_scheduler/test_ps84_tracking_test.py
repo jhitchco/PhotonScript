@@ -81,7 +81,8 @@ class TestSequence:
         order = [_short(d) for d in dso["Items"]["$values"]]
         # StopGuiding and the cool check come before anything moves
         assert order.index("StopGuiding") < order.index("SlewScopeToRaDec")
-        assert order.index("CoolCamera") < order.index("SlewScopeToRaDec")
+        # PS-154: the cool sits in its own bounded container
+        assert order.index("SequentialContainer") < order.index("SlewScopeToRaDec")
         seq_part = [t for t in order if t in (
             "SlewScopeToRaDec", "SwitchFilter", "MoveFocuserAbsolute",
             "RunAutofocus", "Center")]
@@ -89,8 +90,10 @@ class TestSequence:
                             "MoveFocuserAbsolute", "RunAutofocus", "Center"]
         sw = [d for d in dso["Items"]["$values"] if _short(d) == "SwitchFilter"]
         assert sw[0]["Filter"]["_name"] == "L"
-        cool = [d for d in dso["Items"]["$values"] if _short(d) == "CoolCamera"]
-        assert cool[0]["Temperature"] <= 0.0
+        box = [d for d in dso["Items"]["$values"]
+               if str(d.get("Name", "")).startswith(nsj.COOL_BOUNDED_PREFIX)]
+        cool = box[0]["Items"]["$values"]
+        assert _short(cool[0]) == "CoolCamera" and cool[0]["Temperature"] <= 0.0
 
     def test_ladder_order_offset_and_recenter(self):
         lad = _ladder(_gen())

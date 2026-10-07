@@ -103,12 +103,14 @@ def test_every_rc16_light_block_starts_with_the_gate(gate_on):
 
 
 def test_gate_uses_the_temperature_the_start_area_cooled_to(gate_on):
+    # PS-154: that temperature is the configured setpoint; a per-target
+    # camera_temp_c (here the old -10 model default) is ignored
     t = _heart()
     t.camera_temp_c = -10.0
     seq = _gen([t])
     cool = [d for d in _walk(seq) if _short(d.get("$type", "")) == "CoolCamera"]
-    assert cool[0]["Temperature"] == -10.0
-    assert all("--setpoint=-10 " in g["Script"] for g in _gates(seq))
+    assert cool[0]["Temperature"] == 0.0
+    assert all("--setpoint=0 " in g["Script"] for g in _gates(seq))
 
 
 def test_hdr_and_moonrise_blocks_are_gated(gate_on, monkeypatch):

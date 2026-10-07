@@ -307,14 +307,8 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     if filter_wheel is None:
         filter_wheel = rig_has_filter_wheel(PIGGYBACK)
     r = sl.LintResult()
-    cools = sl._find_type(seq, "CoolCamera")
-    if not cools:
-        r.warn("cooling", "No CoolCamera instruction found")
-    for c in cools:
-        temp = c.get("Temperature")
-        if temp is None or temp > 0.0:
-            r.error("cooling", f"CoolCamera Temperature is {temp!r}: must be at "
-                               "or below 0.0 C (never a warm sensor)")
+    # PS-154: the Piggy-600 setpoint, bounded cool (a WARN when hand built)
+    sl.check_cooling(seq, r, rig=PIGGYBACK, strict=not hand_built)
     sl._check_focus_moves(seq, r)
     sl._check_parent_links(seq, r)
     sl._check_light_loop_guards(seq, r)

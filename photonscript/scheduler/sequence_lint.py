@@ -8,6 +8,7 @@ otherwise surface at 3 AM with nobody watching.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 
 
@@ -253,6 +254,110 @@ def _check_flat_filters(seq: dict, r: LintResult,
         r.error("no-filter-wheel", f"{len(set_filters)} SwitchFilter(s) select "
                 f"a filter ({', '.join(names)}) on a rig without a filter "
                 "wheel: NINA reports the wheel not connected")
+
+
+def _cooling_limits(rig: str, setpoint: float | None):
+    """PS-154: (setpoint, tolerance C, bound min) from the config:
+    the rig's setpoint unless one is given, cooler_gate_tolerance_c and
+    cooler_gate_timeout_min. Safe defaults if the config can't be read."""
+    tol, bound, sp = 1.0, 20, setpoint
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        from photonscript.shared.rigs import rig_setpoint
+        from photonscript.scheduler.nina_sequence_json import cool_bound_minutes
+        c = PhotonScriptConfig()
+        tol = float(getattr(c, "cooler_gate_tolerance_c", 1.0))
+        bound = cool_bound_minutes(c)
+        if sp is None:
+            sp = rig_setpoint(c, rig)
+    except Exception:
+        pass
+    return (0.0 if sp is None else float(sp)), tol, bound
+
+
+def _span_minutes(cond: dict) -> float | None:
+    """A TimeSpanCondition's span in minutes, else None."""
+    if "TimeSpanCondition" not in str(cond.get("$type", "")):
+        return None
+    try:
+        return (float(cond.get("Hours", 0) or 0) * 60
+                + float(cond.get("Minutes", 0) or 0)
+                + float(cond.get("Seconds", 0) or 0) / 60)
+    except (TypeError, ValueError):
+        return None
+
+
+def _cools_with_bounds(seq: dict) -> list[tuple[dict, float | None]]:
+    """Every CoolCamera with the tightest TimeSpanCondition span (min) on
+    its own or an ancestor container (None = nothing bounds it). NINA's
+    CoolCamera waits until the sensor is within 1 C of Temperature with no
+    timeout of its own; only an interrupting condition (TimeSpanCondition's
+    1 s watchdog) ends that wait."""
+    out: list[tuple[dict, float | None]] = []
+
+    def visit(node: dict, bound: float | None) -> None:
+        spans = [m for m in (_span_minutes(c) for c in
+                             ((node.get("Conditions") or {}).get("$values", [])
+                              if isinstance(node.get("Conditions"), dict) else [])
+                             if isinstance(c, dict)) if m is not None]
+        if spans:
+            bound = min(spans + ([bound] if bound is not None else []))
+        items = ((node.get("Items") or {}).get("$values", [])
+                 if isinstance(node.get("Items"), dict) else [])
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            if "CoolCamera" in str(it.get("$type", "")):
+                out.append((it, bound))
+            if isinstance(it.get("Items"), dict):
+                visit(it, bound)
+
+    if isinstance(seq, dict):
+        visit(seq, None)
+    return out
+
+
+def check_cooling(seq: dict, r: LintResult, setpoint: float | None = None,
+                  rig: str = "rc16", strict: bool = True) -> None:
+    """Rule cooling (PS-154, 2026-10-06: a CoolCamera at -10 C with the rig
+    configured for 0 C waited all night and the mount never unparked).
+    ERROR: a CoolCamera warmer than 0 C (never a warm sensor), one whose
+    Temperature is more than cooler_gate_tolerance_c off the rig's setpoint,
+    and (strict) one no TimeSpanCondition bounds to cooler_gate_timeout_min
+    plus its ramp. strict False (a hand-built sideload) makes the bound rule
+    a WARN: the operator built it on purpose, the stall alarm still pages."""
+    sp, tol, bound = _cooling_limits(rig, setpoint)
+    pairs = _cools_with_bounds(seq)
+    if not pairs:
+        r.warn("cooling", "No CoolCamera instruction found")
+    for c, span in pairs:
+        temp = c.get("Temperature")
+        try:
+            t = float(temp)
+        except (TypeError, ValueError):
+            t = None
+        if t is None or t > 0.0:
+            r.error("cooling", f"CoolCamera Temperature is {temp!r}: must be at "
+                               "or below 0.0 C (never a warm sensor)")
+        elif abs(t - sp) > tol:
+            r.error("cooling", f"CoolCamera Temperature is {t:g} C but the {rig} "
+                    f"setpoint is {sp:g} C (tolerance {tol:g} C): the sequence "
+                    "would wait for a temperature PhotonScript never holds")
+        try:
+            ramp = max(0.0, float(c.get("Duration", 0) or 0))
+        except (TypeError, ValueError):
+            ramp = 0.0
+        limit = bound + math.ceil(ramp)
+        if span is None or span > limit + 1e-6:
+            msg = ("CoolCamera with no TimeSpanCondition bound" if span is None
+                   else f"CoolCamera bounded at {span:g} min (limit {limit:g})")
+            msg += (": NINA waits for the setpoint with no timeout, so a cooler "
+                    "that cannot reach it holds the whole night (wrap it as "
+                    "nina_sequence_json._cool_camera_bounded does)")
+            if strict:
+                r.error("cooling", msg)
+            else:
+                r.warn("cooling", msg)
 
 
 def _cooler_gate_wanted() -> tuple[str, str | None]:
@@ -876,28 +981,27 @@ def lint(seq: dict, guided: bool | None = None,
          unguided_dither: bool = False,
          cooler_gate: bool | None = None,
          filter_wheel: bool = True,
-         settle_gate: bool | None = None) -> LintResult:
+         settle_gate: bool | None = None,
+         setpoint: float | None = None,
+         hand_built: bool = False) -> LintResult:
     """Validate a parsed sequence. guided=None auto-detects from content.
     unguided_dither (PS-66): an unguided run may carry active dithers (NINA
     Direct Guider); StartGuiding is still an error. cooler_gate (PS-61):
     require the gate before every light loop (None = from the config).
     filter_wheel (PS-132): False for a rig without a wheel.
     settle_gate (PS-27): require the settle gate before every OSC light in
-    the Piggy-600 light loop (None = from the config)."""
+    the Piggy-600 light loop (None = from the config).
+    setpoint (PS-154): the RC16 setpoint every CoolCamera must match (None =
+    camera_setpoint_c from the config). hand_built: a sequence someone built
+    in NINA and sideloads; an unbounded CoolCamera is then a WARN."""
     r = LintResult()
 
     if guided is None:
         guided = _has_type(seq, "StartGuiding")
 
     # --- Global checks -----------------------------------------------------
-    cools = _find_type(seq, "CoolCamera")
-    if not cools:
-        r.warn("cooling", "No CoolCamera instruction found")
-    for c in cools:
-        temp = c.get("Temperature")
-        if temp is None or temp > 0.0:
-            r.error("cooling", f"CoolCamera Temperature is {temp!r} — must be at "
-                               "or below the 0.0°C setpoint (never a warm sensor)")
+    check_cooling(seq, r, setpoint=setpoint, rig="rc16",   # PS-154
+                  strict=not hand_built)
 
     _check_focus_moves(seq, r)
     _check_parent_links(seq, r)

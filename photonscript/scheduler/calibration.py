@@ -246,7 +246,7 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
     """
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _pushover, _connect,
-        _cool_camera, _warm_camera)
+        _cool_camera_bounded, _warm_camera)
 
     def _exposures(name, exp_s, count, image_type):
         conds = ([_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
@@ -281,7 +281,7 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
                           f"{bias_count} bias — roof must be CLOSED. "
                           f"~{total_min:.0f} min"),
                 _connect("Camera"),
-                _cool_camera(config.camera_setpoint_c, 2.0),
+                _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
             ])], container_type="NINA.Sequencer.Container.StartAreaContainer,"
                 " NINA.Sequencer"),
             _seq_container("Targets",
@@ -547,7 +547,7 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
     from photonscript.shared.localtime import utc_offset_hours
     from photonscript.shared.models import FilterType
     from photonscript.scheduler.nina_sequence_json import (
-        _seq_container, _make_typed, _pushover, _connect, _cool_camera,
+        _seq_container, _make_typed, _pushover, _connect, _cool_camera_bounded,
         _sky_flat, _slew_alt_az, _wait_until_safe, _unpark, _park,
         _set_tracking)
 
@@ -593,7 +593,7 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
             _connect("Safety Monitor"),
             _connect("Camera"),
             wait_cool,
-            _cool_camera(config.camera_setpoint_c, 2.0),
+            _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
         ] + ([] if osc else [_connect("Filter Wheel")]) + [
             _connect("Mount"),
             wait_start,
@@ -615,7 +615,7 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
                       "run this alongside the main rig's flats"),
             _connect("Camera"),
             wait_cool,
-            _cool_camera(config.camera_setpoint_c, 2.0),
+            _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
             wait_start,
         ] + flat_blocks + [
             _pushover("Flats", "piggyback dusk flats complete"),
@@ -919,7 +919,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     """
     import json as _json
     from photonscript.scheduler.nina_sequence_json import (
-        _seq_container, _make_typed, _pushover, _connect, _cool_camera,
+        _seq_container, _make_typed, _pushover, _connect, _cool_camera_bounded,
         _warm_camera, _dew_heater, _wait_for_provider, _wait_for_timespan,
         _annotation, _safety_condition, _loop_once)
 
@@ -945,7 +945,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         start_items.append(_connect("Safety Monitor"))
     start_items += [
         _wait_for_provider("DuskProvider", -cool_lead),
-        _cool_camera(setpoint, 2.0),
+        _cool_camera_bounded(setpoint, 2.0, config),   # PS-154
     ]
 
     target_items = []

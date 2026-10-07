@@ -60,7 +60,9 @@ def generate_nina_xml(sequence: NinaSequenceFile) -> str:
     start = ET.SubElement(root, "StartArea")
     if sequence.targets and sequence.targets[0].cool_camera:
         cool = ET.SubElement(start, "CoolCamera")
-        ET.SubElement(cool, "Temperature").text = str(sequence.targets[0].camera_temp_c)
+        from photonscript.scheduler.nina_sequence_json import rig_cool_setpoint
+        ET.SubElement(cool, "Temperature").text = str(   # PS-154: config
+            rig_cool_setpoint(None, "rc16", sequence.targets[0]))
         ET.SubElement(cool, "Duration").text = "600"  # 10 min cooldown
 
     # Target area — main imaging loop

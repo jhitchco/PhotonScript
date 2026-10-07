@@ -432,7 +432,10 @@ class NinaSequenceTarget(BaseModel):
     # StopGuiding / StartGuiding (nina_sequence_json._build_target_container)
     unguided_filters: list[str] = Field(default_factory=list)
     cool_camera: bool = True
-    camera_temp_c: float = -10.0
+    # PS-154: None = cool to the rig's configured setpoint (camera_setpoint_c).
+    # The generators always use the configured setpoint and log (then ignore)
+    # a value here that differs; the old -10.0 default stalled 2026-10-06.
+    camera_temp_c: Optional[float] = None
     # PS-76: a focus-offset calibration target. Instead of imaging, it runs a
     # bracketed series of autofocus runs (L, R, G, B, L, Ha, OIII, SII, L by
     # default) so NINA's AF reports measure every filter's best focus against

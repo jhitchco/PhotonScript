@@ -145,10 +145,12 @@ def test_lint_rule_can_be_forced_without_config():
                for f in lint(seq, settle_gate=True).findings)
 
 
-def test_companion_dispatch_lint_carries_the_settle_gate_rule(gate_on):
+def test_companion_dispatch_lint_carries_the_settle_gate_rule(gate_on, monkeypatch):
     """Integration (wave 2026-10-07): the PS-132 companion lint that gates
     the armer's NINA #2 dispatch also applies the PS-27 settle-gate rule."""
     from photonscript.scheduler.sideload import lint_companion
+    # PS-154: the lint checks the cool against the configured Piggy setpoint
+    monkeypatch.setenv("PS_PIGGYBACK_SETPOINT_C", "-5")
     seq = _companion()
     assert lint_companion(seq).ok
     _vals(_loop(seq), "Items")[1]["ErrorBehavior"] = 1

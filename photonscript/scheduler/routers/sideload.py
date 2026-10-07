@@ -185,7 +185,7 @@ async def api_sideload(rig: str = "rc16", recipe: str = "",
                 "detail": "body is not a NINA sequence (no $type)"})
         built = {"name": str(seq.get("Name") or "custom"), "seq": seq,
                  "lint": sd.lint_companion(seq, hand_built=True)
-                 if rig == PIGGYBACK else lint(seq, guided=None)}
+                 if rig == PIGGYBACK else lint(seq, guided=None, hand_built=True)}
         recipe = None
     elif recipe in sd.RECIPES:
         try:
