@@ -36,10 +36,21 @@ States (classify(), pure):
                instruction has run that long (stuck instruction)
   not_running  no NINA process for this rig (or its log ends in a clean
                shutdown when the process cannot be checked) and no API
+  stuck        PS-154: the armer is RUNNING (or WATCHING) and the same
+               instruction has been running nina_watch_stuck_minutes
+               (default 25) although it is not one that is expected to be
+               long (exposure, wait, loop, autofocus, flat / dark / bias).
+               The log may well be growing (2026-10-06: a Cool Camera item
+               waited 1 h+ for -10 C while PhotonScript's 30 s cooler
+               commands kept the log alive, so "silent" never fired)
+  parked       PS-154, RC16 only: the armer is RUNNING, the safety monitor
+               reads SAFE, it is nina_watch_parked_after_dusk_min (default 15)
+               past astro dusk and the mount has not tracked tonight (still
+               parked, or unparked but not tracking)
   idle / off   outside the window, rig not expected, or nina_watch_mode off
 
 A non-ok state must hold for CONFIRM_TICKS consecutive ticks before it
-counts, so a NINA restart does not alert. Then one Pushover per (rig, state)
+counts (stuck / parked: one tick, they already carry their own minutes), so a NINA restart does not alert. Then one Pushover per (rig, state)
 per night with what to do (priority 1 while the armer has a night), one
 recovery push when an alerted rig is ok again, events kind "nina_watch" in
 runs/<night>_events.jsonl, and the dashboard chip (GET /api/nina/watch).
@@ -59,12 +70,18 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 MODES = ("alert", "panel", "off")
-BAD = ("api_down", "silent", "not_running")
+BAD = ("api_down", "silent", "not_running", "stuck", "parked")
 TICK_S = 60
 CONFIRM_TICKS = 3
+CONFIRM = {"stuck": 1, "parked": 1}   # PS-154: no extra debounce
+NIGHT_RUNNING = ("RUNNING", "WATCHING")   # PS-154: a night that should image
 LIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR", "WATCHING")
 # a running leaf with any of these (lower case) may legitimately log nothing
 QUIET_OK = ("wait", "loop", "safe", "time", "altitude", "dusk", "dawn")
+# PS-154: a running leaf with any of these (lower case) may legitimately run
+# longer than nina_watch_stuck_minutes
+LONG_OK = QUIET_OK + ("exposure", "autofocus", "focus", "flat", "dark",
+                      "bias", "light")
 _PID_RE = re.compile(r"\.(\d+)-\d{6}\.log$", re.I)
 _CLOSED = "Application shutting down"
 
@@ -86,6 +103,16 @@ def _f(cfg, key, default) -> float:
 
 def silent_minutes(cfg) -> float:
     return max(1.0, _f(cfg, "nina_watch_silent_minutes", 15.0))
+
+
+def stuck_minutes(cfg) -> float:
+    """PS-154: one instruction running this long (and not a long one) is stuck."""
+    return max(1.0, _f(cfg, "nina_watch_stuck_minutes", 25.0))
+
+
+def parked_after_dusk_min(cfg) -> float:
+    """PS-154: a still-parked RC16 this long past astro dusk pages."""
+    return max(0.0, _f(cfg, "nina_watch_parked_after_dusk_min", 15.0))
 
 
 def rig_name(cfg, rig: str) -> str:
@@ -202,10 +229,17 @@ def _quiet_ok(leaf: str | None) -> bool:
     return any(k in low for k in QUIET_OK)
 
 
-def classify(r: dict, limit_min: float) -> tuple[str, str]:
+def _long_ok(leaf: str | None) -> bool:
+    low = str(leaf or "").lower()
+    return any(k in low for k in LONG_OK)
+
+
+def classify(r: dict, limit_min: float, stuck_min: float = 25.0,
+             parked_min: float = 15.0) -> tuple[str, str]:
     """(state, why) for one rig's reads. r keys: window, expected, api_ok,
     process, log_quiet_min, closed_at, seq_leaf, seq_exposure_s,
-    leaf_age_min."""
+    leaf_age_min; PS-154: night_running (armer RUNNING / WATCHING),
+    mount_parked, mount_tracking, tracked_tonight, safe, past_dusk_min."""
     if not r.get("window"):
         return "idle", "outside the night window"
     if not r.get("expected"):
@@ -224,6 +258,27 @@ def classify(r: dict, limit_min: float) -> tuple[str, str]:
             return "silent", (f"the sequence shows {leaf} running for "
                               f"{age:.0f} min but the log has not grown for "
                               f"{quiet:.0f} min")
+        if r.get("night_running"):
+            not_tracking = (r.get("mount_parked") is True
+                            or r.get("mount_tracking") is False)
+            mount = ""
+            if not_tracking:
+                mount = (" The mount is "
+                         + ("PARKED." if r.get("mount_parked") else "not tracking."))
+            if (leaf and not _long_ok(leaf) and age is not None
+                    and age >= stuck_min):
+                return "stuck", (f"the sequence has been on '{leaf}' for "
+                                 f"{age:.0f} min (limit {stuck_min:.0f}); "
+                                 f"nothing after it runs.{mount}")
+            past = r.get("past_dusk_min")
+            if (not_tracking and r.get("safe") is True
+                    and not r.get("tracked_tonight")
+                    and past is not None and past >= parked_min):
+                what = ("still PARKED" if r.get("mount_parked")
+                        else "not tracking")
+                running = f"; NINA is running '{leaf}'" if leaf else ""
+                return "parked", (f"the RC16 mount is {what} {past:.0f} min "
+                                  f"after astro dusk with the roof SAFE{running}")
         return "ok", "API answers"
     if proc is False:
         return "not_running", "no NINA process and no API"
@@ -252,13 +307,22 @@ class NinaWatch:
             self.alerted = set()
             for s in self.rigs.values():
                 s["alerted_state"] = None
+                s["tracked"] = False
 
     def _rig(self, rig: str) -> dict:
         return self.rigs.setdefault(rig, {
             "state": "idle", "why": "", "since": None, "pending": None,
             "pending_n": 0, "alerted_state": None, "leaf": None,
             "leaf_since": None, "size": None, "size_at": None, "reads": {},
-            "checked_at": None})
+            "checked_at": None, "tracked": False})
+
+    def note_mount(self, rig: str, parked, tracking) -> bool:
+        """PS-154: True once the mount was seen unparked and tracking this
+        night (a park after the targets are done must not page)."""
+        s = self._rig(rig)
+        if parked is False and tracking is True:
+            s["tracked"] = True
+        return bool(s["tracked"])
 
     def track(self, rig: str, now: datetime, leaf: str | None, size,
               mtime: datetime | None) -> tuple[float | None, float | None]:
@@ -296,7 +360,8 @@ class NinaWatch:
             else:
                 s["pending"], s["pending_n"] = state, 1
             # still debouncing: keep the confirmed state we had
-            confirmed = state if s["pending_n"] >= CONFIRM_TICKS else s["state"]
+            need = CONFIRM.get(state, CONFIRM_TICKS)
+            confirmed = state if s["pending_n"] >= need else s["state"]
         else:
             s["pending"], s["pending_n"] = None, 0
             confirmed = state
@@ -378,12 +443,24 @@ def alert_text(cfg, rig: str, state: str, why: str, reads: dict,
                 "scope PC (remote desktop); if it is frozen, Stop & Make Safe "
                 "from the dashboard, close and restart NINA, then re-arm. "
                 "PhotonScript restarts nothing.").replace("  ", " ")
+    short = who.split(" (")[0]
+    if state == "stuck":
+        return (f"{who} is STUCK: {why} {night} To fix: look at {short} on "
+                "the scope PC; skip or stop that instruction (or Stop & Make "
+                "Safe and re-arm). PhotonScript changed nothing."
+                ).replace("  ", " ")
+    if state == "parked":
+        return (f"{who}: NOT IMAGING, {why}. {night} The sequence never "
+                "unparked or never started tracking: check NINA #1's Start "
+                "area (a wait that never ends), then unpark or re-arm. "
+                "PhotonScript changed nothing.").replace("  ", " ")
     return f"{who}: {state} ({why})"
 
 
 def recovery_text(cfg, rig: str, prev: str) -> str:
     label = {"not_running": "not running", "api_down": "API down",
-             "silent": "up but silent"}.get(prev, prev)
+             "silent": "up but silent", "stuck": "stuck on one instruction",
+             "parked": "parked after dusk"}.get(prev, prev)
     return (f"{rig_name(cfg, rig)} is OK again (API answers, log growing) "
             f"after {label}.")
 
@@ -435,6 +512,49 @@ async def running_leaf(base: str) -> tuple[str | None, float | None]:
     return _name(chain[-1]), _exposure_time(chain[-1])
 
 
+async def _api_get(base: str, path: str, timeout: float = 8.0) -> dict | None:
+    """GET <base><path> -> its Response dict (ninaAPI v2), None on any error."""
+    if not base:
+        return None
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            r = await client.get(base.rstrip("/") + path)
+        if r.status_code >= 400:
+            return None
+        data = r.json()
+        data = data.get("Response", data) if isinstance(data, dict) else None
+        return data if isinstance(data, dict) else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _flag(v):
+    return None if v is None else bool(v)
+
+
+async def read_mount(cfg, rig: str) -> dict:
+    """PS-154: {"mount_parked", "mount_tracking", "safe"} for the rig whose
+    NINA owns the mount (RC16), each None when unknown; {} for other rigs.
+    Read only (GETs)."""
+    try:
+        from photonscript.shared.rigs import rig_devices
+        if "mount" not in rig_devices(rig):
+            return {}
+    except Exception:  # noqa: BLE001
+        if rig != "rc16":
+            return {}
+    base = rig_base(cfg, rig)
+    m = await _api_get(base, "/equipment/mount/info") or {}
+    sm = await _api_get(base, "/equipment/safetymonitor/info") or {}
+    up = m.get("Connected") is not False
+    return {"mount_parked": _flag(m.get("AtPark")) if up else None,
+            "mount_tracking": (_flag(m.get("TrackingEnabled", m.get("Tracking")))
+                               if up else None),
+            "safe": (_flag(sm.get("IsSafe"))
+                     if sm.get("Connected", True) is not False else None)}
+
+
 async def read_rig(cfg, rig: str) -> dict:
     """The live reads for one rig (never raises)."""
     base = rig_base(cfg, rig)
@@ -446,19 +566,22 @@ async def read_rig(cfg, rig: str) -> dict:
         facts = log_facts(None)
     proc = await asyncio.to_thread(process_alive, facts["pid"])
     leaf, exp_s = await running_leaf(base) if ok else (None, None)
+    mount = await read_mount(cfg, rig) if ok else {}
     return {"api_ok": ok, "api_error": err, "process": proc, "pid": facts["pid"],
             "log_file": facts["file"], "log_mtime": facts["mtime"],
             "log_size": facts["size"], "closed_at": facts["closed_at"],
-            "seq_leaf": leaf, "seq_exposure_s": exp_s}
+            "seq_leaf": leaf, "seq_exposure_s": exp_s, **mount}
 
 
 # ------------------------------------------------------------------ tick
 
 async def tick(cfg, armer_state: str, now: datetime | None = None,
                read=None, notify=None, window: bool | None = None,
-               monitor: NinaWatch | None = None) -> dict:
+               monitor: NinaWatch | None = None,
+               dusk_utc: str | datetime | None = None) -> dict:
     """One pass over the rigs. read(cfg, rig) -> reads and notify are
-    injectable for tests. Returns {rig: update result}."""
+    injectable for tests. dusk_utc (PS-154): tonight's astro dusk (the
+    armer's plan) for the parked check. Returns {rig: update result}."""
     from photonscript.shared.phd2_store import night_of
     from photonscript.shared.rigs import rig_ids
     monitor = monitor or MONITOR
@@ -468,6 +591,9 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
     win = in_window(cfg, now) if window is None else window
     night = night_of(cfg, now)
     limit = silent_minutes(cfg)
+    dusk = _parse_utc(dusk_utc)
+    past_dusk = (None if dusk is None or armer_state != "RUNNING"
+                 else (now - dusk).total_seconds() / 60.0)
     out = {}
     for rig in rig_ids(cfg):
         if m == "off" or not win:
@@ -479,10 +605,16 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
         reads = await read(cfg, rig)
         quiet, age = monitor.track(rig, now, reads.get("seq_leaf"),
                                    reads.get("log_size"), reads.get("log_mtime"))
+        monitor._roll(night)   # before note_mount: a roll resets "tracked"
+        tracked = monitor.note_mount(rig, reads.get("mount_parked"),
+                                     reads.get("mount_tracking"))
         reads = {**reads, "window": win, "log_quiet_min": quiet,
                  "leaf_age_min": age,
-                 "expected": armer_state in LIVE or reads.get("process") is True}
-        state, why = classify(reads, limit)
+                 "expected": armer_state in LIVE or reads.get("process") is True,
+                 "night_running": armer_state in NIGHT_RUNNING,
+                 "tracked_tonight": tracked, "past_dusk_min": past_dusk}
+        state, why = classify(reads, limit, stuck_minutes(cfg),
+                              parked_after_dusk_min(cfg))
         res = monitor.update(rig, state, why, reads, night, now)
         out[rig] = res
         if res["alert"]:
@@ -501,6 +633,21 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
     return out
 
 
+def _parse_utc(v) -> datetime | None:
+    """Naive UTC datetime from an ISO string ('...Z') or a datetime."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, datetime):
+        if v.tzinfo is None:
+            return v
+        return v.astimezone(timezone.utc).replace(tzinfo=None)
+    try:
+        d = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
+
+
 async def _push(cfg, msg: str, priority: int, notify=None) -> None:
     if notify is None:
         from photonscript.shared.pushover import notify as _n
@@ -516,7 +663,11 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
     while True:
         try:
             cfg = get_config()
-            await tick(cfg, str(getattr(get_armer(), "state", "") or ""))
+            armer = get_armer()
+            plan = getattr(armer, "plan", None)
+            dusk = plan.get("dusk_utc") if isinstance(plan, dict) else None
+            await tick(cfg, str(getattr(armer, "state", "") or ""),
+                       dusk_utc=dusk)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001

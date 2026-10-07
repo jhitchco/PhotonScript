@@ -663,6 +663,8 @@ _CONFIG_FIELDS = [
     ("nina_watch_mode", "PS_NINA_WATCH_MODE", "NINA watchdog (PS-150): alert (chip + one Pushover per rig and state per night) | panel (chip only) | off; never starts or restarts NINA", "Nanny / Alerts", "str", False, False),
     ("nina_watch_silent_minutes", "PS_NINA_WATCH_SILENT_MINUTES", "NINA watchdog: up but silent when its log has not grown for this many minutes (API down, or a non-wait instruction running)", "Nanny / Alerts", "float", False, False),
     ("nina_watch_sun_alt_deg", "PS_NINA_WATCH_SUN_ALT_DEG", "NINA watchdog: watch while the sun is at or below this altitude (deg)", "Nanny / Alerts", "float", False, False),
+    ("nina_watch_stuck_minutes", "PS_NINA_WATCH_STUCK_MINUTES", "NINA watchdog (PS-154): page when one instruction that is not an exposure / wait / loop / autofocus runs this long while armed RUNNING", "Nanny / Alerts", "float", False, False),
+    ("nina_watch_parked_after_dusk_min", "PS_NINA_WATCH_PARKED_AFTER_DUSK_MIN", "NINA watchdog (PS-154): page when the RC16 mount has not tracked yet this many min after astro dusk (armed RUNNING, roof safe)", "Nanny / Alerts", "float", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
     ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),

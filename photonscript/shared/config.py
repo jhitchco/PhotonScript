@@ -110,6 +110,12 @@ class PhotonScriptConfig(BaseSettings):
     nina_watch_mode: str = "alert"  # alert | panel (chip + events, no push) | off
     nina_watch_silent_minutes: float = 15.0
     nina_watch_sun_alt_deg: float = -6.0  # watch while the sun is at/below this
+    # PS-154 (2026-10-06 cool stall): with the armer RUNNING, page once when
+    # one non-long NINA instruction (not an exposure / wait / loop / AF) has
+    # run this many minutes, or when the RC16 mount has not tracked yet this
+    # many minutes after astro dusk with the roof safe. Observe only.
+    nina_watch_stuck_minutes: float = 25.0
+    nina_watch_parked_after_dusk_min: float = 15.0
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead

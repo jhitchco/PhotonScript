@@ -212,7 +212,7 @@ def _cooler_armer(**cfg):
 
 
 def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",),
-                cool_result=None):
+                cool_result=None, seq_cool=None):
     import photonscript.shared.rigs as rigs_mod
     from types import SimpleNamespace
 
@@ -229,6 +229,12 @@ def _patch_rigs(monkeypatch, info, cool_calls, setpoint=0.0, rigs=("rc16",),
     monkeypatch.setattr(rigs_mod, "rig_setpoint", lambda cfg, r: setpoint)
     monkeypatch.setattr(rigs_mod, "nina_camera_info", _info)
     monkeypatch.setattr(rigs_mod, "nina_cool", _cool)
+    # PS-154: no sequence CoolCamera running unless a test says so
+    import photonscript.scheduler.armer as armer_mod
+
+    async def _no_seq_cool(self, base):
+        return seq_cool
+    monkeypatch.setattr(armer_mod.Armer, "_running_cool_target", _no_seq_cool)
 
 
 @pytest.mark.asyncio

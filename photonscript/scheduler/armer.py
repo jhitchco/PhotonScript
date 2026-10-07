@@ -157,6 +157,8 @@ class Armer:
         self._cooler_warm_since: dict[str, datetime] = {}  # per-rig first warm tick
         self._cooler_stuck_alerted: dict[str, bool] = {}   # per-rig "still warm" latch
         self._cooler_cmd_alerted: dict[str, bool] = {}     # per-rig "cool cmd failed" latch
+        self._cooler_fight_alerted: dict[str, bool] = {}   # PS-154 per-rig mismatch latch
+        self._guider_hold_logged = False  # PS-154 "restart held: mount parked" audit
         self._safety_none_ticks = 0    # consecutive ticks safety monitor unreadable
         self._safety_alerted = False   # safety-monitor-blind alert latch (episode)
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
@@ -944,16 +946,28 @@ class Armer:
                 and getattr(self.config, "guiding_auto_recover", True)):
             self._guiding_recovered = True
             ok = await self._restart_guiding()
-            msg = ("Auto-recovery: restarted PHD2 guiding "
-                   f"({'sent' if ok else 'FAILED, guider unreachable'}). "
-                   "If it doesn't lock, calibrate at Dec 0 / the meridian "
-                   "by hand.")
-            if self._guiding_gate.on_auto_recover(now, ok):
-                await notify(self.config, msg, title="PhotonScript guiding",
-                             priority=1)
+            if ok is None:
+                # PS-154: held, the mount is parked / not tracking;
+                # _restart_guiding re-armed the restart for a later tick.
+                # Audited once per episode, never pushed (the NINA watch
+                # "parked" / "stuck" alarm is the page for that).
+                if not self._guider_hold_logged:
+                    self._guider_hold_logged = True
+                    record(self.config, "Auto-recovery held: not starting "
+                           f"PHD2 guiding ({self.detail}).",
+                           title="PhotonScript guiding", priority=0,
+                           reason="guiding-mount-not-tracking")
             else:
-                record(self.config, msg, title="PhotonScript guiding",
-                       priority=1, reason="guiding-repeat-held")
+                msg = ("Auto-recovery: restarted PHD2 guiding "
+                       f"({'sent' if ok else 'FAILED, guider unreachable'}). "
+                       "If it doesn't lock, calibrate at Dec 0 / the meridian "
+                       "by hand.")
+                if self._guiding_gate.on_auto_recover(now, ok):
+                    await notify(self.config, msg, title="PhotonScript guiding",
+                                 priority=1)
+                else:
+                    record(self.config, msg, title="PhotonScript guiding",
+                           priority=1, reason="guiding-repeat-held")
 
         # 3) Priority escalation — auto-recovery didn't take.
         if (self._guiding_alerted and ticks >= GUIDING_ESCALATE_AFTER_TICKS
@@ -970,10 +984,21 @@ class Armer:
                 record(self.config, msg, title="PhotonScript guiding",
                        priority=2, reason="guiding-repeat-held")
 
-    async def _restart_guiding(self) -> bool:
+    async def _restart_guiding(self) -> bool | None:
         """Best-effort stop→start of PHD2 guiding to break a stuck/idle loop.
         Start does NOT force calibration, so PHD2 Auto-restore reuses a good
-        calibration when one exists. Never raises."""
+        calibration when one exists. Never raises.
+        PS-154: not while the mount is parked or not tracking (2026-10-06:
+        PHD2 lost the star on a parked RC16, RMS 38"). Then it logs, returns
+        None and re-arms the one restart so a later tick retries."""
+        why = await self._mount_not_tracking()
+        if why:
+            logger.warning("guider restart skipped: the mount is %s; retrying "
+                           "on a later tick", why)
+            self.detail = f"guider_start held: mount {why}"
+            self._guiding_recovered = False
+            return None
+        self._guider_hold_logged = False
         try:
             await self._nina("guider_stop")
             await asyncio.sleep(2)
@@ -1025,6 +1050,27 @@ class Armer:
             setp = rig_setpoint(self.config, rig)
             too_warm = (float(temp) - setp) > tol
             if not on or too_warm:
+                # PS-154: a sequence CoolCamera to another temperature is
+                # running. Re-asserting would hold the driver at our setpoint
+                # while NINA waits for its own, forever (2026-10-06: item at
+                # -10 C, nanny at 0 C every 30 s, no lights all night). Page
+                # once and leave that rig alone until the item ends.
+                seq_t = await self._running_cool_target(rc.nina_base_url)
+                if seq_t is not None and abs(seq_t - setp) > tol:
+                    if not self._cooler_fight_alerted.get(rig):
+                        self._cooler_fight_alerted[rig] = True
+                        await notify(
+                            self.config,
+                            f"Cooler mismatch on {rig}: NINA's sequence is "
+                            f"running Cool Camera to {seq_t:g} C but the "
+                            f"configured setpoint is {setp:g} C (sensor "
+                            f"{float(temp):.1f} C). PhotonScript is NOT "
+                            "re-asserting while that item runs; it waits until "
+                            "the sensor is within 1 C of its target and may "
+                            "never finish. Fix the sequence or skip the item.",
+                            title="PhotonScript cooler", priority=1)
+                    continue
+                self._cooler_fight_alerted[rig] = False
                 # Re-assert the correct setpoint (idempotent; corrects a wrong one).
                 res = await nina_cool(rc.nina_base_url, setp, minutes=ramp)  # instant
                 if not (res or {}).get("ok", False):
@@ -1068,6 +1114,43 @@ class Armer:
                 self._cooler_stuck_alerted[rig] = False
                 self._cooler_cmd_alerted[rig] = False
                 self._cooler_warm_since.pop(rig, None)
+
+    async def _running_cool_target(self, base_url: str) -> float | None:
+        """PS-154: the Temperature of a CoolCamera that NINA's sequence is
+        running right now, else None (idle, another item, unreadable).
+        Read only, never raises."""
+        try:
+            from photonscript.scheduler.sideload import read_sequence_state
+            from photonscript.scheduler.where_panel import running_chain
+            tree, _err = await asyncio.wait_for(read_sequence_state(base_url), 10)
+            chain = running_chain(tree) if tree is not None else []
+        except Exception:  # noqa: BLE001
+            return None
+        for node in reversed(chain):
+            name = "".join(str(node.get("Name") or "").lower().split())
+            if ("CoolCamera" in str(node.get("$type") or "")
+                    or name == "coolcamera"):
+                try:
+                    return float(node.get("Temperature"))
+                except (TypeError, ValueError):
+                    return None
+        return None
+
+    async def _mount_not_tracking(self) -> str | None:
+        """PS-154: why guiding cannot start now ("parked" / "not tracking"),
+        or None when the mount tracks or cannot be read (fail open)."""
+        data = await self._nina("mount_info")
+        if not isinstance(data, dict):
+            return None
+        m = data.get("Response", data)
+        if not isinstance(m, dict):
+            return None
+        if m.get("AtPark") is True:
+            return "parked"
+        trk = m.get("TrackingEnabled", m.get("Tracking"))
+        if trk is False:
+            return "not tracking"
+        return None
 
     async def _watch_safety_monitor(self, now: datetime, safe: bool | None) -> None:
         """Safety-monitor watchdog. `safe` is True/False when the monitor reads

@@ -418,7 +418,8 @@ companion (the sideload Piggy recipe); when building one by hand:
 - Center once, before the loop, at most, and only when the RC16 is not
   imaging (it moves the RC16 too). While the RC16 images, NINA #2 only
   cools, focuses and exposes: the RC16's own centering aims both scopes.
-- Keep the companion's guards: CoolCamera at or below 0 C, a
+- Keep the companion's guards: CoolCamera at the Piggy-600 setpoint and
+  bounded by a TimeSpanCondition (PS-154), at or below 0 C, a
   SafetyMonitorCondition and a dawn TimeCondition on the light loop itself,
   the settle gate before each light (PS-27).
 - Load it with the sideload (rig piggyback, JSON body) so the lint runs:
@@ -785,6 +786,27 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   and the shutdown now stops NINA #2 as well. `/api/arm` shows
   `shutdown_due_utc`. Note the "last sub 12:17:45Z" first blamed on the
   piggyback was an RC16 OIII sub.
+- 2026-10-06 (cool stall, PS-154): a clear new-moon night lost >1 h. The
+  Start-area Cool Camera item asked for -10 C (the NinaSequenceTarget
+  camera_temp_c model default, carried in by the PS-144 dusk focus
+  calibration target inserted first) while the config setpoint was 0 C and
+  the armer's cooler nanny re-asserted 0 C every 30 s. NINA's CoolCamera
+  (CameraVM.RegulateTemperature) waits until the sensor is within 1 C of its
+  target with no timeout (its 2 min idle timeout counts only at <1 % or
+  >99 % cooler power), so it never finished: no unpark, no tracking, no RC16
+  lights, PHD2 "guiding" a parked mount, NINA #2 shooting a parked sky. Now
+  every generated CoolCamera uses the rig's configured setpoint (a per-target
+  value is logged and ignored) inside "COOL_CAMERA (bounded N min, then
+  continue)", a run-once container whose TimeSpanCondition
+  (`cooler_gate_timeout_min`, plus any ramp) interrupts it; lint rule
+  `cooling` fails a CoolCamera off the setpoint by more than
+  `cooler_gate_tolerance_c` or without that bound (WARN for a hand-built
+  sideload). The NINA watch pages STUCK (one non-long instruction running
+  `nina_watch_stuck_minutes`, 25) and NOT IMAGING (RC16 not tracked yet
+  `nina_watch_parked_after_dusk_min`, 15, after dusk, roof safe); the cooler
+  nanny pages instead of fighting a running sequence CoolCamera to another
+  temperature; the guiding auto-recovery never starts PHD2 on a parked or
+  idle mount.
 - 2026-10-04 (blind night, PS-150): both NINAs were closed by 19:46 local
   (NINA #2 "requested by user" 19:31 after its safety driver threw "RPC
   server is unavailable"; NINA #1 closed and restarted twice, last closed
