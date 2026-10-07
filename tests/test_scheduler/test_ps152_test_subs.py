@@ -175,7 +175,10 @@ from tests.test_scheduler.test_ps144_focus_offsets import (  # noqa: E402
 def _cal_state(status):
     """ninaAPI /sequence/state with the calibration container in `status`."""
     return {"Response": [{"Name": "Targets_Container", "Status": "RUNNING",
+                          # both fields: the armer picks one from the clock
                           "Items": [{"Name": "Focus calibration M52_Container",
+                                     "Status": status},
+                                    {"Name": "Focus calibration NGC 7789_Container",
                                      "Status": status},
                                     {"Name": "Heart Nebula_Container",
                                      "Status": "RUNNING"}]}]}
@@ -221,7 +224,9 @@ async def test_calibration_is_recorded_and_never_repeated(tmp_path, monkeypatch)
     assert "state" not in order                  # nothing dispatched before
     fc = a.focus_cal
     assert fc["night"] == "2026-10-06" and fc["status"] == "dispatched"
-    assert fc["container"] == "Focus calibration M52"
+    # the field is picked from the real clock (M52 or NGC 7789 by date)
+    assert fc["container"] in ("Focus calibration M52",
+                               "Focus calibration NGC 7789")
     saved = json.loads((tmp_path / "data" / "armer_state.json").read_text())
     assert saved["focus_cal"]["status"] == "dispatched"
     # the flag comes back on (failed .env reset + restart, or re-ticked):
