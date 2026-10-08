@@ -462,6 +462,16 @@ class NinaSequenceTarget(BaseModel):
     optics_test_exposure_s: float = 45.0
     optics_test_nb_exposure_s: float = 120.0
     optics_test_repeats: int = 2
+    # PS-171: a TPoint mapping target. Instead of the imaging plan it slews
+    # to each alt/az point in turn (no center, no sync), takes one short
+    # frame and runs the tpoint-sample ExternalScript (TheSky Image Link,
+    # then a TPoint sample or a CSV row). See generate_tpoint_mapping_json()
+    # and scheduler/tpoint_mapping.py. Points are [alt_deg, az_deg, side].
+    tpoint_mapping: bool = False
+    tpoint_points: list[list] = Field(default_factory=list)
+    tpoint_exposure_s: float = 5.0
+    tpoint_binning: int = 2
+    tpoint_script: str = ""
     # PS-26: the rig the mount centers for (the project's driving_rig), its
     # frame-center option and tonight's transit (UTC, from the planner). A
     # "piggyback" target centers the RC16 so the target lands mid Piggy-600

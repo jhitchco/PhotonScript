@@ -1192,6 +1192,20 @@ class PhotonScriptConfig(BaseSettings):
     tpoint_min_points: int = 50         # ProTrack's minimum per Bisque
     tpoint_rms_max_arcsec: float = 30.0
     tpoint_polar_max_arcmin: float = 3.0  # PS-120: TPoint advised leaving 2.79'
+    # PS-171 TPoint mapping run (sideload recipe tpoint_mapping_then_tonight,
+    # scheduler/tpoint_mapping.py). Only used when that recipe is loaded.
+    tpoint_mapping_points: int = 60      # first run; at most 300
+    tpoint_mapping_min_alt: float = 30.0
+    tpoint_mapping_exposure_s: float = 5.0   # L, per point
+    tpoint_mapping_binning: int = 2      # 0.472"/px: plenty for Image Link
+    tpoint_mapping_moon_deg: float = 15.0
+    tpoint_mapping_max_ha_h: float = 6.0  # beyond = under the pole, skipped
+    tpoint_sample_script: str = "C:\\astro\\PhotonScript\\deploy\\tpoint-sample.cmd"
+    tpoint_sample_add: str = "off"       # off: Image Link + CSV only (no
+                                 # TheSky write); auto: also add each solved
+                                 # point with the method the probe found
+                                 # (the one TheSky write, telescope_agent.
+                                 # tpoint_sample.ADD_CANDIDATES)
     pointing_first_slew_warn_arcmin: float = 2.0  # NINA first-solve median
     pointing_first_slew_fail_arcmin: float = 5.0  # (14 nights, per side)
     thesky_manual_max_age_days: float = 30.0  # manual TPoint record older

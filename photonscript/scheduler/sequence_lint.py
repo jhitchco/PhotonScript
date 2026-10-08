@@ -945,6 +945,66 @@ def _check_optics_test(tgt: dict, name: str, followed: bool,
            "offset, back to best focus at the end. " + after)
 
 
+def _is_tpoint_point(d: dict) -> bool:
+    """PS-171: a TPoint mapping point is a nested DeepSkyObjectContainer
+    only so its frame carries the point's OBJECT; _check_tpoint_mapping
+    checks it."""
+    from photonscript.scheduler.nina_sequence_json import TPOINT_POINT_PREFIX
+    return str(d.get("Name") or "").startswith(TPOINT_POINT_PREFIX)
+
+
+def _is_tpoint_mapping(d: dict) -> bool:
+    from photonscript.scheduler.nina_sequence_json import TPOINT_MAPPING_PREFIX
+    name = (d.get("Target") or {}).get("TargetName") or d.get("Name") or ""
+    return str(name).startswith(TPOINT_MAPPING_PREFIX)
+
+
+# Anything that would sync the mount or re-center it: a TPoint sample is the
+# difference between where the mount thinks it points and where it points,
+# so a sync (NINA's Center syncs; a meridian flip re-centers) erases it.
+_TPOINT_FORBIDDEN = ("Platesolving.Center", "SlewScopeAndCenter",
+                     "MeridianFlipTrigger", "SlewScopeToRaDec", "StartGuiding",
+                     "SyncScope", "Platesolving.SolveAndSync")
+
+
+def _check_tpoint_mapping(tgt: dict, name: str, followed: bool,
+                          r: LintResult) -> None:
+    """PS-171 rule tpoint-mapping, for a TPoint mapping target: no center,
+    sync, RA/Dec slew, meridian flip trigger, guiding or active dither
+    anywhere in it; every point guarded by Safety, run once, with exactly
+    one Slew to Alt/Az and one LIGHT exposure. A WARN says what it is."""
+    bad = sorted({_short_type(d["$type"]) for frag in _TPOINT_FORBIDDEN
+                  for d in _find_type(tgt, frag)})
+    bad += ["DitherAfterExposures (active)"
+            for d in _find_type(tgt, "DitherAfterExposures")
+            if d.get("AfterExposures", 0) > 0][:1]
+    if bad:
+        r.error("tpoint-mapping", f"[{name}] TPoint mapping must not center, "
+                f"sync, guide or flip: found {', '.join(bad)}")
+    points = [st for _p, st in _types_in(tgt)
+              if "DeepSkyObjectContainer" in st.get("$type", "")
+              and _is_tpoint_point(st)]
+    if not points:
+        r.error("tpoint-mapping", f"[{name}] has no points")
+    for st in points:
+        sname = st.get("Name")
+        conds = json.dumps(st.get("Conditions", {}))
+        if "SafetyMonitorCondition" not in conds or not any(
+                _runs_once(c) for c in _vals(st.get("Conditions"))):
+            r.error("tpoint-mapping", f"[{sname}] point needs its own "
+                    "SafetyMonitorCondition and LoopCondition(1)")
+        if (len(_find_type(st, "SlewScopeToAltAz")) != 1
+                or len(_find_type(st, "Imaging.TakeExposure")) != 1
+                or _has_type(st, "RunAutofocus")):
+            r.error("tpoint-mapping", f"[{sname}] point must be one Slew to "
+                    "Alt/Az and one exposure (then the sample script)")
+    after = ("Tonight's targets follow it; it runs once per night."
+             if followed else "Nothing follows it tonight.")
+    r.warn("tpoint-mapping", f"[{name}] TPoint mapping (PS-171): {len(points)} "
+           "blind alt/az points, no center, no sync, no flip trigger, "
+           "guiding stopped. " + after)
+
+
 def _short_type(t: str) -> str:
     return (t or "").split(",")[0].split(".")[-1]
 
@@ -1012,7 +1072,12 @@ def lint(seq: dict, guided: bool | None = None,
     _check_readout_mode(seq, r)
     _check_flat_filters(seq, r, filter_wheel)   # PS-132
 
-    if not _has_type(seq, "MeridianFlipTrigger"):
+    # PS-171: a TPoint mapping run alone (every target a mapping run) has no
+    # flip trigger by design (each alt/az point sits on a fixed pier side)
+    mapping_only = bool(_find_type(seq, "DeepSkyObjectContainer")) and all(
+        _is_tpoint_mapping(d) or _is_tpoint_point(d)
+        for d in _find_type(seq, "DeepSkyObjectContainer"))
+    if not _has_type(seq, "MeridianFlipTrigger") and not mapping_only:
         r.error("meridian", "No MeridianFlipTrigger found anywhere in sequence")
 
     # Night-loop safety architecture (Jerry Macon pattern)
@@ -1072,7 +1137,8 @@ def lint(seq: dict, guided: bool | None = None,
     # PS-148: the nested through-focus steps are checked with their test.
     targets = [(p, d) for p, d in _types_in(seq)
                if "DeepSkyObjectContainer" in d["$type"]
-               and not _is_piggy_center(d) and not _is_optics_step(d)]
+               and not _is_piggy_center(d) and not _is_optics_step(d)
+               and not _is_tpoint_point(d)]
     if not targets:
         r.error("targets", "No DeepSkyObjectContainer targets found")
 
@@ -1083,11 +1149,16 @@ def lint(seq: dict, guided: bool | None = None,
                 tgt, name, any(" through-focus sweep" not in json.dumps(d)
                                for _p, d in targets), r)
 
+        is_tpoint = _is_tpoint_mapping(tgt)   # PS-171
+        if is_tpoint:
+            _check_tpoint_mapping(tgt, name, any(
+                not _is_tpoint_mapping(d) for _p, d in targets), r)
+
         cond_blob = json.dumps(tgt.get("Conditions", {}))
         if "SafetyMonitorCondition" not in cond_blob:
             r.error("safety", f"[{name}] missing SafetyMonitorCondition — scope "
                               "will keep shooting into clouds")
-        if "AltitudeCondition" not in cond_blob:
+        if "AltitudeCondition" not in cond_blob and not is_tpoint:
             r.warn("altitude", f"[{name}] missing AltitudeCondition (want >=30 deg)")
 
         # An empty target still slews/AFs/centers; looping under Safety +
@@ -1147,7 +1218,7 @@ def lint(seq: dict, guided: bool | None = None,
 
         # Centering: Platesolving.Center or SlewScopeAndCenter both plate-solve
         if not (_has_type(tgt, "Platesolving.Center")
-                or _has_type(tgt, "SlewScopeAndCenter")):
+                or _has_type(tgt, "SlewScopeAndCenter")) and not is_tpoint:
             r.error("platesolve", f"[{name}] no plate-solve centering — blind slew "
                                   "can miss by arcminutes")
 

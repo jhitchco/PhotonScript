@@ -321,9 +321,11 @@ IMAGELINK_INPUTS = ("ImageLink.pathToFITS", "ImageLink.scale",
 _SAFE_PATH = re.compile(r"^[A-Za-z0-9 _.:\\/()-]+$")
 
 
-def imagelink_script(path: str, scale: float) -> str:
-    """The Image Link self-test script for one file. Refuses a path with
-    characters that could break out of the JS string."""
+def imagelink_pre(path: str, scale: float) -> str:
+    """The Image Link prelude for one file: set the scripted ImageLink's
+    inputs (IMAGELINK_INPUTS only) and execute, catching the error into
+    `err`. Refuses a path with characters that could break out of the JS
+    string, and an implausible scale. Shared with PS-171 tpoint_sample."""
     p = str(path)
     if not p.isascii() or not _SAFE_PATH.match(p):
         raise TheSkyError(f"refusing an unusual path for Image Link: {p!r}")
@@ -331,11 +333,17 @@ def imagelink_script(path: str, scale: float) -> str:
     sc = float(scale)
     if not 0.01 < sc < 100:
         raise TheSkyError(f"implausible Image Link scale {sc}")
-    pre = (f"ImageLink.pathToFITS = '{p}';"
-           f"ImageLink.scale = {sc:.5f};"
-           "ImageLink.unknownScale = 0;"
-           "var err = '';"
-           "try { ImageLink.execute(); } catch (e) { err = String(e.message || e); }")
+    return (f"ImageLink.pathToFITS = '{p}';"
+            f"ImageLink.scale = {sc:.5f};"
+            "ImageLink.unknownScale = 0;"
+            "var err = '';"
+            "try { ImageLink.execute(); } catch (e) { err = String(e.message || e); }")
+
+
+def imagelink_script(path: str, scale: float) -> str:
+    """The Image Link self-test script for one file (imagelink_pre, then
+    the ImageLinkResults reads)."""
+    pre = imagelink_pre(path, scale)
     return _js_kv([
         ("exec_error", "err"),
         ("succeeded", "ImageLinkResults.succeeded"),

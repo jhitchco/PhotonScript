@@ -400,6 +400,102 @@ per 3x3 zone.
   tilt plate / spacer); a soft corner at best focus that does not swap is not
   a plain tilt.
 
+### TPoint mapping run (PS-171, supervised)
+
+Builds a denser TPoint model without handing the camera to TheSky (its
+Automated Pointing Calibration Run needs TheSky's camera add-on, NINA #1
+owns the AP26MC). NINA slews to N alt/az points, shoots one short frame at
+each, and an ExternalScript asks TheSky to Image Link the frame. Why: the
+mount drifts ~0.4"/min in RA and ~0.3"/min in Dec unguided (PS-168);
+TPoint + ProTrack on a dense model is the fix. About 1 h for 60 points.
+
+What the sequence does (RC16, spliced into the Targets area before the
+night loop, runs once, then tonight's targets): StopGuiding, cool, sidereal
+tracking, Slew to Alt/Az to the first point, AF on L, then per point a
+run-once container `TPoint point <i>/<n> alt <a> az <z> (<side>)`: Slew to
+Alt/Az (NO center, NO sync), one `tpoint_mapping_exposure_s` (5 s) L frame
+at bin `tpoint_mapping_binning` (2), then `deploy\tpoint-sample.cmd` (always
+exits 0, so a failed solve never stops the loop). Points: an equal-area
+spiral above `tpoint_mapping_min_alt` (30 deg, at most 85), minus points
+within `tpoint_mapping_moon_deg` (15) of the moon over the run, within 15
+min of HA of the meridian (pier side ambiguous) and beyond
+`tpoint_mapping_max_ha_h` (6 h, under the pole); all east-of-meridian
+points first, then west (one flip), in 1 h HA strips walked up / down in
+Dec. No MeridianFlipTrigger and no Center in it (a flip re-centers and
+NINA's Center syncs, which would erase what TPoint measures); lint rule
+`tpoint-mapping` errors on either, and on an unguarded point. The frames
+are test subs (PS-152: no QA alerts, no night medians) and the off-target
+alert ignores the run.
+
+What `photonscript tpoint-sample` does per point (scope PC): waits up to
+30 s for the newest FITS under `image_watch_dir` (not the one sampled
+last), then ONE TheSky script: Image Link at `pixel_scale_arcsec` x
+XBINNING, read the solution (J2000 center, stars, RMS), the mount as TheSky
+reports it (RA / Dec, alt / az), LST, JD and TPoint "apply corrections".
+With `tpoint_sample_add=auto` and a probe that found an add method, the
+same script then calls that one method after a successful solve (the only
+TheSky write PhotonScript makes; `tpoint_sample.ADD_CANDIDATES`, test
+`test_add_calls_live_only_in_the_sample_module`). Default `off`: Image
+Link + CSV only. Every point appends a row to
+`<data_dir>/runs/<night>_tpoint.csv` and a `tpoint_sample` event.
+
+The probe (afternoon, READ ONLY, safe any time TheSky runs):
+`C:\astro\venv\Scripts\photonscript.exe tpoint-sample --probe` (add
+`--json` for everything). It prints which candidate add methods exist on
+this TheSky build (typeof checks, nothing called), the TPoint / Image Link
+object members that mention TPoint / point / sample / model (so the real
+API names can be read off), and the model's point count, RMS, IH / ID and
+ProTrack flags from the PS-138 candidate names. Each probe is saved
+(`<data_dir>/tpoint/probe_latest.json` + a dated copy) and the next one
+prints "was ..." next to every changed flag: run it before and after a
+manual TPoint session to compare the model (and the PS-168 drift report
+the nights either side).
+
+How to run it (supervised; first run on a clear night, about 1 h):
+1. Afternoon: run the probe (above). Note the point count / RMS. If it
+   lists an add method and you want points added automatically, set
+   `PS_TPOINT_SAMPLE_ADD=auto` on the System page; otherwise leave `off`
+   and import the CSV by hand (below) or add points from TheSky's Image
+   Link window.
+2. Dashboard, Target Goals, **Sideload**: recipe **TPoint mapping run**
+   (`tpoint_mapping_then_tonight`), **Preview**. The RC16 row shows the
+   point count (east / west), the minutes, the skips and whether the sample
+   script was found ("MISSING" = frames only), lint PASS with a
+   `tpoint-mapping` warning. `?at=<UTC>` previews a later start (the moon
+   skip uses that time).
+3. **Load into RC16** (and the Piggy-600 companion if wanted), confirm,
+   then **Start in NINA #1**. The armer stays DISARMED and WATCHES (PS-136).
+4. Watch: NINA #1's Advanced Sequencer (each point: slew, 5 s frame,
+   script), TheSky's TPoint window (points arriving with `auto`), and
+   `runs/<night>_tpoint.csv` (one row per point: solved yes / no).
+   Several "not solved" rows in a row = clouds or focus: stop.
+5. Stop early: **Stop** in NINA #1. Then on the dashboard **Stop
+   watching** and **Arm** tonight (the armer dispatches the rest of the
+   night from now). Or re-sideload
+   `tracking_test_then_tonight` / plain tonight from the Sideload box.
+6. Afterwards: in TheSky's TPoint window run the model fit (Super Model)
+   yourself, check the RMS, turn on "Apply pointing corrections" /
+   ProTrack as usual, then run the probe again (before / after).
+
+Hand import (no add method, or `off`): the CSV has, per point, the solved
+J2000 center (`solved_ra_j2000_h`, `solved_dec_j2000_d`), the mount's RA /
+Dec as TheSky reported it (`mount_ra_h`, `mount_dec_d`, JNow), its alt /
+az, LST and JD. TPoint (TheSky TPoint window, File > Import, verify the
+menu on the site build) takes "true" (catalog) and "observed" (mount)
+positions per point. Caveat: TheSky reports the mount position AFTER any
+TPoint corrections; when `apply_corrections` reads 1 in the CSV the rows
+measure the current model's residuals (good for checking it), not raw
+pointing errors, so for a fresh model turn "Apply pointing corrections"
+off for the run or rely on the add method. Plan C: TheSky's own Automated
+Pointing Calibration Run (disconnect the camera in NINA #1 first, connect
+it in TheSky; give it back to NINA before the night).
+
+Config: `tpoint_mapping_points` (60, 3 to 300), `tpoint_mapping_min_alt`
+(30), `tpoint_mapping_exposure_s` (5), `tpoint_mapping_binning` (2),
+`tpoint_mapping_moon_deg` (15), `tpoint_mapping_max_ha_h` (6),
+`tpoint_sample_script` (`C:\astro\PhotonScript\deploy\tpoint-sample.cmd`;
+missing = frames only), `tpoint_sample_add` (off | auto).
+
 ### A safe hand-built NINA #2 sequence (PS-139)
 
 The Piggy-600 rides the RC16 mount and NINA #1 owns that mount (PS-25).

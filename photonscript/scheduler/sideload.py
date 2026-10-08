@@ -13,6 +13,8 @@ pure functions, plus two tiny ninaAPI calls:
                           link_parents() (PS-77)
   splice_optics_test()    PS-148: the same splice for the through-focus
                           optics test (recipe optics_through_focus)
+  splice_tpoint_mapping() PS-171: the same splice for the TPoint mapping
+                          run (recipe tpoint_mapping_then_tonight)
   lint_companion()        the Piggy companion's own lint (the RC16 night lint
                           wants a mount, targets and a meridian flip, which a
                           camera-only companion never has)
@@ -37,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 RECIPE_TT_THEN_TONIGHT = "tracking_test_then_tonight"
 RECIPE_OPTICS_THROUGH_FOCUS = "optics_through_focus"   # PS-148
+RECIPE_TPOINT_MAPPING = "tpoint_mapping_then_tonight"   # PS-171
 RECIPES = {
     RECIPE_TT_THEN_TONIGHT: (
         "RC16: tracking test on an auto-picked field, then tonight's targets "
@@ -45,6 +48,10 @@ RECIPES = {
         "RC16: through-focus optics test (astigmatism / collimation) on an "
         "auto-picked field, then tonight's targets (minus any excluded). "
         "Piggy-600: the companion with lights."),
+    RECIPE_TPOINT_MAPPING: (
+        "RC16: TPoint mapping run (N blind alt/az points, Image Link each "
+        "through TheSky, no center, no sync), then tonight's targets (minus "
+        "any excluded). Piggy-600: the companion with lights."),
 }
 
 TARGETS_CONTAINER = "TARGETS_CONTAINER"
@@ -59,6 +66,10 @@ SPLICED_TT_NOTE = ("Sideloaded (PS-127): this test runs once, in the Targets "
                    "follow. An unsafe spell during the ladder ends the test "
                    "for tonight; after an unsafe pause the night loop never "
                    "runs it again.")
+# PS-171: appended to the TPoint mapping run's annotation when spliced.
+SPLICED_TPM_NOTE = ("Sideloaded (PS-171): this run goes once, in the Targets "
+                    "area before the night loop, then tonight's targets "
+                    "follow (each with its own slew, AF and center).")
 # PS-148: the same for the through-focus optics test.
 SPLICED_OT_NOTE = ("Sideloaded (PS-148): this test runs once, in the Targets "
                    "area before the night loop, then tonight's targets "
@@ -221,6 +232,18 @@ def splice_optics_test(night_seq: dict, ot_seq: dict, exclude=(),
                        what="optics-test")
 
 
+def splice_tpoint_mapping(night_seq: dict, tpm_seq: dict, exclude=(),
+                          name: str | None = None) -> dict:
+    """PS-171: splice_tracking_test for the TPoint mapping run: it runs once
+    in the Targets area before the night loop, then tonight's targets
+    (minus `exclude`)."""
+    from photonscript.scheduler.nina_sequence_json import TPOINT_MAPPING_NOTE
+    return splice_test(night_seq, tpm_seq, exclude, name,
+                       note=(TPOINT_MAPPING_NOTE,
+                             TPOINT_MAPPING_NOTE + " " + SPLICED_TPM_NOTE),
+                       what="tpoint-mapping")
+
+
 def splice_test(night_seq: dict, test_seq: dict, exclude=(),
                 name: str | None = None, note: tuple | None = None,
                 what: str = "test") -> dict:
@@ -275,7 +298,8 @@ def _spliced_note(test: dict, note: tuple | None = None) -> dict:
 
 def splice_name(date: str, field: str, kept: list[str], tag: str = "TT") -> str:
     """PhotonScript_<yyyymmdd>_<tag>_<field>_then_<target | tonight>
-    (tag TT = tracking test, OT = optics test, PS-148)."""
+    (tag TT = tracking test, OT = optics test, PS-148, TPM = TPoint
+    mapping, PS-171)."""
     def safe(s):
         return "_".join("".join(c if c.isalnum() else " " for c in str(s)).split())
     tail = safe(kept[0]) if len(kept) == 1 else ("tonight" if kept else "nothing")

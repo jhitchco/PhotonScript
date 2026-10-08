@@ -68,6 +68,15 @@ TARGET_OPTICS_SWEEP_SUFFIX = " through-focus sweep"
 OPTICS_STEP_SUFFIX = " through-focus step"
 OPTICS_TEST_PARK_NOTE = ("When the sweep is done the scope parks and holds "
                          "until dawn: stop the sequence to image.")
+# PS-171: the TPoint mapping run. The target container is "TPoint mapping
+# <n> points", its point loop "<that name> point loop", and every point a
+# run-once container "TPoint point <i>/<n> alt <a> az <z> (<side>)".
+TPOINT_MAPPING_PREFIX = "TPoint mapping "
+TARGET_TPOINT_LOOP_SUFFIX = " point loop"
+TPOINT_POINT_PREFIX = "TPoint point "
+TPOINT_MAPPING_NOTE = ("No center, no sync, no meridian flip trigger: every "
+                       "point is a blind Slew to Alt/Az, one short frame and "
+                       "the tpoint-sample script.")
 FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
 # PS-61: with the cooler gate on, each light block is its own container
 # "<target> filter block (cooler-gated)" whose first item is the gate, so a
@@ -1120,6 +1129,9 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets,
                                                   once=followed)
+    if getattr(target, "tpoint_mapping", False):   # PS-171
+        return _build_tpoint_mapping_container(target, af_filter, loop_end,
+                                               cooler_gate)
     if getattr(target, "optics_test", False):   # PS-148
         return _build_optics_test_container(target, min_altitude,
                                             af_filter, focus_offsets,
@@ -1999,6 +2011,203 @@ def generate_optics_test_json(name: str = "Heart Nebula",
         optics_test_nb_exposure_s=float(nb_exposure_s
                                         or OPTICS_TEST_NB_EXPOSURE_S),
         optics_test_repeats=max(1, int(repeats or 1)))
+    seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
+    return generate_nina_json(seq)
+
+
+# --- PS-171 TPoint mapping run ----------------------------------------------
+
+TPOINT_EXPOSURE_S = 5.0
+TPOINT_BINNING = 2
+_TPOINT_SLEW_S = 25.0       # per point: a short alt/az hop on the Paramount
+_TPOINT_DOWNLOAD_S = 4.0
+_TPOINT_SOLVE_S = 20.0      # the tpoint-sample script (TheSky Image Link)
+
+
+def _dms(value: float) -> tuple:
+    v = abs(float(value))
+    d = int(v)
+    m = int((v - d) * 60)
+    sec = round(((v - d) * 60 - m) * 60, 1)
+    if sec >= 60.0:
+        sec, m = 0.0, m + 1
+    if m >= 60:
+        m, d = 0, d + 1
+    return d, m, sec
+
+
+def _slew_alt_az_exact(alt_deg: float, az_deg: float) -> dict:
+    """SlewScopeToAltAz to a fractional alt / az (deg, min, sec fields)."""
+    ad, am, asec = _dms(alt_deg)
+    zd, zm, zsec = _dms(float(az_deg) % 360.0)
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer",
+        Coordinates=_make_typed(
+            "NINA.Astrometry.InputTopocentricCoordinates, NINA.Astrometry",
+            AzDegrees=zd, AzMinutes=zm, AzSeconds=zsec,
+            AltDegrees=ad, AltMinutes=am, AltSeconds=asec),
+        ErrorBehavior=0, Attempts=1)
+
+
+def tpoint_mapping_name(n_points: int) -> str:
+    return f"{TPOINT_MAPPING_PREFIX}{int(n_points)} points"
+
+
+def tpoint_point_name(i: int, n: int, alt: float, az: float, side: str) -> str:
+    """'TPoint point 07/60 alt 45.0 az 120.0 (east)': the container name and
+    the OBJECT of the point's frame (tpoint-sample reads it back)."""
+    w = max(2, len(str(int(n))))
+    return (f"{TPOINT_POINT_PREFIX}{int(i):0{w}d}/{int(n):0{w}d} "
+            f"alt {float(alt):.1f} az {float(az):.1f} ({side})")
+
+
+def tpoint_script_args(i: int, n: int, alt: float, az: float, side: str) -> str:
+    """Arguments after the script path (see deploy/tpoint-sample.cmd)."""
+    return (f"--rig rc16 --point {int(i)} --of {int(n)} "
+            f"--alt {float(alt):.2f} --az {float(az):.2f} --side {side}")
+
+
+def tpoint_mapping_duration_s(n_points: int, exposure_s: float) -> float:
+    """Estimated wall-clock length (s): per point a slew, the frame, its
+    download and the Image Link script; plus the first slew and one AF."""
+    per = _TPOINT_SLEW_S + float(exposure_s) + _TPOINT_DOWNLOAD_S + _TPOINT_SOLVE_S
+    return int(n_points) * per + _TT_AF_S + _TT_SLEW_S
+
+
+def _build_tpoint_mapping_container(target: NinaSequenceTarget,
+                                    af_filter: "FilterType | None",
+                                    loop_end: tuple | None,
+                                    cooler_gate: tuple | None = None) -> dict:
+    """PS-171 TPoint mapping run: StopGuiding, cool, sidereal tracking, Slew
+    to Alt/Az to the first point, AF on L there. Then for every point (east
+    of the meridian first, then west: one pier flip) a run-once container:
+    Slew to Alt/Az (no center, no sync), one short L frame, then the
+    tpoint-sample ExternalScript (ErrorBehavior 0; the script always exits
+    0, so a failed solve never stops the run). Each point container carries
+    Safety + the loop end itself (it holds a LIGHT exposure, PS-77).
+
+    No Platesolving.Center anywhere: NINA's Center syncs the mount, which
+    would corrupt the very pointing errors TPoint is measuring. No
+    MeridianFlipTrigger: the points are alt/az, so each one sits on a fixed
+    side of the meridian, and the flip's re-center would sync too. The
+    target has no AltitudeCondition (its coordinates are nominal); every
+    point is above tpoint_mapping_min_alt by construction."""
+    ref = af_filter or FilterType.LUMINANCE
+    pts = [(float(p[0]), float(p[1]), str(p[2]) if len(p) > 2 else "")
+           for p in (target.tpoint_points or [])]
+    n = len(pts)
+    exp_s = float(target.tpoint_exposure_s or TPOINT_EXPOSURE_S)
+    binning = int(target.tpoint_binning or 1)
+    script = str(target.tpoint_script or "")
+    cfg = _gen_cfg()
+    gain = int(getattr(cfg, "default_gain", 100))
+    offset_adu = int(getattr(cfg, "default_offset", 50))
+    temp = rig_cool_setpoint(cfg, "rc16", target)   # PS-154
+    est_min = tpoint_mapping_duration_s(n, exp_s) / 60
+    east = sum(1 for p in pts if p[2] == "east")
+
+    def _point(i: int, alt: float, az: float, side: str) -> dict:
+        pname = tpoint_point_name(i, n, alt, az, side)
+        items = [
+            _slew_alt_az_exact(alt, az),
+            _make_typed(
+                "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
+                ExposureTime=exp_s, Gain=gain, Offset=offset_adu,
+                Binning=_make_typed(
+                    "NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                    X=binning, Y=binning),
+                ImageType="LIGHT", ExposureCount=0,
+                ErrorBehavior=0, Attempts=1),
+        ]
+        if script:
+            items.append(_external_script(
+                script, tpoint_script_args(i, n, alt, az, side)))
+        conds = [_safety_condition()]
+        if loop_end:
+            conds.append(_time_condition(*loop_end))
+        conds.append(_loop_once())
+        # a nested DeepSkyObjectContainer so the frame's OBJECT is the
+        # point name (the QA test-sub rule and the CSV read it)
+        return _seq_container(
+            pname, items, conditions=conds, container_type=DSO_CONTAINER_TYPE,
+            Target=_make_typed(
+                "NINA.Astrometry.InputTarget, NINA.Astrometry",
+                Expanded=True, TargetName=pname, PositionAngle=0.0,
+                InputCoordinates=_coords(target)))
+
+    first = pts[0] if pts else (60.0, 90.0, "east")
+    items = [
+        _annotation(f"PS-171 TPoint mapping: {n} points ({east} east of the "
+                    f"meridian, then {n - east} west), {exp_s:g} s L bin "
+                    f"{binning} each, ~{est_min:.0f} min. "
+                    + TPOINT_MAPPING_NOTE + " Watch TheSky's TPoint window; "
+                    "Stop in NINA #1 ends it. Samples: runs/<night>_tpoint.csv."),
+        _pushover("Imaging", f"TPoint mapping: {n} points, ~{est_min:.0f} min"
+                  + ("" if script else " - NO tpoint-sample script on this "
+                     "machine: frames only")),
+        _stop_guiding(),
+        _cool_camera_bounded(temp, 0.0, cfg),   # PS-154: never blocks
+        _set_tracking(0),
+        _slew_alt_az_exact(first[0], first[1]),
+        _switch_filter(ref),
+        _move_focuser(_seed_position(ref)),
+        _autofocus(),
+        _set_tracking(0),
+    ]
+    loop = ([_cooler_gate(cooler_gate, "rc16", "TPoint mapping")]
+            if cooler_gate else [])
+    for i, (alt, az, side) in enumerate(pts, 1):
+        if i > 1 and side != pts[i - 2][2]:
+            loop.append(_pushover("Imaging", f"TPoint mapping: {side} side "
+                                  f"(point {i}/{n}), the mount flips once"))
+        loop.append(_point(i, alt, az, side))
+    loop_conds = [_safety_condition()]
+    if loop_end:
+        loop_conds.append(_time_condition(*loop_end))
+    loop_conds.append(_loop_once())
+    items.append(_seq_container(f"{target.name}{TARGET_TPOINT_LOOP_SUFFIX}",
+                                loop, conditions=loop_conds))
+    items.append(_pushover("Imaging", "TPoint mapping done - check TheSky's "
+                           "TPoint window and runs/<night>_tpoint.csv"))
+    return _seq_container(
+        target.name, items,
+        conditions=[_safety_condition(), _loop_once()],
+        triggers=[_reconnect_trigger()],
+        container_type=DSO_CONTAINER_TYPE,
+        Target=_make_typed(
+            "NINA.Astrometry.InputTarget, NINA.Astrometry",
+            Expanded=True, TargetName=target.name,
+            PositionAngle=target.rotation,
+            InputCoordinates=_coords(target)),
+    )
+
+
+def generate_tpoint_mapping_json(points: list, ra_hours: float = 0.0,
+                                 dec_degrees: float = 31.9,
+                                 exposure_s: float = TPOINT_EXPOSURE_S,
+                                 binning: int = TPOINT_BINNING,
+                                 script: str = "",
+                                 min_altitude: float = 30.0) -> str:
+    """PS-171: a whole-night NINA sequence (same startup, safety loop and
+    shutdown as a normal night) whose only target is the TPoint mapping
+    run over `points` ([alt, az, side], in run order). ra / dec are the
+    target's nominal coordinates (the zenith at the start). Generated only:
+    the sideload recipe tpoint_mapping_then_tonight splices it before
+    tonight's targets."""
+    from photonscript.scheduler.nina_sequence import build_sequence_for_night
+    cfg = _gen_cfg()
+    pts = [[round(float(p[0]), 2), round(float(p[1]), 2),
+            str(p[2]) if len(p) > 2 else ""] for p in points]
+    tname = tpoint_mapping_name(len(pts))
+    t = NinaSequenceTarget(
+        name=tname, ra_hours=float(ra_hours) % 24.0,
+        dec_degrees=max(-89.0, min(89.0, float(dec_degrees))),
+        start_guiding=False, dither_every_n=0,
+        camera_temp_c=float(getattr(cfg, "camera_setpoint_c", 0.0)),
+        tpoint_mapping=True, tpoint_points=pts,
+        tpoint_exposure_s=float(exposure_s or TPOINT_EXPOSURE_S),
+        tpoint_binning=max(1, min(int(binning or 1), 4)),
+        tpoint_script=str(script or ""))
     seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
     return generate_nina_json(seq)
 

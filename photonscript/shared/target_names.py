@@ -228,14 +228,16 @@ def _test_keys() -> tuple:
     prefixes = tuple(target_key(p) for p in (
         gen.TRACKING_TEST_PREFIX,     # PS-84 "Tracking test <field>"
         gen.OPTICS_TEST_PREFIX,       # PS-148 "Optics test <field> ..."
-        gen.FOCUS_CAL_PREFIX))        # PS-144 "Focus calibration <field>"
+        gen.FOCUS_CAL_PREFIX,         # PS-144 "Focus calibration <field>"
+        gen.TPOINT_MAPPING_PREFIX,    # PS-171 "TPoint mapping <n> points"
+        gen.TPOINT_POINT_PREFIX))     # PS-171 "TPoint point 07/60 ..."
     inner = (target_key(gen.TARGET_FOCUS_CAL_SUFFIX),)  # PS-76 AF series
     return prefixes, inner
 
 
 def is_test_target(name: Any) -> bool:
-    """True for a tracking-test, optics-test or focus-calibration target or
-    container name (PS-152)."""
+    """True for a tracking-test, optics-test, focus-calibration or (PS-171)
+    TPoint mapping target or container name (PS-152)."""
     k = target_key(name)
     if not k:
         return False
