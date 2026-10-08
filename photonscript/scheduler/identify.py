@@ -164,9 +164,11 @@ def identify_night(config, date: str, solve: bool = True) -> dict:
 
     Every sub with header coordinates is matched INDIVIDUALLY (NINA stamps
     the mount RA/DEC on each frame), so back-to-back target handoffs tag
-    correctly. Only subs without coordinates fall back to one ASTAP solve
-    per time cluster, and only when solve=True (the library build runs the
-    cheap header pass only; runs.attribute_night orders the passes).
+    correctly. Piggy-600 subs (no coordinates) then take the RC16 target
+    from the night's RC16 timeline (PS-157, dawn_autofile). Only subs still
+    without a name fall back to one ASTAP solve per time cluster and rig,
+    and only when solve=True (the library build runs the cheap header pass
+    only; runs.attribute_night orders the passes).
     """
     from photonscript.scheduler.runs import edit_subs
     # PS-140: header reads and ASTAP solves run without the night lock; on
@@ -225,21 +227,44 @@ def _identify_records(config, date: str, subs: list[dict],
     results = [{"window": f'{e.pop("first")}-{e.pop("last")}', **e}
                for e in header_hits.values()]
 
+    # PS-157: Piggy-600 subs (no coordinates) take the RC16 target over
+    # most of their exposure from the night's RC16 timeline, before any
+    # solve; subs it holds (parked, slewing) are never cluster-solved
+    timeline = None
+    if any(_is_piggy(s) for s in no_coords):
+        try:
+            from photonscript.scheduler.dawn_autofile import (
+                attribute_timeline_records, timeline_hold)
+            timeline = attribute_timeline_records(config, date, subs)
+            n_assigned += timeline["named"]
+            for name, n in sorted(timeline["by_target"].items()):
+                results.append({"window": "per sub", "matched": name,
+                                "subs": n, "method": "rc16 timeline"})
+            no_coords = [s for s in no_coords
+                         if canonical_target(s.get("target")) is None
+                         and not timeline_hold(s)]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("RC16 timeline attribution failed for %s: %s",
+                           date, e)
+
     # Pass 2: coordinate-less subs -> one ASTAP solve per time cluster
+    # (PS-157: per rig, a Piggy cluster never spans an RC16 one)
     if no_coords and solve:
-        clusters, cur = [], [no_coords[0]]
-        for prev, s in zip(no_coords, no_coords[1:]):
-            try:
-                gap = (datetime.fromisoformat(s["time"][:19])
-                       - datetime.fromisoformat(prev["time"][:19])
-                       ).total_seconds() / 60
-            except ValueError:
-                gap = 0
-            if gap > CLUSTER_GAP_MIN:
-                clusters.append(cur)
-                cur = []
-            cur.append(s)
-        clusters.append(cur)
+        clusters = []
+        for rig_subs in _by_rig(no_coords):
+            cur = [rig_subs[0]]
+            for prev, s in zip(rig_subs, rig_subs[1:]):
+                try:
+                    gap = (datetime.fromisoformat(s["time"][:19])
+                           - datetime.fromisoformat(prev["time"][:19])
+                           ).total_seconds() / 60
+                except ValueError:
+                    gap = 0
+                if gap > CLUSTER_GAP_MIN:
+                    clusters.append(cur)
+                    cur = []
+                cur.append(s)
+            clusters.append(cur)
         for cl in clusters:
             mid = cl[len(cl) // 2]
             path = Path(mid.get("abs_path") or "")
@@ -266,4 +291,20 @@ def _identify_records(config, date: str, subs: list[dict],
                 s["target"] = by_file[s.get("file")]
     logger.info("Identify %s: %d subs attributed (%d groups)",
                 date, n_assigned, len(results))
-    return {"identified": n_assigned, "clusters": results}
+    out = {"identified": n_assigned, "clusters": results}
+    if timeline is not None:
+        out["timeline"] = {k: timeline[k] for k in
+                           ("piggy_unknown", "named", "held", "windows")}
+    return out
+
+
+def _is_piggy(rec: dict) -> bool:
+    return (rec.get("rig") or "rc16") not in ("rc16", "")
+
+
+def _by_rig(recs: list[dict]) -> list[list[dict]]:
+    """recs (time-ordered) split per rig, each list keeping the order."""
+    out: dict[str, list[dict]] = {}
+    for r in recs:
+        out.setdefault(r.get("rig") or "rc16", []).append(r)
+    return [v for _k, v in sorted(out.items())]

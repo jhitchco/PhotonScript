@@ -1071,7 +1071,9 @@ def attribute_night(config, date: str, solve: bool = False) -> dict:
     runs all three. Idempotent: only '?' subs are ever touched.
     PS-137: between (1) and (2) every Piggy-600 sub with a stored position
     (solve, else mount) is checked against the goals its frame holds
-    (scheduler.piggy_attribution; renames only in mode "on")."""
+    (scheduler.piggy_attribution; renames only in mode "on").
+    PS-157: step (1) also names Piggy-600 subs from the RC16 timeline
+    (dawn_autofile), so (2) only fills what the timeline could not judge."""
     from photonscript.scheduler.identify import identify_night
     out = {"date": date, "header": 0, "piggy_frame": 0, "piggyback": 0,
            "solved": 0}
@@ -1318,9 +1320,12 @@ def correlate_piggyback_records(subs: list[dict]) -> tuple[int, dict, list]:
          if s.get("rig", "rc16") == "rc16"
          and canonical_target(s.get("target")) and _t(s) is not None),
         key=lambda x: x[0])
+    # PS-157: a sub the RC16 timeline judged parked or slewing stays '?'
     pending = [s for s in subs
                if s.get("rig") not in ("rc16", None, "")
                and canonical_target(s.get("target")) is None
+               and (s.get("timeline") or {}).get("state")
+               not in ("parked", "slewing")
                and _t(s) is not None]
     if not rc16 or not pending:
         return 0, {}, []
@@ -3368,7 +3373,8 @@ def start_thumb_warm(config, date: str, hist: bool = False) -> None:
 
 def post_night_warm(config, hours: float = 30.0) -> list[str]:
     """Called at dawn shutdown: grade + thumbnail every night touched in the
-    last `hours`, in background threads, so the Runs page opens with the work
+    last `hours`, in background threads, then (PS-157) file the night that
+    just ended (dawn_autofile.start_dawn_filing), so the Runs page opens with the work
     already done (before, RC16 grading and thumbnails only started when the
     page was first opened). Covers the RC16 folder (backfill grades and writes
     the grid + lightbox thumbnails in the same pass) and every sub record,
@@ -3398,6 +3404,15 @@ def post_night_warm(config, hours: float = 30.0) -> list[str]:
             logger.warning("post-night warm for %s failed: %s", d, e)
     if nights:
         logger.info("Post-night warm started for %s", ", ".join(sorted(nights)))
+    try:  # PS-157: the night that just ended files itself into the Library
+        # (attribution, auto-approve, build) once its grading is done
+        from photonscript.scheduler.dawn_autofile import start_dawn_filing
+        from photonscript.shared.phd2_store import night_of
+        tonight = night_of(config)
+        if (rd / f"{tonight}_subs.jsonl").exists():
+            start_dawn_filing(config, tonight)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("dawn filing not started: %s", e)
     return sorted(nights)
 
 

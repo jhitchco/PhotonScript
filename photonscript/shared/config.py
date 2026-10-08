@@ -145,6 +145,14 @@ class PhotonScriptConfig(BaseSettings):
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
+    auto_approve_at_dawn: bool = True  # PS-157: at dawn the night that ended
+                                    # is attributed (RC16 timeline for the
+                                    # Piggy-600), its QA-passing subs waiting
+                                    # for review are approved (both rigs; never
+                                    # test subs, '?' subs or subs a person sent
+                                    # back to review) and the Library is built,
+                                    # so Syncthing ships it. Off: the dawn pass
+                                    # still attributes and builds, approves none.
     stamp_fits_object: bool = True  # write the resolved target name into a
                                     # blank FITS OBJECT header at capture (and
                                     # when identify attributes a sub) so

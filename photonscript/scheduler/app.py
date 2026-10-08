@@ -643,6 +643,7 @@ _CONFIG_FIELDS = [
     ("integration_report_url", "PS_INTEGRATION_REPORT_URL", "Desktop .env: scheduler URL the integrator posts ledgers to and polls", "Integration", "str", False, False),
     ("integration_staging_root", "PS_INTEGRATION_STAGING_ROOT", "Desktop .env: staging root for integrate runs (blank = D:/Astrophotography/Staging)", "Integration", "str", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
+    ("auto_approve_at_dawn", "PS_AUTO_APPROVE_AT_DAWN", "Dawn filing (PS-157): approve the night's QA-passing subs at dawn (both rigs; never test subs, '?' subs or subs sent back to review), then build the Library", "Imaging", "bool", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
     ("auto_stale_flats", "PS_AUTO_STALE_FLATS", "At dawn, also reshoot flats for filters gone stale (>45d), even if unused tonight", "Imaging", "bool", False, False),
@@ -2022,6 +2023,11 @@ def api_run_detail(date: str, backfill: bool = True):
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("flexure report skipped for %s: %s", date, e)
         d["flexure"] = {"ok": False, "note": f"flexure report failed: {e}"}
+    try:  # PS-157: the dawn filing record (named, auto-approved, filed)
+        from photonscript.scheduler.dawn_autofile import load_record
+        d["autofile"] = load_record(get_config(), date)
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("autofile record skipped for %s: %s", date, e)
     try:  # PS-27: Piggy-600 split-pointing rate (straddled / attempted)
         from photonscript.scheduler.split_guard import night_split_summary
         d["split_pointing"] = night_split_summary(get_config(), date,
@@ -3060,6 +3066,8 @@ from photonscript.scheduler.routers import safety as _safety_router  # noqa: E40
 app.include_router(_safety_router.router)   # PS-1
 from photonscript.scheduler.routers import nina_watch as _nina_watch_router  # noqa: E402
 app.include_router(_nina_watch_router.router)   # PS-150
+from photonscript.scheduler.routers import autofile as _autofile_router  # noqa: E402
+app.include_router(_autofile_router.router)   # PS-157
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

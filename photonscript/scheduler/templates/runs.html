@@ -746,7 +746,12 @@
             '<span style="color:#4ade80">✓ ' + done + ' transferred</span>' +
             (appr > 0 ? ' · <span style="color:#4ade80">✓ ' + appr + ' accepted</span>' : '') +
             ' · <span style="color:#f87171">✗ ' + rej + ' rejected</span>' +
-            (offT ? ' · <span style="color:#c084fc">&#8982; ' + offT + ' off target</span>' : '');
+            (offT ? ' · <span style="color:#c084fc">&#8982; ' + offT + ' off target</span>' : '') +
+            // PS-157: what the dawn filing named, approved and filed
+            (d.autofile && d.autofile.line ? ' &middot; <span class="bd" title="dawn filing ' +
+                String(d.autofile.at || '').replace(/"/g, '') + ' (GET /api/runs/' + d.date +
+                '/autofile)">dawn: ' + String(d.autofile.line).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;') + '</span>' : '');
         const btn = document.getElementById('approveBtn');
         btn.hidden = rev === 0;
         btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
