@@ -43,7 +43,7 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
 # container back to its target (or to "unattributed" for structural loops):
 # rename a container here and the mapping follows.
 TARGET_IMAGING_SUFFIX = " imaging (repeats while safe and up)"
-# PS-179: leftover time at the end of the night goes back to the
+# PS-180: leftover time at the end of the night goes back to the
 # highest-priority target still up in a final DSO container
 # "<target> fill (rest of the night)" (target.fill_from_utc).
 TARGET_FILL_SUFFIX = " fill (rest of the night)"
@@ -1000,7 +1000,7 @@ def _time_condition_at(hh: int, mm: int) -> dict:
 
 
 def _handoff_condition(target) -> dict | None:
-    """PS-179: TimeCondition at the target's handoff (planner window end) in
+    """PS-180: TimeCondition at the target's handoff (planner window end) in
     local clock time, or None when the target keeps the mount to the loop
     end. Same fixed-time rule as the moonrise cap: NINA reads a time before
     noon as the next morning."""
@@ -1144,7 +1144,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     keeps the full AF recipe, and a time trigger runs that AF recipe every
     verify_min as the verify AF. The start-of-target AF is unchanged.
 
-    PS-179: target.handoff_utc (the planner's window end) ends the target
+    PS-180: target.handoff_utc (the planner's window end) ends the target
     there: a TimeCondition at that local clock time on the imaging loop and
     the DSO container, so the sequence moves on to the next target instead
     of repeating while safe and up all night. fill=True builds the final
@@ -1441,7 +1441,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                    _altitude_condition(target, min_altitude)]
     if loop_end:
         inner_conds.append(_time_condition(*loop_end))
-    # PS-179: the planner's window end hands the mount to the next target
+    # PS-180: the planner's window end hands the mount to the next target
     handoff = None if fill else _handoff_condition(target)
     if handoff is not None:
         inner_conds.append(handoff)
@@ -1472,12 +1472,12 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     dso_name = target.name + (TARGET_FILL_SUFFIX if fill else "")
     if fill:
         items.insert(0, _annotation(
-            f"PS-179: the rest of the night goes back to {target.name}, the "
+            f"PS-180: the rest of the night goes back to {target.name}, the "
             "highest-priority target still up, until it sets or the loop "
             "end"))
     elif handoff is not None:
         items.insert(0, _annotation(
-            f"PS-179: {target.name}'s window ends at "
+            f"PS-180: {target.name}'s window ends at "
             f"{handoff['Hours']:02d}:{handoff['Minutes']:02d} local; then the "
             "next target gets the mount"))
     items.append(_seq_container(
@@ -1508,7 +1508,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                     _altitude_condition(target, min_altitude),
                     _loop_once()]
         + ([copy.deepcopy(bb_condition)] if moon_capped else [])   # PS-149
-        + ([copy.deepcopy(handoff)] if handoff is not None else []),  # PS-179
+        + ([copy.deepcopy(handoff)] if handoff is not None else []),  # PS-180
         triggers=triggers,
         container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
                        "NINA.Sequencer",
@@ -2556,7 +2556,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
         if t.start_guiding:
             first_guided = False  # only a target that actually runs uses it
         target_containers.append(c)
-    # PS-179: the leftover time at the end of the night, back to the
+    # PS-180: the leftover time at the end of the night, back to the
     # highest-priority target still up (the planner sets fill_from_utc)
     for t in sequence.targets:
         if getattr(t, "fill_from_utc", None) is None:

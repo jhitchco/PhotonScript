@@ -119,7 +119,7 @@ class PhotonScriptConfig(BaseSettings):
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
-    # PS-179: every target gets a time window (visibility, priority, goal
+    # PS-180: every target gets a time window (visibility, priority, goal
     # hours left, moonrise for broadband-only) and its repeating loop hands
     # the mount to the next target at the window end; leftover time goes to
     # the highest-priority target still up. Off = the old behavior (the

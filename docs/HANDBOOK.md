@@ -975,7 +975,7 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
-- 2026-10-07 (the first target held the RC16 all night, PS-179): the plan
+- 2026-10-07 (the first target held the RC16 all night, PS-180): the plan
   had M31 LRGB, NGC 604 and the Heart. Picked by priority, the Heart (60)
   took most of the budget, so M31 and NGC 604 were scaled to 1 or 2 subs
   per filter per pass; transit order then put M31 first, and its imaging

@@ -487,7 +487,7 @@ class NinaSequenceTarget(BaseModel):
     repeat_while_up: bool = True
     mosaic_id: Optional[str] = None
     mosaic_note: str = ""
-    # PS-179: tonight's time window from the planner (UTC; the night plan
+    # PS-180: tonight's time window from the planner (UTC; the night plan
     # and /api/nightplan show it). handoff_utc is when the target's repeating
     # loop ends so the next target runs (a TimeCondition on the imaging loop
     # and the DSO container); None = it keeps the mount until the loop end

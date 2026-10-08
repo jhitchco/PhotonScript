@@ -661,7 +661,7 @@ _CONFIG_FIELDS = [
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
     ("auto_stale_flats", "PS_AUTO_STALE_FLATS", "At dawn, also reshoot flats for filters gone stale (>45d), even if unused tonight", "Imaging", "bool", False, False),
     ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
-    ("plan_target_windows", "PS_PLAN_TARGET_WINDOWS", "Target windows (PS-179): each target's loop hands the mount to the next at its planned window end; leftover time goes to the highest-priority target still up", "Imaging", "bool", False, False),
+    ("plan_target_windows", "PS_PLAN_TARGET_WINDOWS", "Target windows (PS-180): each target's loop hands the mount to the next at its planned window end; leftover time goes to the highest-priority target still up", "Imaging", "bool", False, False),
     ("plan_window_min_minutes", "PS_PLAN_WINDOW_MIN_MINUTES", "Target windows: shortest window (min) a target is planned for tonight", "Imaging", "int", False, False),
     ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
     ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),

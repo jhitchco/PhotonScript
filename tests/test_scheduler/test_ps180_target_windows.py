@@ -1,4 +1,4 @@
-"""PS-179: the first repeating target held the RC16 all night.
+"""PS-180: the first repeating target held the RC16 all night.
 
 2026-10-07: tonight's plan had three targets (Andromeda Galaxy LRGB, NGC 604
 and the Heart Nebula Ha/OIII/SII). The planner had scaled M31's sets down to
@@ -227,7 +227,7 @@ def test_replay_1007_sequence_hands_off_and_lints_clean(night_1007):
     for t in night_1007:
         t.start_guiding = True
     seq = json.loads(nsj.generate_nina_json(
-        build_sequence_for_night("PS179_1007", night_1007)))
+        build_sequence_for_night("PS180_1007", night_1007)))
     r = lint(seq, guided=True)
     assert r.ok, [f.detail for f in r.findings if f.level == "ERROR"]
     assert not [f for f in r.findings if f.rule == "loop-spin"]
@@ -311,7 +311,7 @@ def _sim_targets(handoffs):
 
 def _run(handoffs):
     seq = json.loads(nsj.generate_nina_json(
-        build_sequence_for_night("PS179_SIM", _sim_targets(handoffs))))
+        build_sequence_for_night("PS180_SIM", _sim_targets(handoffs))))
     return seq, _Sim(seq, tick=0.002, max_steps=3_000_000).run()
 
 
@@ -365,7 +365,7 @@ def test_fill_container_runs_last_without_a_handoff():
     ts[0].fill_from_utc = heart.handoff_utc         # M31 back for the rest
     ts[0].fill_end_utc = _utc_at_local(5, 50)
     seq = json.loads(nsj.generate_nina_json(
-        build_sequence_for_night("PS179_FILL", ts)))
+        build_sequence_for_night("PS180_FILL", ts)))
     r = lint(seq, guided=True)
     assert r.ok, [f.detail for f in r.findings if f.level == "ERROR"]
     dso = [d for d in _walk(seq) if _short(d.get("$type", ""))
@@ -426,5 +426,5 @@ def test_night_plan_shows_the_windows_and_the_fill(tmp_path, monkeypatch):
 def test_new_sources_are_ascii():
     import pathlib
     root = pathlib.Path(__file__).resolve().parents[2]
-    for p in ("tests/test_scheduler/test_ps179_target_windows.py",):
+    for p in ("tests/test_scheduler/test_ps180_target_windows.py",):
         (root / p).read_text(encoding="ascii")

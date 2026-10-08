@@ -112,7 +112,7 @@ def moon_window_tonight(config) -> dict:
             "illum_pct": info.get("illum_pct"),
             "rise_local_hh": rise_local.hour if rise_local else None,
             "rise_local_mm": rise_local.minute if rise_local else None,
-            # PS-179: the planner caps a broadband-only target's window here
+            # PS-180: the planner caps a broadband-only target's window here
             "rise_utc": rise_utc}
 
 

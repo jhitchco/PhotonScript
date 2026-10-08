@@ -64,7 +64,7 @@ def _owed_sets(t) -> list[dict]:
 
 
 def _window(t, dawn, fill: bool = False):
-    """PS-179: (start, end) UTC of a target's planned window, or of its fill
+    """PS-180: (start, end) UTC of a target's planned window, or of its fill
     window; None when the planner set none (plan_target_windows off)."""
     if fill:
         f0 = getattr(t, "fill_from_utc", None)
@@ -148,7 +148,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
             if cursor >= dawn:
                 break
         else:
-            cursor, end = win   # PS-179: the planner's window
+            cursor, end = win   # PS-180: the planner's window
         events.append({
             "time": _fmt(cursor), "event": f"Target: {t.name}",
             "detail": ", ".join(
@@ -185,7 +185,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     integ_s = 0.0
     rows = [(t, False) for t in targets] + [
         (t, True) for t in targets
-        if getattr(t, "fill_from_utc", None) is not None]   # PS-179
+        if getattr(t, "fill_from_utc", None) is not None]   # PS-180
     for t, is_fill in rows:
         active = [e for e in t.exposures
                   if e.count - e.acquired > 0 or e.short_remaining() > 0]
@@ -197,7 +197,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         if win is None:
             end = min(cursor2 + timedelta(seconds=total_s), dawn)
         else:
-            cursor2, end = win   # PS-179: the planner's window
+            cursor2, end = win   # PS-180: the planner's window
         # transit info
         from photonscript.shared.models import CelestialTarget
         ct = CelestialTarget(name=t.name, ra_hours=t.ra_hours,
@@ -218,7 +218,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
             "kind": kind + (", fill (rest of the night)" if is_fill else ""),
             "window_start": _fmt(cursor2)["local"],
             "window_end": _fmt(end)["local"],
-            # PS-179: the window in UTC; handoff = the loop ends there and the
+            # PS-180: the window in UTC; handoff = the loop ends there and the
             # next target runs (None: it keeps the mount to the loop end)
             "window_start_utc": _fmt(cursor2)["utc"],
             "window_end_utc": _fmt(end)["utc"],

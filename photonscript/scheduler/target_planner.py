@@ -234,7 +234,7 @@ def meridian_safe_order(pairs, dark_start, guard_min: int = 20):
 
 def allocate_windows(entries: list[dict], start: datetime, end: datetime,
                      min_window_s: float = 1800.0) -> dict:
-    """PS-179: split tonight's dark time into one window per target.
+    """PS-180: split tonight's dark time into one window per target.
 
     entries, in run order (transit order), each {"name", "up_from",
     "up_until" (datetimes: when the target is usable, above the altitude
@@ -308,7 +308,7 @@ def allocate_windows(entries: list[dict], start: datetime, end: datetime,
 def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
                    prio_by_name: dict, config, dark_start: datetime,
                    dark_end: datetime, now: datetime, moon: dict | None):
-    """PS-179: allocate_windows over tonight's ordered targets, put the
+    """PS-180: allocate_windows over tonight's ordered targets, put the
     windows on them, drop the targets that get none, and fit each target's
     per-pass counts into its window (filter balance: every filter of a pass
     is shot inside the window; the loop repeats the pass until the
@@ -472,7 +472,7 @@ def plan_night_sequence(
         if project.completion_pct >= 100:
             continue
 
-        # PS-179: tonight's twilight, so rise/set (the target windows) are
+        # PS-180: tonight's twilight, so rise/set (the target windows) are
         # tonight's even after the UTC date rolled over in the evening
         vis = compute_visibility_window(project.target, obs, date_utc,
                                         twilight=twilight)
@@ -507,7 +507,7 @@ def plan_night_sequence(
     # Build sequence targets
     sequence_targets = []
     remaining_hours = dark_hours
-    # PS-179: per target, for the window allocation
+    # PS-180: per target, for the window allocation
     vis_by_name, need_by_name, prio_by_name = {}, {}, {}
     _gen_moon = None  # generator's moon window, fetched only if needed
 
@@ -535,7 +535,7 @@ def plan_night_sequence(
 
         if not remaining_exposures:
             continue
-        # PS-179: what the goal still needs (before tonight's scale-down)
+        # PS-180: what the goal still needs (before tonight's scale-down)
         need_s = sum(owed_seconds(e) for e in remaining_exposures) * 1.15
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
@@ -614,7 +614,7 @@ def plan_night_sequence(
         if t.mosaic_id and last[t.mosaic_id] != i:
             t.repeat_while_up = False
 
-    # PS-179: each target gets a time window and hands the mount on at its
+    # PS-180: each target gets a time window and hands the mount on at its
     # end, so the first repeating target no longer holds the RC16 all night
     # (2026-10-07: 281 M31 subs, NGC 604 and the Heart never ran)
     if sequence_targets and bool(getattr(config, "plan_target_windows", True)):
