@@ -226,8 +226,9 @@ async def test_successful_dispatch_resets_the_key(tmp_path, monkeypatch):
     assert envfile.read_env(env)["PS_FOCUS_CALIBRATION_TONIGHT"] == "false"
     assert env.read_text(encoding="utf-8").startswith("# scope\n")
     assert [t for t, _ in notes] == ["PhotonScript focus calibration"]
-    # the field is picked from the real clock (M52 or NGC 7789 by date)
-    assert any(n in notes[0][1] for n in ("M52", "NGC 7789"))
+    # the field is picked from the real clock: any listed field
+    from photonscript.scheduler.armer import FOCUS_CAL_FIELDS
+    assert any(n in notes[0][1] for n, _, _ in FOCUS_CAL_FIELDS)
     assert "now off" in notes[0][1]
     ev = [json.loads(x) for x in (tmp_path / "data" / "runs").glob(
         "*_events.jsonl").__next__().read_text().splitlines()]
