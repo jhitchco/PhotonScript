@@ -130,6 +130,9 @@ GET /api/phd2/log?date=2026-09-26&grep=star lost   # PS-73: a night's PHD2 log(s
 GET /api/phd2/logs                                 # PS-73: where PHD2 logs were searched / found, file list
 GET /api/phd2/summary?date=2026-09-26              # PS-73: RMS RA/Dec (arcsec + px), star lost, calibrations (Dec, pier side)
 GET /api/ascom/log?name=Safety                     # ASCOM trace log
+GET /api/nina/log?lines=5000&offset=5000           # PS-172: the page before the newest 5000 lines (header names the next offset)
+GET /api/nina/log?grep=Exception&scan_mb=400       # PS-172: grep further back than the default 64 MB
+GET /api/nina/log?file=<name>&download=1           # PS-172: stream one whole log (<= 300 MB, else 413); same on phd2/ascom
 GET /api/notifications?since_hours=24&title=cooler # Pushover audit: tally by type
 ```
 

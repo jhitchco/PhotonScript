@@ -1411,12 +1411,16 @@ open for a meaningful stretch but few/no good lights resulted.
   image directory" check catches a missing capture folder. (Sends a Pushover
   test as a side-effect.)
 - `/api/calibration/health` (staleness), `/api/sync` (transfer backlog).
-- `/api/nina/log?lines=N&grep=term1|term2` -> the log endpoint greps the WHOLE
-  file server-side FIRST, then returns the last min(N,5000) matching rows. So
-  for a specific event type (plate solve, autofocus, a given error) grep sees
-  the entire night; the 5000-line cap only bites when one signature spams
-  (e.g. a validation crash loop). For the complete raw log use the full night
-  bundle: `/api/runs/DATE/bundle` (zip). Note the log message body can wrap onto
+- `/api/nina/log?lines=N&grep=term1|term2` -> PS-172: the log endpoints
+  (nina, phd2, ascom) run in a worker thread and read each file BACKWARDS from
+  its end, returning the last min(N,5000) matching rows. A grep looks back at
+  most scan_mb (default 64 MB) per page; the header says when it stopped
+  short ("scan_mb= to look further"). offset=K skips the newest K matching
+  rows, so the header's "older: offset=..." pages back past 5000 lines.
+  download=1 streams one whole log (file= or the newest) up to 300 MB; a
+  bigger file gets HTTP 413 (page it instead). The night bundle
+  `/api/runs/DATE/bundle` (zip) is still there for everything. Note the log
+  message body can wrap onto
   timestamp-less continuation lines - grep the OWNER (`file.cs|Method|line`) or
   read the stack frames to attribute an exception.
 
