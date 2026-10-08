@@ -440,7 +440,8 @@ def _nights_back(date: str, n: int) -> list[str]:
 def tpoint_model(config, night: str) -> dict:
     """{model_date, points, protrack, source} in force on `night`: the PS-138
     audit saved that night (its manual TPoint record and ProTrack row), else
-    the newest manual record whose model_date is not after the night."""
+    (PS-171) the newest model read from TPoint's own files whose date is not
+    after the night, else the newest manual record."""
     try:
         from photonscript.scheduler import thesky_audit as ta
         from photonscript.shared import phd2_store as store
@@ -458,6 +459,12 @@ def tpoint_model(config, night: str) -> dict:
     for r in a.get("rows") or []:
         if r.get("id") == "protrack_on":
             out["protrack"] = r.get("protrack") or r.get("current")
+    if not out.get("model_date"):
+        try:   # PS-171: TPoint's own files (tpoint-stats / the audit save it)
+            from photonscript.scheduler import tpoint_files
+            out.update(tpoint_files.model_for_night(config, night))
+        except Exception:  # noqa: BLE001
+            pass
     if not out.get("model_date"):
         try:
             hist = store.read_jsonl(ta.manual_path(config).with_name("manual_history.jsonl"))

@@ -1211,6 +1211,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # after the probe; "" = the probe's first
     pointing_first_slew_warn_arcmin: float = 2.0  # NINA first-solve median
     pointing_first_slew_fail_arcmin: float = 5.0  # (14 nights, per side)
+    thesky_user_dir: str = ""   # PS-171: TheSky's user folder (TPoint
+                                 # files, read only); "" = Documents\Software
+                                 # Bisque\TheSky Professional Edition 64
     thesky_manual_max_age_days: float = 30.0  # manual TPoint record older
                                  # reads unknown (re-enter after a session)
     # Filter names as they appear in the NINA profile, mapped from our classes.

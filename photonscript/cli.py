@@ -674,6 +674,36 @@ def settle_gate_cmd(
     raise typer.Exit(0)
 
 
+@app.command("tpoint-stats")
+def tpoint_stats_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+    files: bool = typer.Option(False, "--files", help="Also list the TPoint "
+                               "files found under TheSky's user folder"),
+):
+    """PS-171: the TPoint model's numbers from TPoint's own files (TheSky64
+    has no TPoint scripting object): points, sky RMS, terms, polar
+    alignment (ME / MA and what to adjust), ProTrack, model date. Read only.
+
+    photonscript tpoint-stats
+    """
+    import json as _json
+    from photonscript.scheduler import tpoint_files as tf
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    lst = tf.list_files(cfg)
+    st = tf.stats(cfg, lst)
+    tf.save(cfg, st)
+    if as_json:
+        print(_json.dumps(st, indent=2, default=str))
+    else:
+        console.print(tf.format_stats(st), markup=False, highlight=False)
+    if files:
+        for r in lst["roots"]:
+            print(f"root {r['path']}: {'found' if r['exists'] else 'missing'}")
+        for f in lst["files"]:
+            print(f"  {f['mtime']}  {f['size']:>9}  {f['rel']}")
+    raise typer.Exit(0)
+
+
 @app.command("tpoint-sample")
 def tpoint_sample_cmd(
     file: str = typer.Argument("", help="Frame to sample (default: the newest "

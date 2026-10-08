@@ -503,6 +503,48 @@ How to run it (supervised; first run on a clear night, about 1 h):
    yourself, check the RMS, turn on "Apply pointing corrections" /
    ProTrack as usual, then run the probe again (before / after).
 
+TPoint numbers without a scripting object (`photonscript tpoint-stats`,
+`GET /api/thesky/tpoint`): TPoint keeps its pointing data and model in its
+own files under TheSky's user folder (`thesky_user_dir`; default
+`Documents\Software Bisque\TheSky Professional Edition 64`, plus the
+TheSkyX / "64 2" reinstall folders; the desktop copy has a `TPoint`
+subfolder there, empty). `scheduler/tpoint_files.py` lists every file
+whose path mentions TPoint / pointing / ProTrack or sits under Imaging
+System Profiles (Camera AutoSave, where the Automated Pointing Run frames
+go, is skipped), reads the text ones (never writes) and parses:
+- the TPOINT input data format (caption, `:` options, site line with the
+  run date, one line per observation, END): the point count;
+- a TPOINT fit report or model file (`<n> <TERM> [change] <value> <sigma>`,
+  `Sky RMS =`, `Popn SD =`, an observation count): the terms (IH, ID, CH,
+  NP, MA, ME, TF ... and harmonics) and the sky RMS;
+- a `ProTrack... = on / off` line in any listed file.
+`tpoint-stats` prints points, sky RMS, model date, the main terms, the
+polar alignment from ME / MA in arcmin against `tpoint_polar_max_arcmin`
+with what to turn (TPOINT convention: ME > 0 = polar axis too high, lower
+it; MA > 0 = polar axis east of the pole, move it west; confirm with
+TheSky's Polar Alignment Report first) and ProTrack (unknown unless a file
+states it). `--files` lists what it found; `GET /api/thesky/tpoint/files`
+does the same and `GET /api/thesky/tpoint/file?rel=` shows the head of one
+listed file (anything else 404s) so the parsers can be checked against
+TheSky64's real files after the deploy (their exact names and format are
+not documented offline; the test fixtures follow the documented TPOINT
+formats). The PS-104 audit reads the same numbers as source
+`tpoint-files` (rows model points, RMS, polar error, model age) on the
+scope PC, the probe prints them with "was ..." against the previous
+probe, and every change is a line in `<data_dir>/tpoint/stats_history.jsonl`
+that the PS-168 drift trend uses to key nights by model (date, points)
+when the audit has no record for that night.
+
+TPoint Command Line from a script: not available on build 14139. There is
+no TPoint scripting object, `TheSkyXAction`'s TPoint members
+(`TPointAddOn2` = 147, `TPointModule`) are action ids that open TPoint's
+windows, and no `sky6*` method taking a TPoint command string is known;
+the probe lists all members of sky6RASCOMTele, sky6RASCOMTheSky and
+OpticalTubeAssembly so one would show up, but nothing is executed to find
+out. The file route above is the supported one; anything the Command Line
+tab shows (FIT, polar report) can also be saved from TPoint as a text file
+into its folder, where `tpoint-stats` picks it up.
+
 Hand import (no add method, or `off`): the CSV has, per point, the solved
 J2000 center (`solved_ra_j2000_h`, `solved_dec_j2000_d`), the mount's RA /
 Dec as TheSky reported it (`mount_ra_h`, `mount_dec_d`, JNow), its alt /
@@ -521,7 +563,9 @@ Config: `tpoint_mapping_points` (60, 3 to 300), `tpoint_mapping_min_alt`
 `tpoint_mapping_moon_deg` (15), `tpoint_mapping_max_ha_h` (6),
 `tpoint_sample_script` (`C:\astro\PhotonScript\deploy\tpoint-sample.cmd`;
 missing = frames only), `tpoint_sample_add` (off | auto),
-`tpoint_sample_add_method` ("" = the probe's first; or one candidate id).
+`tpoint_sample_add_method` ("" = the probe's first; or one candidate id),
+`thesky_user_dir` (TheSky's user folder for the TPoint files; "" = the
+default Documents path).
 
 ### A safe hand-built NINA #2 sequence (PS-139)
 

@@ -324,9 +324,19 @@ def run_probe(config, client=None, now: datetime | None = None,
         rec["ok"] = True
     except Exception as e:  # noqa: BLE001
         rec["error"] = f"{type(e).__name__}: {e}"
+    try:   # PS-171: no TPoint scripting object: the numbers from its files
+        from photonscript.scheduler import tpoint_files
+        rec["files"] = tpoint_files.stats(config)
+        if persist:
+            tpoint_files.save(config, rec["files"], now)
+    except Exception as e:  # noqa: BLE001
+        rec["files"] = {"ok": False, "note": f"{type(e).__name__}: {e}"}
     if prev and prev.get("ok"):
+        pf = prev.get("files") or {}
         rec["previous"] = {"t_utc": prev.get("t_utc"),
-                           "tpoint": prev.get("tpoint")}
+                           "tpoint": prev.get("tpoint"),
+                           "files": {k: pf.get(k) for k in
+                                     ("points", "sky_rms_arcsec", "model_date")}}
     if persist and rec["ok"]:
         try:
             d = tpoint_dir(config)
@@ -339,9 +349,27 @@ def run_probe(config, client=None, now: datetime | None = None,
     return rec
 
 
+def _format_files(rec: dict) -> str:
+    """PS-171: the TPoint numbers from its files, with "was" vs the
+    previous probe."""
+    st = rec.get("files")
+    if not st:
+        return ""
+    from photonscript.scheduler.tpoint_files import format_stats
+    text = format_stats(st)
+    pv = ((rec.get("previous") or {}).get("files")) or {}
+    was = [f"{k} was {pv.get(k)}" for k in ("points", "sky_rms_arcsec", "model_date")
+           if pv.get(k) is not None and pv.get(k) != st.get(k)]
+    if was:
+        text += f"\n  (previous probe {rec['previous']['t_utc']}: " + ", ".join(was) + ")"
+    return text
+
+
 def format_probe(rec: dict) -> str:
+    files = _format_files(rec)
     if not rec.get("ok"):
-        return f"TPoint probe FAILED: {rec.get('error')}"
+        return f"TPoint probe FAILED: {rec.get('error')}" + (
+            "\n" + files if files else "")
     lines = [f"TPoint probe {rec['t_utc']} (read only)"]
     lines.append("Add methods found: " + (", ".join(rec["found"]) or
                  "none (samples go to the CSV only; see HANDBOOK)"))
@@ -369,6 +397,8 @@ def format_probe(rec: dict) -> str:
     for o, info in (rec.get("objects") or {}).items():
         lines.append(f"  {o}: {info.get('type')}; members: "
                      + (" ".join(info.get("members") or []) or "-"))
+    if files:
+        lines.append(files)
     return "\n".join(lines)
 
 

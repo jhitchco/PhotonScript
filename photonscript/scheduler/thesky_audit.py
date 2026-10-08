@@ -56,7 +56,8 @@ from photonscript.shared import phd2_store as store
 
 logger = logging.getLogger(__name__)
 
-SOURCES = ("thesky-script", "astap", "pointing-log", "manual", "processes")
+SOURCES = ("thesky-script", "astap", "pointing-log", "manual", "processes",
+           "tpoint-files")   # PS-171: TPoint's own files (tpoint_files.py)
 FORMS = ("equals", "min", "max", "near", "computed", "report")
 CONFIDENCE = ("High", "Med", "Low")
 DEFAULT_FILE = (Path(__file__).resolve().parents[2] / "config" / "thesky"
@@ -1415,6 +1416,14 @@ def collect(config, *, client=None, armer_state: str | None = None) -> dict:
                 "TheSky is not on this PC")}
     except Exception as e:  # noqa: BLE001
         src["processes"] = {"ok": False, "note": f"{type(e).__name__}: {e}"}
+    try:   # PS-171: TPoint's own files, only where TheSky runs
+        if _local_thesky(config):
+            from photonscript.scheduler import tpoint_files
+            obs["tpoint-files"], src["tpoint-files"] = tpoint_files.audit_observed(config)
+        else:
+            src["tpoint-files"] = {"ok": False, "note": "TheSky is not on this PC"}
+    except Exception as e:  # noqa: BLE001
+        src["tpoint-files"] = {"ok": False, "note": f"{type(e).__name__}: {e}"}
     rec = None
     try:
         rec = load_manual(config)

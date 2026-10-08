@@ -12,6 +12,12 @@ GET  /api/thesky/manual                  the manual TPoint record
 POST /api/thesky/manual {model_date, points, rms_arcsec, ...}   save it
 GET  /api/thesky/onsite-script           the read-only script for TheSky's
                                          Run Java Script window (on-site check)
+GET  /api/thesky/tpoint                  PS-171: TPoint numbers from TPoint's own
+                                         files (points, sky RMS, terms, polar
+                                         ME / MA, ProTrack, model date)
+GET  /api/thesky/tpoint/files            the TPoint files under TheSky's user
+                                         folder (names, sizes, dates)
+GET  /api/thesky/tpoint/file?rel=        the head of one listed file
 
 Nothing here writes TheSky, moves the mount or takes an image. Handlers
 lazily import get_config to avoid an import cycle with app.py.
@@ -128,3 +134,40 @@ def api_thesky_onsite_script():
     """The read-only check script for TheSky's Tools > Run Java Script."""
     from photonscript.telescope_agent.thesky_client import onsite_script
     return onsite_script()
+
+
+# ---------------------------------------------------------------- PS-171
+
+@router.get("/api/thesky/tpoint")
+async def api_thesky_tpoint():
+    """TPoint numbers from TPoint's own files (read only; TheSky64 has no
+    TPoint scripting object). Saves stats_latest / a history line."""
+    from photonscript.scheduler import tpoint_files
+    cfg = _cfg()
+    st = await asyncio.to_thread(tpoint_files.stats, cfg)
+    await asyncio.to_thread(tpoint_files.save, cfg, st)
+    st["text"] = tpoint_files.format_stats(st)
+    return st
+
+
+@router.get("/api/thesky/tpoint/files")
+async def api_thesky_tpoint_files():
+    """The TPoint-related files under TheSky's user folder: read-only
+    listing (rel path, size, mtime), newest first."""
+    from photonscript.scheduler import tpoint_files
+    lst = await asyncio.to_thread(tpoint_files.list_files, _cfg())
+    for f in lst["files"]:
+        f.pop("_ts", None)
+        f.pop("path", None)
+    return lst
+
+
+@router.get("/api/thesky/tpoint/file")
+async def api_thesky_tpoint_file(rel: str, max_kb: int = 64):
+    """The first max_kb (at most 64) KB of one LISTED TPoint file, to check
+    the parsers against a real file. Anything not listed is refused (404)."""
+    from photonscript.scheduler import tpoint_files
+    out = await asyncio.to_thread(tpoint_files.head, _cfg(), rel, max_kb * 1024)
+    if not out.get("ok"):
+        return JSONResponse(status_code=404, content=out)
+    return out
