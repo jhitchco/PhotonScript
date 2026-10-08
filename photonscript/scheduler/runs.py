@@ -2968,6 +2968,18 @@ def build_library(config, date: str | None = None) -> dict:
                                            lib, d)
         linked += n_l
         skipped += n_s
+    if not date:
+        # PS-178: calibration-only NINA folders (a daytime capture job, a
+        # roof-closed night, NINA restarted after midnight) have no subs
+        # file, so the loop above never filed them
+        for d in calibration_nights(Path(config.image_watch_dir),
+                                    int(getattr(config, "library_cal_days", 120))):
+            if d in dates:
+                continue
+            n_l, n_s = _link_calibration_night(config, Path(config.image_watch_dir),
+                                               lib, d)
+            linked += n_l
+            skipped += n_s
     result = {"library": str(lib), "nights": len(dates), "linked": linked,
               "archived_nights_skipped": archived,
               "already_there": skipped, "rejected_excluded": rejected,
@@ -3038,6 +3050,69 @@ def _link_calibration_night(config, watch_dir: Path, lib: Path,
             shutil.copy2(f, dest)
         linked += 1
     return linked, skipped
+
+
+CAL_SWEEP_DAYS = 14   # PS-178: the dawn sweep files this many recent folders
+
+
+def calibration_nights(watch_dir: Path, days: int | None = None,
+                       now=None) -> list[str]:
+    """PS-178: date folders of a NINA watch dir that hold calibration frames
+    (BIAS / DARK / FLAT folders), newest last; with `days`, only folders at
+    most that old. Folder names only plus one directory walk per folder."""
+    from datetime import datetime as _dt
+    watch_dir = Path(watch_dir)
+    if not watch_dir.is_dir():
+        return []
+    now = now or _dt.now()
+    out = []
+    for d in sorted(p for p in watch_dir.iterdir()
+                    if p.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}", p.name)):
+        if days is not None:
+            try:
+                if (now - _dt.strptime(d.name, "%Y-%m-%d")).days > days:
+                    continue
+            except ValueError:
+                continue
+        if any(_is_calibration(f.relative_to(d).parts) for f in d.rglob("*.fits")):
+            out.append(d.name)
+    return out
+
+
+def link_recent_calibration(config, days: int = CAL_SWEEP_DAYS) -> dict:
+    """PS-178: file every recent calibration folder of both rigs into the
+    Library (QA'd first; failing frames go to the quarantine as always).
+    The dawn pass runs this, because build_library(date) only files the
+    night's own folder and a calibration-only folder has no night: on
+    2026-10-08 the RC16 2026-09-27 300 s darks (24, QA pass) and every
+    2026-09-30 frame sat in the watch dir, never filed. Idempotent: a frame
+    already linked (or quarantined) is skipped. Returns per rig the nights
+    swept and the frames linked."""
+    from photonscript.shared.rigs import PIGGYBACK, rig_config, rig_ids
+    cal_days = int(getattr(config, "library_cal_days", 120))
+    days = min(int(days), cal_days)
+    out: dict = {}
+    watch = Path(config.image_watch_dir)
+    lib = library_root(config)
+    nights = calibration_nights(watch, days)
+    linked = skipped = 0
+    for d in nights:
+        n_l, n_s = _link_calibration_night(config, watch, lib, d)
+        linked += n_l
+        skipped += n_s
+    out["rc16"] = {"nights": nights, "linked": linked, "already_there": skipped}
+    if PIGGYBACK in rig_ids(config) and getattr(config, "piggyback_image_watch_dir", ""):
+        pcfg = rig_config(config, PIGGYBACK)
+        pw = Path(pcfg.image_watch_dir)
+        plib = library_root(pcfg)
+        pn = calibration_nights(pw, days)
+        pl = ps = 0
+        for d in pn:
+            n_l, n_s = _link_calibration_night(pcfg, pw, plib, d, rig=PIGGYBACK)
+            pl += n_l
+            ps += n_s
+        out["piggyback"] = {"nights": pn, "linked": pl, "already_there": ps}
+    return out
 
 
 def _build_piggyback_calibration(config, date: str | None = None) -> dict | None:

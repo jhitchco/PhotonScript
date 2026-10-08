@@ -23,11 +23,34 @@ Run on the desktop from the repo venv. What it does (code in
    the **second star set**: stars off the reference AND not shared by other
    subs (a split-pointing exposure). `qa/star_qa.csv`. `--qa report` stacks
    everything and only reports; `--qa off` skips it.
+   PS-177: every (filter, exposure, binning, readout) group is judged on
+   its own: its own reference, its own registration, coherence vote and
+   neighbour medians, so a 30 s sub is never measured against a 300 s
+   reference. The console and the `qa.groups` block of the manifest list
+   keep / reject per group; the CSV has `group` and `group_reference`.
+   Mono frames are 3x3 median filtered before star detection (raw RC16
+   subs otherwise give sep the hot pixels: 2026-10-08 M31, 54 of 63 false
+   "second star set" rejects; 77 of 79 kept after the fix).
 3. **Calibration match** (`calib.py`): bias / darks on camera, gain, offset,
    binning, temperature and readout mode (PS-128); a missing dark length
    uses the most plentiful dark length with optimizeDarks (scaling);
    flats per filter only when cooled like the lights (uncooled flats are
-   reported and skipped), `--no-flats` to skip.
+   reported and skipped), `--no-flats` to skip. PS-178: when no bias
+   matches, the bias sessions that miss the epoch are listed with the
+   reason; a light length with no dark gets "nearest alternative" lines
+   (same-length darks below `--min-darks`, same-length darks off the epoch
+   and why, other lengths that could be scaled once a matching bias
+   exists, else what to capture) and its subs are REFUSED (left out)
+   unless `--allow-uncalibrated`.
+   **Stacks (PS-177).** Mono (RC16) never mixes exposure lengths in one
+   ImageIntegration: per filter the group with the most integration time
+   is `master_<F>` (what `blend` and the finish expect), every other
+   group of at least `--min-group-frames` (3) subs is its own HDR master
+   `master_<F>_<exp>` (e.g. `master_L_30s`, combine later with HDRComposition
+   if wanted), smaller groups are left out with a message. An OSC stack
+   still holds every exposure group (one debayered master); it is marked
+   `mixed_exposures` and when PSF Signal Weight fails the PJSR falls back
+   to exposure-time weights, never equal weights.
 4. **Stage** by COPY into a NEW run folder
    (`<staging-root>\<target>_<rig>_<yyyymmdd-hhmm>`, default staging root
    `D:\Astrophotography\Staging`), `manifest.json` / `manifest.csv`,

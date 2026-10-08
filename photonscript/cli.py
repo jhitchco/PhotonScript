@@ -25,6 +25,7 @@ Usage:
     photonscript calibration-owed [--rig R] [--json]              # PS-122
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
+    photonscript calibration-library [--rig R] [--url U] [--desktop-library P] [--json]  # PS-178
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
@@ -2413,6 +2414,56 @@ def autostart_check(
     raise typer.Exit(rc)
 
 
+@app.command("calibration-library")
+def calibration_library_cmd(
+    rig: str = typer.Option("rc16", "--rig", help="rc16 | piggyback"),
+    url: str = typer.Option("", "--url",
+                            help="Ask this scheduler (GET /api/calibration/library-report), "
+                                 "e.g. http://100.94.189.77:8100; default: compute here"),
+    desktop_library: str = typer.Option("", "--desktop-library",
+                                        help="Also compare with this Library mirror (default "
+                                             "with --url: the integrate Library mirror)"),
+    frames: int = typer.Option(0, "--frames", help="Also list up to N single frames"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-178: calibration frames on the scope (NINA watch dir) vs in the
+    Library, the reason each one is not there (QA quarantine, not filed:
+    calibration-only folder, too old, archived, waiting for dawn) and
+    whether a dark / bias fits the lights' epoch (gain, offset, SET-TEMP,
+    readout). With --url on the desktop it also says which Library frames
+    the mirror still lacks (Syncthing pending). Read only.
+
+    photonscript calibration-library --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler import calibration_library as cl
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if url:
+        import httpx
+        try:
+            r = httpx.get(url.rstrip("/") + "/api/calibration/library-report",
+                          params={"rig": rig, "frames": frames}, timeout=120)
+            r.raise_for_status()
+            rep = r.json()
+        except Exception as e:  # noqa: BLE001
+            console.print(f"scheduler unreachable or refused ({e})", markup=False)
+            raise typer.Exit(2)
+        if not desktop_library:
+            from photonscript.integration.pipeline import default_library
+            desktop_library = str(default_library(cfg))
+    else:
+        rep = cl.library_report(cfg, rig, frames_limit=frames)
+    if desktop_library:
+        cl.compare_desktop(rep, Path(desktop_library))
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+        return
+    console.print(cl.format_report(rep), markup=False, highlight=False)
+    for f in rep.get("frames") or []:
+        console.print(f"  {f['type']}/{f['date']}/{f['name']}: {f['status']} {f['reason']}",
+                      markup=False, highlight=False)
+
+
 @app.command("integrate")
 def integrate_cmd(
     target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("Andromeda Galaxy", "M31")'),
@@ -2440,6 +2491,12 @@ def integrate_cmd(
     hoo: bool = typer.Option(False, "--hoo/--no-hoo",
                              help="OSC finish: also the HOO-mapped image (Ha = R, OIII = mean G, B; PS-161)"),
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
+    min_group: int = typer.Option(3, "--min-group-frames",
+                                  help="Mono: an exposure group with fewer subs is left out "
+                                       "(each exposure length is its own stack, PS-177)"),
+    allow_uncalibrated: bool = typer.Option(False, "--allow-uncalibrated",
+                                            help="Stack a light length that has no dark "
+                                                 "(refused by default, PS-178)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
     report: bool = typer.Option(True, "--report/--no-report",
@@ -2471,7 +2528,8 @@ def integrate_cmd(
         filters=[f.strip() for f in filters.split(",") if f.strip()] or None,
         qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
         dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
-        gradient=gradient, use_rc=not no_rc, hoo=hoo, **kw,
+        gradient=gradient, use_rc=not no_rc, hoo=hoo, min_group_frames=min_group,
+        allow_uncalibrated=allow_uncalibrated, **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:

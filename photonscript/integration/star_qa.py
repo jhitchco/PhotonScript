@@ -27,10 +27,18 @@ Reject when second_set_frac > second_set (0.10); with too few aligned subs
 for the vote, fall back to v4b's plain rule extra_frac > extra_max (0.22).
 ghost_offset() reports the shift of the second copy (report only).
 
+PS-177: every sub is judged inside its own group (filter, exposure,
+binning, readout): each group picks its own reference and runs its own
+registration, coherence vote and neighbor medians, so a 30 s sub is never
+measured against a 300 s reference (2026-10-08 M31 RC16 dry run: one
+L 300 s reference flagged 54 of 63 subs, mostly 30 s, for having fewer and
+fainter stars). The run's registration reference (shared by every
+PixInsight stack) is the reference of the group with the longest exposure.
+group_summary() reports keep / reject per group.
+
 Relative tests use the median of the 4 subs on each side in time within the
-same (filter, exposure) group, so 120 s subs are not judged against 400 s
-ones. All functions on star tables are pure (tested with synthetic tables);
-measure_sub() is the only one that reads a FITS file (read-only).
+same group. All functions on star tables are pure (tested with synthetic
+tables); measure_sub() is the only one that reads a FITS file (read-only).
 """
 
 from __future__ import annotations
@@ -69,12 +77,23 @@ def detect(data: np.ndarray, osc: bool, thresh: float = 8.0,
            max_stars: int = 4000) -> dict:
     """sep on a raw frame (Bayer frames as 2x2 superpixel sums). Per-star
     arrays in NATIVE px, brightest first, plus sky / sky_rms in ADU per
-    photosite."""
+    photosite.
+
+    PS-177: a mono frame is 3x3 median filtered first (the graders' recipe,
+    HANDBOOK 2026-09-04): on raw RC16 subs sep otherwise returns the
+    sensor's hot pixels (HFD about 0.8 px, the 4000 cap on every 300 s sub),
+    every sub "registers" on that fixed pattern at zero shift and its real
+    stars all look like a second, shifted star set (2026-10-08 M31 dry
+    run). The Bayer superpixel sum already dilutes single hot pixels."""
     from photonscript.shared.star_measure import superpixel
     from photonscript.shared.star_shape import _sep
     sep = _sep()
     k = 2 if osc else 1
-    img = superpixel(data) if osc else np.asarray(data, dtype=np.float32)
+    if osc:
+        img = superpixel(data)
+    else:
+        from scipy.ndimage import median_filter
+        img = median_filter(np.asarray(data, dtype=np.float32), size=3)
     g = np.ascontiguousarray(img, dtype=np.float32)
     try:
         sep.set_extract_pixstack(10_000_000)
@@ -310,12 +329,26 @@ def _nanmed(v):
     return float(np.median(v)) if v else math.nan
 
 
+def group_key(r: dict) -> tuple:
+    """PS-177: the group a sub is judged in: (filter, exposure, binning,
+    readout). Rows without xbin / readout (older callers) group as bin 1 /
+    no readout."""
+    return (r.get("filter") or "", r.get("exp"), int(r.get("xbin") or 1), r.get("readout") or "")
+
+
+def group_label(key: tuple) -> str:
+    filt, exp, xbin, ro = key
+    e = "?" if exp is None else ("%g s" % exp)
+    parts = [filt or "nofilter", e, ("bin%d" % xbin) if xbin != 1 else "", ro]
+    return " ".join(x for x in parts if x)
+
+
 def neighbor_medians(rows: list[dict], k: int = 4) -> None:
     """Add nb_stars / nb_hfd / nb_sky: medians of the k subs each side in
-    time within the same (filter, exp) group, excluding the sub itself."""
+    time within the same group (group_key), excluding the sub itself."""
     groups: dict = {}
     for r in rows:
-        groups.setdefault((r.get("filter"), r.get("exp")), []).append(r)
+        groups.setdefault(group_key(r), []).append(r)
     for g in groups.values():
         g.sort(key=lambda r: (r.get("time", ""), r.get("file", "")))
         n = len(g)
@@ -399,7 +432,8 @@ def measure_sub(path: str, osc: bool, thresh: float = 8.0) -> dict:
     return row
 
 
-ROW_COLS = ["file", "night", "filter", "exp", "time", "action", "reason", "is_reference",
+ROW_COLS = ["file", "night", "filter", "exp", "time", "action", "reason", "group",
+            "group_reference", "is_reference", "is_run_reference",
             "stars", "nb_stars", "hfd_px", "nb_hfd", "fwhm_px", "ecc", "theta_R",
             "double_frac", "double_vec", "sky_adu", "nb_sky", "sky_rms_adu",
             "aligned", "flipped", "rotation_deg", "coverage", "match_frac", "extra_frac",
@@ -448,11 +482,9 @@ def pick_reference(rows: list[dict], thr: Thresholds, sample: int = 12) -> int:
     return best
 
 
-def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
-    """Register every measured row to the chosen reference, run the
-    coherence vote and classify. Rows need _xy / _shape from measure_sub.
-    Returns the reference index."""
-    thr = thr or Thresholds()
+def _assess_group(rows: list[dict], thr: Thresholds) -> int:
+    """Register every row of ONE group to the group's own reference, run the
+    coherence vote and classify. Returns the reference index (in rows)."""
     ref_i = pick_reference(rows, thr)
     ref = rows[ref_i]
     extras = []
@@ -489,6 +521,61 @@ def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
     return ref_i
 
 
+def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
+    """PS-177: split the measured rows into groups (group_key) and assess
+    each against its own reference. Rows need _xy / _shape from measure_sub.
+    Every row gets group / group_reference / is_reference (its group's) and
+    is_run_reference. Returns the index of the run's registration
+    reference: the reference of the longest-exposure group (ties: the group
+    with more subs)."""
+    thr = thr or Thresholds()
+    if not rows:
+        raise ValueError("no subs")
+    groups: dict[tuple, list[int]] = {}
+    for i, r in enumerate(rows):
+        groups.setdefault(group_key(r), []).append(i)
+    refs: dict[tuple, int] = {}
+    for key, idx in groups.items():
+        sub = [rows[i] for i in idx]
+        refs[key] = idx[_assess_group(sub, thr)]
+        label = group_label(key)
+        ref_file = rows[refs[key]].get("file", "")
+        for r in sub:
+            r["group"] = label
+            r["group_reference"] = ref_file
+    best = max(groups, key=lambda k: ((k[1] or 0), len(groups[k])))
+    run_ref = refs[best]
+    for i, r in enumerate(rows):
+        r["is_run_reference"] = i == run_ref
+    return run_ref
+
+
+def group_summary(rows: list[dict]) -> list[dict]:
+    """PS-177: per group (longest exposure first): subs, keep, reject, the
+    group's reference and the reject reasons (code -> count)."""
+    by: dict[str, dict] = {}
+    order: list[tuple] = []
+    for r in rows:
+        key = group_key(r)
+        lab = r.get("group") or group_label(key)
+        g = by.get(lab)
+        if g is None:
+            g = by[lab] = {"group": lab, "filter": key[0], "exp": key[1], "xbin": key[2],
+                           "readout": key[3], "subs": 0, "keep": 0, "reject": 0,
+                           "reference": r.get("group_reference", ""), "reasons": {}}
+            order.append((-(key[1] or 0), key[0], lab))
+        g["subs"] += 1
+        if r.get("action") == "reject":
+            g["reject"] += 1
+            for part in str(r.get("reason") or "").split(";"):
+                code = part.split("(")[0]
+                if code:
+                    g["reasons"][code] = g["reasons"].get(code, 0) + 1
+        else:
+            g["keep"] += 1
+    return [by[lab] for _e, _f, lab in sorted(order)]
+
+
 def run_qa(frames, *, workers: int | None = None, thr: Thresholds | None = None,
            echo=print) -> tuple[list[dict], int]:
     """Measure + assess every Frame (one star-QA pass over the raw subs).
@@ -509,7 +596,8 @@ def run_qa(frames, *, workers: int | None = None, thr: Thresholds | None = None,
         rows = [measure_sub(p, o) for p, o in zip(paths, oscs)]
     for f, r in zip(frames, rows):
         r.update(file=f.name, night=f.night, filter=f.filter, exp=round(f.exp, 2),
-                 time=f.date_obs)
+                 time=f.date_obs, xbin=int(getattr(f, "xbin", 1) or 1),
+                 readout=getattr(f, "readout", None) or "")
     ref_i = assess(rows, thr)
     return rows, ref_i
 
