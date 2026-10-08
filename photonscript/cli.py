@@ -674,6 +674,62 @@ def settle_gate_cmd(
     raise typer.Exit(0)
 
 
+@app.command("tpoint-sample")
+def tpoint_sample_cmd(
+    file: str = typer.Argument("", help="Frame to sample (default: the newest "
+                                        "FITS under image_watch_dir)"),
+    rig: str = typer.Option("rc16", "--rig", help="rc16 only"),
+    probe: bool = typer.Option(False, "--probe", help="READ ONLY: report which "
+                               "TPoint add methods this TheSky build has, and "
+                               "the model's point count / RMS"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Pick the frame and "
+                                 "print the script; send nothing to TheSky"),
+    point: Optional[int] = typer.Option(None, "--point"),
+    of: Optional[int] = typer.Option(None, "--of"),
+    alt: Optional[float] = typer.Option(None, "--alt"),
+    az: Optional[float] = typer.Option(None, "--az"),
+    side: str = typer.Option("", "--side"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA's ExternalScript item "
+                                        "(deploy\\tpoint-sample.cmd)"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """PS-171: one TPoint sample from the newest saved frame: TheSky Image
+    Link, then (PS_TPOINT_SAMPLE_ADD=auto and a probed add method) a TPoint
+    sample, and always a row in runs/<night>_tpoint.csv. Never syncs or
+    moves the mount. Always exits 0 (the NINA loop must never die).
+
+    photonscript tpoint-sample --probe
+    photonscript tpoint-sample --dry-run
+    """
+    import json as _json
+    try:
+        from photonscript.telescope_agent import tpoint_sample as ts
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        if probe:
+            rec = ts.run_probe(cfg)
+            print(_json.dumps(rec, indent=2) if as_json else ts.format_probe(rec))
+            raise typer.Exit(0)
+        if rig != "rc16":
+            print(f"tpoint-sample: rig {rig!r} not supported (rc16 only); skipped")
+            raise typer.Exit(0)
+        row = ts.run_sample(cfg, file or None, point=point, of=of, alt=alt,
+                            az=az, side=side, dry_run=dry_run)
+        if as_json:
+            print(_json.dumps(row, indent=2, default=str))
+        else:
+            print(ts.format_row(row) + (" (from NINA)" if from_nina else ""))
+            if dry_run:
+                print(f"frame: {row.get('file')}  scale: {row.get('scale')}  "
+                      f"add: {row.get('add_mode')} {row.get('add_method') or ''}")
+                print(row.get("script") or "")
+    except typer.Exit:
+        raise
+    except Exception as e:  # noqa: BLE001
+        print(f"tpoint-sample failed ({type(e).__name__}: {e}); continuing")
+    raise typer.Exit(0)
+
+
 @app.command()
 def report(
     date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),

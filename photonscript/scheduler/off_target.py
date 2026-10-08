@@ -47,7 +47,8 @@ MONITOR_TICK_S = 30
 # a running path containing any of these is not "imaging" (lower case)
 NOT_IMAGING = ("slew", "center", "autofocus", "auto focus", "run autofocus",
                "flat", "dark", "bias", "calibration", "tracking test",
-               "meridian", "flip", "unsafe", "park")
+               "meridian", "flip", "unsafe", "park",
+               "tpoint")   # PS-171: the mapping run slews blind on purpose
 
 
 # ------------------------------------------------------------------ config

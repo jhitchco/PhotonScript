@@ -71,7 +71,8 @@ def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
     from photonscript.scheduler import sideload as sd
     from photonscript.scheduler.nina_sequence_json import generate_tracking_test_json
     from photonscript.scheduler.sequence_lint import lint
-    if recipe not in (sd.RECIPE_TT_THEN_TONIGHT, sd.RECIPE_OPTICS_THROUGH_FOCUS):
+    if recipe not in (sd.RECIPE_TT_THEN_TONIGHT, sd.RECIPE_OPTICS_THROUGH_FOCUS,
+                      sd.RECIPE_TPOINT_MAPPING):
         raise ValueError(f"unknown recipe {recipe!r}")
     app = _app()
     night_name, night_text, guided, dither = app._tonight_sequence(False)
@@ -82,6 +83,12 @@ def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
         field = ot.pick_field(cfg, ot.parse_at(at), _active_projects())
         test = json.loads(ot.generate_sequence(cfg, field))
         splice, tag = sd.splice_optics_test, "OT"
+    elif recipe == sd.RECIPE_TPOINT_MAPPING:   # PS-171
+        from photonscript.scheduler import tpoint_mapping as tm
+        run = tm.build(_cfg(), at)
+        field = run["field"]
+        test = json.loads(run["test_json"])
+        splice, tag = sd.splice_tpoint_mapping, "TPM"
     else:
         fl, ex, rep = app._tracking_test_params("L,Ha", "60,120,180,300", 2)
         field = app._tracking_test_field("", None, None, fl, ex, rep, at)
