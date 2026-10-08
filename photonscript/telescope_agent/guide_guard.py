@@ -33,6 +33,15 @@ safety and armer state); it answers with verdicts. Five detectors:
       a jagged profile; 2026-09-26 real OIII / SII stars read SNR 20 to 22).
       Kind LOW_SNR: the agent stops guiding and switches that filter block to
       unguided (PS-85 guide_block_mode), instead of re-selecting a star.
+  D7  (PS-155) no corrections: phd2_nocorr_frames guided frames in a row with
+      the raw error over phd2_nocorr_px and no RA and no Dec pulse (2026-10-06:
+      Guiding all night, star 5 to 160 px off the lock, every pulse 0 ms,
+      because the mount driver failed IsSlewing and PHD2 dropped each pulse).
+  D8  (PS-155) lock offset growing: within one lock epoch the star walks away
+      from the lock position for phd2_drift_window_min, each quarter of the
+      window further off. Kind NO_CORR for both: page once per night, never
+      re-select a star (the star is fine; the corrections are not reaching
+      the mount), hand the night to the PS-156 unguided fallback.
 
 Also here: hot-pixel map helpers, star detection on a guide frame and the
 guide-star vetting used by the recovery and the pulse self-test.
@@ -48,12 +57,17 @@ from photonscript.shared import guide_motion as gm
 
 NON_STAR, IMPOSSIBLE, PULSES = "non_star", "impossible_state", "pulses_not_moving"
 LOW_SNR = "low_snr"       # PS-85 D6
+NO_CORR = "no_corrections"  # PS-155 D7 / D8
 D1_FRAMES = 10
 D1_PEAK_FRAC = 0.5
 D3_PERSIST_S = 120.0
 D4_WINDOW_S = 180.0
 D4_AT_MAX_PCT = 50.0
 D5_RADIUS_PX = 2.0
+# PS-155: PHD2's Guiding Assistant turns guide output off while it measures
+# (2026-09-25 20:53: 75 frames, 132 s, star 10 px off, no pulses). D7 / D8
+# hold off while output is known off for under this long.
+OUTPUT_OFF_GRACE_S = 900.0
 GUIDING_STATES = ("Guiding", "Calibrating", "LostLock")
 
 
@@ -248,6 +262,8 @@ class NonStarLockGuard:
         self.binning: int | None = None
         self._d3_since: float | None = None
         self._d5: Verdict | None = None
+        self.last_alert: dict | None = None   # PS-155: PHD2's newest Alert event
+        self.output_off_since: float | None = None  # PS-155: guide output off
 
     def set_hotpix(self, hotpix: dict | None) -> None:
         self.hotpix = hotpix
@@ -256,6 +272,21 @@ class NonStarLockGuard:
     def feed(self, event: dict) -> list[Verdict]:
         """Lock events trigger D5 at once; returns any new verdicts."""
         et = event.get("Event")
+        if et == "Alert":
+            # PS-155: e.g. "ASCOM driver failed checking for slewing" (each
+            # pulse dropped); quoted in a D7 / D8 verdict
+            self.last_alert = {"msg": str(event.get("Msg") or "")[:200],
+                               "type": event.get("Type"),
+                               "t": event.get("Timestamp")}
+            return []
+        if et == "GuideParamChange" and str(event.get("Name") or "").replace(
+                " ", "").lower() == "mountguidingenabled":
+            # PS-155: the Guiding Assistant (or a person) toggling output
+            on = str(event.get("Value")).strip().lower() in ("true", "1")
+            t = event.get("Timestamp")
+            self.output_off_since = None if on else (
+                float(t) if isinstance(t, (int, float)) else -1.0)
+            return []
         if et in ("LockPositionSet", "StarSelected"):
             try:
                 xy = (float(event.get("X")), float(event.get("Y")))
@@ -379,7 +410,72 @@ class NonStarLockGuard:
         d6 = self._d6(ctx) if guiding else None
         if d6 is not None:
             out.append(d6)
+        # D7 / D8 (PS-155) guiding that does not correct; never while a
+        # PhotonScript actor holds PHD2 (a self-test pulses by hand)
+        if guiding and not ctx.ops_busy and not self._output_off_young(ctx):
+            out.extend(v for v in (self._d7(ctx), self._d8(ctx)) if v is not None)
         return out
+
+    def _alert_note(self) -> str:
+        a = self.last_alert or {}
+        return f" PHD2 alert: {a['msg']}" if a.get("msg") else ""
+
+    def _output_off_young(self, ctx: GuardContext) -> bool:
+        """True while guide output is known off (a GuideParamChange event,
+        or the newest frames carry output False) for under OUTPUT_OFF_GRACE_S:
+        most likely the Guiding Assistant, which measures with output off."""
+        since = self.output_off_since
+        fs = self._guided(ctx)
+        if fs and fs[-1].get("output", True) is False:
+            k = len(fs) - 1
+            while k > 0 and fs[k - 1].get("output", True) is False:
+                k -= 1
+            since = fs[k]["t"] if since is None or since < 0 else min(since, fs[k]["t"])
+        if since is None:
+            return False
+        now = ctx.now if ctx.now is not None else (fs[-1]["t"] if fs else None)
+        if since < 0 or now is None:
+            return True
+        return now - since < OUTPUT_OFF_GRACE_S
+
+    def _d7(self, ctx: GuardContext) -> Verdict | None:
+        """D7: the newest guided frames form an open run of at least
+        phd2_nocorr_frames frames off the lock with no pulse on either axis."""
+        n = int(getattr(self.config, "phd2_nocorr_frames", gm.NOCORR_FRAMES) or 0)
+        if n <= 0 or not ctx.frames:
+            return None
+        px = float(getattr(self.config, "phd2_nocorr_px", gm.NOCORR_MIN_PX)
+                   or gm.NOCORR_MIN_PX)
+        runs = gm.no_correction_runs(self._guided(ctx), px, n)
+        if runs["tail"] < n:
+            return None
+        ev = {"frames": runs["tail"], "threshold_px": px,
+              "median_px": runs["median_px"]}
+        if self.last_alert:
+            ev["phd2_alert"] = self.last_alert.get("msg")
+        return Verdict(
+            "D7", NO_CORR,
+            f"PHD2 is guiding but sending no corrections: {runs['tail']} frames "
+            f"in a row with the star over {px:g} px off the lock (median "
+            f"{runs['median_px']} px) and no RA or Dec pulse.{self._alert_note()}",
+            ev)
+
+    def _d8(self, ctx: GuardContext) -> Verdict | None:
+        """D8: the star walks away from the lock position within one epoch."""
+        win = float(getattr(self.config, "phd2_drift_window_min", 5.0) or 0) * 60
+        if win <= 0 or not ctx.frames:
+            return None
+        px = float(getattr(self.config, "phd2_nocorr_px", gm.NOCORR_MIN_PX)
+                   or gm.NOCORR_MIN_PX)
+        g = gm.offset_growth(self._guided(ctx), win, px, now=ctx.now)
+        if g is None:
+            return None
+        return Verdict(
+            "D8", NO_CORR,
+            f"the guide star is walking away from the lock position: "
+            f"{g['from_px']} to {g['to_px']} px over {g['minutes']:g} min "
+            f"while PHD2 reports guiding.{self._alert_note()}",
+            dict(g, threshold_px=px))
 
     def _d6_snr(self, ctx: GuardContext) -> tuple | None:
         """(median SNR, frames, floor) when the last guide_lowsnr_frames

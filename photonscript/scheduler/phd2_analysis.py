@@ -435,7 +435,12 @@ def analyze_session(idx, sec, cals, config) -> dict:
             "ra_guide_speed": h.get("ra_guide_speed"),
             "dec_guide_speed": h.get("dec_guide_speed"),
             "dither_scale": h.get("dither_scale"), "profile": h.get("profile"),
-            "mount": h.get("mount")},
+            "mount": h.get("mount"),
+            # PS-155: the header's "guiding enabled / disabled", then any
+            # MountGuidingEnabled change during the session
+            "guide_output": (sec.get("output") if any(
+                e[0] == "param" and str(e[2]).lower() == "mountguidingenabled"
+                for e in sec.get("events") or []) else h.get("guide_output"))},
         "frames": {"total": len(frames), "guided": len(guided), "saturated": sat,
                    "saturated_pct": _pct(sat, len(guided)), "dropped": len(drops),
                    "dropped_pct": _pct(len(drops), len(frames)),
@@ -458,6 +463,7 @@ def analyze_session(idx, sec, cals, config) -> dict:
         "corrections": {"ra": ra_ax, "dec": dec_ax},
         "dithers": dith,
         "calibration": cal_use,
+        "no_corrections": _no_corrections(sec, h, config),   # PS-155
     }
     s["findings"] = session_findings(s)
     return s
@@ -466,6 +472,26 @@ def analyze_session(idx, sec, cals, config) -> dict:
 # --------------------------------------------------------------------------
 # rules
 # --------------------------------------------------------------------------
+
+def _no_corrections(sec, h, config) -> dict:
+    """PS-155: runs of guided frames off the lock with no pulse on either
+    axis. Threshold: phd2_nocorr_px, or 3 x the larger min move. Frames
+    logged with guide output off are left out of the runs and counted
+    apart (output_off_frames); ga = the session ran a Guiding Assistant,
+    which measures with output off on purpose."""
+    frames = sec["frames"]
+    mm = [v for p in (h.get("x_params") or {}, h.get("y_params") or {})
+          for k, v in p.items() if "minimum move" in k or "minmove" in k.replace(" ", "")]
+    thr = gm.nocorr_threshold_px(getattr(config, "phd2_nocorr_px", gm.NOCORR_MIN_PX),
+                                 max((m for m in mm if m is not None), default=None))
+    n = int(getattr(config, "phd2_nocorr_frames", gm.NOCORR_FRAMES) or gm.NOCORR_FRAMES)
+    r = gm.no_correction_runs([f for f in frames if f.get("output", True)], thr, n)
+    r.update(threshold_px=_r(thr, 2), min_frames=n,
+             output_off_frames=sum(1 for f in frames
+                                   if not f["drop"] and f.get("output", True) is False),
+             ga=any(e[0] == "ga" for e in sec.get("events") or []))
+    return r
+
 
 def _f(fid, sev, title, detail, fix, weight=None, **ev):
     """A finding. `weight` picks which session's detail the night shows
@@ -480,6 +506,32 @@ def session_findings(s) -> list[dict]:
     long_enough = (s["duration_min"] or 0) * 60 >= T["min_session_s"]
     guided = fr["guided"]
     scale = st["pixel_scale_arcsec"]
+    # PS-155: guiding that sent no corrections
+    nc = s.get("no_corrections") or {}
+    if nc.get("runs"):
+        out.append(_f(
+            "no_corrections", "critical",
+            "PHD2 guided but sent no corrections",
+            f"{nc['frames']} of {guided} guided frames sat in runs of "
+            f"{nc['min_frames']}+ frames over {nc['threshold_px']:g} px off the "
+            f"lock (longest {nc['longest']}, median {nc['median_px']} px) with no "
+            "RA and no Dec pulse: PHD2 said Guiding while nothing reached the "
+            "mount.",
+            "Check PHD2's debug log for 'pulseguide command failed' / "
+            "'IsSlewing failed' (2026-10-06: TheSky's ASCOM driver refused every "
+            "pulse; restart TheSky and reconnect the mount), Max RA / Dec "
+            "duration on Brain > Algorithms, and Advanced Settings > Guiding > "
+            "Shared Parameters: Enable mount guide output.",
+            weight=nc["frames"], frames=nc["frames"], longest=nc["longest"],
+            threshold_px=nc["threshold_px"]))
+    if (nc.get("output_off_frames") or 0) >= (nc.get("min_frames") or 1)             and not nc.get("ga"):
+        out.append(_f(
+            "guide_output_off", "critical", "Mount guide output was off",
+            f"{nc['output_off_frames']} guided frames were logged with guide "
+            "output disabled (no Guiding Assistant in this session): PHD2 "
+            "measured the star but sent no pulses.",
+            "Advanced Settings > Guiding > Shared Parameters: tick Enable mount "
+            "guide output."))
     for ax, name, dirs in (("ra", "RA", "W/E"), ("dec", "Dec", "N/S")):
         a = s["corrections"][ax]
         v = a.get("response_verdict")

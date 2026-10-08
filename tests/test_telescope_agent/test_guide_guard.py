@@ -53,7 +53,9 @@ def test_static_star_0925_trips_d2():
 
 
 def test_heart_0926_trips_d4_as_a_pulse_path_case():
-    assert _replay(N26, "21:54:09") == {"D4:pulses_not_moving"}
+    # PS-155: the star also walked 12 to 62 px off the lock in under 5 min
+    # (pulses at the max, not moving it), so D8 pages "not correcting" too
+    assert _replay(N26, "21:54:09") == {"D4:pulses_not_moving", "D8:no_corrections"}
 
 
 @pytest.mark.parametrize("name,start", [(N25, "20:53:31"), (N25, "01:36:51"),
@@ -183,3 +185,81 @@ def test_detect_and_vet_stars_skip_hot_pixels():
     for s in vetted:
         assert all(abs(s["x"] - hx) > 3 or abs(s["y"] - hy) > 3 for hx, hy, _ in f.hot)
         assert 1.5 <= s["hfd"] <= 10
+
+
+# ---- PS-155 D7 / D8: guiding that sends no corrections -------------------------
+
+N06 = "PHD2_GuideLog_2026-10-06_203731.txt"
+
+
+def test_no_pulse_night_1006_trips_d7_and_d8():
+    """2026-10-06 22:20: the star 5 to 55 px off the lock, every pulse 0 ms
+    (the mount driver refused each PulseGuide)."""
+    assert _replay(N06, "22:20:54") == {"D7:no_corrections", "D8:no_corrections"}
+
+
+def test_guiding_assistant_with_output_off_is_not_a_no_correction_case():
+    # N25 20:53 is a Guiding Assistant run (MountGuidingEnabled = false for 132 s)
+    assert _replay(N25, "20:53:31") == set()
+
+
+def _quiet(n, off_px=20.0, dt=2.0, t0=1000.0, pulse_every=0, output=True):
+    return [{"t": t0 + i * dt, "ra": off_px, "dec": -off_px / 2,
+             "ra_ms": 300.0 if pulse_every and i % pulse_every == 0 else 0.0,
+             "ra_dir": "W" if pulse_every and i % pulse_every == 0 else "",
+             "dec_ms": 0.0, "dec_dir": "", "hfd": 3.0, "drop": False,
+             "settling": False, "epoch": 1, "output": output} for i in range(n)]
+
+
+def _d7(g, frames, **kw):
+    ctx = GuardContext(frames=frames, app_state="Guiding", scale=0.25, binning=2,
+                       now=frames[-1]["t"], **kw)
+    return [v for v in g.verdicts(ctx) if v.code == "D7"]
+
+
+def test_d7_needs_n_quiet_frames_off_the_lock_and_quotes_the_phd2_alert():
+    g = NonStarLockGuard(_cfg())
+    assert _d7(g, _quiet(19)) == []
+    g.feed({"Event": "Alert", "Msg": "ASCOM driver failed checking for slewing",
+            "Type": "error"})
+    v = _d7(g, _quiet(20))
+    assert len(v) == 1 and v[0].kind == gg.NO_CORR
+    assert "sending no corrections" in v[0].detail and "failed checking" in v[0].detail
+    assert v[0].evidence["frames"] == 20
+    # one pulse in the run ends it; a star near the lock never trips
+    assert _d7(g, _quiet(30, pulse_every=10)) == []
+    assert _d7(g, _quiet(40, off_px=2.0)) == []
+    # never while PhotonScript holds PHD2, never when off
+    assert _d7(g, _quiet(40), ops_busy=True) == []
+    assert _d7(NonStarLockGuard(_cfg(phd2_nocorr_frames=0)), _quiet(40)) == []
+
+
+def test_d7_holds_off_while_guide_output_is_off_for_under_15_min():
+    g = NonStarLockGuard(_cfg())
+    off = _quiet(40, output=False)                       # 80 s: a GA run
+    assert _d7(g, off) == []
+    long_off = _quiet(500, output=False)                 # 1000 s: not a GA
+    assert len(_d7(g, long_off)) == 1
+    g2 = NonStarLockGuard(_cfg())
+    g2.feed({"Event": "GuideParamChange", "Name": "MountGuidingEnabled",
+             "Value": "false", "Timestamp": 1000.0})
+    assert _d7(g2, _quiet(40)) == []
+    g2.feed({"Event": "GuideParamChange", "Name": "MountGuidingEnabled",
+             "Value": "true", "Timestamp": 1100.0})
+    assert len(_d7(g2, _quiet(40))) == 1
+
+
+def test_offset_growth_and_runs_helpers():
+    fr = [{"t": i * 5.0, "ra": 1.0 + i * 0.3, "dec": 0.0, "ra_ms": 100.0,
+           "dec_ms": 0.0, "drop": False, "settling": False, "epoch": 2}
+          for i in range(61)]                            # 5 min, 1 to 19 px
+    g = gm.offset_growth(fr, 300, 5.0)
+    assert g and g["to_px"] > g["from_px"] + 5
+    flat = [dict(f, ra=1.0) for f in fr]
+    assert gm.offset_growth(flat, 300, 5.0) is None
+    # a dither (new epoch) restarts the window
+    assert gm.offset_growth(fr[:-1] + [dict(fr[-1], epoch=3)], 300, 5.0) is None
+    assert gm.nocorr_threshold_px(5.0, 1.5) == 5.0
+    assert gm.nocorr_threshold_px(5.0, 2.5) == 7.5
+    r = gm.no_correction_runs(_quiet(25) + _quiet(5, pulse_every=1) + _quiet(3), 5.0, 20)
+    assert r["runs"] == 1 and r["longest"] == 25 and r["tail"] == 3

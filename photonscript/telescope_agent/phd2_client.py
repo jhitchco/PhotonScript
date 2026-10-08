@@ -487,6 +487,12 @@ class PHD2Client:
     async def set_dec_guide_mode(self, mode: str):
         return await self.call("set_dec_guide_mode", [str(mode)])
 
+    async def get_guide_output_enabled(self) -> bool | None:
+        """PS-155: PHD2's "Enable mount guide output" (Advanced Settings >
+        Guiding > Shared Parameters). Read only; nothing sets it."""
+        r = await self.call("get_guide_output_enabled")
+        return bool(r) if r is not None else None
+
     async def get_profiles(self) -> list[dict]:
         """Every PHD2 equipment profile [{id, name, selected}]."""
         return list(await self.call("get_profiles") or [])

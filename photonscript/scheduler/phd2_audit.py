@@ -645,6 +645,7 @@ def log_observed(sections: list, config) -> dict:
          "ra_min_move": ra_p.get("minimummove"), "dec_min_move": dec_p.get("minimummove"),
          "ra_aggressiveness": ra_p.get("aggressiveness"),
          "dec_guide_mode": st.get("dec_mode"),
+         "guide_output": st.get("guide_output"),   # PS-155
          "backlash_comp": _bool(st.get("backlash_comp")),
          "ra_guide_speed": st.get("ra_guide_speed"),
          "guide_speed": st.get("ra_guide_speed"),
@@ -736,6 +737,7 @@ async def _collect_api(config, client=None) -> tuple[dict, dict]:
         await q("pixel_scale", client.get_pixel_scale)
         await q("search_region_px", client.get_search_region)
         await q("dec_guide_mode", client.get_dec_guide_mode)
+        await q("guide_output", client.get_guide_output_enabled)   # PS-155
         await q("_calibration", client.get_calibration_data)
         await q("variable_delay", client.get_variable_delay_settings)
         for axis in ("ra", "dec"):

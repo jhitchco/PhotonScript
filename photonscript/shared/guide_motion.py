@@ -191,6 +191,96 @@ def epochs(guided, scale) -> dict:
 
 
 # --------------------------------------------------------------------------
+# PS-155 guiding that sends no corrections
+# --------------------------------------------------------------------------
+# 2026-10-06: PHD2 reported Guiding all night (about 3300 frames) with the
+# star 5 to 160 px off the lock and RADuration = DECDuration = 0 on every
+# frame (its debug log: the mount driver failed IsSlewing, so every
+# PulseGuide was dropped). The RMS read 17 to 42" "guiding".
+
+NOCORR_FRAMES = 20        # guided frames in a row with no pulse at all
+NOCORR_MIN_PX = 5.0       # ... while the raw error is over this (guide px)
+DRIFT_QUARTERS = 4        # the lock-offset window is judged in quarters
+
+
+def nocorr_threshold_px(min_px=NOCORR_MIN_PX, min_move=None) -> float:
+    """The raw error (guide px) that must draw a pulse: min_px, or 3 x the
+    largest algorithm minimum move when that is larger."""
+    t = float(min_px if min_px is not None else NOCORR_MIN_PX)
+    try:
+        mm = float(min_move) if min_move is not None else 0.0
+    except (TypeError, ValueError):
+        mm = 0.0
+    return max(t, 3.0 * mm)
+
+
+def _off_px(f) -> float:
+    return max(abs(f.get("ra") or 0.0), abs(f.get("dec") or 0.0))
+
+
+def no_correction_runs(frames, min_px=NOCORR_MIN_PX, n=NOCORR_FRAMES) -> dict:
+    """Runs of guided frames whose raw error exceeds min_px on either axis
+    yet drew no RA and no Dec pulse. Dropped and settling frames are skipped
+    (they neither extend nor break a run); a frame with any pulse, or one
+    under min_px, ends it.
+
+    {"longest", "runs" (runs of n or more), "frames" (frames in those runs),
+     "first_t", "last_t" (of the longest run), "median_px" (its error),
+     "tail" (length of the run still open at the last frame)}"""
+    runs: list[list] = []
+    cur: list = []
+    for f in frames:
+        if f.get("drop") or f.get("settling"):
+            continue
+        quiet = not (f.get("ra_ms") or 0) and not (f.get("dec_ms") or 0)
+        if quiet and _off_px(f) > min_px:
+            cur.append(f)
+            continue
+        if cur:
+            runs.append(cur)
+        cur = []
+    tail = len(cur)
+    if cur:
+        runs.append(cur)
+    long_runs = [r for r in runs if len(r) >= max(1, int(n))]
+    best = max(runs, key=len) if runs else []
+    return {"longest": len(best), "runs": len(long_runs),
+            "frames": sum(len(r) for r in long_runs),
+            "first_t": best[0]["t"] if best else None,
+            "last_t": best[-1]["t"] if best else None,
+            "median_px": _r(statistics.median(_off_px(f) for f in best), 1) if best else None,
+            "tail": tail}
+
+
+def offset_growth(frames, window_s, min_px=NOCORR_MIN_PX, now=None) -> dict | None:
+    """The star walking away from the lock position: guided, settled frames
+    of the newest lock epoch within the last window_s, cut in quarters; the
+    median offset (hypot of the raw RA / Dec error) rises quarter after
+    quarter, by at least min_px in all, and ends over min_px. None when not
+    so (or too few frames, or under 90% of the window covered)."""
+    if not frames or not window_s or window_s <= 0:
+        return None
+    ep = frames[-1].get("epoch")
+    now = frames[-1]["t"] if now is None else now
+    fs = [f for f in frames if not f.get("drop") and not f.get("settling")
+          and f.get("epoch") == ep and f["t"] >= now - window_s]
+    if len(fs) < 4 * DRIFT_QUARTERS or fs[-1]["t"] - fs[0]["t"] < 0.9 * window_s:
+        return None
+    k = len(fs) // DRIFT_QUARTERS
+    meds = [statistics.median(
+        math.hypot(f.get("ra") or 0.0, f.get("dec") or 0.0)
+        for f in (fs[i * k:(i + 1) * k] if i < DRIFT_QUARTERS - 1 else fs[i * k:]))
+        for i in range(DRIFT_QUARTERS)]
+    rising = all(b > a for a, b in zip(meds, meds[1:]))
+    if not rising or meds[-1] - meds[0] < min_px or meds[-1] < min_px:
+        return None
+    span = fs[-1]["t"] - fs[0]["t"]
+    return {"from_px": _r(meds[0], 1), "to_px": _r(meds[-1], 1),
+            "minutes": _r(span / 60, 1), "frames": len(fs),
+            "px_per_min": _r((meds[-1] - meds[0]) / (span / 60), 2) if span else None}
+
+
+# --------------------------------------------------------------------------
 # PS-92 pulse self-test helpers
 # --------------------------------------------------------------------------
 

@@ -374,6 +374,17 @@ apply = "manual"
 why = "PHD2 sizes every pulse from the guide speed; if TheSky guides at a different rate every correction is off by that ratio (the PS-92 WARN case)."
 fix = "Match TheSky's autoguide rate and the ASCOM driver guide rate, then recalibrate."
 
+[[check]]
+id = "guide_output"
+group = "Mount"
+label = "Mount guide output enabled"
+sources = ["api", "log"]
+equals = true
+severity = "fail"
+apply = "manual"
+why = "With guide output off PHD2 measures the star and reports Guiding but sends no pulses, so every long sub trails while the dashboard says guiding. (Not the 2026-10-06 cause: that night output was on and the mount driver refused each pulse; guard D7 pages on either.)"
+fix = "PHD2 Advanced Settings > Guiding tab > Shared Parameters: tick Enable mount guide output."
+
 # ---------------------------------------------------------------- darks
 
 [[check]]
