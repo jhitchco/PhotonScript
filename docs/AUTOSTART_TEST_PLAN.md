@@ -52,7 +52,7 @@ refuses while the armer is ARMED, RUNNING or PAUSED_UNSAFE.
 | `hold` | (only shown when set) | `photonscript stop` left a HOLD: `Start-ScheduledTask PhotonScript` clears it |
 | `log.stalls` | no `STALLED` entry in the last `--hours` (default 24) | FAIL = stall since this start: send `stalls.log` to Claude |
 | `log.supervisor` | no crash restarts in the window | WARN is expected right after the crash test; FAIL = crash-loop give-up |
-| `nina.1`, `nina.2`, `phd2` | NINA #1 (1888), NINA #2 (1889), PHD2 (4400) answer | WARN only: PhotonScript does not start them; start them before arming |
+| `nina.1`, `nina.2`, `phd2` | NINA #1 (1888), NINA #2 (1889), PHD2 (4400) answer | WARN only: the service does not start them; start them before arming (`deploy\observatory-apps.ps1 -Start`, or the PS-170 daily Start task) |
 | `tailscale` | `https://teles-feb25.lobster-bleak.ts.net/api/health` answers | WARN only: `tailscale serve status` |
 
 ## 0. Ship the checker (desktop)

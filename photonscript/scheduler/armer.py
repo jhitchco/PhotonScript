@@ -197,6 +197,7 @@ class Armer:
         # PS-152: tonight's dusk focus calibration (PS-144) once dispatched:
         # {"night", "container", "status": "dispatched" | "done", "field"}
         self.focus_cal: dict | None = None
+        self._apps_alerted: set = set()   # PS-170: (night, phase) paged
         self._task: asyncio.Task | None = None
 
     # -- persistence ----------------------------------------------------------
@@ -453,12 +454,38 @@ class Armer:
                 await self._cooler_dew_off_all()
             except Exception as e:  # noqa: BLE001
                 logger.warning("pre-imaging cooler/dew off at arm failed: %s", e)
+        # PS-170: NINA #1 / #2 (and PHD2 when guided) running? One page.
+        await self._apps_alert("At arm")
         await notify(self.config,
                      f"ARMED for {self.plan['night_of']} [{mode}]: "
                      f"{', '.join(self.plan['targets'][:4])} — "
                      f"{self.plan['dark_hours']}h dark window.{conn}",
                      title="PhotonScript armed")
         return self.status()
+
+    async def _apps_alert(self, phase: str) -> None:
+        """PS-170: page once per night and phase when an app tonight needs
+        (NINA #1, NINA #2 with the piggyback on, PHD2 when guided) does not
+        answer on its port. Report only; never raises."""
+        key = (self.plan.get("night_of"), phase)
+        done = getattr(self, "_apps_alerted", None)
+        if done is None:
+            done = self._apps_alerted = set()
+        if key in done or not getattr(self.config, "app_lifecycle_alert", True):
+            return
+        done.add(key)
+        try:
+            from photonscript.scheduler import app_lifecycle as al
+            apps = await asyncio.to_thread(al.probe, self.config)
+            msg = al.alert_text(self.config, apps, self._use_guiding(), phase,
+                                self.plan.get("preconfig_utc"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-170 apps check failed: %s", e)
+            return
+        if msg:
+            logger.warning("PS-170 %s", msg)
+            await notify(self.config, msg, title="PhotonScript apps not running",
+                         priority=1)
 
     def _unguided_dither(self) -> bool:
         """PS-66: dither the unguided targets tonight? Only on an unguided
@@ -3194,6 +3221,8 @@ class Armer:
                     await self._maybe_hotpix_map(now, "pre-dusk, roof closed")
             if now < preconfig:
                 await self._maybe_predusk_tune()
+            if preconfig - timedelta(minutes=60) <= now < preconfig:
+                await self._apps_alert("Pre-config in 60 min")   # PS-170
             if now >= preconfig:
                 if await self._dispatch_and_start():
                     self._set_state("RUNNING",

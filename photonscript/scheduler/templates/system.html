@@ -110,6 +110,54 @@
         })();
         </script>
 
+        <section class="panel" id="appsPanel" style="margin-bottom:1.5rem;">
+            <h2>Observatory apps (PS-170)</h2>
+            <div class="bd" id="appsBody">loading...</div>
+            <button class="btn btn-secondary" id="appsRefresh" style="margin-top:.5rem;">Refresh</button>
+            <div class="cfg-hint" style="margin-top:.4rem;">NINA #1 / #2, PHD2 and TheSky, and the daily close / relaunch (deploy\observatory-apps.ps1, settings in the App lifecycle group below). Read only: the scheduled tasks on the scope PC do the closing and launching.</div>
+        </section>
+        <script>
+        (function () {
+            function fmt(d) {
+                var lines = [];
+                lines.push("Daily lifecycle: " + (d.enabled ? "ON" : "off") +
+                           " (launch " + d.start_local + " local; close " +
+                           d.stop_after_shutdown_min + " min after the dawn shutdown)");
+                Object.keys(d.apps || {}).forEach(function (k) {
+                    var a = d.apps[k];
+                    var need = (d.needed || []).indexOf(k) >= 0 ? "" : " (not needed tonight)";
+                    lines.push("  " + a.label + " :" + a.port + " " +
+                               (a.answering ? "answers" : "NOT answering") + need);
+                });
+                var t = d.thesky || {};
+                if (t.answering) lines.push("  TheSky mount: " + (t.mount_connected === true ? "connected" :
+                    t.mount_connected === false ? "NOT connected" : "unknown"));
+                lines.push("Close now: " + (d.stop_ok ? "allowed" : "blocked: " + (d.stop_blockers || []).join("; ")) +
+                           (d.stop_done_today ? " (already closed today)" : ""));
+                ["stop", "start"].forEach(function (m) {
+                    var r = (d.last || {})[m];
+                    if (r) lines.push("Last " + m + ": " + r.t + " " + (r.ok ? "ok" : "FAILED") +
+                                      (r.dry_run ? " (dry run)" : "") + " - " + r.message);
+                });
+                return lines.join("\n");
+            }
+            function load() {
+                var el = document.getElementById("appsBody");
+                el.textContent = "loading...";
+                fetch("/api/apps/status").then(function (r) { return r.json(); })
+                    .then(function (d) {
+                        el.style.whiteSpace = "pre-wrap";
+                        el.style.fontFamily = "ui-monospace, monospace";
+                        el.style.fontSize = ".82rem";
+                        el.textContent = fmt(d);
+                    })
+                    .catch(function (e) { el.textContent = "error: " + e; });
+            }
+            document.getElementById("appsRefresh").addEventListener("click", load);
+            load();
+        })();
+        </script>
+
         <section class="panel" id="rigsPanel" style="margin-bottom:1.5rem;">
             <h2>Rigs (multi-scope)</h2>
             <div class="bd" id="rigsBody">loading…</div>

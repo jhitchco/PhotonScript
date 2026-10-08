@@ -552,6 +552,72 @@ Read only; a NINA that cannot be read shows "-".
   with under 40 min of dark. A failed re-dispatch stays paused. Events kind
   `restart` (request / stopped / dispatched / failed / refused), one push.
 
+### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
+
+Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was
+reworked its in-process SoftwareBisque driver went stale and refused every
+guide pulse for three nights (PS-167). A fresh start each day gives every
+night fresh driver instances.
+
+- **Who acts:** `deploy\observatory-apps.ps1`, run by two scheduled tasks in
+  jeremy's interactive session (`deploy\install-app-lifecycle-tasks.ps1`;
+  logon type Interactive, so NINA and PHD2 open on his desktop, never in
+  session 0). The service only reports and decides (`GET /api/apps/status`,
+  `scheduler/app_lifecycle.py`); it never starts, closes or kills an app.
+- **"PhotonScript Apps Stop"**, daily 06:30 and every 15 min until 11:00:
+  `-Stop -Scheduled`. Acts once a day, when the service lists no blocker:
+  armer not ARMED / RUNNING / WATCHING / PAUSED_*, no NINA #1 / #2 sequence
+  and no calibration capture job running, sun above -6 deg, last night's dawn shutdown recorded with its
+  cooler verify done and `app_lifecycle_stop_after_shutdown_min` (30) past
+  it. A disarmed day has no shutdown to wait for. PHD2: `stop_capture`,
+  `set_connected false` (releases the stale driver), `shutdown` over its
+  event server; NINA #2 then NINA #1: close the main window. An app still
+  open after 60 s is killed (the report says KILLED). TheSky is never
+  touched (`-IncludeTheSky` by hand only). Refused when the service does
+  not answer (the guards cannot be read). `-Force` waives only the
+  shutdown timing and the once-a-day rule.
+- **"PhotonScript Apps Start"**, daily 11:45 (`app_lifecycle_start_local`,
+  before the 12:00 noon re-arm, whose PS-125 guard needs NINA #1 up):
+  `-Start -Scheduled`. Only what does not answer is launched. TheSky must
+  run with its mount connected (read-only `IsConnected` over :3040), else
+  nothing is launched and one page goes out. NINA #1 / #2: `NINA.exe
+  --profileid <GUID>`, the GUID resolved from the profile name
+  (`app_nina1_profile` RC16, `app_nina2_profile` Piggy-600) in
+  `%LOCALAPPDATA%\NINA\Profiles\*.profile`; an unresolvable profile is
+  never launched (it could open the wrong camera). PHD2: launched, profile
+  `app_phd2_profile_id` (2) selected with `set_profile`, camera + mount
+  connected with `set_connected true` (`-NoPhd2Connect` skips that). Each
+  port (1888, 1889, 4400) must answer within 180 s. Then `POST
+  /api/equipment/connect` and `POST /api/preflight?push=0` (no test push).
+- **Reports:** every run that acts posts `POST /api/apps/report`
+  (`<data_dir>/app_lifecycle.jsonl`); a failed run pages once per mode and
+  day. Log: `<data_dir>\logs\observatory-apps.log`. System page panel
+  "Observatory apps": ports, TheSky mount, "Close now: allowed / blocked
+  (why)", last stop / start.
+- **Off by default:** the tasks do nothing while `app_lifecycle_enabled` is
+  off; a hand run always may (behind the same guards).
+  `observatory-apps.ps1 -Status` prints ports, TheSky mount and blockers;
+  `-DryRun` with `-Stop` / `-Start` shows what would happen.
+- **Alerts (on even with the lifecycle off, `app_lifecycle_alert`):** the
+  armer pages once at arm and once in the hour before pre-config when NINA
+  #1, NINA #2 (piggyback on) or PHD2 (guided night) does not answer.
+  Preflight row "Observatory apps running": FAIL only with the lifecycle on,
+  on an armed day, 15 min past the launch time; WARN otherwise.
+- **Interplay:** a `calibration_autofill` job (off today) that starts at
+  sunrise holds the stop until it ends; one that would start while the apps
+  are closed is refused for that day (one attempt a day). The PS-150 NINA
+  watchdog only watches after sunset, so a closed NINA in the morning does
+  not page.
+- **One-time setup (scope PC, as jeremy, elevated PowerShell):**
+  `powershell -ExecutionPolicy Bypass -File
+  C:\astro\PhotonScript\deploy\install-app-lifecycle-tasks.ps1 -DryRun`, then
+  without `-DryRun`. Watched first run by hand (normal PowerShell, morning
+  after a night): `observatory-apps.ps1 -Status`, `-Stop -DryRun`, `-Stop`,
+  `-Start -DryRun`, `-Start`; confirm both NINAs open on the right profiles
+  (RC16 on :1888, Piggy-600 on :1889) and PHD2 on "Primary RC Profile
+  (Guider)" with camera + mount connected. Then set `app_lifecycle_enabled`
+  on the System page. Remove: `install-app-lifecycle-tasks.ps1 -Uninstall`.
+
 ### Add a target (PS-124)
 
 The Target Goals **Add** box takes a catalog name, catalog id or alias

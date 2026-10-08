@@ -33,3 +33,11 @@ def _safety_crosscheck_off(monkeypatch):
     unsafe onset; no test should touch the network for it.
     tests/test_scheduler/test_ps1_safety_analytics.py turns it on."""
     monkeypatch.setenv("PS_SAFETY_CROSSCHECK", "off")
+
+
+@pytest.fixture(autouse=True)
+def _app_lifecycle_alert_off(monkeypatch):
+    """PS-170: the armer pages at arm when NINA / PHD2 do not answer on their
+    ports, which they never do on a test machine; no test should count that
+    push. tests/test_scheduler/test_ps170_app_lifecycle.py turns it on."""
+    monkeypatch.setenv("PS_APP_LIFECYCLE_ALERT", "false")

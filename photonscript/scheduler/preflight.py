@@ -96,8 +96,31 @@ async def _ensure_connected(config, device: str, attempts: int = 3):
     return False, payload, err
 
 
-async def run_preflight(config) -> dict:
-    """Run all checks. Returns {'ran_at', 'summary', 'checks': [...]}."""
+def _apps_check(config) -> dict:
+    """PS-170: are NINA #1 / #2 (and PHD2 on a guided night) running? FAIL
+    only with app_lifecycle_enabled, on an armed day, after the daily
+    launch time; otherwise WARN."""
+    try:
+        from photonscript.scheduler import app_lifecycle as al
+        import sys
+        state = ""
+        app_mod = sys.modules.get("photonscript.scheduler.app")
+        if app_mod is not None:   # in the service (the CLI has no armer)
+            try:
+                state = str(getattr(app_mod.get_armer(), "state", "") or "")
+            except Exception:  # noqa: BLE001
+                state = ""
+        now = datetime.utcnow()
+        return al.preflight_check(config, al.probe(config), now,
+                                  armed_day=al.armed_day(config, state),
+                                  guided=al.guided_by_default(config))
+    except Exception as e:  # noqa: BLE001
+        return _check("Observatory apps running", "warn", f"unreadable: {e}")
+
+
+async def run_preflight(config, test_push: bool = True) -> dict:
+    """Run all checks. Returns {'ran_at', 'summary', 'checks': [...]}.
+    test_push=False skips the Pushover test message (PS-170 daily launch)."""
     checks: list[dict] = []
 
     # 1. Config file -------------------------------------------------------
@@ -205,6 +228,7 @@ async def run_preflight(config) -> dict:
         checks.append(_check("PHD2 event server", "warn",
                              "Not reachable — fine for unguided runs"))
     checks.append(_audit_check(config))   # PS-89
+    checks.append(await asyncio.to_thread(_apps_check, config))   # PS-170
 
     # 5. Sequence generation + lint round-trip ------------------------------
     try:
@@ -247,7 +271,10 @@ async def run_preflight(config) -> dict:
                              "eccentricity and corner-spread QA disabled"))
 
     # 7. Pushover ------------------------------------------------------------
-    if getattr(config, "pushover_user_key", "") and getattr(config, "pushover_api_token", ""):
+    if not test_push and getattr(config, "pushover_user_key", ""):
+        checks.append(_check("Pushover", "pass",
+                             "Keys set; test message skipped (push=0)"))
+    elif getattr(config, "pushover_user_key", "") and getattr(config, "pushover_api_token", ""):
         try:
             from photonscript.shared.pushover import notify
             ok = await notify(config, "Preflight test notification — all good if "

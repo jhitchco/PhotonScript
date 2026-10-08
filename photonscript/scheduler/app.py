@@ -894,6 +894,15 @@ _CONFIG_FIELDS = [
     ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),
     ("noon_arm_enabled", "PS_NOON_ARM_ENABLED", "Noon auto re-arm when idle (also re-forces coolers off)", "Nanny / Alerts", "bool", False, False),
     ("noon_arm_guided", "PS_NOON_ARM_GUIDED", "Auto/noon re-arm uses PHD2 guiding (uncheck = re-arm unguided)", "Nanny / Alerts", "bool", False, False),
+    ("app_lifecycle_enabled", "PS_APP_LIFECYCLE_ENABLED", "Daily app lifecycle (PS-170): the scheduled tasks close NINA #1 / #2 + PHD2 after the dawn shutdown and launch them again (a hand run of deploy\\observatory-apps.ps1 always may)", "App lifecycle", "bool", False, False),
+    ("app_lifecycle_alert", "PS_APP_LIFECYCLE_ALERT", "App lifecycle: page once at arm and at pre-config - 60 min when a needed app is not running", "App lifecycle", "bool", False, False),
+    ("app_lifecycle_stop_after_shutdown_min", "PS_APP_LIFECYCLE_STOP_AFTER_SHUTDOWN_MIN", "App lifecycle: close the apps no sooner than this many minutes after the dawn shutdown (and after its cooler verify)", "App lifecycle", "float", False, False),
+    ("app_lifecycle_start_local", "PS_APP_LIFECYCLE_START_LOCAL", "App lifecycle: daily launch time, scope local HH:MM (keep equal to the Start task's time; before the 12:00 noon re-arm)", "App lifecycle", "str", False, False),
+    ("app_nina_exe", "PS_APP_NINA_EXE", "App lifecycle: NINA.exe path", "App lifecycle", "str", False, False),
+    ("app_nina1_profile", "PS_APP_NINA1_PROFILE", "App lifecycle: NINA #1 profile (name or GUID; launched with --profileid)", "App lifecycle", "str", False, False),
+    ("app_nina2_profile", "PS_APP_NINA2_PROFILE", "App lifecycle: NINA #2 profile (name or GUID; launched with --profileid)", "App lifecycle", "str", False, False),
+    ("app_phd2_exe", "PS_APP_PHD2_EXE", "App lifecycle: phd2.exe path", "App lifecycle", "str", False, False),
+    ("app_phd2_profile_id", "PS_APP_PHD2_PROFILE_ID", "App lifecycle: PHD2 profile id selected after a launch (2 = Primary RC Profile (Guider))", "App lifecycle", "int", False, False),
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
@@ -969,9 +978,11 @@ async def api_makesafe():
 
 
 @app.post("/api/preflight")
-async def api_preflight():
+async def api_preflight(push: int = 1):
+    """push=0 skips the Pushover test message (PS-170: the daily app
+    launch runs preflight and should not buzz the phone every noon)."""
     from photonscript.scheduler.preflight import run_preflight
-    return await run_preflight(get_config())
+    return await run_preflight(get_config(), test_push=bool(push))
 
 
 @app.post("/api/equipment/connect")
@@ -3094,6 +3105,8 @@ from photonscript.scheduler.routers import autofile as _autofile_router  # noqa:
 app.include_router(_autofile_router.router)   # PS-157
 from photonscript.scheduler.routers import morning as _morning_router  # noqa: E402
 app.include_router(_morning_router.router)   # PS-166
+from photonscript.scheduler.routers import apps as _apps_router  # noqa: E402
+app.include_router(_apps_router.router)   # PS-170
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

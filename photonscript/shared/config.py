@@ -1130,6 +1130,29 @@ class PhotonScriptConfig(BaseSettings):
     noon_arm_guiding: str = "guided"  # (legacy) guiding mode for noon auto-arms:
                                       # "guided" | "unguided" (alias "encoders") |
                                       # "default" (config). Not read anywhere now.
+    # PS-170 daily app lifecycle (scheduler.app_lifecycle +
+    # deploy\observatory-apps.ps1, run by two scheduled tasks in jeremy's
+    # session): close NINA #1 / #2 and PHD2 after the dawn shutdown, launch
+    # them again before the noon re-arm, connect and preflight. A fresh start
+    # each day drops stale driver instances (PHD2's TheSky driver refused
+    # every pulse 2026-10-05 to 10-08, PS-167).
+    app_lifecycle_enabled: bool = False  # the scheduled runs act only when
+                                 # set (a hand run of the script always may)
+    app_lifecycle_alert: bool = True   # page once at arm and once at
+                                 # pre-config - 60 min when a needed app
+                                 # does not answer (report only)
+    app_lifecycle_stop_after_shutdown_min: float = 30.0  # close the apps no
+                                 # sooner than this after the dawn shutdown,
+                                 # and only once its cooler verify ran
+    app_lifecycle_start_local: str = "11:45"  # launch time, scope local
+                                 # HH:MM (the Start task's time): before the
+                                 # 12:00 noon re-arm, which needs NINA #1
+    app_nina_exe: str = r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe"
+    app_nina1_profile: str = "RC16"       # NINA #1 profile: name or GUID
+    app_nina2_profile: str = "Piggy-600"  # NINA #2 profile: name or GUID
+    app_phd2_exe: str = r"C:\Program Files (x86)\PHDGuiding2\phd2.exe"
+    app_phd2_profile_id: int = 2  # "Primary RC Profile (Guider)", selected
+                                  # over the event server after a launch
     # --- TheSky64 direct hook (EXPERIMENTAL, 2026-09-21) ---
     # PhotonScript normally reaches the Paramount through NINA's ASCOM pass-through
     # (TheSky's connector), which does NOT expose TPoint/ProTrack. TheSky also runs
