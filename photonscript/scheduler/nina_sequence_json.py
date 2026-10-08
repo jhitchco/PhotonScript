@@ -87,6 +87,18 @@ TARGET_BLOCK_SUFFIX = " filter block (cooler-gated)"
 # "<target> filter block (guiding per block)": an unguided block starts with
 # StopGuiding, a guided one with StartGuiding (a failure skips that block).
 TARGET_GUIDE_BLOCK_SUFFIX = " filter block (guiding per block)"
+# PS-176: with rc16_af_policy smart every light block is its own container
+# "<target> filter block (focus by offset)": [cooler gate], SwitchFilter
+# (or AF on the AF filter for a 3 nm filter with no measured offset), [guiding],
+# MoveFocuserRelative(+offset), lights, MoveFocuserRelative(-offset). The
+# focuser is back at the AF filter's best focus between blocks.
+TARGET_SMART_BLOCK_SUFFIX = " filter block (focus by offset)"
+# PS-176: a goal's HDR short subs (PS-47) are shot once per target visit, in
+# "<target> HDR shorts (once per visit)" before the repeating imaging loop.
+# Inside the loop NINA reset their LoopCondition on every pass, so the 12
+# owed 30 s shorts per filter were re-shot each pass (2026-10-07: 225 of
+# 281 M31 subs were 30 s R/G/B).
+TARGET_HDR_SHORTS_SUFFIX = " HDR shorts (once per visit)"
 # PS-26: a Piggy-600-driven target (centering mode on) gets a nested
 # DeepSkyObjectContainer "<target> Piggy-600 center, pier West (before
 # transit)" holding one Center on the pier-West coordinates; it runs once,
@@ -792,14 +804,22 @@ def _autofocus_temp_trigger(amount_c: float = 1.0,
         Amount=amount_c, TriggerRunner=_trigger_runner(runner or [_autofocus()]))
 
 
-def _block_af_runner(af_filter: FilterType, offset: int) -> list:
+def _block_af_runner(af_filter: FilterType, offset: int,
+                     imaging_filter: "FilterType | None" = None) -> list:
     """PS-77: the refocus recipe a mid-block AF trigger runs. Same order as
-    the block start (PS-65): AF filter, autofocus, measured filter offset.
-    The SmartExposure's own SwitchFilter puts the imaging filter back on the
-    next iteration, so a triggered AF never focuses through 3 nm."""
+    the block start (PS-65): AF filter, autofocus, measured filter offset,
+    so a triggered AF never focuses through 3 nm.
+
+    PS-176: then back to the imaging filter. NINA fires an AF trigger just
+    before the TakeExposure, i.e. after the SmartExposure's own
+    SwitchFilter, so the next sub was shot through the AF filter
+    (2026-10-07: 15 L 30 s subs inside the M31 R/G/B short runs, one after
+    each triggered AF)."""
     out = [_switch_filter(af_filter), _autofocus()]
     if offset:
         out.append(_move_focuser_relative(offset))
+    if imaging_filter is not None and imaging_filter != af_filter:
+        out.append(_switch_filter(imaging_filter))
     return out
 
 
@@ -848,6 +868,19 @@ def _focus_drive_spec(cfg) -> dict | None:
         return None
     return {"script": script, "filters": set(tr["filters"]),
             "verify_min": float(tr.get("verify_af_min") or 120.0)}
+
+
+def _smart_af_spec(cfg, af_filter) -> dict | None:
+    """PS-176: af_policy.smart_spec, or None (every_block) on any error so
+    a bad focus model never breaks a night."""
+    try:
+        from photonscript.scheduler.af_policy import smart_spec
+        return smart_spec(cfg, af_filter)
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning(
+            "smart AF policy unavailable, using every_block: %s", e)
+        return None
 
 
 def _meridian_flip_trigger() -> dict:
@@ -1080,10 +1113,18 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             unguided_dither: bool = False,
                             cooler_gate: tuple | None = None,
                             focus_drive: dict | None = None,
-                            followed: bool = False) -> dict:
+                            followed: bool = False,
+                            smart: dict | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
-    -> exposures.
+    -> [HDR shorts once] -> exposures.
+
+    smart (PS-176, af_policy.smart_spec; None = every_block): each light
+    block is a TARGET_SMART_BLOCK_SUFFIX container that moves the focuser by
+    the filter's offset from the AF filter and back, with no AF; a 3 nm
+    filter with no measured offset keeps the AF recipe. The block
+    triggers (temperature, HFR, timed) run the AF recipe and switch back to
+    the imaging filter. Ignored while focus_drive is active.
 
     selftest_script (PS-92): a guided target runs the pulse-path self-test
     script (NINA ExternalScript, slot "target") between SetTracking and
@@ -1277,49 +1318,72 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         first_guided[0] = False
         return out
 
-    def _block(exp, bi, n_blocks, condition=None):
-        n = exp.count - exp.acquired
+    # PS-176: smart AF policy (focus_drive, when active, owns the blocks)
+    use_smart = (smart is not None and focus_drive is None
+                 and af_filter is not None)
+    if use_smart:
+        from photonscript.scheduler.af_policy import describe
+        items.append(_annotation(describe(smart)))
+
+    def _block(exp, bi, n_blocks, condition=None, part="long"):
+        """One filter block. part "short" = only the HDR short set (the
+        once-per-visit container, PS-176), "long" = only the long set (the
+        repeating imaging loop)."""
+        f = exp.filter_type
+        n = (exp.short_remaining() if part == "short"
+             else exp.count - exp.acquired)
+        sub_s = (exp.hdr_short_seconds if part == "short"
+                 else exp.exposure_seconds)
         block_guided = bool(target.start_guiding
-                            and exp.filter_type.value not in unguided_set)
-        block_h = exp.exposure_seconds * n / 3600
+                            and f.value not in unguided_set)
+        block_h = sub_s * n / 3600
+        drive = (focus_drive is not None
+                 and f.value in focus_drive["filters"])
+        smart_move = use_smart and not drive
         # PS-65: every block focuses for itself. AF on the AF filter (L), or on
         # the block's own filter when no AF filter is configured, then move by
         # the measured filter offset. The old per-block MoveFocuserAbsolute to a
         # July seed with no AF after it put a whole night's Ha ~300 steps out
         # (2026-09-26), and on every loop pass undid the triggered AFs.
-        block_af = af_filter or exp.filter_type
-        offset = _focus_offset(block_af, exp.filter_type, focus_offsets)
-        drive = (focus_drive is not None
-                 and exp.filter_type.value in focus_drive["filters"])
+        # PS-176 smart: the block skips the AF (unless it is a 3 nm filter with
+        # no measured offset) and moves by the offset from the AF filter's
+        # focus (and back at the end).
+        block_af = af_filter or f
+        if smart_move:
+            offset = (int(smart["offsets"].get(f.value, 0))
+                      if f != block_af else 0)
+            skip_af = f.value not in smart["af_blocks"]
+        else:
+            offset = _focus_offset(block_af, f, focus_offsets)
+            skip_af = False
         out = []
-        if chatty_block:   # per-block "starting/done" pair — the bulk of the noise
+        if chatty_block:   # per-block "starting/done" pair: the bulk of the noise
+            if drive:
+                how = "focus from the lookup table"
+            elif smart_move and skip_af:
+                how = (f"offset {offset:+d} from {block_af.value} focus "
+                       "(no autofocus)")
+            else:
+                how = (f"autofocus on {block_af.value}"
+                       + (f" then offset {offset:+d}" if offset else ""))
             out.append(_pushover(
                 "Imaging",
-                f"{target.name} [{bi}/{n_blocks}]: starting "
-                f"{exp.filter_type.value} — {n}×{exp.exposure_seconds:.0f}s "
-                f"(~{block_h:.1f}h) gain {exp.gain}; "
-                + ("focus from the lookup table" if drive else
-                   f"autofocus on {block_af.value}"
-                   + (f" then offset {offset:+d}" if offset else ""))
+                f"{target.name} [{bi}/{n_blocks}]: starting {f.value} "
+                + ("HDR shorts " if part == "short" else "")
+                + f": {n}x{sub_s:.0f}s "
+                f"(~{block_h:.1f}h) gain {exp.gain}; " + how
                 + (" (moon-free window)" if condition else "")))
         if drive:
             # PS-76 part 2: table position instead of AF (verify AF below)
-            out.append(_switch_filter(exp.filter_type))
-            out.append(_focus_model_move(focus_drive["script"],
-                                         exp.filter_type))
+            out.append(_switch_filter(f))
+            out.append(_focus_model_move(focus_drive["script"], f))
+        elif smart_move and skip_af:
+            out.append(_switch_filter(f))
         else:
             out.append(_switch_filter(block_af))
             out.append(_autofocus())
-            if offset:
+            if offset and not smart_move:
                 out.append(_move_focuser_relative(offset))
-        # HDR: emit a SHORT companion SmartExposure alongside the long one, same
-        # filter/gain/offset/binning, its own (shorter) length + count. Short
-        # first (bright cores), then the long set. Dither + AF triggers are
-        # container-level, so both blocks share them; each SmartExposure carries
-        # its own dither trigger via _smart_exposure (guided/dither_every_n).
-        # Only what is still owed: the short set stops once hdr_short_acquired
-        # reaches its count (it used to re-shoot all of it every night), and a
-        # finished long set is not re-emitted just because shorts remain.
         # PS-77: the light loop guards itself. Safety + loop end sit on the
         # SmartExposure (the innermost repeating container) so NINA checks
         # them between EVERY exposure, and the refocus triggers carry this
@@ -1333,23 +1397,35 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             return g
 
         def _af_triggers():
-            runner = lambda: _block_af_runner(block_af, offset)  # noqa: E731
+            runner = lambda: _block_af_runner(block_af, offset, f)  # noqa: E731
             if drive:
                 # temperature change -> table move (cheap, so 1 C); HFR creep
                 # and the periodic verify keep the full AF recipe
                 return [_autofocus_temp_trigger(1.0, [_focus_model_move(
-                            focus_drive["script"], exp.filter_type)]),
+                            focus_drive["script"], f)]),
                         _autofocus_hfr_trigger(10.0, 4, runner()),
                         _autofocus_time_trigger(focus_drive["verify_min"],
                                                 runner())]
+            if smart_move:
+                # PS-176: the only AFs inside a target besides the start AF
+                # and blocks of unmeasured filters: temperature, HFR, timed
+                t = [_autofocus_temp_trigger(smart["temp_c"], runner()),
+                     _autofocus_hfr_trigger(smart["hfr_pct"], 4, runner())]
+                if smart["interval_min"] > 0:
+                    t.append(_autofocus_time_trigger(smart["interval_min"],
+                                                     runner()))
+                return t
             return [_autofocus_temp_trigger(2.0, runner()),
                     _autofocus_hfr_trigger(10.0, 4, runner())]
 
-        short_n = exp.short_remaining()
-        if short_n > 0:
+        # HDR (PS-47): the SHORT companion set, same filter/gain/offset/
+        # binning, its own (shorter) length + count, only what is still owed.
+        # PS-176: shot from the once-per-visit container (part "short"); the
+        # repeating loop holds only the long set.
+        if n > 0 and part == "short":
             short_exp = exp.model_copy(update={
                 "exposure_seconds": exp.hdr_short_seconds,
-                "count": short_n, "acquired": 0,
+                "count": n, "acquired": 0,
                 "hdr_short_seconds": None, "hdr_short_count": 0,
                 "hdr_short_acquired": 0})
             out.append(_smart_exposure(short_exp, block_guided,
@@ -1358,7 +1434,7 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                                        extra_triggers=_af_triggers(),
                                        unguided_dither=(unguided_dither
                                                         and not per_block)))
-        if exp.count - exp.acquired > 0:
+        elif n > 0:
             out.append(_smart_exposure(exp, block_guided,
                                        target.dither_every_n,
                                        guard_conditions=_guards(),
@@ -1368,8 +1444,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         if chatty_block:
             out.append(_pushover(
                 "Imaging",
-                f"{target.name} [{bi}/{n_blocks}]: {exp.filter_type.value} block "
-                f"done ({n}×{exp.exposure_seconds:.0f}s attempted)"))
+                f"{target.name} [{bi}/{n_blocks}]: {f.value} block "
+                f"done ({n}x{sub_s:.0f}s attempted)"))
         # PS-85: an unguided block stops guiding before its AF; a guided one
         # starts guiding after its AF and offset, right before its lights
         guide = _guide_items(block_guided)
@@ -1379,12 +1455,27 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             out[k:k] = guide
         elif guide:
             out = guide + out
-        if cooler_gate:
+        if smart_move and offset:
+            # PS-176: the offset move goes right before the lights (after any
+            # StartGuiding, so a skipped guiding start leaves the focuser at
+            # the AF filter's focus) and is undone at the block end, so
+            # every block starts from the AF filter's best focus
+            k = next((i for i, it in enumerate(out)
+                      if it.get("Name") == SMART_EXPOSURE_NAME), len(out))
+            out.insert(k, _move_focuser_relative(offset))
+            out.append(_move_focuser_relative(-offset))
+        gate = (_cooler_gate(cooler_gate, "rc16", f"{target.name} {f.value}")
+                if cooler_gate else None)
+        if smart_move:
+            # PS-176: its own container (a gate SKIP or a failed per-block
+            # StartGuiding skips this block only; lint rule focus-offset
+            # checks its moves add up to zero)
+            return [_seq_container(f"{target.name}{TARGET_SMART_BLOCK_SUFFIX}",
+                                   ([gate] if gate else []) + out)]
+        if gate:
             # PS-61: gate first (before the AF: no point focusing for a block
             # that will not shoot), in a container of its own so a SKIP
             # interrupts this block only.
-            gate = _cooler_gate(cooler_gate, "rc16",
-                                f"{target.name} {exp.filter_type.value}")
             return [_seq_container(f"{target.name}{TARGET_BLOCK_SUFFIX}",
                                    [gate] + out)]
         if per_block:
@@ -1393,17 +1484,28 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             return [_seq_container(f"{target.name}{TARGET_GUIDE_BLOCK_SUFFIX}", out)]
         return out
 
-    n_blocks = len(ordered)
-    imaging = []
-    for bi, exp in enumerate(ordered, 1):
-        is_bb = exp.filter_type.value not in NB_SET
-        blk = _block(exp, bi, n_blocks, bb_condition if is_bb else None)
-        if is_bb and bb_condition is not None:
-            imaging.append(_seq_container(
+    def _moon_wrap(exp, blk):
+        if exp.filter_type.value not in NB_SET and bb_condition is not None:
+            return [_seq_container(
                 f"{exp.filter_type.value}{FILTER_UNTIL_MOONRISE_SUFFIX}", blk,
-                conditions=[bb_condition]))
-        else:
-            imaging.extend(blk)
+                conditions=[copy.deepcopy(bb_condition)])]
+        return blk
+
+    shorts = [e for e in ordered if e.short_remaining() > 0]
+    longs = [e for e in ordered if e.count - e.acquired > 0]
+    n_blocks = len(shorts) + len(longs)
+    bi = 0
+    hdr_items = []
+    for exp in shorts:
+        bi += 1
+        cond = bb_condition if exp.filter_type.value not in NB_SET else None
+        hdr_items.extend(_moon_wrap(exp, _block(exp, bi, n_blocks, cond,
+                                                part="short")))
+    imaging = []
+    for exp in longs:
+        bi += 1
+        cond = bb_condition if exp.filter_type.value not in NB_SET else None
+        imaging.extend(_moon_wrap(exp, _block(exp, bi, n_blocks, cond)))
     # Acquire ONCE per entry, then keep shooting the plan while safe and above
     # the altitude limit (Jeremy 2026-09-26: keep shooting when the plan is
     # done and there's nothing else to do). Only this inner container loops;
@@ -1434,15 +1536,21 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     if moon_capped:
         inner_conds.append(copy.deepcopy(bb_condition))
     # PS-149: a loop with no item that surely takes time can spin when its
-    # children are all skipped (focus-model blocks have no AF): pace it.
+    # children are all skipped (focus-model and smart blocks have no AF):
+    # pace it.
     from photonscript.scheduler.sequence_lint import _paces
-    if not any(_paces(i) for i in imaging):
+    if imaging and not any(_paces(i) for i in imaging):
         imaging.append(_wait_for_timespan(TARGET_IMAGING_PACE_S))
     if getattr(target, "mosaic_note", ""):
         items.insert(0, _annotation(target.mosaic_note))
-    items.append(_seq_container(
-        f"{target.name}{TARGET_IMAGING_SUFFIX}", imaging,
-        conditions=inner_conds))
+    if hdr_items:
+        # PS-176: HDR shorts once per visit, before the repeating loop
+        items.append(_seq_container(f"{target.name}{TARGET_HDR_SHORTS_SUFFIX}",
+                                    hdr_items))
+    if imaging:
+        items.append(_seq_container(
+            f"{target.name}{TARGET_IMAGING_SUFFIX}", imaging,
+            conditions=inner_conds))
     items.append(_pushover("Imaging", f"{target.name}: leaving target "
                            f"({plan_desc}) — below altitude or unsafe"))
     if once:
@@ -1725,7 +1833,7 @@ def _build_tracking_test_container(target: NinaSequenceTarget,
             ladder.append(_smart_exposure(
                 exp, False, 0, guard_conditions=_guards(),
                 extra_triggers=[_autofocus_temp_trigger(
-                    2.0, _block_af_runner(ref, off))]))
+                    2.0, _block_af_runner(ref, off, f))]))   # PS-176
         ladder.append(_pushover("Imaging", f"{target.name}: {f.value} ladder "
                                 f"done ({repeats} x {len(exposures)} subs)"))
     ladder_conds = [_safety_condition(),
@@ -2481,6 +2589,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
     if gate is None:
         start_items += _cooler_gate_missing_notice(_cfg)
     focus_drive = _focus_drive_spec(_cfg)   # PS-76 part 2, None by default
+    smart = _smart_af_spec(_cfg, af_ft)     # PS-176, None = every_block
     target_containers = []
     first_guided = True
     force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", False))
@@ -2498,7 +2607,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     unguided_dither=unguided_dither,
                                     cooler_gate=gate,
                                     focus_drive=focus_drive,
-                                    followed=len(sequence.targets) > 1)
+                                    followed=len(sequence.targets) > 1,
+                                    smart=smart)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops

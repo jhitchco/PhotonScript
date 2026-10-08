@@ -745,7 +745,24 @@
             statCard(st.dark_hours + 'h', 'Dark Hours', '#7dd3fc') +
             statCard(st.targets, 'Targets', '#4ade80') +
             statCard(st.planned_subs, 'Planned Subs', '#eab308') +
-            statCard(st.est_integration_h + 'h', 'Est. Integration', '#c084fc') + '</div>';
+            statCard(st.est_integration_h + 'h', 'Est. Integration', '#c084fc') +
+            (st.est_shutter_pct != null
+                ? statCard(st.est_shutter_pct + '%', 'Est. Shutter Open', '#f472b6') : '') +
+            '</div>';
+        // PS-176: predicted RC16 shutter-open share under both AF policies
+        const ef = d.efficiency;
+        if (ef && ef.policies) {
+            const pol = (k) => {
+                const p = ef.policies[k] || {};
+                return k + (k === ef.active_policy ? ' (active)' : '') + ': ' +
+                    p.pct + '% shutter, ' + p.af_count + ' AF (' + p.af_min + ' min)';
+            };
+            const oh = ef.overheads || {};
+            html += '<div style="font-size:.78rem;opacity:.7;margin:-.4rem 0 1rem;" ' +
+                'title="AF ' + oh.af_s + ' s, ' + oh.per_sub_s + ' s per sub, ' +
+                oh.filter_change_s + ' s per filter change (' + oh.source + ')">' +
+                'RC16 AF policy: ' + pol('every_block') + ' | ' + pol('smart') + '</div>';
+        }
         html += '<div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;' +
             'text-transform:uppercase;margin-bottom:.5rem;">Imaging Schedule</div>';
         html += (d.schedule || []).map((t, i) => {

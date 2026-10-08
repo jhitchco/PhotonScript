@@ -172,15 +172,16 @@ def save_user_entry(config, entry: dict) -> dict:
 def creation_defaults(entry: dict, config) -> dict:
     """Size-aware defaults for a new goal from a catalog row: rig hint,
     long-sub seconds per filter (config nb_exposure_s, 600 s on the 3 nm
-    filters per PS-117; bb_exposure_s for LRGB), goal hours, the row's
+    filters per PS-117; rc16_rgb_exposure_s for R/G/B and bb_exposure_s
+    for L, PS-176), goal hours, the row's
     narrowband mix and Piggy-600 OSC hours (None = type default / none)."""
     from photonscript.scheduler.project_store import target_kind
     target = astronomy.entry_to_target(entry)
     kind = target_kind(target)
-    nb_s = float(getattr(config, "nb_exposure_s", 600) or 600)
-    bb_s = float(getattr(config, "bb_exposure_s", 180) or 180)
-    subs = ({f: nb_s for f in NB_FILTERS} if kind == "narrowband"
-            else {f: bb_s for f in BB_FILTERS})
+    from photonscript.scheduler.project_store import default_sub_seconds
+    # PS-176: R/G/B take rc16_rgb_exposure_s, L bb_exposure_s
+    subs = {f: default_sub_seconds(f, config)
+            for f in (NB_FILTERS if kind == "narrowband" else BB_FILTERS)}
     mix = entry.get("mix") if kind == "narrowband" else None
     return {"rig_hint": astronomy.rig_hint(entry.get("size")),
             "kind": kind,

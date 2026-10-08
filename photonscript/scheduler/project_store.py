@@ -54,6 +54,25 @@ def default_mix(kind: str) -> dict[str, float]:
 # Fixed-count so the short set never grows with the budget.
 HDR_SHORT_COUNT = 12
 
+_NB_VALUES = {"Ha", "OIII", "SII"}
+RGB_VALUES = {"R", "G", "B"}
+
+
+def default_sub_seconds(filter_value: str, config) -> float:
+    """Default RC16 long-sub length for a filter when the goal sets none:
+    nb_exposure_s on the 3 nm filters, rc16_rgb_exposure_s on R/G/B (PS-176:
+    120 s; 0 = bb_exposure_s), bb_exposure_s on L."""
+    if filter_value in _NB_VALUES:
+        return float(getattr(config, "nb_exposure_s", 600) or 600)
+    bb = float(getattr(config, "bb_exposure_s", 180) or 180)
+    if filter_value in RGB_VALUES:
+        try:
+            rgb = float(getattr(config, "rc16_rgb_exposure_s", 0) or 0)
+        except (TypeError, ValueError):
+            rgb = 0.0
+        return rgb if rgb > 0 else bb
+    return bb
+
 
 def allocate_exposures(kind: str, budget_hours: float, config,
                        acquired: dict | None = None,
@@ -71,24 +90,21 @@ def allocate_exposures(kind: str, budget_hours: float, config,
         long-sub length for specific filters (else config nb/bb defaults).
     """
     base = NARROWBAND_MIX if kind == "narrowband" else BROADBAND_MIX
-    nb = {"Ha", "OIII", "SII"}
 
     def _exp(fv):
         if overrides and fv in overrides and overrides[fv]:
             return overrides[fv]
-        return (getattr(config, "nb_exposure_s", 600) if fv in nb
-                else getattr(config, "bb_exposure_s", 180))
+        return default_sub_seconds(fv, config)
 
     if custom_mix:
         total = sum(v for v in custom_mix.values() if v and v > 0) or 1
         mix = [(FilterType(fv), pct / total, _exp(fv))
                for fv, pct in custom_mix.items() if pct and pct > 0]
-    elif overrides:
-        # No custom mix but per-filter overrides -> honor overrides on the
-        # type-default mix.
-        mix = [(ftype, frac, _exp(ftype.value)) for ftype, frac, _ in base]
     else:
-        mix = base
+        # The type-default mix at the configured sub lengths (and any
+        # per-filter overrides). PS-176: this used the table's fallback
+        # seconds before, so a new goal ignored nb/bb_exposure_s.
+        mix = [(ftype, frac, _exp(ftype.value)) for ftype, frac, _ in base]
     acquired = acquired or {}
     hdr = hdr or {}
     plans = []

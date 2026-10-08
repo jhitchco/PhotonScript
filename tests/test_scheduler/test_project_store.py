@@ -28,7 +28,8 @@ def test_allocation_broadband_l_heavy(tmp_path):
     plans = allocate_exposures("broadband", 6.0, _config(tmp_path))
     by = {p.filter_type.value: p.count for p in plans}
     assert by["L"] == 60               # 6h * 50% / 180s
-    assert by["R"] == by["G"] == by["B"] == 20
+    # PS-176: R/G/B default to rc16_rgb_exposure_s (120 s): 6h / 6 / 120 s
+    assert by["R"] == by["G"] == by["B"] == 30
 
 
 def test_budget_change_preserves_acquired(tmp_path):

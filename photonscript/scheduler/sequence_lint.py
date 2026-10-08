@@ -91,6 +91,66 @@ def _check_focus_moves(seq: dict, r: LintResult) -> None:
             pending = None   # one finding per offending move
 
 
+def _check_offset_blocks(seq: dict, r: LintResult) -> None:
+    """PS-176 rule focus-offset: a smart-policy block ("<target> filter
+    block (focus by offset)") moves the focuser by its filter's offset from
+    the AF filter's focus before its lights and back after them, so the
+    next block starts at the AF filter's focus. Its MoveFocuserRelative
+    items (trigger runners aside) must add up to zero, and no absolute move
+    may sit in it (that would need an AF after it, PS-65)."""
+    from photonscript.scheduler.nina_sequence_json import (
+        TARGET_SMART_BLOCK_SUFFIX)
+    for d in _walk_dicts(seq):
+        if not (isinstance(d.get("Items"), dict) and str(
+                d.get("Name") or "").endswith(TARGET_SMART_BLOCK_SUFFIX)):
+            continue
+        moves = [it for it in _exec_items(d)
+                 if "MoveFocuserRelative" in it.get("$type", "")]
+        net = sum(int(m.get("RelativePosition") or 0) for m in moves)
+        if net:
+            r.error("focus-offset", f"[{d.get('Name')}] the block's focuser "
+                    f"moves add up to {net:+d} steps: every later block "
+                    "would be off focus by that much")
+        if any("MoveFocuserAbsolute" in it.get("$type", "")
+               for it in _exec_items(d)):
+            r.error("focus-offset", f"[{d.get('Name')}] an absolute focuser "
+                    "move inside an offset block")
+
+
+def _check_af_runner_filter(seq: dict, r: LintResult) -> None:
+    """PS-176 rule af-runner-filter: NINA fires an autofocus trigger right
+    before the TakeExposure, after the SmartExposure's own SwitchFilter. A
+    trigger runner that switches to the AF filter must switch back to the
+    SmartExposure's filter last, or the next sub is shot through the AF
+    filter (2026-10-07: 15 M31 L subs inside the R/G/B runs)."""
+    bad: list[str] = []
+    for d in _walk_dicts(seq):
+        if not str(d.get("$type") or "").startswith(
+                "NINA.Sequencer.SequenceItem.Imaging.SmartExposure"):
+            continue
+        own = next((it.get("Filter") or {} for it in _vals(d.get("Items"))
+                    if "SwitchFilter" in it.get("$type", "")), {})
+        name = own.get("_name")
+        if name is None:
+            continue
+        for tr in _vals(d.get("Triggers")):
+            if "Autofocus" not in tr.get("$type", ""):
+                continue
+            steps = _vals((tr.get("TriggerRunner") or {}).get("Items"))
+            sw = [s for s in steps if "SwitchFilter" in s.get("$type", "")]
+            if all((s.get("Filter") or {}).get("_name") == name for s in sw):
+                continue   # no switch, or only to the block's own filter
+            if "SwitchFilter" not in steps[-1].get("$type", "") or \
+                    (steps[-1].get("Filter") or {}).get("_name") != name:
+                bad.append(f"{_short_type(tr['$type'])} on {name}")
+    if bad:
+        more = f" (+{len(bad) - 3} more)" if len(bad) > 3 else ""
+        r.error("af-runner-filter", f"{len(bad)} autofocus trigger(s) switch "
+                "filter and do not switch back to the block's filter: the "
+                "next sub is shot through the AF filter: "
+                + "; ".join(bad[:3]) + more)
+
+
 def _check_readout_mode(seq: dict, r: LintResult) -> None:
     """PS-128: darks and bias must be shot at the lights' camera readout mode
     (the AP26MC's HCG vs LCG: 0.25 vs 0.79 e-/ADU, a different bias and dark
@@ -1064,6 +1124,8 @@ def lint(seq: dict, guided: bool | None = None,
                   strict=not hand_built)
 
     _check_focus_moves(seq, r)
+    _check_offset_blocks(seq, r)    # PS-176
+    _check_af_runner_filter(seq, r)  # PS-176
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)
     _check_loop_spin(seq, r)   # PS-149

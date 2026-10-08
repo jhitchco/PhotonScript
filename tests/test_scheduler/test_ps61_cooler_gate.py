@@ -122,12 +122,19 @@ def test_hdr_and_moonrise_blocks_are_gated(gate_on, monkeypatch):
                                     exposure_seconds=180, count=10,
                                     gain=200, offset=256))
     seq = _gen([t])
-    assert len(_blocks(seq)) == 3
+    # PS-176: the Ha HDR shorts are their own gated block, shot once per
+    # visit before the repeating loop, so 4 blocks: Ha shorts, OIII, Ha, R
+    assert len(_blocks(seq)) == 4
     moon = [d for d in _walk(seq) if str(d.get("Name", "")).endswith(
         nsj.FILTER_UNTIL_MOONRISE_SUFFIX)]
     assert moon and _vals(moon[0], "Items")[0]["Name"].endswith(nsj.TARGET_BLOCK_SUFFIX)
-    ha = [b for b in _blocks(seq) if "Heart Nebula Ha" in _vals(b, "Items")[0]["Script"]][0]
-    assert [_short(i["$type"]) for i in _vals(ha, "Items")].count("SmartExposure") == 2
+    ha = [b for b in _blocks(seq) if "Heart Nebula Ha" in _vals(b, "Items")[0]["Script"]]
+    assert len(ha) == 2
+    for b in ha:
+        assert [_short(i["$type"]) for i in _vals(b, "Items")].count("SmartExposure") == 1
+    shorts = [d for d in _walk(seq) if str(d.get("Name", "")).endswith(
+        nsj.TARGET_HDR_SHORTS_SUFFIX)]
+    assert len(shorts) == 1 and _vals(shorts[0], "Items")[0] is not None
     assert lint(seq, guided=True).ok
 
 

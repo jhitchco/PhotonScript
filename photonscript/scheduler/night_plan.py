@@ -63,6 +63,30 @@ def _owed_sets(t) -> list[dict]:
     return out
 
 
+def _shutter_estimate(config, windows: list, dusk, dawn, cursor) -> dict | None:
+    """PS-176: shutter_efficiency.estimate for tonight's plan, both AF
+    policies, overheads from the last nights' timelines. The plan's
+    windows, the last one carried on to dawn (the imaging loop repeats
+    while the target is up). None on any error: an estimate never breaks
+    the plan."""
+    try:
+        from photonscript.scheduler import shutter_efficiency as se
+        from photonscript.scheduler.af_policy import policy, smart_spec
+        from photonscript.scheduler.nina_sequence_json import _af_filter_type
+        if windows and cursor < dawn:
+            windows[-1][1] += (dawn - cursor).total_seconds()
+        night = (dusk - timedelta(hours=12)).strftime("%Y-%m-%d")
+        oh = se.measured_overheads(config, before=night)
+        spec = smart_spec(config, _af_filter_type(config), force=True)
+        return se.estimate([tuple(w) for w in windows],
+                           (dawn - dusk).total_seconds(), oh, spec,
+                           policy(config))
+    except Exception as e:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("shutter estimate failed: %s", e)
+        return None
+
+
 def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     """Compute tonight's timeline. All times UTC ISO + local strings."""
     from photonscript.shared.astronomy import (get_seasonal_targets,
@@ -156,6 +180,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     twilight = {k: _fmt(v)["local"] if v else None for k, v in tw_all.items()}
 
     schedule = []
+    windows = []   # PS-176: (target, seconds) for the shutter estimate
     cursor2 = dusk
     planned_subs = 0
     integ_s = 0.0
@@ -196,7 +221,10 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         })
         planned_subs += sum(x["n"] for x in sets)
         integ_s += sum(owed_seconds(e) for e in active)
+        windows.append([t, (end - cursor2).total_seconds()])
         cursor2 = end
+
+    efficiency = _shutter_estimate(config, windows, dusk, dawn, cursor2)
 
     return {
         # NINA files the night under the LOCAL evening date — use the same
@@ -217,6 +245,12 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         "stats": {"dark_hours": round(dark_hours, 1),
                   "targets": len(schedule),
                   "planned_subs": planned_subs,
-                  "est_integration_h": round(integ_s / 3600, 1)},
+                  "est_integration_h": round(integ_s / 3600, 1),
+                  # PS-176: predicted RC16 shutter-open % of the dark time
+                  # under the configured AF policy
+                  "est_shutter_pct": (efficiency["policies"][
+                      efficiency["active_policy"]]["pct"]
+                      if efficiency else None)},
+        "efficiency": efficiency,
         "schedule": schedule,
     }
