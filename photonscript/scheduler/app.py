@@ -3091,6 +3091,8 @@ from photonscript.scheduler.routers import nina_watch as _nina_watch_router  # n
 app.include_router(_nina_watch_router.router)   # PS-150
 from photonscript.scheduler.routers import autofile as _autofile_router  # noqa: E402
 app.include_router(_autofile_router.router)   # PS-157
+from photonscript.scheduler.routers import morning as _morning_router  # noqa: E402
+app.include_router(_morning_router.router)   # PS-166
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
