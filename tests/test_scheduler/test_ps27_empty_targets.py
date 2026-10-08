@@ -60,6 +60,16 @@ def test_broadband_deferred_rule():
     assert broadband_deferred({"available": False})
 
 
+def test_broadband_deferred_zero_illumination_is_not_unknown():
+    """PS-106: a 0% (new) moon up at dusk is dark sky, not "unknown"."""
+    up = {"available": True, "down_at_dusk": False}
+    assert not broadband_deferred({**up, "illum_pct": 0})
+    assert not broadband_deferred({**up, "illum_pct": 1})
+    assert broadband_deferred({**up, "illum_pct": None})
+    assert broadband_deferred(up)
+    assert broadband_deferred({**up, "illum_pct": 20})
+
+
 # --- generator -------------------------------------------------------------
 
 def test_broadband_only_target_skipped_under_bright_moon(monkeypatch):
