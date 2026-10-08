@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 from datetime import datetime, timedelta
 
 import httpx
@@ -28,6 +29,8 @@ OPEN_METEO = ("https://api.open-meteo.com/v1/forecast"
               "cloud_cover_high,wind_speed_10m,relative_humidity_2m,"
               "precipitation_probability"
               "&forecast_days=8&timezone=auto")
+
+logger = logging.getLogger(__name__)
 
 CLOUD_GOOD, CLOUD_OK = 30, 55
 WIND_MAX_KMH, PRECIP_MAX_PCT, HUMIDITY_MAX_PCT = 35, 30, 90

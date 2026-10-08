@@ -60,3 +60,28 @@ def test_score_nights_cloudy_night_is_red():
     n = score_nights(hourly, windows, -6)[0]
     assert n["usable_hours"] == 0.0
     assert n["rating"] == "red"
+
+
+def test_moon_calc_failure_degrades_to_unknown_tag(monkeypatch, tmp_path, caplog):
+    """PS-82: a night_moon() exception must log and tag the night "?",
+    not raise NameError from the handler (forecast.py had no logger)."""
+    from types import SimpleNamespace
+    import photonscript.scheduler.forecast as fc
+    import photonscript.scheduler.moon as moon
+    import photonscript.shared.astronomy as astro
+
+    def boom(*a, **k):
+        raise RuntimeError("ephemeris unavailable")
+
+    monkeypatch.setattr(moon, "night_moon", boom)
+    monkeypatch.setattr(astro, "get_twilight_times", lambda *a, **k: {})
+    monkeypatch.setattr(fc, "score_nights",
+                        lambda *a, **k: [{"date": "2026-07-03"}])
+    monkeypatch.setattr(fc, "_cache_path", lambda c: tmp_path / "fc.json")
+    cfg = SimpleNamespace(get_observatory=lambda: SimpleNamespace(
+        latitude=31.5, longitude=-110.0))
+    with caplog.at_level("WARNING", logger="photonscript.scheduler.forecast"):
+        out = fc._score_forecast(cfg, {"hourly": {}, "utc_offset_seconds": 0})
+    assert out["nights"][0]["moon"] == {"illum_pct": None,
+                                        "moon_free_h": None, "tag": "?"}
+    assert "moon calc failed" in caplog.text
