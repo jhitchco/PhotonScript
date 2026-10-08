@@ -41,3 +41,13 @@ def _app_lifecycle_alert_off(monkeypatch):
     ports, which they never do on a test machine; no test should count that
     push. tests/test_scheduler/test_ps170_app_lifecycle.py turns it on."""
     monkeypatch.setenv("PS_APP_LIFECYCLE_ALERT", "false")
+
+
+@pytest.fixture(autouse=True)
+def _ttl_cache_clear():
+    """PS-174: dashboard status endpoints share a few-second cache; no test
+    should see another test's cached NINA reads."""
+    from photonscript.shared import ttl_cache
+    ttl_cache.invalidate()
+    yield
+    ttl_cache.invalidate()

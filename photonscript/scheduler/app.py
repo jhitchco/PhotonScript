@@ -621,6 +621,7 @@ _CONFIG_FIELDS = [
     ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
     ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
     ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("nina_log_warn_mb", "PS_NINA_LOG_WARN_MB", "Morning report warns when a NINA log passes this size, or is on pace to within 2 days (MB; 0 = off, PS-174)", "NINA", "float", False, False),
     ("phd2_logs_dir", "PS_PHD2_LOGS_DIR", "PHD2 GuideLog/DebugLog dir", "PHD2", "str", False, False),
     ("ascom_logs_dir", "PS_ASCOM_LOGS_DIR", "ASCOM trace-log base dir", "NINA", "str", False, False),
     ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
@@ -1010,8 +1011,14 @@ async def api_equipment_connect():
 
 
 @app.get("/api/rigs")
-async def api_rigs():
-    """Config + live connection status for every rig (main + piggyback)."""
+async def api_rigs(fresh: bool = False):
+    """Config + live connection status for every rig (main + piggyback).
+    PS-174: shared for RIGS_TTL_S across callers; fresh=true reads now."""
+    from photonscript.shared.ttl_cache import cached
+    return await cached("rigs", RIGS_TTL_S, _api_rigs, fresh=bool(fresh))
+
+
+async def _api_rigs():
     from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
                                           rig_devices, RC16, PIGGYBACK)
     from photonscript.scheduler.preflight import _connected
@@ -1092,7 +1099,7 @@ async def api_rigs():
 async def api_rigs_connect():
     """Actively connect everything on every rig, then return fresh status."""
     connect = await get_armer().connect_all_rigs()
-    status = await api_rigs()
+    status = await api_rigs(fresh=True)
     return {"connect": connect, **status}
 
 
@@ -1127,6 +1134,8 @@ async def api_rigs_cool(minutes: float = 10.0, warm: bool = False,
     rig="" (default) does EVERY enabled rig; rig="rc16"/"piggyback" targets one
     — the dashboard cooler toggles pass a single rig. Each rig uses its own
     setpoint (RC16 camera_setpoint_c, piggyback piggyback_setpoint_c)."""
+    from photonscript.shared.ttl_cache import invalidate
+    invalidate("rigs")      # PS-174: the pane re-reads the new state
     import asyncio as _asyncio
     from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
                                           rig_setpoint, nina_cool, nina_warm)
@@ -1152,6 +1161,8 @@ async def api_rigs_dewheater(on: bool, rig: str = "rc16"):
     """Toggle a rig camera's window dew heater. The dashboard pane passes the
     rig + desired state; returns ok:false with a detail if the driver can't
     switch it."""
+    from photonscript.shared.ttl_cache import invalidate
+    invalidate("rigs")      # PS-174
     from photonscript.shared.rigs import rig_config, rig_label, nina_dew_heater
     cfg = get_config()
     rc = rig_config(cfg, rig)
@@ -2992,9 +3003,21 @@ async def api_camera_cooler(payload: dict = Body(default={})):
     return {"ok": ok, "cooling": on}
 
 
+# PS-174: dashboard status reads are shared for a few seconds across tabs
+# and duplicate polls (shared/ttl_cache) instead of each fanning out to NINA.
+SCOPE_TTL_S = 4.0
+RIGS_TTL_S = 8.0
+
+
 @app.get("/api/scope")
 async def api_scope():
-    """Is the scope home safe? Mount park/tracking + camera cooler state."""
+    """Is the scope home safe? Mount park/tracking + camera cooler state.
+    PS-174: one NINA read per SCOPE_TTL_S, shared by every caller."""
+    from photonscript.shared.ttl_cache import cached
+    return await cached("scope", SCOPE_TTL_S, _api_scope)
+
+
+async def _api_scope():
     import httpx
     base = get_config().nina_base_url.rstrip("/")
     out = {"mount": None, "camera": None, "safety": None,

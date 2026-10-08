@@ -133,6 +133,7 @@ GET /api/ascom/log?name=Safety                     # ASCOM trace log
 GET /api/nina/log?lines=5000&offset=5000           # PS-172: the page before the newest 5000 lines (header names the next offset)
 GET /api/nina/log?grep=Exception&scan_mb=400       # PS-172: grep further back than the default 64 MB
 GET /api/nina/log?file=<name>&download=1           # PS-172: stream one whole log (<= 300 MB, else 413); same on phd2/ascom
+GET /api/nina/log/top?rig=rc16&mb=50&top=25        # PS-174: top repeating message shapes in the last 50 MB + log sizes per rig
 GET /api/notifications?since_hours=24&title=cooler # Pushover audit: tally by type
 ```
 

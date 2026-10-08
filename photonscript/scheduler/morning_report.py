@@ -19,6 +19,8 @@ Built only from data other passes already keep (nothing is measured here):
     events kind nina_watch: not running, API down, silent, stuck, parked)
   * tracking (PS-168): the night's drift line from the PHD2 guide log
     (tracking_drift.morning_line: RA / Dec "/min, 300 s smear, wobble)
+  * NINA log size (PS-174): a line only when a rig's newest NINA log is
+    over nina_log_warn_mb or on pace to pass it (nina_log_watch)
 
 The dashboard shows it as the "Morning report" card (GET
 /api/morning/report); the dawn "Night complete" push carries card_lines
@@ -148,7 +150,8 @@ def report_card(config, date: str | None = None, *, projects=None,
     date = date or latest_night(config)
     out = {"date": date,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-           "rigs": [], "calibration": None, "library": None, "tracking": None}
+           "rigs": [], "calibration": None, "library": None, "tracking": None,
+           "nina_logs": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -193,6 +196,12 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["tracking"] = drift_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no tracking drift: %s", e)
+    try:   # PS-174: NINA log size watch (file sizes only, no log read)
+        from photonscript.scheduler.nina_log_watch import log_sizes, morning_line
+        sizes = log_sizes(config)
+        out["nina_logs"] = {"logs": sizes, "line": morning_line(config, sizes)}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no NINA log sizes: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 
@@ -244,6 +253,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["tracking"])
     if card.get("library"):
         lines.append(card["library"])
+    if (card.get("nina_logs") or {}).get("line"):
+        lines.append(card["nina_logs"]["line"])
     if calibration and card.get("calibration"):
         lines.append(card["calibration"])
     return lines

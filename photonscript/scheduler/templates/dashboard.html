@@ -523,6 +523,7 @@
         const el = document.getElementById('scopeChip');
         try {
             const d = await (await fetch('/api/scope')).json();
+            window._scopeLast = d; window._scopeAt = Date.now();   // PS-174
             const saf = document.getElementById('safetyState');
             if (saf) {
                 saf.textContent = d.is_safe === true ? 'SAFE'
@@ -584,8 +585,11 @@
     }
     async function loadStrip() {
         try {
+            // PS-174: reuse loadScope's read (5 s poll) instead of a
+            // second /api/scope fan-out to NINA
+            const fresh = window._scopeLast && Date.now() - (window._scopeAt || 0) < 8000;
             const [d, arm, ts] = await Promise.all([
-                (await fetch('/api/scope')).json(),
+                fresh ? window._scopeLast : (await fetch('/api/scope')).json(),
                 (await fetch('/api/arm')).json(),
                 (await fetch('/api/telescope/state')).json()]);
             window._scopeLast = d;
@@ -706,10 +710,19 @@
             }
         }
     }, 1000);
-    loadStrip();
-    setInterval(loadStrip, 10 * 1000);
+    // PS-174: NINA-backed polls pause while the tab is hidden and catch up
+    // when it is shown again (a forgotten tab used to cost NINA #1 ~10k
+    // requests an hour).
+    const whenShown = fn => () => { if (!document.hidden) fn(); };
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) return;
+        loadScope(); loadStrip();
+        if (typeof refreshEquip === 'function') refreshEquip();   // next script block
+    });
     loadScope();
-    setInterval(loadScope, 5 * 1000);  // equipment state is cheap; keep the chip fresh
+    loadStrip();
+    setInterval(whenShown(loadStrip), 10 * 1000);
+    setInterval(whenShown(loadScope), 5 * 1000);  // served from a 4 s server cache
     loadSun();
     setInterval(loadSun, 5 * 60 * 1000);   // sun moves ~1.25° per 5 min
 
@@ -929,6 +942,7 @@
     }
 
     async function refreshEquip() {
+        if (document.hidden) return;   // PS-174: no NINA reads for a hidden tab
         const strip = document.getElementById('tsPiggy');
         const host = document.getElementById('equipPanes');
         let rigs = [];
@@ -1076,7 +1090,7 @@
     }
 
     refreshEquip();
-    setInterval(refreshEquip, 15000);
+    setInterval(refreshEquip, 15000);   // PS-174: a no-op while the tab is hidden
     // PS-122: calibration owed badge (both rigs). Refreshes every 5 min; the
     // report scans the subs logs, so it is not polled with the 15 s loop.
     async function refreshCalOwed() {

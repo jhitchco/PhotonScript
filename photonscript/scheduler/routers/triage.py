@@ -265,6 +265,33 @@ def api_nina_logs(rig: str = "", date: str = "", limit: int = 60):
     return {"count": len(out), "logs": out[:max(1, min(int(limit), 200))]}
 
 
+@router.get("/api/nina/log/top")
+def api_nina_log_top(rig: str = "rc16", file: str = "", mb: float = 50,
+                     top: int = 25):
+    """PS-174: the most repeated message shapes in the last `mb` MB (default
+    50, max 1024) of a rig's newest NINA log (or file=<name>), with count and
+    share of bytes, to find what fills the log. Reads only the tail, in a
+    worker thread (plain def). Also: the newest log's size and growth per
+    rig (the morning report's log watch)."""
+    from photonscript.scheduler.log_files import safe_name
+    from photonscript.scheduler.nina_log_watch import log_sizes, top_messages
+    cfg = _cfg()
+    if file:
+        logs_dir, _ded, _port, _pig = _nina_setup(cfg, rig)
+        name = safe_name(file)
+        p = Path(logs_dir) / name if name else None
+        if p is None or not p.is_file():
+            return {"error": f"no NINA log named {file!r} under {logs_dir}"}
+    else:
+        path, note = _rig_log(cfg, rig)
+        if path is None:
+            return {"error": note}
+        p = Path(path)
+    out = top_messages(p, mb=mb, top=top)
+    out.update(rig=rig, sizes=log_sizes(cfg))
+    return out
+
+
 @router.get("/api/notifications")
 def api_notifications(since_hours: float = 24.0, limit: int = 200,
                       title: str = ""):
