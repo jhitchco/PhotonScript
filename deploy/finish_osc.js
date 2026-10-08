@@ -19,6 +19,10 @@
 //      screen the gently stretched stars back at -StarStrength
 //      (else: linked stretch -> core HDR blend on the whole image)
 //   -> gentle saturation (part of the stretch) -> [framing crop]
+//   -> [HOO = on, color masters only (PS-161): a second, HOO-mapped image
+//      from the color-calibrated linear data, Ha = R, OIII = mean of G and B
+//      scaled to the Ha background, R = Ha, G = B = OIII, same linked
+//      stretch and framing -> <Name>_hoo.{xisf,jpg} beside the natural one]
 //
 // Why deconvolution and noise reduction sit here (PS-41): both model the
 // LINEAR signal. Deconvolution inverts a convolution, which only holds before
@@ -77,6 +81,8 @@ var STARS         = "__STARS__";          // on | off (needs the StarNet2 module
 var STAR_STRENGTH = __STAR_STRENGTH__;    // k in ~(~starless * ~(stars * k)); 1 = stars unchanged
 var STAR_FLOOR_SIGMA = 2.0;               // stars below this x linear noise are dropped
 var STARNET_PRE_BG   = 0.25;              // background level of StarNet2's reversible pre-stretch
+// OSC HOO extraction (PS-161): on = also write <Name>_hoo.{xisf,jpg}
+var HOO = "__HOO__";                      // on | off
 // Color (PS-46): auto = SPCC when solved and Gaia DR3/SP is configured, else
 // BN + ColorCalibration; spcc = try SPCC even if the Gaia probe says no;
 // basic = always BN + ColorCalibration.
@@ -730,6 +736,67 @@ function starRecombine(view, split) {
    return ok;
 }
 
+// HOO, part 1 (PS-161): copy the color-calibrated LINEAR image before SCNR
+// (green removal would bias OIII = mean of G and B). Returns the copy, or
+// null when HOO is off, the master is mono or the copy fails.
+function hooSource(view) {
+   if (HOO !== "on") {
+      step("hoo", "PixelMath", "skipped", { reason: "-Hoo off" });
+      return null;
+   }
+   if (!view.image.isColor) {
+      step("hoo", "PixelMath", "skipped", { reason: "mono master" });
+      return null;
+   }
+   try {
+      return dupWindow(view, "PS_hoo");
+   } catch (e) {
+      log("HOO skipped: copy failed (" + e + ")");
+      step("hoo", "PixelMath", "failed", { error: "" + e });
+      return null;
+   }
+}
+
+// HOO, part 2: Ha = R, OIII = k x mean(G, B) with k = median(R) over the
+// median of mean(G, B) (OIII lifted to the Ha background, k kept in 0.1..10),
+// then the same linked stretch and framing as the natural image. Saves
+// <Name>_hoo.xisf and <Name>_hoo.jpg; any failure is logged and skipped. The
+// copy is always closed.
+function hooFinish(win) {
+   try {
+      var v = win.mainView, img = v.image;
+      img.selectedChannel = 0; var mR = img.median();
+      img.selectedChannel = 1; var mG = img.median();
+      img.selectedChannel = 2; var mB = img.median();
+      img.resetSelections();
+      var k = Math.max(0.1, Math.min(10, mR / Math.max(1.0e-6, 0.5 * (mG + mB))));
+      var PM = new PixelMath;
+      PM.useSingleExpression = false;
+      PM.expression = "$T[0]";
+      PM.expression1 = k.toFixed(5) + " * ($T[1] + $T[2]) / 2";
+      PM.expression2 = k.toFixed(5) + " * ($T[1] + $T[2]) / 2";
+      PM.createNewImage = false;
+      PM.rescale = false;
+      PM.truncate = true;
+      if (!PM.executeOn(v, false)) throw new Error("PixelMath returned false");
+      stretch(v, "hoo");
+      frameCrop(v, EDGE_FRAC);
+      trySave(win, FINAL + "/" + NAME + "_hoo.xisf", "HOO xisf (32-bit)");
+      try {
+         var SF = new SampleFormatConversion;
+         SF.format = SampleFormatConversion.prototype.To16Bit;
+         SF.executeOn(v, false);
+      } catch (e1) { log("HOO 16-bit conversion skipped (" + e1 + ")"); }
+      trySave(win, FINAL + "/" + NAME + "_hoo.jpg", "HOO jpg");
+      log("HOO: Ha = R, OIII = " + k.toFixed(3) + " x mean(G, B)");
+      step("hoo", "PixelMath", "ran", { oiii_scale: +k.toFixed(5), file: NAME + "_hoo.jpg" });
+   } catch (e) {
+      log("HOO skipped (" + e + ")");
+      step("hoo", "PixelMath", "failed", { error: "" + e });
+   }
+   try { win.forceClose(); } catch (e2) {}
+}
+
 function frameCrop(view, edgeFrac) {
    if (!FRAME) return;
    try {
@@ -784,6 +851,7 @@ function main() {
    removeGradient(v);
    var solved = plateSolve(w);
    colorCalibrate(v, solved);
+   var hooWin = hooSource(v);   // PS-161: before SCNR
    removeGreen(v);
    trySave(w, FINAL + "/" + NAME + "_linear.xisf", "linear (color-calibrated)");
 
@@ -814,6 +882,7 @@ function main() {
    trySave(w, FINAL + "/" + NAME + "_final.tif", to16 ? "tif (16-bit)" : "tif (32-bit float)");
    trySave(w, FINAL + "/" + NAME + "_final.jpg", "jpg");
    w.forceClose();
+   if (hooWin) hooFinish(hooWin);
    log("DONE");
 }
 

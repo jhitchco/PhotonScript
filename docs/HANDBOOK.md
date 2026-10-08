@@ -714,7 +714,10 @@ docs/OSC_INTEGRATION.md section 0):
 `photonscript integrate --target "Andromeda Galaxy" --rig piggyback`.
 Every run writes `ledger.json` and reports it to the scheduler (PS-33);
 `photonscript integrate-watch --once` starts runs by itself when a goal is
-met or enough new data arrived (PS-31). PS-142: each goal shows a campaign
+met or enough new data arrived (PS-31); `photonscript autointegrate --once`
+(PS-161, deploy\install-autointegrate-task.ps1) adds the Syncthing settle
+wait, the two-rig blend, the OSC HOO image and a Pushover review JPG
+(OSC_INTEGRATION.md "Auto-integrate"). PS-142: each goal shows a campaign
 status chip (Acquiring / Ready to process / Processing / Processed (vN) /
 Published (vN)) and the target page a review panel (verdict, notes, asks with
 Approve / Decline; a plan change shows its diff and goes through PATCH

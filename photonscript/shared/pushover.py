@@ -143,16 +143,37 @@ def _payload(config, message: str, title: str, priority: int,
     return data
 
 
+def _attachment_file(path) -> tuple | None:
+    """PS-161: (name, bytes, mime) for a Pushover image attachment, None
+    when unreadable or over Pushover's 5 MB limit."""
+    try:
+        p = Path(path)
+        data = p.read_bytes()
+    except (OSError, TypeError, ValueError):
+        return None
+    if len(data) > 5 * 1024 * 1024:
+        logger.warning("Pushover attachment %s over 5 MB: sent without it", path)
+        return None
+    mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+    return (p.name, data, mime)
+
+
 async def _send_raw(config, message: str, title: str, priority: int,
-                    sound: str) -> bool:
-    """The actual POST. No-op (logged) if keys unset."""
+                    sound: str, attachment=None) -> bool:
+    """The actual POST. No-op (logged) if keys unset. attachment (PS-161):
+    an image path sent as Pushover's attachment (multipart)."""
     if not config.pushover_user_key or not config.pushover_api_token:
         logger.info("[pushover disabled] %s: %s", title, message)
         return False
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        files = None
+        if attachment:
+            f = _attachment_file(attachment)
+            files = {"attachment": f} if f else None
+        async with httpx.AsyncClient(timeout=30 if files else 10) as client:
             r = await client.post(API, data=_payload(config, message, title,
-                                                     priority, sound))
+                                                     priority, sound),
+                                  files=files)
         if r.status_code != 200:
             logger.error("Pushover rejected (%s): %s", r.status_code,
                          (r.text or "")[:200])
@@ -269,10 +290,12 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
 
 
 async def notify(config, message: str, title: str = "PhotonScript",
-                 priority: int = 0, sound: str = "none") -> bool:
-    """Send a Pushover notification, rate-limited. No-op (logged) if keys unset."""
+                 priority: int = 0, sound: str = "none", attachment=None) -> bool:
+    """Send a Pushover notification, rate-limited. No-op (logged) if keys unset.
+    attachment (PS-161): an image path to attach (desktop review JPG)."""
+    att = {"attachment": attachment} if attachment else {}
     if not _cfg(config, "pushover_ratelimit_enabled"):
-        sent = await _send_raw(config, message, title, priority, sound)
+        sent = await _send_raw(config, message, title, priority, sound, **att)
         _audit(config, title, message, priority, sent, "sent" if sent else "not-sent")
         return sent
 
@@ -301,7 +324,7 @@ async def notify(config, message: str, title: str = "PhotonScript",
             _save_state(path, state)
     except Exception as e:  # noqa: BLE001 - never let the limiter drop a real alert
         logger.warning("Pushover limiter error (%s) — sending unthrottled", e)
-        sent = await _send_raw(config, message, title, priority, sound)
+        sent = await _send_raw(config, message, title, priority, sound, **att)
         _audit(config, title, message, priority, sent, "limiter-error")
         return sent
 
@@ -311,7 +334,7 @@ async def notify(config, message: str, title: str = "PhotonScript",
         return False
     if reason == "monthly-cap-final":
         priority = max(priority, 1)
-    sent = await _send_raw(config, message + note, title, priority, sound)
+    sent = await _send_raw(config, message + note, title, priority, sound, **att)
     reason_out = ("sent" if reason == "ok" else reason) if sent else "send-failed"
     _audit(config, title, message, priority, sent, reason_out)
     return sent

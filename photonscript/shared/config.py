@@ -232,6 +232,19 @@ class PhotonScriptConfig(BaseSettings):
                                  # ledgers stay queued in their run folders
     integration_staging_root: str = ""  # run folders; "" = D:/Astrophotography/Staging
                                  # if it exists, else ~/Astrophotography/Staging
+    integration_library_dir: str = ""  # PS-161: the Library mirror the desktop
+                                 # integrator reads (read-only); "" = the first
+                                 # that exists of D:/ninashare/Library,
+                                 # desktop_library_dir, ~/ninashare/Library
+    # PS-161 desktop auto-integrate (`photonscript autointegrate`, desktop .env)
+    autointegrate_settle_min: float = 15.0  # Syncthing settled: no
+                                 # ~syncthing~ temp file in the target's Library
+                                 # folders and their file count + size unchanged
+                                 # for this many minutes before a run
+    autointegrate_blend: bool = True  # two-rig goals: blend (PS-153) once both
+                                 # rigs have masters and the inputs changed
+    autointegrate_notify: bool = True  # Pushover the review JPG after a run
+    autointegrate_hoo: bool = True  # OSC finish also writes the HOO-mapped image
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as

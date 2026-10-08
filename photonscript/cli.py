@@ -2268,7 +2268,9 @@ def integrate_cmd(
     out: str = typer.Option("", "--out", help="Run folder (NEW or empty; default <staging-root>/<target>_<rig>_<time>)"),
     staging_root: str = typer.Option("", "--staging-root",
                                      help=r"Default D:\Astrophotography\Staging, else ~\Astrophotography\Staging"),
-    library: str = typer.Option("", "--library", help="Library mirror (read-only; default desktop_library_dir)"),
+    library: str = typer.Option("", "--library", help="Library mirror (read-only; default integration_library_dir, "
+                                                       "else the first that exists of D:/ninashare/Library and "
+                                                       "desktop_library_dir)"),
     filters: str = typer.Option("", "--filters", help="Mono: comma list of filters (default all)"),
     qa: str = typer.Option("report", "--qa", help="Star QA: report (stack all, default) | apply (drop rejects) | off"),
     flats: bool = typer.Option(True, "--flats/--no-flats", help="Use matched flats when present"),
@@ -2281,6 +2283,8 @@ def integrate_cmd(
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
     gradient: str = typer.Option("auto", "--gradient", help="auto | abe | none"),
     no_rc: bool = typer.Option(False, "--no-rc", help="Skip BlurXTerminator / NoiseXTerminator"),
+    hoo: bool = typer.Option(False, "--hoo/--no-hoo",
+                             help="OSC finish: also the HOO-mapped image (Ha = R, OIII = mean G, B; PS-161)"),
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
@@ -2313,7 +2317,7 @@ def integrate_cmd(
         filters=[f.strip() for f in filters.split(",") if f.strip()] or None,
         qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
         dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
-        gradient=gradient, use_rc=not no_rc, **kw,
+        gradient=gradient, use_rc=not no_rc, hoo=hoo, **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
@@ -2468,6 +2472,88 @@ def integrate_watch_cmd(
         w.loop(o, once=once, run_integrate=run_integrate, echo=say)
     except Exception as e:  # noqa: BLE001
         console.print(f"[red]integrate-watch:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+
+
+@app.command("autointegrate")
+def autointegrate_cmd(
+    once: bool = typer.Option(False, "--once", help="One cycle, then exit (the Scheduled Task runs this)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the decisions; integrate, blend and post nothing"),
+    url: str = typer.Option("", "--url", help="Scheduler (default integration_report_url)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    library: str = typer.Option("", "--library",
+                                help=r"Library mirror (read-only; default integration_library_dir, "
+                                     r"else D:\ninashare\Library when it exists)"),
+    rigs: str = typer.Option("", "--rigs", help="Override the scope's integrate_watch_rigs (comma list)"),
+    settle_min: float = typer.Option(-1.0, "--settle-min",
+                                     help="Override autointegrate_settle_min (Syncthing settle wait)"),
+    blend: Optional[bool] = typer.Option(None, "--blend/--no-blend", help="Override autointegrate_blend"),
+    notify: Optional[bool] = typer.Option(None, "--notify/--no-notify", help="Override autointegrate_notify"),
+    hoo: Optional[bool] = typer.Option(None, "--hoo/--no-hoo", help="Override autointegrate_hoo (OSC HOO image)"),
+    qa: str = typer.Option("report", "--qa", help="Star QA mode for the runs (report | apply | off)"),
+    interval_min: float = typer.Option(30.0, "--interval-min", help="Minutes between cycles without --once"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+):
+    """PS-161: desktop auto-integrate. integrate-watch's decision (goal met,
+    or new approved data since the last ledger) plus: waits until Syncthing
+    has settled the target's Library folders (no temp files, file count
+    stable for autointegrate_settle_min), runs `photonscript integrate`
+    (OSC natural color + HOO image; RC16 per filter), posts the ledger,
+    blends two-rig goals once both masters exist (PS-153), and sends a
+    review JPG with Pushover. Nothing while PixInsight is open; one
+    PixInsight at a time; never re-integrates without new subs. Install it
+    yourself with deploy\\install-autointegrate-task.ps1 (this command
+    installs nothing).
+
+    photonscript autointegrate --once --dry-run
+    """
+    from photonscript.integration import autointegrate as ai
+    from photonscript.integration import blend as bl
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import watch as w
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    lib = Path(library) if library else pl.default_library(cfg)
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    wo = w.WatchOptions(
+        base_url=url or getattr(cfg, "integration_report_url", ""), staging_root=root,
+        rigs=[r.strip() for r in rigs.split(",") if r.strip()] or None,
+        qa=qa, dry_run=dry_run, interval_min=interval_min)
+    if not wo.base_url:
+        console.print("[red]autointegrate:[/red] no scheduler URL (--url or integration_report_url)")
+        raise typer.Exit(2)
+    o = ai.AutoOptions(
+        watch=wo, library=lib,
+        settle_min=(settle_min if settle_min >= 0
+                    else float(getattr(cfg, "autointegrate_settle_min", 15.0))),
+        blend=bool(getattr(cfg, "autointegrate_blend", True)) if blend is None else blend,
+        notify=bool(getattr(cfg, "autointegrate_notify", True)) if notify is None else notify,
+        hoo=bool(getattr(cfg, "autointegrate_hoo", True)) if hoo is None else hoo,
+        interval_min=interval_min)
+    say(f"autointegrate: Library {lib}, staging {root}, settle {o.settle_min:g} min"
+        + (" (dry run)" if dry_run else ""))
+
+    def run_integrate(target: str, rig: str, trigger: dict) -> dict:
+        kw = pl.config_options(cfg, rig)
+        kw["library"] = lib
+        opts = pl.Options(target=target, rig=rig, staging_root=root, qa=qa, hoo=o.hoo,
+                          pixinsight=pixinsight_exe, trigger=trigger, **kw)
+        return pl.run(opts, echo=say)
+
+    def _blend_opts(target: str, dry: bool) -> bl.Options:
+        return bl.Options(
+            target=target, staging_root=root, dry_run=dry, pixinsight=pixinsight_exe,
+            osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
+            rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE))
+
+    try:
+        ai.loop(o, once=once, echo=say,
+                run_integrate=run_integrate,
+                run_blend=lambda t: bl.run(_blend_opts(t, False), echo=say),
+                discover_blend=lambda t: bl.discover(_blend_opts(t, True)),
+                send=ai.pushover_sender(cfg))
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]autointegrate:[/red] {e}", markup=True)
         raise typer.Exit(1)
 
 

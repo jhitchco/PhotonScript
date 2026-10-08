@@ -66,6 +66,7 @@ class Options:
     rig_label: str = ""
     thresholds: star_qa.Thresholds = field(default_factory=star_qa.Thresholds)
     trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
+    hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -78,13 +79,35 @@ def default_staging_root(cfg=None) -> Path:
     return d if d.is_dir() else Path.home() / "Astrophotography" / "Staging"
 
 
+MIRROR_D = Path(r"D:\ninashare\Library")
+
+
+def default_library(cfg=None) -> Path:
+    """PS-161: the Library mirror the desktop reads. integration_library_dir
+    when set; else the first that exists of D:/ninashare/Library (the mirror
+    since 2026-10; C:/Users/sleep/ninashare becomes a junction to it),
+    desktop_library_dir and ~/ninashare/Library; else desktop_library_dir
+    (or D:/ninashare/Library) so the error names a real candidate."""
+    explicit = str(getattr(cfg, "integration_library_dir", "") or "") if cfg is not None else ""
+    if explicit:
+        return Path(explicit)
+    desk = str(getattr(cfg, "desktop_library_dir", "") or "") if cfg is not None else ""
+    cands = [MIRROR_D] + ([Path(desk)] if desk else []) + [Path.home() / "ninashare" / "Library"]
+    for c in cands:
+        try:
+            if c.is_dir():
+                return c
+        except OSError:
+            continue
+    return Path(desk) if desk else MIRROR_D
+
+
 def config_options(cfg, rig: str) -> dict:
     """Options fields that come from the PhotonScript config (site, readout,
     labels): shared by `photonscript integrate` and integrate-watch."""
     from photonscript.shared.rigs import rig_label, rig_readout
     return dict(
-        library=Path(getattr(cfg, "desktop_library_dir", "") or
-                     (Path.home() / "ninashare" / "Library")),
+        library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
         rig_label=rig_label(cfg, rig),
@@ -405,6 +428,7 @@ def run(o: Options, echo=print) -> dict:
                 "gradient": o.gradient, "use_rc": o.use_rc,
                 "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
                 "graxpert": gx, "graxpert_version": "unknown" if gx else "",
+                "hoo": "on" if (o.hoo and cfa) else "off",   # PS-161: OSC only
                 "masters": [{"name": f"{safe_name(o.target)}_{s['name']}",
                              "path": pjsr.fwd(out_dir / "master" / f"master_{s['name']}.xisf")}
                             for s in stacks]}
