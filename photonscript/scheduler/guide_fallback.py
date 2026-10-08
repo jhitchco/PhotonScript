@@ -14,6 +14,12 @@ guide_fallback_exposure_s, never over unguided_max_exposure_s).
     cap_targets(...)        caps the unguided targets of a re-dispatch per filter
     plan_text(...)          "L 60 s, Ha 300 s (tracking test 2026-10-05)"
 
+PS-169: each length is also checked against the measured drift
+(tracking_drift: smear budget / tonight's or last night's drift rate,
+rounded to a dark length). tracking_drift_cap_mode auto takes the shorter;
+observe (default) keeps the length and adds what auto would do to the
+source text, so the alert push and the run event show it.
+
 Armer.guide_fallback() acts on it once per night: alert records a run event
 (kind guide_fallback) and pushes once what auto would do; auto calls
 Armer.fallback_unguided (stop, guider stop, re-dispatch the remainder with
@@ -47,13 +53,40 @@ def after_min(config) -> float:
         return 10.0
 
 
-def lengths(config, filters) -> dict:
-    """{filter: (seconds, source)} for each filter (None seconds = no cap)."""
+def drift_rec(config) -> dict | None:
+    """PS-169: the RC16 drift recommendation (tracking_drift.recommend), or
+    None when the cap is off or nothing is measured. Never raises."""
+    try:
+        from photonscript.scheduler import tracking_drift as td
+        if td.cap_mode(config) == "off":
+            return None
+        d = td.live_drift(config)
+        if not d:
+            return None
+        rec = td.recommend(config, "rc16", d.get("total_arcsec_min"))
+        rec["drift_source"] = d.get("source")
+        return rec if rec.get("exposure_s") else None
+    except Exception as e:  # noqa: BLE001 - the fallback never fails on this
+        logger.warning("PS-169 drift cap unavailable: %s", e)
+        return None
+
+
+def lengths(config, filters, rec: dict | None = None) -> dict:
+    """{filter: (seconds, source)} for each filter (None seconds = no cap).
+    PS-169: capped by the drift recommendation in tracking_drift_cap_mode
+    auto (observe: the source says what auto would do)."""
+    from photonscript.scheduler import tracking_drift as td
     proven = gb.proven_lengths(config)
+    if rec is None and filters:
+        rec = drift_rec(config)
     out = {}
     for f in filters:
         if f and f not in out:
-            out[f] = gb.fallback_exposure_s(config, f, proven)
+            s, src = gb.fallback_exposure_s(config, f, proven)
+            s2, note = td.cap_length(config, s, rec)
+            if note:
+                src = f"{src}; {note}"
+            out[f] = (s2, src)
     return out
 
 

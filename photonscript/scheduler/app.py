@@ -748,6 +748,14 @@ _CONFIG_FIELDS = [
     ("phd2_pulse_refusal_min", "PS_PHD2_PULSE_REFUSAL_MIN", "PS-167: page once per night when PHD2's debug log shows N guide pulses refused by the mount driver (pulseguide command failed / IsSlewing failed; 0 = off)", "PHD2", "int", False, True),
     ("guide_fallback_mode", "PS_GUIDE_FALLBACK_MODE", "PHD2 failed on a guided night (PS-156): off | alert (one push: what auto would do) | auto (re-dispatch the rest unguided, subs capped per filter at the tracking-test length)", "PHD2", "str", False, False),
     ("guide_fallback_after_min", "PS_GUIDE_FALLBACK_AFTER_MIN", "Unguided fallback: PHD2 not locked and guiding this long (min) counts as failed", "PHD2", "float", False, False),
+    ("tracking_drift_window_min", "PS_TRACKING_DRIFT_WINDOW_MIN", "Tracking drift (PS-168): fit window inside a guiding session (min)", "PHD2", "float", False, False),
+    ("tracking_drift_min_session_min", "PS_TRACKING_DRIFT_MIN_SESSION_MIN", "Tracking drift: shorter windows are excluded (min)", "PHD2", "float", False, False),
+    ("tracking_drift_max_rms_arcsec", "PS_TRACKING_DRIFT_MAX_RMS_ARCSEC", "Tracking drift: wobble RMS over this excludes a window (star lost / jumps, arcsec)", "PHD2", "float", False, False),
+    ("tracking_drift_trend_nights", "PS_TRACKING_DRIFT_TREND_NIGHTS", "Tracking drift: nights in the trend", "PHD2", "int", False, False),
+    ("tracking_drift_cap_mode", "PS_TRACKING_DRIFT_CAP_MODE", "Drift-capped unguided subs (PS-169): off | observe (show only) | auto (the PS-156 fallback caps RC16 subs at the drift length)", "PHD2", "str", False, False),
+    ("tracking_smear_budget_px", "PS_TRACKING_SMEAR_BUDGET_PX", "Drift cap: allowed smear per sub (px at the rig scale)", "PHD2", "float", False, False),
+    ("tracking_sub_floor_s", "PS_TRACKING_SUB_FLOOR_S", "Drift cap: never shorter than this (s)", "PHD2", "float", False, False),
+    ("tracking_drift_recent_min", "PS_TRACKING_DRIFT_RECENT_MIN", "Drift cap: tonight's drift counts when measured this recently (min), else last night's", "PHD2", "float", False, False),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
     ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
@@ -3107,6 +3115,8 @@ from photonscript.scheduler.routers import morning as _morning_router  # noqa: E
 app.include_router(_morning_router.router)   # PS-166
 from photonscript.scheduler.routers import apps as _apps_router  # noqa: E402
 app.include_router(_apps_router.router)   # PS-170
+from photonscript.scheduler.routers import tracking as _tracking_router  # noqa: E402
+app.include_router(_tracking_router.router)   # PS-168
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

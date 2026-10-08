@@ -17,6 +17,8 @@ Built only from data other passes already keep (nothing is measured here):
     them, PS-165), the PS-156 unguided fallback, the median guide RMS
   * stalls: the NINA watchdog's alarms of the night (PS-150 / PS-154 run
     events kind nina_watch: not running, API down, silent, stuck, parked)
+  * tracking (PS-168): the night's drift line from the PHD2 guide log
+    (tracking_drift.morning_line: RA / Dec "/min, 300 s smear, wobble)
 
 The dashboard shows it as the "Morning report" card (GET
 /api/morning/report); the dawn "Night complete" push carries card_lines
@@ -146,7 +148,7 @@ def report_card(config, date: str | None = None, *, projects=None,
     date = date or latest_night(config)
     out = {"date": date,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
-           "rigs": [], "calibration": None, "library": None}
+           "rigs": [], "calibration": None, "library": None, "tracking": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -186,6 +188,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["library"] = morning_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no dawn filing record: %s", e)
+    try:
+        from photonscript.scheduler.tracking_drift import morning_line as drift_line
+        out["tracking"] = drift_line(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no tracking drift: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 
@@ -233,6 +240,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         return ["Morning report: no subs log yet"]
     lines = [_rig_line(r) for r in card.get("rigs") or []
              if r["lights"]["subs"] or r.get("stalls")]
+    if card.get("tracking"):
+        lines.append(card["tracking"])
     if card.get("library"):
         lines.append(card["library"])
     if calibration and card.get("calibration"):

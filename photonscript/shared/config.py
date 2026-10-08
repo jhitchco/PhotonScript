@@ -776,6 +776,22 @@ class PhotonScriptConfig(BaseSettings):
                                  # length; stays unguided until dawn)
     guide_fallback_after_min: float = 10.0  # PHD2 not locked and guiding
                                  # this long (past the watchdog grace) = failed
+    # PS-168 nightly tracking drift from the PHD2 guide log (report only)
+    tracking_drift_window_min: float = 15.0  # fit the drift in windows this
+                                 # long (hours of tracking are not one line)
+    tracking_drift_min_session_min: float = 5.0  # shorter windows are excluded
+    tracking_drift_max_rms_arcsec: float = 5.0  # wobble RMS over this =
+                                 # star lost / jumps: window excluded
+    tracking_drift_trend_nights: int = 14  # nights in the drift trend
+    # PS-169 unguided sub length capped from the measured drift
+    tracking_drift_cap_mode: str = "observe"  # off | observe (show the
+                                 # recommendation, nothing changes) | auto
+                                 # (the PS-156 fallback caps its RC16 subs)
+    tracking_smear_budget_px: float = 1.5  # allowed drift smear per sub, in
+                                 # pixels at the rig's image scale
+    tracking_sub_floor_s: float = 30.0  # never recommend shorter subs
+    tracking_drift_recent_min: float = 60.0  # tonight's drift counts when its
+                                 # window ended this recently, else last night's
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs
