@@ -1349,6 +1349,22 @@ class TelescopeAgent:
             return None
         return "star" if guide_state in ("guiding", "settling") else None
 
+    def _nocorr_for(self, start, exp_s) -> bool:
+        """PS-165 grading input: did a PHD2 no-corrections episode (PS-155)
+        overlap this exposure? Both rigs: the Piggy-600 rides the same
+        mount. Never raises."""
+        if start is None:
+            return False
+        try:
+            from photonscript.shared import phd2_store as store
+            wins = store.nocorr_windows(self.config,
+                                        store.night_of(self.config, start),
+                                        now=datetime.utcnow())
+            return store.in_windows(wins, start, exp_s)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("no-corrections lookup skipped: %s", e)
+            return False
+
     async def _file_watch_loop(self):
         """Watch the image output directory for new FITS/TIFF files.
 
@@ -1570,6 +1586,7 @@ class TelescopeAgent:
             except Exception as e:  # noqa: BLE001
                 logger.debug("night context skipped: %s", e)
         guide_lock = self._guide_lock_for(start, exposure_seconds, guide_state)
+        nocorr = self._nocorr_for(start, exposure_seconds)   # PS-165
         point = self._sub_pointing(hdr, start, exposure_seconds, target_name)
         slew = self._slew_straddle(start, exposure_seconds, night)
         metrics = image_metrics(quality)
@@ -1578,6 +1595,7 @@ class TelescopeAgent:
                        set_temp=hdr.get("SET-TEMP"),
                        guide_rms=quality.tracking_rms_arcsec,
                        guide_state=guide_state, guide_lock=guide_lock,
+                       guide_nocorr=nocorr or None,
                        pointing_offset_arcmin=point.get("off_target_arcmin"),
                        pointing_note=point.get("note"),
                        pointing_src=point.get("src"),
@@ -1652,6 +1670,7 @@ class TelescopeAgent:
                               else None),
                 "guide_state": guide_state or None,
                 "guide_lock": guide_lock,
+                **({"guide_nocorr": True} if nocorr else {}),   # PS-165
                 "corner_spread": quality.corner_spread,
                 "clipped_pct": quality.clipped_pct,
                 "sat_stars_pct": quality.sat_star_pct,

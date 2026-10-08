@@ -54,6 +54,19 @@ def guide_fallback_event(config, date: str) -> dict | None:
     return rows[-1] if rows else None
 
 
+def nocorr_subs(config, date: str) -> int:
+    """PS-165: subs of the night graded inside a PHD2 no-corrections
+    episode (qa_flag unguided-in-name). 0 when the log is unreadable."""
+    from photonscript.shared.qa_rules import UNGUIDED_IN_NAME
+    try:
+        from photonscript.scheduler.runs import _load_subs
+        return sum(1 for r in _load_subs(config, date)
+                   if r.get("qa_flag") == UNGUIDED_IN_NAME
+                   or r.get("guide_nocorr"))
+    except Exception:  # noqa: BLE001
+        return 0
+
+
 def guard_summary(config, date: str) -> dict:
     """The guard block for a night (API, runs page, morning report)."""
     from photonscript.shared import phd2_store as store
@@ -72,6 +85,7 @@ def guard_summary(config, date: str) -> dict:
             "impossible_state": sum(1 for e in eps if e.get("kind") == "impossible_state"),
             # PS-155 D7 / D8: guiding that sent no corrections
             "no_corrections": sum(1 for e in eps if e.get("kind") == "no_corrections"),
+            "nocorr_subs": nocorr_subs(config, date),   # PS-165
             "fallback": guide_fallback_event(config, date),   # PS-156
             "closed_minutes": round(mins, 1),
             "recoveries_ok": sum(1 for r in recs if r.get("ok")),

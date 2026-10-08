@@ -132,6 +132,54 @@ def nonstar_windows(config, night: str, now: datetime | None = None
     return out
 
 
+NOCORR_OPEN_MIN = 30.0   # an open no-corrections episode with no `now`
+
+
+def nocorr_windows(config, night: str, now: datetime | None = None
+                   ) -> list[tuple[datetime, datetime]]:
+    """PS-165: [(start, end)] UTC of the night's PHD2 no-corrections
+    episodes (PS-155 guard D7 / D8: Guiding, but nothing reached the
+    mount). Guard episodes of kind no_corrections, open..close (an episode
+    still open runs to `now`, else NOCORR_OPEN_MIN past its start); plus any
+    no_corrections run event (runs/<night>_events.jsonl) no episode covers,
+    as NOCORR_OPEN_MIN from its time (a guard log lost or pruned)."""
+    out = []
+    for e in guard_episodes(config, night):
+        if e.get("kind") != "no_corrections":
+            continue
+        a = parse_z(e.get("start_utc"))
+        if a is None:
+            continue
+        b = parse_z(e.get("end_utc")) or (
+            now or a + timedelta(minutes=NOCORR_OPEN_MIN))
+        out.append((a, max(a, b)))
+    try:
+        from photonscript.shared.night_events import events_path
+        events = read_jsonl(events_path(config, night))
+    except Exception:  # noqa: BLE001 - no events log is fine
+        events = []
+    for r in events:
+        if r.get("kind") != "no_corrections":
+            continue
+        t = parse_z(r.get("t"))
+        if t is None or any(a <= t <= b for a, b in out):
+            continue
+        out.append((t, now if now and now > t
+                    else t + timedelta(minutes=NOCORR_OPEN_MIN)))
+    return sorted(out)
+
+
+def in_windows(windows, start: datetime | None, exp_s) -> bool:
+    """True when the exposure [start, start + exp_s] overlaps a window."""
+    if start is None:
+        return False
+    try:
+        end = start + timedelta(seconds=float(exp_s or 0))
+    except (TypeError, ValueError):
+        end = start
+    return any(a < end and b > start for a, b in windows or ())
+
+
 # ------------------------------------------------------------ self-test log
 
 def selftest_path(config) -> Path:

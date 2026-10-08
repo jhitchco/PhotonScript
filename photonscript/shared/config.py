@@ -401,6 +401,15 @@ class PhotonScriptConfig(BaseSettings):
                                  # puts the PHD2 RMS in real arcsec
     qa_guide_lock_mode: str = "warn"  # PS-91: a sub guided on a non-star lock
                                  # (guard episode overlapping it): warn | fail
+    # PS-165: a sub exposed while PHD2 guided but sent no corrections (PS-155
+    # no_corrections episode) is flagged unguided-in-name and judged on
+    # unguided limits (held for review, never auto-approved): this rig's ecc
+    # gate + qa_unguided_ecc_margin and HFR gate x qa_unguided_hfr_factor,
+    # or the explicit limits below (0 = derived from the rig's gates)
+    qa_unguided_ecc_margin: float = 0.10
+    qa_unguided_hfr_factor: float = 1.25
+    qa_unguided_eccentricity_max: float = 0.0
+    qa_unguided_hfr_max: float = 0.0
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
     # PS-94: eccentricity at the 2x2-binned scale (0.47"/px on the RC16,

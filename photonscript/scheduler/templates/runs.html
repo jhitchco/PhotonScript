@@ -515,7 +515,9 @@
                 .replace(/</g, '&lt;').replace(/>/g, '&gt;');
             const gd = g && g.guard;  // PS-91 live guard
             const guardLine = gd && gd.episodes ? '<br><span class="warn">Guide guard: ' + gd.episodes +
-                ' episode(s) (' + gd.non_star + ' non-star lock, ' + gd.impossible_state + ' impossible state; ' +
+                ' episode(s) (' + gd.non_star + ' non-star lock, ' + gd.impossible_state + ' impossible state, ' +
+                (gd.no_corrections || 0) + ' no corrections' +
+                (gd.nocorr_subs ? ' covering ' + gd.nocorr_subs + ' sub(s) graded unguided-in-name' : '') + '; ' +
                 (gd.auto_recover ? gd.recoveries_ok + ' recovered, ' + gd.recoveries_failed + ' failed' : 'observe-only') +
                 ') <a href="/api/phd2/guard?date=' + encodeURIComponent(date) + '" target="_blank">episodes</a></span>' : '';
             const st = g && g.selftest;  // PS-92 pulse self-test
@@ -903,7 +905,7 @@
                 '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
                 (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
                 '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
-                Math.round(s.exp_s) + 's<span class="vb">' + badge(s) + '</span>' + roofTag(s) + pointTag(s) +
+                Math.round(s.exp_s) + 's<span class="vb">' + badge(s) + '</span>' + roofTag(s) + nocorrTag(s) + pointTag(s) +
                 '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
                 ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
             .join('');
@@ -1052,7 +1054,7 @@
              : !s.reviewed ? 'review'
              : s.transfer === 'pending' ? 'accepted \u00b7 syncing \u21c5'
              : s.transfer === 'done' ? 'transferred \u2713' : 'accepted') +
-            (s.manual_qa ? ' \u270b' : '') + roofTag(s) + pointTag(s) +
+            (s.manual_qa ? ' \u270b' : '') + roofTag(s) + nocorrTag(s) + pointTag(s) +
             (differs ? ' <span class="bd" title="what the score would do (PS-108)">would ' +
              escH(dc) + '</span>' : '') + '</td>';
     }
@@ -1199,6 +1201,16 @@
             ? ' <span title="shot while the roof was closed or the mount parked '
               + '(PS-71)" style="background:#7c2d12;color:#fed7aa;border-radius:4px;'
               + 'padding:0 .35rem;font-size:.75em;white-space:nowrap;">roof closed / parked</span>'
+            : '';
+    }
+    // PS-165: exposed while PHD2 guided but sent no corrections (PS-155):
+    // judged on the unguided limits and held for review
+    function nocorrTag(s) {
+        return (s.qa_flag === 'unguided-in-name' || s.guide_nocorr)
+            ? ' <span title="PHD2 said Guiding but sent no corrections during this sub '
+              + '(PS-155); judged on unguided limits (PS-165)" style="background:#713f12;'
+              + 'color:#fde68a;border-radius:4px;padding:0 .35rem;font-size:.75em;'
+              + 'white-space:nowrap;">unguided in name</span>'
             : '';
     }
     // PS-67: pointing (per-sub record merged by /api/runs/{date})

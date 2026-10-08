@@ -546,6 +546,14 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
             _lock = sub_guide_lock(config, _date, _start, _exp)
         except Exception as e:  # noqa: BLE001
             logger.debug("guide lock skipped for %s: %s", path.name, e)
+    _nocorr = False   # PS-165: a PHD2 no-corrections episode covers it
+    if _date and _start is not None:
+        try:
+            from photonscript.shared import phd2_store as _pstore
+            _nocorr = _pstore.in_windows(
+                _pstore.nocorr_windows(config, _date), _start, _exp)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("no-corrections skipped for %s: %s", path.name, e)
     _point = {}
     try:  # PS-67: header mount position vs the named target
         from photonscript.shared.pointing import assess, from_header
@@ -575,7 +583,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         ecc_bin=m["ecc_bin"], stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
         ccd_temp=hdr.get("CCD-TEMP"), set_temp=hdr.get("SET-TEMP"),
-        guide_lock=_lock,
+        guide_lock=_lock, guide_nocorr=_nocorr or None,
         doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
         clipped_pct=m.get("clipped_pct"), sat_stars_pct=m.get("sat_stars_pct"),
         swamp=m.get("swamp"), sat_px_pct=px.get("sat_px_pct"),
@@ -625,6 +633,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "shape": m.get("shape"),
         "doubled_frac": m.get("doubled_frac"),
         "guide_lock": _lock,
+        **({"guide_nocorr": True} if _nocorr else {}),   # PS-165
         "clipped_pct": m.get("clipped_pct"),
         "sat_stars_pct": m.get("sat_stars_pct"),
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
@@ -1411,6 +1420,20 @@ def header_pointing_reject(rec: dict) -> bool:
             and not pointing_confirmed(rec.get("pointing_src")))
 
 
+SHAPE_DRIVERS = frozenset({"ecc", "ecc_bin", "hfr", "hfr_rel", "fwhm"})
+
+
+def nocorr_shape_reject(rec: dict, card) -> bool:
+    """PS-165: an automatic reject driven only by the shape gates (ecc, HFR,
+    FWHM) of a sub the current card judges inside a PHD2 no-corrections
+    episode (qa_flag unguided-in-name) and passes on the unguided limits."""
+    from photonscript.shared.qa_rules import UNGUIDED_IN_NAME
+    drv = set(rec.get("drivers") or [])
+    return (not rec.get("passed_qa") and not _human_verdict(rec)
+            and card.passed and card.qa_flag == UNGUIDED_IN_NAME
+            and bool(drv) and drv <= SHAPE_DRIVERS)
+
+
 def _old_verdict(rec: dict) -> str:
     if not rec.get("passed_qa"):
         return "rejected"
@@ -1523,6 +1546,13 @@ def rescore_night(config, date: str, apply: bool = False,
                     counts["unrejected"] += 1
                     counts["unrejected_pointing"] += 1
                     action = "un-rejected (header-only pointing, PS-107)"
+                elif nocorr_shape_reject(rec, card):
+                    # PS-165: rejected on the guided shape gates while PHD2
+                    # sent no corrections; the unguided limits pass it, so
+                    # it goes to review (never straight to approved)
+                    counts["unrejected"] += 1
+                    counts["unrejected_nocorr"] += 1
+                    action = "un-rejected (PHD2 no corrections, PS-165)"
                 else:
                     counts["kept_rejected"] += 1
                     action = "kept rejected (no --allow-unreject)"
@@ -1664,6 +1694,11 @@ def _night_cards(config, date: str, subs: list[dict],
         pts = _load_pointing(config, date) if sidecars else {}
     except Exception:  # noqa: BLE001
         pts = {}
+    try:  # PS-165: PHD2 no-corrections episodes of the night
+        from photonscript.shared import phd2_store as _pstore
+        nocorr = _pstore.nocorr_windows(config, date)
+    except Exception:  # noqa: BLE001
+        _pstore, nocorr = None, []
     out = []
     for rec in subs:
         key = qa_rules.group_key(rec)
@@ -1672,6 +1707,10 @@ def _night_cards(config, date: str, subs: list[dict],
         except Exception:  # noqa: BLE001
             start = None
         _m = qa_rules.metrics_from_record(rec)
+        if (not _m.get("guide_nocorr") and nocorr
+                and _pstore.in_windows(nocorr, start, rec.get("exp_s"))):
+            _m["guide_nocorr"] = True
+            rec["guide_nocorr"] = True
         _p = pts.get((key[0], rec.get("file")))
         if _p and _p.get("off_target_arcmin") is not None:
             from photonscript.shared.pointing import judged_src
