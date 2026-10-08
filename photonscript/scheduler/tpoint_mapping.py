@@ -227,15 +227,26 @@ def sample_script(config) -> str | None:
         return None
 
 
-def build(config, at: str = "", now: datetime | None = None) -> dict:
+def clamp_points(n) -> int:
+    """A point count inside MIN_POINTS..MAX_POINTS (PS-181 per-arm option)."""
+    return max(MIN_POINTS, min(int(n), MAX_POINTS))
+
+
+def build(config, at: str = "", now: datetime | None = None,
+          points: int | None = None, add: str | None = None) -> dict:
     """The run for `at` (or tonight): {"field", "points", "skipped",
     "moon", "test_json", "params", "script"}. field is what the sideload
-    view shows (name, nominal zenith RA / Dec, length)."""
+    view shows (name, nominal zenith RA / Dec, length). PS-181: points /
+    add override tpoint_mapping_points / tpoint_sample_add for this run
+    (an arm with the recipe); None = the config's."""
     from photonscript.scheduler.nina_sequence_json import (
         generate_tpoint_mapping_json, tpoint_mapping_duration_s,
         tpoint_mapping_name)
     from photonscript.scheduler.tracking_test import lst_hours
     p = params(config)
+    if points is not None:
+        p["points"] = clamp_points(points)
+    add = add if add in ("off", "auto") else None
     lat = float(getattr(config, "observatory_lat", 31.9))
     lon = float(getattr(config, "observatory_lon", -109.0))
     when = start_time(config, at, now)
@@ -249,7 +260,7 @@ def build(config, at: str = "", now: datetime | None = None) -> dict:
     test_json = generate_tpoint_mapping_json(
         [[q["alt"], q["az"], q["side"]] for q in pts], ra_hours=zen_ra,
         dec_degrees=lat, exposure_s=p["exposure_s"], binning=p["binning"],
-        script=script or "", min_altitude=p["min_alt"])
+        script=script or "", min_altitude=p["min_alt"], add=add or "")
     est_min = round(tpoint_mapping_duration_s(len(pts), p["exposure_s"]) / 60)
     field = {"name": tpoint_mapping_name(len(pts)),
              "ra_hours": round(zen_ra, 4), "dec_degrees": round(lat, 4),
@@ -269,7 +280,8 @@ def build(config, at: str = "", now: datetime | None = None) -> dict:
         f"~{est_min} min from {field['for_utc']}; skipped "
         f"{sk['meridian']} near the meridian, {sk['pole']} under the pole, "
         f"{field['moon_skip']}; sample script {field['sample_script']}; "
-        f"TPoint add {getattr(config, 'tpoint_sample_add', 'off')}")
+        f"TPoint add {add or getattr(config, 'tpoint_sample_add', 'off')}"
+        + (" (this arm)" if add else ""))
     return {"field": field, "points": pts, "skipped": plan["skipped"],
             "moon": moon, "test_json": test_json, "params": p,
             "script": script}

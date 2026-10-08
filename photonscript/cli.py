@@ -747,6 +747,9 @@ def tpoint_sample_cmd(
     alt: Optional[float] = typer.Option(None, "--alt"),
     az: Optional[float] = typer.Option(None, "--az"),
     side: str = typer.Option("", "--side"),
+    add: str = typer.Option("", "--add", help="off | auto: override "
+                            "tpoint_sample_add for this sample (PS-181: an "
+                            "arm with the TPoint recipe sets it)"),
     from_nina: bool = typer.Option(False, "--from-nina",
                                    help="Called by NINA's ExternalScript item "
                                         "(deploy\\tpoint-sample.cmd)"),
@@ -772,7 +775,8 @@ def tpoint_sample_cmd(
             print(f"tpoint-sample: rig {rig!r} not supported (rc16 only); skipped")
             raise typer.Exit(0)
         row = ts.run_sample(cfg, file or None, point=point, of=of, alt=alt,
-                            az=az, side=side, dry_run=dry_run)
+                            az=az, side=side, dry_run=dry_run,
+                            add=add or None)
         if as_json:
             print(_json.dumps(row, indent=2, default=str))
         else:

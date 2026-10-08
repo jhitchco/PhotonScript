@@ -1301,7 +1301,14 @@ async def api_arm(request: Request):
         if guiding is not None and norm_guiding_mode(guiding) is None:
             return JSONResponse(status_code=400, content={
                 "detail": f"unknown guiding mode {guiding!r}: use 'guided' or 'unguided'"})
-        out = await armer.arm(guiding=norm_guiding_mode(guiding))
+        # PS-181: {"recipe": <sideload recipe id>, "recipe_opts": {points,
+        # add}} runs that recipe at pre-config for this night only
+        from photonscript.scheduler.sideload import arm_recipe
+        recipe, err = arm_recipe(body.get("recipe"), body.get("recipe_opts"))
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+        out = await armer.arm(guiding=norm_guiding_mode(guiding),
+                              **({"recipe": recipe} if recipe else {}))
         if out.get("refused"):   # PS-136: WATCHING a sideloaded night
             return JSONResponse(status_code=409, content={
                 **out, "detail": out["refused"]})

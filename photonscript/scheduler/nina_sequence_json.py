@@ -2215,10 +2215,13 @@ def tpoint_point_name(i: int, n: int, alt: float, az: float, side: str) -> str:
             f"alt {float(alt):.1f} az {float(az):.1f} ({side})")
 
 
-def tpoint_script_args(i: int, n: int, alt: float, az: float, side: str) -> str:
-    """Arguments after the script path (see deploy/tpoint-sample.cmd)."""
+def tpoint_script_args(i: int, n: int, alt: float, az: float, side: str,
+                       add: str = "") -> str:
+    """Arguments after the script path (see deploy/tpoint-sample.cmd).
+    add (PS-181): "off" | "auto" overrides tpoint_sample_add for this run."""
+    tail = f" --add {add}" if add in ("off", "auto") else ""
     return (f"--rig rc16 --point {int(i)} --of {int(n)} "
-            f"--alt {float(alt):.2f} --az {float(az):.2f} --side {side}")
+            f"--alt {float(alt):.2f} --az {float(az):.2f} --side {side}{tail}")
 
 
 def tpoint_mapping_duration_s(n_points: int, exposure_s: float) -> float:
@@ -2275,7 +2278,8 @@ def _build_tpoint_mapping_container(target: NinaSequenceTarget,
         ]
         if script:
             items.append(_external_script(
-                script, tpoint_script_args(i, n, alt, az, side)))
+                script, tpoint_script_args(i, n, alt, az, side,
+                                           str(target.tpoint_add or ""))))
         conds = [_safety_condition()]
         if loop_end:
             conds.append(_time_condition(*loop_end))
@@ -2341,7 +2345,8 @@ def generate_tpoint_mapping_json(points: list, ra_hours: float = 0.0,
                                  exposure_s: float = TPOINT_EXPOSURE_S,
                                  binning: int = TPOINT_BINNING,
                                  script: str = "",
-                                 min_altitude: float = 30.0) -> str:
+                                 min_altitude: float = 30.0,
+                                 add: str = "") -> str:
     """PS-171: a whole-night NINA sequence (same startup, safety loop and
     shutdown as a normal night) whose only target is the TPoint mapping
     run over `points` ([alt, az, side], in run order). ra / dec are the
@@ -2361,7 +2366,7 @@ def generate_tpoint_mapping_json(points: list, ra_hours: float = 0.0,
         tpoint_mapping=True, tpoint_points=pts,
         tpoint_exposure_s=float(exposure_s or TPOINT_EXPOSURE_S),
         tpoint_binning=max(1, min(int(binning or 1), 4)),
-        tpoint_script=str(script or ""))
+        tpoint_script=str(script or ""), tpoint_add=str(add or ""))
     seq = build_sequence_for_night(tname, [t], min_altitude=min_altitude)
     return generate_nina_json(seq)
 

@@ -118,6 +118,21 @@
             <div style="display:flex;align-items:center;flex-wrap:wrap;gap:.6rem 1rem;margin-bottom:.8rem;">
                 <button class="btn btn-secondary" id="armBtn" title="Arm tonight UNGUIDED (Paramount MX on TPoint + ProTrack, no PHD2). RC16 subs are capped at the unguided max exposure (300 s default). Guiding is the default.">Arm (Unguided: TPoint + ProTrack)</button>
                 <button class="btn btn-primary" id="armGuidedBtn" title="Arm tonight with PHD2 guiding — the default. Corrects tracking drift for long subs at 3248mm.">Arm (Guiding) — default</button>
+                <!-- PS-181: arm with a sideload recipe (runs at pre-config,
+                     once, before tonight's targets; no Start in NINA needed) -->
+                <span id="armRecipeBox" style="font-size:.85rem;white-space:nowrap;"
+                      title="PS-181: the armer runs this recipe once at pre-config, before tonight's targets, then images as usual. Tonight only; a resume or restart never repeats it.">
+                    with recipe
+                    <select id="armRecipe">
+                        <option value="">none</option>
+                        <option value="tpoint_mapping_then_tonight">TPoint mapping (N)</option>
+                        <option value="tracking_test_then_tonight">tracking test</option>
+                        <option value="optics_through_focus">optics test</option>
+                    </select>
+                    <input type="number" id="armRecipePoints" min="3" max="300" step="1"
+                           placeholder="N" title="TPoint points (3 to 300; empty = config)"
+                           style="width:4.5rem;display:none;">
+                </span>
                 <button class="btn btn-secondary" id="watchBtn" title="PS-136: watch a sideloaded night PhotonScript did not dispatch. No sequence is sent; unsafe pauses and guiding are alerted, updates are refused, and park + coolers are checked at the dawn shutdown time.">Watch this night</button>
                 <button class="btn" id="makeSafeBtn" style="background:#7f1d1d;color:#fca5a5;">Stop &amp; Make Safe</button>
                 <span id="armState" style="font-weight:700;white-space:nowrap;"></span>
@@ -357,6 +372,8 @@
         const watching = d.state === 'WATCHING';
         btn.style.display = watching ? 'none' : '';
         if (gbtn) gbtn.style.display = (active || watching) ? 'none' : '';
+        const rbox = document.getElementById('armRecipeBox');   // PS-181
+        if (rbox) rbox.style.display = (active || watching) ? 'none' : '';
         const wbtn = document.getElementById('watchBtn');
         if (wbtn) {
             wbtn.style.display = active ? 'none' : '';
@@ -388,6 +405,20 @@
                     (w.paused ? ' &middot; <b>PAUSED: unsafe</b>' : '') +
                     (now ? ' &middot; now: ' + now.replace(/_Container$/, '') : '') +
                     ' &middot; no dispatch; park + cooler check at ' + due + '</div>');
+            }
+            // PS-181: the armed recipe (runs once at pre-config)
+            const rc = d.recipe;
+            if (rc && active) {
+                const st = {armed: 'runs at pre-config, before the targets',
+                            dispatched: 'dispatched' + (rc.container ? ': ' + rc.container : ''),
+                            done: 'done' + (rc.container ? ': ' + rc.container : ''),
+                            fallback: 'NOT run: ' + (rc.detail || 'fell back to the normal plan')}[rc.status] || rc.status;
+                const bad = rc.status === 'fallback';
+                chips.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + (bad ? 'rgba(239,68,68,.7)' : 'rgba(56,189,248,.5)') +
+                    ';background:rgba(56,189,248,.06);"><b>With recipe: ' + (rc.label || rc.id) +
+                    '</b>' + (rc.opts && rc.opts.add ? ' (TPoint add ' + rc.opts.add + ')' : '') +
+                    ' &middot; ' + st + '</div>');
             }
             // PS-139: NINA #2 holds slew / center / park instructions tonight
             const nm = d.nina2_mount;
@@ -838,10 +869,34 @@
         refreshArm();
     });
     async function postArm(body) {
-        await fetch('/api/arm', {method:'POST', headers:{'Content-Type':'application/json'},
+        if (body.armed) {   // PS-181: the selected recipe, if any
+            const sel = document.getElementById('armRecipe');
+            const rid = sel ? sel.value : '';
+            if (rid) {
+                body.recipe = rid;
+                const n = document.getElementById('armRecipePoints').value;
+                if (rid === 'tpoint_mapping_then_tonight' && n) body.recipe_opts = {points: parseInt(n, 10)};
+                const label = sel.options[sel.selectedIndex].text.replace('(N)', n ? '(' + n + ')' : '');
+                if (!confirm('Arm with ' + label + ' first? The armer starts it at pre-config ' +
+                             '(no Start in NINA), then tonight\'s targets. Tonight only.')) return;
+            }
+        }
+        const r = await fetch('/api/arm', {method:'POST', headers:{'Content-Type':'application/json'},
                                  body: JSON.stringify(body)});
+        if (!r.ok) {
+            const e = await r.json().catch(() => ({}));
+            alert('Refused: ' + (e.detail || r.status));
+        }
         refreshArm();
     }
+    (function () {   // PS-181: the points box only for TPoint mapping
+        const sel = document.getElementById('armRecipe');
+        if (!sel) return;
+        sel.addEventListener('change', () => {
+            document.getElementById('armRecipePoints').style.display =
+                sel.value === 'tpoint_mapping_then_tonight' ? '' : 'none';
+        });
+    })();
     document.getElementById('armBtn').addEventListener('click', async (ev) => {
         const arming = ev.currentTarget.dataset.armed !== '1';
         if (!arming) {

@@ -54,6 +54,55 @@ RECIPES = {
         "any excluded). Piggy-600: the companion with lights."),
 }
 
+# PS-181: an arm may carry one of these recipes (POST /api/arm {"recipe",
+# "recipe_opts"}); the armer runs it at pre-config instead of a hand Start.
+# Short labels for the Arm select and the armer card.
+RECIPE_LABELS = {
+    RECIPE_TPOINT_MAPPING: "TPoint mapping",
+    RECIPE_TT_THEN_TONIGHT: "tracking test",
+    RECIPE_OPTICS_THROUGH_FOCUS: "optics test",
+}
+ADD_MODES = ("off", "auto")   # tpoint_sample.ADD_MODES
+
+
+def arm_recipe(recipe, opts=None) -> tuple[dict | None, str | None]:
+    """PS-181: validate an arm's recipe. (None, None) for no recipe,
+    ({"id", "label", "opts"}, None) when valid, (None, error) otherwise.
+    Options: TPoint mapping only, "points" (clamped to the mapping's
+    MIN_POINTS..MAX_POINTS) and "add" ("off" | "auto", tpoint_sample_add
+    for this run). Anything else is an error, not silently dropped."""
+    rid = str(recipe or "").strip()
+    if not rid or rid.lower() == "none":
+        return None, None
+    if rid not in RECIPES:
+        return None, (f"unknown recipe {rid!r}: use one of "
+                      + ", ".join(sorted(RECIPES)))
+    if opts is not None and not isinstance(opts, dict):
+        return None, "recipe_opts must be an object"
+    opts = {k: v for k, v in (opts or {}).items() if v not in (None, "")}
+    allowed = ("points", "add") if rid == RECIPE_TPOINT_MAPPING else ()
+    bad = sorted(set(opts) - set(allowed))
+    if bad:
+        return None, (f"recipe_opts {bad} not allowed for {rid}"
+                      + (f" (allowed: {', '.join(allowed)})" if allowed else ""))
+    out: dict = {}
+    if "points" in opts:
+        from photonscript.scheduler.tpoint_mapping import clamp_points
+        try:
+            out["points"] = clamp_points(int(opts["points"]))
+        except (TypeError, ValueError):
+            return None, f"points must be a whole number, not {opts['points']!r}"
+    if "add" in opts:
+        add = str(opts["add"]).strip().lower()
+        if add not in ADD_MODES:
+            return None, f"add must be off or auto, not {opts['add']!r}"
+        out["add"] = add
+    label = RECIPE_LABELS.get(rid, rid)
+    if rid == RECIPE_TPOINT_MAPPING and "points" in out:
+        label += f" ({out['points']})"
+    return {"id": rid, "label": label, "opts": out}, None
+
+
 TARGETS_CONTAINER = "TARGETS_CONTAINER"
 TARGET_AREA = "TargetAreaContainer"
 NIGHT_LOOP = "LOOP_ALL_NIGHT"
