@@ -330,6 +330,31 @@ armer is not involved and stays DISARMED.
   the test is skipped; re-sideload another night. The standalone tracking-test
   download keeps its park-and-hold after the ladder.
 
+### Arm with a recipe (PS-181)
+
+A sideload only loads; someone must press Start. For an unattended night,
+arm with the recipe instead: Tonight's Run, **with recipe** (none / TPoint
+mapping (N) / tracking test / optics test; N = points, empty = the config's
+`tpoint_mapping_points`), then an Arm button. `POST /api/arm {"armed": true,
+"guiding": ..., "recipe": "<recipe id>", "recipe_opts": {"points": 10,
+"add": "off"|"auto"}}`; options are TPoint only (points clamp to 3..300,
+`add` overrides `tpoint_sample_add` for this run and reaches the script as
+`--add`); anything else is a 400.
+
+- At pre-config the armer builds tonight's normal sequence, lints it, then
+  splices the recipe's test before LOOP_ALL_NIGHT with the same builder as
+  the sideload preview (`routers/sideload.build_rc16_from`; at = astro dusk
+  when dispatching before it) and lints that. It loads AND starts it like a
+  normal night, plus the Piggy companion as usual.
+- The recipe will not build or lint: the normal plan is dispatched instead
+  and one priority page says why (`arm_recipe` event `fallback`).
+- One night only: kept in `armer_state.json` (`recipe`), shown on
+  `GET /api/arm` and the armer card, cleared on disarm, on any new arm and
+  at the dawn shutdown. Once dispatched it is never in a re-dispatch (unsafe
+  resume, Resume after Pause, Restart tonight from now, recalibration,
+  unguided fallback), finished or not, like the PS-144 focus calibration.
+  Events: `kind: "arm_recipe"` `dispatched` / `done` / `fallback`.
+
 ### Through-focus optics test (PS-148)
 
 Answers "astigmatism / collimation, or a mechanical stretch?" when stars

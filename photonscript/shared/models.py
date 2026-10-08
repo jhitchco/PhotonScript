@@ -472,6 +472,9 @@ class NinaSequenceTarget(BaseModel):
     tpoint_exposure_s: float = 5.0
     tpoint_binning: int = 2
     tpoint_script: str = ""
+    # PS-181: per-arm TPoint add mode ("off" | "auto") passed to the script
+    # as --add; "" = the script reads tpoint_sample_add from its config.
+    tpoint_add: str = ""
     # PS-26: the rig the mount centers for (the project's driving_rig), its
     # frame-center option and tonight's transit (UTC, from the planner). A
     # "piggyback" target centers the RC16 so the target lands mid Piggy-600

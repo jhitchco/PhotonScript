@@ -43,6 +43,16 @@ Resilience:
   - make_safe(): stop -> warm camera -> park mount via ninaAPI, used by every
     abort path and exposed as a dashboard button.
 
+Arm with a recipe (PS-181): POST /api/arm {"recipe", "recipe_opts"} runs a
+sideload recipe (TPoint mapping, tracking test, optics test) at pre-config:
+the dispatch splices its one-shot test before tonight's night loop with the
+sideload builder (routers/sideload.build_rc16_from, so the preview shows the
+same sequence and lint), then loads and starts it like any night. A recipe
+that will not build or lint falls back to the normal plan (one page). It
+belongs to one night (cleared on disarm, a new arm and the dawn shutdown)
+and, like the PS-144 focus calibration, is never in a re-dispatch once it
+was dispatched (unsafe resume, PS-64 resume, PS-143 restart).
+
 Transitions send Pushover notifications. Re-arm daily is manual (v1).
 """
 
@@ -197,6 +207,12 @@ class Armer:
         # PS-152: tonight's dusk focus calibration (PS-144) once dispatched:
         # {"night", "container", "status": "dispatched" | "done", "field"}
         self.focus_cal: dict | None = None
+        # PS-181: the arm's recipe for one night: {"id", "label", "opts",
+        # "night", "status": "armed" | "dispatched" | "done" | "fallback",
+        # "container", "sequence", "field", "detail"}
+        self.recipe: dict | None = None
+        self._recipe_pending: dict | None = None   # built into this dispatch
+        self._recipe_alert: str | None = None      # fallback page, sent once
         self._apps_alerted: set = set()   # PS-170: (night, phase) paged
         self._task: asyncio.Task | None = None
 
@@ -225,6 +241,7 @@ class Armer:
                 "watch_declined": getattr(self, "_watch_declined", None),
                 "pause": getattr(self, "pause_info", None),
                 "focus_cal": getattr(self, "focus_cal", None),   # PS-152
+                "recipe": getattr(self, "recipe", None),         # PS-181
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -275,6 +292,7 @@ class Armer:
         self.watch = saved.get("watch")  # PS-136: a watched night reattaches too
         self.pause_info = saved.get("pause")  # PS-64
         self.focus_cal = saved.get("focus_cal")  # PS-152
+        self.recipe = saved.get("recipe")        # PS-181
         self._task = asyncio.create_task(self._run())
         if (self.state == PAUSE_STATE
                 and (self.pause_info or {}).get("phase") == "stopping"):
@@ -328,6 +346,7 @@ class Armer:
                 "pause": (getattr(self, "pause_info", None)
                           if self.state == PAUSE_STATE else None),   # PS-64
                 "restart": self._restart_status(),                  # PS-143
+                "recipe": self._recipe_tonight(),                   # PS-181
                 "noon_arm": self._noon_arm_status()}
 
     def _nina2_mount_status(self) -> dict | None:
@@ -389,12 +408,15 @@ class Armer:
             return False
         return bool(self.config.guided_default)
 
-    async def arm(self, guiding: str | None = None) -> dict:
+    async def arm(self, guiding: str | None = None,
+                  recipe: dict | None = None) -> dict:
         """guiding: 'guided' (PHD2) or 'unguided' (Paramount MX on TPoint +
         ProTrack; 'encoders' is the old name and still accepted). None or an
         unknown value => use config.guided_default. A guided arm also
         runs the PS-89 PHD2 settings audit in the background (never blocks
-        the arm; one push only on a FAIL)."""
+        the arm; one push only on a FAIL). recipe (PS-181): a validated
+        sideload.arm_recipe() dict run at pre-config for this night only;
+        None = the normal night (an arm without one clears the last)."""
         from photonscript.scheduler.night_plan import build_night_plan
         if self.state == WATCH_STATE:
             # PS-136: arming would stop the watched sideload at pre-config
@@ -411,11 +433,19 @@ class Armer:
         self.plan = build_night_plan(self.config)
         if (getattr(self, "block_decisions", None) or {}).get("night") != self.plan.get("night_of"):
             self.block_decisions = {}   # PS-85: decisions belong to one night
+        self.recipe = None   # PS-181: a recipe belongs to the arm that set it
+        self._recipe_pending = self._recipe_alert = None
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
         mode = ("guided (PHD2)" if self._use_guiding()
                 else "unguided (TPoint + ProTrack)")
+        if recipe:
+            self.recipe = {"id": recipe["id"], "label": recipe["label"],
+                           "opts": dict(recipe.get("opts") or {}),
+                           "night": self.plan.get("night_of"),
+                           "status": "armed"}
+            mode += f", with {recipe['label']} first"
         self.last_raw = None; self._set_state("ARMED",
                         f"Pre-config at {self.plan['preconfig_utc']}, "
                         f"{len(self.plan['targets'])} targets, "
@@ -581,6 +611,8 @@ class Armer:
             self._watch_event("stop", "stopped watching by hand")
         self._cancel_pause_wait()   # PS-64
         self.pause_info = None
+        self.recipe = None          # PS-181: the recipe was for this arm only
+        self._recipe_pending = self._recipe_alert = None
         self._set_state("DISARMED", "")
         if self._task and not self._task.done():
             self._task.cancel()
@@ -864,6 +896,7 @@ class Armer:
                          # guider not running are ok); _notify_complete
                          # pages on these
                          "failed": [s for s in steps if "FAILED" in s]}
+        self.recipe = None   # PS-181: the night is over; the recipe was its
         self._persist()
         # Verify + alert once NINA's warm has had time to finish (PS-77: the
         # 5 min check fired mid-warm on 2026-09-27, see _shutdown_verify_delay_s).
@@ -1595,6 +1628,10 @@ class Armer:
             self.detail = "; ".join(f.detail for f in result.findings
                                     if f.level == "ERROR")
             return False
+        # PS-181: the armed recipe's one-shot test first (falls back to the
+        # normal plan above when it does not build or lint)
+        content = self._recipe_content(content, seq.name, use_guiding,
+                                       u_dither, now)
         out = (Path.cwd() / "sequences"
                / f"PhotonScript_{self.plan['night_of']}_{now:%H%M}.json")
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -1744,6 +1781,143 @@ class Armer:
                 self._note_focus_cal_progress(tree)
         except Exception as e:  # noqa: BLE001
             logger.debug("focus calibration state check skipped: %s", e)
+
+    # -- PS-181 arm with a recipe -------------------------------------------
+
+    def _recipe_tonight(self) -> dict | None:
+        """The armed recipe when it belongs to this plan's night, else None."""
+        r = getattr(self, "recipe", None)
+        if (isinstance(r, dict) and r.get("night")
+                and r.get("night") == (self.plan or {}).get("night_of")):
+            return r
+        return None
+
+    def _recipe_event(self, value: str, detail: str, **extra) -> None:
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            now = datetime.utcnow()
+            r = self._recipe_tonight() or {}
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "arm_recipe", "value": value,
+                          "recipe": r.get("id"), "detail": detail, **extra})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("arm recipe event not logged: %s", e)
+
+    def _recipe_content(self, content: str, name: str, guided: bool,
+                        dither: bool, now: datetime) -> str:
+        """PS-181: tonight's linted sequence with the armed recipe's test
+        spliced in (sideload builder, same lint), or `content` unchanged when
+        no recipe is due. A recipe already dispatched (or fallen back) tonight
+        is never built again: re-dispatches run the normal remainder. A build
+        or lint failure marks it "fallback" and queues one page. Never raises."""
+        self._recipe_pending = None
+        r = self._recipe_tonight()
+        if not r or r.get("status") != "armed":
+            if r:
+                logger.info("Arm recipe %s already %s tonight: not repeated",
+                            r.get("id"), r.get("status"))
+            return content
+        try:
+            dusk = datetime.fromisoformat(self.plan["dusk_utc"].rstrip("Z"))
+            at = (dusk.isoformat(timespec="seconds") + "Z") if now < dusk else ""
+        except Exception:  # noqa: BLE001
+            at = ""
+        why = None
+        try:
+            from photonscript.scheduler.routers.sideload import build_rc16_from
+            built = build_rc16_from(json.loads(content), name, guided, dither,
+                                    r["id"], (), at, r.get("opts") or {})
+            if built["lint"].ok:
+                self._recipe_pending = {
+                    "sequence": built["name"],
+                    "container": built.get("test_container"),
+                    "field": {k: built["field"].get(k) for k in (
+                        "name", "summary", "est_minutes", "points",
+                        "for_utc", "ra_hours", "dec_degrees")
+                        if built["field"].get(k) is not None}}
+                logger.info("Arm recipe %s spliced into tonight: %s",
+                            r["id"], built["name"])
+                return json.dumps(built["seq"], indent=2)
+            why = "lint failed: " + "; ".join(
+                f"[{f.rule}] {f.detail}" for f in built["lint"].findings
+                if f.level == "ERROR")
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            why = f"could not build: {type(e).__name__}: {e}"
+        r["status"] = "fallback"
+        r["detail"] = why[:500]
+        self._persist()
+        msg = (f"Armed recipe {r.get('label')} NOT run tonight ({why[:300]}). "
+               f"Dispatching the normal plan instead.")
+        self._recipe_alert = msg
+        self._recipe_event("fallback", msg)
+        logger.warning(msg)
+        return content
+
+    async def _send_recipe_alert(self) -> None:
+        msg, self._recipe_alert = getattr(self, "_recipe_alert", None), None
+        if msg:
+            try:
+                await notify(self.config, msg, title="PhotonScript arm recipe",
+                             priority=1)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("arm recipe page not sent: %s", e)
+
+    async def _consume_recipe(self) -> None:
+        """After a successful start that carried the recipe: mark it
+        dispatched (persisted, so no re-dispatch repeats it), log an event,
+        push a note. Never raises."""
+        built, self._recipe_pending = getattr(self, "_recipe_pending", None), None
+        r = self._recipe_tonight()
+        if not built or not r:
+            return
+        r.update({"status": "dispatched", "container": built.get("container"),
+                  "sequence": built.get("sequence"), "field": built.get("field"),
+                  "dispatched_utc": datetime.utcnow().isoformat(
+                      timespec="seconds") + "Z"})
+        self._persist()
+        f = built.get("field") or {}
+        msg = (f"Arm recipe {r.get('label')} dispatched and started: "
+               f"{built.get('container') or '?'} runs once before tonight's "
+               f"targets" + (f" ({f['summary']})" if f.get("summary") else
+                             (f" (~{f['est_minutes']} min)"
+                              if f.get("est_minutes") else "")) + ".")
+        self._recipe_event("dispatched", msg, sequence=built.get("sequence"),
+                           container=built.get("container"))
+        logger.info(msg)
+        try:
+            await notify(self.config, msg, title="PhotonScript arm recipe")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("arm recipe note not sent: %s", e)
+
+    def _note_recipe_progress(self, tree) -> bool:
+        """Mark tonight's dispatched recipe "done" once NINA shows its test
+        container FINISHED (event + persist). True when it did."""
+        r = self._recipe_tonight()
+        if not r or r.get("status") != "dispatched" or tree is None:
+            return False
+        if _nina_item_status(tree, _norm_item(r.get("container"))) != "FINISHED":
+            return False
+        r["status"] = "done"
+        r["done_utc"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        self._persist()
+        self._recipe_event("done", f"{r.get('container')} finished")
+        logger.info("Arm recipe finished tonight: %s", r.get("container"))
+        return True
+
+    async def _check_recipe_before_redispatch(self) -> None:
+        """Before a re-dispatch stops NINA, record a finished recipe test as
+        done (best-effort: the re-dispatch leaves it out either way)."""
+        r = self._recipe_tonight()
+        if not r or r.get("status") != "dispatched":
+            return
+        try:
+            tree, err = await asyncio.wait_for(self._watch_read_state(), 15)
+            if not err:
+                self._note_recipe_progress(tree)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("arm recipe state check skipped: %s", e)
 
     def _calibration_slot(self, targets, now: datetime) -> dict | None:
         """PS-93: the PHD2 calibration field when tonight needs a calibration
@@ -1895,13 +2069,16 @@ class Armer:
         must not restart the Piggy-600's running sequence). fail_state=None
         leaves the armer state alone on failure (the caller handles it)."""
         if not self._dispatch():
+            await self._send_recipe_alert()   # PS-181
             if fail_state:
                 self._set_state(fail_state)
             await notify(self.config, f"Dispatch FAILED: {self.detail}",
                          title="PhotonScript ERROR", priority=1)
             return False
+        await self._send_recipe_alert()   # PS-181: fallback page, once
         # PS-152: note a finished dusk calibration before the stop clears it
         await self._check_focus_cal_before_redispatch()
+        await self._check_recipe_before_redispatch()   # PS-181
         # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the
         # request body; load 400s if a sequence is running, so stop first.
         await self._nina("sequence_stop")  # harmless if nothing running
@@ -1921,6 +2098,7 @@ class Armer:
         # One arm covers both scopes: fire a calibration companion at NINA #2.
         # Best-effort — a piggyback problem never fails the RC16 night.
         await self._consume_focus_calibration()   # PS-144: one-shot reset
+        await self._consume_recipe()              # PS-181: one-shot
         if companion:
             await self._dispatch_piggyback_companion()
         await self._send_block_alerts()   # PS-85: history decisions, once per target

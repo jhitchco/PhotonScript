@@ -627,7 +627,11 @@ def _event(config, night: str, row: dict, now: datetime) -> None:
 
 # ------------------------------------------------------------- one sample
 
-def add_mode(config) -> str:
+def add_mode(config, override: str | None = None) -> str:
+    """tpoint_sample_add, or (PS-181) the run's own --add when valid."""
+    o = str(override or "").strip().lower()
+    if o in ADD_MODES:
+        return o
     m = str(getattr(config, "tpoint_sample_add", "off") or "off").strip().lower()
     return m if m in ADD_MODES else "off"
 
@@ -654,7 +658,7 @@ def run_sample(config, file: str | None = None, point: int | None = None,
                of: int | None = None, alt: float | None = None,
                az: float | None = None, side: str = "", client=None,
                now: datetime | None = None, dry_run: bool = False,
-               wait_s: float = FRAME_WAIT_S) -> dict:
+               wait_s: float = FRAME_WAIT_S, add: str | None = None) -> dict:
     """One sample (see the module doc). Returns the CSV row (plus "script"
     on a dry run). Never raises. dry_run: pick the frame and build the
     script, but send nothing to TheSky and write nothing."""
@@ -662,7 +666,7 @@ def run_sample(config, file: str | None = None, point: int | None = None,
     now = now or datetime.utcnow()
     night = night_of(config, now)
     out = csv_path(config, night)
-    mode = add_mode(config)
+    mode = add_mode(config, add)   # PS-181: an armed recipe's --add
     row: dict = {"utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"), "point": point,
                  "of": of, "side": side, "cmd_alt": alt, "cmd_az": az,
                  "add_mode": mode, "solved": False}

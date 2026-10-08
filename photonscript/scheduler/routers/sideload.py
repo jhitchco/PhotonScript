@@ -65,9 +65,26 @@ def _excludes(exclude) -> list[str]:
 
 # ------------------------------------------------------------------ builders
 
-def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
-    """The RC16 sequence for `recipe`: {"name", "seq", "lint" (LintResult),
-    "field", "tonight_targets", "targets", "excluded"}."""
+def build_rc16(recipe: str, exclude=(), at: str = "",
+               opts: dict | None = None) -> dict:
+    """The RC16 sequence for `recipe` on tonight's preview night: {"name",
+    "seq", "lint" (LintResult), "field", "tonight_targets", "targets",
+    "excluded"}. opts (PS-181): the arm's recipe options (points, add)."""
+    from photonscript.scheduler import sideload as sd
+    if recipe not in (sd.RECIPE_TT_THEN_TONIGHT, sd.RECIPE_OPTICS_THROUGH_FOCUS,
+                      sd.RECIPE_TPOINT_MAPPING):
+        raise ValueError(f"unknown recipe {recipe!r}")
+    night_name, night_text, guided, dither = _app()._tonight_sequence(False)
+    return build_rc16_from(json.loads(night_text), night_name, guided, dither,
+                           recipe, exclude, at, opts)
+
+
+def build_rc16_from(night: dict, night_name: str, guided, dither,
+                    recipe: str, exclude=(), at: str = "",
+                    opts: dict | None = None) -> dict:
+    """PS-181: build_rc16 on a given night sequence. The sideload preview
+    passes tonight's preview night, the armer its own dispatch sequence, so
+    an arm with a recipe builds and lints exactly what the preview shows."""
     from photonscript.scheduler import sideload as sd
     from photonscript.scheduler.nina_sequence_json import generate_tracking_test_json
     from photonscript.scheduler.sequence_lint import lint
@@ -75,8 +92,8 @@ def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
                       sd.RECIPE_TPOINT_MAPPING):
         raise ValueError(f"unknown recipe {recipe!r}")
     app = _app()
-    night_name, night_text, guided, dither = app._tonight_sequence(False)
-    night = json.loads(night_text)
+    opts = opts or {}
+    exclude = list(exclude or ())
     if recipe == sd.RECIPE_OPTICS_THROUGH_FOCUS:   # PS-148
         from photonscript.scheduler import optics_test as ot
         cfg = _cfg()
@@ -85,7 +102,8 @@ def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
         splice, tag = sd.splice_optics_test, "OT"
     elif recipe == sd.RECIPE_TPOINT_MAPPING:   # PS-171
         from photonscript.scheduler import tpoint_mapping as tm
-        run = tm.build(_cfg(), at)
+        run = tm.build(_cfg(), at, points=opts.get("points"),
+                       add=opts.get("add"))
         field = run["field"]
         test = json.loads(run["test_json"])
         splice, tag = sd.splice_tpoint_mapping, "TPM"
@@ -105,6 +123,7 @@ def build_rc16(recipe: str, exclude=(), at: str = "") -> dict:
     return {"name": seq["Name"], "seq": seq,
             "lint": lint(seq, guided=guided, unguided_dither=dither),
             "field": field, "guided": guided, "tonight_targets": tonight,
+            "test_container": (sd.target_names(test) or [None])[0],
             "targets": sd.target_names(seq),
             "excluded": [n for n in tonight if n not in kept]}
 
@@ -128,11 +147,12 @@ def build_piggyback(recipe: str) -> dict:
             "with_lights": with_lights}
 
 
-def _build(rig: str, recipe: str, exclude, at: str) -> dict:
+def _build(rig: str, recipe: str, exclude, at: str,
+           opts: dict | None = None) -> dict:
     from photonscript.shared.rigs import PIGGYBACK
     if rig == PIGGYBACK:
         return build_piggyback(recipe)
-    return build_rc16(recipe, exclude, at)
+    return build_rc16(recipe, exclude, at, opts)
 
 
 def _view(rig: str, built: dict) -> dict:
@@ -150,24 +170,33 @@ def _view(rig: str, built: dict) -> dict:
 @router.get("/api/sequence/sideload/preview")
 async def api_sideload_preview(recipe: str = "tracking_test_then_tonight",
                                exclude: list[str] = Query(default=[]),
-                               at: str = ""):
-    """Read only: generates and lints, sends nothing to NINA."""
+                               at: str = "", points: int | None = None,
+                               add: str = ""):
+    """Read only: generates and lints, sends nothing to NINA. points / add
+    (PS-181): the per-arm TPoint options, validated as POST /api/arm does."""
     from photonscript.scheduler import sideload as sd
     from photonscript.shared.rigs import rig_ids, rig_label
     if recipe not in sd.RECIPES:
         return JSONResponse(status_code=400, content={
             "detail": f"unknown recipe {recipe!r}", "recipes": sd.RECIPES})
+    opts = {}
+    if points is not None or add:
+        rec, err = sd.arm_recipe(recipe, {"points": points, "add": add})
+        if err:
+            return JSONResponse(status_code=400, content={"detail": err})
+        opts = rec["opts"]
     cfg = _cfg()
     ex = _excludes(exclude)
     rigs = {}
     for rig in rig_ids(cfg):
         try:
-            built = await asyncio.to_thread(_build, rig, recipe, ex, at)
+            built = await asyncio.to_thread(_build, rig, recipe, ex, at, opts)
             rigs[rig] = _view(rig, built)
         except Exception as e:  # noqa: BLE001
             rigs[rig] = {"rig": rig, "error": f"{type(e).__name__}: {e}"}
         rigs[rig]["label"] = rig_label(cfg, rig)
     return {"recipe": recipe, "recipes": sd.RECIPES, "exclude": ex,
+            "opts": opts,
             "armer": _armer_state(), "rigs": rigs, "note": NOTE}
 
 
