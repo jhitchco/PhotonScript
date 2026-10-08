@@ -45,7 +45,7 @@ def test_iter_reverse_matches_splitlines(tmp_path, monkeypatch, body, block):
 def test_iter_reverse_decodes_bad_bytes(tmp_path):
     p = tmp_path / "x.log"
     p.write_bytes(b"ok\n\xff\xfe bad\n")
-    assert list(lf.iter_reverse(p)) == ["�� bad", "ok"]
+    assert list(lf.iter_reverse(p)) == ["\ufffd\ufffd bad", "ok"]
 
 
 def _numbered(p: Path, n: int, pad: int = 60):
