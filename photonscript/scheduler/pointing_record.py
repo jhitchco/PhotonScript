@@ -48,7 +48,8 @@ logger = logging.getLogger(__name__)
 
 RC16, PIGGY = "rc16", "piggyback"
 SLEW_MOVE_ARCMIN = 5.0   # no mount log: a move this big between subs = a slew
-_POS_KEYS = ("src", "mount_ra", "mount_dec", "alt", "az", "airmass", "pier")
+_POS_KEYS = ("src", "mount_ra", "mount_dec", "alt", "az", "airmass", "pier",
+             "mount_epoch")
 
 
 def _header(path) -> dict | None:
@@ -252,7 +253,9 @@ def night_pass(config, date: str, solve: bool = False, runner=None,
                         b = {"src": "mount-log", "mount_ra": m.get("ra"),
                              "mount_dec": m.get("dec"), "alt": m.get("alt"),
                              "az": m.get("az"), "airmass": None,
-                             "pier": m.get("pier")}
+                             "pier": m.get("pier"),
+                             "mount_epoch": pointing.mount_epoch_for(
+                                 config, "mount-log", m.get("epoch"))}
                     else:
                         b = _correlated(frames.get(RC16, []), f["mid"],
                                         PIGGYBACK_CORRELATE_TOL_MIN)

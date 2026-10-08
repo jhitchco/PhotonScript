@@ -5,7 +5,10 @@ Positions (degrees, the epoch the source reports):
   header      RC16 FITS: RA / DEC ("RA of telescope", the mount position),
               CENTALT, CENTAZ, AIRMASS, PIERSIDE. Piggy-600 frames carry none.
   mount-log   runs/<night>_mount.jsonl (shared.mount_log) at the exposure
-              mid-time: how the Piggy-600 gets a position live.
+              mid-time: how the Piggy-600 gets a position live. ninaAPI
+              reports the mount in its own epoch (JNow with the Paramount's
+              TheSky driver, about 22' from J2000 in 2026), so PS-145
+              precesses it back to J2000 before any comparison.
   rc16-correlated  the RC16 header position nearest in time (Piggy-600,
               older nights without a mount log).
   solve       an ASTAP solve from scheduler.solve_store; wins over the mount
@@ -17,7 +20,9 @@ line, the LAST line for a (rig, file) wins):
   rig, file, t (exposure mid, UTC "...Z"), src (header | mount-log |
   rc16-correlated | solve), mount_src (where mount_* came from: header |
   mount-log | rc16-correlated), mount_ra, mount_dec, alt, az, airmass, pier
-  (East | West), ha_h, solved_ra, solved_dec, rotation, scale,
+  (East | West), mount_epoch (J2000 | JNow: the epoch of mount_ra /
+  mount_dec as stored; header and rc16-correlated are J2000 because NINA
+  writes RA / DEC in J2000), ha_h, solved_ra, solved_dec, rotation, scale,
   model_err_arcmin, model_err_pa (mount vs solve, RC16 only: a free TPoint
   model check), target, target_ra, target_dec, off_target_arcmin,
   off_target_pa, off_target_dir (compass word from the target to the frame),
@@ -199,12 +204,51 @@ def target_coords(config, name) -> tuple[str, float, float] | None:
 
 # ------------------------------------------------------------------ assess
 
+def mount_epoch_for(config, src: str | None, reported: str | None = None) -> str | None:
+    """PS-145: the epoch of a stored mount position. FITS header RA / DEC
+    (and the rc16-correlated copy of it) are J2000; a mount-log position is
+    what ninaAPI reported, resolved by off_target.mount_epoch (the
+    off_target_mount_epoch setting; auto = NINA's report, else JNow)."""
+    if src in ("header", "rc16-correlated"):
+        return "J2000"
+    if src == "mount-log":
+        from photonscript.scheduler.off_target import mount_epoch
+        return mount_epoch(config, reported)
+    return None
+
+
+def _parse_mid(t) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(t).rstrip("Z"))
+    except (TypeError, ValueError):
+        return None
+
+
+def mount_j2000(rec: dict) -> tuple[float, float] | None:
+    """The record's mount position in J2000 (PS-145): a JNow mount-log
+    position is precessed back from the exposure mid-time; J2000 (or a
+    record written before mount_epoch existed) is returned as stored."""
+    ra, dec = rec.get("mount_ra"), rec.get("mount_dec")
+    if ra is None or dec is None:
+        return None
+    if str(rec.get("mount_epoch") or "").upper() == "JNOW":
+        when = _parse_mid(rec.get("t"))
+        if when is not None:
+            from photonscript.scheduler.off_target import precess_to_j2000
+            pra, pdec = precess_to_j2000(float(ra), float(dec), when)
+            return round(pra, 5), round(pdec, 5)
+    return ra, dec
+
+
 def judged_position(rec: dict) -> tuple | None:
-    """(ra, dec, label) the off-target test uses: the solve, else the mount."""
+    """(ra, dec, label) the off-target test uses, in J2000 like the targets
+    and the plate solves: the solve, else the mount (PS-145: precessed from
+    its own epoch)."""
     if rec.get("solved_ra") is not None and rec.get("solved_dec") is not None:
         return rec["solved_ra"], rec["solved_dec"], "solved"
-    if rec.get("mount_ra") is not None and rec.get("mount_dec") is not None:
-        return rec["mount_ra"], rec["mount_dec"], "mount"
+    m = mount_j2000(rec)
+    if m is not None:
+        return m[0], m[1], "mount"
     return None
 
 
@@ -268,13 +312,13 @@ def model_error(rec: dict) -> dict:
     """Mount vs solve for an RC16 record (the pointing-model error):
     {model_err_arcmin, model_err_pa}. Piggy-600: none (its center sits a
     fixed boresight offset from the mount position)."""
+    m = mount_j2000(rec)
     if (rec.get("rig") or "rc16") != "rc16" or rec.get("solved_ra") is None \
-            or rec.get("mount_ra") is None:
+            or m is None:
         return {}
-    err = sep_arcmin(rec["mount_ra"], rec["mount_dec"], rec["solved_ra"],
-                     rec["solved_dec"])
-    pa, _ = bearing(rec["mount_ra"], rec["mount_dec"], rec["solved_ra"],
-                    rec["solved_dec"])
+    # PS-145: both sides J2000 (a JNow mount position would add ~20')
+    err = sep_arcmin(m[0], m[1], rec["solved_ra"], rec["solved_dec"])
+    pa, _ = bearing(m[0], m[1], rec["solved_ra"], rec["solved_dec"])
     return {"model_err_arcmin": round(err, 2), "model_err_pa": pa}
 
 
@@ -439,9 +483,13 @@ def sub_pointing(config, rig: str, hdr, start: datetime | None, exp_s,
         if m is not None:
             rec = {"src": "mount-log", "mount_ra": m.get("ra"),
                    "mount_dec": m.get("dec"), "alt": m.get("alt"),
-                   "az": m.get("az"), "airmass": None, "pier": m.get("pier")}
+                   "az": m.get("az"), "airmass": None, "pier": m.get("pier"),
+                   "mount_epoch": mount_epoch_for(config, "mount-log",
+                                                  m.get("epoch"))}
     rec = dict(rec or {"src": None})
     rec.update(rig=rig, t=iso_mid(start, exp_s), mount_src=rec.get("src"))
+    if rec.get("mount_ra") is not None and not rec.get("mount_epoch"):
+        rec["mount_epoch"] = mount_epoch_for(config, rec.get("mount_src"))
     if solve and solve.get("solved") is not False and solve.get("ra") is not None:
         rec.update(src="solve", solved_ra=solve["ra"], solved_dec=solve["dec"],
                    rotation=solve.get("pa"), scale=solve.get("scale"))
