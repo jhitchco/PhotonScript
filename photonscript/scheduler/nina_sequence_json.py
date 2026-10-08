@@ -86,6 +86,8 @@ TARGET_GUIDE_BLOCK_SUFFIX = " filter block (guiding per block)"
 PIGGY_WEST_CENTER_SUFFIX = " Piggy-600 center, pier West (before transit)"
 DSO_CONTAINER_TYPE = ("NINA.Sequencer.Container.DeepSkyObjectContainer, "
                       "NINA.Sequencer")
+# PS-160: the cooler-gated wrapper around the unsafe-time dark blocks
+DARKS_AT_SETPOINT_NAME = "DARKS_AT_SETPOINT"
 SAFE_LOOP_NAME = "SAFE_LOOP"
 RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
 TARGETS_LOOP_NAME = "TARGETS_CONTAINER"
@@ -941,8 +943,10 @@ def _dark_quota_blocks(dawn_provider, dawn_offset):
     try:
         # PS-122: one quota rule with the companion and the Calibration owed
         # view (QA-passed darks once the rig has a QA store)
-        from photonscript.scheduler.calibration import dark_quota, quota_exposures
-        for exp_s in quota_exposures(cfg, "rc16"):
+        # PS-160: plus the lengths the lights actually used
+        from photonscript.scheduler.calibration import (dark_quota,
+                                                        night_dark_exposures)
+        for exp_s in night_dark_exposures(cfg, "rc16"):
             need = dark_quota(cfg, "rc16", exp_s)["need"]
             if need == 0:
                 continue
@@ -2311,6 +2315,13 @@ def generate_nina_json(sequence: NinaSequenceFile,
     if getattr(_gen_cfg(), "unsafe_darks_enabled", True):
         night_dark_blocks = _dark_quota_blocks(dawn_provider, dawn_offset)
         if night_dark_blocks:
+            from photonscript.scheduler.calibration import dark_gate_items
+            dark_gate = dark_gate_items(_cfg, "rc16", temp)
+            if dark_gate:
+                # PS-160: darks only at the setpoint; the gate's skip skips
+                # this container only, never the wait-for-safe below
+                night_dark_blocks = [_seq_container(
+                    DARKS_AT_SETPOINT_NAME, dark_gate + night_dark_blocks)]
             unsafe_items += [
                 _pushover("Safety", "roof closed — filling the dark-library "
                           "quota until conditions clear"),
@@ -2374,10 +2385,18 @@ def generate_nina_json(sequence: NinaSequenceFile,
         try:
             from photonscript.scheduler.calibration import stale_flat_filters
             _by_val = {ft.value: ft for ft in FilterType}
+            # PS-160: owed filters (as used, most owed first), at most
+            # calibration_dawn_flat_extra_max on top of tonight's per morning
+            _extra_max = max(0, int(getattr(
+                _cfg, "calibration_dawn_flat_extra_max", 3) or 0))
+            _added = 0
             for _name in stale_flat_filters(_cfg):
                 _ft = _by_val.get(_name)
                 if _ft is not None and _ft not in flat_filters:
+                    if _added >= _extra_max:
+                        break
                     flat_filters.append(_ft)
+                    _added += 1
         except Exception:  # noqa: BLE001
             pass
     if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:

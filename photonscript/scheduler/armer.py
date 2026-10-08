@@ -589,6 +589,14 @@ class Armer:
                 ("warm", "camera_warm", "camera_connect"),
                 ("park", "mount_park", "mount_connect")):
             kw = step_params.get(key, {})
+            if key == "mount_park":
+                # PS-159: NINA says already parked = ok. Make-safe is an
+                # abort, so a disconnected mount still gets connect + park
+                # below rather than trusting TheSky / the mount log.
+                parked, src = await self._park_state()
+                if parked and src == "NINA":
+                    steps.append("park:ok (already parked)")
+                    continue
             ok = await self._nina(key, **kw) is not None
             if not ok and "not connected" in (self.detail or "").lower():
                 # Try connecting the device, then retry once
@@ -667,13 +675,124 @@ class Armer:
         return out
 
     async def _stop_guider_best_effort(self) -> str:
-        """PS-91: ask NINA to stop the guider. Returns 'ok' or 'FAILED'.
-        Never raises: every shutdown path must still reach the park."""
+        """PS-91: ask NINA to stop the guider. Returns 'ok', 'ok (<why>)'
+        when there was nothing to stop (PS-159), or 'FAILED'. Never raises:
+        every shutdown path must still reach the park."""
+        idle = await self._guider_idle()
+        if idle:
+            return f"ok ({idle})"
         try:
-            return "ok" if await self._nina("guider_stop") is not None else "FAILED"
+            if await self._nina("guider_stop") is not None:
+                return "ok"
         except Exception as e:  # noqa: BLE001
             logger.warning("guider stop failed: %s", e)
-            return "FAILED"
+        # PS-159: the stop can fail because the guider went away meanwhile
+        # (NINA's End-area DisconnectAllEquipment): nothing left to stop.
+        idle = await self._guider_idle()
+        return f"ok ({idle})" if idle else "FAILED"
+
+    async def _guider_idle(self) -> str | None:
+        """PS-159: why there is no guiding to stop ("not connected" /
+        "stopped"), or None when PHD2 may be guiding or NINA cannot be
+        read (then the stop is tried and a failure stays a failure)."""
+        try:
+            data = await self._nina("guider")
+        except Exception:  # noqa: BLE001
+            return None
+        g = data.get("Response", data) if isinstance(data, dict) else None
+        if not isinstance(g, dict):
+            return None
+        if g.get("Connected") is False:
+            return "not connected"
+        state = str(g.get("State") or "").strip().lower()
+        if g.get("Connected") is True and state in ("stopped", "idle"):
+            return "stopped"
+        return None
+
+    async def _park_state(self) -> tuple[bool | None, str]:
+        """PS-159: (parked, source) read before the park, so a mount the
+        sequence's own End area already parked (and DisconnectAllEquipment
+        then disconnected) is "already parked", not a failed park.
+
+        NINA's mount info first. Only when NINA has the mount disconnected
+        or cannot be reached: TheSky's own view over TCP 3040 (read-only,
+        never Connect(): the TheSky safety semantics stay with TheSky), then
+        the last line of the PS-67 mount log (last known state). parked is
+        None when nothing can say."""
+        try:
+            data = await self._nina("mount_info")
+        except Exception:  # noqa: BLE001
+            data = None
+        m = data.get("Response", data) if isinstance(data, dict) else None
+        if isinstance(m, dict) and m.get("Connected") is not False:
+            if "AtPark" in m:
+                return bool(m.get("AtPark")), "NINA"
+            return None, ""
+        ts = await self._thesky_parked()
+        if ts is not None:
+            return ts, "TheSky"
+        ml = self._mount_log_parked()
+        if ml is not None:
+            return ml, "mount log"
+        return None, ""
+
+    async def _thesky_parked(self) -> bool | None:
+        """TheSky's IsParked when its mount is connected (read-only
+        mount_flags script), else None. Never raises."""
+        def _read():
+            from photonscript.telescope_agent.thesky_client import TheSkyClient
+            cl = TheSkyClient(getattr(self.config, "thesky_tcp_host", "localhost"),
+                              int(getattr(self.config, "thesky_tcp_port", 3040)
+                                  or 3040), timeout=5.0)
+            return cl.mount_flags()
+        try:
+            mf = await asyncio.wait_for(asyncio.to_thread(_read), timeout=8.0)
+        except Exception as e:  # noqa: BLE001
+            logger.info("TheSky park read unavailable: %s", e)
+            return None
+        from photonscript.telescope_agent.thesky_client import _truthy
+        if not isinstance(mf, dict) or not _truthy(mf.get("connected")):
+            return None
+        if mf.get("parked") in (None, ""):
+            return None
+        return _truthy(mf.get("parked"))
+
+    def _mount_log_parked(self) -> bool | None:
+        """The parked flag of the newest mount-log line (tonight's file,
+        else the previous night's), or None when there is no log."""
+        try:
+            from photonscript.shared import mount_log
+            from photonscript.shared.phd2_store import night_of
+            now = datetime.utcnow()
+            for when in (now, now - timedelta(days=1)):
+                lines = mount_log.load(self.config, night_of(self.config, when))
+                if lines:
+                    return bool(lines[-1].get("parked"))
+        except Exception as e:  # noqa: BLE001
+            logger.info("mount log park read failed: %s", e)
+        return None
+
+    async def _park_step(self) -> str:
+        """PS-159: the dawn shutdown's park, reading the state first.
+        Already parked = "park ok (already parked[, source])"; a failed
+        park that turns out parked on a re-read is ok too. Only a park
+        that failed on a mount not known to be parked is FAILED."""
+        parked, src = await self._park_state()
+        if parked:
+            return "park ok (already parked" + (
+                f", {src}" if src and src != "NINA" else "") + ")"
+        try:
+            ok = await self._nina("mount_park") is not None
+        except Exception as e:  # noqa: BLE001
+            self.detail = f"mount_park: {e}"
+            ok = False
+        if ok:
+            return "park ok"
+        why = self.detail
+        parked, src = await self._park_state()
+        if parked:
+            return f"park ok (already parked, {src})"
+        return f"park FAILED ({why})"
 
     # -- dawn shutdown -----------------------------------------------------------
 
@@ -711,10 +830,13 @@ class Armer:
             d = await nina_dew_heater(rc.nina_base_url, False)
             steps.append(f"{rig} warm {'ok' if w.get('ok') else 'FAILED'}"
                          f"/dew {'ok' if d.get('ok') else 'FAILED'}")
-        ok = await self._nina("mount_park") is not None
-        steps.append(f"park {'ok' if ok else 'FAILED'}")
+        steps.append(await self._park_step())
         self.shutdown = {"at": datetime.utcnow().isoformat() + "Z",
-                         "reason": reason, "steps": steps, "verify": None}
+                         "reason": reason, "steps": steps, "verify": None,
+                         # PS-159: real failures only (already parked /
+                         # guider not running are ok); _notify_complete
+                         # pages on these
+                         "failed": [s for s in steps if "FAILED" in s]}
         self._persist()
         # Verify + alert once NINA's warm has had time to finish (PS-77: the
         # 5 min check fired mid-warm on 2026-09-27, see _shutdown_verify_delay_s).
@@ -749,8 +871,20 @@ class Armer:
                 msg = f"{msg}\n{integ_line}"
         except Exception as e:  # noqa: BLE001 - the dawn push always goes out
             logger.debug("integration morning note unavailable: %s", e)
+        try:  # PS-160: what calibration the lights still owe
+            from photonscript.scheduler.calibration_owed import (
+                morning_note as cal_note)
+            cal_line = await asyncio.wait_for(
+                asyncio.to_thread(cal_note, self.config), timeout=60)
+            if cal_line:
+                msg = f"{msg}\n{cal_line}"
+        except Exception as e:  # noqa: BLE001 - the dawn push always goes out
+            logger.debug("calibration morning note unavailable: %s", e)
+        failed =(self.shutdown or {}).get("failed") or []
+        if failed:   # PS-159: a real shutdown failure pages
+            msg = f"{msg}\nShutdown step FAILED: {'; '.join(failed)}"
         await notify(self.config, msg, title="PhotonScript complete",
-                     priority=1 if alert else 0)
+                     priority=1 if (alert or failed) else 0)
 
     def _shutdown_verify_delay_s(self) -> int:
         """When to check that every cooler really went off after a warm.

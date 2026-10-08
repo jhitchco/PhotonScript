@@ -172,6 +172,7 @@ FINISH_DEFAULTS = {
     "frame": None, "denoise": 0.5, "deconv": "on", "deconv_strength": 0.5,
     "graxpert": "", "graxpert_version": "", "graxpert_ai": "", "graxpert_gpu": "",
     "graxpert_timeout_min": 30, "stars": "on", "star_strength": 0.7,
+    "hoo": "off",                  # PS-161: on = also <name>_hoo.{xisf,jpg} (OSC only)
     "focal_mm": 600.0, "pixel_um": 3.76,
 }
 
@@ -241,6 +242,7 @@ def render_finish(cfg: dict, solver_block: str = "", deploy_dir: Path | None = N
         "GRAXPERT_AI": _js_str(c["graxpert_ai"]), "GRAXPERT_GPU": _js_str(c["graxpert_gpu"]),
         "GRAXPERT_TIMEOUT_MIN": str(int(c["graxpert_timeout_min"])),
         "STARS": _js_str(c["stars"]), "STAR_STRENGTH": _js_num(float(c["star_strength"])),
+        "HOO": "on" if str(c.get("hoo") or "off").lower() in ("on", "true", "1") else "off",
         "MASTERS": json.dumps([{"name": m["name"], "path": str(m["path"]).replace("\\", "/")}
                                for m in masters], ensure_ascii=True),
     }

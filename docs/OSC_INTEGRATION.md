@@ -93,6 +93,32 @@ Windows Scheduled Task yourself that runs
 `C:\dev\PhotonScript\.venv\Scripts\photonscript.exe integrate-watch --once`
 every 30 minutes while logged on (PixInsight needs the desktop session).
 
+**Auto-integrate (PS-161).** `photonscript autointegrate --once` is the
+unattended desktop job built on the watcher (same lock, same decide(): never
+re-integrates without new approved data, nothing while PixInsight is open):
+1. a goal that wants a run waits until Syncthing has settled its Library
+   folders: no `~syncthing~*.tmp` / `.syncthing.*.tmp` file, and the rig's
+   light count + total size unchanged for `autointegrate_settle_min` (15)
+   minutes (state in `<staging>\.autointegrate-state.json`; Syncthing keeps
+   the source modification times, so file times cannot tell);
+2. runs `photonscript integrate` (OSC natural color plus, with
+   `autointegrate_hoo`, the HOO-mapped `<name>_hoo.{xisf,jpg}`: Ha = R,
+   OIII = mean of G and B scaled to the Ha background; RC16 one master per
+   filter) and posts its ledger;
+3. two-rig goals: `photonscript blend` once both rigs have masters and no
+   blend folder used exactly these inputs yet (`autointegrate_blend`);
+4. writes `<run>\review.jpg` (the finals side by side, at most 2048 px) and
+   sends it with Pushover (`autointegrate_notify`; the desktop .env needs the
+   Pushover keys).
+The Library mirror is `integration_library_dir`, else the first that exists
+of `D:\ninashare\Library` (the mirror since 2026-10; `C:\Users\sleep\ninashare`
+becomes a junction to it), `desktop_library_dir`, `~\ninashare\Library`;
+`photonscript integrate` uses the same default. Install the task yourself:
+`powershell -ExecutionPolicy Bypass -File deploy\install-autointegrate-task.ps1
+-DryRun` first, then without -DryRun (every 30 min, one instance, output in
+`logs\autointegrate.log`; -Uninstall removes it). `run-finish-osc.ps1 -Hoo on`
+and `photonscript integrate --hoo` give the HOO image by hand.
+
 **Campaign status and review (PS-142).** Every goal card (dashboard and
 Targets page) carries a status chip per rig, the target page a "Campaign
 review" panel (`GET /api/integrations/status`, `scheduler/integrations.py`

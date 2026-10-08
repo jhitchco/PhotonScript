@@ -549,12 +549,18 @@
         const darkRows = (r.darks || []).filter(d => d.lights || d.planned.length || d.owed)
             .map(d => '<tr' + (d.owed ? ' class="thin"' : '') + '><td>' + esc(d.label) +
                 '</td><td>' + d.have + '</td><td>' + d.need + '</td><td>' + d.owed +
-                '</td><td>' + d.lights + '</td></tr>').join('');
+                '</td><td>' + d.lights + '</td><td>' +
+                (d.age_days == null ? '-' : d.age_days + ' d') + '</td><td>' +
+                (d.ccd_temp_c == null ? '-' : d.ccd_temp_c + ' C') +
+                (d.from_lights ? ' (from lights)' : '') + '</td></tr>').join('');
         const flatRows = (r.flats || []).map(f => '<tr' + (f.owed ? ' class="thin"' : '') +
             '><td>' + esc(f.filter) + '</td><td>' + esc(f.last || 'none') + '</td><td>' +
             f.count + ' of ' + f.need + '</td><td>' + (f.age_days == null ? '-' : f.age_days + ' d') +
             '</td><td>' + f.lights_since.length + '</td></tr>').join('');
         const cons = (r.constraints || []).map(c => '<div class="muted">' + esc(c) + '</div>').join('');
+        // PS-160: what tonight's sequences fill from this coverage
+        const plan = ((r.plan || {}).text || []).map(t =>
+            '<div>' + esc(t) + '</div>').join('');
         return '<div class="focus-card' + (r.rig === 'rc16' ? '' : ' osc') + '"><h3>' +
             esc(r.name) + ' <span class="pill ' + ((r.items || []).length ? 'p-disabled' : 'p-harvest') +
             '" style="float:right;">' + (r.items || []).length + ' owed</span></h3>' +
@@ -570,9 +576,10 @@
             (items ? '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0;">' + items + '</ul>'
                    : '<div style="color:#86efac;">Nothing owed.</div>') + fixes +
             (unc ? '<div style="margin-top:.4rem;"><b>Uncalibrated nights</b>' + unc + '</div>' : '') +
+            (plan ? '<div style="margin-top:.4rem;"><b>Plan</b>' + plan + '</div>' : '') +
             '<details style="margin-top:.5rem;"><summary class="muted">Darks and flats detail</summary>' +
             '<table class="cal"><thead><tr><th>Darks</th><th>have</th><th>need</th><th>owed</th>' +
-            '<th>lights</th></tr></thead><tbody>' + darkRows + '</tbody></table>' +
+            '<th>lights</th><th>newest</th><th>sensor</th></tr></thead><tbody>' + darkRows + '</tbody></table>' +
             '<table class="cal"><thead><tr><th>Flats</th><th>last set</th><th>count</th><th>age</th>' +
             '<th>nights since</th></tr></thead><tbody>' + flatRows + '</tbody></table></details>' +
             '<div style="margin-top:.5rem;">' + cons + '</div></div>';

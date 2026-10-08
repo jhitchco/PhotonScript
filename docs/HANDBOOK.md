@@ -714,7 +714,10 @@ docs/OSC_INTEGRATION.md section 0):
 `photonscript integrate --target "Andromeda Galaxy" --rig piggyback`.
 Every run writes `ledger.json` and reports it to the scheduler (PS-33);
 `photonscript integrate-watch --once` starts runs by itself when a goal is
-met or enough new data arrived (PS-31). PS-142: each goal shows a campaign
+met or enough new data arrived (PS-31); `photonscript autointegrate --once`
+(PS-161, deploy\install-autointegrate-task.ps1) adds the Syncthing settle
+wait, the two-rig blend, the OSC HOO image and a Pushover review JPG
+(OSC_INTEGRATION.md "Auto-integrate"). PS-142: each goal shows a campaign
 status chip (Acquiring / Ready to process / Processing / Processed (vN) /
 Published (vN)) and the target page a review panel (verdict, notes, asks with
 Approve / Decline; a plan change shows its diff and goes through PATCH
@@ -807,6 +810,18 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   nanny pages instead of fighting a running sequence CoolCamera to another
   temperature; the guiding auto-recovery never starts PHD2 on a parked or
   idle mount.
+- 2026-10-07 (false "park FAILED", PS-159): the 13:07Z dawn shutdown
+  reported "guider stop FAILED ... park FAILED" because NINA #1's own End
+  area had already parked (mount parked since the 09:24Z unsafe) and run
+  DisconnectAllEquipment. The shutdown now reads state first: guider not
+  connected / stopped = "guider stop ok (not connected)"; mount AtPark in
+  NINA, or (NINA mount disconnected) TheSky's IsParked over TCP 3040
+  read-only, or the last mount-log line = "park ok (already parked[,
+  source])". A park call that fails is re-read before it counts. Real
+  failures land in `shutdown.failed` and only those make the "Night
+  complete" push priority 1. Make-safe trusts only NINA's AtPark (an abort
+  still connects and parks). The generated End area already parks before
+  DisconnectAllEquipment (a test pins the order).
 - 2026-10-04 (blind night, PS-150): both NINAs were closed by 19:46 local
   (NINA #2 "requested by user" 19:31 after its safety driver threw "RPC
   server is unavailable"; NINA #1 closed and restarted twice, last closed
@@ -1081,6 +1096,27 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   `calibration.dark_quota`, the same function the RC16 unsafe darks and the
   Piggy-600 companion size their blocks with (QA-passed only once a rig has a
   QA store). Lights logged since PS-122 carry gain / offset / xbin / readout.
+- CALIBRATION COVERAGE (PS-160): the owed view now drives the night. The
+  on-epoch lengths the lights used that the config dark list lacks join the
+  night quota (`calibration.night_dark_exposures`: RC16 unsafe darks and the
+  Piggy-600 companion; `calibration_darks_follow_lights`, at most
+  `calibration_darks_follow_lights_max` 2 per rig and night, most used
+  first), so the Piggy-600's 300 s lights get 300 s darks without a config
+  edit. Night darks sit behind the PS-61 cooler gate
+  (`calibration_darks_gated`): in skip mode a sensor that never reached the
+  setpoint (a PS-154 bounded cool that timed out) skips the darks instead of
+  filing off-setpoint frames (RC16: a DARKS_AT_SETPOINT container inside the
+  unsafe branch; Piggy-600: first item of OSC_DARKS). RC16 stale-flat
+  reshoots (dawn `auto_stale_flats`, dusk flats) only for filters the lights
+  used (`calibration_flats_as_used`; every stale filter while no lights are
+  logged), missing first then oldest, at most
+  `calibration_dawn_flat_extra_max` (3) on top of tonight's per dawn.
+  `calibration_flats_reset` ("rc16:YYYY-MM-DD,piggyback:YYYY-MM-DD") marks
+  flats older than an optics change (rotation, spacer / focus change,
+  cleaning) owed. Each dark row shows the newest matching dark (age) and the
+  median CCD-TEMP of the counted darks; each rig card has a "Plan" block;
+  the dawn "Night complete" push carries one "Calibration owed:" line. The
+  Piggy-600 still shoots one OSC flat set every safe dawn (companion).
 - READOUT MODE (PS-128): darks and bias count only at the lights' camera
   readout mode (AP26MC HCG: 0.25 e-/ADU, RN 5.66 ADU; LCG: 0.79 e-/ADU,
   RN 4.27 ADU). `camera_readout_mode` (RC16, default HCG: every RC16 light

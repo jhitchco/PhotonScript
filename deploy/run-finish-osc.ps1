@@ -58,6 +58,8 @@ param(
     # PS-40 star reduction (needs the StarNet2 PixInsight module; skipped if absent)
     [ValidateSet('on','off')][string]$StarReduction = 'on',
     [double]$StarStrength = 0.7,   # stars come back at this strength (1 = unchanged)
+    # PS-161 OSC HOO extraction: on = also <Name>_hoo.{xisf,jpg} (Ha = R, OIII = mean of G and B)
+    [ValidateSet('on','off')][string]$Hoo = 'off',
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
     [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal'
 )
@@ -192,6 +194,7 @@ $js = $js.Replace('__GRAXPERT__', (JsStr $gxExe)).Replace('__GRAXPERT_VERSION__'
 $js = $js.Replace('__GRAXPERT_AI__', (JsStr $GraXpertAiVersion)).Replace('__GRAXPERT_GPU__', $GraXpertGpu)
 $js = $js.Replace('__GRAXPERT_TIMEOUT_MIN__', [string]$GraXpertTimeoutMin)
 $js = $js.Replace('__STARS__', $StarReduction).Replace('__STAR_STRENGTH__', (JsNum $StarStrength))
+$js = $js.Replace('__HOO__', $Hoo)
 $js = $js.Replace('__MASTERS__', 'null')   # one master; photonscript integrate passes a list
 $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser

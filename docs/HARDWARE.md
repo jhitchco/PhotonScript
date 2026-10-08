@@ -115,7 +115,8 @@ value moves (Choice E).
 ## Desktop processing
 - PixInsight: C:\Program Files\PixInsight\bin\PixInsight.exe
 - Staging: C:\Users\sleep\Astrophotography\Staging\<Target>
-- Library mirror (receive-only): C:\Users\sleep\ninashare\Library
+- Library mirror (receive-only): D:\ninashare\Library (C:\Users\sleep\ninashare
+  becomes a junction to it; the integrator's integration_library_dir, PS-161)
 
 ## TODO - unknowns to fill in (answers unblock real decisions)
 
