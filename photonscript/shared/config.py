@@ -1207,7 +1207,7 @@ class PhotonScriptConfig(BaseSettings):
                                  # (the one TheSky write, telescope_agent.
                                  # tpoint_sample.ADD_CANDIDATES)
     tpoint_sample_add_method: str = ""  # PS-171: pin one ADD_CANDIDATES id
-                                 # (e.g. action_trigger_AddPointingSample)
+                                 # (e.g. action_execute_id_AddPointingSample)
                                  # after the probe; "" = the probe's first
     pointing_first_slew_warn_arcmin: float = 2.0  # NINA first-solve median
     pointing_first_slew_fail_arcmin: float = 5.0  # (14 nights, per side)

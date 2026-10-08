@@ -451,24 +451,31 @@ prints "was ..." next to every changed flag: run it before and after a
 manual TPoint session to compare the model (and the PS-168 drift report
 the nights either side).
 
-First probe (2026-10-08, TheSky64 10.5): no global `TPoint` object; the
-TPoint names hang off `TheSkyXAction` (AddPointingSample,
-AutoPointingCalibration, TPointAddOn2, TPointModule). The probe now prints
-for each of those its typeof, class, value text and (objects) members, the
-typeof of `TheSkyXAction.execute`, every plain value of TPointAddOn2 /
-TPointModule (where the point count / RMS / ProTrack flags should be; the
-`tpoint_flags` read, and so the PS-104 audit, now also looks there), and
-all members of ImageLink and sky6RASCOMTele. Still nothing is called.
-AddPointingSample add candidates, by what the probe sees: a function is
-called (`TheSkyXAction.AddPointingSample();`), an action object with a
-trigger is triggered (`TheSkyXAction.AddPointingSample.trigger();`), a
-number / string is passed to `TheSkyXAction.execute(...)`, else
-`TheSkyXAction.execute('AddPointingSample');`. The first found is used
-unless `tpoint_sample_add_method` pins one (an id from "Add methods
-found"). `photonscript tpoint-sample --dry-run` prints the exact add line
-("add call: ...") and whether it would run. First add: one supervised point
-with `PS_TPOINT_SAMPLE_ADD=auto` (the call may open a TheSky dialog; watch
-the TPoint window), then back to `off` if anything looks wrong.
+Site evidence (2026-10-08, TheSky64 10.5 build 14139, read only): there is
+no TPoint scripting object (`TPoint`, `sky6TPoint`, `TPointAddOn2` globals
+are undefined). `TheSkyXAction` is an object whose members are numeric
+action ids (`AddPointingSample` = 197, `TPointAddOn2` = 147, ...) and
+`TheSkyXAction.execute` is a function, so a pointing sample is added with
+`TheSkyXAction.execute(<action>)`. Which argument it takes is not known
+without calling it, so the add candidates are, in order:
+`TheSkyXAction.execute(TheSkyXAction.AddPointingSample);` (the numeric id),
+`TheSkyXAction.execute('AddPointingSample');`,
+`TheSkyXAction.execute('ADD_POINTING_SAMPLE');`. The probe prints
+execute's own text and length (a Qt slot may show its signature), the
+TheSkyXAction members, all members of ImageLink, sky6RASCOMTele,
+sky6RASCOMTheSky and OpticalTubeAssembly, and their plain values whose
+names mention model / point / RMS / ProTrack / correction. Model points
+and RMS read "unavailable" unless one of those objects exposes them (the
+`tpoint_flags` read, and so the PS-104 audit, looks there too); compare a
+manual session in TheSky's TPoint window and with the PS-168 drift
+report instead. Nothing is called by the probe.
+The first found candidate is used unless `tpoint_sample_add_method` pins
+one. `photonscript tpoint-sample --dry-run` prints the exact add line
+("add call: ...") and whether it would run. First add: ONE supervised point
+with `PS_TPOINT_SAMPLE_ADD=auto` (the action may open a TheSky dialog or
+use TheSky's own Image Link state rather than the scripted one; watch the
+TPoint window and `add_result` / `add_error` in the CSV), then pin the form
+that worked, or go back to `off`.
 
 How to run it (supervised; first run on a clear night, about 1 h):
 1. Afternoon: run the probe (above). Note the point count / RMS. If it

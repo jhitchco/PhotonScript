@@ -27,14 +27,14 @@ a manual run's before / after can be compared. Bisque's published
 scripting reference names no TPoint add method we could confirm offline:
 every name in ADD_CANDIDATES is a CANDIDATE.
 
-First probe on the site (2026-10-08, TheSky64 10.5): no global TPoint
-object; TheSkyXAction lists AddPointingSample, AutoPointingCalibration,
-TPointAddOn2 and TPointModule. The probe now also prints, for those, the
-typeof, class, value text and (objects) member names, the typeof of
-TheSkyXAction.execute, every plain value of TPointAddOn2 / TPointModule,
-and all members of ImageLink and sky6RASCOMTele. The AddPointingSample
-candidates cover each invocation form; tpoint_sample_add_method pins one
-after the probe has been read.
+Site evidence (2026-10-08, TheSky64 10.5 build 14139, read only): no TPoint
+scripting object; TheSkyXAction's members (AddPointingSample = 197, ...)
+are numeric action ids and TheSkyXAction.execute is a function, so the add
+is TheSkyXAction.execute(<action>) in one of three argument forms
+(ADD_CANDIDATES). The probe prints execute's text and length, the
+TheSkyXAction members, all members of ImageLink / sky6RASCOMTele /
+sky6RASCOMTheSky / OpticalTubeAssembly and their model-ish plain values;
+tpoint_sample_add_method pins the form a supervised point confirmed.
 """
 
 from __future__ import annotations
@@ -56,73 +56,62 @@ FRAME_MAX_AGE_S = 180.0      # a frame older than this is not tonight's point
 ADD_MODES = ("off", "auto")
 
 # (id, check, call): `check` is a typeof-only JS expression (the probe
-# evaluates it, nothing is called); `call` is ONE statement run right after
+# evaluates it, nothing is called); `call` is ONE expression run right after
 # a successful Image Link in the same script, and only while `check` still
-# holds. CANDIDATES, in preference order; the probe reports which exist and
-# tpoint_sample_add_method can pin one. The only TheSky writes in
-# PhotonScript; a test checks that no call text appears anywhere else.
+# holds (its return value is kept as add_result). CANDIDATES, in preference
+# order; the probe reports which exist and tpoint_sample_add_method can pin
+# one. The only TheSky writes in PhotonScript; a test checks that no call
+# text appears anywhere else.
 #
-# PS-171 probe 2026-10-08 (TheSky64 10.5): no global TPoint object;
-# TheSkyXAction lists AddPointingSample, AutoPointingCalibration,
-# TPointAddOn2 and TPointModule among its members. How a TheSkyXAction
-# member is invoked on this build is not documented offline, so the four
-# AddPointingSample forms are all candidates and the probe's typeof decides:
-# a function is called, a QAction-like object is triggered, a number or
-# string is passed to TheSkyXAction.execute(), else execute() by name.
+# PS-171, site evidence 2026-10-08 (TheSky64 10.5 build 14139, read only):
+# no TPoint scripting object at all (TPoint, sky6TPoint, TPointAddOn(2) are
+# undefined globals); TheSkyXAction is an object whose members are NUMERIC
+# action ids (AddPointingSample = 197, TPointAddOn2 = 147, ...) and
+# TheSkyXAction.execute is a function. So the add is
+# TheSkyXAction.execute(<action>). Which argument execute() takes (the
+# numeric id, the member name, or an upper-case action string) cannot be
+# told without calling it; the probe prints execute's own text (a Qt slot
+# may show its signature) and the forms are candidates in that order. Pin
+# one with tpoint_sample_add_method once a supervised point confirms it.
 _ACT = "TheSkyXAction"
 _APS = "TheSkyXAction.AddPointingSample"
-_HAS_ACT = f"typeof {_ACT} != 'undefined'"
-_HAS_EXEC = f"{_HAS_ACT} && typeof {_ACT}.execute == 'function'"
-
-
-def _has_method(obj: str, meth: str) -> str:
-    return f"typeof {obj} != 'undefined' && typeof {obj}.{meth} == 'function'"
-
+_HAS_EXEC = (f"typeof {_ACT} != 'undefined' && typeof {_ACT}.execute == 'function' "
+             f"&& typeof {_APS} != 'undefined'")
 
 ADD_CANDIDATES: tuple[tuple[str, str, str], ...] = (
-    ("action_call_AddPointingSample",
-     f"{_HAS_ACT} && typeof {_APS} == 'function'", f"{_APS}();"),
-    ("action_trigger_AddPointingSample",
-     f"{_HAS_ACT} && typeof {_APS} == 'object' && {_APS} !== null "
-     f"&& typeof {_APS}.trigger == 'function'", f"{_APS}.trigger();"),
-    ("action_execute_value_AddPointingSample",
-     f"{_HAS_EXEC} && (typeof {_APS} == 'number' || typeof {_APS} == 'string')",
-     f"{_ACT}.execute({_APS});"),
-    ("action_execute_name_AddPointingSample",
-     f"{_HAS_EXEC} && typeof {_APS} != 'undefined'",
-     f"{_ACT}.execute('AddPointingSample');"),
-    ("imagelinkresults_addToTPoint", _has_method("ImageLinkResults", "addToTPoint"),
-     "ImageLinkResults.addToTPoint();"),
-    ("imagelink_addToTPoint", _has_method("ImageLink", "addToTPoint"),
-     "ImageLink.addToTPoint();"),
-    ("tpoint_AddImageLinkResults", _has_method("TPoint", "AddImageLinkResults"),
-     "TPoint.AddImageLinkResults();"),
-    ("tpoint_addPointingSample", _has_method("TPoint", "addPointingSample"),
-     "TPoint.addPointingSample();"),
-    ("tpoint_AddData", _has_method("TPoint", "AddData"), "TPoint.AddData();"),
+    ("action_execute_id_AddPointingSample",
+     f"{_HAS_EXEC} && typeof {_APS} == 'number'", f"{_ACT}.execute({_APS})"),
+    ("action_execute_name_AddPointingSample", _HAS_EXEC,
+     f"{_ACT}.execute('AddPointingSample')"),
+    ("action_execute_upper_AddPointingSample", _HAS_EXEC,
+     f"{_ACT}.execute('ADD_POINTING_SAMPLE')"),
 )
 
 # objects whose member names the probe lists: (object, all members?) -
 # False = only names matching _MEMBER_RE
-PROBE_OBJECTS = (("TPoint", False), ("ImageLink", True),
-                 ("ImageLinkResults", False), ("sky6RASCOMTele", True),
+PROBE_OBJECTS = (("ImageLink", True), ("ImageLinkResults", False),
+                 ("sky6RASCOMTele", True), ("sky6RASCOMTheSky", True),
+                 ("OpticalTubeAssembly", True),
                  ("AutomatedImageLinkSettings", False), ("TheSkyXAction", False))
-_MEMBER_RE = "tpoint|point|sample|model|rms|protrack|adddata|add"
+_MEMBER_RE = "tpoint|point|sample|model|rms|protrack|correction|adddata|add"
 # TheSkyXAction members the probe describes (typeof, class, value text and,
-# for objects, their members); for the MODULES also every plain value
+# for objects, their members)
 ACTION_NAMES = ("AddPointingSample", "AutoPointingCalibration", "TPointAddOn2",
                 "TPointModule")
-MODULES = ("TPointAddOn2", "TPointModule")
+# objects whose plain values matching _MEMBER_RE the probe prints (where a
+# model point count / RMS / ProTrack flag would have to live, if anywhere)
+MODULES = ("sky6RASCOMTele", "sky6RASCOMTheSky", "OpticalTubeAssembly")
 _LIST_SEP = "~"          # between entries in a probe list (s() keeps it)
 _MAX_MEMBERS = 300
 _MAX_VALUE_CHARS = 60
+_MAX_SRC_CHARS = 160
 
 CSV_FIELDS = ("utc", "point", "of", "side", "cmd_alt", "cmd_az", "file",
               "bin", "scale", "solved", "solved_ra_j2000_h",
               "solved_dec_j2000_d", "image_stars", "solution_rms",
               "position_angle", "mount_ra_h", "mount_dec_d", "mount_alt",
               "mount_az", "lst_h", "jd", "apply_corrections", "add_mode",
-              "add_method", "added", "add_error", "note")
+              "add_method", "added", "add_result", "add_error", "note")
 
 
 # ------------------------------------------------------------- scripts
@@ -141,7 +130,9 @@ _PROBE_PRE = (
     "function txt(v){var t=typeof v;if(t=='function'){return '(function)';}"
     "if(t=='object'&&v!==null){return '(object)';}"
     "return String(v).substring(0," + str(_MAX_VALUE_CHARS) + ");}"
-    "function vals(o){var out=[];var ns=names(o,true);"
+    "function src(f){return String(f).replace(/\\s+/g,' ').substring(0,"
+    + str(_MAX_SRC_CHARS) + ");}"
+    "function vals(o){var out=[];var ns=names(o,false);"
     "for(var i=0;i<ns.length;i++){try{var v=o[ns[i]];var t=typeof v;"
     "if(t!='function'&&t!='object'&&t!='undefined'){out.push(ns[i]+':'+txt(v));}}"
     "catch(e){}}return out.join('" + _LIST_SEP + "');}"
@@ -151,9 +142,9 @@ _PROBE_PRE = (
 
 def probe_script() -> str:
     """READ ONLY. typeof checks on each add candidate, member names of
-    PROBE_OBJECTS, typeof / class / value text of the TheSkyXAction members
-    in ACTION_NAMES (and their own members when they are objects), every
-    plain value of TPointAddOn2 / TPointModule, and the TPoint flags."""
+    PROBE_OBJECTS, TheSkyXAction.execute's typeof / text / length, typeof /
+    class / value of the TheSkyXAction members in ACTION_NAMES, the plain
+    model-ish values of MODULES, and the TPoint flags."""
     pairs: list[tuple[str, str]] = []
     for cid, check, _call in ADD_CANDIDATES:
         pairs.append((f"has_{cid}", f"({check}) ? 1 : 0"))
@@ -161,8 +152,9 @@ def probe_script() -> str:
         pairs.append((f"type_{obj}", f"typeof {obj}"))
         pairs.append((f"members_{obj}",
                       f"members({obj}, {'true' if all_members else 'false'})"))
-    pairs.append(("act_type_execute", f"typeof {_ACT}.execute"))
-    pairs.append(("act_type_Execute", f"typeof {_ACT}.Execute"))
+    pairs += [("act_type_execute", f"typeof {_ACT}.execute"),
+              ("act_src_execute", f"src({_ACT}.execute)"),
+              ("act_len_execute", f"{_ACT}.execute.length")]
     for n in ACTION_NAMES:
         v = f"{_ACT}.{n}"
         pairs += [(f"act_type_{n}", f"typeof {v}"),
@@ -170,7 +162,7 @@ def probe_script() -> str:
                   (f"act_value_{n}", f"txt({v})"),
                   (f"act_members_{n}", f"objMembers({v})")]
     for n in MODULES:
-        pairs.append((f"mod_values_{n}", f"objVals({_ACT}.{n})"))
+        pairs.append((f"mod_values_{n}", f"objVals({n})"))
     flags, _pre = tc.READ_PAIRS["tpoint_flags"]
     pairs += [(f"flag_{k}", expr) for k, expr in flags]
     return tc._js_kv(pairs, pre=_PROBE_PRE + tc.TP_PRE)
@@ -195,6 +187,7 @@ _SAMPLE_READS = [
     ("jd", tc._doc(9)),
     ("apply_corrections", dict(tc.READ_PAIRS["tpoint_flags"][0])["apply_corrections"]),
     ("added", "added"),
+    ("add_result", "addRes"),
     ("add_error", "addErr"),
 ]
 
@@ -208,18 +201,25 @@ def candidate(cid: str) -> tuple[str, str, str]:
     raise tc.TheSkyError(f"not an add candidate: {cid!r}")
 
 
+def add_line(cid: str) -> str:
+    """The exact statement the add runs for candidate `cid`."""
+    return candidate(cid)[2] + ";"
+
+
 def sample_script(path: str, scale: float, add: str | None = None) -> str:
     """Image Link on `path`, then the reads in _SAMPLE_READS. add = an
     ADD_CANDIDATES id: after a successful solve, and only while its typeof
     check still holds, the script runs that one call statement (the only
-    write); None = read only."""
-    pre = tc.imagelink_pre(path, scale) + "var added = ''; var addErr = '';"
+    write; its return value is read back as add_result); None = read
+    only."""
+    pre = (tc.imagelink_pre(path, scale)
+           + "var added = ''; var addErr = ''; var addRes = '';")
     if add:
         _cid, check, call = candidate(add)
         pre += ("var ok = false; try { ok = (err == '' && "
                 "ImageLinkResults.succeeded == 1); } catch (e) {}"
                 f"var can = false; try {{ can = ({check}); }} catch (e) {{}}"
-                f"if (ok && can) {{ try {{ {call} added = '1'; }} "
+                f"if (ok && can) {{ try {{ addRes = String({call}); added = '1'; }} "
                 "catch (e) { addErr = String(e.message || e); } }"
                 "else if (!ok) { addErr = 'not solved: not added'; }"
                 "else { addErr = 'add method not available: not added'; }")
@@ -275,8 +275,9 @@ def parse_probe(kv: dict) -> dict:
     flags = {k[5:]: v for k, v in kv.items() if k.startswith("flag_")}
     return {"found": found, "use": found[0] if found else None,
             "objects": objects, "actions": actions,
-            "execute": {"execute": kv.get("act_type_execute"),
-                        "Execute": kv.get("act_type_Execute")},
+            "execute": {"type": kv.get("act_type_execute"),
+                        "text": kv.get("act_src_execute"),
+                        "length": kv.get("act_len_execute")},
             "modules": modules, "tpoint": flags}
 
 
@@ -345,17 +346,17 @@ def format_probe(rec: dict) -> str:
     lines.append("Add methods found: " + (", ".join(rec["found"]) or
                  "none (samples go to the CSV only; see HANDBOOK)"))
     lines.append(f"Would use: {rec.get('use') or '-'}"
-                 + (f"  -> {candidate(rec['use'])[2]}" if rec.get("use") else ""))
+                 + (f"  -> {add_line(rec['use'])}" if rec.get("use") else ""))
     ex = rec.get("execute") or {}
-    lines.append(f"  TheSkyXAction.execute: {ex.get('execute')}; "
-                 f".Execute: {ex.get('Execute')}")
+    lines.append(f"  TheSkyXAction.execute: {ex.get('type')}, length "
+                 f"{ex.get('length')}, text: {ex.get('text')}")
     for n, a in (rec.get("actions") or {}).items():
         lines.append(f"  TheSkyXAction.{n}: typeof {a.get('type')}, "
                      f"{a.get('class')}, value {a.get('value')}"
                      + (("; members: " + " ".join(a["members"]))
                         if a.get("members") else ""))
     for n, vals in (rec.get("modules") or {}).items():
-        lines.append(f"  TheSkyXAction.{n} values: "
+        lines.append(f"  {n} model-ish values: "
                      + (", ".join(f"{k}={v}" for k, v in vals.items()) or "-"))
     t = rec.get("tpoint") or {}
     pv = ((rec.get("previous") or {}).get("tpoint")) or {}
@@ -364,7 +365,7 @@ def format_probe(rec: dict) -> str:
               "id_arcsec"):
         was = f" (was {pv.get(k)} at {rec['previous']['t_utc']})" \
             if rec.get("previous") and pv.get(k) != t.get(k) else ""
-        lines.append(f"  TPoint {k}: {t.get(k) if t.get(k) is not None else 'unknown (name not on this build)'}{was}")
+        lines.append(f"  TPoint {k}: {t.get(k) if t.get(k) is not None else 'unavailable (no scripting object exposes it on this build)'}{was}")
     for o, info in (rec.get("objects") or {}).items():
         lines.append(f"  {o}: {info.get('type')}; members: "
                      + (" ".join(info.get("members") or []) or "-"))
@@ -529,7 +530,7 @@ def run_sample(config, file: str | None = None, point: int | None = None,
             js = sample_script(str(f), scale, add=use)
             if dry_run:
                 row["script"] = js
-                row["add_call"] = candidate(would)[2] if would else ""
+                row["add_call"] = add_line(would) if would else ""
                 row["add_call_note"] = (
                     ("runs after a successful Image Link" if use else
                      "would run only with PS_TPOINT_SAMPLE_ADD=auto")
@@ -554,6 +555,7 @@ def run_sample(config, file: str | None = None, point: int | None = None,
                 "lst_h": _num(kv.get("lst_h")), "jd": _num(kv.get("jd")),
                 "apply_corrections": kv.get("apply_corrections"),
                 "added": kv.get("added") == "1",
+                "add_result": kv.get("add_result") or "",
                 "add_error": kv.get("add_error") or ""})
             if not solved:
                 row["note"] = (kv.get("exec_error") or kv.get("error_text")

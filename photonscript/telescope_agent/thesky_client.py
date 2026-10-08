@@ -213,11 +213,14 @@ _MOUNT_PRE = "var c = false; try { c = sky6RASCOMTele.IsConnected; } catch (e) {
 
 # PS-171: tp(f, names) = f() (the TPoint.<name> read) when it gives a plain
 # value, else the first plain (not function, not object) value of
-# names[i] on TheSkyXAction.TPointAddOn2 / .TPointModule. Reads only.
-TP_PRE = ("function tpObjs(){var r=[];try{if(typeof TheSkyXAction!='undefined'){"
-          "var a=TheSkyXAction.TPointAddOn2;if(a&&typeof a=='object'){r.push(a);}"
-          "var b=TheSkyXAction.TPointModule;if(b&&typeof b=='object'){r.push(b);}"
-          "}}catch(e){}return r;}"
+# names[i] on sky6RASCOMTele / sky6RASCOMTheSky / OpticalTubeAssembly.
+# Reads only. (Build 14139 has no TPoint scripting object; the
+# TheSkyXAction TPoint members are numeric action ids, not objects.)
+TP_PRE = ("function tpObjs(){var r=[];"
+          "try{if(typeof sky6RASCOMTele=='object'){r.push(sky6RASCOMTele);}}catch(e){}"
+          "try{if(typeof sky6RASCOMTheSky=='object'){r.push(sky6RASCOMTheSky);}}catch(e){}"
+          "try{if(typeof OpticalTubeAssembly=='object'){r.push(OpticalTubeAssembly);}}"
+          "catch(e){}return r;}"
           "function plain(v){return v!==undefined&&v!==null&&typeof v!='function'"
           "&&typeof v!='object';}"
           "function tp(f,names){try{var v=f();if(plain(v)){return v;}}catch(e){}"
@@ -277,11 +280,11 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
     # check prints each). Property reads only, no method call: a name this
     # build lacks reads ?ERR, a method reads as its source text (dropped by
     # parse_kv), and the audit then says unknown / verify by eye.
-    # PS-171: the 2026-10-08 probe found no global TPoint object on 10.5;
-    # TheSkyXAction exposes TPointAddOn2 / TPointModule members. tp() tries
-    # the TPoint.<name> read first, then the same candidate names (and
-    # their camelCase forms) as plain properties of those two objects when
-    # they are objects. Never a call: a function-valued name is skipped.
+    # PS-171: build 14139 has no TPoint scripting object (2026-10-08). tp()
+    # tries the TPoint.<name> read first, then the same candidate names
+    # (and camelCase forms) as plain properties of sky6RASCOMTele,
+    # sky6RASCOMTheSky and OpticalTubeAssembly. Never a call: a
+    # function-valued name is skipped. Unknown until the probe shows one.
     "tpoint_flags": ([
         ("apply_corrections", _tp("TPoint.ApplyPointingCorrections",
                                   "applyPointingCorrections",
