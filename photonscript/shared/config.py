@@ -185,6 +185,30 @@ class PhotonScriptConfig(BaseSettings):
     calibration_owed_lookback_days: int = 60  # PS-122: the Calibration owed
                                  # view reads lights of active goals from the
                                  # last this many nights (report only)
+    # PS-160: calibration coverage drives the night / dawn plan
+    calibration_darks_follow_lights: bool = True  # the night dark quota
+                                 # (RC16 unsafe darks, Piggy-600 companion)
+                                 # also fills on-epoch lengths the rig's lights
+                                 # actually used (active goals, owed lookback)
+                                 # when its config list lacks them (Piggy 300 s
+                                 # lights vs 120 s darks); off = config lists only
+    calibration_darks_follow_lights_max: int = 2  # at most this many such
+                                 # extra lengths per rig and night (most used first)
+    calibration_darks_gated: bool = True  # night darks (RC16 unsafe darks,
+                                 # Piggy-600 OSC darks) sit behind the PS-61
+                                 # cooler gate: in skip mode no darks while the
+                                 # sensor is off its setpoint (a bounded cool
+                                 # that timed out); warn alerts; off = no gate
+    calibration_flats_as_used: bool = True  # stale-flat reshoots (dawn
+                                 # auto_stale_flats, dusk flats) only for filters
+                                 # the RC16's lights used in the owed lookback
+                                 # (every stale filter while no lights are logged)
+    calibration_dawn_flat_extra_max: int = 3  # dawn: at most this many owed
+                                 # filters on top of tonight's per morning
+    calibration_flats_reset: str = ""  # optics change: "rc16:YYYY-MM-DD,
+                                 # piggyback:YYYY-MM-DD" (a bare date = both rigs);
+                                 # flats older than it are owed (camera rotated,
+                                 # spacer / focus change, cleaned optics)
     # --- Integration ledger + watcher (PS-33 / PS-31, desktop integrate) ---
     # Scope side: the thresholds the desktop watcher reads from
     # GET /api/integrations/candidates (editable on the System page).

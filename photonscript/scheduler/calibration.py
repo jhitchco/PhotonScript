@@ -385,6 +385,23 @@ def quota_exposures(config, rig: str = "rc16") -> list[float]:
     return out
 
 
+def night_dark_exposures(config, rig: str = "rc16") -> list[float]:
+    """PS-160: the dark lengths a night fills: quota_exposures plus the
+    on-epoch lengths the rig's lights actually used that the config list
+    lacks (calibration_owed.light_dark_lengths, capped; the Piggy-600's
+    300 s lights against 120 s darks). The RC16 unsafe darks and the
+    Piggy-600 companion size their blocks with this; the Calibration owed
+    view marks the same lengths as filled automatically."""
+    base = quota_exposures(config, rig)
+    try:
+        from photonscript.scheduler.calibration_owed import light_dark_lengths
+        extra = light_dark_lengths(config, rig, quota=base)
+    except Exception:  # noqa: BLE001 - never break the quota over coverage
+        logger.warning("lights-driven dark lengths failed", exc_info=True)
+        extra = []
+    return base + [e for e in extra if not any(abs(e - b) < 0.5 for b in base)]
+
+
 def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
                offset: int | None = None, setpoint: float | None = None,
                readout: str | None = None,
@@ -487,14 +504,35 @@ def _session_readout(f: Path, default: str | None) -> str | None:
 
 
 def stale_flat_filters(config) -> list[str]:
-    """Canonical filter names whose newest flat set is missing or stale."""
+    """Canonical filter names whose newest flat set is missing or stale.
+
+    PS-160: also stale when older than the rig's optics change
+    (calibration_flats_reset); with calibration_flats_as_used only the
+    filters the RC16's lights used in the owed lookback (every stale filter
+    while no lights are logged); missing sets first, then oldest first."""
+    from photonscript.scheduler.calibration_owed import (flats_reset_date,
+                                                         used_filters)
     health = calibration_health(config)
     bb = (health.get("FLAT") or {}).get("by_bucket") or {}
+    reset = flats_reset_date(config, "rc16")
+    used = None
+    if getattr(config, "calibration_flats_as_used", True):
+        try:
+            used = used_filters(config, "rc16") or None
+        except Exception:  # noqa: BLE001 - fall back to every filter
+            logger.warning("flats as used: lights unavailable", exc_info=True)
+    order = ("Ha", "OIII", "SII", "R", "G", "B", "L")
     out = []
-    for f in ("Ha", "OIII", "SII", "R", "G", "B", "L"):
+    for f in order:
+        if used is not None and f not in used:
+            continue
         b = bb.get(f)
-        if b is None or b.get("age_days", 9999) > STALE_DAYS["FLAT"]:
+        if (b is None or b.get("age_days", 9999) > STALE_DAYS["FLAT"]
+                or (reset and str(b.get("date") or "") < reset)):
             out.append(f)
+    out.sort(key=lambda f: (bb.get(f) is not None,
+                            -int((bb.get(f) or {}).get("age_days", 0) or 0),
+                            order.index(f)))
     return out
 
 
@@ -653,8 +691,9 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
     quota = int(getattr(config, "dark_target_count", 30))
     pb_gain, pb_offset = _pb_gain_offset(config)
     blocks = []
-    # PS-122: same lengths and count as the Calibration owed view
-    for exp_s in quota_exposures(config, "piggyback"):
+    # PS-122: same lengths and count as the Calibration owed view (PS-160:
+    # plus the lengths the lights used)
+    for exp_s in night_dark_exposures(config, "piggyback"):
         try:
             need = dark_quota(config, "piggyback", exp_s)["need"]
         except Exception:  # noqa: BLE001
@@ -678,6 +717,20 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
                                "NINA.Sequencer",
                                CompletedIterations=0, Iterations=need)]))
     return blocks
+
+
+def dark_gate_items(config, rig: str, setpoint: float) -> list:
+    """PS-160: the PS-61 cooler gate in front of a rig's night darks, so a
+    bounded cool that timed out (PS-154) never yields off-setpoint darks:
+    skip mode skips the dark container, warn alerts. [] when
+    calibration_darks_gated is off or the gate is not carried (mode off,
+    script missing here)."""
+    if not getattr(config, "calibration_darks_gated", True):
+        return []
+    from photonscript.scheduler.nina_sequence_json import (_cooler_gate,
+                                                           _cooler_gate_spec)
+    gate = _cooler_gate_spec(config, float(setpoint))
+    return [_cooler_gate(gate, rig, "darks")] if gate else []
 
 
 def _wait_safe_until(provider: str, minutes_offset: int = 0,
@@ -972,7 +1025,8 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             CompletedIterations=0, Iterations=1))
         target_items.append(_seq_container(
             "OSC_DARKS" + ("_IF_UNSAFE" if gated else "_UNCONDITIONAL"),
-            dark_blocks, conditions=_dark_conds))
+            dark_gate_items(config, "piggyback", setpoint) + dark_blocks,
+            conditions=_dark_conds))
     # bias top-up only when due (bias barely ages)
     _bias_refresh_days = int(getattr(config, "bias_refresh_days", 60))
     try:

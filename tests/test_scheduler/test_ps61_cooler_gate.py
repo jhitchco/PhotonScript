@@ -180,7 +180,7 @@ def test_companion_image_pass_starts_with_the_gate(gate_on):
     assert gate["ErrorBehavior"] == 1 and gate["Parent"] == {"$ref": ip["$id"]}
     r = lint(seq)
     assert not [f for f in r.findings if f.rule in ("cooler-gate", "parent-links")]
-    assert len(_gates(seq)) == 1
+    assert len(_gates(seq)) == 2      # PS-160: plus the gate in front of OSC_DARKS
 
 
 def test_companion_without_script_warns_in_its_start_area(monkeypatch, tmp_path):

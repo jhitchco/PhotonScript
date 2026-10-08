@@ -868,7 +868,16 @@ class Armer:
                 msg = f"{msg}\n{integ_line}"
         except Exception as e:  # noqa: BLE001 - the dawn push always goes out
             logger.debug("integration morning note unavailable: %s", e)
-        failed = (self.shutdown or {}).get("failed") or []
+        try:  # PS-160: what calibration the lights still owe
+            from photonscript.scheduler.calibration_owed import (
+                morning_note as cal_note)
+            cal_line = await asyncio.wait_for(
+                asyncio.to_thread(cal_note, self.config), timeout=60)
+            if cal_line:
+                msg = f"{msg}\n{cal_line}"
+        except Exception as e:  # noqa: BLE001 - the dawn push always goes out
+            logger.debug("calibration morning note unavailable: %s", e)
+        failed =(self.shutdown or {}).get("failed") or []
         if failed:   # PS-159: a real shutdown failure pages
             msg = f"{msg}\nShutdown step FAILED: {'; '.join(failed)}"
         await notify(self.config, msg, title="PhotonScript complete",

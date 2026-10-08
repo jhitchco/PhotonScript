@@ -103,7 +103,8 @@ def _by_exp(r):
 
 
 def test_piggy_owed_flags_400_not_in_the_quota_list(tmp_path):
-    cfg, n1, n2 = _piggy_setup(tmp_path)
+    # PS-160 off: the config list alone (follow-lights has its own tests)
+    cfg, n1, n2 = _piggy_setup(tmp_path, calibration_darks_follow_lights=False)
     rep = co.owed_report(cfg, "piggyback", projects=[_m31()])
     r = rep["rigs"][0]
     assert r["counted"] == "QA-passed"

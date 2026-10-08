@@ -30,11 +30,25 @@ light length is not in the rig's night quota list (the night quota would
 never fill it); flats per filter (last set, count, age vs 45 d, lights shot
 since); bias; which nights' lights are uncalibrated; and the constraints.
 Report only: nothing here shoots or moves anything.
+
+PS-160 (calibration coverage): the same lights also drive the night plan.
+light_dark_lengths() gives the on-epoch lengths the lights used that the
+config dark list lacks (the Piggy-600's 300 s lights against 120 / 400 s
+darks); calibration.night_dark_exposures() adds them to the RC16 unsafe
+darks and the Piggy-600 companion (calibration_darks_follow_lights, at most
+calibration_darks_follow_lights_max per rig and night). used_filters() and
+flats_reset_date() restrict the RC16 stale-flat reshoots to the filters the
+lights used and mark flats older than an optics change
+(calibration_flats_reset) owed. Each dark item also carries the newest
+matching dark (age) and the sensor temperature the counted darks were shot
+at; each rig carries "plan" (what tonight's sequences will fill) and
+morning_note() is the line the dawn "Night complete" push carries.
 """
 
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
@@ -131,6 +145,112 @@ def collect_lights(config, rig: str, projects, *, days: int,
     return out
 
 
+def _active_projects(config) -> list:
+    from photonscript.scheduler.calibration_plan import load_projects
+    return [p for p in load_projects(config) if getattr(p, "active", True)]
+
+
+def _lookback(config) -> int:
+    return max(1, int(getattr(config, "calibration_owed_lookback_days", 60) or 60))
+
+
+def light_dark_lengths(config, rig: str, lights: list | None = None, *,
+                       quota: list | None = None,
+                       now: datetime | None = None) -> list[float]:
+    """PS-160: on-epoch exposure lengths of the rig's lights (active goals,
+    owed lookback) that the quota list lacks, most-used first, at most
+    calibration_darks_follow_lights_max. [] when
+    calibration_darks_follow_lights is off. `lights` from collect_lights
+    (read here when None); `quota` defaults to quota_exposures."""
+    if not getattr(config, "calibration_darks_follow_lights", True):
+        return []
+    cap = int(getattr(config, "calibration_darks_follow_lights_max", 2) or 0)
+    if cap <= 0:
+        return []
+    from photonscript.scheduler.calibration import dark_epoch, quota_exposures
+    ep = dark_epoch(config, rig)
+    if quota is None:
+        quota = quota_exposures(config, rig)
+    if lights is None:
+        lights = collect_lights(config, rig, _active_projects(config),
+                                days=_lookback(config), now=now or datetime.now())
+    counts: dict[float, int] = {}
+    for li in lights:
+        if not _on_epoch(li, ep):
+            continue
+        e = float(li["exp_s"])
+        if any(_same_exp(e, q) for q in quota):
+            continue
+        k = next((x for x in counts if _same_exp(x, e)), e)
+        counts[k] = counts.get(k, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [float(e) for e, _n in ranked[:cap]]
+
+
+def used_filters(config, rig: str = "rc16", *,
+                 now: datetime | None = None) -> set:
+    """PS-160: canonical filters the rig's lights used in the owed lookback
+    (active goals). Empty when no lights are logged."""
+    lights = collect_lights(config, rig, _active_projects(config),
+                            days=_lookback(config), now=now or datetime.now())
+    return {li["filter"] for li in lights if li.get("filter")}
+
+
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RIG_ALIASES = {"piggy": "piggyback", "piggy-600": "piggyback", "osc": "piggyback",
+                "rc16": "rc16", "piggyback": "piggyback"}
+
+
+def flats_reset_date(config, rig: str) -> str | None:
+    """PS-160: the rig's optics-change date from calibration_flats_reset
+    ("rc16:YYYY-MM-DD,piggyback:YYYY-MM-DD"; a bare date = every rig).
+    Flats older than it are owed. None when unset or unparseable."""
+    raw = str(getattr(config, "calibration_flats_reset", "") or "").strip()
+    out = None
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if ":" in tok:
+            name, date = (x.strip() for x in tok.split(":", 1))
+            if _RIG_ALIASES.get(name.lower()) != rig:
+                continue
+        else:
+            date = tok
+        if _DATE_RE.match(date) and (out is None or date > out):
+            out = date
+    return out
+
+
+def _dark_newest(store: dict, b: dict) -> dict:
+    """PS-160: newest QA-passed dark matching a bucket and the sensor
+    temperatures (CCD-TEMP) of the matching frames."""
+    from photonscript.scheduler import calibration_qa as cq
+    newest, temps = None, []
+    for r in (store or {}).get("frames", {}).values():
+        if r.get("type") != "DARK" or not cq.passed(r):
+            continue
+        if abs((r.get("exptime") or -1) - b["exp_s"]) >= EXP_TOL_S:
+            continue
+        if r.get("gain") != b["gain"] or r.get("offset") != b["offset"]:
+            continue
+        st = r.get("settemp")
+        if st is None or abs(st - b["settemp"]) >= TEMP_TOL_C:
+            continue
+        if b.get("readout") and r.get("readout") and r["readout"] != b["readout"]:
+            continue
+        d = r.get("date")
+        if d and (newest is None or d > newest):
+            newest = d
+        if r.get("ccdtemp") is not None:
+            temps.append(float(r["ccdtemp"]))
+    temps.sort()
+    return {"newest": newest,
+            "ccd_temp_c": (round(temps[len(temps) // 2], 1) if temps else None),
+            "ccd_temp_max_off_c": (round(max(abs(t - b["settemp"]) for t in temps), 1)
+                                   if temps else None)}
+
+
 def planned_lights(config, rig: str) -> list[dict]:
     """Tonight's planned exposures at the rig's epoch."""
     from photonscript.scheduler.calibration import dark_epoch
@@ -178,6 +298,9 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
                                                     quota_exposures)
     ep = dark_epoch(config, rig)
     qlist = quota_exposures(view, rig)
+    # PS-160: the lengths the lights used join the night quota (the same
+    # rule calibration.night_dark_exposures applies at generation)
+    extra = light_dark_lengths(view, rig, lights, quota=qlist)
     buckets: dict[tuple, dict] = {}
 
     def bucket(src: dict) -> dict:
@@ -199,6 +322,12 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
         bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
                 "offset": ep["offset"], "settemp": ep["setpoint"],
                 "xbin": 1, "readout": ep["readout"]})["quota_list"] = True
+    for e in extra:
+        b = bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
+                    "offset": ep["offset"], "settemp": ep["setpoint"],
+                    "xbin": 1, "readout": ep["readout"]})
+        b["quota_list"] = True
+        b["from_lights"] = True
     for li in lights:
         b = bucket(li)
         b["lights"] += 1
@@ -237,6 +366,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
                    f"{_ro_txt(ep['readout'])}, so shoot these by hand or "
                    "drop the lights")
         owed = q["need"] if (used or b["quota_list"]) else 0
+        nd = _dark_newest(store, b)
         label = (f"{_fmt(b['exp_s'])} s (gain {b['gain']}, offset {b['offset']}, "
                  f"{_fmt(b['settemp'])} C" + ("" if b["xbin"] == 1
                                               else f", bin {b['xbin']}")
@@ -252,6 +382,11 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
             "targets": sorted(b["targets"]), "planned": b["planned"],
             "assumed_epoch": b["assumed"], "on_epoch": on,
             "in_quota_list": b["quota_list"] and on, "auto_fill": auto,
+            "from_lights": bool(b.get("from_lights")),
+            "newest": nd["newest"], "age_days": _age(nd["newest"], datetime.now()),
+            "ccd_temp_c": nd["ccd_temp_c"],
+            "ccd_temp_max_off_c": nd["ccd_temp_max_off_c"],
+            "at_setpoint": abs(b["settemp"] - ep["setpoint"]) < TEMP_TOL_C,
             "fix": fix, "label": label})
 
     fixes = []
@@ -311,6 +446,7 @@ def _age(date: str | None, now: datetime) -> int | None:
 
 def _flat_items(config, rig, sessions, lights, planned, now) -> list[dict]:
     from photonscript.scheduler.calibration import STALE_DAYS
+    reset = flats_reset_date(config, rig)   # PS-160
     need = int(getattr(config, "flat_count", 15) if rig == "rc16"
                else getattr(config, "piggyback_flat_count", 25))
     stale_after = STALE_DAYS["FLAT"]
@@ -336,10 +472,15 @@ def _flat_items(config, rig, sessions, lights, planned, now) -> list[dict]:
                 reasons.append(f"{age} d old (stale after {stale_after} d)")
             if count < need:
                 reasons.append(f"newest set has {count} of {need}")
+            if reset and last < reset:
+                reasons.append(f"taken before the optics change on {reset} "
+                               "(calibration_flats_reset)")
         out.append({
             "filter": f, "last": last, "count": count, "need": need,
             "age_days": age, "stale_after_days": stale_after,
-            "stale": last is None or (age is not None and age > stale_after),
+            "stale": (last is None or (age is not None and age > stale_after)
+                      or bool(reset and last < reset)),
+            "optics_reset": reset,
             "lights_since": since, "light_nights": sorted(filters[f]),
             "owed": bool(reasons), "reasons": reasons,
             "label": f"flats {f}"})
@@ -430,6 +571,8 @@ def _items_text(rig_out: dict) -> list[str]:
             txt += f". Fix: {d['fix']}"
         elif not d["auto_fill"] and d["owed"]:
             txt += ". Not filled automatically"
+        elif d.get("from_lights") and d["owed"]:
+            txt += ". Filled at night from the lights (calibration_darks_follow_lights)"
         lines.append(txt)
     for f in rig_out["flats"]:
         if f["owed"]:
@@ -463,6 +606,79 @@ def _readout_assumed_frames(store: dict, ep: dict) -> int:
     return sum(1 for r in store["frames"].values()
                if r.get("type") in ("DARK", "BIAS") and not r.get("readout")
                and r.get("gain") == ep["gain"] and r.get("offset") == ep["offset"])
+
+
+def _plan(config, rig: str, darks: list, flats: list, planned: list) -> dict:
+    """PS-160: what tonight's sequences will fill from this coverage: the
+    dark lengths with need (config list + lengths from the lights, roof
+    closed only, behind the cooler gate when calibration_darks_gated), and
+    the flats a dawn shoots (RC16: tonight's filters plus at most
+    calibration_dawn_flat_extra_max owed filters the lights used, most owed
+    first; Piggy-600: one OSC set every safe dawn, companion)."""
+    from photonscript.scheduler.cooler_gate import gate_mode
+    gated = bool(getattr(config, "calibration_darks_gated", True))
+    mode = gate_mode(config)
+    dark_sets = [{"exp_s": d["exp_s"], "owed": d["owed"],
+                  "from_lights": d.get("from_lights", False)}
+                 for d in darks if d["auto_fill"] and d["owed"]]
+    not_auto = [d["label"] for d in darks if d["owed"] and not d["auto_fill"]]
+    if rig == "rc16":
+        tonight = sorted({p["filter"] for p in planned})
+        cap = max(0, int(getattr(config, "calibration_dawn_flat_extra_max", 3) or 0))
+        owed = [f for f in flats if f["owed"] and f["filter"] not in tonight
+                and (f["light_nights"]
+                     or not getattr(config, "calibration_flats_as_used", True))]
+        owed.sort(key=lambda f: (f["last"] is not None, -(f["age_days"] or 0)))
+        extra = [f["filter"] for f in owed[:cap]]
+        later = [f["filter"] for f in owed[cap:]]
+        flat_txt = ("dawn flats: " + (", ".join(tonight + extra) or "none")
+                    + (f" (owed later: {', '.join(later)})" if later else ""))
+        if not getattr(config, "auto_stale_flats", True):
+            extra, later = [], [f["filter"] for f in owed]
+            flat_txt = ("dawn flats: tonight's filters only (auto_stale_flats "
+                        "off)" + (f"; owed: {', '.join(later)}" if later else ""))
+    else:
+        tonight = ["OSC"] if planned else []
+        extra, later = [], []
+        flat_txt = ("dawn flats: one OSC set every safe dawn (companion)"
+                    + ("; owed now" if any(f["owed"] for f in flats) else ""))
+    dark_txt = ("night darks (roof closed): "
+                + (", ".join(f"{_fmt(x['exp_s'])} s x {x['owed']}"
+                             + (" (from lights)" if x["from_lights"] else "")
+                             for x in dark_sets) or "none owed")
+                + ("; only at the setpoint (cooler gate, "
+                   f"{mode} mode)" if gated and mode != "off" else
+                   "; not gated on the setpoint"))
+    return {"dark_sets": dark_sets, "darks_not_automatic": not_auto,
+            "darks_gated": gated and mode != "off", "gate_mode": mode,
+            "dawn_flats_tonight": tonight, "dawn_flats_extra": extra,
+            "flats_owed_later": later, "text": [dark_txt, flat_txt]}
+
+
+def morning_note(config, rep: dict | None = None) -> str | None:
+    """PS-160: one line for the dawn "Night complete" push: what each rig
+    still owes, or None when nothing is owed. Never raises."""
+    try:
+        rep = rep or owed_report(config)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("calibration morning note unavailable: %s", e)
+        return None
+    parts = []
+    for r in rep.get("rigs") or []:
+        bits = []
+        for d in r["darks"]:
+            if d["owed"] and (d["lights"] or d["planned"]):
+                bits.append(f"darks {_fmt(d['exp_s'])} s {d['have']}/{d['need']}")
+        for f in r["flats"]:
+            if f["owed"]:
+                bits.append(f"flats {f['filter']} "
+                            + (f"{f['age_days']} d" if f["last"] else "none"))
+        if r["bias"]["owed"]:
+            bits.append("bias")
+        if bits:
+            more = f" +{len(bits) - 4}" if len(bits) > 4 else ""
+            parts.append(f"{r['name']}: " + ", ".join(bits[:4]) + more)
+    return ("Calibration owed: " + "; ".join(parts)) if parts else None
 
 
 def owed_report(config, rig: str | None = None, *, projects=None,
@@ -514,6 +730,11 @@ def owed_report(config, rig: str | None = None, *, projects=None,
             "uncalibrated_nights": sum(1 for n in nights if n["uncalibrated"])}
         r["items"] = _items_text(r)
         r["readout_note"] = _readout_note(r)
+        try:   # PS-160
+            r["plan"] = _plan(config, rg, darks, flats, planned)
+        except Exception:  # noqa: BLE001 - the report stands without it
+            logger.warning("coverage plan failed for %s", rg, exc_info=True)
+            r["plan"] = None
         out["rigs"].append(r)
     out["total_items"] = sum(len(r["items"]) for r in out["rigs"])
     return out
@@ -535,6 +756,8 @@ def format_report(rep: dict) -> str:
                      f"fix(es), {s['uncalibrated_nights']} uncalibrated night(s)")
         for t in r["items"]:
             lines.append(f"  - {t}")
+        for t in (r.get("plan") or {}).get("text") or []:
+            lines.append(f"  plan: {t}")
         if r.get("readout_note"):
             lines.append(f"  note: {r['readout_note']}")
         for n in r["nights"]:

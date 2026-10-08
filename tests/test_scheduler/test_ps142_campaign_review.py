@@ -293,6 +293,8 @@ async def test_night_complete_push_carries_the_integration_line(tmp_path, monkey
         sent.append(msg)
     monkeypatch.setattr(armer_mod, "notify", _notify)
     monkeypatch.setattr(integ, "morning_note", lambda cfg: "Integrations: M31 v3 integrated")
+    from photonscript.scheduler import calibration_owed   # PS-160 line: own test
+    monkeypatch.setattr(calibration_owed, "morning_note", lambda cfg: None)
     a = Armer(_cfg(tmp_path))
     a.plan = {"night_of": "2026-10-06"}
     await a._notify_complete("Night complete.")
