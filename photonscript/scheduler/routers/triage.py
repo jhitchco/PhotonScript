@@ -8,13 +8,14 @@ import get_config to avoid an import cycle.
 """
 from __future__ import annotations
 
+import asyncio
 import glob as _glob
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
 router = APIRouter()
 
@@ -144,9 +145,57 @@ def _rig_of(cfg, p: Path) -> str | None:
     return None
 
 
+# PS-172: the tail endpoints run their file work in a worker thread (a
+# synchronous read of a big log inside an async handler stalled the event
+# loop 6-7 s on 2026-10-08) and read each file backwards from its end, so
+# an 836 MB NINA log costs only the tail bytes. offset= pages further back
+# than one 5000-line page; download=1 streams one whole file up to a cap.
+DOWNLOAD_MAX_BYTES = 300 * 1024 * 1024
+
+
+def _scan_bytes(scan_mb) -> int:
+    from photonscript.scheduler.log_files import MAX_SCAN_BYTES
+    try:
+        mb = float(scan_mb)
+    except (TypeError, ValueError):
+        mb = 64.0
+    return int(min(max(1.0, mb), MAX_SCAN_BYTES / 1048576) * 1048576)
+
+
+def _tail_text(paths, grep, lines, offset, scan_mb, label: str = "",
+               extra: str = "") -> str:
+    from photonscript.scheduler.log_files import page_note, tail_page
+    rows, info = tail_page(paths, grep, lines, offset,
+                           scan_bytes=_scan_bytes(scan_mb))
+    names = ", ".join(Path(p).name for p in paths)
+    n = sum(1 for r in rows if not r.startswith("# ===== "))
+    return (f"# {label}{names} - last {n} lines{extra}"
+            f"{page_note(info, offset)}\n" + "\n".join(rows))
+
+
+def _download(paths):
+    """A streamed whole-file response for one log, or a refusal."""
+    if len(paths) != 1:
+        return ("download=1 takes one file: pass file=<name> (see the logs "
+                "listing) or neither file= nor date= for the newest")
+    p = Path(paths[0])
+    try:
+        size = p.stat().st_size
+    except OSError as exc:
+        return f"cannot read {p.name}: {exc}"
+    if size > DOWNLOAD_MAX_BYTES:
+        return PlainTextResponse(
+            f"{p.name} is {size / 1e6:.0f} MB, over the "
+            f"{DOWNLOAD_MAX_BYTES / 1e6:.0f} MB download cap; page it with "
+            "lines= and offset= (and scan_mb=) instead", status_code=413)
+    return FileResponse(str(p), media_type="text/plain; charset=utf-8",
+                        filename=p.name)
+
+
 @router.get("/api/nina/log", response_class=PlainTextResponse)
 async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16",
-                       date: str = "", file: str = ""):
+                       date: str = "", file: str = "", offset: int = 0,
+                       scan_mb: float = 64, download: int = 0):
     """Tail (and optionally filter) the newest NINA log - remote 2AM triage
     without pulling the whole bundle. rig='piggyback' (aliases: osc, nina2, 2)
     tails NINA #2's log instead of the RC16's, so the OSC is triageable too.
@@ -154,8 +203,18 @@ async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16",
     PS-73: date=YYYY-MM-DD reads every log of this rig covering that night
     (12:00 to 12:00 local, oldest first, one header per file), so the night
     stays readable after a NINA restart; file=<name> reads one log by name
-    (see /api/nina/logs for the list)."""
-    from photonscript.scheduler.log_files import read_rows, safe_name
+    (see /api/nina/logs for the list).
+
+    PS-172: runs off the event loop and reads from the end of the file.
+    lines= caps at 5000 per page; offset=N skips the newest N matching lines
+    (the header names the next offset); scan_mb= (default 64) bounds how far
+    back a page looks; download=1 streams one whole log (size-capped)."""
+    return await asyncio.to_thread(_nina_log, lines, grep, rig, date, file,
+                                   offset, scan_mb, download)
+
+
+def _nina_log(lines, grep, rig, date, file, offset, scan_mb, download):
+    from photonscript.scheduler.log_files import safe_name
     cfg = _cfg()
     if file:
         logs_dir, _ded, _port, _pig = _nina_setup(cfg, rig)
@@ -173,9 +232,9 @@ async def api_nina_log(lines: int = 500, grep: str = "", rig: str = "rc16",
         if path is None:
             return note
         paths = [Path(path)]
-    rows = read_rows(paths, grep, lines)
-    names = ", ".join(p.name for p in paths)
-    return f"# [{rig}] {names} - last {len(rows)} lines\n" + "\n".join(rows)
+    if int(download or 0):
+        return _download(paths)
+    return _tail_text(paths, grep, lines, offset, scan_mb, label=f"[{rig}] ")
 
 
 @router.get("/api/nina/logs")
@@ -204,6 +263,33 @@ def api_nina_logs(rig: str = "", date: str = "", limit: int = 60):
             out.append(dict(describe(p), rig=who, dir=d))
     out.sort(key=lambda r: r["modified"] or "", reverse=True)
     return {"count": len(out), "logs": out[:max(1, min(int(limit), 200))]}
+
+
+@router.get("/api/nina/log/top")
+def api_nina_log_top(rig: str = "rc16", file: str = "", mb: float = 50,
+                     top: int = 25):
+    """PS-174: the most repeated message shapes in the last `mb` MB (default
+    50, max 1024) of a rig's newest NINA log (or file=<name>), with count and
+    share of bytes, to find what fills the log. Reads only the tail, in a
+    worker thread (plain def). Also: the newest log's size and growth per
+    rig (the morning report's log watch)."""
+    from photonscript.scheduler.log_files import safe_name
+    from photonscript.scheduler.nina_log_watch import log_sizes, top_messages
+    cfg = _cfg()
+    if file:
+        logs_dir, _ded, _port, _pig = _nina_setup(cfg, rig)
+        name = safe_name(file)
+        p = Path(logs_dir) / name if name else None
+        if p is None or not p.is_file():
+            return {"error": f"no NINA log named {file!r} under {logs_dir}"}
+    else:
+        path, note = _rig_log(cfg, rig)
+        if path is None:
+            return {"error": note}
+        p = Path(path)
+    out = top_messages(p, mb=mb, top=top)
+    out.update(rig=rig, sizes=log_sizes(cfg))
+    return out
 
 
 @router.get("/api/notifications")
@@ -248,7 +334,8 @@ def api_notifications(since_hours: float = 24.0, limit: int = 200,
 
 @router.get("/api/phd2/log", response_class=PlainTextResponse)
 async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide",
-                       date: str = "", file: str = ""):
+                       date: str = "", file: str = "", offset: int = 0,
+                       scan_mb: float = 64, download: int = 0):
     """Tail (and optionally filter) a PHD2 log: remote guiding triage.
 
     kind='guide' (default) reads PHD2_GuideLog_*.txt (per-frame RA/Dec
@@ -260,8 +347,15 @@ async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide",
     that night (12:00 to 12:00 local); file=<name> reads one log. The folder
     is phd2_logs_dir, or the first usual PHD2 folder that holds logs (see
     /api/phd2/logs for where it looked).
+
+    PS-172: off the event loop, read from the end; offset=, scan_mb= and
+    download=1 as on /api/nina/log.
     """
-    from photonscript.scheduler.log_files import read_rows
+    return await asyncio.to_thread(_phd2_log, lines, grep, kind, date, file,
+                                   offset, scan_mb, download)
+
+
+def _phd2_log(lines, grep, kind, date, file, offset, scan_mb, download):
     from photonscript.scheduler.phd2_logs import find_logs, select
     found = find_logs(_cfg(), kind)
     if not found["files"]:
@@ -272,10 +366,10 @@ async def api_phd2_log(lines: int = 500, grep: str = "", kind: str = "guide",
     paths, note = select(found["files"], date=date, file=file)
     if not paths:
         return note
-    rows = read_rows(paths, grep, lines)
+    if int(download or 0):
+        return _download(paths)
     extra = "" if found["why"] == "configured" else f" [found in {found['dir']}]"
-    return (f"# {', '.join(p.name for p in paths)} - last {len(rows)} lines"
-            f"{extra}\n" + "\n".join(rows))
+    return _tail_text(paths, grep, lines, offset, scan_mb, extra=extra)
 
 
 @router.get("/api/phd2/logs")
@@ -339,26 +433,31 @@ def _latest_ascom_log(base: str, name: str = ""):
 
 
 @router.get("/api/ascom/log", response_class=PlainTextResponse)
-async def api_ascom_log(lines: int = 500, grep: str = "", name: str = "Safety"):
-    """Tail (and optionally filter) the newest ASCOM trace log — the driver-level
+async def api_ascom_log(lines: int = 500, grep: str = "", name: str = "Safety",
+                        offset: int = 0, scan_mb: float = 64, download: int = 0):
+    """Tail (and optionally filter) the newest ASCOM trace log: the driver-level
     detail (HTTP calls, exceptions) behind a safety-monitor drop. Requires
     'Enable Trace' in the ASCOM Alpaca driver setup. name= filters by filename
-    substring (default 'Safety' → the safety-monitor client's log; blank = any
-    ASCOM device); grep= filters lines (case-insensitive, '|' for multiple)."""
+    substring (default 'Safety', the safety-monitor client's log; blank = any
+    ASCOM device); grep= filters lines (case-insensitive, '|' for multiple).
+    PS-172: off the event loop (the folder walk too), read from the end;
+    offset=, scan_mb= and download=1 as on /api/nina/log."""
+    return await asyncio.to_thread(_ascom_log, lines, grep, name, offset,
+                                   scan_mb, download)
+
+
+def _ascom_log(lines, grep, name, offset, scan_mb, download):
     base = getattr(_cfg(), "ascom_logs_dir", "")
     if not base:
         return "ascom_logs_dir not configured (set it in System config)"
     p = _latest_ascom_log(base, name)
     if p is None:
         label = f'"{name}" ' if name else ""
-        return (f"no ASCOM {label}logs found under {base} — enable 'Trace' in the "
+        return (f"no ASCOM {label}logs found under {base}: enable 'Trace' in the "
                 "ASCOM Alpaca driver setup, then reconnect and wait for activity")
-    rows = p.read_text(encoding="utf-8", errors="replace").splitlines()
-    if grep:
-        needles = [n.strip().lower() for n in grep.split("|") if n.strip()]
-        rows = [r for r in rows if any(n in r.lower() for n in needles)]
-    rows = rows[-min(max(1, lines), 5000):]
-    return f"# {p.name} - last {len(rows)} lines\n" + "\n".join(rows)
+    if int(download or 0):
+        return _download([p])
+    return _tail_text([p], grep, lines, offset, scan_mb)
 
 
 @router.get("/api/logs/tail")

@@ -40,6 +40,7 @@ and the state is unknown after the last line + STALE_S.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -53,10 +54,23 @@ def log_path(config, night: str) -> Path:
 
 
 def _f(v):
+    """A finite float or None. ninaAPI can report NaN (e.g. Alt/Az while the
+    driver has no fix); json.dumps writes NaN, which strict JSON (FastAPI's
+    response encoder) refuses, so a NaN line made /api/status/mount-log 500
+    (PS-173)."""
     try:
-        return float(v) if v is not None else None
+        x = float(v) if v is not None else None
     except (TypeError, ValueError):
         return None
+    return x if x is None or math.isfinite(x) else None
+
+
+def _clean(v):
+    """Non-finite floats in a loaded line -> None (lines written before
+    PS-173 can hold NaN)."""
+    if isinstance(v, float) and not math.isfinite(v):
+        return None
+    return v
 
 
 def sample_from_nina(mount: dict) -> dict | None:
@@ -142,9 +156,11 @@ def load(config, night: str) -> list[dict]:
     from photonscript.shared.phd2_store import parse_z, read_jsonl
     out = []
     for r in read_jsonl(log_path(config, night)):
+        if not isinstance(r, dict):
+            continue
         dt = parse_z(r.get("t"))
         if dt is not None:
-            out.append({**r, "dt": dt})
+            out.append({**{k: _clean(v) for k, v in r.items()}, "dt": dt})
     out.sort(key=lambda r: r["dt"])
     return out
 
@@ -165,6 +181,8 @@ def position_at(lines: list[dict], when: datetime,
     if (when - r["dt"]).total_seconds() > stale_s and r.get("tracking"):
         return None
     if r.get("slewing") or r.get("parked"):
+        return None
+    if r.get("ra") is None or r.get("dec") is None:
         return None
     return r
 

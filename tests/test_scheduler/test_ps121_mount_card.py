@@ -132,7 +132,8 @@ def _rigs(monkeypatch, tmp_path, mount_payload, conn=True, err=""):
             return conn, mount_payload, err
         return False, {}, ""
     monkeypatch.setattr(preflight, "_connected", _fake)
-    rigs = asyncio.run(app.api_rigs())["rigs"]
+    # PS-174: fresh=True, each call here reads a new fake NINA
+    rigs = asyncio.run(app.api_rigs(fresh=True))["rigs"]
     assert [r["rig"] for r in rigs] == ["rc16"]
     return rigs[0]
 

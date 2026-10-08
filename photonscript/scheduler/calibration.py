@@ -31,8 +31,18 @@ PIGGYBACK_LOOP_CONTAINER_NAMES = (OSC_LIGHT_LOOP_NAME, OSC_IMAGE_PASS_NAME,
                                   OSC_LIGHTS_UNTIL_DAWN_NAME)
 # PS-25 resume debounce pieces (no exposures inside, so not structural loops).
 OSC_RESUME_HOLD_NAME = "OSC_RESUME_HOLD"
-OSC_WAIT_SAFE_CONFIRM_NAME = "WAIT_SAFE_CONFIRM_OR_NAUTICAL_DAWN"
+OSC_WAIT_SAFE_CONFIRM_NAME = "WAIT_SAFE_CONFIRM_OR_ASTRO_DAWN"
 OSC_ROOF_OPEN_NOTICE_NAME = "OSC_ROOF_OPEN_NOTICE"
+# PS-175: OSC lights only in astronomical dark. The first light waits for
+# astro dusk (the RC16's own night loop starts there, or at nautical dusk +10
+# on a narrowband-first night, so astro dusk is also on or after its first
+# target), and the light loop ends at astro dawn. Twilight subs were trash
+# (2026-10-07: 4 x 300 s at the RC16 startup position 18:54-19:14 MST, all
+# rejected by hand). The OSC dawn flats keep their nautical-dawn timing
+# (PS-163).
+OSC_LIGHTS_DUSK = ("DuskProvider", 0)
+OSC_LIGHTS_DAWN = ("DawnProvider", 0)
+OSC_WAIT_DUSK_NAME = "WAIT_ASTRO_DUSK_FOR_OSC_LIGHTS"
 # PS-149: the unconditional wait that ends every OSC_LIGHTS_UNTIL_DAWN pass
 OSC_PASS_PACE_S = 30
 
@@ -784,7 +794,7 @@ def _osc_af_triggers(config) -> list:
 
 def _osc_light_loop(config) -> dict:
     """Dumb OSC light loop for the piggyback (§4.3 DUAL_RIG): shoot continuous
-    OSC lights while the roof is safe, until nautical dawn, resilient to cloud
+    OSC lights while the roof is safe, until astro dawn (PS-175), resilient to cloud
     gaps. No slew/center/dither/guide (those belong to the RC16); the
     piggyback just rides the mount at its fixed offset. Exposure defaults to
     piggyback_exposure_s (120 s OSC — the piggyback is background-limited in
@@ -852,7 +862,7 @@ def _osc_light_loop(config) -> dict:
         Binning=_make_typed("NINA.Core.Model.Equipment.BinningMode, NINA.Core",
                             X=1, Y=1),
         ImageType="LIGHT", ExposureCount=0, ErrorBehavior=0, Attempts=1)
-    dawn = ("NauticalDawnProvider", 0)
+    dawn = OSC_LIGHTS_DAWN   # PS-175: astro dawn (was nautical dawn)
     # Inner loop: repeat exposures WHILE safe and before dawn (checked between
     # exposures, so the loop ends on its own at dawn); triggers refocus.
     # PS-27: the settle gate sits AFTER each light (and once before the
@@ -874,7 +884,7 @@ def _osc_light_loop(config) -> dict:
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
-        [_wait_safe_until(*dawn, name="WAIT_SAFE_OR_NAUTICAL_DAWN"),
+        [_wait_safe_until(*dawn, name="WAIT_SAFE_OR_ASTRO_DAWN"),
          _osc_resume_hold(config, *dawn),
          _wait_safe_until(*dawn, name=OSC_WAIT_SAFE_CONFIRM_NAME),
          image_pass,
@@ -944,16 +954,26 @@ def _osc_roof_open_notice(config) -> list:
         _pushover)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     hold = _osc_resume_hold_seconds(config)
-    dawn = ("NauticalDawnProvider", 0)
+    dawn = OSC_LIGHTS_DAWN
     return [
         _wait_safe_until(*dawn, name="WAIT_SAFE_FOR_FIRST_OSC_LIGHTS"),
         _seq_container(
             OSC_ROOF_OPEN_NOTICE_NAME,
             [_pushover("Piggyback", f"roof open: OSC lights {exp_s:g}s until "
-                       f"nautical dawn, after a {hold} s resume hold")],
+                       f"astro dawn, after a {hold} s resume hold")],
             conditions=[_safety_condition(), _loop_once(),
                         _time_condition(*dawn)]),
     ]
+
+
+def _osc_wait_astro_dusk() -> dict:
+    """PS-175: hold the first OSC light until astro dusk. One WaitForTime
+    (a fixed time, so bounded; it returns at once when armed after dusk) in a
+    run-once container, before the roof-open notice and the light loop."""
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _wait_for_provider)
+    return _seq_container(OSC_WAIT_DUSK_NAME,
+                          [_wait_for_provider(*OSC_LIGHTS_DUSK)])
 
 
 def osc_flat_dawn_offset(config) -> int:
@@ -1081,10 +1101,12 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
                     CompletedIterations=0, Iterations=50)])],
             conditions=_bias_conds))
     if has_safety and with_lights:
-        # Shoot OSC lights while the roof is open until nautical dawn. The loop
-        # waits for safe itself (bounded), so a roof that never opens, or
-        # closes before dawn, falls through to the dawn-flat window below
-        # instead of wedging in an unbounded WaitUntilSafe (PS-36, 2026-09-26).
+        # Shoot OSC lights while the roof is open, astro dusk to astro dawn
+        # (PS-175). The loop waits for safe itself (bounded), so a roof that
+        # never opens, or closes before dawn, falls through to the dawn-flat
+        # window below instead of wedging in an unbounded WaitUntilSafe
+        # (PS-36, 2026-09-26).
+        target_items.append(_osc_wait_astro_dusk())
         target_items += _osc_roof_open_notice(config)
         target_items.append(_osc_light_loop(config))
         from photonscript.scheduler.nina_sequence_json import (

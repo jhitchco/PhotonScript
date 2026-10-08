@@ -269,6 +269,10 @@ class PhotonScriptConfig(BaseSettings):
                                     # nina_logs_dir (both NINAs log to one folder;
                                     # /api/nina/log picks each rig's file by the
                                     # Advanced API port its log says it listens on).
+    # PS-174: the morning report warns when a NINA log is bigger than this
+    # (MB) or grows faster than this per day (the NINA #1 log reached 836 MB
+    # in 2.5 days in 2026-10). Report-only; 0 = off.
+    nina_log_warn_mb: float = 500.0
     phd2_logs_dir: str = "C:\\Users\\jeremy\\Documents\\PHD2"  # PHD2 GuideLog +
     # DebugLog dir (PHD2 default). Lets the dashboard tail guiding remotely —
     # RMS, star-lost, calibration — the same way nina_logs_dir does for NINA.

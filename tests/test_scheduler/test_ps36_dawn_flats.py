@@ -88,18 +88,19 @@ def test_light_loop_waits_are_bounded_and_passes_gated():
     # PS-25 resume hold; PS-149 pace wait last
     first, hold, confirm, image_pass, pace = _items(lights)
     assert _short(pace["$type"]) == "WaitForTimeSpan" and pace["Time"] == 30
-    # bounded wait: loops a short timespan while unsafe AND before naut. dawn
-    assert first["Name"] == "WAIT_SAFE_OR_NAUTICAL_DAWN"
+    # bounded wait: loops a short timespan while unsafe AND before astro
+    # dawn (PS-175; nautical dawn before)
+    assert first["Name"] == "WAIT_SAFE_OR_ASTRO_DAWN"
     kinds = [_short(c["$type"]) for c in _conds(first)]
     assert kinds == ["LoopWhileUnsafe", "TimeCondition"]
-    assert "NauticalDawnProvider" in _conds(first)[1]["SelectedProvider"]["$type"]
+    assert ".DawnProvider," in _conds(first)[1]["SelectedProvider"]["$type"]
     assert [_short(i["$type"]) for i in _items(first)] == ["WaitForTimeSpan"]
-    assert confirm["Name"] == "WAIT_SAFE_CONFIRM_OR_NAUTICAL_DAWN"
+    assert confirm["Name"] == "WAIT_SAFE_CONFIRM_OR_ASTRO_DAWN"
     assert [_short(c["$type"]) for c in _conds(confirm)] == kinds
     assert hold["Name"].startswith("OSC_RESUME_HOLD")
     assert [_short(c["$type"]) for c in _conds(hold)] == [
         "LoopCondition", "TimeCondition"]
-    assert "NauticalDawnProvider" in _conds(hold)[1]["SelectedProvider"]["$type"]
+    assert ".DawnProvider," in _conds(hold)[1]["SelectedProvider"]["$type"]
     # image pass: skipped when unsafe, runs once per outer pass, ends at dawn
     assert image_pass["Name"] == "OSC_IMAGE_PASS"
     assert [_short(c["$type"]) for c in _conds(image_pass)] == [

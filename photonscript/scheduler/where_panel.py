@@ -242,6 +242,19 @@ async def _get(base: str, path: str):
     return await nina_get(base, path, timeout=6.0)
 
 
+# PS-174: the panel is polled every 10 s by every open dashboard tab (and by
+# the off-target monitor); its ninaAPI reads are shared for NINA_TTL_S so
+# the NINA load does not grow with the number of callers. The armer and
+# telescope state parts stay live.
+NINA_TTL_S = 4.0
+
+
+async def _cached_get(base: str, path: str):
+    from photonscript.shared.ttl_cache import cached
+    return await cached(f"where:{base}{path}", NINA_TTL_S,
+                        lambda: _get(base, path))
+
+
 def _tonight_plan(cfg, armer_plan: dict | None) -> dict:
     """The armer's plan when it has dawn times, else tonight's times from
     armer.watch_plan (cached per night; it computes twilight)."""
@@ -313,7 +326,8 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
     tests (default: ninaAPI GETs). piggy=False skips NINA #2 (the PS-143
     off-target monitor reads only the RC16 side). Never raises."""
     from photonscript.shared.rigs import PIGGYBACK, rig_config, rig_ids
-    get = get or _get
+    shared = get is None
+    get = get or _cached_get
     now = now or datetime.utcnow()
     tel = tel or {}
     status = armer.status() if armer is not None else {}
@@ -325,8 +339,13 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
 
     async def seq_tree(base):
         from photonscript.scheduler.sideload import read_sequence_state
+        from photonscript.shared.ttl_cache import cached
+
+        async def read():
+            return await asyncio.wait_for(read_sequence_state(base), 8)
         try:
-            tree, err = await asyncio.wait_for(read_sequence_state(base), 8)
+            tree, err = (await cached(f"where:seq:{base}", NINA_TTL_S, read)
+                         if shared else await read())
         except Exception as e:  # noqa: BLE001
             return None, str(e) or type(e).__name__
         return tree, err

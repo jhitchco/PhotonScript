@@ -684,6 +684,8 @@ class TelescopeAgent:
                              f"Cooling watchdog reconnect errored: {e}",
                              title="PhotonScript cooling watchdog", priority=1)
 
+    SEQ_POLL_EVERY = 3   # PS-174: /sequence/json on every 3rd 5 s cycle
+
     async def _nina_poll_loop(self):
         """Poll NINA for equipment state every few seconds."""
         while self._running:
@@ -754,7 +756,15 @@ class TelescopeAgent:
                 except Exception:
                     pass
 
-                # Get sequence status
+                # Get sequence status. PS-174: /sequence/json is the heaviest
+                # ninaAPI read (the whole container tree), so it runs every
+                # SEQ_POLL_EVERY-th cycle (15 s), not every 5 s.
+                n = getattr(self, "_seq_poll_n", 0)
+                self._seq_poll_n = n + 1
+                if n % self.SEQ_POLL_EVERY:
+                    self.state.updated_at = datetime.utcnow()
+                    await asyncio.sleep(5)
+                    continue
                 seq = await self.nina.get_sequence_status()
                 status = seq.get("State", "IDLE").upper()
                 state_map = {

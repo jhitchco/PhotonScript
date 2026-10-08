@@ -381,7 +381,8 @@ they differ. Nothing here deploys until `deploy.ps1`; the dev clone is
 - **Owner rule (PS-25):** NINA #1 is the only instance that acts on the mount
   (park, unpark, slew, center). NINA #2 only pauses its own exposures, and on
   safe it holds `safety_confirm_seconds` + `piggyback_resume_grace_s` (120 + 300 s)
-  before its AF and lights, ending at nautical dawn; one "roof open" push a night.
+  before its AF and lights; lights only from astro dusk to astro dawn (PS-175:
+  twilight subs were rejected by hand on 2026-10-07); one "roof open" push a night.
 
 ### 9.6 Follow-ups / watch-items
 - **RC16 broadband flats** (L/R/G/B) went 541 d stale while narrowband stayed

@@ -238,9 +238,9 @@ def test_osc_resume_hold_orders_wait_hold_wait_before_autofocus():
     lights = _named(root, "OSC_LIGHTS_UNTIL_DAWN")
     items = lights["Items"]["$values"]
     names = [i.get("Name") for i in items]
-    assert names[0] == "WAIT_SAFE_OR_NAUTICAL_DAWN"
+    assert names[0] == "WAIT_SAFE_OR_ASTRO_DAWN"   # PS-175
     assert names[1].startswith("OSC_RESUME_HOLD")
-    assert names[2] == "WAIT_SAFE_CONFIRM_OR_NAUTICAL_DAWN"
+    assert names[2] == "WAIT_SAFE_CONFIRM_OR_ASTRO_DAWN"
     assert names[3] == "OSC_IMAGE_PASS"
     for wait in (items[0], items[2]):
         assert [_short(c["$type"]) for c in wait["Conditions"]["$values"]] == [
@@ -261,10 +261,11 @@ def test_osc_resume_hold_is_confirm_plus_grace_and_ends_at_dawn():
     assert cfg.piggyback_resume_grace_s == 300
     assert _hold_seconds(hold) >= cfg.safety_confirm_seconds + 300
     assert _hold_seconds(hold) < cfg.safety_confirm_seconds + 300 + 30
-    # bounded by nautical dawn so it cannot push lights or flats past dawn
+    # bounded by astro dawn (PS-175) so it cannot push lights or flats past dawn
     tc = next(c for c in hold["Conditions"]["$values"]
               if _short(c["$type"]) == "TimeCondition")
-    assert "NauticalDawnProvider" in tc["SelectedProvider"]["$type"]
+    assert tc["SelectedProvider"]["$type"].endswith(
+        "DateTimeProvider.DawnProvider, NINA.Sequencer")
     assert tc["MinutesOffset"] == 0
     # configurable
     root = _osc_lights_root(piggyback_focus_seed=0, safety_confirm_seconds=60,
