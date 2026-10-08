@@ -726,6 +726,7 @@ _CONFIG_FIELDS = [
     ("tpoint_mapping_max_ha_h", "PS_TPOINT_MAPPING_MAX_HA_H", "TPoint mapping: skip points beyond this hour angle (under the pole)", "PHD2", "float", False, False),
     ("tpoint_sample_script", "PS_TPOINT_SAMPLE_SCRIPT", "TPoint mapping: sample script NINA runs after each frame (deploy\\tpoint-sample.cmd on the scope PC)", "PHD2", "str", False, False),
     ("tpoint_sample_add", "PS_TPOINT_SAMPLE_ADD", "TPoint mapping: off (Image Link + CSV only) | auto (also add each solved point to TPoint with the method the probe found)", "PHD2", "str", False, True),
+    ("tpoint_sample_add_method", "PS_TPOINT_SAMPLE_ADD_METHOD", "TPoint mapping: pin the add method (an id the probe found, e.g. action_trigger_AddPointingSample); empty = the probe's first", "PHD2", "str", False, False),
     ("tpoint_polar_max_arcmin", "PS_TPOINT_POLAR_MAX_ARCMIN", "TPoint polar alignment error at most N arcmin", "PHD2", "float", False, False),
     ("pointing_first_slew_warn_arcmin", "PS_POINTING_FIRST_SLEW_WARN_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = warn", "PHD2", "float", False, False),
     ("pointing_first_slew_fail_arcmin", "PS_POINTING_FIRST_SLEW_FAIL_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = fail / rebuild", "PHD2", "float", False, False),

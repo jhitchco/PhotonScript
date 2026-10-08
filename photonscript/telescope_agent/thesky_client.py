@@ -211,6 +211,28 @@ def _doc(n: int) -> str:
 
 _MOUNT_PRE = "var c = false; try { c = sky6RASCOMTele.IsConnected; } catch (e) {}"
 
+# PS-171: tp(f, names) = f() (the TPoint.<name> read) when it gives a plain
+# value, else the first plain (not function, not object) value of
+# names[i] on TheSkyXAction.TPointAddOn2 / .TPointModule. Reads only.
+TP_PRE = ("function tpObjs(){var r=[];try{if(typeof TheSkyXAction!='undefined'){"
+          "var a=TheSkyXAction.TPointAddOn2;if(a&&typeof a=='object'){r.push(a);}"
+          "var b=TheSkyXAction.TPointModule;if(b&&typeof b=='object'){r.push(b);}"
+          "}}catch(e){}return r;}"
+          "function plain(v){return v!==undefined&&v!==null&&typeof v!='function'"
+          "&&typeof v!='object';}"
+          "function tp(f,names){try{var v=f();if(plain(v)){return v;}}catch(e){}"
+          "var os=tpObjs();for(var i=0;i<os.length;i++){"
+          "for(var j=0;j<names.length;j++){try{var w=os[i][names[j]];"
+          "if(plain(w)){return w;}}catch(e){}}}return undefined;}")
+
+
+def _tp(expr: str, *alts: str) -> str:
+    """tp() call for a TPoint.<Name> read plus alternative member names
+    (the TPoint.<Name> name itself is always tried on the module objects)."""
+    names = [expr.split(".", 1)[1], *alts]
+    return (f"tp(function(){{return {expr};}}, ["
+            + ",".join(f"'{n}'" for n in names) + "])")
+
 # name -> ([(key, JS expression)], prelude). The TCP reads and the on-site
 # check script (onsite_script) are both built from this one list.
 READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
@@ -255,15 +277,28 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
     # check prints each). Property reads only, no method call: a name this
     # build lacks reads ?ERR, a method reads as its source text (dropped by
     # parse_kv), and the audit then says unknown / verify by eye.
+    # PS-171: the 2026-10-08 probe found no global TPoint object on 10.5;
+    # TheSkyXAction exposes TPointAddOn2 / TPointModule members. tp() tries
+    # the TPoint.<name> read first, then the same candidate names (and
+    # their camelCase forms) as plain properties of those two objects when
+    # they are objects. Never a call: a function-valued name is skipped.
     "tpoint_flags": ([
-        ("apply_corrections", "TPoint.ApplyPointingCorrections"),
-        ("points", "TPoint.NumberOfPoints"),
-        ("rms_arcsec", "TPoint.SkyRMS"),
-        ("ih_arcsec", "TPoint.IH"),
-        ("id_arcsec", "TPoint.ID"),
-        ("protrack_active", "TPoint.ProTrackActive"),
+        ("apply_corrections", _tp("TPoint.ApplyPointingCorrections",
+                                  "applyPointingCorrections",
+                                  "PointingCorrections", "pointingCorrections")),
+        ("points", _tp("TPoint.NumberOfPoints", "numberOfPoints",
+                       "NumberOfDataPoints", "numberOfDataPoints",
+                       "PointCount", "pointCount", "dataPointCount")),
+        ("rms_arcsec", _tp("TPoint.SkyRMS", "skyRMS", "skyRms", "RMS", "rms")),
+        ("ih_arcsec", _tp("TPoint.IH")),
+        ("id_arcsec", _tp("TPoint.ID")),
+        ("protrack_active", _tp("TPoint.ProTrackActive", "proTrackActive",
+                                "ProTrack", "proTrack", "ProTrackEnabled",
+                                "proTrackEnabled")),
         ("protrack_active_tele", "sky6RASCOMTele.ProTrack"),
-        ("protrack_adjustments", "TPoint.EnableTrackingAdjustments")], ""),
+        ("protrack_adjustments", _tp("TPoint.EnableTrackingAdjustments",
+                                     "enableTrackingAdjustments"))],
+        TP_PRE),
     # PS-167: is TheSky slewing (or stuck in a slew)? guide-recover reads it
     # twice a few seconds apart. Property reads only, never Connect().
     "slew_state": ([

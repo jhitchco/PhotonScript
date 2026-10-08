@@ -722,6 +722,8 @@ def tpoint_sample_cmd(
             if dry_run:
                 print(f"frame: {row.get('file')}  scale: {row.get('scale')}  "
                       f"add: {row.get('add_mode')} {row.get('add_method') or ''}")
+                print(f"add call: {row.get('add_call') or '(none)'}  "
+                      f"[{row.get('add_call_note') or ''}]")
                 print(row.get("script") or "")
     except typer.Exit:
         raise

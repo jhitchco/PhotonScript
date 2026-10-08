@@ -451,6 +451,25 @@ prints "was ..." next to every changed flag: run it before and after a
 manual TPoint session to compare the model (and the PS-168 drift report
 the nights either side).
 
+First probe (2026-10-08, TheSky64 10.5): no global `TPoint` object; the
+TPoint names hang off `TheSkyXAction` (AddPointingSample,
+AutoPointingCalibration, TPointAddOn2, TPointModule). The probe now prints
+for each of those its typeof, class, value text and (objects) members, the
+typeof of `TheSkyXAction.execute`, every plain value of TPointAddOn2 /
+TPointModule (where the point count / RMS / ProTrack flags should be; the
+`tpoint_flags` read, and so the PS-104 audit, now also looks there), and
+all members of ImageLink and sky6RASCOMTele. Still nothing is called.
+AddPointingSample add candidates, by what the probe sees: a function is
+called (`TheSkyXAction.AddPointingSample();`), an action object with a
+trigger is triggered (`TheSkyXAction.AddPointingSample.trigger();`), a
+number / string is passed to `TheSkyXAction.execute(...)`, else
+`TheSkyXAction.execute('AddPointingSample');`. The first found is used
+unless `tpoint_sample_add_method` pins one (an id from "Add methods
+found"). `photonscript tpoint-sample --dry-run` prints the exact add line
+("add call: ...") and whether it would run. First add: one supervised point
+with `PS_TPOINT_SAMPLE_ADD=auto` (the call may open a TheSky dialog; watch
+the TPoint window), then back to `off` if anything looks wrong.
+
 How to run it (supervised; first run on a clear night, about 1 h):
 1. Afternoon: run the probe (above). Note the point count / RMS. If it
    lists an add method and you want points added automatically, set
@@ -494,7 +513,8 @@ Config: `tpoint_mapping_points` (60, 3 to 300), `tpoint_mapping_min_alt`
 (30), `tpoint_mapping_exposure_s` (5), `tpoint_mapping_binning` (2),
 `tpoint_mapping_moon_deg` (15), `tpoint_mapping_max_ha_h` (6),
 `tpoint_sample_script` (`C:\astro\PhotonScript\deploy\tpoint-sample.cmd`;
-missing = frames only), `tpoint_sample_add` (off | auto).
+missing = frames only), `tpoint_sample_add` (off | auto),
+`tpoint_sample_add_method` ("" = the probe's first; or one candidate id).
 
 ### A safe hand-built NINA #2 sequence (PS-139)
 

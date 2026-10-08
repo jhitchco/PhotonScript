@@ -26,6 +26,15 @@ be read off the site's build), and the TPoint flags (model points, RMS) so
 a manual run's before / after can be compared. Bisque's published
 scripting reference names no TPoint add method we could confirm offline:
 every name in ADD_CANDIDATES is a CANDIDATE.
+
+First probe on the site (2026-10-08, TheSky64 10.5): no global TPoint
+object; TheSkyXAction lists AddPointingSample, AutoPointingCalibration,
+TPointAddOn2 and TPointModule. The probe now also prints, for those, the
+typeof, class, value text and (objects) member names, the typeof of
+TheSkyXAction.execute, every plain value of TPointAddOn2 / TPointModule,
+and all members of ImageLink and sky6RASCOMTele. The AddPointingSample
+candidates cover each invocation form; tpoint_sample_add_method pins one
+after the probe has been read.
 """
 
 from __future__ import annotations
@@ -46,23 +55,67 @@ FRAME_WAIT_S = 30.0          # NINA saves in the background after the exposure
 FRAME_MAX_AGE_S = 180.0      # a frame older than this is not tonight's point
 ADD_MODES = ("off", "auto")
 
-# (id, object, method): zero-argument calls made right after a successful
-# Image Link in the same script ("add the last solution as a pointing
-# sample"). CANDIDATES, in preference order; the probe reports which exist.
-# The only TheSky writes in PhotonScript; the denylist test checks that
-# these names appear nowhere else in the code.
+# (id, check, call): `check` is a typeof-only JS expression (the probe
+# evaluates it, nothing is called); `call` is ONE statement run right after
+# a successful Image Link in the same script, and only while `check` still
+# holds. CANDIDATES, in preference order; the probe reports which exist and
+# tpoint_sample_add_method can pin one. The only TheSky writes in
+# PhotonScript; a test checks that no call text appears anywhere else.
+#
+# PS-171 probe 2026-10-08 (TheSky64 10.5): no global TPoint object;
+# TheSkyXAction lists AddPointingSample, AutoPointingCalibration,
+# TPointAddOn2 and TPointModule among its members. How a TheSkyXAction
+# member is invoked on this build is not documented offline, so the four
+# AddPointingSample forms are all candidates and the probe's typeof decides:
+# a function is called, a QAction-like object is triggered, a number or
+# string is passed to TheSkyXAction.execute(), else execute() by name.
+_ACT = "TheSkyXAction"
+_APS = "TheSkyXAction.AddPointingSample"
+_HAS_ACT = f"typeof {_ACT} != 'undefined'"
+_HAS_EXEC = f"{_HAS_ACT} && typeof {_ACT}.execute == 'function'"
+
+
+def _has_method(obj: str, meth: str) -> str:
+    return f"typeof {obj} != 'undefined' && typeof {obj}.{meth} == 'function'"
+
+
 ADD_CANDIDATES: tuple[tuple[str, str, str], ...] = (
-    ("imagelinkresults_addToTPoint", "ImageLinkResults", "addToTPoint"),
-    ("imagelink_addToTPoint", "ImageLink", "addToTPoint"),
-    ("tpoint_AddImageLinkResults", "TPoint", "AddImageLinkResults"),
-    ("tpoint_addPointingSample", "TPoint", "addPointingSample"),
-    ("tpoint_AddData", "TPoint", "AddData"),
+    ("action_call_AddPointingSample",
+     f"{_HAS_ACT} && typeof {_APS} == 'function'", f"{_APS}();"),
+    ("action_trigger_AddPointingSample",
+     f"{_HAS_ACT} && typeof {_APS} == 'object' && {_APS} !== null "
+     f"&& typeof {_APS}.trigger == 'function'", f"{_APS}.trigger();"),
+    ("action_execute_value_AddPointingSample",
+     f"{_HAS_EXEC} && (typeof {_APS} == 'number' || typeof {_APS} == 'string')",
+     f"{_ACT}.execute({_APS});"),
+    ("action_execute_name_AddPointingSample",
+     f"{_HAS_EXEC} && typeof {_APS} != 'undefined'",
+     f"{_ACT}.execute('AddPointingSample');"),
+    ("imagelinkresults_addToTPoint", _has_method("ImageLinkResults", "addToTPoint"),
+     "ImageLinkResults.addToTPoint();"),
+    ("imagelink_addToTPoint", _has_method("ImageLink", "addToTPoint"),
+     "ImageLink.addToTPoint();"),
+    ("tpoint_AddImageLinkResults", _has_method("TPoint", "AddImageLinkResults"),
+     "TPoint.AddImageLinkResults();"),
+    ("tpoint_addPointingSample", _has_method("TPoint", "addPointingSample"),
+     "TPoint.addPointingSample();"),
+    ("tpoint_AddData", _has_method("TPoint", "AddData"), "TPoint.AddData();"),
 )
 
-# objects whose member names the probe lists (filtered by _MEMBER_RE)
-PROBE_OBJECTS = ("TPoint", "ImageLink", "ImageLinkResults", "sky6RASCOMTele",
-                 "AutomatedImageLinkSettings", "TheSkyXAction")
+# objects whose member names the probe lists: (object, all members?) -
+# False = only names matching _MEMBER_RE
+PROBE_OBJECTS = (("TPoint", False), ("ImageLink", True),
+                 ("ImageLinkResults", False), ("sky6RASCOMTele", True),
+                 ("AutomatedImageLinkSettings", False), ("TheSkyXAction", False))
 _MEMBER_RE = "tpoint|point|sample|model|rms|protrack|adddata|add"
+# TheSkyXAction members the probe describes (typeof, class, value text and,
+# for objects, their members); for the MODULES also every plain value
+ACTION_NAMES = ("AddPointingSample", "AutoPointingCalibration", "TPointAddOn2",
+                "TPointModule")
+MODULES = ("TPointAddOn2", "TPointModule")
+_LIST_SEP = "~"          # between entries in a probe list (s() keeps it)
+_MAX_MEMBERS = 300
+_MAX_VALUE_CHARS = 60
 
 CSV_FIELDS = ("utc", "point", "of", "side", "cmd_alt", "cmd_az", "file",
               "bin", "scale", "solved", "solved_ra_j2000_h",
@@ -74,26 +127,53 @@ CSV_FIELDS = ("utc", "point", "of", "side", "cmd_alt", "cmd_az", "file",
 
 # ------------------------------------------------------------- scripts
 
-def _g(expr: str) -> str:
-    return f"g(function(){{return {expr};}})"
+# READ-ONLY helpers for the probe: member names by for..in plus
+# Object.getOwnPropertyNames (each in a try: host objects may refuse),
+# property values only when they are plain (never a call).
+_PROBE_PRE = (
+    "function names(o,all){var r={};var re=/" + _MEMBER_RE + "/i;"
+    "try{for(var k in o){r[k]=1;}}catch(e){}"
+    "try{var p=Object.getOwnPropertyNames(o);for(var i=0;i<p.length;i++){r[p[i]]=1;}}"
+    "catch(e){}var out=[];for(var n in r){if(all||re.test(n)){out.push(n);}}"
+    "return out.sort().slice(0," + str(_MAX_MEMBERS) + ");}"
+    "function members(o,all){return names(o,all).join('" + _LIST_SEP + "');}"
+    "function cls(v){return Object.prototype.toString.call(v);}"
+    "function txt(v){var t=typeof v;if(t=='function'){return '(function)';}"
+    "if(t=='object'&&v!==null){return '(object)';}"
+    "return String(v).substring(0," + str(_MAX_VALUE_CHARS) + ");}"
+    "function vals(o){var out=[];var ns=names(o,true);"
+    "for(var i=0;i<ns.length;i++){try{var v=o[ns[i]];var t=typeof v;"
+    "if(t!='function'&&t!='object'&&t!='undefined'){out.push(ns[i]+':'+txt(v));}}"
+    "catch(e){}}return out.join('" + _LIST_SEP + "');}"
+    "function objMembers(v){return (v!==null&&typeof v=='object')?members(v,true):'';}"
+    "function objVals(v){return (v!==null&&typeof v=='object')?vals(v):'';}")
 
 
 def probe_script() -> str:
-    """READ ONLY. typeof checks on each add candidate, the filtered member
-    names of PROBE_OBJECTS (for..in, no call), and the TPoint flags."""
+    """READ ONLY. typeof checks on each add candidate, member names of
+    PROBE_OBJECTS, typeof / class / value text of the TheSkyXAction members
+    in ACTION_NAMES (and their own members when they are objects), every
+    plain value of TPointAddOn2 / TPointModule, and the TPoint flags."""
     pairs: list[tuple[str, str]] = []
-    for cid, obj, meth in ADD_CANDIDATES:
-        pairs.append((f"has_{cid}",
-                      f"(typeof {obj} != 'undefined' && typeof {obj}.{meth} == 'function') ? 1 : 0"))
-    for obj in PROBE_OBJECTS:
+    for cid, check, _call in ADD_CANDIDATES:
+        pairs.append((f"has_{cid}", f"({check}) ? 1 : 0"))
+    for obj, all_members in PROBE_OBJECTS:
         pairs.append((f"type_{obj}", f"typeof {obj}"))
-        pairs.append((f"members_{obj}", f"members({obj})"))
+        pairs.append((f"members_{obj}",
+                      f"members({obj}, {'true' if all_members else 'false'})"))
+    pairs.append(("act_type_execute", f"typeof {_ACT}.execute"))
+    pairs.append(("act_type_Execute", f"typeof {_ACT}.Execute"))
+    for n in ACTION_NAMES:
+        v = f"{_ACT}.{n}"
+        pairs += [(f"act_type_{n}", f"typeof {v}"),
+                  (f"act_class_{n}", f"cls({v})"),
+                  (f"act_value_{n}", f"txt({v})"),
+                  (f"act_members_{n}", f"objMembers({v})")]
+    for n in MODULES:
+        pairs.append((f"mod_values_{n}", f"objVals({_ACT}.{n})"))
     flags, _pre = tc.READ_PAIRS["tpoint_flags"]
     pairs += [(f"flag_{k}", expr) for k, expr in flags]
-    pre = ("function members(o){var r=[];var re=/" + _MEMBER_RE + "/i;"
-           "for (var k in o) { if (re.test(k)) { r.push(k); } }"
-           "return r.sort().join(' ');}")
-    return tc._js_kv(pairs, pre=pre)
+    return tc._js_kv(pairs, pre=_PROBE_PRE + tc.TP_PRE)
 
 
 _SAMPLE_READS = [
@@ -113,13 +193,15 @@ _SAMPLE_READS = [
     ("mount_alt", "c ? sky6RASCOMTele.dAlt : ''"),
     ("lst_h", "(sky6Utils.ComputeLocalSiderealTime(), sky6Utils.dOut0)"),
     ("jd", tc._doc(9)),
-    ("apply_corrections", "TPoint.ApplyPointingCorrections"),
+    ("apply_corrections", dict(tc.READ_PAIRS["tpoint_flags"][0])["apply_corrections"]),
     ("added", "added"),
     ("add_error", "addErr"),
 ]
 
 
-def _candidate(cid: str) -> tuple[str, str, str]:
+def candidate(cid: str) -> tuple[str, str, str]:
+    """(id, check, call) of a whitelisted add candidate; TheSkyError for
+    anything else."""
     for c in ADD_CANDIDATES:
         if c[0] == cid:
             return c
@@ -128,32 +210,74 @@ def _candidate(cid: str) -> tuple[str, str, str]:
 
 def sample_script(path: str, scale: float, add: str | None = None) -> str:
     """Image Link on `path`, then the reads in _SAMPLE_READS. add = an
-    ADD_CANDIDATES id: after a successful solve the script calls that one
-    zero-argument method (the only write); None = read only."""
+    ADD_CANDIDATES id: after a successful solve, and only while its typeof
+    check still holds, the script runs that one call statement (the only
+    write); None = read only."""
     pre = tc.imagelink_pre(path, scale) + "var added = ''; var addErr = '';"
     if add:
-        _cid, obj, meth = _candidate(add)
+        _cid, check, call = candidate(add)
         pre += ("var ok = false; try { ok = (err == '' && "
                 "ImageLinkResults.succeeded == 1); } catch (e) {}"
-                f"if (ok) {{ try {{ {obj}.{meth}(); added = '1'; }} "
+                f"var can = false; try {{ can = ({check}); }} catch (e) {{}}"
+                f"if (ok && can) {{ try {{ {call} added = '1'; }} "
                 "catch (e) { addErr = String(e.message || e); } }"
-                "else { addErr = 'not solved: not added'; }")
-    return tc._js_kv(_SAMPLE_READS, pre=tc._MOUNT_PRE + pre)
+                "else if (!ok) { addErr = 'not solved: not added'; }"
+                "else { addErr = 'add method not available: not added'; }")
+    return tc._js_kv(_SAMPLE_READS, pre=tc._MOUNT_PRE + tc.TP_PRE + pre)
 
 
 # ------------------------------------------------------------- parsing
 
+def parse_raw(raw: str) -> dict:
+    """The probe reply as {key: text}. Unlike thesky_client.parse_kv it keeps
+    "function", "undefined" and "[object ...]" (they are the answers: a
+    typeof or a class); only "?ERR" and "" read as None. The flag_ keys go
+    through parse_kv's rules (a method's text is not a value)."""
+    out: dict = {}
+    for part in (raw or "").split(";"):
+        k, sep, v = part.partition("=")
+        if not sep or not k.strip():
+            continue
+        k, v = k.strip(), v.strip()
+        if k.startswith("flag_"):
+            out[k] = tc.parse_kv(f"{k}={v}").get(k)
+        else:
+            out[k] = None if v in ("", "?ERR") else v
+    return out
+
+
+def _list(v) -> list[str]:
+    return [x for x in str(v or "").split(_LIST_SEP) if x]
+
+
 def parse_probe(kv: dict) -> dict:
-    """{"found": [ids with typeof function], "use": first found or None,
-    "objects": {obj: {"type", "members"}}, "tpoint": {flag: value}}."""
-    found = [cid for cid, _o, _m in ADD_CANDIDATES
+    """{"found": [ids whose check held], "use": first found or None,
+    "objects": {obj: {"type", "members"}}, "actions": {name: {"type",
+    "class", "value", "members"}}, "execute": typeof execute, "modules":
+    {name: {k: value}}, "tpoint": {flag: value}}."""
+    found = [cid for cid, _c, _x in ADD_CANDIDATES
              if str(kv.get(f"has_{cid}") or "") == "1"]
     objects = {o: {"type": kv.get(f"type_{o}"),
-                   "members": (kv.get(f"members_{o}") or "").split()}
-               for o in PROBE_OBJECTS}
+                   "members": _list(kv.get(f"members_{o}"))}
+               for o, _all in PROBE_OBJECTS}
+    actions = {n: {"type": kv.get(f"act_type_{n}"),
+                   "class": kv.get(f"act_class_{n}"),
+                   "value": kv.get(f"act_value_{n}"),
+                   "members": _list(kv.get(f"act_members_{n}"))}
+               for n in ACTION_NAMES}
+    modules = {}
+    for n in MODULES:
+        vals = {}
+        for item in _list(kv.get(f"mod_values_{n}")):
+            k, _sep, v = item.partition(":")
+            vals[k] = v
+        modules[n] = vals
     flags = {k[5:]: v for k, v in kv.items() if k.startswith("flag_")}
     return {"found": found, "use": found[0] if found else None,
-            "objects": objects, "tpoint": flags}
+            "objects": objects, "actions": actions,
+            "execute": {"execute": kv.get("act_type_execute"),
+                        "Execute": kv.get("act_type_Execute")},
+            "modules": modules, "tpoint": flags}
 
 
 def _num(v):
@@ -195,7 +319,7 @@ def run_probe(config, client=None, now: datetime | None = None,
     prev = load_probe(config)
     try:
         cl = client or tc.client_from_config(config)
-        rec.update(parse_probe(tc.parse_kv(cl.run_script(probe_script()))))
+        rec.update(parse_probe(parse_raw(cl.run_script(probe_script()))))
         rec["ok"] = True
     except Exception as e:  # noqa: BLE001
         rec["error"] = f"{type(e).__name__}: {e}"
@@ -220,7 +344,19 @@ def format_probe(rec: dict) -> str:
     lines = [f"TPoint probe {rec['t_utc']} (read only)"]
     lines.append("Add methods found: " + (", ".join(rec["found"]) or
                  "none (samples go to the CSV only; see HANDBOOK)"))
-    lines.append(f"Would use: {rec.get('use') or '-'}")
+    lines.append(f"Would use: {rec.get('use') or '-'}"
+                 + (f"  -> {candidate(rec['use'])[2]}" if rec.get("use") else ""))
+    ex = rec.get("execute") or {}
+    lines.append(f"  TheSkyXAction.execute: {ex.get('execute')}; "
+                 f".Execute: {ex.get('Execute')}")
+    for n, a in (rec.get("actions") or {}).items():
+        lines.append(f"  TheSkyXAction.{n}: typeof {a.get('type')}, "
+                     f"{a.get('class')}, value {a.get('value')}"
+                     + (("; members: " + " ".join(a["members"]))
+                        if a.get("members") else ""))
+    for n, vals in (rec.get("modules") or {}).items():
+        lines.append(f"  TheSkyXAction.{n} values: "
+                     + (", ".join(f"{k}={v}" for k, v in vals.items()) or "-"))
     t = rec.get("tpoint") or {}
     pv = ((rec.get("previous") or {}).get("tpoint")) or {}
     for k in ("points", "rms_arcsec", "apply_corrections", "protrack_active",
@@ -337,6 +473,24 @@ def add_mode(config) -> str:
     return m if m in ADD_MODES else "off"
 
 
+def choose_method(config, probe: dict | None) -> tuple[str | None, str]:
+    """(candidate id or None, why): tpoint_sample_add_method when it is set
+    (only if the probe found it), else the probe's first found."""
+    found = list((probe or {}).get("found") or [])
+    pin = str(getattr(config, "tpoint_sample_add_method", "") or "").strip()
+    if pin:
+        if pin not in {c[0] for c in ADD_CANDIDATES}:
+            return None, f"tpoint_sample_add_method {pin!r} is not a candidate"
+        if pin not in found:
+            return None, f"pinned {pin} was not found by the last probe"
+        return pin, "pinned"
+    if not probe:
+        return None, "no probe yet: run photonscript tpoint-sample --probe"
+    if not found:
+        return None, "the probe found no add method"
+    return found[0], "first found by the probe"
+
+
 def run_sample(config, file: str | None = None, point: int | None = None,
                of: int | None = None, alt: float | None = None,
                az: float | None = None, side: str = "", client=None,
@@ -367,17 +521,19 @@ def run_sample(config, file: str | None = None, point: int | None = None,
             b = frame_bin(f)
             scale = float(getattr(config, "pixel_scale_arcsec", 0.236)) * b
             row.update({"file": str(f), "bin": b, "scale": round(scale, 4)})
-            use = None
-            if mode == "auto":
-                probe = load_probe(config)
-                use = (probe or {}).get("use")
-                if not use:
-                    row["note"] = ("add mode auto but the probe found no add "
-                                   "method: CSV only")
+            would, why = choose_method(config, load_probe(config))
+            use = would if mode == "auto" else None
+            if mode == "auto" and not use:
+                row["note"] = f"add mode auto but {why}: CSV only"
             row["add_method"] = use or ""
             js = sample_script(str(f), scale, add=use)
             if dry_run:
                 row["script"] = js
+                row["add_call"] = candidate(would)[2] if would else ""
+                row["add_call_note"] = (
+                    ("runs after a successful Image Link" if use else
+                     "would run only with PS_TPOINT_SAMPLE_ADD=auto")
+                    if would else why)
                 row["note"] = (row.get("note") or "") + " dry run: nothing sent"
                 return row
             cl = client or tc.client_from_config(config)

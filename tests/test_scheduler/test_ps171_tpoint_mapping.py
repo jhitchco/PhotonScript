@@ -300,15 +300,22 @@ def test_probe_script_is_read_only_and_ascii():
     assert not _violations(js), _violations(js)
     assert js.isascii()
     assert not re.search(_THESKY_OBJ + r"\.\w+\s*\(\s*\)\s*;", js)   # no calls
-    for _cid, obj, meth in ts.ADD_CANDIDATES:
-        assert f"typeof {obj}.{meth}" in js
-        assert f"{obj}.{meth}()" not in js
+    for _cid, check, call in ts.ADD_CANDIDATES:
+        assert check in js
+        assert call.rstrip(";") not in js
+    assert ".trigger(" not in js and "execute(" not in js.replace(
+        "ImageLink.execute(", "")
+    # PS-171: the TheSkyXAction members and the TPoint module objects
+    for n in ts.ACTION_NAMES:
+        assert f"typeof TheSkyXAction.{n}" in js
+    assert "objVals(TheSkyXAction.TPointAddOn2)" in js
+    assert "members(ImageLink, true)" in js and "members(sky6RASCOMTele, true)" in js
 
 
 def test_parse_probe_picks_the_first_found_and_reads_the_model():
     kv = {"has_imagelinkresults_addToTPoint": "0", "has_imagelink_addToTPoint": "0",
           "has_tpoint_AddImageLinkResults": "1", "has_tpoint_AddData": "1",
-          "type_TPoint": "object", "members_TPoint": "AddData NumberOfPoints",
+          "type_TPoint": "object", "members_TPoint": "AddData~NumberOfPoints",
           "flag_points": "84", "flag_rms_arcsec": "21.5"}
     p = ts.parse_probe(kv)
     assert p["found"] == ["tpoint_AddImageLinkResults", "tpoint_AddData"]
@@ -316,6 +323,64 @@ def test_parse_probe_picks_the_first_found_and_reads_the_model():
     assert p["objects"]["TPoint"]["members"] == ["AddData", "NumberOfPoints"]
     assert p["tpoint"]["points"] == "84" and p["tpoint"]["rms_arcsec"] == "21.5"
     assert ts.parse_probe({})["use"] is None
+
+
+# what the 2026-10-08 probe would read if AddPointingSample is a QAction-like
+# object (the next probe tells)
+_ACTION_PROBE = ("has_action_trigger_AddPointingSample=1;"
+                 "has_action_execute_name_AddPointingSample=1;"
+                 "type_TPoint=undefined;act_type_execute=function;"
+                 "act_type_Execute=undefined;"
+                 "act_type_AddPointingSample=object;"
+                 "act_class_AddPointingSample=[object QAction];"
+                 "act_value_AddPointingSample=(object);"
+                 "act_members_AddPointingSample=enabled~text~trigger;"
+                 "act_type_TPointAddOn2=object;"
+                 "act_members_TPointAddOn2=numberOfPoints~skyRMS~fit;"
+                 "mod_values_TPointAddOn2=numberOfPoints:84~skyRMS:21.5 arcsec;"
+                 "mod_values_TPointModule=;flag_points=84;flag_rms_arcsec=21.5")
+
+
+def test_parse_probe_reads_the_action_members_and_modules():
+    p = ts.parse_probe(ts.parse_raw(_ACTION_PROBE))
+    assert p["found"] == ["action_trigger_AddPointingSample",
+                          "action_execute_name_AddPointingSample"]
+    assert p["use"] == "action_trigger_AddPointingSample"
+    a = p["actions"]["AddPointingSample"]
+    assert a["class"] == "[object QAction]"
+    assert a["type"] == "object" and a["members"] == ["enabled", "text", "trigger"]
+    assert p["execute"] == {"execute": "function", "Execute": "undefined"}
+    assert p["modules"]["TPointAddOn2"] == {"numberOfPoints": "84",
+                                            "skyRMS": "21.5 arcsec"}
+    text = ts.format_probe({"ok": True, "t_utc": "T", **p})
+    assert "-> TheSkyXAction.AddPointingSample.trigger();" in text
+    assert "TheSkyXAction.execute: function" in text
+    assert "TheSkyXAction.TPointAddOn2 values: numberOfPoints=84" in text
+    assert "TPoint points: 84" in text
+
+
+def test_choose_method_pin_and_fallbacks(tmp_path):
+    p = ts.parse_probe(ts.parse_raw(_ACTION_PROBE))
+    assert ts.choose_method(_cfg(tmp_path), p) == (
+        "action_trigger_AddPointingSample", "first found by the probe")
+    pin = _cfg(tmp_path, tpoint_sample_add_method="action_execute_name_AddPointingSample")
+    assert ts.choose_method(pin, p)[0] == "action_execute_name_AddPointingSample"
+    gone = _cfg(tmp_path, tpoint_sample_add_method="action_call_AddPointingSample")
+    m, why = ts.choose_method(gone, p)
+    assert m is None and "not found by the last probe" in why
+    bad = _cfg(tmp_path, tpoint_sample_add_method="sky6RASCOMTele.Sync")
+    assert ts.choose_method(bad, p)[0] is None
+    assert ts.choose_method(_cfg(tmp_path), None)[0] is None
+    assert _cfg(tmp_path).tpoint_sample_add_method == ""
+
+
+def test_tpoint_flags_fall_back_to_the_module_objects():
+    js = tc.READ_ONLY_JS["tpoint_flags"]
+    assert "TheSkyXAction.TPointAddOn2" in js and "TheSkyXAction.TPointModule" in js
+    assert "'numberOfPoints'" in js and "'skyRMS'" in js
+    assert "TPoint.NumberOfPoints" in js            # the PS-138 read stays first
+    assert "function tp(" in tc.onsite_script()
+    assert not _violations(js) and js.isascii()
 
 
 class _Fake(tc.TheSkyClient):
@@ -353,14 +418,16 @@ def test_sample_script_read_only_unless_an_add_is_chosen():
     js = ts.sample_script(r"C:\N.I.N.A\TPoint point 01.fits", 0.472)
     assert not _violations(js), _violations(js)
     assert js.isascii()
-    for _cid, obj, meth in ts.ADD_CANDIDATES:
-        assert f"{obj}.{meth}(" not in js
-    for cid, obj, meth in ts.ADD_CANDIDATES:
+    for _cid, _check, call in ts.ADD_CANDIDATES:
+        assert call.rstrip(";") not in js
+    for cid, check, call in ts.ADD_CANDIDATES:
         add = ts.sample_script(r"C:\x\a.fits", 0.472, add=cid)
-        assert f"{obj}.{meth}();" in add
+        assert add.count(call) == 1
         assert not _violations(add), (cid, _violations(add))
-        # the call is guarded by a successful solve
-        assert add.index("ImageLinkResults.succeeded == 1") < add.index(f"{obj}.{meth}();")
+        # the call is guarded by a successful solve and its own typeof check
+        at = add.index(call)
+        assert add.index("ImageLinkResults.succeeded == 1") < at
+        assert add.index(f"can = ({check})") < at
     with pytest.raises(tc.TheSkyError):
         ts.sample_script(r"C:\x\a.fits", 0.472, add="sky6RASCOMTele.Sync")
     with pytest.raises(tc.TheSkyError):
@@ -370,7 +437,8 @@ def test_sample_script_read_only_unless_an_add_is_chosen():
 def test_add_calls_live_only_in_the_sample_module():
     """Denylist: the candidate add calls are the only TheSky writes and
     appear in no other source file."""
-    pats = [re.compile(re.escape(f"{o}.{m}")) for _c, o, m in ts.ADD_CANDIDATES]
+    pats = [re.compile(re.escape(call.rstrip(";")))
+            for _c, _k, call in ts.ADD_CANDIDATES]
     hits = []
     for f in (ROOT / "photonscript").rglob("*.py"):
         if f.name == "tpoint_sample.py":
@@ -415,7 +483,7 @@ def test_sample_off_mode_solves_and_writes_the_csv(tmp_path):
     assert row["scale"] == pytest.approx(0.472)
     assert row["solved"] and row["added"] is False and row["add_method"] == ""
     assert "pathToFITS" in cl.sent[0]
-    assert not any(f"{o}.{m}(" in cl.sent[0] for _c, o, m in ts.ADD_CANDIDATES)
+    assert not any(call in cl.sent[0] for _c, _k, call in ts.ADD_CANDIDATES)
     out = ts.csv_path(cfg, "2026-10-08")
     rows = list(csv.DictReader(open(out, newline="", encoding="utf-8")))
     assert rows[0]["solved_ra_j2000_h"] == "5.5" and rows[0]["side"] == "east"
@@ -430,7 +498,8 @@ def test_sample_auto_uses_the_probed_method_and_records_it(tmp_path):
     _frame(tmp_path / "nina" / "a.fits")
     # auto without a probe: CSV only, says why
     row = ts.run_sample(cfg, client=_Fake(_SOLVED), now=WHEN, wait_s=2)
-    assert row["add_method"] == "" and "probe found no add" in row["note"]
+    assert row["add_method"] == "" and "no probe yet" in row["note"]
+    assert "CSV only" in row["note"]
     ts.run_probe(cfg, client=_Fake("has_tpoint_AddData=1"))
     _frame(tmp_path / "nina" / "b.fits")
     cl = _Fake(_SOLVED.replace("added=;", "added=1;"))
@@ -499,3 +568,72 @@ def test_off_target_alert_ignores_the_mapping_run():
     ok, _ = is_imaging(["Targets", "Heart Nebula"], "Take Exposure", False,
                        target="Heart Nebula")
     assert ok
+
+
+def test_dry_run_prints_the_exact_add_call(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from photonscript import cli
+    cfg = _cfg(tmp_path, image_watch_dir=str(tmp_path / "nina"))
+    ts.run_probe(cfg, client=_Fake(_ACTION_PROBE))
+    _frame(tmp_path / "nina" / "f.fits")
+    row = ts.run_sample(cfg, client=_Fake(_SOLVED), now=WHEN, dry_run=True, wait_s=2)
+    assert row["add_call"] == "TheSkyXAction.AddPointingSample.trigger();"
+    assert "PS_TPOINT_SAMPLE_ADD=auto" in row["add_call_note"]
+    assert "AddPointingSample.trigger" not in row["script"]       # off: not sent
+    auto = _cfg(tmp_path, image_watch_dir=str(tmp_path / "nina"),
+                tpoint_sample_add="auto")
+    row = ts.run_sample(auto, client=_Fake(_SOLVED), now=WHEN, dry_run=True, wait_s=2)
+    assert "TheSkyXAction.AddPointingSample.trigger();" in row["script"]
+    assert row["add_call_note"] == "runs after a successful Image Link"
+    monkeypatch.setattr(cli, "_config_for_repo", lambda repo: auto)
+    r = CliRunner().invoke(cli.app, ["tpoint-sample", "--dry-run"])
+    assert r.exit_code == 0
+    assert "add call: TheSkyXAction.AddPointingSample.trigger();" in r.output
+
+
+_NODE_FAKES = """
+var calls = [];
+var TheSkyXAction = { execute: function (a) { calls.push('execute:' + a); },
+  AddPointingSample: { text: 'Add pointing sample',
+                       trigger: function () { calls.push('trigger'); } },
+  AutoPointingCalibration: { trigger: function () { calls.push('apc'); } },
+  TPointAddOn2: { numberOfPoints: 84, skyRMS: 21.5,
+                  fit: function () { calls.push('fit'); } },
+  TPointModule: { name: 'TPoint' } };
+var ImageLink = { execute: function () { calls.push('imagelink'); } };
+var ImageLinkResults = { succeeded: 1, errorText: '' };
+var sky6RASCOMTele = { IsConnected: 0 };
+var sky6Utils = { ComputeLocalSiderealTime: function () {}, dOut0: 3.2 };
+var sky6StarChart = { DocumentProperty: function () {}, DocPropOut: 1 };
+var AutomatedImageLinkSettings = {};
+"""
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None,
+                    reason="node not installed")
+def test_scripts_run_in_a_js_engine_and_the_probe_calls_nothing(tmp_path):
+    """The generated JS against fake TheSky objects: the probe makes no
+    call at all and reads the module values; the add script triggers the
+    action once, after the Image Link."""
+    import subprocess
+
+    def run(js):
+        f = tmp_path / "t.js"
+        f.write_text(_NODE_FAKES + js + "\nconsole.log(JSON.stringify("
+                     "{out: Out, calls: calls}));", encoding="ascii")
+        return json.loads(subprocess.run(["node", str(f)], capture_output=True,
+                                         text=True, check=True).stdout)
+    pr = run(ts.probe_script())
+    assert pr["calls"] == []
+    p = ts.parse_probe(ts.parse_raw(pr["out"]))
+    assert p["execute"]["execute"] == "function"
+    assert p["actions"]["AddPointingSample"]["members"] == ["text", "trigger"]
+    assert p["use"] == "action_trigger_AddPointingSample"
+    assert p["tpoint"]["points"] == "84" and p["tpoint"]["rms_arcsec"] == "21.5"
+    assert p["modules"]["TPointAddOn2"] == {"numberOfPoints": "84", "skyRMS": "21.5"}
+    sm = run(ts.sample_script(r"C:\x\a.fits", 0.472,
+                              add="action_trigger_AddPointingSample"))
+    assert sm["calls"] == ["imagelink", "trigger"]
+    assert tc.parse_kv(sm["out"])["added"] == "1"
+    ro = run(ts.sample_script(r"C:\x\a.fits", 0.472))
+    assert ro["calls"] == ["imagelink"]
