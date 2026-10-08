@@ -26,6 +26,10 @@ watched-night paths both call it):
    every calibration folder of the last CAL_SWEEP_DAYS on both rigs, so a
    calibration-only folder (daytime capture, roof-closed night, NINA
    restarted after midnight) reaches the Library and the desktop too.
+   PS-181: and the readout fill (calibration_qa.fill_missing_readouts, up
+   to calibration_readout_fill_at_dawn records): QA records of darks / bias
+   with no readout recorded get their READOUTM from a header read, so the
+   July LCG bias stops counting as HCG.
 5. One record per night, runs/<date>_autofile.json, and the line
    "Library: N subs filed for sync (targets...)" for the morning push, the
    runs page and GET /api/runs/{date}/autofile.
@@ -437,6 +441,13 @@ def file_night(config, date: str, push: bool = True,
         return {rg: {"nights": len(v.get("nights") or []), "linked": v.get("linked")}
                 for rg, v in r.items()}
     rec["calibration_sweep"] = step("calibration sweep", _cal_sweep)
+
+    def _readout_fill():   # PS-181: record READOUTM on QA records without one
+        from photonscript.scheduler.calibration_qa import fill_missing_readouts
+        from photonscript.shared.rigs import rig_ids
+        n = int(getattr(config, "calibration_readout_fill_at_dawn", 400) or 0)
+        return {rg: fill_missing_readouts(config, rg, n) for rg in rig_ids(config)}
+    rec["readout_fill"] = step("readout fill", _readout_fill)
     filed = step("count", lambda: filed_counts(config,
                                                runs._load_subs(config, date)))
     rec["filed"] = filed or {}

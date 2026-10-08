@@ -334,7 +334,7 @@ def optics_moved_filters(config, rig: str = "rc16", *,
     return out
 
 
-def _dark_newest(store: dict, b: dict) -> dict:
+def _dark_newest(store: dict, b: dict, default_ro=None, since=None) -> dict:
     """PS-160: newest QA-passed dark matching a bucket and the sensor
     temperatures (CCD-TEMP) of the matching frames."""
     from photonscript.scheduler import calibration_qa as cq
@@ -349,7 +349,8 @@ def _dark_newest(store: dict, b: dict) -> dict:
         st = r.get("settemp")
         if st is None or abs(st - b["settemp"]) >= TEMP_TOL_C:
             continue
-        if b.get("readout") and r.get("readout") and r["readout"] != b["readout"]:
+        if b.get("readout") and not cq.readout_matches(r, b["readout"],
+                                                       default_ro, since):
             continue
         d = r.get("date")
         if d and (newest is None or d > newest):
@@ -408,7 +409,9 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
     """(dark items, config fixes)."""
     from photonscript.scheduler.calibration import (dark_epoch, dark_quota,
                                                     quota_exposures)
+    from photonscript.shared.rigs import rig_readout_since
     ep = dark_epoch(config, rig)
+    ro_since = rig_readout_since(config, rig)   # PS-181
     qlist = quota_exposures(view, rig)
     # PS-160: the lengths the lights used join the night quota (the same
     # rule calibration.night_dark_exposures applies at generation)
@@ -478,7 +481,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
                    f"{_ro_txt(ep['readout'])}, so shoot these by hand or "
                    "drop the lights")
         owed = q["need"] if (used or b["quota_list"]) else 0
-        nd = _dark_newest(store, b)
+        nd = _dark_newest(store, b, ep["readout"], ro_since)
         label = (f"{_fmt(b['exp_s'])} s (gain {b['gain']}, offset {b['offset']}, "
                  f"{_fmt(b['settemp'])} C" + ("" if b["xbin"] == 1
                                               else f", bin {b['xbin']}")
@@ -541,7 +544,9 @@ def _bias_sessions(config, view, rig, store, ep) -> dict:
     if cq.mode(config) != "off" and store["frames"]:
         return cq.passed_bias_sessions(view, rig, gain=ep["gain"],
                                        offset=ep["offset"],
-                                       readout=ep["readout"] or "", store=store)
+                                       readout=ep["readout"] or "",
+                                       setpoint=ep["setpoint"],   # PS-181
+                                       store=store)
     from photonscript.scheduler.calibration import calibration_health
     h = calibration_health(view).get("BIAS") or {}
     return {h["latest"]: int(h.get("count_latest") or 0)} if h.get("latest") else {}
@@ -717,13 +722,16 @@ def _readout_note(rig_out: dict) -> str | None:
             "--dry-run to read READOUTM, nothing moves)")
 
 
-def _readout_assumed_frames(store: dict, ep: dict) -> int:
+def _readout_assumed_frames(store: dict, ep: dict, since: str | None = None) -> int:
     """PS-128: QA records (darks / bias of the rig's gain and offset) with no
-    readout recorded: counted as the rig's readout mode (assumed)."""
+    readout recorded: counted as the rig's readout mode (assumed). PS-181:
+    those older than rig_readout_since are not counted at all (unknown)
+    and not included here."""
     if not ep.get("readout"):
         return 0
     return sum(1 for r in store["frames"].values()
                if r.get("type") in ("DARK", "BIAS") and not r.get("readout")
+               and not (since and str(r.get("date") or "") < since)
                and r.get("gain") == ep["gain"] and r.get("offset") == ep["offset"])
 
 
@@ -805,7 +813,7 @@ def owed_report(config, rig: str | None = None, *, projects=None,
     from photonscript.scheduler import calibration_qa as cq
     from photonscript.scheduler.calibration import dark_epoch
     from photonscript.scheduler.calibration_plan import load_projects
-    from photonscript.shared.rigs import rig_ids, rig_label
+    from photonscript.shared.rigs import rig_ids, rig_label, rig_readout_since
     now = now or datetime.now()
     days = max(1, int(getattr(config, "calibration_owed_lookback_days", 60) or 60))
     if projects is None:
@@ -836,8 +844,9 @@ def owed_report(config, rig: str | None = None, *, projects=None,
              "lights_assumed_epoch": sum(1 for li in lights if li["assumed"]),
              "lights_readout_assumed": sum(1 for li in lights
                                            if li.get("readout_assumed")),
-             "frames_readout_assumed": (_readout_assumed_frames(store, ep)
-                                        if cq.mode(config) != "off" else 0),
+             "frames_readout_assumed": (_readout_assumed_frames(
+                 store, ep, rig_readout_since(config, rg))
+                 if cq.mode(config) != "off" else 0),
              "darks": darks, "flats": flats, "bias": bias,
              "config_fixes": fixes, "nights": nights,
              "constraints": _constraints(config, rg)}

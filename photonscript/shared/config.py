@@ -140,6 +140,14 @@ class PhotonScriptConfig(BaseSettings):
     syncthing_api_key: str = ""
     syncthing_folder_id: str = ""   # folder id of the Library share
     syncthing_device_id: str = ""   # the DESKTOP's device id
+    syncthing_calibration_folder_ids: str = ""  # PS-181: comma list of the
+                                    # Syncthing folders that carry
+                                    # Library/Calibration (and piggyback/Calibration)
+                                    # once they are split off the Library share
+                                    # (docs/HANDBOOK.md section 5); the
+                                    # completeness view asks them what the
+                                    # desktop still needs. Blank = still inside
+                                    # syncthing_folder_id
     sync_stall_min: int = 30        # alarm when the transfer batch's pending count
                                     # hasn't dropped in this many minutes while
                                     # still non-empty (a wedged transfer loop that
@@ -198,6 +206,46 @@ class PhotonScriptConfig(BaseSettings):
                                  # darks + bias job per rig per day (ends 2 h
                                  # before sunset). Never at night. Off = only
                                  # the Capture now button / CLI start a job
+    # PS-181: calibration completeness, cooler reachability, bias when none
+    calibration_completeness_nights: int = 14  # completeness model: light
+                                 # configs of the last this many nights (plus
+                                 # tonight's plan), every goal (report only)
+    cooler_history_sample_s: float = 300.0  # cooler history: one sample (sensor
+                                 # temp, setpoint, TEC power, focuser temp as the
+                                 # ambient proxy) per rig at most this often
+                                 # into data_dir/cooler_history; 0 = off
+    cooler_history_days: int = 10  # the reachability model reads this many days
+    cooler_reach_max_power_pct: float = 90.0  # setpoint "reachable" when the
+                                 # predicted TEC power at it is at most this
+    calibration_cool_reach: str = "refuse"  # capture job: refuse (start) or
+                                 # abort (cooling) quickly when the cooler cannot
+                                 # reach the setpoint (history / stall) and
+                                 # re-plan for dawn | warn (log, carry on) | off
+    calibration_cool_timeout_min: float = 0.0  # capture job: give up cooling
+                                 # after this many minutes (0 = the built-in 20)
+    calibration_cool_stall_min: float = 6.0  # capture job: abort earlier when
+                                 # after this many minutes the sensor has stopped
+                                 # falling (< 0.5 C in 3 min) above the setpoint
+    calibration_dawn_capture: bool = False  # run a re-planned (deferred) darks
+                                 # + bias job by itself at dawn after shutdown
+                                 # (armer idle, roof closed); off = the plan
+                                 # is shown, Jeremy starts it
+    calibration_dawn_window_min: int = 150  # dawn darks window: astro dawn +
+                                 # 30 min (after the flats) to this many minutes
+                                 # after astro dawn
+    calibration_bias_when_missing: bool = True  # night sequences shoot one 50
+                                 # bias set at the setpoint (behind the cooler
+                                 # gate, any roof state; 1 ms is light-safe)
+                                 # when the rig has no usable bias (epoch:
+                                 # gain, offset, SET-TEMP, verified readout)
+    calibration_qa_dark_scale_by_readout: bool = True  # calibration QA: the
+                                 # dark-minus-bias allowance's dark current term
+                                 # scales with the readout mode's ADU per e-
+                                 # (RC16 HCG 0.79 / 0.25 = 3.16 x; the limit was
+                                 # measured on LCG darks); off = one LCG limit
+    calibration_readout_fill_at_dawn: int = 400  # the dawn calibration sweep
+                                 # header-reads READOUTM for up to this many QA
+                                 # records that have none yet (0 = off)
     calibration_owed_lookback_days: int = 60  # PS-122: the Calibration owed
                                  # view reads lights of active goals from the
                                  # last this many nights (report only)
@@ -479,6 +527,11 @@ class PhotonScriptConfig(BaseSettings):
                                 # light since 2026-09-26 is HCG (NINA profile
                                 # setting; the sequence cannot set it). Blank
                                 # = readout not matched (pre-PS-128)
+    camera_readout_since: str = ""  # PS-181: YYYY-MM-DD the RC16 lights went
+                                # to camera_readout_mode (2026-09-26 for HCG).
+                                # A dark / bias with no readout recorded and
+                                # older than this is not assumed at the mode
+                                # (it does not count). Blank = assume (PS-128)
     cooling_tolerance_c: float = 1.0
     # PS-117: RC16 (AP26MC, gain 200) camera constants per readout mode. The
     # graders pick the pair from the frame's READOUTM header: "Low Conversion
@@ -986,6 +1039,7 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_readout_mode: str = "LCG"  # PS-128: AP26CC readout mode of the
                                         # OSC lights (all LCG so far); same rule
                                         # as camera_readout_mode
+    piggyback_readout_since: str = ""   # PS-181: same as camera_readout_since
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_frame_attribution: str = "report"  # PS-137: name Piggy subs
                                      # after the goal their frame holds (solve,

@@ -63,8 +63,11 @@ def _gen(targets=None, **kw):
 
 
 def _gates(seq):
+    # PS-181: the gate in front of BIAS_AT_SETPOINT (shot when no usable
+    # bias exists, which depends on this machine's library) is left out
     return [it for it in _exec_items(seq) if "ExternalScript" in it.get("$type", "")
-            and "cooler-gate" in it.get("Script", "")]
+            and "cooler-gate" in it.get("Script", "")
+            and '--label="bias"' not in it.get("Script", "")]
 
 
 def _blocks(seq):

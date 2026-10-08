@@ -11,6 +11,9 @@ Built only from data other passes already keep (nothing is measured here):
   * hours per goal: hours of the kept subs per target tonight, next to the
     goal's total integration and budget (project store)
   * calibration owed: calibration_owed.morning_note (PS-160)
+  * calibration completeness (PS-181): calibration_completeness.morning_line,
+    "Calibration: complete for <targets> / missing <...>" (captured, QA,
+    Library and the Syncthing cache's view of the desktop)
   * library filed: the dawn filing record's line (dawn_autofile, PS-157)
   * guiding health (RC16, the guided mount): the live guard summary
     (episodes, PS-155 no-corrections episodes and the subs graded inside
@@ -144,14 +147,14 @@ def _stalls(config, date: str) -> dict[str, list[dict]]:
 
 
 def report_card(config, date: str | None = None, *, projects=None,
-                calibration: bool = True) -> dict:
+                calibration: bool = True, completeness: bool = True) -> dict:
     """The card for one night (default: the newest night with a subs log)."""
     from photonscript.shared.rigs import rig_ids, rig_label
     date = date or latest_night(config)
     out = {"date": date,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
            "rigs": [], "calibration": None, "library": None, "tracking": None,
-           "nina_logs": None}
+           "nina_logs": None, "completeness": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -186,6 +189,15 @@ def report_card(config, date: str | None = None, *, projects=None,
             out["calibration"] = morning_note(config) or "Calibration: nothing owed"
         except Exception as e:  # noqa: BLE001
             out["calibration"] = f"Calibration owed: unavailable ({e})"
+    if completeness:   # PS-181
+        try:
+            from photonscript.scheduler.calibration_completeness import cached_line
+            from photonscript.scheduler.routers.calibration import pending_names
+            pending, capped = pending_names()
+            out["completeness"] = cached_line(config, projects=projects,
+                                              pending=pending, pending_capped=capped)
+        except Exception as e:  # noqa: BLE001
+            out["completeness"] = f"Calibration: completeness unavailable ({e})"
     try:
         from photonscript.scheduler.dawn_autofile import morning_line
         out["library"] = morning_line(config, date)
@@ -255,6 +267,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["library"])
     if (card.get("nina_logs") or {}).get("line"):
         lines.append(card["nina_logs"]["line"])
+    if card.get("completeness"):   # PS-181
+        lines.append(card["completeness"])
     if calibration and card.get("calibration"):
         lines.append(card["calibration"])
     return lines
@@ -262,7 +276,9 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
 
 def push_text(config, date: str | None) -> str | None:
     """PS-166 lines for the dawn "Night complete" push (the calibration line
-    is already its own line there). None when nothing can be said."""
+    is already its own line there). None when nothing can be said. PS-181:
+    the completeness line rides along only when the card has something
+    else to say (a night with subs or stalls)."""
     try:
         card = report_card(config, date, calibration=False)
     except Exception as e:  # noqa: BLE001 - the dawn push always goes out
@@ -270,4 +286,9 @@ def push_text(config, date: str | None) -> str | None:
         return None
     if not card.get("date"):
         return None
-    return "\n".join(card_lines(card, calibration=False)) or None
+    lines = card_lines({**card, "completeness": None}, calibration=False)
+    if not lines:
+        return None
+    if card.get("completeness"):
+        lines.append(card["completeness"])
+    return "\n".join(lines)

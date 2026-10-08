@@ -9,6 +9,15 @@ GET  /api/calibration/library-report?rig=&frames=
                                              the watch dir vs the Library, the
                                              reason each is not there, and
                                              whether it fits the lights' epoch
+GET  /api/calibration/completeness?rig=&names=&nights=
+                                             PS-181: per rig, every light set of
+                                             the last N nights + tonight with its
+                                             bias / darks / flats through
+                                             captured, QA-passed, Library and
+                                             (Syncthing cache) desktop, the reason
+                                             when short, darks windows, bias plan
+GET  /api/calibration/windows?rig=&minutes=  PS-181: darks windows + cooler
+                                             reachability, the deferred plan
 POST /api/calibration/qa/backfill            {"rig", "dry_run"}: QA the whole
                                              library in the background
 GET  /api/calibration/qa/backfill            backfill progress / last report
@@ -107,6 +116,81 @@ def api_calibration_library_report(rig: str = "rc16", frames: int = 0):
     if rig not in rig_ids(cfg):
         return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
     return library_report(cfg, rig, frames_limit=max(0, int(frames)))
+
+
+def calibration_folder_need(cfg, folders: list[str], get=None) -> set | None:
+    """PS-181: basenames the desktop still needs from the calibration
+    Syncthing folders (syncthing_calibration_folder_ids), one remoteneed
+    page each (they are small). None when Syncthing is not configured or
+    does not answer. Read only (GET)."""
+    url = str(getattr(cfg, "syncthing_url", "") or "")
+    key = str(getattr(cfg, "syncthing_api_key", "") or "")
+    dev = str(getattr(cfg, "syncthing_device_id", "") or "")
+    if not (url and key and dev and folders):
+        return None
+    names: set = set()
+    try:
+        if get is None:
+            import httpx
+            client = httpx.Client(timeout=10, headers={"X-API-Key": key})
+            get = client.get
+        for fid in folders:
+            r = get(url.rstrip("/") + "/rest/db/remoteneed",
+                    params={"folder": fid, "device": dev, "page": 1, "perpage": 5000})
+            for f in (r.json().get("files") or []):
+                n = f.get("name", "") if isinstance(f, dict) else str(f)
+                names.add(n.replace("\\", "/").rsplit("/", 1)[-1])
+        return names
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def pending_names() -> tuple[set | None, bool]:
+    """PS-181: basenames the desktop still needs and whether that list was
+    capped. With syncthing_calibration_folder_ids: those folders (one cheap
+    call each); else the Library share's remoteneed cache (never starts a
+    walk). (None, False) when unknown."""
+    try:
+        from photonscript.scheduler import app as app_mod
+        cfg = app_mod.get_config()
+        ids = [x.strip() for x in str(getattr(cfg, "syncthing_calibration_folder_ids", "")
+                                      or "").split(",") if x.strip()]
+        if ids:
+            return calibration_folder_need(cfg, ids), False
+        cache = app_mod._remoteneed_cache
+        names = cache.get("names")
+        return (set(names) if names is not None else None), bool(cache.get("capped"))
+    except Exception:  # noqa: BLE001
+        return None, False
+
+
+@router.get("/api/calibration/completeness")
+def api_calibration_completeness(rig: str = "", names: bool = False, nights: int = 0):
+    """PS-181: read only. The calibration completeness model."""
+    from photonscript.scheduler.calibration_completeness import completeness
+    from photonscript.shared.rigs import rig_ids
+    cfg = _cfg()
+    if rig and rig not in rig_ids(cfg):
+        return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
+    pending, capped = pending_names()
+    return completeness(cfg, rig or None, pending=pending, pending_capped=capped,
+                        names=bool(names), nights=max(0, int(nights)) or None)
+
+
+@router.get("/api/calibration/windows")
+def api_calibration_windows(rig: str = "rc16", minutes: float = 0.0):
+    """PS-181: read only. Darks windows with the cooler reachability
+    prediction, the cooler model and the rig's deferred plan."""
+    from photonscript.scheduler import cooler_history as ch
+    from photonscript.scheduler.calibration_window import deferred, windows
+    from photonscript.shared.rigs import rig_ids
+    cfg = _cfg()
+    if rig not in rig_ids(cfg):
+        return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
+    out = windows(cfg, rig, minutes=max(0.0, float(minutes)))
+    out["model"] = ch.reachability(cfg, rig)["model"]
+    out["deferred"] = deferred(cfg, rig)
+    return out
 
 
 @router.post("/api/calibration/qa/backfill")

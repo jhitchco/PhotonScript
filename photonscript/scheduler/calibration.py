@@ -337,6 +337,7 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
     setpoint = config.camera_setpoint_c if setpoint is None else setpoint
     ro_default = normalize_readout(getattr(config, "camera_readout_mode", "HCG"))
     readout = ro_default if readout is None else normalize_readout(readout)
+    since = _view_readout_since(config)   # PS-181
     cal_days = int(getattr(config, "library_cal_days", 120))
     cutoff = (datetime.now() - __import__("datetime")
               .timedelta(days=cal_days)).strftime("%Y-%m-%d")
@@ -356,9 +357,28 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
                 and int(h.get("OFFSET", -1)) == offset
                 and abs(float(h.get("SET-TEMP", 99)) - setpoint) < 1.5
                 and (not readout
-                     or (header_readout(h)[0] or ro_default) == readout)):
+                     or _hdr_readout(h, date, ro_default, since) == readout)):
             n += 1
     return n
+
+
+def _view_readout_since(config) -> str | None:
+    """PS-181: rig_readout_since for a scan view (the piggyback view carries
+    its own date in camera_readout_since)."""
+    from photonscript.shared.rigs import rig_readout_since
+    return rig_readout_since(config, "rc16")
+
+
+def _hdr_readout(h, date: str, default: str | None, since: str | None) -> str | None:
+    """PS-181: a header's readout mode; none recorded = `default`, unless
+    the frame is older than `since` (then unknown, None)."""
+    from photonscript.shared.rigs import header_readout
+    ro = header_readout(h)[0]
+    if ro:
+        return ro
+    if since and date < since:
+        return None
+    return default
 
 
 def dark_epoch(config, rig: str = "rc16") -> dict:
@@ -478,39 +498,72 @@ def _qa_failed_keys(config) -> set:
 
 
 def days_since_last_bias(config, rig: str = "rc16") -> int | None:
-    """Age (in days) of the newest night folder holding BIAS frames, or None
-    if the library has no bias at all. Lightweight: matches on the BIAS
-    directory name, plus (PS-128) one header per session for the readout
-    mode: a session shot at another readout than the rig's lights (the
-    RC16's LCG bias of July vs its HCG lights) does not count. A frame with
-    no readout keyword, or an unreadable one, counts as the rig's."""
-    from photonscript.shared.rigs import rig_readout
-    want = rig_readout(config, rig)
-    sessions: dict[str, Path] = {}
-    for typ, date, f in iter_calibration_frames(config):
-        if typ == "BIAS":
-            sessions.setdefault(date, f)
-    newest: str | None = None
-    for date in sorted(sessions, reverse=True):
-        if want and _session_readout(sessions[date], want) != want:
-            continue
-        newest = date
-        break
+    """Age (in days) of the newest USABLE bias session, or None when the
+    rig has none. PS-181: once the rig has a calibration QA store (QA mode
+    not off) that is the newest QA-passed session at the rig's epoch
+    (gain, offset, SET-TEMP, readout: calibration_qa.passed_bias_sessions,
+    the very count the owed view and the completeness model use). Without
+    a store: the header scan, one header per session for the readout mode
+    and SET-TEMP (PS-128: a session shot at another readout than the
+    rig's lights, the RC16's LCG bias of July vs its HCG lights, does not
+    count; a frame with no readout keyword, or an unreadable one, counts as
+    the rig's unless older than rig_readout_since)."""
+    newest = newest_usable_bias(config, rig)
     if newest is None:
         return None
     return (datetime.now().date()
             - datetime.strptime(newest, "%Y-%m-%d").date()).days
 
 
-def _session_readout(f: Path, default: str | None) -> str | None:
-    """PS-128: readout mode of one frame (its session's), the default when
-    the header has none or cannot be read."""
+def newest_usable_bias(config, rig: str = "rc16") -> str | None:
+    """PS-181: date of the newest usable bias session (see
+    days_since_last_bias), None when there is none."""
+    from photonscript.shared.rigs import rig_readout, rig_readout_since
+    ep = dark_epoch(config, rig)
+    try:
+        from photonscript.scheduler import calibration_qa as cq
+        if cq.mode(config) != "off":
+            store = cq.load_store(config, rig)
+            if store["frames"]:
+                by = cq.passed_bias_sessions(config, rig, gain=ep["gain"],
+                                             offset=ep["offset"],
+                                             readout=ep["readout"] or "",
+                                             setpoint=ep["setpoint"], store=store)
+                return max(by) if by else None
+    except Exception:  # noqa: BLE001 - fall back to the header scan
+        logger.warning("QA bias sessions failed; using the header scan", exc_info=True)
+    want = rig_readout(config, rig)
+    since = rig_readout_since(config, rig)
+    sessions: dict[str, Path] = {}
+    for typ, date, f in iter_calibration_frames(config):
+        if typ == "BIAS":
+            sessions.setdefault(date, f)
+    for date in sorted(sessions, reverse=True):
+        ro, st = _session_readout(sessions[date], want, date=date, since=since)
+        if want and ro != want:
+            continue
+        if st is not None and abs(st - ep["setpoint"]) >= 1.5:
+            continue
+        return date
+    return None
+
+
+def _session_readout(f: Path, default: str | None, *, date: str = "",
+                     since: str | None = None) -> tuple[str | None, float | None]:
+    """PS-128: (readout mode, SET-TEMP) of one frame (its session's); the
+    default readout when the header has none (PS-181: unknown when older
+    than `since`) or cannot be read; SET-TEMP None when not readable."""
     try:
         from astropy.io import fits as _fits
-        from photonscript.shared.rigs import header_readout
-        return header_readout(_fits.getheader(f))[0] or default
+        h = _fits.getheader(f)
     except Exception:  # noqa: BLE001
-        return default
+        return default, None
+    st = h.get("SET-TEMP")
+    try:
+        st = float(st) if st is not None else None
+    except (TypeError, ValueError):
+        st = None
+    return _hdr_readout(h, date, default, since), st
 
 
 def stale_flat_filters(config) -> list[str]:
@@ -738,7 +791,34 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
     return blocks
 
 
-def dark_gate_items(config, rig: str, setpoint: float) -> list:
+def bias_at_setpoint_block(config, rig: str, setpoint: float) -> dict:
+    """PS-181: the BIAS_AT_SETPOINT container a night sequence carries when
+    the rig has no usable bias: the cooler gate (dark_gate_items: skip mode
+    skips the bias when the sensor is off its setpoint) then 50 x 0.001 s
+    at the rig's gain / offset, run once, any roof state."""
+    from photonscript.scheduler.calibration_plan import BIAS_COUNT
+    from photonscript.scheduler.nina_sequence_json import (
+        _seq_container, _make_typed, _loop_once)
+    if rig == "rc16":
+        gain, offset = int(config.default_gain), int(config.default_offset)
+    else:
+        gain, offset = _pb_gain_offset(config)
+    shots = _seq_container(f"{BIAS_COUNT} bias", [_make_typed(
+        "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
+        ExposureTime=0.001, Gain=gain, Offset=offset,
+        Binning=_make_typed("NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                            X=1, Y=1),
+        ImageType="BIAS", ExposureCount=0, ErrorBehavior=0, Attempts=1)],
+        conditions=[_make_typed(
+            "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
+            CompletedIterations=0, Iterations=BIAS_COUNT)])
+    return _seq_container(
+        "BIAS_AT_SETPOINT" if rig == "rc16" else "OSC_BIAS_AT_SETPOINT",
+        dark_gate_items(config, rig, setpoint, "bias") + [shots],
+        conditions=[_loop_once()])
+
+
+def dark_gate_items(config, rig: str, setpoint: float, label: str = "darks") -> list:
     """PS-160: the PS-61 cooler gate in front of a rig's night darks, so a
     bounded cool that timed out (PS-154) never yields off-setpoint darks:
     skip mode skips the dark container, warn alerts. [] when
@@ -749,7 +829,7 @@ def dark_gate_items(config, rig: str, setpoint: float) -> list:
     from photonscript.scheduler.nina_sequence_json import (_cooler_gate,
                                                            _cooler_gate_spec)
     gate = _cooler_gate_spec(config, float(setpoint))
-    return [_cooler_gate(gate, rig, "darks")] if gate else []
+    return [_cooler_gate(gate, rig, label)] if gate else []
 
 
 def _wait_safe_until(provider: str, minutes_offset: int = 0,
@@ -1076,7 +1156,11 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         _bias_age = None
     _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
                  or _bias_age >= _bias_refresh_days)
-    if _bias_due:
+    if _bias_age is None and getattr(config, "calibration_bias_when_missing", True):
+        # PS-181: no usable OSC bias at all: one set at the setpoint first,
+        # whatever the roof (1 ms is light-safe), behind the cooler gate
+        target_items.insert(0, bias_at_setpoint_block(config, "piggyback", setpoint))
+    elif _bias_due:
         _bias_conds = ([_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")]
             if gated else [])

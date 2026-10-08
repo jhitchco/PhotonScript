@@ -310,22 +310,60 @@ def _epoch(rec: dict) -> tuple:
             rec.get("instrume"), rec.get("readout"))
 
 
-def frame_readout(rec: dict, default: str | None) -> tuple[str | None, bool]:
+def frame_readout(rec: dict, default: str | None,
+                  since: str | None = None) -> tuple[str | None, bool]:
     """PS-128: (readout mode, assumed) of a QA record. A record with no
     readout (no header keyword, or measured before PS-128 and not
-    backfilled yet) takes the rig default and is flagged assumed."""
+    backfilled yet) takes the rig default and is flagged assumed.
+    PS-181: unless it is older than `since` (rigs.rig_readout_since): then
+    its mode is unknown (None, True) and it matches no mode."""
     ro = rec.get("readout")
     if ro:
         return ro, False
+    if since and str(rec.get("date") or "") < since:
+        return None, True
     return default, True
 
 
-def readout_matches(rec: dict, want: str | None, default: str | None) -> bool:
+def readout_matches(rec: dict, want: str | None, default: str | None,
+                    since: str | None = None) -> bool:
     """PS-128: does a record count at readout `want`? want None = readout
     not matched (camera_readout_mode blank)."""
     if not want:
         return True
-    return frame_readout(rec, default)[0] == want
+    return frame_readout(rec, default, since)[0] == want
+
+
+SETTEMP_TOL_C = 1.5   # PS-181: one SET-TEMP match for every counter and report
+
+
+def usable_misses(rec: dict, epoch: dict, *, default_ro: str | None = None,
+                  since: str | None = None) -> list[str]:
+    """PS-181: the one rule for "can this DARK / BIAS calibrate lights of
+    `epoch`" (calibration.dark_epoch shape: gain, offset, setpoint,
+    readout). [] = usable. The owed view, the night quota, the library
+    report and the completeness model all count with it: gain and offset
+    equal, SET-TEMP within SETTEMP_TOL_C of the setpoint, readout equal
+    (a frame with none recorded is the rig's unless older than `since`)."""
+    out = []
+    g, o = _num(rec.get("gain")), _num(rec.get("offset"))
+    if epoch.get("gain") is not None and g is not None and g != float(epoch["gain"]):
+        out.append(f"gain {g:g} vs {epoch['gain']}")
+    if epoch.get("offset") is not None and o is not None and o != float(epoch["offset"]):
+        out.append(f"offset {o:g} vs {epoch['offset']}")
+    st, sp = _num(rec.get("settemp")), epoch.get("setpoint")
+    if sp is not None and st is not None and abs(st - float(sp)) >= SETTEMP_TOL_C:
+        out.append(f"SET-TEMP {st:g} C vs setpoint {float(sp):g} C")
+    want = epoch.get("readout")
+    if want:
+        ro, _assumed = frame_readout(rec, want if default_ro is None else default_ro,
+                                     since)
+        if ro is None:
+            out.append(f"readout unknown (no READOUTM recorded, shot before "
+                       f"{since}, the rig's {want} start)")
+        elif ro != want:
+            out.append(f"readout {ro} vs {want}")
+    return out
 
 
 def _set_key(rec: dict) -> tuple:
@@ -333,17 +371,45 @@ def _set_key(rec: dict) -> tuple:
             *_epoch(rec), rec.get("settemp"))
 
 
-def dark_excess_limit(exp_s: float, temp_c: float | None) -> float:
+def dark_excess_limit(exp_s: float, temp_c: float | None, scale: float = 1.0) -> float:
+    """Dark minus bias allowed (ADU). PS-181: `scale` multiplies the dark
+    current term for a readout mode with more ADU per electron than the
+    LCG frames DARK_EXCESS_ADU_PER_S was measured on (AP26MC HCG: 0.79 /
+    0.25 = 3.16 x)."""
     t = 0.0 if temp_c is None else float(temp_c)
     return (DARK_EXCESS_BASE_ADU
-            + DARK_EXCESS_ADU_PER_S * float(exp_s or 0) * 2 ** (t / DARK_DOUBLING_C))
+            + DARK_EXCESS_ADU_PER_S * float(exp_s or 0) * 2 ** (t / DARK_DOUBLING_C)
+            * float(scale or 1.0))
+
+
+def dark_excess_scales(config, rig: str) -> dict:
+    """PS-181: {readout: dark-current scale} for judge_all. The RC16 AP26MC
+    at HCG converts 0.25 e-/ADU (camera_gain_e_adu) against 0.79 at LCG
+    (camera_gain_lcg_e_adu), so the same dark current reads 3.16 x more
+    ADU: the 600 s HCG darks of 2026-10-05 / 10-06 sat 28 to 46 ADU over
+    bias and failed a limit of 22 ADU meant for LCG. {} (no scaling) when
+    calibration_qa_dark_scale_by_readout is off, for the Piggy-600 (LCG
+    only) or when the gains are not set."""
+    if rig != "rc16" or not getattr(config, "calibration_qa_dark_scale_by_readout", True):
+        return {}
+    try:
+        hcg = float(getattr(config, "camera_gain_e_adu", 0.0) or 0.0)
+        lcg = float(getattr(config, "camera_gain_lcg_e_adu", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return {}
+    if hcg <= 0 or lcg <= 0:
+        return {}
+    return {"HCG": round(lcg / hcg, 2), "LCG": 1.0}
 
 
 def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
                 bias_ref: tuple | None = None,
-                setpoint: float | None = None) -> tuple[list, list]:
+                setpoint: float | None = None,
+                excess_scale: float = 1.0) -> tuple[list, list]:
     """Per-frame checks. Returns (fails, warnings): lists of
-    {"code", "detail"}. bias_ref = (level, source) for darks."""
+    {"code", "detail"}. bias_ref = (level, source) for darks;
+    excess_scale (PS-181) scales the dark-current allowance for the
+    frame's readout mode (dark_excess_scales)."""
     fails: list[dict] = []
     warns: list[dict] = []
     typ = rec.get("type")
@@ -398,14 +464,16 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
     if typ in ("DARK", "BIAS") and med is not None:
         if typ == "DARK" and bias_ref is not None and bias_ref[0] is not None:
             excess = med - bias_ref[0]
-            lim = dark_excess_limit(exp or 0, ref)
+            lim = dark_excess_limit(exp or 0, ref, excess_scale)
             if excess < -BIAS_LOW_ADU:
                 bad("level", f"median {med:g} is {-excess:.1f} ADU below bias "
                     f"{bias_ref[0]:g} ({bias_ref[1]})")
             elif excess > lim:
                 bad("level", f"median {med:g} is {excess:.1f} ADU over bias "
                     f"{bias_ref[0]:g} ({bias_ref[1]}); allowed {lim:.1f} for "
-                    f"{exp or 0:g} s")
+                    f"{exp or 0:g} s"
+                    + (f" (x{excess_scale:g} for {rec.get('readout')})"
+                       if excess_scale and excess_scale != 1.0 else ""))
         c, corners = rec.get("center"), rec.get("corners") or []
         if c is not None and corners:
             spread = max(abs(x - c) for x in corners)
@@ -481,9 +549,13 @@ def _bias_ref(rec: dict, levels: dict):
 
 
 def judge_all(store: dict, *, rig: str, tol: float,
-              setpoint: float | None = None) -> None:
-    """Recompute every verdict in the store (cheap: no file reads)."""
+              setpoint: float | None = None, scales: dict | None = None,
+              default_readout: str | None = None) -> None:
+    """Recompute every verdict in the store (cheap: no file reads).
+    PS-181: `scales` = dark_excess_scales (readout -> dark-current scale);
+    a dark with no readout recorded takes `default_readout`'s."""
     recs = store["frames"]
+    scales = scales or {}
     for r in recs.values():
         if r.get("type") == "BIAS" and r.get("median") is not None:
             f, w = judge_frame(r, rig=rig, tol=tol, setpoint=setpoint)
@@ -493,8 +565,10 @@ def judge_all(store: dict, *, rig: str, tol: float,
         if r.get("median") is None:
             continue
         if r.get("type") != "BIAS":
+            sc = scales.get(r.get("readout") or default_readout, 1.0) \
+                if r.get("type") == "DARK" else 1.0
             f, w = judge_frame(r, rig=rig, tol=tol, bias_ref=_bias_ref(r, levels),
-                               setpoint=setpoint)
+                               setpoint=setpoint, excess_scale=sc)
             r["frame_fails"], r["frame_warns"] = f, w
         r["set_fails"] = []
         r["day_fails"] = []
@@ -712,8 +786,11 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
                 r["path"] = str(path)
                 if expect and not r.get("expect"):
                     r["expect"] = expect
+        from photonscript.shared.rigs import rig_readout
         judge_all(store, rig=rig, tol=temp_tol(config),
-                  setpoint=_setpoint(config, rig))
+                  setpoint=_setpoint(config, rig),
+                  scales=dark_excess_scales(config, rig),          # PS-181
+                  default_readout=rig_readout(config, rig))
         if persist:
             save_store(config, rig, store)
     day = store.get("daytime", {}).get("status")
@@ -980,13 +1057,15 @@ def _within_days(date: str, days: int) -> bool:
         return False
 
 
-def _readout_want(config, rig: str, readout) -> tuple[str | None, str | None]:
-    """PS-128: (readout to match, default for frames without one). readout
-    None = the rig's (rig_readout); a blank rig setting = not matched."""
-    from photonscript.shared.rigs import normalize_readout, rig_readout
+def _readout_want(config, rig: str, readout) -> tuple[str | None, str | None, str | None]:
+    """PS-128: (readout to match, default for frames without one, PS-181
+    rig_readout_since). readout None = the rig's (rig_readout); a blank
+    rig setting = not matched."""
+    from photonscript.shared.rigs import (normalize_readout, rig_readout,
+                                          rig_readout_since)
     default = rig_readout(config, rig)
     want = default if readout is None else normalize_readout(readout)
-    return want, default
+    return want, default, rig_readout_since(config, rig)
 
 
 def count_passed_darks(config, rig: str, exp_s: float, *, gain, offset,
@@ -996,44 +1075,86 @@ def count_passed_darks(config, rig: str, exp_s: float, *, gain, offset,
     when None; frames with no readout keyword count as the rig's)."""
     store = store or load_store(config, rig)
     days = int(getattr(config, "library_cal_days", 120))
-    want, default = _readout_want(config, rig, readout)
+    want, default, since = _readout_want(config, rig, readout)
     n = 0
     for r in store["frames"].values():
         if r.get("type") != "DARK" or not passed(r):
             continue
-        if not readout_matches(r, want, default):
+        if not readout_matches(r, want, default, since):
             continue
         if (abs((r.get("exptime") or -1) - exp_s) < 0.5 and r.get("gain") == gain
                 and r.get("offset") == offset
                 and abs((r.get("settemp") if r.get("settemp") is not None else 99)
-                        - setpoint) < 1.5
+                        - setpoint) < SETTEMP_TOL_C
                 and _within_days(r.get("date"), days)):
             n += 1
     return n
 
 
 def count_passed_bias(config, rig: str, *, gain, offset, readout: str | None = None,
+                      setpoint: float | None = None,
                       store: dict | None = None) -> int:
     """QA-passed bias of the epoch in its newest session that has any."""
     by_date = passed_bias_sessions(config, rig, gain=gain, offset=offset,
-                                   readout=readout, store=store)
+                                   readout=readout, setpoint=setpoint, store=store)
     return by_date[max(by_date)] if by_date else 0
 
 
 def passed_bias_sessions(config, rig: str, *, gain, offset,
                          readout: str | None = None,
+                         setpoint: float | None = None,
                          store: dict | None = None) -> dict:
     """PS-122: {date: QA-passed bias of the epoch} per session (PS-128: at
-    the readout mode, the rig's when None)."""
+    the readout mode, the rig's when None; PS-181: at SET-TEMP within
+    SETTEMP_TOL_C of `setpoint` when given, the library report's rule)."""
     store = store or load_store(config, rig)
-    want, default = _readout_want(config, rig, readout)
+    want, default, since = _readout_want(config, rig, readout)
     by_date: dict[str, int] = {}
     for r in store["frames"].values():
         if r.get("type") == "BIAS" and passed(r) and r.get("gain") == gain \
                 and r.get("offset") == offset \
-                and readout_matches(r, want, default):
+                and readout_matches(r, want, default, since):
+            if setpoint is not None and (r.get("settemp") is None or abs(
+                    float(r["settemp"]) - float(setpoint)) >= SETTEMP_TOL_C):
+                continue
             by_date[r["date"]] = by_date.get(r["date"], 0) + 1
     return by_date
+
+
+def fill_missing_readouts(config, rig: str, limit: int = 400) -> dict:
+    """PS-181: header-read READOUTM (and PS-164 focpos / rotator) for up to
+    `limit` DARK / BIAS records of the rig that have no readout recorded
+    and were never header-read for it, and store them. The counters then
+    use the frame's real mode instead of assuming the rig's (the RC16 July
+    bias / 600 s darks are LCG). Metadata only: nothing is measured, judged
+    again or moved. Returns {"checked", "filled", "left"}."""
+    if limit <= 0 or mode(config) == "off":
+        return {"checked": 0, "filled": 0, "left": 0}
+    store = load_store(config, rig)
+    todo = [(k, r) for k, r in store["frames"].items()
+            if r.get("type") in ("DARK", "BIAS") and not r.get("readout")
+            and not r.get("readout_checked") and r.get("path")]
+    todo.sort(key=lambda kr: kr[1].get("date") or "", reverse=True)
+    batch = todo[:int(limit)]
+    got = _read_readouts([(k, Path(r["path"])) for k, r in batch])
+    filled = 0
+    if batch:
+        with _lock, _FileLock(qa_dir(config) / f"{rig}.lock"):
+            store = load_store(config, rig)
+            for k, ro in got.items():
+                r = store["frames"].get(k)
+                if r is None:
+                    continue
+                r["readout_checked"] = True
+                if ro.get("readout"):
+                    r["readout"] = ro["readout"]
+                    r["readout_raw"] = ro.get("readout_raw")
+                    filled += 1
+                for f in ("focpos", "rotator_deg"):
+                    if r.get(f) is None and ro.get(f) is not None:
+                        r[f] = ro[f]
+            save_store(config, rig, store)
+    return {"checked": len(batch), "filled": filled, "left": len(todo) - len(batch)}
 
 
 def count_passed_flats(config, rig: str, *, gain=None, offset=None,

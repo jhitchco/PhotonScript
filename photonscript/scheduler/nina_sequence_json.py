@@ -2530,7 +2530,19 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _bias_age = None
     _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
                  or _bias_age >= _bias_refresh_days)
-    if _bias_due:
+    # PS-181: no usable bias at all (epoch: gain, offset, SET-TEMP, verified
+    # readout): shoot one 50 bias set at the setpoint first thing, whatever
+    # the roof (1 ms is light-safe; QA quarantines a bad frame), behind the
+    # cooler gate so a cool that timed out never yields warm bias.
+    bias_at_setpoint = None
+    if _bias_age is None and getattr(_gen_cfg(), "calibration_bias_when_missing", True):
+        from photonscript.scheduler.calibration import bias_at_setpoint_block
+        bias_at_setpoint = bias_at_setpoint_block(_gen_cfg(), "rc16", temp)
+    if bias_at_setpoint is not None:
+        bias_if_still_unsafe = _annotation(
+            "BIAS_IF_STILL_UNSAFE skipped: BIAS_AT_SETPOINT shoots the missing "
+            "bias at the night start (PS-181)")
+    elif _bias_due:
         bias_if_still_unsafe = _seq_container(
             "BIAS_IF_STILL_UNSAFE",
             [_seq_container("50 bias", [_make_typed(
@@ -2573,6 +2585,10 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _pushover("Startup", f"camera cooling to {temp:.0f}°C; if the night "
                   "starts UNSAFE the roof-closed time fills the dark-library "
                   "quota until conditions clear"),
+    ]
+    if bias_at_setpoint is not None:
+        start_items.append(bias_at_setpoint)
+    start_items += [
         start_unsafe_darks,
         bias_if_still_unsafe,
         _wait_until_safe(),

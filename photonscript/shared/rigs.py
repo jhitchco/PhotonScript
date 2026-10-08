@@ -120,6 +120,7 @@ def rig_config(config, rig: str):
         "default_offset": getattr(config, "piggyback_default_offset", 256),
         "camera_setpoint_c": getattr(config, "piggyback_setpoint_c", 0.0),
         "camera_readout_mode": getattr(config, "piggyback_readout_mode", "LCG"),
+        "camera_readout_since": getattr(config, "piggyback_readout_since", ""),
         "dark_exposures": getattr(config, "piggyback_dark_exposures", "120"),
         # NINA #2 has its own safety driver (a shared one deadlocks on the
         # driver's trace-log file lock), so pin its own chooser Id.
@@ -321,6 +322,21 @@ def rig_readout(config, rig: str) -> str | None:
     key = "piggyback_readout_mode" if rig == PIGGYBACK else "camera_readout_mode"
     default = "LCG" if rig == PIGGYBACK else "HCG"
     return normalize_readout(getattr(config, key, default))
+
+
+def rig_readout_since(config, rig: str) -> str | None:
+    """PS-181: first night (YYYY-MM-DD) the rig's lights were shot at its
+    readout mode (camera_readout_since / piggyback_readout_since). A dark
+    or bias with no readout recorded that is older than this is NOT assumed
+    to be at the rig's mode (the RC16's July frames are LCG, its lights HCG
+    since 2026-09-26): it does not count until a header read records its
+    READOUTM. None (blank or not a date) = every such frame is assumed at
+    the rig's mode (the PS-128 behavior)."""
+    key = "piggyback_readout_since" if rig == PIGGYBACK else "camera_readout_since"
+    v = str(getattr(config, key, "") or "").strip()
+    if len(v) == 10 and v[4] == "-" and v[7] == "-" and v.replace("-", "").isdigit():
+        return v
+    return None
 
 
 def camera_info_readout(info: dict | None) -> tuple[str | None, str | None]:

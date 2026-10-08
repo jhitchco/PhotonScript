@@ -59,25 +59,16 @@ def _header_fields(path: Path) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def epoch_misses(rec: dict, epoch: dict, *, tol: float = 1.0) -> list[str]:
+def epoch_misses(rec: dict, epoch: dict, *, tol: float = 1.0,
+                 default_ro: str | None = None, since: str | None = None) -> list[str]:
     """Why a DARK / BIAS frame cannot match the rig's lights ([] = usable).
-    epoch = calibration.dark_epoch(config, rig). A frame with no readout
-    keyword is assumed to be at the rig's readout (PS-128)."""
-    out = []
-    g, o = _num(rec.get("gain")), _num(rec.get("offset"))
-    if g is not None and epoch.get("gain") is not None and g != float(epoch["gain"]):
-        out.append(f"gain {g:g} vs {epoch['gain']}")
-    if o is not None and epoch.get("offset") is not None and o != float(epoch["offset"]):
-        out.append(f"offset {o:g} vs {epoch['offset']}")
-    st = _num(rec.get("settemp"))
-    sp = epoch.get("setpoint")
-    if st is not None and sp is not None and abs(st - float(sp)) > tol:
-        out.append(f"SET-TEMP {st:g} C vs setpoint {float(sp):g} C")
-    want = epoch.get("readout")
-    ro = rec.get("readout")
-    if want and ro and ro != want:
-        out.append(f"readout {ro} vs {want}")
-    return out
+    epoch = calibration.dark_epoch(config, rig). PS-181: the shared rule
+    (calibration_qa.usable_misses), so this report and the owed view /
+    night quota agree; `tol` is kept for callers and no longer used. A
+    frame with no readout keyword is assumed to be at the rig's readout
+    (`default_ro`, PS-128) unless older than `since`."""
+    from photonscript.scheduler.calibration_qa import usable_misses
+    return usable_misses(rec, epoch, default_ro=default_ro, since=since)
 
 
 def _subs_nights(config) -> set[str]:
@@ -110,7 +101,7 @@ def library_report(config, rig: str = "rc16", *, now: datetime | None = None,
     from photonscript.scheduler import calibration_qa as cq
     from photonscript.scheduler.library_archive import archived_kinds
     from photonscript.scheduler.runs import library_root
-    from photonscript.shared.rigs import rig_readout
+    from photonscript.shared.rigs import rig_readout, rig_readout_since
 
     now = now or datetime.now()
     view = cq.rig_view(config, rig)
@@ -119,7 +110,7 @@ def library_report(config, rig: str = "rc16", *, now: datetime | None = None,
     cal_days = int(getattr(config, "library_cal_days", 120))
     epoch = cal.dark_epoch(config, rig)
     default_ro = rig_readout(config, rig)
-    tol = cq.temp_tol(config)
+    since = rig_readout_since(config, rig)   # PS-181
     store = cq.load_store(config, rig)["frames"]
     subs_nights = _subs_nights(config) if rig == "rc16" else None
 
@@ -175,14 +166,16 @@ def library_report(config, rig: str = "rc16", *, now: datetime | None = None,
         exp = _num(info.get("exptime"))
         ro = info.get("readout")
         ro_assumed = not ro
-        misses = epoch_misses({**info, "readout": ro or default_ro}, epoch, tol=tol) \
-            if typ in ("DARK", "BIAS") else []
+        misses = epoch_misses({**info, "date": d}, epoch, default_ro=default_ro,
+                              since=since) if typ in ("DARK", "BIAS") else []
+        if not ro:
+            ro = None if (since and d < since) else default_ro
         frames.append({
             "type": typ, "date": d, "name": name, "status": status, "reason": why,
             "verdict": verdict, "exptime": exp, "filter": info.get("filter"),
             "settemp": _num(info.get("settemp")), "ccdtemp": _num(info.get("ccdtemp")),
             "gain": _num(info.get("gain")), "offset": _num(info.get("offset")),
-            "readout": ro or default_ro, "readout_assumed": ro_assumed,
+            "readout": ro, "readout_assumed": ro_assumed,
             "usable": not misses, "epoch_misses": misses})
 
     sets: dict[tuple, dict] = {}

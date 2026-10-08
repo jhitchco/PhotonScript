@@ -750,11 +750,19 @@ class TelescopeAgent:
                     await self._poll_filter()   # PS-90
 
                 # Get focuser info
+                focuser = {}
                 try:
                     focuser = await self.nina.get_focuser_info()
                     self.state.focuser_position = focuser.get("Position")
                 except Exception:
                     pass
+                # PS-181: cooler history (temp, TEC power, focuser temp as
+                # the ambient proxy) for the darks window chooser; throttled
+                # to cooler_history_sample_s, never raises
+                from photonscript.scheduler.cooler_history import record
+                record(self.config, getattr(self, "rig", "rc16"), camera,
+                       focuser_temp=(focuser or {}).get("Temperature"),
+                       source="agent")
 
                 # Get sequence status. PS-174: /sequence/json is the heaviest
                 # ninaAPI read (the whole container tree), so it runs every

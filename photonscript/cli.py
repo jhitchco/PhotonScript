@@ -26,6 +26,7 @@ Usage:
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript calibration-library [--rig R] [--url U] [--desktop-library P] [--json]  # PS-178
+    photonscript calibration-status [--rig R] [--url U] [--mirror P] [--nights N] [--json]  # PS-181
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
@@ -2489,6 +2490,63 @@ def calibration_library_cmd(
     for f in rep.get("frames") or []:
         console.print(f"  {f['type']}/{f['date']}/{f['name']}: {f['status']} {f['reason']}",
                       markup=False, highlight=False)
+
+
+@app.command("calibration-status")
+def calibration_status_cmd(
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: every rig)"),
+    url: str = typer.Option("", "--url",
+                            help="Ask this scheduler (GET /api/calibration/completeness), "
+                                 "e.g. http://100.94.189.77:8100; default: compute here"),
+    mirror: str = typer.Option("", "--mirror",
+                               help="Also check this Library mirror (default with --url: "
+                                    "the integrate Library mirror, D:/ninashare/Library)"),
+    nights: int = typer.Option(0, "--nights", help="Light sets of the last N nights "
+                                                   "(default calibration_completeness_nights)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-181: calibration completeness. For every light set (target, filter,
+    exposure, gain, offset, SET-TEMP, readout) of the last nights and
+    tonight's plan: are its bias, darks and flats captured, QA-passed, in
+    the Library on the scope and (desktop, --url) in the mirror? The first
+    stage that is short and why, the darks windows the cooler can serve,
+    the bias plan and whether the darks are light-tight. Exit 1 when
+    anything is missing. Read only.
+
+    photonscript calibration-status --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler import calibration_completeness as cc
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if url:
+        import httpx
+        params = {"names": "true"}
+        if rig:
+            params["rig"] = rig
+        if nights:
+            params["nights"] = nights
+        try:
+            r = httpx.get(url.rstrip("/") + "/api/calibration/completeness",
+                          params=params, timeout=300)
+            r.raise_for_status()
+            rep = r.json()
+        except Exception as e:  # noqa: BLE001
+            console.print(f"scheduler unreachable or refused ({e})", markup=False)
+            raise typer.Exit(2)
+        if not mirror:
+            from photonscript.integration.pipeline import default_library
+            mirror = str(default_library(cfg))
+    else:
+        rep = cc.completeness(cfg, rig or None, names=bool(mirror),
+                              nights=nights or None)
+    if mirror:
+        cc.apply_mirror(rep, Path(mirror))
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(cc.format_report(rep), markup=False, highlight=False)
+    if not all(r.get("complete") for r in rep.get("rigs") or []):
+        raise typer.Exit(1)
 
 
 @app.command("integrate")

@@ -922,6 +922,42 @@ and integration.
   bookkeeping changes.
 - Typical throughput observed: 227 files / 11 GB overnight batch; watch
   progress on /api/sync or the Syncthing GUI on either end.
+- **Calibration first (PS-181, Jeremy's step, PhotonScript never changes
+  Syncthing).** One folder pulls one queue, so on 2026-10-08 the night's
+  calibration sat behind 15 GB of lights at ~1 MB/s. Give
+  `Library\Calibration` and `Library\piggyback\Calibration` folders of
+  their own: Syncthing pulls folders side by side, so a few hundred MB of
+  calibration no longer waits for the light backlog. Order matters (a
+  receive-only parent would "revert" files a child folder writes):
+  1. Desktop, Syncthing GUI `https://127.0.0.1:8384`: Folders > NINAShare >
+     Edit > Ignore Patterns, add the two lines
+     `/Library/Calibration` and `/Library/piggyback/Calibration`. Save.
+  2. Scope PC, Syncthing GUI (`syncthing_url`): Folders > NINAShare
+     (`ninashare-ddpnx-urgun`) > Edit > Ignore Patterns, add the same two
+     lines (next to the PS-43 patterns). Save. Ignoring deletes nothing: the
+     desktop keeps the copies it has.
+  3. Scope PC: Add Folder, Label `Library Calibration RC16`, Folder ID
+     `ninashare-cal-rc16`, Folder Path
+     `C:\Users\jeremy\NINAShare\Library\Calibration`; Sharing: tick the
+     desktop device; Advanced: Folder Type `Send Only`, Watch for Changes
+     on. Save. Again for `Library Calibration Piggy`, ID
+     `ninashare-cal-piggy`, path
+     `C:\Users\jeremy\NINAShare\Library\piggyback\Calibration`.
+     Optional in both: Ignore Patterns `/_quarantine` (QA-failed frames
+     then stay on the scope; integrate never reads them).
+  4. Desktop: accept both folder offers. Paths
+     `D:\ninashare\Library\Calibration` and
+     `D:\ninashare\Library\piggyback\Calibration` (the folders that are
+     already there: Syncthing hashes them and only pulls what is missing),
+     Folder Type `Receive Only`.
+  5. Optional, desktop: NINAShare > Edit > Advanced > File Pull Order
+     `Newest First`, so last night's lights come before the old backlog.
+  6. Scope PC System page: `syncthing_calibration_folder_ids` =
+     `ninashare-cal-rc16,ninashare-cal-piggy`, so the completeness view
+     asks those folders what the desktop still needs (the Library share's
+     remoteneed cache no longer lists calibration). Check with `photonscript
+     calibration-status --url http://100.94.189.77:8100` on the desktop.
+  Undo: remove the two folders on both PCs, then the two ignore lines.
 
 ## 6. PixInsight integration pipeline (desktop)
 
@@ -1410,6 +1446,61 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   integrate` lists the bias sessions that miss the epoch and, for a light
   length with no dark, the nearest alternatives; it refuses that length
   unless `--allow-uncalibrated`.
+- CALIBRATION COMPLETENESS (PS-181): `GET /api/calibration/completeness?rig=`
+  and `photonscript calibration-status [--rig R] [--url
+  http://100.94.189.77:8100] [--mirror D:\ninashare\Library] [--nights N]`
+  (exit 1 when anything is missing). One model per rig: every light set
+  (target, filter, exposure, gain, offset, SET-TEMP, readout, binning) of
+  the last `calibration_completeness_nights` (14) nights, every goal, plus
+  tonight's plan; for each its bias, darks and flats through captured ->
+  QA-passed (quota) -> in the Library on the scope -> on the desktop (from
+  the scope: the Syncthing remoteneed answer; on the desktop with --url: the
+  mirror itself), with the reason at the first stage that is short. Also the
+  darks windows, the deferred dawn plan, the bias plan and a light-tightness
+  check of the recent darks (the Piggy-600 has no wheel or dark slide: a
+  warn says cap the lens or keep its darks roof-closed at night). The
+  morning report card and the dawn push carry "Calibration: complete for
+  <targets> / missing <...>". One rule for "usable"
+  (`calibration_qa.usable_misses`): gain, offset, SET-TEMP within 1.5 C,
+  readout; the owed view, the night quota, the bias age gate, the library
+  report and this model all use it. 2026-10-08 finding: the owed view
+  called the 2026-07-31 RC16 bias usable (gain 200, offset 256, SET-TEMP 0:
+  on epoch except readout) because its QA record has no readout and was
+  assumed HCG; its header says LCG (HARDWARE.md), so integrate on the
+  desktop rejected it. The dawn sweep now header-reads READOUTM for QA
+  records without one (`calibration_readout_fill_at_dawn`, 400 a dawn), and
+  `camera_readout_since` (RC16: set 2026-09-26) stops assuming HCG for any
+  older frame that still has none. Passed bias also has to match SET-TEMP
+  now (the 09-30 bias at 20 C).
+- DARKS THAT WORK (PS-181): (a) QA: the dark-over-bias allowance's dark
+  current term scales with the readout's ADU per electron
+  (`calibration_qa_dark_scale_by_readout`; RC16 HCG 0.79 / 0.25 = 3.16 x).
+  The limit was measured on LCG darks, so good HCG 600 s darks (28 to 46 ADU
+  over bias on 10-05 / 10-06) were quarantined as "level". The next QA pass
+  re-judges them and the dawn sweep files the last 14 days' frames that now
+  pass (not `calibration-qa --restore`: that undoes every quarantine, real
+  light leaks included).
+  (b) Cooler history (`cooler_history.py`, data_dir/cooler_history, one
+  sample per rig every `cooler_history_sample_s`, from the telescope agent's
+  NINA poll and every capture job read): sensor, setpoint, TEC power,
+  focuser temperature as the ambient proxy. The model: power at the
+  setpoint ~ k x (ambient - setpoint) (2026-10-08: 62 % at 33 C, k ~ 1.9
+  %/C) plus the ambients where the TEC ran flat out above the setpoint;
+  per local hour the typical ambient. (c) A daytime capture job is refused
+  at once when the TEC already reads flat out above the setpoint or the
+  model predicts more than `cooler_reach_max_power_pct` (90) at the live
+  ambient, and a cooling job aborts after `calibration_cool_stall_min` (6)
+  when the sensor stopped falling (< 0.5 C in 3 min) above the setpoint,
+  instead of holding the rig (`calibration_cool_reach` refuse | warn |
+  off). Either way the plan is kept as the rig's deferred dawn plan
+  (data_dir/calibration_deferred.json; dawn = astro dawn + 30 min to astro
+  dawn + `calibration_dawn_window_min`), which `calibration_dawn_capture`
+  (default off) starts by itself; `GET /api/calibration/windows?rig=`
+  lists now / pre-config cool-down / night (roof closed) / dawn with the
+  prediction. (d) Bias: when a rig has no usable bias the night sequence
+  shoots BIAS_AT_SETPOINT (RC16 start area, Piggy-600 companion first
+  target item): the cooler gate, then 50 x 1 ms at the rig's gain / offset,
+  any roof (`calibration_bias_when_missing`).
 - CALIBRATION OWED (PS-122): `GET /api/calibration/owed?rig=`, the Calibration
   page "Calibration owed" cards and `photonscript calibration-owed` list, per
   rig, the frames still needed for the lights of active goals over the last
