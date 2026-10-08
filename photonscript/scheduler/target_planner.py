@@ -232,6 +232,134 @@ def meridian_safe_order(pairs, dark_start, guard_min: int = 20):
     return ordered, deferred
 
 
+def allocate_windows(entries: list[dict], start: datetime, end: datetime,
+                     min_window_s: float = 1800.0) -> dict:
+    """PS-180: split tonight's dark time into one window per target.
+
+    entries, in run order (transit order), each {"name", "up_from",
+    "up_until" (datetimes: when the target is usable, above the altitude
+    floor and, for a broadband-only target, before moonrise), "priority",
+    "need_s" (goal seconds still owed, overhead included)}.
+
+    Rule (Needs decision): walk the targets in run order from `start`. Each
+    gets a priority-weighted share of the time left, among itself and the
+    later targets that can still use some of it, capped by what its goal
+    still needs and by its own usable time, never shorter than min_window_s.
+    A window is stretched to the next target's rise so the mount never sits
+    idle between two targets. A target that cannot get min_window_s gets no
+    window. Leftover time at the end of the night goes to the
+    highest-priority target still up: the last target's window just grows,
+    any other target gets a final fill window.
+
+    Returns {"windows": {name: (start, end)}, "handoff": {name: datetime}
+    (the window end of every windowed target except the one that keeps the
+    mount to the end of the night), "fill": None or (name, start, end),
+    "dropped": [names]}. Windows never overlap and lie inside [start, end]."""
+    min_win = timedelta(seconds=max(60.0, float(min_window_s or 0)))
+    rows = []
+    for e in entries:
+        lo = max(start, e.get("up_from") or start)
+        hi = min(end, e.get("up_until") or end)
+        rows.append(dict(e, lo=lo, hi=hi,
+                         w=max(1.0, float(e.get("priority") or 0)),
+                         need=timedelta(seconds=max(0.0, float(
+                             e.get("need_s") or 0)))))
+
+    def usable_from(r, t):
+        return r["hi"] - max(t, r["lo"]) >= min_win
+
+    windows: dict = {}
+    order: list[str] = []
+    dropped: list[str] = []
+    cursor = start
+    for i, r in enumerate(rows):
+        s = max(cursor, r["lo"])
+        if r["hi"] - s < min_win:
+            dropped.append(r["name"])
+            continue
+        rest = [x for x in rows[i + 1:] if usable_from(x, s)]
+        share = (end - s) * (r["w"] / (r["w"] + sum(x["w"] for x in rest)))
+        e_end = s + max(min_win, min(share, r["need"]))
+        if rest and rest[0]["lo"] > e_end:
+            e_end = rest[0]["lo"]   # no idle gap before the next one rises
+        e_end = min(e_end, r["hi"])
+        windows[r["name"]] = (s, e_end)
+        order.append(r["name"])
+        cursor = e_end
+
+    fill = None
+    if order and end - cursor >= min_win:
+        rank = {r["name"]: (-r["w"], k) for k, r in enumerate(rows)}
+        cands = sorted((r for r in rows if r["name"] in windows
+                        and usable_from(r, cursor)),
+                       key=lambda r: rank[r["name"]])
+        if cands:
+            c = cands[0]
+            if c["name"] == order[-1]:
+                windows[c["name"]] = (windows[c["name"]][0], c["hi"])
+            else:
+                fill = (c["name"], max(cursor, c["lo"]), c["hi"])
+    handoff = {n: windows[n][1] for n in order
+               if fill is not None or n != order[-1]}
+    return {"windows": windows, "handoff": handoff, "fill": fill,
+            "dropped": dropped}
+
+
+def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
+                   prio_by_name: dict, config, dark_start: datetime,
+                   dark_end: datetime, now: datetime, moon: dict | None):
+    """PS-180: allocate_windows over tonight's ordered targets, put the
+    windows on them, drop the targets that get none, and fit each target's
+    per-pass counts into its window (filter balance: every filter of a pass
+    is shot inside the window; the loop repeats the pass until the
+    handoff). Returns the targets that keep a window."""
+    start = max(dark_start, now)
+    moon = moon or {}
+    rise = moon.get("rise_utc") if moon.get("down_at_dusk") else None
+    entries = []
+    for t in sequence_targets:
+        vis = vis_by_name.get(t.name) or {}
+        up_until = vis.get("set_time")
+        if up_until is not None:
+            up_until = up_until + timedelta(minutes=10)   # 10-min samples
+        bb_only = all(e.filter_type.value not in _NB_FILTERS
+                      for e in t.exposures)
+        if bb_only and rise is not None:
+            # broadband before moonrise (the generator ends it there too)
+            up_until = min(up_until or dark_end, rise)
+        entries.append({"name": t.name, "up_from": vis.get("rise_time"),
+                        "up_until": up_until,
+                        "priority": prio_by_name.get(t.name, 50),
+                        "need_s": need_by_name.get(t.name, 0.0)})
+    alloc = allocate_windows(
+        entries, start, dark_end,
+        60.0 * float(getattr(config, "plan_window_min_minutes", 30) or 30))
+    kept = []
+    for t in sequence_targets:
+        win = alloc["windows"].get(t.name)
+        if win is None:
+            logger.info("Target windows: %s gets no window tonight (less "
+                        "than the minimum usable time left)", t.name)
+            continue
+        t.window_start_utc, t.window_end_utc = win
+        t.handoff_utc = alloc["handoff"].get(t.name)
+        span_s = (win[1] - win[0]).total_seconds()
+        if alloc["fill"] and alloc["fill"][0] == t.name:
+            t.fill_from_utc, t.fill_end_utc = alloc["fill"][1:]
+        if getattr(t, "repeat_while_up", True):
+            # a run-once mosaic panel (PS-111) keeps its owed subs: the
+            # handoff still bounds it
+            longs = [e for e in t.exposures if e.count - e.acquired > 0]
+            _scale_group(longs, span_s * 0.85)
+        kept.append(t)
+    logger.info("Target windows: %s%s", "; ".join(
+        f"{t.name} {t.window_start_utc:%H:%M}-{t.window_end_utc:%H:%M}Z"
+        + (" then hand off" if t.handoff_utc else "") for t in kept),
+        (f"; fill {alloc['fill'][0]} from {alloc['fill'][1]:%H:%M}Z"
+         if alloc["fill"] else ""))
+    return kept
+
+
 def _panel_note(proj, held: list) -> str:
     m = proj.mosaic
     note = (f"Mosaic {m.get('name')}: panel {m.get('panel')} of {m.get('of')} "
@@ -344,7 +472,10 @@ def plan_night_sequence(
         if project.completion_pct >= 100:
             continue
 
-        vis = compute_visibility_window(project.target, obs, date_utc)
+        # PS-180: tonight's twilight, so rise/set (the target windows) are
+        # tonight's even after the UTC date rolled over in the evening
+        vis = compute_visibility_window(project.target, obs, date_utc,
+                                        twilight=twilight)
         if not vis["visible"] or vis["hours"] < 0.5:
             continue
 
@@ -376,6 +507,8 @@ def plan_night_sequence(
     # Build sequence targets
     sequence_targets = []
     remaining_hours = dark_hours
+    # PS-180: per target, for the window allocation
+    vis_by_name, need_by_name, prio_by_name = {}, {}, {}
     _gen_moon = None  # generator's moon window, fetched only if needed
 
     for vp in visible_projects:
@@ -402,6 +535,8 @@ def plan_night_sequence(
 
         if not remaining_exposures:
             continue
+        # PS-180: what the goal still needs (before tonight's scale-down)
+        need_s = sum(owed_seconds(e) for e in remaining_exposures) * 1.15
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
@@ -459,6 +594,9 @@ def plan_night_sequence(
             if transit != datetime.max:
                 transit = transit + timedelta(seconds=int(m.get("panel") or 0))
         sequence_targets.append((transit, seq_target))
+        vis_by_name[seq_target.name] = vp["visibility"]
+        need_by_name[seq_target.name] = need_s
+        prio_by_name[seq_target.name] = proj.priority
 
     # Transit-order the selected targets (west-to-east through the night), with
     # a meridian guard so the run doesn't open on an immediate flip (see helper).
@@ -475,6 +613,25 @@ def plan_night_sequence(
     for i, t in enumerate(sequence_targets):
         if t.mosaic_id and last[t.mosaic_id] != i:
             t.repeat_while_up = False
+
+    # PS-180: each target gets a time window and hands the mount on at its
+    # end, so the first repeating target no longer holds the RC16 all night
+    # (2026-10-07: 281 M31 subs, NGC 604 and the Heart never ran)
+    if sequence_targets and bool(getattr(config, "plan_target_windows", True)):
+        moon = None
+        if getattr(config, "moon_aware_planning", True):
+            # the generator's own moon window: the window cap and the
+            # sequence's "until moonrise" conditions use the same moonrise
+            try:
+                from photonscript.scheduler.nina_sequence_json import (
+                    _moon_window)
+                moon = _moon_window()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("moon window unavailable: %s", e)
+                moon = {}
+        sequence_targets = _apply_windows(
+            sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
+            dark_start, dark_end, date_utc, moon)
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",

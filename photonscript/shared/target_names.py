@@ -54,6 +54,7 @@ def generator_names() -> dict:
         "container_suffix": NINAAPI_CONTAINER_SUFFIX,
         # suffixes that wrap a target name: strip them, keep the target
         "target_suffixes": (gen.TARGET_IMAGING_SUFFIX,
+                            gen.TARGET_FILL_SUFFIX,           # PS-180
                             gen.TARGET_FOCUS_CAL_SUFFIX,
                             gen.TARGET_TRACKING_LADDER_SUFFIX,
                             gen.TARGET_BLOCK_SUFFIX,          # PS-61

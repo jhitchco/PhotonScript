@@ -119,6 +119,14 @@ class PhotonScriptConfig(BaseSettings):
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead
+    # PS-180: every target gets a time window (visibility, priority, goal
+    # hours left, moonrise for broadband-only) and its repeating loop hands
+    # the mount to the next target at the window end; leftover time goes to
+    # the highest-priority target still up. Off = the old behavior (the
+    # first target repeats while safe and up, i.e. usually all night).
+    plan_target_windows: bool = True
+    plan_window_min_minutes: int = 30  # shortest window worth a slew + AF +
+    # center; a target that cannot get this much tonight is left out
     campaign_min_alt_deg: float = 30.0  # PS-30: campaign planner altitude floor
     # (deg) for a target's usable 10-min slots; a project's min_alt_deg overrides.
     # Flat 30 deg at AARO Pier 3 (Jeremy, 2026-09-26: no roof/terrain profile).

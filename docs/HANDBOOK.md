@@ -988,6 +988,26 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-10-07 (the first target held the RC16 all night, PS-180): the plan
+  had M31 LRGB, NGC 604 and the Heart. Picked by priority, the Heart (60)
+  took most of the budget, so M31 and NGC 604 were scaled to 1 or 2 subs
+  per filter per pass; transit order then put M31 first, and its imaging
+  loop "repeats while safe and up", so it shot all 281 subs and the other
+  two never ran. Fixed: the planner gives every target a time window
+  (`target_planner.allocate_windows`: in run order, a priority-weighted
+  share of the time left among the targets that can still use it, capped
+  by the goal hours still owed and the target's time above 30 deg, and by
+  moonrise for a broadband-only target; no idle gap; a target that cannot
+  get `plan_window_min_minutes` (30) is left out). Each target but the last
+  hands the mount on at its window end: a TimeCondition at that local clock
+  time on the imaging loop and the DSO container (a sub that would not fit
+  is not started). Leftover time at the end of the night goes back to the
+  highest-priority target still up: the last target's window grows, or a
+  final "<target> fill (rest of the night)" container runs. Per-pass counts
+  are fitted into the window (every filter is shot inside it). Windows show
+  in `/api/nightplan` (`schedule[].window_start_utc`, `window_end_utc`,
+  `handoff_utc`, `fill`) and on the dashboard plan. Kill switch:
+  `plan_target_windows` (System page). A re-dispatch replans from now.
 - 2026-10-07 (RC16 shutter open 5.4 h of 9.8 h, PS-176): M31 LRGB all
   night. 28 Run Autofocus items (118 min), one per filter block, because
   the planner's per-pass counts were L x3, R/G/B x1 and every block AFs
