@@ -2530,7 +2530,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _bias_age = None
     _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
                  or _bias_age >= _bias_refresh_days)
-    # PS-181: no usable bias at all (epoch: gain, offset, SET-TEMP, verified
+    # PS-182: no usable bias at all (epoch: gain, offset, SET-TEMP, verified
     # readout): shoot one 50 bias set at the setpoint first thing, whatever
     # the roof (1 ms is light-safe; QA quarantines a bad frame), behind the
     # cooler gate so a cool that timed out never yields warm bias.
@@ -2541,7 +2541,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
     if bias_at_setpoint is not None:
         bias_if_still_unsafe = _annotation(
             "BIAS_IF_STILL_UNSAFE skipped: BIAS_AT_SETPOINT shoots the missing "
-            "bias at the night start (PS-181)")
+            "bias at the night start (PS-182)")
     elif _bias_due:
         bias_if_still_unsafe = _seq_container(
             "BIAS_IF_STILL_UNSAFE",

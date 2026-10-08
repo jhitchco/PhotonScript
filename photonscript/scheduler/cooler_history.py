@@ -1,4 +1,4 @@
-"""PS-181: cooler history and setpoint reachability.
+"""PS-182: cooler history and setpoint reachability.
 
 Darks are the hard part of calibration because the sensor has to sit at
 the setpoint (0 C) for hours with the roof closed, and on a hot afternoon

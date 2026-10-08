@@ -1,4 +1,4 @@
-"""PS-181: calibration completeness, reliable darks, bias when none, copy
+"""PS-182: calibration completeness, reliable darks, bias when none, copy
 priority.
 
 Jeremy 2026-10-08: "let's make sure that we're capturing all of the biases

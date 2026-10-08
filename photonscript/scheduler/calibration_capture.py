@@ -28,7 +28,7 @@ setpoint +/- calibration_temp_tol_c twice in a row (or aborts after
 calibration_cool_timeout_min, default COOL_TIMEOUT_MIN) before dispatching
 the first exposure.
 
-PS-181 (calibration_cool_reach, default refuse): a DAYTIME start is refused
+PS-182 (calibration_cool_reach, default refuse): a DAYTIME start is refused
 at once when the cooler cannot reach the setpoint now (the TEC reads flat
 out above it, or the cooler history predicts more than
 cooler_reach_max_power_pct at the live ambient), and a job that is cooling
@@ -69,7 +69,7 @@ logger = logging.getLogger(__name__)
 IDLE_STATES = ("DISARMED", "COMPLETE")
 POLL_S = 30.0
 COOL_TIMEOUT_MIN = 20.0
-STALL_WINDOW_S = 180.0   # PS-181: "stopped falling" = < STALL_DROP_C in this long
+STALL_WINDOW_S = 180.0   # PS-182: "stopped falling" = < STALL_DROP_C in this long
 STALL_DROP_C = 0.5
 PROBE_COUNT = 3
 ROOF_MISS_LIMIT = 3
@@ -120,7 +120,7 @@ class RigIO:
         return await nina_camera_info(self.base)
 
     async def focuser_temp(self) -> float | None:
-        """PS-181: the focuser temperature, the ambient proxy."""
+        """PS-182: the focuser temperature, the ambient proxy."""
         from photonscript.scheduler.preflight import _connected
         try:
             _ok, payload, _e = await _connected(self.cfg, "focuser")
@@ -245,7 +245,7 @@ class Job:
         self.ended: datetime | None = None
         self.events: list[str] = []
         self.armer_status_fn: Callable[[], dict] | None = None
-        self.reach_stalled = False   # PS-181: cooling stalled above the setpoint
+        self.reach_stalled = False   # PS-182: cooling stalled above the setpoint
 
     @property
     def active(self) -> bool:
@@ -429,7 +429,7 @@ def _next_window_text(config, rig: str) -> tuple[str, dict | None]:
 
 
 async def _reach_check(config, rig: str, io, seen: dict, label: str) -> list[str]:
-    """PS-181: refuse a daytime start the cooler cannot serve: the TEC
+    """PS-182: refuse a daytime start the cooler cannot serve: the TEC
     already reads flat out above the setpoint, or the cooler history
     predicts more than cooler_reach_max_power_pct at the live ambient.
     Unknown (no history, no ambient) never refuses."""
@@ -618,7 +618,7 @@ async def _start(config, rig, armer_state_fn, io, poll_s, day, seen, *, darks, b
 
 def _defer_plan(config, rig: str, *, darks=None, bias=None, exposures=None,
                 count=None, budget=None, reason: str = "", window=None) -> None:
-    """PS-181: keep the plan a refused / stalled job would have shot for the
+    """PS-182: keep the plan a refused / stalled job would have shot for the
     rig's dawn window (calibration_window). Never raises."""
     try:
         from photonscript.scheduler.calibration_window import defer
@@ -698,7 +698,7 @@ def cool_timeout_min(config) -> float:
 
 def stalled(trace: list, setpoint: float, tol: float, now_mono: float,
             stall_min: float, started: float) -> bool:
-    """PS-181: cooling for at least stall_min, the sensor still above the
+    """PS-182: cooling for at least stall_min, the sensor still above the
     setpoint + tol and it fell less than STALL_DROP_C over the last
     STALL_WINDOW_S. trace = [(monotonic, temp)]."""
     if stall_min <= 0 or not trace or now_mono - started < stall_min * 60:
@@ -714,7 +714,7 @@ def stalled(trace: list, setpoint: float, tol: float, now_mono: float,
 
 async def _wait_cooled(config, job: Job, io: RigIO, armer_state_fn, poll_s) -> str | None:
     """Cool and wait for two in-tolerance reads. Returns an abort reason or
-    None when the sensor is at the setpoint. PS-181: a stall (the sensor
+    None when the sensor is at the setpoint. PS-182: a stall (the sensor
     stopped falling above the setpoint) aborts after
     calibration_cool_stall_min when calibration_cool_reach is refuse (warn
     and off wait for the timeout as before)."""
@@ -846,7 +846,7 @@ async def _monitor(config, job: Job, io: RigIO, armer_state_fn, poll_s: float,
         cam = await io.camera()
         t = (cam or {}).get("Temperature")
         from photonscript.scheduler.cooler_history import record as _hist
-        _hist(config, job.rig, cam, source="capture-job")   # PS-181
+        _hist(config, job.rig, cam, source="capture-job")   # PS-182
         if t is None:
             cam_miss += 1
             if cam_miss >= ROOF_MISS_LIMIT:
@@ -950,7 +950,7 @@ async def _finish(config, job: Job, io: RigIO, stop_reason, dispatched: bool,
     if nights:
         await asyncio.to_thread(_file_frames, config, job.rig, nights)
     if job.reach_stalled and not dispatched and not job.source.startswith("deferred"):
-        txt, w = _next_window_text(config, job.rig)   # PS-181
+        txt, w = _next_window_text(config, job.rig)   # PS-182
         _defer_plan(config, job.rig, darks=job.darks, bias=job.bias,
                     reason=stop_reason or "cooler stalled", window=w)
         if txt:
@@ -1028,7 +1028,7 @@ async def autofill_tick(config, armer_state_fn: Callable[[], str],
 
 async def autofill_loop(config_fn, armer_fn, tick_s: float = 600.0) -> None:
     """Started with the service; idles each tick unless calibration_autofill
-    (or, PS-181, calibration_dawn_capture with a deferred plan)."""
+    (or, PS-182, calibration_dawn_capture with a deferred plan)."""
     while True:
         try:
             cfg = config_fn()
@@ -1036,7 +1036,7 @@ async def autofill_loop(config_fn, armer_fn, tick_s: float = 600.0) -> None:
                 res = await autofill_tick(cfg, lambda: armer_fn().state,
                                           armer_status_fn=lambda: armer_fn().status())
                 logger.info("calibration autofill: %s", res)
-            if getattr(cfg, "calibration_dawn_capture", False):   # PS-181
+            if getattr(cfg, "calibration_dawn_capture", False):   # PS-182
                 from photonscript.scheduler.calibration_window import dawn_tick
                 res = await dawn_tick(cfg, lambda: armer_fn().state,
                                       armer_status_fn=lambda: armer_fn().status())

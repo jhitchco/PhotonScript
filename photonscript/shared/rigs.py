@@ -325,7 +325,7 @@ def rig_readout(config, rig: str) -> str | None:
 
 
 def rig_readout_since(config, rig: str) -> str | None:
-    """PS-181: first night (YYYY-MM-DD) the rig's lights were shot at its
+    """PS-182: first night (YYYY-MM-DD) the rig's lights were shot at its
     readout mode (camera_readout_since / piggyback_readout_since). A dark
     or bias with no readout recorded that is older than this is NOT assumed
     to be at the rig's mode (the RC16's July frames are LCG, its lights HCG

@@ -140,7 +140,7 @@ class PhotonScriptConfig(BaseSettings):
     syncthing_api_key: str = ""
     syncthing_folder_id: str = ""   # folder id of the Library share
     syncthing_device_id: str = ""   # the DESKTOP's device id
-    syncthing_calibration_folder_ids: str = ""  # PS-181: comma list of the
+    syncthing_calibration_folder_ids: str = ""  # PS-182: comma list of the
                                     # Syncthing folders that carry
                                     # Library/Calibration (and piggyback/Calibration)
                                     # once they are split off the Library share
@@ -206,7 +206,7 @@ class PhotonScriptConfig(BaseSettings):
                                  # darks + bias job per rig per day (ends 2 h
                                  # before sunset). Never at night. Off = only
                                  # the Capture now button / CLI start a job
-    # PS-181: calibration completeness, cooler reachability, bias when none
+    # PS-182: calibration completeness, cooler reachability, bias when none
     calibration_completeness_nights: int = 14  # completeness model: light
                                  # configs of the last this many nights (plus
                                  # tonight's plan), every goal (report only)
@@ -527,7 +527,7 @@ class PhotonScriptConfig(BaseSettings):
                                 # light since 2026-09-26 is HCG (NINA profile
                                 # setting; the sequence cannot set it). Blank
                                 # = readout not matched (pre-PS-128)
-    camera_readout_since: str = ""  # PS-181: YYYY-MM-DD the RC16 lights went
+    camera_readout_since: str = ""  # PS-182: YYYY-MM-DD the RC16 lights went
                                 # to camera_readout_mode (2026-09-26 for HCG).
                                 # A dark / bias with no readout recorded and
                                 # older than this is not assumed at the mode
@@ -1039,7 +1039,7 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_readout_mode: str = "LCG"  # PS-128: AP26CC readout mode of the
                                         # OSC lights (all LCG so far); same rule
                                         # as camera_readout_mode
-    piggyback_readout_since: str = ""   # PS-181: same as camera_readout_since
+    piggyback_readout_since: str = ""   # PS-182: same as camera_readout_since
     piggyback_library_dir: str = ""     # piggyback library subtree ("" = <main lib>/piggyback)
     piggyback_frame_attribution: str = "report"  # PS-137: name Piggy subs
                                      # after the goal their frame holds (solve,

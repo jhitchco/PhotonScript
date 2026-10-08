@@ -87,7 +87,7 @@ def test_old_bias_includes_block(gen):
 
 
 def test_empty_library_includes_block(gen):
-    # PS-181: no usable bias at all -> the bias is shot at the setpoint at the
+    # PS-182: no usable bias at all -> the bias is shot at the setpoint at the
     # night start (BIAS_AT_SETPOINT) instead of only while unsafe
     data, _ = gen(refresh_days=60, bias_age_days=None)
     assert not _has_bias_block(data)

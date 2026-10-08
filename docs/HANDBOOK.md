@@ -922,7 +922,7 @@ and integration.
   bookkeeping changes.
 - Typical throughput observed: 227 files / 11 GB overnight batch; watch
   progress on /api/sync or the Syncthing GUI on either end.
-- **Calibration first (PS-181, Jeremy's step, PhotonScript never changes
+- **Calibration first (PS-182, Jeremy's step, PhotonScript never changes
   Syncthing).** One folder pulls one queue, so on 2026-10-08 the night's
   calibration sat behind 15 GB of lights at ~1 MB/s. Give
   `Library\Calibration` and `Library\piggyback\Calibration` folders of
@@ -1446,7 +1446,7 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   integrate` lists the bias sessions that miss the epoch and, for a light
   length with no dark, the nearest alternatives; it refuses that length
   unless `--allow-uncalibrated`.
-- CALIBRATION COMPLETENESS (PS-181): `GET /api/calibration/completeness?rig=`
+- CALIBRATION COMPLETENESS (PS-182): `GET /api/calibration/completeness?rig=`
   and `photonscript calibration-status [--rig R] [--url
   http://100.94.189.77:8100] [--mirror D:\ninashare\Library] [--nights N]`
   (exit 1 when anything is missing). One model per rig: every light set
@@ -1472,7 +1472,7 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   `camera_readout_since` (RC16: set 2026-09-26) stops assuming HCG for any
   older frame that still has none. Passed bias also has to match SET-TEMP
   now (the 09-30 bias at 20 C).
-- DARKS THAT WORK (PS-181): (a) QA: the dark-over-bias allowance's dark
+- DARKS THAT WORK (PS-182): (a) QA: the dark-over-bias allowance's dark
   current term scales with the readout's ADU per electron
   (`calibration_qa_dark_scale_by_readout`; RC16 HCG 0.79 / 0.25 = 3.16 x).
   The limit was measured on LCG darks, so good HCG 600 s darks (28 to 46 ADU

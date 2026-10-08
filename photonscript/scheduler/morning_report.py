@@ -11,7 +11,7 @@ Built only from data other passes already keep (nothing is measured here):
   * hours per goal: hours of the kept subs per target tonight, next to the
     goal's total integration and budget (project store)
   * calibration owed: calibration_owed.morning_note (PS-160)
-  * calibration completeness (PS-181): calibration_completeness.morning_line,
+  * calibration completeness (PS-182): calibration_completeness.morning_line,
     "Calibration: complete for <targets> / missing <...>" (captured, QA,
     Library and the Syncthing cache's view of the desktop)
   * library filed: the dawn filing record's line (dawn_autofile, PS-157)
@@ -189,7 +189,7 @@ def report_card(config, date: str | None = None, *, projects=None,
             out["calibration"] = morning_note(config) or "Calibration: nothing owed"
         except Exception as e:  # noqa: BLE001
             out["calibration"] = f"Calibration owed: unavailable ({e})"
-    if completeness:   # PS-181
+    if completeness:   # PS-182
         try:
             from photonscript.scheduler.calibration_completeness import cached_line
             from photonscript.scheduler.routers.calibration import pending_names
@@ -267,7 +267,7 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["library"])
     if (card.get("nina_logs") or {}).get("line"):
         lines.append(card["nina_logs"]["line"])
-    if card.get("completeness"):   # PS-181
+    if card.get("completeness"):   # PS-182
         lines.append(card["completeness"])
     if calibration and card.get("calibration"):
         lines.append(card["calibration"])
@@ -276,7 +276,7 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
 
 def push_text(config, date: str | None) -> str | None:
     """PS-166 lines for the dawn "Night complete" push (the calibration line
-    is already its own line there). None when nothing can be said. PS-181:
+    is already its own line there). None when nothing can be said. PS-182:
     the completeness line rides along only when the card has something
     else to say (a night with subs or stalls)."""
     try:

@@ -337,7 +337,7 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
     setpoint = config.camera_setpoint_c if setpoint is None else setpoint
     ro_default = normalize_readout(getattr(config, "camera_readout_mode", "HCG"))
     readout = ro_default if readout is None else normalize_readout(readout)
-    since = _view_readout_since(config)   # PS-181
+    since = _view_readout_since(config)   # PS-182
     cal_days = int(getattr(config, "library_cal_days", 120))
     cutoff = (datetime.now() - __import__("datetime")
               .timedelta(days=cal_days)).strftime("%Y-%m-%d")
@@ -363,14 +363,14 @@ def count_matching_darks(config, exp_s: float, *, gain: int | None = None,
 
 
 def _view_readout_since(config) -> str | None:
-    """PS-181: rig_readout_since for a scan view (the piggyback view carries
+    """PS-182: rig_readout_since for a scan view (the piggyback view carries
     its own date in camera_readout_since)."""
     from photonscript.shared.rigs import rig_readout_since
     return rig_readout_since(config, "rc16")
 
 
 def _hdr_readout(h, date: str, default: str | None, since: str | None) -> str | None:
-    """PS-181: a header's readout mode; none recorded = `default`, unless
+    """PS-182: a header's readout mode; none recorded = `default`, unless
     the frame is older than `since` (then unknown, None)."""
     from photonscript.shared.rigs import header_readout
     ro = header_readout(h)[0]
@@ -499,7 +499,7 @@ def _qa_failed_keys(config) -> set:
 
 def days_since_last_bias(config, rig: str = "rc16") -> int | None:
     """Age (in days) of the newest USABLE bias session, or None when the
-    rig has none. PS-181: once the rig has a calibration QA store (QA mode
+    rig has none. PS-182: once the rig has a calibration QA store (QA mode
     not off) that is the newest QA-passed session at the rig's epoch
     (gain, offset, SET-TEMP, readout: calibration_qa.passed_bias_sessions,
     the very count the owed view and the completeness model use). Without
@@ -516,7 +516,7 @@ def days_since_last_bias(config, rig: str = "rc16") -> int | None:
 
 
 def newest_usable_bias(config, rig: str = "rc16") -> str | None:
-    """PS-181: date of the newest usable bias session (see
+    """PS-182: date of the newest usable bias session (see
     days_since_last_bias), None when there is none."""
     from photonscript.shared.rigs import rig_readout, rig_readout_since
     ep = dark_epoch(config, rig)
@@ -551,7 +551,7 @@ def newest_usable_bias(config, rig: str = "rc16") -> str | None:
 def _session_readout(f: Path, default: str | None, *, date: str = "",
                      since: str | None = None) -> tuple[str | None, float | None]:
     """PS-128: (readout mode, SET-TEMP) of one frame (its session's); the
-    default readout when the header has none (PS-181: unknown when older
+    default readout when the header has none (PS-182: unknown when older
     than `since`) or cannot be read; SET-TEMP None when not readable."""
     try:
         from astropy.io import fits as _fits
@@ -792,7 +792,7 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
 
 
 def bias_at_setpoint_block(config, rig: str, setpoint: float) -> dict:
-    """PS-181: the BIAS_AT_SETPOINT container a night sequence carries when
+    """PS-182: the BIAS_AT_SETPOINT container a night sequence carries when
     the rig has no usable bias: the cooler gate (dark_gate_items: skip mode
     skips the bias when the sensor is off its setpoint) then 50 x 0.001 s
     at the rig's gain / offset, run once, any roof state."""
@@ -1157,7 +1157,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     _bias_due = (_bias_refresh_days <= 0 or _bias_age is None
                  or _bias_age >= _bias_refresh_days)
     if _bias_age is None and getattr(config, "calibration_bias_when_missing", True):
-        # PS-181: no usable OSC bias at all: one set at the setpoint first,
+        # PS-182: no usable OSC bias at all: one set at the setpoint first,
         # whatever the roof (1 ms is light-safe), behind the cooler gate
         target_items.insert(0, bias_at_setpoint_block(config, "piggyback", setpoint))
     elif _bias_due:

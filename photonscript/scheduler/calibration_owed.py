@@ -411,7 +411,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
                                                     quota_exposures)
     from photonscript.shared.rigs import rig_readout_since
     ep = dark_epoch(config, rig)
-    ro_since = rig_readout_since(config, rig)   # PS-181
+    ro_since = rig_readout_since(config, rig)   # PS-182
     qlist = quota_exposures(view, rig)
     # PS-160: the lengths the lights used join the night quota (the same
     # rule calibration.night_dark_exposures applies at generation)
@@ -545,7 +545,7 @@ def _bias_sessions(config, view, rig, store, ep) -> dict:
         return cq.passed_bias_sessions(view, rig, gain=ep["gain"],
                                        offset=ep["offset"],
                                        readout=ep["readout"] or "",
-                                       setpoint=ep["setpoint"],   # PS-181
+                                       setpoint=ep["setpoint"],   # PS-182
                                        store=store)
     from photonscript.scheduler.calibration import calibration_health
     h = calibration_health(view).get("BIAS") or {}
@@ -724,7 +724,7 @@ def _readout_note(rig_out: dict) -> str | None:
 
 def _readout_assumed_frames(store: dict, ep: dict, since: str | None = None) -> int:
     """PS-128: QA records (darks / bias of the rig's gain and offset) with no
-    readout recorded: counted as the rig's readout mode (assumed). PS-181:
+    readout recorded: counted as the rig's readout mode (assumed). PS-182:
     those older than rig_readout_since are not counted at all (unknown)
     and not included here."""
     if not ep.get("readout"):

@@ -756,7 +756,7 @@ class TelescopeAgent:
                     self.state.focuser_position = focuser.get("Position")
                 except Exception:
                     pass
-                # PS-181: cooler history (temp, TEC power, focuser temp as
+                # PS-182: cooler history (temp, TEC power, focuser temp as
                 # the ambient proxy) for the darks window chooser; throttled
                 # to cooler_history_sample_s, never raises
                 from photonscript.scheduler.cooler_history import record

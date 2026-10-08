@@ -1,4 +1,4 @@
-"""PS-181: when can a rig shoot its darks (and bias) at the setpoint?
+"""PS-182: when can a rig shoot its darks (and bias) at the setpoint?
 
     windows(config, rig, minutes=0, now=None, ambient=None) -> dict
     defer(config, rig, darks, bias, reason, window) / deferred(config, rig)
@@ -14,7 +14,7 @@ and the Piggy-600 companion while the roof is closed; that is opportunistic
                       the live ambient (focuser temperature) or the history
   pre-config cool-down  dusk minus cool_lead_minutes to astro dusk: short,
                       good for a 50 x 0 s bias set (the night sequence shoots
-                      it there when no usable bias exists, PS-181)
+                      it there when no usable bias exists, PS-182)
   night (roof closed) astro dusk to astro dawn, only while unsafe: filled by
                       the night quota automatically
   dawn after shutdown astro dawn + 30 min (after the dawn flats) to astro

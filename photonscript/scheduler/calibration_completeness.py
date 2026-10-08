@@ -1,4 +1,4 @@
-"""PS-181: calibration completeness, one model per rig.
+"""PS-182: calibration completeness, one model per rig.
 
     completeness(config, rig=None, pending=None, pending_capped=False,
                  names=False) -> dict
@@ -31,7 +31,7 @@ know into one answer per light set:
                with the reason at the first stage that is short.
 
 "Usable" is calibration_qa.usable_misses, the same rule the owed view, the
-night quota and the library report count with (PS-181: one source of
+night quota and the library report count with (PS-182: one source of
 truth; a frame with no readout recorded older than rig_readout_since does
 not count). Frames come from calibration_library.library_report (watch dir,
 Library, quarantine, with QA verdicts); flat staleness (age, optics change,

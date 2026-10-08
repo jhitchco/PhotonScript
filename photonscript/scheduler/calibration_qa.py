@@ -315,7 +315,7 @@ def frame_readout(rec: dict, default: str | None,
     """PS-128: (readout mode, assumed) of a QA record. A record with no
     readout (no header keyword, or measured before PS-128 and not
     backfilled yet) takes the rig default and is flagged assumed.
-    PS-181: unless it is older than `since` (rigs.rig_readout_since): then
+    PS-182: unless it is older than `since` (rigs.rig_readout_since): then
     its mode is unknown (None, True) and it matches no mode."""
     ro = rec.get("readout")
     if ro:
@@ -334,12 +334,12 @@ def readout_matches(rec: dict, want: str | None, default: str | None,
     return frame_readout(rec, default, since)[0] == want
 
 
-SETTEMP_TOL_C = 1.5   # PS-181: one SET-TEMP match for every counter and report
+SETTEMP_TOL_C = 1.5   # PS-182: one SET-TEMP match for every counter and report
 
 
 def usable_misses(rec: dict, epoch: dict, *, default_ro: str | None = None,
                   since: str | None = None) -> list[str]:
-    """PS-181: the one rule for "can this DARK / BIAS calibrate lights of
+    """PS-182: the one rule for "can this DARK / BIAS calibrate lights of
     `epoch`" (calibration.dark_epoch shape: gain, offset, setpoint,
     readout). [] = usable. The owed view, the night quota, the library
     report and the completeness model all count with it: gain and offset
@@ -372,7 +372,7 @@ def _set_key(rec: dict) -> tuple:
 
 
 def dark_excess_limit(exp_s: float, temp_c: float | None, scale: float = 1.0) -> float:
-    """Dark minus bias allowed (ADU). PS-181: `scale` multiplies the dark
+    """Dark minus bias allowed (ADU). PS-182: `scale` multiplies the dark
     current term for a readout mode with more ADU per electron than the
     LCG frames DARK_EXCESS_ADU_PER_S was measured on (AP26MC HCG: 0.79 /
     0.25 = 3.16 x)."""
@@ -383,7 +383,7 @@ def dark_excess_limit(exp_s: float, temp_c: float | None, scale: float = 1.0) ->
 
 
 def dark_excess_scales(config, rig: str) -> dict:
-    """PS-181: {readout: dark-current scale} for judge_all. The RC16 AP26MC
+    """PS-182: {readout: dark-current scale} for judge_all. The RC16 AP26MC
     at HCG converts 0.25 e-/ADU (camera_gain_e_adu) against 0.79 at LCG
     (camera_gain_lcg_e_adu), so the same dark current reads 3.16 x more
     ADU: the 600 s HCG darks of 2026-10-05 / 10-06 sat 28 to 46 ADU over
@@ -408,7 +408,7 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
                 excess_scale: float = 1.0) -> tuple[list, list]:
     """Per-frame checks. Returns (fails, warnings): lists of
     {"code", "detail"}. bias_ref = (level, source) for darks;
-    excess_scale (PS-181) scales the dark-current allowance for the
+    excess_scale (PS-182) scales the dark-current allowance for the
     frame's readout mode (dark_excess_scales)."""
     fails: list[dict] = []
     warns: list[dict] = []
@@ -552,7 +552,7 @@ def judge_all(store: dict, *, rig: str, tol: float,
               setpoint: float | None = None, scales: dict | None = None,
               default_readout: str | None = None) -> None:
     """Recompute every verdict in the store (cheap: no file reads).
-    PS-181: `scales` = dark_excess_scales (readout -> dark-current scale);
+    PS-182: `scales` = dark_excess_scales (readout -> dark-current scale);
     a dark with no readout recorded takes `default_readout`'s."""
     recs = store["frames"]
     scales = scales or {}
@@ -789,7 +789,7 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
         from photonscript.shared.rigs import rig_readout
         judge_all(store, rig=rig, tol=temp_tol(config),
                   setpoint=_setpoint(config, rig),
-                  scales=dark_excess_scales(config, rig),          # PS-181
+                  scales=dark_excess_scales(config, rig),          # PS-182
                   default_readout=rig_readout(config, rig))
         if persist:
             save_store(config, rig, store)
@@ -1058,7 +1058,7 @@ def _within_days(date: str, days: int) -> bool:
 
 
 def _readout_want(config, rig: str, readout) -> tuple[str | None, str | None, str | None]:
-    """PS-128: (readout to match, default for frames without one, PS-181
+    """PS-128: (readout to match, default for frames without one, PS-182
     rig_readout_since). readout None = the rig's (rig_readout); a blank
     rig setting = not matched."""
     from photonscript.shared.rigs import (normalize_readout, rig_readout,
@@ -1105,7 +1105,7 @@ def passed_bias_sessions(config, rig: str, *, gain, offset,
                          setpoint: float | None = None,
                          store: dict | None = None) -> dict:
     """PS-122: {date: QA-passed bias of the epoch} per session (PS-128: at
-    the readout mode, the rig's when None; PS-181: at SET-TEMP within
+    the readout mode, the rig's when None; PS-182: at SET-TEMP within
     SETTEMP_TOL_C of `setpoint` when given, the library report's rule)."""
     store = store or load_store(config, rig)
     want, default, since = _readout_want(config, rig, readout)
@@ -1122,7 +1122,7 @@ def passed_bias_sessions(config, rig: str, *, gain, offset,
 
 
 def fill_missing_readouts(config, rig: str, limit: int = 400) -> dict:
-    """PS-181: header-read READOUTM (and PS-164 focpos / rotator) for up to
+    """PS-182: header-read READOUTM (and PS-164 focpos / rotator) for up to
     `limit` DARK / BIAS records of the rig that have no readout recorded
     and were never header-read for it, and store them. The counters then
     use the frame's real mode instead of assuming the rig's (the RC16 July

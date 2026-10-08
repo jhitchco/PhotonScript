@@ -10,13 +10,13 @@ GET  /api/calibration/library-report?rig=&frames=
                                              reason each is not there, and
                                              whether it fits the lights' epoch
 GET  /api/calibration/completeness?rig=&names=&nights=
-                                             PS-181: per rig, every light set of
+                                             PS-182: per rig, every light set of
                                              the last N nights + tonight with its
                                              bias / darks / flats through
                                              captured, QA-passed, Library and
                                              (Syncthing cache) desktop, the reason
                                              when short, darks windows, bias plan
-GET  /api/calibration/windows?rig=&minutes=  PS-181: darks windows + cooler
+GET  /api/calibration/windows?rig=&minutes=  PS-182: darks windows + cooler
                                              reachability, the deferred plan
 POST /api/calibration/qa/backfill            {"rig", "dry_run"}: QA the whole
                                              library in the background
@@ -119,7 +119,7 @@ def api_calibration_library_report(rig: str = "rc16", frames: int = 0):
 
 
 def calibration_folder_need(cfg, folders: list[str], get=None) -> set | None:
-    """PS-181: basenames the desktop still needs from the calibration
+    """PS-182: basenames the desktop still needs from the calibration
     Syncthing folders (syncthing_calibration_folder_ids), one remoteneed
     page each (they are small). None when Syncthing is not configured or
     does not answer. Read only (GET)."""
@@ -146,7 +146,7 @@ def calibration_folder_need(cfg, folders: list[str], get=None) -> set | None:
 
 
 def pending_names() -> tuple[set | None, bool]:
-    """PS-181: basenames the desktop still needs and whether that list was
+    """PS-182: basenames the desktop still needs and whether that list was
     capped. With syncthing_calibration_folder_ids: those folders (one cheap
     call each); else the Library share's remoteneed cache (never starts a
     walk). (None, False) when unknown."""
@@ -166,7 +166,7 @@ def pending_names() -> tuple[set | None, bool]:
 
 @router.get("/api/calibration/completeness")
 def api_calibration_completeness(rig: str = "", names: bool = False, nights: int = 0):
-    """PS-181: read only. The calibration completeness model."""
+    """PS-182: read only. The calibration completeness model."""
     from photonscript.scheduler.calibration_completeness import completeness
     from photonscript.shared.rigs import rig_ids
     cfg = _cfg()
@@ -179,7 +179,7 @@ def api_calibration_completeness(rig: str = "", names: bool = False, nights: int
 
 @router.get("/api/calibration/windows")
 def api_calibration_windows(rig: str = "rc16", minutes: float = 0.0):
-    """PS-181: read only. Darks windows with the cooler reachability
+    """PS-182: read only. Darks windows with the cooler reachability
     prediction, the cooler model and the rig's deferred plan."""
     from photonscript.scheduler import cooler_history as ch
     from photonscript.scheduler.calibration_window import deferred, windows

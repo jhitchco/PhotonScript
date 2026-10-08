@@ -62,7 +62,7 @@ def _header_fields(path: Path) -> dict:
 def epoch_misses(rec: dict, epoch: dict, *, tol: float = 1.0,
                  default_ro: str | None = None, since: str | None = None) -> list[str]:
     """Why a DARK / BIAS frame cannot match the rig's lights ([] = usable).
-    epoch = calibration.dark_epoch(config, rig). PS-181: the shared rule
+    epoch = calibration.dark_epoch(config, rig). PS-182: the shared rule
     (calibration_qa.usable_misses), so this report and the owed view /
     night quota agree; `tol` is kept for callers and no longer used. A
     frame with no readout keyword is assumed to be at the rig's readout
@@ -110,7 +110,7 @@ def library_report(config, rig: str = "rc16", *, now: datetime | None = None,
     cal_days = int(getattr(config, "library_cal_days", 120))
     epoch = cal.dark_epoch(config, rig)
     default_ro = rig_readout(config, rig)
-    since = rig_readout_since(config, rig)   # PS-181
+    since = rig_readout_since(config, rig)   # PS-182
     store = cq.load_store(config, rig)["frames"]
     subs_nights = _subs_nights(config) if rig == "rc16" else None
 

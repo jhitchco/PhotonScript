@@ -26,7 +26,7 @@ watched-night paths both call it):
    every calibration folder of the last CAL_SWEEP_DAYS on both rigs, so a
    calibration-only folder (daytime capture, roof-closed night, NINA
    restarted after midnight) reaches the Library and the desktop too.
-   PS-181: and the readout fill (calibration_qa.fill_missing_readouts, up
+   PS-182: and the readout fill (calibration_qa.fill_missing_readouts, up
    to calibration_readout_fill_at_dawn records): QA records of darks / bias
    with no readout recorded get their READOUTM from a header read, so the
    July LCG bias stops counting as HCG.
@@ -442,7 +442,7 @@ def file_night(config, date: str, push: bool = True,
                 for rg, v in r.items()}
     rec["calibration_sweep"] = step("calibration sweep", _cal_sweep)
 
-    def _readout_fill():   # PS-181: record READOUTM on QA records without one
+    def _readout_fill():   # PS-182: record READOUTM on QA records without one
         from photonscript.scheduler.calibration_qa import fill_missing_readouts
         from photonscript.shared.rigs import rig_ids
         n = int(getattr(config, "calibration_readout_fill_at_dawn", 400) or 0)

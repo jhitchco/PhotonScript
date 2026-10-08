@@ -26,7 +26,7 @@ Usage:
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript calibration-library [--rig R] [--url U] [--desktop-library P] [--json]  # PS-178
-    photonscript calibration-status [--rig R] [--url U] [--mirror P] [--nights N] [--json]  # PS-181
+    photonscript calibration-status [--rig R] [--url U] [--mirror P] [--nights N] [--json]  # PS-182
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
@@ -2505,7 +2505,7 @@ def calibration_status_cmd(
                                                    "(default calibration_completeness_nights)"),
     as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
 ):
-    """PS-181: calibration completeness. For every light set (target, filter,
+    """PS-182: calibration completeness. For every light set (target, filter,
     exposure, gain, offset, SET-TEMP, readout) of the last nights and
     tonight's plan: are its bias, darks and flats captured, QA-passed, in
     the Library on the scope and (desktop, --url) in the mirror? The first
