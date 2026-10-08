@@ -1,0 +1,2001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Imaging Runs</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
+    <script src="/static/js/sky_geom.js?v={{ version }}"></script>
+    <script src="/static/js/review.js?v={{ version }}"></script>
+    <style>
+        .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        main { max-width: 1560px; margin: 0 auto; display: grid;
+               grid-template-columns: 215px 1fr; gap: 1.2rem;
+               align-items: start; }
+        @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+        /* PS-116: one subs view, Grid or Table */
+        #detailPanel { min-width:0; }   /* let the wide table scroll inside */
+        #subTable { display:block; max-height:72vh; max-width:100%; overflow:auto; }
+        #subTable th { position:sticky; top:0; z-index:1; background:#0b1220;
+                       cursor:pointer; white-space:nowrap; user-select:none; }
+        #subTable th.nosort { cursor:default; }
+        #subTable tr.srow { cursor:pointer; }
+        #subTable tr.srow:hover td { background:rgba(255,255,255,.04); }
+        #subTable td.tthumb { padding:.15rem .3rem; }
+        #subTable td.tthumb img { width:72px; min-height:40px; display:block;
+                                  border-radius:4px; background:#0b1220; }
+        #viewToggle .btn { padding:.2rem .7rem; font-size:.8rem; }
+        #viewToggle .btn.on { background:#1d4ed8; color:#fff; }
+        .night-chip { display:block; padding:.4rem .8rem; border-radius:8px;
+                      background:rgba(255,255,255,.05); margin:0 0 .4rem 0;
+                      cursor:pointer; white-space:nowrap; }
+        .night-chip.active { background:#1d4ed8; }
+        .fchip { display:inline-block; padding:.25rem .7rem; border-radius:999px;
+                 background:rgba(255,255,255,.06); margin:0 .35rem .35rem 0;
+                 cursor:pointer; font-size:.8rem; }
+        .fchip.active { background:#1d4ed8; }
+        table.runs { width:100%; border-collapse:collapse; font-size:.87rem; }
+        table.runs th, table.runs td { padding:.35rem .6rem; text-align:right;
+            border-bottom:1px solid rgba(255,255,255,.07); }
+        table.runs th:first-child, table.runs td:first-child { text-align:left; }
+        .score-ring { font-size:2.6rem; font-weight:800; }
+        .bd { font-size:.78rem; opacity:.75; }
+        .night-title { font-size:1.25rem; font-weight:700; margin:0 0 .2rem 0; }
+        .thumbs { display:flex; gap:.45rem; flex-wrap:wrap; padding:.4rem 0; }
+        .thumbs figure { margin:0; text-align:center; width:132px; position:relative;
+            /* own stacking context so the verdict buttons always sit above the
+               image — a rejected thumb's opacity:.55 makes the <img> a stacking
+               context that otherwise paints OVER the buttons and steals the
+               click (it just zoomed instead of accepting/rejecting). */
+            isolation:isolate; }
+        .qa-btns { position:absolute; top:3px; right:3px; display:flex; gap:3px;
+            z-index:2; }
+        .qa-btns span { cursor:pointer; border-radius:4px; padding:0 5px;
+            font-size:.85rem; background:rgba(0,0,0,.65); user-select:none; }
+        .qa-btns .y { color:#4ade80; } .qa-btns .n { color:#f87171; }
+        .qa-btns span:hover { background:rgba(0,0,0,.9); }
+        .thumbs img { border-radius:6px; display:block; width:132px; }
+        .thumbs figcaption { font-size:.6rem; opacity:.65; margin-top:.15rem;
+                             line-height:1.25; }
+        .rej { color:#f87171; }
+        .ok { color:#4ade80; }
+        .warn { color:#eab308; }
+        .bad { color:#ef4444; }
+        #timeline svg { width:100%; display:block; font:10px sans-serif; }
+        #timeline rect.seg { cursor:pointer; }
+        .ptag { border-radius:4px; padding:0 .35rem; font-size:.75em;
+                white-space:nowrap; }
+        .ptag.off { background:#581c87; color:#e9d5ff; }
+        .ptag.flag { background:#713f12; color:#fde68a; }
+        #lightbox[hidden] { display:none; }
+        #lightbox { position:fixed; inset:0; background:rgba(0,0,0,.88);
+                    display:flex; flex-direction:column; align-items:center;
+                    justify-content:center; z-index:50; gap:.6rem; }
+        #lightbox img { max-width:92vw; max-height:78vh; border-radius:8px;
+                        cursor:zoom-in; transition:transform .04s linear; }
+        #lightbox img.zoomed { cursor:move; border-radius:0; }
+        #lbCount { font-weight:700; opacity:.9; }
+        #lbBar { display:flex; gap:1rem; align-items:center; font-size:.85rem; }
+        /* PS-108: metrics side panel to the right of the image */
+        #lbMain { display:flex; gap:.8rem; align-items:flex-start;
+                  max-width:98vw; }
+        #lbMain img { max-width:calc(97vw - 370px) !important; }
+        #lbPanel { width:350px; max-height:80vh; overflow:auto; font-size:.74rem;
+                   background:#0b1220; border:1px solid #1e293b;
+                   border-radius:8px; padding:.5rem .65rem; }
+        #lbPanel .sc { font-size:1.6rem; font-weight:700; }
+        /* PS-115: target section on top, one header line, then the bars */
+        #lbTarget { border-bottom:1px solid #1e293b; padding-bottom:.35rem;
+                    margin-bottom:.3rem; }
+        #lbTarget a { color:#7dd3fc; text-decoration:none; font-weight:700; }
+        #lbRef { position:relative; width:100%; aspect-ratio:1000/667;
+                 background:#020617; border-radius:4px; overflow:hidden;
+                 margin-top:.3rem; }
+        #lbMain #lbRefImg { position:absolute; inset:0; width:100%; height:100%;
+                            max-width:100% !important; max-height:none;
+                            border-radius:0; cursor:default; }
+        #lbRefSvg { position:absolute; inset:0; width:100%; height:100%; }
+        #lbHead { margin-bottom:.25rem; }
+        #lbPanel .nm { padding:.25rem 0; }
+        #lbPanel .mrow { display:grid; grid-template-columns:8.5rem 1fr;
+                         gap:.1rem .5rem; padding:.18rem 0;
+                         border-bottom:1px solid #111827; }
+        #lbPanel .mbar { grid-column:1 / span 2; height:4px;
+                         background:#1f2937; border-radius:2px; overflow:hidden; }
+        #lbPanel .mbar > div { height:100%; }
+        #lbPanel .green { color:#4ade80; } #lbPanel .amber { color:#eab308; }
+        #lbPanel .red { color:#f87171; } #lbPanel .none { color:#94a3b8; }
+        #lbHist { width:100%; height:110px; background:#020617; cursor:pointer;
+                  border-radius:4px; }
+        /* PS-5: histogram section, folded = not fetched */
+        #lbHistBox { margin-top:.35rem; }
+        #lbHistBox summary { cursor:pointer; opacity:.8; }
+        #lbHistLogBtn { font-size:.7rem; padding:.05rem .45rem; margin-left:.4rem; }
+        /* PS-24: batch selection (shift / ctrl click) */
+        .thumbs figure.sel img { box-shadow:0 0 0 3px #38bdf8; }
+        #subTable tr.sel td { background:rgba(56,189,248,.14); }
+        #selBar .btn { padding:.15rem .6rem; font-size:.78rem; }
+        @media (max-width: 900px) {
+            #lbMain { flex-direction:column; align-items:center; }
+            #lbMain img { max-width:96vw !important; }
+            #lbPanel { width:92vw; max-height:30vh; }
+        }
+        #backfillBox { margin-top:.8rem; }
+        .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
+                overflow:hidden; margin:.3rem 0; }
+        .pbar > div { height:100%; background:#1d4ed8; width:0%;
+                      transition:width .5s; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Imaging Runs — plan vs. reality" %}
+    {% set active_page = "runs" %}
+    {% include "_header.html" %}
+    <main>
+        <aside class="panel">
+            <h2>Integration readiness</h2>
+            <div class="bd" id="readyBox" style="margin-bottom:1rem;">loading&hellip;</div>
+            <h2>Nights</h2>
+            <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
+            <button class="btn btn-secondary" id="regradeAllBtn"
+                    title="Re-measure and re-judge every night since a date (sequential, background). Manual review verdicts are kept unless the box below is ticked.">Re-grade all&hellip;</button>
+            <label class="bd" style="display:block;font-size:.75rem;opacity:.7;margin-top:.2rem;"
+                   title="PS-141: the old wipe. Deletes the subs logs of those nights, manual review verdicts included.">
+                <input type="checkbox" id="regradeAllDiscard"> discard manual verdicts</label>
+            <div class="bd" id="regradeAllStatus" style="margin:.4rem 0 .6rem;"></div>
+            <div id="nightList">Loading…</div>
+        </aside>
+        <section class="panel" id="detailPanel" hidden>
+            <div class="night-title" id="nightTitle"></div>
+            <div style="display:flex;gap:2.5rem;align-items:center;flex-wrap:wrap;">
+                <div style="text-align:center;">
+                    <div class="score-ring" id="scoreTotal">–</div>
+                    <div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;">NIGHT SCORE</div>
+                </div>
+                <div id="scoreBreakdown" class="bd"></div>
+                <div id="reportNumbers" class="bd"></div>
+            </div>
+            <div style="margin-top:.8rem;">
+                <a class="btn btn-primary" id="bundleBtn" href="#" download>Download night bundle (.zip)</a>
+                <button class="btn btn-secondary" id="regradeBtn" title="Re-measure and re-judge every sub. Manual verdicts are kept unless 'discard manual verdicts' is ticked.">Re-grade night</button>
+                <label style="font-size:.75rem;opacity:.7;" title="PS-141: the old wipe. Deletes the night's subs log, manual review verdicts included.">
+                    <input type="checkbox" id="regradeDiscard"> discard manual verdicts</label>
+                <button class="btn btn-secondary" id="libraryBtn" title="Hardlink QA-accepted lights into the Library folder for Syncthing">Rebuild library</button>
+                <button class="btn btn-secondary" id="libResetBtn" title="Empty the library and rebuild with APPROVED subs only — stops bulk transfers queued before the review gate">Reset library (approved only)</button>
+            </div>
+            <div id="backfillBox" class="bd" hidden>
+                <div id="backfillLabel"></div>
+                <div class="pbar"><div id="backfillBar"></div></div>
+            </div>
+            <div id="thumbWarmBox" class="bd" hidden style="margin-top:.4rem;">
+                <div id="thumbWarmLabel"></div>
+                <div class="pbar"><div id="thumbWarmBar"></div></div>
+            </div>
+            <h2 style="margin-top:1.2rem;">Plan vs. Actual</h2>
+            <table class="runs" id="pvaTable"></table>
+            <h2 style="margin-top:1.2rem;">Calibration Frames</h2>
+            <div id="calibration" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
+            <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Piggy-600 split pointing <span class="bd">(subs through an RC16 move, PS-27; pass under 5%)</span></h2>
+            <div id="splitPointing" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Piggy-600 vs RC16 <span class="bd">(differential flexure, PS-96)</span></h2>
+            <div id="flexure" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Guiding <span class="bd">(PHD2 guide log, PS-88)</span></h2>
+            <div id="guiding" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Optics (tilt / collimation) <span class="bd">(star sidecars, PS-95)</span></h2>
+            <div id="optics" class="bd"></div>
+            <div id="opticsTest" class="bd" style="margin-top:.5rem;"></div>
+            <h2 style="margin-top:1.2rem;">Night timeline <span class="bd">(mount log, NINA + PHD2 events, safety; PS-67)</span></h2>
+            <div id="pointingSummary" class="bd"></div>
+            <div id="timeline" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Safety monitor <span class="bd">(NINA #1 vs NINA #2 cross-check, PS-1)</span></h2>
+            <div id="safety" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">Subs
+                <label style="font-size:.75rem;opacity:.7;font-weight:normal;margin-left:1rem;">
+                <input type="checkbox" id="annotateToggle"> show star detections</label></h2>
+            <div class="bd" id="scoreReportLine" title="PS-108: what the 0-100 score would do vs today's verdicts (photonscript score-report)"></div>
+            <div style="display:flex;align-items:center;gap:.8rem;margin:.2rem 0 .5rem;">
+                <span class="bd" id="reviewCounts"></span>
+                <button class="btn btn-primary" id="approveShownBtn" hidden>Approve shown</button>
+                <button class="btn btn-primary" id="approveBtn" hidden>Approve night → queue transfer</button>
+            </div>
+            <div id="rigChips" style="margin-bottom:.25rem;"></div>
+            <div id="pointChips" style="margin-bottom:.25rem;"></div>
+            <div id="targetChips" style="margin-bottom:.25rem;"></div>
+            <div id="filterChips"></div>
+            <div style="display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin:.35rem 0 .2rem;">
+                <span id="viewToggle" role="group" aria-label="subs view (PS-116)">
+                    <button type="button" class="btn btn-secondary" id="viewGridBtn" data-v="grid">Grid</button>
+                    <button type="button" class="btn btn-secondary" id="viewTableBtn" data-v="table">Table</button>
+                </span>
+                <span class="bd" id="thumbCount"></span>
+                <button type="button" class="btn btn-secondary" id="selAllBtn" style="padding:.15rem .6rem;font-size:.78rem;"
+                        title="select every sub the chips show (shift-click a range, ctrl-click one)">Select all shown</button>
+                <span id="selBar" class="bd" hidden>
+                    <b id="selCount"></b>
+                    <button type="button" class="btn btn-primary" id="selAccept">Accept</button>
+                    <button type="button" class="btn btn-secondary" id="selReject">Reject</button>
+                    <button type="button" class="btn btn-secondary" id="selReview">Back to review</button>
+                    <button type="button" class="btn btn-secondary" id="selClear">Clear</button>
+                </span>
+            </div>
+            <div class="bd warn" id="scoreHint" hidden></div>
+            <div id="gridView"><div class="thumbs" id="thumbStrip"></div></div>
+            <div id="tableView" hidden><table class="runs" id="subTable"></table></div>
+        </section>
+    </main>
+    <div id="lightbox" hidden>
+        <div id="lbMain">
+            <img id="lbImg" src="">
+            <aside id="lbPanel">
+                <section id="lbTarget" title="where the scope pointed (PS-115)">
+                    <div id="lbTargetText"></div>
+                    <div id="lbRef"><img id="lbRefImg" alt="" hidden><svg id="lbRefSvg" viewBox="0 0 1000 667"></svg></div>
+                    <div id="lbRefNote" class="none"></div>
+                </section>
+                <div id="lbHead"></div>
+                <div id="lbRows"></div>
+                <details id="lbHistBox" open>
+                    <summary>Histogram <span class="none">(raw FITS, full resolution)</span>
+                        <button type="button" class="btn btn-secondary" id="lbHistLogBtn"
+                                title="Y axis log / linear (remembered)">log</button></summary>
+                    <canvas id="lbHist" width="330" height="110" title="histogram (click: log / linear)"></canvas>
+                    <div id="lbHistNote" class="none"></div>
+                </details>
+            </aside>
+        </div>
+        <div id="lbBar">
+            <button class="btn btn-secondary" onclick="lbNav(-1)">◀ prev</button>
+            <span id="lbCount"></span>
+            <span id="lbCaption"></span>
+            <button class="btn btn-secondary" id="lbQaBtn"></button>
+            <button class="btn btn-secondary" onclick="lbNav(1)">next ▶</button>
+            <button class="btn btn-secondary" onclick="closeLb()">close (Esc)</button>
+        </div>
+        <div class="bd">&larr; &rarr; navigate &middot; A accept, R reject (then the next sub to review) &middot; U undo &middot; X cycles the verdict &middot; Esc close &middot; click image to zoom to that spot, move to pan, click again to reset (+/&minus; also zoom) &middot; originals are never deleted: reject only excludes from the library</div>
+    </div>
+    <script>
+    let currentDate = null, currentDetail = null, subFilter = 'ALL';
+    let subTarget = 'ALL';
+    let subRig = 'ALL';
+    let subOffTarget = false, subWindow = null;   // PS-67 chips
+    // PS-24: batch selection (files) and the last clicked index for shift-ranges
+    let selected = new Set(), selAnchor = null;
+    async function loadNights() {
+        const r = await fetch('/api/runs');
+        const nights = await r.json();
+        const box = document.getElementById('nightList');
+        if (!nights.length) { box.textContent = 'No recorded nights yet.'; return; }
+        const label = n => {
+            if (!n.subs_logged) return n.lights ? n.lights + ' ungraded'
+                : n.pb_lights ? n.pb_lights + ' ungraded (Piggy)'
+                : n.cal_frames ? n.cal_frames + ' cal only'
+                : n.has_plan ? 'plan, 0 frames' : 'empty';
+            let l = n.subs_logged + ' subs';
+            if (n.review) l += ' <span style="color:#eab308" title="awaiting review">👁' + n.review + '</span>';
+            if (n.syncing) l += ' <span style="color:#7dd3fc" title="syncing to desktop">⇅' + n.syncing + '</span>';
+            if (!n.review && !n.syncing && n.transferred)
+                l += ' <span style="color:#4ade80" title="all approved subs transferred">✓</span>';
+            return l;
+        };
+        const chip = (n, isArch) => '<span class="night-chip" data-date="' + n.date +
+            '">' + n.date + ' <span style="opacity:.6;font-size:.75rem;">' +
+            label(n) + '</span> <a href="#" class="arch-toggle" data-date="' + n.date +
+            '" data-arch="' + (isArch ? '0' : '1') + '" title="' +
+            (isArch ? 'restore to sidenav' : 'archive (hide from sidenav)') +
+            '" style="opacity:.45;text-decoration:none;font-size:.8rem;">' +
+            (isArch ? '⤒' : '⤓') + '</a></span>';
+        const live = nights.filter(n => !n.archived);
+        const arch = nights.filter(n => n.archived);
+        // PS-20: a night is shown only when it has images (graded subs, RC16
+        // lights or Piggy-600 lights). A saved plan alone no longer counts;
+        // empty and calibration-only nights sit one click away, never deleted.
+        const real = live.filter(n => n.subs_logged > 0 || n.lights > 0 ||
+                                      n.pb_lights > 0);
+        const empty = live.filter(n => !real.includes(n));
+        let showEmpty = false;
+        try { showEmpty = localStorage.getItem('runs.showEmpty') === '1'; } catch (e) {}
+        const emptyText = () => showEmpty ? 'hide empty nights'
+            : 'show ' + empty.length + ' empty night' + (empty.length === 1 ? '' : 's');
+        box.innerHTML = real.map(n => chip(n)).join('') +
+            (empty.length ? '<a href="#" id="moreNights" class="bd" ' +
+                'style="display:block;margin-top:.4rem;" title="nights with no ' +
+                'light frames (plan only or calibration only); nothing is deleted">' +
+                emptyText() + '</a><div id="emptyNights"' + (showEmpty ? '' : ' hidden') +
+                '>' + empty.map(n => chip(n)).join('') + '</div>' : '') +
+            '<a href="#" id="archBefore" class="bd" style="display:block;' +
+              'margin-top:.6rem;color:#7dd3fc;text-decoration:none;" ' +
+              'title="Hide every run before September from the sidenav (does NOT ' +
+              'delete anything)">⤓ archive all before 2026-09-01</a>' +
+            (arch.length ? '<a href="#" id="moreArch" class="bd" ' +
+                'style="display:block;margin-top:.4rem;opacity:.7;">show ' +
+                arch.length + ' archived</a><div id="archNights" hidden>' +
+                arch.map(n => chip(n, true)).join('') + '</div>' : '');
+        const more = document.getElementById('moreNights');
+        if (more) more.onclick = (e) => {
+            e.preventDefault();
+            const d = document.getElementById('emptyNights');
+            showEmpty = d.hidden;
+            d.hidden = !showEmpty;
+            try { localStorage.setItem('runs.showEmpty', showEmpty ? '1' : '0'); } catch (e2) {}
+            more.textContent = emptyText();
+        };
+        const moreA = document.getElementById('moreArch');
+        if (moreA) moreA.onclick = (e) => {
+            e.preventDefault();
+            const d = document.getElementById('archNights');
+            d.hidden = !d.hidden;
+            moreA.textContent = d.hidden ? 'show ' + arch.length + ' archived'
+                                         : 'hide archived';
+        };
+        const ab = document.getElementById('archBefore');
+        if (ab) ab.onclick = async (e) => {
+            e.preventDefault();
+            if (!confirm('Archive every run before 2026-09-01?\n\nThis only hides ' +
+                         'them from the sidenav — no images or grades are deleted.')) return;
+            await fetch('/api/runs/archive-before', {method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({date: '2026-09-01'})});
+            loadNights();
+        };
+        box.querySelectorAll('.arch-toggle').forEach(el =>
+            el.addEventListener('click', async (e) => {
+                e.preventDefault(); e.stopPropagation();
+                await fetch('/api/runs/' + el.dataset.date + '/archive', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({archived: el.dataset.arch === '1'})});
+                loadNights();
+            }));
+        box.querySelectorAll('.night-chip').forEach(el =>
+            el.addEventListener('click', () => loadDetail(el.dataset.date)));
+        const pathNight = (location.pathname.match(/\/runs\/(\d{4}-\d{2}-\d{2})/) || [])[1];
+        const want = pathNight || new URLSearchParams(location.search).get('night');
+        if (want && nights.some(n => n.date === want)) loadDetail(want);
+        else if (real.length) loadDetail(real[0].date);
+    }
+    async function loadDetail(date, keepView = false) {
+        currentDate = date;
+        // keepView preserves the chosen filters across a reload (re-grade,
+        // assign target). PS-24: verdicts never reload the night.
+        if (!keepView) { subFilter = 'ALL'; subTarget = 'ALL'; subRig = 'ALL';
+                         subOffTarget = false; subWindow = null; }
+        selected = new Set(); selAnchor = null;
+        try { history.replaceState(null, '', '/runs/' + date); } catch (e) {}
+        document.querySelectorAll('.night-chip').forEach(el =>
+            el.classList.toggle('active', el.dataset.date === date));
+        const panel = document.getElementById('detailPanel');
+        panel.hidden = false;
+        document.getElementById('scoreTotal').textContent = '…';
+        document.getElementById('bundleBtn').href = '/api/runs/' + date + '/bundle';
+        document.getElementById('regradeBtn').onclick = async () => {
+            // PS-141: verdicts kept by default; the wipe needs the box + a confirm
+            const discard = document.getElementById('regradeDiscard').checked;
+            const msg = discard
+                ? 'DISCARD every grade for ' + date + ', manual accept / reject / ' +
+                  'review verdicts included, and re-grade all subs from scratch?\n\n' +
+                  'This cannot be undone.'
+                : 'Re-measure and re-judge every sub of ' + date + '?\n\n' +
+                  'Manual verdicts are kept.';
+            if (!confirm(msg)) return;
+            showBackfill({running: true, graded: 0, total_files: 0,
+                          current: 'starting…'});
+            await fetch('/api/runs/' + date + '/regrade', {method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({discard_manual: discard})});
+            document.getElementById('regradeDiscard').checked = false;
+            pollBackfill(date);
+        };
+        document.getElementById('libResetBtn').onclick = async () => {
+            if (!confirm('Empty the Library and rebuild it with APPROVED subs only?\n\n' +
+                '• Original FITS files are NOT touched.\n' +
+                '• Syncthing will stop transferring unapproved files and will remove ' +
+                'their copies from the desktop.\n' +
+                '• Approve nights afterwards to queue exactly what you want.')) return;
+            const btn = document.getElementById('libResetBtn');
+            btn.disabled = true; btn.textContent = 'Resetting…';
+            try {
+                const r = await fetch('/api/library/reset', {method: 'POST'});
+                const d = await r.json();
+                alert(r.ok ? d.removed + ' files removed from the library.\n' +
+                        d.linked + ' approved files re-linked · ' + d.pending_review +
+                        ' subs await review.\nSyncthing will settle in a minute or two.'
+                    : d.detail);
+            } finally { btn.disabled = false; btn.textContent = 'Reset library (approved only)'; }
+            loadDetail(currentDate);
+        };
+        document.getElementById('libraryBtn').onclick = async () => {
+            const btn = document.getElementById('libraryBtn');
+            btn.disabled = true; btn.textContent = 'Building…';
+            try {
+                const r = await fetch('/api/library/rebuild', {method: 'POST'});
+                const res = await r.json();
+                let syncMsg = '';
+                try {
+                    const sy = await (await fetch('/api/sync')).json();
+                    syncMsg = !sy.configured ? '\n\nSyncthing not configured — files stay on the scope PC.'
+                        : sy.library_synced
+                          ? '\n\nLibrary is inside the Syncthing share — it will copy to your desktop automatically.'
+                          : '\n\n⚠ Library (' + sy.library_path + ') is OUTSIDE the Syncthing share (' +
+                            sy.folder_path + ').\nSet PS_LIBRARY_DIR to a folder inside the share ' +
+                            '(System & Config) and rebuild, or nothing will transfer.';
+                } catch (e) {}
+                alert('Library: ' + res.library + '\n' + res.linked +
+                      ' new files linked · ' + res.already_there +
+                      ' already there · ' + res.rejected_excluded +
+                      ' rejects excluded' + syncMsg);
+            } finally { btn.disabled = false; btn.textContent = 'Rebuild library'; }
+        };
+        const r = await fetch('/api/runs/' + date);
+        const d = await r.json();
+        currentDetail = d;
+        if (d.backfill && (d.backfill.running || d.backfill.pending > 0)) {
+            showBackfill(d.backfill);
+            pollBackfill(date);
+        } else {
+            document.getElementById('backfillBox').hidden = true;
+            document.getElementById('regradeBtn').disabled = false;
+        }
+        // Title: date + target names
+        const names = [...new Set(d.subs.map(s => s.target).filter(t => t && t !== '?'))];
+        if (!names.length && d.plan) d.plan.targets.forEach(t => names.push(t.name));
+        const hasUnknown = d.subs.some(s => !s.target || s.target === '?');
+        document.getElementById('nightTitle').innerHTML =
+            date + (names.length ? ' — ' + names.join(', ') : '') +
+            (hasUnknown ? ' <input id="assignTarget" placeholder="target name for this night" ' +
+                'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.8rem;">' +
+                '<input id="assignWindow" placeholder="UTC window 04:03-05:18 (optional)" ' +
+                'title="only assign subs inside this UTC time window — for nights with two targets" ' +
+                'style="background:#0b1220;color:#e2e8f0;border:1px solid #334155;' +
+                'border-radius:5px;padding:.15rem .5rem;font-size:.8rem;margin-left:.4rem;width:15rem;">' +
+                '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;" ' +
+                'onclick="assignTarget()">Assign</button>' +
+                '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;margin-left:.3rem;" ' +
+                'title="Read mount coordinates from the FITS headers (plate solve as fallback) and match against the catalog" ' +
+                'onclick="identifyNight()">Identify by position</button>' : '');
+        paintScore(d.score);
+        const rep = d.report;
+        const pctOf = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';
+        document.getElementById('reportNumbers').innerHTML =
+            '<b>dark ' + (rep.dark_hours ?? '?') + 'h</b> → shutter ' +
+            (rep.light_hours ?? '?') + 'h (' + pctOf(rep.light_hours, rep.dark_hours) +
+            ') → <b>accepted ' + (rep.accepted_hours ?? '?') + 'h (' +
+            pctOf(rep.accepted_hours, rep.dark_hours) + ')</b>' +
+            '<br><span style="opacity:.6">weather: safe ' +
+            rep.safe_hours.toFixed(1) + 'h of the dark window</span>';
+        paintPva(d.table);
+        // Calibration frames
+        const cal = d.calibration || {frames: {}, advice: []};
+        const calBox = document.getElementById('calibration');
+        const rows = Object.entries(cal.frames).map(([typ, g]) => {
+            const filts = Object.entries(g.filters).map(([f, n]) => f + '×' + n).join(', ');
+            const exps = Object.entries(g.exposures).map(([e, n]) => e + '×' + n).join(', ');
+            return '<b>' + typ + '</b>: ' + g.count + ' frames (' + filts +
+                   (exps ? ' · ' + exps : '') + ')';
+        });
+        calBox.innerHTML = (rows.length ? rows.join('<br>')
+                : 'no calibration frames captured this night') +
+            (cal.advice.length ? '<br>' + cal.advice.map(a =>
+                '<span class="warn">⚠ ' + a + '</span>').join('<br>') : '');
+        function renderFlexure(fx, date) {  // PS-96
+            const box = document.getElementById('flexure');
+            const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (!fx || !fx.ok) { box.textContent = (fx && fx.note) || 'no flexure report for this night'; return; }
+            const s = fx.summary, v = x => x == null ? '-' : x;
+            const head = (fx.flagged ? '<span class="bad"><b>FLAGGED</b></span> ' : '<span>ok</span> ') +
+                s.piggy_subs + ' Piggy subs, ' + s.paired + ' paired &middot; ' + s.straddled_slew +
+                ' straddle an RC16 move, ' + s.straddled_dither + ' a dither &middot; warn above ' +
+                fx.warn_arcsec_min + '&quot;/min &middot; <a href="/api/flexure?date=' + encodeURIComponent(date) +
+                '" target="_blank">full report</a>';
+            const rows = fx.blocks.map(b => '<tr' + (b.flagged ? ' class="bad"' : '') + '><td>' +
+                esc(b.target || '?') + '</td><td>' + esc(b.pier_side || '?') + '</td><td>' +
+                esc((b.start_utc || '').slice(11, 16)) + '-' + esc((b.end_utc || '').slice(11, 16)) + 'Z</td><td>' +
+                v(b.alt_start) + '&rarr;' + v(b.alt_end) + '</td><td>' + v(b.piggy_rate_arcsec_min) +
+                '</td><td>' + v(b.rc16_rate_arcsec_min) + (b.rc16_assumed_still ? '*' : '') + '</td><td><b>' +
+                (b.diff_rate_arcsec_min != null ? b.diff_rate_arcsec_min
+                    : (b.excess_arcsec_min != null ? '~' + b.excess_arcsec_min : '-')) + '</b></td><td>' + v(b.rotation_deg_h) + '</td><td>' +
+                v(b.steps) + '</td><td>' + esc(b.frame) + '</td></tr>').join('');
+            box.innerHTML = head + '<table class="runs" style="margin-top:.3rem;"><tr><th>target</th>' +
+                '<th>pier</th><th>UTC</th><th>alt</th><th>Piggy &quot;/min</th><th>RC16 &quot;/min</th>' +
+                '<th>diff &quot;/min</th><th>rot deg/h</th><th>steps</th><th>frame</th></tr>' + rows + '</table>' +
+                (fx.blocks.some(b => b.rc16_assumed_still) ? '<span style="opacity:.7">* no RC16 track: taken as held by guiding</span><br>' : '') +
+                (fx.blocks.some(b => b.diff_rate_arcsec_min == null && b.excess_arcsec_min != null) ? '<span style="opacity:.7">~ no plate solution for both rigs: Piggy drift minus RC16 drift (magnitudes)</span><br>' : '') +
+                (fx.causes || []).map(c => 'Likely: <b>' + esc(c.cause) + '</b> (' + esc(c.score) + ') ' +
+                    esc(c.evidence) + '<br><span style="opacity:.8">Check: ' + esc(c.check) + '</span>').join('<br>') +
+                (fx.notes || []).map(n => '<br><span class="warn">' + esc(n) + '</span>').join('');
+        }
+        function renderGuiding(g, date) {  // PS-88
+            const box = document.getElementById('guiding');
+            const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const gd = g && g.guard;  // PS-91 live guard
+            const guardLine = gd && gd.episodes ? '<br><span class="warn">Guide guard: ' + gd.episodes +
+                ' episode(s) (' + gd.non_star + ' non-star lock, ' + gd.impossible_state + ' impossible state; ' +
+                (gd.auto_recover ? gd.recoveries_ok + ' recovered, ' + gd.recoveries_failed + ' failed' : 'observe-only') +
+                ') <a href="/api/phd2/guard?date=' + encodeURIComponent(date) + '" target="_blank">episodes</a></span>' : '';
+            const st = g && g.selftest;  // PS-92 pulse self-test
+            const stLine = st && (st.runs || (st.passive || []).length) ? '<br><span class="' +
+                ({FAIL: 'bad', WARN: 'warn'}[st.verdict] || '') + '">Pulse self-test: ' + esc(st.verdict || 'none') +
+                ' (' + st.runs + ' run(s)' + ((st.passive || []).length ? ', passive: ' +
+                st.passive.map(p => esc(p.verdict) + ' ' + esc(p.source)).join(', ') : '') +
+                ') <a href="/api/phd2/selftest?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            const cal = g && g.calibration;  // PS-93 calibration manager
+            const calRows = (cal && cal.tonight) || [];
+            const calRec = cal && cal.record;
+            const calLine = calRows.length || (calRec && (cal.stale || cal.poor)) ? '<br><span class="' +
+                ({FAIL: 'bad', WARN: 'warn'}[(calRows.length ? calRows[calRows.length - 1].grade : cal.grade)] || '') +
+                '">PHD2 calibration: ' + (calRows.length ? calRows.map(c => esc(c.grade) + ' (' + esc(c.context) +
+                ', Dec ' + esc(c.dec_deg) + ', ortho ' + esc(c.ortho_err_deg) + ')').join(', ') :
+                'none tonight') + (cal.stale ? '; on record is ' + esc(cal.age_days) + ' d old' : '') +
+                (cal.poor ? '; on record FAILED' : '') +
+                ' <a href="/api/phd2/calibration?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            const au = g && g.audit;  // PS-89 settings audit
+            const auLine = au && au.counts ? '<br><span class="' + (au.counts.fail ? 'bad' : (au.counts.warn ? 'warn' : '')) +
+                '">PHD2 settings at ' + esc(au.reason) + ': ' + esc(au.counts.fail) + ' fail, ' + esc(au.counts.warn) + ' warn' +
+                ((au.fails || []).length ? ' (' + au.fails.map(esc).join('; ') + ')' : '') +
+                ' <a href="/api/phd2/audit" target="_blank">details</a></span>' : '';
+            const tu = g && g.tuning;  // PS-90 guide-star auto-tune
+            const tuRows = tu && tu.by_filter ? Object.entries(tu.by_filter) : [];
+            const tuLine = tuRows.length ? '<br><span>Guide star (' + esc(tu.mode) + '): ' + tuRows.map(([f, v]) =>
+                esc(f) + ' ' + esc(v.exposure_ms) + ' ms, peak ' + esc(v.peak_pct) + '%, SNR ' + esc(v.snr) + ', HFD ' + esc(v.hfd_px) +
+                (v.clipped ? ', <span class="warn">' + esc(v.clipped) + ' clipped</span>' : '')).join('; ') +
+                ((tu.changes || []).length ? ', ' + tu.changes.length + ' change(s)' : '') +
+                (tu.recommend && tu.recommend.bin3 && tu.recommend.bin3.note ? '<br><span style="opacity:.8">' + esc(tu.recommend.bin3.note) + '</span>' : '') +
+                ' <a href="/api/phd2/tuning?date=' + encodeURIComponent(date) + '" target="_blank">details</a></span>' : '';
+            const tsk = g && g.thesky;  // PS-104 TheSky / TPoint audit (one line)
+            const tskLine = tsk && tsk.line ? '<br><span class="' + ((tsk.counts || {}).fail ? 'bad' : ((tsk.counts || {}).warn ? 'warn' : '')) +
+                '">' + esc(tsk.line) + ' <a href="/guiding#tpointSec">details</a></span>' : '';
+            if (!g || !g.ok) { box.innerHTML = esc((g && g.note) || 'no PHD2 guide log for this night') + guardLine + stLine + calLine + auLine + tuLine + tskLine; return; }
+            const sev = {critical: 'bad', warning: 'warn', info: ''};
+            box.innerHTML = g.sessions + ' sessions, ' + g.guided_minutes + ' min guided · RMS ' +
+                g.rms_total_arcsec + '&quot; (settled ' + g.settled_rms_total_arcsec + '&quot;) · ' +
+                g.dropped_pct + '% frames dropped · dithers back on lock ' + g.dithers_recovered +
+                '/' + g.dithers + ' · <a href="/api/phd2/analysis?date=' + encodeURIComponent(date) +
+                '" target="_blank">full analysis</a>' +
+                (g.top_findings || []).map(f => '<br><span class="' + (sev[f.severity] || '') + '">' +
+                    esc(f.severity.toUpperCase()) + ': <b>' + esc(f.title) + '</b></span> ' +
+                    esc(f.detail) + '<br><span style="opacity:.8">Fix: ' + esc(f.recommendation) +
+                    '</span>').join('') + guardLine + stLine + calLine + auLine + tuLine + tskLine;
+        }
+        function renderOptics(o, date) {  // PS-95
+            const box = document.getElementById('optics');
+            const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            if (!o || !o.ok) { box.textContent = (o && o.note) || 'no star sidecars for this night'; return; }
+            // 3x3 grid as the thumbnails show it (row 0 = top), colored by
+            // zone FWHM over the center's; tick = stretch direction, length = R
+            const names = [['TL', 'TC', 'TR'], ['ML', 'C', 'MR'], ['BL', 'BC', 'BR']];
+            const cw = 66, ch = 44, z = o.zones || {};
+            let svg = '<svg width="' + (3 * cw + 2) + '" height="' + (3 * ch + 2) +
+                '" style="float:left;margin:.2rem .8rem .3rem 0;font:10px sans-serif;">';
+            names.forEach((row, r) => row.forEach((n, c) => {
+                const q = z[n] || {}, x = 1 + c * cw, y = 1 + r * ch;
+                const k = q.ratio == null ? null : Math.max(0, Math.min(1, (q.ratio - 1) / 0.3));
+                const fill = k == null ? '#1e293b' : 'hsl(' + Math.round(120 - 120 * k) + ',55%,32%)';
+                svg += '<rect x="' + x + '" y="' + y + '" width="' + (cw - 2) + '" height="' + (ch - 2) +
+                    '" fill="' + fill + '" stroke="#334155"><title>' + n + ': FWHM ' + (q.fwhm ?? '-') +
+                    '&quot; (x' + (q.ratio ?? '-') + ' of center), ecc ' + (q.ecc ?? '-') +
+                    ', axis ' + (q.axis_deg ?? '-') + ' deg, R ' + (q.R ?? '-') + '</title></rect>';
+                svg += '<text x="' + (x + 4) + '" y="' + (y + 12) + '" fill="#e2e8f0">' +
+                    (q.fwhm ?? '-') + '&quot;</text>';
+                if (q.axis_deg != null) {
+                    const L = 14 * Math.max(0.3, q.R || 0), a = q.axis_deg * Math.PI / 180;
+                    const cx = x + cw / 2, cy = y + ch / 2 + 6, dx = L * Math.cos(a), dy = L * Math.sin(a);
+                    svg += '<line x1="' + (cx - dx).toFixed(1) + '" y1="' + (cy - dy).toFixed(1) +
+                        '" x2="' + (cx + dx).toFixed(1) + '" y2="' + (cy + dy).toFixed(1) +
+                        '" stroke="#f8fafc" stroke-width="2"/>';
+                }
+            }));
+            svg += '</svg>';
+            const cls = {tilt: 'warn', collimation: 'warn', tracking: 'warn', fine: '', curvature: ''};
+            box.innerHTML = svg + '<span class="' + (cls[o.verdict] || '') + '"><b>' +
+                esc(String(o.verdict).toUpperCase()) + '</b></span> &middot; ' + o.n_measured +
+                ' subs measured &middot; center FWHM ' + (o.center_fwhm ?? '-') + '&quot; &middot; center ecc ' +
+                (o.center_ecc ?? '-') + ' &middot; corner ratio ' + (o.corner_ratio ?? '-') +
+                ' &middot; <a href="/api/optics/report?date=' + encodeURIComponent(date) +
+                '" target="_blank">full report</a> &middot; <a href="/api/optics/trend" target="_blank">trend</a>' +
+                '<br>' + esc(o.headline) +
+                (o.filters || []).map(f => '<br><span style="opacity:.8">' + esc(f.filter) + ' (' +
+                    esc(f.basis) + '): ' + esc(f.verdict) + ', ' + f.n_measured + ' subs</span>').join('') +
+                '<div style="clear:both"></div>';
+        }
+        document.getElementById('phases').innerHTML = Object.keys(d.phases).length
+            ? Object.entries(d.phases).map(([k, v]) =>
+                '<b>' + k + '</b>: ' + v.events + ' log events (' +
+                (v.first || '?').slice(11, 16) + ' → ' + (v.last || '?').slice(11, 16) + ')'
+              ).join(' · ')
+            : 'no phase data found in NINA log';
+        renderGuiding(d.guiding, date);
+        renderOptics(d.optics, date);
+        loadOpticsTest(date);
+        renderSubs();
+        renderReviewBar(d);
+        renderFlexure(d.flexure, date);
+        renderPointing(d.pointing, date);
+        renderSplit(d.split_pointing, date);
+        loadTimeline(date);
+        loadSafety(date);
+        loadScoreReport(date);
+        maybeWarmThumbs(date);
+    }
+    // PS-148: through-focus optics test (only when the night has its subs)
+    async function loadOpticsTest(date) {
+        const box = document.getElementById('opticsTest');
+        box.innerHTML = '';
+        let r;
+        try { r = await (await fetch('/api/optics-test/report?date=' + encodeURIComponent(date))).json(); }
+        catch (e) { return; }
+        if (currentDate !== date || !r || !r.n_subs) return;
+        const esc = t => String(t == null ? '-' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const cls = {astigmatism: 'warn', 'constant-axis': 'warn', unclear: 'warn'};
+        const zn = ['TL', 'TC', 'TR', 'ML', 'C', 'MR', 'BL', 'BC', 'BR'];
+        box.innerHTML = '<b>Through-focus optics test (PS-148)</b>: ' + r.n_subs + ' subs (' +
+            esc((r.fields || []).join(', ')) + ') &middot; <a href="/api/optics-test/report?date=' +
+            encodeURIComponent(date) + '" target="_blank">JSON</a>' +
+            (r.filters || []).map(f => '<div style="margin-top:.3rem;"><span class="' + (cls[f.verdict] || '') +
+                '"><b>' + esc(f.filter) + ': ' + esc(String(f.verdict).toUpperCase()) + '</b></span> ' +
+                esc(f.headline) + (f.detail || []).map(x => '<br><span style="opacity:.8">' + esc(x) + '</span>').join('') +
+                '<table class="tbl" style="font-size:.78rem;margin-top:.2rem;"><tr><th>offset</th><th>n</th><th>ecc (bright)</th>' +
+                '<th>HFR</th><th>axis deg</th><th>R</th><th>soft corner</th><th>zone axes TL TC TR / ML C MR / BL BC BR</th></tr>' +
+                (f.steps || []).map(s => '<tr><td>' + (s.offset > 0 ? '+' : '') + esc(s.offset) + '</td><td>' + esc(s.n) +
+                    '</td><td>' + esc(s.ecc_median) + '</td><td>' + esc(s.hfr_median) + '</td><td>' + esc(s.axis_deg) +
+                    '</td><td>' + esc(s.R) + '</td><td>' + (s.soft_corner ? esc(s.soft_corner) + ' x' + esc(s.corner_ratio) : '-') +
+                    '</td><td style="font-family:monospace;">' + zn.map(n => {
+                        const q = (s.zones || {})[n] || {};
+                        return q.axis_deg == null ? '-' : Math.round(q.axis_deg);
+                    }).join(' ') + '</td></tr>').join('') + '</table></div>').join('') +
+            '<div style="opacity:.7;">' + esc(r.orientation) + '</div>';
+    }
+    // PS-108: one line, what the score would do tonight vs today's verdicts
+    async function loadScoreReport(date) {
+        const box = document.getElementById('scoreReportLine');
+        let r;
+        try { r = await (await fetch('/api/runs/' + date + '/score-report')).json(); }
+        catch (e) { box.textContent = ''; return; }
+        if (currentDate !== date || !r || !r.subs) { box.textContent = ''; return; }
+        const t = r.today || {}, sc = r.score || {}, h = r.human || {};
+        box.innerHTML = 'Score (' + r.mode + ', approve &ge; ' + r.approve_at +
+            ', reject &lt; ' + r.reject_below + '): <span style="color:#4ade80">' +
+            (sc.approve || 0) + ' approve</span> / <span style="color:#eab308">' +
+            (sc.review || 0) + ' review</span> / <span style="color:#f87171">' +
+            (sc.reject || 0) + ' reject</span> &middot; today ' + (t.approved || 0) +
+            ' / ' + (t.review || 0) + ' / ' + (t.rejected || 0) + ' &middot; <b>' +
+            r.would_move + '</b> would move' +
+            (r.would_move ? ' (' + Object.entries(r.moves).map(([k, v]) =>
+                k.replace('->', '&rarr;') + ' ' + v).join(', ') + ')' : '') +
+            (h.n ? ' &middot; ' + h.n + ' human verdicts kept' : '');
+    }
+    async function maybeWarmThumbs(date) {
+        try {
+            const st = await (await fetch('/api/runs/' + date + '/thumb-status')).json();
+            const box = document.getElementById('thumbWarmBox');
+            if (!st.total || st.cached >= st.total) { box.hidden = true; return; }
+            if (currentDate !== date) return;
+            await fetch('/api/runs/' + date + '/warm-thumbs', {method: 'POST'});
+            pollThumbWarm(date);
+        } catch (e) {}
+    }
+    function pollThumbWarm(date) {
+        const box = document.getElementById('thumbWarmBox');
+        const bar = document.getElementById('thumbWarmBar');
+        const lbl = document.getElementById('thumbWarmLabel');
+        box.hidden = false;
+        fetch('/api/runs/' + date + '/thumb-status').then(r => r.json()).then(st => {
+            if (currentDate !== date) { box.hidden = true; return; }
+            const total = st.total || 0;
+            const done = Math.max(st.cached || 0, st.done || 0);
+            const pct = total ? Math.round(done / total * 100) : 100;
+            bar.style.width = pct + '%';
+            lbl.textContent = 'Caching thumbnails locally: ' + done + ' / ' + total +
+                ' (' + pct + '%)';
+            if (st.running || done < total) {
+                setTimeout(() => pollThumbWarm(date), 1000);
+            } else {
+                lbl.textContent = 'All ' + total + ' thumbnails cached locally ✓';
+                renderSubs();
+                setTimeout(() => { if (currentDate === date) box.hidden = true; }, 2500);
+            }
+        }).catch(() => { box.hidden = true; });
+    }
+    function paintScore(sc) {
+        const el = document.getElementById('scoreTotal');
+        el.textContent = sc.total;
+        el.style.color = sc.total >= 70 ? '#4ade80' : sc.total >= 40 ? '#eab308' : '#f87171';
+        document.getElementById('scoreBreakdown').innerHTML =
+            Object.entries(sc.breakdown).map(([k, v]) =>
+                k.replace(/_/g, ' ') + ': <b>' + v.value + '</b> (×' + v.weight + ')'
+            ).join('<br>');
+    }
+    function paintPva(rows) {
+        document.getElementById('pvaTable').innerHTML =
+            '<tr><th>Target</th><th>Filter</th><th>Planned (night)</th><th>Attempted</th>' +
+            '<th>Accepted</th><th>Goal (total)</th><th>Done (total)</th>' +
+            '<th>med HFR</th><th>med Ecc</th><th>med Bkg</th></tr>' +
+            rows.map(t => '<tr><td>' + (t.rig && t.rig !== 'rc16' ? '<span title="piggyback rig" style="background:#1e3a5f;color:#7dd3fc;font-size:.7rem;font-weight:700;padding:.05rem .35rem;border-radius:3px;margin-right:.4rem;">PB</span>' : '') + t.target + '</td><td>' + t.filter +
+                '</td><td>' + (t.planned || '–') + '</td><td>' + t.attempted + '</td><td class="' +
+                (t.accepted >= t.attempted && t.attempted ? 'ok' : '') + '">' + t.accepted +
+                '</td><td>' + (t.goal_total ?? '–') + '</td><td>' +
+                (t.done_total != null && t.goal_total
+                 ? t.done_total + ' (' + Math.round(t.done_total / t.goal_total * 100) + '%)'
+                 : '–') +
+                '</td><td>' + (t.median_hfr ?? '–') + '</td><td>' + (t.median_ecc ?? '–') +
+                '</td><td>' + (t.median_background ?? '–') + '</td></tr>').join('');
+    }
+    function renderReviewBar(d) {
+        const subs = d.subs;
+        const offT = subs.filter(s => subState(s) === 'offtarget').length;  // PS-67
+        const rej = subs.filter(s => !s.passed_qa).length - offT;
+        const rev = subs.filter(s => s.passed_qa && !s.reviewed).length;
+        const pend = subs.filter(s => s.transfer === 'pending').length;
+        const done = subs.filter(s => s.transfer === 'done').length;
+        const appr = subs.filter(s => s.passed_qa && s.reviewed).length
+                     - pend - done;
+        // PS-24: reviewed N of M (every sub with a verdict: approved or rejected)
+        const decided = subs.length - rev;
+        document.getElementById('reviewCounts').innerHTML =
+            '<b title="subs with a verdict (approved, accepted, transferred or rejected) of all the night\'s subs">reviewed ' +
+            decided + ' of ' + subs.length + '</b> &middot; ' +
+            '<span style="color:#eab308">👁 ' + rev + ' review</span> · ' +
+            (pend ? '<span style="color:#7dd3fc">⇅ ' + pend + ' syncing</span> · ' : '') +
+            '<span style="color:#4ade80">✓ ' + done + ' transferred</span>' +
+            (appr > 0 ? ' · <span style="color:#4ade80">✓ ' + appr + ' accepted</span>' : '') +
+            ' · <span style="color:#f87171">✗ ' + rej + ' rejected</span>' +
+            (offT ? ' · <span style="color:#c084fc">&#8982; ' + offT + ' off target</span>' : '') +
+            // PS-157: what the dawn filing named, approved and filed
+            (d.autofile && d.autofile.line ? ' &middot; <span class="bd" title="dawn filing ' +
+                String(d.autofile.at || '').replace(/"/g, '') + ' (GET /api/runs/' + d.date +
+                '/autofile)">dawn: ' + String(d.autofile.line).replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;') + '</span>' : '');
+        const btn = document.getElementById('approveBtn');
+        btn.hidden = rev === 0;
+        btn.textContent = 'Approve ' + rev + ' passing subs → queue transfer';
+        // Scoped approve: just the subs the rig/target/filter chips select,
+        // e.g. "Approve 3 in review · NGC 6543 · OIII". Hidden when nothing is
+        // filtered (then it's the same as the night button).
+        const shown = (window._filteredSubs || subs)
+            .filter(s => s.passed_qa && !s.reviewed);
+        const scoped = (window._filteredSubs || subs).length !== subs.length;
+        const sBtn = document.getElementById('approveShownBtn');
+        sBtn.hidden = !scoped || shown.length === 0;
+        const scopeLbl = [subRig !== 'ALL' ? subRig : null,
+                          subTarget !== 'ALL' ? subTarget : null,
+                          subFilter !== 'ALL' ? subFilter : null]
+            .filter(Boolean).join(' · ');
+        sBtn.textContent = 'Approve ' + shown.length + ' in review · ' + scopeLbl;
+        sBtn.onclick = async () => {
+            if (!confirm('Approve ' + shown.length + ' subs awaiting review (' +
+                         scopeLbl + ') and queue them for transfer?')) return;
+            sBtn.disabled = true;
+            await approveInPlace(d.date, shown, shown.map(s => s.file));
+            sBtn.disabled = false;
+        };
+        btn.onclick = async () => {
+            btn.disabled = true;
+            await approveInPlace(d.date, subs.filter(s => s.passed_qa && !s.reviewed), null);
+            btn.disabled = false;
+        };
+        paintNightChip(d.date, rev);
+    }
+    // PS-24: approve in place: mark the subs approved at once, POST, roll back
+    // on an error; the result is a toast, not an alert, and the night is
+    // never reloaded (counts and goal totals repaint, see refreshSummary).
+    function approveInPlace(date, list, files) {
+        const before = list.map(s => [s, Review.snap(s)]);
+        return Review.approve(date, files, {
+            apply: () => { list.forEach(s => { s.reviewed = true; }); patchSubs(list); },
+            revert: () => { before.forEach(([s, o]) => Review.restore(s, o)); patchSubs(list); },
+            saved: () => scheduleSummary(0)});
+    }
+    // the review count on the night's chip in the left list
+    function paintNightChip(date, rev) {
+        const chip = document.querySelector('.night-chip[data-date="' + date + '"]');
+        const sp = chip && chip.querySelector('span[title="awaiting review"]');
+        if (!sp) return;
+        if (rev) sp.textContent = '\ud83d\udc41' + rev; else sp.remove();
+    }
+    function renderSubs() {
+        const d = currentDetail;
+        if (!d) return;
+        let all0 = d.subs;
+        // Rig chips (only when both scopes have subs) — RC16 vs the piggyback OSC
+        const rigOf = s => s.rig || 'rc16';
+        const rigLabel = r => r === 'rc16' ? 'RC16'
+            : (r === 'piggyback' ? 'Piggyback (OSC)' : r);
+        const rigsPresent = [...new Set(d.subs.map(rigOf))];
+        const rBox = document.getElementById('rigChips');
+        if (rigsPresent.length > 1) {
+            const rc = {}; d.subs.forEach(s => { const r = rigOf(s); rc[r] = (rc[r] || 0) + 1; });
+            rBox.innerHTML = ['ALL', ...rigsPresent.sort()].map(r =>
+                '<span class="fchip' + (subRig === r ? ' active' : '') + '" data-r="' + r + '">' +
+                (r === 'ALL' ? 'ALL rigs' : rigLabel(r)) +
+                ' ' + (r === 'ALL' ? d.subs.length : rc[r]) + '</span>').join('');
+            rBox.querySelectorAll('.fchip').forEach(el =>
+                el.addEventListener('click', () => { subRig = el.dataset.r; renderSubs(); }));
+        } else { rBox.innerHTML = ''; subRig = 'ALL'; }
+        if (subRig !== 'ALL') all0 = all0.filter(s => rigOf(s) === subRig);
+        // PS-67: off-target chip and a time window picked on the timeline
+        const nOff = all0.filter(s => pointFlag(s)).length;
+        const pBox = document.getElementById('pointChips');
+        pBox.innerHTML = (nOff ? '<span class="fchip' + (subOffTarget ? ' active' : '') +
+            '" id="offChip" title="subs off target or flagged (PS-67)">&#8982; off target ' + nOff + '</span>' : '') +
+            (subWindow ? '<span class="fchip active" id="winChip" title="clear the timeline window">' +
+             subWindow[0].slice(11, 16) + '-' + subWindow[1].slice(11, 16) + ' UTC &#215;</span>' : '');
+        const oc = document.getElementById('offChip');
+        if (oc) oc.onclick = () => { subOffTarget = !subOffTarget; renderSubs(); };
+        const wc = document.getElementById('winChip');
+        if (wc) wc.onclick = () => { subWindow = null; renderSubs(); };
+        if (subOffTarget) all0 = all0.filter(s => pointFlag(s));
+        if (subWindow) all0 = all0.filter(s => inWindow(s, subWindow));
+        // Score + plan-vs-actual follow the selected rig
+        const scByRig = d.scores_by_rig || {};
+        paintScore(subRig !== 'ALL' && scByRig[subRig] ? scByRig[subRig] : d.score);
+        paintPva(subRig === 'ALL' ? d.table
+                 : d.table.filter(t => (t.rig || 'rc16') === subRig));
+        // Target chips (only on multi-target nights)
+        const tCounts = {};
+        all0.forEach(s => {
+            const t = (s.target && s.target !== '?') ? s.target : '?';
+            tCounts[t] = (tCounts[t] || 0) + 1;
+        });
+        const tNames = Object.keys(tCounts);
+        const tBox = document.getElementById('targetChips');
+        if (tNames.length > 1) {
+            tBox.innerHTML = ['ALL', ...tNames.sort()].map(t =>
+                '<span class="fchip' + (subTarget === t ? ' active' : '') +
+                '" data-t="' + t + '">' + t +
+                (t === 'ALL' ? ' ' + all0.length : ' ' + tCounts[t]) + '</span>').join('');
+            tBox.querySelectorAll('.fchip').forEach(el =>
+                el.addEventListener('click', () => { subTarget = el.dataset.t; renderSubs(); }));
+        } else { tBox.innerHTML = ''; }
+        const all = subTarget === 'ALL' ? all0
+            : all0.filter(s => ((s.target && s.target !== '?') ? s.target : '?') === subTarget);
+        // Filter chips with counts
+        const counts = {};
+        all.forEach(s => { counts[s.filter] = (counts[s.filter] || 0) + 1; });
+        const chips = ['ALL', ...Object.keys(counts).sort()];
+        document.getElementById('filterChips').innerHTML = chips.map(f =>
+            '<span class="fchip' + (subFilter === f ? ' active' : '') +
+            '" data-f="' + f + '">' + f +
+            (f === 'ALL' ? ' ' + all.length : ' ' + counts[f]) + '</span>').join('');
+        document.querySelectorAll('#filterChips .fchip').forEach(el =>  // only the filter chips (PS-116)
+            el.addEventListener('click', () => { subFilter = el.dataset.f; renderSubs(); }));
+        const subs = subFilter === 'ALL' ? all
+                     : all.filter(s => s.filter === subFilter);
+        window._filteredSubs = subs;  // everything the chips select (not just the tiles drawn)
+        // PS-116: one subs view, Grid or Table; the chips above apply to both
+        const isTable = subView === 'table';
+        document.getElementById('gridView').hidden = isTable;
+        document.getElementById('tableView').hidden = !isTable;
+        document.querySelectorAll('#viewToggle .btn').forEach(b =>
+            b.classList.toggle('on', b.dataset.v === subView));
+        if (isTable) {
+            renderSubTable(subs);
+            renderReviewBar(d);
+            return;
+        }
+        document.getElementById('scoreHint').hidden = true;
+        document.getElementById('subTable').innerHTML = '';
+        // PS-24: every sub the chips select is drawn (no 1-in-N sample), so
+        // next / prev and auto-advance reach all of them; tiles load as they
+        // scroll into view, at most 3 thumbnail requests in flight.
+        const shown = subs;
+        document.getElementById('thumbCount').textContent = shown.length + ' subs';
+        window._shownSubs = shown;
+        renderReviewBar(d);  // keep the scoped approve button in step with the chips
+        const strip = document.getElementById('thumbStrip');
+        strip.innerHTML = shown
+            .map((s, i) => '<figure data-file="' + escH(s.file) + '"' +
+                (selected.has(s.file) ? ' class="sel"' : '') + '>' +
+                '<div class="qa-btns">' +
+                '<span class="y" title="approve (accept + queue transfer)" ' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'accepted\')">✓</span>' +
+                '<span class="n" title="reject (kept on disk, excluded from library)" ' +
+                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'rejected\')">✗</span>' +
+                '</div>' +
+                '<img alt="" style="cursor:zoom-in;min-height:60px;' + tileStyle(s) + '" ' +
+                'onclick="if (!selClick(event, ' + i + ')) openLb(' + i + ')" data-src="/api/runs/' + currentDate +
+                '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
+                (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
+                '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
+                Math.round(s.exp_s) + 's<span class="vb">' + badge(s) + '</span>' + roofTag(s) + pointTag(s) +
+                '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
+                ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
+            .join('');
+        SubTiles.lazy(strip, 3);
+        paintSelBar();
+    }
+    // PS-24: a sub's outline in the grid and the table (verdict colors)
+    function tileStyle(s) {
+        return subState(s) === 'offtarget' ? 'outline:2px solid #c084fc;opacity:.55;'
+             : !s.passed_qa ? 'outline:2px solid #f87171;opacity:.55;'
+             : s.reviewed ? 'outline:2px solid #4ade80;' : 'outline:none;opacity:1;';
+    }
+    // PS-24: repaint only what a verdict changes: that sub's tile outline and
+    // badge, its table row's verdict cell, the review counters, the lightbox
+    // caption when it shows that sub, then (debounced) the plan-vs-actual
+    // accepted counts and goal totals from the server. Never a reload.
+    function patchSubs(list) {
+        const d = currentDetail;
+        if (!d) return;
+        list.forEach(s => {
+            const sel = '[data-file="' + (window.CSS && CSS.escape ? CSS.escape(s.file) : s.file) + '"]';
+            document.querySelectorAll('#thumbStrip figure' + sel).forEach(fig => {
+                const img = fig.querySelector('img');
+                if (img) img.style.cssText = 'cursor:zoom-in;min-height:60px;' + tileStyle(s);
+                const vb = fig.querySelector('.vb');
+                if (vb) vb.innerHTML = badge(s);
+            });
+            document.querySelectorAll('#subTable tr.srow' + sel).forEach(tr => {
+                const img = tr.querySelector('td.tthumb img');
+                if (img) img.style.outline = (tileStyle(s).match(/outline:([^;]*)/) || [])[1] || 'none';
+                const td = tr.querySelector('td.vcell');
+                if (td) td.outerHTML = verdictCell(s);
+            });
+        });
+        renderReviewBar(d);
+        const cur = !document.getElementById('lightbox').hidden && window._shownSubs &&
+            window._shownSubs[lbIdx];
+        if (cur && list.includes(cur)) openLb(lbIdx, true);
+        scheduleSummary();
+    }
+    // the plan-vs-actual table and goal totals, about 2.5 s after the last
+    // verdict (the server runs its debounced goal sync first)
+    let summaryTimer = null;
+    function scheduleSummary(delayMs) {
+        clearTimeout(summaryTimer);
+        const date = currentDate;
+        summaryTimer = setTimeout(async () => {
+            let r;
+            try {
+                const resp = await fetch('/api/runs/' + date + '/review-summary');
+                if (!resp.ok) return;
+                r = await resp.json();
+            } catch (e) { return; }
+            if (currentDate !== date || !currentDetail) return;
+            currentDetail.table = r.table;
+            paintPva(subRig === 'ALL' ? r.table
+                     : r.table.filter(t => (t.rig || 'rc16') === subRig));
+        }, delayMs == null ? 2500 : delayMs);
+    }
+    // ---- PS-116: the Table view. Every sub the chips select, sortable (score
+    //      first by default, lowest first), small lazy thumbnails (SubTiles,
+    //      at most 2 in flight), a click opens the same lightbox in table
+    //      order. Scores come from the record (stored, or scored on read
+    //      from the scorecard): no per-row API call.
+    let subView = 'grid';
+    try { const v = localStorage.getItem('runsSubView'); if (v === 'grid' || v === 'table') subView = v; }
+    catch (e) { /* no storage */ }
+    let subSort = {key: 'score', dir: 1};
+    function setSubView(v) {
+        subView = v;
+        try { localStorage.setItem('runsSubView', v); } catch (e) { /* no storage */ }
+        renderSubs();
+    }
+    document.querySelectorAll('#viewToggle .btn').forEach(b =>
+        b.addEventListener('click', () => setSubView(b.dataset.v)));
+    function subScore(s) {
+        if (s.score != null) return s.score;
+        const c = s.scorecard && s.scorecard.score;
+        return c && c.s != null ? c.s : null;
+    }
+    function subDecision(s) {
+        if (s.score_decision) return s.score_decision;
+        const c = s.scorecard && s.scorecard.score;
+        return c ? c.d : null;
+    }
+    function subOff(s) {
+        const p = s.pointing;
+        return p && p.off_target_arcmin != null ? p.off_target_arcmin
+             : (s.pointing_offset_arcmin ?? null);
+    }
+    const SRC_SHORT = {solve: 'solve', header: 'header', 'mount-log': 'mount log',
+                       'rc16-correlated': 'RC16 hdr'};
+    // [key, header, tooltip, sort value]
+    const SUB_COLS = [
+        ['thumb', '', '', null],
+        ['time', 'Time (UTC)', '', s => s.time || ''],
+        ['target', 'Target', '', s => s.target || ''],
+        ['filter', 'Filter', '', s => s.filter || ''],
+        ['exp', 'Exp', '', s => s.exp_s],
+        ['score', 'Score', 'PS-108 score 0-100 (stored when graded, or scored on read)', subScore],
+        ['verdict', 'Verdict', 'click a verdict to flip pass / reject (manual override)', s => subState(s)],
+        ['hfr', 'HFR', '', s => s.hfr],
+        ['fwhm', 'FWHM', 'arcsec', s => s.fwhm_arcsec],
+        ['ecc', 'Ecc', 'native 0.236"/px, sqrt(1-(b/a)^2)', s => s.ecc],
+        ['ecc_bin', 'Ecc (bin)', '2x2 binned, 0.47"/px (PS-94)', s => s.ecc_bin],
+        ['stars', 'Stars', '', s => s.stars],
+        ['bkg', 'Bkg', '', s => s.background],
+        ['sat', 'Sat\u2605 %', 'saturated star cores (%)', s => s.sat_stars_pct],
+        ['expo', 'Expo', '', s => s.exposure],
+        ['rms', 'Guide RMS', 'arcsec', s => s.guide_rms],
+        ['alt', 'Alt', 'altitude (deg), mount position', s => (s.pointing || {}).alt],
+        ['pier', 'Pier', '', s => (s.pointing || {}).pier],
+        ['off', 'Off target', 'offset of the frame from the named target and its source (plate solve, else the mount position; PS-67 / PS-107)', subOff],
+    ];
+    function sortSubs(list) {
+        const col = SUB_COLS.find(c => c[0] === subSort.key && c[3]) || SUB_COLS[5];
+        const f = col[3];
+        return list.map((s, i) => [s, i]).sort((a, b) => {
+            const x = f(a[0]), y = f(b[0]);
+            if (x == null && y == null) return a[1] - b[1];
+            if (x == null) return 1;           // missing values last either way
+            if (y == null) return -1;
+            const c = x < y ? -1 : x > y ? 1 : 0;
+            return c * subSort.dir || a[1] - b[1];
+        }).map(p => p[0]);
+    }
+    function scoreCell(s) {
+        const v = subScore(s);
+        if (v == null) return '<td title="no stored score: run qa-rescore for this night">\u2013</td>';
+        const dc = subDecision(s);
+        const col = (DEC[dc] || [null, ''])[1];
+        return '<td title="' + escH(dc || '') + '"><b style="color:' + col + '">' + v + '</b></td>';
+    }
+    function verdictCell(s) {
+        const dc = subDecision(s);
+        const st = subState(s);
+        const would = {approve: 'accepted', review: 'review', reject: 'rejected'}[dc];
+        const differs = would && !(would === st || (would === 'accepted' && st === 'syncing') ||
+                                   (would === 'rejected' && st === 'offtarget'));
+        return '<td class="vcell" style="cursor:pointer;color:' +
+            (!s.passed_qa ? '#f87171' : !s.reviewed ? '#eab308'
+             : s.transfer === 'pending' ? '#7dd3fc' : '#4ade80') +
+            ';" title="click to flip pass/reject (manual override)" ' +
+            'onclick="event.stopPropagation();toggleQa(\'' + encodeURIComponent(s.file) + '\')">' +
+            (!s.passed_qa ? escH(s.reason || 'reject')
+             : !s.reviewed ? 'review'
+             : s.transfer === 'pending' ? 'accepted \u00b7 syncing \u21c5'
+             : s.transfer === 'done' ? 'transferred \u2713' : 'accepted') +
+            (s.manual_qa ? ' \u270b' : '') + roofTag(s) + pointTag(s) +
+            (differs ? ' <span class="bd" title="what the score would do (PS-108)">would ' +
+             escH(dc) + '</span>' : '') + '</td>';
+    }
+    // PS-137: the attributed target, with the raw name (OBJECT / RC16 name)
+    // and the Piggy frame evidence on hover; a report-only attribution that
+    // differs shows as a small "frames X" hint.
+    function targetCell(s) {
+        const a = s.target_attr || null;
+        const tip = [];
+        if (s.target_raw && s.target_raw !== s.target) tip.push('recorded as: ' + s.target_raw);
+        if (a && a.name && a.tier === 'mosaic companion') tip.push('mosaic panel ' + (a.via || '') +
+            ': credits the companion goal ' + a.name + ' (PS-111)');
+        else if (a && a.name) tip.push('Piggy frame holds ' + a.name + ' (' + (a.tier || '') + ', ' +
+            (a.off_arcmin != null ? a.off_arcmin + "' from centre, " : '') + (a.src || '') +
+            (a.applied ? '' : ', report only') + ')');
+        const hint = a && a.name && !a.applied && a.name !== s.target
+            ? ' <span class="dim" style="color:#7dd3fc">frames ' + escH(a.name) + '?</span>' : '';
+        const mark = s.target_raw && s.target_raw !== s.target ? ' <span class="dim">*</span>' : '';
+        return '<td' + (tip.length ? ' title="' + escH(tip.join(' \u00b7 ')) + '"' : '') + '>' +
+            escH(s.target) + mark + hint + '</td>';
+    }
+    function renderSubTable(subs) {
+        const rows = sortSubs(subs);
+        window._shownSubs = rows;   // the lightbox walks the table order
+        const noScore = rows.filter(s => subScore(s) == null).length;
+        const hint = document.getElementById('scoreHint');
+        hint.hidden = !noScore;
+        hint.innerHTML = noScore ? noScore + ' of ' + rows.length + ' subs have no stored score ' +
+            '(graded before PS-108): <code>photonscript qa-rescore --date ' + escH(currentDate) +
+            '</code> previews, <code>--apply</code> stores the scores (preview mode changes no verdict)' : '';
+        document.getElementById('thumbCount').textContent = rows.length + ' subs';
+        const ann = document.getElementById('annotateToggle').checked ? '&annotate=true' : '';
+        const tbl = document.getElementById('subTable');
+        tbl.innerHTML = '<tr>' + SUB_COLS.map(c => '<th data-k="' + c[0] + '"' +
+                (c[3] ? '' : ' class="nosort"') + (c[2] ? ' title="' + escH(c[2]) + '"' : '') + '>' +
+                c[1] + (subSort.key === c[0] ? (subSort.dir > 0 ? ' \u25b2' : ' \u25bc') : '') +
+                '</th>').join('') + '</tr>' +
+            rows.map((s, i) => '<tr class="srow' + (selected.has(s.file) ? ' sel' : '') +
+                '" data-file="' + escH(s.file) + '" onclick="if (!selClick(event, ' + i + ')) openLb(' + i + ')">' +
+                '<td class="tthumb"><img alt="" style="' +
+                (subState(s) === 'offtarget' ? 'outline:2px solid #c084fc;'
+                 : !s.passed_qa ? 'outline:2px solid #f87171;'
+                 : s.reviewed ? 'outline:2px solid #4ade80;' : '') + '" data-src="/api/runs/' +
+                currentDate + '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' + ann + '"></td>' +
+                '<td>' + (s.time || '').slice(11, 19) + '</td>' + targetCell(s) + '<td>' +
+                escH(s.filter) + '</td><td>' + Math.round(s.exp_s) + 's</td>' + scoreCell(s) +
+                verdictCell(s) + '<td>' + (s.hfr ?? '\u2013') + '</td><td>' + (s.fwhm_arcsec ?? '\u2013') +
+                '</td><td' + (s.ecc_raw != null ? ' title="stored as 1-b/a ' + s.ecc_raw + '"' : '') +
+                '>' + (s.ecc ?? '\u2013') + '</td><td>' + (s.ecc_bin ?? '\u2013') +
+                '</td><td>' + (s.stars ?? '–') + '</td><td>' + (s.background ?? '–') +
+                '</td><td>' + (s.sat_stars_pct ?? '\u2013') +
+                '</td><td style="color:' + (s.exposure === 'ok' ? '#4ade80'
+                    : s.exposure === 'under' ? '#eab308'
+                    : s.exposure ? '#f87171' : '') + ';" title="swamp ' +
+                (s.swamp ?? '–') + '×RN² (≥3 ok, ≥10 fully sky-limited) · clipped ' +
+                (s.clipped_pct ?? '–') + '% px · saturated stars ' +
+                (s.sat_stars_pct ?? '\u2013') + '%">' + escH(s.exposure ?? '\u2013') +
+                '</td><td>' + (s.guide_rms != null ? s.guide_rms + '&quot;' : '\u2013') + '</td>' +
+                pointCells(s) + '</tr>').join('');
+        tbl.querySelectorAll('th[data-k]').forEach(th => {
+            const k = th.dataset.k;
+            if (!(SUB_COLS.find(c => c[0] === k) || [])[3]) return;
+            th.onclick = () => {
+                subSort = subSort.key === k ? {key: k, dir: -subSort.dir} : {key: k, dir: 1};
+                renderSubs();
+            };
+        });
+        SubTiles.lazy(tbl, 2);
+        paintSelBar();
+    }
+    function fmtEta(s) {
+        if (s == null) return '';
+        return s >= 60 ? '~' + Math.floor(s / 60) + 'm ' + (s % 60) + 's left'
+                       : '~' + s + 's left';
+    }
+    function showBackfill(b) {
+        const box = document.getElementById('backfillBox');
+        box.hidden = false;
+        document.getElementById('regradeBtn').disabled = true;
+        const pct = b.total_files ? Math.round(b.graded / b.total_files * 100) : 0;
+        document.getElementById('backfillBar').style.width = pct + '%';
+        document.getElementById('backfillLabel').innerHTML =
+            '<b>Re-grading:</b> ' + b.graded + '/' + (b.total_files || '?') +
+            (b.current ? ' · <span style="opacity:.7">' +
+                b.current.split(/[\\/]/).pop() + '</span>' +
+                (b.current_s != null ? ' <span style="opacity:.5">(' +
+                    b.current_s + 's)</span>' : '') : '') +
+            (b.rate ? ' · ' + b.rate + '/s · ' + fmtEta(b.eta_s) : '') +
+            (b.last_error ? ' · <span class="rej">last error: ' +
+                b.last_error + '</span>' : '');
+    }
+    let pollTimer = null;
+    function pollBackfill(date) {
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(async () => {
+            if (currentDate !== date) return;
+            try {
+                const r = await fetch('/api/runs/' + date + '/backfill');
+                const b = await r.json();
+                if (b.running || b.pending > 0) {
+                    showBackfill(b);
+                } else {
+                    document.getElementById('backfillBox').hidden = true;
+                    loadDetail(date);   // done: render final numbers
+                    return;
+                }
+            } catch (e) { /* transient — keep polling */ }
+            pollBackfill(date);
+        }, 2500);
+    }
+    async function assignTarget() {
+        const name = document.getElementById('assignTarget').value.trim();
+        if (!name) return;
+        await fetch('/api/runs/' + currentDate + '/assign_target', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name: name,
+                window: (document.getElementById('assignWindow') || {value:''}).value})});
+        loadDetail(currentDate);
+    }
+    async function identifyNight() {
+        const r = await (await fetch('/api/runs/' + currentDate + '/identify',
+                                     {method: 'POST'})).json();
+        alert(r.identified + ' subs attributed.\n\n' + r.clusters.map(c =>
+            c.window + ' UTC · ' + c.subs + ' subs · ' +
+            (c.matched ? c.matched + ' (' + c.method + ')'
+             : 'no match' + (c.ra_deg != null ? ' at RA ' + c.ra_deg +
+               ' Dec ' + c.dec_deg : ' — no coordinates'))).join('\n'));
+        loadDetail(currentDate);
+    }
+    function subState(s) {
+        // PS-67: an off-target reject is its own category (easy to see and
+        // override with the accept button), distinct from quality rejects
+        if (!s.passed_qa && !s.manual_qa && (s.drivers || []).includes('pointing'))
+            return 'offtarget';
+        return !s.passed_qa ? 'rejected' : !s.reviewed ? 'review'
+             : s.transfer === 'pending' ? 'syncing' : 'accepted';
+    }
+    const STATE_ICON = {review: ['👁', '#eab308'], accepted: ['✓', '#4ade80'],
+                        syncing: ['⇅', '#7dd3fc'], rejected: ['✗', '#f87171'],
+                        offtarget: ['\u2316', '#c084fc']};
+    // PS-71: subs graded as shot with the roof closed / mount parked
+    function roofTag(s) {
+        return s.qa_flag === 'roof-closed'
+            ? ' <span title="shot while the roof was closed or the mount parked '
+              + '(PS-71)" style="background:#7c2d12;color:#fed7aa;border-radius:4px;'
+              + 'padding:0 .35rem;font-size:.75em;white-space:nowrap;">roof closed / parked</span>'
+            : '';
+    }
+    // PS-67: pointing (per-sub record merged by /api/runs/{date})
+    function fmtOff(x) {
+        return x == null ? '\u2013' : (x < 120 ? x.toFixed(1) + "'" : Math.round(x / 60) + ' deg');
+    }
+    function pointFlag(s) {
+        const p = s.pointing;
+        return p && (p.flag === 'off-target' || p.flag === 'flag') ? p.flag : '';
+    }
+    function pointTag(s) {
+        const f = pointFlag(s), p = s.pointing;
+        if (!f) return '';
+        // PS-107: only a plate solve confirms; header / mount-log offsets
+        // reject only gross misses and otherwise wait for the dawn solve
+        const solved = p.solved_ra != null;
+        const tip = f === 'off-target'
+            ? (solved ? 'target outside the frame (plate solve)'
+                      : 'gross miss above the header-only reject limit (mount position, no plate solve)')
+            : (solved ? 'off target: worth a look (plate solve)'
+                      : 'header only, unconfirmed: mount model error up to about 1 deg; the dawn plate solve confirms or clears it');
+        const label = solved ? (f === 'off-target' ? 'off target (solved) ' : 'flag ')
+                             : 'off target (header, unconfirmed) ';
+        return ' <span class="ptag ' + (f === 'off-target' ? 'off' : 'flag') + '" title="' +
+            tip + ' (PS-67)">' + label + fmtOff(p.off_target_arcmin) +
+            ' ' + (p.off_target_dir || '') + '</span>';
+    }
+    function pointCells(s) {
+        const p = s.pointing || {};
+        const src = p.src || s.pointing_src;
+        const col = p.flag === 'off-target' ? '#c084fc' : p.flag === 'flag' ? '#eab308' : '';
+        return '<td>' + (p.alt != null ? Math.round(p.alt) : '\u2013') + '</td><td>' +
+            (p.pier ? p.pier.slice(0, 1) : '\u2013') + '</td><td style="color:' + col + '" title="' +
+            (p.model_err_arcmin != null ? 'mount vs solve ' + p.model_err_arcmin + "'" : '') +
+            (p.drift_arcmin != null ? ' drift since previous sub ' + p.drift_arcmin + "'" : '') + '">' +
+            fmtOff(subOff(s)) + (p.off_target_dir ? ' ' + p.off_target_dir : '') +
+            (subOff(s) != null && src ? ' <span class="bd" title="source (PS-107: only a plate solve confirms)">' +
+             (SRC_SHORT[src] || escH(src)) + (src === 'solve' ? '' : '?') + '</span>' : '') +
+            '</td>';
+    }
+    function subSpan(s) {
+        const exp = (s.exp_s || 0) * 1000, t = String(s.time || '');
+        const ms = Date.parse(t.endsWith('Z') ? t : t + 'Z');
+        if (isNaN(ms)) return null;
+        return t.endsWith('Z') ? [ms - exp, ms] : [ms, ms + exp];  // live = end, backfill = start
+    }
+    function inWindow(s, w) {
+        const sp = subSpan(s);
+        return sp && sp[0] < Date.parse(w[1]) && Date.parse(w[0]) < sp[1];
+    }
+    // PS-27: Piggy-600 split pointing, straddled / (judged + aborted)
+    function renderSplit(sp, date) {
+        const box = document.getElementById('splitPointing');
+        if (!box) return;
+        if (!sp || !sp.attempted) {
+            box.textContent = 'no judged Piggy-600 lights this night' +
+                (sp && sp.lights ? ' (' + sp.lights + ' subs, not judged yet: dawn pass)' : '');
+            return;
+        }
+        const pct = (100 * sp.rate).toFixed(1) + '%';
+        box.innerHTML = '<span class="' + (sp.passed ? '' : 'bad') + '"><b>' + pct +
+            '</b> split</span> (' + sp.straddled + ' of ' + sp.attempted +
+            ' straddle an RC16 move; pass under ' + (100 * sp.pass_line) + '%)' +
+            ' &middot; ' + sp.aborted + ' aborted on a move' +
+            (sp.abort ? '' : ' (abort on move is off)') +
+            ' &middot; settle gate: ' + sp.saves + ' split saves, ' + sp.holds + ' holds, ' +
+            sp.timeouts + ' timed out' + (sp.gate ? '' : ' (gate off)') +
+            ' &middot; <a href="/api/runs/' + encodeURIComponent(date) + '/split" target="_blank">json</a>';
+    }
+
+    function renderPointing(pt, date) {
+        const box = document.getElementById('pointingSummary');
+        if (!pt || !pt.rigs || !Object.keys(pt.rigs).length) {
+            box.textContent = 'no pointing record for this night yet'; return;
+        }
+        const m = pt.model;
+        const grp = g => Object.entries(g || {}).map(([k, v]) => k + ' ' + v.median_arcmin + "' (" + v.n + ')').join(', ');
+        box.innerHTML = '<span class="' + (pt.off_target ? 'bad' : '') + '">' + pt.off_target +
+            ' subs off target</span> &middot; ' + pt.flagged + ' flagged &middot; ' +
+            Object.entries(pt.rigs).map(([r, v]) => r + ': ' + v.with_position + '/' + v.subs +
+                ' with a position, ' + v.solved + ' solved').join(' &middot; ') +
+            (m ? '<br>Mount vs plate solve (RC16 pointing model): median ' + m.median_arcmin +
+                "', max " + m.max_arcmin + "' over " + m.n + ' solves &middot; pier ' + grp(m.by_pier) +
+                ' &middot; Dec ' + grp(m.by_dec) + ' &middot; HA ' + grp(m.by_ha) : '') +
+            ' &middot; <a href="/api/runs/' + encodeURIComponent(date) + '/pointing" target="_blank">records</a>';
+    }
+    const TL_COLORS = {slewing: '#f59e0b', centering: '#fbbf24', tracking: '#334155',
+        parked: '#64748b', idle: '#1e293b', 'meridian flip': '#e879f9', guiding: '#16a34a',
+        settling: '#86efac', calibrating: '#38bdf8', 'guider lost': '#ef4444',
+        autofocus: '#a78bfa', exposing: '#2563eb', flats: '#facc15', darks: '#475569',
+        waiting: '#1f2937', dither: '#94a3b8', unsafe: '#b91c1c', guider: '#10b981',
+        cooling: '#0ea5e9', other: '#6b7280'};
+    async function loadTimeline(date) {
+        const box = document.getElementById('timeline');
+        let tl;
+        try { tl = await (await fetch('/api/runs/' + date + '/timeline')).json(); }
+        catch (e) { box.textContent = 'timeline unavailable'; return; }
+        if (currentDate !== date) return;
+        if (!tl || !tl.ok) { box.textContent = (tl && tl.note) || 'no timeline'; return; }
+        const t0 = Date.parse(tl.t0), t1 = Date.parse(tl.t1), span = Math.max(1, t1 - t0);
+        const L = 90, W = 1000, R = 18, top = 14;
+        const x = t => L + (W - L) * (Date.parse(t) - t0) / span;
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const rows = tl.rows.slice();
+        let svg = '<svg viewBox="0 0 ' + W + ' ' + (top + rows.length * R + 4) + '">';
+        for (let h = Math.ceil(t0 / 3600000) * 3600000; h <= t1; h += 3600000) {
+            const xx = L + (W - L) * (h - t0) / span;
+            svg += '<line x1="' + xx + '" y1="10" x2="' + xx + '" y2="' + (top + rows.length * R) +
+                '" stroke="#334155" stroke-width=".5"/><text x="' + (xx + 2) + '" y="9" fill="#94a3b8">' +
+                new Date(h).toISOString().slice(11, 16) + '</text>';
+        }
+        const seen = new Set();
+        rows.forEach((r, i) => {
+            const y = top + i * R;
+            svg += '<text x="0" y="' + (y + 11) + '" fill="#cbd5e1">' + esc(r.label) + '</text>';
+            r.segments.forEach(sg => {
+                seen.add(sg.state);
+                const x0 = x(sg.start), w = Math.max(1, x(sg.end) - x0);
+                svg += '<rect class="seg" data-s="' + sg.start + '" data-e="' + sg.end + '" x="' + x0.toFixed(1) +
+                    '" y="' + y + '" width="' + w.toFixed(1) + '" height="11" fill="' +
+                    (TL_COLORS[sg.state] || '#6b7280') + '"><title>' + esc(sg.state) +
+                    (sg.label ? ': ' + esc(sg.label) : '') + ' ' + sg.start.slice(11, 19) + '-' +
+                    sg.end.slice(11, 19) + ' UTC (click: show these subs)</title></rect>';
+            });
+            (tl.subs[r.id] || []).forEach(sb => {
+                const x0 = x(sb.start), w = Math.max(1, x(sb.end) - x0);
+                svg += '<rect class="seg" data-s="' + sb.start + '" data-e="' + sb.end + '" x="' + x0.toFixed(1) +
+                    '" y="' + (y + 12) + '" width="' + w.toFixed(1) + '" height="3" fill="' +
+                    ({rejected: '#f87171', accepted: '#4ade80'}[sb.verdict] || '#eab308') + '"><title>' +
+                    esc(sb.target) + ' ' + esc(sb.filter) + ' ' + sb.start.slice(11, 19) + ' ' + sb.verdict +
+                    '</title></rect>';
+            });
+        });
+        svg += '</svg>';
+        box.innerHTML = svg + [...seen].map(st => '<span style="display:inline-block;width:.7rem;height:.7rem;background:' +
+            (TL_COLORS[st] || '#6b7280') + ';margin:0 .2rem 0 .6rem;vertical-align:middle"></span>' + esc(st)).join('') +
+            ' &middot; sources: ' + rows.map(r => esc(r.label) + ' ' + esc(r.source || 'none')).join(', ');
+        box.querySelectorAll('rect.seg').forEach(el => el.addEventListener('click', () => {
+            subWindow = [el.dataset.s, el.dataset.e]; renderSubs();
+        }));
+    }
+    // PS-1: was an unsafe AARO's weather (both NINAs agree) or one driver?
+    const SF_COLORS = {safe: '#16a34a', unsafe: '#b91c1c', offline: '#f59e0b', unknown: '#334155'};
+    async function loadSafety(date) {
+        const box = document.getElementById('safety');
+        let r;
+        try { r = await (await fetch('/api/safety/night?date=' + encodeURIComponent(date))).json(); }
+        catch (e) { box.textContent = 'safety analytics unavailable'; return; }
+        if (currentDate !== date) return;
+        if (!r || !r.ok) { box.textContent = (r && r.note) || 'no safety data'; return; }
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const t0 = Date.parse(r.t0), t1 = Date.parse(r.t1), span = Math.max(1, t1 - t0);
+        const L = 150, W = 1000, R = 18, top = 14;
+        const x = t => L + (W - L) * (Date.parse(t) - t0) / span;
+        const rows = Object.values(r.rigs || {});
+        if (r.armer) rows.push(r.armer);
+        let svg = '<svg viewBox="0 0 ' + W + ' ' + (top + rows.length * R + 4) + '">';
+        for (let h = Math.ceil(t0 / 3600000) * 3600000; h <= t1; h += 3 * 3600000) {
+            const xx = L + (W - L) * (h - t0) / span;
+            svg += '<line x1="' + xx + '" y1="10" x2="' + xx + '" y2="' + (top + rows.length * R) +
+                '" stroke="#334155" stroke-width=".5"/><text x="' + (xx + 2) + '" y="9" fill="#94a3b8">' +
+                new Date(h).toISOString().slice(11, 16) + 'Z</text>';
+        }
+        rows.forEach((row, i) => {
+            const y = top + i * R;
+            svg += '<text x="0" y="' + (y + 11) + '" fill="#cbd5e1">' + esc(row.label) + '</text>';
+            (row.segments || []).forEach(sg => {
+                const x0 = x(sg.start), w = Math.max(1, x(sg.end) - x0);
+                svg += '<rect x="' + x0.toFixed(1) + '" y="' + y + '" width="' + w.toFixed(1) +
+                    '" height="12" fill="' + (SF_COLORS[sg.state] || '#6b7280') + '"' +
+                    (sg.inferred ? ' fill-opacity=".5"' : '') + '><title>' + esc(sg.state) +
+                    (sg.inferred ? ' (inferred after a connect)' : '') + ' ' + sg.start.slice(11, 19) +
+                    '-' + sg.end.slice(11, 19) + ' UTC</title></rect>';
+            });
+        });
+        svg += '</svg>';
+        const xc = r.cross_check || {};
+        const lines = ['<b>' + esc(r.verdict) + '</b>'];
+        Object.entries(r.rigs || {}).forEach(([k, v]) => lines.push(esc(v.label) + ': ' + v.to_unsafe +
+            ' to-unsafe, ' + v.connection_losses + ' connection loss(es), safe ' + v.minutes.safe +
+            ' min, unsafe ' + v.minutes.unsafe + ' min, offline ' + v.minutes.offline + ' min' +
+            (v.flaps.length ? ', flaps: ' + v.flaps.map(f => esc(f.state) + ' ' + f.seconds + ' s at ' +
+                f.start.slice(11, 16) + 'Z').join(', ') : '')));
+        if ((xc.suspects || []).length) lines.push('<span class="bad">Suspect (one NINA only): ' +
+            xc.suspects.map(s => esc(s.rig) + ' ' + esc(s.state) + ' at ' + s.t.slice(11, 19) + 'Z while ' +
+                esc(s.other) + ' read ' + esc(s.other_state)).join('; ') + '</span>');
+        if ((xc.losses || []).length) lines.push('Connection losses (read as unsafe): ' +
+            xc.losses.slice(0, 12).map(l => esc(l.rig) + ' ' + l.t.slice(11, 16) + 'Z' + (l.both ? ' (both)' : '')).join(', ') +
+            (xc.losses.length > 12 ? ' &hellip; +' + (xc.losses.length - 12) : ''));
+        if ((r.unsafe_onsets_local || []).length) lines.push('Unsafe onsets (local): ' + r.unsafe_onsets_local.map(esc).join(', '));
+        if ((r.debounce || []).length) lines.push('Confirm-safe hold vs this night: ' + r.debounce.map(d =>
+            (d.current ? '<b>' : '') + d.hold_s + ' s: ' + d.swallowed + '/' + d.resumes + ' resumes held off, ' +
+            d.safe_min_spent + ' safe min spent' + (d.current ? ' (current)</b>' : '')).join(' &middot; '));
+        (r.notes || []).forEach(n => lines.push('<span style="opacity:.8">' + esc(n) + '</span>'));
+        box.innerHTML = svg + Object.entries(SF_COLORS).map(([st, c]) => '<span style="display:inline-block;width:.7rem;height:.7rem;background:' +
+            c + ';margin:0 .2rem 0 .6rem;vertical-align:middle"></span>' + st).join('') +
+            ' &middot; <a href="/api/safety/night?date=' + encodeURIComponent(date) + '" target="_blank">json</a>' +
+            ' &middot; <a href="/api/safety/summary" target="_blank">14 nights</a><br>' + lines.join('<br>');
+    }
+    function badge(s) {
+        const [ic, col] = STATE_ICON[subState(s)];
+        return ' <span style="color:' + col + '">' + ic + '</span>';
+    }
+    // PS-24: one verdict, optimistic (Review.set): the tile, row, counters and
+    // lightbox repaint at once; a refused POST rolls them back with a toast.
+    function setState(s, state) {
+        const date = currentDate;
+        let before = Review.snap(s);
+        return Review.set(date, s.file, state, {
+            prev: Review.subState(s),
+            // (undo reuses these callbacks: the snapshot is retaken each apply)
+            apply: (st) => { before = Review.snap(s); Review.applyToRecord(s, st); patchSubs([s]); },
+            revert: () => { Review.restore(s, before); patchSubs([s]); },
+            saved: (res) => { Review.merge(s, res.sub); patchSubs([s]); }});
+    }
+    function nextState(s) {
+        const st = subState(s);
+        return st === 'offtarget' ? 'accepted'
+             : st === 'review' ? 'accepted'
+             : (st === 'accepted' || st === 'syncing') ? 'rejected' : 'review';
+    }
+    function previewUrl(s) {
+        return '/api/runs/' + currentDate + '/thumb?file=' + encodeURIComponent(s.file) +
+            '&w=1400' + (document.getElementById('annotateToggle').checked ? '&annotate=true' : '');
+    }
+    let lbIdx = 0;
+    const lbPrefetched = new Set();
+    function openLb(i, captionOnly) {
+        lbIdx = i;
+        const s = window._shownSubs[i];
+        if (!s) return;
+        const _n = (window._shownSubs || []).length;
+        if (!captionOnly) {
+            lbZoomReset();   // always open a new frame at 1x
+            document.getElementById('lbImg').src = previewUrl(s);
+            // PS-24: warm the next two previews so next / auto-advance is instant
+            [1, 2].forEach(k => {
+                const nx = window._shownSubs[(i + k) % _n];
+                if (!nx || k >= _n) return;
+                const u = previewUrl(nx);
+                if (!lbPrefetched.has(u)) { lbPrefetched.add(u); new Image().src = u; }
+            });
+        }
+        const toReview = (window._shownSubs || []).filter(x => subState(x) === 'review').length;
+        document.getElementById('lbCount').textContent = (i + 1) + ' / ' + _n +
+            (toReview ? ' \u00b7 ' + toReview + ' to review' : ' \u00b7 all reviewed');
+        // PS-115: date / time, target, filter / exposure and the verdict
+        // only; every metric lives in the side panel
+        document.getElementById('lbCaption').innerHTML =
+            '<b>' + currentDate + ' ' + escH((s.time || '').slice(11, 19)) + ' UTC</b> \u00b7 ' +
+            ((s.target && s.target !== '?') ? escH(s.target) + ' \u00b7 ' : '') +
+            escH(s.filter) + ' ' + Math.round(s.exp_s) + 's \u00b7' + badge(s) +
+            ' <span style="opacity:.75">' + subState(s) +
+            (s.reason && !s.passed_qa ? ': ' + escH(s.reason) : '') + '</span>';
+        const btn = document.getElementById('lbQaBtn');
+        const nx = nextState(s);
+        btn.textContent = 'X → ' + STATE_ICON[nx][0] + ' ' + nx;
+        btn.onclick = () => lbToggle();
+        if (captionOnly) return;
+        document.getElementById('lightbox').hidden = false;
+        loadLbPanel(s, i, _n);
+    }
+    // ---- PS-108 side panel: score, every metric vs its gate, histogram.
+    //      Rows come from /scorecard ready to draw (the page never compares a
+    //      number with a limit). Keyboard flow is unchanged.
+    const RAG = {green: '#4ade80', amber: '#eab308', red: '#f87171', none: '#475569'};
+    const DEC = {approve: ['approve', '#4ade80'], review: ['review', '#eab308'],
+                 reject: ['reject', '#f87171']};
+    let lbHistLog = true;
+    try { lbHistLog = localStorage.getItem('lbHistLog') !== '0'; } catch (e) { /* no storage */ }
+    function escH(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+    // PS-115: target section, one header line, then the bars sorted by
+    //      points lost (server side, qa_score.sort_rows); n/a and skipped
+    //      rows fold into one "not measured" line. No metric is repeated as
+    //      text: values, gates and points lost are on the bars, notes are
+    //      tooltips.
+    async function loadLbPanel(s, i, n) {
+        const file = s.file, date = currentDate;
+        const head = document.getElementById('lbHead');
+        head.innerHTML = '<span class="none">loading score&hellip;</span>';
+        head.title = '';
+        document.getElementById('lbRows').innerHTML = '';
+        renderLbTarget(s, null, true);
+        clearLbHist();
+        let r;
+        try {
+            r = await (await fetch('/api/runs/' + date + '/scorecard?file=' +
+                                   encodeURIComponent(file))).json();
+        } catch (e) { head.textContent = 'scorecard unavailable'; return; }
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (!cur || cur.file !== file || currentDate !== date) return;
+        renderLbTarget(s, r.target || null, false);
+        const sc = r.score || null;
+        const today = r.today || subState(s);
+        const d = sc ? (DEC[sc.decision] || [sc.decision, '#94a3b8']) : null;
+        if (sc) {
+            head.innerHTML = '<span class="sc" style="color:' + d[1] + '">' + sc.score +
+                '</span><span class="none"> / 100</span> &nbsp;' +
+                (sc.mode === 'on' ? '<b style="color:' + d[1] + '">' + d[0] + '</b>'
+                 : 'would <b style="color:' + d[1] + '">' + d[0] + '</b> <span class="none">(preview)</span>') +
+                ' &middot; today <b>' + escH(today) + '</b>' +
+                (sc.cap ? ' <span class="red">capped</span>' : '') +
+                (sc.on_read ? ' <span class="none">&#9432;</span>' : '');
+            head.title = 'approve >= ' + sc.approve_at + ', reject < ' + sc.reject_below +
+                (sc.cap ? '\ncapped at ' + sc.cap.cap + ' by ' + sc.cap.check + ' (' + sc.cap.name + ')' : '') +
+                (sc.on_read ? '\nscored on read: graded before PS-108, scored from the stored metrics now, nothing written' : '');
+        } else {
+            head.innerHTML = '<span class="none">no score for this sub</span> &middot; today <b>' +
+                escH(today) + '</b>';
+        }
+        const rows = r.panel || [];
+        const nm = rows.filter(m => m.measured === false);
+        document.getElementById('lbRows').innerHTML = rows.filter(m => m.measured !== false).map(m => {
+            const col = RAG[m.status] || RAG.none;
+            return '<div class="mrow" title="' + escH(m.note) + '"><span>' + escH(m.label) + '</span>' +
+                '<span><b class="' + escH(m.status) + '">' + escH(m.value) + '</b>' +
+                (m.gate ? ' <span class="none">' + escH(m.gate) + '</span>' : '') +
+                (m.lost ? ' <span class="red">&minus;' + m.lost + '</span>' : '') +
+                '</span>' + (m.frac != null ? '<div class="mbar"><div style="width:' +
+                Math.round(m.frac * 100) + '%;background:' + col + '"></div></div>' : '') + '</div>';
+        }).join('') + (nm.length ? '<div class="none nm" title="' +
+            escH(nm.map(m => m.label + (m.note ? ': ' + m.note : '')).join('\n')) +
+            '">not measured: ' + nm.map(m => escH(m.label)).join(', ') + '</div>' : '');
+        loadLbHist(date, file);
+    }
+    // ---- PS-115 target section: name (Targets page, PS-81), filter and
+    //      exposure, the PS-67 / PS-107 pointing (offset, direction, source,
+    //      alt, pier, HA) and the PS-81 reference image with this rig's frame
+    //      box and a marker at the pointed position (SkyGeom.tanPx, the same
+    //      projection as the Targets page). One meta fetch per target.
+    const REF_META = {};
+    function refMeta(name, view) {
+        const k = name + '|' + view;
+        if (!REF_META[k]) REF_META[k] = fetch('/api/targets/refimage/meta?name=' +
+            encodeURIComponent(name) + '&view=' + view)
+            .then(rr => rr.ok ? rr.json() : null).catch(() => null);
+        return REF_META[k];
+    }
+    function fmtHA(h) {
+        if (h == null) return '\u2013';
+        const a = Math.abs(h);
+        let hh = Math.floor(a), mm = Math.round((a - hh) * 60);
+        if (mm === 60) { hh += 1; mm = 0; }
+        return (h < 0 ? '-' : '+') + hh + 'h' + String(mm).padStart(2, '0') + 'm';
+    }
+    function lbTargetName(s, tb) {
+        if (s.target && s.target !== '?') return s.target;
+        return (tb && tb.name) || null;
+    }
+    function renderLbTarget(s, tb, loading) {
+        const name = lbTargetName(s, tb);
+        const p = tb && tb.pointing;
+        let h = '<div>' + (name ? '<a href="/target?name=' + encodeURIComponent(name) +
+                '" title="Targets page (PS-81)">' + escH(name) + '</a>'
+                : '<span class="none">no target</span>') +
+            ' <span class="none">&middot;</span> ' + escH(s.filter) + ' ' +
+            Math.round(s.exp_s || 0) + ' s</div>';
+        if (loading) {
+            h += '<div class="none">pointing&hellip;</div>';
+        } else if (p) {
+            const cls = p.flag === 'off-target' ? 'red' : p.flag === 'flag' ? 'amber' : '';
+            h += '<div>pointed <b class="' + cls + '">' + (p.off_arcmin != null
+                    ? fmtOff(p.off_arcmin) + (p.off_dir ? ' ' + escH(p.off_dir) : '') : '\u2013') +
+                '</b> from the target <span class="' + (p.confirmed ? 'green' : 'none') +
+                '" title="PS-107: only a plate solve confirms an offset">(' + escH(p.src_label) + ')</span></div>' +
+                '<div class="none">alt ' + (p.alt != null ? Math.round(p.alt) + '&deg;' : '\u2013') +
+                ' &middot; pier ' + escH(p.pier || '\u2013') + ' &middot; HA ' + fmtHA(p.ha_h) + '</div>';
+        } else {
+            h += '<div class="none">no pointing record for this sub (PS-67 dawn pass)</div>';
+        }
+        document.getElementById('lbTargetText').innerHTML = h;
+        if (!loading) { drawLbRef(name, tb, s.file); return; }
+        document.getElementById('lbRef').hidden = true;
+        document.getElementById('lbRefNote').textContent = '';
+    }
+    async function drawLbRef(name, tb, file) {
+        const box = document.getElementById('lbRef'), img = document.getElementById('lbRefImg');
+        const svg = document.getElementById('lbRefSvg'), note = document.getElementById('lbRefNote');
+        img.hidden = true; svg.innerHTML = '';
+        if (!name) { box.hidden = true; note.textContent = ''; return; }
+        note.textContent = 'reference image loading\u2026';
+        const fr = tb && tb.frame;
+        let m = await refMeta(name, 'close');
+        // the Piggy-600 frame (2.2 deg) does not fit the close view: go wide
+        if (m && fr && m.fov_deg && fr.w_arcmin / 60 > m.fov_deg * 0.9) m = await refMeta(name, 'wide');
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (!cur || cur.file !== file) return;
+        if (!m || !m.fov_deg) {
+            box.hidden = true;
+            note.textContent = (m && m.note) || 'no reference image';
+            return;
+        }
+        box.hidden = false;
+        const W = 1000, H = Math.round(W * (m.aspect || 0.667));
+        box.style.aspectRatio = W + '/' + H;
+        svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+        if (m.image_url) {
+            if (img.getAttribute('src') !== m.image_url) img.src = m.image_url;
+            img.hidden = false;
+        }
+        const k = W / m.fov_deg;  // px per degree
+        const p = tb && tb.pointing;
+        let at = null;
+        if (p && p.ra != null && p.dec != null && m.ra_deg != null)
+            at = SkyGeom.tanPx(p.ra, p.dec, m.ra_deg, m.dec_deg, m.fov_deg, W, H);
+        const off = at && (at[0] < 0 || at[0] > W || at[1] < 0 || at[1] > H);
+        if (at) at = [Math.min(W - 12, Math.max(12, at[0])), Math.min(H - 12, Math.max(12, at[1]))];
+        const col = !at ? '#94a3b8' : p.at === 'solve' ? '#4ade80' : '#facc15';
+        let g = '<circle cx="' + W / 2 + '" cy="' + H / 2 + '" r="16" fill="none" stroke="#e2e8f0" ' +
+            'stroke-width="4" opacity=".85"/><text x="' + (W / 2 + 22) + '" y="' + (H / 2 - 18) +
+            '" fill="#e2e8f0" font-size="34" font-family="sans-serif">target</text>';
+        if (fr) {
+            const c = at || [W / 2, H / 2], w = fr.w_arcmin / 60 * k, hh = fr.h_arcmin / 60 * k;
+            g += '<rect x="' + (c[0] - w / 2).toFixed(1) + '" y="' + (c[1] - hh / 2).toFixed(1) +
+                '" width="' + w.toFixed(1) + '" height="' + hh.toFixed(1) + '" fill="none" stroke="' + col +
+                '" stroke-width="5"' + (at && p.confirmed ? '' : ' stroke-dasharray="18 10"') + '/>';
+        }
+        if (at) {
+            g += '<g stroke="' + col + '" stroke-width="5"><line x1="' + (at[0] - 26) + '" y1="' + at[1] +
+                '" x2="' + (at[0] + 26) + '" y2="' + at[1] + '"/><line x1="' + at[0] + '" y1="' + (at[1] - 26) +
+                '" x2="' + at[0] + '" y2="' + (at[1] + 26) + '"/></g><text x="' +
+                Math.max(10, Math.min(W - 400, at[0] + 30)) + '" y="' + Math.min(H - 10, at[1] + 44) +
+                '" fill="' + col + '" font-size="34" font-family="sans-serif">' +
+                (p.at === 'solve' ? 'solve center' : 'mount position') +
+                (off ? ' (off the image)' : '') + '</text>';
+        }
+        svg.innerHTML = g;
+        const src = m.source === 'dss2' ? 'DSS2 / CDS'
+            : m.source === 'own_sub' ? 'own sub (offline fallback, approximate)'
+            : 'no image: frame only';
+        note.textContent = (fr ? fr.label + ' frame ' + fr.w_arcmin + "' x " + fr.h_arcmin + "'" +
+            (at ? '' : ' (no pointed position: drawn on the target)') + ' \u00b7 ' : '') +
+            Math.round(m.fov_deg * 100) / 100 + '\u00b0 wide \u00b7 north up, east left, frame not rotated \u00b7 ' + src;
+    }
+    // ---- PS-5 histogram (data: GET /api/runs/{date}/hist, PS-108, cached on
+    //      the scope PC). Lazy: fetched only while the section is open and
+    //      only once the sub has stayed on screen HIST_DELAY_MS (arrowing
+    //      through subs never queues full-frame reads); one fetch per sub per
+    //      page (HIST_MEMO). Mono: one L curve; OSC: R, G, B curves (Bayer
+    //      sites counted apart) with their medians. Marks: bias floor,
+    //      median, saturation, and black / white clip at the edges.
+    const HIST_MEMO = {};
+    const HIST_DELAY_MS = 300;
+    let lbHistTimer = null, lbHistData = null;
+    function clearLbHist() {
+        clearTimeout(lbHistTimer);
+        lbHistData = null;
+        const cv = document.getElementById('lbHist');
+        cv.getContext('2d').clearRect(0, 0, cv.width, cv.height);
+        document.getElementById('lbHistNote').innerHTML =
+            document.getElementById('lbHistBox').open ? 'histogram loading&hellip;'
+                                                      : 'folded: open to load';
+    }
+    function loadLbHist(date, file) {
+        clearTimeout(lbHistTimer);
+        if (!document.getElementById('lbHistBox').open) return;
+        const key = date + '|' + file;
+        const go = async () => {
+            if (!HIST_MEMO[key]) HIST_MEMO[key] = fetch('/api/runs/' + date + '/hist?file=' +
+                    encodeURIComponent(file))
+                .then(resp => resp.ok ? resp.json() : null)
+                .catch(() => null)
+                .then(h => { if (!h) delete HIST_MEMO[key]; return h; });
+            const hd = await HIST_MEMO[key];
+            const cur = window._shownSubs && window._shownSubs[lbIdx];
+            if (!cur || cur.file !== file || currentDate !== date) return;
+            const note = document.getElementById('lbHistNote');
+            if (!hd) { note.textContent = 'no histogram (FITS not on this PC)'; return; }
+            lbHistData = hd;
+            drawLbHist(hd);
+        };
+        if (HIST_MEMO[key]) go(); else lbHistTimer = setTimeout(go, HIST_DELAY_MS);
+    }
+    function setHistLog(v) {
+        lbHistLog = v;
+        try { localStorage.setItem('lbHistLog', lbHistLog ? '1' : '0'); } catch (er) { /* no storage */ }
+        document.getElementById('lbHistLogBtn').textContent = lbHistLog ? 'log' : 'linear';
+        if (lbHistData) drawLbHist(lbHistData);
+    }
+    document.getElementById('lbHist').onclick = (e) => { e.stopPropagation(); setHistLog(!lbHistLog); };
+    document.getElementById('lbHistLogBtn').onclick = (e) => {
+        e.preventDefault(); e.stopPropagation(); setHistLog(!lbHistLog);
+    };
+    document.getElementById('lbHistLogBtn').textContent = lbHistLog ? 'log' : 'linear';
+    document.getElementById('lbHistBox').addEventListener('toggle', () => {
+        const box = document.getElementById('lbHistBox');
+        try { localStorage.setItem('lbHistOpen', box.open ? '1' : '0'); } catch (er) { /* no storage */ }
+        const cur = window._shownSubs && window._shownSubs[lbIdx];
+        if (box.open && cur && !document.getElementById('lightbox').hidden && !lbHistData) {
+            document.getElementById('lbHistNote').innerHTML = 'histogram loading&hellip;';
+            loadLbHist(currentDate, cur.file);
+        }
+    });
+    try { if (localStorage.getItem('lbHistOpen') === '0') document.getElementById('lbHistBox').open = false; }
+    catch (er) { /* no storage */ }
+    function drawLbHist(hd) {
+        const cv = document.getElementById('lbHist');
+        if (!cv) return;
+        const g = cv.getContext('2d'), W = cv.width, H = cv.height;
+        g.clearRect(0, 0, W, H);
+        const cols = {L: '#e2e8f0', R: '#f87171', G: '#4ade80', B: '#60a5fa'};
+        const f = v => lbHistLog ? Math.log10(1 + v) : v;
+        let top = 1;
+        Object.values(hd.channels).forEach(c => c.counts.forEach(v => { top = Math.max(top, f(v)); }));
+        const span = Math.max(1, hd.hi - hd.lo);
+        const xAt = adu => (adu - hd.lo) / span * W;
+        Object.entries(hd.channels).forEach(([k, c]) => {
+            g.strokeStyle = cols[k] || '#e2e8f0'; g.beginPath();
+            c.counts.forEach((v, j) => {
+                const x = (j + 0.5) / c.counts.length * W, y = H - 2 - f(v) / top * (H - 14);
+                if (j) g.lineTo(x, y); else g.moveTo(x, y);
+            });
+            g.stroke();
+        });
+        const mark = (adu, col, dash) => {
+            if (adu == null || adu < hd.lo || adu > hd.hi) return;
+            g.setLineDash(dash || []);
+            g.strokeStyle = col; g.beginPath(); g.moveTo(xAt(adu), 0); g.lineTo(xAt(adu), H); g.stroke();
+            g.setLineDash([]);
+        };
+        const chans = Object.entries(hd.channels);
+        if (chans.length > 1) chans.forEach(([k, c]) => mark(c.median, cols[k] || '#e2e8f0', [3, 3]));
+        mark(hd.bias_floor, '#a78bfa'); mark(hd.median, '#eab308'); mark(hd.sat_adu, '#f87171');
+        // clip marks: a red bar on the edge when pixels sit at 0 ADU (black
+        // clip) or at / above saturation off the right of the plotted range
+        g.fillStyle = '#ef4444';
+        if (hd.black_clip_pct > 0) {
+            if (0 >= hd.lo) mark(0, '#ef4444'); else g.fillRect(0, 12, 3, H - 12);
+        }
+        if (hd.white_clip_pct > 0 && hd.sat_adu > hd.hi) g.fillRect(W - 3, 12, 3, H - 12);
+        g.fillStyle = '#94a3b8'; g.font = '10px sans-serif';
+        g.fillText(hd.lo + ' ADU', 2, 10); g.fillText(hd.hi + ' ADU', W - 64, 10);
+        g.fillText(lbHistLog ? 'log' : 'linear', W / 2 - 12, 10);
+        const note = document.getElementById('lbHistNote');
+        const clipCls = v => v > 0 ? 'red' : '';
+        note.innerHTML = 'median ' + hd.median + ' ADU' +
+            (chans.length > 1 ? ' (' + chans.map(([k, c]) => k + ' ' + c.median).join(', ') + ')' : '') +
+            ' &middot; <span class="' + clipCls(hd.black_clip_pct) + '">black clip ' +
+            hd.black_clip_pct + '%</span> &middot; <span class="' + clipCls(hd.white_clip_pct) +
+            '">white clip (&ge;' + hd.sat_adu + ') ' + hd.white_clip_pct + '%</span>' +
+            (hd.at_bias_floor_pct != null ? ' &middot; at bias floor ' + hd.at_bias_floor_pct + '%' : '') +
+            (hd.bayer ? ' &middot; ' + hd.bayer + (hd.bayer_assumed ? ' (assumed)' : '') : '') +
+            ' <span title="purple: bias floor, yellow: median, red line: saturation, red edge bar: pixels clipped at 0 ADU (left) or saturated (right); dashed: per-channel medians (OSC)">&#9432;</span>';
+    }
+    function closeLb() { document.getElementById('lightbox').hidden = true; }
+    function lbNav(d) {
+        const n = window._shownSubs.length;
+        openLb(((lbIdx + d) % n + n) % n);
+    }
+    // ---- lightbox zoom/pan: click a spot to zoom in there, move to pan,
+    //      click again to reset. Lets you eyeball star shape/ecc on a reject.
+    let lbZoom = 1;
+    function lbZoomReset() {
+        lbZoom = 1;
+        const img = document.getElementById('lbImg');
+        img.style.transform = ''; img.style.transformOrigin = '50% 50%';
+        img.classList.remove('zoomed');
+    }
+    function _lbOriginFromEvent(e, img) {
+        const r = img.getBoundingClientRect();
+        const x = Math.min(100, Math.max(0, ((e.clientX - r.left) / r.width) * 100));
+        const y = Math.min(100, Math.max(0, ((e.clientY - r.top) / r.height) * 100));
+        img.style.transformOrigin = x + '% ' + y + '%';
+    }
+    function lbImgClick(e) {
+        e.stopPropagation();               // never close the lightbox on image click
+        const img = document.getElementById('lbImg');
+        if (lbZoom === 1) {
+            _lbOriginFromEvent(e, img);
+            lbZoom = 3; img.style.transform = 'scale(3)'; img.classList.add('zoomed');
+        } else { lbZoomReset(); }
+    }
+    function lbImgMove(e) {
+        if (lbZoom === 1) return;
+        _lbOriginFromEvent(e, document.getElementById('lbImg'));
+    }
+    function lbZoomStep(delta) {
+        const img = document.getElementById('lbImg');
+        lbZoom = Math.min(6, Math.max(1, lbZoom + delta));
+        if (lbZoom === 1) { lbZoomReset(); return; }
+        img.style.transform = 'scale(' + lbZoom + ')'; img.classList.add('zoomed');
+    }
+    (function () {
+        const img = document.getElementById('lbImg');
+        img.addEventListener('click', lbImgClick);
+        img.addEventListener('mousemove', lbImgMove);
+        img.addEventListener('wheel', (e) => {
+            e.preventDefault(); e.stopPropagation();
+            if (lbZoom === 1) _lbOriginFromEvent(e, img);
+            lbZoomStep(e.deltaY < 0 ? 0.5 : -0.5);
+        }, { passive: false });
+    })();
+    function lbToggle() {
+        const s = window._shownSubs[lbIdx];
+        if (s) setState(s, nextState(s));   // optimistic, repaints in place
+    }
+    // PS-24: A / R give the verdict, then move on to the next sub still to
+    // review in this view (wrapping); the caption says when none is left.
+    function lbVerdict(state) {
+        const s = window._shownSubs[lbIdx];
+        if (!s) return;
+        setState(s, state);
+        const list = window._shownSubs, n = list.length;
+        for (let k = 1; k < n; k++) {
+            const j = (lbIdx + k) % n;
+            if (subState(list[j]) === 'review') { openLb(j); return; }
+        }
+        Review.toast('No sub left to review in this view', false);
+    }
+    function typingIn(e) {
+        const t = e.target;
+        return t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                     t.tagName === 'SELECT' || t.isContentEditable);
+    }
+    document.addEventListener('keydown', (e) => {
+        if (typingIn(e) || e.ctrlKey || e.metaKey || e.altKey) return;
+        const k = e.key.toLowerCase();
+        if (document.getElementById('lightbox').hidden) {
+            // PS-24: from the page: U undoes, Enter opens the first sub to review
+            if (k === 'u') Review.undo();
+            if (e.key === 'Enter' && currentDetail && window._shownSubs) {
+                const j = window._shownSubs.findIndex(x => subState(x) === 'review');
+                if (j >= 0) { e.preventDefault(); openLb(j); }
+            }
+            return;
+        }
+        if (e.key === 'Escape') closeLb();   // PS-24: no refetch, the page is current
+        if (e.key === 'ArrowLeft') lbNav(-1);
+        if (e.key === 'ArrowRight') lbNav(1);
+        if (e.key.toLowerCase() === 'x') lbToggle();
+        if (k === 'a') lbVerdict('accepted');
+        if (k === 'r') lbVerdict('rejected');
+        if (k === 'u') Review.undo();
+        if (e.key === '+' || e.key === '=') lbZoomStep(0.5);
+        if (e.key === '-' || e.key === '_') lbZoomStep(-0.5);
+    });
+    document.getElementById('lightbox').addEventListener('click', (e) => {
+        if (e.target.id === 'lightbox') closeLb();
+    });
+    function findSub(fileEnc) {
+        const file = decodeURIComponent(fileEnc);
+        return currentDetail && currentDetail.subs.find(x => x.file === file);
+    }
+    function qaSet(ev, fileEnc, state) {
+        ev.stopPropagation();
+        const s = findSub(fileEnc);
+        if (s) setState(s, state);
+    }
+    function toggleQa(fileEnc) {
+        const s = findSub(fileEnc);
+        if (s) setState(s, nextState(s));
+    }
+    // ---- PS-24 batch: ctrl / cmd click toggles one sub, shift click selects
+    //      the range from the last click, "Select all shown" takes every sub
+    //      the chips select; one qa-batch request applies the verdict.
+    function selClick(ev, i) {
+        if (!(ev.shiftKey || ev.ctrlKey || ev.metaKey)) return false;
+        ev.preventDefault(); ev.stopPropagation();
+        const list = window._shownSubs || [];
+        if (ev.shiftKey && selAnchor != null) {
+            const a = Math.min(selAnchor, i), b = Math.max(selAnchor, i);
+            for (let j = a; j <= b; j++) if (list[j]) selected.add(list[j].file);
+        } else if (list[i]) {
+            if (selected.has(list[i].file)) selected.delete(list[i].file);
+            else selected.add(list[i].file);
+        }
+        selAnchor = i;
+        paintSel();
+        return true;
+    }
+    function paintSel() {
+        document.querySelectorAll('#thumbStrip figure[data-file]').forEach(f =>
+            f.classList.toggle('sel', selected.has(f.dataset.file)));
+        document.querySelectorAll('#subTable tr.srow[data-file]').forEach(r =>
+            r.classList.toggle('sel', selected.has(r.dataset.file)));
+        paintSelBar();
+    }
+    function paintSelBar() {
+        const bar = document.getElementById('selBar');
+        bar.hidden = selected.size === 0;
+        document.getElementById('selCount').textContent = selected.size + ' selected';
+    }
+    function selApply(state) {
+        const d = currentDetail;
+        if (!d || !selected.size) return;
+        const list = d.subs.filter(s => selected.has(s.file));
+        const before = list.map(s => [s, Review.snap(s)]);
+        Review.setMany(currentDate, list.map(s => s.file), state, {
+            apply: (st) => { list.forEach(s => Review.applyToRecord(s, st)); patchSubs(list); },
+            revert: (files) => {
+                before.forEach(([s, o]) => { if (files.includes(s.file)) Review.restore(s, o); });
+                patchSubs(list);
+            },
+            saved: (res) => {
+                const by = {};
+                (res.subs || []).forEach(r => { by[r.file] = r; });
+                list.forEach(s => Review.merge(s, by[s.file]));
+                patchSubs(list);
+            }});
+        selected = new Set(); selAnchor = null;
+        paintSel();
+    }
+    document.getElementById('selAllBtn').onclick = () => {
+        (window._shownSubs || []).forEach(s => selected.add(s.file));
+        paintSel();
+    };
+    document.getElementById('selClear').onclick = () => { selected = new Set(); selAnchor = null; paintSel(); };
+    document.getElementById('selAccept').onclick = () => selApply('accepted');
+    document.getElementById('selReject').onclick = () => selApply('rejected');
+    document.getElementById('selReview').onclick = () => selApply('review');
+    document.getElementById('annotateToggle').addEventListener('change', renderSubs);
+    loadNights();
+
+    // ---- integration readiness: what the desktop needs, answered scope-side
+    async function loadReadiness() {
+        const box = document.getElementById('readyBox');
+        try {
+            const [rd, sync] = await Promise.all([
+                (await fetch('/api/integration/readiness')).json(),
+                fetch('/api/sync').then(r => r.json()).catch(() => ({}))]);
+            const synced = sync.library_synced === true;
+            if (!rd.targets || !rd.targets.length) {
+                box.textContent = 'no active target goals'; return;
+            }
+            const ok = t => '<span style="color:#4ade80;">\u2713</span>';
+            // Per-target readiness is about LIGHTS + whether they reached the
+            // desktop. Calibration (darks/bias/flats) is SHARED across targets \u2014
+            // it lives on the Calibration page, not per-target here.
+            box.innerHTML = rd.targets.map(t => {
+                const lightsN = Object.values(t.filters)
+                    .reduce((a, v) => a + (v.accepted_in_library || 0), 0);
+                const fl = Object.entries(t.filters)
+                    .filter(([f, v]) => v.accepted_in_library > 0)
+                    .map(([f, v]) => f + ' ' + v.accepted_in_library)
+                    .join(' \u00b7 ') ||
+                    '<span style="opacity:.6;">no accepted lights yet</span>';
+                const verdict = lightsN && synced
+                    ? '<span style="color:#4ade80;font-weight:700;">lights ready on '
+                      + 'desktop \u2014 </span><code style="font-size:.78rem;">'
+                      + t.command + '</code>'
+                    : lightsN && !synced
+                    ? '<span style="color:#eab308;">lights accepted \u2014 sync in '
+                      + 'progress</span>'
+                    : '<span style="opacity:.6;">no accepted lights yet</span>';
+                return '<div style="margin-bottom:.7rem;">' +
+                    '<b>' + t.target + '</b><br>' +
+                    'lights: ' + fl + '<br>' +
+                    'desktop sync: ' + (synced ? ok() : '\u23f3') + '<br>' +
+                    verdict + '</div>';
+            }).join('') +
+                '<div style="opacity:.5;font-size:.78rem;margin-top:.3rem;">' +
+                'Calibration (darks \u00b7 bias \u00b7 flats) is shared across ' +
+                'targets \u2014 see the Calibration page.</div>';
+        } catch (e) { box.textContent = 'readiness unavailable'; }
+    }
+    loadReadiness();
+    setInterval(loadReadiness, 120 * 1000);
+
+    // ---- re-grade all nights (sequential, background) ----
+    async function pollRegradeAll(loop) {
+        try {
+            const s = await (await fetch('/api/regrade/all')).json();
+            const el = document.getElementById('regradeAllStatus');
+            if (s.running) {
+                el.textContent = 'Re-grading ' + (s.current || '\u2026') + ' \u2014 night ' +
+                    (s.done + 1) + '/' + s.total;
+                if (loop) setTimeout(() => pollRegradeAll(true), 5000);
+            } else if (s.total) {
+                el.textContent = 'Re-grade all: finished ' + s.done + '/' + s.total + ' nights' +
+                    (s.last_error ? ' \u00b7 last error: ' + s.last_error : '');
+                loadNights && loadNights();
+            }
+        } catch (e) {}
+    }
+    document.getElementById('regradeAllBtn').onclick = async () => {
+        const discard = document.getElementById('regradeAllDiscard').checked;
+        const since = prompt(
+            'Re-grade every night SINCE this date (YYYY-MM-DD).\n' +
+            '2026-07-28 = the metadata-bug era. Blank = ALL nights.\n' +
+            (discard ? 'Manual review verdicts for these nights are DELETED.'
+                     : 'Manual review verdicts are kept.'),
+            '2026-07-28');
+        if (since === null) return;
+        // PS-141: the wipe asks once more
+        if (discard && !confirm('DISCARD the manual review verdicts of every night ' +
+                (since.trim() ? 'since ' + since.trim() : '(ALL nights)') +
+                '?\n\nThis cannot be undone.')) return;
+        await fetch('/api/regrade/all', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({since: since.trim(), discard_manual: discard})});
+        document.getElementById('regradeAllDiscard').checked = false;
+        pollRegradeAll(true);
+    };
+    pollRegradeAll(true);
+    </script>
+    <!-- PS-80 / PS-6 / PS-17: star overlay, loupe and 3x3 in the lightbox -->
+    <script src="/static/js/viewer.js?v={{ version }}"></script>
+    {% include "_footer.html" %}
+</body>
+</html>

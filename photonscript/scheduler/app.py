@@ -6,15 +6,18 @@ the remote telescope orchestration.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from datetime import datetime
+import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
+from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
+                               PlainTextResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -36,6 +39,11 @@ from photonscript.scheduler.nina_sequence_json import generate_nina_json
 
 logger = logging.getLogger(__name__)
 
+
+from photonscript.shared.version import repo_version
+
+VERSION = repo_version()
+
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
@@ -43,10 +51,20 @@ app = FastAPI(title="PhotonScript Scheduler", version="0.1.0")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
+
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    """Serve the dashboard favicon (browsers request this path by default)."""
+    return FileResponse(STATIC_DIR / "favicon.ico")
+
 # In-memory state (persisted to DB on changes)
 _config: Optional[PhotonScriptConfig] = None
 _projects: dict[str, ImagingProject] = {}
 _telescope_state: TelescopeState = TelescopeState()
+# PS-67: every agent's latest state by rig. _telescope_state is always the
+# RC16's (it owns the mount): the piggyback's broadcast, which carries no
+# mount, used to overwrite it (/api/status mount_ra 0 on 2026-09-26).
+_rig_states: dict[str, TelescopeState] = {}
 _ws_clients: list[WebSocket] = []
 
 
@@ -57,43 +75,151 @@ def get_config() -> PhotonScriptConfig:
     return _config
 
 
+def _stored_projects() -> dict[str, ImagingProject]:
+    """PS-126: `_projects` with the project store loaded first. get_store()
+    fills `_projects` lazily, so right after a restart a reader that came
+    first saw {} and planned from the seasonal fallback (2026-10-05:
+    Andromeda / Pacman / Owl instead of Heart / Cat's Eye). Every reader goes
+    through here; the startup hook also loads the store eagerly."""
+    try:
+        get_store()
+    except Exception as e:  # noqa: BLE001 (never break a page over the store)
+        logger.warning("project store load failed: %s", e)
+    return _projects
+
+
 # ---------------------------------------------------------------------------
 # WebSocket for live updates
 # ---------------------------------------------------------------------------
 
-async def broadcast_state():
-    """Push current state to all connected WebSocket clients."""
-    state = {
+# PS-74: a dashboard tab that stops reading (asleep laptop, phone on a bad
+# link) used to stall every publisher. broadcast_state() awaited ws.send_text
+# per client with no timeout, and the telescope agents await the bus publish
+# that triggers it, so on 2026-09-26 the 10 s state loop ran every ~22 s.
+# Now: sends run concurrently, each capped at _WS_SEND_TIMEOUT_S; a client
+# that errors or times out is dropped (and closed in the background); and
+# callers only *request* a broadcast, which is coalesced into at most one
+# in-flight send round plus one follow-up carrying the latest state.
+_WS_SEND_TIMEOUT_S = 2.0
+_WS_CLOSE_TIMEOUT_S = 1.0
+_broadcast_task: Optional[asyncio.Task] = None
+_broadcast_dirty = False
+_bg_tasks: set = set()   # strong refs so background tasks are not GC'd
+
+
+def _state_payload() -> dict:
+    return {
         "telescope": _telescope_state.model_dump(mode="json"),
-        "projects": {pid: p.model_dump(mode="json") for pid, p in _projects.items()},
+        "projects": {pid: p.model_dump(mode="json")
+                     for pid, p in _stored_projects().items()},
         "timestamp": datetime.utcnow().isoformat(),
     }
-    msg = json.dumps(state, default=str)
-    dead = []
-    for ws in _ws_clients:
-        try:
-            await ws.send_text(msg)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
+
+
+def _spawn(coro) -> asyncio.Task:
+    t = asyncio.get_running_loop().create_task(coro)
+    _bg_tasks.add(t)
+    t.add_done_callback(_bg_tasks.discard)
+    return t
+
+
+async def _close_quietly(ws) -> None:
+    try:
+        await asyncio.wait_for(ws.close(code=1011), _WS_CLOSE_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - already dead or still wedged
+        pass
+
+
+def _drop_ws_client(ws, reason: str) -> None:
+    if ws in _ws_clients:
         _ws_clients.remove(ws)
+        logger.info("Dashboard WebSocket dropped (%s); %d client(s) left",
+                    reason, len(_ws_clients))
+        try:
+            _spawn(_close_quietly(ws))
+        except RuntimeError:  # no running loop
+            pass
+
+
+async def _send_ws(ws, msg: str) -> Optional[str]:
+    """Send one message; None on success, else why the client is dropped."""
+    try:
+        await asyncio.wait_for(ws.send_text(msg), _WS_SEND_TIMEOUT_S)
+        return None
+    except asyncio.TimeoutError:
+        return f"send took over {_WS_SEND_TIMEOUT_S:g} s"
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}"
+
+
+async def _broadcast_now() -> None:
+    """One send round to every connected client, bounded by the timeout."""
+    clients = list(_ws_clients)
+    if not clients:
+        return
+    msg = json.dumps(_state_payload(), default=str)
+    results = await asyncio.gather(*(_send_ws(ws, msg) for ws in clients))
+    for ws, why in zip(clients, results):
+        if why is not None:
+            _drop_ws_client(ws, why)
+
+
+async def _broadcast_worker() -> None:
+    global _broadcast_dirty, _broadcast_task
+    try:
+        while _broadcast_dirty:
+            _broadcast_dirty = False
+            try:
+                await _broadcast_now()
+            except Exception:  # noqa: BLE001
+                logger.exception("Dashboard broadcast failed")
+    finally:
+        _broadcast_task = None
+
+
+def request_broadcast() -> None:
+    """Ask for the current state to be pushed to dashboards. Never waits on
+    a client: at most one send round runs at a time, and requests arriving
+    meanwhile collapse into one more round with the latest state."""
+    global _broadcast_dirty, _broadcast_task
+    _broadcast_dirty = True
+    if _broadcast_task is not None and not _broadcast_task.done():
+        return
+    try:
+        _broadcast_task = _spawn(_broadcast_worker())
+    except RuntimeError:  # called outside the event loop: nothing to push to
+        _broadcast_task = None
+
+
+async def broadcast_state():
+    """Push current state to all connected WebSocket clients (fire and
+    forget since PS-74; see request_broadcast)."""
+    request_broadcast()
 
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
-    _ws_clients.append(ws)
     try:
-        # Send initial state
+        # Send initial state before joining the broadcast list, bounded like
+        # every other send
         state = {
             "telescope": _telescope_state.model_dump(mode="json"),
-            "projects": {pid: p.model_dump(mode="json") for pid, p in _projects.items()},
+            "projects": {pid: p.model_dump(mode="json")
+                         for pid, p in _stored_projects().items()},
         }
-        await ws.send_text(json.dumps(state, default=str))
+        if await _send_ws(ws, json.dumps(state, default=str)) is not None:
+            await _close_quietly(ws)
+            return
+        _ws_clients.append(ws)
         while True:
             data = await ws.receive_text()
             # Handle client commands if needed
     except WebSocketDisconnect:
+        pass
+    except Exception:  # noqa: BLE001 - we closed it after a failed send
+        pass
+    finally:
         if ws in _ws_clients:
             _ws_clients.remove(ws)
 
@@ -107,19 +233,27 @@ async def on_agent_message(msg: AgentMessage):
     global _telescope_state
 
     if msg.msg_type == "telescope_state_update":
-        _telescope_state = TelescopeState(**msg.payload)
+        st = TelescopeState(**msg.payload)
+        _rig_states[st.rig or "rc16"] = st
+        if (st.rig or "rc16") == "rc16":
+            _telescope_state = st
         await broadcast_state()
 
     elif msg.msg_type == "image_captured":
-        # Update project progress
-        project_id = msg.payload.get("project_id")
-        filter_type = msg.payload.get("filter_type")
-        if project_id in _projects and filter_type:
-            for plan in _projects[project_id].exposure_plans:
-                if plan.filter_type.value == filter_type:
-                    plan.acquired += 1
-                    break
-            _projects[project_id].compute_completion()
+        # Count ONLY QA-passed subs toward project goals, matched by target
+        # name (the agent never knows project ids)
+        quality = msg.payload.get("quality") or {}
+        if quality.get("passed_qa") or msg.payload.get("status") == "validated":
+            # PS-118: credited by the sub's own seconds on both rigs
+            matched = get_store().record_accepted_sub(
+                msg.payload.get("target_name", ""),
+                msg.payload.get("filter_type", ""),
+                msg.payload.get("exposure_seconds"),
+                rig=msg.payload.get("rig"))
+            if matched:
+                logger.info("Progress: %s %s +1 accepted",
+                            msg.payload.get("target_name"),
+                            msg.payload.get("filter_type"))
         await broadcast_state()
 
     elif msg.msg_type == "image_quality_report":
@@ -141,23 +275,49 @@ def setup_message_listeners():
 # Pages
 # ---------------------------------------------------------------------------
 
+_dashboard_cache: dict = {}  # (utc date, site) -> (twilight, ranked)
+
+
+def _dashboard_targets(obs, now: datetime):
+    """Tonight's twilight + ranked seasonal targets, cached per UTC date.
+
+    Seconds are dropped before the astronomy so the result depends only on the
+    date (twilight scan starts 23:00, transit anchor 07:00): one computation
+    per day instead of one per page view.
+    """
+    key = (now.date(), obs.latitude, obs.longitude, obs.elevation)
+    hit = _dashboard_cache.get(key)
+    if hit is not None:
+        return hit
+    day = now.replace(second=0, microsecond=0)
+    twilight = get_twilight_times(obs, day)
+    ranked = rank_targets_for_night(get_seasonal_targets(day.month), obs, day)
+    _dashboard_cache.clear()  # only today's entry is ever useful
+    _dashboard_cache[key] = (twilight, ranked)
+    return twilight, ranked
+
+
+def _picker_targets(ranked):
+    """Top 60 for tonight plus every PS-124 catalog row (scheduler/catalog)."""
+    from photonscript.scheduler.catalog import picker_targets
+    return picker_targets(ranked)
+
+
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request):
     config = get_config()
     obs = config.get_observatory()
     now = datetime.utcnow()
-    twilight = get_twilight_times(obs, now)
-    month = now.month
-    seasonal = get_seasonal_targets(month)
-    ranked = rank_targets_for_night(seasonal, obs, now)
+    # Astronomy runs in a worker thread: on the event loop it froze every
+    # other request (and the telescope agents, which share this loop).
+    twilight, ranked = await asyncio.to_thread(_dashboard_targets, obs, now)
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
+    return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,
         "telescope_state": _telescope_state,
-        "projects": list(_projects.values()),
+        "projects": list(_stored_projects().values()),
         "twilight": twilight,
-        "tonight_targets": ranked[:10],
+        "tonight_targets": _picker_targets(ranked),  # picker list: everything well-placed tonight plus the PS-124 rows
         "month": now.strftime("%B"),
     })
 
@@ -170,14 +330,15 @@ async def dashboard(request: Request):
 async def api_status():
     return {
         "telescope": _telescope_state.model_dump(mode="json"),
-        "active_projects": len([p for p in _projects.values() if p.active]),
-        "total_projects": len(_projects),
+        "rigs": {r: st.model_dump(mode="json") for r, st in _rig_states.items()},
+        "active_projects": len([p for p in _stored_projects().values() if p.active]),
+        "total_projects": len(_stored_projects()),
     }
 
 
 @app.get("/api/projects")
 async def api_list_projects():
-    return [p.model_dump(mode="json") for p in _projects.values()]
+    return [p.model_dump(mode="json") for p in _stored_projects().values()]
 
 
 @app.post("/api/projects")
@@ -189,22 +350,24 @@ async def api_create_project(request: Request):
         project.exposure_plans = [ExposurePlan(**ep) for ep in data["exposure_plans"]]
     if "priority" in data:
         project.priority = data["priority"]
-    _projects[project.id] = project
+    _stored_projects()[project.id] = project
     await broadcast_state()
     return project.model_dump(mode="json")
 
 
 @app.get("/api/projects/{project_id}")
 async def api_get_project(project_id: str):
-    if project_id not in _projects:
+    projects = _stored_projects()
+    if project_id not in projects:
         return JSONResponse({"error": "Project not found"}, status_code=404)
-    return _projects[project_id].model_dump(mode="json")
+    return projects[project_id].model_dump(mode="json")
 
 
 @app.delete("/api/projects/{project_id}")
 async def api_delete_project(project_id: str):
-    if project_id in _projects:
-        del _projects[project_id]
+    projects = _stored_projects()
+    if project_id in projects:
+        del projects[project_id]
         await broadcast_state()
     return {"status": "deleted"}
 
@@ -219,8 +382,9 @@ async def api_tonight_plan():
     month = now.month
 
     # Use existing projects if available, otherwise suggest seasonal
-    if _projects:
-        projects = list(_projects.values())
+    stored = _stored_projects()
+    if stored:
+        projects = list(stored.values())
     else:
         seasonal = get_seasonal_targets(month)
         ranked = rank_targets_for_night(seasonal, obs, now)
@@ -252,8 +416,9 @@ async def api_tonight_sequence_xml():
     config = get_config()
     now = datetime.utcnow()
 
-    if _projects:
-        projects = list(_projects.values())
+    stored = _stored_projects()
+    if stored:
+        projects = list(stored.values())
     else:
         obs = config.get_observatory()
         seasonal = get_seasonal_targets(now.month)
@@ -273,34 +438,60 @@ async def api_tonight_sequence_xml():
     )
 
 
-@app.get("/api/tonight/sequence.json")
-async def api_tonight_sequence_json():
-    """Generate and download the NINA Advanced Sequencer JSON for tonight.
-
-    This is the preferred format for NINA's Advanced Sequencer, using
-    .NET $type annotations that NINA can load directly.
-    """
+def _tonight_sequence(now_mode: bool = False):
+    """Tonight's Advanced Sequencer JSON exactly as the download builds
+    it, before the lint: (name, json_text, guided, unguided_dither). The
+    PS-123 sideload splices the tracking test into it."""
     config = get_config()
     now = datetime.utcnow()
 
-    if _projects:
-        projects = list(_projects.values())
-    else:
+    projects = [p for p in _stored_projects().values() if p.active]
+    if not projects:
         obs = config.get_observatory()
         seasonal = get_seasonal_targets(now.month)
         ranked = rank_targets_for_night(seasonal, obs, now)
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     targets = plan_night_sequence(projects, config, now)
+    # Honor the ARMED guiding mode (guided/unguided) so the preview matches
+    # what will actually be dispatched, not just the config default.
+    preview_guided = get_armer()._use_guiding()
+    for t in targets:
+        t.start_guiding = preview_guided
+    from photonscript.scheduler.target_planner import cap_unguided
+    cap_unguided(targets, getattr(config, "unguided_max_exposure_s", 300))  # PS-66
+    preview_dither = get_armer()._unguided_dither()                       # PS-66
     sequence = build_sequence_for_night(
         name=f"PhotonScript_{now.strftime('%Y%m%d')}",
         targets=targets,
     )
-    json_content = generate_nina_json(sequence)
+    # Dusk/safety gating ON unless explicitly generating a daytime test
+    sequence.wait_until_local = None if now_mode else "00:00:00"
+    json_content = generate_nina_json(sequence, unguided_dither=preview_dither)
+    return sequence.name, json_content, preview_guided, preview_dither
+
+
+@app.get("/api/tonight/sequence.json")
+async def api_tonight_sequence_json(now_mode: bool = False):
+    """Generate and download tonight's Advanced Sequencer JSON (lint-gated).
+
+    Safe to load and START at any time of day: the start area holds at
+    nautical dusk -30 and WaitUntilSafe before touching hardware. Pass
+    ?now_mode=true for an ungated daytime-test version.
+    """
+    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
+
+    name, json_content, preview_guided, preview_dither = _tonight_sequence(now_mode)
+    result = _lint(json.loads(json_content), guided=preview_guided,
+                   unguided_dither=preview_dither)
+    if not result.ok:
+        return JSONResponse(status_code=500, content={
+            "detail": "Lint FAILED — refusing to serve sequence",
+            "findings": format_result(result)})
     return HTMLResponse(
         content=json_content,
         media_type="application/json",
-        headers={"Content-Disposition": f"attachment; filename={sequence.name}.json"},
+        headers={"Content-Disposition": f"attachment; filename={name}.json"},
     )
 
 
@@ -346,6 +537,2556 @@ async def api_telescope_command(request: Request):
 
 
 @app.on_event("startup")
+async def _load_project_store():
+    """PS-126: load the project store at startup so nothing plans from the
+    seasonal fallback before the first get_store() call."""
+    await asyncio.to_thread(_stored_projects)
+
+
+@app.on_event("startup")
+async def _restore_armer():
+    """Reattach to a night in progress if PhotonScript restarted mid-run."""
+    get_armer().restore()
+
+
+@app.on_event("startup")
+async def _start_auto_arm():
+    """Hands-off multi-night supervisor: re-arms every night when enabled.
+    Always started; it no-ops each tick unless config.auto_arm_enabled."""
+    from photonscript.scheduler.auto_armer import run_auto_arm_loop
+    asyncio.create_task(run_auto_arm_loop(get_config(), get_armer))
+
+
+@app.on_event("startup")
+async def _start_watch_detector():
+    """PS-136: adopt tonight's running RC16 sideload into WATCHING. Always
+    started; each tick is a no-op unless config.watch_sideload_auto."""
+    from photonscript.scheduler.armer import run_watch_detector
+    asyncio.create_task(run_watch_detector(get_config, get_armer))
+
+
+@app.on_event("startup")
+async def _start_off_target_monitor():
+    """PS-143: off-target alert while RUNNING / WATCHING (observe only).
+    Always started; idle unless a night images and off_target_mode != off."""
+    from photonscript.scheduler.off_target import run_monitor
+    _spawn(run_monitor(
+        get_config, get_armer,
+        lambda: _telescope_state.model_dump(mode="json"),
+        lambda: list(_stored_projects().values())))
+
+
+@app.on_event("startup")
+async def _start_nina_watchdog():
+    """PS-150: NINA not running / API down / up but silent, dusk to dawn.
+    Always started; observe only, idle unless nina_watch_mode != off."""
+    from photonscript.scheduler.nina_watchdog import run_watchdog
+    _spawn(run_watchdog(get_config, get_armer))
+
+
+@app.on_event("startup")
+async def _start_calibration_autofill():
+    """PS-113: daytime calibration auto-fill. Always started; each tick is a
+    no-op unless config.calibration_autofill (default off)."""
+    from photonscript.scheduler.calibration_capture import autofill_loop
+    asyncio.create_task(autofill_loop(get_config, get_armer))
+
+
+@app.on_event("startup")
+async def _start_focus_ingest():
+    """PS-76 part 2: ingest NINA AF reports at startup and whenever the
+    reports folder changes (focus_model.ingest_loop). No-op while
+    nina_autofocus_reports_dir is empty or focus_model_ingest_poll_s is 0."""
+    from photonscript.scheduler.focus_model import ingest_loop
+    _spawn(ingest_loop(get_config))
+
+
+@app.on_event("startup")
 async def startup():
     setup_message_listeners()
     logger.info("PhotonScript Scheduler started on %s:%d", get_config().scheduler_host, get_config().scheduler_port)
+
+
+# ---------------------------------------------------------------------------
+# System page: preflight + web config editor
+# ---------------------------------------------------------------------------
+
+# Curated editable config fields: (attr, env var, label, group, type, secret, needs_restart)
+_CONFIG_FIELDS = [
+    ("observatory_name", "PS_OBSERVATORY_NAME", "Observatory name", "Observatory", "str", False, False),
+    ("observatory_lat", "PS_OBSERVATORY_LAT", "Latitude (deg N)", "Observatory", "float", False, False),
+    ("observatory_lon", "PS_OBSERVATORY_LON", "Longitude (deg E)", "Observatory", "float", False, False),
+    ("observatory_elev", "PS_OBSERVATORY_ELEV", "Elevation (m)", "Observatory", "float", False, False),
+    ("observatory_tz", "PS_OBSERVATORY_TZ", "Timezone", "Observatory", "str", False, True),
+    ("nina_base_url", "PS_NINA_BASE_URL", "NINA Advanced API URL", "NINA", "str", False, True),
+    ("image_watch_dir", "PS_IMAGE_WATCH_DIR", "NINA image output dir", "NINA", "str", False, True),
+    ("nina_logs_dir", "PS_NINA_LOGS_DIR", "NINA logs dir", "NINA", "str", False, False),
+    ("phd2_logs_dir", "PS_PHD2_LOGS_DIR", "PHD2 GuideLog/DebugLog dir", "PHD2", "str", False, False),
+    ("ascom_logs_dir", "PS_ASCOM_LOGS_DIR", "ASCOM trace-log base dir", "NINA", "str", False, False),
+    ("syncthing_url", "PS_SYNCTHING_URL", "Syncthing GUI URL (scope PC)", "Sync", "str", False, False),
+    ("syncthing_api_key", "PS_SYNCTHING_API_KEY", "Syncthing API key (GUI > Actions > Settings)", "Sync", "str", True, False),
+    ("syncthing_folder_id", "PS_SYNCTHING_FOLDER_ID", "Syncthing folder id for the Library", "Sync", "str", False, False),
+    ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
+    ("dark_exposures", "PS_DARK_EXPOSURES", "Dark library exposures, seconds (comma-sep)", "Imaging", "str", False, False),
+    ("dark_target_count", "PS_DARK_TARGET_COUNT", "Dark library quota per exposure", "Imaging", "int", False, False),
+    ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
+    ("calibration_qa_mode", "PS_CALIBRATION_QA_MODE", "Calibration frame QA (PS-113): quarantine (bad frames to Calibration/_quarantine) | report (verdicts only) | off", "Imaging", "str", False, False),
+    ("calibration_temp_tol_c", "PS_CALIBRATION_TEMP_TOL_C", "Calibration: sensor within setpoint +/- this (C) for darks/bias and capture jobs", "Imaging", "float", False, False),
+    ("calibration_capture_budget_min", "PS_CALIBRATION_CAPTURE_BUDGET_MIN", "Calibration capture job time budget (min, cooling included)", "Imaging", "float", False, False),
+    ("calibration_autofill", "PS_CALIBRATION_AUTOFILL", "Daytime calibration auto-fill (sun up, armer idle, once a day per rig; never at night)", "Imaging", "bool", False, False),
+    ("calibration_owed_lookback_days", "PS_CALIBRATION_OWED_LOOKBACK_DAYS", "Calibration owed: lights lookback (nights, report only)", "Imaging", "int", False, False),
+    ("calibration_darks_follow_lights", "PS_CALIBRATION_DARKS_FOLLOW_LIGHTS", "Calibration coverage (PS-160): night darks also fill the lengths the lights actually used (on-epoch, owed lookback)", "Imaging", "bool", False, False),
+    ("calibration_darks_follow_lights_max", "PS_CALIBRATION_DARKS_FOLLOW_LIGHTS_MAX", "Calibration coverage: at most N such extra dark lengths per rig and night", "Imaging", "int", False, False),
+    ("calibration_darks_gated", "PS_CALIBRATION_DARKS_GATED", "Calibration coverage: night darks behind the cooler gate (skip mode = no off-setpoint darks)", "Imaging", "bool", False, False),
+    ("calibration_flats_as_used", "PS_CALIBRATION_FLATS_AS_USED", "Calibration coverage: reshoot stale flats only for filters the RC16 lights used", "Imaging", "bool", False, False),
+    ("calibration_dawn_flat_extra_max", "PS_CALIBRATION_DAWN_FLAT_EXTRA_MAX", "Calibration coverage: at most N owed flat filters on top of tonight's per dawn", "Imaging", "int", False, False),
+    ("calibration_flats_reset", "PS_CALIBRATION_FLATS_RESET", "Calibration coverage: optics change date per rig (rc16:YYYY-MM-DD,piggyback:YYYY-MM-DD); older flats are owed", "Imaging", "str", False, False),
+    ("integrate_watch_rigs", "PS_INTEGRATE_WATCH_RIGS", "Integrate watcher (PS-31, desktop): rigs it integrates (comma list: piggyback, rc16)", "Integration", "str", False, False),
+    ("integrate_watch_new_data_h", "PS_INTEGRATE_WATCH_NEW_DATA_H", "Integrate watcher: re-integrate after this many new approved hours", "Integration", "float", False, False),
+    ("integrate_watch_first_h", "PS_INTEGRATE_WATCH_FIRST_H", "Integrate watcher: first integration at this many approved hours (0 = only when the goal is met)", "Integration", "float", False, False),
+    ("integrate_watch_min_interval_h", "PS_INTEGRATE_WATCH_MIN_INTERVAL_H", "Integrate watcher: at least this many hours between runs of one goal + rig", "Integration", "float", False, False),
+    ("integrate_watch_require_calibration", "PS_INTEGRATE_WATCH_REQUIRE_CALIBRATION", "Integrate watcher: wait while darks / flats / bias are missing (off = integrate, the ledger notes it)", "Integration", "bool", False, False),
+    ("integration_report_url", "PS_INTEGRATION_REPORT_URL", "Desktop .env: scheduler URL the integrator posts ledgers to and polls", "Integration", "str", False, False),
+    ("integration_staging_root", "PS_INTEGRATION_STAGING_ROOT", "Desktop .env: staging root for integrate runs (blank = D:/Astrophotography/Staging)", "Integration", "str", False, False),
+    ("integration_library_dir", "PS_INTEGRATION_LIBRARY_DIR", "Desktop .env: Library mirror the integrator reads (blank = D:/ninashare/Library if it exists, else desktop_library_dir)", "Integration", "str", False, False),
+    ("autointegrate_settle_min", "PS_AUTOINTEGRATE_SETTLE_MIN", "Auto-integrate (PS-161, desktop): Syncthing settled = no temp files and a stable file count for N min", "Integration", "float", False, False),
+    ("autointegrate_blend", "PS_AUTOINTEGRATE_BLEND", "Auto-integrate: blend two-rig goals once both rigs have masters", "Integration", "bool", False, False),
+    ("autointegrate_notify", "PS_AUTOINTEGRATE_NOTIFY", "Auto-integrate: Pushover the review JPG after a run", "Integration", "bool", False, False),
+    ("autointegrate_hoo", "PS_AUTOINTEGRATE_HOO", "Auto-integrate: OSC finish also writes the HOO-mapped image (Ha = R, OIII = mean G, B)", "Integration", "bool", False, False),
+    ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
+    ("auto_approve_at_dawn", "PS_AUTO_APPROVE_AT_DAWN", "Dawn filing (PS-157): approve the night's QA-passing subs at dawn (both rigs; never test subs, '?' subs or subs sent back to review), then build the Library", "Imaging", "bool", False, False),
+    ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
+    ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
+    ("auto_stale_flats", "PS_AUTO_STALE_FLATS", "At dawn, also reshoot flats for filters gone stale (>45d), even if unused tonight", "Imaging", "bool", False, False),
+    ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
+    ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
+    ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),
+    ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
+    ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
+    ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
+    ("watch_sideload_auto", "PS_WATCH_SIDELOAD_AUTO", "Watch a sideloaded night (PS-136): enter WATCHING when tonight's RC16 sideload runs in NINA #1 (never dispatches)", "Imaging", "bool", False, False),
+    ("watch_dawn_action", "PS_WATCH_DAWN_ACTION", "Watched night at dawn (PS-136): verify (read-only check + alert) | shutdown (stop, warm, park, then verify)", "Imaging", "str", False, False),
+    ("off_target_mode", "PS_OFF_TARGET_MODE", "Off-target alert (PS-143): alert (panel chip + one Pushover per target per night) | panel (chip only) | off; never commands NINA", "Nanny / Alerts", "str", False, False),
+    ("off_target_arcmin", "PS_OFF_TARGET_ARCMIN", "Off-target: separation from the planned center that counts as off target (arcmin)", "Nanny / Alerts", "float", False, False),
+    ("off_target_subs", "PS_OFF_TARGET_SUBS", "Off-target: alert after more than this many consecutive subs off target", "Nanny / Alerts", "int", False, False),
+    ("off_target_minutes", "PS_OFF_TARGET_MINUTES", "Off-target: ... or after this many minutes off target while imaging", "Nanny / Alerts", "float", False, False),
+    ("off_target_solve_max_age_min", "PS_OFF_TARGET_SOLVE_MAX_AGE_MIN", "Off-target: use the latest RC16 plate solve when it is at most this old (min), else the mount position", "Nanny / Alerts", "float", False, False),
+    ("off_target_mount_epoch", "PS_OFF_TARGET_MOUNT_EPOCH", "Off-target: mount position epoch: auto (NINA's report, else JNow) | jnow | j2000", "Nanny / Alerts", "str", False, False),
+    ("nina_watch_mode", "PS_NINA_WATCH_MODE", "NINA watchdog (PS-150): alert (chip + one Pushover per rig and state per night) | panel (chip only) | off; never starts or restarts NINA", "Nanny / Alerts", "str", False, False),
+    ("nina_watch_silent_minutes", "PS_NINA_WATCH_SILENT_MINUTES", "NINA watchdog: up but silent when its log has not grown for this many minutes (API down, or a non-wait instruction running)", "Nanny / Alerts", "float", False, False),
+    ("nina_watch_sun_alt_deg", "PS_NINA_WATCH_SUN_ALT_DEG", "NINA watchdog: watch while the sun is at or below this altitude (deg)", "Nanny / Alerts", "float", False, False),
+    ("nina_watch_stuck_minutes", "PS_NINA_WATCH_STUCK_MINUTES", "NINA watchdog (PS-154): page when one instruction that is not an exposure / wait / loop / autofocus runs this long while armed RUNNING", "Nanny / Alerts", "float", False, False),
+    ("nina_watch_parked_after_dusk_min", "PS_NINA_WATCH_PARKED_AFTER_DUSK_MIN", "NINA watchdog (PS-154): page when the RC16 mount has not tracked yet this many min after astro dusk (armed RUNNING, roof safe)", "Nanny / Alerts", "float", False, False),
+    ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
+    ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
+    ("desktop_library_dir", "PS_DESKTOP_LIBRARY_DIR", "Desktop Syncthing mirror path (for copy-path buttons)", "NINA", "str", False, False),
+    ("nina_filter_names", "PS_NINA_FILTER_NAMES", "Filter names (class:NINA name)", "NINA", "str", False, False),
+    ("phd2_host", "PS_PHD2_HOST", "PHD2 host", "PHD2", "str", False, True),
+    ("phd2_port", "PS_PHD2_PORT", "PHD2 port", "PHD2", "int", False, True),
+    ("phd2_pixel_scale_arcsec", "PS_PHD2_PIXEL_SCALE_ARCSEC", "Guide camera scale (\"/px) override; 0 = ask PHD2, else compute from the fields below", "PHD2", "float", False, True),
+    ("guide_camera_pixel_um", "PS_GUIDE_CAMERA_PIXEL_UM", "Guide camera pixel size (um), OGMA GP678C = 2.0", "PHD2", "float", False, True),
+    ("guide_focal_length_mm", "PS_GUIDE_FOCAL_LENGTH_MM", "Guide focal length (mm); 0 = derive from the imaging pixel scale (OAG on the RC16)", "PHD2", "float", False, True),
+    ("guard_enabled", "PS_GUARD_ENABLED", "Non-star lock guard: watch PHD2 for hot-pixel / non-star locks and guiding a parked scope (PS-91)", "PHD2", "bool", False, True),
+    ("guard_auto_recover", "PS_GUARD_AUTO_RECOVER", "Guard auto-recovery: re-select a vetted star (off = observe-only)", "PHD2", "bool", False, True),
+    ("guard_on_fail", "PS_GUARD_ON_FAIL", "Guard recovery failed: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("guide_min_star_hfd_px", "PS_GUIDE_MIN_STAR_HFD_PX", "Guard D1: guide star HFD below this (PHD2 px at bin 2) is checked for a one-pixel profile", "PHD2", "float", False, True),
+    ("phd2_hotpix_max_age_days", "PS_PHD2_HOTPIX_MAX_AGE_DAYS", "Guide-camera hot-pixel map: rebuild after N days", "PHD2", "float", False, False),
+    ("phd2_selftest_enabled", "PS_PHD2_SELFTEST_ENABLED", "Pulse-path self-test in the NINA sequence (twilight + before each guided target, PS-92)", "PHD2", "bool", False, False),
+    ("phd2_selftest_script", "PS_PHD2_SELFTEST_SCRIPT", "Self-test script NINA runs (deploy\\phd2-selftest.cmd on the scope PC)", "PHD2", "str", False, False),
+    ("selftest_step_px", "PS_SELFTEST_STEP_PX", "Self-test: aim each pulse at N guide px", "PHD2", "float", False, False),
+    ("selftest_steps", "PS_SELFTEST_STEPS", "Self-test: pulses per direction", "PHD2", "int", False, False),
+    ("selftest_ratio_min", "PS_SELFTEST_RATIO_MIN", "Self-test: moved/expected below this = FAIL", "PHD2", "float", False, False),
+    ("selftest_ratio_max", "PS_SELFTEST_RATIO_MAX", "Self-test: moved/expected above this = WARN (guide-rate mismatch)", "PHD2", "float", False, False),
+    ("selftest_timeout_s", "PS_SELFTEST_TIMEOUT_S", "Self-test: hard timeout (s)", "PHD2", "int", False, False),
+    ("guide_rate_sidereal", "PS_GUIDE_RATE_SIDEREAL", "Fallback guide speed (x sidereal) when NINA and the PHD2 log give none", "PHD2", "float", False, False),
+    ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
+    ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
+    ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
+    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once) | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
+    ("phd2_audit_enabled", "PS_PHD2_AUDIT_ENABLED", "PHD2 settings audit at each guided arm and on a PHD2 configuration change (PS-89; one push only on a FAIL)", "PHD2", "bool", False, False),
+    ("phd2_audit_autofix", "PS_PHD2_AUDIT_AUTOFIX", "Allow PHD2 profile (registry) writes from the audit: PHD2 closed, armer idle, backup first (off until a daytime round trip is checked)", "PHD2", "bool", False, False),
+    ("phd2_desired_file", "PS_PHD2_DESIRED_FILE", "PHD2 desired-state file; empty = config/phd2/desired_oag_rc16.toml", "PHD2", "str", False, False),
+    ("phd2_dark_max_age_days", "PS_PHD2_DARK_MAX_AGE_DAYS", "PHD2 dark library older than N days = WARN", "PHD2", "float", False, False),
+    ("phd2_darks_dir", "PS_PHD2_DARKS_DIR", "PHD2 dark library folder; empty = %LOCALAPPDATA%\\phd2\\darks_defects", "PHD2", "str", False, False),
+    ("thesky_audit_enabled", "PS_THESKY_AUDIT_ENABLED", "TheSky / TPoint settings audit, read only (PS-104): on demand, at arm and in the night report; never writes TheSky or moves the mount", "PHD2", "bool", False, False),
+    ("thesky_audit_imagelink_thesky", "PS_THESKY_AUDIT_IMAGELINK_THESKY", "Allow TheSky's own Image Link on a copied RC16 frame from the CLI too (the Guiding tab button runs it while the armer is idle)", "PHD2", "bool", False, False),
+    ("thesky_audit_allsky_read", "PS_THESKY_AUDIT_ALLSKY_READ", "Read the All Sky Image Link flags (DoCommand 12 / 13 read form); on only after the on-site script check", "PHD2", "bool", False, False),
+    ("tpoint_max_age_days", "PS_TPOINT_MAX_AGE_DAYS", "TPoint model older than N days = rebuild (warn at 75%)", "PHD2", "float", False, False),
+    ("tpoint_min_points", "PS_TPOINT_MIN_POINTS", "TPoint model: at least N points", "PHD2", "int", False, False),
+    ("tpoint_rms_max_arcsec", "PS_TPOINT_RMS_MAX_ARCSEC", "TPoint model: RMS at most N arcsec", "PHD2", "float", False, False),
+    ("tpoint_polar_max_arcmin", "PS_TPOINT_POLAR_MAX_ARCMIN", "TPoint polar alignment error at most N arcmin", "PHD2", "float", False, False),
+    ("pointing_first_slew_warn_arcmin", "PS_POINTING_FIRST_SLEW_WARN_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = warn", "PHD2", "float", False, False),
+    ("pointing_first_slew_fail_arcmin", "PS_POINTING_FIRST_SLEW_FAIL_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = fail / rebuild", "PHD2", "float", False, False),
+    ("thesky_manual_max_age_days", "PS_THESKY_MANUAL_MAX_AGE_DAYS", "Manual TPoint record older than N days reads unknown", "PHD2", "float", False, False),
+    ("pe_owner", "PS_PE_OWNER", "Who corrects periodic error: protrack (PHD2 PPEC must be off) | phd2_ppec | none", "PHD2", "str", False, False),
+    ("phd2_tune_mode", "PS_PHD2_TUNE_MODE", "Guide-star auto-tune (PS-90): off | observe (measure and record, never change) | exposure (live exposure-only tuning)", "PHD2", "str", False, True),
+    ("phd2_tune_peak_lo", "PS_PHD2_TUNE_PEAK_LO", "Auto-tune: guide star peak band, low (fraction of full scale)", "PHD2", "float", False, True),
+    ("phd2_tune_peak_hi", "PS_PHD2_TUNE_PEAK_HI", "Auto-tune: guide star peak band, high (fraction of full scale)", "PHD2", "float", False, True),
+    ("phd2_tune_snr_min", "PS_PHD2_TUNE_SNR_MIN", "Auto-tune: a guide star under this SNR is faint", "PHD2", "float", False, True),
+    ("phd2_tune_hfd_px", "PS_PHD2_TUNE_HFD_PX", "Auto-tune: guide star HFD band (guide px, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_tune_exp_ms", "PS_PHD2_TUNE_EXP_MS", "Auto-tune: guide exposures it may pick (ms, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_guide_full_scale_adu", "PS_PHD2_GUIDE_FULL_SCALE_ADU", "Guide camera full scale (ADU): 65535 for 16-bit", "PHD2", "int", False, True),
+    ("phd2_tune_exp_ms_nb", "PS_PHD2_TUNE_EXP_MS_NB", "Auto-tune on 3 nm Ha / OIII / SII: guide exposures it may pick (ms, lo,hi; empty = the band above) (PS-85)", "PHD2", "str", False, True),
+    ("phd2_tune_bin_max_nb", "PS_PHD2_TUNE_BIN_MAX_NB", "Auto-tune next-night advice: guide binning up to N when NB is faint at gain 100 (advice only) (PS-85)", "PHD2", "int", False, False),
+    ("guide_block_mode", "PS_GUIDE_BLOCK_MODE", "Per-block guiding (PS-85): off | observe (decide, record, one push per target; nothing switched) | auto (a block without a real guide star re-dispatches unguided at the proven sub length)", "PHD2", "str", False, True),
+    ("guide_viable_snr_min", "PS_GUIDE_VIABLE_SNR_MIN", "Per-block guiding: a guide star under this SNR is not viable (also the guard D6 floor)", "PHD2", "float", False, True),
+    ("guide_viable_hfd_px", "PS_GUIDE_VIABLE_HFD_PX", "Per-block guiding: viable guide star HFD band (PHD2 px at bin 2, lo,hi)", "PHD2", "str", False, True),
+    ("guide_viable_frames", "PS_GUIDE_VIABLE_FRAMES", "Per-block guiding: guide frames per viability check", "PHD2", "int", False, True),
+    ("guide_lowsnr_frames", "PS_GUIDE_LOWSNR_FRAMES", "Guard D6: SNR under the viable minimum this many guided frames in a row = guiding on noise (0 = off)", "PHD2", "int", False, True),
+    ("guide_fallback_exposure_s", "PS_GUIDE_FALLBACK_EXPOSURE_S", "Per-block guiding: unguided sub length per filter (filter:s, comma-sep) when the tracking test proves nothing longer", "PHD2", "str", False, False),
+    ("guide_fallback_test_date", "PS_GUIDE_FALLBACK_TEST_DATE", "Per-block guiding: tracking-test night whose report sets proven unguided lengths (empty = none)", "PHD2", "str", False, False),
+    ("guide_fallback_test_since_utc", "PS_GUIDE_FALLBACK_TEST_SINCE_UTC", "Per-block guiding: only tracking-test subs after this UTC time count (ProTrack on)", "PHD2", "str", False, False),
+    ("guide_block_history_days", "PS_GUIDE_BLOCK_HISTORY_DAYS", "Per-block guiding: plan a block unguided when the same target + filter was not viable within N nights (same guide bin and gain; 0 = tonight only)", "PHD2", "int", False, False),
+    ("guide_block_max_redispatch", "PS_GUIDE_BLOCK_MAX_REDISPATCH", "Per-block guiding (auto): at most N re-dispatches per night", "PHD2", "int", False, False),
+    ("phd2_nocorr_frames", "PS_PHD2_NOCORR_FRAMES", "Guard D7 (PS-155): PHD2 guiding but no RA or Dec pulse for N frames in a row while the star is off the lock = page once (0 = off)", "PHD2", "int", False, True),
+    ("phd2_nocorr_px", "PS_PHD2_NOCORR_PX", "Guard D7: raw guide error (px) that must draw a pulse", "PHD2", "float", False, True),
+    ("phd2_drift_window_min", "PS_PHD2_DRIFT_WINDOW_MIN", "Guard D8: star walking away from the lock position over N min while guiding (0 = off)", "PHD2", "float", False, True),
+    ("guide_fallback_mode", "PS_GUIDE_FALLBACK_MODE", "PHD2 failed on a guided night (PS-156): off | alert (one push: what auto would do) | auto (re-dispatch the rest unguided, subs capped per filter at the tracking-test length)", "PHD2", "str", False, False),
+    ("guide_fallback_after_min", "PS_GUIDE_FALLBACK_AFTER_MIN", "Unguided fallback: PHD2 not locked and guiding this long (min) counts as failed", "PHD2", "float", False, False),
+    ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),
+    ("default_offset", "PS_DEFAULT_OFFSET", "Camera offset", "Imaging", "int", False, False),
+    ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
+    ("camera_readout_mode", "PS_CAMERA_READOUT_MODE", "RC16 readout mode of the lights (HCG / LCG): darks and bias must match it (blank = not matched)", "Imaging", "str", False, False),
+    ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("unguided_dither", "PS_UNGUIDED_DITHER", "Dither on unguided nights through NINA's Direct Guider (switch NINA's guider first; checked at arm)", "Imaging", "bool", False, False),
+    ("unguided_max_exposure_s", "PS_UNGUIDED_MAX_EXPOSURE_S", "Unguided (TPoint + ProTrack) RC16 max sub length (s); longer subs are split, same integration (0 = no cap)", "Imaging", "float", False, False),
+    ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale", "Imaging", "bool", False, False),
+    ("pixel_scale_arcsec", "PS_PIXEL_SCALE_ARCSEC", "Pixel scale (\"/px)", "Imaging", "float", False, False),
+    ("sensor_width_px", "PS_SENSOR_WIDTH_PX", "Sensor width (px), Targets page field-of-view box", "Imaging", "int", False, False),
+    ("sensor_height_px", "PS_SENSOR_HEIGHT_PX", "Sensor height (px), Targets page field-of-view box", "Imaging", "int", False, False),
+    ("nb_exposure_s", "PS_NB_EXPOSURE_S", "Narrowband sub length (s)", "Imaging", "float", False, False),
+    ("bb_exposure_s", "PS_BB_EXPOSURE_S", "Broadband sub length (s)", "Imaging", "float", False, False),
+    ("focus_model_rc16_match", "PS_FOCUS_MODEL_RC16_MATCH", "Focus model: which AF reports are the RC16's (empty = RC16 filter name + EAF 4000-7000; e.g. any~AP26MC)", "Imaging", "str", False, False),
+    ("focus_model_piggyback_match", "PS_FOCUS_MODEL_PIGGYBACK_MATCH", "Focus model: which AF reports are the Piggy-600's (empty = everything not RC16)", "Imaging", "str", False, False),
+    ("focus_model_ingest_poll_s", "PS_FOCUS_MODEL_INGEST_POLL_S", "Focus model: check the AF reports folder every N s and ingest new reports (0 = backfill/API only)", "Imaging", "int", False, False),
+    ("focus_model_drive", "PS_FOCUS_MODEL_DRIVE", "Focus model drive: move the RC16 focuser to the lookup table instead of per-block AF while the model is trusted (off = advisory)", "Imaging", "bool", False, False),
+    ("focus_model_verify_af_min", "PS_FOCUS_MODEL_VERIFY_AF_MIN", "Focus model drive: verify AF every N min", "Imaging", "float", False, False),
+    ("focus_cfz_steps", "PS_FOCUS_CFZ_STEPS", "RC16 critical focus zone (EAF steps; 0 = AF step size as proxy)", "Imaging", "int", False, False),
+    ("focus_filter_offsets", "PS_FOCUS_FILTER_OFFSETS", "Focus offsets from L per filter (EAF steps, e.g. Ha:120,OIII:120,SII:120; PS-144)", "Imaging", "str", False, False),
+    ("focus_harvest_max_hfr_arcsec", "PS_FOCUS_HARVEST_MAX_HFR_ARCSEC", "Focus-seed harvest (RC16): max sub HFR in arcsec (HFR px x pixel scale)", "Imaging", "float", False, False),
+    ("focus_calibration_tonight", "PS_FOCUS_CALIBRATION_TONIGHT", "Run a focus-offset calibration at the start of tonight (one-shot: turns itself off after the dispatch; PS-144)", "Imaging", "bool", False, False),
+    ("focus_model_move_script", "PS_FOCUS_MODEL_MOVE_SCRIPT", "Focus model drive: NINA ExternalScript for the table move (deploy\\focus-model-move.cmd)", "Imaging", "str", False, False),
+    ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
+    ("camera_read_noise_adu", "PS_CAMERA_READ_NOISE_ADU", "RC16 read noise, HCG (ADU16; floor for the exposure swamp score, PS-117)", "Quality", "float", False, False),
+    ("camera_read_noise_lcg_adu", "PS_CAMERA_READ_NOISE_LCG_ADU", "RC16 read noise, LCG frames (ADU16; READOUTM Low Conversion Gain)", "Quality", "float", False, False),
+    ("camera_gain_e_adu", "PS_CAMERA_GAIN_E_ADU", "RC16 conversion gain, HCG (e-/ADU)", "Quality", "float", False, False),
+    ("camera_gain_lcg_e_adu", "PS_CAMERA_GAIN_LCG_E_ADU", "RC16 conversion gain, LCG frames (e-/ADU)", "Quality", "float", False, False),
+    ("camera_bias_adu", "PS_CAMERA_BIAS_ADU", "RC16 bias level (ADU16; subtracted for the sky rate, PS-117 light budget)", "Quality", "float", False, False),
+    ("camera_dark_e_s", "PS_CAMERA_DARK_E_S", "RC16 dark current at the setpoint (e-/s per pixel; 0 = not measured)", "Quality", "float", False, False),
+    ("light_budget_goal_snr", "PS_LIGHT_BUDGET_GOAL_SNR", "Light budget: default SNR goal per 2x2 pixel at a target's faintest feature (PS-117)", "Quality", "float", False, False),
+    ("quality_eccentricity_max", "PS_QUALITY_ECCENTRICITY_MAX", "Max eccentricity", "Quality", "float", False, False),
+    ("quality_eccentricity_max_binned", "PS_QUALITY_ECCENTRICITY_MAX_BINNED", "Max eccentricity at 0.47\"/px (2x2 binned; 0 = same as Max eccentricity)", "Quality", "float", False, False),
+    ("qa_ecc_scale", "PS_QA_ECC_SCALE", "Eccentricity gate scale: native or binned (the other is info only)", "Quality", "str", False, False),
+    ("qa_ecc_binned", "PS_QA_ECC_BINNED", "Also measure RC16 subs 2x2 binned (ecc at 0.47\"/px)", "Quality", "bool", False, False),
+    ("qa_ecc_bright_rule", "PS_QA_ECC_BRIGHT_RULE", "Judge ecc on the brightest stars (PS-146): auto (narrowband, under-exposed or few stars) | always | off", "Quality", "str", False, False),
+    ("qa_ecc_bright_n", "PS_QA_ECC_BRIGHT_N", "Bright-star ecc: the brightest N stars", "Quality", "int", False, False),
+    ("qa_ecc_bright_snr", "PS_QA_ECC_BRIGHT_SNR", "Bright-star ecc: stars at peak SNR >= this instead (0 = brightest N)", "Quality", "float", False, False),
+    ("qa_ecc_bright_filters", "PS_QA_ECC_BRIGHT_FILTERS", "Bright-star ecc: narrowband filters (comma list)", "Quality", "str", False, False),
+    ("qa_ecc_bright_min_stars", "PS_QA_ECC_BRIGHT_MIN_STARS", "Bright-star ecc (auto): also when fewer stars than this", "Quality", "int", False, False),
+    ("qa_fwhm_method", "PS_QA_FWHM_METHOD", "Judged FWHM (PS-146): auto (2 x HFR when the moment FWHM under-reads) | moment | hfr", "Quality", "str", False, False),
+    ("qa_fwhm_hfr_ratio", "PS_QA_FWHM_HFR_RATIO", "Moment FWHM under this x HFR is unreliable (px)", "Quality", "float", False, False),
+    ("quality_tracking_rms_max", "PS_QUALITY_TRACKING_RMS_MAX", "Max guide RMS (arcsec)", "Quality", "float", False, False),
+    ("quality_corner_spread_max", "PS_QUALITY_CORNER_SPREAD_MAX", "Max corner FWHM spread", "Quality", "float", False, False),
+    ("optics_corner_alert", "PS_OPTICS_CORNER_ALERT", "Daily corner-spread Pushover (off = the persistent optics trend alert replaces it, PS-95)", "Quality", "bool", False, False),
+    ("optics_min_stars_zone", "PS_OPTICS_MIN_STARS_ZONE", "Optics report: min stars per 3x3 zone", "Quality", "int", False, False),
+    ("optics_tilt_warn", "PS_OPTICS_TILT_WARN", "Optics report: corner FWHM ratio that counts as tilt", "Quality", "float", False, False),
+    ("optics_test_offsets", "PS_OPTICS_TEST_OFFSETS", "Through-focus optics test: focuser offsets from best focus, EAF steps (PS-148)", "Quality", "str", False, False),
+    ("optics_test_filters", "PS_OPTICS_TEST_FILTERS", "Through-focus optics test: filters (L, optionally Ha)", "Quality", "str", False, False),
+    ("optics_test_exposure_s", "PS_OPTICS_TEST_EXPOSURE_S", "Through-focus optics test: broadband sub length (s)", "Quality", "float", False, False),
+    ("optics_test_nb_exposure_s", "PS_OPTICS_TEST_NB_EXPOSURE_S", "Through-focus optics test: narrowband sub length (s)", "Quality", "float", False, False),
+    ("optics_test_repeats", "PS_OPTICS_TEST_REPEATS", "Through-focus optics test: subs per filter and offset", "Quality", "int", False, False),
+    ("quality_hfr_abs_max", "PS_QUALITY_HFR_ABS_MAX", "Max HFR (px, RC16)", "Quality", "float", False, False),
+    ("quality_star_min", "PS_QUALITY_STAR_MIN", "Min detected stars", "Quality", "int", False, False),
+    ("quality_star_max", "PS_QUALITY_STAR_MAX", "Max detected stars (defocus guard)", "Quality", "int", False, False),
+    ("piggyback_ecc_max", "PS_PIGGYBACK_ECC_MAX", "Piggyback max eccentricity", "Quality", "float", False, False),
+    ("piggyback_fwhm_max", "PS_PIGGYBACK_FWHM_MAX", "Piggyback max FWHM (arcsec, advisory)", "Quality", "float", False, False),
+    ("piggyback_fwhm_soft", "PS_PIGGYBACK_FWHM_SOFT", "Piggy-600 FWHM advisory only (no reject; a score factor)", "Quality", "bool", False, False),
+    ("piggyback_fwhm_min_arcsec", "PS_PIGGYBACK_FWHM_MIN_ARCSEC", "Piggy-600 star-size floor (arcsec, PS-71 parked / roof-closed signature)", "Quality", "float", False, False),
+    ("quality_fwhm_soft", "PS_QUALITY_FWHM_SOFT", "RC16 FWHM advisory only (no reject)", "Quality", "bool", False, False),
+    ("quality_fwhm_min_arcsec", "PS_QUALITY_FWHM_MIN_ARCSEC", "RC16 star-size floor (arcsec, PS-71 parked / roof-closed signature)", "Quality", "float", False, False),
+    ("qa_tracking_jump_max", "PS_QA_TRACKING_JUMP_MAX", "Tracking jump: doubled-star fraction that rejects (RC16)", "Quality", "float", False, False),
+    ("quality_bias_floor_margin_adu", "PS_QUALITY_BIAS_FLOOR_MARGIN_ADU", "Bias floor margin above the offset (ADU, RC16)", "Quality", "float", False, False),
+    ("piggyback_star_min", "PS_PIGGYBACK_STAR_MIN", "Piggy-600 min detected stars (None = RC16 value; PS-114)", "Quality", "int", False, False),
+    ("piggyback_star_max", "PS_PIGGYBACK_STAR_MAX", "Piggy-600 max detected stars (None = RC16 value)", "Quality", "int", False, False),
+    ("piggyback_background_rel_max", "PS_PIGGYBACK_BACKGROUND_REL_MAX", "Piggy-600 warn: background above x night median (None = RC16 value)", "Quality", "float", False, False),
+    ("piggyback_hfr_outlier_factor", "PS_PIGGYBACK_HFR_OUTLIER_FACTOR", "Piggy-600 reject: HFR above x night median (None = RC16 value)", "Quality", "float", False, False),
+    ("piggyback_tracking_rms_max", "PS_PIGGYBACK_TRACKING_RMS_MAX", "Piggy-600 max guide RMS (arcsec; None = RC16 value)", "Quality", "float", False, False),
+    ("piggyback_tracking_jump_max", "PS_PIGGYBACK_TRACKING_JUMP_MAX", "Piggy-600 tracking jump: doubled-star fraction (None = RC16 value)", "Quality", "float", False, False),
+    ("piggyback_corner_spread_max", "PS_PIGGYBACK_CORNER_SPREAD_MAX", "Piggy-600 max corner FWHM spread (None = RC16 value)", "Quality", "float", False, False),
+    ("piggyback_bias_floor_margin_adu", "PS_PIGGYBACK_BIAS_FLOOR_MARGIN_ADU", "Piggy-600 bias floor margin above offset (ADU; None = RC16 value)", "Quality", "float", False, False),
+    ("qa_baseline_k", "PS_QA_BASELINE_K", "QA baselines: proposed gate = median + k x sigma (report only, PS-114)", "Quality", "float", False, False),
+    ("qa_warn_fraction", "PS_QA_WARN_FRACTION", "Scorecard yellow band (fraction of a limit)", "Quality", "float", False, False),
+    ("qa_background_rel_max", "PS_QA_BACKGROUND_REL_MAX", "Warn: background above x night median", "Quality", "float", False, False),
+    ("qa_hfr_outlier_factor", "PS_QA_HFR_OUTLIER_FACTOR", "Reject: HFR above x night median", "Quality", "float", False, False),
+    ("qa_auto_approve", "PS_QA_AUTO_APPROVE", "Auto-approve all-green subs", "Quality", "bool", False, False),
+    ("qa_auto_approve_rigs", "PS_QA_AUTO_APPROVE_RIGS", "Auto-approve only these rigs (comma list, empty = all)", "Quality", "str", False, False),
+    ("qa_score_mode", "PS_QA_SCORE_MODE", "Sub score 0-100 (PS-108): preview (show what it would do) | on (score sets the verdict on both rigs, replaces the all-green auto-approve)", "Quality", "str", False, False),
+    ("qa_score_approve", "PS_QA_SCORE_APPROVE", "Score: auto-approve at or above", "Quality", "float", False, False),
+    ("qa_score_reject", "PS_QA_SCORE_REJECT", "Score: reject below", "Quality", "float", False, False),
+    ("qa_saturation_adu", "PS_QA_SATURATION_ADU", "Saturated pixel level (ADU; FITS SATURATE wins)", "Quality", "float", False, False),
+    ("qa_guide_lock_mode", "PS_QA_GUIDE_LOCK_MODE", "Sub guided on a non-star lock (PS-91): warn | fail", "Quality", "str", False, True),
+    ("pointing_off_target_flag_arcmin", "PS_POINTING_OFF_TARGET_FLAG_ARCMIN", "RC16 off target: flag for a look above (arcmin, PS-67)", "Quality", "float", False, False),
+    ("pointing_off_target_reject_arcmin", "PS_POINTING_OFF_TARGET_REJECT_ARCMIN", "RC16 off target: reject above (arcmin; target out of the frame)", "Quality", "float", False, False),
+    ("piggyback_off_target_flag_arcmin", "PS_PIGGYBACK_OFF_TARGET_FLAG_ARCMIN", "Piggy-600 off target: flag above (arcmin)", "Quality", "float", False, False),
+    ("piggyback_off_target_reject_arcmin", "PS_PIGGYBACK_OFF_TARGET_REJECT_ARCMIN", "Piggy-600 off target: reject above (arcmin)", "Quality", "float", False, False),
+    ("pointing_header_reject_deg", "PS_POINTING_HEADER_REJECT_DEG", "Off target with no plate solve (header / mount log only): reject above (deg, PS-107; below it warns, unconfirmed)", "Quality", "float", False, False),
+    ("qa_pointing_mode", "PS_QA_POINTING_MODE", "Off target above the reject limit: fail (reject) | warn | info", "Quality", "str", False, True),
+    ("qa_slew_straddle_mode", "PS_QA_SLEW_STRADDLE_MODE", "Piggy-600 sub exposed through an RC16 slew / flip / park (PS-13): fail (reject) | warn | info", "Quality", "str", False, True),
+    ("slew_gate_pad_s", "PS_SLEW_GATE_PAD_S", "RC16 move window padding from the mount log (s, each side)", "Quality", "float", False, False),
+    ("slew_gate_min_move_arcmin", "PS_SLEW_GATE_MIN_MOVE_ARCMIN", "RC16 move from its frames (nights without a mount log): pointing change above (arcmin)", "Quality", "float", False, False),
+    ("pointing_solve_policy", "PS_POINTING_SOLVE_POLICY", "Dawn plate solves (PS-67): sampled (every Nth + flagged + first after a slew) | all | off", "Quality", "str", False, True),
+    ("pointing_solve_every", "PS_POINTING_SOLVE_EVERY", "Dawn plate solves: every Nth sub per rig (sampled)", "Quality", "int", False, False),
+    ("pointing_solve_budget_min", "PS_POINTING_SOLVE_BUDGET_MIN", "Dawn plate solves: stop after N min of ASTAP time", "Quality", "float", False, False),
+    ("mount_log_enabled", "PS_MOUNT_LOG_ENABLED", "Mount log runs/<night>_mount.jsonl from the RC16 agent's poll (PS-67)", "Quality", "bool", False, True),
+    ("astrobin_api_key", "PS_ASTROBIN_API_KEY", "AstroBin API key", "Integrations", "str", True, False),
+    ("astrobin_api_secret", "PS_ASTROBIN_API_SECRET", "AstroBin API secret", "Integrations", "str", True, False),
+    ("pushover_user_key", "PS_PUSHOVER_USER_KEY", "Pushover user key", "Nanny / Alerts", "str", True, False),
+    ("pushover_api_token", "PS_PUSHOVER_API_TOKEN", "Pushover API token", "Nanny / Alerts", "str", True, False),
+    ("consecutive_reject_limit", "PS_CONSECUTIVE_REJECT_LIMIT", "Consecutive rejects before severe alert", "Nanny / Alerts", "int", False, False),
+    ("auto_abort_on_severe", "PS_AUTO_ABORT_ON_SEVERE", "Auto-abort on severe (enable only once trusted)", "Nanny / Alerts", "bool", False, False),
+    ("heartbeat_minutes", "PS_HEARTBEAT_MINUTES", "Heartbeat interval (min)", "Nanny / Alerts", "int", False, False),
+    ("pushover_quiet_daytime", "PS_PUSHOVER_QUIET_DAYTIME", "Quiet Pushover while the sun is up (no heartbeats; each alert type at most once per window)", "Nanny / Alerts", "bool", False, False),
+    ("pushover_daytime_title_window_h", "PS_PUSHOVER_DAYTIME_TITLE_WINDOW_H", "Daytime: hours between repeats of the same alert", "Nanny / Alerts", "float", False, False),
+    ("pushover_daytime_sun_alt_deg", "PS_PUSHOVER_DAYTIME_SUN_ALT_DEG", "Daytime = sun above this altitude (deg)", "Nanny / Alerts", "float", False, False),
+    ("safety_monitor_device_id", "PS_SAFETY_MONITOR_DEVICE_ID", "RC16 safety monitor NINA Id to (re)connect (blank = last seen connected)", "Nanny / Alerts", "str", False, True),
+    ("piggyback_safety_monitor_device_id", "PS_PIGGYBACK_SAFETY_MONITOR_DEVICE_ID", "Piggyback safety monitor NINA Id (blank = last seen connected)", "Nanny / Alerts", "str", False, True),
+    ("safety_watchdog_sun_alt_deg", "PS_SAFETY_WATCHDOG_SUN_ALT_DEG", "Safety reconnect watchdog idles above this sun altitude when not armed (deg)", "Nanny / Alerts", "float", False, True),
+    ("safety_disconnect_repeat_min", "PS_SAFETY_DISCONNECT_REPEAT_MIN", "Repeat the safety-monitor DISCONNECTED alert every N min", "Nanny / Alerts", "int", False, False),
+    ("pushover_ratelimit_enabled", "PS_PUSHOVER_RATELIMIT_ENABLED", "Rate-limit Pushover (dedup + hourly + monthly cap)", "Nanny / Alerts", "bool", False, False),
+    ("pushover_dedup_window_s", "PS_PUSHOVER_DEDUP_WINDOW_S", "Pushover dedup window (s) — collapses flaps", "Nanny / Alerts", "int", False, False),
+    ("pushover_max_per_hour", "PS_PUSHOVER_MAX_PER_HOUR", "Pushover max messages/hour (emergencies exempt)", "Nanny / Alerts", "int", False, False),
+    ("pushover_monthly_cap", "PS_PUSHOVER_MONTHLY_CAP", "Pushover monthly hard cap", "Nanny / Alerts", "int", False, False),
+    ("pushover_emergency_retry_s", "PS_PUSHOVER_EMERGENCY_RETRY_S", "Emergency (priority 2) pushes: repeat every N s until acknowledged", "Nanny / Alerts", "int", False, False),
+    ("pushover_emergency_expire_s", "PS_PUSHOVER_EMERGENCY_EXPIRE_S", "Emergency pushes: stop repeating after N s (max 10800)", "Nanny / Alerts", "int", False, False),
+    ("guiding_force_first_calibration", "PS_GUIDING_FORCE_FIRST_CALIBRATION", "Force a fresh PHD2 calibration at the night's first guided target (off = keep your saved calibration)", "Nanny / Alerts", "bool", False, False),
+    ("nina_autofocus_reports_dir", "PS_NINA_AUTOFOCUS_REPORTS_DIR", "NINA AutoFocus reports folder (feeds the RC16 focus model and AF-quality alert)", "Imaging", "str", False, False),
+    ("guiding_alert_repeat_min", "PS_GUIDING_ALERT_REPEAT_MIN", "Guiding lost: hold repeat pushes for N min (all events still logged)", "Nanny / Alerts", "float", False, False),
+    ("guiding_recovered_push_min", "PS_GUIDING_RECOVERED_PUSH_MIN", "Guiding recovered: push only if the loss lasted N min", "Nanny / Alerts", "float", False, False),
+    ("guiding_flap_count", "PS_GUIDING_FLAP_COUNT", "Guiding flapping: losses in the window before one summary push", "Nanny / Alerts", "int", False, False),
+    ("guiding_flap_window_min", "PS_GUIDING_FLAP_WINDOW_MIN", "Guiding flapping: window (min)", "Nanny / Alerts", "float", False, False),
+    ("safety_confirm_seconds", "PS_SAFETY_CONFIRM_SECONDS", "Confirm-safe hold before resume (s) — safety-flap debounce", "Nanny / Alerts", "int", False, False),
+    ("unsafe_stop_enabled", "PS_UNSAFE_STOP_ENABLED", "Armer stops NINA if it is still imaging while unsafe (PS-77)", "Nanny / Alerts", "bool", False, False),
+    ("unsafe_stop_grace_s", "PS_UNSAFE_STOP_GRACE_S", "Unsafe this long with SAFE_LOOP still running before the armer stops NINA (s)", "Nanny / Alerts", "int", False, False),
+    ("safety_crosscheck", "PS_SAFETY_CROSSCHECK", "Safety cross-check (PS-1): on NINA #1 reading unsafe, read NINA #2 once; off | log (events file only) | alert (also one push a night when only NINA #1 reads unsafe). Never changes park / resume", "Nanny / Alerts", "str", False, False),
+    ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
+    ("cooler_stuck_minutes", "PS_COOLER_STUCK_MINUTES", "Cooler nanny: alert if still warm this many min into the window", "Imaging", "int", False, False),
+    ("cooler_gate_mode", "PS_COOLER_GATE_MODE", "Cooler gate before lights (PS-61): skip (hold, then skip the block) | warn (hold, alert, image anyway) | off", "Imaging", "str", False, False),
+    ("cooler_gate_tolerance_c", "PS_COOLER_GATE_TOLERANCE_C", "Cooler gate: sensor within setpoint +/- this (C) before lights", "Imaging", "float", False, False),
+    ("cooler_gate_timeout_min", "PS_COOLER_GATE_TIMEOUT_MIN", "Cooler gate: hold at most this long (min), then alert + skip", "Imaging", "float", False, False),
+    ("cooler_gate_script", "PS_COOLER_GATE_SCRIPT", "Cooler gate script NINA runs (deploy\\cooler-gate.cmd on the scope PC)", "Imaging", "str", False, False),
+    ("nina_load_validation", "PS_NINA_LOAD_VALIDATION", "After each sequence load, read NINA's validation (PS-132): alert (push, never blocks) | refuse (also no Start on a Validate error) | off", "Imaging", "str", False, False),
+    ("nina_load_validation_settle_s", "PS_NINA_LOAD_VALIDATION_SETTLE_S", "Load validation: wait this long after the load before reading NINA (s)", "Imaging", "float", False, False),
+    ("sub_temp_over_setpoint_c", "PS_SUB_TEMP_OVER_SETPOINT_C", "Reject subs this many °C above setpoint", "Imaging", "float", False, False),
+    ("sub_temp_max_c", "PS_SUB_TEMP_MAX_C", "Reject subs with sensor above (°C)", "Imaging", "float", False, False),
+    ("cool_lead_minutes", "PS_COOL_LEAD_MINUTES", "Cooler + dew heater ON this many min before astro dark", "Imaging", "int", False, False),
+    ("cooler_off_until_precool", "PS_COOLER_OFF_UNTIL_PRECOOL", "On arm, force cooler + dew OFF until pre-cool time", "Imaging", "bool", False, False),
+    ("auto_arm_enabled", "PS_AUTO_ARM_ENABLED", "Auto-arm every night (hands-off multi-night)", "Nanny / Alerts", "bool", False, False),
+    ("auto_arm_lead_hours", "PS_AUTO_ARM_LEAD_HOURS", "Auto-arm window opens N hours before pre-config", "Nanny / Alerts", "float", False, False),
+    ("auto_arm_require_preflight", "PS_AUTO_ARM_REQUIRE_PREFLIGHT", "Auto-arm requires preflight go (else arm-and-notify)", "Nanny / Alerts", "bool", False, False),
+    ("noon_arm_enabled", "PS_NOON_ARM_ENABLED", "Noon auto re-arm when idle (also re-forces coolers off)", "Nanny / Alerts", "bool", False, False),
+    ("noon_arm_guided", "PS_NOON_ARM_GUIDED", "Auto/noon re-arm uses PHD2 guiding (uncheck = re-arm unguided)", "Nanny / Alerts", "bool", False, False),
+    ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
+    ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
+    ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
+    ("piggyback_enabled", "PS_PIGGYBACK_ENABLED", "Piggyback rig enabled (2nd NINA)", "Piggyback", "bool", False, False),
+    ("piggyback_name", "PS_PIGGYBACK_NAME", "Piggyback rig name", "Piggyback", "str", False, False),
+    ("piggyback_nina_base_url", "PS_PIGGYBACK_NINA_BASE_URL", "Piggyback NINA Advanced API URL", "Piggyback", "str", False, False),
+    ("piggyback_image_watch_dir", "PS_PIGGYBACK_IMAGE_WATCH_DIR", "Piggyback NINA image output dir", "Piggyback", "str", False, False),
+    ("piggyback_pixel_scale_arcsec", "PS_PIGGYBACK_PIXEL_SCALE_ARCSEC", "Piggyback pixel scale (\"/px)", "Piggyback", "float", False, False),
+    ("piggyback_sensor_width_px", "PS_PIGGYBACK_SENSOR_WIDTH_PX", "Piggyback sensor width (px; 0 = same as the RC16)", "Piggyback", "int", False, False),
+    ("piggyback_sensor_height_px", "PS_PIGGYBACK_SENSOR_HEIGHT_PX", "Piggyback sensor height (px; 0 = same as the RC16)", "Piggyback", "int", False, False),
+    ("piggyback_default_gain", "PS_PIGGYBACK_DEFAULT_GAIN", "Piggyback camera gain", "Piggyback", "int", False, False),
+    ("piggyback_default_offset", "PS_PIGGYBACK_DEFAULT_OFFSET", "Piggyback camera offset", "Piggyback", "int", False, False),
+    ("piggyback_read_noise_adu", "PS_PIGGYBACK_READ_NOISE_ADU", "Piggyback read noise (ADU16; floor for the exposure swamp score, PS-117)", "Piggyback", "float", False, False),
+    ("piggyback_gain_e_adu", "PS_PIGGYBACK_GAIN_E_ADU", "Piggyback conversion gain (e-/ADU)", "Piggyback", "float", False, False),
+    ("piggyback_bias_adu", "PS_PIGGYBACK_BIAS_ADU", "Piggyback bias level (ADU16; subtracted for the sky rate, PS-117)", "Piggyback", "float", False, False),
+    ("piggyback_dark_e_s", "PS_PIGGYBACK_DARK_E_S", "Piggyback dark current at the setpoint (e-/s per pixel)", "Piggyback", "float", False, False),
+    ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
+    ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
+    ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
+    ("piggyback_readout_mode", "PS_PIGGYBACK_READOUT_MODE", "Piggyback readout mode of the OSC lights (HCG / LCG): darks and bias must match it", "Piggyback", "str", False, False),
+    ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
+    ("piggyback_frame_attribution", "PS_PIGGYBACK_FRAME_ATTRIBUTION", "Piggy subs named after the goal their frame holds (PS-137): off | report (record only) | on (rename and refile)", "Piggyback", "str", False, False),
+    ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
+    ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
+    ("piggyback_mount_check", "PS_PIGGYBACK_MOUNT_CHECK", "NINA #2 mount check (PS-139): at arm and watch, read NINA #2's loaded sequence for slew / center / park instructions: alert (push + chip, read only) | off", "Piggyback", "str", False, False),
+    ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
+    ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
+    ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
+    ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
+    ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
+    ("piggyback_resume_grace_s", "PS_PIGGYBACK_RESUME_GRACE_S", "Piggyback resume hold after safe: confirm hold + this before AF/lights (s)", "Piggyback", "int", False, False),
+    ("piggyback_settle_gate", "PS_PIGGYBACK_SETTLE_GATE", "Piggy-600 settle gate (PS-27): before each OSC light, wait (bounded) until the RC16 mount is still and PHD2 is not settling; never skips, fails open", "Piggyback", "bool", False, False),
+    ("piggyback_settle_timeout_s", "PS_PIGGYBACK_SETTLE_TIMEOUT_S", "Settle gate: hold at most this long (s), then shoot anyway", "Piggyback", "float", False, False),
+    ("piggyback_settle_still_s", "PS_PIGGYBACK_SETTLE_STILL_S", "Settle gate: mount still this long (s) before an OSC light", "Piggyback", "float", False, False),
+    ("piggyback_tracking_gate", "PS_PIGGYBACK_TRACKING_GATE", "Settle gate also holds each OSC light while NINA #1 reports the shared mount parked or not tracking (PS-158); bounded, fails open", "Piggyback", "bool", False, False),
+    ("piggyback_tracking_hold_s", "PS_PIGGYBACK_TRACKING_HOLD_S", "Tracking hold: wait at most this long (s) per OSC light for the mount to track, then shoot anyway", "Piggyback", "float", False, False),
+    ("piggyback_settle_script", "PS_PIGGYBACK_SETTLE_SCRIPT", "Settle gate script NINA #2 runs (deploy\\settle-gate.cmd on the scope PC)", "Piggyback", "str", False, False),
+    ("piggyback_abort_on_move", "PS_PIGGYBACK_ABORT_ON_MOVE", "Abort the Piggy-600's current OSC light when the RC16 mount slews / flips / jumps (NINA #2 only; off until night-tested)", "Piggyback", "bool", False, False),
+    ("piggyback_abort_move_arcmin", "PS_PIGGYBACK_ABORT_MOVE_ARCMIN", "Abort on move / settle gate: a mount jump above this (arcmin) between polls is a move", "Piggyback", "float", False, False),
+    ("piggyback_split_alert_pct", "PS_PIGGYBACK_SPLIT_ALERT_PCT", "Piggy-600 split rate (%) above which the dawn Night complete push goes out at priority 1", "Piggyback", "float", False, False),
+    ("flexure_warn_arcsec_min", "PS_FLEXURE_WARN_ARCSEC_MIN", "Flexure report: flag Piggy drift above the RC16's by this (\"/min, PS-96)", "Piggyback", "float", False, False),
+    ("flexure_solve_all", "PS_FLEXURE_SOLVE_ALL", "Flexure report: plate-solve every Piggy sub (default: first/middle/last per block)", "Piggyback", "bool", False, False),
+    ("piggy_center_mode", "PS_PIGGY_CENTER_MODE", "Piggy-600-driven targets (PS-26): on = center the RC16 so the target lands mid Piggy frame | preview = annotate the shift only | off", "Piggyback", "str", False, False),
+    ("piggy_center_nights", "PS_PIGGY_CENTER_NIGHTS", "Piggy boresight offset: nights of solve pairs measured (PS-26)", "Piggyback", "int", False, False),
+    ("piggy_center_min_pairs", "PS_PIGGY_CENTER_MIN_PAIRS", "Piggy boresight offset: solve pairs a pier side needs before it is applied (PS-26)", "Piggyback", "int", False, False),
+    ("piggy_center_max_shift_arcmin", "PS_PIGGY_CENTER_MAX_SHIFT_ARCMIN", "Piggy centering: never shift the RC16 center by more than this (arcmin, PS-26)", "Piggyback", "float", False, False),
+]
+
+_MASK = "••••••••"
+
+
+def _mask_secret(value: str) -> str:
+    value = str(value or "")
+    return (_MASK + value[-4:]) if len(value) > 4 else (_MASK if value else "")
+
+
+@app.get("/system", response_class=HTMLResponse)
+async def system_page(request: Request):
+    return templates.TemplateResponse(request, "system.html", {"version": VERSION, 
+        "observatory": get_config().get_observatory(),
+    })
+
+
+@app.post("/api/makesafe")
+async def api_makesafe():
+    """Emergency: stop sequence, warm camera, park mount."""
+    report = await get_armer().make_safe()
+    from photonscript.shared.pushover import notify as _notify
+    await _notify(get_config(), f"Manual make-safe: {report}",
+                  title="PhotonScript make-safe", priority=1)
+    return {"report": report}
+
+
+@app.post("/api/preflight")
+async def api_preflight():
+    from photonscript.scheduler.preflight import run_preflight
+    return await run_preflight(get_config())
+
+
+@app.post("/api/equipment/connect")
+async def api_equipment_connect():
+    """Actively connect every device on ALL enabled rigs (main + piggyback).
+    Connect-only — nothing slews, cools, or opens the roof. Runs automatically
+    on arm/restart; this is the manual trigger."""
+    return {"results": await get_armer().connect_all_rigs()}
+
+
+@app.get("/api/rigs")
+async def api_rigs():
+    """Config + live connection status for every rig (main + piggyback)."""
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          rig_devices, RC16, PIGGYBACK)
+    from photonscript.scheduler.preflight import _connected
+    cfg = get_config()
+    rigs = []
+    for rig in rig_ids(cfg):
+        rc = rig_config(cfg, rig)
+        devices = {}
+        # The piggyback owns only camera+focuser, but it can optionally watch the
+        # SHARED safety monitor (if added to the NINA #2 profile) — probe it too
+        # so the pane can show whether NINA #2 "sees the roof" (gates its darks).
+        probe = list(rig_devices(rig))
+        if rig == PIGGYBACK and "safetymonitor" not in probe:
+            probe.append("safetymonitor")
+        for dev in probe:
+            conn, payload, err = await _connected(rc, dev)
+            entry = {"connected": conn}
+            if dev == "camera" and payload:
+                entry["temp_c"] = payload.get("Temperature")
+                entry["setpoint_c"] = payload.get("TemperatureSetPoint")
+                entry["cooler_on"] = payload.get("CoolerOn")
+                cp = payload.get("CoolerPower")
+                entry["cooler_power"] = cp
+                # window dew heater (OGMA/ToupTek); some drivers don't report it
+                entry["dew_heater_on"] = payload.get("DewHeaterOn")
+            if dev == "camera":
+                # PS-61: "waiting for cooler: X C -> Y C" / "not imaging"
+                try:
+                    from photonscript.scheduler.cooler_gate import camera_row_note
+                    entry["cooler_note"] = camera_row_note(
+                        cfg, rig, entry.get("temp_c"), entry.get("cooler_on"),
+                        str(getattr(get_armer(), "state", "") or ""))
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("cooler note skipped: %s", e)
+            if dev == "focuser" and conn and payload:
+                entry["position"] = payload.get("Position")
+                entry["temp_c"] = payload.get("Temperature")
+            if dev == "mount" and conn and payload:
+                entry["parked"] = payload.get("AtPark", payload.get("AtHome"))
+                entry["tracking"] = payload.get("TrackingEnabled",
+                                                payload.get("Tracking"))
+                entry["ra"] = payload.get("RightAscension")
+                entry["dec"] = payload.get("Declination")
+                entry["alt"] = payload.get("Altitude")
+                entry["az"] = payload.get("Azimuth")
+            if dev == "mount":
+                # PS-121: formatted pointing for the dashboard Mount row
+                # (RA in hours from ninaAPI; "-" values when not connected)
+                from photonscript.shared.mount_view import mount_view
+                entry["view"] = mount_view(payload if conn else None, conn,
+                                           lon_deg=cfg.observatory_lon, error=err)
+            if dev == "safetymonitor" and conn and payload:
+                entry["safe"] = payload.get("IsSafe")
+            if err:
+                entry["error"] = err
+            devices[dev] = entry
+        rig_entry = {
+            "rig": rig,
+            "name": rig_label(cfg, rig),
+            "nina_base_url": rc.nina_base_url,
+            "pixel_scale_arcsec": rc.pixel_scale_arcsec,
+            "image_watch_dir": getattr(rc, "image_watch_dir", ""),
+            "devices": devices,
+        }
+        # The mount lives on the RC16 instance and is shared with the
+        # piggyback; surface what the agent believes it's pointing at (the
+        # DSO name comes from the running sequence, not the mount driver).
+        if rig == RC16:
+            rig_entry["target"] = _telescope_state.current_target
+            rig_entry["session_state"] = getattr(
+                _telescope_state.session_state, "value",
+                _telescope_state.session_state)
+        rigs.append(rig_entry)
+    return {"rigs": rigs}
+
+
+@app.post("/api/rigs/connect")
+async def api_rigs_connect():
+    """Actively connect everything on every rig, then return fresh status."""
+    connect = await get_armer().connect_all_rigs()
+    status = await api_rigs()
+    return {"connect": connect, **status}
+
+
+@app.post("/api/rigs/test_capture")
+async def api_rigs_test_capture(duration: float = 2.0):
+    """Fire a short test exposure on EVERY enabled rig at the SAME time — the
+    two-camera bench test. Caps-on / bench only: it does not move the mount,
+    open the roof, or save frames, so it is safe to run while unsafe/daytime.
+    """
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          nina_capture)
+    cfg = get_config()
+
+    async def _cap(rig):
+        rc = rig_config(cfg, rig)
+        res = await nina_capture(rc.nina_base_url, duration=duration)
+        return rig, {"name": rig_label(cfg, rig),
+                     "nina_base_url": rc.nina_base_url, **res}
+
+    pairs = await _asyncio.gather(*[_cap(r) for r in rig_ids(cfg)])
+    return {"duration": duration,
+            "fired_at": datetime.utcnow().isoformat() + "Z",
+            "results": dict(pairs)}
+
+
+@app.post("/api/rigs/cool")
+async def api_rigs_cool(minutes: float = 10.0, warm: bool = False,
+                        rig: str = ""):
+    """Cool a rig's camera to its setpoint (or warm it if warm=true).
+
+    rig="" (default) does EVERY enabled rig; rig="rc16"/"piggyback" targets one
+    — the dashboard cooler toggles pass a single rig. Each rig uses its own
+    setpoint (RC16 camera_setpoint_c, piggyback piggyback_setpoint_c)."""
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
+                                          rig_setpoint, nina_cool, nina_warm)
+    cfg = get_config()
+    targets = [rig] if rig else rig_ids(cfg)
+
+    async def _do(rg):
+        rc = rig_config(cfg, rg)
+        if warm:
+            res = await nina_warm(rc.nina_base_url, minutes=min(minutes, 5.0))
+        else:
+            res = await nina_cool(rc.nina_base_url, rig_setpoint(cfg, rg),
+                                  minutes=minutes)
+        return rg, {"name": rig_label(cfg, rg),
+                    "setpoint_c": rig_setpoint(cfg, rg), **res}
+
+    pairs = await _asyncio.gather(*[_do(r) for r in targets])
+    return {"warm": warm, "results": dict(pairs)}
+
+
+@app.post("/api/rigs/dewheater")
+async def api_rigs_dewheater(on: bool, rig: str = "rc16"):
+    """Toggle a rig camera's window dew heater. The dashboard pane passes the
+    rig + desired state; returns ok:false with a detail if the driver can't
+    switch it."""
+    from photonscript.shared.rigs import rig_config, rig_label, nina_dew_heater
+    cfg = get_config()
+    rc = rig_config(cfg, rig)
+    res = await nina_dew_heater(rc.nina_base_url, on)
+    logger.info("Dew heater %s requested for %s", "ON" if on else "OFF", rig)
+    return {"rig": rig, "name": rig_label(cfg, rig), "on": on, **res}
+
+
+@app.get("/api/config")
+async def api_get_config():
+    config = get_config()
+    groups: dict[str, list] = {}
+    for attr, env_var, label, group, ftype, secret, restart in _CONFIG_FIELDS:
+        raw = getattr(config, attr, "")
+        value = _mask_secret(raw) if secret else str(raw)
+        groups.setdefault(group, []).append({
+            "env": env_var, "label": label, "type": ftype,
+            "secret": secret, "restart": restart, "value": value,
+        })
+    return [{"group": g, "fields": f} for g, f in groups.items()]
+
+
+@app.post("/api/config")
+async def api_update_config(request: Request):
+    from photonscript.shared.envfile import env_path, update_env
+
+    body = await request.json()
+    config = get_config()
+    by_env = {f[1]: f for f in _CONFIG_FIELDS}
+    casts = {"int": int, "float": float,
+             "bool": lambda v: str(v).lower() in ("1", "true", "yes", "on")}
+
+    updates: dict[str, str] = {}
+    restart_recommended = False
+    for env_var, raw in body.items():
+        field = by_env.get(env_var)
+        if field is None:
+            continue
+        attr, _, _, _, ftype, secret, restart = field
+        raw = str(raw).strip()
+        if secret and (raw == "" or raw.startswith(_MASK[:2])):
+            continue  # masked/blank secret = keep current value
+        current = str(getattr(config, attr, ""))
+        if raw == current:
+            continue
+        try:
+            typed = casts.get(ftype, str)(raw)
+        except ValueError:
+            return JSONResponse(status_code=400, content={
+                "detail": f"{env_var}: '{raw}' is not a valid {ftype}"})
+        updates[env_var] = raw
+        setattr(config, attr, typed)  # live-apply where components re-read config
+        restart_recommended = restart_recommended or restart
+
+    if updates:
+        update_env(env_path(), updates)
+        logger.info("Config updated via web UI: %s",
+                    ", ".join(k for k in updates
+                              if not by_env[k][5]) or "(secrets)")
+    return {"updated": len(updates), "restart_recommended": restart_recommended}
+
+
+@app.post("/api/pushover/test")
+async def api_pushover_test():
+    from photonscript.shared.pushover import notify
+
+    config = get_config()
+    if not config.pushover_user_key or not config.pushover_api_token:
+        return JSONResponse(status_code=400, content={
+            "ok": False,
+            "detail": "Pushover keys not set — enter them above and Save first."})
+    ok = await notify(config,
+                      "Test notification from the PhotonScript web UI. "
+                      "If you can read this, nanny alerts will reach you.",
+                      title="PhotonScript test")
+    return {"ok": ok,
+            "detail": "Sent — check your phone." if ok
+            else "Pushover API rejected the request — check both keys."}
+
+
+# ---------------------------------------------------------------------------
+# Forecast, night plan, and ARM control
+# ---------------------------------------------------------------------------
+
+_armer = None
+
+
+def get_armer():
+    global _armer
+    if _armer is None:
+        from photonscript.scheduler.armer import Armer
+        _armer = Armer(get_config())
+    return _armer
+
+
+@app.get("/api/forecast")
+async def api_forecast():
+    from photonscript.scheduler.forecast import get_forecast
+    try:
+        return await get_forecast(get_config())
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502, content={
+            "detail": f"Forecast fetch failed: {e}"})
+
+
+@app.get("/api/nightplan")
+def api_nightplan():
+    from photonscript.scheduler.night_plan import build_night_plan
+    return build_night_plan(get_config())
+
+
+@app.get("/api/arm")
+async def api_arm_status():
+    return get_armer().status()
+
+
+@app.post("/api/arm")
+async def api_arm(request: Request):
+    body = await request.json()
+    armer = get_armer()
+    if body.get("armed"):
+        # guiding: "guided" (PHD2) | "unguided" (TPoint + ProTrack; alias
+        # "encoders") | None (config default). PS-66: junk is a 400, not a
+        # silent fall back to the default mode.
+        from photonscript.scheduler.armer import norm_guiding_mode
+        guiding = body.get("guiding")
+        if guiding is not None and norm_guiding_mode(guiding) is None:
+            return JSONResponse(status_code=400, content={
+                "detail": f"unknown guiding mode {guiding!r}: use 'guided' or 'unguided'"})
+        out = await armer.arm(guiding=norm_guiding_mode(guiding))
+        if out.get("refused"):   # PS-136: WATCHING a sideloaded night
+            return JSONResponse(status_code=409, content={
+                **out, "detail": out["refused"]})
+        return out
+    return await armer.disarm()
+
+
+# ---------------------------------------------------------------------------
+# Target management: persistent projects, altitude charts, thumbnails
+# ---------------------------------------------------------------------------
+
+_store = None
+_thumb_cache: dict[str, dict] = {}
+_thumb_cache_loaded = False
+_alt_cache: dict[tuple, dict] = {}
+
+
+def _thumb_cache_path():
+    return Path(get_config().data_dir) / "thumb_cache.json"
+
+
+def _load_thumb_cache():
+    global _thumb_cache_loaded
+    if _thumb_cache_loaded:
+        return
+    _thumb_cache_loaded = True
+    p = _thumb_cache_path()
+    if p.exists():
+        try:
+            _thumb_cache.update(json.loads(p.read_text(encoding="utf-8")))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _save_thumb_cache():
+    p = _thumb_cache_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(_thumb_cache, indent=1), encoding="utf-8")
+
+
+_store_lock = threading.Lock()
+
+
+def get_store():
+    global _store
+    if _store is None:
+        with _store_lock:  # sync handlers run in worker threads now
+            if _store is None:
+                from photonscript.scheduler.project_store import ProjectStore
+                store = ProjectStore(get_config())
+                _projects.update(store.projects)  # planner + ws updates see stored projects
+                _store = store
+    return _store
+
+
+def _project_json(p) -> dict:
+    from photonscript.scheduler.project_store import default_mix, target_kind
+    d = p.model_dump(mode="json")
+    d["kind"] = target_kind(p.target)
+    d["mix"] = p.filter_mix or default_mix(d["kind"])
+    # PS-118: % from accepted seconds, each plan capped at its goal (the
+    # campaign's plan_seconds rule)
+    from photonscript.scheduler.campaign import plan_seconds
+    secs = [plan_seconds(e) for e in p.exposure_plans]
+    total = sum(g for g, _ in secs) or 1
+    d["completion_pct"] = round(sum(x for _, x in secs) / total * 100)
+    # PS-118: hours from accepted seconds (a 400 s sub on a 120 s plan is
+    # 400 s), not from the whole-sub count
+    d["hours_done"] = round(sum(e.long_seconds_done()
+                                + (e.hdr_short_acquired * e.hdr_short_seconds
+                                   if e.hdr_short_seconds else 0)
+                                for e in p.exposure_plans) / 3600, 1)
+    # PS-134: per-rig goal / done hours, so a goal with both rigs shows its
+    # RC16 line against the RC16 budget and the Piggy line against its own
+    by_rig: dict = {}
+    for e, (g, x) in zip(p.exposure_plans, secs):
+        r = by_rig.setdefault(e.rig or "rc16", {"goal_h": 0.0, "done_h": 0.0})
+        r["goal_h"] += g / 3600
+        r["done_h"] += x / 3600
+    d["hours_by_rig"] = {k: {"goal_h": round(v["goal_h"], 1),
+                             "done_h": round(v["done_h"], 1)}
+                         for k, v in by_rig.items()}
+    try:
+        from photonscript.scheduler.readiness import library_fits_by_rig
+        from photonscript.scheduler.runs import library_root, library_target_dirs
+        from photonscript.shared.rigs import rig_label
+        # PS-78: include not-yet-merged container-named folders
+        by_rig: dict = {}
+        for x in library_target_dirs(library_root(get_config()), p.target.name):
+            for rg, n in library_fits_by_rig(x).items():
+                by_rig[rg] = by_rig.get(rg, 0) + n
+        d["library_files"] = sum(by_rig.values())
+        # PS-63: split by rig so Piggy-600 OSC lights are not read as
+        # progress on RC16 filters (RC16 first)
+        d["library_by_rig"] = [
+            {"rig": rg, "label": rig_label(get_config(), rg), "n": by_rig[rg]}
+            for rg in sorted(by_rig, key=lambda r: (r != "rc16", r))]
+    except Exception:  # noqa: BLE001
+        d["library_files"] = 0
+        d["library_by_rig"] = []
+    return d
+
+
+@app.get("/api/projects2")
+def api_projects2():
+    from photonscript.scheduler.runs import nights_by_target
+    store = get_store()
+    out = sorted((_project_json(p) for p in store.projects.values()),
+                 key=lambda d: -d["priority"])
+    try:
+        # PS-129: match like the goal sync (project names + catalog ids)
+        nbt = nights_by_target(get_config(), store.projects.values())
+        for d in out:
+            d["nights"] = nbt.get(d["target"]["name"].strip().lower(), [])
+    except Exception:  # noqa: BLE001
+        for d in out:
+            d["nights"] = []
+    return out
+
+
+@app.post("/api/projects2/from_catalog")
+async def api_project_from_catalog(request: Request):
+    # PS-124: name, catalog id or alias, case / space / punctuation
+    # insensitive; the row's goal hours, mix and Piggy OSC goal apply unless
+    # the body gives budget_hours. Coordinates go to /api/projects2/custom.
+    from photonscript.scheduler import catalog
+    from photonscript.shared.astronomy import find_catalog_entry
+    body = await request.json()
+    name = body.get("name", "")
+    entry = find_catalog_entry(name)
+    if entry is None:
+        return JSONResponse(status_code=404, content={"detail": f"'{name}' not in catalog"})
+    proj, d = catalog.create_project(get_store(), entry, get_config(),
+                                     body.get("budget_hours"))
+    _projects[proj.id] = proj
+    out = _project_json(proj)
+    out["catalog_defaults"] = d
+    return out
+
+
+@app.patch("/api/projects2/{project_id}")
+async def api_project_update(project_id: str, request: Request):
+    body = await request.json()
+    store = get_store()
+    proj = store.projects.get(project_id)
+    if proj is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    priority = proj.priority + int(body["priority_delta"]) \
+        if "priority_delta" in body else body.get("priority")
+    budget = proj.budget_hours + float(body["budget_delta"]) \
+        if "budget_delta" in body else body.get("budget_hours")
+    try:
+        updated = store.update(
+            project_id, priority=priority,
+            budget_hours=budget, active=body.get("active"),
+            filter_mix=body.get("filter_mix"),
+            hdr=body.get("hdr"),
+            exposure_overrides=body.get("exposure_overrides"),
+            # PS-30: Piggy-600 OSC goal + which rig centers
+            osc_hours=(float(body["osc_hours"])
+                       if body.get("osc_hours") is not None else None),
+            driving_rig=body.get("driving_rig"),
+            drop_rc16=bool(body.get("drop_rc16", False)),
+            # PS-134: add / resize (> 0) or remove (0) the RC16 plan
+            rc16_hours=(float(body["rc16_hours"])
+                        if body.get("rc16_hours") is not None else None),
+            # PS-117 (b): light-budget fields per target
+            light_budget={k: body[k] for k in (
+                "goal_snr", "feature_signal_e_s",
+                "feature_rig", "feature_note") if k in body})
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+    _projects[project_id] = updated
+    return _project_json(updated)
+
+
+@app.delete("/api/projects2/{project_id}")
+async def api_project_delete(project_id: str):
+    get_store().delete(project_id)
+    _projects.pop(project_id, None)
+    return {"ok": True}
+
+
+# PS-111: /mosaic, /api/mosaic/* and /api/mosaics live in routers/mosaic.py
+
+
+@app.get("/api/target/altitude")
+async def api_target_altitude(name: str = "", ra_hours: float = 0.0,
+                              dec_degrees: float = 0.0):
+    """Altitude curve for tonight: local noon -> noon, 15-min grid."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, SkyCoord
+    from astropy.time import Time
+    from photonscript.shared.astronomy import (get_earth_location,
+                                               get_twilight_times)
+
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+
+    config = get_config()
+    obs = config.get_observatory()
+    now = datetime.utcnow()
+    off = _tz_off(config, now)
+
+    cache_key = (round(ra_hours, 3), round(dec_degrees, 3),
+                 (now + timedelta(hours=off)).strftime("%Y-%m-%d"))
+    if cache_key in _alt_cache:
+        cached = dict(_alt_cache[cache_key])
+        return cached
+
+    # local noon (UTC) today
+    noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+        - timedelta(hours=off) + timedelta(hours=12)
+    if noon_utc > now:
+        noon_utc -= timedelta(days=1)
+
+    times = Time(noon_utc) + np.arange(0, 24.01, 0.25) * u.hour
+    frame = AltAz(obstime=times, location=get_earth_location(obs))
+    coord = SkyCoord(ra=ra_hours * u.hourangle, dec=dec_degrees * u.deg)
+    alts = coord.transform_to(frame).alt.deg
+
+    # Darkness window for the SAME night as the noon->noon axis
+    tw = get_twilight_times(obs, noon_utc.replace(hour=0, minute=0, second=0,
+                                                  microsecond=0))
+
+    def _frac(dt):  # position 0..1 along the 24h axis
+        if not dt:
+            return None
+        return max(0.0, min(1.0, (dt - noon_utc).total_seconds() / 86400))
+
+    peak = int(np.argmax(alts))
+
+    # 30-degree crossings (rise above / dip below), with local times
+    cross30 = []
+    for i in range(len(alts) - 1):
+        a0, a1 = float(alts[i]), float(alts[i + 1])
+        if (a0 < 30 <= a1) or (a0 >= 30 > a1):
+            # linear interp for the crossing fraction
+            t = (30 - a0) / (a1 - a0) if a1 != a0 else 0
+            frac = (i + t) / (len(alts) - 1)
+            dt = noon_utc + timedelta(hours=frac * 24)
+            cross30.append({
+                "frac": round(frac, 4),
+                "dir": "up" if a1 > a0 else "down",
+                "local": (dt + timedelta(hours=off)).strftime("%I:%M %p").lstrip("0"),
+            })
+
+    _alt_cache.clear() if len(_alt_cache) > 200 else None
+    _alt_cache[cache_key] = result = {
+        "name": name,
+        "alts": [round(float(a), 1) for a in alts],
+        "labels_every_hours": 3,
+        "start_local_hour": 12,
+        "dark_start_frac": _frac(tw.get("astro_dark_start")),
+        "dark_end_frac": _frac(tw.get("astro_dark_end")),
+        "now_frac": _frac(now),
+        "transit_frac": peak / (len(alts) - 1),
+        "transit_alt": round(float(alts[peak]), 0),
+        "min_altitude": 30,
+        "cross30": cross30,
+    }
+    return result
+
+
+@app.get("/api/thumbnail")
+async def api_thumbnail(name: str = "", catalog: str = ""):
+    """Wikipedia thumbnail for a target (cached)."""
+    import httpx
+
+    _load_thumb_cache()
+    key = (name or catalog).lower()
+    if key in _thumb_cache and _thumb_cache[key].get("url"):
+        return _thumb_cache[key]
+
+    candidates = [c for c in (name, catalog, name.replace(" Nebula", "_Nebula"))
+                  if c]
+    result = {"url": None, "page": None}
+    headers = {"User-Agent": "PhotonScriptBot/0.1 (AARO observatory; astro imaging)",
+               "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=8, follow_redirects=True,
+                                 headers=headers) as client:
+        for cand in candidates:
+            title = cand.replace(" ", "_")
+            # Primary: REST summary
+            try:
+                r = await client.get(
+                    "https://en.wikipedia.org/api/rest_v1/page/summary/" + title)
+                if r.status_code == 200:
+                    data = r.json()
+                    thumb = data.get("thumbnail", {}).get("source")
+                    if thumb:
+                        result = {"url": thumb,
+                                  "page": data.get("content_urls", {})
+                                  .get("desktop", {}).get("page")}
+                        break
+            except Exception:  # noqa: BLE001
+                pass
+            # Fallback: classic MediaWiki pageimages API
+            try:
+                r = await client.get(
+                    "https://en.wikipedia.org/w/api.php",
+                    params={"action": "query", "titles": cand,
+                            "prop": "pageimages", "format": "json",
+                            "pithumbsize": 256, "redirects": 1})
+                if r.status_code == 200:
+                    pages = r.json().get("query", {}).get("pages", {})
+                    for p in pages.values():
+                        thumb = p.get("thumbnail", {}).get("source")
+                        if thumb:
+                            result = {"url": thumb,
+                                      "page": "https://en.wikipedia.org/wiki/"
+                                              + p.get("title", cand).replace(" ", "_")}
+                            break
+                if result["url"]:
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+    _thumb_cache[key] = result
+    if result["url"]:
+        _save_thumb_cache()  # persist successes to disk across restarts
+    return result
+
+
+@app.get("/api/projects2/{project_id}/astrobin_mix")
+async def api_astrobin_mix(project_id: str):
+    """Community-average filter mix for this project's target (cached)."""
+    from photonscript.scheduler.astrobin_client import AstroBinMixSuggester
+
+    store = get_store()
+    proj = store.projects.get(project_id)
+    if proj is None:
+        return JSONResponse(status_code=404, content={"detail": "not found"})
+    suggester = AstroBinMixSuggester(get_config())
+    return await suggester.suggest(proj.target.name, proj.target.catalog_id)
+
+
+_sun_cache: dict = {}
+
+
+@app.get("/api/sun")
+def api_sun():
+    """Sun altitude now + tonight's solar curve with twilight thresholds."""
+    import numpy as np
+    from astropy import units as u
+    from astropy.coordinates import AltAz, get_sun
+    from astropy.time import Time
+    from photonscript.shared.astronomy import get_earth_location
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+
+    config = get_config()
+    obs = config.get_observatory()
+    now = datetime.utcnow()
+    off = _tz_off(config, now)
+
+    cache_key = now.strftime("%Y-%m-%d-%H")  # refresh curve hourly
+    if cache_key not in _sun_cache:
+        noon_utc = now.replace(hour=0, minute=0, second=0, microsecond=0) \
+            - timedelta(hours=off) + timedelta(hours=12)
+        if noon_utc > now:
+            noon_utc -= timedelta(days=1)
+        # 48 h so the next-dusk countdown works in the morning, when
+        # tonight's dusk falls outside the chart's noon->noon window
+        times = Time(noon_utc) + np.arange(0, 48.01, 1 / 6) * u.hour  # 10-min grid
+        frame = AltAz(obstime=times, location=get_earth_location(obs))
+        alts = get_sun(times).transform_to(frame).alt.deg
+        _sun_cache.clear()
+        _sun_cache[cache_key] = {
+            "noon_utc": noon_utc,
+            "alts_full": [round(float(a), 1) for a in alts],
+        }
+    cached = _sun_cache[cache_key]
+    noon_utc, alts_full = cached["noon_utc"], cached["alts_full"]
+    alts = alts_full[:145]  # chart stays noon -> noon
+
+    # Current sun altitude via interpolation on the grid
+    frac_now = (now - noon_utc).total_seconds() / 86400
+    idx = min(int(frac_now * (len(alts) - 1)), len(alts) - 2)
+    sub = (frac_now * (len(alts) - 1)) - idx
+    alt_now = round(alts[idx] + (alts[idx + 1] - alts[idx]) * sub, 1)
+    setting = alts[idx + 1] < alts[idx]
+
+    # Next -18 crossing (descending = astro dusk), searched over the full
+    # 48 h grid so it is found even before local noon
+    minutes_to_dark = None
+    dark_at_local = None
+    for i in range(idx, len(alts_full) - 1):
+        if alts_full[i] > -18 >= alts_full[i + 1]:
+            t_cross = noon_utc + timedelta(hours=(i + 1) / 6)
+            minutes_to_dark = max(0, round((t_cross - now).total_seconds() / 60))
+            dark_at_local = (t_cross + timedelta(hours=off)).strftime("%I:%M %p")
+            break
+
+    def _local(frac):
+        dt = noon_utc + timedelta(hours=frac * 24)
+        return (dt + timedelta(hours=off)).strftime("%I:%M %p")
+
+    crossings = {}
+    labels = {0: ("sunset", "sunrise"), -6: ("civil_dusk", "civil_dawn"),
+              -12: ("naut_dusk", "naut_dawn"), -18: ("astro_dusk", "astro_dawn")}
+    for i in range(len(alts) - 1):
+        for th, (down, up) in labels.items():
+            if alts[i] > th >= alts[i + 1] and down not in crossings:
+                crossings[down] = {"frac": (i + 1) / (len(alts) - 1),
+                                   "local": _local((i + 1) / (len(alts) - 1))}
+            if alts[i] <= th < alts[i + 1] and up not in crossings:
+                crossings[up] = {"frac": (i + 1) / (len(alts) - 1),
+                                 "local": _local((i + 1) / (len(alts) - 1))}
+
+    return {
+        "alt_now": alt_now,
+        "setting": setting,
+        "minutes_to_astro_dark": minutes_to_dark,
+        "dark_at_local": dark_at_local,
+        "now_frac": max(0.0, min(1.0, frac_now)),
+        "alts": alts,
+        "crossings": crossings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Imaging Runs: plan vs actual, night score, thumbnails
+# ---------------------------------------------------------------------------
+
+@app.get("/runs/{night}", response_class=HTMLResponse)
+async def runs_page_night(request: Request, night: str):
+    return templates.TemplateResponse(request, "runs.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
+@app.get("/runs", response_class=HTMLResponse)
+async def runs_page(request: Request):
+    return templates.TemplateResponse(request, "runs.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
+@app.get("/calibration", response_class=HTMLResponse)
+async def calibration_page(request: Request):
+    return templates.TemplateResponse(request, "calibration.html", {
+        "observatory": get_config().get_observatory(),
+        "version": VERSION,
+    })
+
+
+@app.get("/api/runs")
+def api_runs():
+    from photonscript.scheduler.runs import list_runs, _load_subs
+    config = get_config()
+    nights = list_runs(config)
+    pending = _syncthing_pending_names()
+    for n in nights:
+        if not n["subs_logged"]:
+            n.update(review=0, syncing=None, transferred=None)
+            continue
+        subs = _load_subs(config, n["date"])
+        n["review"] = sum(1 for s in subs
+                          if s.get("passed_qa") and not s.get("reviewed"))
+        acc = [s for s in subs
+               if s.get("passed_qa") and s.get("reviewed")]
+        if pending is not None and acc:
+            sy = sum(1 for s in acc
+                     if Path(s.get("abs_path") or s.get("file") or "").name
+                     in pending)
+            n["syncing"] = sy
+            # a capped (partial) list can't prove a file has transferred
+            n["transferred"] = (None if _remoteneed_cache.get("capped")
+                                else len(acc) - sy)
+        else:
+            n["syncing"] = None
+            n["transferred"] = len(acc) if acc else None
+    return nights
+
+
+@app.get("/api/trends")
+def api_trends(nights: int = 14):
+    """Cross-night data-quality trends + any systematic-fault findings (polar
+    drift, optical tilt, soft focus) that per-frame QA can't see."""
+    from photonscript.scheduler.trends import analyze_trends, flexure_nights
+    n = min(max(nights, 1), 60)
+    out = analyze_trends(get_config(), nights=n)
+    out["flexure"] = flexure_nights(get_config(), nights=n)  # PS-96
+    return out
+
+
+@app.get("/api/flexure")
+def api_flexure(date: str, refresh: bool = False):
+    """PS-96: Piggy-600 vs RC16 differential flexure for one night (the
+    evening date): paired subs, per-block drift rates ("/min) for both rigs
+    and their difference, shape comparison per pair, ranked causes. Served
+    from the cache the daytime backfill writes; refresh=true recomputes from
+    the stored solves (never runs ASTAP from a request)."""
+    from photonscript.scheduler.flexure import build_report, cached_report
+    if not refresh:
+        hit = cached_report(get_config(), date)
+        if hit is not None:
+            return hit
+    return build_report(get_config(), date, solve=False)
+
+
+@app.post("/api/runs/archive-before")
+def api_runs_archive_before(payload: dict = Body(default={})):
+    """Archive every run before a cutoff date (default 2026-09-01) so old
+    nights collapse out of the sidenav, leaving the current season. Archiving
+    only hides — it never deletes FITS or grades."""
+    from photonscript.scheduler.runs import archive_before
+    cutoff = str(payload.get("date") or "2026-09-01")
+    return archive_before(get_config(), cutoff)
+
+
+@app.post("/api/runs/{date}/archive")
+def api_run_archive(date: str, payload: dict = Body(default={})):
+    """Archive / unarchive one night (hide it from the sidenav)."""
+    from photonscript.scheduler.runs import set_archived
+    return set_archived(get_config(), date,
+                        bool(payload.get("archived", True)))
+
+
+_remoteneed_cache: dict = {"t": 0.0, "names": None}
+
+
+# PS-75: the dashboard polls /api/sync/queue every 30 s and every poll older
+# than 30 s kicked a walk, so with a 45k-file backlog the scheduler walked
+# remoteneed back to back all day (40 pages, 60 to 126 s each, always cut at
+# 20,000 files) and the service showed ~0.8 to 2.3 s loop-lag spikes as each
+# walk finished (GIL + garbage collection over ~20k parsed entries). Now:
+# - a walk is due at most every _REMOTENEED_FRESH_S (10 min), every
+#   _REMOTENEED_CAPPED_S (15 min) when the last walk hit the cap;
+# - before a capped re-walk the refresh thread asks /rest/db/completion
+#   (one cheap call) and skips the walk while needItems has not dropped;
+# - no walks while the armer is active (the night loop owns the machine);
+# - totals come from completion, and a capped list is treated as a partial
+#   answer (a file missing from it is "unknown", not "transferred").
+_REMOTENEED_PAGES = 40
+_REMOTENEED_PERPAGE = 500
+_REMOTENEED_CAP = _REMOTENEED_PAGES * _REMOTENEED_PERPAGE
+_REMOTENEED_FRESH_S = 600       # uncapped answer: re-walk after 10 min
+_REMOTENEED_CAPPED_S = 900      # capped answer: re-check after 15 min
+_REMOTENEED_STALE_OK_S = 1800   # serve a stale answer this long
+_REMOTENEED_FAIL_BACKOFF_S = 600  # after a failed walk, wait before retrying
+_REMOTENEED_PAGE_TIMEOUT_S = 30   # per page; only ever runs off-request now
+_REMOTENEED_SKIP_WHILE_ARMED = True
+_remoteneed_refresh_lock = threading.Lock()
+
+
+def _syncthing_settings():
+    cfg = get_config()
+    url = getattr(cfg, "syncthing_url", "") or ""
+    key = getattr(cfg, "syncthing_api_key", "") or ""
+    folder = getattr(cfg, "syncthing_folder_id", "") or ""
+    device = getattr(cfg, "syncthing_device_id", "") or ""
+    if not (url and key and folder and device):
+        return None
+    return url, key, folder, device
+
+
+def _armer_active() -> bool:
+    """A night in progress, a watched sideloaded one included (PS-152)."""
+    try:
+        from photonscript.scheduler.armer import LIVE_STATES
+        return (_armer is not None
+                and getattr(_armer, "state", "DISARMED") in LIVE_STATES)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _remoteneed_walk_due(cache: dict, now: float, armed: bool) -> bool:
+    """Pure cadence rule (see the PS-75 note above)."""
+    if armed and _REMOTENEED_SKIP_WHILE_ARMED:
+        return False
+    if now - cache.get("fail_t", 0.0) < _REMOTENEED_FAIL_BACKOFF_S:
+        return False
+    if cache.get("names") is None:
+        return True
+    period = (_REMOTENEED_CAPPED_S if cache.get("capped")
+              else _REMOTENEED_FRESH_S)
+    return now - cache.get("checked_t", cache.get("t", 0.0)) >= period
+
+
+def _syncthing_need(settings) -> Optional[dict]:
+    """{"items", "bytes"} the desktop still needs, from /rest/db/completion
+    (one cheap call, unlike the paged remoteneed walk). None on failure."""
+    import httpx
+    url, key, folder, device = settings
+    try:
+        with httpx.Client(timeout=10, headers={"X-API-Key": key}) as cl:
+            r = cl.get(url.rstrip("/") + "/rest/db/completion",
+                       params={"folder": folder, "device": device})
+            d = r.json()
+            return {"items": int(d.get("needItems", 0)),
+                    "bytes": int(d.get("needBytes", 0))}
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _refresh_remoteneed(settings) -> Optional[set]:
+    """Page through Syncthing /rest/db/remoteneed (up to 40 x 500 entries)
+    and store the result in _remoteneed_cache. None on failure (the failure
+    time is recorded so callers back off instead of hammering Syncthing).
+    Runs in the refresh thread, never on the event loop."""
+    import time as _time
+    import httpx
+    url, key, folder, device = settings
+    t0 = _time.monotonic()
+    pages = 0
+    try:
+        names: set = set()
+        entries: list = []
+        capped = False
+        with httpx.Client(timeout=_REMOTENEED_PAGE_TIMEOUT_S,
+                          headers={"X-API-Key": key}) as cl:
+            for page in range(1, _REMOTENEED_PAGES + 1):
+                pages = page
+                r = cl.get(url.rstrip("/") + "/rest/db/remoteneed",
+                           params={"folder": folder, "device": device,
+                                   "page": page,
+                                   "perpage": _REMOTENEED_PERPAGE})
+                d = r.json()
+                batch = d.get("files") or []
+                if not isinstance(batch, list):
+                    batch = []
+                for f in batch:
+                    if isinstance(f, dict):
+                        n, sz = f.get("name", ""), int(f.get("size", 0))
+                    else:
+                        n, sz = str(f), 0
+                    names.add(Path(n).name)
+                    entries.append((n, sz))
+                del d, batch
+                if len(entries) < page * _REMOTENEED_PERPAGE:
+                    break
+            else:
+                capped = True
+        took = _time.monotonic() - t0
+        now = _time.time()
+        _remoteneed_cache.update(t=now, checked_t=now, names=names,
+                                 entries=entries, capped=capped,
+                                 fail_t=0.0, last_error="",
+                                 took_s=round(took, 1))
+        if took > 5:
+            logger.info("Syncthing remoteneed walk: %s files, %d page(s), "
+                        "%.1f s", f"{len(entries)}+" if capped
+                        else len(entries), pages, took)
+        return names
+    except Exception as e:  # noqa: BLE001
+        took = _time.monotonic() - t0
+        _remoteneed_cache.update(fail_t=_time.time(),
+                                 last_error=f"{type(e).__name__}: {e}",
+                                 took_s=round(took, 1))
+        logger.warning("Syncthing remoteneed walk failed after %.1f s on page "
+                       "%d: %s: %s", took, pages, type(e).__name__, e)
+        return None
+
+
+def _refresh_remoteneed_maybe(settings) -> None:
+    """Refresh-thread body: ask completion for the true backlog, then walk
+    remoteneed unless the last walk was capped and the backlog has not
+    drained since (the walk would return the same 20,000 names)."""
+    import time as _time
+    cache = _remoteneed_cache
+    need = _syncthing_need(settings)
+    if need is not None:
+        cache.update(need_items=need["items"], need_bytes=need["bytes"])
+    prev = cache.get("need_at_walk")
+    if (need is not None and cache.get("capped")
+            and cache.get("names") is not None and prev is not None
+            and need["items"] >= _REMOTENEED_CAP and need["items"] >= prev):
+        # The listed files are still pending, so the partial answer stays
+        # valid (anything not listed is reported as unknown anyway).
+        now = _time.time()
+        cache.update(checked_t=now, t=now)
+        logger.info("Syncthing backlog %d files, not draining; skipping the "
+                    "remoteneed walk", need["items"])
+        return
+    if _refresh_remoteneed(settings) is not None:
+        cache["need_at_walk"] = need["items"] if need is not None else None
+
+
+def _refresh_remoteneed_bg(settings) -> None:
+    """Refresh in a daemon thread; at most one refresh in flight."""
+    if not _remoteneed_refresh_lock.acquire(blocking=False):
+        return
+
+    def _run():
+        try:
+            _refresh_remoteneed_maybe(settings)
+        finally:
+            _remoteneed_refresh_lock.release()
+
+    threading.Thread(target=_run, name="remoteneed-refresh", daemon=True).start()
+
+
+def _syncthing_pending_names():
+    """Basenames the DESKTOP still needs from the Library share.
+    None = can't tell (not configured, unreachable, or not fetched yet).
+    When _remoteneed_cache["capped"] is set the set is PARTIAL: a name in it
+    is pending, a name missing from it is unknown (see _transfer_state).
+
+    NEVER blocks a request on Syncthing: the walk runs in a background
+    thread on the PS-75 cadence and the last answer is served meanwhile, up
+    to _REMOTENEED_STALE_OK_S old."""
+    import time as _time
+    settings = _syncthing_settings()
+    if settings is None:
+        return None
+    now = _time.time()
+    names = _remoteneed_cache.get("names")
+    age = now - _remoteneed_cache.get("t", 0.0)
+    if _remoteneed_walk_due(_remoteneed_cache, now, _armer_active()):
+        _refresh_remoteneed_bg(settings)
+    return names if (names is not None and age < _REMOTENEED_STALE_OK_S) else None
+
+
+def _transfer_state(base: str, pending: Optional[set]) -> Optional[str]:
+    """'pending' / 'done' / None (unknown) for one accepted sub."""
+    if pending is None:
+        return None
+    if base in pending:
+        return "pending"
+    return None if _remoteneed_cache.get("capped") else "done"
+
+
+@app.post("/api/library/archive")
+def api_library_archive(payload: dict = Body(default={})):
+    """Plan (default) or apply ({"apply": true}) moving Library nights before
+    `before` out of the Syncthing share. See library_archive.py."""
+    from photonscript.scheduler.library_archive import run_archive
+    try:
+        return run_archive(get_config(), str(payload.get("before", "")),
+                           str(payload.get("calibration", "flats")),
+                           apply=bool(payload.get("apply", False)),
+                           dest=payload.get("dest") or None)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+
+
+@app.get("/api/runs/{date}")
+def api_run_detail(date: str, backfill: bool = True):
+    from photonscript.scheduler.runs import night_detail
+    d = night_detail(get_config(), date, backfill=backfill)
+    from photonscript.scheduler.routers.review import add_goal_totals
+    add_goal_totals(d["table"])  # goal context: campaign totals per target+filter
+    try:  # PS-88: the night's guiding from PHD2's guide log, top findings
+        from photonscript.scheduler.phd2_analysis import compact, night_analysis
+        d["guiding"] = compact(night_analysis(get_config(), date=date,
+                                              with_subs=False))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("guiding analysis skipped for %s: %s", date, e)
+        d["guiding"] = {"ok": False, "note": f"guide-log analysis failed: {e}"}
+    try:  # PS-95: tilt / collimation from the star sidecars (cached)
+        from photonscript.scheduler import optics_report
+        d["optics"] = optics_report.compact(
+            optics_report.night_optics_cached(get_config(), date))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("optics report skipped for %s: %s", date, e)
+        d["optics"] = {"ok": False, "note": f"optics report failed: {e}"}
+    pending = _syncthing_pending_names()
+    try:  # PS-91 / PS-92: the live guard's episodes and the pulse self-test
+        from photonscript.scheduler.routers.phd2 import guard_summary
+        g = guard_summary(get_config(), date)
+        g.pop("list", None)
+        d["guiding"]["guard"] = g
+        from photonscript.scheduler.routers.phd2 import selftest_summary
+        d["guiding"]["selftest"] = selftest_summary(get_config(), date)  # PS-92
+        from photonscript.scheduler.routers.phd2 import calibration_summary
+        d["guiding"]["calibration"] = calibration_summary(get_config(), date)  # PS-93
+        from photonscript.scheduler.phd2_audit import summary as audit_summary
+        d["guiding"]["audit"] = audit_summary(get_config(), date)  # PS-89
+        from photonscript.scheduler.phd2_tuning import summary as tune_summary
+        d["guiding"]["tuning"] = tune_summary(get_config(), date)  # PS-90
+        from photonscript.scheduler.thesky_audit import summary as thesky_summary
+        d["guiding"]["thesky"] = thesky_summary(get_config(), date)  # PS-104
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("guard summary skipped for %s: %s", date, e)
+    for s in d["subs"]:
+        if s.get("passed_qa") and s.get("reviewed"):
+            base = Path(s.get("abs_path") or s.get("file") or "").name
+            s["transfer"] = _transfer_state(base, pending)
+    try:  # PS-67: per-sub pointing + the night's pointing summary
+        from photonscript.scheduler.routers.pointing import merge_night
+        merge_night(get_config(), date, d)
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("pointing merge skipped for %s: %s", date, e)
+    try:  # PS-96: Piggy-600 vs RC16 differential flexure (cached report)
+        from photonscript.scheduler.flexure import compact as fx_compact
+        from photonscript.scheduler.flexure import fresh_report
+        d["flexure"] = fx_compact(fresh_report(get_config(), date))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("flexure report skipped for %s: %s", date, e)
+        d["flexure"] = {"ok": False, "note": f"flexure report failed: {e}"}
+    try:  # PS-157: the dawn filing record (named, auto-approved, filed)
+        from photonscript.scheduler.dawn_autofile import load_record
+        d["autofile"] = load_record(get_config(), date)
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("autofile record skipped for %s: %s", date, e)
+    try:  # PS-27: Piggy-600 split-pointing rate (straddled / attempted)
+        from photonscript.scheduler.split_guard import night_split_summary
+        d["split_pointing"] = night_split_summary(get_config(), date,
+                                                  subs=d.get("subs"))
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("split summary skipped for %s: %s", date, e)
+    return d
+
+
+@app.post("/api/runs/{date}/regrade")
+async def api_run_regrade(date: str, payload: dict = Body(default={}),
+                          discard_manual: bool = False):
+    """Re-measure and re-judge every sub of the night (e.g. after a grading
+    algorithm fix or installing sep). PS-141: a sub a person decided keeps
+    the verdict; {"discard_manual": true} (or ?discard_manual=true) is the
+    old wipe, manual verdicts included."""
+    from photonscript.scheduler.runs import regrade_night
+    dm = bool(discard_manual or (payload or {}).get("discard_manual"))
+    return {"ok": True, **regrade_night(get_config(), date,
+                                        discard_manual=dm)}
+
+
+@app.post("/api/regrade/all")
+async def api_regrade_all(payload: dict = Body(default={})):
+    """Re-grade every night folder since a date (default: all). Sequential;
+    safe to fire and forget. PS-141: manual verdicts are kept unless
+    payload["discard_manual"] (the old wipe)."""
+    from photonscript.scheduler.runs import start_regrade_all
+    return start_regrade_all(get_config(),
+                             since=str(payload.get("since") or ""),
+                             discard_manual=bool(payload.get("discard_manual")))
+
+
+@app.get("/api/regrade/all")
+async def api_regrade_all_status():
+    from photonscript.scheduler.runs import regrade_all_status
+    return regrade_all_status()
+
+
+@app.get("/api/campaign")
+async def api_campaign(days: int = 14):
+    """14-night plan toward goal completion (PS-30 v2: 10-min visibility
+    slots, one moon rule, rig-aware goals, season and calibration status)."""
+    from photonscript.scheduler.campaign import build_campaign
+    from photonscript.scheduler.forecast import get_forecast
+    config = get_config()
+    fc = None
+    try:
+        fc = await get_forecast(config)
+    except Exception:  # noqa: BLE001 — climatology-only campaign
+        pass
+    from photonscript.scheduler.campaign import suggest_targets
+
+    def _build():
+        c = build_campaign(config, get_store(), forecast=fc,
+                           days=min(max(days, 7), 28))
+        try:  # PS-30 (PS-14): Pushover once when a goal completes
+            from photonscript.scheduler.campaign import notify_transitions
+            notify_transitions(config, c["goals"])
+        except Exception as e:  # noqa: BLE001
+            logger.warning("campaign completion check failed: %s", e)
+        try:
+            c["suggestions"] = suggest_targets(config, get_store(), c)
+        except Exception:  # noqa: BLE001
+            c["suggestions"] = []
+        return c
+
+    return await asyncio.to_thread(_build)
+
+
+@app.post("/api/campaign/dismiss")
+async def api_campaign_dismiss(payload: dict = Body(...)):
+    from photonscript.scheduler.campaign import dismiss_target
+    dismiss_target(get_config(), payload.get("name", ""))
+    return {"ok": True}
+
+
+@app.get("/api/activity")
+def api_activity(limit: int = 8):
+    """Newest graded subs for the current night (local evening date)."""
+    from photonscript.shared.localtime import utc_offset_hours
+    from photonscript.scheduler.runs import _load_subs
+    config = get_config()
+    now_local = datetime.utcnow() + timedelta(
+        hours=utc_offset_hours(config, datetime.utcnow()))
+    # before local noon, we are still "last night"
+    night = (now_local - timedelta(hours=12)).strftime("%Y-%m-%d")
+    subs = _load_subs(config, night)
+    keep = ("time", "filter", "exp_s", "hfr", "stars", "background",
+            "passed_qa", "target")
+    return {"night": night,
+            "subs": [{k: s.get(k) for k in keep} for s in subs[-limit:]][::-1]}
+
+
+@app.get("/api/sync")
+async def api_sync():
+    """Desktop transfer status via the Syncthing REST API (optional).
+
+    Also reports free space on the capture drive (image_watch_dir) so the
+    imaging-run view shows how much headroom a night has before the disk fills
+    — independent of whether Syncthing is configured.
+    """
+    import httpx
+    import shutil as _sh
+    cfg = get_config()
+    # Free space on the drive NINA writes FITS to — the disk that stops an
+    # imaging run when it fills. Best-effort; never fatal.
+    disk = None
+    try:
+        cap_path = str(getattr(cfg, "image_watch_dir", "") or "")
+        if cap_path:
+            probe = (cap_path if Path(cap_path).exists()
+                     else (Path(cap_path).anchor or cap_path))
+            du = _sh.disk_usage(probe)
+            disk = {"path": cap_path,
+                    "free_gb": round(du.free / 1e9, 1),
+                    "total_gb": round(du.total / 1e9, 1),
+                    "percent_used": round(du.used / du.total * 100, 1)}
+    except Exception:  # noqa: BLE001
+        disk = None
+    url = getattr(cfg, "syncthing_url", "") or ""
+    key = getattr(cfg, "syncthing_api_key", "") or ""
+    folder = getattr(cfg, "syncthing_folder_id", "") or ""
+    device = getattr(cfg, "syncthing_device_id", "") or ""
+    if not (url and key and folder and device):
+        return {"configured": False, "disk": disk}
+    try:
+        async with httpx.AsyncClient(timeout=6,
+                                     headers={"X-API-Key": key}) as cl:
+            r = await cl.get(url.rstrip("/") + "/rest/db/completion",
+                             params={"folder": folder, "device": device})
+            d = r.json()
+            folder_path = None
+            try:
+                rf = await cl.get(url.rstrip("/") + "/rest/config/folders")
+                for f in rf.json():
+                    if f.get("id") == folder:
+                        folder_path = str(Path(f.get("path", "")).expanduser()
+                                          .resolve())
+            except Exception:  # noqa: BLE001
+                pass
+        from photonscript.scheduler.runs import library_root
+        from photonscript.scheduler import sync_batch
+        lib = str(library_root(get_config()).expanduser().resolve())
+        library_synced = bool(folder_path) and \
+            lib.lower().startswith(folder_path.lower())
+        need_items = d.get("needItems", 0)
+        need_bytes = d.get("needBytes", 0)
+        # batch = "N of M this transfer", draining to 100% (see sync_batch)
+        batch = sync_batch.annotate(get_config(), need_items, need_bytes)
+        # Alarm once when the batch first stalls (pending not draining) — a
+        # wedged transfer loop was previously only *reported*, never flagged.
+        if batch.get("stall_new"):
+            from photonscript.shared.pushover import notify
+            try:
+                await notify(
+                    get_config(),
+                    f"Transfer STALLED — {batch.get('pending_items')} files still "
+                    f"pending and not draining for ~{batch.get('stalled_min')} min. "
+                    "Check Syncthing / the librarian transfer loop on the scope PC.",
+                    title="PhotonScript transfer", priority=1)
+            except Exception:  # noqa: BLE001
+                pass
+        return {"configured": True,
+                "completion_pct": round(float(d.get("completion", 0)), 1),
+                "need_items": need_items,
+                "need_bytes": need_bytes,
+                "folder_path": folder_path,
+                "library_path": lib,
+                "library_synced": library_synced,
+                "disk": disk,
+                "batch": batch}
+    except Exception as e:  # noqa: BLE001
+        return {"configured": True, "error": str(e), "disk": disk}
+
+
+@app.post("/api/sync/reset")
+def api_sync_reset():
+    """Start a fresh transfer batch — the dashboard 'reset' control."""
+    from photonscript.scheduler import sync_batch
+    return {"ok": True, "batch": sync_batch.mark_reset(get_config())}
+
+
+@app.get("/api/sync/queue")
+def api_sync_queue():
+    """What's still moving to the desktop, grouped by folder."""
+    names = _syncthing_pending_names()  # kicks a background refresh when stale
+    if names is None:
+        return {"configured": False, "groups": [], "total_files": 0,
+                "total_bytes": 0}
+    entries = _remoteneed_cache.get("entries") or []
+    groups: dict[str, dict] = {}
+    for name, size in entries:
+        parts = name.replace("\\", "/").split("/")
+        key = "/".join(parts[:2]) if len(parts) > 1 else (parts[0] or "(root)")
+        g = groups.setdefault(key, {"folder": key, "files": 0, "bytes": 0})
+        g["files"] += 1
+        g["bytes"] += size
+    out = sorted(groups.values(), key=lambda g: -g["bytes"])
+    capped = bool(_remoteneed_cache.get("capped"))
+    listed = len(entries)
+    # PS-43: the hourly background census (kicked by /api/sync/hygiene)
+    # pages the WHOLE backlog, counts only; when it is complete the folder
+    # breakdown is too.
+    from photonscript.scheduler import sync_hygiene as _sh
+    census = _sh._cache.get("census")
+    folders_from = "walk"
+    if census and census.get("complete"):
+        out, folders_from = _sh.queue_groups(census), "census"
+        listed = int(census.get("listed_files") or 0)
+    need = _remoteneed_cache.get("need_items")
+    # PS-75: the true total comes from /rest/db/completion; the folder
+    # breakdown only covers the files the (capped) walk listed.
+    total = need if isinstance(need, int) and need >= listed else listed
+    return {"configured": True, "groups": out[:20],
+            "more_groups": max(0, len(out) - 20),
+            "total_files": total,
+            "listed_files": listed,
+            "partial": capped and folders_from != "census",
+            "total_bytes": (_remoteneed_cache.get("need_bytes")
+                            if ((capped or folders_from == "census")
+                                and _remoteneed_cache.get("need_bytes"))
+                            else sum(s for _, s in entries)),
+            "walked_at": _remoteneed_cache.get("t") or None,
+            "folders_from": folders_from,
+            "census_at": census.get("t") if census else None}
+
+
+@app.get("/api/calibration/health")
+def api_calibration_health(rig: str = "rc16"):
+    from photonscript.scheduler.calibration import calibration_health
+    from photonscript.shared.rigs import PIGGYBACK, rig_config
+    cfg = get_config()
+    if rig == PIGGYBACK and not getattr(cfg, "piggyback_image_watch_dir", ""):
+        # Without its own watch dir the piggyback config falls back to the
+        # RC16's folders, so this used to report the RC16's frames as the
+        # piggyback's (PS-36). Say so instead of reporting healthy.
+        return JSONResponse(status_code=409, content={
+            "detail": "piggyback_image_watch_dir is not set; can't report "
+                      "Piggy-600 calibration (it would show the RC16's frames)"})
+    return calibration_health(rig_config(cfg, rig))
+
+
+def _focus_model_summary(cfg, rig: str = "rc16") -> dict:
+    """PS-76 focus model read-out; never breaks /api/focus."""
+    try:
+        from photonscript.scheduler import focus_model as fm
+        return fm.piggyback_summary(cfg) if rig == "piggyback" else fm.summary(cfg)
+    except Exception as e:  # noqa: BLE001
+        return {"error": str(e)}
+
+
+@app.get("/api/focus/calibration-sequence")
+def api_focus_calibration_sequence(name: str = "NGC 7789", ra: float = 23.957,
+                                   dec: float = 56.708, rounds: int = 1):
+    """PS-76: download a NINA sequence that measures every RC16 filter's focus
+    offset against L (bracketed AF runs on one rich star field). Generated
+    only; nothing is loaded, armed or sent to NINA. Turn OFF the NINA profile
+    Autofocus filter before running it."""
+    from fastapi.responses import Response
+    from photonscript.scheduler.nina_sequence_json import (
+        generate_focus_calibration_json)
+    rounds = max(1, min(int(rounds), 3))
+    body = generate_focus_calibration_json(name, ra, dec, rounds)
+    safe = "".join(c if c.isalnum() else "_" for c in name)
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition":
+            f'attachment; filename="focus_calibration_{safe}.json"'})
+
+
+def _tracking_test_params(filters: str, exposures: str, repeats: int):
+    fl = [f.strip() for f in (filters or "").split(",") if f.strip()]
+    ex = []
+    for tok in (exposures or "").split(","):
+        try:
+            ex.append(float(tok))
+        except ValueError:
+            continue
+    return fl, ex, max(1, min(int(repeats or 1), 10))
+
+
+def _tracking_test_field(name: str, ra: float | None, dec: float | None,
+                         filters: list, exposures: list, repeats: int,
+                         at: str = "") -> dict:
+    """The field for the PS-84 tracking test: the caller's name/ra/dec when
+    both coordinates are given, else pick_target (50 to 70 deg up near the
+    meridian, not crossing it during the test; Heart Nebula fallback)."""
+    from photonscript.scheduler import tracking_test as tt
+    from photonscript.scheduler.nina_sequence_json import (
+        _tracking_test_exposures, _tracking_test_filters,
+        tracking_test_duration_s)
+    n_f = len(_tracking_test_filters(filters)) or 1
+    dur = tracking_test_duration_s(n_f, _tracking_test_exposures(exposures),
+                                   repeats)
+    if ra is not None and dec is not None:
+        return {"name": name or "Custom field", "ra_hours": float(ra),
+                "dec_degrees": float(dec), "source": "request",
+                "est_minutes": round(dur / 60),
+                "reason": "coordinates given in the request"}
+    when = None
+    if at:
+        try:
+            when = datetime.fromisoformat(at.replace("Z", "")).replace(
+                tzinfo=None)
+        except ValueError:
+            when = None
+    projects = [p for p in _stored_projects().values()
+                if getattr(p, "active", False)]
+    pick = tt.pick_target(get_config(), when, dur, projects)
+    if name:  # a name with no coordinates: keep the name only if it is known
+        for c in tt._candidates(projects):
+            if c["name"].lower() == name.strip().lower():
+                pick = {**pick, "name": c["name"], "ra_hours": c["ra_hours"],
+                        "dec_degrees": c["dec_degrees"], "source": "named",
+                        "reason": "named field from the catalog / projects"}
+                break
+    return pick
+
+
+@app.get("/api/tracking-test/target")
+def api_tracking_test_target(name: str = "", ra: float | None = None,
+                             dec: float | None = None,
+                             filters: str = "L,Ha",
+                             exposures: str = "60,120,180,300",
+                             repeats: int = 2, at: str = ""):
+    """PS-84: the field the tracking-test sequence would use right now (or
+    at ?at=<UTC ISO>), with its altitude, hour angle and the test length.
+    Read-only."""
+    fl, ex, rep = _tracking_test_params(filters, exposures, repeats)
+    return _tracking_test_field(name, ra, dec, fl, ex, rep, at)
+
+
+@app.get("/api/tracking-test/sequence")
+def api_tracking_test_sequence(name: str = "", ra: float | None = None,
+                               dec: float | None = None,
+                               filters: str = "L,Ha",
+                               exposures: str = "60,120,180,300",
+                               repeats: int = 2, at: str = ""):
+    """PS-84: download a NINA sequence for the unguided tracking test
+    (TPoint + ProTrack check): StopGuiding, cool, slew + center, AF on L,
+    then an L and an Ha exposure ladder (`repeats` subs per length) with a
+    re-center and L refocus + filter offset between filters. Generated and
+    lint-gated only; nothing is loaded, armed or sent to NINA. Omit
+    name/ra/dec to have a field picked (50 to 70 deg up near the meridian;
+    Heart Nebula fallback)."""
+    from fastapi.responses import Response
+    from photonscript.scheduler.nina_sequence_json import (
+        generate_tracking_test_json)
+    from photonscript.scheduler.sequence_lint import lint as _lint, format_result
+    fl, ex, rep = _tracking_test_params(filters, exposures, repeats)
+    field = _tracking_test_field(name, ra, dec, fl, ex, rep, at)
+    body = generate_tracking_test_json(
+        field["name"], field["ra_hours"], field["dec_degrees"],
+        filters=fl, exposures=ex, repeats=rep)
+    result = _lint(json.loads(body), guided=False)
+    if not result.ok:
+        return JSONResponse(status_code=500, content={
+            "detail": "Lint FAILED - refusing to serve the tracking test",
+            "findings": format_result(result), "field": field})
+    safe = "".join(c if c.isalnum() else "_" for c in field["name"])
+    return Response(body, media_type="application/json", headers={
+        "Content-Disposition":
+            f'attachment; filename="tracking_test_{safe}.json"',
+        "X-PhotonScript-Field": safe})
+
+
+@app.get("/api/tracking-test/report")
+def api_tracking_test_report(date: str = "", pa: float | None = None,
+                             headers: bool = True):
+    """PS-84: that night's tracking-test subs grouped by filter and exposure
+    (n, eccentricity, HFR, FWHM, stars, PS-21 pass rates, altitude, pier
+    side, elongation direction) with the longest exposure that passes
+    unguided per filter and a recommendation. date = the runs-page night
+    (default: tonight). pa = camera position angle (NINA plate-solve
+    rotation) to label the elongation axis RA or Dec."""
+    from photonscript.scheduler.tracking_test import build_report
+    return build_report(get_config(), date or None, read_headers=headers,
+                        pa_override=pa)
+
+
+@app.get("/api/optics/report")
+def api_optics_report(date: str = "", rig: str = "rc16", refresh: bool = False):
+    """PS-95: one night's RC16 tilt / collimation report from the PS-80 star
+    sidecars: per 3x3 zone FWHM-eq (arcsec), eccentricity and stretch
+    direction, the field fit (tilt size and soft side, curvature, sharp
+    spot), per-filter verdicts (tracking / tilt / curvature / collimation /
+    fine) and a plain-language recommendation. date = the runs-page night
+    (default: the night that started last). Cached; refresh=true rebuilds."""
+    from photonscript.scheduler import optics_report
+    from photonscript.scheduler.tracking_test import default_night
+    d = date or default_night(get_config())
+    if refresh:
+        return optics_report.night_optics(get_config(), d, rig or "rc16")
+    return optics_report.night_optics_cached(get_config(), d, rig or "rc16")
+
+
+@app.get("/api/optics/trend")
+def api_optics_trend(nights: int = 30, compute: bool = False):
+    """PS-95: tilt size and direction per night from the cached optics
+    reports, the night the signature changed (a collimation or tilt fix
+    shows up here) and any persistent finding. compute=true first builds
+    missing nights from their sidecars."""
+    from photonscript.scheduler.trends import optics_trend
+    return optics_trend(get_config(), nights=max(1, min(nights, 365)),
+                        compute_missing=compute)
+
+
+@app.get("/api/focus")
+def api_focus():
+    """Per-rig autofocus seed history for the calibration Focus panel.
+
+    Pure local reads (no NINA probe) — the live focuser position comes from
+    /api/rigs. The two rigs stay SEPARATE: RC16 = per-filter focus_seeds on its
+    own EAF; OSC piggyback = single-channel self-harvested seeds on a DIFFERENT
+    EAF (different absolute range), so they are never mixed.
+    """
+    from photonscript.scheduler import focus_seeds as fs
+    from photonscript.scheduler import piggyback_focus as pf
+    cfg = get_config()
+
+    # --- RC16: per-filter records + a median seed per filter ---
+    rc_recs = [r for r in fs.load_records(cfg) if r.get("focpos") is not None]
+    by_filter: dict[str, list] = {}
+    for r in rc_recs:
+        by_filter.setdefault(str(r.get("filter", "?")), []).append({
+            "focpos": r.get("focpos"), "foctemp": r.get("foctemp"),
+            "date": r.get("date"), "source": r.get("source")})
+    rc_filters = {}
+    for filt, pts in sorted(by_filter.items()):
+        try:
+            seed = fs.seed_for(filt, None, cfg)
+        except Exception:  # noqa: BLE001
+            seed = None
+        rc_filters[filt] = {"seed": seed, "points": pts}
+
+    # --- OSC piggyback: single channel, its own store ---
+    pb_recs = [{"focpos": r.get("focpos"), "foctemp": r.get("foctemp"),
+                "n": r.get("n"), "date": r.get("date"), "source": r.get("source")}
+               for r in pf._load(cfg) if r.get("focpos") is not None]
+    pb_min = int(getattr(cfg, "piggyback_focpos_min", 0) or 0)
+    pb_max = int(getattr(cfg, "piggyback_focpos_max", 0) or 0)
+
+    return {
+        "rc16": {
+            "kind": "per_filter",
+            "filters": rc_filters,
+            "count": len(rc_recs),
+            "clamp": [fs._FOCPOS_MIN, fs._FOCPOS_MAX],
+            "model": _focus_model_summary(cfg),
+        },
+        "piggyback": {
+            "kind": "single",
+            "enabled": bool(getattr(cfg, "piggyback_enabled", False)),
+            "static_seed": int(getattr(cfg, "piggyback_focus_seed", 0) or 0),
+            "current_seed": pf.current_seed(cfg),
+            "source": pf.seed_source(cfg),
+            "points": pb_recs,
+            "clamp": [pb_min, pb_max] if pb_max > pb_min else None,
+            "model": _focus_model_summary(cfg, rig="piggyback"),
+        },
+    }
+
+
+@app.get("/api/system/stats")
+def api_system_stats():
+    """Scope-PC load: RAM / CPU / disk + the heavy astro processes.
+
+    Added for the dual-rig bring-up (2026-09-12): a second NINA instance and a
+    second camera pipeline is the main load risk, so surface headroom here
+    instead of guessing. Best-effort — returns available:false if psutil is
+    missing rather than erroring.
+    """
+    try:
+        import psutil
+    except Exception:  # noqa: BLE001
+        import sys as _sys
+        return {"available": False,
+                "detail": "psutil not installed in the interpreter running the "
+                          "scheduler — install it there, then Refresh.",
+                "python_executable": _sys.executable,
+                "python_prefix": _sys.prefix,
+                "fix": f'"{_sys.executable}" -m pip install psutil'}
+    import shutil as _sh
+    cfg = get_config()
+    vm = psutil.virtual_memory()
+    out = {
+        "available": True,
+        "cpu_percent": psutil.cpu_percent(interval=0.3),
+        "cpu_count": psutil.cpu_count(),
+        "ram": {"total_gb": round(vm.total / 1e9, 1),
+                "used_gb": round(vm.used / 1e9, 1),
+                "available_gb": round(vm.available / 1e9, 1),
+                "percent": vm.percent},
+        "processes": [],
+        "disks": [],
+    }
+    keys = ("nina", "phd2", "thesky", "python", "photonscript", "astap",
+            "pixinsight", "siril")
+    procs = []
+    for p in psutil.process_iter(["name", "memory_info"]):
+        try:
+            nm = p.info.get("name") or ""
+            if any(k in nm.lower() for k in keys):
+                rss = p.info["memory_info"].rss if p.info.get("memory_info") else 0
+                procs.append({"name": nm, "pid": p.pid,
+                              "ram_mb": round(rss / 1e6)})
+        except Exception:  # noqa: BLE001 - process vanished / access denied
+            continue
+    out["processes"] = sorted(procs, key=lambda x: -x["ram_mb"])[:20]
+    seen = set()
+    for label, path in (("image", getattr(cfg, "image_watch_dir", "")),
+                        ("library", str(
+                            getattr(cfg, "library_dir", "")
+                            or Path(cfg.data_dir) / "Library"))):
+        try:
+            drive = str(Path(path).anchor or path)
+            if not path or drive in seen:
+                continue
+            seen.add(drive)
+            du = _sh.disk_usage(path if Path(path).exists() else drive)
+            out["disks"].append({
+                "label": label, "path": str(path),
+                "free_gb": round(du.free / 1e9, 1),
+                "total_gb": round(du.total / 1e9, 1),
+                "percent_used": round(du.used / du.total * 100, 1)})
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+@app.post("/api/calibration/capture")
+async def api_calibration_capture(payload: dict = Body(default={})):
+    """Darks + bias for one rig (System page Capture button). PS-113: runs as
+    a guarded capture job (scheduler/calibration_capture.py): refused unless
+    the armer is DISARMED or COMPLETE, the rig's NINA is idle and the roof
+    reads closed; cools to the setpoint first; stops if the roof opens or the
+    sensor drifts. Optional payload["darks"] [[exp, n]], payload["bias"]
+    (default 50); without darks: the rig's dark library list at the quota
+    (RC16 also the PS-66 unguided cap). 409 with the refusals."""
+    from photonscript.scheduler import calibration_capture as cc
+    from photonscript.shared.rigs import rig_config, RC16
+    rig = payload.get("rig", RC16)
+    config = get_config()
+    if payload.get("darks"):
+        darks = [[float(e), int(c)] for e, c in payload["darks"]]
+    else:
+        count = int(getattr(config, "dark_target_count", 30))
+        if rig == RC16:   # PS-66: plus the unguided cap length (300 s)
+            from photonscript.scheduler.nina_sequence_json import dark_library_exposures
+            darks = [[e, count] for e in dark_library_exposures(config)]
+        else:
+            darks = [[float(t.strip()), count]
+                     for t in str(getattr(rig_config(config, rig), "dark_exposures",
+                                          "120")).split(",") if t.strip()]
+    bias = int(payload.get("bias", 50))
+    ok, body = await cc.start_job(config, rig, darks=darks, bias=bias,
+                                  armer_state_fn=lambda: get_armer().state,
+                                  armer_status_fn=lambda: get_armer().status(),
+                                  source="system page")
+    if not ok:
+        return JSONResponse(status_code=409, content={
+            "detail": "refused: " + "; ".join(body.get("refusals") or []),
+            **body})
+    return {"ok": True, "rig": rig, "sequence": body.get("sequence") or body["id"],
+            "estimated_minutes": round(body["estimated_minutes"]),
+            "darks": body["darks"], "bias": body["bias"], "job": body}
+
+
+@app.post("/api/calibration/flats")
+async def api_calibration_flats(payload: dict = Body(default={})):
+    """Dispatch a dusk sky-flat run for today (waits for sunset+15).
+
+    Optional payload["rig"]: the piggyback shoots OSC flats (one set, no filter
+    wheel) and, riding the main mount, never slews/parks — trigger it alongside
+    the RC16 dusk flats so that slew aims both scopes. Dispatched straight to
+    NINA #2.
+
+    Filter scoping (RC16 only): payload["only"] is an explicit filter-name list
+    (e.g. ["L","R","G","B"] to refresh just broadband); payload["stale"]=true
+    computes the filters whose newest flats are older than the 45-day window and
+    shoots only those. Omit both to do all seven. Ignored for the OSC piggyback,
+    which is always one set."""
+    from photonscript.scheduler.calibration import (generate_dusk_flats_json,
+                                                    calibration_health)
+    from photonscript.shared.rigs import rig_config, nina_dispatch, RC16
+    rig = payload.get("rig", RC16)
+    config = rig_config(get_config(), rig)
+    is_pb = rig != RC16
+    only = payload.get("only") or None
+    if payload.get("stale") and not is_pb:
+        try:
+            bb = (calibration_health(config).get("FLAT", {}) or {}).get(
+                "by_bucket", {}) or {}
+            only = [f for f, v in bb.items()
+                    if (v or {}).get("age_days", 9999) > 45] or None
+        except Exception:  # noqa: BLE001
+            only = None
+        if not only:
+            return JSONResponse(status_code=409, content={
+                "detail": "no stale flat filters to refresh (all within 45d)"})
+    try:
+        seq_text, start_local = generate_dusk_flats_json(
+            config, only_filters=(None if is_pb else only),
+            osc=is_pb, owns_mount=not is_pb)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+    seq_dir = Path.cwd() / "sequences"
+    seq_dir.mkdir(exist_ok=True)
+    tag = "" if rig == RC16 else f"_{rig}"
+    path = seq_dir / f"dusk_flats{tag}_{datetime.now():%Y%m%d}.json"
+    path.write_text(seq_text, encoding="utf-8")
+    if rig == RC16:
+        ok = await get_armer().dispatch_raw(json.loads(seq_text),
+                                            f"dusk flats {path.name}")
+        detail = None if ok else get_armer().detail
+    else:
+        res = await nina_dispatch(config.nina_base_url, json.loads(seq_text),
+                                  config=config, rig=rig)   # PS-132
+        ok, detail = res["ok"], res["detail"]
+    if not ok:
+        return JSONResponse(status_code=409, content={
+            "detail": f"dispatch refused/failed: {detail}"})
+    note = ("flats first, then ARM tonight's run after they finish" if not is_pb
+            else "piggyback OSC flats — run with the RC16 flats so the mount "
+                 "slew aims both scopes")
+    return {"ok": True, "rig": rig, "starts_local": start_local, "note": note,
+            "filters": (None if is_pb else only)}
+
+
+@app.get("/api/update/check")
+def api_update_check():
+    """Is the running checkout behind its upstream? (git fetch + compare)."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    def _git(*args, timeout=10):
+        return subprocess.run(["git", *args], cwd=root, capture_output=True,
+                              text=True, timeout=timeout).stdout.strip()
+    try:
+        subprocess.run(["git", "fetch", "--quiet"], cwd=root,
+                       capture_output=True, timeout=25)
+        behind = int(_git("rev-list", "--count", "HEAD..@{u}") or 0)
+        return {"running": VERSION, "behind": behind,
+                "remote": _git("log", "-1", "--format=%h · %s", "@{u}")}
+    except Exception as e:  # noqa: BLE001
+        return {"running": VERSION, "error": str(e)}
+
+
+_UPDATE_HARD_EXIT_S = 15.0   # graceful shutdown budget before os._exit(42)
+
+
+def _update_blockers(allow_armed: bool) -> list[str]:
+    """Why a restart for an update must wait (PS-58). Empty = go."""
+    why = []
+    st_name = str(get_armer().state or "").upper()
+    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING",   # PS-136
+                   "PAUSED_OPERATOR"):                      # PS-64
+        why.append(f"armer is {st_name}: refusing to restart mid-night. "
+                   "Stop the run first.")
+    elif st_name == "ARMED" and not allow_armed:
+        why.append("armer is ARMED: disarm first, or pass allow_armed=true "
+                   "(the armed night is restored after the restart)")
+    try:
+        from photonscript.scheduler.runs import running_jobs
+        jobs = running_jobs()
+    except Exception:  # noqa: BLE001
+        jobs = []
+    if jobs:
+        why.append("background job(s) running: " + "; ".join(jobs)
+                   + ". Try again when they finish.")
+    return why
+
+
+@app.post("/api/update")
+async def api_update(allow_armed: bool = False):
+    """Graceful restart with exit code 42; the run-photonscript.ps1 wrapper
+    then stages, smoke-checks and fast-forwards the new code (PS-58).
+
+    Refused (409) while a sequence runs, while ARMED (unless allow_armed),
+    and while a grading job is writing. The service shuts down through the
+    orchestrator's stop path (uvicorn, agents, PID file); a hard os._exit(42)
+    follows only if that takes longer than 15 s.
+    """
+    why = _update_blockers(allow_armed)
+    if why:
+        return JSONResponse(status_code=409, content={"detail": " ".join(why)})
+    logger.warning("Update requested via API: graceful stop with exit 42 so "
+                   "the wrapper can stage the new code and restart")
+    import os as _os
+    import threading as _th
+    from photonscript import orchestrator
+
+    def _hard_exit():
+        logger.error("Graceful update shutdown took over %.0f s: exiting 42 "
+                     "hard", _UPDATE_HARD_EXIT_S)
+        _os._exit(42)
+
+    def _go():
+        if orchestrator.request_exit(42):
+            t = _th.Timer(_UPDATE_HARD_EXIT_S, _hard_exit)
+        else:   # not under the orchestrator (dev server): old behavior
+            t = _th.Timer(0.1, lambda: _os._exit(42))
+        t.daemon = True
+        t.start()
+
+    # let this response go out before the servers stop
+    asyncio.get_running_loop().call_later(0.5, _go)
+    return {"ok": True, "detail": "Restarting. If PhotonScript was not "
+            "started via deploy/run-photonscript.ps1 it will stay down."}
+
+
+@app.get("/api/runs/{date}/backfill")
+async def api_run_backfill_status(date: str):
+    """Cheap progress poll for the re-grade bar (no log parsing)."""
+    from photonscript.scheduler.runs import backfill_status
+    return backfill_status(get_config(), date)
+
+
+@app.post("/api/library/rebuild")
+def api_library_rebuild(date: str = ""):
+    """(Re)build the accepted-lights library. Sync endpoint: FastAPI runs it
+    in a worker thread; hardlinking a whole archive takes a few seconds."""
+    from photonscript.scheduler.runs import build_library, sync_goal_progress
+    from photonscript.scheduler import sync_batch
+    res = build_library(get_config(), date or None)
+    sync_batch.mark_reset(get_config())  # new files queued → fresh batch counter
+    # PS-51: the build now names '?' subs, so goal bars can move; a full
+    # rebuild (no date) is the one-time backfill of Library/_/.
+    try:
+        res["goals_updated"] = sync_goal_progress(get_config())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Goal sync after library rebuild failed: %s", e)
+    return res
+
+
+@app.post("/api/library/reset")
+def api_library_reset():
+    """Wipe the library and rebuild reviewed-only (un-queues bulk sync)."""
+    from photonscript.scheduler.runs import reset_library
+    from photonscript.scheduler import sync_batch
+    try:
+        res = reset_library(get_config())
+        sync_batch.mark_reset(get_config())
+        return res
+    except RuntimeError as e:
+        return JSONResponse(status_code=400, content={"detail": str(e)})
+
+
+# PS-24: POST /api/runs/{date}/approve, /qa and /qa-batch live in
+# routers/review.py (plain def, per-night lock, atomic subs log).
+
+
+@app.post("/api/runs/{date}/identify")
+def api_run_identify(date: str):
+    """Attribute unknown subs by FITS header coordinates / ASTAP solve."""
+    from photonscript.scheduler.identify import identify_night
+    return identify_night(get_config(), date)
+
+
+@app.post("/api/runs/{date}/analysis")
+async def api_run_analysis(date: str, payload: dict = Body(default={})):
+    """Copy selected subs into the library Syncthing share so they replicate
+    to the desktop for off-scope FITS analysis.
+
+    Body: {"files": ["LIGHT/....fits", ...]} to pick specific subs, or
+    {"which": "rejected"|"accepted"|"all"} to pick by QA state. Returns the
+    dropbox path on the scope PC and the mirrored desktop path per file.
+    """
+    from photonscript.scheduler.runs import stage_for_analysis
+    return stage_for_analysis(get_config(), date,
+                              files=payload.get("files"),
+                              which=payload.get("which", ""))
+
+
+@app.post("/api/runs/{date}/assign_target")
+async def api_run_assign_target(date: str, payload: dict = Body(...)):
+    """Set the target name on a night's unattributed ('?') subs — for old
+    sessions that predate plan snapshots and OBJECT headers."""
+    from photonscript.scheduler.runs import edit_subs
+    name = (payload.get("name") or "").strip()
+    if not name:
+        return JSONResponse(status_code=400, content={"detail": "name required"})
+    config = get_config()
+
+    def _in_window(s):
+        w = (payload.get("window") or "").strip()  # "HH:MM-HH:MM" UTC
+        if not w:
+            return True
+        try:
+            lo, hi = [p.strip() for p in w.split("-")]
+        except ValueError:
+            return True
+        t = str(s.get("time", ""))[11:16]
+        if not t:
+            return False
+        return (lo <= t <= hi) if lo <= hi else (t >= lo or t <= hi)
+
+    from photonscript.shared.target_names import canonical_target
+    n = 0
+    with edit_subs(config, date) as subs:   # PS-140: under the night lock
+        for s in subs:
+            # PS-78: an OSC loop container name is as unassigned as '?'
+            if (canonical_target(s.get("target")) is None
+                    or payload.get("force")) and _in_window(s):
+                s["target"] = name
+                s["target_src"] = "manual"  # PS-137: the Piggy pass keeps it
+                n += 1
+    logger.info("Assigned target '%s' to %d subs on %s", name, n, date)
+    return {"ok": True, "updated": n}
+
+
+@app.post("/api/projects2/recount")
+async def api_projects_recount():
+    """Rebuild accepted counts from every night's records (also runs
+    automatically after approvals/verdicts/identification)."""
+    from photonscript.scheduler.runs import sync_goal_progress, runs_dir
+    changed = sync_goal_progress(get_config())
+    nights = len(list(runs_dir(get_config()).glob("*_subs.jsonl")))
+    return {"ok": True, "nights_scanned": nights, "updated": changed}
+
+
+@app.get("/api/runs/{date}/thumb")
+def api_run_thumb(date: str, file: str, w: int = 360,
+                  annotate: bool = False):
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import thumb_media_type, thumbnail
+    p = thumbnail(get_config(), date, file, width=min(max(w, 96), 1600),
+                  annotate=annotate)
+    if p is None:
+        return JSONResponse(status_code=404, content={"detail": "no thumbnail"})
+    return FileResponse(p, media_type=thumb_media_type(p), headers={
+        "Cache-Control": "public, max-age=604800"})
+
+
+@app.post("/api/runs/{date}/warm-thumbs")
+def api_warm_thumbs(date: str):
+    """Kick off background caching of every grid thumbnail for the night."""
+    from photonscript.scheduler.runs import start_thumb_warm
+    start_thumb_warm(get_config(), date)
+    return {"ok": True}
+
+
+@app.get("/api/runs/{date}/thumb-status")
+def api_thumb_status(date: str):
+    """Progress of the thumbnail cache warm ({total, cached, running, done})."""
+    from photonscript.scheduler.runs import thumb_warm_status
+    return thumb_warm_status(get_config(), date)
+
+
+@app.get("/api/runs/{date}/contact-sheet.png")
+def api_run_contact_sheet(date: str, cols: int = 6, w: int = 200):
+    """One montage PNG of every sub for the night — the archival 'screenshot'
+    of a run (green=accepted, red=rejected). Generated server-side where the
+    FITS live; reuses the thumbnail cache. First call on a cold night warms
+    thumbnails and may take a while; subsequent calls are fast."""
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import contact_sheet
+    p = contact_sheet(get_config(), date, cols=min(max(cols, 2), 10),
+                      tile_w=min(max(w, 120), 400))
+    if p is None:
+        return JSONResponse(status_code=404,
+                            content={"detail": "no subs/thumbnails for this night"})
+    return FileResponse(p, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+# --- triage / log-tail endpoints moved to routers/triage.py (mounted at EOF) ---
+
+
+@app.get("/api/runs/{date}/bundle")
+def api_run_bundle(date: str):
+    """Download the full night bundle (report, logs, plan, subs, sequences)."""
+    from fastapi.responses import FileResponse
+    from photonscript.scheduler.runs import build_bundle
+    p = build_bundle(get_config(), date)
+    return FileResponse(p, media_type="application/zip",
+                        filename=f"night_bundle_{date}.zip")
+
+
+# --- /target and /api/target/history moved to routers/targets.py (PS-81) ---
+
+
+@app.get("/api/integration/readiness")
+def api_integration_readiness():
+    """Everything the DESKTOP needs to integrate a target, answered from the
+    scope's Library: accepted lights per filter, epoch-matched darks, bias,
+    flats. Combine with /api/sync library_synced for 'it is on the desktop'.
+    PS-81: the counting lives in scheduler/readiness.py (shared with the
+    Targets page and the campaign planner)."""
+    from photonscript.scheduler.readiness import readiness_report
+    return readiness_report(get_config(), list(_stored_projects().values()))
+
+
+@app.post("/api/camera/cooler")
+async def api_camera_cooler(payload: dict = Body(default={})):
+    """Toggle the imaging-camera cooler via NINA: cool to the configured
+    setpoint (10 min ramp) or warm. Dashboard strip convenience."""
+    import httpx
+    cfg = get_config()
+    base = cfg.nina_base_url.rstrip("/")
+    on = bool(payload.get("on"))
+    path = (f"/equipment/camera/cool?temperature={cfg.camera_setpoint_c:g}"
+            "&minutes=10") if on else "/equipment/camera/warm?minutes=10"
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            r = await client.get(base + path)
+            ok = r.status_code == 200
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502,
+                            content={"ok": False, "detail": str(e)})
+    logger.info("Cooler %s requested from dashboard", "ON" if on else "OFF")
+    return {"ok": ok, "cooling": on}
+
+
+@app.get("/api/scope")
+async def api_scope():
+    """Is the scope home safe? Mount park/tracking + camera cooler state."""
+    import httpx
+    base = get_config().nina_base_url.rstrip("/")
+    out = {"mount": None, "camera": None, "safety": None,
+           "filterwheel": None, "focuser": None, "guider": None}
+    nina_ok = False
+    async with httpx.AsyncClient(timeout=8) as client:
+        for key, path in (("mount", "/equipment/mount/info"),
+                          ("camera", "/equipment/camera/info"),
+                          ("safety", "/equipment/safetymonitor/info"),
+                          ("filterwheel", "/equipment/filterwheel/info"),
+                          ("focuser", "/equipment/focuser/info"),
+                          ("guider", "/equipment/guider/info")):
+            try:
+                r = await client.get(base + path)
+                p = r.json().get("Response", {})
+                out[key] = p
+                nina_ok = True
+            except Exception:  # noqa: BLE001
+                pass
+    # PHD2 process liveness: its event server listens on 4400 (same PC)
+    phd2_ok = False
+    try:
+        import asyncio as _aio
+        _rd, _wr = await _aio.wait_for(
+            _aio.open_connection("127.0.0.1", 4400), timeout=1.5)
+        _wr.close()
+        phd2_ok = True
+    except Exception:  # noqa: BLE001
+        pass
+    mount, cam = out["mount"] or {}, out["camera"] or {}
+    saf = out["safety"] or {}
+    is_safe = saf.get("IsSafe") if saf.get("Connected") else None
+    parked = mount.get("AtPark", mount.get("AtHome"))
+    tracking = mount.get("TrackingEnabled", mount.get("Tracking"))
+    temp = cam.get("Temperature")
+    cooler = cam.get("CoolerOn")
+    power = cam.get("CoolerPower")  # % TEC drive; drivers can report CoolerOn=true at 0%
+    setpoint = get_config().camera_setpoint_c
+    tol = get_config().cooling_tolerance_c
+    # "Actually cooling" = flag on AND the TEC is drawing power. A stale
+    # CoolerOn flag with 0% power and the sensor at ambient (the 43.9°C /
+    # 0.00% OGMA case) is idle, not cooling.
+    cooling_idle = (cooler and (power is not None and power <= 0.0)
+                    and temp is not None and temp > setpoint + tol)
+    if not mount:
+        status, color = "NINA UNREACHABLE", "gray"
+    elif parked and not cooler:
+        status, color = "PARKED & WARM — home safe", "green"
+    elif parked and cooling_idle:
+        status, color = "PARKED (cooler flag on, 0% power — not cooling)", "yellow"
+    elif parked:
+        status, color = "PARKED (cooler still on)", "yellow"
+    elif tracking:
+        status, color = "TRACKING — scope active", "blue"
+    else:
+        status, color = "UNPARKED, not tracking", "yellow"
+    return {"status": status, "color": color, "parked": parked,
+            "tracking": tracking, "camera_temp": temp, "cooler_on": cooler,
+            "cooler_power": power, "cooling_idle": cooling_idle,
+            "is_safe": is_safe,
+            "nina_connected": nina_ok,
+            "phd2_running": phd2_ok,
+            "devices": {k: bool((out[k] or {}).get("Connected"))
+                        for k in out},
+            "focuser_position": (out["focuser"] or {}).get("Position"),
+            "setpoint_c": get_config().camera_setpoint_c,
+            "scope_local_time": datetime.now().strftime("%H:%M:%S")}
+
+
+# --- Mounted routers (extracted from this file; see routers/) --------------
+from photonscript.scheduler.routers import triage as _triage_router  # noqa: E402
+app.include_router(_triage_router.router)
+from photonscript.scheduler.routers import health as _health_router  # noqa: E402
+app.include_router(_health_router.router)
+from photonscript.scheduler.routers import review as _review_router  # noqa: E402
+app.include_router(_review_router.router)
+from photonscript.scheduler.routers import phd2 as _phd2_router  # noqa: E402
+app.include_router(_phd2_router.router)
+from photonscript.scheduler.routers import thesky as _thesky_router  # noqa: E402
+app.include_router(_thesky_router.router)
+from photonscript.scheduler.routers import targets as _targets_router  # noqa: E402
+app.include_router(_targets_router.router)
+from photonscript.scheduler.routers import pointing as _pointing_router  # noqa: E402
+app.include_router(_pointing_router.router)
+from photonscript.scheduler.routers import calibration as _calibration_router  # noqa: E402
+app.include_router(_calibration_router.router)
+from photonscript.scheduler.routers import rotation as _rotation_router  # noqa: E402
+app.include_router(_rotation_router.router)
+from photonscript.scheduler.routers import cooler as _cooler_router  # noqa: E402
+app.include_router(_cooler_router.router)
+from photonscript.scheduler.routers import sideload as _sideload_router  # noqa: E402
+app.include_router(_sideload_router.router)
+from photonscript.scheduler.routers import auto_arm as _auto_arm_router  # noqa: E402
+app.include_router(_auto_arm_router.router)
+from photonscript.scheduler.routers import catalog as _catalog_router  # noqa: E402
+app.include_router(_catalog_router.router)
+from photonscript.scheduler.routers import watch as _watch_router  # noqa: E402
+app.include_router(_watch_router.router)
+from photonscript.scheduler.routers import split_guard as _split_guard_router  # noqa: E402
+app.include_router(_split_guard_router.router)
+from photonscript.scheduler.routers import piggy_offset as _piggy_offset_router  # noqa: E402
+app.include_router(_piggy_offset_router.router)
+from photonscript.scheduler.routers import mosaic as _mosaic_router  # noqa: E402
+app.include_router(_mosaic_router.router)
+from photonscript.scheduler.routers import viewer as _viewer_router  # noqa: E402
+app.include_router(_viewer_router.router)
+from photonscript.scheduler.routers import focus as _focus_router  # noqa: E402
+app.include_router(_focus_router.router)
+from photonscript.scheduler.routers import integrations as _integrations_router  # noqa: E402
+app.include_router(_integrations_router.router)
+from photonscript.scheduler.routers import optics_test as _optics_test_router  # noqa: E402
+app.include_router(_optics_test_router.router)
+from photonscript.scheduler.routers import pause as _pause_router  # noqa: E402
+app.include_router(_pause_router.router)   # PS-64
+from photonscript.scheduler.routers import where as _where_router  # noqa: E402
+app.include_router(_where_router.router)   # PS-64
+from photonscript.scheduler.routers import sync as _sync_router  # noqa: E402
+app.include_router(_sync_router.router)   # PS-43
+from photonscript.scheduler.routers import safety as _safety_router  # noqa: E402
+app.include_router(_safety_router.router)   # PS-1
+from photonscript.scheduler.routers import nina_watch as _nina_watch_router  # noqa: E402
+app.include_router(_nina_watch_router.router)   # PS-150
+from photonscript.scheduler.routers import autofile as _autofile_router  # noqa: E402
+app.include_router(_autofile_router.router)   # PS-157
+# Re-export handlers + helper for callers/tests that import them from app:
+from photonscript.scheduler.routers.triage import (  # noqa: E402
+    api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
+    _latest_ascom_log)
+from photonscript.scheduler.routers.targets import api_target_history  # noqa: E402,F401
+

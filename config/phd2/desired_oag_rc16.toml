@@ -1,0 +1,490 @@
+# PS-89 desired PHD2 state: RC16 (3248 mm) guided through the OAG by the
+# OGMA GP678C. scheduler/phd2_audit.py reads this file at every arm (and on
+# GET /api/phd2/audit?refresh=1) and compares each row with what PHD2, its
+# stored profile, the newest guide log, NINA, the mount driver, TheSky and the
+# dark library say.
+#
+# Row fields
+#   id, group, label   identity and display
+#   sources            where the current value is read, first one that has it
+#                      wins: api (PHD2 JSON-RPC), profile (registry, see
+#                      scheduler/phd2_profile_store.KEYS; read live, names
+#                      verified 2026-10-04), log (newest guide log header,
+#                      dated: may be older than a settings change), nina,
+#                      ascom, thesky, file (dark library), calibration (PS-93
+#                      record), ga (Guiding Assistant: the profile's newest
+#                      sane run, else the guide logs). Order: api, profile, log.
+#   key                observed key (default: id)
+#   one desired form   equals | min / max | min_arcsec / max_arcsec (converted
+#                      to px at the live guide scale) | allow_off with min/max
+#                      | computed = "<name>" (see phd2_audit.COMPUTED) |
+#                      report = true (shown, never judged)
+#   severity           fail | warn (status when the value misses)
+#   min_x_dither       min / max rows: also at least this many times NINA's
+#                      dither (px; else the guide log's largest dither)
+#   range_severity     min / max rows, optional: the status when only the
+#                      min / max range misses (a dither miss keeps severity)
+#   apply              api (set live when PHD2 is Stopped or Looping) |
+#                      profile (registry write, PHD2 closed, behind
+#                      phd2_audit_autofix) | manual (report only)
+#   target             the value an apply writes (default: equals)
+#   why, fix           plain-language reason and the manual fix
+# Scale-dependent thresholds are written in arcsec so a binning change (the
+# PS-90 auto-tune) moves the pixel limits with it.
+
+rig = "rc16"
+guide_path = "oag"
+title = "RC16 OAG (GP678C, 3248 mm)"
+
+# ---------------------------------------------------------------- camera
+
+[[check]]
+id = "camera"
+group = "Camera"
+label = "Guide camera"
+sources = ["api", "log"]
+equals = "GP678C"
+match = "contains"
+severity = "fail"
+apply = "manual"
+why = "Only the GP678C sits on the OAG; the AP26CC is now the piggyback imaging camera and the AP26MC is the main camera."
+fix = "PHD2 Connect Equipment: select the GP678C (the OAG profile), never the AP26CC or AP26MC."
+
+[[check]]
+id = "bit_depth"
+group = "Camera"
+label = "Camera bit depth"
+sources = ["profile", "log"]
+equals = 16
+severity = "fail"
+apply = "profile"
+why = "In 8-bit mode every star reads saturated (Max ADU 255): on 09-26 100% of frames were flagged saturated at SNR 17 and the centroids were poor."
+fix = "PHD2 Connect Equipment > camera properties (the gear next to the camera): 16-bit. Not in PHD2's API; a profile write needs phd2_audit_autofix."
+
+[[check]]
+id = "saturation_by_adu"
+group = "Camera"
+label = "Saturation detected by Max ADU"
+sources = ["profile"]
+equals = true
+severity = "warn"
+apply = "profile"
+why = "With saturation by Max ADU at the 16-bit ceiling PHD2 flags only truly clipped stars."
+fix = "Brain > Camera: saturation by Max ADU, value 65535."
+
+[[check]]
+id = "saturation_adu"
+group = "Camera"
+label = "Max ADU"
+sources = ["profile"]
+computed = "saturation_adu"
+severity = "fail"
+apply = "profile"
+why = "With Max ADU 255 on a 16-bit camera every star reads saturated: the 09-26 cause. It must match the bit depth (65535 at 16-bit)."
+fix = "Brain > Camera: saturation by Max ADU, value 65535 (16-bit)."
+[[check]]
+id = "binning"
+group = "Camera"
+label = "Guide binning"
+sources = ["api", "profile", "log"]
+equals = 2
+severity = "warn"
+apply = "manual"
+why = "2x2 gives about 0.25 arcsec/px, plenty for 2 to 3 arcsec seeing, with four times the signal per pixel. The auto-tune ticket (PS-90) may change this; re-audit after."
+fix = "Brain > Camera: binning 2."
+
+[[check]]
+id = "pixel_size_um"
+group = "Camera"
+label = "Camera pixel size (um)"
+sources = ["profile", "log"]
+equals = 2.0
+severity = "fail"
+apply = "profile"
+why = "PHD2 turns pixels into arcsec with this; a wrong value skews every RMS number, min-move and the calibration step."
+fix = "Brain > Camera: pixel size 2.0 um (GP678C)."
+
+[[check]]
+id = "gain"
+group = "Camera"
+label = "Guide camera gain"
+sources = ["api", "profile", "log"]
+computed = "guide_gain"
+severity = "warn"
+apply = "profile"
+why = "Gain sets how bright the guide star reads at a 1 to 4 s exposure. The PS-90 tuner recommends it from recent nights (more gain when a filter is still faint at 4 s, less when one clips at 1 s); info until it has data."
+fix = "Brain > Camera: camera gain as recommended (System page > Guide star). The armer writes it pre-dusk only with phd2_audit_autofix."
+
+[[check]]
+id = "exposure_ms"
+group = "Camera"
+label = "Guide exposure (ms)"
+sources = ["api", "profile", "log"]
+min = 2000
+max = 4000
+target = 3000
+severity = "warn"
+apply = "api"
+why = "2 to 4 s averages the seeing at 3248 mm; 1 s chases seeing and 6 s reacts too slowly."
+fix = "PHD2 exposure dropdown: 2 to 4 s."
+
+[[check]]
+id = "auto_exposure"
+group = "Camera"
+label = "Auto exposure off"
+sources = ["profile"]
+equals = false
+severity = "warn"
+apply = "profile"
+why = "Auto exposure changes the exposure under the dark library and the hot-pixel map; a fixed exposure keeps them valid."
+fix = "Exposure dropdown: a fixed value, not Auto."
+
+# ---------------------------------------------------------------- guiding
+
+[[check]]
+id = "search_region_px"
+group = "Guiding"
+label = "Search region (px)"
+sources = ["api", "profile", "log"]
+min = 30
+max = 40
+min_x_dither = 1.0
+target = 35
+severity = "fail"
+range_severity = "warn"
+apply = "profile"
+why = "PHD2 searches this many pixels each side of the star; it must at least cover a dither (09-26 ran 15 px against 20 to 25 px dithers and lost the star)."
+fix = "Brain > Guiding: search region 35 px (30 to 40, and at least NINA's dither pixels)."
+
+[[check]]
+id = "mass_change"
+group = "Guiding"
+label = "Star mass change tolerance"
+sources = ["profile", "log"]
+allow_off = true
+min = 80
+max = 100
+target = "off"
+severity = "fail"
+apply = "profile"
+why = "At 50% seeing and thin cloud trip it constantly: 216 of 305 drops on 09-26 were 'mass changed'."
+fix = "Brain > Guiding: star mass detection off (or 80 to 100%)."
+
+[[check]]
+id = "min_hfd_px"
+group = "Guiding"
+label = "Minimum star HFD (px)"
+sources = ["profile"]
+min = 1.5
+max = 2.0
+target = 1.5
+severity = "warn"
+apply = "profile"
+why = "A floor of 1.5 to 2.0 px keeps PHD2 from auto-selecting a hot pixel as a star (the PS-91 non-star lock)."
+fix = "Brain > Guiding: minimum star HFD 1.5 px."
+
+[[check]]
+id = "multi_star"
+group = "Guiding"
+label = "Multi-star guiding"
+sources = ["profile", "log"]
+equals = true
+severity = "warn"
+apply = "profile"
+why = "Averaging several stars halves the centroid noise from seeing on a small OAG field."
+fix = "Brain > Guiding: use multiple stars."
+
+# ---------------------------------------------------------------- algorithms
+
+[[check]]
+id = "ra_algorithm"
+group = "Algorithms"
+label = "RA algorithm vs periodic-error owner"
+sources = ["api", "profile", "log"]
+computed = "pe_owner"
+severity = "fail"
+apply = "manual"
+why = "Exactly one thing may correct periodic error: ProTrack / TheSky PEC (pe_owner=protrack) or PHD2 PPEC (pe_owner=phd2_ppec), never both."
+fix = "Brain > Algorithms: RA Hysteresis or Lowpass2 when ProTrack owns PE; Predictive PEC only when pe_owner=phd2_ppec."
+
+[[check]]
+id = "ra_min_move"
+group = "Algorithms"
+label = "RA minimum move (px)"
+sources = ["api", "profile", "log"]
+computed = "ra_min_move_ga"
+tol_pct = 30
+severity = "warn"
+apply = "api"
+why = "The Guiding Assistant measures the seeing; a min-move far below it chases seeing (09-25 GA said 1.50 px, PHD2 had 0.76)."
+fix = "Use the Guiding Assistant's RA min-move."
+
+[[check]]
+id = "dec_algorithm"
+group = "Algorithms"
+label = "Dec algorithm"
+sources = ["api", "profile", "log"]
+equals = "Resist Switch"
+severity = "fail"
+apply = "manual"
+why = "Resist Switch only reverses Dec after a sustained trend, which suits a well-aligned Paramount; Lowpass2 in Dec flip-flopped on 09-26."
+fix = "Brain > Algorithms: Dec algorithm Resist Switch."
+
+[[check]]
+id = "dec_min_move"
+group = "Algorithms"
+label = "Dec minimum move (px)"
+sources = ["api", "profile", "log"]
+computed = "dec_min_move"
+ga_band = [0.5, 2.0]
+abs_band = [0.5, 3.0]
+default_target = 1.5
+max_px = 5.0
+severity = "fail"
+apply = "api"
+why = "A Dec min-move above a few pixels leaves Dec unguided: 20 px is about 5 arcsec at 0.25\"/px. Near the Guiding Assistant's RA min-move ignores seeing but still corrects drift; far below it chases the seeing."
+fix = "Brain > Algorithms > Dec: minimum move about the Guiding Assistant's RA value (0.5 to 3 px without one)."
+
+[[check]]
+id = "ra_aggressiveness"
+group = "Algorithms"
+label = "RA aggressiveness"
+sources = ["api", "profile", "log"]
+report = true
+severity = "warn"
+apply = "manual"
+why = "Shown for reference: how much of each RA error the algorithm corrects per frame (PHD2 default 70% for Lowpass2 / Hysteresis)."
+fix = "Brain > Algorithms > RA: aggressiveness (change only after a Guiding Assistant run)."
+
+[[check]]
+id = "dec_guide_mode"
+group = "Algorithms"
+label = "Dec guide mode"
+sources = ["api", "profile", "log"]
+equals = "Auto"
+severity = "warn"
+apply = "api"
+why = "Auto corrects Dec both ways; North or South only is for a known one-way drift, Off stops Dec guiding."
+fix = "Brain > Algorithms: Dec guide mode Auto."
+
+[[check]]
+id = "backlash_comp"
+group = "Algorithms"
+label = "Dec backlash compensation off"
+sources = ["profile", "log"]
+equals = false
+severity = "warn"
+apply = "manual"
+why = "The Guiding Assistant measured 0 ms backlash on the Paramount; compensation would only add overshoot."
+fix = "Brain > Algorithms: backlash compensation off."
+
+# ---------------------------------------------------------------- calibration
+
+[[check]]
+id = "calibration_record"
+group = "Calibration"
+label = "Calibration on record (PS-93)"
+sources = ["calibration"]
+computed = "calibration_record"
+severity = "fail"
+apply = "manual"
+why = "Guiding on a poor calibration (09-26: ortho 15.1 deg at Dec 66.6) makes every correction partly wrong."
+fix = "System page: Calibrate at the next dispatch (PS-93)."
+
+[[check]]
+id = "calibration_step_ms"
+group = "Calibration"
+label = "Calibration step (ms)"
+sources = ["profile", "log"]
+computed = "calibration_step"
+tol_pct = 30
+min_steps_fail = 3
+severity = "warn"
+apply = "profile"
+why = "About 12 steps per axis gives a good calibration; 250 ms gave only 3 steps on 09-26."
+fix = "Brain > Guiding > Calibration step calculator (PS-93 recommends the value)."
+
+[[check]]
+id = "stop_guiding_when_slewing"
+group = "Calibration"
+label = "Stop guiding when the mount slews"
+sources = ["profile"]
+equals = true
+severity = "warn"
+apply = "profile"
+why = "PHD2 stops guiding when the mount slews instead of chasing the star across the sky (NINA also stops guiding before a slew, this is the safety net)."
+fix = "Advanced > Mount: stop guiding when mount slews."
+
+[[check]]
+id = "auto_restore_cal"
+group = "Calibration"
+label = "Auto restore calibration"
+sources = ["profile"]
+equals = true
+severity = "warn"
+apply = "profile"
+why = "Lets every target after the PS-93 calibration reuse it instead of calibrating again."
+fix = "Brain > Guiding: auto restore calibration on."
+
+[[check]]
+id = "dec_compensation"
+group = "Calibration"
+label = "Dec compensation"
+sources = ["profile"]
+equals = true
+severity = "warn"
+apply = "profile"
+why = "Scales the RA rate by cos(Dec) so one calibration near Dec 0 serves every target."
+fix = "Advanced > Mount: use Dec compensation."
+
+[[check]]
+id = "reverse_dec_after_flip"
+group = "Calibration"
+label = "Reverse Dec output after meridian flip"
+sources = ["calibration"]
+computed = "flip"
+severity = "fail"
+apply = "manual"
+why = "If this does not match the mount, Dec runs away after the flip; PS-93 checks it on the first minutes after each flip."
+fix = "Toggle Advanced > Mount > Reverse Dec output after meridian flip only after the PS-93 runaway alert."
+
+# ---------------------------------------------------------------- mount
+
+[[check]]
+id = "focal_length_mm"
+group = "Mount"
+label = "Focal length (mm)"
+sources = ["api", "profile", "log"]
+computed = "focal_length"
+tol_pct = 5
+severity = "fail"
+apply = "profile"
+why = "The OAG sees through the RC16 at 3248 mm; 09-18 ran with 600 mm, a 5.4x scale error in every number PHD2 printed."
+fix = "Brain > Global: focal length 3248 mm (select the OAG profile)."
+
+[[check]]
+id = "guide_speed"
+group = "Mount"
+label = "Guide speed matches the mount"
+sources = ["log"]
+computed = "guide_speed"
+tol_pct = 10
+severity = "fail"
+apply = "manual"
+why = "PHD2 sizes every pulse from the guide speed; if TheSky guides at a different rate every correction is off by that ratio (the PS-92 WARN case)."
+fix = "Match TheSky's autoguide rate and the ASCOM driver guide rate, then recalibrate."
+
+[[check]]
+id = "guide_output"
+group = "Mount"
+label = "Mount guide output enabled"
+sources = ["api", "log"]
+equals = true
+severity = "fail"
+apply = "manual"
+why = "With guide output off PHD2 measures the star and reports Guiding but sends no pulses, so every long sub trails while the dashboard says guiding. (Not the 2026-10-06 cause: that night output was on and the mount driver refused each pulse; guard D7 pages on either.)"
+fix = "PHD2 Advanced Settings > Guiding tab > Shared Parameters: tick Enable mount guide output."
+
+# ---------------------------------------------------------------- darks
+
+[[check]]
+id = "dark_library"
+group = "Darks"
+label = "Dark library"
+sources = ["file"]
+computed = "dark_library"
+severity = "fail"
+apply = "manual"
+why = "Without darks hot pixels look like stars; 09-26 guided with no dark or defect map from 20:29 to 21:53."
+fix = "Tools > Dark library: build darks covering 1 to 4 s at the current gain and binning, roof closed."
+
+[[check]]
+id = "defect_map"
+group = "Darks"
+label = "Bad-pixel (defect) map"
+sources = ["file", "log"]
+equals = true
+severity = "fail"
+apply = "manual"
+why = "The defect map removes hot pixels for good; the guide logs say 'no defect map'."
+fix = "Tools > Bad-pixel map: build one at the final gain and binning."
+
+[[check]]
+id = "darks_or_defects"
+group = "Darks"
+label = "Dark library or defect map auto-loaded"
+sources = ["profile"]
+computed = "darks_or_defects"
+severity = "warn"
+apply = "manual"
+why = "PHD2 loads the dark library or the defect map when it connects; either one keeps hot pixels out of the guide frames."
+fix = "Darks menu: auto-load the dark library (or the bad-pixel map)."
+
+[[check]]
+id = "have_dark"
+group = "Darks"
+label = "Guide log says 'have dark'"
+sources = ["log"]
+equals = true
+severity = "warn"
+apply = "manual"
+why = "The dark library must be loaded, not just present on disk."
+fix = "Darks menu: use dark library."
+
+# ---------------------------------------------------------------- outside PHD2 (report only)
+
+[[check]]
+id = "nina_settle_px"
+group = "NINA"
+label = "NINA settle threshold"
+sources = ["nina"]
+min_arcsec = 0.5
+max_arcsec = 1.0
+severity = "warn"
+apply = "manual"
+why = "Settle is in guide pixels: 1.5 px at 0.25 arcsec/px is only 0.4 arcsec, so dithers time out."
+fix = "NINA Options > Equipment > Guider: settle pixels equal to 0.5 to 1.0 arcsec at the guide scale."
+
+[[check]]
+id = "nina_settle_timeout_s"
+group = "NINA"
+label = "NINA settle timeout (s)"
+sources = ["nina"]
+min = 60
+severity = "warn"
+apply = "manual"
+why = "Under a minute a normal dither settle at 3248 mm times out."
+fix = "NINA Options > Equipment > Guider: settle timeout 60 s or more."
+
+[[check]]
+id = "ascom_direct_guide"
+group = "Mount driver"
+label = "Bisque driver: use DirectGuide"
+sources = ["ascom"]
+equals = true
+severity = "fail"
+apply = "manual"
+why = "Without DirectGuide TheSky can drop ASCOM PulseGuide (PHD2 users report it unchecking itself), so pulses never move the mount."
+fix = "Bisque ASCOM driver settings: tick 'use DirectGuide'."
+
+[[check]]
+id = "ascom_pointing_state"
+group = "Mount driver"
+label = "Bisque driver: Can Get Pointing State"
+sources = ["ascom"]
+equals = true
+severity = "fail"
+apply = "manual"
+why = "PHD2 needs the pier side to flip the calibration; the guide log must never say Pier side = Unknown."
+fix = "Bisque ASCOM driver settings: tick 'Can Get Pointing State'."
+
+[[check]]
+id = "thesky_scripting"
+group = "Mount driver"
+label = "TheSky TCP scripting reachable"
+sources = ["thesky"]
+equals = true
+severity = "warn"
+apply = "manual"
+why = "TheSky's TCP server is how PhotonScript can read ProTrack and the mount state directly."
+fix = "TheSky: Tools > TCP Server: listen for connections (port 3040)."

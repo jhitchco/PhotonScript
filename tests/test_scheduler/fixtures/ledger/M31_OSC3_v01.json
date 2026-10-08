@@ -1,0 +1,187 @@
+{
+  "schema": "photonscript.ledger/0.1",
+  "campaign": "M31",
+  "run": "M31_OSC3",
+  "version": "v3",
+  "created": "2026-09-26T17:58:00Z",
+  "rig": {
+    "id": "piggyback",
+    "name": "Piggy-600",
+    "telescope": "Askar FRA600 600mm f/5.6",
+    "camera": "OGMA AP26CC",
+    "pixel_scale_arcsec": 1.29
+  },
+  "acquisition": {
+    "nights": [
+      "2026-09-21"
+    ],
+    "subs_by_filter": {
+      "OSC": {
+        "offered": 92,
+        "staged": 41,
+        "registered": 39,
+        "integrated": 39,
+        "exposure_s": 120,
+        "hours": 1.3
+      }
+    },
+    "rejects": {
+      "split_pointing": 47,
+      "other_pointing": 4,
+      "dropped_at_registration": 2
+    },
+    "camera": {
+      "gain": 100,
+      "offset": 256,
+      "readout": "Low Conversion Gain",
+      "set_temp_c": 0.0,
+      "ccd_temp_c": {
+        "min": 0.0,
+        "max": 0.0
+      }
+    },
+    "source": "Library/_/OSC via prepare-integration-osc.ps1; cull_report.csv"
+  },
+  "calibration": {
+    "darks": 0,
+    "flats": 0,
+    "bias": 0,
+    "status": "uncalibrated",
+    "note": "No AP26CC calibration exists in the desktop library; piggyback rig not enabled in the scheduler so calibrate-on-arm never ran (2026-09-26 check)"
+  },
+  "integration": {
+    "script": "integrate_osc_run.js (from deploy/integrate_osc.js)",
+    "repo_commit": "c53b001",
+    "steps": [
+      "osc_cull",
+      "debayer VNG",
+      "StarAlignment distortionCorrection",
+      "LocalNormalization",
+      "ImageIntegration PSFSignalWeight WinsorizedSigmaClip"
+    ],
+    "reference": "2026-09-21_05-06-47__0.00_120.00s_0256.fits",
+    "master": "out/master/masterOSC.xisf",
+    "log": "out/pipeline.log"
+  },
+  "finish": {
+    "script": "finish_osc_run_v3.js (v2 + SCNR 0.6, core HDR blend, To16Bit TIF, guarded saves)",
+    "repo_commit": "c53b001",
+    "settings": {
+      "edge_crop_frac": 0.015,
+      "gradient": "GradientCorrection",
+      "bg_target": 0.12,
+      "shadow_sigma": 2.0,
+      "frame": {
+        "left": 0.497,
+        "top": 0.495,
+        "right": 1.0,
+        "bottom": 1.0
+      },
+      "scnr_amount": 0.6,
+      "sat_mid": 0.64,
+      "hdr_layers": 7,
+      "hdr_lo": 0.55,
+      "hdr_span": 0.35
+    },
+    "plate_solve": {
+      "ok": true,
+      "tries": 1,
+      "catalog": "Gaia DR2 via VizieR"
+    },
+    "color": {
+      "method": "BackgroundNeutralization + ColorCalibration",
+      "spcc": "failed: no local Gaia DR3/SP database"
+    },
+    "rc_tools": {
+      "blurx": "not installed",
+      "noisex": "not installed"
+    },
+    "outputs": {
+      "linear": "out/final/M31_OSC3_v3_linear.xisf",
+      "final_xisf": "out/final/M31_OSC3_v3_final.xisf",
+      "final_tif": "out/final/M31_OSC3_v3_final.tif",
+      "final_jpg": "out/final/M31_OSC3_v3_final.jpg",
+      "upload_jpg": "astrobin/M31_2026-09-21_v3_WIP_color.jpg (q95 from the 16-bit TIF)"
+    },
+    "issues": [
+      "v3 first pass came out grayscale: PixelMath blend with CIEL($T) flattened channels; replaced with per-channel JS blend plus chroma guard (2026-09-26)",
+      "run-finish-v*.ps1 passed both -r= and --run=, so PixInsight ran the script twice; now --run= only",
+      "SPCC still falls back: no local Gaia DR3/SP database"
+    ],
+    "log": "out/finish.log",
+    "steps": [
+      "edge crop 1.5%",
+      "GradientCorrection",
+      "ImageSolver plate solve (Gaia DR2 online)",
+      "BackgroundNeutralization + ColorCalibration",
+      "SCNR green 0.6 AverageNeutral",
+      "linked HistogramTransformation (bg 0.12, black point median - 2.0 MAD)",
+      "saturation curve 0.64",
+      "framing crop to core + M32",
+      "HDRMultiscaleTransform 7 layers blended above L=0.55"
+    ]
+  },
+  "metrics": {
+    "final_luminance_percentiles": {
+      "p5": 0.094,
+      "p50": 0.267,
+      "p99_9": 0.974
+    }
+  },
+  "review": {
+    "reviewers": [
+      "Jeremy",
+      "Claude"
+    ],
+    "verdict": "needs_more_data",
+    "publishable_as": "WIP",
+    "notes": [
+      "Galaxy sits in the bottom-right of the full frame; cropped to core + M32",
+      "Core saturated by the stretch; needs HDR/masked stretch",
+      "Dust shadows visible without flats",
+      "Darker background (v2) preferred over v1 auto-stretch",
+      "v3: core and M32 recovered with masked HDR; color intact (R/G/B means 0.331/0.314/0.292)"
+    ],
+    "asks": [
+      {
+        "type": "need_calibration",
+        "what": [
+          "flats",
+          "darks",
+          "bias"
+        ],
+        "rig": "piggyback",
+        "why": "uncalibrated stack; dust shadows"
+      },
+      {
+        "type": "more_hours",
+        "filter": "OSC",
+        "hours": 4.7,
+        "goal_hours": 6.0,
+        "why": "1.3 h of 6 h goal"
+      },
+      {
+        "type": "reframe",
+        "driving_rig": "piggyback",
+        "why": "M31 off-center at 600 mm when the RC16 drives centering"
+      },
+      {
+        "type": "fix_blocker",
+        "ticket": "Piggy-600 split pointing",
+        "why": "51 of 92 subs lost to mount moves"
+      }
+    ],
+    "decided_by_jeremy": false
+  },
+  "publish": {
+    "astrobin": {
+      "status": "published",
+      "url": "https://app.astrobin.com/i/stnh5q",
+      "uploaded": "2026-09-26",
+      "packet": "astrobin/M31_2026-09-21_astrobin_packet_v3.md",
+      "note": "Published by Jeremy. Later versions go up as revisions of this image.",
+      "published": "2026-09-26",
+      "plate_solve": "AstroBin: center 0h43m57s +41d10m35s, 1.09 x 0.73 deg, 1.29 arcsec/px, objects M31 (NGC 224), M32 (NGC 221)"
+    }
+  }
+}

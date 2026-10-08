@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Calibration Library</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <style>
+        .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
+        main { max-width: 1200px; margin: 0 auto; }
+        .cal-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:1.1rem; }
+        @media (max-width: 900px){ .cal-grid { grid-template-columns:1fr; } }
+        .cal-card { background:rgba(255,255,255,.04); border-radius:12px;
+                    padding:1rem 1.1rem; border-top:3px solid #334155; }
+        .cal-card h3 { margin:.1rem 0 .5rem 0; font-size:1.2rem; letter-spacing:.02em; }
+        .cal-card .big { font-size:1.05rem; font-weight:700; }
+        .muted { opacity:.62; font-size:.82rem; }
+        .badge { display:inline-block; padding:.12rem .6rem; border-radius:999px;
+                 font-size:.74rem; font-weight:700; }
+        .b-fresh { background:#14532d; color:#86efac; }
+        .b-soon  { background:#78350f; color:#fcd34d; }
+        .b-stale { background:#7f1d1d; color:#fca5a5; }
+        table.cal { width:100%; border-collapse:collapse; font-size:.85rem;
+                    margin-top:.6rem; }
+        table.cal th, table.cal td { padding:.28rem .5rem; text-align:right;
+            border-bottom:1px solid rgba(255,255,255,.07); }
+        table.cal th:first-child, table.cal td:first-child { text-align:left; }
+        .thin td { color:#fcd34d; }
+        .bar { height:7px; border-radius:4px; background:rgba(255,255,255,.08);
+               overflow:hidden; margin:.5rem 0 .2rem; }
+        .bar > i { display:block; height:100%; }
+        .refresh-note { font-size:.85rem; margin-top:.4rem; }
+        .focus-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:1.1rem; }
+        @media (max-width: 900px){ .focus-grid { grid-template-columns:1fr; } }
+        .focus-card { background:rgba(255,255,255,.04); border-radius:12px;
+                      padding:1rem 1.1rem; border-top:3px solid #38bdf8; }
+        .focus-card.osc { border-top-color:#c084fc; }
+        .focus-card h3 { margin:.1rem 0 .5rem 0; font-size:1.2rem; }
+        .seedline { font-size:1.05rem; font-weight:700; margin:.2rem 0; }
+        .plot { width:100%; height:210px; margin:.5rem 0 .3rem; }
+        .plot text { fill:#94a3b8; font-size:10px; }
+        .plot .grid { stroke:rgba(255,255,255,.08); stroke-width:1; }
+        .plot .axis { stroke:rgba(255,255,255,.25); stroke-width:1; }
+        .legend { display:flex; flex-wrap:wrap; gap:.5rem 1rem; font-size:.78rem;
+                  margin:.2rem 0; }
+        .legend span { display:inline-flex; align-items:center; gap:.3rem; }
+        .dot { width:9px; height:9px; border-radius:50%; display:inline-block; }
+        .pill { display:inline-block; padding:.1rem .55rem; border-radius:999px;
+                font-size:.72rem; font-weight:700; }
+        .p-harvest { background:#14532d; color:#86efac; }
+        .p-static  { background:#1e3a5f; color:#7dd3fc; }
+        .p-disabled{ background:#7f1d1d; color:#fca5a5; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Calibration Library — coverage & freshness" %}
+    {% set active_page = "calibration" %}
+    {% include "_header.html" %}
+    <main>
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:.2rem 0 1rem;">
+            <h2 style="margin:0;">Calibration owed</h2>
+            <span class="muted" id="owedUpdated">loading...</span>
+            <span class="muted" style="margin-left:auto;">lights of active goals + tonight's plan; darks counted the way the night quota counts them</span>
+        </div>
+        <div class="focus-grid" id="owedCards"></div>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
+            <h2 style="margin:0;">Needs vs have (QA-passed)</h2>
+            <span class="muted" id="needUpdated">loading...</span>
+            <span class="muted" style="margin-left:auto;">darks + bias: Capture now (roof closed, armer DISARMED or COMPLETE) &middot; flats: dusk / dawn only</span>
+        </div>
+        <div class="focus-grid" id="needCards"></div>
+        <p class="muted" style="margin-top:.6rem;">Every calibration frame is checked (sensor temperature, header, level vs bias, light leak, stars, set outliers; flats: level, saturation, vignetting). Failing frames go to Calibration/_quarantine with the reason and never reach a master. CLI: <code>photonscript calibration-plan</code>, <code>calibration-capture --rig R</code>, <code>calibration-qa --backfill --dry-run</code>.</p>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
+            <h2 style="margin:0;">Calibration masters on disk</h2>
+            <span class="muted" id="updated">loading…</span>
+            <span class="muted" style="margin-left:auto;">auto-refreshes every 60s · flats stale after 45d · darks 90d · bias 180d</span>
+        </div>
+        <div class="cal-grid" id="cards"></div>
+        <p class="muted" id="thinNote" style="margin-top:1rem;"></p>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
+            <h2 style="margin:0;">Autofocus seeds</h2>
+            <span class="muted">FOCPOS vs focuser temp — the cold-start position each rig seeds before its first AF. The two rigs are separate focusers.</span>
+        </div>
+        <div class="focus-grid" id="focusCards"></div>
+
+        <div style="display:flex;align-items:baseline;gap:1rem;margin:1.8rem 0 1rem;">
+            <h2 style="margin:0;">Focus model &middot; lookup table</h2>
+            <span class="muted">Best focus vs focuser temp learned from NINA's own autofocus reports (PS-76): one temperature slope, a per-filter intercept, the table it gives and how far the last AFs landed from it.</span>
+        </div>
+        <div class="focus-grid" id="modelCards"></div>
+    </main>
+    <script>
+    const STALE_COLORS = {fresh:'#22c55e', soon:'#eab308', stale:'#ef4444'};
+    // frames below this count in a given exposure/filter bucket are "thin"
+    const THIN = 10;
+
+    function statusOf(age, staleAfter) {
+        if (age == null || staleAfter == null) return ['stale','—'];
+        const left = staleAfter - age;
+        if (left < 0)  return ['stale', `overdue by ${-left}d`];
+        if (left <= 7) return ['soon',  `refresh in ${left}d`];
+        return ['fresh', `good for ${left}d`];
+    }
+
+    function card(typ, d) {
+        if (!d || d.latest == null) {
+            return `<div class="cal-card"><h3>${typ}</h3>
+                <div class="big" style="color:#f87171;">none on disk</div>
+                <div class="muted">no ${typ} masters found — capture some.</div></div>`;
+        }
+        const [st, label] = statusOf(d.age_days, d.stale_after_days);
+        const cls = {fresh:'b-fresh', soon:'b-soon', stale:'b-stale'}[st];
+        const border = STALE_COLORS[st];
+        const detail = d.detail || {};
+        const isFlat = (typ === 'FLAT');
+        const thin = [];
+        const rows = Object.keys(detail).sort().map(k => {
+            const n = detail[k];
+            const t = n < THIN;
+            if (t) thin.push(`${typ} ${k} (${n})`);
+            return `<tr class="${t?'thin':''}"><td>${k}</td><td>${n}${t?' ⚠':''}</td></tr>`;
+        }).join('');
+        const pct = Math.max(0, Math.min(100,
+            d.stale_after_days ? (1 - d.age_days / d.stale_after_days) * 100 : 0));
+        return `<div class="cal-card" style="border-top-color:${border};" data-thin='${JSON.stringify(thin)}'>
+            <h3>${typ} <span class="badge ${cls}" style="float:right;">${label}</span></h3>
+            <div class="big">${d.total} frames total</div>
+            <div class="muted">latest ${d.latest} · ${d.age_days}d ago · ${d.count_latest} in newest set</div>
+            <div class="bar"><i style="width:${pct}%;background:${border};"></i></div>
+            <div class="muted">${d.age_days}d of ${d.stale_after_days}d staleness budget used</div>
+            <table class="cal"><thead><tr><th>${isFlat?'Filter':'Exposure'}</th><th>newest-set count</th></tr></thead>
+            <tbody>${rows || '<tr><td colspan=2 class="muted">no per-'+(isFlat?'filter':'exposure')+' detail</td></tr>'}</tbody></table>
+            ${d.location ? `<div class="muted" style="margin-top:.4rem;word-break:break-all;">${d.location}</div>` : ''}
+        </div>`;
+    }
+
+    async function load() {
+        try {
+            const r = await fetch('/api/calibration/health');
+            const data = await r.json();
+            const order = ['FLAT','DARK','BIAS'];
+            document.getElementById('cards').innerHTML =
+                order.map(t => card(t, data[t])).join('');
+            const thin = [];
+            document.querySelectorAll('[data-thin]').forEach(el => {
+                try { JSON.parse(el.dataset.thin).forEach(x => thin.push(x)); } catch(e){}
+            });
+            document.getElementById('thinNote').textContent = thin.length
+                ? '⚠ Thin coverage (fewer than ' + THIN + ' frames): ' + thin.join(' · ') +
+                  ' — consider topping these up on the next closed-roof night.'
+                : 'All buckets have healthy frame counts.';
+            document.getElementById('updated').textContent =
+                'updated ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            document.getElementById('updated').textContent = 'dashboard unreachable';
+        }
+    }
+    load();
+    setInterval(load, 60000);
+
+    // ---- Autofocus seed panel ----------------------------------------
+    const FILTER_COLORS = {L:'#e2e8f0', R:'#f87171', G:'#4ade80', B:'#60a5fa',
+        Ha:'#fb7185', OIII:'#22d3ee', SII:'#fbbf24'};
+    const esc = s => String(s==null?'':s).replace(/[&<>]/g,
+        c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+    function scatter(series, clamp) {
+        const W=360, H=210, m={l:44,r:10,t:12,b:26};
+        const pts = series.flatMap(s => s.points.filter(
+            p => typeof p.x==='number' && typeof p.y==='number'));
+        if (!pts.length) return '<svg class="plot" viewBox="0 0 '+W+' '+H+
+            '"><text x="'+(W/2)+'" y="'+(H/2)+'" text-anchor="middle">no'+
+            ' focus history yet</text></svg>';
+        let xs=pts.map(p=>p.x), ys=pts.map(p=>p.y);
+        let x0=Math.min(...xs), x1=Math.max(...xs);
+        let y0=Math.min(...ys), y1=Math.max(...ys);
+        if (clamp){ y0=Math.min(y0,clamp[0]); y1=Math.max(y1,clamp[1]); }
+        if (x1-x0<1){ x0-=1; x1+=1; } if (y1-y0<10){ y0-=10; y1+=10; }
+        const px = x => m.l + (x-x0)/(x1-x0)*(W-m.l-m.r);
+        const py = y => H-m.b - (y-y0)/(y1-y0)*(H-m.t-m.b);
+        let g='';
+        for (let i=0;i<=3;i++){ const yy=m.t+i*(H-m.t-m.b)/3,
+            val=Math.round(y1-(y1-y0)*i/3);
+            g+='<line class="grid" x1="'+m.l+'" y1="'+yy+'" x2="'+(W-m.r)+'" y2="'+yy+'"/>'+
+               '<text x="'+(m.l-4)+'" y="'+(yy+3)+'" text-anchor="end">'+val+'</text>'; }
+        for (let i=0;i<=3;i++){ const xx=m.l+i*(W-m.l-m.r)/3,
+            val=(x0+(x1-x0)*i/3).toFixed(0);
+            g+='<text x="'+xx+'" y="'+(H-m.b+13)+'" text-anchor="middle">'+val+'&deg;</text>'; }
+        g+='<line class="axis" x1="'+m.l+'" y1="'+(H-m.b)+'" x2="'+(W-m.r)+'" y2="'+(H-m.b)+'"/>';
+        g+='<line class="axis" x1="'+m.l+'" y1="'+m.t+'" x2="'+m.l+'" y2="'+(H-m.b)+'"/>';
+        g+='<text x="'+m.l+'" y="'+(m.t-2)+'" >FOCPOS</text>';
+        for (const s of series){
+            const sp=s.points.filter(p=>typeof p.x==='number'&&typeof p.y==='number');
+            if (s.line){ // PS-76: the model's own line (shared slope)
+                const sl=s.line.slope, ic=s.line.intercept;
+                g+='<line x1="'+px(x0)+'" y1="'+py(sl*x0+ic)+'" x2="'+px(x1)+
+                   '" y2="'+py(sl*x1+ic)+'" stroke="'+s.color+
+                   '" stroke-width="1.4" opacity=".8"/>';
+            } else if (s.fit && sp.length>=2){ // least-squares fit line
+                const n=sp.length, sx=sp.reduce((a,p)=>a+p.x,0),
+                    sy=sp.reduce((a,p)=>a+p.y,0),
+                    sxx=sp.reduce((a,p)=>a+p.x*p.x,0),
+                    sxy=sp.reduce((a,p)=>a+p.x*p.y,0), d=n*sxx-sx*sx;
+                if (d!==0){ const sl=(n*sxy-sx*sy)/d, ic=(sy-sl*sx)/n;
+                    g+='<line x1="'+px(x0)+'" y1="'+py(sl*x0+ic)+'" x2="'+px(x1)+
+                       '" y2="'+py(sl*x1+ic)+'" stroke="'+s.color+
+                       '" stroke-dasharray="4 3" stroke-width="1.3" opacity=".7"/>'; }
+            }
+            for (const p of sp)
+                g+='<circle cx="'+px(p.x)+'" cy="'+py(p.y)+'" r="3.4" fill="'+
+                   s.color+'"><title>'+esc(p.date)+': '+p.y+' @ '+p.x+
+                   '&deg;C</title></circle>';
+        }
+        return '<svg class="plot" viewBox="0 0 '+W+' '+H+'">'+g+'</svg>';
+    }
+
+    function rc16Card(rc, live) {
+        const filts = rc.filters||{};
+        const names = Object.keys(filts);
+        const series = names.map(f => ({label:f, color:FILTER_COLORS[f]||'#a3a3a3',
+            points:(filts[f].points||[]).map(p=>({x:p.foctemp,y:p.focpos,date:p.date})),
+            fit:true}));
+        const legend = names.length ? '<div class="legend">'+names.map(f =>
+            '<span><i class="dot" style="background:'+(FILTER_COLORS[f]||'#a3a3a3')+
+            '"></i>'+esc(f)+(filts[f].seed!=null?' &middot; seed '+filts[f].seed:'')+
+            '</span>').join('')+'</div>' : '';
+        const noTemp = Object.values(filts).reduce((a,fo)=>a+
+            (fo.points||[]).filter(p=>p.foctemp==null).length,0);
+        const liveTxt = (live && live.position!=null)
+            ? 'Live: pos <b>'+live.position+'</b>'+(live.temp_c!=null?
+              ' @ '+(+live.temp_c).toFixed(1)+'&deg;C':'')
+            : 'Live: focuser not connected';
+        return '<div class="focus-card"><h3>RC16 &mdash; per filter</h3>'+
+            '<div class="muted">'+liveTxt+' &middot; '+rc.count+
+            ' harvested point(s), '+names.length+' filter(s)'+
+            (noTemp?' &middot; '+noTemp+' w/o temp (not plotted)':'')+'</div>'+
+            scatter(series, rc.clamp)+legend+'</div>';
+    }
+
+    function oscCard(osc, live) {
+        if (!osc.enabled)
+            return '<div class="focus-card osc"><h3>OSC piggyback</h3>'+
+                '<div class="muted">Piggyback rig disabled (piggyback_enabled=false).</div></div>';
+        const src = osc.source||'disabled';
+        const pill = '<span class="pill p-'+src+'">'+src+'</span>';
+        const pts = (osc.points||[]).map(p=>({x:p.foctemp,y:p.focpos,date:p.date}));
+        const series = [{label:'OSC', color:'#c084fc', points:pts, fit:true}];
+        const seedTxt = osc.current_seed>0
+            ? 'Seed <b>'+osc.current_seed+'</b> '+pill
+            : 'Seed <b>disabled</b> '+pill;
+        const rows = (osc.points||[]).slice().reverse().map(p =>
+            '<tr><td>'+esc(p.date)+'</td><td>'+p.focpos+'</td><td>'+
+            (p.foctemp!=null?p.foctemp+'&deg;':'&mdash;')+'</td><td>'+
+            (p.n!=null?p.n:'&mdash;')+'</td></tr>').join('');
+        const noTemp = (osc.points||[]).filter(p=>p.foctemp==null).length;
+        const liveTxt = (live && live.position!=null)
+            ? 'Live: pos <b>'+live.position+'</b>'+(live.temp_c!=null?
+              ' @ '+(+live.temp_c).toFixed(1)+'&deg;C':'')
+            : 'Live: focuser not connected';
+        return '<div class="focus-card osc"><h3>OSC piggyback</h3>'+
+            '<div class="seedline">'+seedTxt+'</div>'+
+            '<div class="muted">'+liveTxt+' &middot; static fallback '+
+            osc.static_seed+(noTemp?' &middot; '+noTemp+' w/o temp':'')+'</div>'+
+            scatter(series, osc.clamp)+
+            (rows?'<table class="cal"><thead><tr><th>Night</th><th>FOCPOS</th>'+
+             '<th>Temp</th><th>Frames</th></tr></thead><tbody>'+rows+
+             '</tbody></table>':'<div class="muted">No harvested nights yet — '+
+             'seeds from the static fallback until the OSC focuses well.</div>')+'</div>';
+    }
+
+    async function loadFocus() {
+        try {
+            const [f, rigs] = await Promise.all([
+                fetch('/api/focus').then(r=>r.json()),
+                fetch('/api/rigs').then(r=>r.json()).catch(()=>({rigs:[]}))]);
+            const dev = {};
+            (rigs.rigs||[]).forEach(r => dev[r.rig]=(r.devices||{}).focuser||null);
+            document.getElementById('focusCards').innerHTML =
+                rc16Card(f.rc16||{}, dev.rc16) + oscCard(f.piggyback||{}, dev.piggyback);
+            document.getElementById('modelCards').innerHTML =
+                modelCard((f.rc16||{}).model||{}, 'RC16', false, f.rc16||{}) +
+                modelCard((f.piggyback||{}).model||{}, 'Piggy-600', true, null);
+        } catch (e) {
+            document.getElementById('focusCards').innerHTML =
+                '<div class="focus-card"><div class="muted">focus data unreachable</div></div>';
+        }
+    }
+
+    // ---- PS-76 part 2: focus model lookup table -------------------------
+    function fmt(v, d) { return (typeof v==='number') ? v.toFixed(d||0) : '&mdash;'; }
+
+    function ingestLine(ing, enabled) {
+        if (!enabled) return '<div class="muted">AF reports folder not set '+
+            '(nina_autofocus_reports_dir): nothing is learned yet.</div>';
+        if (!ing) return '<div class="muted">No ingest has run yet (the '+
+            'service ingests at startup and after each new AF report).</div>';
+        let t = 'Last ingest '+esc(ing.at)+' ('+esc(ing.trigger)+'): '+
+            (ing.files||0)+' file(s), '+(ing.read||0)+' report(s) read';
+        if (ing.parse_errors) t += ', <b>'+ing.parse_errors+' unparseable</b>';
+        if (ing.dir_exists===false) t += ', <b>folder not found</b>';
+        t += ', RC16 +'+(ing.added||0)+' ('+(ing.total||0)+' stored)';
+        if (ing.piggyback) t += ', Piggy-600 +'+(ing.piggyback.added||0)+
+            ' ('+(ing.piggyback.total||0)+')';
+        if (ing.unclassified) t += ', '+ing.unclassified+' unclassified';
+        const rr = ing.reject_reasons||{};
+        const rk = Object.keys(rr);
+        if (rk.length) t += '; rejected: '+rk.map(k => esc(k)+' x'+rr[k]).join(', ');
+        if (ing.error) t += '; <b>error: '+esc(ing.error)+'</b>';
+        return '<div class="muted">'+t+'</div>';
+    }
+
+    function modelCard(s, title, osc, rc) {
+        const m = s.model||{};
+        const filts = m.filters||{};
+        const names = Object.keys(filts);
+        const slope = m.slope_steps_per_c;
+        const ref = m.ref_filter||'L';
+        const color = f => osc ? '#c084fc' : (FILTER_COLORS[f]||'#a3a3a3');
+        const byF = {};
+        (s.points||[]).forEach(p => (byF[p.f] = byF[p.f]||[]).push(
+            {x:p.t, y:p.p, date:p.time}));
+        const series = names.map(f => ({label:f, color:color(f),
+            points:byF[f]||[], line:{slope:slope||0, intercept:filts[f].intercept}}));
+        let head = '<div class="seedline">'+(m.n_points||0)+' AF point(s)';
+        if (m.n_rejected) head += ' &middot; '+m.n_rejected+' rejected as outliers';
+        head += '</div><div class="muted">Slope '+(slope!=null ?
+            '<b>'+fmt(slope,1)+'</b>'+(m.slope_se!=null?' &plusmn; '+fmt(m.slope_se,1):'')+
+            ' steps/&deg;C' : 'not fitted yet (needs a 3&deg;C spread in one filter)')+
+            ' &middot; scatter '+fmt(m.sigma_steps,1)+' steps'+
+            (m.temp_range?' &middot; '+fmt(m.temp_range[0],1)+' to '+
+             fmt(m.temp_range[1],1)+'&deg;C':'')+'</div>';
+        let trust = '';
+        if (!osc && s.trust) {
+            const tr = s.trust;
+            const pill = tr.mode==='drive' ? '<span class="pill p-harvest">drive</span>'
+                : (tr.trusted ? '<span class="pill p-static">trusted, advisory</span>'
+                   : '<span class="pill p-disabled">not trusted</span>');
+            trust = '<div class="muted">Table '+pill+' CFZ '+
+                (tr.cfz_steps!=null ? tr.cfz_steps+' steps ('+esc(tr.cfz_source)+')' : 'unknown')+
+                ', scatter limit '+fmt(tr.sigma_limit,0)+
+                (tr.reasons&&tr.reasons.length ? '; '+tr.reasons.map(esc).join('; ') : '')+
+                (tr.drive_enabled ? '' : ' &middot; focus_model_drive off')+'</div>';
+        }
+        // PS-144: configured offset vs same-night L / filter AF pairs
+        let offs = '';
+        const oc = (!osc && s.offset_check) ? s.offset_check : null;
+        if (oc && oc.filters && Object.keys(oc.filters).length) {
+            const sg = v => (v>0?'+':'')+v;
+            offs = '<div class="muted"'+(oc.alert?' style="color:#fca5a5;"':'')+
+                '>Offsets vs '+esc(oc.ref_filter||'L')+' (configured / same-night pairs / model): '+
+                Object.keys(oc.filters).map(f => {
+                    const r = oc.filters[f], m = r.measured;
+                    return (r.alert?'<b>':'')+esc(f)+' '+sg(r.configured)+' / '+
+                        (m ? sg(m.steps)+' ('+m.n+', '+esc(m.night)+')' : '&mdash;')+' / '+
+                        (r.model!=null ? sg(r.model) : '&mdash;')+(r.alert?' OFF by '+
+                        Math.abs(r.diff)+'</b>':'');
+                }).join(' &middot; ')+
+                ' &middot; CFZ '+(oc.cfz_steps!=null ? oc.cfz_steps : '?')+
+                (oc.alert ? ' &middot; set PS_FOCUS_FILTER_OFFSETS on the System page' : '')+'</div>';
+        }
+        let exp = '';
+        if (!osc) {
+            const et = s.expected_temp;
+            const seeds = (rc && rc.filters) ? rc.filters : {};
+            const sl = Object.keys(seeds).map(f => esc(f)+' '+seeds[f].seed).join(', ');
+            exp = '<div class="muted">Seeds now'+(et ? ' (at '+fmt(et.temp,1)+
+                '&deg;C, '+esc(et.basis)+')' : ' (no temperature known)')+': '+
+                (sl||'&mdash;')+'</div>';
+        }
+        // lookup table: rows = whole-degree temps, cols = filters
+        let table = '';
+        if (names.length) {
+            const tr = m.temp_range || [0, 30];
+            const lo = Math.max(-10, Math.floor((tr[0]-4)/2)*2),
+                  hi = Math.min(40, Math.ceil((tr[1]+4)/2)*2);
+            const temps = [];
+            for (let t=hi; t>=lo; t-=2) temps.push(t);
+            table = '<table class="cal"><thead><tr><th>Temp</th>'+
+                names.map(f=>'<th>'+esc(f)+'</th>').join('')+'</tr></thead><tbody>'+
+                temps.map(t => '<tr><td>'+t+'&deg;C</td>'+names.map(f =>
+                    '<td>'+Math.round(filts[f].intercept+(slope||0)*t)+'</td>').join('')+
+                    '</tr>').join('')+
+                '<tr><td>AFs</td>'+names.map(f=>'<td>'+filts[f].n+'</td>').join('')+'</tr>'+
+                (osc ? '' : '<tr><td>Offset vs '+esc(ref)+'</td>'+names.map(f => {
+                    const o = (m.offsets||{})[f];
+                    return '<td>'+(f===ref ? '0' : (o ? (o.steps>0?'+':'')+o.steps+
+                        (o.se!=null?' &plusmn;'+fmt(o.se,0):'') : '&mdash;'))+'</td>';
+                }).join('')+'</tr>')+
+                '<tr><td>Scatter</td>'+names.map(f=>'<td>'+fmt(filts[f].scatter,0)+'</td>').join('')+'</tr>'+
+                '</tbody></table>';
+        }
+        const res = (s.residuals||[]).slice().reverse();
+        const resT = res.length ? '<table class="cal"><thead><tr><th>Last AFs</th>'+
+            '<th>Filter</th><th>Temp</th><th>AF best</th><th>Start</th>'+
+            '<th>Table</th><th>Residual</th></tr></thead><tbody>'+
+            res.map(r => '<tr'+(r.outlier?' class="thin"':'')+'><td>'+
+                esc(String(r.time||'').slice(0,16).replace('T',' '))+'</td><td>'+
+                esc(r.filter)+'</td><td>'+fmt(r.temp,1)+'</td><td>'+r.position+
+                '</td><td>'+(r.initial!=null?r.initial:'&mdash;')+'</td><td>'+
+                (r.predicted!=null?r.predicted:'&mdash;')+'</td><td>'+
+                (r.residual!=null?(r.residual>0?'+':'')+r.residual:'&mdash;')+
+                '</td></tr>').join('')+'</tbody></table>' : '';
+        const moves = (s.moves||[]).slice().reverse();
+        const movesT = moves.length ? '<div class="muted" style="margin-top:.4rem;">Model moves: '+
+            moves.slice(0,5).map(mv => esc(String(mv.at||'').slice(5,16))+' '+
+                esc(mv.filter)+' '+esc(mv.verdict)+(mv.position!=null?' '+mv.position:''))
+                .join(' &middot; ')+'</div>' : '';
+        return '<div class="focus-card'+(osc?' osc':'')+'"><h3>'+esc(title)+
+            ' &mdash; focus model</h3>'+head+trust+offs+exp+
+            (osc ? '<div class="muted">Read-only: nothing seeds from it yet. '+
+                   'Ingest status is on the RC16 card.</div>'
+                 : ingestLine(s.ingest, s.enabled))+
+            scatter(series, null)+table+resT+movesT+'</div>';
+    }
+    loadFocus();
+    setInterval(loadFocus, 60000);
+
+    // ---- PS-113: needs vs have, capture jobs, QA ----------------------
+    const ACTIVE_JOB = ['starting', 'cooling', 'running', 'stopping'];
+    let needData = null, jobData = {jobs: {}}, qaData = {rigs: {}};
+    const refusals = {};
+
+    function needCard(r) {
+        const job = (jobData.jobs || {})[r.rig];
+        const qa = (qaData.rigs || {})[r.rig] || {};
+        const rows = r.sets.map(s => {
+            const cls = s.gap > 0 ? ' class="thin"' : '';
+            return '<tr' + cls + '><td>' + esc(s.label) +
+                (s.capturable ? '' : ' <span class="muted">(dusk/dawn)</span>') +
+                '</td><td>' + s.need + '</td><td>' + s.have + '</td><td>' +
+                (s.bad == null ? '-' : s.bad) + '</td><td>' + s.gap +
+                '</td><td style="text-align:left;" class="muted">' +
+                esc((s.sources || []).slice(0, 2).join('; ')) + '</td></tr>';
+        }).join('');
+        const c = r.capture || {};
+        const plan = (c.darks || []).map(x => x[0] + ' s x ' + x[1]).join(' + ') +
+            (c.bias ? ((c.darks || []).length ? ' + ' : '') + c.bias + ' bias' : '');
+        const day = (r.daytime || {}).status || 'untested';
+        const dayCls = day === 'disabled' ? 'p-disabled' : (day === 'ok' ? 'p-harvest' : 'p-static');
+        let jobTxt = '';
+        if (job) {
+            const v = job.verdicts || {};
+            jobTxt = '<div style="margin-top:.5rem;"><b>Job ' + esc(job.state) + '</b>: ' +
+                esc(job.detail || '') + ' <span class="muted">(' + job.landed + ' of ' +
+                job.expected + ' frames, ' + ((v.pass || 0) + (v.warn || 0)) + ' passed, ' +
+                (v.fail || 0) + ' quarantined)</span>' +
+                (ACTIVE_JOB.includes(job.state) ? ' <button class="btn" onclick="cancelJob(\'' +
+                    r.rig + '\')">Cancel</button>' : '') + '</div>';
+        }
+        const ref = refusals[r.rig];
+        const refTxt = !ref ? '' : (ref.length
+            ? '<div style="margin-top:.4rem;color:#fca5a5;">Refused:<br>' +
+              ref.map(x => '&middot; ' + esc(x)).join('<br>') + '</div>'
+            : '<div style="margin-top:.4rem;color:#86efac;">No refusals right now.</div>');
+        const badList = (qa.bad || []).slice(0, 8).map(b =>
+            '<div class="muted" style="word-break:break-all;">' + esc(b.key) + ': ' +
+            esc((b.reasons || [])[0] || '') + '</div>').join('');
+        return '<div class="focus-card' + (r.rig === 'rc16' ? '' : ' osc') + '"><h3>' +
+            esc(r.name) + ' <span class="pill ' + dayCls + '" style="float:right;">daytime ' +
+            esc(day) + '</span></h3><div class="muted">gain ' + r.epoch.gain + ' offset ' +
+            r.epoch.offset + ' setpoint ' + r.epoch.setpoint + ' C &middot; ' + r.qa_checked +
+            ' frames QA\'d, ' + r.unchecked + ' not yet (calibration-qa --backfill)</div>' +
+            '<table class="cal"><thead><tr><th>Set</th><th>need</th><th>have</th><th>bad</th>' +
+            '<th>gap</th><th style="text-align:left;">from</th></tr></thead><tbody>' + rows +
+            '</tbody></table><div style="margin-top:.5rem;">' + (plan
+                ? 'Capture plan: <b>' + esc(plan) + '</b> (about ' +
+                  Math.round((c.minutes || 0) + 10) + ' min with cooling' +
+                  (c.trimmed ? ', trimmed to the budget' : '') + ')'
+                : 'Darks and bias at quota.') + '</div>' +
+            '<div style="margin-top:.5rem;"><button class="btn" onclick="checkJob(\'' + r.rig +
+            '\')">Check</button> <button class="btn" onclick="captureNow(\'' + r.rig + '\')"' +
+            (plan ? '' : ' disabled') + '>Capture now</button></div>' + refTxt + jobTxt +
+            (qa.fail ? '<details style="margin-top:.5rem;"><summary class="muted">' + qa.fail +
+                ' failing frames (quarantined or to be)</summary>' + badList + '</details>' : '') +
+            '</div>';
+    }
+
+    function renderNeeds() {
+        if (!needData) return;
+        document.getElementById('needCards').innerHTML = needData.rigs.map(needCard).join('');
+    }
+
+    async function loadNeeds() {
+        try {
+            const [p, j, q] = await Promise.all([
+                fetch('/api/calibration/plan').then(r => r.json()),
+                fetch('/api/calibration/capture-job').then(r => r.json()),
+                fetch('/api/calibration/qa?limit=20').then(r => r.json())]);
+            needData = p; jobData = j; qaData = q;
+            renderNeeds();
+            document.getElementById('needUpdated').textContent = 'QA mode ' + p.qa_mode +
+                ', armer ' + (j.armer || '?') + ', updated ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            document.getElementById('needUpdated').textContent = 'calibration plan unavailable';
+        }
+    }
+
+    async function checkJob(rig) {
+        const d = await (await fetch('/api/calibration/capture-job?check=1&rig=' +
+            encodeURIComponent(rig))).json();
+        refusals[rig] = ((d.refusals || {})[rig] || {}).refusals || [];
+        renderNeeds();
+    }
+
+    async function captureNow(rig) {
+        if (!confirm('Capture darks + bias now on ' + rig + '?\n\nOnly with the roof CLOSED ' +
+                     'and the armer DISARMED or COMPLETE. The camera cools to its setpoint ' +
+                     'first; the job stops if the roof opens or the sensor drifts. It never ' +
+                     'moves the mount.')) return;
+        const r = await fetch('/api/calibration/capture-job', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({rig: rig, source: 'calibration page'})});
+        const d = await r.json();
+        refusals[rig] = r.ok ? [] : (d.refusals || [d.detail || 'failed']);
+        await loadNeeds();
+    }
+
+    async function cancelJob(rig) {
+        if (!confirm('Cancel the ' + rig + ' capture job? NINA stops and the camera warms.')) return;
+        await fetch('/api/calibration/capture-job/cancel', {method: 'POST',
+            headers: {'Content-Type': 'application/json'}, body: JSON.stringify({rig: rig})});
+        await loadNeeds();
+    }
+
+    loadNeeds();
+    setInterval(loadNeeds, 60000);
+
+    // ---- PS-122: Calibration owed ---------------------------------------
+    function owedCard(r) {
+        const s = r.summary || {};
+        const ep = r.epoch || {};
+        const counts = s.dark_sets_owed + ' dark set(s) (' + s.dark_frames_owed +
+            ' frames) &middot; ' + s.flats_owed + ' flat filter(s) &middot; bias ' +
+            (s.bias_owed ? 'owed' : 'ok') + ' &middot; ' + s.uncalibrated_nights +
+            ' uncalibrated night(s)';
+        const items = (r.items || []).map(t =>
+            '<li>' + esc(t) + '</li>').join('');
+        const fixes = (r.config_fixes || []).map(f =>
+            '<div style="margin-top:.4rem;color:#fcd34d;">Config fix: <code>' +
+            esc(f.set) + '</code><div class="muted">' + esc(f.text) + '</div></div>').join('');
+        const unc = (r.nights || []).filter(n => n.uncalibrated).slice(0, 6).map(n =>
+            '<div class="muted">' + esc(n.night) + ': ' + n.lights + ' lights, missing ' +
+            esc(n.missing.join(', ')) + '</div>').join('');
+        const darkRows = (r.darks || []).filter(d => d.lights || d.planned.length || d.owed)
+            .map(d => '<tr' + (d.owed ? ' class="thin"' : '') + '><td>' + esc(d.label) +
+                '</td><td>' + d.have + '</td><td>' + d.need + '</td><td>' + d.owed +
+                '</td><td>' + d.lights + '</td><td>' +
+                (d.age_days == null ? '-' : d.age_days + ' d') + '</td><td>' +
+                (d.ccd_temp_c == null ? '-' : d.ccd_temp_c + ' C') +
+                (d.from_lights ? ' (from lights)' : '') + '</td></tr>').join('');
+        const flatRows = (r.flats || []).map(f => '<tr' + (f.owed ? ' class="thin"' : '') +
+            '><td>' + esc(f.filter) + '</td><td>' + esc(f.last || 'none') + '</td><td>' +
+            f.count + ' of ' + f.need + '</td><td>' + (f.age_days == null ? '-' : f.age_days + ' d') +
+            '</td><td>' + f.lights_since.length + '</td></tr>').join('');
+        const cons = (r.constraints || []).map(c => '<div class="muted">' + esc(c) + '</div>').join('');
+        // PS-160: what tonight's sequences fill from this coverage
+        const plan = ((r.plan || {}).text || []).map(t =>
+            '<div>' + esc(t) + '</div>').join('');
+        return '<div class="focus-card' + (r.rig === 'rc16' ? '' : ' osc') + '"><h3>' +
+            esc(r.name) + ' <span class="pill ' + ((r.items || []).length ? 'p-disabled' : 'p-harvest') +
+            '" style="float:right;">' + (r.items || []).length + ' owed</span></h3>' +
+            '<div class="muted">gain ' + ep.gain + ' offset ' + ep.offset + ' ' + ep.setpoint +
+            ' C' + (ep.readout ? ' ' + esc(ep.readout) : '') +
+            ' &middot; ' + r.lights + ' lights' + (r.lights_assumed_epoch ? ' (' +
+            r.lights_assumed_epoch + ' logged before PS-122: epoch assumed)' : '') +
+            (r.lights_readout_assumed ? ' (' + r.lights_readout_assumed +
+             ' with no readout logged: ' + esc(ep.readout || '?') + ' assumed)' : '') +
+            ' &middot; ' + esc(r.counted) + '</div>' +
+            (r.readout_note ? '<div class="muted">' + esc(r.readout_note) + '</div>' : '') +
+            '<div style="margin:.4rem 0;">' + counts + '</div>' +
+            (items ? '<ul style="margin:.3rem 0 .3rem 1.1rem;padding:0;">' + items + '</ul>'
+                   : '<div style="color:#86efac;">Nothing owed.</div>') + fixes +
+            (unc ? '<div style="margin-top:.4rem;"><b>Uncalibrated nights</b>' + unc + '</div>' : '') +
+            (plan ? '<div style="margin-top:.4rem;"><b>Plan</b>' + plan + '</div>' : '') +
+            '<details style="margin-top:.5rem;"><summary class="muted">Darks and flats detail</summary>' +
+            '<table class="cal"><thead><tr><th>Darks</th><th>have</th><th>need</th><th>owed</th>' +
+            '<th>lights</th><th>newest</th><th>sensor</th></tr></thead><tbody>' + darkRows + '</tbody></table>' +
+            '<table class="cal"><thead><tr><th>Flats</th><th>last set</th><th>count</th><th>age</th>' +
+            '<th>nights since</th></tr></thead><tbody>' + flatRows + '</tbody></table></details>' +
+            '<div style="margin-top:.5rem;">' + cons + '</div></div>';
+    }
+
+    async function loadOwed() {
+        try {
+            const d = await (await fetch('/api/calibration/owed')).json();
+            document.getElementById('owedCards').innerHTML = d.rigs.map(owedCard).join('');
+            document.getElementById('owedUpdated').textContent = d.total_items + ' item(s), last ' +
+                d.lookback_days + ' nights, updated ' + new Date().toLocaleTimeString();
+        } catch (e) {
+            document.getElementById('owedUpdated').textContent = 'calibration owed unavailable';
+        }
+    }
+    loadOwed();
+    setInterval(loadOwed, 120000);
+    </script>
+    {% include "_footer.html" %}
+</body>
+</html>

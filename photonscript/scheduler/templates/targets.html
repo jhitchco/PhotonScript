@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Targets</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <script src="/static/js/integrations.js?v={{ version }}"></script>
+    <style>
+        main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
+        .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
+                 gap:1rem; }
+        .tcard { background:rgba(255,255,255,.04); border-radius:12px; overflow:hidden;
+                 display:flex; flex-direction:column; color:inherit; text-decoration:none;
+                 border-top:3px solid #334155; transition:background .15s; }
+        .tcard:hover { background:rgba(255,255,255,.07); }
+        .tcard.active { border-top-color:#38bdf8; }
+        .tcard.unattr { border-top-color:#a855f7; }
+        .tcard .pic { height:120px; background:#0b1220 center/cover no-repeat;
+                      display:flex; align-items:flex-end; }
+        .tcard .pic span { font-size:.62rem; opacity:.5; padding:.15rem .4rem; }
+        .tcard .bd2 { padding:.7rem .9rem .8rem; display:flex; flex-direction:column;
+                      gap:.3rem; }
+        .tcard h3 { margin:0; font-size:1.05rem; }
+        .muted { opacity:.62; font-size:.8rem; }
+        .counts b { margin-right:.55rem; }
+        .ok { color:#4ade80; } .pend { color:#eab308; } .rej { color:#f87171; }
+        .bar { height:6px; border-radius:3px; background:rgba(255,255,255,.08);
+               overflow:hidden; }
+        .bar > i { display:block; height:100%; background:#38bdf8; }
+        .tag { display:inline-block; padding:.05rem .45rem; border-radius:999px;
+               font-size:.68rem; font-weight:700; background:rgba(255,255,255,.08);
+               margin-left:.35rem; vertical-align:middle; }
+        .sec { margin:1.2rem 0 .5rem; font-size:.85rem; letter-spacing:.04em;
+               text-transform:uppercase; opacity:.6; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Targets: every sub and its review status" %}
+    {% set active_page = "targets" %}
+    {% include "_header.html" %}
+    <main>
+        <section class="panel">
+            <div class="muted" id="tSummary">loading&hellip;</div>
+            <div id="tSections"></div>
+        </section>
+    </main>
+<script>
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+function card(t) {
+    const c = t.counts, f = t.facts || {}, g = t.goal;
+    const href = '/target?name=' + encodeURIComponent(t.name);
+    const title = t.unattributed ? 'Unattributed (?)' : t.name;
+    const sub = t.unattributed
+        ? 'subs whose recorded name is a loop container (e.g. OSC_LIGHT_LOOP), not a target'
+        : [f.catalog_id, f.object_type, f.size_arcmin ? f.size_arcmin + "'" : '',
+           f.magnitude != null ? 'mag ' + f.magnitude : ''].filter(Boolean).join(' \u00b7 ');
+    const tr = t.top_reason;
+    return '<a class="tcard' + (t.active ? ' active' : '') + (t.unattributed ? ' unattr' : '') +
+        '" href="' + href + '">' +
+        '<div class="pic" data-name="' + esc(t.unattributed ? '' : t.name) +
+        '" data-catalog="' + esc(f.catalog_id || '') + '"><span></span></div>' +
+        '<div class="bd2"><h3>' + esc(title) +
+        (t.mosaic ? '<span class="tag" title="mosaic panel, row ' + t.mosaic.row + ', col ' +
+             t.mosaic.col + '">panel ' + t.mosaic.panel + '/' + t.mosaic.of + '</span>' : '') +
+        (t.active === false ? '<span class="tag">paused</span>' : '') +
+        (t.project_id == null && !t.unattributed ? '<span class="tag">no project</span>' : '') +
+        '</h3><div class="muted">' + esc(sub) + '</div>' +
+        (g ? '<div class="bar" title="goal ' + g.pct + '%: ' + g.hours_done + ' of ' +
+             g.hours_goal + ' h"><i style="width:' + Math.min(100, g.pct) + '%"></i></div>' +
+             '<div class="muted">goal ' + g.pct + '% \u00b7 ' + g.hours_done + ' / ' +
+             g.hours_goal + ' h</div>' : '') +
+        '<div class="counts"><b class="ok" title="approved">' + c.approved + ' \u2713</b>' +
+        '<b class="pend" title="pending review">' + c.pending + ' \u25cb</b>' +
+        '<b class="rej" title="rejected">' + c.rejected + ' \u2717</b>' +
+        '<span class="muted">' + c.hours.approved + ' h approved</span></div>' +
+        (t.project_id ? '<div class="muted" style="font-size:.74rem;" id="integ-' +
+             esc(t.project_id) + '"></div>' : '') +
+        '<div class="muted">' + (t.last_night ? 'last night ' + t.last_night + ' \u00b7 ' +
+             t.nights + ' night' + (t.nights === 1 ? '' : 's') : 'no subs yet') +
+        (tr ? ' \u00b7 top reject: ' + esc(tr.label) + ' (' + tr.count + ')' : '') +
+        '</div></div></a>';
+}
+async function pics() {
+    // one Wikipedia lookup at a time (server caches them)
+    for (const el of document.querySelectorAll('.pic[data-name]')) {
+        if (!el.dataset.name) continue;
+        try {
+            const r = await (await fetch('/api/thumbnail?name=' +
+                encodeURIComponent(el.dataset.name) + '&catalog=' +
+                encodeURIComponent(el.dataset.catalog))).json();
+            if (r.url) {
+                el.style.backgroundImage = 'url("' + r.url + '")';
+                el.firstChild.textContent = 'Wikipedia';
+            }
+        } catch (e) { /* offline: plain panel */ }
+    }
+}
+fetch('/api/targets').then(r => r.json()).then(d => {
+    const ts = d.targets || [];
+    // PS-111: mosaic panels group under their mosaic, in capture order
+    const plain = ts.filter(t => !t.mosaic);
+    const mosaics = {};
+    ts.filter(t => t.mosaic).forEach(t => {
+        (mosaics[t.mosaic.id] = mosaics[t.mosaic.id] || []).push(t);
+    });
+    const groups = [['Active projects', plain.filter(t => t.active)]];
+    Object.values(mosaics).forEach(ps => {
+        ps.sort((a, b) => a.mosaic.panel - b.mosaic.panel);
+        const m = ps[0].mosaic;
+        groups.push(['Mosaic: ' + m.name + ' (' + m.of + ' panels, finished in order)', ps]);
+    });
+    groups.push(['Other targets', plain.filter(t => !t.active && !t.unattributed)],
+                ['Unattributed', plain.filter(t => t.unattributed)]);
+    const n = ts.reduce((a, t) => a + t.counts.total, 0);
+    document.getElementById('tSummary').textContent = ts.length + ' targets \u00b7 ' +
+        n + ' subs recorded \u00b7 read-only: review subs on the run page (click a tile on a target)';
+    document.getElementById('tSections').innerHTML = groups
+        .filter(g => g[1].length)
+        .map(g => '<div class="sec">' + esc(g[0]) + '</div><div class="tgrid">' +
+             g[1].map(card).join('') + '</div>').join('');
+    // PS-33: the integrator ledger line per goal (latest version, new data since)
+    if (window.Integrations) Integrations.campaign('integ-', null);
+    pics();
+}).catch(() => document.getElementById('tSummary').textContent = 'unavailable');
+</script>
+    {% include "_footer.html" %}
+</body>
+</html>
