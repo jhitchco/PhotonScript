@@ -105,6 +105,7 @@ _LIST_SEP = "~"          # between entries in a probe list (s() keeps it)
 _MAX_MEMBERS = 300
 _MAX_VALUE_CHARS = 60
 _MAX_SRC_CHARS = 160
+_MAX_ITEM_CHARS = 6000   # one probe value (a member list) at most
 
 CSV_FIELDS = ("utc", "point", "of", "side", "cmd_alt", "cmd_az", "file",
               "bin", "scale", "solved", "solved_ra_j2000_h",
@@ -116,56 +117,95 @@ CSV_FIELDS = ("utc", "point", "of", "side", "cmd_alt", "cmd_az", "file",
 
 # ------------------------------------------------------------- scripts
 
-# READ-ONLY helpers for the probe: member names by for..in plus
-# Object.getOwnPropertyNames (each in a try: host objects may refuse),
-# property values only when they are plain (never a call).
+# READ-ONLY probe, PS-171 follow-up. On 2026-10-08 (build 14139) the
+# 0f134ee probe came back with every field empty while a plain script on
+# the same engine worked (typeof TheSkyXAction.execute = function,
+# AddPointingSample = 197). So each probe item is now its own guarded
+# push: t(name, f) appends "name=<value>" or "name=ERR:<message>" to a
+# list and one failing item cannot blank the rest; Out = the list joined
+# with ";". Only ES3 / ES5 constructs QtScript has: for..in, try / catch,
+# typeof, String(), regex literals; Object.getOwnPropertyNames only when
+# typeof says it exists; a function's text only through String(f) in its
+# own item. Helpers carry a ps_ prefix so they cannot collide with a
+# TheSky global. run_probe sends the items in PROBE_STAGES as separate
+# scripts and re-sends a stage item by item when the whole stage fails.
 _PROBE_PRE = (
-    "function names(o,all){var r={};var re=/" + _MEMBER_RE + "/i;"
+    "var Out='';var ps_o=[];"
+    "function ps_s(v){var t='';try{t=String(v);}catch(e){t='?';}"
+    "return t.replace(/[|;=\\r\\n]/g,'_').substring(0," + str(_MAX_ITEM_CHARS) + ");}"
+    "function ps_t(n,f){try{ps_o.push(n+'='+ps_s(f()));}"
+    "catch(e){ps_o.push(n+'=ERR:'+ps_s(e));}}"
+    "function ps_names(o,all){var r={};var re=/" + _MEMBER_RE + "/i;"
     "try{for(var k in o){r[k]=1;}}catch(e){}"
-    "try{var p=Object.getOwnPropertyNames(o);for(var i=0;i<p.length;i++){r[p[i]]=1;}}"
+    "try{if(typeof Object.getOwnPropertyNames=='function'){"
+    "var p=Object.getOwnPropertyNames(o);for(var i=0;i<p.length;i++){r[p[i]]=1;}}}"
     "catch(e){}var out=[];for(var n in r){if(all||re.test(n)){out.push(n);}}"
-    "return out.sort().slice(0," + str(_MAX_MEMBERS) + ");}"
-    "function members(o,all){return names(o,all).join('" + _LIST_SEP + "');}"
-    "function cls(v){return Object.prototype.toString.call(v);}"
-    "function txt(v){var t=typeof v;if(t=='function'){return '(function)';}"
+    "out.sort();return out.slice(0," + str(_MAX_MEMBERS) + ");}"
+    "function ps_members(o,all){return ps_names(o,all).join('" + _LIST_SEP + "');}"
+    "function ps_cls(v){return Object.prototype.toString.call(v);}"
+    "function ps_txt(v){var t=typeof v;if(t=='function'){return '(function)';}"
     "if(t=='object'&&v!==null){return '(object)';}"
     "return String(v).substring(0," + str(_MAX_VALUE_CHARS) + ");}"
-    "function src(f){return String(f).replace(/\\s+/g,' ').substring(0,"
+    "function ps_src(f){return String(f).replace(/\\s+/g,' ').substring(0,"
     + str(_MAX_SRC_CHARS) + ");}"
-    "function vals(o){var out=[];var ns=names(o,false);"
+    "function ps_vals(o){var out=[];var ns=ps_names(o,false);"
     "for(var i=0;i<ns.length;i++){try{var v=o[ns[i]];var t=typeof v;"
-    "if(t!='function'&&t!='object'&&t!='undefined'){out.push(ns[i]+':'+txt(v));}}"
+    "if(t!='function'&&t!='object'&&t!='undefined'){out.push(ns[i]+':'+ps_txt(v));}}"
     "catch(e){}}return out.join('" + _LIST_SEP + "');}"
-    "function objMembers(v){return (v!==null&&typeof v=='object')?members(v,true):'';}"
-    "function objVals(v){return (v!==null&&typeof v=='object')?vals(v):'';}")
+    "function ps_objMembers(v){return (v!==null&&typeof v=='object')?ps_members(v,true):'';}"
+    "function ps_objVals(v){return (v!==null&&typeof v=='object')?ps_vals(v):'';}"
+    "var ps_global=this;")
+_PROBE_POST = "Out=ps_o.join(';');"
 
 
-def probe_script() -> str:
-    """READ ONLY. typeof checks on each add candidate, member names of
-    PROBE_OBJECTS, TheSkyXAction.execute's typeof / text / length, typeof /
-    class / value of the TheSkyXAction members in ACTION_NAMES, the plain
-    model-ish values of MODULES, and the TPoint flags."""
-    pairs: list[tuple[str, str]] = []
+def probe_items() -> list[tuple[str, str, str]]:
+    """(stage, key, JS expression) of every probe item, in PROBE_STAGES
+    order. Reads only: typeof, member names, plain values, a function's
+    text; nothing is called."""
+    items: list[tuple[str, str, str]] = []
     for cid, check, _call in ADD_CANDIDATES:
-        pairs.append((f"has_{cid}", f"({check}) ? 1 : 0"))
-    for obj, all_members in PROBE_OBJECTS:
-        pairs.append((f"type_{obj}", f"typeof {obj}"))
-        pairs.append((f"members_{obj}",
-                      f"members({obj}, {'true' if all_members else 'false'})"))
-    pairs += [("act_type_execute", f"typeof {_ACT}.execute"),
-              ("act_src_execute", f"src({_ACT}.execute)"),
-              ("act_len_execute", f"{_ACT}.execute.length")]
+        items.append(("basic", f"has_{cid}", f"({check}) ? 1 : 0"))
+    for obj, _all in PROBE_OBJECTS:
+        items.append(("basic", f"type_{obj}", f"typeof {obj}"))
+    items.append(("basic", "act_type_execute", f"typeof {_ACT}.execute"))
     for n in ACTION_NAMES:
         v = f"{_ACT}.{n}"
-        pairs += [(f"act_type_{n}", f"typeof {v}"),
-                  (f"act_class_{n}", f"cls({v})"),
-                  (f"act_value_{n}", f"txt({v})"),
-                  (f"act_members_{n}", f"objMembers({v})")]
+        items += [("basic", f"act_type_{n}", f"typeof {v}"),
+                  ("basic", f"act_class_{n}", f"ps_cls({v})"),
+                  ("basic", f"act_value_{n}", f"ps_txt({v})")]
+    for obj, all_members in PROBE_OBJECTS:
+        items.append(("members", f"members_{obj}",
+                      f"ps_members({obj}, {'true' if all_members else 'false'})"))
+    for n in ACTION_NAMES:
+        items.append(("members", f"act_members_{n}", f"ps_objMembers({_ACT}.{n})"))
+    items.append(("members", "globals", "ps_members(ps_global, false)"))
+    items += [("execute", "act_len_execute", f"{_ACT}.execute.length"),
+              ("execute", "act_src_execute", f"ps_src({_ACT}.execute)")]
     for n in MODULES:
-        pairs.append((f"mod_values_{n}", f"objVals({n})"))
+        items.append(("modules", f"mod_values_{n}", f"ps_objVals({n})"))
     flags, _pre = tc.READ_PAIRS["tpoint_flags"]
-    pairs += [(f"flag_{k}", expr) for k, expr in flags]
-    return tc._js_kv(pairs, pre=_PROBE_PRE + tc.TP_PRE)
+    items += [("flags", f"flag_{k}", expr) for k, expr in flags]
+    return items
+
+
+PROBE_STAGES = ("basic", "members", "execute", "modules", "flags")
+
+
+def _probe_js(items) -> str:
+    body = "".join(f"ps_t('{k}', function(){{return {expr};}});"
+                   for _st, k, expr in items)
+    return _PROBE_PRE + tc.TP_PRE + body + _PROBE_POST
+
+
+def probe_script(stage: str | None = None) -> str:
+    """READ ONLY. One stage of the probe (PROBE_STAGES), or every item in
+    one script when stage is None: typeof checks on each add candidate,
+    member names of PROBE_OBJECTS (and the global names that mention
+    TPoint / point / model ...), TheSkyXAction.execute's typeof / length /
+    text, typeof / class / value of the TheSkyXAction members in
+    ACTION_NAMES, the plain model-ish values of MODULES, the TPoint
+    flags."""
+    return _probe_js([i for i in probe_items() if stage is None or i[0] == stage])
 
 
 _SAMPLE_READS = [
@@ -231,18 +271,25 @@ def sample_script(path: str, scale: float, add: str | None = None) -> str:
 def parse_raw(raw: str) -> dict:
     """The probe reply as {key: text}. Unlike thesky_client.parse_kv it keeps
     "function", "undefined" and "[object ...]" (they are the answers: a
-    typeof or a class); only "?ERR" and "" read as None. The flag_ keys go
+    typeof or a class); "?ERR", "" and "ERR:<message>" (the item threw; the
+    message goes to out["_errors"][key]) read as None. The flag_ keys go
     through parse_kv's rules (a method's text is not a value)."""
     out: dict = {}
+    errors: dict = {}
     for part in (raw or "").split(";"):
         k, sep, v = part.partition("=")
         if not sep or not k.strip():
             continue
         k, v = k.strip(), v.strip()
-        if k.startswith("flag_"):
+        if v.startswith("ERR:"):
+            errors[k] = v[4:].strip() or "error"
+            out[k] = None
+        elif k.startswith("flag_"):
             out[k] = tc.parse_kv(f"{k}={v}").get(k)
         else:
             out[k] = None if v in ("", "?ERR") else v
+    if errors:
+        out["_errors"] = errors
     return out
 
 
@@ -275,6 +322,8 @@ def parse_probe(kv: dict) -> dict:
     flags = {k[5:]: v for k, v in kv.items() if k.startswith("flag_")}
     return {"found": found, "use": found[0] if found else None,
             "objects": objects, "actions": actions,
+            "globals": _list(kv.get("globals")),
+            "item_errors": dict(kv.get("_errors") or {}),
             "execute": {"type": kv.get("act_type_execute"),
                         "text": kv.get("act_src_execute"),
                         "length": kv.get("act_len_execute")},
@@ -311,6 +360,73 @@ def load_probe(config) -> dict | None:
         return None
 
 
+class _Unreachable(Exception):
+    """TheSky's TCP server did not answer (no point re-sending per item)."""
+
+
+def _run_items(cl, items) -> tuple[dict | None, str | None]:
+    """One script for `items`: (parsed reply, None), or (None, why) when it
+    raised or the reply holds no key=value pair at all (TheSky answers an
+    engine-level failure with its message in place of Out)."""
+    try:
+        raw = cl.run_script(_probe_js(items))
+    except Exception as e:  # noqa: BLE001
+        if isinstance(e.__cause__, OSError):
+            raise _Unreachable(f"{type(e).__name__}: {e}") from e
+        return None, f"{type(e).__name__}: {e}"
+    kv = parse_raw(raw)
+    if not [k for k in kv if k != "_errors"]:
+        return None, "reply not parsed: " + (str(raw or "").strip()[:200] or "(empty)")
+    return kv, None
+
+
+def collect_probe(cl) -> tuple[dict, dict]:
+    """Every probe item, stage by stage (PROBE_STAGES), each stage its own
+    script. A stage that fails as a whole is re-sent one item per script,
+    so one item the engine cannot run is named (its key in "_errors") and
+    every other item still reads. The first stage is the minimal typeof
+    set: when it fails even item by item, TheSky is down and TheSkyError
+    is raised (at once when the TCP server does not answer). Returns
+    (merged key/value dict, {stage: "ok" | "per item (why)" | why})."""
+    kv: dict = {}
+    errors: dict = {}
+    stages: dict = {}
+    items = probe_items()
+    for stage in PROBE_STAGES:
+        its = [i for i in items if i[0] == stage]
+        try:
+            got, why = _run_items(cl, its)
+        except _Unreachable as e:
+            if stage == PROBE_STAGES[0]:
+                raise tc.TheSkyError(str(e)) from e
+            stages[stage] = f"not run: {e}"
+            continue
+        if got is not None:
+            errors.update(got.pop("_errors", {}))
+            kv.update(got)
+            stages[stage] = "ok"
+            continue
+        ok_any = False
+        for it in its:
+            try:
+                one, why1 = _run_items(cl, [it])
+            except _Unreachable as e:
+                errors[it[1]] = str(e)
+                break
+            if one is None:
+                errors[it[1]] = why1
+                continue
+            ok_any = True
+            errors.update(one.pop("_errors", {}))
+            kv.update(one)
+        if stage == PROBE_STAGES[0] and not ok_any:
+            raise tc.TheSkyError(why or "probe failed")
+        stages[stage] = f"per item ({why})"
+    if errors:
+        kv["_errors"] = errors
+    return kv, stages
+
+
 def run_probe(config, client=None, now: datetime | None = None,
               persist: bool = True) -> dict:
     """Run the read-only probe; store it (latest + a dated copy) with the
@@ -320,7 +436,9 @@ def run_probe(config, client=None, now: datetime | None = None,
     prev = load_probe(config)
     try:
         cl = client or tc.client_from_config(config)
-        rec.update(parse_probe(parse_raw(cl.run_script(probe_script()))))
+        kv, stages = collect_probe(cl)
+        rec.update(parse_probe(kv))
+        rec["stages"] = stages
         rec["ok"] = True
     except Exception as e:  # noqa: BLE001
         rec["error"] = f"{type(e).__name__}: {e}"
@@ -397,6 +515,16 @@ def format_probe(rec: dict) -> str:
     for o, info in (rec.get("objects") or {}).items():
         lines.append(f"  {o}: {info.get('type')}; members: "
                      + (" ".join(info.get("members") or []) or "-"))
+    if rec.get("globals"):
+        lines.append("  globals (TPoint / point / model ...): " + " ".join(rec["globals"]))
+    errs = rec.get("item_errors") or {}
+    if errs:
+        lines.append(f"  {len(errs)} probe item(s) failed (the rest still read):")
+        lines += [f"    {k}: {v}" for k, v in errs.items()]
+    bad = {k: v for k, v in (rec.get("stages") or {}).items() if v != "ok"}
+    if bad:
+        lines.append("  stages re-sent item by item: "
+                     + "; ".join(f"{k} ({v})" for k, v in bad.items()))
     if files:
         lines.append(files)
     return "\n".join(lines)

@@ -449,7 +449,12 @@ ProTrack flags from the PS-138 candidate names. Each probe is saved
 (`<data_dir>/tpoint/probe_latest.json` + a dated copy) and the next one
 prints "was ..." next to every changed flag: run it before and after a
 manual TPoint session to compare the model (and the PS-168 drift report
-the nights either side).
+the nights either side). Every probe item is guarded on its own (a
+throwing item reads `ERR:<message>` and is listed under "probe item(s)
+failed"; the rest still read), and the items go in five scripts (basic
+typeofs, member lists, execute's length / text, model-ish values, TPoint
+flags); a script TheSky rejects as a whole is re-sent item by item. The
+2026-10-08 probe that printed None everywhere is what this fixes.
 
 Site evidence (2026-10-08, TheSky64 10.5 build 14139, read only): there is
 no TPoint scripting object (`TPoint`, `sky6TPoint`, `TPointAddOn2` globals
@@ -513,12 +518,21 @@ whose path mentions TPoint / pointing / ProTrack or sits under Imaging
 System Profiles (Camera AutoSave, where the Automated Pointing Run frames
 go, is skipped), reads the text ones (never writes) and parses:
 - the TPOINT input data format (caption, `:` options, site line with the
-  run date, one line per observation, END): the point count;
-- a TPOINT fit report or model file (`<n> <TERM> [change] <value> <sigma>`,
-  `Sky RMS =`, `Popn SD =`, an observation count): the terms (IH, ID, CH,
-  NP, MA, ME, TF ... and harmonics) and the sky RMS;
+  run date, one line per observation, END): the point count. TheSky64
+  writes `TPoint\<run> in.dat` / `Super Model Indat.dat` (all points) and
+  `Super Model Outdat.dat` (the points kept in the fit, `& <extra columns>`
+  after each);
+- TheSky64's model file (`TPoint\<run> outmod.dat`, `Super Model
+  Outmod.dat`): caption, `T <n obs> <sky RMS> <refraction A> <refraction
+  B>`, one `[&][=]<TERM> <value> [<sigma>]` line per term (`=` = fixed),
+  END; also a TPOINT fit report (`Sky RMS =`, `Popn SD =`). The model file
+  has no popn SD: it is derived as sky RMS x sqrt(n / (n - fitted terms))
+  and shown as "(derived)";
 - a `ProTrack... = on / off` line in any listed file.
-`tpoint-stats` prints points, sky RMS, model date, the main terms, the
+The newest model file wins (so the Super Model files when they are newer
+than the base run's) and the data file of the same run gives the points.
+`tpoint-stats` prints points (and how many are in the fit), sky RMS, popn
+SD, model date, the main terms and every term (fixed ones marked `=`), the
 polar alignment from ME / MA in arcmin against `tpoint_polar_max_arcmin`
 with what to turn (TPOINT convention: ME > 0 = polar axis too high, lower
 it; MA > 0 = polar axis east of the pole, move it west; confirm with
@@ -526,9 +540,8 @@ TheSky's Polar Alignment Report first) and ProTrack (unknown unless a file
 states it). `--files` lists what it found; `GET /api/thesky/tpoint/files`
 does the same and `GET /api/thesky/tpoint/file?rel=` shows the head of one
 listed file (anything else 404s) so the parsers can be checked against
-TheSky64's real files after the deploy (their exact names and format are
-not documented offline; the test fixtures follow the documented TPOINT
-formats). The PS-104 audit reads the same numbers as source
+TheSky64's real files (the `thesky64_*` test fixtures are those files,
+read this way from the scope PC on 2026-10-08). The PS-104 audit reads the same numbers as source
 `tpoint-files` (rows model points, RMS, polar error, model age) on the
 scope PC, the probe prints them with "was ..." against the previous
 probe, and every change is a line in `<data_dir>/tpoint/stats_history.jsonl`

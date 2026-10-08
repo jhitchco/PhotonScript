@@ -2,12 +2,12 @@
 
 TheSky64 10.5 build 14139 has no TPoint scripting object, so points, sky
 RMS, terms, polar alignment and ProTrack come from the files under
-TheSky's user folder. The fixtures (fixtures/tpoint/documented-format_*)
-are written from the documented TPOINT formats (input data: caption,
-":" options, site line, observations, END; fit report: numbered term
-lines, Sky RMS, Popn SD), not copied from a real file: none was readable
-from the desktop. Check the parsers against a real file with
-GET /api/thesky/tpoint/file?rel= after the deploy."""
+TheSky's user folder. fixtures/tpoint/documented-format_* are written from
+the documented TPOINT formats (input data: caption, ":" options, site line,
+observations, END; fit report: numbered term lines, Sky RMS, Popn SD).
+fixtures/tpoint/thesky64_* are the real files read from the scope PC with
+GET /api/thesky/tpoint/file?rel= on 2026-10-08 (TheSky64 build 14139,
+byte for byte, CRLF)."""
 import asyncio
 import os
 import shutil
@@ -62,14 +62,14 @@ def test_parse_data_counts_observations_and_reads_the_date():
 
 def test_parse_model_terms_rms_and_count():
     m = tf.parse_model((FIX / "documented-format_fit.txt").read_text(encoding="ascii"))
-    assert m["terms"]["IH"] == {"value": -3484.63, "sigma": 1.23}
+    assert m["terms"]["IH"] == {"value": -3484.63, "sigma": 1.23, "fixed": False}
     assert m["terms"]["ME"]["value"] == 120.6 and m["terms"]["MA"]["value"] == -45.2
     assert "HDSH" in m["terms"] and len(m["terms"]) == 8
     assert m["sky_rms_arcsec"] == 15.77 and m["popn_sd_arcsec"] == 16.2
     assert m["observations"] == 84
     # a model file without the change column, and the data file is no model
     m2 = tf.parse_model("RC16 model\n  IH  -3480.10  1.2\n  ME  +60.0  0.9\nEND\n")
-    assert m2["terms"]["IH"] == {"value": -3480.1, "sigma": 1.2}
+    assert m2["terms"]["IH"] == {"value": -3480.1, "sigma": 1.2, "fixed": False}
     assert tf.parse_model((FIX / "documented-format_pointing.dat").read_text(
         encoding="ascii")) is None
     assert tf.parse_model("WIDTH 12 3\nHEIGHT 4 5\n") is None   # not TPOINT terms
@@ -124,7 +124,7 @@ def test_stats_merge_newest_data_and_model(tmp_path):
     assert st["polar"]["total_arcmin"] == pytest.approx(2.15, abs=0.01)
     assert st["protrack"] is True
     text = tf.format_stats(st)
-    assert "5 points, sky RMS 15.77\"" in text
+    assert "5 points (84 in the fit), sky RMS 15.77\"" in text
     assert "IH -3484.6\", ID +52.4\", ME +120.6\", MA -45.2\"" in text
     assert "polar alignment: 2.15' (OK the 3' limit)" in text
     assert "ProTrack: on" in text
@@ -240,3 +240,110 @@ def test_probe_shows_the_file_numbers_and_their_change(tmp_path):
     assert "sky RMS 11.4\"" in text and "sky_rms_arcsec was 15.77" in text
     down = ts.run_probe(cfg, client=_Down("x", 1))
     assert "FAILED" in ts.format_probe(down) and "5 points" in ts.format_probe(down)
+
+
+# ------------------------------------------------- real TheSky64 files
+
+REAL = {n.name[len("thesky64_"):]: n for n in FIX.glob("thesky64_*")}
+TERMS_233 = ["IH", "ID", "HHSH", "HHSH2", "HHSH3", "HDSD", "HDCD", "HDCD2",
+             "HDCD3", "HDSD7", "HDSH", "HDSHSD", "HDCH", "HDCH3", "NP", "CH",
+             "HXCD2", "HXSHCD7", "DAF", "ME", "MA", "TF", "TX10"]
+
+
+def _real(name):
+    return REAL[name].read_bytes().decode("latin-1")
+
+
+def test_real_outmod_rms_terms_and_fixed_np():
+    m = tf.parse_model(_real("TPoint base run outmod.dat"))
+    assert m["observations"] == 233 and m["sky_rms_arcsec"] == 15.7683
+    assert list(m["terms"]) == TERMS_233                      # file order, all 23
+    assert m["terms"]["NP"] == {"value": 0.0, "sigma": None, "fixed": True}
+    assert m["terms"]["HHSH2"]["value"] == -59.6319           # "& HHSH2" line
+    assert m["terms"]["TX10"]["value"] == -50.6439
+    assert m["terms"]["ME"]["value"] == -57.8537 and m["terms"]["MA"]["value"] == -154.8011
+    assert m["fitted_terms"] == 22
+    # the T line's last two numbers are the refraction constants, not popn SD
+    assert m["refraction"] == {"a_arcsec": 53.048, "b_arcsec": -0.0642}
+    assert m["popn_sd_source"] == "derived"
+    assert m["popn_sd_arcsec"] == pytest.approx(15.7683 * (233 / 211) ** 0.5, abs=0.01)
+    assert tf.parse_data(_real("TPoint base run outmod.dat")) is None
+
+
+def test_real_recal_model_with_no_data_has_no_rms():
+    m = tf.parse_model(_real("TPoint recal run outmod.dat"))
+    assert m["sky_rms_arcsec"] is None and m["observations"] is None
+    assert m["popn_sd_arcsec"] is None
+    assert m["terms"]["NP"] == {"value": 97.4158, "sigma": None, "fixed": True}
+    assert m["terms"]["HDSD"]["fixed"] and m["terms"]["HDSH7CD8"]["value"] == 13.9166
+    assert m["fitted_terms"] == 2 and len(m["terms"]) == 18
+
+
+def test_real_data_files_in_and_outdat():
+    d = tf.parse_data(_real("TPoint base run in.dat"))
+    assert d["points"] == 255 and d["date"] == "2026-10-04"
+    assert d["caption"] == "Paramount MX Series 6" and d["options"] == ["NODA", "EQUAT"]
+    o = tf.parse_data(_real("Super Model Outdat.dat"))
+    assert o["points"] == 233                    # "<obs> & <extra columns>" lines
+    assert o["options"] == ["NODA", "ALLSKY", "EQUAT"]
+    assert tf.parse_model(_real("Super Model Outdat.dat")) is None
+
+
+def _real_tree(tmp_path, ages: dict) -> Path:
+    root = tmp_path / "Software Bisque" / "TheSkyX Professional Edition"
+    tp = root / "TPoint"
+    tp.mkdir(parents=True)
+    now = time.time()
+    for name, age_s in ages.items():
+        f = tp / name
+        f.write_bytes(REAL[name].read_bytes())
+        os.utime(f, (now - age_s, now - age_s))
+    return root
+
+
+def test_real_stats_pairs_the_run_and_formats_everything(tmp_path):
+    root = _real_tree(tmp_path, {"TPoint base run outmod.dat": 60,
+                                 "TPoint base run in.dat": 60,
+                                 "Super Model Outmod.dat": 3600,
+                                 "Super Model Outdat.dat": 3600})
+    st = tf.stats(_cfg(tmp_path, thesky_user_dir=str(root)))
+    assert st["ok"] and st["model_file"].endswith("TPoint base run outmod.dat")
+    assert st["data_file"].endswith("TPoint base run in.dat")
+    assert st["points"] == 255 and st["model_points"] == 233
+    assert st["sky_rms_arcsec"] == 15.7683
+    assert st["polar"]["total_arcmin"] == pytest.approx(2.75, abs=0.01)
+    assert "confirm with TheSky's Polar Alignment Report" in st["polar"]["note"]
+    text = tf.format_stats(st)
+    assert "255 points (233 in the fit), sky RMS 15.77\"" in text
+    assert "popn SD 16.57\" (derived)" in text
+    assert "NP= +0.0\" (all 23 below)" in text.splitlines()[1]   # fixed, not missing
+    assert "NP= +0.0\"" in text.splitlines()[5] and "TX10 -50.6\"" in text and "HXSHCD7 -7.4\"" in text
+    assert "all 23 terms (22 fitted, = fixed)" in text
+    assert "?" not in text.splitlines()[0]
+
+
+def test_real_stats_prefers_the_super_model_when_newer(tmp_path):
+    root = _real_tree(tmp_path, {"TPoint base run outmod.dat": 3600,
+                                 "TPoint base run in.dat": 3600,
+                                 "Super Model Outmod.dat": 60,
+                                 "Super Model Outdat.dat": 60,
+                                 "TPoint recal run outmod.dat": 30})
+    st = tf.stats(_cfg(tmp_path, thesky_user_dir=str(root)))
+    # the newer recal model has no data and no RMS; it still is the newest
+    # model, so this run reports it honestly (no data of its own)
+    assert st["model_file"].endswith("TPoint recal run outmod.dat")
+    root2 = _real_tree(tmp_path / "b", {"TPoint base run outmod.dat": 3600,
+                                        "TPoint base run in.dat": 3600,
+                                        "Super Model Outmod.dat": 60,
+                                        "Super Model Outdat.dat": 60})
+    st = tf.stats(_cfg(tmp_path / "b", thesky_user_dir=str(root2)))
+    assert st["model_file"].endswith("Super Model Outmod.dat")
+    assert st["data_file"].endswith("Super Model Outdat.dat")  # same run, no Indat here
+    assert st["points"] == 233 and st["sky_rms_arcsec"] == 15.7683
+
+
+def test_run_key_groups_in_out_files():
+    k = lambda rel: tf.run_key({"rel": rel})
+    assert k("TPoint\TPoint base run outmod.dat") == k("TPoint\TPoint base run in.dat")
+    assert k("TPoint\Super Model Outdat.dat") == k("TPoint\Super Model Indat.dat")
+    assert k("TPoint\Main.dat")[1] == "main"

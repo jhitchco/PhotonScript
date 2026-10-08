@@ -652,3 +652,118 @@ def test_scripts_run_in_a_js_engine_and_the_probe_calls_nothing(tmp_path):
                                     text=True, check=True).stdout)
     assert out["calls"] == ["imagelink"]
     assert "not solved" in tc.parse_kv(out["out"])["add_error"]
+
+
+# ------------------------------------- probe robustness (2026-10-08 fix)
+
+_HOSTILE = """
+// build-14139-like engine quirks: execute's text cannot be read, a host
+// property getter throws, Object.getOwnPropertyNames is missing
+TheSkyXAction.execute.toString = function () { throw new Error('slot text'); };
+Object.defineProperty(sky6RASCOMTheSky, 'pointingModel',
+  {enumerable: true, get: function () { throw new Error('host getter'); }});
+Object.defineProperty(OpticalTubeAssembly, 'modelRMS',
+  {enumerable: true, get: function () { throw new Error('ota getter'); }});
+Object.getOwnPropertyNames = undefined;
+"""
+
+
+def _node_client(tmp_path, extra="", fail_if=None):
+    """A TheSkyClient whose run_script runs the JS in node against the
+    build-14139 fakes; fail_if(js) -> True raises like an engine-level
+    failure (TheSky answers with an error instead of Out)."""
+    import subprocess
+
+    class _Node(tc.TheSkyClient):
+        def __init__(self):
+            super().__init__("x", 3040)
+            self.sent = []
+
+        def run_script(self, js):
+            self.sent.append(js)
+            if fail_if and fail_if(js):
+                raise tc.TheSkyError("TheSky script error: SyntaxError (out='')")
+            f = tmp_path / f"p{len(self.sent)}.js"
+            f.write_text(_NODE_FAKES + extra + js + "\nconsole.log(JSON.stringify("
+                         "{out: Out, calls: calls}));", encoding="ascii")
+            r = json.loads(subprocess.run(["node", str(f)], capture_output=True,
+                                          text=True, check=True).stdout)
+            assert r["calls"] == [], r["calls"]          # the probe calls nothing
+            return r["out"]
+    return _Node()
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None,
+                    reason="node not installed")
+def test_one_throwing_probe_item_does_not_blank_the_rest(tmp_path):
+    """The 2026-10-08 scope run printed None for every probe field. Every
+    item is now its own guarded push: items that throw read ERR:<why> and
+    every other item still reads, in one script and stage by stage."""
+    cl = _node_client(tmp_path, extra=_HOSTILE)
+    kv = ts.parse_raw(cl.run_script(ts.probe_script()))      # all items, one script
+    p = ts.parse_probe(kv)
+    assert p["execute"]["type"] == "function"
+    assert p["execute"]["text"] is None and "slot text" in p["item_errors"]["act_src_execute"]
+    assert p["actions"]["AddPointingSample"]["value"] == "197"
+    assert p["use"] == "action_execute_id_AddPointingSample"
+    assert "Connect" in p["objects"]["sky6RASCOMTheSky"]["members"]
+    assert "pointingModel" in p["objects"]["sky6RASCOMTheSky"]["members"]
+    assert p["modules"]["OpticalTubeAssembly"] == {"modelPoints": "84"}  # bad getter skipped
+    assert isinstance(p["globals"], list) and "globals" not in p["item_errors"]
+
+    rec = ts.run_probe(_cfg(tmp_path), client=_node_client(tmp_path, extra=_HOSTILE),
+                       persist=False)
+    assert rec["ok"] and rec["stages"] == {s: "ok" for s in ts.PROBE_STAGES}
+    assert rec["actions"]["TPointAddOn2"]["value"] == "147"
+    assert "act_src_execute: Error: slot text" in ts.format_probe(rec)
+
+
+@pytest.mark.skipif(__import__("shutil").which("node") is None,
+                    reason="node not installed")
+def test_a_stage_the_engine_rejects_is_resent_item_by_item(tmp_path):
+    """An item that kills the whole script (an engine-level error TheSky
+    reports instead of Out) costs only that item."""
+    cl = _node_client(tmp_path, fail_if=lambda js: "ps_src(TheSkyXAction" in js)
+    rec = ts.run_probe(_cfg(tmp_path), client=cl, persist=False)
+    assert rec["ok"]
+    assert rec["stages"]["execute"].startswith("per item")
+    assert rec["execute"]["length"] == "1" and rec["execute"]["text"] is None
+    assert "SyntaxError" in rec["item_errors"]["act_src_execute"]
+    assert rec["execute"]["type"] == "function"               # basic stage intact
+    assert rec["objects"]["ImageLink"]["members"] == ["execute"]
+    assert len(cl.sent) == len(ts.PROBE_STAGES) + 2           # execute: 2 items
+
+
+def test_probe_reply_without_pairs_is_not_silently_empty(tmp_path):
+    """TheSky can answer an engine failure with just a message: that is a
+    failed probe (named), not a probe whose every field is None."""
+    rec = ts.run_probe(_cfg(tmp_path), client=_Fake("TypeError: Result of expression"),
+                       persist=False)
+    assert not rec["ok"] and "reply not parsed: TypeError" in rec["error"]
+    assert "FAILED" in ts.format_probe(rec)
+
+
+def test_probe_unreachable_fails_fast(tmp_path):
+    class _Down(tc.TheSkyClient):
+        n = 0
+
+        def run_script(self, js):
+            _Down.n += 1
+            raise tc.TheSkyError("TheSky TCP x:3040: refused") from OSError("refused")
+    rec = ts.run_probe(_cfg(tmp_path), client=_Down("x", 3040), persist=False)
+    assert not rec["ok"] and "refused" in rec["error"] and _Down.n == 1
+
+
+def test_probe_items_are_es5_and_individually_guarded():
+    js = ts.probe_script()
+    for _st, k, expr in ts.probe_items():
+        assert f"ps_t('{k}', function(){{return {expr};}});" in js
+    assert js.rstrip().endswith("Out=ps_o.join(';');")
+    for bad in ("=>", "let ", "const ", "`", "class ", "...", "Object.keys(",
+                "Array.isArray(", ".forEach(", ".map(", ".filter("):
+        assert bad not in js, bad
+    assert "typeof Object.getOwnPropertyNames=='function'" in js
+    assert {i[0] for i in ts.probe_items()} == set(ts.PROBE_STAGES)
+    for st in ts.PROBE_STAGES:
+        part = ts.probe_script(st)
+        assert part.count("ps_t('") == sum(1 for i in ts.probe_items() if i[0] == st)
