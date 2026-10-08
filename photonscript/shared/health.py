@@ -333,7 +333,7 @@ def apply_process_qos() -> dict:
 # astropy IERS: never download inside the service
 # ---------------------------------------------------------------------------
 
-def configure_astropy_iers(offline: bool = True) -> dict:
+def configure_astropy_iers(offline: bool = True, probe: bool = True) -> dict:
     """With ``offline`` (default): use the IERS-A table bundled in the
     installed ``astropy-iers-data`` package, never download, and never treat
     it as too old to use.
@@ -347,6 +347,9 @@ def configure_astropy_iers(offline: bool = True) -> dict:
     planning; a stale UT1-UTC prediction costs well under a second of time
     (a few arcsec), so the bundled table is always good enough. Refresh it by
     upgrading ``astropy-iers-data`` in the venv, never from the night loop.
+
+    ``probe=False`` only pins the config (no bundled-table read), for the
+    CLI's per-command hook (PS-62).
     """
     out: dict = {"offline": bool(offline)}
     try:
@@ -355,6 +358,8 @@ def configure_astropy_iers(offline: bool = True) -> dict:
             iers.conf.auto_download = False
             iers.conf.auto_max_age = None
         out["auto_download"] = bool(iers.conf.auto_download)
+        if not probe:
+            return out
         try:
             import astropy_iers_data
             out["iers_data_version"] = getattr(astropy_iers_data, "__version__", "?")

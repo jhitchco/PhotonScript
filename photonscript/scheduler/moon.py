@@ -126,4 +126,6 @@ def broadband_deferred(mw: dict) -> bool:
         return True
     if mw.get("down_at_dusk"):
         return False
-    return (mw.get("illum_pct") or 100) >= 20
+    illum = mw.get("illum_pct")
+    # 0% is a real value (new moon up at dusk), not "unknown" (PS-106).
+    return True if illum is None else illum >= 20

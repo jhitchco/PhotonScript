@@ -14,10 +14,17 @@ user's TheSky folder; this module finds and parses those files:
   pointing / ProTrack (depth 6, at most MAX_FILES), with size and mtime.
 * parse_data: the TPOINT input format (caption line, ":" option lines, the
   site line "lat d m s  yyyy mm dd  temp press height humid wl lapse",
-  one line per observation, END): point count and the run date.
-* parse_model: a TPOINT fit report or model file: "<n> <TERM> [change]
-  <value> <sigma>" lines (IH, ID, CH, NP, MA, ME, TF, TX, harmonics ...),
-  "Sky RMS = x", "Popn SD = x", an observation count.
+  one line per observation, END): point count and the run date. TheSky64
+  writes "<run> in.dat" / "Super Model Indat.dat" (raw input) and
+  "Super Model Outdat.dat" (the observations kept in the fit, each line
+  followed by "& <extra columns>").
+* parse_model: TheSky64's model file ("<run> outmod.dat", "Super Model
+  Outmod.dat", seen 2026-10-08): caption, then "T <n obs> <sky RMS>
+  <refraction A> <refraction B>", then one "[&][=]<TERM> <value> [<sigma>]"
+  line per term ("=" = fixed, not fitted; "&" = continues the previous
+  group), END. Also a TPOINT fit report ("<n> <TERM> [change] <value>
+  <sigma>", "Sky RMS = x", "Popn SD = x"). The model file carries no popn
+  SD: it is derived as sky RMS x sqrt(n / (n - fitted terms)).
 * protrack: a "ProTrack... = on/off" style line in any listed text file.
 * stats: the newest data file and the newest model / report, merged, with
   the polar alignment from ME / MA (TPOINT's convention: ME > 0 = polar
@@ -29,9 +36,9 @@ user's TheSky folder; this module finds and parses those files:
 
 The exact file names and formats TheSky64 10.5 writes are not documented
 offline: GET /api/thesky/tpoint/files lists what is there and
-GET /api/thesky/tpoint/file?rel= shows the head of one listed file, so the
-parsers can be checked against a real file. Fixtures in the tests are
-written from the documented TPOINT formats, not copied from a real file.
+GET /api/thesky/tpoint/file?rel= shows the head of one listed file. The
+test fixtures (tests/fixtures/tpoint/) are the real files read that way
+from the scope PC on 2026-10-08 (TheSky64 build 14139).
 """
 
 from __future__ import annotations
@@ -65,14 +72,19 @@ _SKIP_DIRS = {"camera autosave", "satellites", "asteroids", "comets", "sdbs",
 _BINARY_EXTS = {".fit", ".fits", ".fts", ".jpg", ".jpeg", ".png", ".gif", ".zip",
                 ".7z", ".exe", ".dll", ".bmp", ".tif", ".tiff"}
 
-# TPOINT term names: the geometric terms and the harmonics
-# H<result><S|C><coordinate>[n] (HDSH, HDCD2, HXSE ...)
+# TPOINT term names: the geometric terms (TX10 = TX with a parameter) and
+# the harmonics H<result>(<S|C><coordinate>[n])+ (HDSH, HDCD2, HDSHSD,
+# HXSHCD7, HDSH7CD8 ...)
 _TERM_RE = re.compile(
-    r"^(IH|ID|CH|NP|MA|ME|TF|TX|FO|DAF|DAB|DNP|DCES|DCEC|ECES|ECEC|PDD|POX|POY|"
-    r"H[A-Z][SC][A-Z]\d?)$")
+    r"^(IH|ID|CH|NP|MA|ME|TF|TX\d*|FO|DAF|DAB|DNP|DCES|DCEC|ECES|ECEC|PDD|POX|POY|"
+    r"H[A-Z](?:[SC][A-Z]\d*)+)$")
 _NUM = r"[+-]?\d+(?:\.\d+)?"
+# "[<n>] [&][=]<TERM> <value> [<sigma>] [<sigma>]": TheSky64 writes
+# "& HHSH2  -59.6319  7.05907", " =NP  +0.0000", "&=HDSD  +270.1741"
 _TERM_LINE = re.compile(
-    rf"^\s*(?:\d+\s+)?&?([A-Z][A-Z0-9]{{1,7}})\s+({_NUM})(?:\s+({_NUM}))?(?:\s+({_NUM}))?\s*$")
+    rf"^\s*(?:\d+\s+)?([&=\s]*?)([A-Z][A-Z0-9]{{1,9}})\s+({_NUM})(?:\s+({_NUM}))?(?:\s+({_NUM}))?\s*$")
+# TheSky64 model file header: "T  233  15.7683   53.048  -0.0642"
+_T_LINE = re.compile(rf"^\s*T\s+(\d+)\s+({_NUM})(?:\s+({_NUM}))?(?:\s+({_NUM}))?\s*$")
 _RMS_RE = re.compile(rf"sky\s*rms\s*[=:]?\s*({_NUM})", re.IGNORECASE)
 _PSD_RE = re.compile(rf"popn\.?\s*sd\s*[=:]?\s*({_NUM})", re.IGNORECASE)
 _NOBS_RE = re.compile(
@@ -183,7 +195,7 @@ def head(config, rel: str, max_bytes: int = HEAD_BYTES) -> dict:
 # ------------------------------------------------------------- parsing
 
 def _nums(line: str) -> list[float] | None:
-    toks = line.split()
+    toks = line.split("&")[0].split()   # Outdat: "<obs> & <extra columns>"
     try:
         return [float(t) for t in toks]
     except ValueError:
@@ -230,31 +242,52 @@ def parse_data(text: str) -> dict | None:
 
 
 def parse_model(text: str) -> dict | None:
-    """A TPOINT fit report / model file: {"terms": {name: {"value",
-    "sigma"}}, "sky_rms_arcsec", "popn_sd_arcsec", "observations"} or None
-    when nothing model-like is in it."""
+    """A TheSky64 model file or a TPOINT fit report: {"terms": {name:
+    {"value", "sigma", "fixed"}} (file order), "sky_rms_arcsec",
+    "popn_sd_arcsec", "popn_sd_source" ("file" | "derived"),
+    "observations", "fitted_terms", "refraction"} or None when nothing
+    model-like is in it."""
     terms: dict = {}
+    rms: list[float] = []
+    nobs = None
+    refr = None
     for ln in (text or "").splitlines():
-        m = _TERM_LINE.match(ln)
-        if not m or not _TERM_RE.match(m.group(1)):
+        t = _T_LINE.match(ln)
+        if t:
+            nobs = int(t.group(1))
+            # a model with no data (the recal run: "T 0 0.0000 ...") has no RMS
+            rms = [float(t.group(2))] if nobs else []
+            if t.group(3) is not None:
+                refr = {"a_arcsec": float(t.group(3)),
+                        "b_arcsec": float(t.group(4)) if t.group(4) else None}
             continue
-        nums = [float(x) for x in m.groups()[1:] if x is not None]
+        m = _TERM_LINE.match(ln)
+        if not m or not _TERM_RE.match(m.group(2)):
+            continue
+        nums = [float(x) for x in m.groups()[2:] if x is not None]
         if len(nums) == 3:
             val, sig = nums[1], nums[2]
         elif len(nums) == 2:
             val, sig = nums[0], nums[1]
         else:
             val, sig = nums[0], None
-        terms[m.group(1)] = {"value": val, "sigma": sig}
-    rms = [float(x) for x in _RMS_RE.findall(text or "")]
+        terms[m.group(2)] = {"value": val, "sigma": sig,
+                             "fixed": "=" in (m.group(1) or "")}
+    rms = [float(x) for x in _RMS_RE.findall(text or "")] or rms
     psd = [float(x) for x in _PSD_RE.findall(text or "")]
-    nobs = None
     for a, b in _NOBS_RE.findall(text or ""):
         nobs = int(a or b)
     if not terms and not rms:
         return None
-    return {"terms": terms, "sky_rms_arcsec": rms[-1] if rms else None,
-            "popn_sd_arcsec": psd[-1] if psd else None, "observations": nobs}
+    fitted = sum(1 for v in terms.values() if not v["fixed"])
+    sky = rms[-1] if rms else None
+    popn, src = (psd[-1], "file") if psd else (None, None)
+    if popn is None and sky and nobs and nobs > fitted > 0:
+        # TPOINT: popn SD = sqrt(sum r^2 / (n - m)), sky RMS = sqrt(sum r^2 / n)
+        popn, src = round(sky * math.sqrt(nobs / (nobs - fitted)), 2), "derived"
+    return {"terms": terms, "sky_rms_arcsec": sky, "popn_sd_arcsec": popn,
+            "popn_sd_source": src, "observations": nobs or None,
+            "fitted_terms": fitted, "refraction": refr}
 
 
 def parse_protrack(text: str) -> bool | None:
@@ -297,9 +330,29 @@ def _date(iso: str | None) -> str | None:
     return str(iso)[:10] if iso else None
 
 
+_RUN_SUFFIX = re.compile(r"(?:^|\s+)(?:in|out)(?:mod|dat)?$", re.IGNORECASE)
+
+
+def run_key(f: dict) -> tuple[str, str]:
+    """(folder, run name) of a TPoint file: "TPoint base run outmod.dat" and
+    "TPoint base run in.dat" are one run, as are "Super Model Outmod.dat",
+    "Super Model Indat.dat" and "Super Model Outdat.dat"."""
+    p = Path(str(f.get("path") or f.get("rel") or ""))
+    return str(p.parent).lower(), _RUN_SUFFIX.sub("", p.stem).strip().lower()
+
+
+def _data_rank(f: dict) -> int:
+    """Within one run: the raw input (in / Indat) before Outdat (the points
+    kept in the fit; the model's own count covers those)."""
+    stem = Path(str(f.get("rel") or "")).stem.lower()
+    return 0 if re.search(r"(?:^|\s)in(?:dat)?$", stem) else 1
+
+
 def stats(config, listing: dict | None = None) -> dict:
-    """The TPoint numbers from the newest data file and the newest model /
-    report (see the module doc). Never raises."""
+    """The TPoint numbers from the newest model file and the data file of
+    the same run (else the newest data file); see the module doc. The
+    newest run wins, so "Super Model" files are used whenever they are
+    newer than the base run's. Never raises."""
     out: dict = {"ok": False, "source": "tpoint-files"}
     try:
         lst = listing or list_files(config)
@@ -307,24 +360,36 @@ def stats(config, listing: dict | None = None) -> dict:
         out["files_seen"] = len(lst["files"])
         data = model = None
         prot = None
+        texts: dict = {}
+
+        def text_of(f):
+            if f["path"] not in texts:
+                texts[f["path"]] = _read(f["path"])
+            return texts[f["path"]]
+
         for f in lst["files"]:                    # newest first
-            if data and model and prot is not None:
-                break
-            text = _read(f["path"])
+            text = text_of(f)
             if text is None:
                 continue
-            if data is None:
-                d = parse_data(text)
-                if d:
-                    data = {**d, "file": f["rel"], "mtime": f["mtime"]}
-            if model is None:
+            if model is None and parse_data(text) is None:
                 m = parse_model(text)
                 if m:
-                    model = {**m, "file": f["rel"], "mtime": f["mtime"]}
+                    model = {**m, "file": f["rel"], "mtime": f["mtime"],
+                             "_run": run_key(f)}
             if prot is None:
                 pv = parse_protrack(text)
                 if pv is not None:
                     prot = {"on": pv, "file": f["rel"]}
+            if model is not None and prot is not None:
+                break
+        same = ([f for f in lst["files"] if run_key(f) == model["_run"]]
+                if model else [])
+        for f in sorted(same, key=_data_rank) + list(lst["files"]):
+            text = text_of(f)
+            d = parse_data(text) if text is not None else None
+            if d:
+                data = {**d, "file": f["rel"], "mtime": f["mtime"]}
+                break
         lim = float(getattr(config, "tpoint_polar_max_arcmin", 3.0) or 3.0)
         if data:
             out.update(points=data["points"], data_file=data["file"],
@@ -333,6 +398,9 @@ def stats(config, listing: dict | None = None) -> dict:
             out.update(model_file=model["file"], terms=model["terms"],
                        sky_rms_arcsec=model["sky_rms_arcsec"],
                        popn_sd_arcsec=model["popn_sd_arcsec"],
+                       popn_sd_source=model.get("popn_sd_source"),
+                       model_points=model.get("observations"),
+                       fitted_terms=model.get("fitted_terms"),
                        polar=polar(model["terms"], lim))
             if out.get("points") is None and model.get("observations"):
                 out["points"] = model["observations"]
@@ -428,14 +496,31 @@ def format_stats(st: dict) -> str:
 
     def term(n):
         v = (t.get(n) or {}).get("value")
-        return f"{v:+.1f}\"" if v is not None else "-"
+        fx = "= " if (t.get(n) or {}).get("fixed") else " "
+        return f"{fx}{v:+.1f}\"" if v is not None else " -"
+    def num(k):
+        v = st.get(k)
+        return f"{round(v, 2):g}" if isinstance(v, (int, float)) else "?"
+    mp = st.get("model_points")
+    psd = (f", popn SD {num('popn_sd_arcsec')}\""
+           + (" (derived)" if st.get("popn_sd_source") == "derived" else "")
+           if st.get("popn_sd_arcsec") is not None else "")
     lines = [f"TPoint model (from TPoint's files, read only): "
-             f"{st.get('points') if st.get('points') is not None else '?'} points, "
-             f"sky RMS {st.get('sky_rms_arcsec') if st.get('sky_rms_arcsec') is not None else '?'}\""
+             f"{st.get('points') if st.get('points') is not None else '?'} points"
+             + (f" ({mp} in the fit)" if mp is not None and mp != st.get("points") else "")
+             + f", sky RMS {num('sky_rms_arcsec')}\"{psd}"
              f", model date {st.get('model_date') or '?'}",
-             f"  terms: IH {term('IH')}, ID {term('ID')}, ME {term('ME')}, "
-             f"MA {term('MA')}, CH {term('CH')}, NP {term('NP')}"
-             + (f" (+{len(t) - 6} more)" if len(t) > 6 else "")]
+             f"  terms: IH{term('IH')}, ID{term('ID')}, ME{term('ME')}, "
+             f"MA{term('MA')}, CH{term('CH')}, NP{term('NP')}"
+             + (f" (all {len(t)} below)" if len(t) > 6 else "")]
+    if t:
+        cells = [f"{n}{'=' if (v or {}).get('fixed') else ''} "
+                 + (f"{v['value']:+.1f}\"" if (v or {}).get("value") is not None else "-")
+                 for n, v in t.items()]
+        lines.append(f"  all {len(t)} terms ({st.get('fitted_terms', '?')} fitted, "
+                     "= fixed):")
+        for i in range(0, len(cells), 6):
+            lines.append("    " + ", ".join(cells[i:i + 6]))
     pol = st.get("polar")
     if pol:
         lines.append(f"  polar alignment: {pol['total_arcmin']}' "

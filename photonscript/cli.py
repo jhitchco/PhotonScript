@@ -60,6 +60,33 @@ app = typer.Typer(
 )
 console = Console()
 
+
+@app.callback()
+def _cli_root() -> None:
+    """PhotonScript: Remote Telescope Orchestration Platform."""
+    _pin_iers_offline()
+
+
+def _pin_iers_offline() -> None:
+    """PS-62: every CLI command (not only `start`, which PS-55 covers) pins
+    astropy IERS offline, so a scope-PC command run under an account that
+    cannot write ~/.cache/astropy never retries the finals2000A.all download
+    (the WinError 5 IERSWarning). Honors PS_IERS_OFFLINE; never fails a
+    command."""
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        offline = bool(getattr(PhotonScriptConfig(), "iers_offline", True))
+    except Exception:  # noqa: BLE001
+        offline = True
+    if not offline:
+        return
+    try:
+        from photonscript.shared import health
+        health.configure_astropy_iers(offline=True, probe=False)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # `photonscript start` binds here unless --port is given; the supervisor's
 # child command passes no --port, so its health check probes the same port.
 DEFAULT_PORT = 8100

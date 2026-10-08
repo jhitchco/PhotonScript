@@ -101,16 +101,19 @@ def separation(ra1_deg, dec1_deg, ra2_deg, dec2_deg) -> dict | None:
             "north": round(north, 2), "pa": pa, "dir": word}
 
 
-def precess_from_j2000(ra_deg: float, dec_deg: float, when: datetime) -> tuple[float, float]:
-    """J2000 mean place -> mean place of the date (IAU 1976 precession,
-    Meeus 21.2 / 21.4). Nutation and aberration (under 1') are left out:
-    this is for a 10' alarm, not for pointing."""
+def _precession_angles(when: datetime) -> tuple[float, float, float]:
+    """IAU 1976 zeta, z, theta (radians) from J2000 to `when`."""
     jd = 2451545.0 + (when.replace(tzinfo=None)
                       - datetime(2000, 1, 1, 12, 0, 0)).total_seconds() / 86400.0
     t = (jd - 2451545.0) / 36525.0
     zeta = math.radians((2306.2181 * t + 0.30188 * t * t + 0.017998 * t ** 3) / 3600.0)
     z = math.radians((2306.2181 * t + 1.09468 * t * t + 0.018203 * t ** 3) / 3600.0)
     th = math.radians((2004.3109 * t - 0.42665 * t * t - 0.041833 * t ** 3) / 3600.0)
+    return zeta, z, th
+
+
+def _rotate(ra_deg: float, dec_deg: float, zeta: float, z: float,
+            th: float) -> tuple[float, float]:
     a0, d0 = math.radians(ra_deg), math.radians(dec_deg)
     a = math.cos(d0) * math.sin(a0 + zeta)
     b = (math.cos(th) * math.cos(d0) * math.cos(a0 + zeta)
@@ -120,6 +123,22 @@ def precess_from_j2000(ra_deg: float, dec_deg: float, when: datetime) -> tuple[f
     ra = math.degrees(math.atan2(a, b) + z) % 360.0
     dec = math.degrees(math.asin(max(-1.0, min(1.0, c))))
     return ra, dec
+
+
+def precess_from_j2000(ra_deg: float, dec_deg: float, when: datetime) -> tuple[float, float]:
+    """J2000 mean place -> mean place of the date (IAU 1976 precession,
+    Meeus 21.2 / 21.4). Nutation and aberration (under 1') are left out:
+    this is for a 10' alarm, not for pointing."""
+    zeta, z, th = _precession_angles(when)
+    return _rotate(ra_deg, dec_deg, zeta, z, th)
+
+
+def precess_to_j2000(ra_deg: float, dec_deg: float, when: datetime) -> tuple[float, float]:
+    """Mean place of the date -> J2000 (PS-145): the exact inverse of
+    precess_from_j2000 (the same rotation run backwards: zeta and z swap
+    and change sign, theta changes sign)."""
+    zeta, z, th = _precession_angles(when)
+    return _rotate(ra_deg, dec_deg, -z, -zeta, -th)
 
 
 def mount_epoch(cfg, reported: str | None) -> str:

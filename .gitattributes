@@ -15,3 +15,6 @@
 *.fits binary
 *.fit binary
 *.xisf binary
+
+# PS-171: real TheSky64 TPoint files, kept byte for byte (CRLF)
+tests/test_scheduler/fixtures/tpoint/thesky64_* -text
