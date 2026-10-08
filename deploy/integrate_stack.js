@@ -13,7 +13,9 @@
 //     -> StarAlignment with distortion correction to ONE reference shared by
 //     every stack -> LocalNormalization (drops only frames without a map;
 //     falls back to AdditiveWithScaling) -> ImageIntegration with PSF Signal
-//     Weight (falls back to equal weights on star-poor frames) and
+//     Weight (falls back to equal weights on star-poor frames; PS-177: a
+//     stack that mixes exposure lengths falls back to exposure-time weights,
+//     never to equal weights; mono stacks hold one length each) and
 //     Winsorized sigma clipping -> master_<stack>.xisf (+ masterOSC.xisf for
 //     an OSC stack) and a review jpg
 // Funnel checks: a stage may drop frames but never add them; every dropped
@@ -442,7 +444,9 @@ function runStack(stack, masters, reg) {
       var II = new ImageIntegration;
       II.images = regFiles.map(function (f, i) { return [true, f, "", lnData ? lnData[i] : ""]; });
       II.combination = ImageIntegration.prototype.Average;
-      II.weightMode = psf ? ImageIntegration.prototype.PSFSignalWeight : ImageIntegration.prototype.DontCare;
+      II.weightMode = psf ? ImageIntegration.prototype.PSFSignalWeight
+                          : (stack.mixed_exposures ? ImageIntegration.prototype.ExposureTimeWeight
+                                                   : ImageIntegration.prototype.DontCare);
       II.minWeight = 0.0;
       II.generateIntegratedImage = true; II.generateRejectionMaps = false;
       II.rejection = ImageIntegration.prototype[rej];
@@ -462,7 +466,9 @@ function runStack(stack, masters, reg) {
    try { ok = II.executeGlobal(); } catch (e) { log("[" + S + "] PSF Signal Weight integration failed (" + e + ")"); }
    if (!ok) {
       // HANDBOOK lesson: star-poor narrowband frames fail PSF weighting
-      log("[" + S + "] retrying with equal weights (weightMode DontCare)");
+      log("[" + S + "] retrying with " + (stack.mixed_exposures
+          ? "exposure-time weights (weightMode ExposureTimeWeight: this stack mixes exposure lengths)"
+          : "equal weights (weightMode DontCare)"));
       II = makeII(false);
       if (!II.executeGlobal()) throw new Error("integration failed");
    }

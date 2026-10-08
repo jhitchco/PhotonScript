@@ -6,6 +6,16 @@
 Every stage is timed into <run>/out/timing.csv (PixInsight's own per-stage
 times go to <run>/out/timing_pi.csv).
 
+PS-177 exposure groups: star QA judges each (filter, exposure, binning,
+readout) group against its own reference. Mono (RC16) stacks never mix
+exposure lengths: per filter, the group with the most integration time is
+the stack named after the filter (master_<F>, what blend / finish expect),
+every other group with at least min_group_frames subs is its own HDR stack
+<F>_<exp> (master_L_30s), and smaller groups are left out with a message.
+An OSC stack still holds every exposure group (one debayered master), so a
+mixed OSC stack is flagged and the PJSR falls back to exposure-time weights,
+never to equal weights.
+
 Safety:
   * the Library mirror is READ-ONLY: frames are COPIED into a new staging
     run folder; copy_into() refuses any destination inside the Library;
@@ -67,6 +77,7 @@ class Options:
     thresholds: star_qa.Thresholds = field(default_factory=star_qa.Thresholds)
     trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
     hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
+    min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -209,6 +220,63 @@ def reference_per_filter(rows: list[dict], kept: set[str]) -> dict[str, str]:
     return out
 
 
+def plan_stacks(lights: list[Frame], min_group: int = 3) -> tuple[list[dict], list[tuple[Frame, str]], list[str]]:
+    """PS-177: which lights go into which stack. Returns (specs, left_out,
+    notes); a spec is {name, filter, exps}. OSC (Bayer) lights: one stack
+    per filter with every exposure (mixed = more than one). Mono: one stack
+    per (filter, exposure); the group with the most integration time (ties:
+    the longer exposure) keeps the filter name, the others are named
+    <filter>_<exp> (HDR masters), groups with fewer than min_group subs are
+    left out (PixInsight needs 3 registered frames for a stack)."""
+    by: dict[str, dict[float, list[Frame]]] = {}
+    osc: dict[str, bool] = {}
+    for f in lights:
+        by.setdefault(f.filter, {}).setdefault(round(f.exp, 2), []).append(f)
+        osc[f.filter] = osc.get(f.filter, False) or f.is_osc
+    specs: list[dict] = []
+    left: list[tuple[Frame, str]] = []
+    notes: list[str] = []
+    for filt in sorted(by):
+        groups = by[filt]
+        if osc[filt]:
+            specs.append({"name": safe_name(filt), "filter": filt, "exps": sorted(groups)})
+            continue
+        ok = {}
+        for e, fs in sorted(groups.items()):
+            if len(fs) < max(1, min_group):
+                why = (f"{filt} {e:g} s: {len(fs)} sub(s), fewer than {min_group} "
+                       "(a stack of its own needs at least that; exposures are never mixed)")
+                notes.append("left out " + why)
+                left += [(f, why) for f in fs]
+            else:
+                ok[e] = fs
+        if not ok:
+            continue
+        primary = max(ok, key=lambda e: (sum(f.exp for f in ok[e]), e))
+        for e in sorted(ok, key=lambda x: (x != primary, -x)):
+            name = safe_name(filt) if e == primary else f"{safe_name(filt)}_{ok[e][0].exp_key}"
+            specs.append({"name": name, "filter": filt, "exps": [e]})
+        if len(ok) > 1:
+            notes.append(f"{filt}: " + ", ".join(
+                f"{e:g} s x {len(ok[e])} -> master_{safe_name(filt) if e == primary else safe_name(filt) + '_' + ok[e][0].exp_key}"
+                for e in sorted(ok, key=lambda x: (x != primary, -x)))
+                + " (one master per exposure, HDR combine them later)")
+    return specs, left, notes
+
+
+def reference_for(rows: list[dict], names: set[str]) -> str:
+    """PS-177: LocalNormalization reference of one stack: the star QA
+    group reference when it is in the stack, else the kept sub with the
+    most stars among the sharper half."""
+    rs = [r for r in rows if r["file"] in names]
+    if not rs:
+        return ""
+    refs = [r for r in rs if r.get("is_reference")]
+    if refs:
+        return Path(refs[0]["file"]).stem
+    return reference_per_filter([dict(r, filter="_") for r in rs], names).get("_", "")
+
+
 def limit_per_group(lights: list[Frame], n: int) -> list[Frame]:
     """At most n subs per (filter, exposure) group, evenly spaced in time."""
     by: dict[tuple, list[Frame]] = {}
@@ -294,8 +362,13 @@ def run(o: Options, echo=print) -> dict:
             if not o.dry_run:
                 star_qa.write_csv(run_dir / "qa" / "star_qa.csv", rows)
             nrej = sum(r["action"] == "reject" for r in rows)
-            echo(f"  reference {rows[ref_i]['file']}; {len(rows) - nrej} keep, {nrej} reject"
+            echo(f"  registration reference {rows[ref_i]['file']}; {len(rows) - nrej} keep, {nrej} reject"
                  + (" (report only: all staged)" if o.qa == "report" else ""))
+            # PS-177: every group is judged against its own reference
+            for g in star_qa.group_summary(rows):
+                why = ", ".join(f"{k} {v}" for k, v in sorted(g["reasons"].items(), key=lambda kv: -kv[1]))
+                echo(f"  group {g['group']}: {g['subs']} subs, {g['keep']} keep, {g['reject']} reject"
+                     f" (reference {g['reference']})" + (f": {why}" if why else ""))
     if o.qa == "apply":
         lights = [f for f in sel.lights if qa_by_file.get(f.name, {}).get("action", "keep") == "keep"]
     else:
@@ -312,41 +385,51 @@ def run(o: Options, echo=print) -> dict:
         lights, off = calib.lights_in_epoch(lights, plan.epoch, o.default_readout)
         for f, why in off:
             plan.notes.append(f"light {f.name} left out: {why} (not the stack's epoch)")
+        # PS-177: one stack per mono exposure group; small groups left out
+        specs, left_out, stack_notes = plan_stacks(lights, o.min_group_frames)
+        if left_out:
+            gone = {f.name for f, _ in left_out}
+            lights = [f for f in lights if f.name not in gone]
+        plan.notes += stack_notes
         for n in plan.notes:
             echo("  " + n)
     if not lights:
-        raise PipelineError("no lights left after QA and the epoch check")
+        raise PipelineError("no lights left after QA, the epoch check and the exposure groups")
 
     kept_names = {f.name for f in lights}
     reference = ""
     if rows and ref_i is not None and rows[ref_i]["file"] in kept_names:
         reference = Path(rows[ref_i]["file"]).stem
-    per_filter_ref = reference_per_filter(rows, kept_names) if rows else {}
-    if not reference and per_filter_ref:
-        # the QA reference was left out (--limit, epoch): best kept sub of
-        # the filter that holds the longest subs
-        reference = per_filter_ref.get(max(lights, key=lambda f: f.exp).filter, "")
     cfa = (lights[0].bayer or "RGGB").upper() if lights[0].is_osc else ""
 
-    # stacks: OSC = one stack of every exposure; mono = one per filter
+    # stacks (PS-177): OSC = one stack of every exposure; mono = one per
+    # filter AND exposure (plan_stacks)
     stacks = []
-    by_filter: dict[str, list[Frame]] = {}
-    for f in lights:
-        by_filter.setdefault(f.filter, []).append(f)
-    for filt in sorted(by_filter):
-        exps = sorted({round(f.exp, 2) for f in by_filter[filt]})
+    for sp in specs:
+        fs = [f for f in lights if f.filter == sp["filter"] and round(f.exp, 2) in sp["exps"]]
+        if not fs:
+            continue
         grp = []
-        for e in exps:
+        for e in sp["exps"]:
             dc = plan.darks.get(e)
-            sample = next(f for f in by_filter[filt] if round(f.exp, 2) == e)
+            sample = next((f for f in fs if round(f.exp, 2) == e), None)
+            if sample is None:
+                continue
             grp.append({"name": sample.exp_key, "exp": e, "dir": group_dir(sample), "tag": nina_tag(e),
                         "dark": (dc.dark_exp if dc and dc.frames else None),
                         "optimize": bool(dc and dc.scaled)})
-        stacks.append({"name": safe_name(filt), "filter": safe_name(filt), "groups": grp,
-                       "reference": per_filter_ref.get(filt, "")})
+        stacks.append({"name": sp["name"], "filter": safe_name(sp["filter"]), "groups": grp,
+                       "reference": reference_for(rows, {f.name for f in fs}) if rows else "",
+                       # PS-177: a stack of several lengths never integrates
+                       # with equal weights (PJSR falls back to exposure time)
+                       "mixed_exposures": len(grp) > 1})
+    if not reference and stacks:
+        # the QA reference was left out (--limit, epoch): the
+        # reference of the stack that holds the longest subs
+        longest = max(stacks, key=lambda s: max(g["exp"] for g in s["groups"]))
+        reference = longest["reference"]
     if reference:
-        ref_filter = next((f.filter for f in lights if f.base == reference), "")
-        stacks.sort(key=lambda s: s["filter"] != safe_name(ref_filter))
+        stacks.sort(key=lambda s: s["reference"] != reference)
 
     entries = []
     staged_files: dict[str, str] = {}
@@ -386,6 +469,7 @@ def run(o: Options, echo=print) -> dict:
         "flats": [{"filter": k, "session": v.session, "n": len(v.frames), "note": v.note}
                   for k, v in plan.flats.items()],
         "skipped_sessions": cal_skipped[:50],
+        "left_out": [{"file": f.name, "why": why} for f, why in left_out],
     }
     reasons = Counter()
     for r in rows:
@@ -395,6 +479,7 @@ def run(o: Options, echo=print) -> dict:
     qa_summary = {"mode": o.qa, "kept": sum(1 for r in rows if r["action"] == "keep"),
                   "rejected": sum(1 for r in rows if r["action"] == "reject"),
                   "reasons": reasons.most_common(), "reference": reference,
+                  "groups": star_qa.group_summary(rows) if rows else [],
                   "thresholds": star_qa.thresholds_dict(o.thresholds)}
     run_info = {"target": o.target, "rig": o.rig, "run_name": run_dir.name, "run_dir": str(run_dir),
                 "built": datetime.now().strftime("%Y-%m-%d %H:%M"),

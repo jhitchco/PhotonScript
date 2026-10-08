@@ -2408,6 +2408,9 @@ def integrate_cmd(
     hoo: bool = typer.Option(False, "--hoo/--no-hoo",
                              help="OSC finish: also the HOO-mapped image (Ha = R, OIII = mean G, B; PS-161)"),
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
+    min_group: int = typer.Option(3, "--min-group-frames",
+                                  help="Mono: an exposure group with fewer subs is left out "
+                                       "(each exposure length is its own stack, PS-177)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
     report: bool = typer.Option(True, "--report/--no-report",
@@ -2439,7 +2442,8 @@ def integrate_cmd(
         filters=[f.strip() for f in filters.split(",") if f.strip()] or None,
         qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
         dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
-        gradient=gradient, use_rc=not no_rc, hoo=hoo, **kw,
+        gradient=gradient, use_rc=not no_rc, hoo=hoo, min_group_frames=min_group,
+        **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
