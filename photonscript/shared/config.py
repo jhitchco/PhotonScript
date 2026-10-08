@@ -145,6 +145,14 @@ class PhotonScriptConfig(BaseSettings):
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
+    auto_approve_at_dawn: bool = True  # PS-157: at dawn the night that ended
+                                    # is attributed (RC16 timeline for the
+                                    # Piggy-600), its QA-passing subs waiting
+                                    # for review are approved (both rigs; never
+                                    # test subs, '?' subs or subs a person sent
+                                    # back to review) and the Library is built,
+                                    # so Syncthing ships it. Off: the dawn pass
+                                    # still attributes and builds, approves none.
     stamp_fits_object: bool = True  # write the resolved target name into a
                                     # blank FITS OBJECT header at capture (and
                                     # when identify attributes a sub) so
@@ -918,6 +926,12 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_settle_timeout_s: float = 90.0
     piggyback_settle_still_s: float = 6.0
     piggyback_settle_poll_s: float = 2.0
+    # PS-158: the settle gate also holds while NINA #1 reports the shared
+    # mount parked or not tracking (2026-10-06: 22 Piggy lights on a parked
+    # mount), re-checking every poll, at most piggyback_tracking_hold_s per
+    # light, then it shoots (fails open, never wedges NINA #2).
+    piggyback_tracking_gate: bool = True
+    piggyback_tracking_hold_s: float = 900.0
     piggyback_settle_script: str = "C:\\astro\\PhotonScript\\deploy\\settle-gate.cmd"
     piggyback_abort_on_move: bool = False  # abort NINA #2's current OSC light
                                  # (ninaAPI camera/abort-exposure on NINA #2

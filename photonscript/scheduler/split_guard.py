@@ -19,6 +19,17 @@ or holds the RC16 sequence. Two pieces, both on NINA #2's side:
    (TIMEOUT, NINA #1 unreadable, service down, script missing all mean
    "shoot now"). Holds are logged to runs/<night>_events.jsonl.
 
+   PS-158 tracking hold (piggyback_tracking_gate, default on): the same
+   gate also holds while NINA #1 reports the shared mount parked (AtPark)
+   or not tracking (TrackingEnabled false), re-checking every poll, at most
+   piggyback_tracking_hold_s (then it shoots, like every other verdict);
+   once the mount tracks again the settle checks get their own
+   piggyback_settle_timeout_s, so one call holds at most the sum.
+   2026-10-06: 22 Piggy-600 lights were shot on a parked, non-tracking
+   mount (the parked mount is "still", so the settle checks passed). Only
+   an explicit AtPark true / TrackingEnabled false holds: a driver that
+   reports neither, or a mount NINA #1 shows disconnected, fails open.
+
 2. Abort on move (piggyback_abort_on_move, default OFF). on_rc16_mount()
    runs after each RC16 agent mount poll. When the poll sees a slew, a pier
    change or a jump over piggyback_abort_move_arcmin, and NINA #2 is taking
@@ -53,6 +64,7 @@ ABORT_DEBOUNCE_S = 60.0  # at most one abort per move episode
 ABORT_KINDS = ("slew-start", "slewing", "pier", "move")
 SAVE_HELDS = ("slewing", "moved", "settling")   # a hold that kept a sub
                                                  # off a move or a settle
+TRACKING_HELDS = ("parked", "not tracking")     # PS-158 holds
 PASS_LINE = 0.05         # PS-27 pass criterion: split rejects under 5%
 EVENT_SRC = "photonscript"
 
@@ -62,6 +74,38 @@ _ABORT: dict = {"at": None}
 
 def gate_enabled(cfg) -> bool:
     return bool(getattr(cfg, "piggyback_settle_gate", True))
+
+
+def tracking_gate_enabled(cfg) -> bool:
+    return bool(getattr(cfg, "piggyback_tracking_gate", True))
+
+
+def tracking_hold_s(cfg) -> float:
+    """PS-158: the longest one gate call holds for a parked / non-tracking
+    mount (never below the settle timeout)."""
+    return max(_f(cfg, "piggyback_settle_timeout_s", 90.0),
+               _f(cfg, "piggyback_tracking_hold_s", 900.0))
+
+
+def gate_bound_s(cfg) -> float:
+    """The longest one gate call can hold (the CLI waits this + a margin):
+    the settle timeout, plus the tracking hold before it when that is on."""
+    base = max(0.0, _f(cfg, "piggyback_settle_timeout_s", 90.0))
+    return base + (tracking_hold_s(cfg) if tracking_gate_enabled(cfg) else 0.0)
+
+
+def mount_not_tracking(raw) -> str | None:
+    """PS-158: "parked" / "not tracking" from a ninaAPI mount info dict, or
+    None. Only explicit flags count: a missing key or a mount NINA #1 shows
+    disconnected is unknown (the gate fails open)."""
+    if not isinstance(raw, dict) or raw.get("Connected") is False:
+        return None
+    if raw.get("AtPark") is True:
+        return "parked"
+    trk = raw.get("TrackingEnabled", raw.get("Tracking"))
+    if trk is False:
+        return "not tracking"
+    return None
 
 
 def abort_enabled(cfg) -> bool:
@@ -157,10 +201,12 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
                           sleep=asyncio.sleep, clock=time.time,
                           tracker=None, disconnected=None) -> dict:
     """Hold until the shared mount is still and PHD2 is not settling, at most
-    piggyback_settle_timeout_s. Returns {"verdict": PASS | TIMEOUT | UNKNOWN
-    | OFF | ABORTED, "waited_s", "held": [...], "reason"}. No verdict stops
-    a sub (the CLI always exits 0). read(cfg) -> ninaAPI mount dict or None,
-    tracker and disconnected() are injectable for tests."""
+    piggyback_settle_timeout_s; PS-158: and while it is parked or not
+    tracking, at most piggyback_tracking_hold_s. Returns {"verdict": PASS |
+    TIMEOUT | UNKNOWN | OFF | ABORTED, "waited_s", "held": [...], "reason"}.
+    No verdict stops a sub (the CLI always exits 0). read(cfg) -> ninaAPI
+    mount dict or None, tracker and disconnected() are injectable for
+    tests."""
     from photonscript.shared.mount_log import sample_from_nina
     from photonscript.shared.mount_motion import TRACKER
     tracker = tracker or TRACKER
@@ -173,7 +219,10 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
     still_need = max(0.0, _f(cfg, "piggyback_settle_still_s", 6.0))
     poll_s = max(0.5, _f(cfg, "piggyback_settle_poll_s", 2.0))
     move = _move_arcmin(cfg)
+    track_gate = tracking_gate_enabled(cfg)
+    hold_s = tracking_hold_s(cfg)
     t0 = clock()
+    settle_from = t0
     unreadable = 0
     held: list[str] = []
 
@@ -204,6 +253,7 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
             raw = None
         now = clock()
         sample = sample_from_nina(raw) if raw else None
+        off = mount_not_tracking(raw) if track_gate and sample else None
         if sample is None:
             unreadable += 1
             if unreadable >= UNREADABLE_POLLS:
@@ -223,6 +273,8 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
                     why.append("moved" if recent else "watching")
             if tracker.guider_settling(now):
                 why.append("settling")
+            if off:                      # PS-158: parked / not tracking
+                why.append(off)
             if not why:
                 return done("PASS", "mount still" if not held else
                             "mount still again", now)
@@ -230,10 +282,18 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
                 if w not in held:
                     held.append(w)
         waited = now - t0
-        if waited >= timeout_s:
-            return done("TIMEOUT", f"still moving or settling after "
-                                   f"{waited:.0f} s; shooting anyway", now)
-        await sleep(min(poll_s, max(0.5, timeout_s - waited)))
+        if off:
+            # PS-158: held while parked / not tracking, at most hold_s; the
+            # settle checks then get their own timeout from the unpark
+            settle_from = now
+            left = hold_s - waited
+        else:
+            left = timeout_s - (now - settle_from)
+        if left <= 0:
+            what = (f"mount {off}" if off else "still moving or settling")
+            return done("TIMEOUT", f"{what} after {waited:.0f} s; shooting "
+                                   "anyway", now)
+        await sleep(min(poll_s, max(0.5, left)))
 
 
 # ------------------------------------------------------------------ abort
@@ -335,7 +395,8 @@ def night_split_summary(cfg, date: str, subs: list[dict] | None = None) -> dict:
                not a split reject (its time went to a fresh sub), so a
                working abort lowers the rate; aborts are counted apart
     saves      settle-gate holds that kept a sub off a move or a settle
-    holds      every settle-gate hold; timeouts: holds that ran out"""
+    holds      every settle-gate hold; timeouts: holds that ran out
+    tracking_holds  PS-158: holds for a parked / non-tracking mount"""
     from photonscript.shared.night_events import events_path
     from photonscript.shared.phd2_store import read_jsonl
     from photonscript.scheduler.slew_gate import gated_rigs
@@ -357,7 +418,7 @@ def night_split_summary(cfg, date: str, subs: list[dict] | None = None) -> dict:
             continue
         judged += 1
         straddled += int(ov > 0)
-    aborted = holds = saves = timeouts = 0
+    aborted = holds = saves = timeouts = tracking = 0
     for e in read_jsonl(events_path(cfg, date)):
         if e.get("src") != EVENT_SRC:
             continue
@@ -367,6 +428,8 @@ def night_split_summary(cfg, date: str, subs: list[dict] | None = None) -> dict:
             holds += 1
             timeouts += int(e.get("value") == "TIMEOUT")
             saves += int(any(h in SAVE_HELDS for h in e.get("held") or []))
+            tracking += int(any(h in TRACKING_HELDS
+                                for h in e.get("held") or []))
     attempted = judged + aborted
     rate = round(straddled / attempted, 3) if attempted else None
     return {"date": date, "lights": lights, "judged": judged,
@@ -374,6 +437,7 @@ def night_split_summary(cfg, date: str, subs: list[dict] | None = None) -> dict:
             "rate": rate, "pass_line": PASS_LINE,
             "passed": None if rate is None else rate < PASS_LINE,
             "saves": saves, "holds": holds, "timeouts": timeouts,
+            "tracking_holds": tracking,   # PS-158: parked / not tracking
             "gate": gate_enabled(cfg), "abort": abort_enabled(cfg)}
 
 
