@@ -63,6 +63,17 @@ def _owed_sets(t) -> list[dict]:
     return out
 
 
+def _window(t, dawn, fill: bool = False):
+    """PS-179: (start, end) UTC of a target's planned window, or of its fill
+    window; None when the planner set none (plan_target_windows off)."""
+    if fill:
+        f0 = getattr(t, "fill_from_utc", None)
+        return (f0, getattr(t, "fill_end_utc", None) or dawn) if f0 else None
+    w0 = getattr(t, "window_start_utc", None)
+    w1 = getattr(t, "window_end_utc", None)
+    return (w0, w1) if w0 and w1 else None
+
+
 def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     """Compute tonight's timeline. All times UTC ISO + local strings."""
     from photonscript.shared.astronomy import (get_seasonal_targets,
@@ -131,17 +142,30 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         total_s = sum(owed_seconds(e) for e in t.exposures) * 1.15
         if total_s <= 0:
             continue
-        end = min(cursor + timedelta(seconds=total_s), dawn)
-        if cursor >= dawn:
-            break
+        win = _window(t, dawn)
+        if win is None:
+            end = min(cursor + timedelta(seconds=total_s), dawn)
+            if cursor >= dawn:
+                break
+        else:
+            cursor, end = win   # PS-179: the planner's window
         events.append({
             "time": _fmt(cursor), "event": f"Target: {t.name}",
             "detail": ", ".join(
                 f"{s['f']}×{s['n']}@{s['exp']}s" + (" HDR short" if s.get("short") else "")
                 for s in _owed_sets(t)) +
-            f" (~{(end - cursor).total_seconds() / 3600:.1f}h)"})
+            f" (~{(end - cursor).total_seconds() / 3600:.1f}h)"
+            + (" per pass, repeats until the window ends"
+               if win is not None else "")})
         target_names.append(t.name)
         cursor = end
+    for t in targets:
+        if getattr(t, "fill_from_utc", None) is not None:
+            f0, f1 = t.fill_from_utc, t.fill_end_utc or dawn
+            events.append({
+                "time": _fmt(f0), "event": f"Fill: {t.name}",
+                "detail": "rest of the night back to the highest-priority "
+                          f"target still up (~{(f1 - f0).total_seconds() / 3600:.1f}h)"})
 
     events.append({"time": _fmt(dawn), "event": "Astro dark ends — shutdown",
                    "detail": "Warm camera, slew to park, stop tracking"})
@@ -159,14 +183,21 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     cursor2 = dusk
     planned_subs = 0
     integ_s = 0.0
-    for t in targets:
+    rows = [(t, False) for t in targets] + [
+        (t, True) for t in targets
+        if getattr(t, "fill_from_utc", None) is not None]   # PS-179
+    for t, is_fill in rows:
         active = [e for e in t.exposures
                   if e.count - e.acquired > 0 or e.short_remaining() > 0]
         sets = _owed_sets(t)
         total_s = sum(owed_seconds(e) for e in active) * 1.15
-        if total_s <= 0 or cursor2 >= dawn:
+        win = _window(t, dawn, fill=is_fill)
+        if total_s <= 0 or (win is None and cursor2 >= dawn):
             continue
-        end = min(cursor2 + timedelta(seconds=total_s), dawn)
+        if win is None:
+            end = min(cursor2 + timedelta(seconds=total_s), dawn)
+        else:
+            cursor2, end = win   # PS-179: the planner's window
         # transit info
         from photonscript.shared.models import CelestialTarget
         ct = CelestialTarget(name=t.name, ra_hours=t.ra_hours,
@@ -184,9 +215,17 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         decm = int((abs(t.dec_degrees) - decd) * 60)
         schedule.append({
             "name": t.name,
-            "kind": kind,
+            "kind": kind + (", fill (rest of the night)" if is_fill else ""),
             "window_start": _fmt(cursor2)["local"],
             "window_end": _fmt(end)["local"],
+            # PS-179: the window in UTC; handoff = the loop ends there and the
+            # next target runs (None: it keeps the mount to the loop end)
+            "window_start_utc": _fmt(cursor2)["utc"],
+            "window_end_utc": _fmt(end)["utc"],
+            "handoff_utc": (_fmt(t.handoff_utc)["utc"]
+                            if getattr(t, "handoff_utc", None) and not is_fill
+                            else None),
+            "fill": is_fill,
             "transit_local": _fmt(transit)["local"] if transit else None,
             "transit_alt": transit_alt,
             "coords": f"{rah:02d}h{ram:02d}m / {dec_sign}{decd:02d}d{decm:02d}m",
@@ -194,8 +233,9 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
             "dec_degrees": t.dec_degrees,
             "filters": sets,
         })
-        planned_subs += sum(x["n"] for x in sets)
-        integ_s += sum(owed_seconds(e) for e in active)
+        if not is_fill:
+            planned_subs += sum(x["n"] for x in sets)
+            integ_s += sum(owed_seconds(e) for e in active)
         cursor2 = end
 
     return {
@@ -215,7 +255,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         "events": events,
         "twilight": twilight,
         "stats": {"dark_hours": round(dark_hours, 1),
-                  "targets": len(schedule),
+                  "targets": sum(1 for r in schedule if not r["fill"]),
                   "planned_subs": planned_subs,
                   "est_integration_h": round(integ_s / 3600, 1)},
         "schedule": schedule,

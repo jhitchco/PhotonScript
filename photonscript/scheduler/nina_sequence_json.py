@@ -43,6 +43,10 @@ OBS_COLLECTION_TRIGGERS = ("System.Collections.ObjectModel.ObservableCollection`
 # container back to its target (or to "unattributed" for structural loops):
 # rename a container here and the mapping follows.
 TARGET_IMAGING_SUFFIX = " imaging (repeats while safe and up)"
+# PS-179: leftover time at the end of the night goes back to the
+# highest-priority target still up in a final DSO container
+# "<target> fill (rest of the night)" (target.fill_from_utc).
+TARGET_FILL_SUFFIX = " fill (rest of the night)"
 TARGET_FOCUS_CAL_SUFFIX = " focus calibration AFs"
 # PS-144: the armer's dusk calibration target (and the standalone download's
 # night) is "Focus calibration <field>" (PS-152: a test target, see
@@ -995,6 +999,19 @@ def _time_condition_at(hh: int, mm: int) -> dict:
             "NINA.Sequencer"))
 
 
+def _handoff_condition(target) -> dict | None:
+    """PS-179: TimeCondition at the target's handoff (planner window end) in
+    local clock time, or None when the target keeps the mount to the loop
+    end. Same fixed-time rule as the moonrise cap: NINA reads a time before
+    noon as the next morning."""
+    when = getattr(target, "handoff_utc", None)
+    if when is None:
+        return None
+    from photonscript.shared.localtime import to_local
+    tl = to_local(_gen_cfg(), when)
+    return _time_condition_at(tl.hour, tl.minute)
+
+
 def _slew_alt_az(alt_deg: int = 70, az_deg: int = 180) -> dict:
     return _make_typed(
         "NINA.Sequencer.SequenceItem.Telescope.SlewScopeToAltAz, NINA.Sequencer",
@@ -1080,7 +1097,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             unguided_dither: bool = False,
                             cooler_gate: tuple | None = None,
                             focus_drive: dict | None = None,
-                            followed: bool = False) -> dict:
+                            followed: bool = False,
+                            fill: bool = False) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> exposures.
@@ -1124,7 +1142,14 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     own filter) + the model-move ExternalScript instead of AF filter + AF +
     offset; its temperature trigger runs the model move, its HFR trigger
     keeps the full AF recipe, and a time trigger runs that AF recipe every
-    verify_min as the verify AF. The start-of-target AF is unchanged."""
+    verify_min as the verify AF. The start-of-target AF is unchanged.
+
+    PS-179: target.handoff_utc (the planner's window end) ends the target
+    there: a TimeCondition at that local clock time on the imaging loop and
+    the DSO container, so the sequence moves on to the next target instead
+    of repeating while safe and up all night. fill=True builds the final
+    "<target> fill (rest of the night)" container instead: same plan, no
+    handoff, it runs to the loop end."""
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets,
@@ -1416,6 +1441,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                    _altitude_condition(target, min_altitude)]
     if loop_end:
         inner_conds.append(_time_condition(*loop_end))
+    # PS-179: the planner's window end hands the mount to the next target
+    handoff = None if fill else _handoff_condition(target)
+    if handoff is not None:
+        inner_conds.append(handoff)
     # PS-111: a mosaic panel that is not the mosaic's last one tonight shoots
     # its owed subs once (LoopCondition(1)) and hands the mount to the next
     # panel; the last panel keeps the repeat-while-up loop.
@@ -1440,11 +1469,24 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         imaging.append(_wait_for_timespan(TARGET_IMAGING_PACE_S))
     if getattr(target, "mosaic_note", ""):
         items.insert(0, _annotation(target.mosaic_note))
+    dso_name = target.name + (TARGET_FILL_SUFFIX if fill else "")
+    if fill:
+        items.insert(0, _annotation(
+            f"PS-179: the rest of the night goes back to {target.name}, the "
+            "highest-priority target still up, until it sets or the loop "
+            "end"))
+    elif handoff is not None:
+        items.insert(0, _annotation(
+            f"PS-179: {target.name}'s window ends at "
+            f"{handoff['Hours']:02d}:{handoff['Minutes']:02d} local; then the "
+            "next target gets the mount"))
     items.append(_seq_container(
-        f"{target.name}{TARGET_IMAGING_SUFFIX}", imaging,
+        f"{dso_name}{TARGET_IMAGING_SUFFIX}", imaging,
         conditions=inner_conds))
     items.append(_pushover("Imaging", f"{target.name}: leaving target "
-                           f"({plan_desc}) — below altitude or unsafe"))
+                           f"({plan_desc}): "
+                           + ("window over, " if handoff is not None else "")
+                           + "below altitude or unsafe"))
     if once:
         items[-1] = _pushover("Imaging", f"{target.name}: leaving panel "
                               f"({plan_desc}): its subs are done (or unsafe / "
@@ -1461,11 +1503,12 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     triggers = [_meridian_flip_trigger(), _reconnect_trigger()]
 
     container = _seq_container(
-        target.name, items,
+        dso_name, items,
         conditions=[_safety_condition(),
                     _altitude_condition(target, min_altitude),
                     _loop_once()]
-        + ([copy.deepcopy(bb_condition)] if moon_capped else []),   # PS-149
+        + ([copy.deepcopy(bb_condition)] if moon_capped else [])   # PS-149
+        + ([copy.deepcopy(handoff)] if handoff is not None else []),  # PS-179
         triggers=triggers,
         container_type="NINA.Sequencer.Container.DeepSkyObjectContainer, "
                        "NINA.Sequencer",
@@ -2513,6 +2556,24 @@ def generate_nina_json(sequence: NinaSequenceFile,
         if t.start_guiding:
             first_guided = False  # only a target that actually runs uses it
         target_containers.append(c)
+    # PS-179: the leftover time at the end of the night, back to the
+    # highest-priority target still up (the planner sets fill_from_utc)
+    for t in sequence.targets:
+        if getattr(t, "fill_from_utc", None) is None:
+            continue
+        c = _build_target_container(t, sequence.wait_for_altitude, False,
+                                    af_filter=af_ft,
+                                    narrate=getattr(_cfg, "pushover_verbosity",
+                                                    "normal"),
+                                    focus_offsets=_cfg.focus_offset_map(),
+                                    loop_end=(dawn_provider, dawn_offset),
+                                    selftest_script=selftest,
+                                    unguided_dither=unguided_dither,
+                                    cooler_gate=gate,
+                                    focus_drive=focus_drive,
+                                    followed=False, fill=True)
+        if c is not None:
+            target_containers.append(c)
 
     unsafe_items = [
         _pushover("Safety", "UNSAFE — imaging stopped, parking scope; will "
