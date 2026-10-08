@@ -438,7 +438,27 @@ def _c_guide_gain(row, val, observed, config, ctx):
     return (PASS if abs(v - want) < 1e-6 else row["severity"]), desired, int(want), None
 
 
+def _c_silenced_alerts(row, val, observed, config, ctx):
+    """PS-167: PHD2 alerts switched off with "don't show again"
+    (/Confirm/<profile>/<Name>AlertEnabled = 0). Any = WARN, listed; the
+    PulseGuide-failed one first, since it hid 2026-10-05 to 10-07."""
+    if val is None:
+        return UNKNOWN, "no PHD2 alert silenced", None, None
+    names = sorted(val, key=lambda n: (0 if "PulseGuide" in n else 1, n))
+    if not names:
+        return PASS, "no PHD2 alert silenced", None, None
+    ctx["current"] = ", ".join(n[:-len("Enabled")] if n.endswith("Enabled") else n
+                               for n in names) + " off"
+    note = f"{len(names)} silenced: " + ", ".join(names)
+    if any("PulseGuide" in n for n in names):
+        note += ("; PulseGuideFailedAlertEnabled = 0 hid every 'PulseGuide command "
+                 "to mount has failed' alert (2026-10-05 to 10-07: every pulse "
+                 "refused, PHD2 showed nothing)")
+    return row["severity"], "no PHD2 alert silenced", None, note
+
+
 COMPUTED = {
+    "silenced_alerts": _c_silenced_alerts,
     "pe_owner": _c_pe_owner,
     "ra_min_move_ga": _c_ra_min_move_ga,
     "dec_min_move": _c_dec_min_move,
@@ -953,8 +973,13 @@ async def collect(config, *, client=None, nina=None, raw: bool = False) -> dict:
         if der.get("calibration"):
             from photonscript.scheduler import phd2_calibration as pc
             pc.seed_from_registry(config, der["calibration"], read.get("values") or {})
+        # PS-167: alerts silenced with "don't show again" (Confirm/<id>)
+        conf = await asyncio.to_thread(ps.read_confirm, read.get("profile_id"))
+        if conf.get("available"):
+            obs["profile"]["silenced_alerts"] = list(conf.get("silenced") or [])
         if raw:
             obs["profile_raw"] = read.get("raw")
+            obs["confirm_raw"] = conf.get("values")
         src["profile"] = {"ok": bool(read.get("available")),
                           "note": read.get("note") or f"profile {read.get('profile_id')} read; "
                           f"{len(obs['profile'])} verified keys"}

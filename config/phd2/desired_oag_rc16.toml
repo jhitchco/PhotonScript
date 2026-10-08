@@ -385,6 +385,17 @@ apply = "manual"
 why = "With guide output off PHD2 measures the star and reports Guiding but sends no pulses, so every long sub trails while the dashboard says guiding. (Not the 2026-10-06 cause: that night output was on and the mount driver refused each pulse; guard D7 pages on either.)"
 fix = "PHD2 Advanced Settings > Guiding tab > Shared Parameters: tick Enable mount guide output."
 
+[[check]]
+id = "silenced_alerts"
+group = "Mount"
+label = "PHD2 alerts not silenced"
+sources = ["profile"]
+computed = "silenced_alerts"
+severity = "warn"
+apply = "manual"
+why = "An alert ticked 'don't show again' is gone for good: on 2026-10-05 to 10-07 the mount driver refused every guide pulse (thousands) and PHD2 showed nothing because PulseGuideFailedAlertEnabled was 0. Read from PHD2's Confirm/<profile> registry key."
+fix = "PHD2 Advanced Settings (Brain) > Global tab: reset the 'don't ask / show again' messages so silenced alerts show again (or, with PHD2 closed, delete the listed <Name>AlertEnabled values under HKCU Software > StarkLabs > PHDGuidingV2 > Confirm > <profile id>)."
+
 # ---------------------------------------------------------------- darks
 
 [[check]]

@@ -742,6 +742,12 @@ class PhotonScriptConfig(BaseSettings):
     phd2_drift_window_min: float = 5.0  # guard D8: the star walks away from
                                  # the lock position over this window, each
                                  # quarter further off (0 = off)
+    # PS-167 the mount driver refusing PHD2's pulses (2026-10-05 to 10-07:
+    # "IsSlewing failed ... pulseguide command failed [80020009]" on every
+    # pulse, PHD2's own alert silenced)
+    phd2_pulse_refusal_min: int = 3  # page once per night when PHD2's debug
+                                 # log shows this many refused pulses (the
+                                 # RC16 agent tails it read only; 0 = off)
     # PS-156 unguided fallback when PHD2 fails (D7 / D8, or PHD2 not locked
     # for guide_fallback_after_min on a guided night)
     guide_fallback_mode: str = "alert"  # off | alert (record + one push

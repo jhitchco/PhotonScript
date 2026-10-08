@@ -1,0 +1,67 @@
+02:29:35.895 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:29:35.895 00.000 20228 Move returns status 1, amount 0
+02:29:35.895 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:29:35.895 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:29:35.895 00.000 20228 Move returns status 1, amount 0
+02:29:42.083 00.000 3216 CameraToMount -- cameraTheta (2.30) - m_xAngle (1.58) = xAngle (0.73 = 0.73)
+02:29:42.083 00.000 3216 CameraToMount -- cameraTheta (2.30) - (m_xAngle (1.58) + m_yAngleError (3.06)) = yAngle (-2.33 = -2.33)
+02:29:42.083 00.000 3216 CameraToMount -- cameraX=-77.14 cameraY=85.55 hyp=115.19 cameraTheta=2.30 mountX=85.93 mountY=-83.71, mountTheta=-0.77
+02:29:42.087 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:29:42.087 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:29:42.087 00.000 20228 Move returns status 1, amount 0
+02:29:42.087 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:29:42.087 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:29:42.087 00.000 20228 Move returns status 1, amount 0
+02:29:48.275 00.000 3216 CameraToMount -- cameraTheta (2.31) - m_xAngle (1.58) = xAngle (0.73 = 0.73)
+02:29:48.275 00.000 3216 CameraToMount -- cameraTheta (2.31) - (m_xAngle (1.58) + m_yAngleError (3.06)) = yAngle (-2.33 = -2.33)
+02:41:40.441 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:40.441 00.000 20228 pulseguide: [80020009] Exception occurred.
+02:41:40.441 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:40.441 00.000 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+02:41:40.441 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:41:40.441 00.000 20228 invoke: [80020009] Exception occurred.
+02:41:40.441 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:40.447 00.006 20228 pulseguide: [80020009] Exception occurred.
+02:41:40.447 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:40.447 00.000 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+02:41:40.447 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:41:46.618 00.000 20228 invoke: [80020009] Exception occurred.
+02:41:46.618 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:46.634 00.016 20228 pulseguide: [80020009] Exception occurred.
+02:41:46.634 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:46.635 00.001 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+02:41:46.635 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:41:46.635 00.000 20228 invoke: [80020009] Exception occurred.
+02:41:46.635 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:46.635 00.000 20228 pulseguide: [80020009] Exception occurred.
+02:41:46.635 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:46.635 00.000 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+02:41:46.635 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:41:52.827 00.005 20228 invoke: [80020009] Exception occurred.
+02:41:52.827 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:52.827 00.000 20228 pulseguide: [80020009] Exception occurred.
+02:41:52.827 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:52.827 00.000 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+02:41:52.827 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:41:52.827 00.000 20228 invoke: [80020009] Exception occurred.
+02:41:52.827 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:52.829 00.002 20228 pulseguide: [80020009] Exception occurred.
+02:41:52.829 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:52.829 00.000 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+02:41:52.829 00.000 20228 Suppressed alert:  PulseGuide command to mount has failed - guiding is likely to be ineffective.
+02:41:59.014 00.000 20228 invoke: [80020009] Exception occurred.
+02:41:59.014 00.000 20228 ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.Telescope) Slewing
+02:41:59.014 00.000 20228 pulseguide: [80020009] Exception occurred.
+02:41:59.014 00.000 20228 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:600->ASCOM Scope: pulseguide command failed: (ASCOM.SoftwareBisque.Telescope) PulseGuide
+02:41:59.014 00.000 20228 GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled", 1) returns 0
+03:25:23.254 00.000 3216 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:1140->ASCOM Scope: SideOfPier failed: (ASCOM.SoftwareBisque.Telescope) SideOfPier
+03:25:23.255 00.001 3216 ScopeASCOM::SideOfPier() returns -1
+19:42:30.571 00.004 3216 Throw from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:819->!m_canGetCoordinates
+19:42:30.572 00.001 3216 ScopeASCOM::GetDeclinationRadians() returns Unknown
+19:42:30.574 00.000 3216 Error thrown from C:\cygwin\home\Andy\projects\phd2-build-20251209-235857\src\scope_ascom.cpp:1140->ASCOM Scope: SideOfPier failed: (ASCOM.SoftwareBisque.Telescope) SideOfPier
+19:42:30.575 00.001 3216 ScopeASCOM::SideOfPier() returns -1
+19:42:30.615 00.000 3216 evsrv: cli 0CF24FA8 request: {"method":"get_calibration_data","id":21,"params":["Mount"]}
+19:42:30.621 00.003 3216 evsrv: cli 0CF24FA8 response: {"jsonrpc":"2.0","result":{"camera":{"name":"GP678C","connected":true},"mount":{"name":"Driver for telescope connected through TheSky (ASCOM)","connected":true}},"id":22}
+20:18:39.551 00.001 3216 CameraToMount -- cameraTheta (0.54) - m_xAngle (1.58) = xAngle (-1.03 = -1.03)
+20:18:39.551 00.000 3216 CameraToMount -- cameraTheta (0.54) - (m_xAngle (1.58) + m_yAngleError (3.06)) = yAngle (-4.09 = 2.19)
+20:18:39.552 00.001 3216 CameraToMount -- cameraX=1.12 cameraY=0.67 hyp=1.31 cameraTheta=0.54 mountX=0.67 mountY=1.06, mountTheta=1.01

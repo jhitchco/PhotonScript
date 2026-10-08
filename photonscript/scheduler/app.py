@@ -743,6 +743,7 @@ _CONFIG_FIELDS = [
     ("phd2_nocorr_frames", "PS_PHD2_NOCORR_FRAMES", "Guard D7 (PS-155): PHD2 guiding but no RA or Dec pulse for N frames in a row while the star is off the lock = page once (0 = off)", "PHD2", "int", False, True),
     ("phd2_nocorr_px", "PS_PHD2_NOCORR_PX", "Guard D7: raw guide error (px) that must draw a pulse", "PHD2", "float", False, True),
     ("phd2_drift_window_min", "PS_PHD2_DRIFT_WINDOW_MIN", "Guard D8: star walking away from the lock position over N min while guiding (0 = off)", "PHD2", "float", False, True),
+    ("phd2_pulse_refusal_min", "PS_PHD2_PULSE_REFUSAL_MIN", "PS-167: page once per night when PHD2's debug log shows N guide pulses refused by the mount driver (pulseguide command failed / IsSlewing failed; 0 = off)", "PHD2", "int", False, True),
     ("guide_fallback_mode", "PS_GUIDE_FALLBACK_MODE", "PHD2 failed on a guided night (PS-156): off | alert (one push: what auto would do) | auto (re-dispatch the rest unguided, subs capped per filter at the tracking-test length)", "PHD2", "str", False, False),
     ("guide_fallback_after_min", "PS_GUIDE_FALLBACK_AFTER_MIN", "Unguided fallback: PHD2 not locked and guiding this long (min) counts as failed", "PHD2", "float", False, False),
     ("default_gain", "PS_DEFAULT_GAIN", "Camera gain", "Imaging", "int", False, False),

@@ -20,6 +20,7 @@ Usage:
         [--camera-cal]                                            # PS-117
     photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
     photonscript guiding-status [--json]                          # PS-119
+    photonscript guide-recover [--dry-run] [--yes] [--force]       # PS-167
     photonscript calibration-plan [--rig R] [--json]              # PS-113
     photonscript calibration-owed [--rig R] [--json]              # PS-122
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
@@ -1283,6 +1284,68 @@ def guiding_status_cmd(
         print(_json.dumps(s, indent=2, default=str))
     else:
         console.print(ga.format_text(s), markup=False, highlight=False)
+
+
+@app.command("guide-recover")
+def guide_recover_cmd(
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Show the readings and what it would do; change nothing"),
+    yes: bool = typer.Option(False, "--yes", help="Do the steps without the typed "
+                             "confirmation (operator only)"),
+    force: bool = typer.Option(False, "--force", help="Reconnect PHD2's mount even "
+                               "when the debug log shows no refused pulse"),
+    as_json: bool = typer.Option(False, "--json", help="Print the readings and plan as JSON"),
+):
+    """PS-167: recover from the mount driver refusing PHD2's guide pulses
+    (PHD2 debug log 'IsSlewing failed ... pulseguide command failed').
+    OPERATOR ONLY, run on the scope PC. Reads PHD2's debug log, TheSky's
+    slew state (TCP 3040, read script) and PHD2's state (JSON-RPC), then:
+    abort a slew TheSky reports while the mount stands still, stop PHD2,
+    set_connected false / true, verify. --dry-run changes nothing.
+
+    photonscript guide-recover --dry-run
+    """
+    import json as _json
+    from photonscript.scheduler import guide_recover as gr
+    from photonscript.telescope_agent.pulse_refusal_watch import DebugLogTail, newest_debug_log
+    from photonscript.telescope_agent.thesky_client import client_from_config
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    thesky = client_from_config(cfg)
+    state = {}
+    try:
+        state["debug"] = gr.debug_summary(cfg)
+    except Exception as e:  # noqa: BLE001
+        state["debug"] = {"ok": False, "note": f"debug log not read: {e}"}
+    state["thesky"] = gr.thesky_state(thesky)
+    try:
+        with gr.Phd2Rpc(cfg.phd2_host, cfg.phd2_port) as phd2:
+            state["phd2"] = gr.phd2_state(phd2)
+    except Exception as e:  # noqa: BLE001
+        state["phd2"] = {"ok": False, "note": f"PHD2 not answering: {e}"}
+    p = gr.plan(state, force=force)
+    if as_json:
+        print(_json.dumps({"state": state, "plan": p, "dry_run": dry_run},
+                          indent=2, default=str))
+    else:
+        console.print(gr.format_plan(state, p, dry_run), markup=False, highlight=False)
+    if dry_run or not p["steps"]:
+        raise typer.Exit(0 if p["verdict"] != "blocked" else 1)
+    if not yes:
+        if not sys.stdin.isatty():
+            console.print("not a terminal and no --yes: nothing done", markup=False)
+            raise typer.Exit(2)
+        if input("Type yes to do these steps now: ").strip().lower() != "yes":
+            console.print("nothing done", markup=False)
+            raise typer.Exit(1)
+    tail = DebugLogTail(lambda: newest_debug_log(cfg))
+    tail.skip_to_end()                    # the verify step reads from here
+
+    def _since():
+        return tail.read_new()[1]
+    with gr.Phd2Rpc(cfg.phd2_host, cfg.phd2_port, timeout=30.0) as phd2:
+        res = gr.execute(p["steps"], phd2=phd2, thesky=thesky, log_tail=_since,
+                         say=lambda m: console.print(m, markup=False, highlight=False))
+    raise typer.Exit(0 if res and all(r["ok"] for r in res) else 1)
 
 
 @app.command("tracking-test-report")

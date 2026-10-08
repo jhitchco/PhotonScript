@@ -44,7 +44,8 @@ from photonscript.shared.guide_motion import (  # noqa: F401
 
 SEVERITY_RANK = {"critical": 0, "warning": 1, "info": 2}
 # within a severity, root causes first
-RULE_ORDER = ["pulses_not_moving", "pulses_reversed", "calibration_no_motion",
+RULE_ORDER = ["pulse_refused", "no_corrections",          # PS-167, PS-155
+              "pulses_not_moving", "pulses_reversed", "calibration_no_motion",
               "star_static", "calibration_ortho",
               "calibration_other_pier", "max_duration_pulses", "dec_one_direction",
               "search_region_small", "saturated_star", "settle_failures",
@@ -519,7 +520,8 @@ def session_findings(s) -> list[dict]:
             "mount.",
             "Check PHD2's debug log for 'pulseguide command failed' / "
             "'IsSlewing failed' (2026-10-06: TheSky's ASCOM driver refused every "
-            "pulse; restart TheSky and reconnect the mount), Max RA / Dec "
+            "pulse; reconnect the mount in PHD2: photonscript guide-recover), "
+            "Max RA / Dec "
             "duration on Brain > Algorithms, and Advanced Settings > Guiding > "
             "Shared Parameters: Enable mount guide output.",
             weight=nc["frames"], frames=nc["frames"], longest=nc["longest"],
@@ -1106,6 +1108,79 @@ _RESULTS: dict = {}    # finished analyses (the runs page asks often)
 _GA_CACHE: dict = {}   # Guiding Assistant lookback per set of older files
 
 
+# --------------------------------------------------------------------------
+# PS-167: the mount driver refusing pulses, from PHD2's DEBUG log
+# --------------------------------------------------------------------------
+
+_DEBUG_SCANS: dict = {}   # path -> (offset scanned, Scanner); grows with the file
+
+
+def _scan_debug_file(p: Path) -> dict:
+    """pulse_refusal summary of one debug log. Incremental: a live log that
+    grew is read only from where the last scan stopped (a whole line)."""
+    from photonscript.shared import pulse_refusal as pr
+    size = p.stat().st_size
+    off, sc = _DEBUG_SCANS.get(str(p), (0, None))
+    if sc is None or size < off:
+        off, sc = 0, pr.Scanner(pr.file_start(p.name), p.name)
+    if size > off:
+        with open(p, "rb") as fh:
+            fh.seek(off)
+            data = fh.read(size - off)
+        cut = data.rfind(b"\n")
+        if cut >= 0:
+            for line in data[:cut].decode("utf-8", "replace").splitlines():
+                sc.feed(line)
+            off += cut + 1
+    if len(_DEBUG_SCANS) > 12:
+        _DEBUG_SCANS.clear()
+    _DEBUG_SCANS[str(p)] = (off, sc)
+    return sc.summary()
+
+
+def debug_findings(config, date: str = "", file: str = "") -> tuple[list, dict]:
+    """(findings, info) from the PHD2 debug log(s) of the night (date=) or the
+    one matching a guide log (file=PHD2_GuideLog_X -> PHD2_DebugLog_X).
+    Finding "pulse_refused" (critical) with the exact first error, the count,
+    the diagnosis and the operator fix (shared.pulse_refusal)."""
+    from photonscript.shared import pulse_refusal as pr
+    found = pl.find_logs(config, "debug")
+    dname = file.replace("GuideLog", "DebugLog") if file else ""
+    paths, note = pl.select(found["files"], date=date, file=dname)
+    per = []
+    for p in paths:
+        try:
+            per.append(_scan_debug_file(Path(p)))
+        except OSError as e:
+            per.append({"source": Path(p).name, "error": str(e), "refusals": 0})
+    info = {"files": [x.get("source") for x in per], "note": note or None,
+            "per_file": per}
+    bad = [x for x in per if x.get("refusals")]
+    if not bad:
+        return [], info
+    total = sum(x["refusals"] for x in bad)
+    first = min(bad, key=lambda x: x.get("first_error_at") or "9")
+    worst = max(bad, key=lambda x: x["refusals"])
+    d = pr.diagnose(dict(worst, refusals=total,
+                         first_error=first.get("first_error"),
+                         first_error_at=first.get("first_error_at")))
+    detail = (d["detail"] + f" Exact error: {first.get('first_error')}"
+              + (f" then {first['first_refusal']}" if first.get("first_refusal")
+                 and first["first_refusal"] != first.get("first_error") else "")
+              + (f" [{first['hresult']}]" if first.get("hresult") else "")
+              + f" (first {first.get('first_error_at')}, last "
+              f"{max(x.get('last_error_at') or '' for x in bad)} local; "
+              f"{', '.join(x['source'] for x in bad)}).")
+    info["diagnosis"] = d
+    return [_f("pulse_refused", "critical", d["title"], detail, d["fix"],
+               refusals=total, cause=d["cause"], members=worst.get("members"),
+               first_error=first.get("first_error"),
+               first_error_at=first.get("first_error_at"),
+               mount_connected_at=worst.get("mount_connected_at"),
+               silenced=sorted({s for x in bad for s in x.get("silenced") or []}),
+               files=[x["source"] for x in bad])], info
+
+
 def _load(config, date, file):
     """Parsed sections for the night, cached on the files' size + mtime."""
     found = pl.find_logs(config, "guide")
@@ -1136,8 +1211,9 @@ def _load(config, date, file):
 
 
 def analyze_sections(sections, config, date: str = "", subs=None,
-                     ga_before=None) -> dict:
-    """The full analysis of already-parsed sections (tests call this)."""
+                     ga_before=None, extra_findings=None) -> dict:
+    """The full analysis of already-parsed sections (tests call this).
+    extra_findings: night findings from elsewhere (PS-167 debug log)."""
     window = None
     if date:
         try:
@@ -1222,7 +1298,8 @@ def analyze_sections(sections, config, date: str = "", subs=None,
                     f["detail"] = f["detail"].replace(
                         "far beyond this mount's unguided drift.",
                         "far beyond this mount's unguided drift." + note)
-    findings = merge_findings(sessions, night_findings(cals, ga_ref))
+    findings = merge_findings(sessions, night_findings(cals, ga_ref)
+                              + list(extra_findings or []))
     out = {"ok": True, "date": date or None, "totals": totals,
            "findings": findings, "calibrations": cals, "sessions": sessions,
            "guiding_assistant": {"this_night": ga, "reference": ga_ref},
@@ -1260,12 +1337,20 @@ def night_analysis(config, date: str = "", file: str = "", with_subs: bool = Tru
                 ga_before = latest_ga_before(config, first, files)
         except Exception:  # noqa: BLE001 - the yardstick is optional
             ga_before = None
+    try:
+        dbg, dbg_info = debug_findings(config, date=date, file=file)   # PS-167
+    except Exception as e:  # noqa: BLE001 - the debug log is optional
+        dbg, dbg_info = [], {"note": f"debug log not read: {e}"}
     rkey = (key, date, file, with_subs, len(subs or []),
-            max((str(r.get("time") or "") for r in subs or []), default=""))
+            max((str(r.get("time") or "") for r in subs or []), default=""),
+            tuple((x.get("source"), x.get("refusals"))
+                  for x in dbg_info.get("per_file") or []))
     if rkey in _RESULTS:
         return _RESULTS[rkey]
-    out = analyze_sections(secs, config, date=date, subs=subs, ga_before=ga_before)
+    out = analyze_sections(secs, config, date=date, subs=subs, ga_before=ga_before,
+                           extra_findings=dbg)
     out.update(info)
+    out["pulse_refusal"] = dbg_info
     if len(_RESULTS) > 8:
         _RESULTS.clear()
     _RESULTS[rkey] = out

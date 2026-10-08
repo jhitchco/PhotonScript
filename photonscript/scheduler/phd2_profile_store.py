@@ -354,6 +354,38 @@ def read(profile_id=None, name: str | None = None) -> dict:
             "derived": der, "raw": raw}
 
 
+def read_confirm(profile_id) -> dict:
+    """PS-167: PHD2's "don't show again" switches for profile <id>: wx path
+    /Confirm/<id>/<Name> = the values of the registry key Confirm/<id> beside
+    profile/<id> under PHDGuidingV2
+    (PHD2 2.6.14 debug log: GetBoolean("/Confirm/2/PulseGuideFailedAlertEnabled",
+    1) returns 0). {"available", "values": {name: value}, "silenced": [names
+    ending AlertEnabled that are 0]}. A missing Confirm key = nothing ever
+    silenced. Read only; never raises."""
+    reg = _winreg()
+    if reg is None:
+        return {"available": False, "note": "not Windows (no registry)",
+                "values": {}, "silenced": []}
+    if profile_id is None:
+        return {"available": False, "note": "PHD2 profile id unknown",
+                "values": {}, "silenced": []}
+    try:
+        with reg.OpenKey(reg.HKEY_CURRENT_USER, ROOT):
+            pass
+    except OSError as e:
+        return {"available": False, "note": f"no PHD2 registry key ({e})",
+                "values": {}, "silenced": []}
+    try:
+        vals, _t = _flat(reg, f"{ROOT}\\Confirm\\{profile_id}")
+    except OSError:
+        vals = {}
+    silenced = sorted(k for k, v in vals.items()
+                      if k.endswith("AlertEnabled") and _fnum(v) == 0)
+    return {"available": True, "profile_id": str(profile_id), "values": vals,
+            "silenced": silenced,
+            "location": f"HKCU\\{ROOT}\\Confirm\\{profile_id}"}
+
+
 def read_ascom() -> dict:
     """{logical: {value, verified, location}} of the Bisque driver flags
     (HKLM, read only). Never raises."""

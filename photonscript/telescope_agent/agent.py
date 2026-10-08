@@ -137,6 +137,9 @@ class TelescopeAgent:
         ]
         if guard:
             tasks.append(asyncio.create_task(self._guard_loop()))
+        if (getattr(self, "rig", "rc16") == "rc16"
+                and int(getattr(self.config, "phd2_pulse_refusal_min", 3) or 0) > 0):
+            tasks.append(asyncio.create_task(self._pulse_refusal_loop()))  # PS-167
 
         # Listen for commands from scheduler
         self.bus.subscribe("command", self._on_command)
@@ -1198,8 +1201,8 @@ class TelescopeAgent:
     NOCORR_CAUSES = (
         "Likely causes: the mount driver rejecting PulseGuide (2026-10-06: "
         "TheSky's ASCOM driver failed IsSlewing / PulseGuide on every pulse; "
-        "PHD2 debug log 'pulseguide command failed': restart TheSky and "
-        "reconnect the mount in PHD2), Max RA / Dec duration 0 (Brain > "
+        "PHD2 debug log 'pulseguide command failed': reconnect the mount in "
+        "PHD2, see photonscript guide-recover), Max RA / Dec duration 0 (Brain > "
         "Algorithms), mount guide output off (Advanced Settings > Guiding > "
         "Shared Parameters: Enable mount guide output), or guiding paused.")
 
@@ -1238,6 +1241,57 @@ class TelescopeAgent:
                                          source=f"guard {vs[0].code}")
         except Exception as e:  # noqa: BLE001
             logger.warning("PS-156 fallback request failed: %s", e)
+
+    # PS-167: PHD2's debug log says the mount driver refused a guide pulse
+    PULSE_REFUSAL_TICK_S = 30.0
+
+    async def _pulse_refusal_loop(self):
+        """Tail PHD2's debug log (read only) and page once per night when the
+        mount driver refuses guide pulses (pulse_refusal_watch). Never lets
+        an error end the loop."""
+        from photonscript.telescope_agent.pulse_refusal_watch import PulseRefusalWatch
+        watch = PulseRefusalWatch(self.config)
+        while self._running:
+            await asyncio.sleep(self.PULSE_REFUSAL_TICK_S)
+            try:
+                hit = await asyncio.to_thread(watch.poll)
+                if hit:
+                    await self._pulse_refusal_alarm(hit)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("pulse-refusal watch errored: %s", e)
+
+    async def _pulse_refusal_alarm(self, hit: dict) -> None:
+        """One priority-1 page per night (key pulserefused-<night>) with the
+        exact error and the operator fix, plus a run event pulse_refused.
+        Nothing is commanded: recovery is `photonscript guide-recover`, run
+        by the operator. Never raises."""
+        from photonscript.shared import phd2_store as store
+        from photonscript.shared.pushover import record
+        from photonscript.telescope_agent.pulse_refusal_watch import page_text
+        night, s = hit["night"], hit["summary"]
+        target = getattr(getattr(self, "state", None), "current_target", None)
+        msg = page_text(hit, target)
+        logger.warning("PHD2 pulse refused: %s", msg)
+        try:
+            from photonscript.shared.night_events import events_path
+            store.append_jsonl(events_path(self.config, night), {
+                "t": hit.get("t_utc"), "rig": "rc16", "src": "phd2",
+                "kind": "pulse_refused", "value": hit["cause"],
+                "detail": s.get("first_error"), "file": hit.get("file"),
+                "evidence": {k: s.get(k) for k in (
+                    "refusals", "members", "first_error_at", "mount_connected_at",
+                    "hresult", "silenced")}})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-167 run event not written: %s", e)
+        title = "PhotonScript PHD2 mount refuses pulses"
+        try:
+            if store.alert_once(self.config, f"pulserefused-{night}"):
+                await notify(self.config, msg, title=title, priority=1)
+            else:
+                record(self.config, msg, title=title, priority=1,
+                       reason="pulserefused-once-per-night")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-167 page failed: %s", e)
 
     async def _lowsnr_switch(self, verdict) -> None:
         """PS-85 guard D6: PHD2 is guiding on noise. guide_block_mode auto:

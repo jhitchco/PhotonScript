@@ -1045,6 +1045,26 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   has finding `no_corrections` (and `guide_output_off` outside a GA run);
   the PS-89 audit has row `guide_output` (PHD2 API `get_guide_output_enabled`,
   else the guide log; Advanced Settings > Guiding > Shared Parameters).
+- MOUNT DRIVER REFUSING PULSES (PS-167): 2026-10-05 22:55 to 10-07 every
+  PHD2 pulse failed ("ScopeASCOM::IsSlewing failed: (ASCOM.SoftwareBisque.
+  Telescope) Slewing", then "pulseguide command failed ... PulseGuide",
+  [80020009]); SideOfPier and the coordinates failed too while the guide
+  rate (a driver setting) still read, and NINA's own connection slewed and
+  tracked normally. Cause: PHD2's copy of the in-process Bisque driver,
+  connected 10-05 08:50 and never reconnected, lost TheSky when TheSky was
+  reworked that day (two TheSky apps, PS-138); not a slew in progress. Fix:
+  reconnect the mount in PHD2 (not a TheSky restart). Detection: the RC16
+  agent tails PHD2's debug log (read only, every 30 s) and pages once per
+  night after `phd2_pulse_refusal_min` (3) refusals with the exact error
+  and the fix (run event `pulse_refused`); the morning analysis has finding
+  `pulse_refused` from the night's debug logs (`pulse_refusal` block in
+  `GET /api/phd2/analysis`); the PS-89 audit row `silenced_alerts` warns on
+  any PHD2 alert ticked "don't show again" (registry `Confirm/<profile>`,
+  e.g. `PulseGuideFailedAlertEnabled = 0`). Recovery is operator-run only:
+  `photonscript guide-recover --dry-run` shows the readings (debug log,
+  TheSky slew state over 3040, PHD2 state) and the steps (abort a slew TheSky
+  reports while the mount stands still; PHD2 stop_capture, set_connected
+  false / true, verify); without --dry-run it asks for "yes" and runs them.
 - UNGUIDED FALLBACK (PS-156): when D7 / D8 fire, or PHD2 stays unlocked for
   `guide_fallback_after_min` (10) on a guided night, `guide_fallback_mode`
   decides once per night: `alert` (default) records run event

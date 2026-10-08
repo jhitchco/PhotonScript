@@ -165,6 +165,11 @@ class TheSkyClient:
         doc). Property reads only."""
         return self._kv("tpoint_flags")
 
+    def slew_state(self) -> dict:
+        """PS-167: IsConnected; only when connected IsSlewComplete,
+        IsTracking, IsParked, the position and LastSlewError."""
+        return self._kv("slew_state")
+
     def version(self) -> dict:
         return self._kv("version")
 
@@ -259,6 +264,16 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
         ("protrack_active", "TPoint.ProTrackActive"),
         ("protrack_active_tele", "sky6RASCOMTele.ProTrack"),
         ("protrack_adjustments", "TPoint.EnableTrackingAdjustments")], ""),
+    # PS-167: is TheSky slewing (or stuck in a slew)? guide-recover reads it
+    # twice a few seconds apart. Property reads only, never Connect().
+    "slew_state": ([
+        ("connected", "c"),
+        ("slew_complete", "c ? sky6RASCOMTele.IsSlewComplete : ''"),
+        ("tracking", "c ? sky6RASCOMTele.IsTracking : ''"),
+        ("parked", "c ? sky6RASCOMTele.IsParked() : ''"),
+        ("ra_h", "c ? (sky6RASCOMTele.GetRaDec(), sky6RASCOMTele.dRa) : ''"),
+        ("dec_d", "c ? sky6RASCOMTele.dDec : ''"),
+        ("last_slew_error", "c ? sky6RASCOMTele.LastSlewError : ''")], _MOUNT_PRE),
     # read form only (empty argument); behind thesky_audit_allsky_read
     "allsky_flags": ([
         ("allsky_scripted",
