@@ -189,6 +189,14 @@
             <div id="morningCard" class="bd">Loading...</div>
         </section>
 
+        <!-- PS-168: tracking drift from the PHD2 guide log (per night, trend
+             by TPoint model) and the PS-169 recommended unguided sub length,
+             from /api/tracking/drift -->
+        <section class="panel" id="driftPanel">
+            <h2>Tracking drift <span class="bd" id="driftDate"></span></h2>
+            <div id="driftCard" class="bd">Loading...</div>
+        </section>
+
         <!-- Recent Activity: last subs + telescope events -->
         <section class="panel" id="activityPanel">
             <h2>Activity <span class="bd">(latest subs first)</span></h2>
@@ -1130,6 +1138,56 @@
     }
     refreshMorning();
     setInterval(refreshMorning, 600000);
+    // PS-168: tracking drift card (guide-log drift, smear per sub length,
+    // trend per TPoint model, PS-169 recommended unguided sub per rig).
+    async function refreshDrift() {
+        const box = document.getElementById('driftCard');
+        if (!box) return;
+        const esc = t => String(t == null ? '-' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        try {
+            const r = await fetch('/api/tracking/drift?nights=7');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            document.getElementById('driftDate').textContent =
+                d.date ? '(night of ' + d.date + ')' : '';
+            if (!d.ok) { box.textContent = d.note || 'No guide log.'; return; }
+            const s = d.summary || {};
+            const rigs = Object.keys(d.scales || {});
+            let h = '<div>' + esc(d.line || 'No clean guide-log window.') + '</div>';
+            h += '<div style="opacity:.75;">' + esc(s.sessions_used) + ' windows used, ' +
+                esc((s.sessions_excluded || []).length) + ' excluded (short, or wobble over ' +
+                esc((d.limits || {}).max_rms_arcsec) + '"), mode ' + esc(s.mode) + '</div>';
+            if ((s.smear || []).length) {
+                h += '<table class="tbl" style="font-size:.8rem;margin-top:.3rem;"><tr><th>sub</th><th>smear</th>' +
+                    rigs.map(k => '<th>' + esc(k) + ' px</th>').join('') + '</tr>' +
+                    s.smear.map(x => '<tr><td>' + x.exp_s + ' s</td><td>' + esc(x.arcsec) + '"</td>' +
+                        rigs.map(k => '<td>' + esc((x.px || {})[k]) + '</td>').join('') + '</tr>').join('') + '</table>';
+            }
+            const rec = d.recommended || {};
+            const rr = Object.values(rec.rigs || {}).filter(x => x.exposure_s);
+            if (rr.length) {
+                h += '<div style="margin-top:.3rem;">Unguided sub (' + esc(rec.mode) + '): ' +
+                    rr.map(x => esc(x.rig) + ' ' + esc(x.exposure_s) + ' s' +
+                        (x.dark_match === false ? ' (no dark yet)' : '')).join(', ') +
+                    ' <span style="opacity:.7;">' + esc((rec.drift || {}).source) + '</span></div>';
+            }
+            const tm = ((d.trend || {}).by_model || []);
+            if (tm.length) {
+                h += '<table class="tbl" style="font-size:.8rem;margin-top:.3rem;"><tr><th>TPoint model</th><th>points</th><th>nights</th><th>RA "/min</th><th>Dec "/min</th><th>RMS "</th></tr>' +
+                    tm.map(m => '<tr><td>' + esc(m.model_date || 'unknown') + '</td><td>' + esc(m.points) +
+                        '</td><td>' + esc(m.nights) + '</td><td>' + esc(m.ra_arcsec_min) + '</td><td>' +
+                        esc(m.dec_arcsec_min) + '</td><td>' + esc(m.rms_arcsec) + '</td></tr>').join('') + '</table>';
+            }
+            h += '<div style="margin-top:.3rem;"><a href="/api/tracking/drift?date=' +
+                encodeURIComponent(d.date) + '" target="_blank">JSON</a></div>';
+            box.innerHTML = h;
+        } catch (e) {
+            box.textContent = 'Tracking drift unavailable (' + e.message + ')';
+        }
+    }
+    refreshDrift();
+    setInterval(refreshDrift, 600000);
 
     </script>
 
