@@ -975,6 +975,26 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
 - Never mix dark temperatures; -Loose enforces temp match since 5b4c6c9.
 
 ### Night-ops lessons
+- 2026-10-07 (RC16 shutter open 5.4 h of 9.8 h, PS-176): M31 LRGB all
+  night. 28 Run Autofocus items (118 min), one per filter block, because
+  the planner's per-pass counts were L x3, R/G/B x1 and every block AFs
+  (PS-65); 225 of 281 subs were the goal's 30 s HDR shorts (12 per R/G/B),
+  re-shot on every pass because NINA resets a SmartExposure's
+  LoopCondition when the imaging loop repeats; and each triggered AF left
+  the next sub in L (NINA fires AF triggers after the SmartExposure's
+  SwitchFilter: 15 L 30 s subs inside the R/G/B runs). Fixed: HDR shorts
+  run once per visit ("<target> HDR shorts (once per visit)", before the
+  loop); trigger runners switch back to the block's filter (lint rule
+  `af-runner-filter`); `rc16_af_policy` smart (opt-in, default
+  every_block) moves the focuser by the PS-76 model offset with no AF
+  ("<target> filter block (focus by offset)", moves add up to zero, lint
+  rule `focus-offset`), AF at target start, after `rc16_af_temp_change_c`,
+  an `rc16_af_hfr_increase_pct` HFR rise, every `rc16_af_interval_min`,
+  and at every block of a 3 nm filter whose offset has under 3 AFs; R/G/B
+  default to `rc16_rgb_exposure_s` (120 s) on new goals. The night plan
+  (`GET /api/nightplan` `efficiency`, dashboard "Est. Shutter Open")
+  predicts the shutter share under both policies from the last nights'
+  timelines (AF run, same-filter gap, filter change).
 - 2026-10-06 (NINA #2 busy loop before nautical dawn, PS-149): after a pass
   NINA re-checks a loop's conditions with no next item (0 s) and, if they
   hold, resets and re-runs it. The companion's OSC_LIGHTS_UNTIL_DAWN

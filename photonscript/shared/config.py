@@ -620,6 +620,23 @@ class PhotonScriptConfig(BaseSettings):
     focus_cfz_steps: int = 0  # RC16 critical focus zone in EAF steps; 0 =
                                  # use the median AF step size as the proxy
     focus_model_move_script: str = "C:\\astro\\PhotonScript\\deploy\\focus-model-move.cmd"
+    # PS-176: when the RC16 autofocuses inside a target. "every_block" (the
+    # default, today's sequence): every filter block runs AF on
+    # autofocus_filter + its offset (2026-10-07: 28 AFs, 118 min of a 9.8 h
+    # night). "smart": a filter block only moves the focuser by its offset
+    # from autofocus_filter (MoveFocuserRelative, undone at the block end;
+    # the PS-76 model offset when measured, >= 3 AFs in each filter, else
+    # focus_filter_offsets); a full AF runs at target start, on a
+    # temperature change, an HFR rise, every rc16_af_interval_min, and on
+    # every block of a 3 nm filter whose offset is not measured yet.
+    # Opt-in until a supervised night (Needs decision).
+    rc16_af_policy: str = "every_block"
+    rc16_af_temp_change_c: float = 2.0   # smart: AF after this focuser
+                                 # temperature change since the last AF (C)
+    rc16_af_hfr_increase_pct: float = 10.0  # smart: AF after the HFR rises
+                                 # this much over the last AF's (%)
+    rc16_af_interval_min: float = 60.0  # smart: AF at least this often
+                                 # (min; 0 = no timed AF)
     guiding_auto_recover: bool = True  # when the watchdog sees guiding stay down
                                  # (idle OR stuck calibrating/looping) well past
                                  # the grace, attempt ONE automatic PHD2 guider
@@ -795,6 +812,11 @@ class PhotonScriptConfig(BaseSettings):
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs
+    rc16_rgb_exposure_s: float = 120.0  # PS-176: default R/G/B sub length on
+                                  # the RC16 for a new or re-allocated goal
+                                  # (L keeps bb_exposure_s). A goal's own
+                                  # per-filter sub seconds always win; 0 =
+                                  # bb_exposure_s for RGB too (the old rule)
 
     # --- Supervisor escalation ---
     pushover_user_key: str = ""
