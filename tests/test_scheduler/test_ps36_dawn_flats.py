@@ -119,7 +119,8 @@ def test_dawn_flat_step_order_and_gating():
     wait_i = kinds.index("WaitForTime", lights_i)
     items = _items(_targets(root))
     assert "NauticalDawnProvider" in items[wait_i]["SelectedProvider"]["$type"]
-    assert items[wait_i]["MinutesOffset"] == 5
+    # PS-163: the OSC set starts at ND + piggyback_flat_dawn_offset_min (20)
+    assert items[wait_i]["MinutesOffset"] == 20
     # let the RC16's dawn slew land before the first flat
     assert kinds[wait_i + 1] == "WaitForTimeSpan"
     assert items[wait_i + 1]["Time"] == 90

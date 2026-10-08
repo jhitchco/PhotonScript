@@ -914,6 +914,7 @@ _CONFIG_FIELDS = [
     ("piggyback_mount_check", "PS_PIGGYBACK_MOUNT_CHECK", "NINA #2 mount check (PS-139): at arm and watch, read NINA #2's loaded sequence for slew / center / park instructions: alert (push + chip, read only) | off", "Piggyback", "str", False, False),
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
     ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
+    ("piggyback_flat_dawn_offset_min", "PS_PIGGYBACK_FLAT_DAWN_OFFSET_MIN", "Piggyback flats (PS-163): start at nautical dawn + this (min), capped to fit the dawn flat window", "Piggyback", "int", False, False),
     ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),

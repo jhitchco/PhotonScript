@@ -344,8 +344,11 @@ No new code needed; the machinery matches the light epoch via `rig_config(PIGGYB
   profile, it's **dawn-flats-only** — add the shared safety monitor to the NINA #2 profile
   to unlock roof-closed darks/bias.
   Dawn flats (PS-36): `piggyback_flat_count` (default 25) at gain 100 / offset 256, at
-  nautical dawn +5 plus 90 s (the RC16's dawn slew). With the safety monitor they wait
-  for safe only until nautical dawn + `piggyback_flat_wait_min` (25) and are skipped if
+  nautical dawn + `piggyback_flat_dawn_offset_min` (PS-163, default 20; was a fixed 5,
+  where the OSC SkyFlat found the sky too dim at its 30 s max on 2026-10-07) plus 90 s
+  (the RC16's dawn slew), capped at nautical dawn + 5 + `dawn_flats_window_min` - 10.
+  With the safety monitor they wait for safe only until nautical dawn +
+  max(`piggyback_flat_wait_min` (25), the start offset) and are skipped if
   the roof is still closed; the light loop's wait for safe is bounded the same way, so a
   pre-dawn roof close can no longer wedge the companion. The armer's dawn shutdown holds
   until nautical dawn + 5 + `dawn_flats_window_min` (40, capped at sunrise) and then also

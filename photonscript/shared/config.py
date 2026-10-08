@@ -939,6 +939,11 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_flat_wait_min: int = 25  # PS-36: after nautical dawn + 5, wait at most
                                        # until nautical dawn + this for the roof to be
                                        # safe; later = skip the OSC flats (not wedge)
+    piggyback_flat_dawn_offset_min: int = 20  # PS-163: OSC dawn flats start at
+    # nautical dawn + this (min; +90 s for the RC16 slew). Was a fixed 5: on
+    # 2026-10-07 the OSC SkyFlat at ND+5 found the sky "too dim" at its 30 s
+    # max for 14 min and gave up (8188 ADU at 30 s by ND+20). Capped so the
+    # set fits the armer's dawn hold (ND + 5 + dawn_flats_window_min - 10).
     piggyback_af_temp_change_c: float = 1.5  # PS-68: OSC refocus on this focuser
                                              # temperature change (C)
     piggyback_af_hfr_increase_pct: float = 10.0  # PS-68: OSC refocus when HFR rises
