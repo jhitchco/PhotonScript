@@ -22,6 +22,10 @@ watched-night paths both call it):
    target is still "?". Marked review_source "auto" (a later automatic
    reject still applies) plus approved_by "dawn".
 4. build_library(date) so Syncthing gets the night, goal progress synced.
+   PS-178: then the calibration sweep (runs.link_recent_calibration) files
+   every calibration folder of the last CAL_SWEEP_DAYS on both rigs, so a
+   calibration-only folder (daytime capture, roof-closed night, NINA
+   restarted after midnight) reaches the Library and the desktop too.
 5. One record per night, runs/<date>_autofile.json, and the line
    "Library: N subs filed for sync (targets...)" for the morning push, the
    runs page and GET /api/runs/{date}/autofile.
@@ -427,6 +431,12 @@ def file_night(config, date: str, push: bool = True,
                                         "pending_review", "rejected_excluded",
                                         "missing_files")}
     rec["library"] = step("library", _library)
+
+    def _cal_sweep():
+        r = runs.link_recent_calibration(config)
+        return {rg: {"nights": len(v.get("nights") or []), "linked": v.get("linked")}
+                for rg, v in r.items()}
+    rec["calibration_sweep"] = step("calibration sweep", _cal_sweep)
     filed = step("count", lambda: filed_counts(config,
                                                runs._load_subs(config, date)))
     rec["filed"] = filed or {}

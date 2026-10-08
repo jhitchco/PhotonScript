@@ -4,6 +4,11 @@ GET  /api/calibration/plan?rig=              needs vs have vs bad per rig
 GET  /api/calibration/owed?rig=              PS-122: calibration owed for the
                                              lights already shot + tonight
 GET  /api/calibration/qa?rig=&limit=         QA summary + failing frames
+GET  /api/calibration/library-report?rig=&frames=
+                                             PS-178: every calibration frame in
+                                             the watch dir vs the Library, the
+                                             reason each is not there, and
+                                             whether it fits the lights' epoch
 POST /api/calibration/qa/backfill            {"rig", "dry_run"}: QA the whole
                                              library in the background
 GET  /api/calibration/qa/backfill            backfill progress / last report
@@ -89,6 +94,19 @@ def api_calibration_qa(rig: str = "", limit: int = 200):
                      "ccdtemp": r.get("ccdtemp"), "median": r.get("median")}
                     for r in bad[:max(0, int(limit))]]}
     return out
+
+
+@router.get("/api/calibration/library-report")
+def api_calibration_library_report(rig: str = "rc16", frames: int = 0):
+    """PS-178: read only. Status per calibration frame (library /
+    quarantine / not_filed + reason) grouped in sets, and the light-epoch
+    check for darks and bias."""
+    from photonscript.scheduler.calibration_library import library_report
+    from photonscript.shared.rigs import rig_ids
+    cfg = _cfg()
+    if rig not in rig_ids(cfg):
+        return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
+    return library_report(cfg, rig, frames_limit=max(0, int(frames)))
 
 
 @router.post("/api/calibration/qa/backfill")

@@ -35,7 +35,13 @@ Run on the desktop from the repo venv. What it does (code in
    binning, temperature and readout mode (PS-128); a missing dark length
    uses the most plentiful dark length with optimizeDarks (scaling);
    flats per filter only when cooled like the lights (uncooled flats are
-   reported and skipped), `--no-flats` to skip.
+   reported and skipped), `--no-flats` to skip. PS-178: when no bias
+   matches, the bias sessions that miss the epoch are listed with the
+   reason; a light length with no dark gets "nearest alternative" lines
+   (same-length darks below `--min-darks`, same-length darks off the epoch
+   and why, other lengths that could be scaled once a matching bias
+   exists, else what to capture) and its subs are REFUSED (left out)
+   unless `--allow-uncalibrated`.
    **Stacks (PS-177).** Mono (RC16) never mixes exposure lengths in one
    ImageIntegration: per filter the group with the most integration time
    is `master_<F>` (what `blend` and the finish expect), every other

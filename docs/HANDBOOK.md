@@ -1267,6 +1267,25 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   with night ones; a leak disables daytime capture for that rig until
   `calibration-qa --rig R --reset-daytime`. `calibration_autofill` (daytime
   only) is off by default.
+- CALIBRATION REACHES THE LIBRARY (PS-178): build_library(date) files only
+  that night's own NINA folder, and build_library() only nights with a subs
+  file, so a calibration-only folder (a daytime capture job, a roof-closed
+  night, NINA restarted after midnight: the 2026-09-27 RC16 300 s darks,
+  24 QA-passed) never reached the Library or the desktop. The dawn pass
+  (PS-157 file_night) now ends with a calibration sweep
+  (`runs.link_recent_calibration`: every calibration folder of the last 14
+  days on both rigs, QA'd and quarantined as usual, idempotent) and
+  build_library() without a date files those folders too. Read-only
+  report: `GET /api/calibration/library-report?rig=` and `photonscript
+  calibration-library [--rig R] [--url http://100.94.189.77:8100]
+  [--desktop-library D:\ninashare\Library] [--frames N]` list every
+  calibration frame as library / quarantine / not_filed with the reason,
+  whether a dark / bias fits the lights' epoch (gain, offset, SET-TEMP vs
+  setpoint, readout), and with --url on the desktop how many Library frames
+  the mirror still lacks (Syncthing pending). On the desktop `photonscript
+  integrate` lists the bias sessions that miss the epoch and, for a light
+  length with no dark, the nearest alternatives; it refuses that length
+  unless `--allow-uncalibrated`.
 - CALIBRATION OWED (PS-122): `GET /api/calibration/owed?rig=`, the Calibration
   page "Calibration owed" cards and `photonscript calibration-owed` list, per
   rig, the frames still needed for the lights of active goals over the last

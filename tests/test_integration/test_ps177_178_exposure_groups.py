@@ -4,12 +4,14 @@ calibration matcher explains alternatives and refuses a length with no dark.
 The 2026-10-08 M31 RC16 dry run: 63 lights (B 30s x5, B 300s x1, G 30s x3,
 L 30s x42, L 300s x6, R 30s x5, R 300s x1) were judged against ONE L 300 s
 reference and 54 were flagged; no 300 s darks and no matching bias."""
+import json
 import math
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from photonscript.integration import calib
 from photonscript.integration import pipeline as pl
 from photonscript.integration import star_qa as q
 from photonscript.integration.frames import Frame
@@ -129,6 +131,124 @@ def test_plan_stacks_primary_is_most_integration_time():
     fs += [_fr(f"l{i}.fits", "Ha", 600.0) for i in range(3)]      # 1800 s
     specs, _, _ = pl.plan_stacks(fs)
     assert [s["name"] for s in specs] == ["Ha", "Ha_60s"]
+
+
+# ----------------------------------------------------------- calibration matcher
+
+def _c(name, kind, exp=0.0, ro="HCG", temp=0.0, session="2026-10-01", offset=256):
+    return Frame(path=Path(name), kind=kind, exp=exp, gain=200, offset=offset, set_temp=temp,
+                 readout=ro, instrument="AP26MC", filter="", session=session)
+
+
+EP = calib.Epoch("AP26MC", 200, 256, 1, 0.0, "HCG")
+
+
+def test_alternatives_explain_the_m31_gap():
+    cals = [_c(f"d300_{i}", "DARK", 300.0) for i in range(6)]                        # too few
+    cals += [_c(f"d30_{i}", "DARK", 30.0, session="2026-10-06") for i in range(30)]   # usable
+    cals += [_c(f"d300lcg_{i}", "DARK", 300.0, ro="LCG", session="2026-04-06") for i in range(20)]
+    cals += [_c(f"b_{i}", "BIAS", ro="LCG", session="2026-07-31") for i in range(50)]
+    cals += [_c(f"bw_{i}", "BIAS", temp=20.0, session="2026-09-30") for i in range(50)]
+    lights = [Frame(path=Path(f"L{i}.fits"), exp=300.0, gain=200, offset=256, set_temp=0.0,
+                    readout="HCG", instrument="AP26MC", filter="L") for i in range(6)]
+    p = calib.plan(lights, cals, use_flats=False)
+    assert not p.bias and p.uncalibrated() == [300.0]
+    assert p.bias_misses == ["2026-09-30 (50 frames): temperature 20 C",
+                             "2026-07-31 (50 frames): readout LCG"]
+    alt = p.darks[300.0].alternatives
+    assert alt[0].startswith("6 x 300 s darks at this epoch: --min-darks 6")
+    assert alt[1] == "300 s darks off this epoch: 2026-04-06 (20 x 300 s): readout LCG"
+    assert alt[2].startswith("scale 30 s x 30 darks (optimizeDarks) once a bias at this epoch")
+    assert "2026-09-30 (50 frames): temperature 20 C" in alt[2]
+    assert any(n.startswith("  nearest alternative: 6 x 300 s") for n in p.notes)
+
+
+def test_no_alternative_says_capture():
+    lights = [Frame(path=Path("L.fits"), exp=300.0, gain=200, offset=256, set_temp=0.0,
+                    readout="HCG", instrument="AP26MC", filter="L")]
+    p = calib.plan(lights, [], use_flats=False)
+    assert p.darks[300.0].alternatives[0].startswith("capture 300 s darks at AP26MC gain 200")
+
+
+# ----------------------------------------------------------- pipeline refusal
+
+def _fits(path, kind, exp, filt="L", ro="High Conversion Gain", minute=0):
+    from astropy.io import fits
+    h = fits.Header()
+    h["IMAGETYP"] = kind
+    h["EXPTIME"] = exp
+    h["GAIN"] = 200
+    h["OFFSET"] = 256
+    h["SET-TEMP"] = 0.0
+    h["READOUTM"] = ro
+    h["INSTRUME"] = "AP26MC"
+    h["XBINNING"] = 1
+    if filt:
+        h["FILTER"] = filt
+    h["DATE-LOC"] = f"2026-10-06T03:{minute:02d}:00"
+    h["DATE-OBS"] = f"2026-10-06T09:{minute:02d}:00"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fits.PrimaryHDU(np.zeros((8, 8), np.uint16), header=h).writeto(path)
+
+
+@pytest.fixture
+def mono_lib(tmp_path):
+    L = tmp_path / "Library"
+    for i in range(4):
+        _fits(L / "M 31" / "L" / f"2026-10-06_03-{i:02d}-00__L_300.00s_{i:04d}.fits", "LIGHT", 300.0,
+              minute=i)
+    for i in range(5):
+        _fits(L / "M 31" / "L" / f"2026-10-06_03-{10 + i:02d}-00__L_30.00s_{i:04d}.fits", "LIGHT", 30.0,
+              minute=10 + i)
+    _fits(L / "M 31" / "R" / "2026-10-06_03-30-00__R_300.00s_0000.fits", "LIGHT", 300.0, filt="R",
+          minute=30)
+    for i in range(12):
+        _fits(L / "Calibration" / "DARK" / "2026-10-06" / f"d30_{i:02d}.fits", "DARK", 30.0, filt="")
+    return L
+
+
+def _opts(lib, tmp_path, **kw):
+    o = pl.Options(target="M31", rig="rc16", library=lib, staging_root=tmp_path / "Staging",
+                   qa="off", run_pixinsight=False, flats=False, default_readout="HCG",
+                   pixinsight=str(tmp_path / "PI" / "bin" / "PixInsight.exe"))
+    for k, v in kw.items():
+        setattr(o, k, v)
+    return o
+
+
+def test_pipeline_refuses_the_length_without_a_dark(mono_lib, tmp_path):
+    msgs = []
+    out = tmp_path / "Staging" / "r1"
+    res = pl.run(_opts(mono_lib, tmp_path, out=out), echo=msgs.append)
+    assert res["lights_staged"] == 5                     # only the 30 s L subs
+    assert res["refused_uncalibrated"][0]["exp"] == 300.0
+    assert res["refused_uncalibrated"][0]["n"] == 5
+    assert any(m.strip().startswith("REFUSED: 5 x 300 s lights (L, R) have no dark") for m in msgs)
+    js = (out / "integrate_run.js").read_text()
+    cfg = json.loads(js.split("var CONFIG = ", 1)[1].split(";\n", 1)[0])
+    assert [s["name"] for s in cfg["stacks"]] == ["L"]
+    assert cfg["stacks"][0]["groups"][0]["exp"] == 30.0
+    assert cfg["stacks"][0]["mixed_exposures"] is False
+    assert not (out / "LIGHTS" / "L" / "300s").exists()
+
+
+def test_pipeline_allow_uncalibrated_splits_lengths(mono_lib, tmp_path):
+    msgs = []
+    out = tmp_path / "Staging" / "r2"
+    res = pl.run(_opts(mono_lib, tmp_path, out=out, allow_uncalibrated=True), echo=msgs.append)
+    assert res["refused_uncalibrated"] == []
+    names = [s["name"] for s in res["stacks"]]
+    assert names == ["L", "L_30s"]                        # 300 s x4 (1200 s) beats 30 s x5
+    assert all(len(s["groups"]) == 1 for s in res["stacks"])
+    assert res["lights_staged"] == 9                     # R 300 s x1 left out (fewer than 3)
+    assert any("left out R 300 s: 1 sub(s)" in m for m in msgs)
+    assert any("WITHOUT a dark" in m for m in msgs)
+
+
+def test_pipeline_refuses_everything_names_the_flag(mono_lib, tmp_path):
+    with pytest.raises(pl.PipelineError, match="--allow-uncalibrated"):
+        pl.run(_opts(mono_lib, tmp_path, out=tmp_path / "S" / "x", filters=["R"]),
+               echo=lambda s: None)
 
 
 def test_pjsr_never_integrates_mixed_lengths_with_equal_weights():

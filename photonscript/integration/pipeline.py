@@ -16,6 +16,10 @@ An OSC stack still holds every exposure group (one debayered master), so a
 mixed OSC stack is flagged and the PJSR falls back to exposure-time weights,
 never to equal weights.
 
+PS-178 calibration: a light length with no dark at all is refused (its
+subs are left out, with the matcher's nearest alternatives) unless
+allow_uncalibrated (--allow-uncalibrated).
+
 Safety:
   * the Library mirror is READ-ONLY: frames are COPIED into a new staging
     run folder; copy_into() refuses any destination inside the Library;
@@ -78,6 +82,7 @@ class Options:
     trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
     hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
+    allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -385,6 +390,24 @@ def run(o: Options, echo=print) -> dict:
         lights, off = calib.lights_in_epoch(lights, plan.epoch, o.default_readout)
         for f, why in off:
             plan.notes.append(f"light {f.name} left out: {why} (not the stack's epoch)")
+        # PS-178: a light length with no dark is not stacked unless asked
+        refused: list[dict] = []
+        for e in plan.uncalibrated():
+            fs = [f for f in lights if round(f.exp, 2) == e]
+            if not fs:
+                continue
+            filts = ", ".join(sorted({f.filter for f in fs}))
+            if o.allow_uncalibrated:
+                plan.notes.append(f"WARNING: {len(fs)} x {e:g} s lights ({filts}) stacked WITHOUT a dark "
+                                  "(--allow-uncalibrated)")
+                continue
+            lights = [f for f in lights if round(f.exp, 2) != e]
+            refused.append({"exp": e, "n": len(fs), "filters": filts,
+                            "alternatives": plan.darks[e].alternatives})
+            plan.notes.append(f"REFUSED: {len(fs)} x {e:g} s lights ({filts}) have no dark "
+                              f"({plan.darks[e].note}); see the nearest alternatives above, or "
+                              "--allow-uncalibrated to stack them without one")
+        result["refused_uncalibrated"] = refused
         # PS-177: one stack per mono exposure group; small groups left out
         specs, left_out, stack_notes = plan_stacks(lights, o.min_group_frames)
         if left_out:
@@ -394,7 +417,10 @@ def run(o: Options, echo=print) -> dict:
         for n in plan.notes:
             echo("  " + n)
     if not lights:
-        raise PipelineError("no lights left after QA, the epoch check and the exposure groups")
+        raise PipelineError("no lights left after QA, the epoch check, the dark check "
+                            "and the exposure groups" + (
+                                " (no dark for " + ", ".join(f"{r['exp']:g} s" for r in refused)
+                                + ": --allow-uncalibrated stacks them anyway)" if refused else ""))
 
     kept_names = {f.name for f in lights}
     reference = ""
@@ -424,7 +450,7 @@ def run(o: Options, echo=print) -> dict:
                        # with equal weights (PJSR falls back to exposure time)
                        "mixed_exposures": len(grp) > 1})
     if not reference and stacks:
-        # the QA reference was left out (--limit, epoch): the
+        # the QA reference was left out (--limit, epoch, refused): the
         # reference of the stack that holds the longest subs
         longest = max(stacks, key=lambda s: max(g["exp"] for g in s["groups"]))
         reference = longest["reference"]
@@ -469,6 +495,8 @@ def run(o: Options, echo=print) -> dict:
         "flats": [{"filter": k, "session": v.session, "n": len(v.frames), "note": v.note}
                   for k, v in plan.flats.items()],
         "skipped_sessions": cal_skipped[:50],
+        "bias_misses": plan.bias_misses,
+        "refused_uncalibrated": result.get("refused_uncalibrated", []),
         "left_out": [{"file": f.name, "why": why} for f, why in left_out],
     }
     reasons = Counter()
@@ -562,7 +590,7 @@ def run(o: Options, echo=print) -> dict:
             if d.scaled:
                 issues.append(f"{d.light_exp:g} s subs calibrated with {d.dark_exp:g} s darks scaled by "
                               f"dark optimization; matched darks would remove this.")
-            elif not d.frames:
+            elif not d.frames and any(round(f.exp, 2) == d.light_exp for f in integrated):
                 issues.append(f"{d.light_exp:g} s subs have no dark ({d.note}).")
         if not plan.bias:
             issues.append("No bias frames matched.")
