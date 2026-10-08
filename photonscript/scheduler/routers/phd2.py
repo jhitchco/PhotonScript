@@ -44,6 +44,16 @@ def _armer_state() -> str:
         return ""
 
 
+def guide_fallback_event(config, date: str) -> dict | None:
+    """PS-156: the night's unguided-fallback decision (run event kind
+    guide_fallback), or None."""
+    from photonscript.shared import phd2_store as store
+    from photonscript.shared.night_events import events_path
+    rows = [r for r in store.read_jsonl(events_path(config, date))
+            if r.get("kind") == "guide_fallback"]
+    return rows[-1] if rows else None
+
+
 def guard_summary(config, date: str) -> dict:
     """The guard block for a night (API, runs page, morning report)."""
     from photonscript.shared import phd2_store as store
@@ -60,6 +70,9 @@ def guard_summary(config, date: str) -> dict:
             "episodes": len(eps),
             "non_star": sum(1 for e in eps if e.get("kind") == "non_star"),
             "impossible_state": sum(1 for e in eps if e.get("kind") == "impossible_state"),
+            # PS-155 D7 / D8: guiding that sent no corrections
+            "no_corrections": sum(1 for e in eps if e.get("kind") == "no_corrections"),
+            "fallback": guide_fallback_event(config, date),   # PS-156
             "closed_minutes": round(mins, 1),
             "recoveries_ok": sum(1 for r in recs if r.get("ok")),
             "recoveries_failed": sum(1 for r in recs if r.get("ok") is False),

@@ -686,6 +686,26 @@ class PhotonScriptConfig(BaseSettings):
                                  # night this recent at the same guide binning
                                  # and gain (0 = tonight's checks only)
     guide_block_max_redispatch: int = 3  # mode auto: re-dispatches per night
+    # PS-155 PHD2 "guiding" that sends no corrections (2026-10-06: Guiding
+    # all night, star 5 to 160 px off the lock, every pulse 0 ms).
+    phd2_nocorr_frames: int = 20  # guard D7: this many guided frames in a
+                                 # row with no RA and no Dec pulse while the
+                                 # error is over phd2_nocorr_px (0 = off)
+    phd2_nocorr_px: float = 5.0  # D7: raw error (guide px) that must draw a
+                                 # pulse (the morning analysis also uses at
+                                 # least 3 x the min move from the guide log)
+    phd2_drift_window_min: float = 5.0  # guard D8: the star walks away from
+                                 # the lock position over this window, each
+                                 # quarter further off (0 = off)
+    # PS-156 unguided fallback when PHD2 fails (D7 / D8, or PHD2 not locked
+    # for guide_fallback_after_min on a guided night)
+    guide_fallback_mode: str = "alert"  # off | alert (record + one push
+                                 # saying what auto would do) | auto (re-
+                                 # dispatch the rest of the night unguided,
+                                 # subs capped per filter at the tracking-test
+                                 # length; stays unguided until dawn)
+    guide_fallback_after_min: float = 10.0  # PHD2 not locked and guiding
+                                 # this long (past the watchdog grace) = failed
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

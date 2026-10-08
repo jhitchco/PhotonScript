@@ -1014,6 +1014,32 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   L 60 s, NB 300 s), no dithers. `guide_block_mode=observe` (default)
   records and pushes once per target; `auto` re-dispatches. NB tuner band
   1 to 8 s. `GET /api/phd2/blocks`, Guiding tab "Per-block guiding".
+- GUIDING THAT DOES NOT CORRECT (PS-155): 2026-10-06 PHD2 reported Guiding
+  all night (RMS 17 to 42") with the star 5 to 160 px off the lock and every
+  RA / Dec pulse 0 ms. Guide output was ON; PHD2's debug log shows the
+  TheSky ASCOM driver failing IsSlewing and every PulseGuide ("pulseguide
+  command failed", the PHD2 alert was silenced). Guard D7: `phd2_nocorr_frames`
+  (20) guided frames in a row over `phd2_nocorr_px` (5) px off the lock with
+  no pulse on either axis; D8: the star walking away from the lock position
+  over `phd2_drift_window_min` (5) within one lock epoch. Both hold off for
+  15 min while guide output is known off (the Guiding Assistant measures
+  that way). One priority page per night naming the likely causes (driver
+  refusing pulses, Max RA / Dec duration 0, guide output off, paused), run
+  event `no_corrections`, guard episode kind `no_corrections` (counted on
+  `GET /api/phd2/guard`; subs are not marked non-star). The morning analysis
+  has finding `no_corrections` (and `guide_output_off` outside a GA run);
+  the PS-89 audit has row `guide_output` (PHD2 API `get_guide_output_enabled`,
+  else the guide log; Advanced Settings > Guiding > Shared Parameters).
+- UNGUIDED FALLBACK (PS-156): when D7 / D8 fire, or PHD2 stays unlocked for
+  `guide_fallback_after_min` (10) on a guided night, `guide_fallback_mode`
+  decides once per night: `alert` (default) records run event
+  `guide_fallback` and pushes what auto would do; `auto` runs the PS-91
+  `fallback_unguided` (stop, guider stop, re-dispatch the remainder unguided:
+  no StartGuiding, no dithers, Piggy-600 untouched) with every sub capped per
+  filter at the tracking-test length (`guide_fallback_exposure_s` /
+  `guide_fallback_test_date`, never over `unguided_max_exposure_s`). The night
+  stays unguided until dawn; re-arm guided by hand to go back. A watched
+  sideload is alert only.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard

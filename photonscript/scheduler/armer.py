@@ -173,6 +173,7 @@ class Armer:
         self._unsafe_tree_misses = 0
         self._hotpix_tried: str | None = None   # PS-91: night of the last map try
         self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
+        self.guide_fallback_rec: dict | None = None  # PS-156: tonight's decision
         # PS-85: tonight's per-block guiding decisions (mode auto) that the
         # dispatch applies: {"night", "blocks": {"<target>|<filter>": {...}},
         # "redispatches"}
@@ -215,6 +216,7 @@ class Armer:
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
                 "fallback_night": getattr(self, "_fallback_night", None),
+                "guide_fallback": getattr(self, "guide_fallback_rec", None),
                 "block_decisions": getattr(self, "block_decisions", None) or {},
                 "recal_night": getattr(self, "_recal_night", None),
                 "guider_name": getattr(self, "guider_name", None),
@@ -263,6 +265,7 @@ class Armer:
         # re-dispatches instead of waiting on a sequence that is not running.
         self._unsafe_stopped = bool(saved.get("unsafe_stopped", False))
         self._fallback_night = saved.get("fallback_night")
+        self.guide_fallback_rec = saved.get("guide_fallback")   # PS-156
         bd = saved.get("block_decisions") or {}
         self.block_decisions = (bd if bd.get("night") == self.plan.get("night_of")
                                 else {})
@@ -984,6 +987,15 @@ class Armer:
                 record(self.config, msg, title="PhotonScript guiding",
                        priority=2, reason="guiding-repeat-held")
 
+        # 4) PS-156: unlocked this long = PHD2 failed; the unguided fallback
+        # decides (mode alert / auto, once per night)
+        from photonscript.scheduler import guide_fallback as gf
+        lost_min = (now - self._not_locked_since).total_seconds() / 60
+        if gf.mode(self.config) != "off" and lost_min >= gf.after_min(self.config):
+            await self.guide_fallback(
+                f"PHD2 not locked and guiding for {lost_min:.0f} min "
+                f"(state {state or 'unknown'})", source="watchdog")
+
     async def _restart_guiding(self) -> bool | None:
         """Best-effort stop→start of PHD2 guiding to break a stuck/idle loop.
         Start does NOT force calibration, so PHD2 Auto-restore reuses a good
@@ -1375,6 +1387,10 @@ class Armer:
         # Here, after guiding is resolved, so fallback_unguided's re-dispatch
         # is capped too.
         cap_unguided(targets, getattr(self.config, "unguided_max_exposure_s", 300))
+        if self._fallback_night and self._fallback_night == self.plan.get("night_of"):
+            # PS-156: the fallback's remainder, per filter at the proven length
+            from photonscript.scheduler.guide_fallback import cap_targets
+            cap_targets(self.config, targets)
         # PS-144: a one-shot focus-offset calibration first, inside the same
         # night sequence (focus_calibration_tonight; reset after the start)
         self._focus_cal_field = None
@@ -2777,6 +2793,78 @@ class Armer:
                      title="PhotonScript unguided fallback", priority=1)
         return ok
 
+    def _planned_filters(self) -> list[str]:
+        """PS-156: the filters in tonight's plan snapshot (runs/<night>_plan.json),
+        else every filter."""
+        try:
+            from photonscript.scheduler.runs import runs_dir
+            p = runs_dir(self.config) / f"{self.plan.get('night_of')}_plan.json"
+            snap = json.loads(p.read_text(encoding="utf-8"))
+            out = []
+            for t in snap.get("targets") or []:
+                for e in t.get("exposures") or []:
+                    if e.get("filter") and e["filter"] not in out:
+                        out.append(e["filter"])
+            if out:
+                return out
+        except Exception:  # noqa: BLE001 - no snapshot yet
+            pass
+        return ["L", "R", "G", "B", "Ha", "OIII", "SII"]
+
+    async def guide_fallback(self, reason: str, source: str = "") -> dict | None:
+        """PS-156: PHD2 failed on a guided night (guard D7 / D8 or the
+        watchdog). Once per night: record a run event (kind guide_fallback)
+        and, by guide_fallback_mode, push what auto would do (alert) or run
+        fallback_unguided (auto: the remainder unguided, subs capped per
+        filter at the tracking-test length; it pushes itself). Stays
+        unguided until dawn. Returns the record, None when skipped."""
+        from photonscript.scheduler import guide_fallback as gf
+        from photonscript.shared.night_events import events_path
+        from photonscript.shared.phd2_store import append_jsonl, iso_z
+        mode = gf.mode(self.config)
+        night = self.plan.get("night_of")
+        if mode == "off" or not night or self.state not in ("RUNNING", WATCH_STATE):
+            return None
+        if (self.guide_fallback_rec or {}).get("night") == night:
+            return None                       # decided already tonight
+        if not self._use_guiding() and self.state != WATCH_STATE:
+            return None                       # nothing to fall back from
+        lens = gf.lengths(self.config, self._planned_filters())
+        plan = gf.plan_text(lens)
+        why_not = None
+        if mode == "alert":
+            why_not = "guide_fallback_mode=alert: nothing switched"
+        elif self.state == WATCH_STATE:
+            why_not = "watching a sideloaded night: the armer cannot re-dispatch it"
+        rec = {"night": night, "t": iso_z(datetime.utcnow()), "reason": reason,
+               "source": source, "mode": mode, "acted": why_not is None,
+               "lengths": {f: s for f, (s, _) in lens.items()}, "note": why_not}
+        self.guide_fallback_rec = rec
+        self._persist()
+        if why_not is None:
+            ok = await self.fallback_unguided(f"{reason}; subs capped: {plan}")
+            rec["ok"] = ok
+            if not ok:
+                rec["note"] = f"fallback_unguided declined or failed ({self.detail})"
+            self._persist()
+        try:
+            append_jsonl(events_path(self.config, night), {
+                "t": rec["t"], "rig": "rc16", "src": "photonscript",
+                "kind": "guide_fallback",
+                "value": "unguided" if rec["acted"] else mode,
+                "detail": reason, "note": rec.get("note"), "lengths": rec["lengths"]})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-156 run event not written: %s", e)
+        if why_not is not None:
+            await notify(self.config,
+                         f"PHD2 failed tonight ({reason}). The unguided fallback "
+                         f"would run the rest of the night unguided at {plan}; "
+                         f"{why_not}. Set guide_fallback_mode=auto (System page) "
+                         "to let it, or re-arm unguided by hand.",
+                         title="PhotonScript unguided fallback", priority=0)
+        logger.warning("PS-156 guide fallback (%s, %s): %s", mode, source, rec)
+        return rec
+
     # -- PS-85: per-block guiding ------------------------------------------------
 
     def _live_block_decisions(self) -> dict:
@@ -3264,6 +3352,24 @@ async def request_block_unguided(config, target: str, filt: str, reason: str,
                         f"{target} {filt}: no real guide star ({reason}). Would run "
                         f"it unguided; no armer in this process.")
     return False
+
+
+async def request_guide_fallback(config, reason: str, source: str = "") -> dict | None:
+    """PS-156: hand a PHD2 failure (guard D7 / D8) to the scheduler's armer
+    (same process in `start --mode full`). None when no armer runs here or
+    it skipped (mode off, not a guided night, decided already tonight)."""
+    import sys
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    armer = getattr(app_mod, "_armer", None) if app_mod else None
+    if armer is None:
+        logger.warning("guide fallback requested (%s) but no armer in this "
+                       "process", reason)
+        return None
+    try:
+        return await armer.guide_fallback(reason, source=source)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("guide fallback failed: %s", e)
+        return None
 
 
 async def request_fallback_unguided(config, reason: str) -> bool:

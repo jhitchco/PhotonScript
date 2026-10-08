@@ -1134,7 +1134,7 @@ class TelescopeAgent:
         PS-92 pulse-path FAIL record instead."""
         from photonscript.shared import phd2_store as store
         from photonscript.telescope_agent.guide_guard import (
-            IMPOSSIBLE, LOW_SNR, NON_STAR, PULSES)
+            IMPOSSIBLE, LOW_SNR, NO_CORR, NON_STAR, PULSES)
         now = datetime.utcnow()
         night = store.night_of(self.config, now)
         path = store.guard_path(self.config, night)
@@ -1142,7 +1142,7 @@ class TelescopeAgent:
         for v in verdicts:
             if v.kind == PULSES:
                 await self._guard_pulses_not_moving(v, night)
-        for kind in (NON_STAR, IMPOSSIBLE, LOW_SNR):
+        for kind in (NON_STAR, IMPOSSIBLE, LOW_SNR, NO_CORR):
             vs = [v for v in verdicts if v.kind == kind]
             ep = self._guard_ep.get(kind)
             if vs and ep is None:
@@ -1165,6 +1165,8 @@ class TelescopeAgent:
                     # PS-85: guiding on noise; the per-block decision pushes
                     # (once per target per night), so no guard push here
                     await self._lowsnr_switch(vs[0])
+                elif kind == NO_CORR:
+                    await self._nocorr_alarm(vs, night, now)   # PS-155
                 elif not auto:
                     what = ("locked on a non-star (hot pixel or artifact)"
                             if kind == NON_STAR else "guiding in an impossible state")
@@ -1190,8 +1192,52 @@ class TelescopeAgent:
                         "reason": f"no verdict for {self.GUARD_CLOSE_TICKS} ticks "
                                   f"(PHD2 {self.phd2.app_state})"})
                     self._guard_ep.pop(kind, None)
-            if vs and auto and kind != LOW_SNR:
+            if vs and auto and kind in (NON_STAR, IMPOSSIBLE):
                 await self._guard_recover(kind, vs, night, path)
+
+    NOCORR_CAUSES = (
+        "Likely causes: the mount driver rejecting PulseGuide (2026-10-06: "
+        "TheSky's ASCOM driver failed IsSlewing / PulseGuide on every pulse; "
+        "PHD2 debug log 'pulseguide command failed': restart TheSky and "
+        "reconnect the mount in PHD2), Max RA / Dec duration 0 (Brain > "
+        "Algorithms), mount guide output off (Advanced Settings > Guiding > "
+        "Shared Parameters: Enable mount guide output), or guiding paused.")
+
+    async def _nocorr_alarm(self, vs, night: str, now) -> None:
+        """PS-155 guard D7 / D8: PHD2 reports Guiding but the star is not
+        being corrected. One priority push per night (key nocorr-<night>),
+        a run event, then the PS-156 unguided fallback decides (mode alert /
+        auto; it pushes on its own). Never raises."""
+        from photonscript.shared import phd2_store as store
+        from photonscript.shared.pushover import record
+        detail = " ".join(v.detail for v in vs)
+        msg = (f"PHD2 is guiding but not correcting ({now:%H:%M}Z, "
+               f"{self.state.current_target or 'no target'}): {detail} "
+               + self.NOCORR_CAUSES)
+        try:
+            from photonscript.shared.night_events import events_path
+            store.append_jsonl(events_path(self.config, night), {
+                "t": store.iso_z(now), "rig": "rc16", "src": "phd2",
+                "kind": "no_corrections", "value": ",".join(v.code for v in vs),
+                "detail": detail, "evidence": {v.code: v.evidence for v in vs}})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-155 run event not written: %s", e)
+        try:
+            if store.alert_once(self.config, f"nocorr-{night}"):
+                await notify(self.config, msg, title="PhotonScript PHD2 not correcting",
+                             priority=1)
+            else:
+                record(self.config, msg, title="PhotonScript PHD2 not correcting",
+                       priority=1, reason="nocorr-once-per-night")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-155 page failed: %s", e)
+        try:
+            from photonscript.scheduler.armer import request_guide_fallback
+            await request_guide_fallback(self.config, f"guard {vs[0].code}: "
+                                         "PHD2 guiding but not correcting",
+                                         source=f"guard {vs[0].code}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("PS-156 fallback request failed: %s", e)
 
     async def _lowsnr_switch(self, verdict) -> None:
         """PS-85 guard D6: PHD2 is guiding on noise. guide_block_mode auto:
