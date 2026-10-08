@@ -151,3 +151,33 @@ def test_snapshot_shape():
     snap = health.snapshot()
     assert snap["mode"] == "scheduler" and snap["uptime_s"] >= 0
     assert snap["pid"] > 0 and "process" in snap and "iers" in snap
+
+
+def test_cli_callback_pins_iers_offline_for_every_command(monkeypatch):
+    """PS-62: any CLI command (not only `start`) pins IERS offline, cheaply
+    (probe=False, no bundled-table read), and PS_IERS_OFFLINE=0 opts out."""
+    from typer.testing import CliRunner
+    from photonscript import cli
+
+    seen = []
+    monkeypatch.setattr(health, "configure_astropy_iers",
+                        lambda offline=True, probe=True: seen.append((offline, probe)) or {})
+    r = CliRunner().invoke(cli.app, ["notify", "--help"])
+    assert r.exit_code == 0, r.output
+    assert seen == [(True, False)]
+
+    seen.clear()
+    monkeypatch.setenv("PS_IERS_OFFLINE", "0")
+    CliRunner().invoke(cli.app, ["notify", "--help"])
+    assert seen == []
+
+
+def test_iers_pin_without_probe_skips_table_read(monkeypatch):
+    from astropy.utils import iers
+    monkeypatch.setattr(iers.conf, "auto_download", True)
+    monkeypatch.setattr(iers.conf, "auto_max_age", 30.0)
+    monkeypatch.setattr(iers.IERS_Auto, "open",
+                        classmethod(lambda cls, *a, **k: (_ for _ in ()).throw(AssertionError("read"))))
+    info = health.configure_astropy_iers(offline=True, probe=False)
+    assert info == {"offline": True, "auto_download": False}
+    assert iers.conf.auto_max_age is None
