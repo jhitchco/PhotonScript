@@ -46,6 +46,8 @@ def api_split_guard_status():
            "script_found": sg.gate_script(cfg) is not None,
            "timeout_s": float(getattr(cfg, "piggyback_settle_timeout_s", 90.0)),
            "still_s": float(getattr(cfg, "piggyback_settle_still_s", 6.0)),
+           "tracking_gate": sg.tracking_gate_enabled(cfg),   # PS-158
+           "tracking_hold_s": sg.tracking_hold_s(cfg),
            "abort_on_move": sg.abort_enabled(cfg),
            "abort_move_arcmin": float(getattr(cfg, "piggyback_abort_move_arcmin", 0.5)),
            "motion": TRACKER.snapshot(time.time()),

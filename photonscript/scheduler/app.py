@@ -904,6 +904,8 @@ _CONFIG_FIELDS = [
     ("piggyback_settle_gate", "PS_PIGGYBACK_SETTLE_GATE", "Piggy-600 settle gate (PS-27): before each OSC light, wait (bounded) until the RC16 mount is still and PHD2 is not settling; never skips, fails open", "Piggyback", "bool", False, False),
     ("piggyback_settle_timeout_s", "PS_PIGGYBACK_SETTLE_TIMEOUT_S", "Settle gate: hold at most this long (s), then shoot anyway", "Piggyback", "float", False, False),
     ("piggyback_settle_still_s", "PS_PIGGYBACK_SETTLE_STILL_S", "Settle gate: mount still this long (s) before an OSC light", "Piggyback", "float", False, False),
+    ("piggyback_tracking_gate", "PS_PIGGYBACK_TRACKING_GATE", "Settle gate also holds each OSC light while NINA #1 reports the shared mount parked or not tracking (PS-158); bounded, fails open", "Piggyback", "bool", False, False),
+    ("piggyback_tracking_hold_s", "PS_PIGGYBACK_TRACKING_HOLD_S", "Tracking hold: wait at most this long (s) per OSC light for the mount to track, then shoot anyway", "Piggyback", "float", False, False),
     ("piggyback_settle_script", "PS_PIGGYBACK_SETTLE_SCRIPT", "Settle gate script NINA #2 runs (deploy\\settle-gate.cmd on the scope PC)", "Piggyback", "str", False, False),
     ("piggyback_abort_on_move", "PS_PIGGYBACK_ABORT_ON_MOVE", "Abort the Piggy-600's current OSC light when the RC16 mount slews / flips / jumps (NINA #2 only; off until night-tested)", "Piggyback", "bool", False, False),
     ("piggyback_abort_move_arcmin", "PS_PIGGYBACK_ABORT_MOVE_ARCMIN", "Abort on move / settle gate: a mount jump above this (arcmin) between polls is a move", "Piggyback", "float", False, False),

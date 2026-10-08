@@ -898,6 +898,12 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_settle_timeout_s: float = 90.0
     piggyback_settle_still_s: float = 6.0
     piggyback_settle_poll_s: float = 2.0
+    # PS-158: the settle gate also holds while NINA #1 reports the shared
+    # mount parked or not tracking (2026-10-06: 22 Piggy lights on a parked
+    # mount), re-checking every poll, at most piggyback_tracking_hold_s per
+    # light, then it shoots (fails open, never wedges NINA #2).
+    piggyback_tracking_gate: bool = True
+    piggyback_tracking_hold_s: float = 900.0
     piggyback_settle_script: str = "C:\\astro\\PhotonScript\\deploy\\settle-gate.cmd"
     piggyback_abort_on_move: bool = False  # abort NINA #2's current OSC light
                                  # (ninaAPI camera/abort-exposure on NINA #2

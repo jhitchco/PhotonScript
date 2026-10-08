@@ -646,16 +646,19 @@ def settle_gate_cmd(
 ):
     """PS-27: hold the Piggy-600's next OSC light until the RC16 mount is
     still and PHD2 is not settling (POST /api/piggyback/settle-gate), at
-    most piggyback_settle_timeout_s. Always exits 0: the gate can delay a
-    sub, never skip one, and fails open when the service is down."""
+    most piggyback_settle_timeout_s; PS-158: and while the mount is parked
+    or not tracking, at most piggyback_tracking_hold_s. Always exits 0: the
+    gate can delay a sub, never skip one, and fails open when the service
+    is down."""
     import json as _json
     import urllib.parse
     import urllib.request
     try:
+        from photonscript.scheduler.split_guard import gate_bound_s
         cfg = _config_for_repo(Path(__file__).resolve().parents[1])
-        timeout = float(getattr(cfg, "piggyback_settle_timeout_s", 90.0)) + 30
+        timeout = gate_bound_s(cfg) + 30
     except Exception:  # noqa: BLE001
-        timeout = 120.0
+        timeout = 1020.0
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/api/piggyback/settle-gate?"
