@@ -225,6 +225,7 @@ def _norm_imagetyp(v) -> str:
 
 
 def header_fields(hdr) -> dict:
+    from photonscript.shared.optics_state import optics_fields
     from photonscript.shared.rigs import header_readout
     ro, ro_raw = header_readout(hdr)
     return {"imagetyp": _norm_imagetyp(hdr.get("IMAGETYP")),
@@ -239,7 +240,9 @@ def header_fields(hdr) -> dict:
             if hdr.get("FILTER") is not None else None,
             "instrume": str(hdr.get("INSTRUME") or "").strip() or None,
             "date_obs": str(hdr.get("DATE-OBS") or "").strip() or None,
-            "bayer": str(hdr.get("BAYERPAT") or "").strip() or None}
+            "bayer": str(hdr.get("BAYERPAT") or "").strip() or None,
+            # PS-164: focuser position / rotator angle (None when absent)
+            **optics_fields(hdr)}
 
 
 def _zones(binned) -> dict:
@@ -666,7 +669,7 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
                  and old.get("size") == size and old.get("median") is not None)
         if not fresh:
             todo.append((key, typ, date, p, size, old))
-        elif "readout" not in old:
+        elif "readout" not in old or "focpos" not in old:   # PS-128, PS-164
             hdr_only.append((key, p))
     measured: dict[str, dict] = {}
     for i, (key, typ, date, p, size, old) in enumerate(todo):
@@ -734,16 +737,21 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
 def _read_readouts(items) -> dict:
     """PS-128: {key: {"readout", "readout_raw"}} from a header-only read of
     each (key, path): the backfill for records measured before PS-128. An
-    unreadable header records None (the rig default is then assumed)."""
+    unreadable header records None (the rig default is then assumed).
+    PS-164: also "focpos" / "rotator_deg" (shared.optics_state)."""
     from astropy.io import fits as _fits
+    from photonscript.shared.optics_state import optics_fields
     from photonscript.shared.rigs import header_readout
     out = {}
     for key, p in items:
         try:
-            ro, raw = header_readout(_fits.getheader(p))
+            hdr = _fits.getheader(p)
+            ro, raw = header_readout(hdr)
+            opt = optics_fields(hdr)   # PS-164: same backfill path
         except Exception:  # noqa: BLE001 - one unreadable frame
             ro, raw = None, None
-        out[key] = {"readout": ro, "readout_raw": raw}
+            opt = {"focpos": None, "rotator_deg": None}
+        out[key] = {"readout": ro, "readout_raw": raw, **opt}
     return out
 
 
@@ -1064,6 +1072,42 @@ def passed_flat_sessions(config, rig: str, *, gain=None, offset=None,
         per.setdefault(f, {})
         per[f][r["date"]] = per[f].get(r["date"], 0) + 1
     return per
+
+
+def flat_session_optics(config, rig: str, *, gain=None, offset=None,
+                        store: dict | None = None) -> dict:
+    """PS-164: {canonical filter: {date: {"focpos", "rotator_deg", "n"}}}:
+    the median focuser position and rotator angle of each QA-passed flat
+    session (None when no frame of the session recorded one). Same filter
+    naming as passed_flat_sessions."""
+    store = store or load_store(config, rig)
+    try:
+        rev = config.reverse_filter_map()
+    except Exception:  # noqa: BLE001
+        rev = {}
+    acc: dict = {}
+    for r in store["frames"].values():
+        if r.get("type") != "FLAT" or not passed(r):
+            continue
+        if gain is not None and r.get("gain") != gain:
+            continue
+        if offset is not None and r.get("offset") != offset:
+            continue
+        f = "OSC" if rig != "rc16" else rev.get(r.get("filter") or "?", r.get("filter") or "?")
+        a = acc.setdefault(f, {}).setdefault(r.get("date"), {"fp": [], "rot": []})
+        if r.get("focpos") is not None:
+            a["fp"].append(float(r["focpos"]))
+        if r.get("rotator_deg") is not None:
+            a["rot"].append(float(r["rotator_deg"]))
+    out: dict = {}
+    for f, by_date in acc.items():
+        for d, a in by_date.items():
+            fp, rot = _median(a["fp"]), _median(a["rot"])
+            out.setdefault(f, {})[d] = {
+                "focpos": int(round(fp)) if fp is not None else None,
+                "rotator_deg": round(rot, 2) if rot is not None else None,
+                "n": len(a["fp"])}
+    return out
 
 
 def format_report(rep: dict, config=None) -> str:

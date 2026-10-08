@@ -641,6 +641,8 @@ _CONFIG_FIELDS = [
     ("calibration_flats_as_used", "PS_CALIBRATION_FLATS_AS_USED", "Calibration coverage: reshoot stale flats only for filters the RC16 lights used", "Imaging", "bool", False, False),
     ("calibration_dawn_flat_extra_max", "PS_CALIBRATION_DAWN_FLAT_EXTRA_MAX", "Calibration coverage: at most N owed flat filters on top of tonight's per dawn", "Imaging", "int", False, False),
     ("calibration_flats_reset", "PS_CALIBRATION_FLATS_RESET", "Calibration coverage: optics change date per rig (rc16:YYYY-MM-DD,piggyback:YYYY-MM-DD); older flats are owed", "Imaging", "str", False, False),
+    ("calibration_flats_focus_steps", "PS_CALIBRATION_FLATS_FOCUS_STEPS", "Calibration coverage (PS-164): flats owed when lights' FOCPOS is more than N steps from the newest flat set (rc16:N,piggyback:N; 0 = off)", "Imaging", "str", False, False),
+    ("calibration_flats_rotator_deg", "PS_CALIBRATION_FLATS_ROTATOR_DEG", "Calibration coverage (PS-164): flats owed when the rotator angle moved more than this (deg; 0 = off)", "Imaging", "float", False, False),
     ("integrate_watch_rigs", "PS_INTEGRATE_WATCH_RIGS", "Integrate watcher (PS-31, desktop): rigs it integrates (comma list: piggyback, rc16)", "Integration", "str", False, False),
     ("integrate_watch_new_data_h", "PS_INTEGRATE_WATCH_NEW_DATA_H", "Integrate watcher: re-integrate after this many new approved hours", "Integration", "float", False, False),
     ("integrate_watch_first_h", "PS_INTEGRATE_WATCH_FIRST_H", "Integrate watcher: first integration at this many approved hours (0 = only when the goal is met)", "Integration", "float", False, False),

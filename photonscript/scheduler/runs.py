@@ -482,6 +482,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     from photonscript.shared.qa_signatures import         exposure_start as _exposure_start
     from photonscript.shared.rigs import rig_config
     from photonscript.shared.sub_time import window_fields as _window_fields
+    from photonscript.shared.optics_state import optics_fields as _optics_fields
     rcfg = rig_config(config, rig)   # the rig view, as the live grader gets
     px: dict = {}   # PS-108 full-resolution pixel counts
     with _HEAVY:
@@ -596,6 +597,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         # PS-162: explicit exposure window (`time` above is DATE-OBS)
         **_window_fields(_exposure_start(hdr.get("DATE-OBS")),
                          hdr.get("EXPTIME")),
+        **_optics_fields(hdr),   # PS-164: FOCPOS / rotator angle
         "target": target,
         "filter": flt,
         # PS-152: a test / calibration sub, kept out of medians and score

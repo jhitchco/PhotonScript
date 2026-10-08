@@ -217,6 +217,16 @@ class PhotonScriptConfig(BaseSettings):
                                  # piggyback:YYYY-MM-DD" (a bare date = both rigs);
                                  # flats older than it are owed (camera rotated,
                                  # spacer / focus change, cleaned optics)
+    # PS-164: the same judgment from the headers. Lights whose FOCPOS is more
+    # than this many steps from their filter's newest QA-passed flat set make
+    # those flats owed (report, morning push, RC16 stale-flat reshoot).
+    # "rc16:N,piggyback:N", a bare number = both rigs, 0 / unset = off. RC16
+    # thermal focus spans ~800 steps over 10-29 C (focus_seeds), so 1000
+    # only fires on a real change (spacing, a refocus far off the curve).
+    calibration_flats_focus_steps: str = "rc16:1000"
+    calibration_flats_rotator_deg: float = 1.0  # PS-164: rotator angle change
+                                 # (deg) that makes flats owed; 0 = off. No
+                                 # rotator on either rig today (no ROTATOR key)
     # --- Integration ledger + watcher (PS-33 / PS-31, desktop integrate) ---
     # Scope side: the thresholds the desktop watcher reads from
     # GET /api/integrations/candidates (editable on the System page).

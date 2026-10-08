@@ -507,7 +507,9 @@ def stale_flat_filters(config) -> list[str]:
     """Canonical filter names whose newest flat set is missing or stale.
 
     PS-160: also stale when older than the rig's optics change
-    (calibration_flats_reset); with calibration_flats_as_used only the
+    (calibration_flats_reset); PS-164: or when the lights' focuser position
+    / rotator moved past calibration_flats_focus_steps /
+    calibration_flats_rotator_deg from the newest QA-passed set; with calibration_flats_as_used only the
     filters the RC16's lights used in the owed lookback (every stale filter
     while no lights are logged); missing sets first, then oldest first."""
     from photonscript.scheduler.calibration_owed import (flats_reset_date,
@@ -522,13 +524,20 @@ def stale_flat_filters(config) -> list[str]:
         except Exception:  # noqa: BLE001 - fall back to every filter
             logger.warning("flats as used: lights unavailable", exc_info=True)
     order = ("Ha", "OIII", "SII", "R", "G", "B", "L")
+    try:   # PS-164: focus / rotator moved since the newest flat set
+        from photonscript.scheduler.calibration_owed import optics_moved_filters
+        moved = optics_moved_filters(config, "rc16")
+    except Exception:  # noqa: BLE001 - never block the dawn flats on this
+        logger.warning("flats vs focus check unavailable", exc_info=True)
+        moved = set()
     out = []
     for f in order:
         if used is not None and f not in used:
             continue
         b = bb.get(f)
         if (b is None or b.get("age_days", 9999) > STALE_DAYS["FLAT"]
-                or (reset and str(b.get("date") or "") < reset)):
+                or (reset and str(b.get("date") or "") < reset)
+                or f in moved):
             out.append(f)
     out.sort(key=lambda f: (bb.get(f) is not None,
                             -int((bb.get(f) or {}).get("age_days", 0) or 0),
