@@ -323,6 +323,30 @@
         })();
         </script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="driftSubPanel">
+            <h2>Unguided sub length from drift (PS-169)</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">The longest unguided sub per rig that keeps the measured tracking drift (PHD2 guide log, PS-168: tonight's last hour, else last night) under tracking_smear_budget_px at the rig's scale; never above the existing cap, never below tracking_sub_floor_s, rounded down to a dark length the night quota fills. tracking_drift_cap_mode auto lets the PS-156 unguided fallback use it for RC16 subs; observe only shows it.</p>
+            <div id="driftSubBody" class="bd">loading...</div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            fetch('/api/tracking/drift?nights=1').then(function (r) { return r.json(); }).then(function (d) {
+                var rec = d.recommended || {};
+                var dr = rec.drift || {};
+                var rows = Object.values(rec.rigs || {}).map(function (x) {
+                    return '<tr><td>' + esc(x.rig) + '</td><td>' + esc(x.scale_arcsec) + '</td><td>' + esc(x.budget_px) + ' px = ' + esc(x.budget_arcsec) +
+                        '"</td><td>' + esc(x.drift_max_s) + '</td><td>' + esc(x.cap_s) + '</td><td><b>' + esc(x.exposure_s) + ' s</b></td><td>' +
+                        esc(x.smear_px) + '</td><td>' + (x.dark_match === false ? 'no (PS-160 adds it once lights use it)' : esc(x.dark_match)) +
+                        '</td><td>' + esc(x.why) + '</td></tr>';
+                }).join('');
+                document.getElementById('driftSubBody').innerHTML =
+                    '<p>Mode <b>' + esc(rec.mode) + '</b>; drift ' + esc(dr.total_arcsec_min) + '"/min (RA ' + esc(dr.ra_arcsec_min) + ', Dec ' + esc(dr.dec_arcsec_min) + '; ' + esc(dr.source || 'no measurement') + '). ' + esc(d.line) + '</p>' +
+                    '<table class="tbl" style="font-size:.8rem;"><tr><th>rig</th><th>"/px</th><th>budget</th><th>drift max s</th><th>cap s</th><th>sub</th><th>smear px</th><th>dark match</th><th>limited by</th></tr>' + rows + '</table>';
+            }).catch(function (e) { document.getElementById('driftSubBody').textContent = 'unavailable: ' + e; });
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;" id="gatesPanel">
             <h2>QA gates per rig (PS-114)</h2>
             <p style="opacity:.7;margin-bottom:.6rem;">The limit each rig's subs are graded (and scored) against, and the key that sets it (Configuration below, or .env). A Piggy-600 key left blank uses the RC16 value. Baselines: median + k x sigma of each rig's accepted subs, a proposal only; gates never change from here.</p>
