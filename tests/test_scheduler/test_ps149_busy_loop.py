@@ -52,12 +52,18 @@ def _named(seq, name):
 
 
 def _unpaced(seq):
-    """The companion as generated before PS-149: no pace wait."""
+    """The companion as generated before PS-149: no pace wait, and (before
+    PS-175) the light loop and its waits ending at nautical dawn."""
     out = copy.deepcopy(seq)
     loop = _named(out, cal.OSC_LIGHTS_UNTIL_DAWN_NAME)
     items = loop["Items"]["$values"]
     assert _short(items[-1]["$type"]) == "WaitForTimeSpan"
     items.pop()
+    for d in _walk(loop):
+        prov = d.get("SelectedProvider")
+        if isinstance(prov, dict):
+            prov["$type"] = prov["$type"].replace(
+                ".DawnProvider,", ".NauticalDawnProvider,")
     return out
 
 
@@ -194,11 +200,13 @@ def test_sim_companion_with_settle_gate_and_full_quotas_never_spins(
 def test_sim_companion_still_images_and_ends_at_dawn():
     sim = _sim(_companion())
     assert sim.lights
-    assert max(x["end"] for x in sim.lights) <= ND
-    # the old and the new loop shoot the same lights
+    assert max(x["end"] for x in sim.lights) <= AD      # PS-175: astro dawn
+    # the old and the new loop shoot the same lights up to astro dawn; the
+    # old one (nautical dawn) kept going into morning twilight
     old = _sim(_unpaced(_companion()))
-    assert [(round(x["start"]), x["done"]) for x in sim.lights] == \
-        [(round(x["start"]), x["done"]) for x in old.lights]
+    new = [(round(x["start"]), x["done"]) for x in sim.lights]
+    assert new == [(round(x["start"]), x["done"]) for x in old.lights][:len(new)]
+    assert max(x["end"] for x in old.lights) > AD
 
 
 @pytest.mark.parametrize("weather", sorted(SCENARIOS))

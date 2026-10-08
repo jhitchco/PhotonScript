@@ -356,6 +356,10 @@ No new code needed; the machinery matches the light epoch via `rig_config(PIGGYB
   (`piggyback_af_temp_change_c` 1.5 C), HFR rise (`piggyback_af_hfr_increase_pct` 10%)
   and every `piggyback_af_interval_min` (60; covers the RC16 meridian flip NINA #2 can't
   see, and a bad AF the HFR trigger won't catch).
+  OSC lights (PS-175) run only in astronomical dark: the first light waits for astro
+  dusk (`WAIT_ASTRO_DUSK_FOR_OSC_LIGHTS`, at or after the RC16's first target) and the
+  light loop and its bounded waits end at astro dawn. The dawn flats above keep their
+  nautical-dawn timing.
 - **On demand (any closed-roof night)** — dispatch a matched OSC dark/bias set to NINA #2:
   ```
   POST /api/calibration/capture   {"rig":"piggyback"}          # 120 s x quota + 50 bias
