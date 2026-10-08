@@ -722,6 +722,8 @@ def _complete_armer(tmp_path, monkeypatch, subs, **cfg_kw):
     monkeypatch.setattr(runs, "_load_subs", lambda cfg, date: subs)
     from photonscript.scheduler import calibration_owed   # PS-160 line: own test
     monkeypatch.setattr(calibration_owed, "morning_note", lambda cfg: None)
+    from photonscript.scheduler import morning_report   # PS-166: own test
+    monkeypatch.setattr(morning_report, "push_text", lambda cfg, night: None)
     a = Armer(_cfg(tmp_path, **cfg_kw))
     a.plan = {"night_of": "2026-10-06"}
     return a, sent

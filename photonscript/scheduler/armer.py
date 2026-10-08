@@ -880,6 +880,14 @@ class Armer:
                 msg = f"{msg}\n{cal_line}"
         except Exception as e:  # noqa: BLE001 - the dawn push always goes out
             logger.debug("calibration morning note unavailable: %s", e)
+        try:  # PS-166: the morning report card, per rig
+            from photonscript.scheduler.morning_report import push_text
+            card = await asyncio.wait_for(asyncio.to_thread(
+                push_text, self.config, self.plan.get("night_of")), timeout=60)
+            if card:
+                msg = f"{msg}\n{card}"
+        except Exception as e:  # noqa: BLE001 - the dawn push always goes out
+            logger.debug("morning report card unavailable: %s", e)
         failed =(self.shutdown or {}).get("failed") or []
         if failed:   # PS-159: a real shutdown failure pages
             msg = f"{msg}\nShutdown step FAILED: {'; '.join(failed)}"

@@ -112,6 +112,8 @@ def append_sub_record(config, night_of: str, record: dict) -> None:
     """Called by the telescope agent for every graded sub. PS-147: the
     `file` is stored with "/" (shared.sub_file)."""
     record = norm_record(dict(record))
+    from photonscript.shared.sub_time import normalize as _norm_time
+    _norm_time(record)   # PS-162: explicit start_utc / end_utc
     try:
         with subs_lock(config, night_of):
             with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",
@@ -151,6 +153,7 @@ def _load_subs(config, date: str) -> list[dict]:
         hit = _subs_cache.get(key)
     if hit is not None and hit[0] == sig:
         return [dict(r) for r in hit[1]]
+    from photonscript.shared.sub_time import normalize as _norm_time
     out = []
     try:
         text = p.read_text(encoding="utf-8")
@@ -164,7 +167,8 @@ def _load_subs(config, date: str) -> list[dict]:
         f = r.get("filter")
         if f in rev:
             r["filter"] = rev[f]
-        out.append(norm_record(r))   # PS-147: older lines hold "\\"
+        # PS-147: older lines hold "\\"; PS-162: start_utc / end_utc
+        out.append(_norm_time(norm_record(r)))
     with _subs_cache_lock:
         _subs_cache[key] = (sig, out)
     return [dict(r) for r in out]
@@ -475,7 +479,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     star sidecar from the stars already in memory.
     """
     from photonscript.shared import star_measure
+    from photonscript.shared.qa_signatures import         exposure_start as _exposure_start
     from photonscript.shared.rigs import rig_config
+    from photonscript.shared.sub_time import window_fields as _window_fields
+    from photonscript.shared.optics_state import optics_fields as _optics_fields
     rcfg = rig_config(config, rig)   # the rig view, as the live grader gets
     px: dict = {}   # PS-108 full-resolution pixel counts
     with _HEAVY:
@@ -539,6 +546,14 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
             _lock = sub_guide_lock(config, _date, _start, _exp)
         except Exception as e:  # noqa: BLE001
             logger.debug("guide lock skipped for %s: %s", path.name, e)
+    _nocorr = False   # PS-165: a PHD2 no-corrections episode covers it
+    if _date and _start is not None:
+        try:
+            from photonscript.shared import phd2_store as _pstore
+            _nocorr = _pstore.in_windows(
+                _pstore.nocorr_windows(config, _date), _start, _exp)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("no-corrections skipped for %s: %s", path.name, e)
     _point = {}
     try:  # PS-67: header mount position vs the named target
         from photonscript.shared.pointing import assess, from_header
@@ -568,7 +583,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         ecc_bin=m["ecc_bin"], stars=m["stars"],
         background=m.get("background"), exp_s=_exp,
         ccd_temp=hdr.get("CCD-TEMP"), set_temp=hdr.get("SET-TEMP"),
-        guide_lock=_lock,
+        guide_lock=_lock, guide_nocorr=_nocorr or None,
         doubled_frac=m.get("doubled_frac"), exposure=m.get("exposure"),
         clipped_pct=m.get("clipped_pct"), sat_stars_pct=m.get("sat_stars_pct"),
         swamp=m.get("swamp"), sat_px_pct=px.get("sat_px_pct"),
@@ -587,6 +602,10 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     rec = {
         "rig": rig,
         "time": hdr.get("DATE-OBS", ""),
+        # PS-162: explicit exposure window (`time` above is DATE-OBS)
+        **_window_fields(_exposure_start(hdr.get("DATE-OBS")),
+                         hdr.get("EXPTIME")),
+        **_optics_fields(hdr),   # PS-164: FOCPOS / rotator angle
         "target": target,
         "filter": flt,
         # PS-152: a test / calibration sub, kept out of medians and score
@@ -614,6 +633,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         "shape": m.get("shape"),
         "doubled_frac": m.get("doubled_frac"),
         "guide_lock": _lock,
+        **({"guide_nocorr": True} if _nocorr else {}),   # PS-165
         "clipped_pct": m.get("clipped_pct"),
         "sat_stars_pct": m.get("sat_stars_pct"),
         "swamp": m.get("swamp"), "exposure": m.get("exposure"),
@@ -1308,11 +1328,9 @@ def correlate_piggyback_records(subs: list[dict]) -> tuple[int, dict, list]:
     (attributed, {target: n}, pending subs)."""
     import bisect
 
-    def _t(s):
-        try:
-            return datetime.fromisoformat(str(s.get("time", ""))[:19])
-        except ValueError:
-            return None
+    from photonscript.shared.sub_time import sub_start as _t
+    # PS-162: both rigs on the exposure START (sub_time): the raw `time` is
+    # the end for live-graded subs ("Z") and the start for backfilled ones
 
     rc16 = sorted(
         ((_t(s), canonical_target(s.get("target")),
@@ -1400,6 +1418,20 @@ def header_pointing_reject(rec: dict) -> bool:
     return (not rec.get("passed_qa") and not _human_verdict(rec)
             and list(rec.get("drivers") or []) == ["pointing"]
             and not pointing_confirmed(rec.get("pointing_src")))
+
+
+SHAPE_DRIVERS = frozenset({"ecc", "ecc_bin", "hfr", "hfr_rel", "fwhm"})
+
+
+def nocorr_shape_reject(rec: dict, card) -> bool:
+    """PS-165: an automatic reject driven only by the shape gates (ecc, HFR,
+    FWHM) of a sub the current card judges inside a PHD2 no-corrections
+    episode (qa_flag unguided-in-name) and passes on the unguided limits."""
+    from photonscript.shared.qa_rules import UNGUIDED_IN_NAME
+    drv = set(rec.get("drivers") or [])
+    return (not rec.get("passed_qa") and not _human_verdict(rec)
+            and card.passed and card.qa_flag == UNGUIDED_IN_NAME
+            and bool(drv) and drv <= SHAPE_DRIVERS)
 
 
 def _old_verdict(rec: dict) -> str:
@@ -1514,6 +1546,13 @@ def rescore_night(config, date: str, apply: bool = False,
                     counts["unrejected"] += 1
                     counts["unrejected_pointing"] += 1
                     action = "un-rejected (header-only pointing, PS-107)"
+                elif nocorr_shape_reject(rec, card):
+                    # PS-165: rejected on the guided shape gates while PHD2
+                    # sent no corrections; the unguided limits pass it, so
+                    # it goes to review (never straight to approved)
+                    counts["unrejected"] += 1
+                    counts["unrejected_nocorr"] += 1
+                    action = "un-rejected (PHD2 no corrections, PS-165)"
                 else:
                     counts["kept_rejected"] += 1
                     action = "kept rejected (no --allow-unreject)"
@@ -1655,6 +1694,11 @@ def _night_cards(config, date: str, subs: list[dict],
         pts = _load_pointing(config, date) if sidecars else {}
     except Exception:  # noqa: BLE001
         pts = {}
+    try:  # PS-165: PHD2 no-corrections episodes of the night
+        from photonscript.shared import phd2_store as _pstore
+        nocorr = _pstore.nocorr_windows(config, date)
+    except Exception:  # noqa: BLE001
+        _pstore, nocorr = None, []
     out = []
     for rec in subs:
         key = qa_rules.group_key(rec)
@@ -1663,6 +1707,10 @@ def _night_cards(config, date: str, subs: list[dict],
         except Exception:  # noqa: BLE001
             start = None
         _m = qa_rules.metrics_from_record(rec)
+        if (not _m.get("guide_nocorr") and nocorr
+                and _pstore.in_windows(nocorr, start, rec.get("exp_s"))):
+            _m["guide_nocorr"] = True
+            rec["guide_nocorr"] = True
         _p = pts.get((key[0], rec.get("file")))
         if _p and _p.get("off_target_arcmin") is not None:
             from photonscript.shared.pointing import judged_src

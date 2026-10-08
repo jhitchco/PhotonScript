@@ -217,6 +217,16 @@ class PhotonScriptConfig(BaseSettings):
                                  # piggyback:YYYY-MM-DD" (a bare date = both rigs);
                                  # flats older than it are owed (camera rotated,
                                  # spacer / focus change, cleaned optics)
+    # PS-164: the same judgment from the headers. Lights whose FOCPOS is more
+    # than this many steps from their filter's newest QA-passed flat set make
+    # those flats owed (report, morning push, RC16 stale-flat reshoot).
+    # "rc16:N,piggyback:N", a bare number = both rigs, 0 / unset = off. RC16
+    # thermal focus spans ~800 steps over 10-29 C (focus_seeds), so 1000
+    # only fires on a real change (spacing, a refocus far off the curve).
+    calibration_flats_focus_steps: str = "rc16:1000"
+    calibration_flats_rotator_deg: float = 1.0  # PS-164: rotator angle change
+                                 # (deg) that makes flats owed; 0 = off. No
+                                 # rotator on either rig today (no ROTATOR key)
     # --- Integration ledger + watcher (PS-33 / PS-31, desktop integrate) ---
     # Scope side: the thresholds the desktop watcher reads from
     # GET /api/integrations/candidates (editable on the System page).
@@ -391,6 +401,15 @@ class PhotonScriptConfig(BaseSettings):
                                  # puts the PHD2 RMS in real arcsec
     qa_guide_lock_mode: str = "warn"  # PS-91: a sub guided on a non-star lock
                                  # (guard episode overlapping it): warn | fail
+    # PS-165: a sub exposed while PHD2 guided but sent no corrections (PS-155
+    # no_corrections episode) is flagged unguided-in-name and judged on
+    # unguided limits (held for review, never auto-approved): this rig's ecc
+    # gate + qa_unguided_ecc_margin and HFR gate x qa_unguided_hfr_factor,
+    # or the explicit limits below (0 = derived from the rig's gates)
+    qa_unguided_ecc_margin: float = 0.10
+    qa_unguided_hfr_factor: float = 1.25
+    qa_unguided_eccentricity_max: float = 0.0
+    qa_unguided_hfr_max: float = 0.0
     qa_star_sidecar_max: int = 500  # PS-80 star sidecar: brightest N stars
                                  # per sub for the review overlay; 0 = off
     # PS-94: eccentricity at the 2x2-binned scale (0.47"/px on the RC16,
@@ -945,6 +964,11 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_flat_wait_min: int = 25  # PS-36: after nautical dawn + 5, wait at most
                                        # until nautical dawn + this for the roof to be
                                        # safe; later = skip the OSC flats (not wedge)
+    piggyback_flat_dawn_offset_min: int = 20  # PS-163: OSC dawn flats start at
+    # nautical dawn + this (min; +90 s for the RC16 slew). Was a fixed 5: on
+    # 2026-10-07 the OSC SkyFlat at ND+5 found the sky "too dim" at its 30 s
+    # max for 14 min and gave up (8188 ADU at 30 s by ND+20). Capped so the
+    # set fits the armer's dawn hold (ND + 5 + dawn_flats_window_min - 10).
     piggyback_af_temp_change_c: float = 1.5  # PS-68: OSC refocus on this focuser
                                              # temperature change (C)
     piggyback_af_hfr_increase_pct: float = 10.0  # PS-68: OSC refocus when HFR rises

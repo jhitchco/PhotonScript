@@ -141,7 +141,10 @@ def collect_lights(config, rig: str, projects, *, days: int,
                            else ep["offset"]),
                 "settemp": st, "xbin": int(rec.get("xbin") or 1),
                 "readout": ro, "readout_assumed": ro_assumed,
-                "assumed": assumed})
+                "assumed": assumed,
+                # PS-164: the optical state the flats are judged against
+                "focpos": rec.get("focpos"),
+                "rotator_deg": rec.get("rotator_deg")})
     return out
 
 
@@ -219,6 +222,115 @@ def flats_reset_date(config, rig: str) -> str | None:
             date = tok
         if _DATE_RE.match(date) and (out is None or date > out):
             out = date
+    return out
+
+
+def flats_focus_steps(config, rig: str) -> int | None:
+    """PS-164: focuser steps between a flat set and its lights beyond which
+    the flats are owed (calibration_flats_focus_steps, "rc16:1000,
+    piggyback:0"; a bare number = every rig; 0 or unset = off)."""
+    raw = str(getattr(config, "calibration_flats_focus_steps", "") or "").strip()
+    out = None
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if ":" in tok:
+            name, val = (x.strip() for x in tok.split(":", 1))
+            if _RIG_ALIASES.get(name.lower()) != rig:
+                continue
+        else:
+            val = tok
+        try:
+            out = int(float(val))
+        except ValueError:
+            continue
+    return out if out and out > 0 else None
+
+
+def flats_rotator_deg(config) -> float | None:
+    """PS-164: rotator change (deg) beyond which flats are owed; 0 = off."""
+    try:
+        v = float(getattr(config, "calibration_flats_rotator_deg", 0) or 0)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def optics_check(config, rig: str, flat: dict | None,
+                 lights: list[dict]) -> dict:
+    """PS-164: judge one filter's newest flat set against the lights that
+    use it. `flat` is the session's {"focpos", "rotator_deg"} (None when
+    unknown); `lights` the filter's lights (collect_lights rows). Returns
+    {"reasons": [...], "focus": {...} | None, "rotator": {...} | None};
+    no reason when a threshold is off or either side has no value."""
+    from photonscript.shared.optics_state import angle_diff
+    out = {"reasons": [], "focus": None, "rotator": None}
+    flat = flat or {}
+    fp0 = flat.get("focpos")
+    fps = [float(li["focpos"]) for li in lights if li.get("focpos") is not None]
+    if fp0 is not None and fps:
+        worst = max(fps, key=lambda v: abs(v - fp0))
+        steps = flats_focus_steps(config, rig)
+        far = ([v for v in fps if abs(v - fp0) > steps] if steps else [])
+        out["focus"] = {"flat_focpos": int(fp0),
+                        "light_focpos_min": int(min(fps)),
+                        "light_focpos_max": int(max(fps)),
+                        "max_shift": int(round(abs(worst - fp0))),
+                        "threshold": steps, "lights_beyond": len(far)}
+        if far:
+            out["reasons"].append(
+                f"focus moved: {len(far)} light(s) more than {steps} steps "
+                f"from the flats' FOCPOS {int(fp0)} (lights "
+                f"{int(min(fps))}-{int(max(fps))})")
+    r0 = flat.get("rotator_deg")
+    rots = [float(li["rotator_deg"]) for li in lights
+            if li.get("rotator_deg") is not None]
+    if r0 is not None and rots:
+        lim = flats_rotator_deg(config)
+        worst = max(angle_diff(r, r0) for r in rots)
+        far = [r for r in rots if lim and angle_diff(r, r0) > lim]
+        out["rotator"] = {"flat_deg": r0, "max_shift_deg": round(worst, 2),
+                          "threshold": lim, "lights_beyond": len(far)}
+        if far:
+            out["reasons"].append(
+                f"rotator moved: {len(far)} light(s) more than {lim:g} deg "
+                f"from the flats' {r0:g} deg")
+    return out
+
+
+def _flat_optics(config, view, rig, store, ep) -> dict:
+    """PS-164: {filter: {date: {"focpos", "rotator_deg"}}} of the QA-passed
+    flat sessions; {} without a QA store (the header scan has no FOCPOS)."""
+    from photonscript.scheduler import calibration_qa as cq
+    if cq.mode(config) == "off" or not store["frames"]:
+        return {}
+    return cq.flat_session_optics(view, rig, gain=ep["gain"],
+                                  offset=ep["offset"], store=store)
+
+
+def optics_moved_filters(config, rig: str = "rc16", *,
+                         now: datetime | None = None) -> set:
+    """PS-164: filters whose newest QA-passed flat set the lights moved away
+    from (focus / rotator beyond the thresholds). Empty when both are off."""
+    if flats_focus_steps(config, rig) is None and flats_rotator_deg(config) is None:
+        return set()
+    from photonscript.scheduler import calibration_qa as cq
+    from photonscript.scheduler.calibration import dark_epoch
+    view = cq.rig_view(config, rig)
+    ep = dark_epoch(config, rig)
+    store = cq.load_store(config, rig)
+    optics = _flat_optics(config, view, rig, store, ep)
+    if not optics:
+        return set()
+    lights = collect_lights(config, rig, _active_projects(config),
+                            days=_lookback(config), now=now or datetime.now())
+    out = set()
+    for f, by_date in optics.items():
+        last = max(by_date)
+        mine = [li for li in lights if li["filter"] == f]
+        if optics_check(config, rig, by_date[last], mine)["reasons"]:
+            out.add(f)
     return out
 
 
@@ -444,7 +556,8 @@ def _age(date: str | None, now: datetime) -> int | None:
         return None
 
 
-def _flat_items(config, rig, sessions, lights, planned, now) -> list[dict]:
+def _flat_items(config, rig, sessions, lights, planned, now,
+                optics: dict | None = None) -> list[dict]:
     from photonscript.scheduler.calibration import STALE_DAYS
     reset = flats_reset_date(config, rig)   # PS-160
     need = int(getattr(config, "flat_count", 15) if rig == "rc16"
@@ -475,12 +588,18 @@ def _flat_items(config, rig, sessions, lights, planned, now) -> list[dict]:
             if reset and last < reset:
                 reasons.append(f"taken before the optics change on {reset} "
                                "(calibration_flats_reset)")
+        # PS-164: focus / rotator of the lights vs the newest flat set
+        oc = (optics_check(config, rig, ((optics or {}).get(f) or {}).get(last),
+                           [li for li in lights if li["filter"] == f])
+              if last else {"reasons": [], "focus": None, "rotator": None})
+        reasons += oc["reasons"]
         out.append({
             "filter": f, "last": last, "count": count, "need": need,
             "age_days": age, "stale_after_days": stale_after,
             "stale": (last is None or (age is not None and age > stale_after)
-                      or bool(reset and last < reset)),
+                      or bool(reset and last < reset) or bool(oc["reasons"])),
             "optics_reset": reset,
+            "focus": oc["focus"], "rotator": oc["rotator"],
             "lights_since": since, "light_nights": sorted(filters[f]),
             "owed": bool(reasons), "reasons": reasons,
             "label": f"flats {f}"})
@@ -704,7 +823,8 @@ def owed_report(config, rig: str | None = None, *, projects=None,
         planned = planned_lights(config, rg)
         darks, fixes = _dark_items(config, view, rg, store, lights, planned)
         flats = _flat_items(config, rg, _flat_sessions(config, view, rg, store, ep),
-                            lights, planned, now)
+                            lights, planned, now,
+                            optics=_flat_optics(config, view, rg, store, ep))
         bias = _bias_item(config, rg, _bias_sessions(config, view, rg, store, ep), now,
                           readout=ep["readout"])
         nights = _night_items(lights, darks, flats, bias)

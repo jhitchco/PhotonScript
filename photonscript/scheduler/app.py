@@ -641,6 +641,8 @@ _CONFIG_FIELDS = [
     ("calibration_flats_as_used", "PS_CALIBRATION_FLATS_AS_USED", "Calibration coverage: reshoot stale flats only for filters the RC16 lights used", "Imaging", "bool", False, False),
     ("calibration_dawn_flat_extra_max", "PS_CALIBRATION_DAWN_FLAT_EXTRA_MAX", "Calibration coverage: at most N owed flat filters on top of tonight's per dawn", "Imaging", "int", False, False),
     ("calibration_flats_reset", "PS_CALIBRATION_FLATS_RESET", "Calibration coverage: optics change date per rig (rc16:YYYY-MM-DD,piggyback:YYYY-MM-DD); older flats are owed", "Imaging", "str", False, False),
+    ("calibration_flats_focus_steps", "PS_CALIBRATION_FLATS_FOCUS_STEPS", "Calibration coverage (PS-164): flats owed when lights' FOCPOS is more than N steps from the newest flat set (rc16:N,piggyback:N; 0 = off)", "Imaging", "str", False, False),
+    ("calibration_flats_rotator_deg", "PS_CALIBRATION_FLATS_ROTATOR_DEG", "Calibration coverage (PS-164): flats owed when the rotator angle moved more than this (deg; 0 = off)", "Imaging", "float", False, False),
     ("integrate_watch_rigs", "PS_INTEGRATE_WATCH_RIGS", "Integrate watcher (PS-31, desktop): rigs it integrates (comma list: piggyback, rc16)", "Integration", "str", False, False),
     ("integrate_watch_new_data_h", "PS_INTEGRATE_WATCH_NEW_DATA_H", "Integrate watcher: re-integrate after this many new approved hours", "Integration", "float", False, False),
     ("integrate_watch_first_h", "PS_INTEGRATE_WATCH_FIRST_H", "Integrate watcher: first integration at this many approved hours (0 = only when the goal is met)", "Integration", "float", False, False),
@@ -828,6 +830,10 @@ _CONFIG_FIELDS = [
     ("qa_score_reject", "PS_QA_SCORE_REJECT", "Score: reject below", "Quality", "float", False, False),
     ("qa_saturation_adu", "PS_QA_SATURATION_ADU", "Saturated pixel level (ADU; FITS SATURATE wins)", "Quality", "float", False, False),
     ("qa_guide_lock_mode", "PS_QA_GUIDE_LOCK_MODE", "Sub guided on a non-star lock (PS-91): warn | fail", "Quality", "str", False, True),
+    ("qa_unguided_ecc_margin", "PS_QA_UNGUIDED_ECC_MARGIN", "Sub inside a PHD2 no-corrections episode (PS-165): ecc gate + this", "Quality", "float", False, True),
+    ("qa_unguided_hfr_factor", "PS_QA_UNGUIDED_HFR_FACTOR", "Sub inside a PHD2 no-corrections episode (PS-165): HFR gate x this", "Quality", "float", False, True),
+    ("qa_unguided_eccentricity_max", "PS_QA_UNGUIDED_ECCENTRICITY_MAX", "No-corrections episode: explicit ecc limit (0 = gate + margin)", "Quality", "float", False, True),
+    ("qa_unguided_hfr_max", "PS_QA_UNGUIDED_HFR_MAX", "No-corrections episode: explicit HFR limit (px, 0 = gate x factor)", "Quality", "float", False, True),
     ("pointing_off_target_flag_arcmin", "PS_POINTING_OFF_TARGET_FLAG_ARCMIN", "RC16 off target: flag for a look above (arcmin, PS-67)", "Quality", "float", False, False),
     ("pointing_off_target_reject_arcmin", "PS_POINTING_OFF_TARGET_REJECT_ARCMIN", "RC16 off target: reject above (arcmin; target out of the frame)", "Quality", "float", False, False),
     ("piggyback_off_target_flag_arcmin", "PS_PIGGYBACK_OFF_TARGET_FLAG_ARCMIN", "Piggy-600 off target: flag above (arcmin)", "Quality", "float", False, False),
@@ -915,6 +921,7 @@ _CONFIG_FIELDS = [
     ("piggyback_mount_check", "PS_PIGGYBACK_MOUNT_CHECK", "NINA #2 mount check (PS-139): at arm and watch, read NINA #2's loaded sequence for slew / center / park instructions: alert (push + chip, read only) | off", "Piggyback", "str", False, False),
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
     ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
+    ("piggyback_flat_dawn_offset_min", "PS_PIGGYBACK_FLAT_DAWN_OFFSET_MIN", "Piggyback flats (PS-163): start at nautical dawn + this (min), capped to fit the dawn flat window", "Piggyback", "int", False, False),
     ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
@@ -3085,6 +3092,8 @@ from photonscript.scheduler.routers import nina_watch as _nina_watch_router  # n
 app.include_router(_nina_watch_router.router)   # PS-150
 from photonscript.scheduler.routers import autofile as _autofile_router  # noqa: E402
 app.include_router(_autofile_router.router)   # PS-157
+from photonscript.scheduler.routers import morning as _morning_router  # noqa: E402
+app.include_router(_morning_router.router)   # PS-166
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

@@ -32,7 +32,6 @@ def _start_of(rec: dict):
     else a backfill record's time (it IS DATE-OBS); else a live record's
     time (written at grading, just after readout) minus the exposure."""
     from photonscript.shared.qa_signatures import exposure_start
-    exp = rec.get("exp_s") or 0
     p = rec.get("abs_path")
     if p:
         try:
@@ -42,9 +41,9 @@ def _start_of(rec: dict):
                 return exposure_start(d)
         except Exception:  # noqa: BLE001 - file gone / not on this machine
             pass
-    if rec.get("graded_by"):
-        return exposure_start(rec.get("time"))
-    return exposure_start(None, rec.get("time"), exp)
+    # PS-162: start_utc, else `time` read by its convention (shared.sub_time)
+    from photonscript.shared.sub_time import sub_start
+    return sub_start(rec)
 
 
 def _library_links(config, rec: dict) -> list[Path]:

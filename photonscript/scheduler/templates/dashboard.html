@@ -181,6 +181,14 @@
             <div id="exposureProgress"><div id="exposureFill"></div></div>
         </div>
 
+        <!-- PS-166: Morning report card, last night per rig, from
+             /api/morning/report (lights kept / rejected with top reasons,
+             hours per goal, guiding health, stalls, library, calibration) -->
+        <section class="panel" id="morningPanel">
+            <h2>Morning report <span class="bd" id="morningDate"></span></h2>
+            <div id="morningCard" class="bd">Loading...</div>
+        </section>
+
         <!-- Recent Activity: last subs + telescope events -->
         <section class="panel" id="activityPanel">
             <h2>Activity <span class="bd">(latest subs first)</span></h2>
@@ -1097,6 +1105,31 @@
     }
     refreshCalOwed();
     setInterval(refreshCalOwed, 300000);
+    // PS-166: morning report card (last night per rig). The calibration
+    // line scans the subs logs, so every 10 min like the badge above.
+    async function refreshMorning() {
+        const box = document.getElementById('morningCard');
+        if (!box) return;
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        try {
+            const r = await fetch('/api/morning/report');
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            document.getElementById('morningDate').textContent =
+                d.date ? '(night of ' + d.date + ')' : '';
+            if (!d.date) { box.textContent = 'No subs log yet.'; return; }
+            const lines = (d.lines || []).length ? d.lines : ['No lights or stalls logged.'];
+            box.innerHTML = lines.map(l => '<div style="margin:.15rem 0;">' +
+                esc(l) + '</div>').join('') +
+                '<div style="margin-top:.3rem;"><a href="/runs?night=' +
+                encodeURIComponent(d.date) + '">Runs page</a></div>';
+        } catch (e) {
+            box.textContent = 'Morning report unavailable (' + e.message + ')';
+        }
+    }
+    refreshMorning();
+    setInterval(refreshMorning, 600000);
 
     </script>
 

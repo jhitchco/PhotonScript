@@ -311,6 +311,18 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         "saturation_adu": float(_f(config, "qa_saturation_adu", 65000.0)),
         "corner_spread_max": float(_f(cfg, "quality_corner_spread_max", 0.35)),
     }
+    # PS-165: a sub exposed while PHD2 guided without correcting (PS-155
+    # no_corrections) is judged on unguided limits: this rig's gates widened
+    # by qa_unguided_ecc_margin / qa_unguided_hfr_factor, or the explicit
+    # qa_unguided_eccentricity_max / qa_unguided_hfr_max (0 = derived)
+    ecc_m = float(_f(config, "qa_unguided_ecc_margin", 0.10) or 0.0)
+    hfr_k = float(_f(config, "qa_unguided_hfr_factor", 1.25) or 1.0)
+    u_ecc = float(_f(cfg, "qa_unguided_eccentricity_max", 0.0) or 0.0)
+    u_hfr = float(_f(cfg, "qa_unguided_hfr_max", 0.0) or 0.0)
+    t["unguided_ecc_max"] = round(u_ecc or min(0.95, t["ecc_max"] + ecc_m), 3)
+    t["unguided_ecc_max_bin"] = round(
+        u_ecc or min(0.95, t["ecc_max_bin"] + ecc_m), 3)
+    t["unguided_hfr_max"] = round(u_hfr or t["hfr_max"] * hfr_k, 2)
     ov = _target_overrides(config)
     if ov and target:
         tl = str(target).strip().lower()
@@ -543,6 +555,7 @@ SKIP_TEXT = {
     "tracking_jump": "not measured by this grader",
     "guide_rms": "not judged (unguided, or PS-70 units pending)",
     "guide_lock": "no guard data for this sub (PS-91)",
+    "guide_nocorr": "PHD2 sent no corrections (PS-155): unguided limits",
     "slew_straddle": "not judged: this rig moves the mount itself, or no "
                      "mount log or RC16 frames cover the sub",
     "pointing": "no position (no header coordinates, mount log or solve) "
@@ -686,6 +699,13 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     t = ctx.thresholds
     wf = float(t.get("warn_fraction", 0.10))
     checks: list[Check] = []
+    # PS-165: exposed while PHD2 sent no corrections: unguided limits
+    nocorr = bool(m.get("guide_nocorr"))
+    if nocorr:
+        t = {**t, "ecc_max": t.get("unguided_ecc_max", t["ecc_max"]),
+             "ecc_max_bin": t.get("unguided_ecc_max_bin",
+                                  t.get("ecc_max_bin", t["ecc_max"])),
+             "hfr_max": t.get("unguided_hfr_max", t["hfr_max"])}
 
     hfr = _num(m.get("hfr"))
     fwhm = _num(m.get("fwhm_arcsec"))
@@ -833,10 +853,23 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     else:
         checks.append(Check("guide_lock", None, "star", SKIP,
                             "no guard data for this sub"))
+    # PS-165: PHD2 guided but no correction reached the mount (PS-155):
+    # the sub is effectively unguided. Held for review on the unguided
+    # limits above instead of rejected on the guided ones.
+    if nocorr:
+        checks.append(Check(
+            "guide_nocorr", "no corrections", "corrections", WARN,
+            "PHD2 guided but sent no corrections during this sub (PS-155): "
+            f"judged on unguided limits (ecc {t['ecc_max']:g}, HFR "
+            f"{t['hfr_max']:g} px)"))
     # guiding RMS snapshot (only judged while guiding)
     rms = _num(m.get("guide_rms"))
     gstate = str(m.get("guide_state") or "").lower()
-    if nonstar:
+    if nocorr:
+        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
+                            "PHD2 sent no corrections: the RMS is not "
+                            "the mount's"))
+    elif nonstar:
         checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
                             "guided on a non-star lock: the RMS is meaningless"))
     elif rms is None:
@@ -891,7 +924,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
             ctx.config, hfr_px=hfr, fwhm_arcsec=fwhm, background=bg,
             exp_s=exp_s, stars=stars, start_utc=ctx.start_utc,
             unsafe_windows=ctx.unsafe_windows, image_type=ctx.image_type)
-        qa_flag = v.flag
+        qa_flag = v.flag or (UNGUIDED_IN_NAME if nocorr else "")
         if v.reject:
             checks.append(Check("roof", v.flag or "reject", "sky frame", FAIL,
                                 "; ".join(v.reasons)))
@@ -899,6 +932,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
             checks.append(Check("roof", "sky", "sky frame", PASS))
     except Exception as e:  # noqa: BLE001 - never lose a grade over this
         checks.append(Check("roof", None, "sky frame", SKIP, f"check error: {e}"))
+        qa_flag = UNGUIDED_IN_NAME if nocorr else ""
     # PS-13: exposed through an RC16 slew / flip / park (Piggy-600)
     checks.append(slew_straddle_check(_num(m.get("slew_overlap_s")), t,
                                       m.get("slew_note")))
@@ -1142,6 +1176,9 @@ SHAPE_KEYS = ("ecc_src", "ecc_why", "ecc_bright_n", "ecc_all", "ecc_bin_all",
               "fwhm_src", "fwhm_moment_arcsec", "fwhm_unreliable")
 
 
+UNGUIDED_IN_NAME = "unguided-in-name"   # PS-165 qa_flag
+
+
 def metrics_from_record(rec: dict) -> dict:
     """Stored sub record -> evaluate() metrics. Pre-PS-83 backfill records
     carry fwhm_arcsec = HFR x scale, not a measured FWHM: dropped
@@ -1153,7 +1190,7 @@ def metrics_from_record(rec: dict) -> dict:
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
         "pointing_offset_arcmin", "pointing_note", "pointing_src",
         "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-        "max_adu") + SHAPE_KEYS}
+        "max_adu", "guide_nocorr") + SHAPE_KEYS}
     m["fwhm_arcsec"] = record_fwhm(rec)
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -1168,5 +1205,5 @@ def record_metrics(**kw) -> dict:
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin", "pointing_note", "pointing_src",
             "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-            "max_adu") + SHAPE_KEYS
+            "max_adu", "guide_nocorr") + SHAPE_KEYS
     return {k: kw.get(k) for k in keys}

@@ -507,7 +507,9 @@ def stale_flat_filters(config) -> list[str]:
     """Canonical filter names whose newest flat set is missing or stale.
 
     PS-160: also stale when older than the rig's optics change
-    (calibration_flats_reset); with calibration_flats_as_used only the
+    (calibration_flats_reset); PS-164: or when the lights' focuser position
+    / rotator moved past calibration_flats_focus_steps /
+    calibration_flats_rotator_deg from the newest QA-passed set; with calibration_flats_as_used only the
     filters the RC16's lights used in the owed lookback (every stale filter
     while no lights are logged); missing sets first, then oldest first."""
     from photonscript.scheduler.calibration_owed import (flats_reset_date,
@@ -522,13 +524,20 @@ def stale_flat_filters(config) -> list[str]:
         except Exception:  # noqa: BLE001 - fall back to every filter
             logger.warning("flats as used: lights unavailable", exc_info=True)
     order = ("Ha", "OIII", "SII", "R", "G", "B", "L")
+    try:   # PS-164: focus / rotator moved since the newest flat set
+        from photonscript.scheduler.calibration_owed import optics_moved_filters
+        moved = optics_moved_filters(config, "rc16")
+    except Exception:  # noqa: BLE001 - never block the dawn flats on this
+        logger.warning("flats vs focus check unavailable", exc_info=True)
+        moved = set()
     out = []
     for f in order:
         if used is not None and f not in used:
             continue
         b = bb.get(f)
         if (b is None or b.get("age_days", 9999) > STALE_DAYS["FLAT"]
-                or (reset and str(b.get("date") or "") < reset)):
+                or (reset and str(b.get("date") or "") < reset)
+                or f in moved):
             out.append(f)
     out.sort(key=lambda f: (bb.get(f) is not None,
                             -int((bb.get(f) or {}).get("age_days", 0) or 0),
@@ -947,6 +956,18 @@ def _osc_roof_open_notice(config) -> list:
     ]
 
 
+def osc_flat_dawn_offset(config) -> int:
+    """PS-163: minutes after nautical dawn the Piggy-600 OSC dawn flats
+    start. piggyback_flat_dawn_offset_min (default 20), at least 5 (the
+    RC16's flat window opens at ND+5) and at most ND + 5 +
+    dawn_flats_window_min - 10, so a set (25 flats, a few minutes) still
+    fits before the armer's dawn shutdown stops NINA #2 (PS-36)."""
+    want = int(getattr(config, "piggyback_flat_dawn_offset_min", 20))
+    win = int(getattr(config, "dawn_flats_window_min", 40))
+    cap = 5 + win - 10 if win > 0 else want
+    return max(5, min(want, max(5, cap)))
+
+
 def generate_piggyback_companion_json(config, has_safety: bool = False,
                                       with_lights: bool = False) -> str:
     """A full-night companion for the piggyback (NINA #2), meant to
@@ -959,8 +980,8 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
       * (has_safety) fills OSC darks to quota + a 50-bias top-up while the roof
         is CLOSED (LoopWhileUnsafe) — needs the SHARED safety monitor connected
         in the NINA #2 profile, since NINA #2 can't otherwise tell roof state,
-      * at nautical dawn +5 (+90 s for the RC16's dawn slew) shoots one OSC
-        sky-flat set of piggyback_flat_count at the OSC gain/offset, then warms.
+      * at nautical dawn + piggyback_flat_dawn_offset_min (PS-163, default
+        20; +90 s for the RC16's dawn slew) shoots one OSC sky-flat set of piggyback_flat_count at the OSC gain/offset, then warms.
         With the safety monitor the flats wait (bounded) for safe until
         nautical dawn + piggyback_flat_wait_min and are skipped, not wedged,
         if the roof stays closed. The armer's dawn shutdown waits for this
@@ -1073,10 +1094,15 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         start_items += _osc_settle_gate_missing_notice(config)   # PS-27
 
     # Dawn flats: the RC16's flat window opens at nautical dawn +5 (its End
-    # area slews to alt 85 / az 200); give that slew 90 s to land, then one OSC
-    # set. With the safety monitor: wait (bounded) for safe, and skip the flats
-    # if the roof is still closed (closed roof = junk flats).
-    target_items.append(_wait_for_provider("NauticalDawnProvider", 5))
+    # area slews to alt 85 / az 200). PS-163: the OSC set starts later, at
+    # nautical dawn + piggyback_flat_dawn_offset_min (osc_flat_dawn_offset),
+    # because at ND+5 the sky is too dim for the OSC (2026-10-07: SkyFlat
+    # gave up at its 30 s max); then 90 s for the slew to land, then one OSC
+    # set. With the safety monitor: wait (bounded) for safe, and skip the
+    # flats if the roof is still closed (closed roof = junk flats).
+    flat_offset = osc_flat_dawn_offset(config)
+    target_items.append(_wait_for_provider("NauticalDawnProvider",
+                                           flat_offset))
     target_items.append(_wait_for_timespan(90))
     flat_items = [
         _pushover("Piggyback", f"dawn flat window — shooting {n} OSC sky flats "
@@ -1086,7 +1112,8 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     ]
     if has_safety:
         target_items.append(_wait_safe_until(
-            "NauticalDawnProvider", flat_wait, name="WAIT_SAFE_FOR_OSC_FLATS"))
+            "NauticalDawnProvider", max(flat_wait, flat_offset),
+            name="WAIT_SAFE_FOR_OSC_FLATS"))
         target_items.append(_seq_container(
             "DAWN_SKY_FLATS_OSC (skipped if unsafe: closed roof makes junk "
             "flats)", flat_items,
