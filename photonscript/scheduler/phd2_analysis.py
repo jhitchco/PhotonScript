@@ -919,7 +919,8 @@ def _parse_iso(s):
 
 def sub_start_utc(rec: dict, config) -> datetime | None:
     """Exposure start (naive UTC) of a runs record: NINA's file-name local
-    start time when present; else date_obs; else 'time', which the backfill
+    start time when present; else start_utc (PS-162); else date_obs; else
+    'time', which the backfill
     grader fills with DATE-OBS (start, no Z) and the live agent with the
     processing time (end, ends in Z)."""
     name = Path(str(rec.get("file") or "").replace("\\", "/")).name
@@ -931,16 +932,10 @@ def sub_start_utc(rec: dict, config) -> datetime | None:
             return to_utc(config, loc)
         except ValueError:
             pass
-    if rec.get("date_obs"):
-        t = _parse_iso(rec["date_obs"])
-        if t:
-            return t
-    t = _parse_iso(rec.get("time") or "")
-    if t is None:
-        return None
-    if str(rec.get("time")).strip().endswith("Z"):
-        return t - timedelta(seconds=float(rec.get("exp_s") or 0))
-    return t
+    # PS-162: start_utc, else date_obs, else `time` (start without "Z",
+    # end with one), all in shared.sub_time
+    from photonscript.shared.sub_time import sub_start
+    return sub_start(rec)
 
 
 class GuideTimeline:

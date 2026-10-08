@@ -1613,12 +1613,16 @@ class TelescopeAgent:
         # date folder NINA used, i.e. the parent date directory if present)
         try:
             from photonscript.scheduler.runs import append_sub_record
+            from photonscript.shared.sub_time import window_fields
             if night is None:
                 raise ValueError(f"{file_path} is not under image_watch_dir")
             rec = {
                 "rig": self.rig,
                 "file": rel_in_night, "abs_path": str(file_path),
                 "time": datetime.utcnow().isoformat() + "Z",
+                # PS-162: the exposure window (DATE-OBS based); `time`
+                # above stays the processing time for compatibility
+                **window_fields(start, exposure_seconds),
                 "target": target_name, "filter": rec_filter,
                 # PS-152: a test / calibration sub, kept out of medians
                 **({"test": True} if qa_rules.is_test_record(

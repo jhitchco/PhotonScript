@@ -112,6 +112,8 @@ def append_sub_record(config, night_of: str, record: dict) -> None:
     """Called by the telescope agent for every graded sub. PS-147: the
     `file` is stored with "/" (shared.sub_file)."""
     record = norm_record(dict(record))
+    from photonscript.shared.sub_time import normalize as _norm_time
+    _norm_time(record)   # PS-162: explicit start_utc / end_utc
     try:
         with subs_lock(config, night_of):
             with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",
@@ -151,6 +153,7 @@ def _load_subs(config, date: str) -> list[dict]:
         hit = _subs_cache.get(key)
     if hit is not None and hit[0] == sig:
         return [dict(r) for r in hit[1]]
+    from photonscript.shared.sub_time import normalize as _norm_time
     out = []
     try:
         text = p.read_text(encoding="utf-8")
@@ -164,7 +167,8 @@ def _load_subs(config, date: str) -> list[dict]:
         f = r.get("filter")
         if f in rev:
             r["filter"] = rev[f]
-        out.append(norm_record(r))   # PS-147: older lines hold "\\"
+        # PS-147: older lines hold "\\"; PS-162: start_utc / end_utc
+        out.append(_norm_time(norm_record(r)))
     with _subs_cache_lock:
         _subs_cache[key] = (sig, out)
     return [dict(r) for r in out]
@@ -475,7 +479,9 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     star sidecar from the stars already in memory.
     """
     from photonscript.shared import star_measure
+    from photonscript.shared.qa_signatures import         exposure_start as _exposure_start
     from photonscript.shared.rigs import rig_config
+    from photonscript.shared.sub_time import window_fields as _window_fields
     rcfg = rig_config(config, rig)   # the rig view, as the live grader gets
     px: dict = {}   # PS-108 full-resolution pixel counts
     with _HEAVY:
@@ -587,6 +593,9 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
     rec = {
         "rig": rig,
         "time": hdr.get("DATE-OBS", ""),
+        # PS-162: explicit exposure window (`time` above is DATE-OBS)
+        **_window_fields(_exposure_start(hdr.get("DATE-OBS")),
+                         hdr.get("EXPTIME")),
         "target": target,
         "filter": flt,
         # PS-152: a test / calibration sub, kept out of medians and score
@@ -1308,11 +1317,9 @@ def correlate_piggyback_records(subs: list[dict]) -> tuple[int, dict, list]:
     (attributed, {target: n}, pending subs)."""
     import bisect
 
-    def _t(s):
-        try:
-            return datetime.fromisoformat(str(s.get("time", ""))[:19])
-        except ValueError:
-            return None
+    from photonscript.shared.sub_time import sub_start as _t
+    # PS-162: both rigs on the exposure START (sub_time): the raw `time` is
+    # the end for live-graded subs ("Z") and the start for backfilled ones
 
     rc16 = sorted(
         ((_t(s), canonical_target(s.get("target")),
