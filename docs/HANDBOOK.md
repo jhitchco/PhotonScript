@@ -350,10 +350,18 @@ mapping (N) / tracking test / optics test; N = points, empty = the config's
   and one priority page says why (`arm_recipe` event `fallback`).
 - One night only: kept in `armer_state.json` (`recipe`), shown on
   `GET /api/arm` and the armer card, cleared on disarm, on any new arm and
-  at the dawn shutdown. Once dispatched it is never in a re-dispatch (unsafe
-  resume, Resume after Pause, Restart tonight from now, recalibration,
-  unguided fallback), finished or not, like the PS-144 focus calibration.
-  Events: `kind: "arm_recipe"` `dispatched` / `done` / `fallback`.
+  at the dawn shutdown.
+- Re-dispatches (unsafe resume, Resume after Pause, Restart tonight from
+  now, recalibration, unguided fallback) first read NINA's sequence state
+  (PS-183; on 2026-10-09 a PHD2 recalibration re-dispatch during startup
+  dropped a TPoint recipe that had never started). Recipe container
+  FINISHED: `done`, left out. Container RUNNING, anything inside it RUNNING
+  or FINISHED, or any `TPoint point` container FINISHED: `started`, left
+  out (a partial test is never repeated). Container CREATED or absent
+  (never started, or NINA restarted): back to `armed` and spliced into this
+  re-dispatch again. NINA unreadable: left out, as before.
+  Events: `kind: "arm_recipe"` `dispatched` / `re-included` / `started` /
+  `done` / `fallback`.
 
 ### Through-focus optics test (PS-148)
 

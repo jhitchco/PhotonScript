@@ -50,8 +50,9 @@ sideload builder (routers/sideload.build_rc16_from, so the preview shows the
 same sequence and lint), then loads and starts it like any night. A recipe
 that will not build or lint falls back to the normal plan (one page). It
 belongs to one night (cleared on disarm, a new arm and the dawn shutdown)
-and, like the PS-144 focus calibration, is never in a re-dispatch once it
-was dispatched (unsafe resume, PS-64 resume, PS-143 restart).
+and is never in a re-dispatch once it started (unsafe resume, PS-64
+resume, PS-143 restart): PS-183 reads NINA's state first and re-includes a
+dispatched recipe whose test never started.
 
 Transitions send Pushover notifications. Re-arm daily is manual (v1).
 """
@@ -1892,10 +1893,12 @@ class Armer:
             logger.warning("arm recipe note not sent: %s", e)
 
     def _note_recipe_progress(self, tree) -> bool:
-        """Mark tonight's dispatched recipe "done" once NINA shows its test
-        container FINISHED (event + persist). True when it did."""
+        """Mark tonight's dispatched (or started) recipe "done" once NINA
+        shows its test container FINISHED (event + persist). True when it
+        did."""
         r = self._recipe_tonight()
-        if not r or r.get("status") != "dispatched" or tree is None:
+        if (not r or r.get("status") not in ("dispatched", "started")
+                or tree is None):
             return False
         if _nina_item_status(tree, _norm_item(r.get("container"))) != "FINISHED":
             return False
@@ -1906,18 +1909,66 @@ class Armer:
         logger.info("Arm recipe finished tonight: %s", r.get("container"))
         return True
 
-    async def _check_recipe_before_redispatch(self) -> None:
-        """Before a re-dispatch stops NINA, record a finished recipe test as
-        done (best-effort: the re-dispatch leaves it out either way)."""
+    def _reconcile_recipe(self, tree) -> str:
+        """PS-183: classify a dispatched recipe from NINA's sequence state
+        before a re-dispatch rebuilds the sequence. Container FINISHED:
+        "done". Container RUNNING, anything inside it RUNNING / FINISHED, or
+        any TPoint point container FINISHED: "started" (it ran at least
+        partly; a re-dispatch does not repeat it). Otherwise (CREATED, or
+        absent because NINA restarted or holds another sequence): back to
+        "armed" so this re-dispatch includes it again. Returns the status it left. tree is never None here."""
         r = self._recipe_tonight()
-        if not r or r.get("status") != "dispatched":
+        st = r.get("status")
+        if self._note_recipe_progress(tree):
+            return "done"
+        from photonscript.scheduler.nina_sequence_json import TPOINT_POINT_PREFIX
+        want = _norm_item(r.get("container"))
+        cont = _nina_item_status(tree, want)
+        ran = _nina_recipe_ran(tree, want, _norm_item(TPOINT_POINT_PREFIX))
+        if cont == "RUNNING" or ran:
+            if st != "started":
+                r["status"] = "started"
+                r["started_utc"] = datetime.utcnow().isoformat(
+                    timespec="seconds") + "Z"
+                self._persist()
+                self._recipe_event(
+                    "started", f"{r.get('container')} "
+                    + ("running" if cont == "RUNNING" else "partly run")
+                    + " at a re-dispatch: not repeated")
+            return "started"
+        if st == "started":
+            return "started"   # it ran before; never re-run a partial test
+        why = (f"{r.get('container')} {cont}" if cont
+               else f"{r.get('container')} not in NINA's sequence")
+        r["status"] = "armed"
+        r["redispatches"] = int(r.get("redispatches") or 0) + 1
+        r["detail"] = f"re-included at a re-dispatch: {why} (never started)"
+        self._persist()
+        self._recipe_event("re-included", r["detail"])
+        logger.info("Arm recipe %s re-included: %s", r.get("id"), why)
+        return "armed"
+
+    async def _check_recipe_before_redispatch(self) -> None:
+        """PS-183: before a re-dispatch rebuilds tonight's sequence, read
+        NINA's state once and reconcile the dispatched recipe (done /
+        started / re-included, _reconcile_recipe). When NINA cannot be read
+        the recipe stays out (as PS-181): an unknown state never repeats a
+        test that may have run."""
+        r = self._recipe_tonight()
+        if not r or r.get("status") not in ("dispatched", "started"):
             return
         try:
             tree, err = await asyncio.wait_for(self._watch_read_state(), 15)
-            if not err:
-                self._note_recipe_progress(tree)
         except Exception as e:  # noqa: BLE001
-            logger.debug("arm recipe state check skipped: %s", e)
+            tree, err = None, f"{type(e).__name__}: {e}"
+        if err or tree is None:
+            logger.warning("arm recipe state not read before re-dispatch "
+                           "(%s): left out", err)
+            return
+        try:
+            self._reconcile_recipe(tree)
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            logger.warning("arm recipe reconcile failed: %s", e)
 
     def _calibration_slot(self, targets, now: datetime) -> dict | None:
         """PS-93: the PHD2 calibration field when tonight needs a calibration
@@ -2068,6 +2119,9 @@ class Armer:
         """companion=False skips the NINA #2 companion (a mid-night re-dispatch
         must not restart the Piggy-600's running sequence). fail_state=None
         leaves the armer state alone on failure (the caller handles it)."""
+        # PS-183: reconcile a dispatched recipe with NINA's state BEFORE the
+        # sequence is rebuilt, so one that never started is included again
+        await self._check_recipe_before_redispatch()
         if not self._dispatch():
             await self._send_recipe_alert()   # PS-181
             if fail_state:
@@ -2078,7 +2132,6 @@ class Armer:
         await self._send_recipe_alert()   # PS-181: fallback page, once
         # PS-152: note a finished dusk calibration before the stop clears it
         await self._check_focus_cal_before_redispatch()
-        await self._check_recipe_before_redispatch()   # PS-181
         # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the
         # request body; load 400s if a sequence is running, so stop first.
         await self._nina("sequence_stop")  # harmless if nothing running
@@ -3526,6 +3579,48 @@ def _nina_item_status(state, norm_name: str) -> str | None:
 
     walk(_state_payload(state))
     return found[0] if found else None
+
+
+def _nina_recipe_ran(state, norm_name: str, norm_prefix: str) -> bool:
+    """PS-183: True when NINA's sequence tree shows the recipe began: any
+    item inside the container named norm_name is RUNNING or FINISHED, or any
+    item anywhere whose name starts with norm_prefix (the TPoint point
+    containers) is FINISHED. Needed because a stopped NINA run puts an
+    interrupted item back to CREATED while finished ones stay FINISHED."""
+    from photonscript.scheduler.sideload import _state_payload
+    hit: list[bool] = []
+
+    def kids(n):
+        out = []
+        for key in ("Items", "Conditions", "Triggers"):
+            v = n.get(key)
+            v = v.get("$values") if isinstance(v, dict) else v
+            if isinstance(v, list):
+                out += v
+        return out
+
+    def walk(n, inside: bool):
+        if hit:
+            return
+        if isinstance(n, list):
+            for x in n:
+                walk(x, inside)
+            return
+        if not isinstance(n, dict):
+            return
+        name = _norm_item(n.get("Name"))
+        status = str(n.get("Status", "")).upper()
+        if inside and status in ("RUNNING", "FINISHED"):
+            hit.append(True)
+            return
+        if norm_prefix and name.startswith(norm_prefix) and status == "FINISHED":
+            hit.append(True)
+            return
+        for x in kids(n):
+            walk(x, inside or (bool(norm_name) and name == norm_name))
+
+    walk(_state_payload(state), False)
+    return bool(hit)
 
 
 def _norm_item(name) -> str:

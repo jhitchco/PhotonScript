@@ -411,6 +411,7 @@
             if (rc && active) {
                 const st = {armed: 'runs at pre-config, before the targets',
                             dispatched: 'dispatched' + (rc.container ? ': ' + rc.container : ''),
+                            started: 'started, interrupted by a re-dispatch (not repeated)' + (rc.container ? ': ' + rc.container : ''),
                             done: 'done' + (rc.container ? ': ' + rc.container : ''),
                             fallback: 'NOT run: ' + (rc.detail || 'fell back to the normal plan')}[rc.status] || rc.status;
                 const bad = rc.status === 'fallback';

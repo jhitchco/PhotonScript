@@ -277,8 +277,9 @@ def _tree(status):
 @pytest.mark.parametrize("path", ["unsafe_resume", "operator_resume", "restart"])
 async def test_redispatch_never_repeats_the_recipe(armer, tmp_path, path):
     """Every re-dispatch path goes through _dispatch_and_start(companion=
-    False, fail_state=None): the one-shot test is left out once dispatched,
-    finished or not."""
+    False, fail_state=None): the one-shot test is left out once it started,
+    finished or not (PS-183: one that never started is re-included, see
+    test_ps183_recipe_redispatch)."""
     a = armer
     _arm_recipe(a)
     assert await a._dispatch_and_start() is True
@@ -287,12 +288,13 @@ async def test_redispatch_never_repeats_the_recipe(armer, tmp_path, path):
     assert await a._dispatch_and_start(companion=False, fail_state=None)
     assert a.calls[:2] == ["state", "sequence_stop"]   # progress read first
     assert _dsos(_dispatched(a)) == ["Heart Nebula"]
-    assert a.recipe["status"] == "dispatched"
+    assert a.recipe["status"] == "started"   # PS-183: it ran, not repeated
     a.tree = _tree("FINISHED")
     assert await a._dispatch_and_start(companion=False, fail_state=None)
     assert _dsos(_dispatched(a)) == ["Heart Nebula"]
     assert a.recipe["status"] == "done" and a.recipe["done_utc"]
-    assert [e["value"] for e in _events(tmp_path)] == ["dispatched", "done"]
+    assert [e["value"] for e in _events(tmp_path)] == [
+        "dispatched", "started", "done"]
 
 
 async def test_resume_paths_use_the_shared_redispatch():
