@@ -143,6 +143,26 @@ class NinaClient:
     async def get_guider_info(self) -> dict:
         return _unwrap(await self._get("/equipment/guider/info"))
 
+    # PS-189: flat device (Wanderer Cover V4-EC on the Piggy-600's NINA #2)
+    async def get_flatdevice_info(self) -> dict:
+        """CoverState, LightOn, Brightness, Min/MaxBrightness, Connected..."""
+        return _unwrap(await self._get("/equipment/flatdevice/info"))
+
+    async def connect_flatdevice(self) -> dict:
+        return await self._get("/equipment/flatdevice/connect")
+
+    async def set_cover(self, closed: bool) -> dict:
+        return await self._get(
+            f"/equipment/flatdevice/set-cover?closed={'true' if closed else 'false'}")
+
+    async def set_flat_light(self, on: bool) -> dict:
+        return await self._get(
+            f"/equipment/flatdevice/set-light?on={'true' if on else 'false'}")
+
+    async def set_flat_brightness(self, brightness: int) -> dict:
+        return await self._get(
+            f"/equipment/flatdevice/set-brightness?brightness={int(brightness)}")
+
     async def get_safety_info(self) -> dict:
         """Safety-monitor state (Connected, IsSafe, DeviceId, ...).
 

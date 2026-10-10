@@ -232,7 +232,15 @@ def dark_capture_window(config) -> str:
 
 
 def piggy_dark_action(config) -> str:
-    """The completeness 'action' for Piggy-600 darks that are short."""
+    """The completeness 'action' for Piggy-600 darks that are short.
+    PS-189: with the Wanderer Cover enabled the closed cover is the
+    shutter, so the window does not apply (the companion and a daytime
+    capture job shoot them with the cover closed)."""
+    if getattr(config, "piggyback_cover_enabled", False):
+        return ("the Piggy-600 cover is its shutter (PS-189): the companion's "
+                "OSC_DARKS_COVER_CLOSED fills them before the night's lights "
+                "whatever the roof, or start a capture job (rig piggyback) any "
+                "time, daytime included; it closes the cover first")
     w = dark_capture_window(config)
     base = ("the Piggy-600 has no shutter and the dome leaks daylight (RC16 900 s "
             "day dark 5661 ADU over bias), so its darks are shot only with the roof "

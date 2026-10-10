@@ -1105,6 +1105,29 @@ class PhotonScriptConfig(BaseSettings):
     # 2026-10-07 the OSC SkyFlat at ND+5 found the sky "too dim" at its 30 s
     # max for 14 min and gave up (8188 ADU at 30 s by ND+20). Capped so the
     # set fits the armer's dawn hold (ND + 5 + dawn_flats_window_min - 10).
+    # PS-189: Wanderer Cover V4-EC on the Piggy-600 (motorized dust cover with
+    # an EL flat panel; ASCOM CoverCalibrator, NINA "Flat Panel"). Off until
+    # it is installed: with it off nothing below changes a sequence or a job.
+    # On: the companion connects it, closes it for the darks, opens it before
+    # the first light (deploy\cover-gate.cmd verifies Open through ninaAPI,
+    # at most piggyback_cover_gate_timeout_s, else skips the image pass and
+    # pages once a night), closes it whenever the roof reads unsafe, shoots
+    # piggyback_flat_count panel flats at astro dawn (no sky: replaces the
+    # PS-163 dawn sky flats) and leaves it closed with the panel off. The
+    # dawn shutdown and the unsafe park close it too, and a daytime
+    # calibration capture on the Piggy-600 counts a closed cover as
+    # light-tight (no closed roof needed; the daytime probe still runs).
+    piggyback_cover_enabled: bool = False
+    piggyback_cover_gate_timeout_s: float = 180.0  # V4-EC opens in ~10-20 s
+    piggyback_cover_gate_poll_s: float = 5.0
+    piggyback_cover_script: str = "C:\\astro\\PhotonScript\\deploy\\cover-gate.cmd"
+    piggyback_panel_flat_mode: str = "auto"  # auto: NINA AutoExposureFlat
+    # (fixed brightness, NINA seeks the exposure for a 50% histogram, like the
+    # Flat Wizard) | fixed: piggyback_panel_flat_exposure_s at the brightness
+    piggyback_panel_brightness: int = 50  # panel brightness, device units
+    # (ninaAPI flatdevice info MinBrightness..MaxBrightness)
+    piggyback_panel_flat_exposure_s: float = 1.0  # fixed mode exposure (s)
+    piggyback_panel_flat_max_s: float = 10.0  # auto mode exposure ceiling (s)
     piggyback_af_temp_change_c: float = 1.5  # PS-68: OSC refocus on this focuser
                                              # temperature change (C)
     piggyback_af_hfr_increase_pct: float = 10.0  # PS-68: OSC refocus when HFR rises

@@ -1114,6 +1114,28 @@
                 }
                 pane += _equipRow('Roof', '<span style="white-space:normal;">' + roof + '</span>');
             }
+            // PS-189: Wanderer Cover (dust cover + flat panel) on the Piggy-600
+            const fd = (r.devices || {}).flatdevice;
+            if (fd) {
+                let cov;
+                if (fd.connected) {
+                    const st = String(fd.cover || 'unknown');
+                    const col = st === 'open' ? '#4ade80' : st === 'closed' ? '#7dd3fc' : '#fbbf24';
+                    cov = _dot(true) + ' <span style="color:' + col + ';">cover ' + st + '</span>' +
+                        (fd.light_on === true ? ' &#183; <span style="color:#fbbf24;">panel ON' +
+                            (fd.brightness != null ? ' (' + fd.brightness + ')' : '') + '</span>'
+                            : fd.light_on === false ? '<span style="opacity:.6;"> &#183; panel off</span>' : '');
+                } else {
+                    cov = _dot(false) + ' <span style="opacity:.75;">flat panel not connected</span>';
+                }
+                if (fd.cover_note) {
+                    const note = String(fd.cover_note).replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    cov += '<br><span style="color:' + (/^not imaging/.test(fd.cover_note) ? '#f87171' : '#fbbf24') +
+                        ';">' + note + '</span>';
+                }
+                pane += _equipRow('Cover', '<span style="white-space:normal;">' + cov + '</span>');
+            }
             pane += '</div>';
             html += pane;
         });

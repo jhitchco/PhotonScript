@@ -188,6 +188,33 @@ class RigIO:
                     "RC16 safety monitor (read only)"
         return None, "safety monitor unreadable"
 
+    async def cover(self, close: bool = False, wait_s: float = 45.0,
+                    poll_s: float = 3.0) -> tuple[str | None, bool | None]:
+        """PS-189: (cover state, panel light on) of the rig's Wanderer Cover
+        from ninaAPI flatdevice info; (None, None) when unreadable. With
+        `close` (a job start: the armer is idle, so nothing else wants the
+        cover) a cover not yet closed gets connect, light off and close,
+        then is read until closed (at most wait_s)."""
+        from photonscript.shared.rigs import (cover_state, nina_flatdevice,
+                                              nina_flatdevice_info)
+        info = await nina_flatdevice_info(self.base)
+        st = cover_state(info) if info and info.get("Connected", True) else None
+        light = (info or {}).get("LightOn")
+        if not close or (st == "closed" and light is not True):
+            return st, light
+        if st is None:
+            await nina_flatdevice(self.base, "connect")
+        await nina_flatdevice(self.base, "light_off")
+        await nina_flatdevice(self.base, "close")
+        t0 = time.monotonic()
+        while True:
+            info = await nina_flatdevice_info(self.base)
+            st = cover_state(info) if info and info.get("Connected", True) else None
+            light = (info or {}).get("LightOn")
+            if (st == "closed" and light is not True) or time.monotonic() - t0 >= wait_s:
+                return st, light
+            await asyncio.sleep(poll_s)
+
     async def guider_state(self) -> str | None:
         """PHD2 state as NINA #1 reports it (RC16 only); None = unknown."""
         if self.rig != "rc16":
@@ -215,6 +242,27 @@ def tree_running(tree) -> bool:
     for top in tree if isinstance(tree, list) else [tree]:
         walk(top)
     return found
+
+
+async def light_tight(config, rig: str, io, connect: bool = True
+                      ) -> tuple[bool | None, str, str]:
+    """(closed, source, via): may darks be shot now? PS-189: on a rig with
+    the Wanderer Cover enabled, a cover reading closed with the panel off
+    is light-tight whatever the roof (via "cover"; with `connect` it is
+    closed first). Otherwise, or when the cover is not closed, the roof /
+    safety monitor decides as before (via "roof"). io without cover()
+    (older test doubles) is roof-only."""
+    from photonscript.shared.rigs import cover_enabled, rig_label
+    if cover_enabled(config, rig) and hasattr(io, "cover"):
+        try:
+            st, light = await io.cover(close=connect)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cover read (%s): %s", rig, e)
+            st, light = None, None
+        if st == "closed" and light is not True:
+            return True, f"{rig_label(config, rig)} cover closed", "cover"
+    closed, src = await io.roof(connect=connect)
+    return closed, src, "roof"
 
 
 # --- job ---------------------------------------------------------------------------
@@ -246,6 +294,7 @@ class Job:
         self.events: list[str] = []
         self.armer_status_fn: Callable[[], dict] | None = None
         self.reach_stalled = False   # PS-182: cooling stalled above the setpoint
+        self.light_via = "roof"      # PS-189: "cover" when the closed cover is the shutter
 
     @property
     def active(self) -> bool:
@@ -281,6 +330,7 @@ class Job:
                 "elapsed_min": round((time.monotonic() - self.started_mono) / 60, 1),
                 "landed": len(self.frames), "expected": self.expected,
                 "verdicts": verdicts, "sequence": self.sequence,
+                "light_via": self.light_via,
                 "bad": [{"file": r.get("name"), "reasons": r.get("reasons")}
                         for r in self.frames.values() if r.get("verdict") == "fail"][:20],
                 "events": self.events[-15:]}
@@ -376,14 +426,17 @@ async def preflight(config, rig: str, armer_state: str, io: RigIO | None = None,
         refusals.append(f"cannot read {label}'s NINA sequence state (is NINA up?)")
     elif running:
         refusals.append(f"{label}'s NINA is running a sequence; stop it first")
-    closed, src = await io.roof(connect=connect)
+    closed, src, via = await light_tight(config, rig, io, connect=connect)
     seen["roof"] = {"closed": closed, "source": src}
+    seen["light_via"] = via   # PS-189: "cover" = the closed cover is the shutter
+    cover_hint = (" (or the Piggy-600 cover closed)"
+                  if via == "roof" and _cover_on(config, rig) else "")
     if closed is None:
         refusals.append(f"roof state unknown ({src}): darks need the roof reading "
-                        "CLOSED")
+                        f"CLOSED{cover_hint}")
     elif not closed:
         refusals.append(f"roof reads OPEN / safe ({src}): darks and bias need the "
-                        "roof closed")
+                        f"roof closed{cover_hint}")
     if connect:
         ok, err = await io.connect_camera()
     else:
@@ -399,6 +452,11 @@ async def preflight(config, rig: str, armer_state: str, io: RigIO | None = None,
         if day:
             refusals += await _reach_check(config, rig, io, seen, label)
     return refusals, seen
+
+
+def _cover_on(config, rig: str) -> bool:
+    from photonscript.shared.rigs import cover_enabled
+    return cover_enabled(config, rig)
 
 
 def reach_mode(config) -> str:
@@ -611,6 +669,9 @@ async def _start(config, rig, armer_state_fn, io, poll_s, day, seen, *, darks, b
     if probe:
         job.log(f"daytime probe first: {probe[1]} x {probe[0]:g} s darks vs night ones")
     job.armer_status_fn = armer_status_fn
+    job.light_via = seen.get("light_via") or "roof"   # PS-189
+    if job.light_via == "cover":
+        job.log("light-tight by the closed cover (roof state not needed)")
     _jobs[rig] = job
     job.task = asyncio.create_task(_run(config, job, io, armer_state_fn, poll_s))
     return True, job.to_dict()
@@ -754,10 +815,20 @@ async def _wait_cooled(config, job: Job, io: RigIO, armer_state_fn, poll_s) -> s
         if time.monotonic() > deadline:
             return (f"camera did not reach {job.setpoint:g} +/- {job.tol:g} C in "
                     f"{cool_timeout_min(config):g} min (last {t} C)")
-        closed, src = await io.roof(connect=False)
+        closed, src, _via = await _tight(config, job, io)
         if closed is False:
             return f"roof opened ({src})"
         await asyncio.sleep(poll_s)
+
+
+async def _tight(config, job: Job, io) -> tuple[bool | None, str, str]:
+    """A running job's light check: the cover when the job started on it
+    (PS-189), else the roof. A cover that stops reading closed falls back
+    to the roof, so daylight on an open roof stops the job."""
+    if job.light_via == "cover":
+        return await light_tight(config, job.rig, io, connect=False)
+    closed, src = await io.roof(connect=False)
+    return closed, src, "roof"
 
 
 async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> None:
@@ -775,15 +846,19 @@ async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> No
         job.log("cooling to setpoint")
         stop_reason = await _wait_cooled(config, job, io, armer_state_fn, poll_s)
         if stop_reason is None:
-            closed, src = await io.roof(connect=False)
+            closed, src, _via = await _tight(config, job, io)
             running = await io.sequence_running()
             if closed is not True:
                 stop_reason = f"roof not reading closed before dispatch ({src})"
             elif running is not False:
                 stop_reason = "NINA busy or unreadable before dispatch"
         if stop_reason is None:
+            # PS-189: on the cover the roof may be open (daytime): no
+            # LoopWhileUnsafe, the sequence closes the cover itself instead
+            on_cover = job.light_via == "cover"
             seq_text, _m = generate_darks_json(
-                view, [(e, n) for e, n in job.darks], job.bias, safety_gated=True,
+                view, [(e, n) for e, n in job.darks], job.bias,
+                safety_gated=not on_cover, cover_closed=on_cover,
                 warm_minutes=float(getattr(config, "gradual_warm_minutes", 0.0)))
             try:
                 seq_dir = Path.cwd() / "sequences"
@@ -807,7 +882,9 @@ async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> No
             await notify(config, f"{label} calibration capture started: "
                          + ", ".join(f"{e:g}s x{n}" for e, n in job.darks)
                          + (f" + {job.bias} bias" if job.bias else "")
-                         + f", about {job.minutes():.0f} min. Roof must stay closed.",
+                         + f", about {job.minutes():.0f} min. "
+                         + ("Cover stays closed." if job.light_via == "cover"
+                            else "Roof must stay closed."),
                          title="PhotonScript calibration")
             stop_reason = await _monitor(config, job, io, armer_state_fn, poll_s, nights)
     except asyncio.CancelledError:
@@ -837,7 +914,7 @@ async def _monitor(config, job: Job, io: RigIO, armer_state_fn, poll_s: float,
         st = armer_state_fn()
         if st not in IDLE_STATES:
             return f"armer went {st}"
-        closed, src = await io.roof(connect=False)
+        closed, src, _via = await _tight(config, job, io)
         if closed is False:
             return f"roof opened ({src})"
         roof_miss = roof_miss + 1 if closed is None else 0
@@ -882,7 +959,7 @@ async def _monitor(config, job: Job, io: RigIO, armer_state_fn, poll_s: float,
             if job.daytime and not cq.daytime_capture_allowed(config, job.rig):
                 return "daytime light leak: day darks brighter than night darks"
         job.detail = (f"{len(job.frames)} of {job.expected} frames, sensor {t} C, "
-                      f"roof closed ({src})")
+                      f"light-tight ({src})")
         if len(job.frames) >= job.expected:
             job.log("every frame landed")
             return None

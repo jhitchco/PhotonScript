@@ -359,7 +359,8 @@ def splice_name(date: str, field: str, kept: list[str], tag: str = "TT") -> str:
 # ------------------------------------------------------------------------ lint
 
 def lint_companion(seq: dict, filter_wheel: bool | None = None,
-                   settle_gate: bool | None = None, hand_built: bool = False):
+                   settle_gate: bool | None = None, hand_built: bool = False,
+                   cover: bool | None = None):
     """Lint for the Piggy-600 companion (camera + focuser only). Errors: a
     warm or missing setpoint, missing $id / Parent links (PS-77), a light
     loop without its own Safety + Time condition, a loop with no waiting
@@ -374,6 +375,9 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     trigger is an ERROR, one outside any loop a WARN (center once before
     the loop, never while the RC16 images). PhotonScript's own companion
     (hand_built False) never carries one: any is an ERROR, as before.
+    cover (PS-189): the Wanderer Cover rules (cover-open, cover-flats,
+    cover-end; None = from piggyback_cover_enabled, and always when the
+    sequence carries a cover instruction).
     Returns a sequence_lint.LintResult."""
     from photonscript.scheduler import sequence_lint as sl
     from photonscript.shared.rigs import PIGGYBACK, rig_has_filter_wheel
@@ -390,6 +394,7 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     sl._check_flat_filters(seq, r, filter_wheel)   # PS-132
     sl._check_settle_gate(seq, r, settle_gate)   # PS-27
     sl._check_piggy_mount(seq, r, strict=not hand_built)   # PS-139
+    sl._check_cover(seq, r, cover)   # PS-189
     mount = sorted({_short(d["$type"])
                     for frag in (GUIDER_TYPES if hand_built else MOUNT_TYPES)
                     for d in sl._find_type(seq, frag)})

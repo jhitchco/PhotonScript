@@ -46,6 +46,22 @@ def rig_devices(rig: str) -> tuple:
     return RIG_DEVICES.get(rig, RIG_DEVICES[RC16])
 
 
+def cover_enabled(config, rig: str = PIGGYBACK) -> bool:
+    """PS-189: the rig has the Wanderer Cover V4-EC (motorized dust cover +
+    EL flat panel, NINA "Flat Panel" device). Only the Piggy-600 can, and
+    only with piggyback_cover_enabled (default off until it is installed)."""
+    return rig == PIGGYBACK and bool(getattr(config, "piggyback_cover_enabled", False))
+
+
+def rig_connect_devices(config, rig: str) -> tuple:
+    """rig_devices plus the devices the config adds: the Piggy-600's flat
+    device (ninaAPI "flatdevice") when its cover is enabled (PS-189)."""
+    devs = tuple(rig_devices(rig))
+    if cover_enabled(config, rig) and "flatdevice" not in devs:
+        devs += ("flatdevice",)
+    return devs
+
+
 def rig_has_filter_wheel(rig: str) -> bool:
     """PS-132: False for the Piggy-600 (one-shot color, no wheel). Its
     sequences must not ask NINA for a filter (sequence_lint no-filter-wheel)."""
@@ -270,6 +286,104 @@ async def nina_camera_info(base_url: str) -> dict | None:
     except Exception as e:  # noqa: BLE001
         logger.warning("camera info (%s) failed: %s", base_url, e)
         return None
+
+
+# PS-189: NINA's CoverState enum (NINA.Equipment.Interfaces, in this order)
+# for a ninaAPI that serializes it as a number; names are matched as text.
+_COVER_STATES = ("unknown", "moving", "closed", "open", "error", "notpresent")
+
+
+def cover_state(info: dict | None) -> str | None:
+    """"open" | "closed" | "moving" | "error" | "notpresent" | "unknown"
+    from a ninaAPI flatdevice info payload, None when there is none.
+    CoverState is read as a name (any case, "NeitherOpenNorClosed" is
+    moving) or as NINA's enum number; LocalizedCoverState is the fallback."""
+    if not isinstance(info, dict):
+        return None
+    for key in ("CoverState", "LocalizedCoverState"):
+        v = info.get(key)
+        if v is None or isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            i = int(v)
+            return _COVER_STATES[i] if 0 <= i < len(_COVER_STATES) else "unknown"
+        s = str(v).strip().lower().replace(" ", "").replace("_", "")
+        if s in ("neitheropennorclosed", "moving", "halfopen"):
+            return "moving"
+        if s.startswith("open"):
+            return "open"
+        if s.startswith("close"):
+            return "closed"
+        return s if s in _COVER_STATES else "unknown"
+    return "unknown"
+
+
+async def nina_flatdevice_info(base_url: str) -> dict | None:
+    """PS-189: the rig's flat device (ninaAPI v2 GET
+    /equipment/flatdevice/info): Connected, CoverState, LightOn,
+    Brightness, MinBrightness, MaxBrightness, SupportsOpenClose... None when
+    NINA is unreachable or says Success false."""
+    base = base_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(base + "/equipment/flatdevice/info")
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("Success") is False:
+                logger.warning("flatdevice info (%s): %s", base_url, data.get("Error"))
+                return None
+            payload = data.get("Response", data) if isinstance(data, dict) else data
+            return payload if isinstance(payload, dict) else None
+    except Exception as e:  # noqa: BLE001
+        logger.warning("flatdevice info (%s) failed: %s", base_url, e)
+        return None
+
+
+# ninaAPI v2 flat-device commands (all GET, like every ninaAPI equipment call)
+FLATDEVICE_COMMANDS = {
+    "connect": ("/equipment/flatdevice/connect", {}),
+    "open": ("/equipment/flatdevice/set-cover", {"closed": "false"}),
+    "close": ("/equipment/flatdevice/set-cover", {"closed": "true"}),
+    "light_on": ("/equipment/flatdevice/set-light", {"on": "true"}),
+    "light_off": ("/equipment/flatdevice/set-light", {"on": "false"}),
+}
+
+
+async def nina_flatdevice(base_url: str, command: str,
+                          brightness: int | None = None) -> dict:
+    """PS-189: one flat-device command on a rig's NINA: connect | open |
+    close | light_on | light_off | brightness (set-brightness?brightness=N).
+    Returns {ok, detail}. The cover moves on its own after the call: read
+    nina_flatdevice_info for the state."""
+    base = base_url.rstrip("/")
+    if command == "brightness":
+        path, params = ("/equipment/flatdevice/set-brightness",
+                        {"brightness": int(brightness or 0)})
+    elif command in FLATDEVICE_COMMANDS:
+        path, params = FLATDEVICE_COMMANDS[command]
+    else:
+        return {"ok": False, "detail": f"unknown flat-device command {command!r}"}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(base + path, params=params)
+            r.raise_for_status()
+            data = r.json()
+            if isinstance(data, dict) and data.get("Success") is False:
+                return {"ok": False, "detail": str(data.get("Error"))}
+        return {"ok": True, "detail": f"flat device {command}"}
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
+
+async def nina_cover_close(base_url: str) -> dict:
+    """PS-189: panel light off, then cover closed (dawn shutdown, unsafe
+    park, daytime darks). Returns {ok, detail}; ok only when both calls
+    went through."""
+    lo = await nina_flatdevice(base_url, "light_off")
+    cl = await nina_flatdevice(base_url, "close")
+    return {"ok": bool(lo.get("ok") and cl.get("ok")),
+            "detail": f"light off {'ok' if lo.get('ok') else lo.get('detail')}, "
+                      f"close {'ok' if cl.get('ok') else cl.get('detail')}"}
 
 
 def rig_setpoint(config, rig: str) -> float:

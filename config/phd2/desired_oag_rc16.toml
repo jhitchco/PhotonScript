@@ -1,5 +1,6 @@
 # PS-89 desired PHD2 state: RC16 (3248 mm) guided through the OAG by the
-# OGMA GP678C. scheduler/phd2_audit.py reads this file at every arm (and on
+# OGMA GP678C, and (PS-190) by the ZWO ASI174MM Mini that replaces it (the
+# [[camera]] tables below). scheduler/phd2_audit.py reads this file at every arm (and on
 # GET /api/phd2/audit?refresh=1) and compares each row with what PHD2, its
 # stored profile, the newest guide log, NINA, the mount driver, TheSky and the
 # dark library say.
@@ -31,10 +32,77 @@
 #   why, fix           plain-language reason and the manual fix
 # Scale-dependent thresholds are written in arcsec so a binning change (the
 # PS-90 auto-tune) moves the pixel limits with it.
+#
+# PS-190 guide cameras ([[camera]]): id, name, match (a piece of the camera
+# name PHD2 or the guide log reports, case and punctuation ignored),
+# pixel_size_um, binning, expected_scale_arcsec_px, sensor. The audit picks
+# the camera whose match is in the reported name (else default_camera) and
+# lays its [camera.rows.<check id>] overrides over the [[check]] rows: an
+# override that sets a desired form (equals, min / max, computed ...)
+# replaces the row's form and target, other keys (why, fix, band) merge.
+# Until the swap both cameras pass the camera row; the rows judged are the
+# connected camera's.
 
 rig = "rc16"
 guide_path = "oag"
-title = "RC16 OAG (GP678C, 3248 mm)"
+title = "RC16 OAG (GP678C, then ZWO ASI174MM Mini; 3248 mm)"
+default_camera = "gp678c"
+
+# ---------------------------------------------------------------- cameras
+
+[[camera]]
+id = "gp678c"
+name = "OGMA GP678C"
+match = "GP678"
+sensor = "IMX678 color, 3840 x 2160, 2.0 um"
+pixel_size_um = 2.0
+binning = 2
+expected_scale_arcsec_px = 0.254
+
+[[camera]]
+id = "asi174mm_mini"
+name = "ZWO ASI174MM Mini"
+match = "ASI174"
+sensor = "IMX174 mono, 1936 x 1216, 5.86 um"
+pixel_size_um = 5.86
+binning = 1
+expected_scale_arcsec_px = 0.372
+
+[camera.rows.binning]
+equals = 1
+why = "At 5.86 um the ASI174MM Mini is already 0.372 arcsec/px at bin 1 on the OAG (206.265 x 5.86 / 3248), plenty for 2 to 3 arcsec seeing; bin 2 (0.74 arcsec/px) would undersample the centroid. Mono and large pixels give the signal that bin 2 bought on the GP678C."
+fix = "Brain > Camera: binning 1."
+
+[camera.rows.pixel_size_um]
+equals = 5.86
+why = "PHD2 turns pixels into arcsec with this; the GP678C's 2.0 um left in the profile would make every RMS, min-move and calibration number 2.9x off."
+fix = "Brain > Camera: pixel size 5.86 um (ASI174MM Mini)."
+
+[camera.rows.exposure_ms]
+min = 1500
+max = 4000
+target = 2000
+why = "Start at 2 s: the mono IMX174 behind the OAG prism collects far more signal per pixel than the GP678C, so 2 s already averages the seeing at 3248 mm; up to 4 s for a faint OAG field, never 1 s (chases seeing)."
+fix = "PHD2 exposure dropdown: 2 s (1.5 to 4 s)."
+
+[camera.rows.gain]
+band = [33, 50]
+why = "PHD2 sets ZWO gain as 0 to 100 percent of the camera's range: 33 to 50 is about 200 to 300 of a 0 to 600 native gain (unity is near the bottom), a good start for a mono IMX174 on an OAG. The PS-90 tuner takes over once it has nights of data; this band is only a recommendation."
+fix = "Brain > Camera: camera gain 33 to 50 (about native 200 to 300) to start, then as the PS-90 tuner recommends (System page > Guide star)."
+
+[camera.rows.min_hfd_px]
+min = 1.5
+max = 2.5
+target = 2.0
+why = "At 0.372 arcsec/px a 2.5 arcsec star is about 6.7 px HFD and a hot pixel about 1 px, so a 2 px floor rejects hot pixels with room to spare (the PS-91 non-star lock)."
+fix = "Brain > Guiding: minimum star HFD 2.0 px."
+
+[camera.rows.search_region_px]
+min = 20
+max = 35
+target = 25
+why = "25 px is 9.3 arcsec at 0.372 arcsec/px, the same sky as 35 px on the GP678C at bin 2; it must still cover a dither (NINA's dither pixels are guide pixels, so fewer of them with the bigger pixels)."
+fix = "Brain > Guiding: search region 25 px (20 to 35, and at least NINA's dither pixels)."
 
 # ---------------------------------------------------------------- camera
 
@@ -43,12 +111,24 @@ id = "camera"
 group = "Camera"
 label = "Guide camera"
 sources = ["api", "log"]
-equals = "GP678C"
-match = "contains"
+computed = "guide_camera"
 severity = "fail"
 apply = "manual"
-why = "Only the GP678C sits on the OAG; the AP26CC is now the piggyback imaging camera and the AP26MC is the main camera."
-fix = "PHD2 Connect Equipment: select the GP678C (the OAG profile), never the AP26CC or AP26MC."
+why = "Only the OAG guide camera may guide: the GP678C until the swap, then the ZWO ASI174MM Mini (the [[camera]] tables); the AP26CC is the piggyback imaging camera and the AP26MC is the main camera."
+fix = "PHD2 Connect Equipment: select the OAG guide camera (GP678C, or the ASI174MM Mini after the swap), never the AP26CC or AP26MC."
+
+[[check]]
+id = "guide_scale"
+group = "Camera"
+label = "Guide pixel scale (\"/px)"
+sources = ["api", "log"]
+key = "pixel_scale"
+computed = "guide_scale"
+tol_pct = 5
+severity = "warn"
+apply = "manual"
+why = "PHD2's scale must be the connected camera's pixel size x binning over the OAG focal length: 0.254 for the GP678C at bin 2, 0.372 for the ASI174MM Mini at bin 1. A miss means the profile kept the old camera's pixel size or a wrong focal length."
+fix = "Brain > Camera: the camera's pixel size and binning; Brain > Global: focal length 3248 mm."
 
 [[check]]
 id = "bit_depth"
@@ -102,7 +182,7 @@ equals = 2.0
 severity = "fail"
 apply = "profile"
 why = "PHD2 turns pixels into arcsec with this; a wrong value skews every RMS number, min-move and the calibration step."
-fix = "Brain > Camera: pixel size 2.0 um (GP678C)."
+fix = "Brain > Camera: pixel size 2.0 um (GP678C; the ASI174MM Mini row says 5.86)."
 
 [[check]]
 id = "gain"

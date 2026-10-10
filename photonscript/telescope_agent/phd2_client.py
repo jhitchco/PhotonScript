@@ -115,17 +115,29 @@ def guide_focal_length_mm(config) -> float:
     return 0.0
 
 
-def guide_scale_from_config(config, binning: int | None = 1) -> float | None:
+def guide_scale_from_config(config, binning: int | None = 1, camera: str | None = None,
+                            pixel_um: float | None = None) -> float | None:
     """Guide-camera arcsec/px from config, or None when it cannot be known.
 
     phd2_pixel_scale_arcsec (if set) wins as-is; otherwise
-    206.265 * guide_camera_pixel_um * binning / guide focal length."""
+    206.265 * pixel size * binning / guide focal length. PS-190: the pixel
+    size is `pixel_um` when given, else the [[camera]] entry of the PHD2
+    desired file that matches `camera` (the name PHD2 or its log reports:
+    the ASI174MM Mini is 5.86 um), else guide_camera_pixel_um."""
     if config is None:
         return None
     explicit = float(getattr(config, "phd2_pixel_scale_arcsec", 0) or 0)
     if explicit > 0:
         return explicit
-    px = float(getattr(config, "guide_camera_pixel_um", 0) or 0)
+    px = float(pixel_um or 0)
+    if px <= 0 and camera:
+        try:
+            from photonscript.scheduler.phd2_audit import camera_pixel_um
+            px = float(camera_pixel_um(config, camera) or 0)
+        except Exception:  # noqa: BLE001
+            px = 0.0
+    if px <= 0:
+        px = float(getattr(config, "guide_camera_pixel_um", 0) or 0)
     fl = guide_focal_length_mm(config)
     if px <= 0 or fl <= 0:
         return None
