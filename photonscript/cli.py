@@ -27,6 +27,7 @@ Usage:
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
     photonscript calibration-library [--rig R] [--url U] [--desktop-library P] [--json]  # PS-178
     photonscript calibration-status [--rig R] [--url U] [--mirror P] [--nights N] [--json]  # PS-182
+    photonscript calibration-file --url U [--rig R] [--dry-run] [--rejudge] [--regrade] [--days N]  # PS-188
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
@@ -2564,6 +2565,74 @@ def _rc_overrides(rcastro: str, bxt_stars: float, bxt_nonstellar: float, nxt_den
         if v is not None and v >= 0:
             out[k] = pjsr.unit_value(k, v)
     return out
+
+
+@app.command("calibration-file")
+def calibration_file_cmd(
+    url: str = typer.Option("", "--url",
+                            help="The scope scheduler (POST /api/calibration/file), "
+                                 "e.g. http://100.94.189.77:8100"),
+    local: bool = typer.Option(False, "--local",
+                               help="File on this machine instead (the scope PC only: "
+                                    "it links into this config's Library)"),
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: both)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Report only: move, link and save nothing"),
+    rejudge: bool = typer.Option(False, "--rejudge",
+                                 help="Judge every QA record by today's rule first and move "
+                                      "filed frames to match (quarantine <-> Library)"),
+    regrade: bool = typer.Option(False, "--regrade", help="Re-measure every frame (slow)"),
+    days: int = typer.Option(0, "--days", help="Folders of the last N days (default 14, "
+                                               "at most library_cal_days)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """PS-188: file calibration now instead of waiting for the dawn pass.
+    Every recent calibration folder of both rigs: QA (cached; a new frame
+    is measured unless the armer is imaging), failing frames to the
+    quarantine, the rest linked into Library/Calibration for Syncthing.
+    Prints what was filed, quarantined and left, and why. Exit 1 when
+    anything is left.
+
+    photonscript calibration-file --url http://100.94.189.77:8100 --dry-run
+    photonscript calibration-file --url http://100.94.189.77:8100 --rejudge
+    """
+    import json as _json
+    from photonscript.scheduler import calibration_filing as cf
+    if not url and not local:
+        console.print("give --url of the scope scheduler (or --local on the scope PC)",
+                      markup=False)
+        raise typer.Exit(2)
+    if url:
+        import httpx
+        body = {"dry_run": dry_run, "rejudge": rejudge, "regrade": regrade,
+                "source": "cli"}
+        if rig:
+            body["rig"] = rig
+        if days:
+            body["days"] = days
+        try:
+            r = httpx.post(url.rstrip("/") + "/api/calibration/file", json=body,
+                           timeout=1800)
+            rep = r.json()
+            if r.status_code >= 400:
+                console.print(f"scheduler refused ({r.status_code}): "
+                              f"{rep.get('detail') or rep.get('error')}", markup=False)
+                raise typer.Exit(2)
+        except typer.Exit:
+            raise
+        except Exception as e:  # noqa: BLE001
+            console.print(f"scheduler unreachable or refused ({e})", markup=False)
+            raise typer.Exit(2)
+    else:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        rep = cf.file_now(cfg, rigs=[rig] if rig else None, days=days or None,
+                          dry_run=dry_run, regrade=regrade, rejudge=rejudge,
+                          source="cli")
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(cf.format_report(rep), markup=False, highlight=False)
+    if any(r.get("error") or r.get("n_left") for r in (rep.get("rigs") or {}).values()):
+        raise typer.Exit(1)
 
 
 @app.command("integrate")

@@ -18,6 +18,12 @@ GET  /api/calibration/completeness?rig=&names=&nights=
                                              when short, darks windows, bias plan
 GET  /api/calibration/windows?rig=&minutes=  PS-182: darks windows + cooler
                                              reachability, the deferred plan
+POST /api/calibration/file                   PS-188 {"rig", "dry_run",
+                                             "regrade", "rejudge", "days"}: file
+                                             calibration now (QA, Library,
+                                             quarantine), what was filed /
+                                             quarantined / left and why
+GET  /api/calibration/file                   the last filing report
 POST /api/calibration/qa/backfill            {"rig", "dry_run"}: QA the whole
                                              library in the background
 GET  /api/calibration/qa/backfill            backfill progress / last report
@@ -167,14 +173,15 @@ def pending_names() -> tuple[set | None, bool]:
 @router.get("/api/calibration/completeness")
 def api_calibration_completeness(rig: str = "", names: bool = False, nights: int = 0):
     """PS-182: read only. The calibration completeness model."""
-    from photonscript.scheduler.calibration_completeness import completeness
+    from photonscript.scheduler.calibration_completeness import safe_report
     from photonscript.shared.rigs import rig_ids
     cfg = _cfg()
     if rig and rig not in rig_ids(cfg):
         return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
     pending, capped = pending_names()
-    return completeness(cfg, rig or None, pending=pending, pending_capped=capped,
-                        names=bool(names), nights=max(0, int(nights)) or None)
+    # PS-188: never a 500; a failing rig carries an "error" field
+    return safe_report(cfg, rig or None, pending=pending, pending_capped=capped,
+                       names=bool(names), nights=max(0, int(nights)) or None)
 
 
 @router.get("/api/calibration/windows")
@@ -187,10 +194,56 @@ def api_calibration_windows(rig: str = "rc16", minutes: float = 0.0):
     cfg = _cfg()
     if rig not in rig_ids(cfg):
         return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
-    out = windows(cfg, rig, minutes=max(0.0, float(minutes)))
-    out["model"] = ch.reachability(cfg, rig)["model"]
-    out["deferred"] = deferred(cfg, rig)
-    return out
+    from photonscript.scheduler.calibration_completeness import json_safe
+    try:
+        out = windows(cfg, rig, minutes=max(0.0, float(minutes)))
+        out["model"] = ch.reachability(cfg, rig)["model"]
+        out["deferred"] = deferred(cfg, rig)
+    except Exception as e:  # noqa: BLE001 - PS-188: an answer, not a 500
+        return {"rig": rig, "error": f"{type(e).__name__}: {e}", "windows": []}
+    return json_safe(out)
+
+
+@router.post("/api/calibration/file")
+async def api_calibration_file(payload: dict = Body(default={})):
+    """PS-188: file calibration now, both rigs (or "rig"). Runs in a worker
+    thread and answers with the report. regrade (re-measure every frame)
+    is refused while the armer images; new frames are then not measured
+    either (left "QA pending" for the dawn sweep)."""
+    import asyncio
+    from photonscript.scheduler import calibration_filing as cf
+    from photonscript.scheduler.calibration_completeness import json_safe
+    from photonscript.shared.rigs import rig_ids
+    cfg = _cfg()
+    rig = str(payload.get("rig") or "")
+    if rig and rig not in rig_ids(cfg):
+        return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
+    state = _armer_state()
+    imaging = state in cf.IMAGING_STATES
+    regrade = bool(payload.get("regrade", False))
+    if regrade and imaging:
+        return JSONResponse(status_code=409, content={
+            "detail": f"armer is {state}: a regrade re-reads every frame and would "
+                      "compete with tonight's grading; run it in the day"})
+    try:
+        days = int(payload.get("days") or 0) or None
+    except (TypeError, ValueError):
+        return JSONResponse(status_code=400, content={"detail": "days must be a number"})
+    rep = await asyncio.to_thread(
+        cf.file_now, cfg, rigs=[rig] if rig else None, days=days,
+        dry_run=bool(payload.get("dry_run", False)), regrade=regrade,
+        rejudge=bool(payload.get("rejudge", False)), measure_new=not imaging,
+        source=str(payload.get("source") or "manual"))
+    rep["armer"] = state
+    if rep.get("error"):
+        return JSONResponse(status_code=409, content=json_safe(rep))
+    return json_safe(rep)
+
+
+@router.get("/api/calibration/file")
+def api_calibration_file_last():
+    from photonscript.scheduler.calibration_filing import last_report
+    return last_report(_cfg()) or {"detail": "no calibration filing has run yet"}
 
 
 @router.post("/api/calibration/qa/backfill")

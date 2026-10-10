@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import statistics
 import time
 from datetime import datetime, timedelta
@@ -56,10 +57,16 @@ def _dir(config) -> Path:
 
 
 def _num(v):
+    """A finite float or None. PS-188: NINA reports a focuser without a
+    temperature probe as NaN ("NaN" over ninaAPI); a NaN ambient written
+    into the history made every model median NaN, and the JSON responses
+    that carry it (/api/calibration/windows, /completeness) failed with
+    HTTP 500 (Starlette refuses NaN)."""
     try:
-        return None if v is None else float(v)
+        f = None if v is None else float(v)
     except (TypeError, ValueError):
         return None
+    return f if f is not None and math.isfinite(f) else None
 
 
 def sample_period_s(config) -> float:
@@ -129,6 +136,11 @@ def load(config, rig: str, days: int | None = None,
                 r = json.loads(line)
             except ValueError:
                 continue
+            if not isinstance(r, dict):
+                continue
+            for k in ("temp", "setpoint", "power", "amb"):   # PS-188: old NaN rows
+                if k in r and r[k] is not None and _num(r[k]) is None:
+                    r[k] = None
             if str(r.get("t") or "") >= cutoff:
                 out.append(r)
     out.sort(key=lambda r: r.get("t") or "")

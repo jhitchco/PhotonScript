@@ -1137,6 +1137,14 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     dark_blocks = _osc_dark_blocks(
         config, dawn_provider=("DawnProvider" if gated else "DuskProvider"),
         dawn_offset=0, gated=gated)
+    # PS-188: piggyback_dark_capture_window manual = no companion darks (the
+    # dome leaks daylight and the OSC has no shutter: lens cap + capture job)
+    from photonscript.scheduler.calibration_filing import dark_capture_window
+    if dark_blocks and dark_capture_window(config) == "manual":
+        dark_blocks = []
+        target_items.append(_annotation(
+            "OSC darks OFF tonight: piggyback_dark_capture_window is manual "
+            "(cap the lens and start a capture job for the owed lengths)"))
     if dark_blocks:
         _dark_conds = ([_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")]

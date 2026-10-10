@@ -896,18 +896,31 @@ def link_into_quarantine(src: Path, lib: Path, rec: dict) -> Path:
     return dest
 
 
-def file_night(config, rig: str, lib: Path, night: str, frames) -> set:
+_last_filed: dict[str, dict] = {}
+
+
+def last_filed(rig: str) -> dict:
+    """PS-188: {key: record} of the rig's last file_night batch."""
+    return _last_filed.get(rig) or {}
+
+
+def file_night(config, rig: str, lib: Path, night: str, frames, *,
+               recheck: bool = False, dry_run: bool = False) -> set:
     """The filing hook (runs._link_calibration_night): QA one night's
     calibration frames as a batch. With mode quarantine every failing frame
     is filed into the quarantine (moved there when it was already linked in
     the Library, else hardlinked from the watch dir). Returns the set of
     watch-dir paths (str) the caller must NOT link into the Library. Mode
     off: no QA, empty set; mode report: QA recorded, empty set. Frames that
-    could not be read ("error") are filed as before."""
+    could not be read ("error") are filed as before. PS-188: recheck
+    re-measures cached frames; dry_run judges without saving or moving."""
     m = mode(config)
+    _last_filed[rig] = {}
     if m == "off" or not frames:
         return set()
-    recs = qa_frames(config, rig, frames)
+    recs = qa_frames(config, rig, frames, recheck=recheck, persist=not dry_run,
+                     apply_daytime=not dry_run)
+    _last_filed[rig] = recs
     held: set = set()
     if m != "quarantine":
         return held
@@ -916,6 +929,8 @@ def file_night(config, rig: str, lib: Path, night: str, frames) -> set:
         if rec is None or rec.get("verdict") != "fail":
             continue
         held.add(str(path))
+        if dry_run:
+            continue
         try:
             if _lib_link(lib, rec).exists():
                 quarantine(lib, rec)
@@ -923,7 +938,7 @@ def file_night(config, rig: str, lib: Path, night: str, frames) -> set:
                 link_into_quarantine(Path(path), lib, rec)
         except OSError as e:  # still kept out of the Library
             logger.warning("PS-113: quarantine of %s failed: %s", path, e)
-    if held:
+    if held and not dry_run:
         _persist_locations(config, rig, recs)
         logger.info("PS-113: %d %s calibration frame(s) of %s quarantined",
                     len(held), rig, night)
@@ -1046,6 +1061,98 @@ def restore(config, rig: str, *, dry_run: bool = False) -> dict:
         if not dry_run:
             save_store(config, rig, store)
     return {"rig": rig, "dry_run": dry_run, "restored": moved}
+
+
+def _judge_store(config, rig: str, store: dict) -> None:
+    from photonscript.shared.rigs import rig_readout
+    judge_all(store, rig=rig, tol=temp_tol(config), setpoint=_setpoint(config, rig),
+              scales=dark_excess_scales(config, rig),
+              default_readout=rig_readout(config, rig))
+
+
+def _quarantine_reason(qpath: Path) -> str:
+    """The reasons written next to a quarantined frame (reasons.json)."""
+    try:
+        data = json.loads((qpath.parent / "reasons.json").read_text(encoding="utf-8"))
+        return "; ".join((data.get(qpath.name) or {}).get("reasons", [])[:2])
+    except (OSError, ValueError, AttributeError):
+        return ""
+
+
+def rejudged_verdicts(config, rig: str, store: dict | None = None) -> dict:
+    """PS-188: {key: (verdict, reasons)} of the rig's store judged by
+    today's rule (no file reads, nothing saved). The store keeps the
+    verdict of the last filing pass: the RC16 HCG darks of 2026-10-01 /
+    10-05 / 10-06 still carried the LCG dark-current limit (allowed 22 ADU
+    for 600 s) after PS-182 scaled it for HCG (47.9 ADU), because no
+    filing ran after that deploy."""
+    import copy
+    st = copy.deepcopy(store if store is not None else load_store(config, rig))
+    if not st.get("frames"):
+        return {}
+    _judge_store(config, rig, st)
+    return {k: (r.get("verdict"), list(r.get("reasons") or []))
+            for k, r in st["frames"].items()}
+
+
+def rejudge(config, rig: str, *, dry_run: bool = False) -> dict:
+    """PS-188: judge the rig's whole store by today's rule (cheap, no
+    file reads) and put each filed frame where its new verdict says: a
+    quarantined frame that passes now goes back into the Library (its
+    quarantine copy removed when the Library already has it), and, in
+    quarantine mode, a Library frame that fails now goes to the quarantine.
+    dry_run reports the moves and saves nothing. Returns {"restored",
+    "quarantined", "changed"} with [key, old reason / new reason]."""
+    from photonscript.scheduler.runs import library_root
+    lib = library_root(rig_view(config, rig))
+    out = {"rig": rig, "dry_run": dry_run, "restored": [], "quarantined": [],
+           "changed": 0}
+    with _lock, _FileLock(qa_dir(config) / f"{rig}.lock"):
+        store = load_store(config, rig)
+        if not store["frames"]:
+            return out
+        before = {k: (r.get("verdict"), list(r.get("reasons") or []))
+                  for k, r in store["frames"].items()}
+        if dry_run:
+            import copy
+            store = copy.deepcopy(store)
+        _judge_store(config, rig, store)
+        qmode = mode(config)
+        for k, r in store["frames"].items():
+            old_v, old_r = before.get(k, (None, []))
+            if r.get("verdict") != old_v:
+                out["changed"] += 1
+            if not all(r.get(f) for f in ("type", "date", "name")):
+                continue
+            qpath, lpath = _quarantine_path(lib, r), _lib_link(lib, r)
+            if passed(r) and qpath.exists():
+                was = "; ".join(old_r[:2]) if old_v == "fail" else ""
+                out["restored"].append([k, was or _quarantine_reason(qpath)
+                                        or "quarantined"])
+                if dry_run:
+                    continue
+                try:
+                    if lpath.exists():
+                        qpath.unlink()
+                    else:
+                        lpath.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(qpath, lpath)
+                    _write_reasons(qpath.parent, r["name"], None)
+                    r["location"] = "library"
+                except OSError as e:
+                    logger.warning("PS-188: restore of %s failed: %s", k, e)
+            elif (r.get("verdict") == "fail" and qmode == "quarantine"
+                  and lpath.exists()):
+                out["quarantined"].append([k, "; ".join((r.get("reasons") or [])[:2])])
+                if dry_run:
+                    continue
+                try:
+                    quarantine(lib, r)
+                except OSError as e:
+                    logger.warning("PS-188: quarantine of %s failed: %s", k, e)
+        if not dry_run:
+            save_store(config, rig, store)
+    return out
 
 
 # --- counting (readiness / gap report) ----------------------------------------------

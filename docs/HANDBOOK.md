@@ -1558,6 +1558,31 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   `camera_readout_since` (RC16: set 2026-09-26) stops assuming HCG for any
   older frame that still has none. Passed bias also has to match SET-TEMP
   now (the 09-30 bias at 20 C).
+- FILE CALIBRATION NOW (PS-188): 2026-10-10 the completeness and windows
+  endpoints answered HTTP 500: a focuser with no temperature probe reports
+  NaN, the cooler history stored it, and Starlette refuses NaN in JSON. The
+  history now drops non-finite values (old NaN rows read as None) and both
+  endpoints answer with a per-rig "error" field instead of a 500. The
+  calibration sweep used to run only in the dawn pass, so a disarmed night
+  (10-09, manual TPoint) filed nothing. `POST /api/calibration/file`
+  {"rig", "dry_run", "rejudge", "regrade", "days"} and `photonscript
+  calibration-file --url http://100.94.189.77:8100 [--dry-run] [--rejudge]
+  [--regrade] [--days N]` (exit 1 when anything is left) file both rigs'
+  calibration folders of the last 14 days now and say what was filed,
+  quarantined and left, and why (QA pending, quarantined because X, older
+  verdict that passes today, folder outside the window with the --days to
+  use); `GET /api/calibration/file` is the last report. --rejudge judges
+  the whole QA store by today's rule and moves filed frames to match (the
+  pre-PS-182 HCG darks back out of the quarantine). With
+  `calibration_file_auto` (default on) the same filing runs at arm time,
+  when a night ends without a dawn pass and after a capture job; while the
+  armer images, new frames are not measured (left "QA pending" for dawn).
+  The completeness requirements carry a concrete reason, an `action` and
+  the not-filed frames grouped by reason. Piggy-600 darks:
+  `piggyback_dark_capture_window` unsafe-night (default, today: the
+  companion's OSC_DARKS_IF_UNSAFE behind the cooler gate) | dawn-roof-closed
+  (also saved as the Piggy-600 dawn plan at each filing: lens cap on) |
+  manual (no companion darks).
 - DARKS THAT WORK (PS-182): (a) QA: the dark-over-bias allowance's dark
   current term scales with the readout's ADU per electron
   (`calibration_qa_dark_scale_by_readout`; RC16 HCG 0.79 / 0.25 = 3.16 x).
