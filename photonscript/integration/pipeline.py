@@ -73,7 +73,11 @@ class Options:
     workers: int | None = None
     default_readout: str | None = None
     gradient: str = "auto"
-    use_rc: bool = True
+    use_rc: bool = True               # False (--no-rc) = rc_mode off
+    rc_mode: str = "auto"             # PS-186 finish_use_rcastro: auto | on | off
+    bxt_stars: float = pjsr.FINISH_DEFAULTS["bxt_stars"]
+    bxt_nonstellar: float = pjsr.FINISH_DEFAULTS["bxt_nonstellar"]
+    nxt_denoise: float = pjsr.FINISH_DEFAULTS["nxt_denoise"]
     bortle: int = 2
     site: dict = field(default_factory=dict)
     tz: str = "America/Denver"
@@ -120,9 +124,11 @@ def default_library(cfg=None) -> Path:
 
 def config_options(cfg, rig: str) -> dict:
     """Options fields that come from the PhotonScript config (site, readout,
-    labels): shared by `photonscript integrate` and integrate-watch."""
+    labels, the PS-186 RC Astro finish settings): shared by `photonscript
+    integrate` and integrate-watch."""
     from photonscript.shared.rigs import rig_label, rig_readout
     return dict(
+        **pjsr.rc_settings(cfg),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -512,7 +518,10 @@ def run(o: Options, echo=print) -> dict:
     run_info = {"target": o.target, "rig": o.rig, "run_name": run_dir.name, "run_dir": str(run_dir),
                 "built": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "options": {"since": o.since, "until": o.until, "qa": o.qa, "flats": o.flats,
-                            "library": str(o.library), "filters": o.filters}}
+                            "library": str(o.library), "filters": o.filters,
+                            "rcastro": {"mode": o.rc_mode if o.use_rc else "off", "bxt_stars": o.bxt_stars,
+                                        "bxt_nonstellar": o.bxt_nonstellar,
+                                        "nxt_denoise": o.nxt_denoise}}}
     result.update(lights_selected=len(sel.lights), lights_staged=len(lights), qa=qa_summary,
                   calibration=calib_summary, stacks=stacks)
     if o.dry_run:
@@ -539,6 +548,8 @@ def run(o: Options, echo=print) -> dict:
         fcfg = {"out": pjsr.fwd(out_dir), "staging": pjsr.fwd(run_dir), "ra_deg": ra, "dec_deg": dec,
                 "focal_mm": g0.focallen or 600.0, "pixel_um": g0.pixel_um or 3.76,
                 "gradient": o.gradient, "use_rc": o.use_rc,
+                "rc_mode": o.rc_mode, "bxt_stars": o.bxt_stars, "bxt_nonstellar": o.bxt_nonstellar,
+                "nxt_denoise": o.nxt_denoise,
                 "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
                 "graxpert": gx, "graxpert_version": "unknown" if gx else "",
                 "hoo": "on" if (o.hoo and cfa) else "off",   # PS-161: OSC only

@@ -1,8 +1,9 @@
 # Finish an OSC master in PixInsight: crop -> gradient -> plate solve
 # -> SPCC with Gaia DR3/SP (fallback BN + ColorCalibration) -> SCNR
-# -> deconvolution (BlurXTerminator, else GraXpert, else skipped)
+# -> deconvolution (BlurXTerminator correct-only + sharpen, else GraXpert, else skipped)
 # -> noise reduction (NoiseXTerminator, else GraXpert, else built-in MLT)
-# -> star reduction (StarNet2 if installed: starless stretched, stars screened back)
+# -> star reduction (StarXTerminator, else StarNet2: starless stretched, stars screened back)
+# RC Astro tools (PS-186) are detected inside PixInsight at run time; -RcAstro off never uses them.
 # -> stretch -> saturation -> core HDR -> save.
 # Run AFTER run-integration-osc.ps1 (needs out\master\masterOSC.xisf).
 #   .\deploy\run-finish-osc.ps1 -Name "M31_OSC2"                 # target guessed from Name
@@ -45,7 +46,13 @@ param(
     [double]$SatMid = 0.64,        # saturation S-curve midpoint (0.5 = off)
     [int]$HdrLayers = 7,           # core HDRMultiscaleTransform layers (0 = off)
     [string]$Frame = "",           # framing crop "left,top,right,bottom" fractions of the master; "" = none
-    [switch]$NoRC,                 # don't use BlurXTerminator / NoiseXTerminator even if installed
+    [switch]$NoRC,                 # same as -RcAstro off
+    # PS-186 RC Astro: auto = BlurX / NoiseX / StarXTerminator when installed; on = the same,
+    # a missing tool is a WARNING in finish.log; off = never
+    [ValidateSet('auto','on','off')][string]$RcAstro = 'auto',
+    [double]$BxtStars = 0.25,      # BlurXTerminator sharpen stars
+    [double]$BxtNonstellar = 0.5,  # BlurXTerminator sharpen nonstellar (0.5 to 0.9 useful)
+    [double]$NxtDenoise = 0.8,     # NoiseXTerminator denoise (detail 0.15)
     # PS-41 noise reduction + deconvolution on the linear image
     [double]$Denoise = 0.5,        # 0..1 strength (NXT denoise / GraXpert strength / MLT amount); 0 = off
     [ValidateSet('on','off')][string]$Deconv = 'on',   # needs BlurXTerminator or GraXpert; no built-in
@@ -85,7 +92,8 @@ if ($OutDir) {
 foreach ($pair in @(@('BgTarget', $BgTarget, 0.01, 0.5), @('ShadowSigma', $ShadowSigma, 0, 10),
                     @('Scnr', $Scnr, 0, 1), @('SatMid', $SatMid, 0.3, 0.9),
                     @('Denoise', $Denoise, 0, 1), @('DeconvStrength', $DeconvStrength, 0, 1),
-                    @('StarStrength', $StarStrength, 0, 1))) {
+                    @('StarStrength', $StarStrength, 0, 1), @('BxtStars', $BxtStars, 0, 1),
+                    @('BxtNonstellar', $BxtNonstellar, 0, 1), @('NxtDenoise', $NxtDenoise, 0, 1))) {
     if ($pair[1] -lt $pair[2] -or $pair[1] -gt $pair[3]) {
         Write-Error "-$($pair[0]) $($pair[1]) out of range $($pair[2])..$($pair[3])"; exit 1
     }
@@ -168,6 +176,9 @@ if (-not $NoGraXpert) {
         if (-not $gxVer) { $gxVer = "unknown" }
     }
 }
+$rcMode = $(if ($NoRC) { 'off' } else { $RcAstro })
+$rcDll = @(Get-ChildItem $piBin -Filter "*XTerminator*.dll" -ErrorAction SilentlyContinue)
+Write-Host ("  RC Astro (" + $rcMode + "):    " + $(if ($rcDll.Count) { ($rcDll | ForEach-Object { $_.Name }) -join ', ' } else { "no *XTerminator* module in bin (checked again inside PixInsight)" }))
 Write-Host ("  StarNet2 module:    " + $(if (Get-ChildItem $piBin -Filter "StarNet2*.dll" -ErrorAction SilentlyContinue) { "present" } else { "not found (star reduction skipped)" }))
 Write-Host ("  GraXpert:           " + $(if ($gxExe) { "$gxExe ($gxVer)" } elseif ($NoGraXpert) { "disabled (-NoGraXpert)" } else { "not found (built-in noise reduction, no deconvolution)" }))
 
@@ -180,7 +191,9 @@ $js = $js.Replace('__LOGDIR__', (JsStr $logDir)).Replace('__PI_LIBRARY__', (JsSt
 $js = $js.Replace('__RA__', (JsNum $RaDeg)).Replace('__DEC__', (JsNum $DecDeg))
 $js = $js.Replace('__FOCAL__', (JsNum $FocalMm)).Replace('__PIXEL__', (JsNum $PixelUm))
 $js = $js.Replace('__GRADIENT__', $Gradient)
-$js = $js.Replace('__USE_RC__', $(if ($NoRC) { 'false' } else { 'true' }))
+$js = $js.Replace('__RC_MODE__', $rcMode)
+$js = $js.Replace('__BXT_STARS__', (JsNum $BxtStars)).Replace('__BXT_NONSTELLAR__', (JsNum $BxtNonstellar))
+$js = $js.Replace('__NXT_DENOISE__', (JsNum $NxtDenoise))
 $js = $js.Replace('__COLOR__', $Color)
 $js = $js.Replace('__SPCC_QE__', (JsStr $SpccQE)).Replace('__SPCC_RED__', (JsStr $SpccRed))
 $js = $js.Replace('__SPCC_GREEN__', (JsStr $SpccGreen)).Replace('__SPCC_BLUE__', (JsStr $SpccBlue))
@@ -201,7 +214,7 @@ $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run
 [System.IO.File]::WriteAllText($runjs, $js)
 
 Write-Host "Launching PixInsight OSC finish for '$Name'..."
-Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> deconv($Deconv) -> denoise($Denoise)$(if ($NoRC) {' (no RC tools)'}) -> stars($StarReduction, $StarStrength) -> stretch -> save"
+Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> deconv($Deconv) -> denoise($Denoise) rcastro($rcMode) -> stars($StarReduction, $StarStrength) -> stretch -> save"
 Write-Host "Script: $runjs"
 $logFile = Join-Path $logDir "finish.log"
 if ($Wait) {

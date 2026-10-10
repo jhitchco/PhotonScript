@@ -4,7 +4,9 @@ The templates live in deploy/. integrate_stack.js gets its settings as one
 `var CONFIG = {...};` line (JSON, ASCII-escaped), so the template never needs
 per-run edits. The finish is deploy/finish_osc.js, the ONE finish
 implementation (PS-46 SPCC with Gaia, PS-41 noise reduction + deconvolution,
-PS-40 StarNet2 star reduction, a steps json per master): render_finish()
+PS-40 StarNet2 star reduction, PS-186 RC Astro BlurXTerminator /
+NoiseXTerminator / StarXTerminator when installed, a steps json per master):
+render_finish()
 fills the same __PLACEHOLDERS__ run-finish-osc.ps1 fills, with MASTERS set to
 every master of the run.
 
@@ -162,7 +164,11 @@ def fwd(p) -> str:
 # The run-finish-osc.ps1 parameter defaults (the M31_OSC4 v4b look, PS-46 /
 # PS-41 / PS-40). tests/test_integration/test_pjsr.py checks they agree.
 FINISH_DEFAULTS = {
-    "gradient": "auto", "use_rc": True, "color": "auto",
+    "gradient": "auto", "color": "auto",
+    # PS-186 RC Astro: rc_mode auto | on | off (config finish_use_rcastro);
+    # use_rc False (the older --no-rc) still means off.
+    "use_rc": True, "rc_mode": "auto", "bxt_stars": 0.25, "bxt_nonstellar": 0.50,
+    "nxt_denoise": 0.80,
     "spcc_qe": "Sony IMX411/455/461/533/571",
     "spcc_red": "Sony Color Sensor R-UVIRcut",
     "spcc_green": "Sony Color Sensor G-UVIRcut",
@@ -175,6 +181,44 @@ FINISH_DEFAULTS = {
     "hoo": "off",                  # PS-161: on = also <name>_hoo.{xisf,jpg} (OSC only)
     "focal_mm": 600.0, "pixel_um": 3.76,
 }
+
+
+RC_MODES = ("auto", "on", "off")
+# config key -> FINISH_DEFAULTS key (PS-186)
+RC_CONFIG_KEYS = {"finish_use_rcastro": "rc_mode", "bxt_sharpen_stars": "bxt_stars",
+                  "bxt_sharpen_nonstellar": "bxt_nonstellar", "nxt_denoise": "nxt_denoise"}
+
+
+def rc_mode(v) -> str:
+    """Normalize finish_use_rcastro: auto | on | off (booleans and blanks
+    map to on / off / auto). Raises PjsrError on anything else."""
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    m = str(v if v is not None else "").strip().lower() or "auto"
+    m = {"true": "on", "yes": "on", "1": "on", "false": "off", "no": "off", "0": "off"}.get(m, m)
+    if m not in RC_MODES:
+        raise PjsrError(f"finish_use_rcastro must be auto, on or off (got {v!r})")
+    return m
+
+
+def unit_value(name: str, v) -> float:
+    f = float(v)
+    if not 0.0 <= f <= 1.0:
+        raise PjsrError(f"{name} must be within 0..1 (got {v!r})")
+    return f
+
+
+def rc_settings(cfg) -> dict:
+    """The PS-186 finish settings from a PhotonScript config (missing keys
+    keep the FINISH_DEFAULTS): rc_mode, bxt_stars, bxt_nonstellar, nxt_denoise."""
+    out = {}
+    for ck, fk in RC_CONFIG_KEYS.items():
+        v = getattr(cfg, ck, None) if cfg is not None else None
+        out[fk] = FINISH_DEFAULTS[fk] if v is None or v == "" else v
+    out["rc_mode"] = rc_mode(out["rc_mode"])
+    for k in ("bxt_stars", "bxt_nonstellar", "nxt_denoise"):
+        out[k] = unit_value(k, out[k])
+    return out
 
 
 def find_graxpert() -> str:
@@ -226,7 +270,11 @@ def render_finish(cfg: dict, solver_block: str = "", deploy_dir: Path | None = N
         "LOGDIR": _js_str(out), "PI_LIBRARY": _js_str(c.get("pi_library", "")),
         "RA": _js_num(c.get("ra_deg")), "DEC": _js_num(c.get("dec_deg")),
         "FOCAL": _js_num(float(c["focal_mm"])), "PIXEL": _js_num(float(c["pixel_um"])),
-        "GRADIENT": _js_str(c["gradient"]), "USE_RC": "true" if c["use_rc"] else "false",
+        "GRADIENT": _js_str(c["gradient"]),
+        "RC_MODE": rc_mode(c["rc_mode"]) if c.get("use_rc", True) else "off",
+        "BXT_STARS": _js_num(unit_value("bxt_stars", c["bxt_stars"])),
+        "BXT_NONSTELLAR": _js_num(unit_value("bxt_nonstellar", c["bxt_nonstellar"])),
+        "NXT_DENOISE": _js_num(unit_value("nxt_denoise", c["nxt_denoise"])),
         "COLOR": _js_str(c["color"]),
         "SPCC_QE": _js_str(c["spcc_qe"]), "SPCC_RED": _js_str(c["spcc_red"]),
         "SPCC_GREEN": _js_str(c["spcc_green"]), "SPCC_BLUE": _js_str(c["spcc_blue"]),

@@ -242,8 +242,14 @@ Outputs in `<staging>\Blend\<target>_blend_<time>\out\final\`:
 `out\timing_pi.csv`, `manifest.json`, `ledger.json` (kind `blend`, rig
 piggyback). Blend ledgers live one level below the staging root, so they are
 not integration versions, do not trip integrate-watch and are not posted.
-The stretch is the finish's linked stretch only (no noise reduction,
-deconvolution or star reduction on the blend yet).
+The stretch is the finish's linked stretch only (no noise reduction or star
+reduction on the blend yet). PS-186: at the linear stage the RC16 luminance
+first gets a BlurXTerminator pass (correct-only, then sharpen at
+`bxt_sharpen_stars` / `bxt_sharpen_nonstellar`) when the process is installed,
+`blend_rc16_bxt` is on (default) and `finish_use_rcastro` is not off;
+`--rc16-bxt auto|on|off` overrides. It is the only BXT the RC16 data gets in
+the blend (the finish's `*_linear.xisf` is saved before its deconvolution).
+Recorded as step `rc16_bxt` and `rcastro.rc16_bxt` in `<name>_blend_steps.json`.
 
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
@@ -307,7 +313,7 @@ twilight sub after a 44-min gap (+20% background).
 with PixInsight's ImageSolver, seeded from `-Target`/`-RaDeg -DecDeg` (guessed
 from the name, e.g. M31) and spiralling out to ~1.2 deg because Piggy-600 frames
 rarely center on the target -> color -> SCNR green (`-Scnr`, 0.6) ->
-deconvolution -> noise reduction (`-NoRC` skips the RC Astro tools) -> linked
+deconvolution -> noise reduction (`-RcAstro off` or `-NoRC` skips the RC Astro tools) -> linked
 stretch (`-BgTarget` 0.12, `-ShadowSigma` 2.0) + saturation (`-SatMid` 0.64) ->
 core HDR blend (`-HdrLayers` 7) -> optional framing crop (`-Frame l,t,r,b`).
 Output in `out\final\` (or a new `-OutDir`): `<Name>_linear.xisf`
@@ -355,6 +361,30 @@ statistics, so slightly harder), saturation and the core HDR blend, and is
 saved as `<Name>_starless.xisf`; the stars get the same midtones with a floor
 at 2x the linear noise, then are screened back:
 `~(~starless * ~(stars * k))`. Any failure falls back to the normal stretch.
+
+RC Astro (PS-186, `-RcAstro auto|on|off`, config `finish_use_rcastro`, default
+auto; `photonscript integrate --rcastro`). The script checks inside PixInsight
+whether each process exists (`typeof BlurXTerminator === "function"` etc.),
+never from the install folders: the RC Astro docs and scripts can be present
+while the module is not loaded yet (it installs from the RC Astro update
+repository on a PixInsight restart). auto uses what is installed; on does the
+same but logs a WARNING for a missing tool; off never uses them. Per step:
+- deconvolution: BlurXTerminator, two passes on the linear image after the
+  gradient removal and SPCC: correct-only first, then sharpen with
+  `bxt_sharpen_stars` (0.25, `-BxtStars`) and `bxt_sharpen_nonstellar` (0.5,
+  `-BxtNonstellar`; 0.5 to 0.9 is the useful range), halos 0, nonstellar PSF
+  auto. If the sharpen pass fails, the GraXpert fallback runs.
+- noise reduction: NoiseXTerminator on the linear image, `nxt_denoise` (0.8,
+  `-NxtDenoise`), detail 0.15. `-Denoise 0` still turns noise reduction off;
+  the GraXpert / MLT fallbacks keep using `-Denoise`.
+- star reduction: StarXTerminator (unscreen on) on the same reversible
+  pre-stretched copy, else StarNet2; a failed StarXTerminator retries with
+  StarNet2. stars = linear - starless as before.
+`<Name>_final_steps.json` gets an `rcastro` record (`mode`, and per tool `bxt`
+/ `nxt` / `sxt`: `status` used / partial / skipped / failed, `why`, the
+settings that were set, and `version` / `ai_model` when the process exposes
+them); the step records name the tool that ran. `*_linear.xisf` is still
+saved before deconvolution.
 
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`

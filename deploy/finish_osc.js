@@ -11,13 +11,16 @@
 //   -> plate solve (ImageSolver, spiral search around the target)
 //   -> color: SPCC against Gaia DR3/SP when that database is configured
 //      (fallback: BackgroundNeutralization + ColorCalibration) -> SCNR green
-//   -> deconvolution: BlurXTerminator, else GraXpert CLI, else skipped
-//   -> noise reduction: NoiseXTerminator, else GraXpert CLI, else built-in
-//      MultiscaleLinearTransform through a linear mask
-//   -> star reduction if StarNet2 is installed: split the linear image into
-//      starless + stars, stretch the starless image, core HDR blend on it,
-//      screen the gently stretched stars back at -StarStrength
-//      (else: linked stretch -> core HDR blend on the whole image)
+//   -> deconvolution: BlurXTerminator (a correct-only pass, then the sharpen
+//      pass with BXT_STARS / BXT_NONSTELLAR, PSF auto), else GraXpert CLI,
+//      else skipped
+//   -> noise reduction: NoiseXTerminator (NXT_DENOISE, detail 0.15), else
+//      GraXpert CLI, else built-in MultiscaleLinearTransform through a
+//      linear mask
+//   -> star reduction: split the linear image into starless + stars with
+//      StarXTerminator, else StarNet2; stretch the starless image, core HDR
+//      blend on it, screen the gently stretched stars back at -StarStrength
+//      (neither installed: linked stretch -> core HDR blend on the whole image)
 //   -> gentle saturation (part of the stretch) -> [framing crop]
 //   -> [HOO = on, color masters only (PS-161): a second, HOO-mapped image
 //      from the color-calibrated linear data, Ha = R, OIII = mean of G and B
@@ -36,6 +39,13 @@
 //
 // Every optional step is guarded: if a process or third-party tool is missing
 // or fails, it is logged and skipped, never fatal.
+// RC Astro (PS-186): BlurXTerminator / NoiseXTerminator / StarXTerminator are
+// detected at run time (typeof X === "function"), never assumed: the docs and
+// scripts can be installed while the module itself is not. RC_MODE auto = use
+// what is installed; on = the same, but a missing tool is logged as a
+// WARNING; off = never. The steps json gets an "rcastro" record: per tool
+// used / partial / skipped / failed, why, settings, and the version / AI model
+// file when the process exposes them.
 // Pure ASCII; no slash-star inside line comments (HANDBOOK sec 6).
 
 // pjsr headers MUST precede the AdP solver includes (AstronomicalCatalogs.jsh
@@ -66,7 +76,13 @@ var DEC_DEG   = __DEC__;
 var FOCAL_MM  = __FOCAL__;
 var PIXEL_UM  = __PIXEL__;
 var GRADIENT  = "__GRADIENT__";  // auto | abe | none
-var USE_RC    = __USE_RC__;      // true: use BlurX/NoiseXTerminator if installed
+// RC Astro (PS-186): auto | on | off (config finish_use_rcastro)
+var RC_MODE        = "__RC_MODE__";
+var USE_RC         = (RC_MODE !== "off");
+var BXT_STARS      = __BXT_STARS__;        // BlurXTerminator sharpen_stars (0..1)
+var BXT_NONSTELLAR = __BXT_NONSTELLAR__;   // BlurXTerminator sharpen_nonstellar (0..1)
+var NXT_DENOISE    = __NXT_DENOISE__;      // NoiseXTerminator denoise (0..1; DENOISE 0 still = no NR)
+var NXT_DETAIL     = 0.15;                 // NoiseXTerminator detail
 // Noise reduction + deconvolution (PS-41)
 var DENOISE         = __DENOISE__;          // 0..1 strength; 0 = off
 var DECONV          = "__DECONV__";         // on | off
@@ -111,6 +127,7 @@ var MASTERS = __MASTERS__;
 
 var LOGLINES = [];
 var STEPS = [];   // one record per pipeline step, written to <Name>_final_steps.json
+var RC = {};      // PS-186: per RC Astro tool (bxt, nxt, sxt): status, why, settings
 // Steps whose tool goes into the output label (PSFINISH keyword, json "tag").
 var LABEL_STEPS = { color: 1, deconvolution: 1, noise_reduction: 1, star_reduction: 1 };
 function ensureDir(d) { if (!File.directoryExists(d)) File.createDirectory(d, true); }
@@ -146,7 +163,8 @@ function writeSteps(result) {
    try {
       ensureDir(FINAL);
       var doc = { name: NAME, master: MASTER, result: result, tag: stepTag(),
-                  finished_utc: (new Date).toISOString(), finish: { steps: STEPS } };
+                  finished_utc: (new Date).toISOString(), finish: { steps: STEPS },
+                  rcastro: { mode: RC_MODE, bxt: RC.bxt || null, nxt: RC.nxt || null, sxt: RC.sxt || null } };
       var f = new File; f.createForWriting(FINAL + "/" + NAME + "_final_steps.json");
       f.outTextLn(JSON.stringify(doc, null, 2));
       f.close();
@@ -451,6 +469,104 @@ function graxpert(view, cmd, strength) {
    }
 }
 
+// ---------------------------------------------------------------- RC Astro (PS-186)
+
+// Is the RC Astro process installed in THIS PixInsight? A literal typeof per
+// tool (an undeclared name is "undefined", never an error).
+function rcInstalled(tool) {
+   if (tool === "BlurXTerminator") return typeof BlurXTerminator === "function";
+   if (tool === "NoiseXTerminator") return typeof NoiseXTerminator === "function";
+   if (tool === "StarXTerminator") return typeof StarXTerminator === "function";
+   return false;
+}
+
+// Should the step use this RC Astro tool? Records why not in RC[key] (and the
+// log; a WARNING when RC_MODE is on and the tool is missing).
+function rcUse(tool, key) {
+   if (!USE_RC) {
+      RC[key] = { tool: tool, status: "skipped", why: "finish_use_rcastro off" };
+      log(tool + ": not used (finish_use_rcastro off)");
+      return false;
+   }
+   if (!rcInstalled(tool)) {
+      RC[key] = { tool: tool, status: "skipped", why: "not installed (no " + tool + " process in this PixInsight)" };
+      log((RC_MODE === "on" ? "WARNING: finish_use_rcastro on but " : "") + tool +
+          ": not installed; using the fallback");
+      return false;
+   }
+   return true;
+}
+
+// Set one process parameter; set[prop] records it when the assignment worked.
+function trySet(P, prop, val, set) {
+   try { P[prop] = val; set[prop] = val; } catch (e) { log("  " + prop + " not set (" + e + ")"); }
+}
+
+// Version and AI model file of an RC Astro instance, when PJSR exposes them.
+function rcInfo(P, info) {
+   try { if (P.ai_file) info.ai_model = "" + P.ai_file; } catch (e1) {}
+   try { if (typeof P.processVersion === "function") info.version = "" + P.processVersion(); } catch (e2) {}
+   try { if (!info.version && P.version !== undefined && P.version !== null) info.version = "" + P.version; } catch (e3) {}
+   return info;
+}
+
+// BlurXTerminator on the LINEAR image: a correct-only pass (PSF / aberration
+// correction across the field, no sharpening), then the sharpen pass
+// (BXT_STARS, BXT_NONSTELLAR, halos untouched, nonstellar PSF measured by
+// BXT). Returns the passes that ran; RC.bxt holds the record.
+function bxtDeconvolve(view) {
+   var rec = { tool: "BlurXTerminator", status: "failed", passes: [], settings: {} };
+   RC.bxt = rec;
+   try {
+      var B1 = new BlurXTerminator;
+      var s1 = {};
+      trySet(B1, "correct_only", true, s1);
+      if (!B1.executeOn(view, false)) throw new Error("returned false");
+      rcInfo(B1, rec);
+      rec.passes.push("correct_only");
+      rec.settings.correct = s1;
+      log("deconvolution: BlurXTerminator correct-only pass done");
+   } catch (e1) {
+      log("BlurXTerminator correct-only pass failed (" + e1 + ")");
+      rec.correct_error = "" + e1;
+   }
+   try {
+      var B2 = new BlurXTerminator;
+      var s2 = {};
+      trySet(B2, "correct_only", false, s2);
+      trySet(B2, "correct_first", false, s2);        // the first pass already corrected
+      trySet(B2, "sharpen_stars", BXT_STARS, s2);
+      trySet(B2, "sharpen_nonstellar", BXT_NONSTELLAR, s2);
+      trySet(B2, "adjust_halos", 0.0, s2);
+      trySet(B2, "auto_nonstellar_psf", true, s2);   // PSF auto
+      if (!B2.executeOn(view, false)) throw new Error("returned false");
+      rcInfo(B2, rec);
+      rec.passes.push("sharpen");
+      rec.settings.sharpen = s2;
+      log("deconvolution: BlurXTerminator sharpen pass (stars " + BXT_STARS + ", nonstellar " +
+          BXT_NONSTELLAR + ", PSF auto)");
+   } catch (e2) {
+      log("BlurXTerminator sharpen pass failed (" + e2 + ")");
+      rec.sharpen_error = "" + e2;
+   }
+   rec.status = rec.passes.length === 2 ? "used" : (rec.passes.length ? "partial" : "failed");
+   if (rec.status !== "used") rec.why = rec.passes.length ? "sharpen pass failed" : "both passes failed";
+   return rec.passes;
+}
+
+// NoiseXTerminator on the LINEAR image (NXT_DENOISE, NXT_DETAIL). Throws on failure.
+function nxtDenoise(view) {
+   var rec = { tool: "NoiseXTerminator", status: "failed", settings: {} };
+   RC.nxt = rec;
+   var NX = new NoiseXTerminator;
+   trySet(NX, "denoise", NXT_DENOISE, rec.settings);
+   trySet(NX, "detail", NXT_DETAIL, rec.settings);
+   if (!NX.executeOn(view, false)) throw new Error("returned false");
+   rcInfo(NX, rec);
+   rec.status = "used";
+   return rec;
+}
+
 // Deconvolution (linear): BlurXTerminator if installed, else GraXpert
 // (deconv-obj, then deconv-stellar at half strength), else skipped. There is
 // no built-in fallback on purpose: classic Deconvolution needs a measured PSF
@@ -459,19 +575,24 @@ function deconvolve(view) {
    if (DECONV !== "on") {
       log("deconvolution: off (-Deconv off)");
       step("deconvolution", "none", "skipped", { reason: "-Deconv off" });
+      RC.bxt = { tool: "BlurXTerminator", status: "skipped", why: "-Deconv off" };
       return;
    }
-   if (USE_RC && typeof BlurXTerminator !== "undefined") {
-      try {
-         var BX = new BlurXTerminator;
-         try { BX.correct_only = false; BX.sharpen_stars = 0.25;
-               BX.sharpen_nonstellar = 0.50; BX.adjust_halos = 0.0; } catch (e1) {}
-         BX.executeOn(view, false);
-         log("deconvolution: BlurXTerminator (stars 0.25, nonstellar 0.50)");
-         step("deconvolution", "BlurXTerminator", "ran", { stars: 0.25, nonstellar: 0.50 });
+   var bxtNote = "";
+   if (rcUse("BlurXTerminator", "bxt")) {
+      var passes = [];
+      try { passes = bxtDeconvolve(view); }
+      catch (e) { log("BlurXTerminator failed (" + e + ")"); RC.bxt = { tool: "BlurXTerminator", status: "failed", why: "" + e }; }
+      if (passes.length === 2) {
+         var st = { stars: BXT_STARS, nonstellar: BXT_NONSTELLAR, psf: "auto", passes: passes };
+         if (RC.bxt.version) st.version = RC.bxt.version;
+         if (RC.bxt.ai_model) st.ai_model = RC.bxt.ai_model;
+         step("deconvolution", "BlurXTerminator", "ran", st);
          return;
-      } catch (e) { log("BlurXTerminator failed (" + e + ")"); }
-   } else log(USE_RC ? "BlurXTerminator: not installed" : "RC Astro tools: disabled (-NoRC)");
+      }
+      bxtNote = passes.length ? "BlurXTerminator corrected only (sharpen pass failed)" : "BlurXTerminator failed";
+      log(bxtNote + "; trying the fallback");
+   }
    if (GRAXPERT) {
       var done = [];
       var jobs = [["deconv-obj", DECONV_STRENGTH], ["deconv-stellar", DECONV_STRENGTH / 2]];
@@ -484,8 +605,9 @@ function deconvolve(view) {
          } catch (e2) { log("GraXpert " + jobs[j][0] + " failed (" + e2 + ")"); }
       }
       if (done.length) {
-         step("deconvolution", "GraXpert", "ran",
-              { commands: done, strength: DECONV_STRENGTH, version: GRAXPERT_VERSION });
+         var gs = { commands: done, strength: DECONV_STRENGTH, version: GRAXPERT_VERSION };
+         if (bxtNote) gs.rcastro = bxtNote;
+         step("deconvolution", "GraXpert", "ran", gs);
          return;
       }
       step("deconvolution", "GraXpert", "failed", { version: GRAXPERT_VERSION });
@@ -493,7 +615,7 @@ function deconvolve(view) {
       return;
    }
    log("deconvolution: skipped (no BlurXTerminator, GraXpert not found; no built-in fallback)");
-   step("deconvolution", "none", "skipped", { reason: "no BlurXTerminator or GraXpert" });
+   step("deconvolution", "none", "skipped", { reason: bxtNote || "no BlurXTerminator or GraXpert" });
 }
 
 // Built-in noise reduction: MultiscaleLinearTransform on the linear image,
@@ -520,18 +642,23 @@ function denoise(view) {
    if (!(DENOISE > 0)) {
       log("noise reduction: off (-Denoise 0)");
       step("noise_reduction", "none", "skipped", { reason: "-Denoise 0" });
+      RC.nxt = { tool: "NoiseXTerminator", status: "skipped", why: "-Denoise 0" };
       return;
    }
-   if (USE_RC && typeof NoiseXTerminator !== "undefined") {
+   if (rcUse("NoiseXTerminator", "nxt")) {
       try {
-         var NX = new NoiseXTerminator;
-         try { NX.denoise = DENOISE; NX.detail = 0.15; } catch (e1) {}
-         NX.executeOn(view, false);
-         log("noise reduction: NoiseXTerminator (denoise " + DENOISE + ")");
-         step("noise_reduction", "NoiseXTerminator", "ran", { denoise: DENOISE, detail: 0.15 });
+         var r = nxtDenoise(view);
+         log("noise reduction: NoiseXTerminator (denoise " + NXT_DENOISE + ", detail " + NXT_DETAIL + ")");
+         var ns = { denoise: NXT_DENOISE, detail: NXT_DETAIL };
+         if (r.version) ns.version = r.version;
+         if (r.ai_model) ns.ai_model = r.ai_model;
+         step("noise_reduction", "NoiseXTerminator", "ran", ns);
          return;
-      } catch (e) { log("NoiseXTerminator failed (" + e + ")"); }
-   } else log(USE_RC ? "NoiseXTerminator: not installed" : "RC Astro tools: disabled (-NoRC)");
+      } catch (e) {
+         log("NoiseXTerminator failed (" + e + "); trying the fallback");
+         RC.nxt = { tool: "NoiseXTerminator", status: "failed", why: "" + e };
+      }
+   }
    if (GRAXPERT) {
       try {
          var sec = graxpert(view, "denoising", DENOISE);
@@ -659,51 +786,92 @@ function pixelMath(view, expr) {
    if (!PM.executeOn(view, false)) throw new Error("PixelMath returned false: " + expr);
 }
 
-// Star reduction, part 1 (PS-40): split the LINEAR image into starless and
-// stars with StarNet2. StarNet2 is trained on stretched data, so the copy gets
-// a reversible pre-stretch (midtones only, no clipping), StarNet2 runs, and
-// the inverse midtones transform takes the starless image back to linear.
-// stars = max(0, linear - starless). Returns null (and leaves the view alone)
-// if StarNet2 is missing, disabled or fails.
+// Star reduction, part 1 (PS-40, PS-186): split the LINEAR image into
+// starless and stars with StarXTerminator, else StarNet2. Both are trained on
+// stretched data, so the copy gets a reversible pre-stretch (midtones only, no
+// clipping), the tool runs, and the inverse midtones transform takes the
+// starless image back to linear. stars = max(0, linear - starless), the exact
+// complement, so the screen recombination at the end (part 2) is the
+// unscreen-style workflow: SXT runs with unscreen on and no star image of its
+// own. A failed StarXTerminator falls back to StarNet2. Returns null (and
+// leaves the view alone) if no tool is installed, star reduction is off or
+// every tool fails.
+function starlessPre(view, mPre, tool) {
+   var w = dupWindow(view, "PS_starless");
+   try {
+      applyHT(w.mainView, 0, mPre);
+      var set = {};
+      if (tool === "StarXTerminator") {
+         var SX = new StarXTerminator;
+         trySet(SX, "stars", false, set);       // starless only; stars = linear - starless
+         trySet(SX, "unscreen", true, set);
+         trySet(SX, "overlap", 0.20, set);
+         if (!SX.executeOn(w.mainView, false)) throw new Error("StarXTerminator returned false");
+         var info = rcInfo(SX, {});
+         RC.sxt = { tool: "StarXTerminator", status: "used", settings: set };
+         if (info.version) RC.sxt.version = info.version;
+         if (info.ai_model) RC.sxt.ai_model = info.ai_model;
+         try {   // a stray star image (older SXT ignores stars = false)
+            var extra = ImageWindow.windowById(w.mainView.id + "_stars");
+            if (extra && !extra.isNull) extra.forceClose();
+         } catch (e0) {}
+      } else {
+         var SN = new StarNet2;
+         try { SN.mask = false; } catch (e1) {}      // replace the target with the starless image
+         try { SN.linear = false; } catch (e2) {}    // input is already pre-stretched
+         if (!SN.executeOn(w.mainView, false)) throw new Error("StarNet2 returned false");
+      }
+      applyHT(w.mainView, 0, 1 - mPre);              // inverse midtones: back to linear
+      return w;
+   } catch (e) {
+      try { w.forceClose(); } catch (e3) {}
+      throw e;
+   }
+}
+
 function starSplit(view) {
    if (STARS !== "on") {
       log("star reduction: off (-StarReduction off)");
       step("star_reduction", "none", "skipped", { reason: "-StarReduction off" });
+      RC.sxt = { tool: "StarXTerminator", status: "skipped", why: "-StarReduction off" };
       return null;
    }
-   if (typeof StarNet2 === "undefined") {
-      log("star reduction: StarNet2 not installed; skipped");
+   var tools = [];
+   if (rcUse("StarXTerminator", "sxt")) tools.push("StarXTerminator");
+   if (typeof StarNet2 !== "undefined") tools.push("StarNet2");
+   if (!tools.length) {
+      log("star reduction: neither StarXTerminator nor StarNet2 installed; skipped");
       step("star_reduction", "StarNet2", "skipped", { reason: "not installed" });
       return null;
    }
-   var sl = null, st = null;
-   try {
-      var mPre = mtfv(STARNET_PRE_BG, Math.max(1.0e-6, view.image.median()));
-      sl = dupWindow(view, "PS_starless");
-      applyHT(sl.mainView, 0, mPre);
-      var SN = new StarNet2;
-      try { SN.mask = false; } catch (e1) {}      // replace the target with the starless image
-      try { SN.linear = false; } catch (e2) {}    // input is already pre-stretched
-      if (!SN.executeOn(sl.mainView, false)) throw new Error("StarNet2 returned false");
-      applyHT(sl.mainView, 0, 1 - mPre);          // inverse midtones: back to linear
-      st = dupWindow(view, "PS_stars");
-      pixelMath(st.mainView, "max(0, $T - " + sl.mainView.id + ")");
-      log("star reduction: StarNet2 split (pre-stretch midtones " + mPre.toFixed(5) + ")");
-      return { starless: sl, stars: st, preM: mPre };
-   } catch (e) {
-      log("star reduction skipped: StarNet2 split failed (" + e + ")");
-      step("star_reduction", "StarNet2", "failed", { error: "" + e });
-      if (sl) try { sl.forceClose(); } catch (e3) {}
-      if (st) try { st.forceClose(); } catch (e4) {}
-      return null;
+   var mPre = mtfv(STARNET_PRE_BG, Math.max(1.0e-6, view.image.median()));
+   var errors = [];
+   for (var t = 0; t < tools.length; ++t) {
+      var sl = null, st = null;
+      try {
+         sl = starlessPre(view, mPre, tools[t]);
+         st = dupWindow(view, "PS_stars");
+         pixelMath(st.mainView, "max(0, $T - " + sl.mainView.id + ")");
+         log("star reduction: " + tools[t] + " split (pre-stretch midtones " + mPre.toFixed(5) + ")");
+         return { starless: sl, stars: st, preM: mPre, tool: tools[t], errors: errors };
+      } catch (e) {
+         log("star reduction: " + tools[t] + " split failed (" + e + ")");
+         errors.push(tools[t] + ": " + e);
+         if (tools[t] === "StarXTerminator") RC.sxt = { tool: "StarXTerminator", status: "failed", why: "" + e };
+         if (sl) try { sl.forceClose(); } catch (e3) {}
+         if (st) try { st.forceClose(); } catch (e4) {}
+      }
    }
+   log("star reduction skipped: every split failed");
+   step("star_reduction", tools[tools.length - 1], "failed", { error: errors.join("; ") });
+   return null;
 }
 
 // Star reduction, part 2: stretch the starless image with the normal knobs
 // (it has no stars, so its own statistics give a slightly harder stretch),
 // recover the core on it, save it, stretch the stars gently (floor at
-// STAR_FLOOR_SIGMA x the linear noise so StarNet2 residue does not come back
-// as grain, same midtones), then screen them back at STAR_STRENGTH:
+// STAR_FLOOR_SIGMA x the linear noise so star-removal residue does not come
+// back as grain, same midtones), then screen them back at STAR_STRENGTH:
 //   final = ~(~starless * ~(stars * k))
 // The result replaces the view only at the end; on any failure the view is
 // still linear and the caller does the normal stretch.
@@ -723,13 +891,20 @@ function starRecombine(view, split) {
       view.image.assign(slv.image);
       view.endProcess();
       log("star reduction: stars screened back at " + k + " (star floor " + cs.toFixed(6) + ")");
-      step("star_reduction", "StarNet2", "ran",
-           { star_strength: STAR_STRENGTH, star_floor: +cs.toFixed(6), prestretch_m: +split.preM.toFixed(6),
-             starless_file: NAME + "_starless.xisf" });
+      var ss = { star_strength: STAR_STRENGTH, star_floor: +cs.toFixed(6), prestretch_m: +split.preM.toFixed(6),
+                 starless_file: NAME + "_starless.xisf" };
+      if (split.errors.length) ss.fallback_from = split.errors.join("; ");
+      if (split.tool === "StarXTerminator") {
+         ss.unscreen = true;
+         if (RC.sxt && RC.sxt.version) ss.version = RC.sxt.version;
+         if (RC.sxt && RC.sxt.ai_model) ss.ai_model = RC.sxt.ai_model;
+      }
+      step("star_reduction", split.tool, "ran", ss);
       ok = true;
    } catch (e) {
       log("star reduction skipped: recombine failed (" + e + "); normal stretch instead");
-      step("star_reduction", "StarNet2", "failed", { error: "" + e });
+      step("star_reduction", split.tool, "failed", { error: "" + e });
+      if (split.tool === "StarXTerminator" && RC.sxt) { RC.sxt.status = "failed"; RC.sxt.why = "recombine failed (" + e + ")"; }
    }
    try { split.starless.forceClose(); } catch (e1) {}
    try { split.stars.forceClose(); } catch (e2) {}
@@ -847,6 +1022,10 @@ function main() {
    var w = ws[0];
    var v = w.mainView;
 
+   log("RC Astro (finish_use_rcastro " + RC_MODE + "): BlurXTerminator " +
+       (rcInstalled("BlurXTerminator") ? "installed" : "not installed") + ", NoiseXTerminator " +
+       (rcInstalled("NoiseXTerminator") ? "installed" : "not installed") + ", StarXTerminator " +
+       (rcInstalled("StarXTerminator") ? "installed" : "not installed"));
    cropEdges(v, EDGE_FRAC);
    removeGradient(v);
    var solved = plateSolve(w);
@@ -889,7 +1068,7 @@ function main() {
 var RUN = MASTERS ? MASTERS : [{ name: NAME, path: MASTER }];
 var NFAIL = 0;
 for (var mi = 0; mi < RUN.length; ++mi) {
-   NAME = RUN[mi].name; MASTER = RUN[mi].path; STEPS = [];
+   NAME = RUN[mi].name; MASTER = RUN[mi].path; STEPS = []; RC = {};
    var tf0 = Date.now();
    if (MASTERS) log("STAGE START " + NAME + " / finish");
    try { main(); writeSteps("ok"); }
