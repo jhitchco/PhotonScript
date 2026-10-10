@@ -170,6 +170,11 @@ class TheSkyClient:
         IsTracking, IsParked, the position and LastSlewError."""
         return self._kv("slew_state")
 
+    def park_state(self) -> dict:
+        """PS-185: IsConnected; only when connected IsParked, IsTracking
+        and the alt / az."""
+        return self._kv("park_state")
+
     def version(self) -> dict:
         return self._kv("version")
 
@@ -312,6 +317,14 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
         ("ra_h", "c ? (sky6RASCOMTele.GetRaDec(), sky6RASCOMTele.dRa) : ''"),
         ("dec_d", "c ? sky6RASCOMTele.dDec : ''"),
         ("last_slew_error", "c ? sky6RASCOMTele.LastSlewError : ''")], _MOUNT_PRE),
+    # PS-185: the dawn mount check (parked / tracking / where). Property
+    # reads only, never Connect().
+    "park_state": ([
+        ("connected", "c"),
+        ("parked", "c ? sky6RASCOMTele.IsParked() : ''"),
+        ("tracking", "c ? sky6RASCOMTele.IsTracking : ''"),
+        ("az", "c ? (sky6RASCOMTele.GetAzAlt(), sky6RASCOMTele.dAz) : ''"),
+        ("alt", "c ? sky6RASCOMTele.dAlt : ''")], _MOUNT_PRE),
     # read form only (empty argument); behind thesky_audit_allsky_read
     "allsky_flags": ([
         ("allsky_scripted",

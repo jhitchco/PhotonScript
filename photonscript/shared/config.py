@@ -116,6 +116,12 @@ class PhotonScriptConfig(BaseSettings):
     # many minutes after astro dusk with the roof safe. Observe only.
     nina_watch_stuck_minutes: float = 25.0
     nina_watch_parked_after_dusk_min: float = 15.0
+    # PS-185 (2026-10-09, a disarmed night left tracking): after astro dawn
+    # + N min, whatever the armer state (an armed night is left to its dawn
+    # shutdown), page once when TheSky / NINA #1 read the mount unparked and
+    # tracking with no NINA #1 sequence running. Alert only, never parks.
+    dawn_mount_check_mode: str = "alert"  # alert | off
+    dawn_mount_check_after_dawn_min: float = 20.0
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
     # meridian within this many minutes of dark-start (avoids an immediate flip
     # + recenter failure); it's reordered to image after the meridian instead

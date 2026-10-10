@@ -585,6 +585,14 @@ async def _start_nina_watchdog():
 
 
 @app.on_event("startup")
+async def _start_dawn_mount_check():
+    """PS-185: mount left unparked and tracking after astro dawn on a night
+    the armer does not own. Always started; alert only, never parks."""
+    from photonscript.scheduler.dawn_mount_check import run_dawn_mount_check
+    _spawn(run_dawn_mount_check(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_calibration_autofill():
     """PS-113: daytime calibration auto-fill. Always started; each tick is a
     no-op unless config.calibration_autofill (default off)."""
@@ -695,6 +703,8 @@ _CONFIG_FIELDS = [
     ("nina_watch_silent_minutes", "PS_NINA_WATCH_SILENT_MINUTES", "NINA watchdog: up but silent when its log has not grown for this many minutes (API down, or a non-wait instruction running)", "Nanny / Alerts", "float", False, False),
     ("nina_watch_sun_alt_deg", "PS_NINA_WATCH_SUN_ALT_DEG", "NINA watchdog: watch while the sun is at or below this altitude (deg)", "Nanny / Alerts", "float", False, False),
     ("nina_watch_stuck_minutes", "PS_NINA_WATCH_STUCK_MINUTES", "NINA watchdog (PS-154): page when one instruction that is not an exposure / wait / loop / autofocus runs this long while armed RUNNING", "Nanny / Alerts", "float", False, False),
+    ("dawn_mount_check_mode", "PS_DAWN_MOUNT_CHECK_MODE", "Dawn mount check (PS-185): alert = one priority page when the mount is unparked and tracking after astro dawn with no armed night or NINA #1 sequence (runs when DISARMED too) | off; never parks", "Nanny / Alerts", "str", False, False),
+    ("dawn_mount_check_after_dawn_min", "PS_DAWN_MOUNT_CHECK_AFTER_DAWN_MIN", "Dawn mount check: start checking this many minutes after astro dawn", "Nanny / Alerts", "float", False, False),
     ("nina_watch_parked_after_dusk_min", "PS_NINA_WATCH_PARKED_AFTER_DUSK_MIN", "NINA watchdog (PS-154): page when the RC16 mount has not tracked yet this many min after astro dusk (armed RUNNING, roof safe)", "Nanny / Alerts", "float", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),

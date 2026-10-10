@@ -1185,6 +1185,20 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   nanny pages instead of fighting a running sequence CoolCamera to another
   temperature; the guiding auto-recovery never starts PHD2 on a parked or
   idle mount.
+- 2026-10-09 (mount left tracking, PS-185): a DISARMED night (a manual
+  TPoint run) was never parked: at 06:04 local the mount was still
+  unparked and tracking (az 354, alt 62) and TheSky then said "The mount
+  cannot slew" until the Bisque control software was restarted. The
+  armer's dawn shutdown only runs for an armed night. Now the dawn mount
+  check (scheduler/dawn_mount_check.py, every 2 min, any armer state) from
+  astro dawn + `dawn_mount_check_after_dawn_min` (20) to the noon roll-over:
+  armer with a night (its own shutdown parks) or a NINA #1 sequence
+  running = wait; else TheSky's read-only IsParked() / IsTracking (TCP
+  3040, alt / az too), or NINA #1's mount info, unparked AND tracking =
+  one priority page per night with the fix (TheSky: Telescope > Park; if
+  "cannot slew", restart the Bisque control software) and a `dawn_mount`
+  event (the latch across restarts). `dawn_mount_check_mode` alert
+  (default) | off; it never parks.
 - 2026-10-07 (false "park FAILED", PS-159): the 13:07Z dawn shutdown
   reported "guider stop FAILED ... park FAILED" because NINA #1's own End
   area had already parked (mount parked since the 09:24Z unsafe) and run
