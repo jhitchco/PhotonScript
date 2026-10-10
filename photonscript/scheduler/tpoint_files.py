@@ -26,13 +26,26 @@ user's TheSky folder; this module finds and parses those files:
   <sigma>", "Sky RMS = x", "Popn SD = x"). The model file carries no popn
   SD: it is derived as sky RMS x sqrt(n / (n - fitted terms)).
 * protrack: a "ProTrack... = on/off" style line in any listed text file.
-* stats: the newest data file and the newest model / report, merged, with
-  the polar alignment from ME / MA (TPOINT's convention: ME > 0 = polar
-  axis too high, MA > 0 = polar axis east of the pole; check TheSky's
-  Polar Alignment Report before turning a knob) against
-  tpoint_polar_max_arcmin. Saved to <data_dir>/tpoint/stats_latest.json
-  and, when the model changes, a line in stats_history.jsonl (the PS-168
-  drift trend keys nights by it).
+* stats (PS-184): the BASE model (the newest full run, any model file that
+  is not a recalibration) with its data file, and separately any
+  RECALIBRATION run after it (a "recal" run name or caption: IH / ID and a
+  few terms refitted on a short run, the rest held). The active model
+  (the one ProTrack uses) is the recal when it has data, else the base.
+  Polar alignment from the active model's fitted ME / MA (else the
+  base's), relative to the REFRACTED pole: TheSky's Polar Alignment
+  Report recommends ME = -R, R = refraction at the pole altitude (the
+  latitude) from the site temperature / pressure (2026-10-10: ME -79.6",
+  "Recommended ME -76.1\" (refracted pole)", lower 3"); a "Recommended
+  ME" line in any listed file wins over the computed R. Sign convention
+  (TPOINT, matching that report): ME > 0 = polar axis below the pole
+  (raise it), MA > 0 = polar axis east of the pole (move it west); the
+  azimuth advice is in Paramount MX knob form (Bisque manual: tightening
+  the right azimuth knob moves the axis east, the left one west; loosen
+  the opposite knob first). Check TheSky's Polar Alignment Report before
+  turning a knob. Limit tpoint_polar_max_arcmin. Saved to
+  <data_dir>/tpoint/stats_latest.json and, when the model or recal
+  changes, a line in stats_history.jsonl (the PS-168 drift trend keys
+  nights by it).
 
 The exact file names and formats TheSky64 10.5 writes are not documented
 offline: GET /api/thesky/tpoint/files lists what is there and
@@ -92,6 +105,12 @@ _NOBS_RE = re.compile(
     r"|(\d+)\s+(?:observations|data\s*points)\b", re.IGNORECASE)
 _PROTRACK_RE = re.compile(
     r"protrack\w*\s*[=:]\s*\"?(true|false|on|off|yes|no|1|0)\b", re.IGNORECASE)
+# PS-184: TheSky's Polar Alignment Report "Recommended ME -76.1" (refracted
+# pole), when a listed file carries it
+_REC_ME_RE = re.compile(rf"recommended\s+ME\s*[=:]?\s*({_NUM})", re.IGNORECASE)
+_RECAL_RE = re.compile(r"recal", re.IGNORECASE)
+# below this distance from the refracted pole a knob turn is not worth it
+POLAR_NO_ADJUST_ARCSEC = 10.0
 
 
 # ------------------------------------------------------------- finding
@@ -231,6 +250,9 @@ def parse_data(text: str) -> dict | None:
     if site is None or obs == 0:
         return None
     date = None
+    cond = None
+    if len(site) >= 9:   # "lat d m s  yyyy mm dd  temp press height ..."
+        cond = {"temp_c": site[6], "pressure_mb": site[7], "height_m": site[8]}
     if len(site) >= 6:
         try:
             y, m, d = int(site[3]), int(site[4]), int(site[5])
@@ -238,7 +260,8 @@ def parse_data(text: str) -> dict | None:
                 date = f"{y:04d}-{m:02d}-{d:02d}"
         except (TypeError, ValueError):
             pass
-    return {"points": obs, "caption": caption, "options": options, "date": date}
+    return {"points": obs, "caption": caption, "options": options, "date": date,
+            "site": cond}
 
 
 def parse_model(text: str) -> dict | None:
@@ -251,8 +274,11 @@ def parse_model(text: str) -> dict | None:
     rms: list[float] = []
     nobs = None
     refr = None
+    caption = None
     for ln in (text or "").splitlines():
         t = _T_LINE.match(ln)
+        if caption is None and ln.strip() and not t and not terms and nobs is None:
+            caption = ln.strip()
         if t:
             nobs = int(t.group(1))
             # a model with no data (the recal run: "T 0 0.0000 ...") has no RMS
@@ -287,7 +313,7 @@ def parse_model(text: str) -> dict | None:
         popn, src = round(sky * math.sqrt(nobs / (nobs - fitted)), 2), "derived"
     return {"terms": terms, "sky_rms_arcsec": sky, "popn_sd_arcsec": popn,
             "popn_sd_source": src, "observations": nobs or None,
-            "fitted_terms": fitted, "refraction": refr}
+            "fitted_terms": fitted, "refraction": refr, "caption": caption}
 
 
 def parse_protrack(text: str) -> bool | None:
@@ -301,27 +327,124 @@ def parse_protrack(text: str) -> bool | None:
 
 # ------------------------------------------------------------- polar
 
-def polar(terms: dict, max_arcmin: float = 3.0) -> dict | None:
-    """ME / MA (arcsec) -> total misalignment and what to adjust. TPOINT
-    convention: ME > 0 = polar axis too high, MA > 0 = polar axis east of
-    the pole (northern hemisphere)."""
+def refraction_arcsec(alt_deg: float, pressure_mb: float = 1010.0,
+                      temp_c: float = 10.0) -> float:
+    """Atmospheric refraction (arcsec) at true altitude alt_deg
+    (Saemundsson), scaled by pressure / temperature."""
+    h = float(alt_deg)
+    r_arcmin = 1.02 / math.tan(math.radians(h + 10.3 / (h + 5.11)))
+    return r_arcmin * 60.0 * (pressure_mb / 1010.0) * (283.0 / (273.0 + temp_c))
+
+
+def std_pressure_mb(height_m: float) -> float:
+    """Standard-atmosphere pressure at height_m."""
+    return 1013.25 * (1.0 - 2.25577e-5 * float(height_m)) ** 5.25588
+
+
+def site_refraction(lat_deg: float, site: dict | None = None,
+                    height_m: float | None = None) -> dict:
+    """The refraction at the pole altitude (= latitude): {"pole_alt_deg",
+    "refraction_arcsec", "temp_c", "pressure_mb", "source"}. Temperature
+    and pressure from a TPoint data file's site line; that pressure is used
+    only when it is within 10% of the standard atmosphere at the site
+    height (TheSky64 writes its default 1000.00 mB at 1300 m, 2026-10-04),
+    else the standard atmosphere; no site line: 10 C and the standard
+    atmosphere at height_m."""
+    site = site or {}
+    h = site.get("height_m")
+    h = float(h) if isinstance(h, (int, float)) and 0 <= h < 6000 else float(height_m or 0.0)
+    std = std_pressure_mb(h)
+    p = site.get("pressure_mb")
+    t = site.get("temp_c")
+    src = []
+    if isinstance(p, (int, float)) and abs(p - std) <= 0.10 * std:
+        src.append("pressure from the TPoint site line")
+    else:
+        p = std
+        src.append(f"pressure: standard atmosphere at {h:.0f} m")
+    if isinstance(t, (int, float)) and -40 <= t <= 50:
+        src.append("temperature from the TPoint site line")
+    else:
+        t = 10.0
+        src.append("temperature 10 C (no site line)")
+    return {"pole_alt_deg": round(float(lat_deg), 3),
+            "refraction_arcsec": round(refraction_arcsec(lat_deg, p, t), 1),
+            "temp_c": round(float(t), 2), "pressure_mb": round(float(p), 1),
+            "source": "site " + "; ".join(src)}
+
+
+def model_refraction(lat_deg: float, consts: dict | None) -> dict | None:
+    """The refraction at the pole altitude from a model file's T line
+    refraction constants (R = A tan z + B tan^3 z, arcsec, z = 90 - lat):
+    what TheSky's Polar Alignment Report uses (2026-10-10: A 47.546, B
+    -0.0564 at 31.907 deg give R 76.1", its "Recommended ME -76.1").
+    None without a usable A."""
+    a = (consts or {}).get("a_arcsec")
+    if not isinstance(a, (int, float)) or a <= 0:
+        return None
+    b = (consts or {}).get("b_arcsec") or 0.0
+    tz = math.tan(math.radians(90.0 - float(lat_deg)))
+    return {"pole_alt_deg": round(float(lat_deg), 3),
+            "refraction_arcsec": round(a * tz + b * tz ** 3, 1),
+            "source": f"the model's refraction constants (A {a:g}\", B {b:g}\")"}
+
+
+def polar(terms: dict, max_arcmin: float = 3.0, refraction: dict | None = None,
+          recommended_me: float | None = None) -> dict | None:
+    """ME / MA (arcsec) -> the misalignment from the refracted pole and
+    what to adjust (PS-184). Sign convention (TPOINT, matching TheSky's
+    Polar Alignment Report): ME > 0 = polar axis below the pole, MA > 0 =
+    polar axis east of the pole (northern hemisphere). The refracted pole
+    is R above the true pole, so the recommended ME is -R (TheSky's own
+    "Recommended ME" when given); without either the target is ME 0 (the
+    true pole). MA's target is 0 (refraction is vertical). Azimuth advice
+    in Paramount MX knob form."""
     me = (terms.get("ME") or {}).get("value")
     ma = (terms.get("MA") or {}).get("value")
     if me is None and ma is None:
         return None
-    total = math.hypot(me or 0.0, ma or 0.0) / 60.0
+    if recommended_me is not None:
+        me_rec, target = float(recommended_me), "TheSky's Recommended ME (refracted pole)"
+    elif refraction and refraction.get("refraction_arcsec") is not None:
+        me_rec = -float(refraction["refraction_arcsec"])
+        target = (f"refracted pole (R {refraction['refraction_arcsec']:.1f}\" at "
+                  f"{refraction['pole_alt_deg']:g} deg from {refraction.get('source')})")
+    else:
+        me_rec, target = 0.0, "true pole (no refraction known)"
+    d_me = (me - me_rec) if me is not None else None
+    total = math.hypot(d_me or 0.0, ma or 0.0) / 60.0
+    true_total = math.hypot(me or 0.0, ma or 0.0) / 60.0
     adv = []
-    if me is not None:
-        adv.append(f"altitude: polar axis {abs(me) / 60:.2f}' too "
-                   f"{'high, lower it' if me > 0 else 'low, raise it'} (ME {me:+.1f}\")")
+    if d_me is not None:
+        if abs(d_me) < POLAR_NO_ADJUST_ARCSEC:
+            adv.append(f"altitude: within {abs(d_me):.0f}\" of the target "
+                       f"({'below' if d_me > 0 else 'above'} it), no adjustment "
+                       f"(ME {me:+.1f}\", recommended {me_rec:+.1f}\")")
+        else:
+            adv.append(f"altitude: polar axis {abs(d_me) / 60:.2f}' "
+                       f"{'below the target, raise it' if d_me > 0 else 'above the target, lower it'}"
+                       f" (ME {me:+.1f}\", recommended {me_rec:+.1f}\")")
     if ma is not None:
-        adv.append(f"azimuth: polar axis {abs(ma) / 60:.2f}' "
-                   f"{'east of the pole, move it west' if ma > 0 else 'west of the pole, move it east'}"
-                   f" (MA {ma:+.1f}\")")
-    return {"me_arcsec": me, "ma_arcsec": ma, "total_arcmin": round(total, 2),
+        if abs(ma) < POLAR_NO_ADJUST_ARCSEC:
+            adv.append(f"azimuth: within {abs(ma):.0f}\" of the pole, no "
+                       f"adjustment (MA {ma:+.1f}\")")
+        elif ma > 0:
+            adv.append(f"azimuth: polar axis {ma / 60:.2f}' east of the pole, "
+                       f"move it west: loosen the RIGHT azimuth knob first, then "
+                       f"tighten the LEFT one (MA {ma:+.1f}\")")
+        else:
+            adv.append(f"azimuth: polar axis {-ma / 60:.2f}' west of the pole, "
+                       f"move it east: loosen the LEFT azimuth knob first, then "
+                       f"tighten the RIGHT one (MA {ma:+.1f}\")")
+    return {"me_arcsec": me, "ma_arcsec": ma, "me_recommended_arcsec": round(me_rec, 1),
+            "target": target, "total_arcmin": round(total, 2),
+            "true_pole_arcmin": round(true_total, 2),
             "ok": total <= max_arcmin, "max_arcmin": max_arcmin, "advice": adv,
-            "note": "TPOINT sign convention; confirm with TheSky's Polar "
-                    "Alignment Report before turning a knob"}
+            "refraction": refraction,
+            "note": "TPOINT sign convention (ME > 0 = axis low, MA > 0 = axis "
+                    "east); MX knobs per the Bisque manual (right knob "
+                    "tightened = east, left = west); confirm with TheSky's "
+                    "Polar Alignment Report before turning a knob"}
 
 
 # ------------------------------------------------------------- stats
@@ -348,18 +471,44 @@ def _data_rank(f: dict) -> int:
     return 0 if re.search(r"(?:^|\s)in(?:dat)?$", stem) else 1
 
 
+def _is_recal(f: dict, m: dict) -> bool:
+    """A recalibration model: "recal" in the run name or the caption."""
+    return bool(_RECAL_RE.search(run_key(f)[1])
+                or _RECAL_RE.search(str(m.get("caption") or "")))
+
+
+def _polar_terms(active: dict | None, base: dict | None):
+    """ME / MA for the polar advice: each from the active model when it
+    fitted it, else from the base model when it did. ({terms}, source,
+    the model ME came from)."""
+    out, src, me_model = {}, [], None
+    for k in ("ME", "MA"):
+        for label, m in (("active", active), ("base", base)):
+            v = ((m or {}).get("terms") or {}).get(k)
+            if v and v.get("value") is not None and not v.get("fixed"):
+                out[k] = v
+                src.append(f"{k} from the {label} model")
+                if k == "ME":
+                    me_model = m
+                break
+    return out, ", ".join(src), me_model
+
+
 def stats(config, listing: dict | None = None) -> dict:
-    """The TPoint numbers from the newest model file and the data file of
-    the same run (else the newest data file); see the module doc. The
-    newest run wins, so "Super Model" files are used whenever they are
-    newer than the base run's. Never raises."""
+    """The TPoint numbers (PS-184): the base model (newest full run) with
+    the data file of the same run (else the newest data file of a non-recal
+    run), any recalibration run after it, which one is active, and the
+    polar alignment from the refracted pole; see the module doc. Top-level
+    model keys are the BASE model's (a recal-only folder reports the recal
+    there). Never raises."""
     out: dict = {"ok": False, "source": "tpoint-files"}
     try:
         lst = listing or list_files(config)
         out["roots"] = lst["roots"]
         out["files_seen"] = len(lst["files"])
-        data = model = None
+        models: list[dict] = []
         prot = None
+        rec_me = None
         texts: dict = {}
 
         def text_of(f):
@@ -371,44 +520,104 @@ def stats(config, listing: dict | None = None) -> dict:
             text = text_of(f)
             if text is None:
                 continue
-            if model is None and parse_data(text) is None:
+            if parse_data(text) is None:
                 m = parse_model(text)
                 if m:
-                    model = {**m, "file": f["rel"], "mtime": f["mtime"],
-                             "_run": run_key(f)}
+                    models.append({**m, "file": f["rel"], "mtime": f["mtime"],
+                                   "_run": run_key(f), "recal": _is_recal(f, m)})
             if prot is None:
                 pv = parse_protrack(text)
                 if pv is not None:
                     prot = {"on": pv, "file": f["rel"]}
-            if model is not None and prot is not None:
-                break
-        same = ([f for f in lst["files"] if run_key(f) == model["_run"]]
-                if model else [])
-        for f in sorted(same, key=_data_rank) + list(lst["files"]):
-            text = text_of(f)
-            d = parse_data(text) if text is not None else None
-            if d:
-                data = {**d, "file": f["rel"], "mtime": f["mtime"]}
-                break
+            if rec_me is None:
+                rm = _REC_ME_RE.findall(text)
+                if rm:
+                    rec_me = {"value": float(rm[-1]), "file": f["rel"]}
+        base = next((m for m in models if not m["recal"]), None)
+        recal = next((m for m in models if m["recal"]), None)
+        # a recal saved before the base model was refitted belongs to an
+        # older base: shown, never the active model
+        after = bool(recal and (base is None or recal["mtime"] >= base["mtime"]))
+        recal_runs = {m["_run"] for m in models if m["recal"]}
+
+        def data_for(m, fallback: bool):
+            same = [f for f in lst["files"] if run_key(f) == m["_run"]]
+            rest = ([f for f in lst["files"] if run_key(f) not in recal_runs]
+                    if fallback else [])
+            for f in sorted(same, key=_data_rank) + rest:
+                text = text_of(f)
+                d = parse_data(text) if text is not None else None
+                if d:
+                    return {**d, "file": f["rel"], "mtime": f["mtime"]}
+            return None
+
+        main = base or recal
+        data = data_for(main, True) if main else None
+        if main is None:              # data only, no model file
+            for f in lst["files"]:
+                text = text_of(f)
+                d = parse_data(text) if text is not None else None
+                if d:
+                    data = {**d, "file": f["rel"], "mtime": f["mtime"]}
+                    break
         lim = float(getattr(config, "tpoint_polar_max_arcmin", 3.0) or 3.0)
         if data:
             out.update(points=data["points"], data_file=data["file"],
                        data_date=data.get("date") or _date(data["mtime"]))
-        if model:
-            out.update(model_file=model["file"], terms=model["terms"],
-                       sky_rms_arcsec=model["sky_rms_arcsec"],
-                       popn_sd_arcsec=model["popn_sd_arcsec"],
-                       popn_sd_source=model.get("popn_sd_source"),
-                       model_points=model.get("observations"),
-                       fitted_terms=model.get("fitted_terms"),
-                       polar=polar(model["terms"], lim))
-            if out.get("points") is None and model.get("observations"):
-                out["points"] = model["observations"]
-        out["model_date"] = (_date(model["mtime"]) if model else None) or out.get("data_date")
+        if main:
+            out.update(model_file=main["file"], terms=main["terms"],
+                       sky_rms_arcsec=main["sky_rms_arcsec"],
+                       popn_sd_arcsec=main["popn_sd_arcsec"],
+                       popn_sd_source=main.get("popn_sd_source"),
+                       model_points=main.get("observations"),
+                       fitted_terms=main.get("fitted_terms"),
+                       model_kind="recal" if main is recal else "base")
+            if out.get("points") is None and main.get("observations"):
+                out["points"] = main["observations"]
+        out["model_date"] = (_date(main["mtime"]) if main else None) or out.get("data_date")
+        rc = None
+        if recal is not None and base is not None:
+            rd = data_for(recal, False)
+            rc = {"model_file": recal["file"], "model_date": _date(recal["mtime"]),
+                  "points": (rd or {}).get("points") or recal.get("observations"),
+                  "model_points": recal.get("observations"),
+                  "sky_rms_arcsec": recal["sky_rms_arcsec"],
+                  "popn_sd_arcsec": recal["popn_sd_arcsec"],
+                  "fitted_terms": recal.get("fitted_terms"),
+                  "fitted": [k for k, v in recal["terms"].items() if not v["fixed"]],
+                  "terms": recal["terms"], "data_file": (rd or {}).get("file"),
+                  "has_data": bool(recal.get("observations")),
+                  "after_base": after}
+        out["recal"] = rc
+        active = recal if (rc and rc["has_data"] and after) else main
+        out["active_model"] = ("recal" if active is recal and recal is not None
+                               else "base" if main else None)
+        out["active_model_file"] = active["file"] if active else None
+        if main:
+            pt, psrc, me_model = _polar_terms(active, base)
+            lat = float(getattr(config, "observatory_lat", 31.9))
+            refr = model_refraction(lat, (me_model or active or {}).get("refraction"))
+            if refr is None:
+                site = (data or {}).get("site")
+                if not site:
+                    for f in lst["files"]:
+                        text = text_of(f)
+                        d = parse_data(text) if text is not None else None
+                        if d and d.get("site"):
+                            site = d["site"]
+                            break
+                refr = site_refraction(
+                    lat, site, float(getattr(config, "observatory_elev", 0.0) or 0.0))
+            pol = polar(pt, lim, refr, rec_me["value"] if rec_me else None)
+            if pol:
+                pol["terms_source"] = psrc
+                if rec_me:
+                    pol["recommended_me_file"] = rec_me["file"]
+            out["polar"] = pol
         if prot is not None:
             out["protrack"] = prot["on"]
             out["protrack_file"] = prot["file"]
-        out["ok"] = bool(data or model)
+        out["ok"] = bool(data or main)
         if not out["ok"]:
             found = [r["path"] for r in lst["roots"] if r["exists"]]
             out["note"] = ("no TPoint data or model file parsed under "
@@ -432,7 +641,9 @@ def save(config, st: dict, now: datetime | None = None) -> None:
     rec = {"t_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
            **{k: st.get(k) for k in ("model_date", "points", "sky_rms_arcsec",
                                      "popn_sd_arcsec", "protrack", "data_file",
-                                     "model_file")},
+                                     "model_file", "active_model")},
+           "recal_date": (st.get("recal") or {}).get("model_date"),
+           "recal_rms_arcsec": (st.get("recal") or {}).get("sky_rms_arcsec"),
            "polar_arcmin": (st.get("polar") or {}).get("total_arcmin")}
     try:
         d = stats_dir(config)
@@ -440,7 +651,8 @@ def save(config, st: dict, now: datetime | None = None) -> None:
         (d / "stats_latest.json").write_text(json.dumps(st, indent=2, default=str),
                                              encoding="utf-8")
         hist = history(config)
-        key = ("model_date", "points", "sky_rms_arcsec")
+        key = ("model_date", "points", "sky_rms_arcsec", "recal_date",
+               "recal_rms_arcsec")
         if not hist or any(hist[-1].get(k) != rec.get(k) for k in key):
             with open(d / "stats_history.jsonl", "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(rec) + "\n")
@@ -505,7 +717,9 @@ def format_stats(st: dict) -> str:
     psd = (f", popn SD {num('popn_sd_arcsec')}\""
            + (" (derived)" if st.get("popn_sd_source") == "derived" else "")
            if st.get("popn_sd_arcsec") is not None else "")
-    lines = [f"TPoint model (from TPoint's files, read only): "
+    kind = ("recal run (no base model file found)"
+            if st.get("model_kind") == "recal" else "base model (newest full run)")
+    lines = [f"TPoint {kind}, from TPoint's files (read only): "
              f"{st.get('points') if st.get('points') is not None else '?'} points"
              + (f" ({mp} in the fit)" if mp is not None and mp != st.get("points") else "")
              + f", sky RMS {num('sky_rms_arcsec')}\"{psd}"
@@ -521,10 +735,33 @@ def format_stats(st: dict) -> str:
                      "= fixed):")
         for i in range(0, len(cells), 6):
             lines.append("    " + ", ".join(cells[i:i + 6]))
+    rc = st.get("recal")
+    if rc:
+        rpts = rc.get("points")
+        lines.append(
+            ("  recal run after it: " if rc.get("after_base") else
+             "  recal run BEFORE it (belongs to an older base, not active): ")
+            + f"{rc.get('model_date') or '?'}, "
+            + (f"{rpts} points, " if rpts is not None else "")
+            + (f"{rc.get('fitted_terms')} fitted ({', '.join(rc.get('fitted') or [])})"
+               + (f", sky RMS {round(rc['sky_rms_arcsec'], 2):g}\""
+                  if rc.get("sky_rms_arcsec") is not None else "")
+               if rc.get("has_data") else "no data yet (not fitted)")
+            + f" ({rc.get('model_file')})")
+    elif st.get("model_kind") == "base":
+        lines.append("  recal run after it: none")
+    if st.get("active_model"):
+        lines.append(f"  active model (ProTrack uses it): "
+                     f"{'the recal run' if st['active_model'] == 'recal' else 'the base model'}"
+                     f" ({st.get('active_model_file')}; newest fitted model file)")
     pol = st.get("polar")
     if pol:
-        lines.append(f"  polar alignment: {pol['total_arcmin']}' "
-                     f"({'OK' if pol['ok'] else 'over'} the {pol['max_arcmin']:g}' limit)")
+        lines.append(f"  polar alignment: {pol['total_arcmin']}' from the "
+                     f"{pol.get('target', 'pole')} "
+                     f"({'OK' if pol['ok'] else 'over'} the {pol['max_arcmin']:g}' limit; "
+                     f"{pol.get('true_pole_arcmin')}' from the true pole)")
+        if pol.get("terms_source"):
+            lines.append(f"    ({pol['terms_source']})")
         lines += [f"    {a}" for a in pol["advice"]]
         lines.append(f"    ({pol['note']})")
     else:

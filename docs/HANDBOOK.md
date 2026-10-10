@@ -562,15 +562,35 @@ go, is skipped), reads the text ones (never writes) and parses:
   has no popn SD: it is derived as sky RMS x sqrt(n / (n - fitted terms))
   and shown as "(derived)";
 - a `ProTrack... = on / off` line in any listed file.
-The newest model file wins (so the Super Model files when they are newer
-than the base run's) and the data file of the same run gives the points.
+PS-184: the BASE model is the newest model file that is not a
+recalibration (Super Model files when they are newer than the base run's)
+and the data file of the same run gives its points; a RECAL run ("recal"
+in the run name or caption: IH / ID and a few terms refitted on a short
+run, the rest held `=`) is reported separately with its date, points,
+fitted terms and RMS. The active model (the one ProTrack uses) is the
+recal when it was saved after the base and has data, else the base; a
+recal older than the base (the base was refitted after it) is shown as
+"BEFORE it, not active". The top-level numbers (points, RMS, the audit
+and history) are always the base's.
 `tpoint-stats` prints points (and how many are in the fit), sky RMS, popn
 SD, model date, the main terms and every term (fixed ones marked `=`), the
-polar alignment from ME / MA in arcmin against `tpoint_polar_max_arcmin`
-with what to turn (TPOINT convention: ME > 0 = polar axis too high, lower
-it; MA > 0 = polar axis east of the pole, move it west; confirm with
-TheSky's Polar Alignment Report first) and ProTrack (unknown unless a file
-states it). `--files` lists what it found; `GET /api/thesky/tpoint/files`
+recal line, the active model, the polar alignment from ME / MA (each from
+the active model when it fitted it, else the base's) in arcmin against
+`tpoint_polar_max_arcmin`, and ProTrack (unknown unless a file states it).
+Polar alignment is measured from the REFRACTED pole, as TheSky's Polar
+Alignment Report does: recommended ME = -R, R = A tan z + B tan^3 z from
+the model's T line refraction constants at the pole altitude (z = 90 -
+latitude; 2026-10-10: A 47.546", B -0.0564" give 76.1", exactly TheSky's
+"Recommended ME -76.1"); without them R comes from the data file's site
+temperature / pressure (standard atmosphere at the site height when the
+file's pressure is implausible); a "Recommended ME" line in any listed
+file wins. Under 10" from the target says "no adjustment". Sign
+convention (TPOINT, matching that report): ME > 0 = polar axis below the
+pole, raise it; MA > 0 = polar axis east of the pole, move it west. The
+azimuth advice is in Paramount MX knob form (Bisque manual: tightening the
+right azimuth knob moves the axis east, the left one west; loosen the
+opposite knob first). Confirm with TheSky's Polar Alignment Report before
+turning a knob. `--files` lists what it found; `GET /api/thesky/tpoint/files`
 does the same and `GET /api/thesky/tpoint/file?rel=` shows the head of one
 listed file (anything else 404s) so the parsers can be checked against
 TheSky64's real files (the `thesky64_*` test fixtures are those files,

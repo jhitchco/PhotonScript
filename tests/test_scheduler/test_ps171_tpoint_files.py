@@ -82,12 +82,14 @@ def test_protrack_line():
 
 
 def test_polar_advice_and_limit():
+    # PS-184: TPOINT's convention as TheSky's report reads it: ME > 0 =
+    # polar axis below the pole; no refraction given = the true pole
     p = tf.polar({"ME": {"value": 120.6}, "MA": {"value": -45.2}}, 3.0)
     assert p["total_arcmin"] == pytest.approx(2.15, abs=0.01) and p["ok"]
-    assert "too high, lower it" in p["advice"][0]
+    assert "below the target, raise it" in p["advice"][0]
     assert "west of the pole, move it east" in p["advice"][1]
     big = tf.polar({"ME": {"value": -300.0}}, 3.0)
-    assert not big["ok"] and "too low, raise it" in big["advice"][0]
+    assert not big["ok"] and "above the target, lower it" in big["advice"][0]
     assert tf.polar({"IH": {"value": 1.0}}) is None
 
 
@@ -121,12 +123,15 @@ def test_stats_merge_newest_data_and_model(tmp_path):
     assert st["data_file"].endswith("documented-format_pointing.dat")
     assert st["data_date"] == "2026-10-09"
     assert st["sky_rms_arcsec"] == 15.77 and st["terms"]["ID"]["value"] == 52.41
-    assert st["polar"]["total_arcmin"] == pytest.approx(2.15, abs=0.01)
+    # PS-184: from the refracted pole (site line 12 C, 820 mB: R 78.4")
+    assert st["polar"]["total_arcmin"] == pytest.approx(3.4, abs=0.02)
+    assert st["polar"]["true_pole_arcmin"] == pytest.approx(2.15, abs=0.01)
     assert st["protrack"] is True
     text = tf.format_stats(st)
     assert "5 points (84 in the fit), sky RMS 15.77\"" in text
     assert "IH -3484.6\", ID +52.4\", ME +120.6\", MA -45.2\"" in text
-    assert "polar alignment: 2.15' (OK the 3' limit)" in text
+    assert "polar alignment: 3.4' from the refracted pole" in text
+    assert "over the 3' limit; 2.15' from the true pole" in text
     assert "ProTrack: on" in text
 
 
@@ -177,7 +182,7 @@ def test_audit_reads_the_files_as_a_source(tmp_path, monkeypatch):
     obs = ta.collect(cfg)
     o = obs["tpoint-files"]
     assert o["tpoint_points"] == 5 and o["tpoint_rms_arcsec"] == 15.77
-    assert o["tpoint_polar_error_arcmin"] == pytest.approx(2.15, abs=0.01)
+    assert o["tpoint_polar_error_arcmin"] == pytest.approx(3.4, abs=0.02)
     assert obs["_sources"]["tpoint-files"]["ok"]
     desired = ta.load_desired(cfg)
     rows = {r["id"]: r for r in desired["check"]}
@@ -213,7 +218,7 @@ def test_cli_tpoint_stats(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "_config_for_repo", lambda repo: cfg)
     r = CliRunner().invoke(cli.app, ["tpoint-stats", "--files"])
     assert r.exit_code == 0
-    assert "5 points" in r.output and "lower it" in r.output
+    assert "5 points" in r.output and "raise it" in r.output
     assert "documented-format_fit.txt" in r.output
 
 
@@ -311,7 +316,10 @@ def test_real_stats_pairs_the_run_and_formats_everything(tmp_path):
     assert st["data_file"].endswith("TPoint base run in.dat")
     assert st["points"] == 255 and st["model_points"] == 233
     assert st["sky_rms_arcsec"] == 15.7683
-    assert st["polar"]["total_arcmin"] == pytest.approx(2.75, abs=0.01)
+    # PS-184: from the refracted pole (the model's A / B: R 84.9")
+    assert st["polar"]["total_arcmin"] == pytest.approx(2.62, abs=0.01)
+    assert st["polar"]["true_pole_arcmin"] == pytest.approx(2.75, abs=0.01)
+    assert st["polar"]["me_recommended_arcsec"] == pytest.approx(-84.9, abs=0.1)
     assert "confirm with TheSky's Polar Alignment Report" in st["polar"]["note"]
     text = tf.format_stats(st)
     assert "255 points (233 in the fit), sky RMS 15.77\"" in text
@@ -329,9 +337,12 @@ def test_real_stats_prefers_the_super_model_when_newer(tmp_path):
                                  "Super Model Outdat.dat": 60,
                                  "TPoint recal run outmod.dat": 30})
     st = tf.stats(_cfg(tmp_path, thesky_user_dir=str(root)))
-    # the newer recal model has no data and no RMS; it still is the newest
-    # model, so this run reports it honestly (no data of its own)
-    assert st["model_file"].endswith("TPoint recal run outmod.dat")
+    # PS-184: the newer recal model has no data (T 0): shown as the recal,
+    # never as the model; the base model (Super Model) stays active
+    assert st["model_file"].endswith("Super Model Outmod.dat")
+    assert st["recal"]["model_file"].endswith("TPoint recal run outmod.dat")
+    assert st["recal"]["has_data"] is False and st["recal"]["after_base"]
+    assert st["active_model"] == "base"
     root2 = _real_tree(tmp_path / "b", {"TPoint base run outmod.dat": 3600,
                                         "TPoint base run in.dat": 3600,
                                         "Super Model Outmod.dat": 60,
