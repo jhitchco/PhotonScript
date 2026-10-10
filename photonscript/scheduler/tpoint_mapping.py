@@ -238,7 +238,11 @@ def build(config, at: str = "", now: datetime | None = None,
     "moon", "test_json", "params", "script"}. field is what the sideload
     view shows (name, nominal zenith RA / Dec, length). PS-181: points /
     add override tpoint_mapping_points / tpoint_sample_add for this run
-    (an arm with the recipe); None = the config's."""
+    (an arm with the recipe); points None = the config's. PS-187: add None
+    = "off" (every point gets --add off, whatever tpoint_sample_add says):
+    the scripted add did not add points on 2026-10-09, the CSV is the
+    deliverable and TheSky's Automated Pointing Calibration adds points;
+    "auto" only when a run asks for it (a supervised test)."""
     from photonscript.scheduler.nina_sequence_json import (
         generate_tpoint_mapping_json, tpoint_mapping_duration_s,
         tpoint_mapping_name)
@@ -246,7 +250,8 @@ def build(config, at: str = "", now: datetime | None = None,
     p = params(config)
     if points is not None:
         p["points"] = clamp_points(points)
-    add = add if add in ("off", "auto") else None
+    asked = add in ("off", "auto")
+    add = add if asked else "off"
     lat = float(getattr(config, "observatory_lat", 31.9))
     lon = float(getattr(config, "observatory_lon", -109.0))
     when = start_time(config, at, now)
@@ -260,7 +265,7 @@ def build(config, at: str = "", now: datetime | None = None,
     test_json = generate_tpoint_mapping_json(
         [[q["alt"], q["az"], q["side"]] for q in pts], ra_hours=zen_ra,
         dec_degrees=lat, exposure_s=p["exposure_s"], binning=p["binning"],
-        script=script or "", min_altitude=p["min_alt"], add=add or "")
+        script=script or "", min_altitude=p["min_alt"], add=add)
     est_min = round(tpoint_mapping_duration_s(len(pts), p["exposure_s"]) / 60)
     field = {"name": tpoint_mapping_name(len(pts)),
              "ra_hours": round(zen_ra, 4), "dec_degrees": round(lat, 4),
@@ -280,9 +285,48 @@ def build(config, at: str = "", now: datetime | None = None,
         f"~{est_min} min from {field['for_utc']}; skipped "
         f"{sk['meridian']} near the meridian, {sk['pole']} under the pole, "
         f"{field['moon_skip']}; sample script {field['sample_script']}; "
-        f"TPoint add {add or getattr(config, 'tpoint_sample_add', 'off')}"
-        + (" (this arm)" if add else ""))
+        f"TPoint add {add}"
+        + (" (this arm)" if asked else " (default: CSV only, PS-187)"))
     return {"field": field, "points": pts, "skipped": plan["skipped"],
             "moon": moon, "test_json": test_json, "params": p,
             "script": script}
 
+
+# ------------------------------------------------------------- PS-187
+
+def samples(config, night: str) -> dict:
+    """PS-187: runs/<night>_tpoint.csv as {"date", "file", "exists",
+    "rows", "summary"} (read only). summary: points, solved, added, and
+    the add_error / note texts with their counts. The scheduler reads the
+    file here (tpoint_sample writes it; the scheduler never imports that
+    module, test_add_calls_live_only_in_the_sample_module)."""
+    import csv
+    from pathlib import Path
+    p = Path(getattr(config, "data_dir", ".")) / "runs" / f"{night}_tpoint.csv"
+    rows: list[dict] = []
+    try:
+        with open(p, newline="", encoding="utf-8") as fh:
+            rows = list(csv.DictReader(fh))
+    except OSError:
+        pass
+    return {"date": night, "file": p.name, "exists": p.exists(), "rows": rows,
+            "summary": summarize(rows)}
+
+
+def summarize(rows: list[dict]) -> dict:
+    def yes(v):
+        return str(v or "").strip().lower() in ("true", "1", "yes")
+
+    def tally(key):
+        out: dict = {}
+        for r in rows:
+            v = str(r.get(key) or "").strip()
+            if v:
+                out[v] = out.get(v, 0) + 1
+        return out
+    return {"points": len(rows),
+            "solved": sum(1 for r in rows if yes(r.get("solved"))),
+            "added": sum(1 for r in rows if yes(r.get("added"))),
+            "add_modes": tally("add_mode"), "add_methods": tally("add_method"),
+            "add_results": tally("add_result"), "add_errors": tally("add_error"),
+            "notes": tally("note")}

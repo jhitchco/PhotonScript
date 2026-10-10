@@ -18,6 +18,9 @@ GET  /api/thesky/tpoint                  PS-171: TPoint numbers from TPoint's ow
 GET  /api/thesky/tpoint/files            the TPoint files under TheSky's user
                                          folder (names, sizes, dates)
 GET  /api/thesky/tpoint/file?rel=        the head of one listed file
+GET  /api/tpoint/samples?date=YYYY-MM-DD PS-187: that night's tpoint-sample CSV
+                                         rows (runs/<date>_tpoint.csv) and a
+                                         summary (solved / added / add errors)
 
 Nothing here writes TheSky, moves the mount or takes an image. Handlers
 lazily import get_config to avoid an import cycle with app.py.
@@ -160,6 +163,22 @@ async def api_thesky_tpoint_files():
         f.pop("_ts", None)
         f.pop("path", None)
     return lst
+
+
+@router.get("/api/tpoint/samples")
+async def api_tpoint_samples(date: str = ""):
+    """PS-187: the TPoint mapping samples of one night (read only): every
+    row of runs/<date>_tpoint.csv plus a summary (points, solved, added,
+    add_error / note counts). date empty = tonight."""
+    import re
+    from photonscript.shared.phd2_store import night_of
+    from photonscript.scheduler import tpoint_mapping as tm
+    cfg = _cfg()
+    date = date.strip() or night_of(cfg)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+        return JSONResponse(status_code=400,
+                            content={"detail": f"bad date {date!r} (YYYY-MM-DD)"})
+    return await asyncio.to_thread(tm.samples, cfg, date)
 
 
 @router.get("/api/thesky/tpoint/file")

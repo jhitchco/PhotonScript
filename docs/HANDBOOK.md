@@ -515,12 +515,31 @@ use TheSky's own Image Link state rather than the scripted one; watch the
 TPoint window and `add_result` / `add_error` in the CSV), then pin the form
 that worked, or go back to `off`.
 
+PS-187 finding (2026-10-09 run, read on 2026-10-10 over read-only GETs):
+the sideloaded 45-point run went with `--add auto` and was stopped after 9
+points (NINA #1 log, 20:57 to 21:07 local). No TPoint file saved after it
+holds any of those points: `TPoint base run in.dat` was not saved between
+the run and 12:55Z, the recal run saved at 03:50Z (51 points, LST 21:10 to
+21:48) and the 10-10 base run (356 points, LST 21:56 to 03:25, TheSky's own
+Automated Pointing Calibration) have no observation at the mapping's LST
+(20:12 to 20:22). Working hypothesis: TheSky's Add Pointing Sample action
+(`TheSkyXAction.execute(AddPointingSample)`) acts on TheSky's own last
+camera Image Link, not on a scripted `ImageLink` of a FITS file, so the
+scripted path cannot add points. Per point `add_result` / `add_error` is in
+the night's CSV: `GET /api/tpoint/samples?date=2026-10-09` (PS-187, read
+only: rows plus a summary of solved / added / add errors) once deployed.
+So: the mapping recipe now passes `--add off` on every point unless the run
+asks for `auto` explicitly (per-arm / preview `add=auto`, a supervised
+test only; `tpoint_sample_add` no longer switches it on for the recipe);
+the CSV is the deliverable (hand import, below). The supported way to add
+points to TPoint is TheSky's Automated Pointing Calibration Run with the
+camera handed to TheSky, as done on 2026-10-09 / 10.
+
 How to run it (supervised; first run on a clear night, about 1 h):
-1. Afternoon: run the probe (above). Note the point count / RMS. If it
-   lists an add method and you want points added automatically, set
-   `PS_TPOINT_SAMPLE_ADD=auto` on the System page; otherwise leave `off`
-   and import the CSV by hand (below) or add points from TheSky's Image
-   Link window.
+1. Afternoon: run the probe (above). Note the point count / RMS. The
+   recipe samples with `--add off` (PS-187): import the CSV by hand
+   (below), or add points with TheSky's Automated Pointing Calibration.
+   Only for a supervised add test pass `add=auto` with the run.
 2. Dashboard, Target Goals, **Sideload**: recipe **TPoint mapping run**
    (`tpoint_mapping_then_tonight`), **Preview**. The RC16 row shows the
    point count (east / west), the minutes, the skips and whether the sample

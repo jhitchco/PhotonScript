@@ -401,7 +401,10 @@ def test_tpoint_points_and_add_reach_the_sequence(tmp_path, monkeypatch):
     text = run["test_json"]
     assert text.count("--add auto") == 10
     plain = tm.build(cfg, "2026-10-07T03:00:00Z")
-    assert "--add" not in plain["test_json"]
+    # PS-187: no per-run add = an explicit --add off on every point
+    assert "--add auto" not in plain["test_json"]
+    assert plain["test_json"].count("--add off") == plain["field"]["points"]
+    assert "TPoint add off (default: CSV only, PS-187)" in plain["field"]["summary"]
     assert plain["field"]["points"] == cfg.tpoint_mapping_points
 
 

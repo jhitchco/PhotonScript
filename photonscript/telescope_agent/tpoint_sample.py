@@ -35,6 +35,15 @@ is TheSkyXAction.execute(<action>) in one of three argument forms
 TheSkyXAction members, all members of ImageLink / sky6RASCOMTele /
 sky6RASCOMTheSky / OpticalTubeAssembly and their model-ish plain values;
 tpoint_sample_add_method pins the form a supervised point confirmed.
+
+PS-187 (the 2026-10-09 run with --add auto): no TPoint file saved after it
+holds any of its points, so the add is taken not to work on a scripted
+Image Link of a FITS (TheSky's Add Pointing Sample most likely acts on its
+own last camera Image Link). The mapping recipe now passes --add off
+unless a run asks for auto; the CSV is the deliverable and TheSky's
+Automated Pointing Calibration (camera handed to TheSky) adds points.
+GET /api/tpoint/samples?date= returns a night's CSV rows
+(scheduler/tpoint_mapping.samples, read only).
 """
 
 from __future__ import annotations
