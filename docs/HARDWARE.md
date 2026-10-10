@@ -55,6 +55,49 @@ corner over a 600 s sub, about 39 px over 6 h (registration crops it).
 - GUIDING COMMITTED TO THE OAG (GP678C on the RC16) as of 2026-09-12 — this
   frees the AP26CC (formerly the piggyback guide cam) to become the 600mm
   IMAGING camera. See the dual-rig plan below and docs/DUAL_RIG.md.
+- PS-190: a ZWO ASI174MM Mini (IMX174 mono, 1936 x 1216, 5.86 um) replaces
+  the GP678C (IMX678 color, 2.0 um) on the OAG (ordered 2026-10-10, AARO
+  installs). PHD2 profile "Primary RC Profile (Guider)", id 2. New scale
+  206.265 x 5.86 / 3248 = 0.372"/px at bin 1 (GP678C bin 2: 0.254"/px).
+  config/phd2/desired_oag_rc16.toml knows both cameras ([[camera]]): the
+  audit judges the connected one's rows (by the camera name PHD2 or the
+  guide log reports), so both pass until the swap.
+
+#### ASI174MM Mini swap checklist (PS-190)
+Do these in order on the first session after AARO installs the camera.
+1. Hardware: OAG focus. Loop in PHD2 (2 s, gain 40) on a bright star with
+   the RC16 at imaging focus, and move the OAG camera's helical / spacer
+   until the guide stars are sharp (HFD a few px at 0.372"/px). The IMX174
+   sits at a different back-focus than the GP678C (check the spacer).
+2. PHD2 profile: edit "Primary RC Profile (Guider)" (or make a new one and
+   delete the old): Connect Equipment > camera = ZWO ASI174MM Mini (native
+   ZWO driver); Brain > Camera: pixel size 5.86 um, binning 1, 16-bit,
+   saturation by Max ADU 65535, gain 33 to 50 (PHD2 percent, about native
+   200 to 300) to start; exposure 2 s; Brain > Guiding: search region 25 px,
+   minimum star HFD 2.0 px, star mass detection off, multi-star on;
+   Brain > Global: focal length 3248 mm.
+3. PhotonScript config (System page): guide_camera_pixel_um = 5.86 (the
+   config fallback scale; the audit, the guide logs and drift already take
+   5.86 from the camera name). Leave phd2_pixel_scale_arcsec at 0.
+4. Dark library: Darks > Dark library, roof closed, 1 to 4 s at the new
+   gain and bin 1 (the GP678C library does not match the new sensor).
+5. Bad-pixel (defect) map: Darks > Bad-pixel map at the same gain and
+   binning, then auto-load it (or the dark library) on connect.
+6. Calibration: clear the old calibration (it was at bin 2, 0.254"/px) and
+   calibrate near Dec 0 (System page: Calibrate at the next dispatch,
+   PS-93). The calibration step changes with the scale: use the PHD2
+   calculator or the PS-93 recommended step.
+7. Guiding Assistant: run it 2 to 3 minutes on the new camera, then set the
+   RA / Dec min-move it recommends (the audit's ra_min_move / dec_min_move
+   rows follow it).
+8. NINA (NINA #1) Options > Equipment > Guider: settle pixels are guide
+   pixels, so at 0.372"/px 0.5 to 1.0" is 1.3 to 2.7 px (was 2 to 3.9 px at
+   0.254"/px): set about 2 px; settle timeout 60 s or more; dither pixels
+   about 2/3 of the GP678C value for the same sky move.
+9. Audit: GET /api/phd2/audit?refresh=1 (or arm guided): the camera row
+   says "ZWO ASI174MM Mini: its rows are applied" and the guide pixel
+   scale row passes at about 0.372"/px. Note the first calibration and
+   typical RMS under section 1 below.
 
 ## Exposure & calibration standards
 - NB 600s, BB 180s, gain 200, offset 256, 0 C ("NEW epoch", 2026-07-05+)

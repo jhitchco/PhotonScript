@@ -171,6 +171,33 @@ def lint_desired(desired: dict) -> list[str]:
         for k, v in r.items():
             if isinstance(v, str) and not v.isascii():
                 out.append(f"{rid}: {k} is not plain ASCII")
+    # PS-190: the guide cameras and their row overrides
+    cams = [c for c in desired.get("camera") or [] if isinstance(c, dict)]
+    cids = set()
+    for i, c in enumerate(cams):
+        cid = c.get("id") or f"camera #{i}"
+        if not c.get("id"):
+            out.append(f"camera {i}: no id")
+        if cid in cids:
+            out.append(f"{cid}: duplicate camera id")
+        cids.add(cid)
+        if not str(c.get("match") or "").strip():
+            out.append(f"{cid}: no match (camera name pattern)")
+        if not isinstance(c.get("pixel_size_um"), (int, float)) or c["pixel_size_um"] <= 0:
+            out.append(f"{cid}: no pixel_size_um")
+        for k, v in c.items():
+            if isinstance(v, str) and not v.isascii():
+                out.append(f"{cid}: {k} is not plain ASCII")
+        for oid, o in (c.get("rows") or {}).items():
+            if oid not in seen:
+                out.append(f"{cid}: override for unknown row {oid}")
+            for k, v in (o or {}).items():
+                if isinstance(v, str) and not v.isascii():
+                    out.append(f"{cid}.{oid}: {k} is not plain ASCII")
+            if (o or {}).get("computed") and o["computed"] not in COMPUTED:
+                out.append(f"{cid}.{oid}: unknown computed {o['computed']}")
+    if cams and desired.get("default_camera") not in cids:
+        out.append(f"default_camera {desired.get('default_camera')!r} is not a [[camera]] id")
     return out
 
 
@@ -428,14 +455,29 @@ def _c_guide_gain(row, val, observed, config, ctx):
     """PS-90: the gain the guide-star tuner recommends from recent nights
     (scheduler.phd2_tuning.recommend, collected as observed["tuning"])."""
     rec = observed.get("tuning") or {}
+    # PS-190: a camera may give a recommended starting band (PHD2 gain,
+    # 0-100); it judges the gain until the tuner has data, and is noted
+    # when the tuner recommends outside it
+    band = row.get("band")
+    lo, hi = (float(band[0]), float(band[1])) if band and len(band) == 2 else (None, None)
+    v = _num(val)
     if not rec.get("ok") or rec.get("gain") is None:
-        return INFO, "the PS-90 tuner's recommendation", None,             rec.get("note") or "no guide-star tuning data yet"
+        note = rec.get("note") or "no guide-star tuning data yet"
+        if lo is None:
+            return INFO, "the PS-90 tuner's recommendation", None, note
+        desired = f"{lo:g} to {hi:g} (camera starting band until the PS-90 tuner has data)"
+        if v is None:
+            return UNKNOWN, desired, int(round((lo + hi) / 2)), note
+        return ((PASS if lo <= v <= hi else row["severity"]), desired,
+                int(round((lo + hi) / 2)), note)
     want = _num(rec["gain"])
     desired = f"{want:g} (PS-90 tuner: {rec.get('note')})"
-    v = _num(val)
+    note = None
+    if lo is not None and not lo <= want <= hi:
+        note = f"the tuner's {want:g} is outside the camera's starting band {lo:g} to {hi:g}"
     if v is None:
-        return UNKNOWN, desired, int(want), None
-    return (PASS if abs(v - want) < 1e-6 else row["severity"]), desired, int(want), None
+        return UNKNOWN, desired, int(want), note
+    return (PASS if abs(v - want) < 1e-6 else row["severity"]), desired, int(want), note
 
 
 def _c_silenced_alerts(row, val, observed, config, ctx):
@@ -457,7 +499,49 @@ def _c_silenced_alerts(row, val, observed, config, ctx):
     return row["severity"], "no PHD2 alert silenced", None, note
 
 
+def _c_guide_camera(row, val, observed, config, ctx):
+    """PS-190: the guide camera is one the desired file knows ([[camera]]:
+    the GP678C until the swap, then the ZWO ASI174MM Mini). The rows for
+    the detected camera are the ones judged."""
+    info = observed.get("_camera") or {}
+    known = info.get("known") or []
+    desired = "one of " + ", ".join(known) if known else "a known OAG guide camera"
+    if val is None:
+        return UNKNOWN, desired, None, None
+    if info.get("detected"):
+        return PASS, desired, None, f"{info.get('label')}: its rows are applied"
+    return row["severity"], desired, None, (
+        "not a known OAG guide camera: the rows are judged for "
+        f"{info.get('label') or 'the default camera'}")
+
+
+def _c_guide_scale(row, val, observed, config, ctx):
+    """PS-190: the scale PHD2 reports is the detected camera's pixel size x
+    binning over the guide focal length (0.372"/px for the ASI174MM Mini at
+    bin 1 and 3248 mm). A miss means PHD2's profile has the wrong pixel size
+    or focal length for the camera on the OAG."""
+    from photonscript.telescope_agent.phd2_client import guide_focal_length_mm
+    cam = (observed.get("_camera") or {}).get("camera") or {}
+    px = _num(cam.get("pixel_size_um"))
+    fl = guide_focal_length_mm(config)
+    b = _num((observed.get("api") or {}).get("binning")
+             or (observed.get("log") or {}).get("binning")) or _num(cam.get("binning")) or 1
+    if not px or not fl:
+        return UNKNOWN, "the camera's pixel size x binning / focal length", None, \
+            "no pixel size for the camera or no guide focal length in config"
+    want = 206.265 * px * int(b) / fl
+    tol = float(row.get("tol_pct", 5))
+    desired = (f"{want:.3f}\"/px +/- {tol:g}% ({cam.get('name') or cam.get('id')}, "
+               f"{px:g} um, bin {int(b)}, {fl:.0f} mm)")
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, desired, None, None
+    return (PASS if _within(v, want, tol) else row["severity"]), desired, None, None
+
+
 COMPUTED = {
+    "guide_camera": _c_guide_camera,
+    "guide_scale": _c_guide_scale,
     "silenced_alerts": _c_silenced_alerts,
     "pe_owner": _c_pe_owner,
     "ra_min_move_ga": _c_ra_min_move_ga,
@@ -477,11 +561,14 @@ COMPUTED = {
 def _scale(observed: dict, config) -> tuple[float | None, str | None]:
     """Guide arcsec/px for arcsec rows: the configured optics at the
     observed binning (the physical scale, right even when the PHD2 profile's
-    focal length is wrong), else what PHD2 or its log reports."""
+    focal length is wrong), else what PHD2 or its log reports. PS-190: with
+    a detected camera ([[camera]] match) its own pixel size is used."""
     from photonscript.telescope_agent.phd2_client import guide_scale_from_config
     b = _num((observed.get("api") or {}).get("binning")
              or (observed.get("log") or {}).get("binning")) or 1
-    v = guide_scale_from_config(config, int(b))
+    info = observed.get("_camera") or {}
+    px = _num((info.get("camera") or {}).get("pixel_size_um")) if info.get("detected") else None
+    v = guide_scale_from_config(config, int(b), pixel_um=px)
     if v:
         return v, "config"
     for src in ("api", "log"):
@@ -613,14 +700,97 @@ def _unknown_note(row, observed) -> str:
 
 
 def evaluate(desired: dict, observed: dict, config) -> dict:
-    """Every row judged, plus counts and the guide scale used."""
+    """Every row judged, plus counts and the guide scale used. PS-190: the
+    rows are the detected guide camera's (rows_for_camera)."""
+    cam, name, detected = select_camera(desired, observed)
+    observed = dict(observed, _camera={
+        "camera": cam or {}, "name": name, "detected": detected,
+        "label": (cam or {}).get("name") or (cam or {}).get("id"),
+        "known": [c.get("name") or c.get("id") for c in cameras(desired)]})
     scale, scale_src = _scale(observed, config)
-    rows = [evaluate_row(r, observed, config, scale) for r in desired.get("check") or []]
+    rows = [evaluate_row(r, observed, config, scale)
+            for r in rows_for_camera(desired, cam)]
     counts = {s: sum(1 for r in rows if r["status"] == s)
               for s in (PASS, WARN, FAIL, UNKNOWN, INFO)}
     return {"rows": rows, "counts": counts,
             "scale_arcsec_px": round(scale, 4) if scale else None,
-            "scale_source": scale_src}
+            "scale_source": scale_src,
+            "camera": {"id": (cam or {}).get("id"), "name": (cam or {}).get("name"),
+                       "reported": name, "detected": detected}}
+
+
+# --------------------------------------------------------------------------
+# PS-190: guide cameras ([[camera]] in the desired file)
+# --------------------------------------------------------------------------
+
+_FORM_KEYS = FORMS + ("allow_off", "match")
+
+
+def cameras(desired: dict) -> list[dict]:
+    return [c for c in desired.get("camera") or [] if isinstance(c, dict)]
+
+
+def camera_by_name(desired: dict, name) -> dict | None:
+    """The first [[camera]] whose match is in the camera name (case and
+    punctuation ignored), else None."""
+    n = _norm(name) if name else ""
+    if not n:
+        return None
+    for c in cameras(desired):
+        m = _norm(c.get("match") or "")
+        if m and m in n:
+            return c
+    return None
+
+
+def default_camera(desired: dict) -> dict | None:
+    want = desired.get("default_camera")
+    return next((c for c in cameras(desired) if c.get("id") == want), None)
+
+
+def select_camera(desired: dict, observed: dict) -> tuple[dict | None, str | None, bool]:
+    """(camera, reported name, detected): the camera PHD2 (api) or the
+    newest guide log reports, matched against [[camera]]; an unknown or
+    unreported camera falls back to default_camera (detected False)."""
+    for src in ("api", "log"):
+        name = (observed.get(src) or {}).get("camera")
+        if name:
+            c = camera_by_name(desired, name)
+            return (c, str(name), True) if c else (default_camera(desired), str(name), False)
+    return default_camera(desired), None, False
+
+
+def rows_for_camera(desired: dict, cam: dict | None) -> list[dict]:
+    """The [[check]] rows with the camera's [camera.rows.<id>] overrides on
+    top. An override that sets a desired form (equals, min, max, ...)
+    replaces the row's form and target; other keys are merged."""
+    rows = list(desired.get("check") or [])
+    ov = (cam or {}).get("rows") or {}
+    if not ov:
+        return rows
+    out = []
+    for r in rows:
+        o = ov.get(r.get("id"))
+        if isinstance(o, dict) and o:
+            r = dict(r)
+            if any(k in o for k in _FORM_KEYS):
+                for k in _FORM_KEYS + ("target", "range_severity"):
+                    r.pop(k, None)
+            r.update(o)
+        out.append(r)
+    return out
+
+
+def camera_pixel_um(config, name) -> float | None:
+    """PS-190: the pixel size of the guide camera called `name` from the
+    desired file's [[camera]] table, or None when it is not a known one."""
+    if not name:
+        return None
+    try:
+        c = camera_by_name(load_desired(config), name)
+    except Exception:  # noqa: BLE001
+        return None
+    return _num((c or {}).get("pixel_size_um"))
 
 
 # --------------------------------------------------------------------------
@@ -788,7 +958,10 @@ async def _collect_api(config, client=None) -> tuple[dict, dict]:
     cal = o.pop("_calibration", None)
     if isinstance(cal, dict):
         o["calibrated"] = bool(cal.get("calibrated"))
-    px = float(getattr(config, "guide_camera_pixel_um", 0) or 0)
+    # PS-190: the connected camera's own pixel size when the desired file
+    # knows it (the ASI174MM Mini is 5.86 um, not the GP678C's 2.0)
+    px = (camera_pixel_um(config, o.get("camera"))
+          or float(getattr(config, "guide_camera_pixel_um", 0) or 0))
     if o.get("pixel_scale") and o.get("binning") and px > 0:
         # the profile's focal length, from the scale PHD2 computes with it
         o["focal_length_mm"] = round(206.265 * px * int(o["binning"]) / o["pixel_scale"], 0)
@@ -1390,7 +1563,12 @@ async def apply(config, ids: list[str], *, dry_run: bool = True, client=None,
     audit = audit or load_latest(config)
     if not audit:
         audit = await run_audit(config, reason="apply")
-    desired_rows = {r.get("id"): r for r in load_desired(config).get("check") or []}
+    desired = load_desired(config)
+    # PS-190: the rows (exposure range etc.) of the camera the audit judged
+    cam_id = (audit.get("camera") or {}).get("id")
+    cam = next((c for c in cameras(desired) if c.get("id") == cam_id),
+               default_camera(desired))
+    desired_rows = {r.get("id"): r for r in rows_for_camera(desired, cam)}
     by_id = {r["id"]: r for r in audit.get("rows") or []}
     results, api_rows, prof_rows = [], [], []
     for rid in ids or []:

@@ -407,7 +407,9 @@ def _scale_for(h: dict, config) -> tuple[float | None, str | None]:
         return s, "log"
     if config is not None:
         from photonscript.telescope_agent.phd2_client import guide_scale_from_config
-        c = guide_scale_from_config(config, int(h.get("binning") or 1))
+        # PS-190: the header's camera picks its pixel size (ASI174MM Mini 5.86 um)
+        c = guide_scale_from_config(config, int(h.get("binning") or 1),
+                                    camera=h.get("camera"))
         if c:
             return c, "config"
     return None, None
