@@ -2994,7 +2994,10 @@ def build_library(config, date: str | None = None) -> dict:
 
 
 def _link_calibration_night(config, watch_dir: Path, lib: Path,
-                            d: str, rig: str = "rc16") -> tuple[int, int]:
+                            d: str, rig: str = "rc16", *, detail: list | None = None,
+                            measure_new: bool = True, recheck: bool = False,
+                            dry_run: bool = False,
+                            hold_quarantined: bool = False) -> tuple[int, int]:
     """Hardlink (else copy) one night's BIAS/DARK/FLAT frames from a NINA
     output dir into <lib>/Calibration/<TYPE>/<date>/. Returns (linked,
     already_there). Nights older than library_cal_days are skipped.
@@ -3002,7 +3005,14 @@ def _link_calibration_night(config, watch_dir: Path, lib: Path,
     PS-113: the night's frames are QA'd first (calibration_qa.file_night).
     With calibration_qa_mode=quarantine a failing frame is linked into
     Calibration/_quarantine/ instead of the Library (or moved there if it
-    was linked before). A QA error files everything as before."""
+    was linked before). A QA error files everything as before.
+
+    PS-188 (file calibration now): `detail` collects one entry per frame
+    that was filed, quarantined or left (with the reason); measure_new=False
+    files only frames the QA store already measured (the rest stay "QA
+    pending"); recheck re-measures; dry_run moves and saves nothing;
+    hold_quarantined leaves a frame whose quarantine copy exists where it
+    is (calibration_qa.rejudge moves those)."""
     import os
     import shutil
     from datetime import datetime as _dt
@@ -3027,28 +3037,63 @@ def _link_calibration_night(config, watch_dir: Path, lib: Path,
         if typ in gone:
             continue
         frames.append((typ, f))
+
+    def note(outcome, typ, f, reason=""):
+        if detail is not None:
+            detail.append({"type": typ, "date": d, "name": f.name,
+                           "outcome": outcome, "reason": reason})
+
     held: set = set()
+    pending: set = set()
+    recs: dict = {}
     try:
         from photonscript.scheduler import calibration_qa
-        held = calibration_qa.file_night(
-            config, rig, lib, d,
-            [(t, d, f) for t, f in frames if t in ("BIAS", "DARK", "FLAT")])
+        qa = [(t, d, f) for t, f in frames if t in ("BIAS", "DARK", "FLAT")]
+        if calibration_qa.mode(config) != "off" and (not measure_new or detail is not None):
+            known = calibration_qa.load_store(config, rig)["frames"]
+            if not measure_new:
+                for t, _d, f in qa:
+                    r = known.get(calibration_qa.frame_key(t, d, f.name))
+                    if r is None or r.get("median") is None:
+                        pending.add(str(f))
+                qa = [x for x in qa if str(x[2]) not in pending]
+        held = calibration_qa.file_night(config, rig, lib, d, qa, recheck=recheck,
+                                         dry_run=dry_run)
+        if detail is not None:
+            recs = calibration_qa.last_filed(rig)
     except Exception as e:  # noqa: BLE001 - QA never blocks filing
         logger.warning("calibration QA (%s %s) failed, filing unchecked: %s",
                        rig, d, e)
     for typ, f in frames:
         if str(f) in held:
+            if detail is not None:
+                from photonscript.scheduler.calibration_qa import frame_key
+                r = recs.get(frame_key(typ, d, f.name)) or {}
+                note("quarantined", typ, f, "; ".join((r.get("reasons") or [])[:2])
+                     or "QA fail")
             continue  # quarantined (PS-113)
+        if str(f) in pending:
+            note("left", typ, f, "QA pending: no QA record yet (measured by the "
+                 "dawn sweep, or file now while the armer is not imaging)")
+            continue
         dest = lib / "Calibration" / typ / d / f.name
         if dest.exists():
             skipped += 1
             continue
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            os.link(f, dest)
-        except OSError:
-            shutil.copy2(f, dest)
+        if hold_quarantined:
+            from photonscript.scheduler.calibration_qa import QUARANTINE_DIR
+            if (lib / "Calibration" / QUARANTINE_DIR / typ / d / f.name).exists():
+                note("left", typ, f, "in the quarantine from an older QA verdict that "
+                     "passes today: calibration-file --rejudge moves it into the Library")
+                continue
+        if not dry_run:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                os.link(f, dest)
+            except OSError:
+                shutil.copy2(f, dest)
         linked += 1
+        note("filed", typ, f)
     return linked, skipped
 
 

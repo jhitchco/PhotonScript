@@ -590,6 +590,10 @@ async def _start_calibration_autofill():
     no-op unless config.calibration_autofill (default off)."""
     from photonscript.scheduler.calibration_capture import autofill_loop
     asyncio.create_task(autofill_loop(get_config, get_armer))
+    # PS-188: file calibration at arm time and when a night ends (each run
+    # is a no-op unless calibration_file_auto, default on)
+    from photonscript.scheduler.calibration_filing import filing_loop
+    asyncio.create_task(filing_loop(get_config, get_armer))
 
 
 @app.on_event("startup")
@@ -648,6 +652,7 @@ _CONFIG_FIELDS = [
     ("calibration_bias_when_missing", "PS_CALIBRATION_BIAS_WHEN_MISSING", "Night sequences shoot a 50-bias set at the setpoint (any roof state) when no usable bias exists (PS-182)", "Imaging", "bool", False, False),
     ("calibration_qa_dark_scale_by_readout", "PS_CALIBRATION_QA_DARK_SCALE_BY_READOUT", "Calibration QA (PS-182): dark-over-bias allowance scales with the readout mode's ADU per e- (RC16 HCG 3.16 x LCG)", "Imaging", "bool", False, False),
     ("calibration_readout_fill_at_dawn", "PS_CALIBRATION_READOUT_FILL_AT_DAWN", "Dawn sweep: header-read READOUTM for up to N QA records without one (0 = off)", "Imaging", "int", False, False),
+    ("calibration_file_auto", "PS_CALIBRATION_FILE_AUTO", "File calibration at arm time, at a night's end and after a capture job, not only at dawn (PS-188)", "Imaging", "bool", False, False),
     ("camera_readout_since", "PS_CAMERA_READOUT_SINCE", "RC16: first night at camera_readout_mode (YYYY-MM-DD); older darks / bias with no readout recorded do not count (blank = assumed)", "Imaging", "str", False, False),
     ("calibration_owed_lookback_days", "PS_CALIBRATION_OWED_LOOKBACK_DAYS", "Calibration owed: lights lookback (nights, report only)", "Imaging", "int", False, False),
     ("calibration_darks_follow_lights", "PS_CALIBRATION_DARKS_FOLLOW_LIGHTS", "Calibration coverage (PS-160): night darks also fill the lengths the lights actually used (on-epoch, owed lookback)", "Imaging", "bool", False, False),
@@ -967,6 +972,7 @@ _CONFIG_FIELDS = [
     ("piggyback_library_dir", "PS_PIGGYBACK_LIBRARY_DIR", "Piggyback library subtree (blank = <main lib>/piggyback)", "Piggyback", "str", False, False),
     ("piggyback_frame_attribution", "PS_PIGGYBACK_FRAME_ATTRIBUTION", "Piggy subs named after the goal their frame holds (PS-137): off | report (record only) | on (rename and refile)", "Piggyback", "str", False, False),
     ("piggyback_dark_exposures", "PS_PIGGYBACK_DARK_EXPOSURES", "Piggyback dark-library exposures (s, comma-sep)", "Piggyback", "str", False, False),
+    ("piggyback_dark_capture_window", "PS_PIGGYBACK_DARK_CAPTURE_WINDOW", "Piggy-600 darks: unsafe-night (roof closed at night) | dawn-roof-closed (+ dawn plan, lens cap) | manual (PS-188)", "Piggyback", "str", False, False),
     ("piggyback_calibrate_on_arm", "PS_PIGGYBACK_CALIBRATE_ON_ARM", "Arm also runs piggyback calibration (auto: dawn flats + darks/bias if NINA #2 sees the roof)", "Piggyback", "bool", False, False),
     ("piggyback_mount_check", "PS_PIGGYBACK_MOUNT_CHECK", "NINA #2 mount check (PS-139): at arm and watch, read NINA #2's loaded sequence for slew / center / park instructions: alert (push + chip, read only) | off", "Piggyback", "str", False, False),
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),

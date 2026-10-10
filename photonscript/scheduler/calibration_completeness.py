@@ -219,6 +219,12 @@ def _evaluate(config, rig: str, key: tuple, frames: list, *, default_ro, since,
                    and key[0] != "FLAT" else "")
     out["stage"], out["reason"] = _stage(out, key, pool, frames, flat_item, dark_item,
                                          unusable_bias, counted)
+    # PS-188: frames that fail on their stored verdict but pass today's rule
+    out["rejudge_would_pass"] = sum(
+        1 for f in pool if f.get("verdict") not in PASS_VERDICTS
+        and f.get("verdict_now") in PASS_VERDICTS)
+    out["reason"], out["action"], out["not_filed"] = _concrete(
+        config, rig, key, out, pool, counted)
     out["complete"] = out["stage"] == "complete"
     return out
 
@@ -265,6 +271,126 @@ def _stage(r: dict, key: tuple, pool: list, frames: list, flat_item, dark_item,
     return "complete", ""
 
 
+REJUDGE_ACTION = ("photonscript calibration-file --url <scope> --rejudge (re-judges "
+                  "with today's rule and moves them into the Library)")
+FILE_ACTION = "photonscript calibration-file --url <scope> (files it now)"
+
+
+def frame_filing(fr: dict, *, now: datetime, sweep_days: int,
+                 cal_days: int) -> tuple[str, str]:
+    """PS-188: (reason, action) for one calibration frame that is not in
+    the Library: quarantined because X, a stale verdict that passes today,
+    QA pending, a folder outside the sweep window, archived, too old, or
+    simply not swept yet."""
+    d = fr.get("date") or ""
+    try:
+        age = (now - datetime.strptime(d, "%Y-%m-%d")).days
+    except ValueError:
+        age = 0
+    v, v_now = fr.get("verdict"), fr.get("verdict_now")
+    why = fr.get("reason") or ""
+    if fr.get("status") == "quarantine":
+        if v_now in PASS_VERDICTS:
+            return (f"quarantined under an older QA verdict ({why or 'fail'}); it "
+                    "passes today's rule", REJUDGE_ACTION)
+        return (f"quarantined because {why or 'QA fail'}", _reshoot_action(fr))
+    if v == "fail" and v_now in PASS_VERDICTS:
+        return ("QA verdict recorded under an older rule; passes today's rule",
+                REJUDGE_ACTION)
+    if v == "fail":
+        first = "; ".join((fr.get("reasons_now") or [])[:1]) or why
+        return (f"fails QA ({first}): filing puts it in the quarantine",
+                _reshoot_action(fr))
+    if "archived" in why:
+        return ("night archived (library_archive): archived calibration is not "
+                "re-linked", "none")
+    if age > cal_days:
+        return (f"older than library_cal_days ({age} > {cal_days} d)",
+                "none: too old to file")
+    if v in (None, "unchecked", "error"):
+        return (f"QA pending: never measured ({d})", FILE_ACTION)
+    if age > sweep_days:
+        return (f"folder {d} is {age} d old, outside the {sweep_days} d calibration "
+                "sweep window",
+                f"photonscript calibration-file --url <scope> --days {age + 1}")
+    left = sweep_days - age
+    return (f"folder {d} not swept yet: the sweep ran only at dawn after an armed "
+            f"night (PS-188: also at arm time now); it leaves the {sweep_days} d "
+            f"window in {left} d", FILE_ACTION)
+
+
+def _reshoot_action(fr: dict) -> str:
+    codes = " ".join(fr.get("reasons_now") or [fr.get("reason") or ""])
+    if any(c in codes for c in ("leak", "stars", "level", "daytime")):
+        return ("reshoot with the roof closed at night (light reached the sensor); "
+                "Piggy-600: lens cap on")
+    if "temp" in codes:
+        return "reshoot at the setpoint (the cooler gate holds darks until it is reached)"
+    if "outlier" in codes or "noise" in codes:
+        return "none: an outlier of its set; the rest of the set counts"
+    return "reshoot (see the QA reasons)"
+
+
+def _concrete(config, rig: str, key: tuple, out: dict, pool: list,
+              counted: list) -> tuple[str, str, list]:
+    """PS-188: the requirement's reason made concrete, the action for it,
+    and its frames that are not in the Library grouped by (date, reason,
+    action)."""
+    from photonscript.scheduler.runs import CAL_SWEEP_DAYS
+    now = datetime.now()
+    cal_days = int(getattr(config, "library_cal_days", 120))
+    stage, reason = out["stage"], out["reason"]
+    groups: dict = {}
+    for f in pool:
+        if f.get("status") == "library":
+            continue
+        why, act = frame_filing(f, now=now, sweep_days=CAL_SWEEP_DAYS, cal_days=cal_days)
+        k = (f.get("date"), why, act)
+        groups[k] = groups.get(k, 0) + 1
+    nf = [{"date": d, "n": n, "reason": w, "action": a}
+          for (d, w, a), n in sorted(groups.items(),
+                                     key=lambda kv: (str(kv[0][0]), kv[0][1]))]
+    more = out.get("rejudge_would_pass") or 0
+    if stage == "complete":
+        return reason, "", nf
+    if stage == "syncing":
+        return reason, "wait for Syncthing (calibration folders go first, PS-182)", nf
+    if stage == "not_in_library":
+        passed_nf = [x for x in nf if not x["reason"].startswith(("fails QA",
+                                                                  "quarantined because"))]
+        use = passed_nf or nf
+        top = max(use, key=lambda x: x["n"]) if use else None
+        txt = (f"{out['qa_passed'] - out['in_library']} QA-passed frame(s) not in the "
+               "Library: " + "; ".join(f"{x['date']} x{x['n']}: {x['reason']}"
+                                       for x in use[:3]))
+        return txt, (top["action"] if top else FILE_ACTION), nf
+    if more:
+        reason += f"; {more} more pass today's QA rule (verdicts recorded before it)"
+    if stage == "stale":
+        return reason, ("the next clear dawn shoots them (sky flats need the roof "
+                        "open at dawn)"), nf
+    if more:
+        return reason, REJUDGE_ACTION, nf
+    if key[0] == "FLAT":
+        return reason, "the next clear dawn shoots them (sky flats, roof open)", nf
+    if key[0] == "BIAS":
+        if getattr(config, "calibration_bias_when_missing", True):
+            act = ("the night sequence shoots 50 bias at the setpoint first thing "
+                   "(BIAS_AT_SETPOINT, any roof)")
+        else:
+            act = "a capture job or the unsafe-night top-up"
+        return reason, act, nf
+    if rig != "rc16":
+        from photonscript.scheduler.calibration_filing import piggy_dark_action
+        return reason, piggy_dark_action(config), nf
+    if stage == "qa_failed":
+        return reason, _reshoot_action({"reasons_now": [f.get("reason") or ""
+                                                        for f in pool]}), nf
+    return reason, ("the RC16 night quota fills it while the roof is closed at night "
+                    "(cooler gate at the setpoint); or a capture job in a darks "
+                    "window"), nf
+
+
 def light_tightness(config, rig: str, *, days: int = 45,
                     now: datetime | None = None) -> dict:
     """Recent darks of the rig that failed a light check (leak, stars,
@@ -309,6 +435,13 @@ def _rig(config, rig: str, *, projects, now, pending, pending_capped, names,
     sets = light_sets(config, rig, projects=projects, nights=nights, now=now)
     lib = library_report(config, rig, now=now, frames_limit=10 ** 7)
     frames = lib.get("frames") or []
+    try:   # PS-188: what each frame's verdict would be under today's rule
+        now_v = cq.rejudged_verdicts(config, rig)
+    except Exception:  # noqa: BLE001
+        now_v = {}
+    for fr in frames:
+        v = now_v.get(cq.frame_key(fr["type"], fr["date"], fr["name"]))
+        fr["verdict_now"], fr["reasons_now"] = (v if v else (fr.get("verdict"), []))
     active = [p for p in projects if getattr(p, "active", True)]
     owed = owed_report(config, rig, projects=active, now=now)["rigs"][0]
     flat_items = {f["filter"]: f for f in owed["flats"]}
@@ -428,6 +561,68 @@ def completeness(config, rig: str | None = None, *, projects=None,
     return out
 
 
+def json_safe(obj):
+    """PS-188: a copy of `obj` that json.dumps(allow_nan=False) accepts
+    (what Starlette's JSONResponse runs): non-finite floats become None,
+    tuples / sets lists, dict keys strings, datetimes ISO text, anything
+    else its str(). The completeness and windows endpoints answered HTTP
+    500 on 2026-10-10 because a NaN ambient from the cooler history reached
+    the response."""
+    import math
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return obj
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {(k if isinstance(k, (str, int, bool)) else str(k)): json_safe(v)
+                for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [json_safe(v) for v in obj]
+    if isinstance(obj, (set, frozenset)):
+        return [json_safe(v) for v in sorted(obj, key=str)]
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    try:
+        import numpy as np
+        if isinstance(obj, np.generic):
+            return json_safe(obj.item())
+    except ImportError:  # pragma: no cover
+        pass
+    return str(obj)
+
+
+def safe_report(config, rig: str | None = None, **kw) -> dict:
+    """PS-188: completeness() that never raises and is always JSON-safe.
+    Each rig is built on its own (one rig must not hide the other), and a
+    rig whose part fails, or does not serialize, becomes {"rig", "error"}."""
+    import json
+    from photonscript.shared.rigs import rig_ids
+    try:
+        rigs = [rig] if rig else list(rig_ids(config))
+    except Exception as e:  # noqa: BLE001
+        return {"generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                "rigs": [], "error": f"{type(e).__name__}: {e}",
+                "line": "Calibration: report failed"}
+    out = None
+    for rg in rigs:
+        try:
+            part = json_safe(completeness(config, rg, **kw))
+            json.dumps(part, allow_nan=False)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("completeness failed for %s", rg, exc_info=True)
+            part = {"generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    "rigs": [{"rig": rg, "error": f"{type(e).__name__}: {e}"}]}
+        if out is None:
+            out = part
+            out["rigs"] = list(part.get("rigs") or [])
+        else:
+            out["rigs"] += list(part.get("rigs") or [])
+    out = out or {"generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                  "rigs": []}
+    out["line"] = morning_line(out)
+    return out
+
+
 _line_cache: dict = {}
 LINE_TTL_S = 600.0
 
@@ -534,6 +729,10 @@ def format_report(rep: dict) -> str:
             lines.append(f"  {q['label']:<46} captured {q['captured']:>3}  QA {q['qa_passed']:>3}"
                          f"/{q['need']:<3} Library {q['in_library']:>3}  desktop {desk:>3}  "
                          f"{q['stage']}" + (f": {q['reason']}" if q["reason"] else ""))
+            if q.get("action"):
+                lines.append(f"    action: {q['action']}")
+            for x in (q.get("not_filed") or [])[:4]:
+                lines.append(f"    not filed {x['date']} x{x['n']}: {x['reason']}")
             if q.get("note"):
                 lines.append(f"    note: {q['note']}")
         for t in r["targets"]:

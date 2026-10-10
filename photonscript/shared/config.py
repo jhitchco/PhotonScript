@@ -246,6 +246,10 @@ class PhotonScriptConfig(BaseSettings):
     calibration_readout_fill_at_dawn: int = 400  # the dawn calibration sweep
                                  # header-reads READOUTM for up to this many QA
                                  # records that have none yet (0 = off)
+    calibration_file_auto: bool = True  # PS-188: file calibration (QA, Library
+                                 # links, quarantine) at arm time, when a night
+                                 # ends without a dawn pass and after a capture
+                                 # job, not only at dawn; off = dawn only
     calibration_owed_lookback_days: int = 60  # PS-122: the Calibration owed
                                  # view reads lights of active goals from the
                                  # last this many nights (report only)
@@ -1049,6 +1053,13 @@ class PhotonScriptConfig(BaseSettings):
                                      # refiled) | on (rename; the Library build
                                      # moves the links)
     piggyback_dark_exposures: str = "120"  # OSC dark-library exposures (s), match the OSC subs
+    piggyback_dark_capture_window: str = "unsafe-night"  # PS-188: when the
+                                     # Piggy-600 shoots darks (no shutter, the dome
+                                     # leaks daylight): unsafe-night (companion,
+                                     # roof closed at night, today) |
+                                     # dawn-roof-closed (also saved as the dawn
+                                     # plan after shutdown: lens cap on) | manual
+                                     # (no companion darks; capture job, lens cap)
     piggyback_calibrate_on_arm: bool = True  # on arm, also dispatch a calibration
                                      # companion to NINA #2 so ONE arm covers both
                                      # scopes: OSC dawn flats always, plus

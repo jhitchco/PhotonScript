@@ -949,6 +949,10 @@ async def _finish(config, job: Job, io: RigIO, stop_reason, dispatched: bool,
             job.log(f"warm failed: {e}")
     if nights:
         await asyncio.to_thread(_file_frames, config, job.rig, nights)
+    # PS-188: then the rig's whole recent calibration (folders the dawn
+    # sweep has not reached yet); calibration_file_auto, never raises
+    from photonscript.scheduler.calibration_filing import run_auto
+    await asyncio.to_thread(run_auto, config, "capture job", "", [job.rig])
     if job.reach_stalled and not dispatched and not job.source.startswith("deferred"):
         txt, w = _next_window_text(config, job.rig)   # PS-182
         _defer_plan(config, job.rig, darks=job.darks, bias=job.bias,
