@@ -112,6 +112,55 @@ value moves (Choice E).
   --feature-arcmin R`; set with PATCH /api/projects2/<id>). M31: 0.19 at
   the outer disk 60' from the core. Advisory only: the goal stays seconds.
 
+## Piggy-600 Wanderer Cover V4-EC (PS-189)
+- WandererAstro Wanderer Cover V4-EC 150 mm on the Piggy-600 (Askar FRA600):
+  motorized dust cover with a built-in EL flat panel. ASCOM CoverCalibrator
+  driver; in NINA #2 it is the "Flat Panel" device (ninaAPI
+  /equipment/flatdevice/...). Ordered 2026-10-10, AARO installs.
+- Everything sits behind `piggyback_cover_enabled` (default false: no
+  sequence or job changes until it is on). On:
+  - companion Start: connect the Flat Panel, panel off, cover CLOSED; the
+    OSC darks / bias run with the cover closed (no roof gate; capped at
+    astro dusk on a lights night)
+  - each OSC image pass: OpenCover, then deploy\cover-gate.cmd checks the
+    cover reads Open (ninaAPI flatdevice info) for at most
+    `piggyback_cover_gate_timeout_s` (180); not open = the pass is skipped
+    (no light through a closed cover) and one page per night. The gate does
+    not fail open: with the service down the CLI reads NINA #2 itself.
+  - each light-loop pass closes the cover while the roof reads unsafe; the
+    next safe pass opens it again
+  - panel flats at astro dawn (no sky, no roof; replaces the PS-163 dawn sky
+    flats): cover closed, light on, `piggyback_panel_brightness`,
+    `piggyback_flat_count` (25) flats; `piggyback_panel_flat_mode` auto =
+    NINA AutoExposureFlat (exposure sought for a 50% histogram, like the Flat
+    Wizard, at most `piggyback_panel_flat_max_s`), fixed =
+    `piggyback_panel_flat_exposure_s`; light off
+  - End area, dawn shutdown, PS-77 unsafe stop, paused unsafe park: panel
+    off + cover closed (closed by day)
+  - calibration capture on the Piggy-600: a closed cover (panel off) is
+    light-tight, so daytime darks no longer need the roof closed; the job
+    closes the cover itself, the PS-113 daytime probe and leak checks still
+    run, and a cover that opens mid-job stops it
+- Dashboard: Piggy-600 pane, "Cover" row (cover state, panel on / off,
+  waiting / skipped gate note). `GET /api/cover/gate` for the gate log.
+- One-time setup after the install (before turning it on):
+  1. NINA #2 profile: Equipment > Flat Panel = the Wanderer Cover V4-EC
+     ASCOM driver; connect; open / close / light on / off by hand once.
+     Note MinBrightness / MaxBrightness (ninaAPI flatdevice info) and set
+     `piggyback_panel_brightness` inside it.
+  2. Optional: NINA Flat Wizard on the panel at the OSC gain 100 / offset
+     256 to find a brightness that gives 1 to 5 s exposures.
+  3. Confirm deploy\cover-gate.cmd is on the scope PC
+     (`piggyback_cover_script`).
+  4. If the Piggy-600 daytime capture state is "disabled" from a roof-era
+     leak, reset it (calibration-qa --rig piggyback --reset-daytime) so the
+     probe re-runs on the cover.
+  5. Set `piggyback_cover_enabled` true on the System page.
+- Cover record (add a line per change):
+| Date | What | Notes |
+|------|------|-------|
+| TODO | installed | brightness range, open / close time |
+
 ## Desktop processing
 - PixInsight: C:\Program Files\PixInsight\bin\PixInsight.exe
 - Staging: C:\Users\sleep\Astrophotography\Staging\<Target>

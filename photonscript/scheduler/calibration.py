@@ -243,7 +243,8 @@ def calibration_health(config) -> dict:
 
 def generate_darks_json(config, darks: list[tuple[float, int]],
                         bias_count: int = 50, *, safety_gated: bool = False,
-                        warm_minutes: float = 3.0) -> tuple[str, float]:
+                        warm_minutes: float = 3.0,
+                        cover_closed: bool = False) -> tuple[str, float]:
     """NINA sequence: cool -> DARK exposures -> BIAS -> warm.
 
     Mount untouched; run only with the roof closed at night (no shutter).
@@ -253,6 +254,10 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
     exposure block, so NINA itself stops shooting darks the moment its
     safety monitor reads safe (roof open); bias_count 0 leaves the bias
     block out; warm_minutes is the End-area warm.
+
+    PS-189 cover_closed (a Piggy-600 job on its Wanderer Cover): the Start
+    area connects the Flat Panel, turns the panel off and closes the cover
+    before cooling; the End area leaves it closed (closed by day).
     """
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _pushover, _connect,
@@ -276,6 +281,9 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=count)])
 
+    from photonscript.scheduler import flat_cover
+    _cover_start = flat_cover.start_items() if cover_closed else []
+    _cover_end = flat_cover.end_items() if cover_closed else []
     total_min = (sum(e * c for e, c in darks) + 0.005 * bias_count) / 60 + 12
     dark_items = [_exposures(f"DARK {e:g}s x{c}", e, c, "DARK")
                   for e, c in darks]
@@ -288,9 +296,12 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
         [
             _seq_container("Start", [_seq_container("Calibration startup", [
                 _pushover("Calibration", f"darks starting: {plan_txt} + "
-                          f"{bias_count} bias — roof must be CLOSED. "
-                          f"~{total_min:.0f} min"),
+                          f"{bias_count} bias: "
+                          + ("cover closed. " if cover_closed
+                             else "roof must be CLOSED. ")
+                          + f"~{total_min:.0f} min"),
                 _connect("Camera"),
+                *_cover_start,
                 _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
             ])], container_type="NINA.Sequencer.Container.StartAreaContainer,"
                 " NINA.Sequencer"),
@@ -300,6 +311,7 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
                            "TargetAreaContainer, NINA.Sequencer"),
             _seq_container("End", [_seq_container("Calibration shutdown", [
                 _pushover("Calibration", "darks + bias complete — warming"),
+                *_cover_end,
                 _warm_camera(warm_minutes),
             ])], container_type="NINA.Sequencer.Container.EndAreaContainer, "
                 "NINA.Sequencer"),
@@ -959,12 +971,22 @@ def _osc_light_loop(config) -> dict:
     # piggyback setpoint the Start area cooled to
     gate = _cooler_gate_spec(config, float(getattr(config, "camera_setpoint_c", 0.0)))
     gate_items = [_cooler_gate(gate, "piggyback", "OSC lights")] if gate else []
+    # PS-189: with the Wanderer Cover, each image pass opens it and the cover
+    # gate verifies Open (both skip the pass on failure), and each loop pass
+    # first closes it while the roof reads unsafe
+    from photonscript.scheduler import flat_cover
+    cover_on = flat_cover.enabled(config, "piggyback")
+    cover_open = flat_cover.open_items(config, "piggyback",
+                                       f"OSC {exp_s:g}s") if cover_on else []
+    cover_close = [flat_cover.close_if_unsafe()] if cover_on else []
     image_pass = _seq_container(
-        OSC_IMAGE_PASS_NAME, [*gate_items, *pre_af, _autofocus(), *settle, inner],
+        OSC_IMAGE_PASS_NAME,
+        [*cover_open, *gate_items, *pre_af, _autofocus(), *settle, inner],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
-        [_wait_safe_until(*dawn, name="WAIT_SAFE_OR_ASTRO_DAWN"),
+        [*cover_close,
+         _wait_safe_until(*dawn, name="WAIT_SAFE_OR_ASTRO_DAWN"),
          _osc_resume_hold(config, *dawn),
          _wait_safe_until(*dawn, name=OSC_WAIT_SAFE_CONFIRM_NAME),
          image_pass,
@@ -1105,16 +1127,25 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     cool_lead = int(getattr(config, "cool_lead_minutes", 30))
     setpoint = float(getattr(config, "camera_setpoint_c", 0.0))
 
+    # PS-189: the Wanderer Cover V4-EC (flat_cover.py): closed for the darks,
+    # opened (and verified) for lights, panel flats at astro dawn
+    from photonscript.scheduler import flat_cover
+    cover = flat_cover.enabled(config, "piggyback")
     start_items = [
         _pushover("Piggyback", "piggyback armed: cools the OSC camera, "
-                  + ("fills darks/bias while the roof is closed, " if has_safety
-                     else "fills darks/bias (unconditional — no safety monitor), ")
+                  + ("fills darks/bias with the cover closed, " if cover
+                     else "fills darks/bias while the roof is closed, " if has_safety
+                     else "fills darks/bias (unconditional, no safety monitor), ")
                   + ("shoots OSC lights while the roof is open, "
                      if (with_lights and has_safety) else "")
-                  + "then shoots OSC dawn flats. No mount control — rides the RC16."),
+                  + ("then shoots OSC panel flats at astro dawn and closes the "
+                     "cover. " if cover else "then shoots OSC dawn flats. ")
+                  + "No mount control, rides the RC16."),
         _connect("Camera"),
         _dew_heater(True),
     ]
+    if cover:
+        start_items += flat_cover.start_items()
     if has_safety:
         start_items.append(_connect("Safety Monitor"))
     start_items += [
@@ -1128,15 +1159,23 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     # ends up with zero matching calibration. Ungated darks are time-capped at
     # astro dusk so they run in the roof-closed pre-dark window; any frame that
     # catches a just-opened roof is rejected by QA. Bias is 0.001s (light-safe).
-    gated = has_safety
-    if not gated:
+    # PS-189: a closed cover is light-tight whatever the roof does, so the
+    # darks need no roof gate; they end at astro dusk on a lights night
+    # (the light loop opens the cover), else at astro dawn.
+    gated = has_safety and not cover
+    if cover:
+        dark_cap = "DuskProvider" if (with_lights and has_safety) else "DawnProvider"
+        dark_tag = "_COVER_CLOSED"
+    else:
+        dark_cap = "DawnProvider" if gated else "DuskProvider"
+        dark_tag = "_IF_UNSAFE" if gated else "_UNCONDITIONAL"
+    if not gated and not cover:
         target_items.append(_annotation(
             "OSC darks/bias running UNCONDITIONALLY: NINA #2 can't see the safety "
             "monitor, so these are time-capped at dusk instead of roof-gated. Add "
             "the shared safety monitor to the NINA #2 profile to roof-gate them."))
     dark_blocks = _osc_dark_blocks(
-        config, dawn_provider=("DawnProvider" if gated else "DuskProvider"),
-        dawn_offset=0, gated=gated)
+        config, dawn_provider=dark_cap, dawn_offset=0, gated=gated)
     if dark_blocks:
         _dark_conds = ([_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")]
@@ -1145,7 +1184,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=1))
         target_items.append(_seq_container(
-            "OSC_DARKS" + ("_IF_UNSAFE" if gated else "_UNCONDITIONAL"),
+            "OSC_DARKS" + dark_tag,
             dark_gate_items(config, "piggyback", setpoint) + dark_blocks,
             conditions=_dark_conds))
     # bias top-up only when due (bias barely ages)
@@ -1168,7 +1207,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=1))
         target_items.append(_seq_container(
-            "OSC_BIAS" + ("_IF_UNSAFE" if gated else "_UNCONDITIONAL"),
+            "OSC_BIAS" + dark_tag,
             [_seq_container("50 bias", [_make_typed(
                 "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
                 "NINA.Sequencer",
@@ -1198,6 +1237,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         if _cooler_gate_spec(config, setpoint) is None:
             start_items += _cooler_gate_missing_notice(config)   # PS-61
         start_items += _osc_settle_gate_missing_notice(config)   # PS-27
+        start_items += flat_cover.gate_missing_notice(config)    # PS-189
 
     # Dawn flats: the RC16's flat window opens at nautical dawn +5 (its End
     # area slews to alt 85 / az 200). PS-163: the OSC set starts later, at
@@ -1206,6 +1246,17 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     # gave up at its 30 s max); then 90 s for the slew to land, then one OSC
     # set. With the safety monitor: wait (bounded) for safe, and skip the
     # flats if the roof is still closed (closed roof = junk flats).
+    if cover:
+        # PS-189: panel flats need no sky and no roof: at astro dawn (where
+        # the light loop ends), cover closed, light on, then light off. This
+        # replaces the PS-163 nautical-dawn sky flats.
+        target_items.append(_wait_for_provider("DawnProvider", 0))
+        target_items.append(flat_cover.panel_flats_block(config))
+        return _companion_root(start_items, target_items, [
+            *flat_cover.end_items(),
+            _warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
+            _pushover("Piggyback", "companion done: cover closed, panel off, "
+                      "camera warm")])
     flat_offset = osc_flat_dawn_offset(config)
     target_items.append(_wait_for_provider("NauticalDawnProvider",
                                            flat_offset))
@@ -1229,7 +1280,13 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
 
     end_items = [_warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
                  _pushover("Piggyback", "companion calibration done — camera warm")]
+    return _companion_root(start_items, target_items, end_items)
 
+
+def _companion_root(start_items: list, target_items: list, end_items: list) -> str:
+    """The companion's root container (Start / Targets / End), linked."""
+    import json as _json
+    from photonscript.scheduler.nina_sequence_json import _seq_container
     root = _seq_container(
         "PhotonScript_PiggybackCompanion",
         [

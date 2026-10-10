@@ -972,6 +972,13 @@ _CONFIG_FIELDS = [
     ("piggyback_flat_count", "PS_PIGGYBACK_FLAT_COUNT", "Piggyback OSC dawn sky flats per night", "Piggyback", "int", False, False),
     ("piggyback_flat_wait_min", "PS_PIGGYBACK_FLAT_WAIT_MIN", "Piggyback flats: wait for safe until nautical dawn + this (min)", "Piggyback", "int", False, False),
     ("piggyback_flat_dawn_offset_min", "PS_PIGGYBACK_FLAT_DAWN_OFFSET_MIN", "Piggyback flats (PS-163): start at nautical dawn + this (min), capped to fit the dawn flat window", "Piggyback", "int", False, False),
+    ("piggyback_cover_enabled", "PS_PIGGYBACK_COVER_ENABLED", "Piggy-600 Wanderer Cover V4-EC (PS-189): connect, close for darks, open + verify before lights, close on unsafe / at dawn, panel flats at astro dawn instead of dawn sky flats, daytime darks with the cover closed. Off until installed", "Piggyback", "bool", False, False),
+    ("piggyback_cover_gate_timeout_s", "PS_PIGGYBACK_COVER_GATE_TIMEOUT_S", "Cover gate: wait at most this long (s) for the cover to read Open before an OSC image pass, then skip it and page once", "Piggyback", "float", False, False),
+    ("piggyback_cover_script", "PS_PIGGYBACK_COVER_SCRIPT", "Cover gate script NINA #2 runs (deploy\\cover-gate.cmd on the scope PC)", "Piggyback", "str", False, False),
+    ("piggyback_panel_flat_mode", "PS_PIGGYBACK_PANEL_FLAT_MODE", "Panel flats: auto (NINA AutoExposureFlat at the brightness, seeks a 50% histogram) | fixed (the exposure below at the brightness)", "Piggyback", "str", False, False),
+    ("piggyback_panel_brightness", "PS_PIGGYBACK_PANEL_BRIGHTNESS", "Panel flats: flat panel brightness (device units)", "Piggyback", "int", False, False),
+    ("piggyback_panel_flat_exposure_s", "PS_PIGGYBACK_PANEL_FLAT_EXPOSURE_S", "Panel flats, fixed mode: exposure (s)", "Piggyback", "float", False, False),
+    ("piggyback_panel_flat_max_s", "PS_PIGGYBACK_PANEL_FLAT_MAX_S", "Panel flats, auto mode: longest exposure NINA may try (s)", "Piggyback", "float", False, False),
     ("piggyback_af_temp_change_c", "PS_PIGGYBACK_AF_TEMP_CHANGE_C", "Piggyback refocus on temperature change (C)", "Piggyback", "float", False, False),
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
@@ -1044,7 +1051,7 @@ async def api_rigs(fresh: bool = False):
 
 async def _api_rigs():
     from photonscript.shared.rigs import (rig_ids, rig_label, rig_config,
-                                          rig_devices, RC16, PIGGYBACK)
+                                          rig_connect_devices, RC16, PIGGYBACK)
     from photonscript.scheduler.preflight import _connected
     cfg = get_config()
     rigs = []
@@ -1054,7 +1061,7 @@ async def _api_rigs():
         # The piggyback owns only camera+focuser, but it can optionally watch the
         # SHARED safety monitor (if added to the NINA #2 profile) — probe it too
         # so the pane can show whether NINA #2 "sees the roof" (gates its darks).
-        probe = list(rig_devices(rig))
+        probe = list(rig_connect_devices(cfg, rig))   # PS-189: + flat device
         if rig == PIGGYBACK and "safetymonitor" not in probe:
             probe.append("safetymonitor")
         for dev in probe:
@@ -1096,6 +1103,19 @@ async def _api_rigs():
                                            lon_deg=cfg.observatory_lon, error=err)
             if dev == "safetymonitor" and conn and payload:
                 entry["safe"] = payload.get("IsSafe")
+            if dev == "flatdevice":
+                # PS-189: the Wanderer Cover row (cover state, panel light)
+                from photonscript.shared.rigs import cover_state
+                if conn and payload:
+                    entry["cover"] = cover_state(payload)
+                    entry["light_on"] = payload.get("LightOn")
+                    entry["brightness"] = payload.get("Brightness")
+                    entry["max_brightness"] = payload.get("MaxBrightness")
+                try:
+                    from photonscript.scheduler.flat_cover import row_note
+                    entry["cover_note"] = row_note(rig)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug("cover note skipped: %s", e)
             if err:
                 entry["error"] = err
             devices[dev] = entry
@@ -3185,3 +3205,5 @@ from photonscript.scheduler.routers.triage import (  # noqa: E402
     _latest_ascom_log)
 from photonscript.scheduler.routers.targets import api_target_history  # noqa: E402,F401
 
+from photonscript.scheduler.routers import cover as _cover_router  # noqa: E402
+app.include_router(_cover_router.router)   # PS-189

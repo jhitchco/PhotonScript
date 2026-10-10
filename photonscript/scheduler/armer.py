@@ -682,10 +682,10 @@ class Armer:
         out) come up on arm/restart.
         """
         from photonscript.scheduler.preflight import _ensure_connected
-        from photonscript.shared.rigs import rig_config, rig_devices
+        from photonscript.shared.rigs import rig_config, rig_connect_devices
         cfg = rig_config(self.config, rig)
         results = {}
-        for dev in rig_devices(rig):
+        for dev in rig_connect_devices(self.config, rig):   # PS-189: + flat device
             try:
                 connected, _payload, err = await _ensure_connected(
                     cfg, dev, attempts=2)
@@ -853,6 +853,23 @@ class Armer:
             return f"park ok (already parked, {src})"
         return f"park FAILED ({why})"
 
+    async def _close_piggy_cover(self) -> str | None:
+        """PS-189: panel light off + cover closed on NINA #2 when the
+        Piggy-600 has its Wanderer Cover (dawn shutdown, unsafe stop,
+        paused unsafe park). The step text, or None when there is no cover.
+        Never raises."""
+        from photonscript.shared.rigs import (PIGGYBACK, cover_enabled, rig_config,
+                                              rig_ids, nina_cover_close)
+        if PIGGYBACK not in rig_ids(self.config) or not cover_enabled(self.config):
+            return None
+        try:
+            res = await nina_cover_close(rig_config(self.config, PIGGYBACK).nina_base_url)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "detail": str(e)}
+        if not res.get("ok"):
+            logger.warning("piggyback cover close failed: %s", res.get("detail"))
+        return f"piggyback cover close {'ok' if res.get('ok') else 'FAILED'}"
+
     # -- dawn shutdown -----------------------------------------------------------
 
     async def dawn_shutdown(self, reason: str = "dawn") -> str:
@@ -885,6 +902,10 @@ class Armer:
                 # lights/flats after sunrise if the roof reopens.
                 st = await nina_sequence_stop(rc.nina_base_url)
                 steps.append(f"{rig} stop {'ok' if st.get('ok') else 'FAILED'}")
+                # PS-189: the Wanderer Cover stays closed by day
+                cov = await self._close_piggy_cover()
+                if cov:
+                    steps.append(cov)
             w = await nina_warm(rc.nina_base_url, minutes=warm_min)
             d = await nina_dew_heater(rc.nina_base_url, False)
             steps.append(f"{rig} warm {'ok' if w.get('ok') else 'FAILED'}"
@@ -2137,6 +2158,18 @@ class Armer:
                 if has_safety:
                     break
                 await asyncio.sleep(3)
+            # PS-189: connect the Wanderer Cover's flat device before the
+            # companion (its Start area connects it too); best effort
+            from photonscript.shared.rigs import cover_enabled
+            if cover_enabled(cfg):
+                try:
+                    ok_fd, _p, err_fd = await _ensure_connected(pcfg, "flatdevice",
+                                                                attempts=2)
+                    if not ok_fd:
+                        logger.warning("Piggy-600 flat device not connected: %s",
+                                       err_fd)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("Piggy-600 flat device connect: %s", e)
             # Shoot OSC lights while the roof is open, but only when NINA #2 can
             # see the shared safety monitor (has_safety) — lights must be roof-gated.
             want_lights = bool(getattr(cfg, "piggyback_image_lights", True)
@@ -2788,8 +2821,10 @@ class Armer:
                 ok = await self._nina("mount_park") is not None
                 p["parked"] = bool(ok)
                 self.pause_info = p
-                msg = (f"Paused and unsafe: mount park {'ok' if ok else 'FAILED'} "
-                       "(cooler kept on; Resume re-dispatches)")
+                cov = await self._close_piggy_cover()   # PS-189
+                msg = (f"Paused and unsafe: mount park {'ok' if ok else 'FAILED'}"
+                       + (f", {cov}" if cov else "")
+                       + " (cooler kept on; Resume re-dispatches)")
                 self._set_state(PAUSE_STATE, msg)
                 self._pause_event("park_unsafe", msg, now, ok=ok)
                 await notify(self.config, f"Unsafe while paused: {msg}.",
@@ -3026,6 +3061,9 @@ class Armer:
                            ("park", "mount_park")):
             ok = await self._nina(key) is not None
             steps.append(f"{label} {'ok' if ok else 'FAILED'}")
+        cov = await self._close_piggy_cover()   # PS-189
+        if cov:
+            steps.append(cov)
         self._unsafe_stopped = True
         mins = int((now - self._unsafe_since).total_seconds() // 60)
         report = " · ".join(steps)

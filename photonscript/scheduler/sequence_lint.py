@@ -567,6 +567,136 @@ def _check_settle_gate(seq: dict, r: LintResult,
                 "other than 0: the gate must never skip a Piggy-600 light")
 
 
+def _cover_wanted() -> bool:
+    """PS-189: is the Piggy-600 cover enabled in the config? False if the
+    config can't be read."""
+    try:
+        from photonscript.shared.config import PhotonScriptConfig
+        return bool(getattr(PhotonScriptConfig(), "piggyback_cover_enabled", False))
+    except Exception:
+        return False
+
+
+_COVER_ITEM_TYPES = ("FlatDevice.OpenCover", "FlatDevice.CloseCover",
+                     "FlatDevice.ToggleLight", "FlatDevice.SetBrightness")
+
+
+def _cover_events(seq: dict):
+    """(kind, item) in execution (document) order through Items: kind is
+    open | close | light_on | light_off | light | flat_panel | flat_sky |
+    gate | end. An OpenCover inside a flat instruction with KeepPanelClosed
+    true is skipped by NINA, so it is not an event; "end" marks the start
+    of the End area."""
+    from photonscript.scheduler.flat_cover import GATE_SCRIPT_TOKEN
+
+    def kids(node):
+        items = node.get("Items")
+        return [i for i in items.get("$values", []) or [] if isinstance(i, dict)] \
+            if isinstance(items, dict) else []
+
+    def walk(node, sky: bool, keep_closed: bool):
+        for it in kids(node):
+            t = it.get("$type", "")
+            if "EndAreaContainer" in t:
+                yield "end", it
+            if "FlatDevice.OpenCover" in t:
+                if not keep_closed:
+                    yield "open", it
+            elif "FlatDevice.CloseCover" in t:
+                yield "close", it
+            elif "FlatDevice.ToggleLight" in t:
+                yield ("light_on" if it.get("OnOff") else "light_off"), it
+            elif "Imaging.TakeExposure" in t:
+                kind = str(it.get("ImageType", "LIGHT")).upper()
+                if kind == "LIGHT":
+                    yield "light", it
+                elif kind == "FLAT":
+                    yield ("flat_sky" if sky else "flat_panel"), it
+            elif ("ExternalScript" in t
+                  and GATE_SCRIPT_TOKEN in str(it.get("Script", "")).lower()):
+                yield "gate", it
+            yield from walk(it, sky or "FlatDevice.SkyFlat" in t,
+                            keep_closed or (any(f in t for f in FLAT_FILTER_TYPES)
+                                            and bool(it.get("KeepPanelClosed"))))
+
+    yield from walk(seq, False, False)
+
+
+def _check_cover(seq: dict, r: LintResult, expected: bool | None = None) -> None:
+    """PS-189 rules for the Piggy-600's Wanderer Cover (dust cover + flat
+    panel), checked when the sequence has a cover instruction or the cover
+    is enabled (expected None = the config). Walking the items in order,
+    from a cover assumed CLOSED (it is closed by day):
+      cover-open    ERROR: a LIGHT can start with the cover not opened, or
+                    with the panel light on; WARN: no cover-gate script
+                    (only NINA's OpenCover guards the lights)
+      cover-flats   ERROR: a panel FLAT (outside SkyFlat) with the cover
+                    open or the panel light off; a SkyFlat FLAT with the
+                    cover closed
+      cover-end     ERROR: the End area does not close the cover with the
+                    panel light off"""
+    events = list(_cover_events(seq))
+    has_cover = any(any(c in it.get("$type", "") for c in _COVER_ITEM_TYPES)
+                    for _k, it in events)
+    if expected is None:
+        expected = _cover_wanted()
+    if not (has_cover or expected):
+        return
+    state, light = "closed", False
+    in_end = end_close = end_off = False
+    shut_lights = lit_lights = panel_open = panel_dark = sky_closed = 0
+    lights = gates = 0
+    for kind, _it in events:
+        if kind == "end":
+            in_end = True
+        elif kind == "open":
+            state = "open"
+        elif kind == "close":
+            state = "closed"
+            end_close = end_close or in_end
+        elif kind == "light_on":
+            light = True
+            if in_end:
+                end_off = False
+        elif kind == "light_off":
+            light = False
+            end_off = end_off or in_end
+        elif kind == "gate":
+            gates += 1
+        elif kind == "light":
+            lights += 1
+            shut_lights += state != "open"
+            lit_lights += bool(light)
+        elif kind == "flat_panel":
+            panel_open += state == "open"
+            panel_dark += not light
+        elif kind == "flat_sky" and state == "closed" and has_cover:
+            sky_closed += 1
+    if shut_lights:
+        r.error("cover-open", f"{shut_lights} LIGHT exposure(s) can start with the "
+                "Piggy-600 cover not opened (no OpenCover before them since the "
+                "last CloseCover): every one would be a dark")
+    if lit_lights:
+        r.error("cover-open", f"{lit_lights} LIGHT exposure(s) with the flat "
+                "panel light on")
+    if lights and has_cover and not gates:
+        r.warn("cover-open", "no cover-gate script before the OSC lights: only "
+               "NINA's OpenCover guards them (deploy\\cover-gate.cmd missing?)")
+    if panel_open:
+        r.error("cover-flats", f"{panel_open} panel flat(s) with the cover open: "
+                "close it before the panel flats")
+    if panel_dark:
+        r.error("cover-flats", f"{panel_dark} panel flat(s) with the panel light "
+                "off: ToggleLight on before them")
+    if sky_closed:
+        r.error("cover-flats", f"{sky_closed} sky flat(s) with the cover closed: "
+                "open it, or use panel flats")
+    if not (end_close and end_off):
+        r.error("cover-end", "the End area must close the cover and turn the "
+                "panel light off (CloseCover + ToggleLight off), so the cover "
+                "is closed by day")
+
+
 # PS-149: instructions that take time whenever they run. Inside a loop such
 # an item either runs (the pass costs time) or a TimeCondition fails for its
 # estimated duration and ends the loop, so it can never be passed over at no

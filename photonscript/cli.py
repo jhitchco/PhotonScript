@@ -665,6 +665,67 @@ def cooler_gate_cmd(
     raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
 
 
+def _cover_fallback(cfg, rig: str) -> dict:
+    """PS-189: the service is down: read NINA #2's flat device directly
+    (one read-only GET). PASS only when the cover reads Open."""
+    import asyncio as _asyncio
+    from photonscript.shared.rigs import (cover_enabled, cover_state, rig_config,
+                                          nina_flatdevice_info)
+    if cfg is None or not cover_enabled(cfg, rig):
+        return {"verdict": "OFF", "reason": "cover not enabled"}
+    info = _asyncio.run(nina_flatdevice_info(rig_config(cfg, rig).nina_base_url))
+    st = cover_state(info)
+    if st == "open" and (info or {}).get("LightOn") is not True:
+        return {"verdict": "PASS", "reason": "cover open (read directly)"}
+    return {"verdict": "SKIP", "reason": f"cover reads {st or 'unreadable'} "
+                                         "(read directly, service down)"}
+
+
+@app.command("cover-gate")
+def cover_gate_cmd(
+    rig: str = typer.Argument("piggyback", help="piggyback"),
+    label: str = typer.Option("", "--label", help="For the messages"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA #2's ExternalScript "
+                                        "item (deploy\\cover-gate.cmd)"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-189: hold until the Piggy-600's Wanderer Cover reads Open (POST
+    /api/cover/gate), at most piggyback_cover_gate_timeout_s. Exit 3 when the
+    gate says SKIP (deploy\\cover-gate.cmd turns that into exit 1 and NINA
+    skips the image pass). Unlike the other gates it does not fail open:
+    with the service unreachable it reads NINA #2's flat device itself and
+    skips unless the cover reads Open. With the cover disabled it exits 0."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    from photonscript.scheduler.flat_cover import EXIT_SKIP
+    cfg = None
+    try:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        timeout = float(getattr(cfg, "piggyback_cover_gate_timeout_s", 180.0)) + 120
+    except Exception:  # noqa: BLE001
+        timeout = 300.0
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/cover/gate?"
+            + urllib.parse.urlencode({"rig": rig, "label": label}),
+            data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+    except Exception as e:  # noqa: BLE001
+        print(f"cover gate service unreachable ({e}); reading NINA #2 directly")
+        try:
+            rep = _cover_fallback(cfg, rig)
+        except Exception as e2:  # noqa: BLE001
+            rep = {"verdict": "SKIP", "reason": f"cover unreadable: {e2}"}
+    print(f"cover gate ({rig}{' ' + label if label else ''}"
+          f"{', from NINA' if from_nina else ''}): {rep.get('verdict')} "
+          f"- {rep.get('reason', '')}")
+    raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
+
+
 @app.command("settle-gate")
 def settle_gate_cmd(
     label: str = typer.Option("", "--label", help="For the log"),
