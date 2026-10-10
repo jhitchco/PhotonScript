@@ -21,6 +21,12 @@ Inputs per stage:
                     RC16 out/final/*_<F>_linear.xisf, else master_<F>.xisf
   final:            out/final/*_final.xisf of both runs (already stretched)
 RC16 luminance = the L master, else the mean of the R/G/B (or any) masters.
+PS-186: at the linear stage the RC16 luminance first gets a BlurXTerminator
+pass (correct-only, then sharpen) when the process is installed and rc16_bxt
+is not off (config blend_rc16_bxt + finish_use_rcastro). The finish saves
+*_linear.xisf before its own deconvolution, so this is the only BXT the RC16
+data sees in the blend. Guarded: missing or failing = the blend runs on the
+unsharpened luminance.
 
 The Blend folder sits under the staging root on purpose: local_ledgers()
 reads <staging_root>/*/ledger.json only, so blend ledgers never count as
@@ -96,9 +102,27 @@ class Options:
     keep_work: bool = False
     bg_target: float = pjsr.FINISH_DEFAULTS["bg_target"]
     shadow_sigma: float = pjsr.FINISH_DEFAULTS["shadow_sigma"]
+    rc16_bxt: str = "auto"            # PS-186: auto | on | off (rc16_bxt_mode(cfg))
+    bxt_stars: float = pjsr.FINISH_DEFAULTS["bxt_stars"]
+    bxt_nonstellar: float = pjsr.FINISH_DEFAULTS["bxt_nonstellar"]
     run_pixinsight: bool = True
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
+
+
+def rc16_bxt_mode(cfg) -> str:
+    """PS-186: the blend's RC16 BlurXTerminator mode from the config: off when
+    blend_rc16_bxt is off, else finish_use_rcastro (auto | on | off)."""
+    if cfg is not None and not bool(getattr(cfg, "blend_rc16_bxt", True)):
+        return "off"
+    return pjsr.rc_mode(getattr(cfg, "finish_use_rcastro", "auto") if cfg is not None else "auto")
+
+
+def config_bxt(cfg) -> dict:
+    """Options fields for the blend's RC16 BXT pass from the config."""
+    rc = pjsr.rc_settings(cfg)
+    return {"rc16_bxt": rc16_bxt_mode(cfg), "bxt_stars": rc["bxt_stars"],
+            "bxt_nonstellar": rc["bxt_nonstellar"]}
 
 
 def _filter_rank(f: str) -> tuple:
@@ -277,6 +301,10 @@ def blend_config(o: Options, inp: Inputs, run_dir: Path) -> dict:
         "ra_deg": ra, "dec_deg": dec, "solve": bool(o.solve), "resolve": bool(o.resolve),
         "keep_work": bool(o.keep_work),
         "bg_target": float(o.bg_target), "shadow_sigma": float(o.shadow_sigma),
+        "rc16_bxt": {"mode": pjsr.rc_mode(o.rc16_bxt) if inp.stage == "linear" else "off",
+                     "why_off": "" if inp.stage == "linear" else "stage final (already stretched)",
+                     "stars": pjsr.unit_value("bxt_stars", o.bxt_stars),
+                     "nonstellar": pjsr.unit_value("bxt_nonstellar", o.bxt_nonstellar)},
     }
 
 
@@ -327,8 +355,8 @@ def build_ledger(o: Options, inp: Inputs, run_dir: Path, man: dict, pi: dict | N
     machine = {
         "run_dir": str(run_dir), "repo_commit": repo_commit(), "kind": "blend",
         "inputs": man["inputs"], "luminance_from": man["luminance_from"], "notes": inp.notes,
-        "options": {k: man["config"][k] for k in ("stage", "weight", "inset_frac", "feather_frac",
-                                                  "lum_mask", "core", "core_margin_frac")},
+        "options": {k: man["config"].get(k) for k in ("stage", "weight", "inset_frac", "feather_frac",
+                                                      "lum_mask", "core", "core_margin_frac", "rc16_bxt")},
         "blend": {"script": "blend_run.js (deploy/blend_rc16_osc.js)",
                   "ok": (pi or {}).get("ok"), "minutes": (pi or {}).get("minutes"),
                   "last_line": (pi or {}).get("last_line", ""),

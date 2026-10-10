@@ -2553,6 +2553,19 @@ def calibration_status_cmd(
         raise typer.Exit(1)
 
 
+def _rc_overrides(rcastro: str, bxt_stars: float, bxt_nonstellar: float, nxt_denoise: float) -> dict:
+    """PS-186: integrate's --rcastro / --bxt-* / --nxt-denoise over the config
+    (blank / negative = keep the config value). Raises ValueError."""
+    from photonscript.integration import pjsr
+    out: dict = {}
+    if rcastro:
+        out["rc_mode"] = pjsr.rc_mode(rcastro)
+    for k, v in (("bxt_stars", bxt_stars), ("bxt_nonstellar", bxt_nonstellar), ("nxt_denoise", nxt_denoise)):
+        if v is not None and v >= 0:
+            out[k] = pjsr.unit_value(k, v)
+    return out
+
+
 @app.command("integrate")
 def integrate_cmd(
     target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("Andromeda Galaxy", "M31")'),
@@ -2576,7 +2589,17 @@ def integrate_cmd(
     finish: bool = typer.Option(True, "--finish/--no-finish", help="Run the finish script after integrating"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
     gradient: str = typer.Option("auto", "--gradient", help="auto | abe | none"),
-    no_rc: bool = typer.Option(False, "--no-rc", help="Skip BlurXTerminator / NoiseXTerminator"),
+    no_rc: bool = typer.Option(False, "--no-rc", help="Skip the RC Astro tools (same as --rcastro off)"),
+    rcastro: str = typer.Option("", "--rcastro",
+                                help="BlurX / NoiseX / StarXTerminator in the finish: auto | on | off "
+                                     "(default finish_use_rcastro; PS-186)"),
+    bxt_stars: float = typer.Option(-1.0, "--bxt-stars",
+                                    help="BlurXTerminator sharpen stars 0..1 (default bxt_sharpen_stars)"),
+    bxt_nonstellar: float = typer.Option(-1.0, "--bxt-nonstellar",
+                                         help="BlurXTerminator sharpen nonstellar 0..1 "
+                                              "(default bxt_sharpen_nonstellar)"),
+    nxt_denoise: float = typer.Option(-1.0, "--nxt-denoise",
+                                      help="NoiseXTerminator denoise 0..1 (default nxt_denoise)"),
     hoo: bool = typer.Option(False, "--hoo/--no-hoo",
                              help="OSC finish: also the HOO-mapped image (Ha = R, OIII = mean G, B; PS-161)"),
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
@@ -2608,7 +2631,12 @@ def integrate_cmd(
     from photonscript.integration.runner import PixInsightBusy
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
-    kw = pl.config_options(cfg, rig)
+    try:
+        kw = pl.config_options(cfg, rig)
+        kw.update(_rc_overrides(rcastro, bxt_stars, bxt_nonstellar, nxt_denoise))
+    except ValueError as e:
+        console.print(f"[red]integrate:[/red] {e}", markup=True)
+        raise typer.Exit(2)
     if library:
         kw["library"] = Path(library)
     opts = pl.Options(
@@ -2677,6 +2705,9 @@ def blend_cmd(
     out: str = typer.Option("", "--out", help="Blend folder (NEW or empty; default <staging-root>/Blend/<target>_blend_<time>)"),
     staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
     keep_work: bool = typer.Option(False, "--keep-work", help="Keep the registration work files"),
+    rc16_bxt: str = typer.Option("", "--rc16-bxt",
+                                 help="BlurXTerminator pass on the RC16 L linear master first: auto | on | off "
+                                      "(default blend_rc16_bxt + finish_use_rcastro; PS-186)"),
     pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Find the inputs and check the script; write nothing"),
@@ -2695,9 +2726,17 @@ def blend_cmd(
     import json as _json
     from photonscript.integration import blend as bl
     from photonscript.integration import pipeline as pl
+    from photonscript.integration import pjsr
     from photonscript.integration.runner import PixInsightBusy
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    try:
+        bxt = bl.config_bxt(cfg)
+        if rc16_bxt:
+            bxt["rc16_bxt"] = pjsr.rc_mode(rc16_bxt)
+    except ValueError as e:
+        console.print(f"[red]blend:[/red] {e}", markup=True)
+        raise typer.Exit(2)
     opts = bl.Options(
         target=target, staging_root=root, out=Path(out) if out else None,
         osc=Path(osc) if osc else None,
@@ -2707,6 +2746,7 @@ def blend_cmd(
         pixinsight=pixinsight_exe,
         osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
         rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
+        **bxt,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
@@ -2845,7 +2885,8 @@ def autointegrate_cmd(
         return bl.Options(
             target=target, staging_root=root, dry_run=dry, pixinsight=pixinsight_exe,
             osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
-            rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE))
+            rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
+            **bl.config_bxt(cfg))
 
     try:
         ai.loop(o, once=once, echo=say,

@@ -30,6 +30,7 @@ OPTIONAL = [
     "NoiseXTerminator",
     "MultiscaleLinearTransform",
     "StarNet2",
+    "StarXTerminator",
     "ExternalProcess",
 ]
 
@@ -119,7 +120,8 @@ def test_every_optional_process_is_detected_before_use():
             assert "if (GRAXPERT)" in s
             continue
         if re.search(r"new " + p + r"\b", s):
-            assert f'typeof {p} !== "undefined"' in s or f"typeof {p} === \"undefined\"" in s, p
+            assert (f'typeof {p} !== "undefined"' in s or f"typeof {p} === \"undefined\"" in s
+                    or f'typeof {p} === "function"' in s), p
 
 
 def test_every_optional_process_runs_inside_a_try():
@@ -270,14 +272,15 @@ def test_star_reduction_after_denoise_and_falls_back_to_the_normal_stretch():
 def test_starnet2_split_is_reversible_and_screen_blend_matches_the_ticket():
     s = _read(JS)
     split = _func(s, "starSplit")
-    assert 'typeof StarNet2 === "undefined"' in split
-    assert "applyHT(sl.mainView, 0, mPre)" in split and "applyHT(sl.mainView, 0, 1 - mPre)" in split
+    assert 'typeof StarNet2 !== "undefined"' in split
+    pre = _func(s, "starlessPre")       # PS-186: StarXTerminator or StarNet2 on the pre-stretched copy
+    assert "applyHT(w.mainView, 0, mPre)" in pre and "applyHT(w.mainView, 0, 1 - mPre)" in pre
     assert '"max(0, $T - " + sl.mainView.id + ")"' in split
     rec = _func(s, "starRecombine")
     assert '"~(~$T * ~(" + stv.id + " * " + k + "))"' in rec
     assert '_starless.xisf' in rec
     assert rec.index("stretch(slv") < rec.index("recoverCore(slv)") < rec.index("view.image.assign")
-    assert 'step("star_reduction", "StarNet2", "ran"' in rec
+    assert 'step("star_reduction", split.tool, "ran"' in rec
 
 
 def test_mtf_prestretch_is_exactly_invertible():

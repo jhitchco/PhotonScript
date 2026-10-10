@@ -158,6 +158,9 @@ OAG test, piggyback fallback; record first calibration + typical RMS here:
 
 ### 4. PixInsight add-ons  [processing pipeline scope]
 - StarXTerminator: yes/no · NoiseXTerminator: yes/no · BlurXTerminator: yes/no
+  (2026-10-10, Jeremy: licensed. Desktop has doc/tools/BlurXTerminator and
+  src/scripts/rc-astro/BatchStarXTerminator.js but no *XTerminator* module
+  in bin yet; the finish detects the processes at run time, PS-186)
 - Other licensed tools:
 
 ### 5. Horizon & slew limits  [planner usable-hours accuracy]

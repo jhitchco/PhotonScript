@@ -319,6 +319,21 @@ class PhotonScriptConfig(BaseSettings):
                                  # rigs have masters and the inputs changed
     autointegrate_notify: bool = True  # Pushover the review JPG after a run
     autointegrate_hoo: bool = True  # OSC finish also writes the HOO-mapped image
+    # PS-186 RC Astro in the finish (desktop .env; finish_osc.js detects the
+    # processes inside PixInsight at run time and falls back per step)
+    finish_use_rcastro: str = "auto"  # auto = BlurXTerminator / NoiseXTerminator
+                                 # / StarXTerminator when installed, else the
+                                 # GraXpert / built-in / StarNet2 steps; on =
+                                 # the same but a missing tool is a WARNING in
+                                 # finish.log; off = never
+    bxt_sharpen_stars: float = 0.25  # BlurXTerminator sharpen_stars (0..1)
+    bxt_sharpen_nonstellar: float = 0.50  # BlurXTerminator sharpen_nonstellar
+                                 # (0..1; 0.5 to 0.9 is the useful range)
+    nxt_denoise: float = 0.80  # NoiseXTerminator denoise on the linear image
+                                 # (0..1; detail fixed at 0.15)
+    blend_rc16_bxt: bool = True  # PS-153 blend: BlurXTerminator pass on the
+                                 # RC16 L linear master before the blend (only
+                                 # when installed and finish_use_rcastro not off)
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as
