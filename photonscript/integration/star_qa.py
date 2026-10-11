@@ -576,6 +576,35 @@ def group_summary(rows: list[dict]) -> list[dict]:
     return [by[lab] for _e, _f, lab in sorted(order)]
 
 
+FOCUSER_ZERO_REASON = "focuser_zero(FOCPOS 0: focuser disconnected or frozen, focus unknown)"
+
+
+def is_focuser_zero(frame) -> bool:
+    """A light whose FOCPOS header is exactly 0: the focuser was dead (the
+    2026-10-08 RC16 EAF), focus unknown, never stacked. A missing FOCPOS
+    (None) is unknown, not zero."""
+    fp = getattr(frame, "focpos", None)
+    return fp is not None and fp == 0
+
+
+def focuser_zero_rows(frames) -> list[dict]:
+    """QA rows for FOCPOS 0 lights, which are never measured: action
+    reject, reason focuser_zero, in their own group (group_key), so
+    group_summary counts them like the other reject reasons."""
+    rows = []
+    for f in frames:
+        r = {"file": f.name, "night": f.night, "filter": f.filter,
+             "exp": round(f.exp, 2), "time": f.date_obs,
+             "xbin": int(getattr(f, "xbin", 1) or 1),
+             "readout": getattr(f, "readout", None) or "",
+             "action": "reject", "reason": FOCUSER_ZERO_REASON,
+             "group_reference": "", "is_reference": False,
+             "is_run_reference": False}
+        r["group"] = group_label(group_key(r))
+        rows.append(r)
+    return rows
+
+
 def run_qa(frames, *, workers: int | None = None, thr: Thresholds | None = None,
            echo=print) -> tuple[list[dict], int]:
     """Measure + assess every Frame (one star-QA pass over the raw subs).

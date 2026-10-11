@@ -87,6 +87,7 @@ class Options:
     hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
     allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
+    keep_focuser_zero: bool = False   # stack lights with FOCPOS 0 anyway (focus unknown)
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -363,18 +364,36 @@ def run(o: Options, echo=print) -> dict:
             echo(f"  skipped {Path(p).name}: {why}")
     if not sel.lights:
         raise PipelineError(f"no approved {o.rig} lights for {o.target!r} in {o.library}")
+    # FOCPOS 0 (the 2026-10-08 RC16 EAF off USB): focus unknown, never
+    # stacked in any --qa mode unless --keep-focuser-zero
+    zero = [f for f in sel.lights if star_qa.is_focuser_zero(f)]
+    zero_out = bool(zero) and not o.keep_focuser_zero
+    result["focuser_zero"] = {"n": len(zero), "excluded": zero_out,
+                              "files": [f.name for f in zero]}
+    if zero_out:
+        sel.lights = [f for f in sel.lights if not star_qa.is_focuser_zero(f)]
+        echo(f"  left out {len(zero)} light(s) with FOCPOS 0 (focuser disconnected or frozen, "
+             "focus unknown)")
+        if not sel.lights:
+            raise PipelineError(f"every {o.rig} light for {o.target!r} in range has FOCPOS 0 "
+                                f"({len(zero)}): focus unknown, nothing to stack")
+    elif zero:
+        echo(f"  WARNING: {len(zero)} light(s) with FOCPOS 0 kept (--keep-focuser-zero)")
 
     rows, ref_i = [], None
     qa_by_file: dict[str, dict] = {}
     if o.qa != "off":
         with timer.stage(f"star QA ({len(sel.lights)} subs)"):
             rows, ref_i = star_qa.run_qa(sel.lights, workers=o.workers, thr=o.thresholds, echo=echo)
+            if zero_out:
+                rows += star_qa.focuser_zero_rows(zero)   # after ref_i: indexes stay
             qa_by_file = {r["file"]: r for r in rows}
             if not o.dry_run:
                 star_qa.write_csv(run_dir / "qa" / "star_qa.csv", rows)
             nrej = sum(r["action"] == "reject" for r in rows)
             echo(f"  registration reference {rows[ref_i]['file']}; {len(rows) - nrej} keep, {nrej} reject"
-                 + (" (report only: all staged)" if o.qa == "report" else ""))
+                 + ((" (report only: all staged" + (", FOCPOS 0 left out)" if zero_out else ")"))
+                    if o.qa == "report" else ""))
             # PS-177: every group is judged against its own reference
             for g in star_qa.group_summary(rows):
                 why = ", ".join(f"{k} {v}" for k, v in sorted(g["reasons"].items(), key=lambda kv: -kv[1]))

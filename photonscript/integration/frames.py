@@ -90,6 +90,7 @@ class Frame:
     target_dir: str = ""           # Library folder the light came from
     object: str = ""
     foctemp: float | None = None
+    focpos: int | None = None      # FOCPOS (0 = focuser dead: focus unknown)
     focallen: float | None = None
     focratio: float | None = None
     pixel_um: float | None = None
@@ -129,6 +130,11 @@ class Frame:
         return (f"{int(e)}s" if e == int(e) else f"{e:g}s")
 
 
+def _focpos(hdr) -> int | None:
+    from photonscript.shared.optics_state import optics_fields
+    return optics_fields(hdr)["focpos"]
+
+
 def kind_of(imagetyp: str, default: str = "LIGHT") -> str:
     t = _s(imagetyp).upper()
     if "DARK" in t and "FLAT" in t:
@@ -165,7 +171,8 @@ def from_header(path, hdr, *, kind: str | None = None, tz: str = "America/Denver
         date_obs=date_obs, date_loc=date_loc,
         night=night_of(date_loc, date_obs, tz),
         object=_s(get("OBJECT")),
-        foctemp=_f(get("FOCTEMP")), focallen=_f(get("FOCALLEN")),
+        foctemp=_f(get("FOCTEMP")), focpos=_focpos(hdr),
+        focallen=_f(get("FOCALLEN")),
         focratio=_f(get("FOCRATIO")), pixel_um=_f(get("XPIXSZ")),
         telescope=_s(get("TELESCOP")), software=_s(get("SWCREATE")),
         site_lat=_f(get("SITELAT")), site_lon=_f(get("SITELONG")),

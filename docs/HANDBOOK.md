@@ -1483,6 +1483,23 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   `guide_fallback_test_date`, never over `unguided_max_exposure_s`). The night
   stays unguided until dawn; re-arm guided by hand to go back. A watched
   sideload is alert only.
+- FOCUSER AT 0 (2026-10-08 to 10-11): the RC16 ZWO EAF dropped off USB
+  about midday 10-08; NINA #1 kept "EAF(MainRC16)" Connected with Position
+  0 (StepSize 600000, Temperature frozen at 21.29 C), autofocus started 55
+  times and never finished, and every RC16 light had FOCPOS 0 at about 5"
+  FWHM. Neither rig ever focuses at 0 (RC16 about 5600 to 6100, Piggy-600
+  about 10900 to 11100). Now: a LIGHT whose FOCPOS is 0, or whose live
+  focuser read was 0 at grading, fails scorecard row `focuser_zero`
+  (reason code, `qa_focuser_zero_mode` fail | warn | info | off; calibration
+  frames and a missing FOCPOS are never rejected); each rig's agent pushes
+  once per night when its focuser reads 0 for a minute while imaging
+  (`focuser_zero_alert`, run event `focuser_zero`); `photonscript integrate`
+  leaves FOCPOS 0 lights out in every --qa mode (`focuser_zero N` in the
+  group summary; `--keep-focuser-zero` overrides). Already captured subs:
+  `photonscript qa-focuser-zero --since 2026-10-08 [--rig rc16]` lists them
+  from the Library (read only) and this machine's subs logs; `--apply` ON
+  THE SCOPE PC rejects them in the subs logs (row swap, human verdicts
+  kept, Library links to `_rejected`).
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
