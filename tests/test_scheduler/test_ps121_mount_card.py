@@ -225,7 +225,7 @@ def test_agent_poll_fills_alt_az_connected(tmp_path, monkeypatch, connected):
 def _mount_block():
     html = DASH.read_text(encoding="utf-8")
     a = html.index("// PS-121: where the mount points")
-    b = html.index("// Roof (piggyback only)")
+    b = html.index("// Roof (both rigs")
     return html, html[a:b]
 
 
@@ -244,7 +244,7 @@ def test_mount_code_is_ascii():
     html = DASH.read_text(encoding="utf-8")
     helpers = html[html.index("// PS-121: where the mount points"):
                    html.index("function _toggleBtn")]
-    row = html[html.index("// Mount (RC16 owns it"):html.index("// Roof (piggyback only)")]
+    row = html[html.index("// Mount (RC16 owns it"):html.index("// Roof (both rigs")]
     assert helpers.isascii() and row.isascii()
     src = (ROOT.parent / "shared" / "mount_view.py").read_text(encoding="utf-8")
     assert src.isascii()

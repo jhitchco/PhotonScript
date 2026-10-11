@@ -183,6 +183,8 @@
             <div id="equipPanes" style="margin-bottom:1rem;display:flex;
                  flex-direction:column;gap:.6rem;"></div>
             <div id="sunCard" style="margin-bottom:1rem;"></div>
+            <!-- Night strip: "Tonight so far" (roof + each rig, sunset to now) -->
+            <div id="tonightStrip"></div>
             <div id="nightTimeline"></div>
         </section>
 
@@ -757,6 +759,105 @@
     setInterval(whenShown(loadScope), 5 * 1000);  // served from a 4 s server cache
     loadSun();
     setInterval(loadSun, 5 * 60 * 1000);   // sun moves ~1.25° per 5 min
+    // Night strip: "Tonight so far" under the sun chart. The Runs page night
+    // timeline (PS-67) collapsed to three rows: Roof (safety history, PS-71)
+    // and one per rig as exposing / busy (slew, center, AF, flip, dither,
+    // calibration) / idle, sunset to now. From /api/tonight/strip (a 45 s
+    // server cache); refreshed once a minute while the tab is shown.
+    const NS_COLORS = {open: '#16a34a', closed: '#b91c1c', unknown: '#334155',
+                       exposing: '#2563eb', busy: '#94a3b8', idle: '#1e293b'};
+    const NS_NAMES = {open: 'roof open', closed: 'roof closed', unknown: 'unknown',
+                      exposing: 'exposing', busy: 'busy', idle: 'idle'};
+    function _nsDur(s) {
+        s = Math.max(0, Math.round((s || 0) / 60));
+        return Math.floor(s / 60) + 'h' + String(s % 60).padStart(2, '0') + 'm';
+    }
+    async function loadTonightStrip() {
+        const box = document.getElementById('tonightStrip');
+        if (!box) return;
+        let d;
+        try { d = await (await fetch('/api/tonight/strip')).json(); }
+        catch (e) { box.textContent = ''; return; }
+        const off = (d.tz_offset_h || 0) * 3600000;
+        const pad = n => String(n).padStart(2, '0');
+        const loc = t => { const x = new Date(Date.parse(t) + off);
+                           return pad(x.getUTCHours()) + ':' + pad(x.getUTCMinutes()); };
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+        const head = '<div style="font-size:.7rem;letter-spacing:.08em;opacity:.5;' +
+            'text-transform:uppercase;margin-bottom:.3rem;">' +
+            (d.now && d.sunrise && d.now >= d.sunrise ? 'Last night' : 'Tonight so far') + '</div>';
+        if (!d.ok || !d.started) {
+            box.innerHTML = head + '<div style="font-size:.78rem;opacity:.6;margin-bottom:1rem;">' +
+                esc(d.note || 'no run yet tonight') +
+                (d.sunset ? ' &middot; sunset ' + loc(d.sunset) + ', sunrise ' + loc(d.sunrise) : '') +
+                '</div>';
+            return;
+        }
+        const t0 = Date.parse(d.t0), t1 = Date.parse(d.t1), span = Math.max(1, t1 - t0);
+        const tu = Date.parse(d.upto);
+        const L = 62, W = 600, R = 17, H = 11, top = 13;   // ~1 unit per px in the panel
+        const x = ms => L + (W - L) * (ms - t0) / span;
+        const rows = d.rows || [];
+        const hgt = top + rows.length * R + 2;
+        let svg = '<svg viewBox="0 0 ' + W + ' ' + hgt + '" style="width:100%;display:block;' +
+            'font:10px ui-monospace,monospace;">';
+        // local time every 2 h
+        const h0 = Math.ceil((t0 + off) / 7200000) * 7200000 - off;
+        for (let h = h0; h <= t1; h += 7200000) {
+            const xx = x(h);
+            svg += '<line x1="' + xx.toFixed(1) + '" y1="' + (top - 2) + '" x2="' + xx.toFixed(1) +
+                '" y2="' + (hgt - 2) + '" stroke="#334155" stroke-width=".5"/>' +
+                '<text x="' + (xx + 2).toFixed(1) + '" y="8" fill="#94a3b8">' + loc(new Date(h).toISOString()) +
+                '</text>';
+        }
+        rows.forEach((r, i) => {
+            const y = top + i * R;
+            svg += '<text x="0" y="' + (y + 8) + '" fill="#cbd5e1">' + esc(r.label) + '</text>';
+            // elapsed part of the track reads as idle / unknown; the rest is empty
+            svg += '<rect x="' + L + '" y="' + y + '" width="' + (W - L) + '" height="' + H +
+                '" fill="none" stroke="#1e293b" stroke-width=".6"/>' +
+                '<rect x="' + L + '" y="' + y + '" width="' + Math.max(0, x(tu) - L).toFixed(1) +
+                '" height="' + H + '" fill="' + (r.id === 'roof' ? NS_COLORS.unknown : NS_COLORS.idle) +
+                '"><title>' + esc(r.label) + ': ' + (r.id === 'roof' ? 'unknown' : 'idle / no record') +
+                '</title></rect>';
+            (r.segments || []).forEach(sg => {
+                const a = x(Date.parse(sg.start)), w = Math.max(1, x(Date.parse(sg.end)) - a);
+                svg += '<rect x="' + a.toFixed(1) + '" y="' + y + '" width="' + w.toFixed(1) +
+                    '" height="' + H + '" fill="' + (NS_COLORS[sg.state] || '#6b7280') + '"><title>' +
+                    esc(r.label) + ' ' + esc(NS_NAMES[sg.state] || sg.state) +
+                    (sg.label ? ' (' + esc(sg.label) + ')' : '') + ' ' + loc(sg.start) + '-' +
+                    loc(sg.end) + ' (' + _nsDur((Date.parse(sg.end) - Date.parse(sg.start)) / 1000) +
+                    ')</title></rect>';
+            });
+            // subs: a tiny tick at each sub's end, green kept / red rejected
+            ((d.ticks || {})[r.id] || []).forEach(tk => {
+                const a = x(Date.parse(tk.t));
+                svg += '<rect x="' + (a - .5).toFixed(1) + '" y="' + (y + H + 1) + '" width="1.2" height="3" fill="' +
+                    (tk.kept ? '#4ade80' : '#f87171') + '"><title>' + esc(tk.target) + ' ' + esc(tk.filter) +
+                    ' ' + loc(tk.t) + (tk.kept ? ' kept' : ' rejected') + '</title></rect>';
+            });
+        });
+        const xn = x(tu);
+        svg += '<line x1="' + xn.toFixed(1) + '" y1="' + (top - 3) + '" x2="' + xn.toFixed(1) + '" y2="' +
+            (hgt - 1) + '" stroke="#f8fafc" stroke-width="1.2"><title>now ' + loc(d.upto) + '</title></line>';
+        svg += '</svg>';
+        const sm = d.summary || {};
+        const parts = ['Roof open ' + _nsDur(sm.roof_open_s) +
+            (sm.dark_s ? ' of ' + _nsDur(sm.dark_s) + ' dark' : '')];
+        Object.values(sm.rigs || {}).forEach((g, i) => parts.push(esc(g.label) +
+            (i === 0 ? ' exposing ' : ' ') + _nsDur(g.exposing_s)));
+        parts.push(sm.subs + ' subs (' + sm.kept + ' kept)');
+        const legend = ['exposing', 'busy', 'idle'].map(k => '<span style="display:inline-block;width:.6rem;' +
+            'height:.6rem;background:' + NS_COLORS[k] + ';margin:0 .2rem 0 .5rem;vertical-align:middle;' +
+            'border:1px solid #334155;"></span>' + k).join('');
+        box.innerHTML = head + svg +
+            '<div style="font-size:.76rem;opacity:.8;margin:.25rem 0 1rem;font-family:ui-monospace,monospace;">' +
+            parts.join(' &middot; ') + '<span style="opacity:.6;">' + legend +
+            ' &middot; <a href="/runs?night=' + encodeURIComponent(d.date) + '" style="color:#7dd3fc;">Runs timeline</a></span></div>';
+    }
+    loadTonightStrip();
+    setInterval(whenShown(loadTonightStrip), 60 * 1000);
+    // end night strip
 
     function twCard(label, value, hi) {
         return '<div style="text-align:center;min-width:96px;">' +
@@ -1097,20 +1198,25 @@
                 pane += _equipRow('Mount', '<span>' + m + '</span>');
                 pane += _mountRows(v);
             }
-            // Roof (piggyback only): does NINA #2 see the shared safety monitor?
-            // That's what lets the companion shoot roof-closed darks/bias on arm.
+            // Roof (both rigs, Night strip): the one shared safety monitor as
+            // each NINA sees it. RC16: NINA #1 owns it (what pauses the night).
+            // Piggy-600: seeing it lets the companion shoot roof-closed
+            // darks/bias on arm.
             const sm = (r.devices || {}).safetymonitor;
-            if (!mnt && sm) {
+            if (sm) {
+                const isRc = r.rig === 'rc16';
                 let roof;
                 if (sm.connected) {
                     const safe = sm.safe === true ? '<span style="color:#4ade80;">roof open (safe)</span>'
                         : sm.safe === false ? '<span style="color:#f87171;">roof closed (unsafe)</span>'
                         : '<span style="opacity:.7;">no signal</span>';
-                    roof = _dot(true) + ' seeing · ' + safe +
-                        '<span style="opacity:.55;"> · can do darks/bias</span>';
+                    roof = _dot(true) + ' seeing &middot; ' + safe + (isRc ? ''
+                        : '<span style="opacity:.55;"> &middot; can do darks/bias</span>');
                 } else {
-                    roof = _dot(false) + ' <span style="opacity:.75;">not seeing — flats only ' +
-                        '(add the safety monitor to the NINA #2 profile)</span>';
+                    roof = _dot(false) + (isRc
+                        ? ' <span style="opacity:.75;">safety monitor not connected on NINA #1</span>'
+                        : ' <span style="opacity:.75;">not seeing &#8212; flats only ' +
+                          '(add the safety monitor to the NINA #2 profile)</span>');
                 }
                 pane += _equipRow('Roof', '<span style="white-space:normal;">' + roof + '</span>');
             }
