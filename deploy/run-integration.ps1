@@ -4,7 +4,7 @@
 #   .\deploy\run-integration.ps1 -Target "Crescent Nebula"
 param(
     [Parameter(Mandatory=$true)][string]$Target,
-    [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
+    [string]$StageRoot = $(if (Test-Path "D:\Astrophotography\Staging") { "D:\Astrophotography\Staging" } else { "$env:USERPROFILE\Astrophotography\Staging" }),
     [string]$PixInsight = "C:\Program Files\PixInsight\bin\PixInsight.exe"
 )
 $stage = Join-Path $StageRoot ($Target -replace '[^\w\- ]','_')

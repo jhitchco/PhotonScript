@@ -8,7 +8,7 @@
 param(
     [Parameter(Mandatory=$true)][string]$Target,
     [string]$Library = "$env:USERPROFILE\ninashare\Library",
-    [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
+    [string]$StageRoot = $(if (Test-Path "D:\Astrophotography\Staging") { "D:\Astrophotography\Staging" } else { "$env:USERPROFILE\Astrophotography\Staging" }),
     [switch]$Copy,  # default = hardlink (instant, no extra disk); -Copy to copy
     [switch]$Loose  # match darks on EXPOSURE only (accept temp/offset drift) — pipeline tests
 )

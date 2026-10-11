@@ -9,7 +9,7 @@
 # cull_report.csv and reference.txt (sharpest kept sub = registration reference).
 param(
     [string]$Name = "M31_OSC",
-    [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
+    [string]$StageRoot = $(if (Test-Path "D:\Astrophotography\Staging") { "D:\Astrophotography\Staging" } else { "$env:USERPROFILE\Astrophotography\Staging" }),
     [string]$PixInsight = "C:\Program Files\PixInsight\bin\PixInsight.exe",
     # CPU niceness: Idle = only spare cycles, BelowNormal = yields to your apps,
     # Normal = full speed. Default BelowNormal so the box stays usable.

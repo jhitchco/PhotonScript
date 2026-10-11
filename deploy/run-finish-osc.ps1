@@ -20,7 +20,7 @@
 # renders the same script (photonscript/integration/pjsr.py render_finish).
 param(
     [string]$Name = "M31_OSC2",
-    [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
+    [string]$StageRoot = $(if (Test-Path "D:\Astrophotography\Staging") { "D:\Astrophotography\Staging" } else { "$env:USERPROFILE\Astrophotography\Staging" }),
     [string]$PixInsight = "C:\Program Files\PixInsight\bin\PixInsight.exe",
     [string]$Master = "",          # default <stage>\out\master\masterOSC.xisf
     [string]$OutDir = "",          # default <stage>\out\final; an explicit OutDir must be new or empty

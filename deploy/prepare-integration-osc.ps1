@@ -12,7 +12,7 @@ param(
     [string]$Name = "M31_OSC",
     [string]$Source = "$env:USERPROFILE\ninashare\Library\_\OSC",
     [string]$Library = "$env:USERPROFILE\ninashare\Library",
-    [string]$StageRoot = "$env:USERPROFILE\Astrophotography\Staging",
+    [string]$StageRoot = $(if (Test-Path "D:\Astrophotography\Staging") { "D:\Astrophotography\Staging" } else { "$env:USERPROFILE\Astrophotography\Staging" }),
     [string]$Instrument = "AP26CC",
     [switch]$Copy   # default = hardlink; -Copy to physically copy
 )
