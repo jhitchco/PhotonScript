@@ -11,6 +11,7 @@
     <script src="/static/js/sky_geom.js?v={{ version }}"></script>
     <script src="/static/js/review.js?v={{ version }}"></script>
     <script src="/static/js/integrations.js?v={{ version }}"></script>
+    <script src="/static/js/readiness.js?v={{ version }}"></script>
     <style>
         main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
         .top { display:grid; grid-template-columns: minmax(0,1.25fr) minmax(0,1fr);
@@ -440,24 +441,25 @@ async function loadQa() {
         if (m2) m2.textContent = 'saved';
     });
 }
+// Integration readiness per rig (the block that used to sit on the Runs
+// sidebar): /api/integration/readiness + /api/sync via static/js/readiness.js.
+// A paused project is not in that report: /api/targets/readiness (RC16).
 async function loadReady() {
     const el = document.getElementById('tReady');
     try {
-        const r = await (await fetch('/api/targets/readiness?name=' +
-                                     encodeURIComponent(D.target))).json();
-        if (!r.project) { el.textContent = r.note || 'no imaging project'; return; }
-        const fl = Object.entries(r.filters).map(([f, v]) =>
-            '<b style="color:' + (FC[f] || '#94a3b8') + ';">' + esc(f) + '</b> ' +
-            v.accepted_in_library + '/' + v.planned + ' lights \u00b7 ' + v.flats + ' flats').join(
-            ' &nbsp;\u00b7&nbsp; ');
-        const dk = Object.entries(r.darks_by_exposure).map(([e, n]) => e + ': ' + n).join(', ');
-        el.innerHTML = '<div><b class="' + (r.ready ? 'ok' : 'pend') + '">' +
-            (r.ready ? 'ready to integrate' : 'not ready yet') + '</b> \u00b7 ' +
-            r.lights_in_library + ' lights in the Library \u00b7 darks ' + esc(dk) +
-            ' \u00b7 bias ' + r.bias + '</div><div style="margin:.3rem 0;">' + fl + '</div>' +
-            '<code>' + esc(r.command) + '</code> ' + copyBtn('copy command', r.command) +
-            '<div class="dim" style="margin-top:.3rem;">Run on the desktop (PS-22), or let ' +
-            'photonscript integrate-watch (PS-31) start it when the goal is met.</div>';
+        const all = await Readiness.load();
+        let rs = all.byKey[Readiness.key(D.target)] || [];
+        if (!rs.length) {
+            const r = await (await fetch('/api/targets/readiness?name=' +
+                                         encodeURIComponent(D.target))).json();
+            if (!r.project) { el.textContent = r.note || 'no imaging project'; return; }
+            rs = [r];
+        }
+        el.innerHTML = rs.map(r => Readiness.detail(r, all.synced, copyBtn)).join('') +
+            '<div class="dim">Run on the desktop (PS-22), or let ' +
+            'photonscript integrate-watch (PS-31) start it when the goal is met. ' +
+            'Calibration (darks \u00b7 bias \u00b7 flats) is shared across targets: ' +
+            '<a href="/calibration" style="color:inherit;">Calibration page</a>.</div>';
         // PS-33: the desktop integrator's ledgers for this goal
         if (window.Integrations && D.project_id) {
             const m = await Integrations.load();

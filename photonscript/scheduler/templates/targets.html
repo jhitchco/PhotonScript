@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
     <script src="/static/js/theme.js"></script>
     <script src="/static/js/integrations.js?v={{ version }}"></script>
+    <script src="/static/js/readiness.js?v={{ version }}"></script>
     <style>
         main { max-width: 1400px; margin: 0 auto; grid-template-columns: 1fr; }
         .tgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr));
@@ -33,6 +34,7 @@
         .tag { display:inline-block; padding:.05rem .45rem; border-radius:999px;
                font-size:.68rem; font-weight:700; background:rgba(255,255,255,.08);
                margin-left:.35rem; vertical-align:middle; }
+        .ready { font-size:.74rem; }
         .sec { margin:1.2rem 0 .5rem; font-size:.85rem; letter-spacing:.04em;
                text-transform:uppercase; opacity:.6; }
     </style>
@@ -77,6 +79,8 @@ function card(t) {
         '<b class="pend" title="pending review">' + c.pending + ' \u25cb</b>' +
         '<b class="rej" title="rejected">' + c.rejected + ' \u2717</b>' +
         '<span class="muted">' + c.hours.approved + ' h approved</span></div>' +
+        (t.unattributed ? '' : '<div class="ready" data-rkey="' +
+             esc(Readiness.key(t.name)) + '"></div>') +
         (t.project_id ? '<div class="muted" style="font-size:.74rem;" id="integ-' +
              esc(t.project_id) + '"></div>' : '') +
         '<div class="muted">' + (t.last_night ? 'last night ' + t.last_night + ' \u00b7 ' +
@@ -98,6 +102,17 @@ async function pics() {
             }
         } catch (e) { /* offline: plain panel */ }
     }
+}
+// Integration readiness per target and rig (moved here off the Runs sidebar):
+// accepted lights per filter + desktop sync, from /api/integration/readiness.
+// The full breakdown and the integrate command are on the target page.
+async function loadReadiness() {
+    try {
+        const r = await Readiness.load();
+        document.querySelectorAll('.ready[data-rkey]').forEach(el => {
+            el.innerHTML = Readiness.chip(r.byKey[el.dataset.rkey], r.synced);
+        });
+    } catch (e) { /* readiness unavailable: cards stay as they are */ }
 }
 fetch('/api/targets').then(r => r.json()).then(d => {
     const ts = d.targets || [];
@@ -124,6 +139,7 @@ fetch('/api/targets').then(r => r.json()).then(d => {
              g[1].map(card).join('') + '</div>').join('');
     // PS-33: the integrator ledger line per goal (latest version, new data since)
     if (window.Integrations) Integrations.campaign('integ-', null);
+    loadReadiness();
     pics();
 }).catch(() => document.getElementById('tSummary').textContent = 'unavailable');
 </script>

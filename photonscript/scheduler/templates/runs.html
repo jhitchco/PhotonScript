@@ -136,8 +136,6 @@
     {% include "_header.html" %}
     <main>
         <aside class="panel">
-            <h2>Integration readiness</h2>
-            <div class="bd" id="readyBox" style="margin-bottom:1rem;">loading&hellip;</div>
             <h2>Nights</h2>
             <div class="bd" style="margin-bottom:.4rem;">👁 to review · ⇅ syncing · ✓ transferred</div>
             <button class="btn btn-secondary" id="regradeAllBtn"
@@ -147,6 +145,8 @@
                 <input type="checkbox" id="regradeAllDiscard"> discard manual verdicts</label>
             <div class="bd" id="regradeAllStatus" style="margin:.4rem 0 .6rem;"></div>
             <div id="nightList">Loading…</div>
+            <div class="bd" style="margin-top:.8rem;font-size:.75rem;opacity:.6;">
+                <a href="/targets" style="color:inherit;">Integration readiness is on Targets</a></div>
         </aside>
         <section class="panel" id="detailPanel" hidden>
             <div class="night-title" id="nightTitle"></div>
@@ -1923,51 +1923,6 @@
     document.getElementById('selReview').onclick = () => selApply('review');
     document.getElementById('annotateToggle').addEventListener('change', renderSubs);
     loadNights();
-
-    // ---- integration readiness: what the desktop needs, answered scope-side
-    async function loadReadiness() {
-        const box = document.getElementById('readyBox');
-        try {
-            const [rd, sync] = await Promise.all([
-                (await fetch('/api/integration/readiness')).json(),
-                fetch('/api/sync').then(r => r.json()).catch(() => ({}))]);
-            const synced = sync.library_synced === true;
-            if (!rd.targets || !rd.targets.length) {
-                box.textContent = 'no active target goals'; return;
-            }
-            const ok = t => '<span style="color:#4ade80;">\u2713</span>';
-            // Per-target readiness is about LIGHTS + whether they reached the
-            // desktop. Calibration (darks/bias/flats) is SHARED across targets \u2014
-            // it lives on the Calibration page, not per-target here.
-            box.innerHTML = rd.targets.map(t => {
-                const lightsN = Object.values(t.filters)
-                    .reduce((a, v) => a + (v.accepted_in_library || 0), 0);
-                const fl = Object.entries(t.filters)
-                    .filter(([f, v]) => v.accepted_in_library > 0)
-                    .map(([f, v]) => f + ' ' + v.accepted_in_library)
-                    .join(' \u00b7 ') ||
-                    '<span style="opacity:.6;">no accepted lights yet</span>';
-                const verdict = lightsN && synced
-                    ? '<span style="color:#4ade80;font-weight:700;">lights ready on '
-                      + 'desktop \u2014 </span><code style="font-size:.78rem;">'
-                      + t.command + '</code>'
-                    : lightsN && !synced
-                    ? '<span style="color:#eab308;">lights accepted \u2014 sync in '
-                      + 'progress</span>'
-                    : '<span style="opacity:.6;">no accepted lights yet</span>';
-                return '<div style="margin-bottom:.7rem;">' +
-                    '<b>' + t.target + '</b><br>' +
-                    'lights: ' + fl + '<br>' +
-                    'desktop sync: ' + (synced ? ok() : '\u23f3') + '<br>' +
-                    verdict + '</div>';
-            }).join('') +
-                '<div style="opacity:.5;font-size:.78rem;margin-top:.3rem;">' +
-                'Calibration (darks \u00b7 bias \u00b7 flats) is shared across ' +
-                'targets \u2014 see the Calibration page.</div>';
-        } catch (e) { box.textContent = 'readiness unavailable'; }
-    }
-    loadReadiness();
-    setInterval(loadReadiness, 120 * 1000);
 
     // ---- re-grade all nights (sequential, background) ----
     async function pollRegradeAll(loop) {
