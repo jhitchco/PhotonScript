@@ -215,7 +215,11 @@ function removeGradient(view) {
       // higher-order model would fit (and subtract) the galaxy itself.
       var ABE = new AutomaticBackgroundExtractor;
       ABE.polyDegree = 1;
-      ABE.targetCorrection = AutomaticBackgroundExtractor.prototype.Subtract;
+      // The enum constant is not exposed as prototype.Subtract on every
+      // build (1.9.5 threw "unsigned integer value expected"); 1 = subtract.
+      var ABEP = AutomaticBackgroundExtractor.prototype;
+      ABE.targetCorrection = (ABEP.Subtract !== undefined) ? ABEP.Subtract :
+         ((ABEP.Correction_Subtract !== undefined) ? ABEP.Correction_Subtract : 1);
       ABE.normalize = true;
       ABE.discardModel = true;
       ABE.replaceTarget = true;
