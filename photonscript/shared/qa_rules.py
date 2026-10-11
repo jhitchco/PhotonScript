@@ -36,7 +36,10 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   shared.pixel_stats; sat_px_pct feeds the score's exposure grade),
   ecc_src, ecc_bright_n, ecc_all, fwhm_src, fwhm_moment_arcsec,
   fwhm_unreliable (PS-146: what the judged ecc and FWHM came from; notes on
-  the ecc and FWHM rows only, the gates judge ecc and fwhm_arcsec as given).
+  the ecc and FWHM rows only, the gates judge ecc and fwhm_arcsec as given),
+  focpos (header FOCPOS, PS-164), focuser_live_pos (the live grader's
+  focuser read at scoring time): either exactly 0 on a LIGHT rejects
+  (focuser_zero, qa_focuser_zero_mode).
 
 PS-108: evaluate() also scores the sub 0 to 100 (shared.qa_score, weights
 per rig in config/qa/score_weights.toml). qa_score_mode "preview" (default)
@@ -69,6 +72,9 @@ CHECKS: dict[str, tuple[str, str, str]] = {
     "hfr_rel": ("HFR vs night median", "px",
                 "as sharp as the night's other subs of this target + filter"),
     "fwhm": ("FWHM (focus)", "\"", "star size within the seeing budget"),
+    "focuser_zero": ("Focuser position", "steps",
+                     "a real focuser position (0 = focuser disconnected or "
+                     "frozen, focus unknown)"),
     "stars": ("Star count", "", "enough real stars, no defocus flood"),
     "bg_rel": ("Background vs night median", "ADU",
                "no moon, twilight or cloud glow"),
@@ -300,6 +306,10 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         # (qa_slew_straddle_mode fail | warn | info)
         "slew_straddle_mode": str(_f(config, "qa_slew_straddle_mode",
                                      "fail")).lower(),
+        # focuser reporting position 0 (2026-10-08: the RC16 EAF dropped off
+        # USB, NINA kept Connected with Position 0): fail | warn | info | off
+        "focuser_zero_mode": str(_f(config, "qa_focuser_zero_mode",
+                                    "fail")).lower(),
         "warn_fraction": float(_f(config, "qa_warn_fraction", 0.10)),
         "auto_approve": bool(_f(config, "qa_auto_approve", True))
         and _rig_auto_approves(config, rig),
@@ -781,6 +791,9 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
             "fwhm", fwhm, t["fwhm_max"], wf,
             f"FWHM {fwhm:.1f}\" > {t['fwhm_max']:g}\""
             + override_note(t, "fwhm"), nd=2), f_note))
+    # focuser position 0: focus unknown (header FOCPOS or the live read)
+    checks.append(focuser_zero_check(m.get("focpos"), t, ctx.image_type,
+                                     m.get("focuser_live_pos")))
     # star count
     lim_s = [t["star_min"], t["star_max"]]
     if stars is None:
@@ -1030,6 +1043,56 @@ def slew_straddle_check(overlap, t: dict, note: str | None = None) -> Check:
                  + (f": {note}" if note else ""))
 
 
+FOCUSER_ZERO_WHY = ("focuser reported position 0 (disconnected or frozen); "
+                    "focus unknown")
+CALIBRATION_TYPES = ("BIAS", "DARK", "FLAT")   # DARKFLAT / FLATDARK too
+
+
+def is_light_type(image_type) -> bool:
+    """A LIGHT frame (or no IMAGETYP at all): calibration frames (BIAS,
+    DARK, FLAT, DARKFLAT) never carry a meaningful focus."""
+    t = str(image_type or "LIGHT").strip().upper()
+    return not any(k in t for k in CALIBRATION_TYPES)
+
+
+def _is_zero(v) -> bool:
+    x = _num(v)
+    return x is not None and x == 0
+
+
+def focuser_zero_check(focpos, t: dict, image_type="LIGHT",
+                       live_pos=None) -> Check:
+    """A LIGHT whose FOCPOS header is exactly 0, or whose live focuser read
+    was 0 when it was graded, was shot with the focuser disconnected or
+    frozen (2026-10-08: the RC16 EAF fell off USB, NINA kept reporting
+    Connected with Position 0 and every later light had FOCPOS 0 at about 5"
+    FWHM): focus unknown, reject. Neither rig ever focuses at 0 (RC16 about
+    5600 to 6100, Piggy-600 about 10900 to 11100). A missing FOCPOS is
+    unknown (skip), never a reject; calibration frames are not judged.
+    qa_focuser_zero_mode can soften it to warn or info, or turn it off."""
+    mode = str(t.get("focuser_zero_mode", "fail")).lower()
+    fp = _num(focpos)
+    val = int(fp) if fp is not None else None
+    if mode == "off":
+        return Check("focuser_zero", val, ">0", SKIP, "check off")
+    if not is_light_type(image_type):
+        return Check("focuser_zero", val, ">0", SKIP,
+                     "calibration frame: focus not judged")
+    src = []
+    if _is_zero(focpos):
+        src.append("FOCPOS header 0")
+    if _is_zero(live_pos):
+        src.append("live focuser read 0")
+    if src:
+        status = FAIL if mode == "fail" else WARN if mode == "warn" else PASS
+        return Check("focuser_zero", 0, ">0", status,
+                     f"{FOCUSER_ZERO_WHY} ({', '.join(src)})")
+    if fp is None:
+        return Check("focuser_zero", None, ">0", SKIP,
+                     "no FOCPOS header: focus position unknown")
+    return Check("focuser_zero", val, ">0", PASS)
+
+
 def _swap_row(rec: dict, new: Check, t: dict,
               metrics_over: dict | None = None) -> dict | None:
     """Swap one row of a stored scorecard (no other check is re-run, so no
@@ -1092,6 +1155,21 @@ def regrade_slew_straddle(rec: dict, overlap, t: dict, note: str | None = None):
         return None
     fields["slew_overlap_s"] = None if overlap is None else round(overlap, 1)
     fields["slew_note"] = note or None
+    return fields
+
+
+def regrade_focuser_zero(rec: dict, t: dict, focpos="rec", image_type="LIGHT"):
+    """Swap only the focuser_zero row of a stored scorecard (the
+    qa-focuser-zero pass) and return the new record fields, or None when
+    nothing changes. `focpos` defaults to the record's own (PS-164); pass the
+    header value for a record written without one."""
+    fp = rec.get("focpos") if focpos == "rec" else focpos
+    new = focuser_zero_check(fp, t, image_type, rec.get("focuser_live_pos"))
+    fields = _swap_row(rec, new, t, {"focpos": fp})
+    if fields is None:
+        return None
+    if focpos != "rec" and fp is not None:
+        fields["focpos"] = int(_num(fp))
     return fields
 
 
@@ -1190,7 +1268,7 @@ def metrics_from_record(rec: dict) -> dict:
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
         "pointing_offset_arcmin", "pointing_note", "pointing_src",
         "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-        "max_adu", "guide_nocorr") + SHAPE_KEYS}
+        "max_adu", "guide_nocorr", "focpos", "focuser_live_pos") + SHAPE_KEYS}
     m["fwhm_arcsec"] = record_fwhm(rec)
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -1205,5 +1283,5 @@ def record_metrics(**kw) -> dict:
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin", "pointing_note", "pointing_src",
             "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-            "max_adu", "guide_nocorr") + SHAPE_KEYS
+            "max_adu", "guide_nocorr", "focpos", "focuser_live_pos") + SHAPE_KEYS
     return {k: kw.get(k) for k in keys}

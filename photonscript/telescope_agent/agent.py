@@ -225,6 +225,74 @@ class TelescopeAgent:
             )
 
     # ------------------------------------------------------------------
+    # Focuser reporting position 0 (2026-10-08: the RC16 EAF fell off USB,
+    # NINA kept it Connected at Position 0 for days)
+    # ------------------------------------------------------------------
+
+    FOCUSER_ZERO_GRACE_S = 60   # position 0 this long while imaging -> page
+
+    def _focuser_live_pos(self):
+        """The poll loop's last focuser Position, or None when the focuser
+        is not connected or was never read (only a connected 0 counts)."""
+        f = getattr(self, "_focuser_info", None)
+        if not f or f.get("Connected") is False:
+            return None
+        return f.get("Position")
+
+    async def _focuser_zero_watch(self, focuser: dict | None) -> None:
+        """One priority push per rig per night (key focuser-zero-<rig>-
+        <night>, latched across restarts) when this rig's focuser reports
+        Position 0 for FOCUSER_ZERO_GRACE_S while its NINA is imaging, plus a
+        run event focuser_zero. Off with focuser_zero_alert. Never raises."""
+        import time as _t
+        try:
+            if not getattr(self.config, "focuser_zero_alert", True):
+                return
+            from photonscript.scheduler.focuser_zero import is_zero_reading
+            imaging = (getattr(self.state, "session_state", None)
+                       == SessionState.IMAGING)
+            if not (imaging and is_zero_reading(focuser)):
+                self._focuser_zero_since = None
+                return
+            now = _t.monotonic()
+            since = getattr(self, "_focuser_zero_since", None)
+            if since is None:
+                self._focuser_zero_since = now
+                return
+            if now - since < self.FOCUSER_ZERO_GRACE_S:
+                return
+            from photonscript.shared import phd2_store as store
+            night = store.night_of(self.config)
+            if getattr(self, "_focuser_zero_night", None) == night:
+                return            # already handled this night (this process)
+            self._focuser_zero_night = night
+            await self._focuser_zero_alarm(focuser, night)
+        except Exception as e:  # noqa: BLE001 - never stop the poll loop
+            logger.warning("focuser-zero watch errored: %s", e)
+
+    async def _focuser_zero_alarm(self, focuser: dict, night: str) -> None:
+        from photonscript.scheduler.focuser_zero import ALERT_TITLE, alert_text
+        from photonscript.shared import phd2_store as store
+        from photonscript.shared.pushover import record
+        rig = getattr(self, "rig", "rc16")
+        msg = alert_text(self.config, rig, focuser,
+                         getattr(self.state, "current_target", None))
+        logger.warning("focuser at 0: %s", msg)
+        try:
+            from photonscript.shared.night_events import events_path
+            store.append_jsonl(events_path(self.config, night), {
+                "t": store.iso_z(datetime.utcnow()), "rig": rig,
+                "src": "focuser", "kind": "focuser_zero", "value": 0,
+                "detail": msg})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("focuser-zero run event not written: %s", e)
+        if store.alert_once(self.config, f"focuser-zero-{rig}-{night}"):
+            await notify(self.config, msg, title=ALERT_TITLE, priority=1)
+        else:
+            record(self.config, msg, title=ALERT_TITLE, priority=1,
+                   reason="focuser-zero-once-per-night")
+
+    # ------------------------------------------------------------------
     # Monitoring loops
     # ------------------------------------------------------------------
 
@@ -754,8 +822,10 @@ class TelescopeAgent:
                 try:
                     focuser = await self.nina.get_focuser_info()
                     self.state.focuser_position = focuser.get("Position")
+                    self._focuser_info = focuser
                 except Exception:
-                    pass
+                    self._focuser_info = None
+                await self._focuser_zero_watch(focuser)
                 # PS-182: cooler history (temp, TEC power, focuser temp as
                 # the ambient proxy) for the darks window chooser; throttled
                 # to cooler_history_sample_s, never raises
@@ -1673,9 +1743,16 @@ class TelescopeAgent:
                        pointing_src=point.get("src"),
                        slew_overlap_s=slew.get("overlap_s"),
                        slew_note=slew.get("note"))
+        # focuser position 0 = disconnected or frozen (2026-10-08 RC16 EAF):
+        # the header FOCPOS and the poll loop's live read, both judged
+        from photonscript.shared.optics_state import optics_fields
+        focpos = optics_fields(hdr)["focpos"]
+        live_pos = self._focuser_live_pos()
+        metrics.update(focpos=focpos, focuser_live_pos=live_pos)
         card = qa_rules.evaluate(metrics, qa_rules.context(
             self.config, self.rig, target_name, rec_filter, night=night_ctx,
-            unsafe_windows=wins, start_utc=start))
+            unsafe_windows=wins, start_utc=start,
+            image_type=str(hdr.get("IMAGETYP") or "LIGHT")))
         quality.passed_qa = card.passed
         quality.rejection_reason = card.reason
         qa_flag = card.qa_flag
@@ -1716,6 +1793,8 @@ class TelescopeAgent:
                 **window_fields(start, exposure_seconds),
                 # PS-164: focuser position / rotator angle from the header
                 **optics_fields(hdr),
+                # the poll loop's focuser read at grading (0 rejects)
+                "focuser_live_pos": live_pos,
                 "target": target_name, "filter": rec_filter,
                 # PS-152: a test / calibration sub, kept out of medians
                 **({"test": True} if qa_rules.is_test_record(

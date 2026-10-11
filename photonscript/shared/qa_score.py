@@ -41,17 +41,20 @@ _FALLBACK = {
     "caps": {"roof": {"cap": 0}, "pointing_solved": {"cap": 20},
              "slew_straddle": {"cap": 20}, "guide_lock": {"cap": 40},
              "temp": {"cap": 40}, "tracking_jump": {"cap": 40},
-             "stars": {"cap": 40}, "far_out_of_gate": {"cap": 59},
+             "stars": {"cap": 40}, "focuser_zero": {"cap": 20},
+             "far_out_of_gate": {"cap": 59},
              "out_of_gate": {"cap": 79}},
     "rc16": {k: {"weight": w} for k, w in (
         ("ecc", 25), ("ecc_bin", 25), ("hfr", 20), ("hfr_rel", 10),
-        ("fwhm", 10), ("stars", 10), ("bg_rel", 5), ("bg_floor", 3),
+        ("fwhm", 10), ("focuser_zero", 0), ("stars", 10), ("bg_rel", 5),
+        ("bg_floor", 3),
         ("temp", 5), ("guide_lock", 5), ("guide_rms", 10),
         ("tracking_jump", 10), ("exposure", 8), ("roof", 10),
         ("slew_straddle", 0), ("pointing", 10))},
     "piggyback": {k: {"weight": w} for k, w in (
         ("ecc", 20), ("ecc_bin", 0), ("hfr", 25), ("hfr_rel", 10),
-        ("fwhm", 5), ("stars", 10), ("bg_rel", 5), ("bg_floor", 3),
+        ("fwhm", 5), ("focuser_zero", 0), ("stars", 10), ("bg_rel", 5),
+        ("bg_floor", 3),
         ("temp", 5), ("guide_lock", 0), ("guide_rms", 0),
         ("tracking_jump", 10), ("exposure", 10), ("roof", 10),
         ("slew_straddle", 10), ("pointing", 5))},
@@ -148,7 +151,8 @@ def grade(cid: str, value, limit, status: str, metrics: dict, t: dict,
     good = float(curve.get("good", 0.80))
     zero = float(curve.get("zero", 1.25))
     m = metrics or {}
-    if cid in ("roof", "guide_lock", "slew_straddle", "bg_floor"):
+    if cid in ("roof", "guide_lock", "slew_straddle", "bg_floor",
+               "focuser_zero"):
         return 1.0 if status == "pass" else 0.0
     if cid == "stars":
         n = _num(value)
@@ -524,6 +528,7 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
         out[-1]["note"] = (note + " " + tag) if note else tag
     check_row("slew_straddle", "Clear of RC16 moves", " s")
     check_row("roof", "Roof open / not parked")
+    check_row("focuser_zero", "Focuser position", " steps")
     return sort_rows(out)
 
 

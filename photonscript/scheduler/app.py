@@ -901,6 +901,8 @@ _CONFIG_FIELDS = [
     ("pointing_header_reject_deg", "PS_POINTING_HEADER_REJECT_DEG", "Off target with no plate solve (header / mount log only): reject above (deg, PS-107; below it warns, unconfirmed)", "Quality", "float", False, False),
     ("qa_pointing_mode", "PS_QA_POINTING_MODE", "Off target above the reject limit: fail (reject) | warn | info", "Quality", "str", False, True),
     ("qa_slew_straddle_mode", "PS_QA_SLEW_STRADDLE_MODE", "Piggy-600 sub exposed through an RC16 slew / flip / park (PS-13): fail (reject) | warn | info", "Quality", "str", False, True),
+    ("qa_focuser_zero_mode", "PS_QA_FOCUSER_ZERO_MODE", "Light whose focuser reported position 0 (FOCPOS 0 or a live read of 0: disconnected or frozen, focus unknown): fail (reject) | warn | info | off", "Quality", "str", False, True),
+    ("focuser_zero_alert", "PS_FOCUSER_ZERO_ALERT", "Push once per rig per night when a rig's focuser reports position 0 while imaging (check USB / power)", "Quality", "bool", False, True),
     ("slew_gate_pad_s", "PS_SLEW_GATE_PAD_S", "RC16 move window padding from the mount log (s, each side)", "Quality", "float", False, False),
     ("slew_gate_min_move_arcmin", "PS_SLEW_GATE_MIN_MOVE_ARCMIN", "RC16 move from its frames (nights without a mount log): pointing change above (arcmin)", "Quality", "float", False, False),
     ("pointing_solve_policy", "PS_POINTING_SOLVE_POLICY", "Dawn plate solves (PS-67): sampled (every Nth + flagged + first after a slew) | all | off", "Quality", "str", False, True),

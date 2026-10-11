@@ -457,6 +457,14 @@ class PhotonScriptConfig(BaseSettings):
     # PS-13 "Clear of RC16 moves": a Piggy-600 sub exposing through an RC16
     # slew, meridian flip or park (mount log, else the RC16 frames)
     qa_slew_straddle_mode: str = "fail"  # fail (reject) | warn | info
+    # Focuser reporting position 0 (2026-10-08: the RC16 EAF dropped off USB,
+    # NINA kept Connected=true with Position 0, every later light had FOCPOS
+    # 0 at about 5" FWHM). Jeremy 2026-10-11: such lights are not usable.
+    qa_focuser_zero_mode: str = "fail"  # LIGHT with FOCPOS 0 (or a live read
+                                 # of 0): fail (reject) | warn | info | off
+    focuser_zero_alert: bool = True  # one push per rig per night when a
+                                 # rig's focuser reports Position 0 while
+                                 # its NINA is imaging
     slew_gate_pad_s: float = 10.0  # padding each side of a mount-log move
     slew_gate_min_move_arcmin: float = 5.0  # RC16 frames (older nights): a
                                  # pointing change this big between frames

@@ -72,6 +72,10 @@ why = "Mount jump doubled the stars: every star is two stars."
 cap = 40
 why = "Too few stars (cloud, no sky) or a defocus flood: not a usable light."
 
+[caps.focuser_zero]
+cap = 20
+why = "Focuser reported position 0 (FOCPOS 0: disconnected or frozen, 2026-10-08 RC16 EAF): focus unknown, nothing to stack. The check carries no weight; only this cap."
+
 [caps.far_out_of_gate]
 cap = 59
 why = "Any other gate failed past the zero point of the curve (for example ecc 0.75 against 0.60): clearly bad, reject."
@@ -101,6 +105,10 @@ why = "Softer than the night's other subs of the same target and filter: seeing 
 [rc16.fwhm]
 weight = 10
 why = "Star size within the seeing budget; overlaps HFR, so a lower weight."
+
+[rc16.focuser_zero]
+weight = 0
+why = "Pass / fail only: a light with FOCPOS 0 has an unknown focus (capped when it fails, no weight otherwise)."
 
 [rc16.stars]
 weight = 10
@@ -167,6 +175,10 @@ why = "Softer than the night's other Piggy-600 subs of the target: focus drift."
 [piggyback.fwhm]
 weight = 5
 why = "Advisory on OSC: galaxies and bright extended objects inflate it."
+
+[piggyback.focuser_zero]
+weight = 0
+why = "Pass / fail only: a light with FOCPOS 0 has an unknown focus (capped when it fails, no weight otherwise)."
 
 [piggyback.stars]
 weight = 10

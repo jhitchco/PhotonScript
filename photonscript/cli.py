@@ -29,6 +29,7 @@ Usage:
     photonscript calibration-status [--rig R] [--url U] [--mirror P] [--nights N] [--json]  # PS-182
     photonscript calibration-file --url U [--rig R] [--dry-run] [--rejudge] [--regrade] [--days N]  # PS-188
     photonscript integrate --target T [--rig piggyback|rc16] [--since D] [--out DIR]  # PS-22
+    photonscript qa-focuser-zero [--since D] [--rig R] [--library P] [--apply] [--json]  # FOCPOS 0
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
     photonscript blend --target T [--osc P] [--rc16 P] [--stage linear|final]  # PS-153
@@ -963,6 +964,67 @@ def qa_rescore(
         res = {**res, "diffs": res["diffs"][:20],
                "diffs_total": len(res["diffs"])}
     console.print_json(_json.dumps(res, default=str))
+
+
+@app.command("qa-focuser-zero")
+def qa_focuser_zero_cmd(
+    since: str = typer.Option("", "--since", help="First night (evening date YYYY-MM-DD)"),
+    until: str = typer.Option("", "--until", help="Last night (evening date YYYY-MM-DD)"),
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default both)"),
+    library: str = typer.Option("", "--library",
+                                help="Library to scan, read only (default: the desktop mirror, "
+                                     "D:/ninashare/Library or integration_library_dir)"),
+    apply: bool = typer.Option(False, "--apply",
+                               help="Reject the FOCPOS 0 lights in this machine's subs logs "
+                                    "(the scope PC; default: dry run)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="List only (the default)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Lights shot while the focuser reported position 0 (FOCPOS 0: the
+    2026-10-08 RC16 EAF off USB). Lists them from the Library (header scan,
+    read only) grouped by rig, target and night, and checks this machine's
+    subs logs. --apply rejects them there with reason focuser_zero (the
+    scorecard row swap of the dawn passes; human verdicts kept; Library
+    links move to _rejected). Nothing is posted to the scope: run --apply ON
+    the scope PC.
+
+    photonscript qa-focuser-zero --since 2026-10-08 --rig rc16
+    """
+    import json as _json
+    from photonscript.integration import pipeline as pl
+    from photonscript.scheduler import focuser_zero as fz
+
+    if apply and dry_run:
+        raise typer.BadParameter("--apply and --dry-run exclude each other")
+    if rig and rig not in ("rc16", "piggyback"):
+        raise typer.BadParameter("--rig must be rc16 or piggyback")
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    lib = Path(library) if library else pl.default_library(cfg)
+    hits = fz.scan_library(lib, since, until, rig, tz=cfg.observatory_tz)
+    groups = fz.summarize(hits)
+    nights = [fz.night_pass(cfg, d, apply=apply, rig=rig)
+              for d in fz.log_nights(cfg, since, until)]
+    res = {"library": str(lib), "mode": "apply" if apply else "dry-run",
+           "library_lights": len(hits), "groups": groups, "nights": nights}
+    if as_json:
+        res["library_files"] = hits
+        print(_json.dumps(res, indent=1, default=str))
+        return
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    say(f"Library {lib}: {len(hits)} light(s) with FOCPOS 0"
+        + (f" (rig {rig})" if rig else "") + (f" since {since}" if since else ""))
+    for g in groups:
+        say(f"  {g['night']}  {g['rig']:<9} {g['instrument'] or '?':<8} {g['target']}: {g['n']}"
+            + (f" ({g['in_rejected']} already in _rejected)" if g["in_rejected"] else ""))
+    logs = [n for n in nights if not n.get("missing_log")]
+    if not logs:
+        say("No subs logs here for that range (run on the scope PC to judge / --apply).")
+    for n in logs:
+        say(f"{n['date']} subs log ({n['mode']}): {n['zero']} of {n['subs']} subs at FOCPOS 0, "
+            f"{n['newly_rejected']} newly rejected, {n['already_rejected']} already rejected, "
+            f"{n['human_kept']} human verdicts kept, {n['unknown_focpos']} without FOCPOS"
+            + (f"; {n['records_updated']} records updated, {n['library_moves']} Library moves"
+               if apply else ""))
 
 
 @app.command("score-report")
@@ -2739,6 +2801,9 @@ def integrate_cmd(
     allow_uncalibrated: bool = typer.Option(False, "--allow-uncalibrated",
                                             help="Stack a light length that has no dark "
                                                  "(refused by default, PS-178)"),
+    keep_focuser_zero: bool = typer.Option(False, "--keep-focuser-zero",
+                                           help="Stack lights whose FOCPOS is 0 (focuser disconnected "
+                                                "or frozen; left out by default in every --qa mode)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
     report: bool = typer.Option(True, "--report/--no-report",
@@ -2776,7 +2841,7 @@ def integrate_cmd(
         qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
         dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
         gradient=gradient, use_rc=not no_rc, hoo=hoo, min_group_frames=min_group,
-        allow_uncalibrated=allow_uncalibrated, **kw,
+        allow_uncalibrated=allow_uncalibrated, keep_focuser_zero=keep_focuser_zero, **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
