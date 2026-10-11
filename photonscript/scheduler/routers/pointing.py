@@ -13,6 +13,12 @@ POST /api/runs/{date}/pointing          {"solve": false} re-run the pass
 GET  /api/runs/{date}/timeline          night timeline rows (mount, guider,
                                         each rig, safety) + sub spans
 GET  /api/status/mount-log?date=&tail=  the raw mount log lines
+GET  /api/tonight/strip                 the dashboard "Tonight so far" strip:
+                                        roof + one row per rig, collapsed to
+                                        exposing / busy / idle, sunset to now
+                                        (night_timeline.tonight_strip; a sync
+                                        handler, so it runs in a worker
+                                        thread; shared for STRIP_TTL_S)
 
 merge_night(config, date, detail) is called by GET /api/runs/{date} to add
 `pointing` to each sub and the night summary. Handlers lazily import
@@ -91,6 +97,27 @@ def api_pointing_run(date: str, payload: dict | None = Body(default=None)):
 def api_timeline(date: str):
     from photonscript.scheduler.night_timeline import timeline
     return timeline(_cfg(), date)
+
+
+STRIP_TTL_S = 45.0
+_strip_cache: dict = {}
+_strip_lock = threading.Lock()
+
+
+@router.get("/api/tonight/strip")
+def api_tonight_strip(date: str = ""):
+    """Read-only. Tonight's strip (date= picks another night, uncached)."""
+    import time
+    from photonscript.scheduler.night_timeline import tonight_strip
+    if date:
+        return tonight_strip(_cfg(), date)
+    with _strip_lock:   # one computation per TTL however many tabs poll
+        hit = _strip_cache.get("v")
+        if hit and time.monotonic() - hit[0] < STRIP_TTL_S:
+            return hit[1]
+        val = tonight_strip(_cfg())
+        _strip_cache["v"] = (time.monotonic(), val)
+        return val
 
 
 @router.get("/api/status/mount-log")
