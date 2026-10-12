@@ -132,10 +132,11 @@ async def run_preflight(config, test_push: bool = True) -> dict:
                              "No .env found — running on built-in defaults"))
 
     # 2. Directories — create the ones we own, verify the ones NINA owns ---
+    from photonscript.librarian.agent import local_base_dir  # "~" expanded
     created, missing = [], []
     ours = {
         "data dir": Path(config.data_dir),
-        "local images": Path(config.local_image_dir),
+        "local images": local_base_dir(config.local_image_dir),
         "stacking output": Path(config.stacking_output_dir),
         "sequences": Path.cwd() / "sequences",
         "sequences/archive": Path.cwd() / "sequences" / "archive",

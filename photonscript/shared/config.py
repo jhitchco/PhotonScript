@@ -1389,6 +1389,12 @@ class PhotonScriptConfig(BaseSettings):
     transfer_start_hour: int = 8
     transfer_end_hour: int = 18
     transfer_bandwidth_limit_mbps: float = 50.0
+    # The Librarian agent's legacy per-sub copy into local_image_dir (and
+    # the image processor's Siril auto-stack it feeds). Dawn filing (PS-157)
+    # builds the Library and Syncthing ships it, so on the scope this only
+    # duplicated subs; its mkdir on a "?" target stalled the event loop
+    # (2026-10-10). Off = catalog only.
+    librarian_legacy_transfer: bool = False
 
     # --- Image Processor ---
     siril_path: str = "siril-cli"

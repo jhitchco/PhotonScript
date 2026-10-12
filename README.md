@@ -64,7 +64,7 @@ page has the same controls (`Check for updates` / `Pull latest & restart`).
 
 **Telescope Agent** — Runs on the Windows PC at the telescope. Monitors NINA (camera, mount, focuser, filter wheel, sequencer) and PHD2 (guiding RMS, star lock). Validates every captured sub-frame for FWHM, HFR, eccentricity, and tracking quality. Rejects bad frames automatically.
 
-**Librarian** — Catalogs captured images and transfers validated frames from the remote telescope to your local machine. Transfers only during daytime hours (8 AM - 6 PM) to avoid competing with imaging on shared Starlink bandwidth.
+**Librarian** — Catalogs captured images and transfers validated frames from the remote telescope to your local machine. Transfers only during daytime hours (8 AM - 6 PM) to avoid competing with imaging on shared Starlink bandwidth. Legacy: this per-sub copy (and the Image Processor auto-stack below, which it feeds) is off by default (`PS_LIBRARIAN_LEGACY_TRANSFER=false`); accepted subs now reach the desktop through the Library (dawn filing) and Syncthing, see docs/HANDBOOK.md section 5. The Librarian still catalogs subs.
 
 **Image Processor** — Groups transferred subs by target and filter, runs automated stacking via Siril CLI (or optionally PixInsight), and feeds completion progress back to the scheduler.
 

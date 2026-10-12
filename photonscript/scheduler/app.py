@@ -978,6 +978,7 @@ _CONFIG_FIELDS = [
     ("transfer_start_hour", "PS_TRANSFER_START_HOUR", "Transfer window start (local hour)", "Transfers", "int", False, False),
     ("transfer_end_hour", "PS_TRANSFER_END_HOUR", "Transfer window end (local hour)", "Transfers", "int", False, False),
     ("transfer_bandwidth_limit_mbps", "PS_TRANSFER_BANDWIDTH_LIMIT_MBPS", "Bandwidth limit (Mbps)", "Transfers", "float", False, False),
+    ("librarian_legacy_transfer", "PS_LIBRARIAN_LEGACY_TRANSFER", "Legacy librarian copy of each sub into the local image dir (off: dawn filing + Syncthing move subs)", "Transfers", "bool", False, False),
     ("piggyback_enabled", "PS_PIGGYBACK_ENABLED", "Piggyback rig enabled (2nd NINA)", "Piggyback", "bool", False, False),
     ("piggyback_name", "PS_PIGGYBACK_NAME", "Piggyback rig name", "Piggyback", "str", False, False),
     ("piggyback_nina_base_url", "PS_PIGGYBACK_NINA_BASE_URL", "Piggyback NINA Advanced API URL", "Piggyback", "str", False, False),
