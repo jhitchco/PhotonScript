@@ -39,23 +39,29 @@ def same_campaign(a: str, b: str) -> bool:
     return bool(target_keys(a) & target_keys(b))
 
 
-def local_ledgers(staging_root: Path) -> list[tuple[Path, L.Ledger]]:
-    """Every readable <staging_root>/*/ledger.json."""
-    out = []
-    root = Path(staging_root)
-    if not root.is_dir():
-        return out
-    for f in sorted(root.glob("*/ledger.json")):
-        try:
-            out.append((f, L.load(f)))
-        except Exception:  # noqa: BLE001 - hand-edited or half-written file
+def local_ledgers(staging_root: Path, scratch_root: Path | None = None) -> list[tuple[Path, L.Ledger]]:
+    """Every readable <staging_root>/*/ledger.json, then those of the fast
+    scratch root (a run being built, or one whose archive step could not
+    finish); a run folder name found in the staging root wins."""
+    from photonscript.integration.scratch import run_roots
+    out, seen = [], set()
+    for root in run_roots(staging_root, scratch_root):
+        if not root.is_dir():
             continue
+        for f in sorted(root.glob("*/ledger.json")):
+            if f.parent.name in seen:
+                continue
+            try:
+                out.append((f, L.load(f)))
+            except Exception:  # noqa: BLE001 - hand-edited or half-written file
+                continue
+            seen.add(f.parent.name)
     return out
 
 
 def next_version(staging_root: Path, campaign: str, rig: str, exclude: Path | None = None,
-                 kind: str = "integration") -> int:
-    vs = [led.version for f, led in local_ledgers(staging_root)
+                 kind: str = "integration", scratch_root: Path | None = None) -> int:
+    vs = [led.version for f, led in local_ledgers(staging_root, scratch_root)
           if led.rig == rig and led.kind == kind and (exclude is None or f.parent != Path(exclude))
           and same_campaign(led.campaign, campaign)]
     return max(vs + [0]) + 1
@@ -162,7 +168,8 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
                     machine=machine)
 
 
-def write_for_run(led: L.Ledger, run_dir: Path, staging_root: Path) -> Path:
+def write_for_run(led: L.Ledger, run_dir: Path, staging_root: Path,
+                  scratch_root: Path | None = None) -> Path:
     """Write <run>/ledger.json. Keeps the review block (and the version) of
     a ledger already there; a new one gets the next local version."""
     path = Path(run_dir) / "ledger.json"
@@ -175,5 +182,6 @@ def write_for_run(led: L.Ledger, run_dir: Path, staging_root: Path) -> Path:
         except Exception:  # noqa: BLE001 - unreadable: replace it
             pass
     if not led.version:
-        led.version = next_version(staging_root, led.campaign, led.rig, exclude=run_dir, kind=led.kind)
+        led.version = next_version(staging_root, led.campaign, led.rig, exclude=run_dir, kind=led.kind,
+                                   scratch_root=scratch_root)
     return L.save(path, led)

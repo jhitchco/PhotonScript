@@ -69,18 +69,20 @@ def post_ledger(path: Path, base_url: str, *, post=http_post_json,
             "version": led.version, "project_id": body.get("project_id")}
 
 
-def pending(staging_root: Path) -> list[Path]:
+def pending(staging_root: Path, scratch_root: Path | None = None) -> list[Path]:
     """Ledger files the scheduler has not taken yet (integration ledgers
-    only: a PS-153 blend ledger is a desktop record, never posted)."""
-    return [f for f, led in writer.local_ledgers(staging_root)
+    only: a PS-153 blend ledger is a desktop record, never posted). The
+    fast scratch root counts too (a run whose archive step did not finish)."""
+    return [f for f, led in writer.local_ledgers(staging_root, scratch_root)
             if not led.reported and led.kind == "integration"]
 
 
 def sweep(staging_root: Path, base_url: str, *, post=http_post_json, echo=print,
-          timeout: float = DEFAULT_TIMEOUT_S, dry_run: bool = False) -> dict:
+          timeout: float = DEFAULT_TIMEOUT_S, dry_run: bool = False,
+          scratch_root: Path | None = None) -> dict:
     """Post every unreported ledger under the staging root. Stops at the
     first unreachable error (the scope is down: try again next time)."""
-    todo = pending(staging_root)
+    todo = pending(staging_root, scratch_root)
     done, failed = [], []
     for f in todo:
         if dry_run:

@@ -687,6 +687,8 @@ _CONFIG_FIELDS = [
     ("integrate_watch_require_calibration", "PS_INTEGRATE_WATCH_REQUIRE_CALIBRATION", "Integrate watcher: wait while darks / flats / bias are missing (off = integrate, the ledger notes it)", "Integration", "bool", False, False),
     ("integration_report_url", "PS_INTEGRATION_REPORT_URL", "Desktop .env: scheduler URL the integrator posts ledgers to and polls", "Integration", "str", False, False),
     ("integration_staging_root", "PS_INTEGRATION_STAGING_ROOT", "Desktop .env: staging root for integrate runs (blank = D:/Astrophotography/Staging)", "Integration", "str", False, False),
+    ("integration_scratch_root", "PS_INTEGRATION_SCRATCH_ROOT", "Desktop .env: fast scratch disk for integrate / blend runs (e.g. C:/Astro/Scratch); keepers are archived to the staging root, intermediates deleted (blank = off)", "Integration", "str", False, False),
+    ("integration_keep_staged_frames", "PS_INTEGRATION_KEEP_STAGED_FRAMES", "Desktop .env: fast scratch also archives the staged LIGHTS / BIAS / DARKS / FLATS copies (off = deleted; the manifest names each Library source)", "Integration", "bool", False, False),
     ("integration_library_dir", "PS_INTEGRATION_LIBRARY_DIR", "Desktop .env: Library mirror the integrator reads (blank = D:/ninashare/Library if it exists, else desktop_library_dir)", "Integration", "str", False, False),
     ("autointegrate_settle_min", "PS_AUTOINTEGRATE_SETTLE_MIN", "Auto-integrate (PS-161, desktop): Syncthing settled = no temp files and a stable file count for N min", "Integration", "float", False, False),
     ("autointegrate_blend", "PS_AUTOINTEGRATE_BLEND", "Auto-integrate: blend two-rig goals once both rigs have masters", "Integration", "bool", False, False),

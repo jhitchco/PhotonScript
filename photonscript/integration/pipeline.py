@@ -27,6 +27,11 @@ PS-178 calibration: a light length with no dark at all is refused (its
 subs are left out, with the matcher's nearest alternatives) unless
 allow_uncalibrated (--allow-uncalibrated).
 
+Fast scratch (integration_scratch_root, scratch.py): the run folder is
+built on a fast local disk and archived to the staging root when it is
+done (masters, finals, packet, ledger, logs moved; intermediates and staged
+copies deleted); a short disk falls back to the staging root.
+
 Safety:
   * the Library mirror is READ-ONLY: frames are COPIED into a new staging
     run folder; copy_into() refuses any destination inside the Library;
@@ -46,7 +51,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from photonscript.integration import astrobin, calib, manifest, pjsr, runner, star_qa
+from photonscript.integration import astrobin, calib, manifest, pjsr, runner, scratch, star_qa
 from photonscript.integration.frames import Frame
 from photonscript.integration.select import Selection, select_lights
 
@@ -96,6 +101,8 @@ class Options:
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
     allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
     keep_focuser_zero: bool = False   # stack lights with FOCPOS 0 anyway (focus unknown)
+    scratch_root: Path | None = None  # fast scratch: build here, archive to staging_root
+    keep_staged_frames: bool = False  # fast scratch: archive LIGHTS / BIAS / DARKS / FLATS too
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -143,6 +150,8 @@ def config_options(cfg, rig: str) -> dict:
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
         rig_label=rig_label(cfg, rig),
+        scratch_root=scratch.configured_root(cfg),
+        keep_staged_frames=bool(getattr(cfg, "integration_keep_staged_frames", False)),
         site={"name": cfg.observatory_name, "lat": round(cfg.observatory_lat, 3),
               "lon": round(cfg.observatory_lon, 3), "elev": int(cfg.observatory_elev),
               "bortle": cfg.observatory_bortle})
@@ -363,10 +372,39 @@ def catalog_coords(target: str) -> tuple[float | None, float | None]:
 
 # ----------------------------------------------------------------- run
 
+def workspace(o: Options, echo=print) -> scratch.Workspace | None:
+    """Fast scratch (integration_scratch_root): the run is built in
+    <scratch>/<run name> and archived to <staging_root>/<run name>. Off for
+    --out, --dry-run, --no-pixinsight (the scripts are run later by hand,
+    from the folder they name) and a scratch root that is the staging root."""
+    if o.out or o.dry_run or not o.run_pixinsight or not o.scratch_root:
+        return None
+    if not scratch.usable(o.scratch_root, o.staging_root):
+        echo(f"  scratch root {o.scratch_root} overlaps the staging root: not used")
+        return None
+    try:
+        return scratch.Workspace.create(default_run_dir(o), o.scratch_root, o.staging_root,
+                                        keep_staged=o.keep_staged_frames, protect=[o.library])
+    except ValueError as e:
+        raise PipelineError(str(e)) from None
+
+
 def run(o: Options, echo=print) -> dict:
     if o.qa not in QA_MODES:
         raise PipelineError(f"--qa must be one of {', '.join(QA_MODES)}")
-    run_dir = Path(o.out) if o.out else default_run_dir(o)
+    ws = workspace(o, echo)
+    if ws is None:
+        return _run(o, echo, None)
+    try:
+        res = _run(o, echo, ws)
+    except Exception:
+        ws.after_error(echo)
+        raise
+    return ws.finish(res, echo)
+
+
+def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
+    run_dir = ws.run_dir if ws else (Path(o.out) if o.out else default_run_dir(o))
     if is_inside(run_dir, o.library):
         raise PipelineError(f"the run folder must be outside the Library mirror: {run_dir}")
     if not o.dry_run:
@@ -510,6 +548,17 @@ def run(o: Options, echo=print) -> dict:
 
     entries = []
     staged_files: dict[str, str] = {}
+    if ws is not None:
+        # fast scratch preflight: room for the staged copies and PixInsight's
+        # intermediates, else build on the staging root (a warning, not a failure)
+        staged_bytes = (sum(f.size or 0 for f in lights) + sum(b.size or 0 for b in plan.bias)
+                        + sum(df.size or 0 for e in plan.dark_masters() for df in plan.dark_frames(e))
+                        + sum(ff.size or 0 for fc in plan.flats.values() for ff in fc.frames))
+        run_dir = ws.preflight(staged_bytes, bool(cfa), echo)
+        out_dir = run_dir / "out"
+        timer.path = out_dir / "timing.csv"
+        result["run_dir"] = str(run_dir)
+        result["scratch_preflight"] = {"staged_bytes": staged_bytes, "fell_back": ws.fell_back}
     if not o.dry_run:
         with timer.stage("stage (copy into the run folder)"):
             n = 0
@@ -724,7 +773,8 @@ def run(o: Options, echo=print) -> dict:
         qa=qa_summary, calibration=calib_summary, integration=result.get("integration"),
         finish=result.get("finish"), timing=timer.rows, packet=str(md_path), csv=str(csv_path),
         final=final_img, trigger=o.trigger or None)
-    result["ledger"] = str(ledger_writer.write_for_run(led, run_dir, o.staging_root))
+    result["ledger"] = str(ledger_writer.write_for_run(led, run_dir, o.staging_root,
+                                                       scratch_root=o.scratch_root))
     result["ledger_version"] = led.version
     result["hours_integrated"] = round(led.hours, 3)
     echo(f"done: {run_dir}")

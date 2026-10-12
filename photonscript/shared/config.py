@@ -323,6 +323,14 @@ class PhotonScriptConfig(BaseSettings):
                                  # ledgers stay queued in their run folders
     integration_staging_root: str = ""  # run folders; "" = D:/Astrophotography/Staging
                                  # if it exists, else ~/Astrophotography/Staging
+    integration_scratch_root: str = ""  # fast scratch: integrate / blend build
+                                 # their run folder here (a fast local disk,
+                                 # e.g. C:/Astro/Scratch) and archive the
+                                 # keepers to integration_staging_root, deleting
+                                 # the intermediates; "" = off (build on the
+                                 # staging root)
+    integration_keep_staged_frames: bool = False  # fast scratch: also archive
+                                 # the staged LIGHTS / BIAS / DARKS / FLATS copies
     integration_library_dir: str = ""  # PS-161: the Library mirror the desktop
                                  # integrator reads (read-only); "" = the first
                                  # that exists of D:/ninashare/Library,

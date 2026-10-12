@@ -1083,6 +1083,16 @@ section 0b. Two-rig goals: `photonscript blend --target M31` puts the RC16 L
 core into the Piggy-600 color image (full field + RC16-scale core crop) in a
 new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
 
+Fast scratch (desktop `.env` `PS_INTEGRATION_SCRATCH_ROOT=C:/Astro/Scratch`;
+blank = off): integrate / blend runs are built on the NVMe and, once a
+master exists, the keepers (masters, finals, packet, ledger, manifest, logs,
+scripts) move to the same run name under the staging root on D: and the
+scratch folder (intermediates + staged frame copies, 250 to 350 GB for a
+Piggy M31) is deleted. No master = the scratch folder is kept and the run
+prints its size and the `Remove-Item` line to clear it. Too little free
+space on C: = the run is built on D: as before, with a warning. Details:
+OSC_INTEGRATION.md "Fast scratch disk".
+
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block
   comment. Inside string globs is fine.

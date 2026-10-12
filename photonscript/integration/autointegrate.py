@@ -143,15 +143,19 @@ def blend_inputs_key(inp) -> list[str]:
     return sorted([str(inp.osc)] + [str(p) for p in inp.rc16.values()])
 
 
-def already_blended(staging_root: Path, target: str, key: list[str]) -> str | None:
-    """Name of a blend folder under <staging>/Blend that used exactly these
-    inputs, else None (blend idempotence)."""
+def already_blended(staging_root: Path, target: str, key: list[str],
+                    scratch_root: Path | None = None) -> str | None:
+    """Name of a blend folder under <staging>/Blend (or the fast scratch
+    root's Blend) that used exactly these inputs, else None (blend
+    idempotence)."""
     from photonscript.integration.blend import BLEND_DIR
     from photonscript.integration.ledger import same_campaign
-    root = Path(staging_root) / BLEND_DIR
-    if not root.is_dir():
-        return None
-    for d in sorted(root.iterdir(), reverse=True):
+    from photonscript.integration.scratch import run_roots
+    dirs = []
+    for root in run_roots(staging_root, scratch_root):
+        if (root / BLEND_DIR).is_dir():
+            dirs += sorted((root / BLEND_DIR).iterdir(), reverse=True)
+    for d in dirs:
         try:
             m = json.loads((d / "manifest.json").read_text(encoding="ascii"))
         except (OSError, ValueError):
@@ -170,7 +174,8 @@ def blend_candidate(o: AutoOptions, target: str, discover) -> tuple[object | Non
         inp = discover(target)
     except Exception as e:  # noqa: BLE001 - BlendError: a rig has no master yet
         return None, f"no blend: {e}"
-    done = already_blended(o.watch.staging_root, target, blend_inputs_key(inp))
+    done = already_blended(o.watch.staging_root, target, blend_inputs_key(inp),
+                           o.watch.scratch_root)
     if done:
         return None, f"already blended in {done}"
     return inp, "both rigs have masters and these inputs are not blended yet"
@@ -264,7 +269,7 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
     try:
         echo("== queued ledgers")
         out["sweep"] = report.sweep(wo.staging_root, wo.base_url, post=post, echo=echo,
-                                    dry_run=wo.dry_run)
+                                    dry_run=wo.dry_run, scratch_root=wo.scratch_root)
         busy = pi_running()
         if busy:
             echo(f"PixInsight is running (pid {', '.join(map(str, busy))}): nothing now")
@@ -283,7 +288,7 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
         decs = []
         for c in cands:
             t, rig = c.get("target", ""), c.get("rig", "")
-            dec = w.decide(c, thr, w.local_state(wo.staging_root, t, rig), now=now)
+            dec = w.decide(c, thr, w.local_state(wo.staging_root, t, rig, wo.scratch_root), now=now)
             if dec.run:
                 snap = folder_snapshot(o.library, t, rig)
                 ok, why = settled(snap, f"{t}|{rig}", state, o.settle_min, now)

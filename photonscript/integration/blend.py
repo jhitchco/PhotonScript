@@ -31,6 +31,11 @@ unsharpened luminance.
 The Blend folder sits under the staging root on purpose: local_ledgers()
 reads <staging_root>/*/ledger.json only, so blend ledgers never count as
 integration versions, never trip integrate-watch and are never posted.
+
+Fast scratch (integration_scratch_root): the blend is built in
+<scratch>/Blend/<name> and moved to <staging_root>/Blend/<name> when
+PixInsight made its outputs (out/work, the registration work, is dropped
+unless --keep-work); integrate runs are found in both roots.
 """
 
 from __future__ import annotations
@@ -41,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from photonscript.integration import pjsr, runner
+from photonscript.integration import pjsr, runner, scratch
 from photonscript.integration.pipeline import PipelineError, Timer, catalog_coords, is_inside, safe_name
 
 TEMPLATE = "blend_rc16_osc.js"
@@ -108,6 +113,7 @@ class Options:
     run_pixinsight: bool = True
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
+    scratch_root: Path | None = None  # fast scratch: build here, archive to staging_root/Blend
 
 
 def rc16_bxt_mode(cfg) -> str:
@@ -194,18 +200,23 @@ def files_for(run_dir: Path, stage: str) -> tuple[dict[str, Path], str]:
     return got, what
 
 
-def find_runs(staging_root: Path, target: str, rig: str) -> list[RunInfo]:
-    """Integrate runs of `target` + `rig` under the staging root, newest
+def find_runs(staging_root: Path, target: str, rig: str,
+              scratch_root: Path | None = None) -> list[RunInfo]:
+    """Integrate runs of `target` + `rig` under the staging root (and the
+    fast scratch root; a folder name in the staging root wins), newest
     first (version, then created time, then folder name)."""
     from photonscript.integration.ledger import same_campaign
-    root = Path(staging_root)
-    if not root.is_dir():
-        return []
-    out = []
-    for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name != BLEND_DIR):
-        info = run_info(d)
-        if info and info.rig == rig and same_campaign(info.campaign, target):
-            out.append(info)
+    out, seen = [], set()
+    for root in scratch.run_roots(staging_root, scratch_root):
+        if not root.is_dir():
+            continue
+        for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name != BLEND_DIR):
+            if d.name in seen:
+                continue
+            info = run_info(d)
+            if info and info.rig == rig and same_campaign(info.campaign, target):
+                out.append(info)
+                seen.add(d.name)
     return sorted(out, key=lambda r: (r.version, r.created_at, r.run_dir.name), reverse=True)
 
 
@@ -247,7 +258,7 @@ def discover(o: Options) -> Inputs:
     if o.osc:
         osc = Path(o.osc)
     else:
-        runs = find_runs(o.staging_root, o.target, "piggyback")
+        runs = find_runs(o.staging_root, o.target, "piggyback", o.scratch_root)
         osc_run, got, what = _pick(runs, o.stage, lambda g: "OSC" in g)
         if not osc_run:
             raise BlendError(f"no Piggy-600 OSC {o.stage} master for {o.target!r} under {o.staging_root} "
@@ -260,7 +271,7 @@ def discover(o: Options) -> Inputs:
         for p in o.rc16:
             rc16.setdefault(filter_of(p), Path(p))
     else:
-        runs = find_runs(o.staging_root, o.target, "rc16")
+        runs = find_runs(o.staging_root, o.target, "rc16", o.scratch_root)
         rc_run, rc16, what = _pick(runs, o.stage, lambda g: bool(g))
         if not rc_run:
             raise BlendError(f"no RC16 {o.stage} master for {o.target!r} under {o.staging_root} "
@@ -372,12 +383,31 @@ def build_ledger(o: Options, inp: Inputs, run_dir: Path, man: dict, pi: dict | N
                     machine=machine)
 
 
-def write_ledger(led, run_dir: Path, blend_root: Path) -> Path:
+def write_ledger(led, run_dir: Path, blend_root: Path, scratch_blend_root: Path | None = None) -> Path:
     from photonscript.integration import ledger as writer
-    return writer.write_for_run(led, run_dir, blend_root)
+    return writer.write_for_run(led, run_dir, blend_root, scratch_root=scratch_blend_root)
 
 
 # ----------------------------------------------------------------- run
+
+def workspace(o: Options, inp: Inputs, run_dir: Path, echo=print) -> scratch.Workspace | None:
+    """Fast scratch for a blend: <scratch>/Blend/<name>, archived to
+    <staging_root>/Blend/<name>. Off for --out, --dry-run, --no-pixinsight."""
+    if o.out or o.dry_run or not o.run_pixinsight or not o.scratch_root:
+        return None
+    if not scratch.usable(o.scratch_root, o.staging_root):
+        echo(f"  scratch root {o.scratch_root} overlaps the staging root: not used")
+        return None
+    try:
+        ws = scratch.Workspace.create(run_dir, o.scratch_root, o.staging_root, kind="blend",
+                                      keep_staged=o.keep_work)
+    except ValueError as e:
+        raise BlendError(str(e)) from None
+    for src in [inp.osc, *inp.rc16.values()]:
+        if is_inside(src, ws.work_dir):
+            raise BlendError(f"an input sits inside the blend folder {ws.work_dir}")
+    return ws
+
 
 def run(o: Options, echo=print) -> dict:
     if not 0.0 <= o.weight <= 1.0:
@@ -408,6 +438,22 @@ def run(o: Options, echo=print) -> dict:
     if run_dir.exists() and any(run_dir.iterdir()):
         raise BlendError(f"{run_dir} exists and is not empty: every blend gets a NEW folder "
                          "(pass another --out or leave it out)")
+    ws = workspace(o, inp, run_dir, echo)
+    if ws is None:
+        return _run_in(o, inp, run_dir, None, timer, result, echo)
+    ws.work_dir.mkdir(parents=True, exist_ok=True)
+    ws.preflight(sum(Path(p).stat().st_size for p in [inp.osc, *inp.rc16.values()]), False, echo)
+    try:
+        res = _run_in(o, inp, ws.run_dir, ws, timer, result, echo)
+    except Exception:
+        ws.after_error(echo)
+        raise
+    return ws.finish(res, echo, ok=bool((res.get("blend") or {}).get("ok")))
+
+
+def _run_in(o: Options, inp: Inputs, run_dir: Path, ws: scratch.Workspace | None, timer: Timer,
+            result: dict, echo) -> dict:
+    result["run_dir"] = str(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     out_dir = run_dir / "out"
     timer.path = out_dir / "timing.csv"
@@ -437,7 +483,9 @@ def run(o: Options, echo=print) -> dict:
         (run_dir / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=True, default=str),
                                                encoding="ascii")
         led = build_ledger(o, inp, run_dir, man, pi, timer.rows)
-        result["ledger"] = str(write_ledger(led, run_dir, run_dir.parent))
+        blend_root = (ws.archive_dir if ws else run_dir).parent
+        result["ledger"] = str(write_ledger(led, run_dir, blend_root,
+                                            ws.work_dir.parent if ws and not ws.fell_back else None))
         result["ledger_version"] = led.version
     timer.flush()
     result["outputs"] = man["outputs"]

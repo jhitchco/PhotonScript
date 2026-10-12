@@ -57,6 +57,7 @@ class WatchOptions:
     qa: str = "report"
     dry_run: bool = False
     interval_min: float = 30.0
+    scratch_root: Path | None = None         # fast scratch: runs are found there too
 
 
 @dataclass
@@ -105,11 +106,11 @@ def record_failure(staging_root: Path, target: str, rig: str, when: str | None =
     p.write_text(json.dumps(f, indent=1), encoding="ascii")
 
 
-def local_state(staging_root: Path, target: str, rig: str) -> dict:
-    """This goal + rig's ledgers in the staging root: the newest one's age
-    stamp (a recorded failed run counts) and whether any is still queued
-    (not reported)."""
-    mine = [led for _f, led in writer.local_ledgers(staging_root)
+def local_state(staging_root: Path, target: str, rig: str, scratch_root: Path | None = None) -> dict:
+    """This goal + rig's ledgers in the staging root (and the fast scratch
+    root): the newest one's age stamp (a recorded failed run counts) and
+    whether any is still queued (not reported)."""
+    mine = [led for _f, led in writer.local_ledgers(staging_root, scratch_root)
             if led.rig == rig and led.kind == "integration"
             and writer.same_campaign(led.campaign, target)]
     newest = max([led.created_at for led in mine]
@@ -240,7 +241,7 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
     try:
         echo("== queued ledgers")
         out["sweep"] = report.sweep(o.staging_root, o.base_url, post=post, echo=echo,
-                                    dry_run=o.dry_run)
+                                    dry_run=o.dry_run, scratch_root=o.scratch_root)
         busy = pi_running()
         if busy:
             echo(f"PixInsight is running (pid {', '.join(map(str, busy))}): no integration now")
@@ -257,8 +258,8 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
         out["thresholds"] = thr
         decs = []
         for c in data.get("candidates") or []:
-            dec = decide(c, thr, local_state(o.staging_root, c.get("target", ""), c.get("rig", "")),
-                         now=now)
+            dec = decide(c, thr, local_state(o.staging_root, c.get("target", ""), c.get("rig", ""),
+                                             o.scratch_root), now=now)
             decs.append(dec)
             echo(f"  {'RUN ' if dec.run else 'wait'} {dec.target} [{dec.rig}]: {dec.reason}")
         out["decisions"] = [{"target": x.target, "rig": x.rig, "run": x.run, "reason": x.reason}

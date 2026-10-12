@@ -80,6 +80,49 @@ Run on the desktop from the repo venv. What it does (code in
 Timing per stage: `out\timing.csv` (Python stages) and `out\timing_pi.csv`
 (PixInsight stages). Small test run: `--limit 3 --max-cal 15`.
 
+### Fast scratch disk (stack on C:, archive on D:)
+
+`D:\Astrophotography\Staging` is a USB spinning drive (30 to 50 MB/s); a
+Piggy-600 M31 stack writes 250 to 350 GB of intermediates
+(`out\<stack>\cal, cc, debayer, ln, reg`, `out\flatcal`) and took about 4 h
+there. With `integration_scratch_root` set in the desktop `.env`
+(`PS_INTEGRATION_SCRATCH_ROOT=C:/Astro/Scratch`, the NVMe), `integrate`,
+`integrate-watch`, `autointegrate` and `blend` build the run folder in
+`<scratch>\<run name>` (blend: `<scratch>\Blend\<name>`) and archive it to
+the staging root under the same name when PixInsight is done:
+
+- **at least one master** (success, or partial with skipped stacks): the
+  keepers MOVE to `<staging-root>\<run name>`: `out\master`, `out\final*`,
+  `astrobin`, `qa`, `ledger.json`, `manifest.*`, `reference.txt`, the
+  generated `.js` scripts, `out\pipeline.log`, `finish.log`, `timing*.csv`
+  and the per stack `weights.csv` / `dark_scaling.csv`. Paths inside the
+  ledger, manifest, packet and scripts are rewritten to the archive folder
+  (`manifest.json` gets a `scratch` block naming where it was built). Then
+  the scratch run folder is deleted: the intermediates and the staged
+  LIGHTS / BIAS / DARKS / FLATS copies (copies of the read-only Library
+  mirror; `manifest.json` `frames[].source` names each original, so a rerun
+  restages). `PS_INTEGRATION_KEEP_STAGED_FRAMES=true` archives the staged
+  copies too. Blend: everything but `out\work` (unless `--keep-work`).
+- **no master** (or the run raised after staging): the keepers are COPIED
+  to the archive (the ledger moves, so there is exactly one), the scratch
+  folder stays for debugging and the run prints its size and the exact
+  cleanup command (`Remove-Item -LiteralPath "<scratch>\<run>" -Recurse
+  -Force`). A run that failed before staging leaves nothing in scratch.
+- **preflight**: before staging, free space on the scratch drive is checked
+  against the staged frame bytes x 6 (OSC) or x 4 (mono) plus 10%; short =
+  the run is built on the staging root as before, with a WARNING (never a
+  failure).
+
+Deletes only ever remove the run's own folder strictly inside the scratch
+root (never the scratch root itself, a Library mirror, the staging root or
+any ninashare path). Ledgers, `integrate-report`, the watcher state, blend
+input discovery and blend idempotence read the staging root first and the
+scratch root second, so a run whose archive step could not finish (D:
+unplugged, full) is still found and posted. Scratch is not used with
+`--out`, `--dry-run`, `--no-pixinsight` (the scripts are run later by hand
+from the folder they name) or `--no-scratch`. Default (blank): off, today's
+behavior.
+
 ## 0b. Ledger and the integrate watcher (PS-33, PS-31)
 
 **Ledger (PS-33).** Every `photonscript integrate` run ends by writing

@@ -2938,6 +2938,10 @@ def integrate_cmd(
                                            help="Stack lights whose FOCPOS is 0 (focuser disconnected "
                                                 "or frozen; left out by default in every --qa mode)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
+    use_scratch: bool = typer.Option(True, "--scratch/--no-scratch",
+                                     help="Build the run on integration_scratch_root (when set) and "
+                                          "archive it to the staging root; --no-scratch = build on "
+                                          "the staging root"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
     report: bool = typer.Option(True, "--report/--no-report",
                                 help="Post the run's ledger to the scheduler (PS-33; queued when unreachable)"),
@@ -2970,6 +2974,8 @@ def integrate_cmd(
         raise typer.Exit(2)
     if library:
         kw["library"] = Path(library)
+    if not use_scratch:
+        kw["scratch_root"] = None
     opts = pl.Options(
         target=target, rig=rig, since=since, until=until,
         staging_root=root, out=Path(out) if out else None,
@@ -2989,7 +2995,7 @@ def integrate_cmd(
     if report and res.get("ledger"):
         url = report_url or getattr(cfg, "integration_report_url", "")
         say("== report the ledger to the scheduler")
-        rp.sweep(root, url, echo=say)
+        rp.sweep(root, url, echo=say, scratch_root=opts.scratch_root)
         if Path(res["ledger"]).parent.parent != root:
             r = rp.post_ledger(Path(res["ledger"]), url)
             say(("  posted " + r.get("detail", "")) if r["ok"]
@@ -3016,8 +3022,10 @@ def integrate_report_cmd(
     from photonscript.integration import report as rp
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    from photonscript.integration import scratch as sc
     res = rp.sweep(root, url or getattr(cfg, "integration_report_url", ""),
-                   echo=lambda s: console.print(s, markup=False, highlight=False), dry_run=dry_run)
+                   echo=lambda s: console.print(s, markup=False, highlight=False), dry_run=dry_run,
+                   scratch_root=sc.configured_root(cfg))
     console.print(f"{res['pending']} queued, {len(res['posted'])} posted, "
                   f"{len(res['failed'])} still queued", markup=False)
 
@@ -3042,6 +3050,9 @@ def blend_cmd(
     pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Find the inputs and check the script; write nothing"),
+    use_scratch: bool = typer.Option(True, "--scratch/--no-scratch",
+                                     help="Build the blend on integration_scratch_root (when set) and "
+                                          "archive it to <staging-root>/Blend"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
 ):
     """PS-153: blend the RC16 luminance core into the Piggy-600 color image
@@ -3058,6 +3069,7 @@ def blend_cmd(
     from photonscript.integration import blend as bl
     from photonscript.integration import pipeline as pl
     from photonscript.integration import pjsr
+    from photonscript.integration import scratch as sc
     from photonscript.integration.runner import PixInsightBusy
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
@@ -3074,7 +3086,7 @@ def blend_cmd(
         rc16=[Path(x.strip()) for x in rc16.split(",") if x.strip()] or None,
         stage=stage, weight=weight, feather_frac=feather, inset_frac=inset, lum_mask=lum_mask,
         core=core, keep_work=keep_work, run_pixinsight=pixinsight, dry_run=dry_run,
-        pixinsight=pixinsight_exe,
+        pixinsight=pixinsight_exe, scratch_root=sc.configured_root(cfg) if use_scratch else None,
         osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
         rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
         **bxt,
@@ -3119,12 +3131,14 @@ def integrate_watch_cmd(
     photonscript integrate-watch --once --dry-run
     """
     from photonscript.integration import pipeline as pl
+    from photonscript.integration import scratch as sc
     from photonscript.integration import watch as w
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     o = w.WatchOptions(
         base_url=url or getattr(cfg, "integration_report_url", ""), staging_root=root,
+        scratch_root=sc.configured_root(cfg),
         rigs=[r.strip() for r in rigs.split(",") if r.strip()] or None,
         new_data_h=new_data_h if new_data_h >= 0 else None,
         first_h=first_h if first_h >= 0 else None,
@@ -3182,6 +3196,7 @@ def autointegrate_cmd(
     from photonscript.integration import autointegrate as ai
     from photonscript.integration import blend as bl
     from photonscript.integration import pipeline as pl
+    from photonscript.integration import scratch as sc
     from photonscript.integration import watch as w
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
@@ -3189,6 +3204,7 @@ def autointegrate_cmd(
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     wo = w.WatchOptions(
         base_url=url or getattr(cfg, "integration_report_url", ""), staging_root=root,
+        scratch_root=sc.configured_root(cfg),
         rigs=[r.strip() for r in rigs.split(",") if r.strip()] or None,
         qa=qa, dry_run=dry_run, interval_min=interval_min)
     if not wo.base_url:
@@ -3202,7 +3218,9 @@ def autointegrate_cmd(
         notify=bool(getattr(cfg, "autointegrate_notify", True)) if notify is None else notify,
         hoo=bool(getattr(cfg, "autointegrate_hoo", True)) if hoo is None else hoo,
         interval_min=interval_min)
-    say(f"autointegrate: Library {lib}, staging {root}, settle {o.settle_min:g} min"
+    say(f"autointegrate: Library {lib}, staging {root}"
+        + (f", scratch {wo.scratch_root}" if wo.scratch_root else "")
+        + f", settle {o.settle_min:g} min"
         + (" (dry run)" if dry_run else ""))
 
     def run_integrate(target: str, rig: str, trigger: dict) -> dict:
@@ -3215,6 +3233,7 @@ def autointegrate_cmd(
     def _blend_opts(target: str, dry: bool) -> bl.Options:
         return bl.Options(
             target=target, staging_root=root, dry_run=dry, pixinsight=pixinsight_exe,
+            scratch_root=wo.scratch_root,
             osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
             rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
             **bl.config_bxt(cfg))
