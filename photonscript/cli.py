@@ -2911,6 +2911,9 @@ def integrate_cmd(
     filters: str = typer.Option("", "--filters", help="Mono: comma list of filters (default all)"),
     qa: str = typer.Option("report", "--qa", help="Star QA: report (stack all, default) | apply (drop rejects) | off"),
     flats: bool = typer.Option(True, "--flats/--no-flats", help="Use matched flats when present"),
+    flat_temp_tol: float = typer.Option(5.0, "--flat-temp-tol",
+                                        help="Flats whose sensor is within this many C of the lights "
+                                             "(default 5; wider for short sky flats shot uncooled)"),
     min_darks: int = typer.Option(10, "--min-darks", help="Darks needed to use a dark length"),
     max_cal: int = typer.Option(50, "--max-cal", help="At most this many bias / darks / flats per master"),
     limit: int = typer.Option(0, "--limit", help="At most N subs per filter + exposure (small smoke runs)"),
@@ -2993,7 +2996,7 @@ def integrate_cmd(
         target=target, rig=rig, since=since, until=until,
         staging_root=root, out=Path(out) if out else None,
         filters=[f.strip() for f in filters.split(",") if f.strip()] or None,
-        qa=qa, flats=flats, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
+        qa=qa, flats=flats, flat_temp_tol=flat_temp_tol, min_darks=min_darks, max_cal=max_cal, limit=limit, run_pixinsight=pixinsight, finish=finish,
         dry_run=dry_run, pixinsight=pixinsight_exe, workers=workers or None,
         gradient=gradient, use_rc=not no_rc, hoo=hoo, min_group_frames=min_group,
         allow_uncalibrated=allow_uncalibrated, keep_focuser_zero=keep_focuser_zero, **kw,

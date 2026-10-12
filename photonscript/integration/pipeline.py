@@ -104,6 +104,7 @@ class Options:
     scratch_root: Path | None = None  # fast scratch: build here, archive to staging_root
     keep_staged_frames: bool = False  # fast scratch: archive LIGHTS / BIAS / DARKS / FLATS too
     hdr_combine: bool = True          # integrate_hdr_combine: mono master_<F> + master_<F>_<exp> -> master_<F>_hdr
+    flat_temp_tol: float = 5.0        # flats within this many C of the lights (legacy imports: wider)
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -476,7 +477,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         instrument = Counter(f.instrument for f in lights).most_common(1)[0][0]
         cals, cal_skipped = calib.scan(o.library, instrument=instrument)
         plan = calib.plan(lights, cals, default_readout=o.default_readout, use_flats=o.flats,
-                          min_darks=o.min_darks, max_frames=o.max_cal)
+                          min_darks=o.min_darks, max_frames=o.max_cal,
+                          flat_temp_tol=o.flat_temp_tol)
         lights, off = calib.lights_in_epoch(lights, plan.epoch, o.default_readout)
         for f, why in off:
             plan.notes.append(f"light {f.name} left out: {why} (not the stack's epoch)")
