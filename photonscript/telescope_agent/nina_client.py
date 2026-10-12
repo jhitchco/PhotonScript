@@ -134,6 +134,17 @@ class NinaClient:
     async def get_focuser_info(self) -> dict:
         return _unwrap(await self._get("/equipment/focuser/info"))
 
+    async def get_last_af(self) -> dict:
+        """The newest NINA autofocus report (ninaAPI focuser/last-af)."""
+        r = _unwrap(await self._get("/equipment/focuser/last-af"))
+        return r if isinstance(r, dict) else {}
+
+    async def get_event_history(self) -> list[dict]:
+        """ninaAPI event history since NINA started (oldest first):
+        [{"Event", "Time", ...}] (AUTOFOCUS-*, SAFETY-CHANGED, ...)."""
+        r = _unwrap(await self._get("/event-history"))
+        return r if isinstance(r, list) else []
+
     async def get_filter_wheel_info(self) -> dict:
         return _unwrap(await self._get("/equipment/filterwheel/info"))
 

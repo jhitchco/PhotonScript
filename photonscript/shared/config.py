@@ -120,6 +120,14 @@ class PhotonScriptConfig(BaseSettings):
     # + N min, whatever the armer state (an armed night is left to its dawn
     # shutdown), page once when TheSky / NINA #1 read the mount unparked and
     # tracking with no NINA #1 sequence running. Alert only, never parks.
+    # NINA offline mid-night (2026-10-09: NINA #1 dropped at 03:07Z on an
+    # armed recipe night; PS-150 had already paged "not running" once that
+    # night, so the second outage was silent). While the armer is RUNNING /
+    # WATCHING or an arm recipe is dispatched: one priority-1 push per outage
+    # when a NINA API stops answering for nina_offline_grace_min, a recovery
+    # note when it is back. Observe only.
+    nina_offline_alert: bool = True
+    nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0
     meridian_guard_min: int = 20  # don't open the run on a target crossing the
@@ -490,6 +498,14 @@ class PhotonScriptConfig(BaseSettings):
     focuser_zero_alert: bool = True  # one push per rig per night when a
                                  # rig's focuser reports Position 0 while
                                  # its NINA is imaging
+    # Autofocus that keeps restarting without finishing (2026-10-08..11:
+    # 55 AF starts, one point each, no finish, nothing paged). From NINA's
+    # event history: af_stall_runs AF runs in a row with fewer than
+    # af_stall_min_points points or no completed fit -> one push per rig per
+    # night (runs cut by an unsafe roof or a sequence end do not count).
+    af_stall_alert: bool = True
+    af_stall_runs: int = 3
+    af_stall_min_points: int = 4
     slew_gate_pad_s: float = 10.0  # padding each side of a mount-log move
     slew_gate_min_move_arcmin: float = 5.0  # RC16 frames (older nights): a
                                  # pointing change this big between frames

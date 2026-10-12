@@ -293,6 +293,86 @@ class TelescopeAgent:
                    reason="focuser-zero-once-per-night")
 
     # ------------------------------------------------------------------
+    # Autofocus that keeps restarting without finishing (2026-10-08..11:
+    # 55 AUTOFOCUS-STARTING, 54 points, no finish, no page for three nights)
+    # ------------------------------------------------------------------
+
+    AF_STALL_POLL_S = 120   # read NINA's event history this often (imaging)
+
+    async def _af_stall_watch(self, focuser: dict | None) -> None:
+        """While this rig's NINA is imaging, every AF_STALL_POLL_S read its
+        event history (and the last AF report) and page once per rig per
+        night (key af-stall-<rig>-<night>, latched across restarts) when
+        af_stall_runs autofocus runs in a row ended with fewer than
+        af_stall_min_points points or no completed fit. Runs cut by an
+        unsafe roof or a sequence end do not count. Off with af_stall_alert.
+        Read only (GETs); never raises."""
+        import time as _t
+        try:
+            if not getattr(self.config, "af_stall_alert", True):
+                return
+            if (getattr(self.state, "session_state", None)
+                    != SessionState.IMAGING):
+                return
+            now_m = _t.monotonic()
+            last = getattr(self, "_af_stall_polled", None)
+            if last is not None and now_m - last < self.AF_STALL_POLL_S:
+                return
+            self._af_stall_polled = now_m
+            from photonscript.scheduler import af_stall
+            from photonscript.shared import phd2_store as store
+            now = datetime.utcnow()
+            if getattr(self, "_af_watch_since", None) is None:
+                self._af_watch_since = now
+            reports = getattr(self, "_af_reports", None)
+            if reports is None:
+                reports = self._af_reports = {}
+            try:
+                rep = await self.nina.get_last_af()
+                if af_stall.report_ok(rep) is not None:
+                    reports[str(rep.get("Timestamp"))] = rep
+            except Exception as e:  # noqa: BLE001 - no report is not a failure
+                logger.debug("last-af read failed: %s", e)
+            night = store.night_of(self.config, now)
+            if getattr(self, "_af_stall_night", None) == night:
+                return            # already handled this night (this process)
+            events = await self.nina.get_event_history()
+            runs = af_stall.tonight(self.config, af_stall.af_runs(
+                events, list(reports.values())), night)
+            n = int(getattr(self.config, "af_stall_runs", 3) or 3)
+            m = int(getattr(self.config, "af_stall_min_points", 4) or 4)
+            streak = af_stall.stall(runs, n, m, now=now,
+                                    watching_since=self._af_watch_since)
+            if not streak:
+                return
+            self._af_stall_night = night
+            await self._af_stall_alarm(streak, focuser, night, m)
+        except Exception as e:  # noqa: BLE001 - never stop the poll loop
+            logger.warning("autofocus stall watch errored: %s", e)
+
+    async def _af_stall_alarm(self, streak: list, focuser: dict | None,
+                              night: str, min_points: int) -> None:
+        from photonscript.scheduler import af_stall
+        from photonscript.shared import phd2_store as store
+        from photonscript.shared.pushover import record
+        rig = getattr(self, "rig", "rc16")
+        msg = af_stall.alert_text(self.config, rig, streak, focuser, min_points)
+        logger.warning("autofocus stall: %s", msg)
+        try:
+            from photonscript.shared.night_events import events_path
+            store.append_jsonl(events_path(self.config, night), {
+                "t": store.iso_z(datetime.utcnow()), "rig": rig,
+                "src": "autofocus", "kind": "af_stall", "value": len(streak),
+                "detail": msg, **af_stall.summary(streak)})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("autofocus stall run event not written: %s", e)
+        if store.alert_once(self.config, f"af-stall-{rig}-{night}"):
+            await notify(self.config, msg, title=af_stall.ALERT_TITLE, priority=1)
+        else:
+            record(self.config, msg, title=af_stall.ALERT_TITLE, priority=1,
+                   reason="af-stall-once-per-night")
+
+    # ------------------------------------------------------------------
     # Monitoring loops
     # ------------------------------------------------------------------
 
@@ -826,6 +906,7 @@ class TelescopeAgent:
                 except Exception:
                     self._focuser_info = None
                 await self._focuser_zero_watch(focuser)
+                await self._af_stall_watch(focuser)
                 # PS-182: cooler history (temp, TEC power, focuser temp as
                 # the ambient proxy) for the darks window chooser; throttled
                 # to cooler_history_sample_s, never raises
