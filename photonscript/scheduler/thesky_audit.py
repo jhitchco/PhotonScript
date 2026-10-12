@@ -1671,6 +1671,93 @@ def save_manual(config, body: dict) -> dict:
     return {"ok": True, "record": rec}
 
 
+# 2026-10-12: the record still said the 2026-10-04 model (250 points) while
+# TPoint's files held the 356-point model of 2026-10-10. The TPoint section
+# flags a stale record and offers "Use file values" (operator triggered).
+FILE_FIELDS = ("model_date", "points", "rms_arcsec", "ih_arcsec", "id_arcsec")
+
+
+def file_values(st: dict | None) -> dict:
+    """The manual-record fields TPoint's files can fill (tpoint_files.stats):
+    model_date, points, rms_arcsec (sky RMS) of the base model, IH / ID of
+    the active model (a recal refits them). Only what parsed."""
+    st = st or {}
+    if not st.get("ok"):
+        return {}
+    terms = st.get("terms") or {}
+    rc = st.get("recal") or {}
+    if st.get("active_model") == "recal" and rc.get("terms"):
+        terms = rc["terms"]
+    out = {"model_date": st.get("model_date"), "points": st.get("points"),
+           "rms_arcsec": st.get("sky_rms_arcsec"),
+           "ih_arcsec": (terms.get("IH") or {}).get("value"),
+           "id_arcsec": (terms.get("ID") or {}).get("value")}
+    if out["points"] is not None:
+        out["points"] = int(out["points"])
+    if out["rms_arcsec"] is not None:
+        out["rms_arcsec"] = round(float(out["rms_arcsec"]), 2)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def record_vs_files(rec: dict | None, st: dict | None) -> dict:
+    """{"stale", "why", "files" (file_values), "record", "differs" (fields
+    whose values differ), "model_file", "active_model_mtime"}. Stale: the
+    files hold a newer model than the record (a later model date, or the
+    same date with other points / RMS written after the record was
+    entered), or there is no record date while the files have one."""
+    rec = rec or {}
+    fv = file_values(st)
+    out = {"stale": False, "why": None, "files": fv,
+           "record": {k: rec.get(k) for k in FILE_FIELDS if rec.get(k) is not None},
+           "differs": [], "model_file": (st or {}).get("model_file"),
+           "active_model_mtime": (st or {}).get("active_model_mtime"),
+           "note": None if fv else ((st or {}).get("note") or "no TPoint file values")}
+    if not fv.get("model_date"):
+        return out
+    out["differs"] = [k for k in FILE_FIELDS if k in fv and rec.get(k) != fv[k]
+                      and not (isinstance(fv[k], float) and _num(rec.get(k)) is not None
+                               and abs(_num(rec.get(k)) - fv[k]) < 0.01)]
+    fd, rd = _parse_date(fv["model_date"]), _parse_date(rec.get("model_date"))
+    if rd is None:
+        out["stale"] = True
+        out["why"] = (f"the TPoint files hold a model of {fd} and the record "
+                      "has no model date")
+    elif fd and fd > rd:
+        out["stale"] = True
+        out["why"] = (f"the TPoint files hold a newer model ({fd}) than the "
+                      f"record ({rd})")
+    elif fd == rd and set(out["differs"]) & {"points", "rms_arcsec"}:
+        ft = store.parse_z(out["active_model_mtime"] or "")
+        ent = store.parse_z(rec.get("entered_at") or "")
+        if ft is not None and ent is not None and ft > ent:
+            out["stale"] = True
+            out["why"] = (f"TPoint wrote a model on {fd} after the record was "
+                          "entered and its numbers differ")
+    return out
+
+
+def use_file_values(config, st: dict | None = None) -> dict:
+    """Operator triggered (the TPoint section's "Use file values"): the
+    manual record with model date, points, sky RMS and IH / ID from
+    TPoint's files; every other field (ProTrack, binning, catalogs, polar,
+    notes) kept. Writes only PhotonScript's own manual.json (save_manual)."""
+    if st is None:
+        from photonscript.scheduler import tpoint_files
+        st = tpoint_files.stats(config)
+    fv = file_values(st)
+    if not fv.get("model_date"):
+        return {"ok": False, "problems": [
+            "no TPoint model in the files: " + ((st or {}).get("note") or "nothing parsed")]}
+    old = load_manual(config) or {}
+    body = {k: v for k, v in old.items() if k in MANUAL_FIELDS}
+    body.update(fv)
+    res = save_manual(config, body)
+    if res.get("ok"):
+        res["applied"] = fv
+        res["from_file"] = (st or {}).get("model_file")
+    return res
+
+
 # --------------------------------------------------------------------------
 # Image Link check
 # --------------------------------------------------------------------------

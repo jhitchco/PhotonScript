@@ -674,7 +674,9 @@ def test_guiding_tab_section_and_panel_js(client):
     paths = {rt.path for rt in thesky.router.routes}
     for url in re.findall(r"'(/api/thesky/[a-z/-]+)", js):
         assert url.rstrip("/") in paths, url
-    assert "method: 'POST'" in js and js.count("method: 'POST'") == 1   # the manual record only
+    # the manual record, and its "Use file values" (2026-10-12): nothing else
+    assert "method: 'POST'" in js and js.count("method: 'POST'") == 2
+    assert "'/api/thesky/manual/use-files'" in js
     assert "'/api/thesky/manual'" in js
     assert "data-apply" not in js and "/apply" not in js
 

@@ -8,8 +8,13 @@ GET  /api/thesky/imagelink-check?refresh=&thesky=0|1
                                          Image Link on a temporary copy (only
                                          while the armer is idle)
 GET  /api/thesky/pointing?nights=14&refresh=   NINA first-slew error trend
-GET  /api/thesky/manual                  the manual TPoint record
+GET  /api/thesky/manual                  the manual TPoint record, and how it
+                                         compares with TPoint's files ("files":
+                                         stale when they hold a newer model)
 POST /api/thesky/manual {model_date, points, rms_arcsec, ...}   save it
+POST /api/thesky/manual/use-files        the operator's "Use file values":
+                                         model date, points, sky RMS, IH / ID
+                                         from TPoint's files into the record
 GET  /api/thesky/onsite-script           the read-only script for TheSky's
                                          Run Java Script window (on-site check)
 GET  /api/thesky/tpoint                  PS-171: TPoint numbers from TPoint's own
@@ -106,12 +111,31 @@ async def api_thesky_pointing(nights: int = 14, refresh: bool = False):
 
 
 @router.get("/api/thesky/manual")
-def api_thesky_manual():
+async def api_thesky_manual():
     from photonscript.scheduler import thesky_audit as ta
+    from photonscript.scheduler import tpoint_files
     cfg = _cfg()
     rec = ta.load_manual(cfg)
+    try:   # read only: TPoint's own files
+        st = await asyncio.to_thread(tpoint_files.stats, cfg)
+        files = ta.record_vs_files(rec, st)
+    except Exception as e:  # noqa: BLE001
+        files = {"stale": False, "note": f"TPoint files not read: {e}"}
     return {"record": rec, "fields": list(ta.MANUAL_FIELDS),
-            "max_age_days": getattr(cfg, "thesky_manual_max_age_days", 30)}
+            "max_age_days": getattr(cfg, "thesky_manual_max_age_days", 30),
+            "files": files}
+
+
+@router.post("/api/thesky/manual/use-files")
+async def api_thesky_manual_use_files():
+    """The operator's one click: fill the manual record's model date,
+    points, sky RMS and IH / ID from TPoint's files (the other fields are
+    kept). Writes only PhotonScript's own manual.json."""
+    from photonscript.scheduler import thesky_audit as ta
+    res = await asyncio.to_thread(ta.use_file_values, _cfg())
+    if not res.get("ok"):
+        return JSONResponse(status_code=400, content=res)
+    return res
 
 
 @router.post("/api/thesky/manual")

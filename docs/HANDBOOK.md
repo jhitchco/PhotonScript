@@ -435,6 +435,13 @@ per 3x3 zone.
 
 ### TPoint mapping run (PS-171, supervised)
 
+After any new model: the Guiding tab's TPoint record shows "record stale"
+when TPoint's files hold a newer model than the manual record (2026-10-12:
+the record said 10-04 / 250 points while the files held 10-10 / 356);
+"Use file values" fills model date, points, sky RMS and IH / ID from the
+files and keeps the rest (ProTrack, binning, catalogs, polar, notes).
+Operator triggered; it writes only PhotonScript's manual.json.
+
 Builds a denser TPoint model without handing the camera to TheSky (its
 Automated Pointing Calibration Run needs TheSky's camera add-on, NINA #1
 owns the AP26MC). NINA slews to N alt/az points, shoots one short frame at

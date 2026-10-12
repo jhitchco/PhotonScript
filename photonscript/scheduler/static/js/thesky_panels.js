@@ -7,7 +7,9 @@
  *   imagelink  GET  /api/thesky/imagelink-check[?refresh=1][&thesky=1]
  *   pointing   GET  /api/thesky/pointing?nights=14
  *   rotation   GET  /api/rotation/report?nights=14 (PS-97, routers/rotation.py)
- *   manual     GET  /api/thesky/manual, POST /api/thesky/manual
+ *   manual     GET  /api/thesky/manual, POST /api/thesky/manual,
+ *              POST /api/thesky/manual/use-files (the operator's "Use file
+ *              values" when TPoint's files hold a newer model)
  * Row rendering follows PHD2's audit table (status, current, desired, why,
  * fix), without Apply buttons.
  */
@@ -274,7 +276,34 @@
             setHTML('tsManualFields', FIELDS.map(function (f) { return fieldHTML(f, rec); }).join(''));
             setText('tsManualStatus', rec.entered_at ? ' last entered ' + rec.entered_at +
                 ' (reads unknown after ' + d.max_age_days + ' d)' : ' no record yet');
+            renderFiles(d.files || {});
         } catch (e) { setText('tsManualStatus', ' error: ' + e); }
+    }
+    // the record against TPoint's own files: stale when they hold a newer model
+    function renderFiles(f) {
+        var fv = f.files || {}, rv = f.record || {}, bar = $('tsManualFilesBar');
+        if (bar) bar.style.display = f.stale ? '' : 'none';
+        if (!f.stale) {
+            setHTML('tsManualFiles', fv.model_date ? 'TPoint files: model ' + esc(fv.model_date) +
+                ', ' + esc(fv.points) + ' points, sky RMS ' + esc(fv.rms_arcsec) + '" (record up to date)' : '');
+            return;
+        }
+        var show = function (v) {
+            return esc(v.model_date) + ', ' + esc(v.points) + ' points, sky RMS ' + esc(v.rms_arcsec) + '"' +
+                (v.ih_arcsec != null ? ', IH ' + esc(v.ih_arcsec) + '" / ID ' + esc(v.id_arcsec) + '"' : '');
+        };
+        setHTML('tsManualFiles', '<span class="badge badge-warn">record stale</span> ' + esc(f.why) +
+            '<br>files: ' + show(fv) + (f.model_file ? ' (' + esc(f.model_file) + ')' : '') +
+            '<br>record: ' + show(rv));
+    }
+    async function useFiles() {
+        setText('tsManualFilesStatus', ' saving...');
+        try {
+            var r = await fetch('/api/thesky/manual/use-files', {method: 'POST'});
+            var d = await r.json();
+            setText('tsManualFilesStatus', d.ok ? ' saved ' + stamp() : ' not saved: ' + (d.problems || []).join('; '));
+            if (d.ok) { loadManual(); loadAudit(true); }
+        } catch (e) { setText('tsManualFilesStatus', ' error: ' + e); }
     }
     async function saveManual() {
         var body = {};
@@ -300,6 +329,7 @@
         on('tsAstap', function () { loadImagelink('astap'); });
         on('tsThesky', function () { loadImagelink('thesky'); });
         on('tsManualSave', saveManual);
+        on('tsManualUseFiles', useFiles);
         loadAudit(false);
         loadImagelink('');
         loadPointing();
