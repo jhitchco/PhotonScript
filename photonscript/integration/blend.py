@@ -57,6 +57,8 @@ OSC_SCALE = 1.29      # piggyback_pixel_scale_arcsec (600 mm + IMX571 3.76 um)
 RC16_SCALE = 0.236    # pixel_scale_arcsec (RC16 3248 mm + AP26MC, plate solves)
 PIXEL_UM = 3.76
 _SKIP_MASTER = re.compile(r"^master(Bias|Dark|Flat|OSC)", re.I)
+_HDR = "_hdr"                                     # integration/hdr.py SUFFIX
+_EXP_VARIANT = re.compile(r"^(.+)_\d+(?:\.\d+)?s$")   # PS-177 L_30s -> L
 
 
 class BlendError(PipelineError):
@@ -165,13 +167,20 @@ def run_info(run_dir: Path) -> RunInfo | None:
 
 def masters(run_dir: Path) -> dict[str, Path]:
     """filter -> out/master/master_<F>.xisf (calibration masters and the
-    masterOSC copy left out)."""
+    masterOSC copy left out). A filter with an HDR master (master_<F>_hdr,
+    integration/hdr.py) gets that one, and its single-exposure masters
+    (master_<F>_<exp>) are left out: they are inside the HDR master."""
     out = {}
     for p in sorted((Path(run_dir) / "out" / "master").glob("master_*.xisf")):
         stem = p.stem
         if _SKIP_MASTER.match(stem) or stem.endswith("_review"):
             continue
         out[stem[len("master_"):]] = p
+    for key in [k for k in out if k.endswith(_HDR)]:
+        f = key[: -len(_HDR)]
+        out[f] = out.pop(key)
+        for k in [k for k in out if (m := _EXP_VARIANT.match(k)) and m.group(1) == f]:
+            del out[k]
     return out
 
 
@@ -237,10 +246,10 @@ def _pick(runs: list[RunInfo], stage: str, want) -> tuple[RunInfo | None, dict[s
 
 
 def filter_of(path: Path) -> str:
-    """Filter of a master given by path: master_<F>, <name>_<F>_linear /
-    _final, else L."""
+    """Filter of a master given by path: master_<F> (or master_<F>_hdr),
+    <name>_<F>_linear / _final, else L."""
     stem = Path(path).stem
-    m = re.match(r"^master_([A-Za-z0-9]+)$", stem)
+    m = re.match(r"^master_([A-Za-z0-9]+)(?:_hdr)?$", stem)
     if m:
         return m.group(1)
     m = re.search(r"_([A-Za-z0-9]+)_(linear|final)$", stem)

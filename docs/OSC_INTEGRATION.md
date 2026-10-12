@@ -46,8 +46,22 @@ Run on the desktop from the repo venv. What it does (code in
    ImageIntegration: per filter the group with the most integration time
    is `master_<F>` (what `blend` and the finish expect), every other
    group of at least `--min-group-frames` (3) subs is its own HDR master
-   `master_<F>_<exp>` (e.g. `master_L_30s`, combine later with HDRComposition
-   if wanted), smaller groups are left out with a message. A group that
+   `master_<F>_<exp>` (e.g. `master_L_30s`), smaller groups are left out
+   with a message. **HDR combine** (config `integrate_hdr_combine`, default
+   on; `--no-hdr` skips it; mono only): after the integration, every filter
+   with two or more of those masters goes through `hdr_run.js`
+   (`deploy/hdr_combine.js`): the longest master is the base and each
+   shorter one fills the pixels it saturates, with PixInsight's
+   HDRComposition when it exists, else (missing, failed or a flat result) a
+   least-squares fit of the short master to the long one over unsaturated
+   signal (slope within 3x of the exposure ratio, else the ratio itself)
+   and a smoothstep blend from 0.65 to 0.80 of the long master's maximum,
+   rescaled into 0..1. Out: `master_<F>_hdr.xisf` (PSHDR keyword),
+   `out\master\hdr_steps.json` (inputs, method, fit, threshold, status per
+   filter), `out\hdr.log`, `out\timing_hdr.csv`, a `hdr` block in the
+   ledger. The finish then runs on `master_<F>_hdr` (named `<target>_<F>`)
+   instead of that filter's exposure masters, and `blend` prefers it too. A
+   filter whose combine fails keeps its single-exposure masters. A group that
    passes selection but ends up below `--min-group-frames` registered frames
    inside PixInsight (or whose calibration / registration / integration
    fails) is SKIPPED there: `SKIPPED [<stack>]: <why>` in `pipeline.log`, a
@@ -451,6 +465,15 @@ and saturation, a gentle hue curve (red-orange and yellow toward gold, azure
 toward teal-blue), the framing crop: `<Name>_gold.{xisf,jpg}` beside the
 others, step `palette` in the steps json (ran / skipped / failed). Finish
 only, on an existing master (no restack):
+`photonscript finish --master <run>\out\master\master_OSC.xisf --name Heart_OSC_gold --target IC1805 --palette gold`
+(same finish and defaults as `integrate`: `finish_use_rcastro`, `bxt_*`,
+`nxt_denoise`, `finish_palette`; optics and coordinates from the master's
+own run folder when it is an integrate run, else the rig and `--target`;
+one PixInsight at a time, refused while one is open; a NEW folder, default
+`<staging-root>\Finish\<name>_finish_<time>`, with `finish_run.js`,
+`out\finish.log`, `out\final\...`, `manifest.json` and a `ledger.json` of
+kind `finish` that is never posted; `--dry-run` checks the script and
+writes nothing). The older launcher still works:
 `.\deploy\run-finish-osc.ps1 -Name Heart_OSC -Target IC1805 -Master <run>\out\master\master_OSC.xisf -OutDir <run>\out\final_gold -Palette gold -Wait`.
 
 ## 2. Calibration capture — already built into the sequencer

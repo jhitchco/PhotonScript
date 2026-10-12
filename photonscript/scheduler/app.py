@@ -699,6 +699,7 @@ _CONFIG_FIELDS = [
     ("bxt_sharpen_stars", "PS_BXT_SHARPEN_STARS", "Finish: BlurXTerminator sharpen stars (0..1)", "Integration", "float", False, False),
     ("bxt_sharpen_nonstellar", "PS_BXT_SHARPEN_NONSTELLAR", "Finish: BlurXTerminator sharpen nonstellar (0..1; 0.5 to 0.9 useful)", "Integration", "float", False, False),
     ("nxt_denoise", "PS_NXT_DENOISE", "Finish: NoiseXTerminator denoise on the linear image (0..1, detail 0.15)", "Integration", "float", False, False),
+    ("integrate_hdr_combine", "PS_INTEGRATE_HDR_COMBINE", "Integrate (mono, desktop .env): HDR combine a filter's exposure-length masters into master_<F>_hdr; the finish and blend prefer it", "Integration", "bool", False, False),
     ("blend_rc16_bxt", "PS_BLEND_RC16_BXT", "Blend (PS-153): BlurXTerminator pass on the RC16 L linear master first (when installed)", "Integration", "bool", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("auto_approve_at_dawn", "PS_AUTO_APPROVE_AT_DAWN", "Dawn filing (PS-157): approve the night's QA-passing subs at dawn (both rigs; never test subs, '?' subs or subs sent back to review), then build the Library", "Imaging", "bool", False, False),

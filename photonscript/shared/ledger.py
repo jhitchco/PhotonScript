@@ -13,7 +13,9 @@ Shape (schema "photonscript.ledger/0.2"):
     rig           "piggyback" | "rc16"
     kind          "integration" (default) | "blend" (PS-153: `photonscript
                   blend`, the RC16 core in the Piggy-600 image; rig is
-                  piggyback, the frame of the product)
+                  piggyback, the frame of the product) | "finish"
+                  (`photonscript finish`, one master finished again;
+                  stays on the desktop like blend)
     run           run folder name (unique per run; the store's key)
     version       1, 2, ... per goal + rig (0 = let the scheduler pick)
     created_at    ISO UTC
@@ -54,7 +56,7 @@ ASK_TYPES = ("more_hours", "need_calibration", "short_subs", "reframe", "rest",
              "fix_blocker")
 ASK_STATUSES = ("open", "approved", "declined", "applied")
 VERDICTS = ("", "keep", "redo_processing", "publish", "needs_more_data")
-KINDS = ("integration", "blend")
+KINDS = ("integration", "blend", "finish")
 _TOP_KEEP = {"schema", "campaign", "run", "version", "rig", "kind", "review", "publish",
              "created_at", "reported", "reported_at", "machine"}
 
