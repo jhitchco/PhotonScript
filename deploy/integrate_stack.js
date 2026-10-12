@@ -20,6 +20,12 @@
 //     an OSC stack) and a review jpg
 // Funnel checks: a stage may drop frames but never add them; every dropped
 // frame is logged as "DROPPED at <stage>: <file>" (the packet reads these).
+// One stack that cannot be made (fewer than MIN_FRAMES registered frames, a
+// failed calibration / registration / integration) is SKIPPED: a
+// "SKIPPED [<stack>]: <why>" line, a SKIPPED row in timing_pi.csv, and the
+// run goes on with the next stack. The run fails only when no stack made a
+// master (2026-10-12 M31 rc16: B_300s had 3 subs, 2 registered, and the
+// throw lost the L 30 s, R and G masters queued after it).
 // Stage timing goes to out/timing_pi.csv; the log ends EXIT OK or ERROR.
 //
 // PJSR rules (HANDBOOK sec 6): pure ASCII; no slash-star sequence inside a
@@ -34,6 +40,10 @@ var STAGING = CONFIG.staging;
 var OUT = CONFIG.out;
 var LOGFILE = OUT + "/pipeline.log";
 var TIMINGFILE = OUT + "/timing_pi.csv";
+// frames a stack needs after registration (photonscript integrate
+// --min-group-frames; ImageIntegration needs at least 3)
+var MIN_FRAMES = Math.max(3, CONFIG.min_group_frames || 3);
+var SKIPPED = [];   // [{stack, reason}], one per stack that made no master
 
 function listFits(dir) {
    if (!File.directoryExists(dir)) return [];
@@ -323,7 +333,7 @@ function runStack(stack, masters, reg) {
       byGroup.push(L); all = all.concat(L);
       log("[" + S + "] lights " + stack.groups[g].name + ": " + L.length);
    }
-   if (!all.length) { log("[" + S + "] no lights; skipped"); TEND(S, "stack total"); return null; }
+   if (!all.length) { log("[" + S + "] no lights"); TEND(S, "stack total"); return null; }
 
    var scalingCsv = ["stack,group,file,k0,k1,k2"];
    var nBefore = 0;
@@ -401,7 +411,8 @@ function runStack(stack, masters, reg) {
    logDrops("registration", rgbFiles, regFiles);
    log("[" + S + "] stage registration: " + rgbFiles.length + " in -> " + regFiles.length + " out (" + groupCounts(stack, regFiles) + ")");
    TEND(S, "star alignment");
-   if (regFiles.length < 3) throw new Error("[" + S + "] too few registered frames (" + regFiles.length + ")");
+   if (regFiles.length < MIN_FRAMES)
+      throw new Error("[" + S + "] too few registered frames (" + regFiles.length + ", need " + MIN_FRAMES + ")");
    var nReg = regFiles.length;
 
    var lnData = null;
@@ -437,6 +448,8 @@ function runStack(stack, masters, reg) {
       lnData = null;
    }
    TEND(S, "local normalization");
+   if (regFiles.length < MIN_FRAMES)
+      throw new Error("[" + S + "] too few frames after local normalization (" + regFiles.length + ", need " + MIN_FRAMES + ")");
 
    TSTART(S, "integration");
    var rej = regFiles.length >= 15 ? "WinsorizedSigmaClip" : (regFiles.length >= 6 ? "SigmaClip" : "PercentileClip");
@@ -507,6 +520,21 @@ function runStack(stack, masters, reg) {
    return masterPath;
 }
 
+// A stack that made no master: log the SKIPPED line, record it (SKIPPED,
+// timing_pi.csv), close what the failed stage left open. `open` = the
+// stack's "stack total" timer is still running (it threw).
+function skipStack(S, why, open) {
+   SKIPPED.push({ stack: S, reason: why });
+   log("SKIPPED [" + S + "]: " + why + " (no master_" + S + "; continuing with the other stacks)");
+   if (open) { try { TEND(S, "stack total"); } catch (e1) {} }
+   var t = (new Date).toISOString();
+   TIMING.push(S + ",SKIPPED," + t + "," + t + ",0");
+   writeText(TIMINGFILE, TIMING);
+   ["integration", "rejection_low", "rejection_high", "slope"].forEach(function (id) {
+      try { var w = ImageWindow.windowById(id); if (!w.isNull) w.forceClose(); } catch (e2) {}
+   });
+}
+
 function main() {
    console.show();
    log("staging: " + STAGING + "  target " + CONFIG.target + "  rig " + CONFIG.rig + "  CFA " + (CONFIG.cfa || "none"));
@@ -532,8 +560,18 @@ function main() {
    TEND("masters", "calibration masters");
    var reg = { file: null };
    var made = 0;
-   for (var s = 0; s < CONFIG.stacks.length; ++s)
-      if (runStack(CONFIG.stacks[s], masters, reg)) ++made;
+   for (var s = 0; s < CONFIG.stacks.length; ++s) {
+      var SN = CONFIG.stacks[s].name;
+      try {
+         if (runStack(CONFIG.stacks[s], masters, reg)) ++made;
+         else skipStack(SN, "no lights", false);
+      } catch (e) {
+         skipStack(SN, ("" + e).replace(/^Error: /, ""), true);
+      }
+   }
+   if (SKIPPED.length)
+      log("stacks SKIPPED: " + SKIPPED.length + " of " + CONFIG.stacks.length + " (" +
+          SKIPPED.map(function (k) { return k.stack; }).join(", ") + ")");
    if (!made) throw new Error("no stack produced a master");
    TIMING.push("all,integration script total," + new Date(T0).toISOString() + "," + (new Date).toISOString() + "," + ((Date.now() - T0) / 60000).toFixed(2));
    writeText(TIMINGFILE, TIMING);

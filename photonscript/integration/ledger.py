@@ -141,6 +141,8 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
                         "ok": (integration or {}).get("ok"),
                         "minutes": (integration or {}).get("minutes"),
                         "last_line": (integration or {}).get("last_line", ""),
+                        # stacks PixInsight skipped (too few registered frames, failed)
+                        "skipped_stacks": (integration or {}).get("skipped_stacks") or [],
                         "log": str(out_dir / "pipeline.log")},
         "finish": {"script": "finish_run.js (deploy/finish_osc.js)",
                    "ok": (finish or {}).get("ok"),

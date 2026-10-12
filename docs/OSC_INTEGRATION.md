@@ -47,7 +47,16 @@ Run on the desktop from the repo venv. What it does (code in
    is `master_<F>` (what `blend` and the finish expect), every other
    group of at least `--min-group-frames` (3) subs is its own HDR master
    `master_<F>_<exp>` (e.g. `master_L_30s`, combine later with HDRComposition
-   if wanted), smaller groups are left out with a message. An OSC stack
+   if wanted), smaller groups are left out with a message. A group that
+   passes selection but ends up below `--min-group-frames` registered frames
+   inside PixInsight (or whose calibration / registration / integration
+   fails) is SKIPPED there: `SKIPPED [<stack>]: <why>` in `pipeline.log`, a
+   SKIPPED row in `timing_pi.csv` and `timing.csv`, `skipped_stacks` in the
+   result and the ledger's integration block, a known issue in the packet;
+   the other stacks still get their masters and the finish runs on the
+   masters that exist. Only a run with no master at all fails (2026-10-12
+   M31 rc16: `B_300s` had 3 subs, 2 registered, and used to stop the run
+   before L 30 s, R and G). An OSC stack
    still holds every exposure group (one debayered master); it is marked
    `mixed_exposures` and when PSF Signal Weight fails the PJSR falls back
    to exposure-time weights, never equal weights.
