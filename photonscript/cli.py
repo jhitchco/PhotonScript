@@ -1872,6 +1872,58 @@ def slew_backfill(
         print(_json.dumps(results, indent=2, default=str))
 
 
+@app.command("dawn-file")
+def dawn_file_cmd(
+    night: str = typer.Option(..., "--night", help="The night (YYYY-MM-DD)"),
+    dry_run: bool = typer.Option(False, "--dry-run",
+                                 help="Only show what would be named and "
+                                      "approved (writes nothing, no solves)"),
+    approve: bool = typer.Option(True, "--approve/--no-approve",
+                                 help="--no-approve files without approving "
+                                      "(default: auto_approve_at_dawn)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Run the dawn filing (PS-157) of one night now: attribution (RC16
+    timeline, per-sub solve, plan window), pointing and slew passes,
+    auto-approve of QA-passing subs, Library build, filing record. The same
+    code as the dawn shutdown and POST /api/runs/{date}/autofile. Human
+    verdicts never change; re-running is safe. It rewrites the subs log:
+    with PhotonScript running prefer the POST, else run it in daytime.
+
+    photonscript dawn-file --night 2026-10-09 --dry-run
+    """
+    import json as _json
+
+    from photonscript.scheduler import dawn_autofile as da
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if dry_run:
+        r = da.preview_night(cfg, night)
+        if as_json:
+            print(_json.dumps(r, indent=2, default=str))
+            return
+        tl = r["timeline"]
+        console.print(
+            f"DRY RUN {night}: {r['subs']} subs; filing record "
+            f"{'exists' if r['record'] else 'none'}; RC16 timeline names "
+            f"{tl['named']} Piggy subs {tl['by_target'] or ''}, holds "
+            f"{tl['held']}; {r['would_solve']} would be plate-solved; plan "
+            f"window names {r['plan_fallback']['named']} "
+            f"{r['plan_fallback']['skipped'] or ''}; would approve "
+            f"{r['would_approve']} {r['by_target'] or ''} {r['by_rig'] or ''}"
+            f"{'' if r['auto_approve_at_dawn'] else ' (auto_approve_at_dawn off)'}"
+            f"; Piggy subs still '?': {r['piggy_still_unknown']}",
+            markup=False, highlight=False)
+        return
+    rec = da.file_night(cfg, night, push=False,
+                        approve=None if approve else False)
+    if as_json:
+        print(_json.dumps(rec, indent=2, default=str))
+        return
+    console.print(f"{night}: {rec['line']}", markup=False, highlight=False)
+    for e in rec["errors"]:
+        console.print(f"  step failed: {e}", markup=False, highlight=False)
+
+
 @app.command("regrade")
 def regrade(
     date: str = typer.Option("", help="One night (YYYY-MM-DD)"),
