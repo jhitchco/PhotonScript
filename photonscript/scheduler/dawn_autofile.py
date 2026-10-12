@@ -192,12 +192,10 @@ def rc16_timeline(config, subs: list[dict],
 def mount_offline(r: dict) -> bool:
     """A poll of a mount NINA #1 no longer has: RA 0, Dec 0 and no alt / az
     (2026-10-10 03:08Z, logged as an "unpark" to an idle mount). It says
-    nothing about where the mount is."""
-    try:
-        zero = float(r.get("ra")) == 0.0 and float(r.get("dec")) == 0.0
-    except (TypeError, ValueError):
-        return False
-    return zero and r.get("alt") is None and r.get("az") is None
+    nothing about where the mount is. The logger now writes an explicit
+    "offline" marker instead (shared.mount_log.is_offline reads both)."""
+    from photonscript.shared.mount_log import is_offline
+    return is_offline(r)
 
 
 def _mount_states(lines: list[dict] | None,

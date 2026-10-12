@@ -26,6 +26,12 @@ the same date the runs page uses). One JSON object per line, oldest first:
               move       moved more than mount_log_move_arcmin since the
                          last line (dithers, centering nudges)
               heartbeat  no line for mount_log_heartbeat_s while tracking
+              offline    NINA #1 reports the mount disconnected, or a poll
+                         with RA 0, Dec 0 and no alt / az (a mount the
+                         driver no longer has). The line carries
+                         "offline": true and no position (ra / dec / alt /
+                         az / pier / parked None); one line per outage.
+              reconnect  the first real poll after an offline line
 
 Readers: load() parses a night; position_at() gives the mount position at a
 time (the Piggy-600's live pointing); segments() turns the lines into
@@ -34,7 +40,10 @@ segment: it opens at the first line with slewing=true and closes at the
 next line with slewing=false (PS-13 slew gating reads these). Lines are
 written only on change, so a state holds until the next line; a gap longer
 than STALE_S with no line means the poll stopped (agent down, NINA closed)
-and the state is unknown after the last line + STALE_S.
+and the state is unknown after the last line + STALE_S. An offline line
+(is_offline, which also knows the pre-marker 0 / 0 polls of older logs)
+says nothing about where the mount is: position_at gives None there, its
+segment state is "offline", and the slew gate reads it as not covered.
 """
 
 from __future__ import annotations
@@ -73,11 +82,39 @@ def _clean(v):
     return v
 
 
+def poll_offline(mount: dict) -> bool:
+    """A ninaAPI mount poll that says nothing about the mount: NINA reports
+    it disconnected, or RA 0, Dec 0 with no alt / az (2026-10-09 03:08Z,
+    NINA #1 lost the mount and kept answering zeros)."""
+    if not isinstance(mount, dict):
+        return False
+    if mount.get("Connected") is False:
+        return True
+    ra_h, dec = _f(mount.get("RightAscension")), _f(mount.get("Declination"))
+    return (ra_h == 0.0 and dec == 0.0 and _f(mount.get("Altitude")) is None
+            and _f(mount.get("Azimuth")) is None)
+
+
+def is_offline(r: dict) -> bool:
+    """A stored line that is an offline marker: "offline": true, or (logs
+    written before the marker) RA 0, Dec 0 and no alt / az."""
+    if not isinstance(r, dict):
+        return False
+    if r.get("offline"):
+        return True
+    try:
+        zero = float(r.get("ra")) == 0.0 and float(r.get("dec")) == 0.0
+    except (TypeError, ValueError):
+        return False
+    return zero and r.get("alt") is None and r.get("az") is None
+
+
 def sample_from_nina(mount: dict) -> dict | None:
     """ninaAPI mount info -> {ra, dec (deg), alt, az, pier, slewing,
-    tracking, parked}; None when the payload has no coordinates."""
+    tracking, parked}; None when the payload has no coordinates or the
+    mount is offline (poll_offline: never a position at RA 0 / Dec 0)."""
     from photonscript.shared.pointing import pier_name
-    if not isinstance(mount, dict):
+    if not isinstance(mount, dict) or poll_offline(mount):
         return None
     ra_h, dec = _f(mount.get("RightAscension")), _f(mount.get("Declination"))
     if ra_h is None or dec is None:
@@ -106,12 +143,13 @@ class MountLogger:
         self.last: dict | None = None
         self.last_t: datetime | None = None
         self.night: str | None = None
+        self.offline = False   # the last line written is an offline marker
 
     def _why(self, s: dict, now: datetime) -> str | None:
         from photonscript.shared.pointing import sep_arcmin
         last = self.last
         if last is None:
-            return "start"
+            return "reconnect" if self.offline else "start"
         if s["slewing"] != last["slewing"]:
             return "slew-start" if s["slewing"] else "slew-end"
         if s["parked"] != last["parked"]:
@@ -132,18 +170,31 @@ class MountLogger:
     def observe(self, mount: dict, now: datetime | None = None,
                 write: bool = True) -> dict | None:
         from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
-        s = sample_from_nina(mount)
-        if s is None:
+        offline = poll_offline(mount)
+        s = None if offline else sample_from_nina(mount)
+        if s is None and not offline:
             return None
         now = now or datetime.utcnow()
         night = night_of(self.config, now)
         if night != self.night:   # a new night file starts with a full line
-            self.night, self.last = night, None
+            self.night, self.last, self.offline = night, None, False
+        if offline:
+            # one marker per outage, never a position (no RA 0 / Dec 0)
+            if self.offline:
+                return None
+            line = {"t": iso_z(now), "rig": self.rig, "offline": True,
+                    "ra": None, "dec": None, "alt": None, "az": None,
+                    "pier": None, "slewing": False, "tracking": False,
+                    "parked": None, "why": "offline"}
+            self.last, self.last_t, self.offline = None, now, True
+            if write:
+                append_jsonl(log_path(self.config, night), line)
+            return line
         why = self._why(s, now)
         if why is None:
             return None
         line = {"t": iso_z(now), "rig": self.rig, **s, "why": why}
-        self.last, self.last_t = s, now
+        self.last, self.last_t, self.offline = s, now, False
         if write:
             append_jsonl(log_path(self.config, night), line)
         return line
@@ -178,6 +229,8 @@ def position_at(lines: list[dict], when: datetime,
     if i < 0:
         return None
     r = lines[i]
+    if is_offline(r):
+        return None
     if (when - r["dt"]).total_seconds() > stale_s and r.get("tracking"):
         return None
     if r.get("slewing") or r.get("parked"):
@@ -197,6 +250,8 @@ def moved_during(lines: list[dict], start: datetime, end: datetime) -> bool:
 
 
 def _state(r: dict) -> str:
+    if is_offline(r):
+        return "offline"
     if r.get("parked"):
         return "parked"
     if r.get("slewing"):
@@ -209,7 +264,7 @@ def _state(r: dict) -> str:
 def segments(lines: list[dict], end: datetime | None = None,
              stale_s: float = STALE_S) -> list[dict]:
     """Merge lines into [{start, end, state}] (datetimes), state in
-    slewing | tracking | parked | idle. A tracking state with no newer line
+    slewing | tracking | parked | idle | offline. A tracking state with no newer line
     ends stale_s after its last line (the poll stopped)."""
     out: list[dict] = []
     for i, r in enumerate(lines):

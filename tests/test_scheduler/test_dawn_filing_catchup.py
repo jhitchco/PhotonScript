@@ -72,15 +72,21 @@ def _night_1009(cfg, windows=True):
 
 
 def test_root_cause_disconnected_poll_held_subs_as_parked(tmp_path):
-    """Before the fix the 03:08 line made every later sub 'parked'."""
+    """Before the fix the 03:08 line made every later sub 'parked' (it
+    read as an idle mount). mount_log now reads that legacy 0 / 0 line as
+    an offline marker too, so its segment is "offline", never "idle"."""
     from photonscript.shared import mount_log
     cfg = _cfg(tmp_path)
     late = _night_1009(cfg)
     lines = mount_log.load(cfg, N9)
-    old = mount_log.segments(lines, end=_t(N9, "06:46"))   # the old states
-    assert old[-1]["state"] == "idle" and old[-1]["end"] == _t(N9, "06:46")
+    old = mount_log.segments(lines, end=_t(N9, "06:46"))
+    assert old[-1]["state"] == "offline" and old[-1]["end"] == _t(N9, "06:46")
     s = dict(late[5])
-    assert da.judge_sub(s, cfg, [], old)["state"] == "parked"
+    assert da.judge_sub(s, cfg, [], old)["state"] != "parked"
+    # what the pre-fix reader saw: the 0 / 0 line as an idle mount
+    idle = [{**g, "state": "idle"} if g["state"] == "offline" else g
+            for g in old]
+    assert da.judge_sub(s, cfg, [], idle)["state"] == "parked"
     # the fix: the disconnected poll ends the state; after it, unknown
     new = da._mount_states(lines, _t(N9, "06:46"))
     assert new[-1]["state"] == "parked" and new[-1]["end"] == _t(N9, "03:08", 3)

@@ -818,16 +818,19 @@ class Armer:
         return _truthy(mf.get("parked"))
 
     def _mount_log_parked(self) -> bool | None:
-        """The parked flag of the newest mount-log line (tonight's file,
-        else the previous night's), or None when there is no log."""
+        """The parked flag of the newest real mount-log line (tonight's
+        file, else the previous night's), or None when there is no log.
+        Offline markers are skipped: the last known state is the line
+        before the outage."""
         try:
             from photonscript.shared import mount_log
             from photonscript.shared.phd2_store import night_of
             now = datetime.utcnow()
             for when in (now, now - timedelta(days=1)):
                 lines = mount_log.load(self.config, night_of(self.config, when))
-                if lines:
-                    return bool(lines[-1].get("parked"))
+                real = [r for r in lines if not mount_log.is_offline(r)]
+                if real:
+                    return bool(real[-1].get("parked"))
         except Exception as e:  # noqa: BLE001
             logger.info("mount log park read failed: %s", e)
         return None

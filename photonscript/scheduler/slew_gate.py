@@ -130,12 +130,18 @@ def windows_from_mount_log(lines, pad_s: float = PAD_S,
     on both sides, plus pad_s around every pier change (meridian flip), park
     and unpark (the events mount_log.moved_during counts), and around a
     "move" line that jumped min_move_arcmin or more from the line before it
-    (a short centering slew the 5 s poll never saw as Slewing). Merged."""
+    (a short centering slew the 5 s poll never saw as Slewing). Merged.
+    Offline lines (mount_log.is_offline) are skipped: no event, and no
+    "move" is measured across an outage (mount_log_covers reports the
+    outage as not covered instead)."""
     from photonscript.shared import mount_log
     pad = timedelta(seconds=float(pad_s or 0))
     wins = [(a - pad, b + pad) for a, b in mount_log.slew_windows(lines)]
     prev = None
     for r in lines:
+        if mount_log.is_offline(r):
+            prev = None
+            continue
         why = r.get("why")
         if why in EVENT_WHYS:
             wins.append((r["dt"] - pad, r["dt"] + pad))
@@ -153,12 +159,16 @@ def mount_log_covers(lines, start: datetime, end: datetime,
     last line at or before the start must be fresh (the poll writes on every
     change and a heartbeat while tracking) or say the mount was not tracking
     (parked / idle: no heartbeat, the state holds), or a line must fall
-    inside the exposure."""
+    inside the exposure. An offline line (mount_log.is_offline) in force
+    at the start or inside the exposure means the log does not know."""
     from photonscript.shared import mount_log
     if not lines or start is None or end is None:
         return False
     stale = float(stale_s if stale_s is not None else mount_log.STALE_S)
     before = [r for r in lines if r["dt"] <= start]
+    if (before and mount_log.is_offline(before[-1])) or any(
+            start < r["dt"] <= end and mount_log.is_offline(r) for r in lines):
+        return False
     if before:
         last = before[-1]
         if (start - last["dt"]).total_seconds() <= stale \

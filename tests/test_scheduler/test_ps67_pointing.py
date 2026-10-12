@@ -156,7 +156,7 @@ def test_mount_logger_change_detection(tmp_path):
                       t + timedelta(seconds=95))["why"] == "pier"
     assert ml.observe(_mount(ra_h=17.97, dec=66.6, pier="pierEast", tracking=False,
                              park=True), t + timedelta(seconds=99))["why"] == "park"
-    assert ml.observe({"Connected": False}, t) is None   # no coordinates
+    assert ml.observe({}, t) is None   # no coordinates, not offline
     lines = mount_log.load(cfg, mount_log.log_path(cfg, NIGHT).stem[:10])
     assert [r["why"] for r in lines] == ["start", "heartbeat", "slew-start",
                                          "move", "slew-end", "pier", "park"]
