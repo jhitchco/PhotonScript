@@ -979,9 +979,12 @@ def _osc_light_loop(config) -> dict:
     cover_open = flat_cover.open_items(config, "piggyback",
                                        f"OSC {exp_s:g}s") if cover_on else []
     cover_close = [flat_cover.close_if_unsafe()] if cover_on else []
+    # PS-25 (2026-10-12): first in every image pass (so after every resume
+    # hold), wait until NINA #1 exposes again before the OSC AF and lights
     image_pass = _seq_container(
         OSC_IMAGE_PASS_NAME,
-        [*cover_open, *gate_items, *pre_af, _autofocus(), *settle, inner],
+        [*_osc_resume_gate(config), *cover_open, *gate_items, *pre_af,
+         _autofocus(), *settle, inner],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
@@ -1004,6 +1007,24 @@ def _osc_settle_gate(config) -> list:
         return []
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     return [_external_script(path, f"--label=\"OSC {exp_s:g}s\"")]
+
+
+def _osc_resume_gate(config) -> list:
+    """PS-25: [the settle-gate ExternalScript with --resume] when the resume
+    gate and the settle gate are on and the script exists here, else [].
+    It holds (split_guard.run_resume_gate) until NINA #1 is in an exposure
+    item again, at most piggyback_resume_wait_max_s, so the OSC AF and
+    first light wait out the RC16's whole resume (2026-10-10: the 420 s hold
+    ended 6.6 min before the RC16's first light, inside its 8 min center).
+    It runs at the top of every image pass, i.e. after every resume hold;
+    on a pass where the RC16 is already exposing it returns at once.
+    ErrorBehavior 0 like the settle gate: it can delay, never skip."""
+    from photonscript.scheduler.nina_sequence_json import _external_script
+    from photonscript.scheduler.split_guard import gate_script, resume_gate_enabled
+    path = gate_script(config)
+    if not path or not resume_gate_enabled(config):
+        return []
+    return [_external_script(path, '--label="OSC resume" --resume')]
 
 
 def _osc_settle_gate_missing_notice(config) -> list:

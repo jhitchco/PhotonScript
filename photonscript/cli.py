@@ -737,29 +737,36 @@ def settle_gate_cmd(
                                         "item (deploy\\settle-gate.cmd)"),
     url: str = typer.Option("http://127.0.0.1:8100", "--url",
                             help="The running PhotonScript service"),
+    resume: bool = typer.Option(False, "--resume",
+                                help="PS-25: hold until NINA #1 exposes again "
+                                     "after a resume (the OSC image pass)"),
 ):
     """PS-27: hold the Piggy-600's next OSC light until the RC16 mount is
     still and PHD2 is not settling (POST /api/piggyback/settle-gate), at
     most piggyback_settle_timeout_s; PS-158: and while the mount is parked
     or not tracking, at most piggyback_tracking_hold_s. Always exits 0: the
     gate can delay a sub, never skip one, and fails open when the service
-    is down."""
+    is down. --resume (PS-25): the resume gate instead (mode=resume), at
+    most piggyback_resume_wait_max_s."""
     import json as _json
     import urllib.parse
     import urllib.request
     try:
-        from photonscript.scheduler.split_guard import gate_bound_s
+        from photonscript.scheduler.split_guard import (gate_bound_s,
+                                                        resume_wait_max_s)
         cfg = _config_for_repo(Path(__file__).resolve().parents[1])
-        timeout = gate_bound_s(cfg) + 30
+        timeout = (resume_wait_max_s(cfg) if resume else gate_bound_s(cfg)) + 30
     except Exception:  # noqa: BLE001
         timeout = 1020.0
+    q = {"label": label, **({"mode": "resume"} if resume else {})}
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/api/piggyback/settle-gate?"
-            + urllib.parse.urlencode({"label": label}), data=b"", method="POST")
+            + urllib.parse.urlencode(q), data=b"", method="POST")
         with urllib.request.urlopen(req, timeout=timeout) as r:
             rep = _json.loads(r.read().decode("utf-8"))
-        print(f"settle gate{' (from NINA)' if from_nina else ''}: "
+        print(f"{'resume' if resume else 'settle'} gate"
+              f"{' (from NINA)' if from_nina else ''}: "
               f"{rep.get('verdict')} after {rep.get('waited_s')} s - "
               f"{rep.get('reason', '')}")
     except Exception as e:  # noqa: BLE001

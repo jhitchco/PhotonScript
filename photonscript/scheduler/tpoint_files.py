@@ -593,6 +593,9 @@ def stats(config, listing: dict | None = None) -> dict:
         out["active_model"] = ("recal" if active is recal and recal is not None
                                else "base" if main else None)
         out["active_model_file"] = active["file"] if active else None
+        # PS-120: when the active model was written (UTC ISO), the cutoff for
+        # the audit's first slews (slews before it say nothing about it)
+        out["active_model_mtime"] = active["mtime"] if active else None
         if main:
             pt, psrc, me_model = _polar_terms(active, base)
             lat = float(getattr(config, "observatory_lat", 31.9))
@@ -695,6 +698,7 @@ def audit_observed(config) -> tuple[dict, dict]:
     o = {"tpoint_points": st.get("points"),
          "tpoint_rms_arcsec": st.get("sky_rms_arcsec"),
          "tpoint_model_date": st.get("model_date"),
+         "tpoint_model_mtime": st.get("active_model_mtime"),
          "tpoint_polar_error_arcmin": (st.get("polar") or {}).get("total_arcmin")}
     o = {k: v for k, v in o.items() if v is not None}
     return o, {"ok": True, "note": f"{st.get('data_file') or '-'} / "

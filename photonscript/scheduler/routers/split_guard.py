@@ -5,7 +5,11 @@ POST /api/piggyback/settle-gate?label=   hold until the RC16 mount is still
                                          piggyback_settle_timeout_s); NINA #2's
                                          ExternalScript reaches it through
                                          deploy\\settle-gate.cmd
-GET  /api/piggyback/split-guard          config, the live motion tracker, the
+                                         (PS-25: &mode=resume holds the OSC
+                                         image pass until NINA #1 exposes
+                                         again, at most
+                                         piggyback_resume_wait_max_s)
+GET /api/piggyback/split-guard          config, the live motion tracker, the
                                          last gate result, tonight's numbers
 GET  /api/runs/{date}/split              the night's split-pointing rate
 
@@ -27,10 +31,14 @@ def _cfg():
 
 
 @router.post("/api/piggyback/settle-gate")
-async def api_settle_gate(request: Request, label: str = ""):
+async def api_settle_gate(request: Request, label: str = "", mode: str = ""):
     """Held while the mount moves (bounded). Every verdict means "shoot":
-    PASS, TIMEOUT, UNKNOWN (NINA #1 unreadable), OFF."""
+    PASS, TIMEOUT, UNKNOWN (NINA #1 unreadable), OFF. mode=resume (PS-25):
+    held until NINA #1 is exposing again after a resume (bounded)."""
     from photonscript.scheduler import split_guard as sg
+    if mode == "resume":
+        return await sg.run_resume_gate(_cfg(), label,
+                                        disconnected=request.is_disconnected)
     return await sg.run_settle_gate(_cfg(), label,
                                     disconnected=request.is_disconnected)
 

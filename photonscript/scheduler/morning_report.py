@@ -33,11 +33,19 @@ The dashboard shows it as the "Morning report" card (GET
 /api/morning/report); the dawn "Night complete" push carries card_lines
 (the calibration line is already its own line there). Never raises: a
 section that cannot be built says so.
+
+fit_push (2026-10-12) keeps that push inside Pushover's 1024 characters:
+every line has a priority (PRI_KEEP headline and shutdown failure, PRI_RIG
+per-rig card lines and the split note, PRI_NOTE calibration owed and
+integrations, PRI_DETAIL the rest of the card); details go first, a line is
+cut with "..." before it is dropped, and a trimmed push ends with the
+dashboard link (the card there has every line).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 from collections import Counter
 from datetime import datetime
@@ -324,3 +332,82 @@ def push_text(config, date: str | None) -> str | None:
     if card.get("completeness"):
         lines.append(card["completeness"])
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# fitting the dawn push into Pushover's message limit (PS-166, 2026-10-12)
+# --------------------------------------------------------------------------
+
+# Pushover takes at most 1024 characters of message text; the rate limiter
+# may append "\n[+N alert(s) suppressed]" (pushover.notify), so the push is
+# fitted to the limit minus that margin. 2026-10-11: the 10-10 "PhotonScript
+# complete" push was about 1.2k characters (shutdown steps, split, two
+# integration lines, calibration owed, four card lines).
+PUSH_MAX_CHARS = 1024
+PUSH_NOTE_MARGIN = 40
+PUSH_MIN_PART = 40          # shorter than this, a trimmed line is dropped
+DASHBOARD_URL = "https://teles-feb25.lobster-bleak.ts.net/"
+
+# Line priorities, lowest kept longest. KEEP is never dropped (the night's
+# headline and a shutdown failure); RIG is a per-rig card line or the split
+# note; NOTE the calibration owed and integration lines; DETAIL the rest of
+# the card (tracking, library, NINA log size, calibration completeness).
+PRI_KEEP, PRI_RIG, PRI_NOTE, PRI_DETAIL = 0, 1, 2, 3
+
+_RIG_LINE = re.compile(r"^[^:\n]{1,40}: \d+ kept / \d+ rejected")
+
+
+def card_line_priority(line: str) -> int:
+    """PRI_RIG for a per-rig card line (_rig_line: "<rig>: N kept / M
+    rejected..."), else PRI_DETAIL."""
+    return PRI_RIG if _RIG_LINE.match(line or "") else PRI_DETAIL
+
+
+def card_parts(text: str | None) -> list[tuple[int, str]]:
+    """push_text's block as (priority, line) parts for fit_push."""
+    return [(card_line_priority(ln), ln) for ln in (text or "").splitlines() if ln]
+
+
+def _cut(line: str, n: int) -> str:
+    return line[:max(0, n - 3)].rstrip(" ;,") + "..."
+
+
+def fit_push(parts: list[tuple[int, str]], limit: int | None = None,
+             link: str | None = DASHBOARD_URL) -> str:
+    """Join (priority, line) parts with newlines so the result fits
+    `limit` characters (default PUSH_MAX_CHARS - PUSH_NOTE_MARGIN). Lines
+    keep their order. When it does not fit, the highest priority number
+    goes first, last line first: a line is cut with "..." when at least
+    PUSH_MIN_PART characters of it still fit, else dropped; PRI_KEEP lines
+    are only cut as a last resort. A trimmed push ends with a link to the
+    dashboard, whose Morning report card has every line."""
+    limit = int(limit if limit is not None else PUSH_MAX_CHARS - PUSH_NOTE_MARGIN)
+    lines = [[int(p), str(t)] for p, t in parts if t]
+
+    def size(ls, extra=""):
+        return len("\n".join(t for _p, t in ls)) + (len(extra) + 1 if extra else 0)
+
+    if size(lines) <= limit:
+        return "\n".join(t for _p, t in lines)
+    tail = (f"(trimmed: full report {link})" if link else
+            "(trimmed to fit Pushover)")
+    order = sorted(range(len(lines)), key=lambda i: (-lines[i][0], -i))
+    for i in order:
+        if lines[i][0] == PRI_KEEP:
+            break
+        over = size([ln for ln in lines if ln[1]], tail) - limit
+        if over <= 0:
+            break
+        t = lines[i][1]
+        keep = len(t) - over
+        if keep >= PUSH_MIN_PART:
+            lines[i][1] = _cut(t, keep)
+            break
+        lines[i][1] = ""
+    lines = [ln for ln in lines if ln[1]]
+    over = size(lines, tail) - limit
+    if over > 0:   # only KEEP lines left and still too long: cut the longest
+        j = max(range(len(lines)), key=lambda k: len(lines[k][1]))
+        lines[j][1] = _cut(lines[j][1], max(PUSH_MIN_PART, len(lines[j][1]) - over))
+    out = "\n".join([t for _p, t in lines] + [tail])
+    return out if len(out) <= limit else _cut(out, limit)

@@ -383,6 +383,13 @@ they differ. Nothing here deploys until `deploy.ps1`; the dev clone is
   safe it holds `safety_confirm_seconds` + `piggyback_resume_grace_s` (120 + 300 s)
   before its AF and lights; lights only from astro dusk to astro dawn (PS-175:
   twilight subs were rejected by hand on 2026-10-07); one "roof open" push a night.
+  After that fixed hold, every OSC image pass starts with the resume gate
+  (settle-gate script with `--resume`, `piggyback_resume_gate`, default on):
+  it holds until NINA #1's running item is an exposure again (read only from
+  its `/sequence/json`), at most `piggyback_resume_wait_max_s` (900 s), and
+  fails open. 2026-10-10: the hold ran on both resumes, but the second RC16
+  resume (new target, 8 min center) took 13.7 min, so the OSC focused and
+  started a light inside the RC16's center.
 
 ### 9.6 Follow-ups / watch-items
 - **RC16 broadband flats** (L/R/G/B) went 541 d stale while narrowband stayed

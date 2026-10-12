@@ -1778,7 +1778,11 @@ OSC_INTEGRATION.md "Fast scratch disk".
   magnitude and takes E / W from TheSky's own sidereal time (unknown, verify
   by eye, when that read is missing); DST index 17 = U.S. and Canada;
   first slews count only after the TPoint model; run binning 1 or 2; All
-  Sky off is fine with a catalog solve; polar limit 3'.
+  Sky off is fine with a catalog solve; polar limit 3'. 2026-10-12: a
+  zone that disagrees with the PC is a WARN (not FAIL) when TheSky's
+  Julian date and LST are right (its UT comes from the computer clock), and
+  a TPoint model file newer than the manual record moves the first-slew
+  cutoff and the model age.
 - OPEN THREADS: `gradual_warm_minutes` change is staged in the desktop repo but
   NOT yet deployed (deploy after a dawn shutdown, never mid-run - deploy 409s
   while armed). Confirm the OSC dark library has matching 120s @0C darks.

@@ -360,7 +360,9 @@ site's TheSky 10.5 build).
   side of the meridian (from the hour angle unless the log names the pier),
   Dec band and HA band, 14 nights, counting only runs after the TPoint model
   (PS-120: the earlier of the record's entry time and the end of the model
-  night; none yet reads "no slews since the model (n=0)", unknown). PS-67's mount vs solve median shows beside
+  night, or the active TPoint model file's write time when that is later,
+  so a model rebuilt without re-entering the record is judged on its own
+  slews; none yet reads "no slews since the model (n=0)", unknown). PS-67's mount vs solve median shows beside
   it once that record exists.
 - PS-138: TPoint model on (Apply pointing corrections), points, RMS and
   ProTrack (Activate ProTrack + Enable tracking adjustments) are read live

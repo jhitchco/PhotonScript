@@ -296,6 +296,131 @@ async def run_settle_gate(cfg, label: str = "", *, read=None,
         await sleep(min(poll_s, max(0.5, left)))
 
 
+# ------------------------------------------------------------------ resume
+
+def resume_gate_enabled(cfg) -> bool:
+    return bool(getattr(cfg, "piggyback_resume_gate", True))
+
+
+def resume_wait_max_s(cfg) -> float:
+    return max(0.0, _f(cfg, "piggyback_resume_wait_max_s", 900.0))
+
+
+def rc16_activity(tree) -> tuple[str, str | None]:
+    """PS-25: what NINA #1's /sequence/json tree says the RC16 is doing:
+    ("exposing", leaf) when the deepest running item is an exposure item
+    (Smart Exposure / Take Exposure: past its unpark, slew, AF and center),
+    ("busy", leaf) for anything else running (a wait, unpark, slew, AF,
+    Center, script), ("idle", None) when nothing runs. The deepest running
+    leaf is found the way the RC16 agent's _sequence_status does it (an
+    item with no Items of its own). An exposure inside the UNSAFE branch
+    (the roof-closed dark quota) is "busy": the RC16 has not resumed."""
+    leaf = (-1, None, False)
+    running = False
+
+    def walk(node, depth, unsafe):
+        nonlocal leaf, running
+        if not isinstance(node, dict):
+            return
+        name = str(node.get("Name") or "")
+        if _is_running(node):
+            running = True
+            unsafe = unsafe or name.upper().startswith("UNSAFE")
+            if node.get("Items") is None and depth > leaf[0]:
+                leaf = (depth, name, unsafe)
+        for child in node.get("Items") or []:
+            walk(child, depth + 1, unsafe)
+
+    for top in (tree if isinstance(tree, list) else [tree]):
+        walk(top, 0, False)
+    if not running:
+        return "idle", None
+    _d, name, in_unsafe = leaf
+    if name and "exposure" in name.lower() and not in_unsafe:
+        return "exposing", name
+    return "busy", name
+
+
+async def read_rc16_sequence(cfg):
+    """NINA #1 /sequence/json (read-only), or None."""
+    try:
+        return await _http_get(_rc16_base(cfg) + "/sequence/json", 5.0)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("resume gate: NINA #1 sequence read failed: %s", e)
+        return None
+
+
+async def run_resume_gate(cfg, label: str = "", *, read=None,
+                          sleep=asyncio.sleep, clock=time.time,
+                          disconnected=None) -> dict:
+    """PS-25: hold the Piggy-600's image pass (its AF, then lights) after a
+    safe re-entry until NINA #1 is in an exposure item again, so the OSC
+    does not focus or shoot while the RC16 unparks, slews and centers.
+    NINA #2's sequence already held safety_confirm_seconds +
+    piggyback_resume_grace_s before calling this; this is the rest of the
+    RC16's resume, however long it runs (2026-10-10: 13.7 min after safe,
+    a new target and an 8 min center), at most piggyback_resume_wait_max_s.
+    Verdicts: PASS (NINA #1 exposing, or running no sequence), TIMEOUT,
+    UNKNOWN (NINA #1 unreadable 3 polls), OFF, ABORTED; every one means
+    "go on" (the CLI exits 0). Reads NINA #1 only; writes nothing to it."""
+    read = read or read_rc16_sequence
+    base = {"rig": "piggyback", "label": label, "gate": "resume"}
+    if not (gate_enabled(cfg) and resume_gate_enabled(cfg)):
+        return {**base, "verdict": "OFF", "waited_s": 0.0, "held": [],
+                "reason": "piggyback_resume_gate (or the settle gate) is off"}
+    max_s = resume_wait_max_s(cfg)
+    poll_s = max(1.0, _f(cfg, "piggyback_settle_poll_s", 2.0))
+    t0 = clock()
+    unreadable = 0
+    held: list[str] = []
+
+    def done(verdict, reason, now):
+        res = {**base, "verdict": verdict, "waited_s": round(now - t0, 1),
+               "held": list(held), "reason": reason}
+        LAST.clear()
+        LAST.update(res, at=now)
+        log_event(cfg, "resume_gate", verdict, waited_s=res["waited_s"],
+                  held=list(held), reason=reason)
+        return res
+
+    while True:
+        if disconnected is not None:
+            try:
+                if await disconnected():
+                    return {**base, "verdict": "ABORTED",
+                            "waited_s": round(clock() - t0, 1),
+                            "held": list(held),
+                            "reason": "NINA cancelled the gate"}
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            tree = await read(cfg)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("resume gate read failed: %s", e)
+            tree = None
+        now = clock()
+        if tree is None:
+            unreadable += 1
+            if unreadable >= UNREADABLE_POLLS:
+                return done("UNKNOWN", "NINA #1 sequence unreadable; going on "
+                                       "(fails open)", now)
+        else:
+            unreadable = 0
+            state, leaf = rc16_activity(tree)
+            if state == "exposing":
+                return done("PASS", f"RC16 exposing ({leaf})" if held else
+                            f"RC16 already exposing ({leaf})", now)
+            if state == "idle":
+                return done("PASS", "NINA #1 runs no sequence", now)
+            if leaf and leaf not in held:
+                held.append(leaf)
+        left = max_s - (now - t0)
+        if left <= 0:
+            return done("TIMEOUT", f"RC16 not exposing after {now - t0:.0f} s; "
+                                   "going on", now)
+        await sleep(min(poll_s, max(0.5, left)))
+
+
 # ------------------------------------------------------------------ abort
 
 def _is_running(node) -> bool:

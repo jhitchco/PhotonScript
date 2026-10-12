@@ -406,6 +406,26 @@ def _utcnow() -> datetime:
     return datetime.utcnow()
 
 
+def _ut_matches_pc(row, observed, config) -> str | None:
+    """PS-120: the evidence that TheSky's UT is right whatever its zone
+    reads: its Julian date within ut_max_s (2 s) of the PC's UTC (the
+    site_clock read) and, when read, its sidereal time putting the site
+    within 1 deg of observatory_lon. None when the clock was not read, or
+    either check is off."""
+    ts = observed.get("thesky-script") or {}
+    clk = _num(ts.get("site_clock"))
+    if clk is None or abs(clk) > float(row.get("ut_max_s", 2.0)):
+        return None
+    why = f"Julian date {clk:+.1f} s from the PC's UTC"
+    lon = lst_longitude(observed)
+    if lon is not None:
+        want = float(getattr(config, "observatory_lon", -109.021111))
+        if abs(_wrap180(lon - want)) > 1.0:
+            return None
+        why += f", LST puts the site at {_ew(lon)}"
+    return why
+
+
 def _c_time_zone(row, val, observed, config, ctx):
     """PS-119 / PS-120: TheSky's time zone (DocumentProperty 2) and DST rule
     (DocumentProperty 4, an index into TheSky's daylight saving list: 0 =
@@ -415,7 +435,14 @@ def _c_time_zone(row, val, observed, config, ctx):
     offset with U.S. and Canada DST. WARN: another rule, or a combination
     that gives the right local time only today (e.g. -6 with DST not
     observed while New Mexico is on MDT). FAIL: TheSky's local time differs
-    from the PC's now."""
+    from the PC's now AND its UT is not shown to be right.
+
+    PS-120 (2026-10-11): after the 10-08 reinstall the zone read tz +0, DST
+    not observed (index 0) while the same script read TheSky's Julian date
+    0.0 s from the PC's UTC and an LST that put the site at 109.02 W. So
+    TheSky's UT comes from the computer clock, not from this zone, and a
+    wrong zone only skews TheSky's local-time display and DST dates: WARN
+    with the fix, not a pointing FAIL (_ut_matches_pc)."""
     from zoneinfo import ZoneInfo
     ts = observed.get("thesky-script") or {}
     tz, dst = _num(ts.get("time_zone")), _num(ts.get("dst_index"))
@@ -435,8 +462,14 @@ def _c_time_zone(row, val, observed, config, ctx):
     ctx["current"] = f"tz {tz:+g}, DST {dst_name(dst)}"
     eff = tz + (1.0 if int(dst) != 0 and dst_now else 0.0)
     if abs(eff - pc_now) * 60.0 > 1.0:
-        return FAIL, want, (f"TheSky's local time is {eff:+g} h from UTC, the PC's is "
-                            f"{pc_now:+g} h: TheSky's local time is off")
+        off = (f"TheSky's local time is {eff:+g} h from UTC, the PC's is "
+               f"{pc_now:+g} h: TheSky's local time is off")
+        ut_ok = _ut_matches_pc(row, observed, config)
+        if ut_ok:
+            return WARN, want, (f"{off}, but its UT is right ({ut_ok}), so pointing is "
+                                "not affected: set the zone so TheSky's local times and "
+                                "DST dates are right")
+        return FAIL, want, off
     if abs(tz - std) < 1e-6 and int(dst) in DST_US_CANADA:
         return PASS, want, None
     if int(dst) != 0 and int(dst) not in DST_US_CANADA:
@@ -654,8 +687,19 @@ def _c_tpoint_threshold(row, val, observed, config, ctx):
     return (PASS if ok else row["severity"]), want, None
 
 
+def model_date(observed) -> date | None:
+    """PS-120: the newest TPoint model date: the manual record's model_date
+    or the TPoint files' (the active model file's date), whichever is later.
+    2026-10-11: the record still said 2026-10-04 while TPoint's files held
+    the 356-point model written 2026-10-10 (after the 10-08 reinstall)."""
+    dates = [_parse_date((observed.get("manual_record") or {}).get("model_date")),
+             _parse_date((observed.get("tpoint-files") or {}).get("tpoint_model_date"))]
+    dates = [d for d in dates if d]
+    return max(dates) if dates else None
+
+
 def _model_age(observed, config) -> int | None:
-    md = _parse_date((observed.get("manual_record") or {}).get("model_date"))
+    md = model_date(observed)
     return (_today(config) - md).days if md else None
 
 
@@ -677,7 +721,7 @@ def rebuild_reasons(observed, config) -> tuple[list[str], list[str]]:
     """(rebuild reasons, watch reasons) for the TPoint model."""
     rebuild, watch = [], []
     rec = observed.get("manual_record") or {}
-    md = _parse_date(rec.get("model_date"))
+    md = model_date(observed)
     lim = float(getattr(config, "tpoint_max_age_days", 90) or 90)
     age = _model_age(observed, config)
     if age is not None:
@@ -743,7 +787,7 @@ def _c_tpoint_rebuild(row, val, observed, config, ctx):
     if watch:
         ctx["current"] = "watch"
         return WARN, want, "; ".join(watch)
-    if not (observed.get("manual_record") or {}).get("model_date"):
+    if model_date(observed) is None:
         ctx["current"] = "unknown"
         return UNKNOWN, want, "no model date: enter the TPoint record below"
     pl = observed.get("pointing-log") or {}
@@ -1319,12 +1363,23 @@ def astap_observed(config) -> tuple[dict, list[dict], dict, dict]:
     return o, hist, latest, {"ok": True, "note": f"check {latest.get('t_utc')} on {latest.get('file')}"}
 
 
-def model_cutoff_utc(rec: dict | None, config) -> datetime | None:
+def model_cutoff_utc(rec: dict | None, config,
+                     files_mtime: str | None = None) -> datetime | None:
     """PS-120: first slews older than the TPoint model say nothing about it.
-    The cutoff is the earlier of the record's entered_at and the end of the
+    From the manual record: the earlier of its entered_at and the end of the
     model night (local noon after model_date), so no slew from before the
     model is counted; a few slews between the build and the entry may be
-    left out (conservative). None without a model date."""
+    left out (conservative). files_mtime (the active TPoint model file's
+    write time, UTC) wins when it is later: a model rebuilt without
+    re-entering the record (2026-10-10, after the 10-08 reinstall) must not
+    be judged on the old model's slews. None without either."""
+    rec_cut = _record_cutoff_utc(rec, config)
+    ft = store.parse_z(files_mtime) if files_mtime else None
+    cands = [c for c in (rec_cut, ft) if c is not None]
+    return max(cands) if cands else None
+
+
+def _record_cutoff_utc(rec: dict | None, config) -> datetime | None:
     from photonscript.shared.localtime import utc_offset_hours
     rec = rec or {}
     md = _parse_date(rec.get("model_date"))
@@ -1342,9 +1397,13 @@ def model_cutoff_utc(rec: dict | None, config) -> datetime | None:
     return min(end, ent)
 
 
-def pointing_observed(config, rec: dict | None = None) -> tuple[dict, dict]:
+def pointing_observed(config, rec: dict | None = None,
+                      files: dict | None = None) -> tuple[dict, dict]:
+    """files: the "tpoint-files" observed keys (PS-120: a newer model file
+    moves the first-slew cutoff)."""
     from photonscript.scheduler import nina_center_log as ncl
-    since = model_cutoff_utc(rec, config)
+    files = files or {}
+    since = model_cutoff_utc(rec, config, files.get("tpoint_model_mtime"))
     s = ncl.summary(config, 14, since_utc=since)
     o = dict(s)
     # the newest night that has a filter change in its NINA log
@@ -1364,7 +1423,14 @@ def pointing_observed(config, rec: dict | None = None) -> tuple[dict, dict]:
              f"NINA logs folder {getattr(config, 'nina_logs_dir', '')} not found"))
     if since is not None:
         o["model_date"] = (rec or {}).get("model_date")
-        cut = f"since the TPoint model ({o['model_date']}, counted from {store.iso_z(since)})"
+        fd = files.get("tpoint_model_date")
+        ft = store.parse_z(files.get("tpoint_model_mtime") or "")
+        by_files = ft is not None and since == ft and fd
+        if by_files:
+            o["model_date"] = fd
+        cut = (f"since the TPoint model ({o['model_date']}"
+               + (", TPoint files" if by_files else "")
+               + f", counted from {store.iso_z(since)})")
         skipped = (f"; {s.get('before_since')} older run(s) ignored"
                    if s.get("before_since") else "")
         note = (f"{s['runs']} NINA Center runs {cut}{skipped}" if ok else
@@ -1432,7 +1498,8 @@ def collect(config, *, client=None, armer_state: str | None = None) -> dict:
     except Exception as e:  # noqa: BLE001
         src["manual"] = {"ok": False, "note": str(e)}
     try:
-        obs["pointing-log"], src["pointing-log"] = pointing_observed(config, rec)
+        obs["pointing-log"], src["pointing-log"] = pointing_observed(
+            config, rec, obs.get("tpoint-files"))
     except Exception as e:  # noqa: BLE001
         src["pointing-log"] = {"ok": False, "note": str(e)}
     try:
