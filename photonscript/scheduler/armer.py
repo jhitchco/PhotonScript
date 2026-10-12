@@ -944,39 +944,43 @@ class Armer:
     async def _notify_complete(self, msg: str) -> None:
         """The dawn "Night complete" push. PS-27: adds the Piggy-600 split
         rate when the Piggy took lights; over piggyback_split_alert_pct the
-        push goes out at priority 1 with a short hint."""
+        push goes out at priority 1 with a short hint.
+
+        PS-166 (2026-10-12): every line carries a priority and fit_push
+        keeps the push inside Pushover's 1024 characters: card details go
+        first, then the calibration / integration notes, then the per-rig
+        lines; the headline and a shutdown failure stay. A trimmed push
+        ends with the dashboard link (the Morning report card)."""
+        from photonscript.scheduler import morning_report as mr
         from photonscript.scheduler.split_guard import morning_split_note
+        parts = [(mr.PRI_KEEP, ln) for ln in str(msg).splitlines()]
+
+        def add(pri, text):
+            parts.extend((pri, ln) for ln in str(text or "").splitlines() if ln)
         line, alert = morning_split_note(self.config, self.plan.get("night_of"))
-        if line:
-            msg = f"{msg}\n{line}"
+        add(mr.PRI_RIG, line)
         try:  # PS-142: ledgers the desktop integrator posted in the last 24 h
             from photonscript.scheduler.integrations import morning_note
-            integ_line = morning_note(self.config)
-            if integ_line:
-                msg = f"{msg}\n{integ_line}"
+            add(mr.PRI_NOTE, morning_note(self.config))
         except Exception as e:  # noqa: BLE001 - the dawn push always goes out
             logger.debug("integration morning note unavailable: %s", e)
         try:  # PS-160: what calibration the lights still owe
             from photonscript.scheduler.calibration_owed import (
                 morning_note as cal_note)
-            cal_line = await asyncio.wait_for(
-                asyncio.to_thread(cal_note, self.config), timeout=60)
-            if cal_line:
-                msg = f"{msg}\n{cal_line}"
+            add(mr.PRI_NOTE, await asyncio.wait_for(
+                asyncio.to_thread(cal_note, self.config), timeout=60))
         except Exception as e:  # noqa: BLE001 - the dawn push always goes out
             logger.debug("calibration morning note unavailable: %s", e)
         try:  # PS-166: the morning report card, per rig
-            from photonscript.scheduler.morning_report import push_text
             card = await asyncio.wait_for(asyncio.to_thread(
-                push_text, self.config, self.plan.get("night_of")), timeout=60)
-            if card:
-                msg = f"{msg}\n{card}"
+                mr.push_text, self.config, self.plan.get("night_of")), timeout=60)
+            parts.extend(mr.card_parts(card))
         except Exception as e:  # noqa: BLE001 - the dawn push always goes out
             logger.debug("morning report card unavailable: %s", e)
         failed =(self.shutdown or {}).get("failed") or []
         if failed:   # PS-159: a real shutdown failure pages
-            msg = f"{msg}\nShutdown step FAILED: {'; '.join(failed)}"
-        await notify(self.config, msg, title="PhotonScript complete",
+            parts.append((mr.PRI_KEEP, f"Shutdown step FAILED: {'; '.join(failed)}"))
+        await notify(self.config, mr.fit_push(parts), title="PhotonScript complete",
                      priority=1 if (alert or failed) else 0)
 
     def _shutdown_verify_delay_s(self) -> int:

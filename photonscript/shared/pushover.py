@@ -58,6 +58,11 @@ _DEFAULTS = {
 
 _lock = asyncio.Lock()
 
+# Message characters kept in notifications.jsonl: a whole Pushover message
+# (1024) plus the limiter's suppressed note. Was 500 until 2026-10-12 (PS-166:
+# the stored "PhotonScript complete" text read as cut off at 500).
+AUDIT_MESSAGE_CHARS = 1100
+
 
 def _cfg(config, key):
     return getattr(config, key, _DEFAULTS[key])
@@ -98,7 +103,7 @@ def _audit(config, title: str, message: str, priority: int, sent: bool,
         p = _audit_path(config)
         p.parent.mkdir(parents=True, exist_ok=True)
         rec = {"ts": datetime.now(timezone.utc).isoformat(),
-               "title": title, "message": (message or "")[:500],
+               "title": title, "message": (message or "")[:AUDIT_MESSAGE_CHARS],
                "priority": int(priority), "sent": bool(sent), "reason": reason}
         with open(p, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec) + "\n")
