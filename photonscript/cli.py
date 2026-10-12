@@ -858,6 +858,84 @@ def tpoint_sample_cmd(
     raise typer.Exit(0)
 
 
+@app.command("tpoint-autocal")
+def tpoint_autocal_cmd(
+    points: int = typer.Option(30, "--points", help="Pointing samples "
+                               "(6..500; a first supervised run: small)"),
+    mode: str = typer.Option("loop", "--mode", help="loop (PhotonScript "
+                             "slews / exposes / AutoMaps each point) | window "
+                             "(open TheSky's Automated Pointing Calibration, "
+                             "the operator starts it)"),
+    exposure_s: Optional[float] = typer.Option(None, "--exposure-s"),
+    binning: Optional[int] = typer.Option(None, "--binning"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan, "
+                                 "the preflight and every script; send nothing"),
+    go: bool = typer.Option(False, "--go", help="The live run (NOT "
+                            "IMPLEMENTED yet)"),
+    status: bool = typer.Option(False, "--status", help="Dry run: also read "
+                                "the scheduler's GET /api/arm and GET "
+                                "/api/apps/status for the preflight"),
+    url: str = typer.Option("http://localhost:8100", "--url",
+                            help="Scheduler for --status"),
+    scripts: bool = typer.Option(True, "--scripts/--no-scripts",
+                                 help="Print each step's TheSky script"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """TPoint autocal: grow the TPoint model with TheSky's own camera,
+    operator-started and supervised (docs/TPOINT_AUTOCAL.md). Only the dry
+    run exists: it prints the preflight, the NINA camera hand-off and every
+    TheSky script, and sends nothing to TheSky or NINA. Never arms.
+
+    photonscript tpoint-autocal --points 30 --dry-run
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from photonscript.telescope_agent import tpoint_autocal as ta
+    if dry_run and go:
+        console.print("pick one of --dry-run and --go", markup=False)
+        raise typer.Exit(2)
+    if go:
+        try:
+            ta.run_go()
+        except NotImplementedError as e:
+            console.print(str(e), markup=False)
+            raise typer.Exit(2)
+    if mode not in ta.MODES:
+        console.print(f"--mode must be one of {', '.join(ta.MODES)}", markup=False)
+        raise typer.Exit(2)
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    arm = apps = None
+    if status:   # read-only GETs on PhotonScript's own scheduler
+        import httpx
+        base = url.rstrip("/")
+        try:
+            arm = httpx.get(base + "/api/arm", timeout=10).json()
+        except Exception as e:  # noqa: BLE001
+            console.print(f"GET /api/arm failed ({e})", markup=False)
+        try:
+            apps = httpx.get(base + "/api/apps/status", timeout=30).json()
+        except Exception as e:  # noqa: BLE001
+            console.print(f"GET /api/apps/status failed ({e})", markup=False)
+    backup = None
+    try:
+        from photonscript.scheduler import tpoint_files as tf
+        backup = ta.backup_plan(tf.list_files(cfg), _dt.utcnow())
+    except Exception as e:  # noqa: BLE001
+        console.print(f"TPoint file listing failed ({e})", markup=False)
+    pre = ta.preflight(arm, apps, None, backup,
+                       auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
+                       auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)))
+    plan = ta.build_plan(cfg, points=points, mode=mode, exposure_s=exposure_s,
+                         binning=binning)
+    if as_json:
+        print(_json.dumps({"dry_run": True, "preflight": pre, "backup": backup,
+                           "plan": plan}, indent=2, default=str))
+    else:
+        console.print(ta.format_plan(plan, pre, show_scripts=scripts),
+                      markup=False, highlight=False)
+    raise typer.Exit(0)
+
+
 @app.command()
 def report(
     date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),

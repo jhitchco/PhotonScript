@@ -533,7 +533,9 @@ asks for `auto` explicitly (per-arm / preview `add=auto`, a supervised
 test only; `tpoint_sample_add` no longer switches it on for the recipe);
 the CSV is the deliverable (hand import, below). The supported way to add
 points to TPoint is TheSky's Automated Pointing Calibration Run with the
-camera handed to TheSky, as done on 2026-10-09 / 10.
+camera handed to TheSky, as done on 2026-10-09 / 10. Automating that
+(operator-started, supervised, never armed): docs/TPOINT_AUTOCAL.md and
+`photonscript tpoint-autocal --dry-run` (plan only; `--go` not built yet).
 
 How to run it (supervised; first run on a clear night, about 1 h):
 1. Afternoon: run the probe (above). Note the point count / RMS. The
