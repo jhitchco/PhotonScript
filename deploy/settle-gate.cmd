@@ -1,7 +1,10 @@
 @echo off
 rem PS-27 settle gate, run by the NINA ExternalScript item PhotonScript puts
 rem before each Piggy-600 OSC light (NINA #2 only; NINA #1 is never touched).
-rem Arguments: --label="<what>"
+rem Arguments: --label="<what>" [--resume]
+rem PS-25: with --resume (once per OSC image pass, before its AF) it holds
+rem instead until NINA #1 is exposing again after a resume, at most
+rem piggyback_resume_wait_max_s.
 rem It asks the running PhotonScript service to hold until the RC16 mount is
 rem not slewing, has been still for piggyback_settle_still_s and PHD2 is not
 rem settling, at most piggyback_settle_timeout_s (PS-158: and while the mount

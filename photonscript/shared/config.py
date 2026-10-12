@@ -1160,6 +1160,17 @@ class PhotonScriptConfig(BaseSettings):
                                          # AF and lights, so the OSC does not shoot
                                          # while NINA #1 unparks, slews, focuses and
                                          # centers. Ends early at nautical dawn.
+    # PS-25 (2026-10-12): after that fixed hold, the Piggy-600 image pass
+    # (AF, then lights) also waits until NINA #1 is in an exposure item
+    # again (its /sequence/json, read only), i.e. the RC16 is past its
+    # unpark, slew, AF and center; at most piggyback_resume_wait_max_s, and
+    # it passes at once when NINA #1 runs no sequence or cannot be read.
+    # 2026-10-10: the 420 s hold ran on both resumes, but the second RC16
+    # resume (new target, an 8 min center) took 13.7 min, so the OSC AF and
+    # first light landed inside the RC16's center. Runs through the settle
+    # gate script (needs piggyback_settle_gate on and the script present).
+    piggyback_resume_gate: bool = True
+    piggyback_resume_wait_max_s: float = 900.0
     # PS-27 part 2 (scheduler/split_guard.py): the Piggy-600 never spends a
     # whole sub on a mount move, and the RC16 keeps the timing (nothing here
     # writes to NINA #1). Settle gate: before each OSC light NINA #2 runs

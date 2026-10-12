@@ -1018,6 +1018,8 @@ _CONFIG_FIELDS = [
     ("piggyback_af_hfr_increase_pct", "PS_PIGGYBACK_AF_HFR_INCREASE_PCT", "Piggyback refocus on HFR rise (%)", "Piggyback", "float", False, False),
     ("piggyback_af_interval_min", "PS_PIGGYBACK_AF_INTERVAL_MIN", "Piggyback periodic refocus (min, 0 = off)", "Piggyback", "int", False, False),
     ("piggyback_resume_grace_s", "PS_PIGGYBACK_RESUME_GRACE_S", "Piggyback resume hold after safe: confirm hold + this before AF/lights (s)", "Piggyback", "int", False, False),
+    ("piggyback_resume_gate", "PS_PIGGYBACK_RESUME_GATE", "Piggyback resume gate (PS-25): after the resume hold, OSC AF and lights also wait until NINA #1 is taking an exposure again (past unpark, slew, AF, center); fails open", "Piggyback", "bool", False, False),
+    ("piggyback_resume_wait_max_s", "PS_PIGGYBACK_RESUME_WAIT_MAX_S", "Resume gate: wait at most this long (s) for NINA #1 to start exposing, then shoot anyway", "Piggyback", "float", False, False),
     ("piggyback_settle_gate", "PS_PIGGYBACK_SETTLE_GATE", "Piggy-600 settle gate (PS-27): before each OSC light, wait (bounded) until the RC16 mount is still and PHD2 is not settling; never skips, fails open", "Piggyback", "bool", False, False),
     ("piggyback_settle_timeout_s", "PS_PIGGYBACK_SETTLE_TIMEOUT_S", "Settle gate: hold at most this long (s), then shoot anyway", "Piggyback", "float", False, False),
     ("piggyback_settle_still_s", "PS_PIGGYBACK_SETTLE_STILL_S", "Settle gate: mount still this long (s) before an OSC light", "Piggyback", "float", False, False),
