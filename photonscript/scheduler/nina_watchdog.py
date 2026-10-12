@@ -578,10 +578,14 @@ async def read_rig(cfg, rig: str) -> dict:
 async def tick(cfg, armer_state: str, now: datetime | None = None,
                read=None, notify=None, window: bool | None = None,
                monitor: NinaWatch | None = None,
-               dusk_utc: str | datetime | None = None) -> dict:
+               dusk_utc: str | datetime | None = None,
+               owned: set | None = None) -> dict:
     """One pass over the rigs. read(cfg, rig) -> reads and notify are
     injectable for tests. dusk_utc (PS-154): tonight's astro dusk (the
-    armer's plan) for the parked check. Returns {rig: update result}."""
+    armer's plan) for the parked check. owned: rigs whose API-down page
+    belongs to the NINA offline watch (nina_offline.OfflineWatch.owned()):
+    their chip and events stay, the push is only recorded. Returns {rig:
+    update result}."""
     from photonscript.shared.phd2_store import night_of
     from photonscript.shared.rigs import rig_ids
     monitor = monitor or MONITOR
@@ -621,12 +625,16 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
             msg = alert_text(cfg, rig, res["state"], why, reads, armer_state)
             _event(cfg, rig, res["state"], msg, now, pid=reads.get("pid"),
                    log_file=reads.get("log_file"), api_error=reads.get("api_error"))
-            if m == "alert":
+            if m == "alert" and rig in (owned or ()) and not reads.get("api_ok"):
+                _held(cfg, msg, 1 if armer_state in LIVE else 0)
+            elif m == "alert":
                 await _push(cfg, msg, 1 if armer_state in LIVE else 0, notify)
         elif res["recovered"]:
             msg = recovery_text(cfg, rig, res["prev"])
             _event(cfg, rig, "ok", msg, now)
-            if m == "alert":
+            if m == "alert" and rig in (owned or ()):
+                _held(cfg, msg, 0)
+            elif m == "alert":
                 await _push(cfg, msg, 0, notify)
         elif res["changed"]:
             _event(cfg, rig, res["state"], why, now)
@@ -648,6 +656,16 @@ def _parse_utc(v) -> datetime | None:
     return d.astimezone(timezone.utc).replace(tzinfo=None) if d.tzinfo else d
 
 
+def _held(cfg, msg: str, priority: int) -> None:
+    """Audit a push the NINA offline watch sends instead (never raises)."""
+    try:
+        from photonscript.shared.pushover import record
+        record(cfg, msg, title="PhotonScript NINA watch", priority=priority,
+               reason="nina-offline-owns")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("nina watch held push not recorded: %s", e)
+
+
 async def _push(cfg, msg: str, priority: int, notify=None) -> None:
     if notify is None:
         from photonscript.shared.pushover import notify as _n
@@ -666,8 +684,16 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
             armer = get_armer()
             plan = getattr(armer, "plan", None)
             dusk = plan.get("dusk_utc") if isinstance(plan, dict) else None
-            await tick(cfg, str(getattr(armer, "state", "") or ""),
-                       dusk_utc=dusk)
+            state = str(getattr(armer, "state", "") or "")
+            owned = None
+            try:   # NINA offline watch first: it owns API-down pages
+                from photonscript.scheduler import nina_offline
+                await nina_offline.tick(cfg, state,
+                                        nina_offline.recipe_live(armer))
+                owned = nina_offline.MONITOR.owned()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("nina offline tick failed: %s", e)
+            await tick(cfg, state, dusk_utc=dusk, owned=owned)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001

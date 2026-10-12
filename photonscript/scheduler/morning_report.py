@@ -20,6 +20,10 @@ Built only from data other passes already keep (nothing is measured here):
     them, PS-165), the PS-156 unguided fallback, the median guide RMS
   * stalls: the NINA watchdog's alarms of the night (PS-150 / PS-154 run
     events kind nina_watch: not running, API down, silent, stuck, parked)
+  * NINA offline (run events kind nina_offline, value down): counted
+    with the stalls as "offline"
+  * autofocus not finishing (run events kind af_stall): "autofocus: N
+    runs in a row did not finish (points 1, 1, 1)"
   * tracking (PS-168): the night's drift line from the PHD2 guide log
     (tracking_drift.morning_line: RA / Dec "/min, 300 s smear, wobble)
   * NINA log size (PS-174): a line only when a rig's newest NINA log is
@@ -139,10 +143,28 @@ def _stalls(config, date: str) -> dict[str, list[dict]]:
     from photonscript.shared.night_events import events_path
     out: dict[str, list[dict]] = {}
     for r in store.read_jsonl(events_path(config, date)):
-        if r.get("kind") != "nina_watch" or r.get("value") not in STALL_STATES:
+        if r.get("kind") == "nina_offline" and r.get("value") == "down":
+            state = "offline"
+        elif r.get("kind") == "nina_watch" and r.get("value") in STALL_STATES:
+            state = r.get("value")
+        else:
             continue
         out.setdefault(r.get("rig") or "rc16", []).append(
-            {"t": r.get("t"), "state": r.get("value")})
+            {"t": r.get("t"), "state": state})
+    return out
+
+
+def _af_stalls(config, date: str) -> dict[str, dict]:
+    """{rig: the night's last af_stall run event} (autofocus that kept
+    restarting without finishing)."""
+    from photonscript.shared import phd2_store as store
+    from photonscript.shared.night_events import events_path
+    out: dict[str, dict] = {}
+    for r in store.read_jsonl(events_path(config, date)):
+        if r.get("kind") == "af_stall":
+            out[r.get("rig") or "rc16"] = {"t": r.get("t"),
+                                           "runs": r.get("runs") or r.get("value"),
+                                           "points": r.get("points") or []}
     return out
 
 
@@ -176,10 +198,15 @@ def report_card(config, date: str | None = None, *, projects=None,
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no events log: %s", e)
         stalls = {}
+    try:
+        af = _af_stalls(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no af stall events: %s", e)
+        af = {}
     for rig in rig_ids(config):
         r = {"rig": rig, "name": rig_label(config, rig),
              "lights": _lights(config, subs, rig, goals),
-             "stalls": stalls.get(rig, [])}
+             "stalls": stalls.get(rig, []), "af_stall": af.get(rig)}
         if rig == "rc16":
             r["guiding"] = _guiding(config, date, subs)
         out["rigs"].append(r)
@@ -251,6 +278,11 @@ def _rig_line(r: dict) -> str:
     if r.get("stalls"):
         c = Counter(s["state"] for s in r["stalls"])
         bits.append("stalls: " + ", ".join(f"{k} {v}" for k, v in sorted(c.items())))
+    a = r.get("af_stall")
+    if a:
+        pts = ", ".join(str(p) for p in a.get("points") or [])
+        bits.append(f"autofocus: {a.get('runs')} runs in a row did not finish"
+                    + (f" (points {pts})" if pts else ""))
     return f"{r['name']}: " + "; ".join(bits)
 
 
@@ -260,7 +292,7 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     if not card.get("date"):
         return ["Morning report: no subs log yet"]
     lines = [_rig_line(r) for r in card.get("rigs") or []
-             if r["lights"]["subs"] or r.get("stalls")]
+             if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall")]
     if card.get("tracking"):
         lines.append(card["tracking"])
     if card.get("library"):

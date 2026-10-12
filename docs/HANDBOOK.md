@@ -1502,6 +1502,25 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
   from the Library (read only) and this machine's subs logs; `--apply` ON
   THE SCOPE PC rejects them in the subs logs (row swap, human verdicts
   kept, Library links to `_rejected`).
+- AUTOFOCUS NOT FINISHING (same incident: 55 AUTOFOCUS-STARTING, 54 points,
+  no finish, no page for three nights): while a rig's NINA is imaging, its
+  agent reads NINA's event history (`/event-history`, plus `last-af`) every
+  2 min and pushes once per rig per night when `af_stall_runs` (3) AF runs
+  in a row ended with fewer than `af_stall_min_points` (4) points or no
+  completed fit (`af_stall_alert`, run event `af_stall`, a morning report
+  line). AF runs under an unsafe roof (SAFETY-CHANGED) or ended by the
+  sequence finishing do not count (scheduler/af_stall.py).
+- NINA OFFLINE (2026-10-09 armed TPoint recipe night): NINA #1 dropped at
+  about 02:42Z (PS-150 paged) and again at 03:07:58Z, and PS-150's once per rig and
+  state per night latch kept the second outage silent; the Piggy-600 imaged
+  an unknown field for 3.5 h. scheduler/nina_offline.py runs before PS-150
+  in the same loop: while the armer is RUNNING / WATCHING or an arm recipe
+  is dispatched (or was within 10 min when the outage began), a NINA API
+  that does not answer for `nina_offline_grace_min` (3) gets one priority-1
+  push per outage (what was running, the mount as last seen, "the Piggy is
+  imaging an unknown field" when NINA #2 still exposes) and a recovery note;
+  PS-150 keeps its chip and events for that rig but leaves the push to it
+  (`nina_offline_alert`, run events `nina_offline`). Never restarts NINA.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
