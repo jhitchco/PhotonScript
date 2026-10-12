@@ -134,10 +134,13 @@ def test_live_time_zone_and_dst_passes(monkeypatch):
     assert r["current"] == "tz -7, DST U.S. and Canada (index 17)"
     monkeypatch.setattr(ta, "_utcnow", lambda: datetime(2026, 12, 1, 3, 0))
     assert _eval({"thesky-script": _live_site()})[0]["time_zone_dst"]["status"] == "pass"
-    # DST not observed with -7 is an hour off while the PC is on MDT
+    # DST not observed with -7 is an hour off while the PC is on MDT: FAIL
+    # unless TheSky's clock and LST show its UT is right (2026-10-11), then WARN
     monkeypatch.setattr(ta, "_utcnow", lambda: AUDIT_T)
-    r = _eval({"thesky-script": _live_site(dst_index=0.0)})[0]["time_zone_dst"]
+    r = _eval({"thesky-script": _live_site(dst_index=0.0, site_clock=None)})[0]["time_zone_dst"]
     assert r["status"] == "fail" and r["current"].endswith("not observed (index 0)")
+    r = _eval({"thesky-script": _live_site(dst_index=0.0)})[0]["time_zone_dst"]
+    assert r["status"] == "warn" and "UT is right" in r["note"]
     r = _eval({"thesky-script": _live_site(dst_index=3.0)})[0]["time_zone_dst"]
     assert r["status"] == "warn" and "not U.S. and Canada" in r["note"]
 
