@@ -153,7 +153,8 @@ def test_head_only_for_listed_files(tmp_path):
 def test_save_history_and_the_drift_trend_key(tmp_path, monkeypatch):
     root = _tree(tmp_path)
     cfg = _cfg(tmp_path, thesky_user_dir=str(root))
-    st = tf.stats(cfg)
+    # Pin the model date: stats() takes it from the file mtime (today).
+    st = dict(tf.stats(cfg), model_date="2026-10-09")
     tf.save(cfg, st, datetime(2026, 10, 9, 18, 0))
     tf.save(cfg, st, datetime(2026, 10, 9, 19, 0))      # unchanged: one line
     assert len(tf.history(cfg)) == 1
