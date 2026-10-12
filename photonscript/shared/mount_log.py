@@ -34,7 +34,8 @@ the same date the runs page uses). One JSON object per line, oldest first:
               reconnect  the first real poll after an offline line
 
 Readers: load() parses a night; position_at() gives the mount position at a
-time (the Piggy-600's live pointing); segments() turns the lines into
+time (the Piggy-600's live pointing); state_at() the mount state at a time
+(the Piggy guard); segments() turns the lines into
 slewing / tracking / parked / idle spans. A slew window is a "slewing"
 segment: it opens at the first line with slewing=true and closes at the
 next line with slewing=false (PS-13 slew gating reads these). Lines are
@@ -259,6 +260,27 @@ def _state(r: dict) -> str:
     if r.get("tracking"):
         return "tracking"
     return "idle"
+
+
+def state_at(lines: list[dict], when: datetime,
+             stale_s: float = STALE_S) -> tuple[str, dict | None]:
+    """(state, line) of the mount at `when` from the last line at or before
+    it: tracking | slewing | parked | idle | offline | unknown. Unknown: no
+    line, or a tracking / slewing line older than stale_s (tracking writes
+    a heartbeat, so the poll stopped). A parked / idle line holds until the
+    next line (they write no heartbeat)."""
+    import bisect
+    if not lines or when is None:
+        return "unknown", None
+    ts = [r["dt"] for r in lines]
+    i = bisect.bisect_right(ts, when) - 1
+    if i < 0:
+        return "unknown", None
+    r = lines[i]
+    st = _state(r)
+    if st in ("tracking", "slewing") and (when - r["dt"]).total_seconds() > stale_s:
+        return "unknown", r
+    return st, r
 
 
 def segments(lines: list[dict], end: datetime | None = None,

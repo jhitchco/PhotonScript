@@ -131,6 +131,12 @@ class PhotonScriptConfig(BaseSettings):
     # when a NINA API stops answering for nina_offline_grace_min, a recovery
     # note when it is back. Observe only.
     nina_offline_alert: bool = True
+    # Piggy guard (2026-10-12): the Piggy-600 (NINA #2) taking lights while
+    # the RC16 mount log says parked / not tracking / offline / unknown for
+    # piggy_guard_grace_min, dusk to dawn: one push per night, a run event,
+    # a morning report line. alert | panel (no push) | off. Observe only.
+    piggy_guard_mode: str = "alert"
+    piggy_guard_grace_min: float = 10.0
     nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0

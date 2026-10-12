@@ -733,6 +733,11 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
             except Exception as e:  # noqa: BLE001
                 logger.warning("nina offline tick failed: %s", e)
             await tick(cfg, state, dusk_utc=dusk, owned=owned)
+            try:   # the Piggy-600 shooting lights on a mount that does not track
+                from photonscript.scheduler import piggy_guard
+                await piggy_guard.tick(cfg)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("piggy guard tick failed: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001

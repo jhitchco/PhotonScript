@@ -28,6 +28,8 @@ Built only from data other passes already keep (nothing is measured here):
     (tracking_drift.morning_line: RA / Dec "/min, 300 s smear, wobble)
   * NINA log size (PS-174): a line only when a rig's newest NINA log is
     over nina_log_warn_mb or on pace to pass it (nina_log_watch)
+  * Piggy guard (run events kind piggy_guard): "Piggy guard: NINA #2 took
+    lights 03:20-06:10 local while the RC16 mount was offline (...)"
 
 The dashboard shows it as the "Morning report" card (GET
 /api/morning/report); the dawn "Night complete" push carries card_lines
@@ -184,7 +186,7 @@ def report_card(config, date: str | None = None, *, projects=None,
     out = {"date": date,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
            "rigs": [], "calibration": None, "library": None, "tracking": None,
-           "nina_logs": None, "completeness": None}
+           "nina_logs": None, "completeness": None, "piggy_guard": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -249,6 +251,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["nina_logs"] = {"logs": sizes, "line": morning_line(config, sizes)}
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no NINA log sizes: %s", e)
+    try:   # the Piggy-600 took lights on a mount that did not track
+        from photonscript.scheduler.piggy_guard import morning_line as pg_line
+        out["piggy_guard"] = pg_line(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no piggy guard line: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 
@@ -301,6 +308,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         return ["Morning report: no subs log yet"]
     lines = [_rig_line(r) for r in card.get("rigs") or []
              if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall")]
+    if card.get("piggy_guard"):
+        lines.append(card["piggy_guard"])
     if card.get("tracking"):
         lines.append(card["tracking"])
     if card.get("library"):
@@ -359,8 +368,10 @@ _RIG_LINE = re.compile(r"^[^:\n]{1,40}: \d+ kept / \d+ rejected")
 
 def card_line_priority(line: str) -> int:
     """PRI_RIG for a per-rig card line (_rig_line: "<rig>: N kept / M
-    rejected..."), else PRI_DETAIL."""
-    return PRI_RIG if _RIG_LINE.match(line or "") else PRI_DETAIL
+    rejected...") or the Piggy guard line, else PRI_DETAIL."""
+    if _RIG_LINE.match(line or "") or str(line or "").startswith("Piggy guard:"):
+        return PRI_RIG
+    return PRI_DETAIL
 
 
 def card_parts(text: str | None) -> list[tuple[int, str]]:

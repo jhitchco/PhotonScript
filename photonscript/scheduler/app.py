@@ -732,6 +732,8 @@ _CONFIG_FIELDS = [
     ("dawn_mount_check_after_dawn_min", "PS_DAWN_MOUNT_CHECK_AFTER_DAWN_MIN", "Dawn mount check: start checking this many minutes after astro dawn", "Nanny / Alerts", "float", False, False),
     ("nina_offline_alert", "PS_NINA_OFFLINE_ALERT", "NINA offline watch: while the armer is RUNNING / WATCHING or an arm recipe is dispatched, one priority-1 push per outage when a NINA API stops answering (plus a recovery note); never restarts anything", "Nanny / Alerts", "bool", False, False),
     ("nina_offline_grace_min", "PS_NINA_OFFLINE_GRACE_MIN", "NINA offline watch: minutes a NINA API may not answer before the push", "Nanny / Alerts", "float", False, False),
+    ("piggy_guard_mode", "PS_PIGGY_GUARD_MODE", "Piggy guard: alert (one push per night) | panel (run event + morning line, no push) | off, when NINA #2 takes lights while the RC16 mount is parked / not tracking / offline / unknown; never stops anything", "Nanny / Alerts", "str", False, False),
+    ("piggy_guard_grace_min", "PS_PIGGY_GUARD_GRACE_MIN", "Piggy guard: minutes NINA #2 may take lights on a mount that does not track before the push", "Nanny / Alerts", "float", False, False),
     ("nina_watch_parked_after_dusk_min", "PS_NINA_WATCH_PARKED_AFTER_DUSK_MIN", "NINA watchdog (PS-154): page when the RC16 mount has not tracked yet this many min after astro dusk (armed RUNNING, roof safe)", "Nanny / Alerts", "float", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),

@@ -1541,6 +1541,13 @@ OSC_INTEGRATION.md "Fast scratch disk".
   `nina_watch_rearm_ok_min` (10) re-arms it, so a repeat outage on an
   unarmed night pages too (0 = the old once per night); a rig the offline
   watch owns is still only recorded, never double paged.
+  Piggy guard (scheduler/piggy_guard.py, same loop, after PS-150): when
+  NINA #2 takes lights while the RC16 mount log says parked / not tracking /
+  offline / unknown for `piggy_guard_grace_min` (10), dusk to dawn, one push
+  per night with what NINA #2 is shooting, run events `piggy_guard`
+  (alert / clear) and a morning report line (`piggy_guard_mode` alert |
+  panel | off). Independent of NINA #1 being up and of the armer. Never
+  stops NINA #2.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
