@@ -310,7 +310,10 @@ def test_slew_state_read_is_read_only_and_abort_lives_only_in_guide_recover():
     assert _violations(gr.ABORT_JS) == ["abort"]
     hits = [p.relative_to(ROOT).as_posix() for p in (ROOT / "photonscript").rglob("*.py")
             if "Abort()" in p.read_text(encoding="utf-8", errors="replace")]
-    assert hits == ["photonscript/scheduler/guide_recover.py"]
+    # TPoint autocal (docs/TPOINT_AUTOCAL.md): its abort_script builder is
+    # the one other Abort() text; the module cannot send (its own test)
+    assert sorted(hits) == ["photonscript/scheduler/guide_recover.py",
+                            "photonscript/telescope_agent/tpoint_autocal.py"]
 
 
 # ---- guide-recover: plan ------------------------------------------------------------
