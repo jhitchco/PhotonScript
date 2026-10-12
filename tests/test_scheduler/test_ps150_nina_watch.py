@@ -336,3 +336,109 @@ def test_dashboard_chip_and_observe_only():
     src = (ROOT / "photonscript/scheduler/nina_watchdog.py").read_text(encoding="utf-8")
     assert ".post(" not in src and "sequence_stop" not in src and "start_sequence" not in src
     assert src.isascii()
+
+
+# ------------------------------------------------------------- 6. per outage
+
+def test_latch_rearms_after_a_long_enough_recovery():
+    m = nw.NinaWatch(rearm_min=10.0)
+
+    def run(state, minute, n=1):
+        r = None
+        for i in range(n):
+            r = m.update("rc16", state, "x", {}, "n", T0 + timedelta(minutes=minute + i))
+        return r
+    assert run("not_running", 0, 3)["alert"]
+    assert run("ok", 3)["recovered"]
+    # a short flap (back down after 5 min ok): still one page
+    assert not run("not_running", 8, 3)["alert"]
+    r = run("ok", 11)
+    assert not r["recovered"] and not r.get("rearmed")
+    # ok for 10 min: the latch re-arms once
+    assert run("ok", 21).get("rearmed")
+    assert not run("ok", 22).get("rearmed")
+    # the next outage pages again, with its recovery
+    assert run("not_running", 30, 3)["alert"]
+    assert run("ok", 33)["recovered"]
+
+
+def test_rearm_zero_keeps_once_per_night():
+    m = nw.NinaWatch(rearm_min=0.0)
+    for i in range(3):
+        m.update("rc16", "api_down", "x", {}, "n", T0 + timedelta(minutes=i))
+    m.update("rc16", "ok", "", {}, "n", T0 + timedelta(minutes=3))
+    m.update("rc16", "ok", "", {}, "n", T0 + timedelta(minutes=60))
+    r = [m.update("rc16", "api_down", "x", {}, "n", T0 + timedelta(minutes=61 + i))
+         for i in range(3)]
+    assert not any(x["alert"] for x in r)
+
+
+def _flip_read(down_minutes):
+    """NINA #1 runs (process alive) on an UNARMED night; its API is down in
+    the given minute ranges, else ok."""
+    async def read(cfg, rig):
+        i = read.i
+        down = any(a <= i < b for a, b in down_minutes)
+        return {"api_ok": not down, "api_error": "ConnectError" if down else "",
+                "process": True, "pid": 7984, "log_file": "x.log",
+                "log_mtime": T0 + timedelta(minutes=i), "log_size": 10 + i,
+                "closed_at": None, "seq_leaf": "", "seq_exposure_s": None}
+    read.i = 0
+    return read
+
+
+def _ticks(cfg, n, read, owned=None, mon=None, armer_state="DISARMED"):
+    pushes = []
+
+    async def notify(c, msg, title="", priority=0):
+        pushes.append((title, msg, priority))
+    mon = mon or nw.NinaWatch()
+    for i in range(n):
+        read.i = i
+        asyncio.run(nw.tick(cfg, armer_state, now=T0 + timedelta(minutes=i),
+                            read=read, notify=notify, window=True, monitor=mon,
+                            owned=owned))
+    return pushes, mon
+
+
+def test_unarmed_night_pages_each_outage(tmp_path):
+    # 2026-10-09 shape: two outages ~20 min apart, nothing armed
+    cfg = _cfg(tmp_path, piggyback_enabled=False)
+    pushes, _ = _ticks(cfg, 60, _flip_read([(5, 12), (35, 42)]))
+    downs = [p for p in pushes if "Advanced API" in p[1]]
+    oks = [p for p in pushes if "OK again" in p[1]]
+    assert len(downs) == 2 and len(oks) == 2
+    assert all(p[2] == 0 for p in downs)        # not armed: priority 0
+    ev = [e["value"] for e in read_jsonl(events_path(cfg, night_of(cfg, T0)))
+          if e.get("kind") == "nina_watch"]
+    assert ev.count("api_down") == 2 and "rearmed" in ev
+
+
+def test_short_flap_is_one_page_and_zero_is_per_night(tmp_path):
+    cfg = _cfg(tmp_path, piggyback_enabled=False)
+    pushes, _ = _ticks(cfg, 40, _flip_read([(5, 12), (17, 24)]))   # 5 min ok
+    assert len([p for p in pushes if "Advanced API" in p[1]]) == 1
+    cfg0 = _cfg(tmp_path / "z", piggyback_enabled=False, nina_watch_rearm_ok_min=0)
+    pushes, _ = _ticks(cfg0, 60, _flip_read([(5, 12), (35, 42)]))
+    assert len([p for p in pushes if "Advanced API" in p[1]]) == 1
+
+
+def test_repeat_outage_owned_by_nina_offline_is_not_double_paged(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path, piggyback_enabled=False)
+    held = []
+    monkeypatch.setattr("photonscript.shared.pushover.record",
+                        lambda c, m, **kw: held.append(m))
+    pushes, _ = _ticks(cfg, 60, _flip_read([(5, 12), (35, 42)]), owned={"rc16"},
+                       armer_state="RUNNING")
+    assert pushes == []                          # nina_offline pages these
+    assert len([m for m in held if "Advanced API" in m]) == 2
+
+
+def test_rearm_config_field():
+    from photonscript.scheduler.app import _CONFIG_FIELDS
+    c = PhotonScriptConfig(_env_file=None)
+    assert c.nina_watch_rearm_ok_min == 10.0
+    by_env = {f[1]: f for f in _CONFIG_FIELDS}
+    assert by_env["PS_NINA_WATCH_REARM_OK_MIN"][0] == "nina_watch_rearm_ok_min"
+    assert nw.rearm_ok_min(PhotonScriptConfig(_env_file=None,
+                                              nina_watch_rearm_ok_min=-3)) == 0.0

@@ -116,6 +116,10 @@ class PhotonScriptConfig(BaseSettings):
     # many minutes after astro dusk with the roof safe. Observe only.
     nina_watch_stuck_minutes: float = 25.0
     nina_watch_parked_after_dusk_min: float = 15.0
+    # Per outage (2026-10-12): a rig ok again for this many minutes re-arms
+    # its once-per-state latch, so a second outage the same night pages
+    # again (armed or not). 0 = once per rig and state per night.
+    nina_watch_rearm_ok_min: float = 10.0
     # PS-185 (2026-10-09, a disarmed night left tracking): after astro dawn
     # + N min, whatever the armer state (an armed night is left to its dawn
     # shutdown), page once when TheSky / NINA #1 read the mount unparked and

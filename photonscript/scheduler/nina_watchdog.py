@@ -51,10 +51,18 @@ States (classify(), pure):
 
 A non-ok state must hold for CONFIRM_TICKS consecutive ticks before it
 counts (stuck / parked: one tick, they already carry their own minutes), so a NINA restart does not alert. Then one Pushover per (rig, state)
-per night with what to do (priority 1 while the armer has a night), one
+per outage with what to do (priority 1 while the armer has a night), one
 recovery push when an alerted rig is ok again, events kind "nina_watch" in
 runs/<night>_events.jsonl, and the dashboard chip (GET /api/nina/watch).
 nina_watch_mode: alert (default) | panel (chip + events, no push) | off.
+
+Per outage (2026-10-12): the (rig, state) latch re-arms once the rig has
+been ok for nina_watch_rearm_ok_min (default 10) minutes, so a second
+outage on the same night pages again, armed or not (2026-10-09: NINA #1
+went away twice; the second outage was silent). A flap shorter than that
+stays one page. 0 = the old once per (rig, state) per night. While the
+NINA offline watch owns a rig (an engaged outage, nina_offline.owned())
+the push is still only recorded, so one outage is never two pages.
 
 Observe only: this never starts, restarts, stops or commands NINA.
 """
@@ -108,6 +116,12 @@ def silent_minutes(cfg) -> float:
 def stuck_minutes(cfg) -> float:
     """PS-154: one instruction running this long (and not a long one) is stuck."""
     return max(1.0, _f(cfg, "nina_watch_stuck_minutes", 25.0))
+
+
+def rearm_ok_min(cfg) -> float:
+    """Minutes a rig must stay ok before its latched alerts re-arm (per
+    outage paging); 0 = never (once per rig and state per night)."""
+    return max(0.0, _f(cfg, "nina_watch_rearm_ok_min", 10.0))
 
 
 def parked_after_dusk_min(cfg) -> float:
@@ -293,10 +307,12 @@ def classify(r: dict, limit_min: float, stuck_min: float = 25.0,
 # ------------------------------------------------------------------ monitor
 
 class NinaWatch:
-    """Per-rig debounce + once per (rig, state) per night latch. update()
-    feeds one rig's reads; view() is the chip payload."""
+    """Per-rig debounce + once per (rig, state) latch, re-armed after the rig
+    was ok for rearm_min (per outage; 0 = per night). update() feeds one
+    rig's reads; view() is the chip payload."""
 
-    def __init__(self):
+    def __init__(self, rearm_min: float = 10.0):
+        self.rearm_min = rearm_min
         self.night: str | None = None
         self.alerted: set[tuple[str, str]] = set()
         self.rigs: dict[str, dict] = {}
@@ -314,7 +330,7 @@ class NinaWatch:
             "state": "idle", "why": "", "since": None, "pending": None,
             "pending_n": 0, "alerted_state": None, "leaf": None,
             "leaf_since": None, "size": None, "size_at": None, "reads": {},
-            "checked_at": None, "tracked": False})
+            "checked_at": None, "tracked": False, "ok_since": None})
 
     def note_mount(self, rig: str, parked, tracking) -> bool:
         """PS-154: True once the mount was seen unparked and tracking this
@@ -369,6 +385,7 @@ class NinaWatch:
             res["changed"] = True
             s["state"], s["since"] = confirmed, now
         s["why"] = why if confirmed == state else s["why"]
+        self._rearm(rig, s, confirmed, now, res)
         if res["changed"] and confirmed in BAD and (rig, confirmed) not in self.alerted:
             self.alerted.add((rig, confirmed))
             s["alerted_state"] = confirmed
@@ -379,6 +396,23 @@ class NinaWatch:
             s["alerted_state"] = None
         res["state"] = confirmed
         return res
+
+    def _rearm(self, rig: str, s: dict, confirmed: str, now: datetime,
+               res: dict) -> None:
+        """Per outage: a rig ok for rearm_min forgets its latched states, so
+        the next outage tonight pages again. res["rearmed"] is True on the
+        tick that happens."""
+        if confirmed != "ok":
+            s["ok_since"] = None
+            return
+        if s.get("ok_since") is None:
+            s["ok_since"] = now
+        if (self.rearm_min > 0
+                and (now - s["ok_since"]).total_seconds() >= self.rearm_min * 60.0):
+            mine = {k for k in self.alerted if k[0] == rig}
+            if mine:
+                self.alerted -= mine
+                res["rearmed"] = True
 
     def view(self) -> dict:
         def iso(t):
@@ -591,6 +625,7 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
     monitor = monitor or MONITOR
     now = now or datetime.utcnow()
     m = mode(cfg)
+    monitor.rearm_min = rearm_ok_min(cfg)
     read = read or read_rig
     win = in_window(cfg, now) if window is None else window
     night = night_of(cfg, now)
@@ -638,6 +673,10 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
                 await _push(cfg, msg, 0, notify)
         elif res["changed"]:
             _event(cfg, rig, res["state"], why, now)
+        if res.get("rearmed"):
+            _event(cfg, rig, "rearmed",
+                   f"ok for {monitor.rearm_min:g} min: the next outage pages again",
+                   now)
     return out
 
 

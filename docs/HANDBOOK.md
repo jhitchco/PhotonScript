@@ -1537,6 +1537,10 @@ OSC_INTEGRATION.md "Fast scratch disk".
   imaging an unknown field" when NINA #2 still exposes) and a recovery note;
   PS-150 keeps its chip and events for that rig but leaves the push to it
   (`nina_offline_alert`, run events `nina_offline`). Never restarts NINA.
+  2026-10-12: PS-150's latch is now per outage: a rig ok again for
+  `nina_watch_rearm_ok_min` (10) re-arms it, so a repeat outage on an
+  unarmed night pages too (0 = the old once per night); a rig the offline
+  watch owns is still only recorded, never double paged.
 - SHIPPED this session (see AUDIT-2026-09.md): revived focus-seed temperature
   model; cross-night polar-drift/optical-tilt/focus-drift trend alarm
   (trends.py, `/api/trends`); guided-but-not-guiding watchdog; meridian guard
