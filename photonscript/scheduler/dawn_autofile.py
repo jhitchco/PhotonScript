@@ -53,6 +53,29 @@ A sub assigned by hand (target_src "manual") or already named is never
 touched. Evidence goes to rec["timeline"]; a renamed sub keeps target_raw
 and gets target_src "rc16-timeline". Nothing here writes a FITS file or
 touches the desktop mirror.
+
+Dawn filing fix (2026-10-11). Night 2026-10-09 (armed with the TPoint
+recipe, then left DISARMED) was never filed: file_night only started from
+the armer's dawn shutdown / watched-night end (runs.post_night_warm), which
+files night_of(now) only, so a night the armer no longer owned at dawn (or
+whose filing thread a restart killed) stayed in review for good. And its
+Piggy subs would have stayed "?" anyway: NINA #1 lost the mount at 03:08Z
+and the mount log took the disconnected poll (RA 0, Dec 0, no alt / az) as
+an "idle" mount, so every later sub was held as parked and never solved.
+
+  * sweep / run_sweep (app startup, every SWEEP_TICK_S): every armed night
+    (runs/<night>_plan.json, written at dispatch) of the last
+    dawn_filing_catchup_days with a subs log and no filing record is filed
+    once, SWEEP_AFTER_DAWN_MIN after its dawn, unless the armer still owns
+    that night (its own dawn shutdown files it). The record is the "once".
+  * mount_offline: a disconnected poll ends the mount state; the time after
+    it is unknown (ambiguous, so the PS-137 per-sub solve runs).
+  * plan_fallback_records: a Piggy sub still "?" after the timeline and
+    the solve takes the plan target whose window (plan snapshot) covers
+    most of it, only when the mount log shows it tracking over most of the
+    sub AND the mount position is within PLAN_CONFIRM_DEG of that target.
+    No evidence, no name: a "?" sub is never approved.
+  * preview_night: the dry run of the CLI `photonscript dawn-file`.
 """
 
 from __future__ import annotations
@@ -76,6 +99,13 @@ APPROVED_BY = "dawn"
 WAIT_BACKFILL_MAX_S = 3 * 3600.0   # dawn filing waits for a grading pass
 WAIT_POLL_S = 30.0
 HOLD_STATES = ("parked", "slewing")
+PLAN_SRC = "plan-window"
+PLAN_CONFIRM_DEG = 1.0     # mount position to plan target, at most this
+SWEEP_TICK_S = 600
+SWEEP_AFTER_DAWN_MIN = 90.0   # after the armer's own shutdown (dawn + ~75)
+# armer states whose own dawn shutdown files their night
+LIVE_STATES = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR",
+               "WATCHING")
 
 _RUNNING: dict[str, bool] = {}
 
@@ -159,13 +189,37 @@ def rc16_timeline(config, subs: list[dict],
     return segs
 
 
+def mount_offline(r: dict) -> bool:
+    """A poll of a mount NINA #1 no longer has: RA 0, Dec 0 and no alt / az
+    (2026-10-10 03:08Z, logged as an "unpark" to an idle mount). It says
+    nothing about where the mount is."""
+    try:
+        zero = float(r.get("ra")) == 0.0 and float(r.get("dec")) == 0.0
+    except (TypeError, ValueError):
+        return False
+    return zero and r.get("alt") is None and r.get("az") is None
+
+
 def _mount_states(lines: list[dict] | None,
                   end: datetime | None = None) -> list[dict]:
     """The mount log's state spans. The logger writes a line on a change
     (and a heartbeat only while tracking), so the night's last state holds
-    to `end` (the last sub) unless it is tracking (stale after STALE_S)."""
+    to `end` (the last sub) unless it is tracking (stale after STALE_S).
+    A disconnected poll (mount_offline) ends the state before it; the time
+    after it is unknown until the next real line."""
     from photonscript.shared import mount_log
-    return mount_log.segments(lines or [], end=end) if lines else []
+    out: list[dict] = []
+    run: list[dict] = []
+    for r in lines or []:
+        if mount_offline(r):
+            if run:
+                out += mount_log.segments(run, end=r["dt"])
+            run = []
+        else:
+            run.append(r)
+    if run:
+        out += mount_log.segments(run, end=end)
+    return out
 
 
 def judge_sub(rec: dict, config, segs: list[dict],
@@ -260,6 +314,133 @@ def timeline_hold(rec: dict) -> bool:
     """True when the timeline judged this sub parked or slewing: the PS-51
     correlation and the cluster solve must not name it."""
     return (rec.get("timeline") or {}).get("state") in HOLD_STATES
+
+
+# ------------------------------------------------------------------ plan window
+
+def plan_snapshot(config, date: str) -> dict | None:
+    """runs/<date>_plan.json (the armer writes it at dispatch), or None."""
+    from photonscript.scheduler.runs import runs_dir
+    try:
+        snap = json.loads((runs_dir(config) / f"{date}_plan.json")
+                          .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return snap if isinstance(snap, dict) else None
+
+
+def _utc(v) -> datetime | None:
+    from photonscript.shared.phd2_store import parse_z
+    return parse_z(v) if v else None
+
+
+def plan_windows(snap: dict | None) -> list[dict]:
+    """[{target, start, end}] of the plan targets with a window (snapshots
+    from before this fix carry none)."""
+    out = []
+    for t in (snap or {}).get("targets") or []:
+        st, en = _utc(t.get("window_start_utc")), _utc(t.get("window_end_utc"))
+        if t.get("name") and st and en and en > st:
+            out.append({"target": t["name"], "start": st, "end": en})
+    return out
+
+
+def _target_coords(config, name: str) -> tuple[float, float] | None:
+    """(ra, dec) deg of a goal / catalog target by name, else None."""
+    from photonscript.scheduler.identify import _candidates
+    from photonscript.shared.target_names import target_key
+    k = target_key(name)
+    for c in _candidates(config):
+        if target_key(c[0]) == k:
+            return float(c[1]), float(c[2])
+    return None
+
+
+def plan_fallback_records(config, date: str, subs: list[dict],
+                          lines: list[dict] | None = None,
+                          apply: bool = True) -> dict:
+    """Name the Piggy "?" subs the timeline and the solve left ambiguous
+    after the plan target window covering most of the sub, IN PLACE, only
+    with the mount evidence of the module doc. Returns {tried, named,
+    by_target, skipped {reason: n}}."""
+    from photonscript.shared import mount_log
+    from photonscript.shared.target_names import UNATTRIBUTED, canonical_target
+    from photonscript.scheduler.identify import _sep_deg
+    out = {"tried": 0, "named": 0, "by_target": {}, "skipped": {}}
+    todo = [s for s in subs if _is_piggy(s)
+            and s.get("target_src") != "manual"
+            and canonical_target(s.get("target")) is None
+            and not timeline_hold(s)]
+    wins = plan_windows(plan_snapshot(config, date)) if todo else []
+    if not todo or not wins:
+        if todo:
+            out["skipped"]["no plan windows"] = len(todo)
+        return out
+    if lines is None:
+        try:
+            lines = mount_log.load(config, date)
+        except Exception:  # noqa: BLE001
+            lines = []
+    real = [r for r in lines if not mount_offline(r)]
+    states = _mount_states(lines)
+    coords: dict[str, tuple[float, float] | None] = {}
+
+    def skip(why):
+        out["skipped"][why] = out["skipped"].get(why, 0) + 1
+
+    for s in todo:
+        sp = _span(s, config)
+        if sp is None:
+            skip("no capture time")
+            continue
+        out["tried"] += 1
+        st, en = sp
+        dur = max(1.0, (en - st).total_seconds())
+        best, best_ov = None, 0.0
+        for w in wins:
+            ov = _overlap(st, en, w["start"], w["end"])
+            if ov > best_ov:
+                best, best_ov = w, ov
+        if best is None or best_ov / dur < TIMELINE_MAJORITY:
+            skip("no plan window")
+            continue
+        trk = sum(_overlap(st, en, m["start"], m["end"]) for m in states
+                  if m["state"] == "tracking")
+        if trk / dur < TIMELINE_MAJORITY:
+            skip("mount not seen tracking")
+            continue
+        pos = mount_log.position_at(real, st + (en - st) / 2)
+        name = best["target"]
+        if name not in coords:
+            coords[name] = _target_coords(config, name)
+        if pos is None or coords[name] is None:
+            skip("no mount position" if pos is None else "no target coordinates")
+            continue
+        sep = _sep_deg(float(pos["ra"]), float(pos["dec"]), *coords[name])
+        if sep > PLAN_CONFIRM_DEG:
+            skip("mount elsewhere")
+            continue
+        out["named"] += 1
+        out["by_target"][name] = out["by_target"].get(name, 0) + 1
+        if apply:
+            if not s.get("target_raw"):
+                cur = s.get("target")
+                s["target_raw"] = cur if cur not in (None, "") else UNATTRIBUTED
+            s["target"] = name
+            s["target_src"] = PLAN_SRC
+            s["plan_window"] = {"target": name, "sep_deg": round(sep, 2),
+                                "window": f"{best['start']:%H:%M}-"
+                                          f"{best['end']:%H:%M}"}
+    if out["named"]:
+        logger.info("Plan window %s: %d Piggy '?' subs named %s", date,
+                    out["named"], out["by_target"])
+    return out
+
+
+def _plan_fallback(config, date: str) -> dict:
+    from photonscript.scheduler.runs import edit_subs
+    with edit_subs(config, date) as subs:   # under the night lock
+        return plan_fallback_records(config, date, subs)
 
 
 # ------------------------------------------------------------------ approve
@@ -387,6 +568,8 @@ def file_night(config, date: str, push: bool = True,
                               lambda: runs.attribute_night(config, date))
     rec["solve_fallback"] = step("solve fallback",
                                  lambda: _solve_fallback(config, date))
+    rec["plan_fallback"] = step("plan fallback",
+                                lambda: _plan_fallback(config, date))
 
     def _pointing():
         from photonscript.scheduler.pointing_record import night_pass
@@ -518,3 +701,125 @@ def start_dawn_filing(config, date: str) -> bool:
     threading.Thread(target=_work, daemon=True,
                      name=f"dawn-file-{date}").start()
     return True
+
+
+# ------------------------------------------------------------------ dry run
+
+def preview_night(config, date: str) -> dict:
+    """What file_night would name and approve, on a copy (writes nothing,
+    solves nothing: the subs left ambiguous are the ones the dawn pass
+    would plate-solve; the header pass and the PS-51 correlation are not
+    run, so it can count a few more "?" subs than the pass leaves). The
+    dry run of `photonscript dawn-file`."""
+    import copy
+
+    from photonscript.scheduler import runs
+    from photonscript.shared import mount_log
+    from photonscript.shared.target_names import canonical_target
+    subs = copy.deepcopy(runs._load_subs(config, date))
+    try:
+        lines = mount_log.load(config, date)
+    except Exception:  # noqa: BLE001
+        lines = []
+    tl = attribute_timeline_records(config, date, subs, lines=lines)
+    would_solve = sum(1 for s in subs if _is_piggy(s)
+                      and s.get("target_src") != "manual"
+                      and canonical_target(s.get("target")) is None
+                      and (s.get("timeline") or {}).get("state") == "ambiguous")
+    pf = plan_fallback_records(config, date, subs, lines=lines)
+    hits = approve_records(subs)
+    by: dict[str, int] = {}
+    for h in hits:
+        by[h.get("target")] = by.get(h.get("target"), 0) + 1
+    unknown = sum(1 for s in subs if _is_piggy(s)
+                  and canonical_target(s.get("target")) is None)
+    return {"date": date, "dry_run": True,
+            "record": bool(load_record(config, date)),
+            "subs": len(subs),
+            "timeline": {"named": tl.get("named", 0),
+                         "by_target": tl.get("by_target") or {},
+                         "held": tl.get("held") or {},
+                         "windows": tl.get("windows") or []},
+            "would_solve": would_solve,
+            "plan_fallback": pf,
+            "would_approve": len(hits), "by_target": by,
+            "by_rig": {r: sum(1 for h in hits if (h.get("rig") or RC16) == r)
+                       for r in sorted({h.get("rig") or RC16 for h in hits})},
+            "piggy_still_unknown": unknown,
+            "auto_approve_at_dawn": enabled(config)}
+
+
+# ------------------------------------------------------------------ sweep
+
+def due_nights(config, now: datetime | None = None, armer_state: str = "",
+               armer_night: str | None = None) -> list[str]:
+    """The armed nights to file now (module doc): a plan snapshot, a subs
+    log, no filing record, none running, SWEEP_AFTER_DAWN_MIN past their
+    dawn, within dawn_filing_catchup_days, not the armer's live night."""
+    from photonscript.scheduler.runs import runs_dir
+    from photonscript.shared.phd2_store import night_of
+    days = int(getattr(config, "dawn_filing_catchup_days", 3) or 0)
+    rd = runs_dir(config)
+    if days <= 0 or not rd.exists():
+        return []
+    now = now or datetime.utcnow()
+    today = night_of(config, now)
+    first = (datetime.strptime(today, "%Y-%m-%d")
+             - timedelta(days=days)).strftime("%Y-%m-%d")
+    live = str(armer_state or "") in LIVE_STATES
+    out = []
+    for p in sorted(rd.glob("*_plan.json")):
+        d = p.name[:10]
+        if not (first <= d <= today) or _RUNNING.get(d):
+            continue
+        if live and armer_night == d:
+            continue
+        if not (rd / f"{d}_subs.jsonl").exists() or record_path(config, d).exists():
+            continue
+        dawn = _utc((plan_snapshot(config, d) or {}).get("dawn_utc"))
+        if dawn is None:
+            if d >= today:   # no dawn known: only nights already over
+                continue
+        elif now < dawn + timedelta(minutes=SWEEP_AFTER_DAWN_MIN):
+            continue
+        out.append(d)
+    return out
+
+
+def sweep(config, armer_state: str = "", armer_night: str | None = None,
+          now: datetime | None = None, start=None) -> list[str]:
+    """Start the dawn filing of every due night. Returns the nights
+    started. Never raises."""
+    start = start or start_dawn_filing
+    try:
+        nights = due_nights(config, now, armer_state, armer_night)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("dawn filing sweep failed: %s", e)
+        return []
+    started = []
+    for d in nights:
+        try:
+            if start(config, d):
+                started.append(d)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("dawn filing sweep: %s not started: %s", d, e)
+    if started:
+        logger.info("Dawn filing sweep: filing %s (armer %s)",
+                    ", ".join(started), armer_state or "?")
+    return started
+
+
+async def run_sweep(get_config, get_armer, tick_seconds: int = SWEEP_TICK_S) -> None:
+    """Background loop (app startup). Never raises."""
+    import asyncio
+    while True:
+        try:
+            armer = get_armer()
+            plan = getattr(armer, "plan", None) or {}
+            sweep(get_config(), str(getattr(armer, "state", "") or ""),
+                  plan.get("night_of") if isinstance(plan, dict) else None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("dawn filing sweep failed: %s", e)
+        await asyncio.sleep(tick_seconds)

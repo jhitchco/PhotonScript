@@ -175,6 +175,13 @@ class PhotonScriptConfig(BaseSettings):
                                     # back to review) and the Library is built,
                                     # so Syncthing ships it. Off: the dawn pass
                                     # still attributes and builds, approves none.
+    dawn_filing_catchup_days: int = 3  # dawn filing sweep (2026-10-11): an
+                                    # armed night of the last N days (plan
+                                    # snapshot + subs log) with no filing
+                                    # record is filed once, 90 min after its
+                                    # dawn, when the armer no longer owns it
+                                    # (disarmed, error, a restart killed the
+                                    # filing). 0 = off (dawn shutdown only).
     stamp_fits_object: bool = True  # write the resolved target name into a
                                     # blank FITS OBJECT header at capture (and
                                     # when identify attributes a sub) so

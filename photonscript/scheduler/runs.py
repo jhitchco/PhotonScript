@@ -51,6 +51,10 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
         "dark_hours": plan.get("dark_hours"),
         "targets": [{
             "name": t.name,
+            # dawn filing (2026-10-11): the planned window, the Piggy-600's
+            # last-resort name (dawn_autofile.plan_fallback_records)
+            "window_start_utc": _iso_or_none(getattr(t, "window_start_utc", None)),
+            "window_end_utc": _iso_or_none(getattr(t, "window_end_utc", None)),
             # PS-66: shown on the night page (goal credit is by seconds
             # for every sub since PS-118, guided or not)
             "guided": bool(getattr(t, "start_guiding", False)),
@@ -70,6 +74,16 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
     }
     (runs_dir(config) / f"{night_of}_plan.json").write_text(
         json.dumps(snapshot, indent=1), encoding="utf-8")
+
+
+def _iso_or_none(dt) -> str | None:
+    """A naive-UTC datetime as ISO with a Z, else None."""
+    if not isinstance(dt, datetime):
+        return None
+    if dt.tzinfo is not None:
+        from datetime import timezone
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt.replace(microsecond=0).isoformat() + "Z"
 
 
 def _sanitize_floats(obj):

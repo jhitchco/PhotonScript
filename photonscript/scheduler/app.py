@@ -593,6 +593,15 @@ async def _start_dawn_mount_check():
 
 
 @app.on_event("startup")
+async def _start_dawn_filing_sweep():
+    """Dawn filing sweep (2026-10-11): an armed night the armer's dawn
+    shutdown did not file (disarmed, error, a restart) files itself once.
+    Off when dawn_filing_catchup_days = 0."""
+    from photonscript.scheduler.dawn_autofile import run_sweep
+    _spawn(run_sweep(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_calibration_autofill():
     """PS-113: daytime calibration auto-fill. Always started; each tick is a
     no-op unless config.calibration_autofill (default off)."""
@@ -690,6 +699,7 @@ _CONFIG_FIELDS = [
     ("blend_rc16_bxt", "PS_BLEND_RC16_BXT", "Blend (PS-153): BlurXTerminator pass on the RC16 L linear master first (when installed)", "Integration", "bool", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("auto_approve_at_dawn", "PS_AUTO_APPROVE_AT_DAWN", "Dawn filing (PS-157): approve the night's QA-passing subs at dawn (both rigs; never test subs, '?' subs or subs sent back to review), then build the Library", "Imaging", "bool", False, False),
+    ("dawn_filing_catchup_days", "PS_DAWN_FILING_CATCHUP_DAYS", "Dawn filing sweep: file an armed night of the last N days that has no filing record (disarmed or errored at dawn, restart killed the filing), 90 min after its dawn (0 = off: dawn shutdown only)", "Imaging", "int", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
     ("bias_refresh_days", "PS_BIAS_REFRESH_DAYS", "Skip roof-closed bias unless library older than N days (0=nightly)", "Imaging", "int", False, False),
     ("auto_stale_flats", "PS_AUTO_STALE_FLATS", "At dawn, also reshoot flats for filters gone stale (>45d), even if unused tonight", "Imaging", "bool", False, False),
