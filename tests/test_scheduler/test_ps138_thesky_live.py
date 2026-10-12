@@ -273,3 +273,42 @@ def test_no_warning_guided_or_when_protrack_is_on(monkeypatch):
     a, sent = _armer(monkeypatch, {"rows": list(rows.values())})
     asyncio.run(a._thesky_audit_at_arm())
     assert len(sent) == 1 and "could not be confirmed" in sent[0][0]
+
+
+# --------------------------------------------------------------------------
+# 2026-10-12: the arm-time audit FAILed ProTrack with the mount parked by day
+# --------------------------------------------------------------------------
+
+def test_protrack_not_judged_while_parked():
+    parked = {"thesky_scripting": True, "mount_connected": True, "mount_parked": True,
+              "mount_tracking": False, "protrack_on": False, "protrack_adjustments": False}
+    for armer in ("ARMED", "RUNNING", "DISARMED"):
+        rows, res = _eval({"thesky-script": parked, "armer_state": armer})
+        p = rows["protrack_on"]
+        assert p["status"] == "info", armer
+        assert p["current"] == "not judged (parked)"
+        assert "not judged while parked" in p["note"]
+        assert p["protrack"] == "unknown"
+    # the Guiding tab shows no ProTrack OFF fail for it; the unguided arm
+    # warning says "could not be confirmed", not "OFF"
+    assert ta.protrack_status(res)["state"] == "unknown"
+    # nothing read about ProTrack, still parked: info too (not "OFF (greyed)")
+    rows, _ = _eval({"thesky-script": {"mount_connected": True, "mount_parked": True,
+                                       "mount_tracking": False}, "armer_state": "ARMED"})
+    assert rows["protrack_on"]["status"] == "info"
+    # ticked while parked: still not judged, but known on
+    rows, _ = _eval({"thesky-script": dict(parked, protrack_on=True,
+                                           protrack_adjustments=True)})
+    assert rows["protrack_on"]["status"] == "info" and rows["protrack_on"]["protrack"] == "on"
+
+
+def test_protrack_judged_once_unparked_and_tracking():
+    live = {"mount_connected": True, "mount_parked": False, "mount_tracking": True}
+    rows, _ = _eval({"thesky-script": dict(live, protrack_on=False), "armer_state": "RUNNING"})
+    assert rows["protrack_on"]["status"] == "fail" and rows["protrack_on"]["current"] == "OFF"
+    rows, _ = _eval({"thesky-script": dict(live, protrack_on=True, protrack_adjustments=True)})
+    assert rows["protrack_on"]["status"] == "pass"
+    # TheSky not connected (parked flag meaningless): the PS-138 rule stands
+    rows, _ = _eval({"thesky-script": {"mount_connected": False, "mount_parked": True},
+                     "armer_state": "ARMED"})
+    assert rows["protrack_on"]["status"] == "fail"

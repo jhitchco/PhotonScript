@@ -895,7 +895,9 @@ def _c_protrack(row, val, observed, config, ctx):
     cannot be working (2026-10-05: the record said on, TheSky had it unticked
     and greyed, the unguided test trailed). Off: FAIL when TheSky's mount is
     connected and tracking or a night is armed, else WARN (by day). Nothing
-    live: the record is shown as info (verify by eye), or unknown."""
+    live: the record is shown as info (verify by eye), or unknown. TheSky's
+    mount PARKED (2026-10-12: the arm-time audit FAILed by day): INFO "not
+    judged while parked", whatever the boxes read."""
     want = "Activate ProTrack and Enable tracking adjustments ticked (read from TheSky)"
     ts = observed.get("thesky-script") or {}
     act = ts.get("protrack_on")
@@ -907,6 +909,17 @@ def _c_protrack(row, val, observed, config, ctx):
     man = (observed.get("manual") or {}).get("protrack_on")
     hint = (f"; {_manual_tag(observed)} says {'on' if _bool(man) else 'off'} "
             "(not used for the status)") if man is not None else ""
+    parked = ts.get("mount_parked")
+    parked = None if parked is None else _bool(parked)
+    if conn is not False and parked is True:
+        # 2026-10-12: the arm-time audit runs by day with the mount parked:
+        # ProTrack is greyed until TheSky's mount unparks and tracks, so an
+        # unticked box says nothing yet. Judged once it tracks.
+        ctx["current"] = "not judged (parked)"
+        ctx["protrack"] = "on" if (act and adj) else "unknown"
+        return INFO, want, ("not judged while parked: ProTrack is greyed until "
+                            "TheSky's mount unparks and tracks; it is judged then"
+                            f"{hint}")
     if act is False or adj is False:
         what = "Activate ProTrack" if act is False else "Enable tracking adjustments"
         ctx["current"] = "OFF"
