@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from photonscript.integration import astrobin, calib, manifest, pjsr, runner, star_qa
+from photonscript.integration import astrobin, calib, hdr, manifest, pjsr, runner, star_qa
 from photonscript.integration.frames import Frame
 from photonscript.integration.select import Selection, select_lights
 
@@ -96,6 +96,7 @@ class Options:
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
     allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
     keep_focuser_zero: bool = False   # stack lights with FOCPOS 0 anyway (focus unknown)
+    hdr_combine: bool = True          # integrate_hdr_combine: mono master_<F> + master_<F>_<exp> -> master_<F>_hdr
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -139,6 +140,7 @@ def config_options(cfg, rig: str) -> dict:
     return dict(
         **pjsr.rc_settings(cfg),
         palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
+        hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -281,7 +283,8 @@ def plan_stacks(lights: list[Frame], min_group: int = 3) -> tuple[list[dict], li
             notes.append(f"{filt}: " + ", ".join(
                 f"{e:g} s x {len(ok[e])} -> master_{safe_name(filt) if e == primary else safe_name(filt) + '_' + ok[e][0].exp_key}"
                 for e in sorted(ok, key=lambda x: (x != primary, -x)))
-                + " (one master per exposure, HDR combine them later)")
+                + " (one master per exposure; HDR combined into master_"
+                + safe_name(filt) + "_hdr after the integration when integrate_hdr_combine is on)")
     return specs, left, notes
 
 
@@ -605,7 +608,14 @@ def run(o: Options, echo=print) -> dict:
                             for s in stacks]}
         finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
         echo(f"  {integ_js.name}, {finish_js.name}")
-    result["scripts"] = [str(integ_js), str(finish_js)]
+        # mono exposure masters of one filter -> master_<F>_hdr (rewritten
+        # after the integration for the masters PixInsight actually made)
+        hdr_items = hdr.plan(stacks, out_dir) if (o.hdr_combine and not cfa) else []
+        hdr_js = hdr.write_script(run_dir, hdr_items) if hdr_items else None
+        if hdr_js:
+            echo(f"  {hdr_js.name} (HDR combine: " + ", ".join(
+                "+".join(x["stack"] for x in it["inputs"]) for it in hdr_items) + ")")
+    result["scripts"] = [str(integ_js), str(finish_js)] + ([str(hdr_js)] if hdr_js else [])
 
     pi_ok = False
     final_img = ""
@@ -636,6 +646,19 @@ def run(o: Options, echo=print) -> dict:
                 fcfg["masters"] = keep
                 finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
                 echo(f"  {finish_js.name} rewritten for {len(keep)} master(s)")
+        if pi_ok and hdr_items:
+            gone_stacks = {k["stack"] for k in skipped}
+            items = hdr.plan(stacks, out_dir, made={s["name"] for s in stacks} - gone_stacks)
+            if items:
+                with timer.stage("PixInsight HDR combine (launch to exit)"):
+                    rh = hdr.run(run_dir, items, exe=o.pixinsight, echo=echo)
+                    echo(f"  HDR combine: {'EXIT OK' if rh['ok'] else 'FAILED'} in {rh['minutes']} min, "
+                         f"{len(rh['made'])} of {len(items)} made")
+                result["hdr"] = rh
+                if rh["made"]:
+                    fcfg["masters"] = hdr.finish_masters(fcfg["masters"], items, rh["made"], out_dir)
+                    finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
+                    echo(f"  {finish_js.name} rewritten: the finish prefers the HDR master(s)")
         if pi_ok and o.finish:
             with timer.stage("PixInsight finish (launch to exit)"):
                 r2 = runner.run_script(finish_js, out_dir / "finish.log", exe=o.pixinsight, echo=echo)
@@ -646,6 +669,8 @@ def run(o: Options, echo=print) -> dict:
     else:
         echo("  PixInsight not started (--no-pixinsight). Run it later with:")
         echo(f'    "{o.pixinsight}" -n --automation-mode --run={integ_js} --force-exit')
+        if hdr_js:
+            echo(f'    then "{o.pixinsight}" -n --automation-mode --run={hdr_js} --force-exit')
 
     with timer.stage("AstroBin packet draft"):
         gone_names = set().union(*(stack_frames.get(k["stack"], set()) for k in skipped))
@@ -723,7 +748,7 @@ def run(o: Options, echo=print) -> dict:
         selected=sel.lights, staged=lights, integrated=integrated, dropped=dropped,
         qa=qa_summary, calibration=calib_summary, integration=result.get("integration"),
         finish=result.get("finish"), timing=timer.rows, packet=str(md_path), csv=str(csv_path),
-        final=final_img, trigger=o.trigger or None)
+        final=final_img, trigger=o.trigger or None, hdr=result.get("hdr"))
     result["ledger"] = str(ledger_writer.write_for_run(led, run_dir, o.staging_root))
     result["ledger_version"] = led.version
     result["hours_integrated"] = round(led.hours, 3)

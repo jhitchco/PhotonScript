@@ -1082,6 +1082,9 @@ Approve / Decline; a plan change shows its diff and goes through PATCH
 section 0b. Two-rig goals: `photonscript blend --target M31` puts the RC16 L
 core into the Piggy-600 color image (full field + RC16-scale core crop) in a
 new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
+Mono runs HDR combine a filter's exposure-length masters (PS-177
+`master_L` + `master_L_30s`) into `master_<F>_hdr` before the finish
+(config `integrate_hdr_combine`, default on; the finish and blend prefer it).
 
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block

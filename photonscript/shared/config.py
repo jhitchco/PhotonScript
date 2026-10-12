@@ -355,6 +355,12 @@ class PhotonScriptConfig(BaseSettings):
     blend_rc16_bxt: bool = True  # PS-153 blend: BlurXTerminator pass on the
                                  # RC16 L linear master before the blend (only
                                  # when installed and finish_use_rcastro not off)
+    integrate_hdr_combine: bool = True  # mono (RC16) integrate: a filter stacked
+                                 # at two or more exposure lengths (PS-177
+                                 # master_L + master_L_30s) is HDR combined into
+                                 # master_<F>_hdr (HDRComposition, else a fitted
+                                 # replacement of the saturated pixels); the
+                                 # finish and the blend prefer it. OSC: no effect
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as

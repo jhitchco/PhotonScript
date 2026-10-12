@@ -2937,6 +2937,9 @@ def integrate_cmd(
     keep_focuser_zero: bool = typer.Option(False, "--keep-focuser-zero",
                                            help="Stack lights whose FOCPOS is 0 (focuser disconnected "
                                                 "or frozen; left out by default in every --qa mode)"),
+    hdr: Optional[bool] = typer.Option(None, "--hdr/--no-hdr",
+                                       help="Mono: HDR combine a filter's exposure-length masters into "
+                                            "master_<F>_hdr (default integrate_hdr_combine, on)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
     report: bool = typer.Option(True, "--report/--no-report",
@@ -2970,6 +2973,8 @@ def integrate_cmd(
         raise typer.Exit(2)
     if library:
         kw["library"] = Path(library)
+    if hdr is not None:
+        kw["hdr_combine"] = hdr
     opts = pl.Options(
         target=target, rig=rig, since=since, until=until,
         staging_root=root, out=Path(out) if out else None,
