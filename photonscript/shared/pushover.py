@@ -68,6 +68,44 @@ def _cfg(config, key):
     return getattr(config, key, _DEFAULTS[key])
 
 
+# Push text is plain ASCII (2026-10-12: the dawn "PhotonScript complete"
+# push showed "A-circumflex, middle dot" where " U+00B7 " separated the
+# shutdown steps.
+# PhotonScript stored and posted correct UTF-8, notifications.jsonl reads
+# U+00B7, so the UTF-8 bytes were read as Latin-1 / cp1252 after the form
+# POST. ASCII cannot be misread.) Typography first, then any accent
+# stripped (NFKD), anything else left becomes "?".
+_ASCII_MAP = {
+    "\u00b7": "|", "\u2022": "*", "\u2014": "-", "\u2013": "-", "\u2012": "-",
+    "\u2010": "-", "\u2011": "-", "\u2212": "-", "\u2018": "'", "\u2019": "'",
+    "\u201a": "'", "\u201c": '"', "\u201d": '"', "\u201e": '"', "\u2026": "...",
+    "\u00a0": " ", "\u202f": " ", "\u2009": " ", "\u00b0": " deg", "\u00b1": "+/-",
+    "\u00d7": "x", "\u00b5": "u", "\u03bc": "u", "\u2192": "->", "\u2190": "<-",
+    "\u2264": "<=", "\u2265": ">=", "\u2248": "~", "\u2032": "'", "\u2033": '"',
+    "\u26a0": "!", "\u2713": "ok", "\u2714": "ok", "\u2717": "x", "\u2718": "x",
+    "\ufe0f": "",
+}
+
+
+def ascii_text(text) -> str:
+    """text as plain ASCII for a push (see _ASCII_MAP); None -> ""."""
+    import unicodedata
+    s = "" if text is None else str(text)
+    if s.isascii():
+        return s
+    s = "".join(_ASCII_MAP.get(ch, ch) for ch in s)
+    if s.isascii():
+        return s
+    out = []
+    for ch in s:
+        if ch.isascii():
+            out.append(ch)
+            continue
+        base = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode()
+        out.append(base or "?")
+    return "".join(out)
+
+
 def _state_path(config) -> Path:
     data_dir = Path(getattr(config, "data_dir", Path.home() / ".photonscript"))
     return data_dir / "pushover_state.json"
@@ -123,6 +161,7 @@ def record(config, message: str, title: str = "PhotonScript",
     """Audit a notification that the CALLER decided not to push (e.g. the
     armer collapsing a guiding flap, PS-66), so notifications.jsonl and
     /api/notifications still show every event with sent=false."""
+    message, title = ascii_text(message), ascii_text(title)
     logger.info("[pushover held:%s] %s: %s", reason, title, message)
     _audit(config, title, message, priority, False, reason)
 
@@ -297,7 +336,9 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
 async def notify(config, message: str, title: str = "PhotonScript",
                  priority: int = 0, sound: str = "none", attachment=None) -> bool:
     """Send a Pushover notification, rate-limited. No-op (logged) if keys unset.
-    attachment (PS-161): an image path to attach (desktop review JPG)."""
+    attachment (PS-161): an image path to attach (desktop review JPG).
+    Title and message go out as plain ASCII (ascii_text)."""
+    message, title = ascii_text(message), ascii_text(title)
     att = {"attachment": attachment} if attachment else {}
     if not _cfg(config, "pushover_ratelimit_enabled"):
         sent = await _send_raw(config, message, title, priority, sound, **att)

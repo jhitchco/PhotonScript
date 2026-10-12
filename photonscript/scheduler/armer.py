@@ -460,7 +460,7 @@ class Armer:
         if getattr(self.config, "connect_all_on_arm", True):
             try:
                 res = await self.connect_all_rigs()
-                conn = " · safety: " + res.get("rc16", {}).get("safetymonitor", "?")
+                conn = " | safety: " + res.get("rc16", {}).get("safetymonitor", "?")
             except Exception as e:  # noqa: BLE001
                 logger.warning("connect_all at arm failed: %s", e)
         # PS-66: which guider NINA has (Direct Guider vs PHD2), for the
@@ -667,7 +667,7 @@ class Armer:
                     continue
             steps.append(f"{label}:{'ok' if ok else f'FAILED ({self.detail})'}")
         self.last_raw = None
-        report = "make-safe " + " · ".join(steps)
+        report = "make-safe " + " | ".join(steps)
         logger.warning(report)
         return report
 
@@ -937,7 +937,7 @@ class Armer:
                 steps.append("prewarm " + ",".join(nights))
         except Exception as e:  # noqa: BLE001
             logger.warning("post-night grade/thumbnail warm failed: %s", e)
-        report = " · ".join(steps)
+        report = " | ".join(steps)   # ASCII: it goes into pushes
         logger.warning("dawn shutdown (%s): %s", reason, report)
         return report
 
@@ -3126,7 +3126,7 @@ class Armer:
             steps.append(cov)
         self._unsafe_stopped = True
         mins = int((now - self._unsafe_since).total_seconds() // 60)
-        report = " · ".join(steps)
+        report = " | ".join(steps)   # ASCII: it goes into pushes
         self._set_state("PAUSED_UNSAFE",
                         f"Unsafe {mins} min and NINA kept imaging ({why}): "
                         f"armer stopped the sequence ({report}); cooler kept "

@@ -319,4 +319,4 @@ async def test_dawn_shutdown_stops_the_piggyback_sequence(tmp_path, monkeypatch)
     report = await a.dawn_shutdown(reason="dawn")
     assert stopped == ["http://nina2"]     # NINA #1 is stopped via _nina
     assert "piggyback stop ok" in report
-    assert "stop ok" in report.split(" · ")[0]
+    assert "stop ok" in report.split(" | ")[0]
