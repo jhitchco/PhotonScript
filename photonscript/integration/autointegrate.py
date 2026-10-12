@@ -179,10 +179,10 @@ def blend_candidate(o: AutoOptions, target: str, discover) -> tuple[object | Non
 # --- review image + notice -------------------------------------------------------
 
 def finals(run_dir: Path, blend: bool = False) -> list[Path]:
-    """The finished JPGs of a run: integrate *_final.jpg (+ *_hoo.jpg), or a
-    blend's *_blend.jpg (+ *_core.jpg)."""
+    """The finished JPGs of a run: integrate *_final.jpg (+ *_hoo.jpg,
+    *_gold.jpg), or a blend's *_blend.jpg (+ *_core.jpg)."""
     fin = Path(run_dir) / "out" / "final"
-    pats = ("*_blend.jpg", "*_core.jpg") if blend else ("*_final.jpg", "*_hoo.jpg")
+    pats = ("*_blend.jpg", "*_core.jpg") if blend else ("*_final.jpg", "*_hoo.jpg", "*_gold.jpg")
     out: list[Path] = []
     for pat in pats:
         out += sorted(fin.glob(pat))

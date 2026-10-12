@@ -692,6 +692,7 @@ _CONFIG_FIELDS = [
     ("autointegrate_blend", "PS_AUTOINTEGRATE_BLEND", "Auto-integrate: blend two-rig goals once both rigs have masters", "Integration", "bool", False, False),
     ("autointegrate_notify", "PS_AUTOINTEGRATE_NOTIFY", "Auto-integrate: Pushover the review JPG after a run", "Integration", "bool", False, False),
     ("autointegrate_hoo", "PS_AUTOINTEGRATE_HOO", "Auto-integrate: OSC finish also writes the HOO-mapped image (Ha = R, OIII = mean G, B)", "Integration", "bool", False, False),
+    ("finish_palette", "PS_FINISH_PALETTE", "Finish (desktop .env): OSC palette image: off | gold (gold-blue HOO-style <name>_gold.jpg; integrate --palette overrides)", "Integration", "str", False, False),
     ("finish_use_rcastro", "PS_FINISH_USE_RCASTRO", "Finish (PS-186, desktop .env): RC Astro BlurX / NoiseX / StarXTerminator: auto (when installed) | on (same, missing = warning) | off", "Integration", "str", False, False),
     ("bxt_sharpen_stars", "PS_BXT_SHARPEN_STARS", "Finish: BlurXTerminator sharpen stars (0..1)", "Integration", "float", False, False),
     ("bxt_sharpen_nonstellar", "PS_BXT_SHARPEN_NONSTELLAR", "Finish: BlurXTerminator sharpen nonstellar (0..1; 0.5 to 0.9 useful)", "Integration", "float", False, False),

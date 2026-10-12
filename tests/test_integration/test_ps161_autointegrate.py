@@ -316,3 +316,53 @@ def test_cli_registers_autointegrate():
     from photonscript.cli import app
     r = CliRunner().invoke(app, ["autointegrate", "--help"])
     assert r.exit_code == 0 and "--dry-run" in r.output and "--settle-min" in r.output
+
+
+# --- gold-blue palette (finish_palette / --palette gold) ------------------------
+
+def test_render_finish_palette_switch():
+    base = {"out": "D:/X/out", "ra_deg": None, "dec_deg": None,
+            "masters": [{"name": "Heart_OSC", "path": "D:/X/out/master/master_OSC.xisf"}]}
+    off = pjsr.render_finish(base)
+    assert 'var PALETTE  = "off";' in off and "var GOLD_MIX = 0.6;" in off
+    gold = pjsr.render_finish({**base, "palette": "gold", "gold_mix": 0.55})
+    assert 'var PALETTE  = "gold";' in gold and "var GOLD_MIX = 0.55;" in gold
+    assert pjsr.check(gold) == []
+    assert pjsr.FINISH_DEFAULTS["palette"] == "off"
+    with pytest.raises(pjsr.PjsrError):
+        pjsr.render_finish({**base, "palette": "sho"})
+    with pytest.raises(pjsr.PjsrError):
+        pjsr.render_finish({**base, "palette": "gold", "gold_mix": 1.5})
+
+
+def test_palette_mode_normalizes():
+    assert pjsr.palette_mode(None) == "off" and pjsr.palette_mode("") == "off"
+    assert pjsr.palette_mode("GOLD") == "gold" and pjsr.palette_mode("none") == "off"
+    with pytest.raises(pjsr.PjsrError):
+        pjsr.palette_mode("rainbow")
+
+
+def test_finish_palette_config_default_off_and_on_system_page():
+    from photonscript.scheduler.app import _CONFIG_FIELDS
+    from photonscript.shared.config import PhotonScriptConfig
+    c = PhotonScriptConfig(_env_file=None)
+    assert c.finish_palette == "off"
+    assert "finish_palette" in {f[0] for f in _CONFIG_FIELDS}
+    assert pl.config_options(c, "piggyback")["palette"] == "off"
+    c2 = PhotonScriptConfig(_env_file=None, finish_palette="gold")
+    assert pl.config_options(c2, "piggyback")["palette"] == "gold"
+
+
+def test_cli_integrate_has_palette():
+    from typer.testing import CliRunner
+    from photonscript.cli import app
+    r = CliRunner().invoke(app, ["integrate", "--help"])
+    assert r.exit_code == 0 and "--palette" in r.output
+
+
+def test_review_includes_the_gold_image(tmp_path):
+    fin = tmp_path / "out" / "final"
+    fin.mkdir(parents=True)
+    for n in ("H_OSC_final.jpg", "H_OSC_gold.jpg"):
+        _jpg(fin / n)
+    assert [p.name for p in ai.finals(tmp_path)] == ["H_OSC_final.jpg", "H_OSC_gold.jpg"]

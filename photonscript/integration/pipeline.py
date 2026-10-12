@@ -85,6 +85,7 @@ class Options:
     thresholds: star_qa.Thresholds = field(default_factory=star_qa.Thresholds)
     trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
     hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
+    palette: str = "off"              # finish_palette: gold = OSC finish also writes <name>_gold.{xisf,jpg}
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
     allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
     keep_focuser_zero: bool = False   # stack lights with FOCPOS 0 anyway (focus unknown)
@@ -130,6 +131,7 @@ def config_options(cfg, rig: str) -> dict:
     from photonscript.shared.rigs import rig_label, rig_readout
     return dict(
         **pjsr.rc_settings(cfg),
+        palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -538,6 +540,7 @@ def run(o: Options, echo=print) -> dict:
                 "built": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "options": {"since": o.since, "until": o.until, "qa": o.qa, "flats": o.flats,
                             "library": str(o.library), "filters": o.filters,
+                            "palette": pjsr.palette_mode(o.palette),
                             "rcastro": {"mode": o.rc_mode if o.use_rc else "off", "bxt_stars": o.bxt_stars,
                                         "bxt_nonstellar": o.bxt_nonstellar,
                                         "nxt_denoise": o.nxt_denoise}}}
@@ -572,6 +575,7 @@ def run(o: Options, echo=print) -> dict:
                 "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
                 "graxpert": gx, "graxpert_version": "unknown" if gx else "",
                 "hoo": "on" if (o.hoo and cfa) else "off",   # PS-161: OSC only
+                "palette": pjsr.palette_mode(o.palette) if cfa else "off",   # gold-blue: OSC only
                 "masters": [{"name": f"{safe_name(o.target)}_{s['name']}",
                              "path": pjsr.fwd(out_dir / "master" / f"master_{s['name']}.xisf")}
                             for s in stacks]}

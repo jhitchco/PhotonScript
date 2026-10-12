@@ -386,6 +386,21 @@ settings that were set, and `version` / `ai_model` when the process exposes
 them); the step records name the tool that ran. `*_linear.xisf` is still
 saved before deconvolution.
 
+Gold-blue palette (`-Palette gold`, `photonscript integrate --palette gold`,
+config `finish_palette`, default off; color masters only). The HOO-style look
+of an unfiltered OSC emission nebula (Heart, IC 1805): from the same
+color-calibrated linear copy as HOO (before SCNR), Ha = R and OIII = mean of G
+and B scaled to the Ha background, then R = Ha, G = `-GoldMix` (0.6) x Ha +
+0.4 x OIII, B = OIII, so Ha goes orange-gold and OIII blue. NoiseXTerminator
+runs on the copy when installed; with StarXTerminator (else StarNet2) the
+mapping runs on the starless copy and the natural RGB stars are screened back
+at `-StarStrength`, else on the whole image. Then the finish's linked stretch
+and saturation, a gentle hue curve (red-orange and yellow toward gold, azure
+toward teal-blue), the framing crop: `<Name>_gold.{xisf,jpg}` beside the
+others, step `palette` in the steps json (ran / skipped / failed). Finish
+only, on an existing master (no restack):
+`.\deploy\run-finish-osc.ps1 -Name Heart_OSC -Target IC1805 -Master <run>\out\master\master_OSC.xisf -OutDir <run>\out\final_gold -Palette gold -Wait`.
+
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
 (gain 100 / offset 256 / 0 °C / `dark_exposures="120"`). Three ways to get it:

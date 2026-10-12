@@ -179,6 +179,8 @@ FINISH_DEFAULTS = {
     "graxpert": "", "graxpert_version": "", "graxpert_ai": "", "graxpert_gpu": "",
     "graxpert_timeout_min": 30, "stars": "on", "star_strength": 0.7,
     "hoo": "off",                  # PS-161: on = also <name>_hoo.{xisf,jpg} (OSC only)
+    # gold-blue OSC palette (config finish_palette): gold = also <name>_gold.{xisf,jpg}
+    "palette": "off", "gold_mix": 0.6,
     "focal_mm": 600.0, "pixel_um": 3.76,
 }
 
@@ -198,6 +200,21 @@ def rc_mode(v) -> str:
     m = {"true": "on", "yes": "on", "1": "on", "false": "off", "no": "off", "0": "off"}.get(m, m)
     if m not in RC_MODES:
         raise PjsrError(f"finish_use_rcastro must be auto, on or off (got {v!r})")
+    return m
+
+
+PALETTES = ("off", "gold")
+
+
+def palette_mode(v) -> str:
+    """Normalize finish_palette / --palette: off | gold (blank, false, none
+    = off). Raises PjsrError on anything else."""
+    if isinstance(v, bool):
+        return "gold" if v else "off"
+    m = str(v if v is not None else "").strip().lower() or "off"
+    m = {"none": "off", "false": "off", "no": "off", "0": "off"}.get(m, m)
+    if m not in PALETTES:
+        raise PjsrError(f"palette must be one of {', '.join(PALETTES)} (got {v!r})")
     return m
 
 
@@ -291,6 +308,8 @@ def render_finish(cfg: dict, solver_block: str = "", deploy_dir: Path | None = N
         "GRAXPERT_TIMEOUT_MIN": str(int(c["graxpert_timeout_min"])),
         "STARS": _js_str(c["stars"]), "STAR_STRENGTH": _js_num(float(c["star_strength"])),
         "HOO": "on" if str(c.get("hoo") or "off").lower() in ("on", "true", "1") else "off",
+        "PALETTE": palette_mode(c.get("palette")),
+        "GOLD_MIX": _js_num(unit_value("gold_mix", c["gold_mix"])),
         "MASTERS": json.dumps([{"name": m["name"], "path": str(m["path"]).replace("\\", "/")}
                                for m in masters], ensure_ascii=True),
     }

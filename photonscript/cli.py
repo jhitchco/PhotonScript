@@ -2924,6 +2924,9 @@ def integrate_cmd(
                                       help="NoiseXTerminator denoise 0..1 (default nxt_denoise)"),
     hoo: bool = typer.Option(False, "--hoo/--no-hoo",
                              help="OSC finish: also the HOO-mapped image (Ha = R, OIII = mean G, B; PS-161)"),
+    palette: str = typer.Option("", "--palette",
+                                help="OSC finish: also a palette image, off | gold (gold-blue: "
+                                     "<name>_gold.{xisf,jpg}; default finish_palette, off)"),
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
     min_group: int = typer.Option(3, "--min-group-frames",
                                   help="Mono: an exposure group with fewer subs is left out "
@@ -2959,6 +2962,9 @@ def integrate_cmd(
     try:
         kw = pl.config_options(cfg, rig)
         kw.update(_rc_overrides(rcastro, bxt_stars, bxt_nonstellar, nxt_denoise))
+        if palette:
+            from photonscript.integration import pjsr as _pjsr
+            kw["palette"] = _pjsr.palette_mode(palette)
     except ValueError as e:
         console.print(f"[red]integrate:[/red] {e}", markup=True)
         raise typer.Exit(2)
