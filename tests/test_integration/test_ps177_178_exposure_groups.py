@@ -276,3 +276,102 @@ def test_mono_detect_ignores_hot_pixels():
     st = q.detect(img, osc=False)
     assert 90 <= len(st["x"]) <= 110
     assert np.median(st["hfd"]) > 3.0
+
+
+# ----------------------------------------- one tiny / failed group never aborts the run
+# 2026-10-12 M31 rc16: B_300s had 3 subs, only 2 registered inside PixInsight,
+# and the throw stopped the run before the L 30 s, R and G masters.
+
+def _stack_js():
+    from photonscript.integration import pjsr
+    return pjsr.template(pjsr.INTEGRATE_TEMPLATE)
+
+
+def test_pjsr_skips_a_stack_with_too_few_registered_frames():
+    t = _stack_js()
+    assert "var MIN_FRAMES = Math.max(3, CONFIG.min_group_frames || 3);" in t
+    assert "if (regFiles.length < MIN_FRAMES)" in t
+    assert "too few registered frames" in t and "too few frames after local normalization" in t
+    main = t[t.index("function main()"):]
+    loop = main[main.index("for (var s = 0; s < CONFIG.stacks.length; ++s)"):main.index("if (!made)")]
+    assert loop.index("try {") < loop.index("runStack(CONFIG.stacks[s], masters, reg)")
+    assert "catch (e)" in loop and "skipStack(SN," in loop
+    # the run fails only when no stack made a master
+    assert 'if (!made) throw new Error("no stack produced a master");' in main
+
+
+def test_pjsr_skip_logs_records_and_cleans_up():
+    t = _stack_js()
+    sk = t[t.index("function skipStack("):t.index("function main()")]
+    assert 'log("SKIPPED [" + S + "]: " + why + " (no master_" + S' in sk
+    assert 'TIMING.push(S + ",SKIPPED,"' in sk and "writeText(TIMINGFILE, TIMING)" in sk
+    assert 'TEND(S, "stack total")' in sk and '"integration"' in sk and "forceClose()" in sk
+    for n, ln in enumerate(t.splitlines(), 1):
+        if "//" in ln:
+            assert "/*" not in ln.split("//", 1)[1], n
+    t.encode("ascii")
+
+
+def test_integrate_config_carries_min_group_frames(mono_lib, tmp_path):
+    out = tmp_path / "Staging" / "mg"
+    pl.run(_opts(mono_lib, tmp_path, out=out, allow_uncalibrated=True, min_group_frames=4),
+           echo=lambda s: None)
+    js = (out / "integrate_run.js").read_text()
+    cfg = json.loads(js.split("var CONFIG = ", 1)[1].split(";\n", 1)[0])
+    assert cfg["min_group_frames"] == 4
+    from photonscript.integration import pjsr
+    assert pjsr.check(js) == []
+    # a mono run never renders the OSC palette
+    assert 'var PALETTE  = "off";' in (out / "finish_run.js").read_text()
+
+
+def test_skipped_from_log():
+    txt = ("2026-10-12T05:00:00Z  [+3.1m]  SKIPPED [B_300s]: [B_300s] too few registered frames "
+           "(2, need 3) (no master_B_300s; continuing with the other stacks)\n"
+           "x  SKIPPED [R]: integration failed (no master_R; continuing with the other stacks)\n"
+           "x  SKIPPED [R]: again (no master_R; continuing)\n")
+    assert pl.skipped_from_log(txt) == [
+        {"stack": "B_300s", "reason": "[B_300s] too few registered frames (2, need 3)"},
+        {"stack": "R", "reason": "integration failed"}]
+    assert pl.skipped_from_log("EXIT OK\n") == []
+
+
+def test_pipeline_reports_a_skipped_stack_and_finishes_the_rest(mono_lib, tmp_path, monkeypatch):
+    out = tmp_path / "Staging" / "skip"
+    calls = []
+
+    def fake_run(script, log_path, **kw):
+        script, log_path = Path(script), Path(log_path)
+        calls.append(script.name)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if script.name == "integrate_run.js":
+            (log_path.parent / "master").mkdir(parents=True, exist_ok=True)
+            (log_path.parent / "master" / "master_L.xisf").write_bytes(b"x")
+            log_path.write_text(
+                "t  [L] master saved\n"
+                "t  SKIPPED [L_30s]: [L_30s] too few registered frames (2, need 3) "
+                "(no master_L_30s; continuing with the other stacks)\n"
+                "t  stacks SKIPPED: 1 of 2 (L_30s)\nt  EXIT OK\n")
+        else:
+            log_path.write_text("t  EXIT OK\n")
+        return {"ok": True, "exit_code": 0, "minutes": 0.1, "last_line": "EXIT OK", "timed_out": False}
+
+    monkeypatch.setattr(pl.runner, "run_script", fake_run)
+    msgs = []
+    res = pl.run(_opts(mono_lib, tmp_path, out=out, allow_uncalibrated=True, run_pixinsight=True),
+                 echo=msgs.append)
+    assert calls == ["integrate_run.js", "finish_run.js"]          # the run went on
+    want = [{"stack": "L_30s", "reason": "[L_30s] too few registered frames (2, need 3)"}]
+    assert res["skipped_stacks"] == want and res["integration"]["skipped_stacks"] == want
+    assert res["integration"]["ok"] and res["finish"]["ok"]
+    assert any("SKIPPED stack L_30s" in m for m in msgs)
+    fin = (out / "finish_run.js").read_text()
+    masters = json.loads(fin.split("var MASTERS = ", 1)[1].split(";\n", 1)[0])
+    assert [m["name"] for m in masters] == ["M31_L"]               # only what exists
+    assert any(r[0] == "PixInsight stack L_30s SKIPPED" and r[4] == "skipped" for r in res["timing"])
+    led = json.loads(Path(res["ledger"]).read_text())
+    assert led["machine"]["integration"]["skipped_stacks"] == want
+    used = {s["file"] for s in led["machine"]["subs"] if s["used"]}
+    assert used and all("_300.00s_" in f for f in used)            # the 30 s subs were not integrated
+    md = next((out / "astrobin").glob("*_packet.md")).read_text()
+    assert "Stack L_30s skipped inside PixInsight" in md

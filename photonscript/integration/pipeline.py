@@ -16,6 +16,13 @@ An OSC stack still holds every exposure group (one debayered master), so a
 mixed OSC stack is flagged and the PJSR falls back to exposure-time weights,
 never to equal weights.
 
+One stack that ends up with too few frames inside PixInsight (fewer than
+min_group_frames registered) or whose integration fails is SKIPPED by the
+PJSR, which goes on with the other stacks; the run reports it
+(result["skipped_stacks"], the ledger, timing.csv, the AstroBin packet), the
+finish runs on the masters that exist, and only a run without any master
+fails (2026-10-12 M31 rc16: B_300s lost the L 30 s, R and G masters).
+
 PS-178 calibration: a light length with no dark at all is refused (its
 subs are left out, with the matcher's nearest alternatives) unless
 allow_uncalibrated (--allow-uncalibrated).
@@ -85,6 +92,7 @@ class Options:
     thresholds: star_qa.Thresholds = field(default_factory=star_qa.Thresholds)
     trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
     hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
+    palette: str = "off"              # finish_palette: gold = OSC finish also writes <name>_gold.{xisf,jpg}
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
     allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
     keep_focuser_zero: bool = False   # stack lights with FOCPOS 0 anyway (focus unknown)
@@ -130,6 +138,7 @@ def config_options(cfg, rig: str) -> dict:
     from photonscript.shared.rigs import rig_label, rig_readout
     return dict(
         **pjsr.rc_settings(cfg),
+        palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -315,6 +324,20 @@ def dropped_from_log(text: str) -> set[str]:
     return out
 
 
+_SKIPPED = re.compile(r"SKIPPED \[([^\]]+)\]: (.*?) \(no master_")
+
+
+def skipped_from_log(text: str) -> list[dict]:
+    """Stacks the PJSR skipped (no master made): [{stack, reason}] from its
+    'SKIPPED [<stack>]: <why> (no master_<stack>; ...)' lines, in order."""
+    out, seen = [], set()
+    for m in _SKIPPED.finditer(text):
+        if m.group(1) not in seen:
+            seen.add(m.group(1))
+            out.append({"stack": m.group(1), "reason": m.group(2).strip()})
+    return out
+
+
 def build_integrate_config(o: Options, run_dir: Path, stacks: list[dict], plan: calib.CalibrationPlan,
                            cfa: str, reference: str) -> dict:
     darks = [{"exp": e, "label": f"{e:g}s", "dir": f"DARKS/{e:g}s"} for e in plan.dark_masters()]
@@ -323,7 +346,8 @@ def build_integrate_config(o: Options, run_dir: Path, stacks: list[dict], plan: 
     return {"staging": pjsr.fwd(run_dir), "out": pjsr.fwd(run_dir / "out"),
             "target": o.target, "rig": o.rig, "cfa": cfa, "pedestal": PEDESTAL_DN,
             "bias": {"dir": "BIAS"} if plan.bias else None,
-            "darks": darks, "flats": flats, "stacks": stacks, "reference": reference}
+            "darks": darks, "flats": flats, "stacks": stacks, "reference": reference,
+            "min_group_frames": int(o.min_group_frames)}
 
 
 def catalog_coords(target: str) -> tuple[float | None, float | None]:
@@ -456,10 +480,12 @@ def run(o: Options, echo=print) -> dict:
     # stacks (PS-177): OSC = one stack of every exposure; mono = one per
     # filter AND exposure (plan_stacks)
     stacks = []
+    stack_frames: dict[str, set[str]] = {}   # stack name -> its light names
     for sp in specs:
         fs = [f for f in lights if f.filter == sp["filter"] and round(f.exp, 2) in sp["exps"]]
         if not fs:
             continue
+        stack_frames[sp["name"]] = {f.name for f in fs}
         grp = []
         for e in sp["exps"]:
             dc = plan.darks.get(e)
@@ -538,6 +564,7 @@ def run(o: Options, echo=print) -> dict:
                 "built": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "options": {"since": o.since, "until": o.until, "qa": o.qa, "flats": o.flats,
                             "library": str(o.library), "filters": o.filters,
+                            "palette": pjsr.palette_mode(o.palette),
                             "rcastro": {"mode": o.rc_mode if o.use_rc else "off", "bxt_stars": o.bxt_stars,
                                         "bxt_nonstellar": o.bxt_nonstellar,
                                         "nxt_denoise": o.nxt_denoise}}}
@@ -572,6 +599,7 @@ def run(o: Options, echo=print) -> dict:
                 "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
                 "graxpert": gx, "graxpert_version": "unknown" if gx else "",
                 "hoo": "on" if (o.hoo and cfa) else "off",   # PS-161: OSC only
+                "palette": pjsr.palette_mode(o.palette) if cfa else "off",   # gold-blue: OSC only
                 "masters": [{"name": f"{safe_name(o.target)}_{s['name']}",
                              "path": pjsr.fwd(out_dir / "master" / f"master_{s['name']}.xisf")}
                             for s in stacks]}
@@ -582,6 +610,7 @@ def run(o: Options, echo=print) -> dict:
     pi_ok = False
     final_img = ""
     dropped: set[str] = set()
+    skipped: list[dict] = []
     if o.run_pixinsight:
         with timer.stage("PixInsight integration (launch to exit)"):
             r = runner.run_script(integ_js, out_dir / "pipeline.log", exe=o.pixinsight, echo=echo)
@@ -590,6 +619,23 @@ def run(o: Options, echo=print) -> dict:
             pi_ok = r["ok"]
             log_txt, _ = runner.read_new(out_dir / "pipeline.log", 0)
             dropped = dropped_from_log(log_txt)
+            skipped = skipped_from_log(log_txt)
+        if skipped:
+            # one tiny / failed group must not cost the others their masters:
+            # report it and finish only the masters that exist
+            r["skipped_stacks"] = skipped
+            result["skipped_stacks"] = skipped
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            for k in skipped:
+                echo(f"  SKIPPED stack {k['stack']}: {k['reason']} (no master_{k['stack']})")
+                timer.rows.append([f"PixInsight stack {k['stack']} SKIPPED", now, now, 0.0, "skipped"])
+            timer.flush()
+            gone = {k["stack"] for k in skipped}
+            keep = [m for m, st in zip(fcfg["masters"], stacks) if st["name"] not in gone]
+            if pi_ok and keep:
+                fcfg["masters"] = keep
+                finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
+                echo(f"  {finish_js.name} rewritten for {len(keep)} master(s)")
         if pi_ok and o.finish:
             with timer.stage("PixInsight finish (launch to exit)"):
                 r2 = runner.run_script(finish_js, out_dir / "finish.log", exe=o.pixinsight, echo=echo)
@@ -602,7 +648,8 @@ def run(o: Options, echo=print) -> dict:
         echo(f'    "{o.pixinsight}" -n --automation-mode --run={integ_js} --force-exit')
 
     with timer.stage("AstroBin packet draft"):
-        integrated = [f for f in lights if not (pi_ok and f.base in dropped)]
+        gone_names = set().union(*(stack_frames.get(k["stack"], set()) for k in skipped))
+        integrated = [f for f in lights if not (pi_ok and f.base in dropped) and f.name not in gone_names]
         darks_for = {d.light_exp: len(d.frames) for d in plan.darks.values()}
         flats_for = {k: len(v.frames) for k, v in plan.flats.items()}
         rows_csv = astrobin.acquisition_rows(integrated, darks_for=darks_for, flats_for=flats_for,
@@ -628,6 +675,9 @@ def run(o: Options, echo=print) -> dict:
             issues.append("Several nights: framing can differ between nights; the stack keeps the overlap.")
         if dropped:
             issues.append(f"{len(dropped)} frame(s) dropped inside PixInsight (see out/pipeline.log).")
+        for k in skipped:
+            issues.append(f"Stack {k['stack']} skipped inside PixInsight ({k['reason']}): "
+                          f"no master_{k['stack']}.")
         if o.qa == "report":
             issues.append("Star QA ran in report mode: rejected subs were stacked anyway.")
         g0 = integrated[0] if integrated else lights[0]

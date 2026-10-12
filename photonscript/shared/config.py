@@ -336,6 +336,10 @@ class PhotonScriptConfig(BaseSettings):
                                  # rigs have masters and the inputs changed
     autointegrate_notify: bool = True  # Pushover the review JPG after a run
     autointegrate_hoo: bool = True  # OSC finish also writes the HOO-mapped image
+    finish_palette: str = "off"  # OSC finish palette image (desktop .env): off |
+                                 # gold = also <name>_gold.{xisf,jpg}, the gold-blue
+                                 # HOO-style look (Ha orange-gold, OIII teal-blue,
+                                 # natural stars); `integrate --palette` overrides
     # PS-186 RC Astro in the finish (desktop .env; finish_osc.js detects the
     # processes inside PixInsight at run time and falls back per step)
     finish_use_rcastro: str = "auto"  # auto = BlurXTerminator / NoiseXTerminator

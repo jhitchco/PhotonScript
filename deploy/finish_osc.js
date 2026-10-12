@@ -26,6 +26,12 @@
 //      from the color-calibrated linear data, Ha = R, OIII = mean of G and B
 //      scaled to the Ha background, R = Ha, G = B = OIII, same linked
 //      stretch and framing -> <Name>_hoo.{xisf,jpg} beside the natural one]
+//   -> [PALETTE = gold, color masters only: a gold-blue "HOO-style" image
+//      from the same linear copy, R = Ha, G = GOLD_MIX x Ha + (1 - GOLD_MIX)
+//      x OIII, B = OIII, mapped on the starless copy with the natural RGB
+//      stars screened back (StarXTerminator, else StarNet2; neither: the
+//      whole image), linked stretch + saturation, a gentle hue curve
+//      (Ha orange-gold, OIII teal-blue) -> <Name>_gold.{xisf,jpg}]
 //
 // Why deconvolution and noise reduction sit here (PS-41): both model the
 // LINEAR signal. Deconvolution inverts a convolution, which only holds before
@@ -99,6 +105,13 @@ var STAR_FLOOR_SIGMA = 2.0;               // stars below this x linear noise are
 var STARNET_PRE_BG   = 0.25;              // background level of StarNet2's reversible pre-stretch
 // OSC HOO extraction (PS-161): on = also write <Name>_hoo.{xisf,jpg}
 var HOO = "__HOO__";                      // on | off
+// Gold-blue palette for OSC finishes: off | gold (config finish_palette)
+var PALETTE  = "__PALETTE__";
+var GOLD_MIX = __GOLD_MIX__;              // Ha share of the green channel (0..1); OIII gets the rest
+// Hue curve after the gold stretch (CurvesTransformation H, linear, hue
+// 0 = red, 1/6 = yellow, 1/2 = cyan, 2/3 = blue): red-orange and yellow move
+// toward orange-gold, azure toward teal-blue. Monotonic, ends fixed.
+var GOLD_HUE = [[0, 0], [0.04, 0.07], [0.15, 0.115], [0.5, 0.5], [0.6, 0.55], [0.7, 0.64], [1, 1]];
 // Color (PS-46): auto = SPCC when solved and Gaia DR3/SP is configured, else
 // BN + ColorCalibration; spcc = try SPCC even if the Gaia probe says no;
 // basic = always BN + ColorCalibration.
@@ -936,6 +949,16 @@ function hooSource(view) {
    }
 }
 
+// The HOO OIII scale (also used by the gold palette): k = median(R) over the
+// median of mean(G, B), kept in 0.1..10.
+function hooScale(img) {
+   img.selectedChannel = 0; var mR = img.median();
+   img.selectedChannel = 1; var mG = img.median();
+   img.selectedChannel = 2; var mB = img.median();
+   img.resetSelections();
+   return Math.max(0.1, Math.min(10, mR / Math.max(1.0e-6, 0.5 * (mG + mB))));
+}
+
 // HOO, part 2: Ha = R, OIII = k x mean(G, B) with k = median(R) over the
 // median of mean(G, B) (OIII lifted to the Ha background, k kept in 0.1..10),
 // then the same linked stretch and framing as the natural image. Saves
@@ -943,12 +966,8 @@ function hooSource(view) {
 // copy is always closed.
 function hooFinish(win) {
    try {
-      var v = win.mainView, img = v.image;
-      img.selectedChannel = 0; var mR = img.median();
-      img.selectedChannel = 1; var mG = img.median();
-      img.selectedChannel = 2; var mB = img.median();
-      img.resetSelections();
-      var k = Math.max(0.1, Math.min(10, mR / Math.max(1.0e-6, 0.5 * (mG + mB))));
+      var v = win.mainView;
+      var k = hooScale(v.image);
       var PM = new PixelMath;
       PM.useSingleExpression = false;
       PM.expression = "$T[0]";
@@ -974,6 +993,132 @@ function hooFinish(win) {
       step("hoo", "PixelMath", "failed", { error: "" + e });
    }
    try { win.forceClose(); } catch (e2) {}
+}
+
+// Gold palette, part 1: the same color-calibrated LINEAR copy as HOO (before
+// SCNR, which would bias OIII). Returns the copy, or null when the palette is
+// off, the master is mono or the copy fails.
+function paletteSource(view) {
+   if (PALETTE !== "gold") {
+      step("palette", "PixelMath", "skipped", { reason: "-Palette off" });
+      return null;
+   }
+   if (!view.image.isColor) {
+      step("palette", "PixelMath", "skipped", { palette: PALETTE, reason: "mono master" });
+      return null;
+   }
+   try {
+      return dupWindow(view, "PS_gold");
+   } catch (e) {
+      log("gold palette skipped: copy failed (" + e + ")");
+      step("palette", "PixelMath", "failed", { palette: PALETTE, error: "" + e });
+      return null;
+   }
+}
+
+// The gold-blue mapping as PixelMath expressions (R, G, B), OIII scaled by k:
+//   R = Ha, G = GOLD_MIX x Ha + (1 - GOLD_MIX) x OIII, B = OIII
+function goldExpressions(k) {
+   var o = k.toFixed(5) + " * ($T[1] + $T[2]) / 2";
+   return ["$T[0]",
+           GOLD_MIX.toFixed(3) + " * $T[0] + " + (1 - GOLD_MIX).toFixed(3) + " * " + o,
+           o];
+}
+
+// Gold palette, part 2: NoiseXTerminator on the copy when installed (the
+// GraXpert / MLT fallbacks stay with the natural image), split the stars off
+// (StarXTerminator, else StarNet2, on the reversible pre-stretch like the
+// star reduction), map Ha / OIII to gold-blue on the starless (else whole)
+// image, linked stretch + saturation, hue curve, screen the natural RGB stars
+// back, framing crop, save <Name>_gold.{xisf,jpg}. Any failure is logged and
+// skipped; the RC Astro records of the natural image are kept; every copy is
+// closed.
+function paletteFinish(win) {
+   var st = { palette: PALETTE, ha_in_green: GOLD_MIX, file: NAME + "_gold.jpg" };
+   var keepNxt = RC.nxt, keepSxt = RC.sxt;
+   var sl = null, stars = null;
+   try {
+      var v = win.mainView;
+      st.noise_reduction = "none";
+      if (DENOISE > 0 && USE_RC && rcInstalled("NoiseXTerminator")) {
+         try { nxtDenoise(v); st.noise_reduction = "NoiseXTerminator"; }
+         catch (e0) { log("gold palette: NoiseXTerminator skipped (" + e0 + ")"); }
+      }
+      var sigma = v.image.MAD() * 1.4826;
+      var tools = [];
+      if (USE_RC && rcInstalled("StarXTerminator")) tools.push("StarXTerminator");
+      if (typeof StarNet2 !== "undefined") tools.push("StarNet2");
+      var mPre = mtfv(STARNET_PRE_BG, Math.max(1.0e-6, v.image.median()));
+      for (var t = 0; t < tools.length && !sl; ++t) {
+         try {
+            sl = starlessPre(v, mPre, tools[t]);
+            stars = dupWindow(v, "PS_gold_stars");
+            pixelMath(stars.mainView, "max(0, $T - " + sl.mainView.id + ")");
+            st.stars = tools[t];
+         } catch (e1) {
+            log("gold palette: " + tools[t] + " split failed (" + e1 + ")");
+            if (sl) try { sl.forceClose(); } catch (e2) {}
+            if (stars) try { stars.forceClose(); } catch (e3) {}
+            sl = null; stars = null;
+         }
+      }
+      if (!sl) st.stars = "in the image (no star split)";
+      var tv = sl ? sl.mainView : v;
+      var k = hooScale(tv.image);
+      var ex = goldExpressions(k);
+      var PM = new PixelMath;
+      PM.useSingleExpression = false;
+      PM.expression = ex[0];
+      PM.expression1 = ex[1];
+      PM.expression2 = ex[2];
+      PM.createNewImage = false;
+      PM.rescale = false;
+      PM.truncate = true;
+      if (!PM.executeOn(tv, false)) throw new Error("PixelMath returned false");
+      st.oiii_scale = +k.toFixed(5);
+      st.expressions = ex;
+      var p = stretch(tv, sl ? "gold starless" : "gold");
+      try {
+         var CT = new CurvesTransformation;
+         CT.H = GOLD_HUE;
+         try { CT.Ht = CurvesTransformation.prototype.Linear; } catch (e4) {}
+         if (!CT.executeOn(tv, false)) throw new Error("CurvesTransformation returned false");
+         st.hue_curve = GOLD_HUE;
+      } catch (e5) {
+         log("gold palette: hue curve skipped (" + e5 + ")");
+         st.hue_curve = "failed: " + e5;
+      }
+      if (sl) {
+         var cs = Math.max(0, Math.min(0.5, STAR_FLOOR_SIGMA * sigma));
+         applyHT(stars.mainView, cs, p.m);
+         var ks = (STARS === "on" ? STAR_STRENGTH : 1).toFixed(3);
+         pixelMath(tv, "~(~$T * ~(" + stars.mainView.id + " * " + ks + "))");
+         v.beginProcess(UndoFlag_NoSwapFile);
+         v.image.assign(tv.image);
+         v.endProcess();
+         st.star_strength = +ks;
+         st.star_floor = +cs.toFixed(6);
+      }
+      frameCrop(v, EDGE_FRAC);
+      trySave(win, FINAL + "/" + NAME + "_gold.xisf", "gold xisf (32-bit)");
+      try {
+         var SF = new SampleFormatConversion;
+         SF.format = SampleFormatConversion.prototype.To16Bit;
+         SF.executeOn(v, false);
+      } catch (e6) { log("gold 16-bit conversion skipped (" + e6 + ")"); }
+      trySave(win, FINAL + "/" + NAME + "_gold.jpg", "gold jpg");
+      log("gold palette: R = Ha, G = " + GOLD_MIX.toFixed(2) + " Ha + " + (1 - GOLD_MIX).toFixed(2) +
+          " OIII, B = OIII (OIII = " + k.toFixed(3) + " x mean(G, B)); stars: " + st.stars);
+      step("palette", "PixelMath", "ran", st);
+   } catch (e) {
+      log("gold palette skipped (" + e + ")");
+      st.error = "" + e;
+      step("palette", "PixelMath", "failed", st);
+   }
+   RC.nxt = keepNxt; RC.sxt = keepSxt;
+   if (sl) try { sl.forceClose(); } catch (e7) {}
+   if (stars) try { stars.forceClose(); } catch (e8) {}
+   try { win.forceClose(); } catch (e9) {}
 }
 
 function frameCrop(view, edgeFrac) {
@@ -1035,6 +1180,7 @@ function main() {
    var solved = plateSolve(w);
    colorCalibrate(v, solved);
    var hooWin = hooSource(v);   // PS-161: before SCNR
+   var palWin = paletteSource(v);   // gold palette: the same linear copy point
    removeGreen(v);
    trySave(w, FINAL + "/" + NAME + "_linear.xisf", "linear (color-calibrated)");
 
@@ -1066,6 +1212,7 @@ function main() {
    trySave(w, FINAL + "/" + NAME + "_final.jpg", "jpg");
    w.forceClose();
    if (hooWin) hooFinish(hooWin);
+   if (palWin) paletteFinish(palWin);
    log("DONE");
 }
 

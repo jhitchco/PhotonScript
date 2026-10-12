@@ -158,3 +158,14 @@ def test_reference_per_filter_picks_sharp_deep_sub():
             {"file": "d.fits", "filter": "OIII", "stars": 100, "hfd_px": 3.0}]
     ref = pl.reference_per_filter(rows, {"a.fits", "b.fits", "c.fits", "d.fits"})
     assert ref == {"Ha": "b", "OIII": "d"}
+
+
+def test_osc_run_renders_the_gold_palette(lib, tmp_path):
+    out = tmp_path / "Staging" / "gold"
+    pl.run(_opts(lib, tmp_path, out=out, palette="gold"), echo=lambda s: None)
+    fin = (out / "finish_run.js").read_text()
+    assert 'var PALETTE  = "gold";' in fin and pjsr.check(fin) == []
+    assert json.loads((out / "manifest.json").read_text())["options"]["palette"] == "gold"
+    out2 = tmp_path / "Staging" / "plain"
+    pl.run(_opts(lib, tmp_path, out=out2), echo=lambda s: None)
+    assert 'var PALETTE  = "off";' in (out2 / "finish_run.js").read_text()

@@ -47,7 +47,16 @@ Run on the desktop from the repo venv. What it does (code in
    is `master_<F>` (what `blend` and the finish expect), every other
    group of at least `--min-group-frames` (3) subs is its own HDR master
    `master_<F>_<exp>` (e.g. `master_L_30s`, combine later with HDRComposition
-   if wanted), smaller groups are left out with a message. An OSC stack
+   if wanted), smaller groups are left out with a message. A group that
+   passes selection but ends up below `--min-group-frames` registered frames
+   inside PixInsight (or whose calibration / registration / integration
+   fails) is SKIPPED there: `SKIPPED [<stack>]: <why>` in `pipeline.log`, a
+   SKIPPED row in `timing_pi.csv` and `timing.csv`, `skipped_stacks` in the
+   result and the ledger's integration block, a known issue in the packet;
+   the other stacks still get their masters and the finish runs on the
+   masters that exist. Only a run with no master at all fails (2026-10-12
+   M31 rc16: `B_300s` had 3 subs, 2 registered, and used to stop the run
+   before L 30 s, R and G). An OSC stack
    still holds every exposure group (one debayered master); it is marked
    `mixed_exposures` and when PSF Signal Weight fails the PJSR falls back
    to exposure-time weights, never equal weights.
@@ -385,6 +394,21 @@ same but logs a WARNING for a missing tool; off never uses them. Per step:
 settings that were set, and `version` / `ai_model` when the process exposes
 them); the step records name the tool that ran. `*_linear.xisf` is still
 saved before deconvolution.
+
+Gold-blue palette (`-Palette gold`, `photonscript integrate --palette gold`,
+config `finish_palette`, default off; color masters only). The HOO-style look
+of an unfiltered OSC emission nebula (Heart, IC 1805): from the same
+color-calibrated linear copy as HOO (before SCNR), Ha = R and OIII = mean of G
+and B scaled to the Ha background, then R = Ha, G = `-GoldMix` (0.6) x Ha +
+0.4 x OIII, B = OIII, so Ha goes orange-gold and OIII blue. NoiseXTerminator
+runs on the copy when installed; with StarXTerminator (else StarNet2) the
+mapping runs on the starless copy and the natural RGB stars are screened back
+at `-StarStrength`, else on the whole image. Then the finish's linked stretch
+and saturation, a gentle hue curve (red-orange and yellow toward gold, azure
+toward teal-blue), the framing crop: `<Name>_gold.{xisf,jpg}` beside the
+others, step `palette` in the steps json (ran / skipped / failed). Finish
+only, on an existing master (no restack):
+`.\deploy\run-finish-osc.ps1 -Name Heart_OSC -Target IC1805 -Master <run>\out\master\master_OSC.xisf -OutDir <run>\out\final_gold -Palette gold -Wait`.
 
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`

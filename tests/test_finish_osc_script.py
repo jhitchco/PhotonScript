@@ -307,3 +307,103 @@ def test_mono_masters_skip_the_color_steps():
     for fn in ("colorCalibrate", "removeGreen", "recoverCore"):
         assert "!view.image.isColor" in _func(s, fn), fn
     assert "SAT_MID !== 0.5 && img.isColor" in _func(s, "stretch")
+
+
+# --- gold-blue "HOO-style" palette for OSC finishes (finish_palette / --palette gold) --
+
+def test_gold_palette_is_off_by_default_and_filled_by_the_launcher():
+    s = _read(JS)
+    assert 'var PALETTE  = "__PALETTE__";' in s and "var GOLD_MIX = __GOLD_MIX__;" in s
+    ps1 = _read(PS1)
+    assert "[ValidateSet('off','gold')][string]$Palette = 'off'" in ps1
+    assert "[double]$GoldMix = 0.6" in ps1
+    assert "Replace('__PALETTE__', $Palette)" in ps1 and "Replace('__GOLD_MIX__', (JsNum $GoldMix))" in ps1
+    assert "@('GoldMix', $GoldMix, 0, 1)" in ps1
+
+
+def test_gold_palette_copy_point_and_order_in_main():
+    main = _func(_read(JS), "main")
+    # same linear, color-calibrated copy point as HOO: after color, before SCNR
+    assert main.index("colorCalibrate(v, solved)") < main.index("paletteSource(v)") < main.index("removeGreen(v)")
+    # the natural image is saved first, the palette image after it
+    assert main.index('"_final.jpg", "jpg")') < main.index("if (palWin) paletteFinish(palWin);")
+
+
+def test_gold_palette_source_is_guarded():
+    src = _func(_read(JS), "paletteSource")
+    assert 'PALETTE !== "gold"' in src and "!view.image.isColor" in src
+    assert 'step("palette", "PixelMath", "skipped"' in src
+    assert src.index("try {") < src.index("dupWindow(view")
+    assert 'step("palette", "PixelMath", "failed"' in src
+
+
+def test_gold_palette_pixelmath_mapping():
+    s = _read(JS)
+    ex = _func(s, "goldExpressions")
+    # Ha = R, OIII = k x mean(G, B) (the HOO extraction), R = Ha, G = mix, B = OIII
+    assert '" * ($T[1] + $T[2]) / 2"' in ex and '"$T[0]"' in ex
+    assert 'GOLD_MIX.toFixed(3) + " * $T[0] + " + (1 - GOLD_MIX).toFixed(3) + " * " + o' in ex
+    assert "hooScale(" in _func(s, "hooFinish") and "hooScale(tv.image)" in _func(s, "paletteFinish")
+    fin = _func(s, "paletteFinish")
+    for x in ("PM.expression = ex[0];", "PM.expression1 = ex[1];", "PM.expression2 = ex[2];",
+              "PM.useSingleExpression = false;"):
+        assert x in fin, x
+
+
+def test_gold_palette_starless_with_natural_stars_screened_back():
+    fin = _func(_read(JS), "paletteFinish")
+    assert 'USE_RC && rcInstalled("StarXTerminator")' in fin and 'typeof StarNet2 !== "undefined"' in fin
+    assert "starlessPre(v, mPre, tools[t])" in fin
+    assert '"max(0, $T - " + sl.mainView.id + ")"' in fin
+    assert '"~(~$T * ~(" + stars.mainView.id + " * " + ks + "))"' in fin
+    # mapping on the starless view, then stretch + saturation, hue curve, then the stars
+    order = [fin.index(x) for x in ("var tv = sl ? sl.mainView : v;", "PM.executeOn(tv, false)",
+                                    "stretch(tv,", "CT.H = GOLD_HUE", "applyHT(stars.mainView",
+                                    "frameCrop(v, EDGE_FRAC)", '"_gold.xisf"', '"_gold.jpg", "gold jpg")')]
+    assert order == sorted(order)
+    assert 'st.stars = "in the image (no star split)"' in fin
+
+
+def test_gold_palette_every_failure_is_logged_and_the_copies_closed():
+    fin = _func(_read(JS), "paletteFinish")
+    assert fin.index("try {") < fin.index("new PixelMath")
+    assert 'step("palette", "PixelMath", "ran", st)' in fin
+    assert 'step("palette", "PixelMath", "failed", st)' in fin
+    assert "RC.nxt = keepNxt; RC.sxt = keepSxt;" in fin      # natural image's RC records kept
+    for w in ("sl.forceClose()", "stars.forceClose()", "win.forceClose()"):
+        assert w in fin, w
+    assert "nxtDenoise(v)" in fin and 'rcInstalled("NoiseXTerminator")' in fin
+
+
+def _gold_hue():
+    s = _read(JS)
+    m = re.search(r"^var GOLD_HUE = (\[.*\]);", s, re.M)
+    import json as _json
+    return _json.loads(m.group(1))
+
+
+def test_gold_hue_curve_is_monotonic_and_moves_the_right_way():
+    pts = _gold_hue()
+    xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+    assert pts[0] == [0, 0] and pts[-1] == [1, 1]
+    assert xs == sorted(xs) and ys == sorted(ys)
+
+    def f(h):
+        for (x0, y0), (x1, y1) in zip(pts, pts[1:]):
+            if x0 <= h <= x1:
+                return y0 + (y1 - y0) * (h - x0) / (x1 - x0)
+    assert f(0.04) > 0.04 and f(0.15) < 0.15       # red-orange and yellow toward gold
+    assert 0.5 < f(0.6) < 0.6                       # azure toward teal-blue
+
+
+def test_gold_mapping_puts_ha_in_orange_and_oiii_in_blue():
+    import colorsys
+    mix = 0.6
+
+    def rgb(ha, o):
+        return ha, mix * ha + (1 - mix) * o, o
+    h_ha = colorsys.rgb_to_hsv(*rgb(1.0, 0.0))[0] * 360
+    h_o = colorsys.rgb_to_hsv(*rgb(0.0, 1.0))[0] * 360
+    assert 20 < h_ha < 50            # orange-gold, not pure red
+    assert 190 < h_o < 240           # blue
+    assert rgb(0.3, 0.3) == (0.3, 0.3, 0.3)   # equal background stays neutral

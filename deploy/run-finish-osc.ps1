@@ -12,6 +12,7 @@
 #   .\deploy\run-finish-osc.ps1 -Name "M31_OSC4" -Master <xisf> -OutDir <new folder> -Wait
 # Output: Staging\<Name>\out\final\<Name>_final.{xisf,tif,jpg} + <Name>_linear.xisf
 #         + <Name>_starless.xisf (when StarNet2 ran)
+#         + <Name>_gold.{xisf,jpg} with -Palette gold (color masters)
 #         + <Name>_final_steps.json (which step ran, tool, settings; tag also in
 #         the PSFINISH FITS keyword)
 # Log:    Staging\<Name>\out\finish.log (or <OutDir>\finish.log; ends EXIT OK, or an
@@ -67,6 +68,10 @@ param(
     [double]$StarStrength = 0.7,   # stars come back at this strength (1 = unchanged)
     # PS-161 OSC HOO extraction: on = also <Name>_hoo.{xisf,jpg} (Ha = R, OIII = mean of G and B)
     [ValidateSet('on','off')][string]$Hoo = 'off',
+    # Gold-blue OSC palette: gold = also <Name>_gold.{xisf,jpg} (R = Ha, G = GoldMix Ha + (1 - GoldMix) OIII,
+    # B = OIII; starless with the natural stars screened back when StarXTerminator / StarNet2 is installed)
+    [ValidateSet('off','gold')][string]$Palette = 'off',
+    [double]$GoldMix = 0.6,        # Ha share of the gold green channel
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
     [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal'
 )
@@ -93,7 +98,8 @@ foreach ($pair in @(@('BgTarget', $BgTarget, 0.01, 0.5), @('ShadowSigma', $Shado
                     @('Scnr', $Scnr, 0, 1), @('SatMid', $SatMid, 0.3, 0.9),
                     @('Denoise', $Denoise, 0, 1), @('DeconvStrength', $DeconvStrength, 0, 1),
                     @('StarStrength', $StarStrength, 0, 1), @('BxtStars', $BxtStars, 0, 1),
-                    @('BxtNonstellar', $BxtNonstellar, 0, 1), @('NxtDenoise', $NxtDenoise, 0, 1))) {
+                    @('BxtNonstellar', $BxtNonstellar, 0, 1), @('NxtDenoise', $NxtDenoise, 0, 1),
+                    @('GoldMix', $GoldMix, 0, 1))) {
     if ($pair[1] -lt $pair[2] -or $pair[1] -gt $pair[3]) {
         Write-Error "-$($pair[0]) $($pair[1]) out of range $($pair[2])..$($pair[3])"; exit 1
     }
@@ -208,6 +214,7 @@ $js = $js.Replace('__GRAXPERT_AI__', (JsStr $GraXpertAiVersion)).Replace('__GRAX
 $js = $js.Replace('__GRAXPERT_TIMEOUT_MIN__', [string]$GraXpertTimeoutMin)
 $js = $js.Replace('__STARS__', $StarReduction).Replace('__STAR_STRENGTH__', (JsNum $StarStrength))
 $js = $js.Replace('__HOO__', $Hoo)
+$js = $js.Replace('__PALETTE__', $Palette).Replace('__GOLD_MIX__', (JsNum $GoldMix))
 $js = $js.Replace('__MASTERS__', 'null')   # one master; photonscript integrate passes a list
 $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser
