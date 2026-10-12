@@ -33,6 +33,7 @@ Usage:
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
     photonscript blend --target T [--osc P] [--rc16 P] [--stage linear|final]  # PS-153
+    photonscript finish --master P --name N [--target T] [--out DIR] [--dry-run]  # re-finish one master
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
@@ -3093,6 +3094,71 @@ def blend_cmd(
     if as_json:
         print(_json.dumps(res, indent=1, default=str))
     raise typer.Exit(0 if res.get("blend", {}).get("ok", True) else 1)
+
+
+@app.command("finish")
+def finish_cmd(
+    master: str = typer.Option(..., "--master", help="The master to finish (.xisf, linear)"),
+    name: str = typer.Option(..., "--name", help="Output name: <name>_final.{xisf,tif,jpg}"),
+    target: str = typer.Option("", "--target", help="Catalog name for the plate solve seed "
+                                                   "(default: the master's integrate run)"),
+    rig: str = typer.Option("", "--rig", help="piggyback | rc16 (default: the master's integrate run, "
+                                              "else piggyback)"),
+    out: str = typer.Option("", "--out", help="Finish folder (NEW or empty; default "
+                                              "<staging-root>/Finish/<name>_finish_<time>)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    palette: str = typer.Option("", "--palette", help="off | gold (color masters; default finish_palette)"),
+    gradient: str = typer.Option("auto", "--gradient", help="auto | abe | none"),
+    rcastro: str = typer.Option("", "--rcastro",
+                                help="BlurX / NoiseX / StarXTerminator: auto | on | off "
+                                     "(default finish_use_rcastro; PS-186)"),
+    bxt_stars: float = typer.Option(-1.0, "--bxt-stars", help="BlurXTerminator sharpen stars 0..1"),
+    bxt_nonstellar: float = typer.Option(-1.0, "--bxt-nonstellar", help="BlurXTerminator sharpen nonstellar 0..1"),
+    nxt_denoise: float = typer.Option(-1.0, "--nxt-denoise", help="NoiseXTerminator denoise 0..1"),
+    hoo: bool = typer.Option(False, "--hoo/--no-hoo", help="Color masters: also the HOO-mapped image"),
+    focal_mm: float = typer.Option(0.0, "--focal-mm", help="0 = the master's run, else the rig's"),
+    pixel_um: float = typer.Option(0.0, "--pixel-um", help="0 = the master's run, else 3.76"),
+    pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Resolve and check the script; write nothing"),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+):
+    """Finish one master again (no integration): the same finish and
+    defaults as `photonscript integrate` (deploy/finish_osc.js), run in
+    PixInsight one instance at a time, into a NEW folder with a ledger
+    (kind finish, stays on the desktop). Replaces run-finish-osc.ps1 for
+    re-finishes.
+
+    photonscript finish --master D:/.../out/master/master_OSC.xisf --name M31_v5 --palette gold --dry-run
+    """
+    import json as _json
+    from photonscript.integration import finish as fn
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import pjsr
+    from photonscript.integration.runner import PixInsightBusy
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    try:
+        kw = pjsr.rc_settings(cfg)
+        kw.update(_rc_overrides(rcastro, bxt_stars, bxt_nonstellar, nxt_denoise))
+        kw["palette"] = pjsr.palette_mode(palette or getattr(cfg, "finish_palette", "off"))
+    except ValueError as e:
+        console.print(f"[red]finish:[/red] {e}", markup=True)
+        raise typer.Exit(2)
+    opts = fn.Options(
+        master=Path(master), name=name, target=target, rig=rig, staging_root=root,
+        out=Path(out) if out else None, gradient=gradient, hoo=hoo, focal_mm=focal_mm, pixel_um=pixel_um,
+        run_pixinsight=pixinsight, dry_run=dry_run, pixinsight=pixinsight_exe, **kw,
+    )
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    try:
+        res = fn.run(opts, echo=say)
+    except (pl.PipelineError, PixInsightBusy, FileNotFoundError, ValueError) as e:
+        console.print(f"[red]finish:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+    if as_json:
+        print(_json.dumps(res, indent=1, default=str))
+    raise typer.Exit(0 if res.get("finish", {}).get("ok", True) else 1)
 
 
 @app.command("integrate-watch")

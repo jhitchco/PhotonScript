@@ -422,6 +422,15 @@ and saturation, a gentle hue curve (red-orange and yellow toward gold, azure
 toward teal-blue), the framing crop: `<Name>_gold.{xisf,jpg}` beside the
 others, step `palette` in the steps json (ran / skipped / failed). Finish
 only, on an existing master (no restack):
+`photonscript finish --master <run>\out\master\master_OSC.xisf --name Heart_OSC_gold --target IC1805 --palette gold`
+(same finish and defaults as `integrate`: `finish_use_rcastro`, `bxt_*`,
+`nxt_denoise`, `finish_palette`; optics and coordinates from the master's
+own run folder when it is an integrate run, else the rig and `--target`;
+one PixInsight at a time, refused while one is open; a NEW folder, default
+`<staging-root>\Finish\<name>_finish_<time>`, with `finish_run.js`,
+`out\finish.log`, `out\final\...`, `manifest.json` and a `ledger.json` of
+kind `finish` that is never posted; `--dry-run` checks the script and
+writes nothing). The older launcher still works:
 `.\deploy\run-finish-osc.ps1 -Name Heart_OSC -Target IC1805 -Master <run>\out\master\master_OSC.xisf -OutDir <run>\out\final_gold -Palette gold -Wait`.
 
 ## 2. Calibration capture — already built into the sequencer

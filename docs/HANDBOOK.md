@@ -1085,6 +1085,9 @@ new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
 Mono runs HDR combine a filter's exposure-length masters (PS-177
 `master_L` + `master_L_30s`) into `master_<F>_hdr` before the finish
 (config `integrate_hdr_combine`, default on; the finish and blend prefer it).
+Re-finish one master without integrating: `photonscript finish --master <xisf>
+--name <NAME> [--palette gold] [--dry-run]` (NEW `Staging\Finish\` folder,
+ledger kind finish; replaces `run-finish-osc.ps1` for re-finishes).
 
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block
