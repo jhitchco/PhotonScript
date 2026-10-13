@@ -2173,10 +2173,17 @@ def api_library_archive(payload: dict = Body(default={})):
 
 @app.get("/api/runs/{date}")
 def api_run_detail(date: str, backfill: bool = True):
-    from photonscript.scheduler.runs import night_detail
-    d = night_detail(get_config(), date, backfill=backfill)
-    from photonscript.scheduler.routers.review import add_goal_totals
-    add_goal_totals(d["table"])  # goal context: campaign totals per target+filter
+    from photonscript.scheduler.runs import _sanitize_floats, degraded_detail, night_detail
+    try:
+        d = night_detail(get_config(), date, backfill=backfill)
+    except Exception as e:  # noqa: BLE001 - a damaged night degrades, never 500s
+        logger.warning("night detail %s failed: %s", date, e, exc_info=True)
+        return _sanitize_floats(degraded_detail(get_config(), date, e))
+    try:
+        from photonscript.scheduler.routers.review import add_goal_totals
+        add_goal_totals(d["table"])  # goal context: campaign totals per target+filter
+    except Exception as e:  # noqa: BLE001 - never break the night page
+        logger.debug("goal totals skipped for %s: %s", date, e)
     try:  # PS-88: the night's guiding from PHD2's guide log, top findings
         from photonscript.scheduler.phd2_analysis import compact, night_analysis
         d["guiding"] = compact(night_analysis(get_config(), date=date,
@@ -2211,8 +2218,11 @@ def api_run_detail(date: str, backfill: bool = True):
         logger.debug("guard summary skipped for %s: %s", date, e)
     for s in d["subs"]:
         if s.get("passed_qa") and s.get("reviewed"):
-            base = Path(s.get("abs_path") or s.get("file") or "").name
-            s["transfer"] = _transfer_state(base, pending)
+            try:
+                base = Path(s.get("abs_path") or s.get("file") or "").name
+                s["transfer"] = _transfer_state(base, pending)
+            except Exception as e:  # noqa: BLE001 - one odd sub, not the page
+                logger.debug("transfer state skipped for %s: %s", s.get("file"), e)
     try:  # PS-67: per-sub pointing + the night's pointing summary
         from photonscript.scheduler.routers.pointing import merge_night
         merge_night(get_config(), date, d)
@@ -2236,7 +2246,8 @@ def api_run_detail(date: str, backfill: bool = True):
                                                   subs=d.get("subs"))
     except Exception as e:  # noqa: BLE001 - never break the night page
         logger.debug("split summary skipped for %s: %s", date, e)
-    return d
+    # a NaN anywhere (a sidecar, a report) is not JSON: the response would 500
+    return _sanitize_floats(d)
 
 
 @app.post("/api/runs/{date}/regrade")
