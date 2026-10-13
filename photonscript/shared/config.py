@@ -1466,6 +1466,16 @@ class PhotonScriptConfig(BaseSettings):
     thesky_audit_allsky_read: bool = False  # read the All Sky flags through
                                  # DoCommand 12 / 13 (read form); on only after
                                  # the on-site script check (MAINTENANCE.md)
+    # Settings ledger (scheduler.settings_ledger): NINA #1 / #2 profiles and
+    # devices, PHD2 (API + registry profile), TheSky and PhotonScript's own
+    # config, snapshotted at arm, pre-config, dispatch, every armer state
+    # change and hourly while running; stored only when changed, judged
+    # against config/settings/desired_settings.toml. READ ONLY.
+    settings_ledger_enabled: bool = True
+    settings_ledger_interval_min: float = 60.0  # while RUNNING / WATCHING; 0 = off
+    settings_ledger_push: bool = True   # one push per rule per night on a FAIL
+    settings_ledger_apps: str = "nina1,nina2,phd2,thesky,photonscript"
+    settings_rules_file: str = ""       # empty = config/settings/desired_settings.toml
     tpoint_max_age_days: float = 90.0   # TPoint model older = rebuild
     tpoint_min_points: int = 50         # ProTrack's minimum per Bisque
     tpoint_rms_max_arcsec: float = 30.0

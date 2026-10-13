@@ -20,6 +20,10 @@ Usage:
         [--library PATH] [--profile] [--feature-arcmin 60] [--json]
         [--camera-cal]                                            # PS-117
     photonscript thesky-audit [--json] [--imagelink] [--thesky-imagelink]  # PS-104
+    photonscript settings [--night D] [--at HH:MM] [--diff A B] [--sub FILE]
+        [--full] [--json] [--url U]                               # settings ledger
+    photonscript settings-snapshot [--no-push] [--json]
+    photonscript settings-backfill [--night D] [--apply] [--force] [--json]
     photonscript guiding-status [--json]                          # PS-119
     photonscript guide-recover [--dry-run] [--yes] [--force]       # PS-167
     photonscript calibration-plan [--rig R] [--json]              # PS-113
@@ -1728,6 +1732,158 @@ def thesky_audit_cmd(
         print(_json.dumps(audit, indent=2, default=str))
     else:
         console.print(ta.format_report(audit), markup=False, highlight=False)
+
+
+@app.command("settings")
+def settings_cmd(
+    night: str = typer.Option("", "--night", help="Night YYYY-MM-DD (noon to noon)"),
+    at: str = typer.Option("", "--at", help="Local HH:MM on that night (21:30, 03:10)"),
+    diff: Optional[tuple[str, str]] = typer.Option(
+        None, "--diff", help="What changed from A to B: snapshot ids, latest, last_good, "
+                             "YYYY-MM-DD or YYYY-MM-DD@HH:MM"),
+    sub: str = typer.Option("", "--sub", help="A sub's file name: the settings it was "
+                                              "taken with"),
+    full: bool = typer.Option(False, "--full", help="Every stored setting, not only the "
+                                                    "ones that matter"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    url: str = typer.Option("", "--url", help="Ask a scheduler (http://host:8100) "
+                                              "instead of this PC's data folder"),
+):
+    """Settings ledger, READ ONLY: what NINA #1 / #2, PHD2, TheSky and
+    PhotonScript were set to at a time or for a sub, the rule results, and
+    what changed between two snapshots.
+
+    photonscript settings --night 2026-10-12 --at 23:40
+    photonscript settings --sub "2026-10-13_05-56-11_Heart Nebula_O_180.00s_0034.fits"
+    photonscript settings --diff last_good latest
+    """
+    import json as _json
+    from photonscript.scheduler import settings_ledger as sl
+
+    def show(obj, text):
+        if as_json:
+            print(_json.dumps(obj, indent=2, default=str))
+        else:
+            console.print(text, markup=False, highlight=False)
+
+    def get(path, **params):
+        import httpx
+        r = httpx.get(url.rstrip("/") + path, params=params, timeout=60)
+        r.raise_for_status()
+        return r.json()
+    cfg = None if url else _config_for_repo(Path(__file__).resolve().parents[1])
+    if diff:
+        a, b = diff
+        d = get("/api/settings-ledger/diff", a=a, b=b) if url else sl.diff(cfg, a, b)
+        if not d.get("ok"):
+            show(d, d.get("note") or "no such snapshot")
+            raise typer.Exit(1)
+        lines = [f"From {d['a']['id']} ({d['a']['night']}) to {d['b']['id']} "
+                 f"({d['b']['night']}): {d['changed']} settings changed"]
+        for app_, rows in d["diff"].items():
+            lines.append(f"\n[{sl.APP_LABELS.get(app_, app_)}]")
+            for k, (old, new) in ((k, v) for k, v in rows.items() if k != "_truncated"):
+                lines.append(f"  {k}: {sl._g(old)} -> {sl._g(new)}")
+        show(d, "\n".join(lines))
+        return
+    if sub:
+        hit = get("/api/settings-ledger/sub", file=sub, night=night) if url \
+            else sl.for_sub(cfg, sub, night or None)
+        head = (f"Sub {hit.get('sub', {}).get('file') or sub} (night {hit.get('night')}): "
+                + ", ".join(f"{k} {v}" for k, v in (hit.get("sub") or {}).items()
+                            if k not in ("file",)))
+        if not hit.get("ok"):
+            show(hit, head + "\n" + str(hit.get("note")))
+            raise typer.Exit(1)
+        show(hit, head + f"\nsettings {hit['id']} ({hit['how']})\n"
+             + sl.format_snapshot(hit["snapshot"], hit.get("line"), full=full))
+        return
+    if night or at:
+        if not night:
+            console.print("--at needs --night", markup=False)
+            raise typer.Exit(2)
+        if url:
+            hit = get("/api/settings-ledger/at", night=night, at=at or "12:00")
+        else:
+            when = sl.local_to_utc(cfg, night, at) if at else None
+            if when is None:   # the night's last snapshot
+                sid = sl.resolve_ref(cfg, night)
+                snap = sl.load_snapshot(cfg, sid)
+                hit = {"ok": bool(snap), "snapshot": snap,
+                       "line": (sl.index(cfg, night) or [None])[-1]}
+            else:
+                hit = sl.at(cfg, when) or {"ok": False}
+                hit.setdefault("ok", bool(hit.get("snapshot")))
+        if not hit.get("snapshot"):
+            show(hit, f"No settings snapshot for {night} {at}".strip())
+            raise typer.Exit(1)
+        st = sl.load_status(cfg, hit["snapshot"].get("night")) if cfg else {}
+        text = sl.format_snapshot(hit["snapshot"], hit.get("line"), full=full)
+        if st.get("rows"):
+            text += "\n\nRules (newest evaluation that night):\n" + sl.format_rules(st["rows"])
+        show(hit, text)
+        return
+    st = get("/api/settings-ledger/status") if url else sl.status(cfg)
+    if not st.get("ok"):
+        show(st, st.get("note") or "no settings snapshot yet")
+        raise typer.Exit(1)
+    apps_ = "\n".join(f"  {a['label']}: read {a.get('read_utc')}"
+                      + (" (not read now)" if a.get("carried") else "")
+                      + (f", last change {a['last_change_utc']}" if a.get("last_change_utc") else "")
+                      for a in (st.get("apps") or {}).values())
+    show(st, f"Settings ledger: night {st['night']}, snapshot {st['id']}, checked "
+             f"{st.get('checked_utc')} ({st.get('reason')})\n{apps_}\n\n"
+             + sl.format_rules(st.get("rows") or []))
+
+
+@app.command("settings-snapshot")
+def settings_snapshot_cmd(
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    no_push: bool = typer.Option(False, "--no-push", help="Never push, even on a new FAIL"),
+):
+    """Settings ledger: take one snapshot now on this PC (reads NINA #1 / #2,
+    PHD2, TheSky and the config; writes only <data_dir>/settings_ledger)."""
+    import asyncio as _asyncio
+    import json as _json
+    from photonscript.scheduler import settings_ledger as sl
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    res = _asyncio.run(sl.take(cfg, "cli", push=False if no_push else None))
+    if as_json:
+        print(_json.dumps(res, indent=2, default=str))
+        return
+    console.print(f"snapshot {res['id']} ({'changed' if res['changed'] else 'unchanged'}); "
+                  f"not read now: {', '.join(res['unread']) or 'none'}\n"
+                  + sl.format_rules(res["rules"]["rows"]), markup=False, highlight=False)
+
+
+@app.command("settings-backfill")
+def settings_backfill_cmd(
+    night: list[str] = typer.Option([], "--night", help="Night(s) YYYY-MM-DD; default "
+                                                         "every night with stored data"),
+    apply: bool = typer.Option(False, "--apply", help="Write (default: dry run)"),
+    force: bool = typer.Option(False, "--force", help="Rewrite nights that hold only "
+                                                      "backfilled data"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Settings ledger backfill from what PhotonScript stored (PS-89 / PS-104
+    audits, sub records, PHD2 guide logs). Nights with live ledger data are
+    never touched. Lists what cannot be reconstructed."""
+    import json as _json
+    from photonscript.scheduler import settings_ledger as sl
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    rep = sl.backfill(cfg, night or None, dry_run=not apply, force=force)
+    if as_json:
+        print(_json.dumps(rep, indent=2, default=str))
+        return
+    lines = [("DRY RUN: " if not apply else "") + f"{len(rep['nights'])} nights"]
+    for n in rep["nights"]:
+        lines.append(f"  {n['night']}: {n['events']} readings, {n['snapshots']} snapshots, "
+                     f"failing then: {', '.join(n['ever_failed']) or 'none'}")
+    for s in rep["skipped"]:
+        lines.append(f"  {s['night']}: skipped ({s['why']})")
+    lines.append("Cannot be reconstructed:")
+    lines += [f"  - {c}" for c in rep["cannot"]]
+    console.print("\n".join(lines), markup=False, highlight=False)
 
 
 @app.command("guiding-status")

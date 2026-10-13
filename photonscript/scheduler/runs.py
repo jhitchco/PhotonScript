@@ -128,6 +128,13 @@ def append_sub_record(config, night_of: str, record: dict) -> None:
     record = norm_record(dict(record))
     from photonscript.shared.sub_time import normalize as _norm_time
     _norm_time(record)   # PS-162: explicit start_utc / end_utc
+    try:   # settings ledger: the settings snapshot in force at capture
+        from photonscript.scheduler.settings_ledger import current_id
+        sid = None if record.get("settings_id") else current_id(config, night_of)
+        if sid:
+            record["settings_id"] = sid
+    except Exception as e:  # noqa: BLE001 (never blocks a sub record)
+        logger.debug("settings ledger id not stamped: %s", e)
     try:
         with subs_lock(config, night_of):
             with open(runs_dir(config) / f"{night_of}_subs.jsonl", "a",

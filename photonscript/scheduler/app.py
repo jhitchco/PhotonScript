@@ -794,6 +794,11 @@ _CONFIG_FIELDS = [
     ("thesky_audit_enabled", "PS_THESKY_AUDIT_ENABLED", "TheSky / TPoint settings audit, read only (PS-104): on demand, at arm and in the night report; never writes TheSky or moves the mount", "PHD2", "bool", False, False),
     ("thesky_audit_imagelink_thesky", "PS_THESKY_AUDIT_IMAGELINK_THESKY", "Allow TheSky's own Image Link on a copied RC16 frame from the CLI too (the Guiding tab button runs it while the armer is idle)", "PHD2", "bool", False, False),
     ("thesky_audit_allsky_read", "PS_THESKY_AUDIT_ALLSKY_READ", "Read the All Sky Image Link flags (DoCommand 12 / 13 read form); on only after the on-site script check", "PHD2", "bool", False, False),
+    ("settings_ledger_enabled", "PS_SETTINGS_LEDGER_ENABLED", "Settings ledger: snapshot NINA #1 / #2, PHD2, TheSky and PhotonScript settings at arm, dispatch, each armer state change and hourly while running (read only; System page > Settings ledger)", "Nanny / Alerts", "bool", False, False),
+    ("settings_ledger_interval_min", "PS_SETTINGS_LEDGER_INTERVAL_MIN", "Settings ledger: snapshot every N min while a night runs (0 = only at arm, dispatch and state changes)", "Nanny / Alerts", "float", False, False),
+    ("settings_ledger_push", "PS_SETTINGS_LEDGER_PUSH", "Settings ledger: one Pushover per rule per night the first time it FAILS", "Nanny / Alerts", "bool", False, False),
+    ("settings_ledger_apps", "PS_SETTINGS_LEDGER_APPS", "Settings ledger: apps read (comma list of nina1, nina2, phd2, thesky, photonscript)", "Nanny / Alerts", "str", False, False),
+    ("settings_rules_file", "PS_SETTINGS_RULES_FILE", "Settings ledger rules file; empty = config/settings/desired_settings.toml", "Nanny / Alerts", "str", False, False),
     ("tpoint_max_age_days", "PS_TPOINT_MAX_AGE_DAYS", "TPoint model older than N days = rebuild (warn at 75%)", "PHD2", "float", False, False),
     ("tpoint_min_points", "PS_TPOINT_MIN_POINTS", "TPoint model: at least N points", "PHD2", "int", False, False),
     ("tpoint_rms_max_arcsec", "PS_TPOINT_RMS_MAX_ARCSEC", "TPoint model: RMS at most N arcsec", "PHD2", "float", False, False),
@@ -3293,3 +3298,5 @@ from photonscript.scheduler.routers.targets import api_target_history  # noqa: E
 
 from photonscript.scheduler.routers import cover as _cover_router  # noqa: E402
 app.include_router(_cover_router.router)   # PS-189
+from photonscript.scheduler.routers import settings_ledger as _settings_ledger_router  # noqa: E402
+app.include_router(_settings_ledger_router.router)   # settings ledger
