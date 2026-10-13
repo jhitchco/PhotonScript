@@ -849,7 +849,9 @@ loop every 60 s (`run_pilot`, app startup).
   length) against the diagnosis' numbers: better = ecc down 0.05, HFR down
   10%, or every sub passed QA. Not better: shorten goes one more step after
   the cooldown, AF gets one more try; then one priority push for a human
-  and no more tries for that cause tonight. No subs within
+  and no more tries for that cause tonight (a PHD2 stop that did not help
+  pushes too, but a PHD2 that starts guiding again later is stopped again,
+  at most twice a night). No subs within
   `night_pilot_verify_timeout_min` (60): a priority push.
 - Restart race: a restart the armer reports failed is retried once after
   NINA #1 reads idle; the armer's re-dispatch also waits for NINA #1 to wind

@@ -1258,6 +1258,12 @@ def _escalate(cfg, st, a, now) -> tuple[str, bool]:
         st.setdefault("given_up", {})[key] = _iso(now)
         return ("Autofocus did not fix it twice: check the focuser (position, "
                 "USB) and the AF curve. No more tries tonight.", True)
+    if a["action"] == "stop_phd2":
+        # PHD2 stopped but the subs still trail: it was not (only) PHD2. Not
+        # given up: PHD2 started again later (2026-10-12, 08:30Z) is stopped
+        # again (max 2 per night, 30 min cooldown, only while PHD2 is active)
+        return ("Stopping PHD2 was not enough: needs a human (tracking, "
+                "flexure, focus). PHD2 is stopped again if it restarts.", True)
     st.setdefault("given_up", {})[key] = _iso(now)
     return ("Needs a human. No more tries for this tonight.", True)
 

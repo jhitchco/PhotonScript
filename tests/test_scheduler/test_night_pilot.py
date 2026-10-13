@@ -271,6 +271,25 @@ def test_replay_guider_conflict_stop_phd2_subs_improve(tmp_path):
     assert io.calls.count("phd2_stop") == 1
 
 
+def test_stop_phd2_not_enough_pushes_but_stops_a_later_session(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="LostLock")
+    _tonight_bad_subs(cfg)
+    _diag(cfg, "04:23", "guider_conflict", "stop_phd2", confidence="medium", ecc=0.76)
+    _tick(cfg, armer, io, "04:24")
+    _sub(cfg, "04:27", 0.74)
+    _sub(cfg, "04:32", 0.75)
+    _tick(cfg, armer, io, "04:38")
+    pri, msg = io.pushes[-1]
+    assert pri == 1 and "Stopping PHD2 was not enough" in msg
+    assert not npil.load_state(cfg, NIGHT)["given_up"]
+    # 08:30Z: PHD2 guiding again (both rigs dragged): stopped a second time
+    io.phd2 = "Guiding"
+    _diag(cfg, "08:37", "guider_conflict", "stop_phd2", ecc=0.86)
+    _tick(cfg, armer, io, "08:38")
+    assert io.calls.count("phd2_stop") == 2
+
+
 def test_guided_fail_calibration_switches_to_unguided(tmp_path):
     cfg = _cfg(tmp_path)
     armer, io = FakeArmer(guided=True), FakeIO(cfg)
