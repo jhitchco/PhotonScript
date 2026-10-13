@@ -274,6 +274,10 @@ CAL_NIGHT = [  # a dusk calibration, 2026-10-06 local
     _pt("SII", 5830, "2026-10-06T20:00:00-06:00"),
     _pt("L", 5700, "2026-10-06T20:04:00-06:00"),
 ]
+# 2026-10-13: the alert needs 3 recent pairs (focus_table.pair_offsets):
+# the same calibration on three nights
+CAL_NIGHTS = [dict(p, time=p["time"].replace("10-06", d)) for d in
+              ("10-04", "10-05") for p in CAL_NIGHT] + CAL_NIGHT
 
 
 def test_pair_offsets_same_night_nearest_l():
@@ -300,7 +304,7 @@ def test_pair_offsets_temperature_correction_gap_and_latest_night():
 
 def test_offset_check_alerts_beyond_one_cfz():
     old = fm.offset_check(_cfg(focus_filter_offsets="Ha:-187,OIII:-187,SII:-187",
-                               focus_cfz_steps=110), CAL_NIGHT)
+                               focus_cfz_steps=110), CAL_NIGHTS)
     assert old["cfz_steps"] == 110 and old["alert"] is True
     assert old["alerts"] == ["Ha", "OIII", "SII"]
     ha = old["filters"]["Ha"]
@@ -308,16 +312,16 @@ def test_offset_check_alerts_beyond_one_cfz():
     assert ha["diff"] == -310 and old["night"] == "2026-10-06"
     assert "configured -187, measured +123" in fm.offset_alert_text(old)
 
-    new = fm.offset_check(_cfg(focus_cfz_steps=110), CAL_NIGHT)   # +120 default
+    new = fm.offset_check(_cfg(focus_cfz_steps=110), CAL_NIGHTS)  # +120 default
     assert new["alert"] is False
     assert [new["filters"][f]["diff"] for f in ("Ha", "OIII", "SII")] == [-3, 10, -10]
-    assert new["filters"]["Ha"]["measured"]["deltas"] == [123]
+    assert new["filters"]["Ha"]["measured"]["deltas"] == [123, 123, 123]
     # no CFZ configured: the AF step size (110) stands in
     assert fm.offset_check(_cfg(focus_filter_offsets="Ha:-187"),
-                           CAL_NIGHT)["cfz_source"] == "median AF step size"
+                           CAL_NIGHTS)["cfz_source"] == "median AF step size"
     # exactly one CFZ off is still inside; one step more alerts
     edge = fm.offset_check(_cfg(focus_filter_offsets="Ha:13,OIII:-1,SII:131",
-                                focus_cfz_steps=110), CAL_NIGHT)
+                                focus_cfz_steps=110), CAL_NIGHTS)
     assert edge["filters"]["Ha"]["diff"] == -110      # one CFZ: inside
     assert edge["filters"]["OIII"]["diff"] == -111    # one step more: alert
     assert edge["alerts"] == ["OIII"]
@@ -339,11 +343,11 @@ async def test_offset_alert_pushes_once_per_night(tmp_path):
     async def _notify(c, msg, **kw):
         sent.append(msg)
         return True
-    chk = fm.offset_check(cfg, CAL_NIGHT)
+    chk = fm.offset_check(cfg, CAL_NIGHTS)
     assert await fm.offset_alert(cfg, chk, notify=_notify) is True
     assert await fm.offset_alert(cfg, chk, notify=_notify) is False
     assert len(sent) == 1 and "PS_FOCUS_FILTER_OFFSETS" in sent[0]
-    ok = fm.offset_check(_cfg(tmp_path, focus_cfz_steps=110), CAL_NIGHT)
+    ok = fm.offset_check(_cfg(tmp_path, focus_cfz_steps=110), CAL_NIGHTS)
     assert await fm.offset_alert(cfg, ok, notify=_notify) is False
 
 
@@ -351,7 +355,7 @@ def test_summary_and_attention_show_the_offset_check(tmp_path, monkeypatch):
     from photonscript.scheduler import guiding_attention as ga
     cfg = _cfg(tmp_path, focus_filter_offsets="Ha:-187,OIII:120,SII:120",
                focus_cfz_steps=110)
-    monkeypatch.setattr(fm, "_rc16_points", lambda config: list(CAL_NIGHT))
+    monkeypatch.setattr(fm, "_rc16_points", lambda config: list(CAL_NIGHTS))
     s = fm.summary(cfg)
     assert s["offset_check"]["alerts"] == ["Ha"]
     items = ga.safe_build(cfg)["items"]
