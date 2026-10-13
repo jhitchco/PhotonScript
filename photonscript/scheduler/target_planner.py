@@ -434,9 +434,10 @@ def plan_night_sequence(
     # Anchor to the LOCAL evening date — after ~6 PM local the UTC date has
     # already rolled over and a UTC anchor plans TOMORROW's night (the same
     # bug fixed in night_plan; this was the last copy).
-    from photonscript.shared.localtime import utc_offset_hours as _tz_off
-    _local = date_utc + timedelta(hours=_tz_off(config, date_utc))
-    _base = datetime(_local.year, _local.month, _local.day)
+    # 2026-10-13: and noon to noon, so after local midnight it is still the
+    # night that began yesterday evening (00:04 local planned the next one).
+    from photonscript.shared.localtime import night_base_date
+    _base = night_base_date(config, date_utc)
     twilight = get_twilight_times(obs, _base)
     if twilight.get("astro_dark_end") and twilight["astro_dark_end"] < date_utc:
         twilight = get_twilight_times(obs, _base + timedelta(days=1))
@@ -554,15 +555,17 @@ def plan_night_sequence(
             if _gen_moon is None:
                 try:
                     from photonscript.scheduler.moon import moon_window_tonight
-                    _gen_moon = moon_window_tonight(config)
+                    _gen_moon = moon_window_tonight(config, now=date_utc)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("moon window unavailable: %s", e)
                     _gen_moon = {}
             if _gen_moon.get("available"):
-                from photonscript.scheduler.moon import broadband_deferred
+                from photonscript.scheduler.moon import (broadband_deferred,
+                                                         describe_moon)
                 if broadband_deferred(_gen_moon):
                     logger.info("Skipping %s tonight: broadband-only and the "
-                                "moon defers broadband", proj.target.name)
+                                "moon defers broadband (%s)", proj.target.name,
+                                describe_moon(_gen_moon))
                     continue
 
         alloc_time = sum(owed_seconds(e) for e in remaining_exposures) / 3600

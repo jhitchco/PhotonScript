@@ -410,7 +410,10 @@ class TestDawnSkyFlats:
         config = PhotonScriptConfig()
         projects = [create_project_from_target(t)
                     for t in get_seasonal_targets(7)]
-        targets = plan_night_sequence(projects, config, datetime.utcnow())[:2]
+        # a fixed July afternoon, not the wall clock: between local midnight
+        # and dawn the planner plans the minutes left of tonight (1013)
+        targets = plan_night_sequence(projects, config,
+                                      datetime(2026, 7, 15, 20, 0))[:2]
         for t in targets:
             t.start_guiding = False
         seq = build_sequence_for_night("flats_test", targets)
@@ -449,7 +452,10 @@ class TestDawnSkyFlats:
         config = PhotonScriptConfig()
         projects = [create_project_from_target(t)
                     for t in get_seasonal_targets(7)]
-        targets = plan_night_sequence(projects, config, datetime.utcnow())[:2]
+        # a fixed July afternoon, not the wall clock: between local midnight
+        # and dawn the planner plans the minutes left of tonight (1013)
+        targets = plan_night_sequence(projects, config,
+                                      datetime(2026, 7, 15, 20, 0))[:2]
         for t in targets:
             t.start_guiding = False
         seq = build_sequence_for_night("flats_test", targets)

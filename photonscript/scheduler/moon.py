@@ -13,14 +13,21 @@ from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-_cache: dict[str, dict] = {}
+_cache: dict[tuple, dict] = {}
+
+# broadband_deferred(): a moon up at dusk defers broadband from this lit %
+BROADBAND_DEFER_ILLUM_PCT = 20
 
 
 def night_moon(config, date_str: str, dark_start: datetime,
                dark_end: datetime) -> dict:
-    """Illumination %, moon-free dark hours, and a BB/NB tag for one night."""
-    if date_str in _cache:
-        return _cache[date_str]
+    """Illumination %, moon-free dark hours, and a BB/NB tag for one night.
+    Cached by the dark window itself: callers label nights differently (the
+    forecast by local date, moon_window_tonight by the UTC date of dusk), and
+    a date-only key served one night's moon for another (2026-10-12)."""
+    key = (date_str, _minute(dark_start), _minute(dark_end))
+    if key in _cache:
+        return _cache[key]
     import numpy as np
     from astropy import units as u
     from astropy.coordinates import AltAz, get_body, get_sun
@@ -43,8 +50,12 @@ def night_moon(config, date_str: str, dark_start: datetime,
            "tag": moon_tag(illum, moon_free)}
     if len(_cache) > 64:
         _cache.clear()
-    _cache[date_str] = out
+    _cache[key] = out
     return out
+
+
+def _minute(dt) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M") if isinstance(dt, datetime) else str(dt)
 
 
 def moon_tag(illum: float, moon_free_h: float) -> str:
@@ -75,20 +86,26 @@ def moon_series(config, times) -> tuple:
     return np.asarray(alt), np.asarray(illum)
 
 
-def moon_window_tonight(config) -> dict:
-    """Moon geometry for the coming night: is the moon down at dusk, when
-    does it rise (local HH, MM), and tonight's illumination."""
+def moon_window_tonight(config, now: datetime | None = None) -> dict:
+    """Moon geometry for tonight (the night in progress, or the coming one
+    once its dawn has passed): is the moon down at dusk, its altitude then,
+    when does it rise / set (local HH, MM), and tonight's illumination.
+    2026-10-12: this anchored to the UTC date, so from 18:00 MDT on (the
+    whole night) it described TOMORROW night's moon."""
     import numpy as np
     from astropy import units as u
     from astropy.coordinates import AltAz, get_body
     from astropy.time import Time
     from photonscript.shared.astronomy import (get_earth_location,
                                                get_twilight_times)
-    from photonscript.shared.localtime import utc_offset_hours
+    from photonscript.shared.localtime import night_base_date, utc_offset_hours
 
     obs = config.get_observatory()
-    tw = get_twilight_times(obs, datetime.utcnow().replace(
-        hour=0, minute=0, second=0, microsecond=0))
+    now = now or datetime.utcnow()
+    base = night_base_date(config, now)
+    tw = get_twilight_times(obs, base)
+    if tw.get("astro_dark_end") and tw["astro_dark_end"] < now:
+        tw = get_twilight_times(obs, base + timedelta(days=1))
     dusk, dawn = tw.get("astro_dark_start"), tw.get("astro_dark_end")
     if not dusk or not dawn or dawn <= dusk:
         return {"available": False}
@@ -105,15 +122,26 @@ def moon_window_tonight(config) -> dict:
             if alt[i] < 0 <= alt[i + 1]:
                 rise_utc = dusk + (dawn - dusk) * (i + 1) / (len(alt) - 1)
                 break
+    set_utc = None
+    if not down_at_dusk:
+        for i in range(len(alt) - 1):
+            if alt[i] >= 0 > alt[i + 1]:
+                set_utc = dusk + (dawn - dusk) * (i + 1) / (len(alt) - 1)
+                break
     off = utc_offset_hours(config, dusk)
     rise_local = ((rise_utc + timedelta(hours=off))
                   if rise_utc else None)
+    set_local = (set_utc + timedelta(hours=off)) if set_utc else None
     return {"available": True, "down_at_dusk": down_at_dusk,
             "illum_pct": info.get("illum_pct"),
+            "alt_at_dusk_deg": round(float(alt[0]), 1),
+            "dusk_utc": dusk, "dawn_utc": dawn,
             "rise_local_hh": rise_local.hour if rise_local else None,
             "rise_local_mm": rise_local.minute if rise_local else None,
             # PS-180: the planner caps a broadband-only target's window here
-            "rise_utc": rise_utc}
+            "rise_utc": rise_utc,
+            "set_utc": set_utc,
+            "set_local": set_local.strftime("%H:%M") if set_local else None}
 
 
 def broadband_deferred(mw: dict) -> bool:
@@ -130,4 +158,30 @@ def broadband_deferred(mw: dict) -> bool:
         return False
     illum = mw.get("illum_pct")
     # 0% is a real value (new moon up at dusk), not "unknown" (PS-106).
-    return True if illum is None else illum >= 20
+    return True if illum is None else illum >= BROADBAND_DEFER_ILLUM_PCT
+
+
+def describe_moon(mw: dict) -> str:
+    """One line for the planner log: tonight's illumination, the moon's
+    altitude at dusk and its rise or set time, and the broadband verdict."""
+    if not mw or not mw.get("available"):
+        return "moon geometry unavailable (broadband deferred to be safe)"
+    illum = mw.get("illum_pct")
+    lit = "illumination unknown" if illum is None else f"{illum}% lit"
+    alt = mw.get("alt_at_dusk_deg")
+    alt_txt = "" if alt is None else f" (alt {alt:.0f} deg)"
+    if mw.get("down_at_dusk"):
+        where = "down at dusk" + alt_txt
+        if mw.get("rise_local_hh") is not None:
+            where += (f", rises {int(mw['rise_local_hh']):02d}:"
+                      f"{int(mw.get('rise_local_mm') or 0):02d} local")
+        else:
+            where += ", no moonrise before dawn"
+    else:
+        where = "up at dusk" + alt_txt
+        if mw.get("set_local"):
+            where += f", sets {mw['set_local']} local"
+    verdict = ("broadband deferred: the moon is up at dusk and at least "
+               f"{BROADBAND_DEFER_ILLUM_PCT}% lit" if broadband_deferred(mw)
+               else "broadband OK")
+    return f"moon {lit}, {where}: {verdict}"
