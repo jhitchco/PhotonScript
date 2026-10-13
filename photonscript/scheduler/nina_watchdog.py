@@ -738,6 +738,11 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
                 await piggy_guard.tick(cfg)
             except Exception as e:  # noqa: BLE001
                 logger.warning("piggy guard tick failed: %s", e)
+            try:   # ProTrack re-judged once the RC16 mount tracks (once a night)
+                from photonscript.scheduler import protrack_recheck
+                await protrack_recheck.tick(cfg, armer)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ProTrack recheck tick failed: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001

@@ -1765,7 +1765,13 @@ OSC_INTEGRATION.md "Fast scratch disk".
   and "One TheSky running" (`scheduler/thesky_procs.py`: the Bisque sky apps
   in this PC's process list, the TCP 3040 listener and the TheSky the Bisque
   ASCOM driver targets per the registry; read only, never closes or starts
-  anything; fail and first on the Guiding tab when two run). Runs at arm (no push) and on Refresh; Guiding tab section
+  anything; fail and first on the Guiding tab when two run). The ProTrack
+  row is not judged while TheSky's mount is parked (the arm-time audit runs
+  by day); the nina watch loop re-judges just that row once a night when the
+  RC16 mount first tracks, or at its first light (`scheduler/protrack_recheck.py`,
+  read-only mount_flags + tpoint_flags), puts it in the night's audit
+  (`rechecks`, the row replaced) and pushes once when ProTrack is OFF on an
+  unguided night. Runs at arm (no push) and on Refresh; Guiding tab section
   "TheSky / TPoint", `GET /api/thesky/audit`, `/api/thesky/imagelink-check`,
   `/api/thesky/pointing`, `POST /api/thesky/manual`, CLI `photonscript
   thesky-audit`, one runs-page line. The rebuild flag says REBUILD when the

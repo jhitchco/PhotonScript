@@ -1238,12 +1238,7 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
     o["mount_selected"] = hw.get("mount")
     o["camera_selected"] = hw.get("camera")
     o["filter_wheel_selected"] = hw.get("filter_wheel")
-    mf = read("mount_flags", cl.mount_flags)
-    if mf:
-        o["mount_connected"] = _bool(mf.get("connected"))
-        o["mount_parked"] = _bool(mf.get("parked")) if mf.get("parked") is not None else None
-        o["mount_tracking"] = _bool(mf.get("tracking")) if mf.get("tracking") is not None else None
-        o["mount_last_slew_error"] = mf.get("last_slew_error")
+    o.update(mount_observed(read("mount_flags", cl.mount_flags)))
     t0 = _jd_now_utc()
     st = read("site", cl.site)
     t1 = _jd_now_utc()
@@ -1289,6 +1284,17 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
                 o[k] = _bool(al[k]) if _bool(al[k]) is not None else al[k]
     o = {k: v for k, v in o.items() if v is not None}
     return o, {"ok": True, "note": "; ".join(errs) or f"TheSky {cl.host}:{cl.port} read"}
+
+
+def mount_observed(mf: dict | None) -> dict:
+    """The mount_flags reply -> observed keys ({} when nothing read)."""
+    if not mf:
+        return {}
+    return {"mount_connected": _bool(mf.get("connected")),
+            "mount_parked": _bool(mf.get("parked")) if mf.get("parked") is not None else None,
+            "mount_tracking": (_bool(mf.get("tracking")) if mf.get("tracking") is not None
+                               else None),
+            "mount_last_slew_error": mf.get("last_slew_error")}
 
 
 def tpoint_observed(tp: dict) -> dict:
