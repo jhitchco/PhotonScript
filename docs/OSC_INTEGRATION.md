@@ -137,6 +137,18 @@ unplugged, full) is still found and posted. Scratch is not used with
 from the folder they name) or `--no-scratch`. Default (blank): off, today's
 behavior.
 
+**What is left in scratch.** `photonscript scratch-status [--root
+C:/Astro/Scratch]` lists every run folder in the scratch root (and
+`Blend\` / `Finish\` under it) and the legacy `--out` run folders under
+`C:\Astro\Staging` (`--legacy-root`, `''` = skip): size, age, master /
+final or not, the archive twin under the staging root (`ledger.json` or
+`manifest.json` there) or NOT archived, and the exact `Remove-Item` line.
+`--clean <name>` deletes ONLY that listed folder, after showing its size and
+asking (y/N; `--yes` skips the question), through the same guards as the
+archive step (strictly a run folder inside its root, never the staging root,
+the Library mirror or a ninashare path). A root that is missing or overlaps
+the staging root is not listed.
+
 ## 0b. Ledger and the integrate watcher (PS-33, PS-31)
 
 **Ledger (PS-33).** Every `photonscript integrate` run ends by writing

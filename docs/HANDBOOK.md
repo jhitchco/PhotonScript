@@ -1103,8 +1103,11 @@ scripts) move to the same run name under the staging root on D: and the
 scratch folder (intermediates + staged frame copies, 250 to 350 GB for a
 Piggy M31) is deleted. No master = the scratch folder is kept and the run
 prints its size and the `Remove-Item` line to clear it. Too little free
-space on C: = the run is built on D: as before, with a warning. Details:
-OSC_INTEGRATION.md "Fast scratch disk".
+space on C: = the run is built on D: as before, with a warning.
+`photonscript scratch-status` lists what is left in scratch (and legacy
+`--out` runs under C:/Astro/Staging) with size, age, master, archive twin and
+the Remove-Item line; `--clean <name>` deletes one listed folder after a y/N.
+Details: OSC_INTEGRATION.md "Fast scratch disk".
 
 ### PJSR lessons (each cost a debugging session)
 - No `/*` anywhere in `//` comments - PixInsight's preprocessor opens a block

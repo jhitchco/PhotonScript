@@ -3046,6 +3046,79 @@ def integrate_report_cmd(
                   f"{len(res['failed'])} still queued", markup=False)
 
 
+@app.command("scratch-status")
+def scratch_status_cmd(
+    root: str = typer.Option("", "--root", help="Scratch root (default integration_scratch_root, "
+                                                "else C:/Astro/Scratch)"),
+    legacy_root: str = typer.Option("C:/Astro/Staging", "--legacy-root",
+                                    help="Legacy --out run folders ('' = skip)"),
+    staging_root: str = typer.Option("", "--staging-root",
+                                     help="Archive root for the twin check (default integration_staging_root)"),
+    clean: str = typer.Option("", "--clean", help="Delete this ONE listed run folder (asks first)"),
+    yes: bool = typer.Option(False, "--yes", help="With --clean: do not ask"),
+    as_json: bool = typer.Option(False, "--json", help="Print the list as JSON"),
+):
+    """Run folders left on the fast scratch disk (and legacy --out runs under
+    C:/Astro/Staging): size, age, master / final, archive twin under the
+    staging root, and the exact Remove-Item line per folder. --clean <name>
+    deletes only that folder inside those roots, after showing its size and
+    asking (y/N) unless --yes.
+
+    photonscript scratch-status
+    photonscript scratch-status --clean M31_piggyback_20261011-2200
+    """
+    import json as _json
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import scratch as sc
+    from photonscript.integration import scratch_status as ss
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    sroot = Path(root) if root else (sc.configured_root(cfg) or ss.DEFAULT_SCRATCH)
+    staging = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    legacy = Path(legacy_root) if legacy_root.strip() else None
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    used = [r for r, _k in ss.roots(sroot, staging, legacy)]
+    for r in (sroot, legacy):
+        if r and r not in used:
+            say(f"  {r}: not listed (missing, or it overlaps the staging root {staging})")
+    folders = ss.scan(sroot, staging, legacy)
+    if clean:
+        hits = ss.find(clean, folders)
+        if len(hits) != 1:
+            say(f"scratch-status: {clean!r} is " + ("not a listed run folder" if not hits else
+                "ambiguous: " + ", ".join(str(h.path) for h in hits)))
+            raise typer.Exit(2)
+        f = hits[0]
+        try:
+            ss.check(f, staging, [pl.default_library(cfg)])
+        except ValueError as e:
+            say(f"scratch-status: {e}")
+            raise typer.Exit(2)
+        say(f"{f.path}: {sc.gb(f.size)}, {ss.age_text(f.age_days)} old, "
+            + (f"archived to {f.archive}" if f.archive else "NOT archived")
+            + ("" if f.product or f.archive else ", no master"))
+        if f.product and not f.archive:
+            say("  WARNING: it holds a master / final with no archive twin: deleting loses it")
+        if not yes and not typer.confirm(f"Delete {f.path}?", default=False):
+            say("  not deleted")
+            raise typer.Exit(1)
+        try:
+            n = ss.clean(f, staging, [pl.default_library(cfg)])
+        except (OSError, ValueError) as e:
+            say(f"scratch-status: not deleted: {e}")
+            raise typer.Exit(1)
+        say(f"  deleted, {sc.gb(n)} freed")
+        return
+    if as_json:
+        print(_json.dumps([f.as_dict() for f in folders], indent=1))
+        return
+    if not folders:
+        say("no run folders left in " + ", ".join(str(r) for r in used or [sroot]))
+        return
+    for line in ss.format_rows(folders):
+        say(line)
+    say(f"{len(folders)} folder(s), {sc.gb(sum(f.size for f in folders))}")
+
+
 @app.command("blend")
 def blend_cmd(
     target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("M31")'),
