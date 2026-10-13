@@ -1572,6 +1572,25 @@ class TelescopeAgent:
             return None
         return "star" if guide_state in ("guiding", "settling") else None
 
+    def _guide_rms_for(self, start, exp_s) -> dict:
+        """The sub's own guide RMS (phd2_client.window_rms over the frames
+        between the exposure start and end). No start, no PHD2 frames in the
+        window or no pixel scale: rms_arcsec None. Never raises."""
+        out = {"rms_arcsec": None, "frames": 0, "drops": 0}
+        if start is None:
+            return out
+        try:
+            from datetime import timezone
+
+            from photonscript.telescope_agent.phd2_client import window_rms
+            t0 = start.replace(tzinfo=timezone.utc).timestamp()                 if start.tzinfo is None else start.timestamp()
+            t1 = t0 + float(exp_s or 0)
+            return window_rms(self.phd2.recent_frames(), t0, t1,
+                              self.phd2.pixel_scale)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("sub guide RMS skipped: %s", e)
+            return out
+
     def _nocorr_for(self, start, exp_s) -> bool:
         """PS-165 grading input: did a PHD2 no-corrections episode (PS-155)
         overlap this exposure? Both rigs: the Piggy-600 rides the same
@@ -1758,11 +1777,6 @@ class TelescopeAgent:
         # snapshot + PS-71 roof-closed / parked signatures + night medians).
         quality = validate_image(str(file_path), self.config, rig=self.rig)
         _g = self.state.guiding
-        # PS-70: only an arcsec RMS is judged; None when the guide pixel
-        # scale is unknown, so a pixel number never meets the arcsec gate.
-        quality.tracking_rms_arcsec = (_g.rms_total_arcsec
-                                       if getattr(_g, "units", "arcsec") == "arcsec"
-                                       else None)
         # GuidingState is a str Enum: str() gives 'GuidingState.GUIDING', so
         # the old str(...).lower() in ("guiding", ...) test never matched and
         # the live RMS gate never ran. Compare the enum value.
@@ -1808,6 +1822,12 @@ class TelescopeAgent:
                      if qa_rules.group_key(r) == key]).get(key)
             except Exception as e:  # noqa: BLE001
                 logger.debug("night context skipped: %s", e)
+        # PS-70: only an arcsec RMS is judged (None without the guide pixel
+        # scale). 2026-10-13: from the guide frames inside THIS exposure
+        # only, else None (the rolling snapshot kept the last sample while
+        # PHD2 was stopped or lost the star: 34.84" on every 10-12 sub)
+        _win = self._guide_rms_for(start, exposure_seconds)
+        quality.tracking_rms_arcsec = _win["rms_arcsec"]
         guide_lock = self._guide_lock_for(start, exposure_seconds, guide_state)
         nocorr = self._nocorr_for(start, exposure_seconds)   # PS-165
         point = self._sub_pointing(hdr, start, exposure_seconds, target_name)
@@ -1900,6 +1920,8 @@ class TelescopeAgent:
                 "guide_rms": (round(quality.tracking_rms_arcsec, 3)
                               if quality.tracking_rms_arcsec is not None
                               else None),
+                # the guided frames inside the exposure the RMS came from
+                "guide_rms_frames": _win["frames"],
                 "guide_state": guide_state or None,
                 "guide_lock": guide_lock,
                 **({"guide_nocorr": True} if nocorr else {}),   # PS-165

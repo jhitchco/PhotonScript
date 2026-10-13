@@ -81,6 +81,35 @@ def frame_from_event(event: dict, *, t: float, settling: bool, epoch: int,
             "settling": bool(settling), "epoch": int(epoch), "output": bool(output)}
 
 
+WINDOW_RMS_MIN_FRAMES = 3   # guided frames a sub needs for its own RMS
+
+
+def window_rms(frames, start_t: float, end_t: float,
+               scale_arcsec_px: float | None) -> dict:
+    """Guide RMS of ONE exposure: only the guided frames (GuideStep, not a
+    StarLost drop) whose time is inside [start_t, end_t] (unix seconds).
+    {"rms_arcsec", "frames", "drops"}; rms_arcsec is None with fewer than
+    WINDOW_RMS_MIN_FRAMES guided frames or no guide pixel scale (2026-10-12:
+    RC16 subs carried the last rolling sample, 34.84", while PHD2 was
+    stopped or LostLock)."""
+    ra, dec, drops = [], [], 0
+    for f in frames or []:
+        t = f.get("t")
+        if t is None or not start_t <= t <= end_t:
+            continue
+        if f.get("drop") or f.get("ra") is None or f.get("dec") is None:
+            drops += 1
+            continue
+        ra.append(float(f["ra"]))
+        dec.append(float(f["dec"]))
+    out = {"rms_arcsec": None, "frames": len(ra), "drops": drops}
+    if len(ra) >= WINDOW_RMS_MIN_FRAMES and scale_arcsec_px:
+        n = len(ra)
+        tot_px = ((sum(x * x for x in ra) + sum(y * y for y in dec)) / n) ** 0.5
+        out["rms_arcsec"] = tot_px * float(scale_arcsec_px)
+    return out
+
+
 def guide_rms_text(m) -> str:
     """Honest one-line guide RMS for logs, Pushover and the CLI: arcsec when
     the guide pixel scale is known (with the pixel figure and scale behind
