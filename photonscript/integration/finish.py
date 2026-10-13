@@ -45,7 +45,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from photonscript.integration import pjsr, runner
+from photonscript.integration import pilock, pjsr, runner
 from photonscript.integration.pipeline import PipelineError, Timer, catalog_coords, is_inside, safe_name
 
 FINISH_DIR = "Finish"
@@ -78,6 +78,7 @@ class Options:
     run_pixinsight: bool = True
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
+    lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
     mono_run: Path | None = None      # --mono-run: color combine of this run's filter masters
     colors: str = "auto"              # --color: auto | all | lrgb,rgb,sho,hoo
 
@@ -204,6 +205,14 @@ def build_ledger(o: Options, res: dict, run_dir: Path, cfg: dict, pi: dict | Non
 # ----------------------------------------------------------------- run
 
 def run(o: Options, echo=print) -> dict:
+    """Re-finish one master, holding the PixInsight queue lock (pilock.py)
+    when it runs PixInsight."""
+    with pilock.job(f"finish {o.name or Path(o.master).name}", enabled=o.run_pixinsight and not o.dry_run,
+                    wait_min=o.lock_wait_min, echo=echo):
+        return _run(o, echo)
+
+
+def _run(o: Options, echo=print) -> dict:
     master = Path(o.master)
     if not master.is_file():
         raise FinishError(f"no master at {master}")
@@ -335,7 +344,14 @@ def default_color_dir(o: Options, name: str, now: datetime | None = None) -> Pat
 def run_mono_color(o: Options, echo=print) -> dict:
     """--mono-run: the color combine of an existing mono run's masters, run
     in PixInsight into a NEW folder with a manifest and a ledger (kind
-    finish). The source run is only read."""
+    finish). The source run is only read. Holds the PixInsight queue lock
+    (pilock.py) when it runs PixInsight."""
+    with pilock.job(f"finish --mono-run {Path(o.mono_run).name if o.mono_run else '?'}",
+                    enabled=o.run_pixinsight and not o.dry_run, wait_min=o.lock_wait_min, echo=echo):
+        return _run_mono_color(o, echo)
+
+
+def _run_mono_color(o: Options, echo=print) -> dict:
     from photonscript.integration import mono_color as mc
     if not o.mono_run:
         raise FinishError("--mono-run: no run folder given")

@@ -18,8 +18,10 @@ param(
     [int]$MaxCores = 0,
     [switch]$NoCull,        # skip osc_cull.py
     [switch]$CullDryRun,    # run osc_cull.py in report-only mode and stop
-    [switch]$RejectBright   # also move sky-background outliers (default: flag only)
+    [switch]$RejectBright,  # also move sky-background outliers (default: flag only)
+    [double]$LockWaitMin = 60   # wait this long for another PixInsight job's queue lock
 )
+. (Join-Path $PSScriptRoot "pixinsight-lock.ps1")   # one PixInsight job at a time (pilock.py)
 $stage = Join-Path $StageRoot ($Name -replace '[^\w\- ]','_')
 $hasLights = (Test-Path "$stage\LIGHTS") -or `
     ($null -ne (Get-ChildItem $stage -Filter *.fits -ErrorAction SilentlyContinue | Select-Object -First 1))
@@ -74,8 +76,13 @@ Write-Host "  -> StarAlignment(distortion, ref=reference.txt) -> LocalNormalizat
 Write-Host "  -> PSF-weighted integration -> masterOSC + review.jpg"
 Write-Host "Script: $runjs"
 Write-Host "  CPU: priority=$Priority$(if ($MaxCores -gt 0){" , cores=$MaxCores"})"
-$proc = Start-Process -FilePath $PixInsight `
-    -ArgumentList @("-n", "-r=$runjs", "--run=$runjs") -PassThru
+$lockCmd = "run-integration-osc.ps1 $Name"
+Enter-PixInsightLock -Command $lockCmd -WaitMin $LockWaitMin
+try {
+    $proc = Start-Process -FilePath $PixInsight `
+        -ArgumentList @("-n", "-r=$runjs", "--run=$runjs") -PassThru
+} catch { Remove-PixInsightLock; throw }
+Set-PixInsightLockOwner -Process $proc -Command $lockCmd   # held until this PixInsight closes
 Start-Sleep -Seconds 4
 try {
     $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::$Priority

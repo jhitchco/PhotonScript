@@ -275,6 +275,7 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
         echo("another integrate-watch / autointegrate is running; nothing to do")
         out["skipped"] = "locked"
         return out
+    qlock = None
     try:
         echo("== queued ledgers")
         out["sweep"] = report.sweep(wo.staging_root, wo.base_url, post=post, echo=echo,
@@ -283,6 +284,13 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
         if busy:
             echo(f"PixInsight is running (pid {', '.join(map(str, busy))}): nothing now")
             out["skipped"] = "pixinsight running"
+            return out
+        # the PixInsight queue lock for the whole cycle: the integrate and
+        # the blend nest inside it, so no other job runs between them
+        qlock, why = w.queue_lock("autointegrate", wo.dry_run, echo)
+        if why:
+            echo(f"{why}: nothing now")
+            out["skipped"] = "pixinsight queue busy"
             return out
         try:
             data = get(wo.base_url.rstrip("/") + "/api/integrations/candidates")
@@ -325,6 +333,8 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
                                         pi_running, echo)
         return out
     finally:
+        if qlock is not None:
+            qlock.release()
         w.release_lock(lock)
 
 

@@ -59,3 +59,15 @@ def _settings_ledger_off(monkeypatch):
     the network) on every state change; no test should. The ledger's own
     tests (tests/test_scheduler/test_settings_ledger.py) turn it on."""
     monkeypatch.setenv("PS_SETTINGS_LEDGER_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _pixinsight_lock_isolated(monkeypatch, tmp_path):
+    """The PixInsight queue lock (integration/pilock.py) lives in
+    %LOCALAPPDATA%; every test gets its own lock file instead, so the suite
+    never sees (or leaves) the desktop's real lock."""
+    monkeypatch.setenv("PS_PIXINSIGHT_LOCK", str(tmp_path / "pixinsight.lock"))
+    from photonscript.integration import pilock
+    pilock._held.clear()
+    yield
+    pilock._held.clear()

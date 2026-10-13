@@ -46,7 +46,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from photonscript.integration import pjsr, runner, scratch
+from photonscript.integration import pilock, pjsr, runner, scratch
 from photonscript.integration.pipeline import PipelineError, Timer, catalog_coords, is_inside, safe_name
 
 TEMPLATE = "blend_rc16_osc.js"
@@ -115,6 +115,7 @@ class Options:
     run_pixinsight: bool = True
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
+    lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
     scratch_root: Path | None = None  # fast scratch: build here, archive to staging_root/Blend
 
 
@@ -419,6 +420,14 @@ def workspace(o: Options, inp: Inputs, run_dir: Path, echo=print) -> scratch.Wor
 
 
 def run(o: Options, echo=print) -> dict:
+    """The blend, holding the PixInsight queue lock (pilock.py) when it
+    runs PixInsight."""
+    with pilock.job(f"blend {o.target}", enabled=o.run_pixinsight and not o.dry_run,
+                    wait_min=o.lock_wait_min, echo=echo):
+        return _run(o, echo)
+
+
+def _run(o: Options, echo=print) -> dict:
     if not 0.0 <= o.weight <= 1.0:
         raise BlendError("--weight must be within 0..1")
     timer = Timer(None, echo)                 # the file is set once the run folder exists

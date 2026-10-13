@@ -1255,6 +1255,20 @@ Color an existing mono run without restacking: `photonscript finish --mono-run
 <run folder> --color auto|lrgb|rgb|sho|hoo [--dry-run]` (NEW `Staging\Finish\`
 folder, ledger kind finish).
 
+One PixInsight job at a time (2026-10-12 two scripts overlapped in the gap
+between one job's launches): a queue lock file
+`%LOCALAPPDATA%\PhotonScript\pixinsight.lock` (pid, command, start time;
+`photonscript/integration/pilock.py`) is held for a whole `integrate` /
+`blend` / `finish` job and for an `integrate-watch` / `autointegrate` cycle,
+and by the hand-run `run-integration.ps1`, `run-integration-osc.ps1`,
+`run-finish-osc.ps1` and `prepare-integration.ps1` launchers
+(`deploy\pixinsight-lock.ps1`; they record the PixInsight pid, so the lock
+ends when that PixInsight closes). A second job waits up to
+`pixinsight_lock_wait_min` (desktop `.env`, default 60; launchers
+`-LockWaitMin`) and then stops naming the holder; the watcher and
+autointegrate skip to their next cycle. A lock whose pid is gone (or reused)
+is taken over; nothing needs deleting by hand.
+
 Fast scratch (desktop `.env` `PS_INTEGRATION_SCRATCH_ROOT=C:/Astro/Scratch`;
 blank = off): integrate / blend runs are built on the NVMe and, once a
 master exists, the keepers (masters, finals, packet, ledger, manifest, logs,

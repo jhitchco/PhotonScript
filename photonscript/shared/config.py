@@ -384,6 +384,13 @@ class PhotonScriptConfig(BaseSettings):
                                  # rigs have masters and the inputs changed
     autointegrate_notify: bool = True  # Pushover the review JPG after a run
     autointegrate_hoo: bool = True  # OSC finish also writes the HOO-mapped image
+    pixinsight_lock_wait_min: float = 60.0  # one PixInsight job at a time
+                                 # (integration/pilock.py, a lock file in
+                                 # %LOCALAPPDATA%\PhotonScript): integrate /
+                                 # blend / finish wait this long for another
+                                 # job's lock, then stop with a message naming
+                                 # it; 0 = never wait. integrate-watch and
+                                 # autointegrate never wait (next cycle)
     finish_palette: str = "off"  # OSC finish palette image (desktop .env): off |
                                  # gold = also <name>_gold.{xisf,jpg}, the gold-blue
                                  # HOO-style look (Ha orange-gold, OIII teal-blue,

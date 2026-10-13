@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from photonscript.integration import astrobin, calib, hdr, manifest, mono_color, pjsr, runner, scratch, star_qa
+from photonscript.integration import astrobin, calib, hdr, manifest, mono_color, pilock, pjsr, runner, scratch, star_qa
 from photonscript.integration.frames import Frame
 from photonscript.integration.select import Selection, select_lights
 
@@ -83,6 +83,7 @@ class Options:
     finish: bool = True
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
+    lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
     workers: int | None = None
     default_readout: str | None = None
     gradient: str = "auto"
@@ -152,6 +153,7 @@ def config_options(cfg, rig: str) -> dict:
         palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
         mono_color=bool(getattr(cfg, "integrate_mono_color", True)),
+        lock_wait_min=pilock.wait_min(cfg),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -407,6 +409,14 @@ def workspace(o: Options, echo=print) -> scratch.Workspace | None:
 def run(o: Options, echo=print) -> dict:
     if o.qa not in QA_MODES:
         raise PipelineError(f"--qa must be one of {', '.join(QA_MODES)}")
+    # one PixInsight job at a time (pilock.py): held from the start so a
+    # second job never stages into the gap between this run's launches
+    with pilock.job(f"integrate {o.target} [{o.rig}]", enabled=o.run_pixinsight and not o.dry_run,
+                    wait_min=o.lock_wait_min, echo=echo):
+        return _run_ws(o, echo)
+
+
+def _run_ws(o: Options, echo) -> dict:
     ws = workspace(o, echo)
     if ws is None:
         return _run(o, echo, None)

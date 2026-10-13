@@ -65,7 +65,18 @@ def run_script(script: Path, log_path: Path, *, exe: str = DEFAULT_EXE, poll_s: 
                running=pixinsight_running, sleep=time.sleep, ok_marker: str = "EXIT OK") -> dict:
     """Run `script` in a fresh PixInsight and wait for it. Returns
     {ok, exit_code, minutes, last_line, timed_out}. Raises PixInsightBusy if
-    PixInsight is already running (nothing is started then)."""
+    PixInsight is already running or another job holds the PixInsight
+    queue lock (pilock.py; nothing is started then)."""
+    from photonscript.integration import pilock
+    # the queue lock (pilock.py): a no-op nest inside a job that holds it
+    # (integrate / blend / finish), else this one launch takes it
+    with pilock.acquire(f"PixInsight {Path(script).name}", wait_s=0, echo=echo):
+        return _run_script(script, log_path, exe=exe, poll_s=poll_s, timeout_s=timeout_s, echo=echo,
+                           popen=popen, running=running, sleep=sleep, ok_marker=ok_marker)
+
+
+def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeout_s: float, echo,
+                popen, running, sleep, ok_marker: str) -> dict:
     busy = running()
     if busy:
         raise PixInsightBusy(f"PixInsight is already running (pid {', '.join(map(str, busy))}); "

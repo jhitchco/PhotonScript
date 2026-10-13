@@ -701,6 +701,7 @@ _CONFIG_FIELDS = [
     ("autointegrate_settle_min", "PS_AUTOINTEGRATE_SETTLE_MIN", "Auto-integrate (PS-161, desktop): Syncthing settled = no temp files and a stable file count for N min", "Integration", "float", False, False),
     ("autointegrate_blend", "PS_AUTOINTEGRATE_BLEND", "Auto-integrate: blend two-rig goals once both rigs have masters", "Integration", "bool", False, False),
     ("autointegrate_notify", "PS_AUTOINTEGRATE_NOTIFY", "Auto-integrate: Pushover the review JPG after a run", "Integration", "bool", False, False),
+    ("pixinsight_lock_wait_min", "PS_PIXINSIGHT_LOCK_WAIT_MIN", "Desktop .env: integrate / blend / finish wait up to N min for another PixInsight job's queue lock, then stop (0 = no wait; the watcher and autointegrate skip to the next cycle)", "Integration", "float", False, False),
     ("autointegrate_hoo", "PS_AUTOINTEGRATE_HOO", "Auto-integrate: OSC finish also writes the HOO-mapped image (Ha = R, OIII = mean G, B)", "Integration", "bool", False, False),
     ("finish_palette", "PS_FINISH_PALETTE", "Finish (desktop .env): OSC palette image: off | gold (gold-blue HOO-style <name>_gold.jpg; integrate --palette overrides)", "Integration", "str", False, False),
     ("finish_use_rcastro", "PS_FINISH_USE_RCASTRO", "Finish (PS-186, desktop .env): RC Astro BlurX / NoiseX / StarXTerminator: auto (when installed) | on (same, missing = warning) | off", "Integration", "str", False, False),

@@ -73,8 +73,10 @@ param(
     [ValidateSet('off','gold')][string]$Palette = 'off',
     [double]$GoldMix = 0.6,        # Ha share of the gold green channel
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
-    [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal'
+    [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal',
+    [double]$LockWaitMin = 60      # wait this long for another PixInsight job's queue lock
 )
+. (Join-Path $PSScriptRoot "pixinsight-lock.ps1")   # one PixInsight job at a time (pilock.py)
 $inv = [Globalization.CultureInfo]::InvariantCulture
 $stage = Join-Path $StageRoot ($Name -replace '[^\w\- ]','_')
 if (-not $Master) { $Master = "$stage\out\master\masterOSC.xisf" }
@@ -225,18 +227,27 @@ Write-Host "  crop -> gradient($Gradient) -> plate solve -> color($Color) -> dec
 Write-Host "Script: $runjs"
 $logFile = Join-Path $logDir "finish.log"
 if ($Wait) {
+    Enter-PixInsightLock -Command "run-finish-osc.ps1 -Wait $Name" -WaitMin $LockWaitMin
     if (Get-Process PixInsight -ErrorAction SilentlyContinue) {
+        Remove-PixInsightLock
         Write-Error "PixInsight is already running - close it (or run without -Wait)."; exit 2
     }
-    $proc = Start-Process -FilePath $PixInsight -ArgumentList @("-n", "--automation-mode", "--run=$runjs", "--force-exit") -PassThru
-    Start-Sleep -Seconds 4
-    try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::$Priority } catch {}
-    $proc.WaitForExit()
+    try {
+        $proc = Start-Process -FilePath $PixInsight -ArgumentList @("-n", "--automation-mode", "--run=$runjs", "--force-exit") -PassThru
+        Start-Sleep -Seconds 4
+        try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::$Priority } catch {}
+        $proc.WaitForExit()
+    } finally { Remove-PixInsightLock }
     $tail = Get-Content $logFile -ErrorAction SilentlyContinue
     if ($tail -match "EXIT OK") { Write-Host "Finish OK. Log: $logFile   Output: $finalDir"; exit 0 }
     Write-Error "Finish did not log EXIT OK - see $logFile"; exit 1
 }
-$proc = Start-Process -FilePath $PixInsight -ArgumentList @("-n", "-r=$runjs", "--run=$runjs") -PassThru
+$lockCmd = "run-finish-osc.ps1 $Name"
+Enter-PixInsightLock -Command $lockCmd -WaitMin $LockWaitMin
+try {
+    $proc = Start-Process -FilePath $PixInsight -ArgumentList @("-n", "-r=$runjs", "--run=$runjs") -PassThru
+} catch { Remove-PixInsightLock; throw }
+Set-PixInsightLockOwner -Process $proc -Command $lockCmd   # held until this PixInsight closes
 Start-Sleep -Seconds 4
 try { $proc.PriorityClass = [System.Diagnostics.ProcessPriorityClass]::$Priority } catch {}
 Write-Host ""

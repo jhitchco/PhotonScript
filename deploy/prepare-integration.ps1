@@ -136,5 +136,12 @@ Write-Host "  -> '+ Directory' -> $stage  (WBPP groups by headers automatically)
 $pix = "C:\Program Files\PixInsight\bin\PixInsight.exe"
 if (Test-Path $pix) {
     $launch = Read-Host "Launch PixInsight now? (y/n)"
-    if ($launch -eq 'y') { Start-Process $pix }
+    if ($launch -eq 'y') {
+        # the PixInsight queue lock (pilock.py): no photonscript job starts
+        # PixInsight while this one is open
+        . (Join-Path $PSScriptRoot "pixinsight-lock.ps1")
+        Enter-PixInsightLock -Command "prepare-integration.ps1 (WBPP by hand)" -WaitMin 0
+        try { $proc = Start-Process $pix -PassThru } catch { Remove-PixInsightLock; throw }
+        Set-PixInsightLockOwner -Process $proc -Command "prepare-integration.ps1 (WBPP by hand)"
+    }
 }

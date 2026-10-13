@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from photonscript.integration import ledger as writer
-from photonscript.integration import report, runner
+from photonscript.integration import pilock, report, runner
 
 LOCK_NAME = ".integrate-watch.lock"
 FAILURES_NAME = ".integrate-watch-failures.json"   # "target|rig" -> ISO of a failed run
@@ -210,6 +210,21 @@ def release_lock(lock: Path | None) -> None:
             pass
 
 
+def queue_lock(command: str, dry_run: bool, echo=print):
+    """(lock, '') holding the PixInsight queue lock (pilock.py) for this
+    cycle, or (None, why) when another job holds it. A dry run takes
+    nothing: (None, '') unless the queue is busy (then it only says so)."""
+    if dry_run:
+        cur = pilock.read()
+        if cur and not pilock.stale_reason(cur):
+            echo(f"  (PixInsight queue busy: {pilock.describe(cur)})")
+        return None, ""
+    try:
+        return pilock.acquire(command, wait_s=0, echo=echo), ""
+    except pilock.PixInsightLocked as e:
+        return None, str(e)
+
+
 # --- one cycle -------------------------------------------------------------------
 
 def post_processing(o: WatchOptions, dec: Decision, state: str, *, post=report.http_post_json,
@@ -238,6 +253,7 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
         echo("another integrate-watch is running; nothing to do")
         out["skipped"] = "locked"
         return out
+    qlock = None
     try:
         echo("== queued ledgers")
         out["sweep"] = report.sweep(o.staging_root, o.base_url, post=post, echo=echo,
@@ -246,6 +262,11 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
         if busy:
             echo(f"PixInsight is running (pid {', '.join(map(str, busy))}): no integration now")
             out["skipped"] = "pixinsight running"
+            return out
+        qlock, why = queue_lock("integrate-watch", o.dry_run, echo)
+        if why:
+            echo(f"{why}: no integration now")
+            out["skipped"] = "pixinsight queue busy"
             return out
         url = o.base_url.rstrip("/") + "/api/integrations/candidates"
         try:
@@ -292,6 +313,8 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
             post_processing(o, chosen, "end", post=post, echo=echo)
         return out
     finally:
+        if qlock is not None:
+            qlock.release()
         release_lock(lock)
 
 

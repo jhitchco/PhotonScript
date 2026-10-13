@@ -3185,6 +3185,12 @@ def calibration_file_cmd(
         raise typer.Exit(1)
 
 
+def _pilock_wait(cfg) -> float:
+    """pixinsight_lock_wait_min (integration/pilock.py)."""
+    from photonscript.integration import pilock
+    return pilock.wait_min(cfg)
+
+
 @app.command("integrate")
 def integrate_cmd(
     target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("Andromeda Galaxy", "M31")'),
@@ -3522,6 +3528,7 @@ def blend_cmd(
         stage=stage, weight=weight, feather_frac=feather, inset_frac=inset, lum_mask=lum_mask,
         core=core, keep_work=keep_work, run_pixinsight=pixinsight, dry_run=dry_run,
         pixinsight=pixinsight_exe, scratch_root=sc.configured_root(cfg) if use_scratch else None,
+        lock_wait_min=_pilock_wait(cfg),
         osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
         rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
         **bxt,
@@ -3608,7 +3615,7 @@ def finish_cmd(
         master=Path(master) if master else None, name=name, target=target, rig=rig, staging_root=root,
         out=Path(out) if out else None, gradient=gradient, hoo=hoo, focal_mm=focal_mm, pixel_um=pixel_um,
         run_pixinsight=pixinsight, dry_run=dry_run, pixinsight=pixinsight_exe,
-        mono_run=Path(mono_run) if mono_run else None, colors=color, **kw,
+        mono_run=Path(mono_run) if mono_run else None, colors=color, lock_wait_min=_pilock_wait(cfg), **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
