@@ -254,7 +254,11 @@ class NinaClient:
     # --- Profile ---
 
     async def get_profile(self) -> dict:
-        return _unwrap(await self._get("/profile/show"))
+        """The ACTIVE profile with its settings (GuiderSettings etc.). Bare
+        /profile/show answers the list of profiles (Id, Name, IsActive), so
+        the PS-89 NINA rows read "unknown" until 2026-10-13."""
+        r = _unwrap(await self._get("/profile/show?active=true"))
+        return r if isinstance(r, dict) else {}
 
     async def close(self):
         if self._client and not self._client.is_closed:
