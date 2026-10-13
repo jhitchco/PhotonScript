@@ -138,6 +138,8 @@ var EDGE_FRAC = 0.015;
 // every master finished).
 var MASTERS = __MASTERS__;
 
+// ==== PS_FINISH_LIB_BEGIN (deploy/finish_mono_color.js reuses the functions from here
+// to PS_FINISH_LIB_END; keep them free of placeholders)
 var LOGLINES = [];
 var STEPS = [];   // one record per pipeline step, written to <Name>_final_steps.json
 var RC = {};      // PS-186: per RC Astro tool (bxt, nxt, sxt): status, why, settings
@@ -1159,6 +1161,8 @@ function labelOutput(w) {
       w.keywords = kw;
    } catch (e) { log("PSFINISH keyword skipped (" + e + ")"); }
 }
+
+// ==== PS_FINISH_LIB_END
 
 function main() {
    console.show();

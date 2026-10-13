@@ -85,6 +85,29 @@ Run on the desktop from the repo venv. What it does (code in
    the run: SPCC with Gaia DR3/SP, deconvolution + noise reduction, StarNet2
    star reduction, `<name>_final_steps.json` per master; mono masters skip
    the color steps; GraXpert is found via `PS_GRAXPERT` or the usual paths).
+   **Mono color** (config `integrate_mono_color`, default on;
+   `--no-mono-color` skips it; mono only): after the finish, `color_run.js`
+   (`deploy/finish_mono_color.js`; it pastes in the finish_osc.js functions
+   between the `PS_FINISH_LIB` markers) combines the masters PixInsight made
+   (`master_<F>_hdr` preferred): R G B -> ChannelCombination -> edge crop,
+   gradient, plate solve, SPCC (Gaia DR3/SP; else BN + ColorCalibration),
+   SCNR, BXT / NXT / SXT with their fallbacks, stretch; with an L master the
+   L gets the same chain (no color steps) and goes in by LRGBCombination
+   (lightness 0.5, saturation 0.45; else a JS lightness replacement) ->
+   `<target>_LRGB`, else `<target>_RGB`. Ha + OIII (+ SII): OIII and SII
+   LinearFit to Ha (else a median / MAD match) -> `<target>_SHO` (R = SII,
+   G = Ha, B = OIII; SCNR green 0.8 and a hue curve to gold / blue on the
+   stretched starless image) and `<target>_HOO` (R = Ha, G = B = OIII; the
+   only one when SII is missing); BN only, no photometric color; stars from
+   this run's stretched RGB star layer, else white Ha stars. Out:
+   `out\final\<Name>.{xisf,tif,jpg}`, `<Name>_linear.xisf`,
+   `<Name>_steps.json`, `mono_color_steps.json`, `out\color.log`,
+   `out\timing_color.csv`, a `color` block (and the files) in the ledger. A
+   run without the filters for any of them makes none (the log says what is
+   missing); a failed item is `SKIPPED [<Name>]` and the others are still
+   made. On an existing run: `photonscript finish --mono-run <run folder>
+   --color auto|all|lrgb|rgb|sho|hoo` (a NEW `Staging\Finish\<name>_color_<time>`
+   folder; the run itself is only read).
    Only when no PixInsight is running; one at a time; logs polled with short
    reads (never `tail -F`). `--no-pixinsight` stops after writing the
    scripts and prints the launch line.

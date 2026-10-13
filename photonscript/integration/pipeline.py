@@ -1,7 +1,8 @@
 """PS-22: the `photonscript integrate` pipeline (desktop).
 
     select -> star QA -> calibration match -> stage (copy) -> manifest
-    -> PJSR -> PixInsight integration -> PixInsight finish -> AstroBin packet
+    -> PJSR -> PixInsight integration -> [mono HDR combine] -> PixInsight finish
+    -> [mono color combine, mono_color.py] -> AstroBin packet
 
 Every stage is timed into <run>/out/timing.csv (PixInsight's own per-stage
 times go to <run>/out/timing_pi.csv).
@@ -51,7 +52,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from photonscript.integration import astrobin, calib, hdr, manifest, pjsr, runner, scratch, star_qa
+from photonscript.integration import astrobin, calib, hdr, manifest, mono_color, pjsr, runner, scratch, star_qa
 from photonscript.integration.frames import Frame
 from photonscript.integration.select import Selection, select_lights
 
@@ -105,6 +106,7 @@ class Options:
     keep_staged_frames: bool = False  # fast scratch: archive LIGHTS / BIAS / DARKS / FLATS too
     hdr_combine: bool = True          # integrate_hdr_combine: mono master_<F> + master_<F>_<exp> -> master_<F>_hdr
     flat_temp_tol: float = 5.0        # flats within this many C of the lights (legacy imports: wider)
+    mono_color: bool = True           # integrate_mono_color: mono masters -> <target>_LRGB / _RGB / _SHO / _HOO
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -149,6 +151,7 @@ def config_options(cfg, rig: str) -> dict:
         **pjsr.rc_settings(cfg),
         palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
+        mono_color=bool(getattr(cfg, "integrate_mono_color", True)),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -666,7 +669,20 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         if hdr_js:
             echo(f"  {hdr_js.name} (HDR combine: " + ", ".join(
                 "+".join(x["stack"] for x in it["inputs"]) for it in hdr_items) + ")")
-    result["scripts"] = [str(integ_js), str(finish_js)] + ([str(hdr_js)] if hdr_js else [])
+        # mono masters -> color images (re-planned after the finish from the
+        # masters PixInsight actually made)
+        color_items, color_notes, color_js = [], [], None
+        if o.mono_color and o.finish and not cfa:
+            color_items, color_notes = mono_color.plan(
+                mono_color.expected_masters(stacks, out_dir, hdr_items), safe_name(o.target))
+            for n in color_notes:
+                echo("  color: " + n)
+            if color_items:
+                color_js = mono_color.write_script(
+                    run_dir, mono_color.config(out_dir, color_items, fcfg, o.target), block)
+                echo(f"  {color_js.name} (color: " + ", ".join(it["name"] for it in color_items) + ")")
+    result["scripts"] = ([str(integ_js), str(finish_js)] + ([str(hdr_js)] if hdr_js else [])
+                         + ([str(color_js)] if color_js else []))
 
     pi_ok = False
     final_img = ""
@@ -717,11 +733,31 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                 result["finish"] = r2
                 jpgs = sorted((out_dir / "final").glob("*_final.jpg"))
                 final_img = str(jpgs[0]) if jpgs else ""
+        if pi_ok and color_items:
+            items, notes = mono_color.plan(mono_color.run_masters(run_dir), safe_name(o.target))
+            for n in notes:
+                if n not in color_notes:
+                    echo("  color: " + n)
+            if items:
+                with timer.stage("PixInsight color combine (launch to exit)"):
+                    try:
+                        rc = mono_color.run(run_dir, mono_color.config(out_dir, items, fcfg, o.target),
+                                            solver_block=block, exe=o.pixinsight, echo=echo)
+                        echo(f"  color: {'EXIT OK' if rc['ok'] else 'FAILED'} in {rc['minutes']} min, "
+                             f"{len(rc['made'])} of {len(items)} made")
+                    except Exception as e:  # noqa: BLE001 - the masters and finals stand without it
+                        echo(f"  color: not run ({e})")
+                        rc = {"ok": False, "error": str(e), "made": [], "items": items, "outputs": [],
+                              "minutes": 0.0}
+                rc["notes"] = notes
+                result["mono_color"] = rc
     else:
         echo("  PixInsight not started (--no-pixinsight). Run it later with:")
         echo(f'    "{o.pixinsight}" -n --automation-mode --run={integ_js} --force-exit')
         if hdr_js:
             echo(f'    then "{o.pixinsight}" -n --automation-mode --run={hdr_js} --force-exit')
+        if color_js:
+            echo(f'    after the finish "{o.pixinsight}" -n --automation-mode --run={color_js} --force-exit')
 
     with timer.stage("AstroBin packet draft"):
         gone_names = set().union(*(stack_frames.get(k["stack"], set()) for k in skipped))
@@ -799,7 +835,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         selected=sel.lights, staged=lights, integrated=integrated, dropped=dropped,
         qa=qa_summary, calibration=calib_summary, integration=result.get("integration"),
         finish=result.get("finish"), timing=timer.rows, packet=str(md_path), csv=str(csv_path),
-        final=final_img, trigger=o.trigger or None, hdr=result.get("hdr"))
+        final=final_img, trigger=o.trigger or None, hdr=result.get("hdr"),
+        color=mono_color.ledger_block(result.get("mono_color")))
     result["ledger"] = str(ledger_writer.write_for_run(led, run_dir, o.staging_root,
                                                        scratch_root=o.scratch_root))
     result["ledger_version"] = led.version
