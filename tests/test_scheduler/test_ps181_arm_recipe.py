@@ -304,7 +304,8 @@ async def test_resume_paths_use_the_shared_redispatch():
     test above covers."""
     import inspect
     src = inspect.getsource(armer_mod.Armer)
-    for fn in ("resume", "_restart_dispatch", "_resume_after_safety_stop"):
+    # 2026-10-13: resume()'s re-dispatch runs in its background half
+    for fn in ("_finish_resume", "_restart_dispatch", "_resume_after_safety_stop"):
         body = inspect.getsource(getattr(armer_mod.Armer, fn))
         assert "_dispatch_and_start(companion=False, fail_state=None)" in body, fn
     assert src.count("await self._consume_recipe()") == 1

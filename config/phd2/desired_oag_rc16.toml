@@ -264,6 +264,19 @@ why = "A floor of 1.5 to 2.0 px keeps PHD2 from auto-selecting a hot pixel as a 
 fix = "Brain > Guiding: minimum star HFD 1.5 px."
 
 [[check]]
+id = "min_snr"
+group = "Guiding"
+label = "AutoFind minimum star SNR"
+sources = ["profile"]
+min = 8
+max = 20
+target = 10
+severity = "fail"
+apply = "profile"
+why = "Auto-select (AutoFind) rejects every star under this SNR: at 50 (2026-10-12) the SNR 28 OAG star was never picked and guiding could not start. Behind the OAG prism 10 to 20 is a usable star; under 8 noise and hot pixels qualify."
+fix = "Brain > Guiding > Star selection: minimum star SNR for AutoFind 10 (8 to 20)."
+
+[[check]]
 id = "multi_star"
 group = "Guiding"
 label = "Multi-star guiding"

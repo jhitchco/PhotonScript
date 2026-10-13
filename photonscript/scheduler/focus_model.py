@@ -1215,6 +1215,13 @@ def _table(config, pts):
 
 PAIR_MAX_GAP_MIN = 90.0    # an NB AF pairs with the nearest ref AF this close
 OFFSET_ALERT_FILE = "focus_offset_alert.json"
+# 2026-10-13: offset_check() measures with focus_table.pair_offsets (the
+# table's pooled pairs: ref AF at most 30 min before, |dT| <= 1 C) over the
+# AFs of the last OFFSET_ALERT_RECENT_DAYS, and alerts only on at least
+# OFFSET_ALERT_MIN_PAIRS of them (one 2026-07-06 Ha pair at -106, paired
+# across 90 min, alerted against the model's +121)
+OFFSET_ALERT_MIN_PAIRS = 3
+OFFSET_ALERT_RECENT_DAYS = 14.0
 
 
 def _when(p: dict):
@@ -1277,13 +1284,24 @@ def pair_offsets(pts: list[dict], ref_filter: str = "L",
     return found
 
 
+def _recent_points(pts: list[dict], days: float) -> list[dict]:
+    """The AF points within `days` of the newest one (by local AF time)."""
+    ts = [(t, p) for p in pts or [] if (t := _when(p)) is not None]
+    if not ts:
+        return []
+    newest = max(t for t, _ in ts)
+    return [p for t, p in ts if (newest - t).total_seconds() <= days * 86400]
+
+
 def offset_check(config, pts: list[dict] | None = None,
                  model: dict | None = None) -> dict:
-    """Configured focus_filter_offsets vs the same-night pair measurement
-    (pair_offsets) and the model offset, per filter. A filter alerts when it
-    has a pair measurement and |configured - measured| > one CFZ (cfz_steps:
-    focus_cfz_steps, else the AF step size). Unlisted filters are
-    configured 0 (the sequence applies no move). Never raises."""
+    """Configured focus_filter_offsets vs the pair measurement and the model
+    offset, per filter. The measurement is focus_table.pair_offsets (pooled
+    same-night pairs: the ref AF at most 30 min before, within 1 C) over the
+    AFs of the last OFFSET_ALERT_RECENT_DAYS. A filter alerts when it has at
+    least OFFSET_ALERT_MIN_PAIRS such pairs and |configured - measured| >
+    one CFZ (cfz_steps: focus_cfz_steps, else the AF step size). Unlisted
+    filters are configured 0 (the sequence applies no move). Never raises."""
     try:
         pts = _rc16_points(config) if pts is None else pts
         ref = _ref_filter(config)
@@ -1294,7 +1312,9 @@ def offset_check(config, pts: list[dict] | None = None,
             configured = config.focus_offset_map()
         except Exception:  # noqa: BLE001
             configured = {}
-        pairs = pair_offsets(pts, ref, model.get("slope_steps_per_c"))
+        from photonscript.scheduler import focus_table as ft
+        pairs = ft.pair_offsets(_recent_points(pts, OFFSET_ALERT_RECENT_DAYS), ref,
+                                model.get("slope_steps_per_c"))
         mo = model.get("offsets") or {}
         out = {}
         for f in sorted(set(configured) | set(pairs) | set(mo)):
@@ -1302,17 +1322,23 @@ def offset_check(config, pts: list[dict] | None = None,
                 continue
             conf = int(configured.get(f, 0))
             meas = pairs.get(f)
+            if meas:
+                # "night" for the alert text and the once-per-night latch
+                meas = dict(meas, night=meas.get("last_night"))
             diff = (conf - meas["steps"]) if meas else None
+            enough = bool(meas and meas["n"] >= OFFSET_ALERT_MIN_PAIRS)
             out[f] = {"configured": conf, "listed": f in configured,
-                      "measured": meas,
+                      "measured": meas, "enough_pairs": enough,
                       "model": (mo.get(f) or {}).get("steps"),
                       "model_se": (mo.get(f) or {}).get("se"),
                       "diff": diff,
-                      "alert": bool(cfz and diff is not None
+                      "alert": bool(cfz and enough and diff is not None
                                     and abs(diff) > cfz)}
         alerts = [f for f, r in out.items() if r["alert"]]
         return {"ref_filter": ref, "cfz_steps": (round(cfz) if cfz else None),
-                "cfz_source": src, "filters": out, "alerts": alerts,
+                "cfz_source": src, "min_pairs": OFFSET_ALERT_MIN_PAIRS,
+                "recent_days": OFFSET_ALERT_RECENT_DAYS,
+                "filters": out, "alerts": alerts,
                 "alert": bool(alerts),
                 "night": max((out[f]["measured"]["night"] for f in alerts),
                              default=None)}

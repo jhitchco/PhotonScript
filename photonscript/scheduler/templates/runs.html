@@ -459,6 +459,12 @@
                 '<button class="btn btn-secondary" style="font-size:.75rem;padding:.15rem .5rem;margin-left:.3rem;" ' +
                 'title="Read mount coordinates from the FITS headers (plate solve as fallback) and match against the catalog" ' +
                 'onclick="identifyNight()">Identify by position</button>' : '');
+        if (d.error) {  // a damaged night: the subs still list, the rest is empty
+            const w = document.createElement('div');
+            w.style.cssText = 'color:#fbbf24;font-size:.8rem;margin-top:.3rem;';
+            w.textContent = d.error;
+            document.getElementById('nightTitle').appendChild(w);
+        }
         paintScore(d.score);
         const rep = d.report;
         const pctOf = (a, b) => b ? Math.round(a / b * 100) + '%' : '—';

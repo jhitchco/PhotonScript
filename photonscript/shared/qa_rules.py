@@ -82,7 +82,7 @@ CHECKS: dict[str, tuple[str, str, str]] = {
     "temp": ("Sensor temp vs setpoint", "C", "sensor at the configured setpoint"),
     "guide_lock": ("Guide star is a star", "",
                    "PHD2 guiding on a real star, not a hot pixel or artifact"),
-    "guide_rms": ("Guiding RMS (snapshot at sub end)", "\"",
+    "guide_rms": ("Guiding RMS (during the sub)", "\"",
                   "guiding under the RMS limit"),
     "tracking_jump": ("Tracking jump (doubled stars)", "",
                       "no mount jump doubling the stars"),

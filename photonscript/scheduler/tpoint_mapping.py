@@ -183,9 +183,10 @@ def start_time(config, at: str = "", now: datetime | None = None) -> datetime:
         return when
     now = (now or datetime.utcnow()).replace(tzinfo=None)
     try:
-        from photonscript.shared.astronomy import get_twilight_times
-        tw = get_twilight_times(config.get_observatory(), now.replace(
-            hour=0, minute=0, second=0, microsecond=0))
+        # the local night (noon to noon), not the UTC date: from 18:00 MDT
+        # the UTC date's dusk is TOMORROW's and a preview waited a day
+        from photonscript.shared.localtime import night_window
+        _base, tw = night_window(config, now)
         dusk = tw.get("astro_dark_start")
         if dusk and now < dusk.replace(tzinfo=None):
             return dusk.replace(tzinfo=None)

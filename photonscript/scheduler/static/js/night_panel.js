@@ -136,6 +136,13 @@
                 var ph = (a.pause || {}).phase;
                 txt = ph === 'stopping' ? 'PAUSING (waiting for the sub to end)' : 'PAUSED';
                 if ((a.restart || {}).pending) txt = 'RESTARTING (waiting for the sub to end)';
+                if (ph === 'resuming') {
+                    // the re-dispatch runs in the background (it can wait
+                    // minutes for NINA #1 to wind down)
+                    var job = (a.pause || {}).resume || a.restart || {};
+                    txt = ((a.pause || {}).resume ? 'RESUMING' : 'RESTARTING') +
+                        ' (' + (job.step || 're-dispatching') + ')';
+                }
             } else if (a.watch_paused) {
                 txt = 'WATCHING, alerts paused';
             }

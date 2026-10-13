@@ -335,11 +335,24 @@ _KEEP = ("rig", "file", "t", "src", "mount_src", "mount_ra", "mount_dec",
          "flag", "drift_arcmin", "note")
 
 
+def _finite(obj):
+    """NaN / Infinity -> None, recursively. Python's json writes and reads
+    them, but the API's JSON response refuses them (2026-10-06: one in the
+    pointing sidecar 500-ed GET /api/runs/<night> and /pointing)."""
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+    if isinstance(obj, dict):
+        return {k: _finite(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_finite(v) for v in obj]
+    return obj
+
+
 def append_record(config, night: str, rec: dict) -> dict:
     """Append one pointing record (only the documented keys); returns what
     was written."""
     from photonscript.shared.sub_file import norm_record
-    line = norm_record({k: rec.get(k) for k in _KEEP})   # PS-147: "/" file
+    line = norm_record(_finite({k: rec.get(k) for k in _KEEP}))   # PS-147: "/" file
     line["rig"] = line["rig"] or "rc16"
     line["at"] = datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
     p = sidecar_path(config, night)
@@ -355,7 +368,9 @@ def append_record(config, night: str, rec: dict) -> dict:
 
 def load(config, night: str) -> dict[tuple[str, str], dict]:
     """(rig, file) -> the latest record. Never raises. PS-147: the file is
-    in the canonical "/" form (shared.sub_file), whatever the line holds."""
+    in the canonical "/" form (shared.sub_file), whatever the line holds.
+    Non-finite numbers read back as None and a line whose file or rig is
+    not text is skipped (a damaged sidecar degrades, never 500s a page)."""
     from photonscript.shared.sub_file import norm_record
     out: dict = {}
     try:
@@ -367,9 +382,10 @@ def load(config, night: str) -> dict[tuple[str, str], dict]:
             r = json.loads(line)
         except ValueError:
             continue
-        if isinstance(r, dict) and r.get("file"):
-            norm_record(r)
-            out[(r.get("rig") or "rc16", r["file"])] = r
+        if not isinstance(r, dict) or not isinstance(r.get("file"), str)                 or not r["file"] or not isinstance(r.get("rig") or "rc16", str):
+            continue
+        r = norm_record(_finite(r))
+        out[(r.get("rig") or "rc16", r["file"])] = r
     return out
 
 
@@ -395,7 +411,7 @@ def _group(pts, keyf):
         if k is not None:
             g.setdefault(k, []).append(p["model_err_arcmin"])
     return {k: {"n": len(v), "median_arcmin": round(_median(v), 2)}
-            for k, v in sorted(g.items())}
+            for k, v in sorted(g.items(), key=lambda kv: str(kv[0]))}
 
 
 def _dec_band(p):
@@ -430,7 +446,8 @@ def summarize(records) -> dict:
         rg["solved"] += int(r.get("solved_ra") is not None)
         rg["flag"] += int(r.get("flag") == "flag")
         rg["off_target"] += int(r.get("flag") == "off-target")
-    pts = [r for r in recs if _num(r.get("model_err_arcmin")) is not None]
+    pts = [dict(r, model_err_arcmin=_num(r.get("model_err_arcmin"))) for r in recs
+           if _num(r.get("model_err_arcmin")) is not None]
     model = None
     if pts:
         errs = [r["model_err_arcmin"] for r in pts]

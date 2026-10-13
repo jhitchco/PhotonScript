@@ -67,6 +67,19 @@ class _Bus:
         self.msgs.append(msg)
 
 
+class _FramesPHD2:
+    pixel_scale = 1.0
+
+    def __init__(self, rms):
+        from datetime import datetime, timezone
+        t0 = datetime(2026, 9, 27, 4, 0, tzinfo=timezone.utc).timestamp()
+        self.frames = [{"t": t0 + 10 + 3 * i, "ra": rms, "dec": 0.0, "drop": False}
+                       for i in range(20)] if rms else []
+
+    def recent_frames(self, seconds=None, now=None):
+        return list(self.frames)
+
+
 def _agent(cfg, rig="rc16", temp=0.3, rms=0.0, gstate=GuidingState.STOPPED):
     from photonscript.telescope_agent import agent as agent_mod
     a = agent_mod.TelescopeAgent.__new__(agent_mod.TelescopeAgent)
@@ -76,6 +89,9 @@ def _agent(cfg, rig="rc16", temp=0.3, rms=0.0, gstate=GuidingState.STOPPED):
     a.state.guiding.rms_total_arcsec = rms
     a.state.guiding.state = gstate
     a._consecutive_rejects, a._alerted = 0, set()
+    # 2026-10-13: the sub's RMS comes from the guide frames inside its
+    # exposure (DATE-OBS 04:00:00, 300 s): `rms` there at 1 "/px
+    a.phd2 = _FramesPHD2(rms)
 
     async def _esc(*_a, **_k):
         pass

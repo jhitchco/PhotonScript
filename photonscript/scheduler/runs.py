@@ -2592,8 +2592,14 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     """Full plan-vs-actual record for one night."""
 
     plan_path = runs_dir(config) / f"{date}_plan.json"
-    plan = json.loads(plan_path.read_text(encoding="utf-8")) \
-        if plan_path.exists() else None
+    try:
+        plan = json.loads(plan_path.read_text(encoding="utf-8")) \
+            if plan_path.exists() else None
+    except (OSError, ValueError) as e:   # a damaged plan file: no plan
+        logger.warning("plan %s unreadable: %s", plan_path.name, e)
+        plan = None
+    if plan is not None and not isinstance(plan, dict):
+        plan = None
 
     status = backfill_status(config, date)
     if backfill and status["pending"] and not status["running"]:
@@ -2631,6 +2637,26 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
                               table, report, accepted, total_planned, dark_h)
 
 
+def degraded_detail(config, date: str, err: Exception) -> dict:
+    """What GET /api/runs/<date> answers when night_detail() raised on a
+    damaged or odd night: the night_detail keys with empty values, the subs
+    log when it still reads, and the error, so the page shows the subs and
+    says what broke instead of a 500."""
+    try:
+        subs = _load_subs(config, date)
+    except Exception:  # noqa: BLE001
+        subs = []
+    zero = {"dark_hours": 0.0, "light_hours": 0.0, "accepted_hours": 0.0,
+            "test_hours": 0.0, "safe_hours": 0.0, "shutter_hours": 0.0,
+            "integrating_hours": 0.0, "sky_utilization_pct": 0,
+            "photon_efficiency_pct": 0}
+    return {"date": date, "plan": None, "report": zero, "table": [], "subs": subs,
+            "calibration": {"frames": {}, "advice": []}, "phases": {},
+            "score": night_score(0.0, 0.0, 0.0, 0.0), "scores_by_rig": {},
+            "backfill": {"running": False, "pending": 0},
+            "error": f"night detail failed: {type(err).__name__}: {err}"}
+
+
 def review_summary(config, date: str) -> dict:
     """PS-24: what the runs page repaints after verdicts without reloading
     the night: the review counts and the plan-vs-actual rows (accepted per
@@ -2663,10 +2689,18 @@ def _plan_vs_actual(plan, subs: list[dict]) -> tuple[dict, list]:
     from photonscript.shared.target_names import is_test_target
     planned: dict[tuple, int] = {}
     if plan:
-        for t in plan["targets"]:
-            for e in t["exposures"]:
-                planned[("rc16", t["name"], e["filter"])] = \
-                    planned.get(("rc16", t["name"], e["filter"]), 0) + e["planned"]
+        # an odd plan (no exposures, a missing count) plans nothing, never raises
+        for t in plan.get("targets") or []:
+            if not isinstance(t, dict):
+                continue
+            for e in t.get("exposures") or []:
+                if not isinstance(e, dict):
+                    continue
+                k = ("rc16", t.get("name") or "?", e.get("filter") or "?")
+                try:
+                    planned[k] = planned.get(k, 0) + int(e.get("planned") or 0)
+                except (TypeError, ValueError):
+                    continue
     actual: dict[tuple, dict] = {}
     for s in subs:
         key = (s.get("rig", "rc16"), s.get("target", "?"), s.get("filter", "?"))

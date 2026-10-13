@@ -57,9 +57,15 @@ def api_pointing(date: str):
     from photonscript.shared import pointing
     cfg = _cfg()
     pts = pointing.load(cfg, date)
-    recs = sorted(pts.values(), key=lambda r: (r.get("t") or "", r.get("rig") or ""))
-    return {"date": date, "records": recs, "summary": pointing.summarize(recs),
-            "job": _jobs.get(date)}
+    recs = sorted(pts.values(), key=lambda r: (str(r.get("t") or ""),
+                                               str(r.get("rig") or "")))
+    try:
+        summary = pointing.summarize(recs)
+    except Exception as e:  # noqa: BLE001 - an odd record degrades the summary
+        logger.warning("pointing summary %s failed: %s", date, e)
+        summary = {"error": f"{type(e).__name__}: {e}"}
+    return pointing._finite({"date": date, "records": recs, "summary": summary,
+                             "job": _jobs.get(date)})
 
 
 @router.post("/api/runs/{date}/pointing")
