@@ -117,6 +117,7 @@ NINA_PATHS = {
     "sequence_start": ["/sequence/start"],
     "sequence_stop": ["/sequence/stop"],
     "sequence_json": ["/sequence/json"],
+    "sequence_state": ["/sequence/state", "/sequence/json"],   # 1013 restart race
     "safety": ["/equipment/safetymonitor/info"],
     "guider": ["/equipment/guider/info"],
     "mount_park": ["/equipment/mount/park"],
@@ -128,6 +129,29 @@ NINA_PATHS = {
     "guider_start": ["/equipment/guider/start"],
     "guider_stop": ["/equipment/guider/stop"],
 }
+
+# 2026-10-13 restart race: ninaAPI's /sequence/stop only asks NINA to stop;
+# its sequence reports RUNNING (and /sequence/load + /sequence/start answer
+# "Sequence is already running") until it has wound down. A re-dispatch
+# therefore waits for NINA #1 to read not running after the stop (bounded:
+# a long sub plus a margin), and a load/start that still answers "already
+# running" is stopped again and retried with a backoff before it fails.
+STOP_IDLE_POLL_S = 3.0          # NINA #1 sequence-state poll after a stop
+STOP_IDLE_MAX_WAIT_S = 600.0    # wait at most this for NINA #1 to wind down
+STOP_RESEND_S = 30.0            # re-send the stop this often while it runs
+STOP_UNREADABLE_POLLS = 3       # an unreadable state this many polls = go on
+DISPATCH_BUSY_BACKOFF_S = (5.0, 15.0, 30.0)   # retries after "already running"
+DISPATCH_BUSY_RETRY_WAIT_S = 120.0            # idle wait before each retry
+
+
+def _sequence_busy(detail) -> bool:
+    """True when a ninaAPI error says a sequence is still running."""
+    return "already running" in str(detail or "").lower()
+
+
+async def _armer_sleep(seconds: float) -> None:
+    """asyncio.sleep, a seam the offline tests replace."""
+    await asyncio.sleep(seconds)
 
 # Guiding watchdog escalation ladder (in TICK_SECONDS units, once past the
 # config grace window). A "working" state (calibrating/looping/settling) is
@@ -2161,14 +2185,33 @@ class Armer:
         # PS-152: note a finished dusk calibration before the stop clears it
         await self._check_focus_cal_before_redispatch()
         # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the
-        # request body; load 400s if a sequence is running, so stop first.
+        # request body; load 400s if a sequence is running, so stop first
+        # and wait until NINA #1 has actually wound down (2026-10-13: the
+        # restart's load and start ran 1 s before SEQUENCE-FINISHED).
         await self._nina("sequence_stop")  # harmless if nothing running
+        await self._wait_nina1_stopped()
         content = json.loads(self.sequence_path.read_text(encoding="utf-8"))
-        loaded = await self._nina("sequence_load", method="POST",
-                                  json_body=content)
-        # skipValidation: our sequence connects equipment in its start area,
-        # so pre-start validation ('camera not connected') is expected noise
-        started = await self._nina("sequence_start", skipValidation="true")
+        loaded = started = None
+        for attempt in range(len(DISPATCH_BUSY_BACKOFF_S) + 1):
+            loaded = await self._nina("sequence_load", method="POST",
+                                      json_body=content)
+            # skipValidation: our sequence connects equipment in its start
+            # area, so pre-start validation ('camera not connected') is
+            # expected noise. Never start after a failed load: that would
+            # start whatever NINA still has loaded.
+            started = (await self._nina("sequence_start", skipValidation="true")
+                       if loaded is not None else None)
+            if loaded is not None and started is not None:
+                break
+            if attempt >= len(DISPATCH_BUSY_BACKOFF_S) or                     not _sequence_busy(self.detail):
+                break
+            wait = DISPATCH_BUSY_BACKOFF_S[attempt]
+            logger.warning("dispatch: NINA #1 %s; stop and retry %d/%d in "
+                           "%.0f s", self.detail, attempt + 1,
+                           len(DISPATCH_BUSY_BACKOFF_S), wait)
+            await _armer_sleep(wait)
+            await self._nina("sequence_stop")
+            await self._wait_nina1_stopped(max_wait_s=DISPATCH_BUSY_RETRY_WAIT_S)
         if loaded is None or started is None:
             if fail_state:
                 self._set_state(fail_state, f"ninaAPI load/start failed "
@@ -2184,6 +2227,60 @@ class Armer:
             await self._dispatch_piggyback_companion()
         await self._send_block_alerts()   # PS-85: history decisions, once per target
         return True
+
+    async def _nina1_running(self) -> list[str] | None:
+        """Names of NINA #1's RUNNING sequence items ([] = idle, also when
+        nothing is loaded), None when the state cannot be read. Leaves
+        self.detail as it was (a read is not a dispatch error)."""
+        from photonscript.scheduler.sideload import nina_running
+        keep = self.detail
+        try:
+            data = await self._nina("sequence_state")
+        except Exception:  # noqa: BLE001
+            data = None
+        if data is None:
+            err = str(self.detail or "").lower()
+            self.detail = keep
+            if "no sequence" in err or "not loaded" in err:
+                return []
+            return None
+        self.detail = keep
+        return nina_running(data)
+
+    async def _wait_nina1_stopped(self, max_wait_s: float = STOP_IDLE_MAX_WAIT_S,
+                                  poll_s: float = STOP_IDLE_POLL_S) -> bool | None:
+        """After a sequence stop: poll until NINA #1's sequence reads not
+        running (True), re-sending the stop every STOP_RESEND_S. False when
+        it still runs at max_wait_s, None when the state stays unreadable
+        (the caller goes on: the load/start retry is the backstop). Bounded
+        by poll count, so a slow NINA never wedges the armer."""
+        polls = max(1, int(max_wait_s / poll_s))
+        resend = max(1, int(STOP_RESEND_S / poll_s))
+        misses = 0
+        running: list[str] = []
+        for i in range(polls + 1):
+            running = await self._nina1_running()
+            if running is None:
+                misses += 1
+                if misses >= STOP_UNREADABLE_POLLS:
+                    logger.warning("dispatch: NINA #1 sequence state unreadable "
+                                   "after the stop; going on")
+                    return None
+            elif not running:
+                if i:
+                    logger.info("dispatch: NINA #1 stopped after %.0f s",
+                                i * poll_s)
+                return True
+            else:
+                misses = 0
+            if i >= polls:
+                break
+            await _armer_sleep(poll_s)
+            if running and (i + 1) % resend == 0:
+                await self._nina("sequence_stop")
+        logger.warning("dispatch: NINA #1 still running %s %.0f s after the "
+                       "stop", ", ".join((running or [])[:3]), max_wait_s)
+        return False
 
     async def _dispatch_piggyback_companion(self) -> None:
         """Dispatch the piggyback calibration companion to NINA #2 alongside the

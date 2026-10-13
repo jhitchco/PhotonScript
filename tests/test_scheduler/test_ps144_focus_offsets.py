@@ -221,7 +221,8 @@ async def test_successful_dispatch_resets_the_key(tmp_path, monkeypatch):
         return None
     monkeypatch.setattr(a, "_send_block_alerts", _none)
     assert await a._dispatch_and_start(companion=False) is True
-    assert calls == ["sequence_stop", "sequence_load", "sequence_start"]
+    assert calls == ["sequence_stop", "sequence_state", "sequence_load",
+                     "sequence_start"]   # 1013: waits for NINA #1 to stop
     assert a.config.focus_calibration_tonight is False
     assert envfile.read_env(env)["PS_FOCUS_CALIBRATION_TONIGHT"] == "false"
     assert env.read_text(encoding="utf-8").startswith("# scope\n")
