@@ -63,6 +63,19 @@ corner over a 600 s sub, about 39 px over 6 h (registration crops it).
   audit judges the connected one's rows (by the camera name PHD2 or the
   guide log reports), so both pass until the swap.
 
+- Guide optics config (2026-10-13): the configured guide scale is
+  206.265 x guide_camera_pixel_um x PHD2 binning / guide focal length;
+  guide_focal_length_mm = 0 derives it from pixel_scale_arcsec 0.236 and
+  imaging_camera_pixel_um 3.76 (3286 mm, 1 % over the real 3248 mm). The
+  Piggy-600 agent's config used to derive it from the Piggy-600's 1.29"/px
+  (601 mm): "configured optics give 2.059"/px (bin 3)" against PHD2's
+  correct 0.381"/px (GP678C 2.0 um, 3248 mm, bin 3). Fixed in code
+  (rig_config keeps the RC16 guide focal length). Recommended: set
+  PS_GUIDE_FOCAL_LENGTH_MM = 3248 (System page, guide focal length) so the
+  config scale is exact. Expected scales at 3248 mm: GP678C 0.127"/px
+  bin 1, 0.254 bin 2, 0.381 bin 3; ASI174MM Mini (5.86 um) 0.372"/px bin 1,
+  0.744 bin 2 (then guide_camera_pixel_um = 5.86).
+
 #### ASI174MM Mini swap checklist (PS-190)
 Do these in order on the first session after AARO installs the camera.
 1. Hardware: OAG focus. Loop in PHD2 (2 s, gain 40) on a bright star with

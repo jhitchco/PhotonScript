@@ -812,6 +812,13 @@ Read only; a NINA that cannot be read shows "-".
   calibration capture job runs, in ARMED / PAUSED_UNSAFE / other states and
   with under 40 min of dark. A failed re-dispatch stays paused. Events kind
   `restart` (request / stopped / dispatched / failed / refused), one push.
+  Every re-dispatch (Restart, Resume, the PS-77 safe-again resume) waits
+  after its sequence stop until NINA #1's `/sequence/state` reads not
+  running (poll 3 s, stop re-sent every 30 s, at most 10 min; an unreadable
+  state goes on after 3 polls), and a load/start that still answers
+  "Sequence is already running" is stopped and retried 3 times (5 / 15 /
+  30 s backoff) before it fails. 2026-10-13: the restart's load and start
+  ran 1 s before NINA's SEQUENCE-FINISHED and the restart failed.
 
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
@@ -1224,6 +1231,20 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   and the shutdown now stops NINA #2 as well. `/api/arm` shows
   `shutdown_due_utc`. Note the "last sub 12:17:45Z" first blamed on the
   piggyback was an RC16 OIII sub.
+- 2026-10-12 (moon rule, wrong night): from 18:02 local the planner logged
+  "Skipping Andromeda Galaxy tonight: broadband-only and the moon defers
+  broadband" on a BB night with a 7 % moon (17:57 still planned M31 then the
+  Heart). moon_window_tonight() anchored to the UTC date, so after 18:00 MDT
+  it described TOMORROW night (moon up at dusk), and night_moon() cached by a
+  date label that the forecast spells as the local date, so that night got
+  the 10-14/15 night's 20 % moon: up at dusk and >= 20 % defers broadband.
+  Fixed: moon_window_tonight, the planner and the night plan anchor noon to
+  noon local (`localtime.night_base_date`, same as `night_of`; after local
+  midnight the planner had also planned the next night: "Dark window:
+  2026-10-14 ..." at 00:04 local), night_moon caches by the dark window,
+  and the skip line says why (illumination, altitude at dusk, rise / set).
+  The rule itself is unchanged: broadband defers only with the moon up at
+  dusk and at least 20 % lit.
 - 2026-10-06 (cool stall, PS-154): a clear new-moon night lost >1 h. The
   Start-area Cool Camera item asked for -10 C (the NinaSequenceTarget
   camera_temp_c model default, carried in by the PS-144 dusk focus

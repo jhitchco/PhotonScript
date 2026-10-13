@@ -285,3 +285,61 @@ async def test_piggyback_agent_does_not_double_alert(monkeypatch):
     a, sent = _agent(monkeypatch, rig="piggyback")
     await a._on_guiding_update(_metrics(px=98.0))
     assert sent == [] and a.state.guiding.rms_total_px == 98.0
+
+
+# --- 2026-10-12: the Piggy-600 agent's config gave the OAG a 600 mm FL ---------
+
+def test_piggyback_rig_config_keeps_the_rc16_guide_focal_length():
+    """The Piggy-600 agent's PHD2 client (same PHD2, RC16 OAG) derived the
+    guide focal length from the Piggy-600's 1.29"/px: 601 mm, so bin 3 read
+    2.059"/px against PHD2's correct 0.381"/px."""
+    from photonscript.shared.rigs import PIGGYBACK, rig_config
+    base = _cfg(piggyback_pixel_scale_arcsec=1.29)
+    pcfg = rig_config(base, PIGGYBACK)
+    assert pcfg.pixel_scale_arcsec == 1.29          # its imaging scale
+    assert guide_focal_length_mm(pcfg) == pytest.approx(guide_focal_length_mm(base))
+    s3 = guide_scale_from_config(pcfg, 3)
+    assert s3 == pytest.approx(guide_scale_from_config(base, 3))
+    assert s3 == pytest.approx(0.381, abs=0.01)     # PHD2's profile value
+    # the old derivation, for the record: 206.265 * 2.0 * 3 / 601 mm
+    assert 206.265 * 2.0 * 3 / (206.265 * 3.76 / 1.29) == pytest.approx(2.059, abs=0.001)
+
+
+def test_piggyback_rig_config_keeps_an_explicit_guide_focal_length():
+    from photonscript.shared.rigs import PIGGYBACK, rig_config
+    pcfg = rig_config(_cfg(guide_focal_length_mm=3248), PIGGYBACK)
+    assert guide_focal_length_mm(pcfg) == 3248
+    assert guide_scale_from_config(pcfg, 3) == pytest.approx(206.265 * 2.0 * 3 / 3248)
+
+
+def test_asi174mm_mini_expected_scale():
+    """PS-190: the ASI174MM Mini (5.86 um) on the OAG at 3248 mm."""
+    c = _cfg(guide_focal_length_mm=3248, guide_camera_pixel_um=5.86)
+    assert guide_scale_from_config(c, 1) == pytest.approx(0.372, abs=0.001)
+    assert guide_scale_from_config(c, 2) == pytest.approx(0.744, abs=0.001)
+
+
+async def test_piggyback_agent_bin3_matches_phd2_and_mismatch_names_the_keys(caplog):
+    from photonscript.shared.rigs import PIGGYBACK, rig_config
+    pcfg = rig_config(_cfg(), PIGGYBACK)
+    srv, cl = await _connected({"get_pixel_scale": 0.381, "get_camera_binning": 3},
+                               pcfg)
+    try:
+        with caplog.at_level(logging.WARNING, "photonscript.telescope_agent.phd2_client"):
+            await cl.refresh_pixel_scale()
+        assert cl._scale_mismatch is None
+        assert "pixel scale mismatch" not in caplog.text
+    finally:
+        await cl.disconnect()
+        await srv.close()
+    # a real mismatch says which config values the configured scale used
+    srv, cl = await _connected({"get_pixel_scale": 0.69, "get_camera_binning": 1},
+                               _cfg())
+    try:
+        await cl.refresh_pixel_scale()
+        txt = cl._scale_mismatch or ""
+        assert "guide_camera_pixel_um 2" in txt
+        assert "guide focal length 3286 mm (derived from pixel_scale_arcsec 0.236)" in txt
+    finally:
+        await cl.disconnect()
+        await srv.close()

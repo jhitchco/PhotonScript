@@ -111,9 +111,10 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
 
     # Anchor to the LOCAL date: after ~6 PM local, UTC has already rolled to
     # tomorrow, and a UTC-date anchor plans the wrong night entirely.
-    from photonscript.shared.localtime import utc_offset_hours as _tz_off
-    local_now = now + timedelta(hours=_tz_off(config, now))
-    base = datetime(local_now.year, local_now.month, local_now.day)
+    # 2026-10-13: noon to noon, so after local midnight it is still the
+    # night that began yesterday evening (night_base_date).
+    from photonscript.shared.localtime import night_base_date
+    base = night_base_date(config, now)
 
     tw = get_twilight_times(obs, base)
     dusk, dawn = tw.get("astro_dark_start"), tw.get("astro_dark_end")
