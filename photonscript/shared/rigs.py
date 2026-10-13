@@ -143,6 +143,16 @@ def rig_config(config, rig: str):
         "safety_monitor_device_id": getattr(
             config, "piggyback_safety_monitor_device_id", ""),
     }
+    # The guide path is the RC16's off-axis guider whatever the rig (one
+    # PHD2, the Piggy-600 agent watches it too): keep the RC16 guide focal
+    # length. Derived from the rig's pixel_scale_arcsec it became 601 mm from
+    # the Piggy-600's 1.29"/px (2026-10-12: "the configured optics give
+    # 2.059"/px (bin 3)" against PHD2's correct 0.381"/px).
+    if not float(getattr(config, "guide_focal_length_mm", 0) or 0):
+        rc_scale = float(getattr(config, "pixel_scale_arcsec", 0) or 0)
+        ipx = float(getattr(config, "imaging_camera_pixel_um", 0) or 0)
+        if rc_scale > 0 and ipx > 0:
+            updates["guide_focal_length_mm"] = 206.265 * ipx / rc_scale
     # PS-117: the AP26CC's own read noise and gain. It shoots LCG only, so
     # both readout-mode keys carry the Piggy-600 value (camera_constants
     # picks the _lcg pair from a "Low Conversion Gain" header).

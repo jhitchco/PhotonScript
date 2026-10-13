@@ -144,6 +144,22 @@ def guide_scale_from_config(config, binning: int | None = 1, camera: str | None 
     return _ARCSEC_K * px * max(1, int(binning or 1)) / fl
 
 
+def guide_optics_text(config) -> str:
+    """Which config values the configured guide scale came from, for the
+    mismatch warning: the override, or pixel size and focal length (and
+    whether that focal length is set or derived)."""
+    explicit = float(getattr(config, "phd2_pixel_scale_arcsec", 0) or 0)
+    if explicit > 0:
+        return f"phd2_pixel_scale_arcsec {explicit:g}"
+    px = float(getattr(config, "guide_camera_pixel_um", 0) or 0)
+    fl = guide_focal_length_mm(config)
+    src = ("set" if float(getattr(config, "guide_focal_length_mm", 0) or 0) > 0
+           else "derived from pixel_scale_arcsec "
+                f"{float(getattr(config, 'pixel_scale_arcsec', 0) or 0):g}")
+    return (f"guide_camera_pixel_um {px:g}, guide focal length {fl:.0f} mm "
+            f"({src})")
+
+
 class PHD2Client:
     """Async client for PHD2's event-driven server API.
 
@@ -356,8 +372,9 @@ class PHD2Client:
             if cfg_scale and abs(phd2_scale - cfg_scale) / cfg_scale > _SCALE_MISMATCH:
                 self._scale_mismatch = (
                     f"PHD2 profile says {phd2_scale:.3f}\"/px but the configured "
-                    f"optics give {cfg_scale:.3f}\"/px (bin {binning or 1}); check "
-                    "the PHD2 profile focal length / guide camera")
+                    f"optics give {cfg_scale:.3f}\"/px (bin {binning or 1}; "
+                    f"{guide_optics_text(self._config)}); check the PHD2 "
+                    "profile focal length / guide camera, or the config keys")
                 logger.warning("PHD2 pixel scale mismatch: %s", self._scale_mismatch)
         elif cfg_scale:
             self._set_scale(cfg_scale, "config")
