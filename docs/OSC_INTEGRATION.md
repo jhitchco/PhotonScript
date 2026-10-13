@@ -149,6 +149,22 @@ archive step (strictly a run folder inside its root, never the staging root,
 the Library mirror or a ninashare path). A root that is missing or overlaps
 the staging root is not listed.
 
+**Redo an archived run.** `photonscript restage <archived run folder>
+[--out NEW] [--library MIRROR] [--dry-run]` copies the run's LIGHTS / BIAS /
+DARKS / FLATS again from `manifest.json` `frames[].source` (the Library
+mirror, only read) into a NEW or empty folder (default
+`<scratch root, else staging root>/<run>_restage_<time>`) under the same
+relative paths, checking each source against the manifest size and each
+copy against its source. `integrate_run.js`, `hdr_run.js`, `finish_run.js`,
+`reference.txt` and `manifest.*` are copied with their paths rewritten to
+the new folder (the ledger is not: the archived run stays the record);
+`restage.json` records the copy. It then prints the PixInsight lines that
+run those scripts in order and a `photonscript finish --master` line. A
+missing source or a size mismatch is listed and fails the command (exit 1);
+a non-empty folder, one inside the run or the Library, a ninashare path or
+too little free space is refused (exit 2). `--library` remaps sources when
+the mirror moved.
+
 ## 0b. Ledger and the integrate watcher (PS-33, PS-31)
 
 **Ledger (PS-33).** Every `photonscript integrate` run ends by writing

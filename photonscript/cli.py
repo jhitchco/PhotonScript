@@ -3119,6 +3119,57 @@ def scratch_status_cmd(
     say(f"{len(folders)} folder(s), {sc.gb(sum(f.size for f in folders))}")
 
 
+@app.command("restage")
+def restage_cmd(
+    run: str = typer.Argument(..., help="Archived integrate run folder (has manifest.json)"),
+    out: str = typer.Option("", "--out", help="NEW or empty folder (default <scratch root, else "
+                                              "staging root>/<run>_restage_<time>)"),
+    library: str = typer.Option("", "--library",
+                                help="Library mirror the sources moved to (default: the manifest's)"),
+    pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Plan and check only; copy nothing"),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+):
+    """Rebuild an archived run's LIGHTS / BIAS / DARKS / FLATS copies from
+    manifest.json frames[].source (the Library mirror, read only) into a NEW
+    or empty folder, sizes verified, with the run's scripts rewritten to it;
+    then prints the PixInsight integrate / finish lines to rerun it.
+
+    photonscript restage D:/Astrophotography/Staging/M31_piggyback_20261011-2200
+    """
+    import json as _json
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import restage as rs
+    from photonscript.integration import scratch as sc
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    run_dir = Path(run)
+    base = sc.configured_root(cfg) or pl.default_staging_root(cfg)
+    dest = Path(out) if out else rs.default_out(run_dir, base)
+    lib = Path(library) if library else None
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    try:
+        p = rs.plan(run_dir, dest, lib)
+        guard = lib or pl.default_library(cfg)
+        rs.check_out(dest, run_dir, guard)
+        if dry_run:
+            say(f"dry run: {len(p.items)} frames, {sc.gb(p.total)} would be copied into {dest}")
+            for e in p.errors:
+                say(f"  ERROR: {e}")
+            raise typer.Exit(1 if p.errors else 0)
+        res = rs.restage(p, echo=say, library=guard)
+    except rs.RestageError as e:
+        console.print(f"[red]restage:[/red] {e}", markup=True)
+        raise typer.Exit(2)
+    if as_json:
+        print(_json.dumps(res, indent=1, default=str))
+    if res["errors"]:
+        say("restage INCOMPLETE: fix the errors above before rerunning")
+        raise typer.Exit(1)
+    say("== rerun (PowerShell; one PixInsight at a time):")
+    for line in rs.rerun_commands(res, pixinsight_exe, run_dir.name):
+        say(f"  {line}")
+
+
 @app.command("blend")
 def blend_cmd(
     target: str = typer.Option(..., "--target", help='Target name, catalog id or alias ("M31")'),

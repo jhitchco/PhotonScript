@@ -1107,6 +1107,9 @@ space on C: = the run is built on D: as before, with a warning.
 `photonscript scratch-status` lists what is left in scratch (and legacy
 `--out` runs under C:/Astro/Staging) with size, age, master, archive twin and
 the Remove-Item line; `--clean <name>` deletes one listed folder after a y/N.
+`photonscript restage <archived run>` copies its staged frames back from the
+Library (manifest frames[].source, sizes verified) into a new folder and
+prints the PixInsight lines to rerun it.
 Details: OSC_INTEGRATION.md "Fast scratch disk".
 
 ### PJSR lessons (each cost a debugging session)
