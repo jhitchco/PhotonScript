@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from photonscript.shared.models import ObservatoryLocation, TransferWindow
 
@@ -761,16 +761,30 @@ class PhotonScriptConfig(BaseSettings):
     # this many seconds (so within a couple of minutes of each NINA AF), plus
     # once a day. 0 = no background ingest (backfill + API only).
     focus_model_ingest_poll_s: int = 120
-    # PS-76 part 2: model-driven focus. Off (default) = advisory: GET
-    # /api/focus says whether the table is trusted, the sequence keeps every
-    # AF. On, and only while the model is trusted (>= 8 L AFs, a fitted
-    # slope, fit scatter <= half the critical focus zone), each RC16 filter
-    # block with >= 5 AFs of its own moves the focuser to the table position
-    # (ExternalScript focus_model_move_script -> POST /api/focus/model-move)
-    # instead of AF on L + offset, the temperature trigger runs the same
-    # move, and a verify AF runs every focus_model_verify_af_min.
-    focus_model_drive: bool = False
+    # PS-76 part 2 + focus table: model-driven focus. "seed" (default,
+    # today's behavior) = the model seeds each AF, the sequence keeps every
+    # AF; GET /api/focus/table says which filters would qualify. "drive":
+    # while the model is trusted (>= 8 L AFs, a fitted slope, fit scatter <=
+    # half the critical focus zone), each RC16 filter block whose focus-table
+    # row is drive-ready (high confidence, >= 5 AFs of its own, its newest AF
+    # recent and within one CFZ of the table, no pending counter shift)
+    # moves the focuser to the table position (ExternalScript
+    # focus_model_move_script -> POST /api/focus/model-move) instead of AF
+    # on L + offset; the temperature trigger re-moves after half a CFZ of
+    # drift, and a verify AF runs every focus_model_verify_af_min. The old
+    # booleans still parse (true = drive, false = seed).
+    focus_model_drive: str = "seed"
     focus_model_verify_af_min: float = 120.0
+    # Focus table: the RC16 EAF counter was re-zeroed here (local time).
+    # Points before it are taken as they are; after it an AF with R^2 >=
+    # 0.9 more than 3 sigma from the model is a counter shift and the table
+    # re-anchors on it. Empty = no shift detection.
+    focus_counter_epoch: str = "2026-10-12T20:20:00"
+    # Focus table: RC16 EAF temperatures known to be a frozen reading (C,
+    # comma-separated). At such a reading, or when the focuser temperature
+    # has not changed for 60 min while the NINA weather ambient moved > 1 C,
+    # model moves use the ambient (+ the learned bias) instead.
+    focus_frozen_temps: str = "21.29"
     focus_cfz_steps: int = 0  # RC16 critical focus zone in EAF steps; 0 =
                                  # use the median AF step size as the proxy
     focus_model_move_script: str = "C:\\astro\\PhotonScript\\deploy\\focus-model-move.cmd"
@@ -1473,6 +1487,16 @@ class PhotonScriptConfig(BaseSettings):
                 cls, name = pair.split(":", 1)
                 out[cls.strip()] = name.strip()
         return out
+
+    @field_validator("focus_model_drive", mode="before")
+    @classmethod
+    def _focus_model_drive_mode(cls, v):
+        """focus_model_drive "seed" / "drive"; the pre-table boolean
+        (True / "true" / "on" / "1") still means drive."""
+        if isinstance(v, bool):
+            return "drive" if v else "seed"
+        s = str(v or "").strip().lower()
+        return "drive" if s in ("drive", "true", "on", "1", "yes") else "seed"
 
     def focus_offset_map(self) -> dict:
         """focus_filter_offsets -> {filter class: int steps}. Bad pairs are

@@ -852,26 +852,32 @@ def _focus_model_move(script: str, filter_type) -> dict:
 
 
 def _focus_drive_spec(cfg) -> dict | None:
-    """{script, filters, verify_min} when the sequence should replace the
-    per-block AF with model moves: focus_model_drive on, the move script on
-    this machine, and focus_model.trust() says the model is trusted. The
-    filters are those with enough AFs of their own; every other block keeps
-    its AF. None = today's AF-per-block sequence (the default)."""
+    """{script, filters, verify_min, temp_c} when the sequence should
+    replace the per-block AF with focus-table moves: focus_model_drive
+    "drive", the move script on this machine, and the model trusted. The
+    filters are the focus table's drive-ready rows (focus_table.build_table:
+    high confidence, >= 5 AFs of their own, newest AF recent and within one
+    CFZ, no pending counter shift); every other block keeps its AF (the
+    seed behavior). temp_c: the temperature change after which the block
+    re-moves (half a CFZ of drift). None = today's sequence (the default
+    "seed")."""
     from pathlib import Path
-    if not bool(getattr(cfg, "focus_model_drive", False)):
-        return None
-    script = str(getattr(cfg, "focus_model_move_script", "") or "").strip()
     try:
+        from photonscript.scheduler.focus_model import DRIVE_DRIVE, drive_mode
+        if drive_mode(cfg) != DRIVE_DRIVE:
+            return None
+        script = str(getattr(cfg, "focus_model_move_script", "") or "").strip()
         if not script or not Path(script).is_file():
             return None
-        from photonscript.scheduler.focus_model import trust
-        tr = trust(cfg)
+        from photonscript.scheduler.focus_table import build_table
+        tab = build_table(cfg)
     except Exception:  # noqa: BLE001
         return None
-    if tr.get("mode") != "drive" or not tr.get("filters"):
+    if not tab.get("trusted") or not tab.get("drive_ready"):
         return None
-    return {"script": script, "filters": set(tr["filters"]),
-            "verify_min": float(tr.get("verify_af_min") or 120.0)}
+    return {"script": script, "filters": set(tab["drive_ready"]),
+            "verify_min": float(tab.get("verify_af_min") or 120.0),
+            "temp_c": float(tab.get("move_temp_step_c") or 1.0)}
 
 
 def _smart_af_spec(cfg, af_filter) -> dict | None:
@@ -1424,10 +1430,12 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         def _af_triggers():
             runner = lambda: _block_af_runner(block_af, offset, f)  # noqa: E731
             if drive:
-                # temperature change -> table move (cheap, so 1 C); HFR creep
-                # and the periodic verify keep the full AF recipe
-                return [_autofocus_temp_trigger(1.0, [_focus_model_move(
-                            focus_drive["script"], f)]),
+                # temperature change -> table move (after half a CFZ of
+                # drift, focus table); HFR creep and the periodic verify
+                # keep the full AF recipe
+                return [_autofocus_temp_trigger(
+                            float(focus_drive.get("temp_c") or 1.0),
+                            [_focus_model_move(focus_drive["script"], f)]),
                         _autofocus_hfr_trigger(10.0, 4, runner()),
                         _autofocus_time_trigger(focus_drive["verify_min"],
                                                 runner())]

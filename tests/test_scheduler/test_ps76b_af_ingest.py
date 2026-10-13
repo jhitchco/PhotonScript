@@ -320,7 +320,11 @@ class TestFocusRouter:
             moves.append(pos)
             return {"Success": True}
 
+        async def weather(base):
+            return {}
+
         monkeypatch.setattr(focus, "_nina_focuser", info)
+        monkeypatch.setattr(focus, "_nina_weather", weather)
         monkeypatch.setattr(focus, "_nina_move", move)
         return focus, cfg, moves
 
@@ -499,12 +503,12 @@ def test_config_fields_exposed():
     by_env = {f[1]: f for f in _CONFIG_FIELDS}
     c = PhotonScriptConfig(_env_file=None)
     for env, typ in (("PS_FOCUS_MODEL_INGEST_POLL_S", "int"),
-                     ("PS_FOCUS_MODEL_DRIVE", "bool"),
+                     ("PS_FOCUS_MODEL_DRIVE", "str"),   # focus table: seed|drive
                      ("PS_FOCUS_MODEL_VERIFY_AF_MIN", "float"),
                      ("PS_FOCUS_CFZ_STEPS", "int"),
                      ("PS_FOCUS_MODEL_MOVE_SCRIPT", "str")):
         assert by_env[env][4] == typ and hasattr(c, by_env[env][0])
-    assert c.focus_model_drive is False and c.focus_model_ingest_poll_s == 120
+    assert c.focus_model_drive == "seed" and c.focus_model_ingest_poll_s == 120
 
 
 def test_cli_focus_ingest_local(tmp_path, monkeypatch):

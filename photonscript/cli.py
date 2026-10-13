@@ -37,6 +37,7 @@ Usage:
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
+    photonscript focus-table [--rig rc16] [--temp T] [--payoff] [--local] [--json]  # focus table
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
     photonscript stop | restart
@@ -583,6 +584,63 @@ def focus_ingest_cmd(
         if res.get("error"):
             print(f"  error: {res['error']}")
     raise typer.Exit(1 if res.get("error") else 0)
+
+
+@app.command("focus-table")
+def focus_table_cmd(
+    rig: str = typer.Option("rc16", "--rig", help="Rig (the table is RC16 "
+                            "only)"),
+    temp: float = typer.Option(None, "--temp", help="Temperature (C); "
+                               "default: the first AF temperature of the "
+                               "last night"),
+    payoff: bool = typer.Option(False, "--payoff",
+                                help="Also replay last week's AFs: AF "
+                                     "minutes drive mode would have saved"),
+    nights: int = typer.Option(7, "--nights", help="Payoff: nights back"),
+    local: bool = typer.Option(False, "--local",
+                               help="Compute it here instead of asking the "
+                                    "running service"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw table"),
+):
+    """Focus table: per filter (L R G B Ha OIII SII) the RC16 focuser
+    position at a temperature, position = intercept_L + slope x T + offset
+    (offsets from same-night AF pairs, else the model, else
+    focus_filter_offsets), its confidence, and which filters
+    focus_model_drive "drive" may move to the table instead of running AF.
+    Read-only (GET /api/focus/table; --local reads this checkout's data)."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    from photonscript.scheduler import focus_table as ft
+    if (rig or "rc16").strip().lower() != "rc16":
+        print("focus table: RC16 only (the Piggy-600 has one channel; see "
+              "/api/focus piggyback.model)")
+        raise typer.Exit(2)
+    if local:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        tab = ft.build_table(cfg, temp=temp)
+        if payoff:
+            tab["payoff"] = ft.payoff(cfg, nights=max(1, nights))
+    else:
+        q = {"rig": "rc16", "payoff": "true" if payoff else "false",
+             "nights": str(max(1, nights))}
+        if temp is not None:
+            q["temp"] = str(temp)
+        try:
+            with urllib.request.urlopen(
+                    url.rstrip("/") + "/api/focus/table?"
+                    + urllib.parse.urlencode(q), timeout=60) as r:
+                tab = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            print(f"focus table: service not reachable ({e}); try --local")
+            raise typer.Exit(1)
+    if as_json:
+        print(_json.dumps(tab, indent=1))
+    else:
+        print(ft.format_table(tab, tab.get("payoff")))
+    raise typer.Exit(1 if tab.get("error") else 0)
 
 
 @app.command("focus-move")
