@@ -1584,6 +1584,14 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   mount unguided) both at setpoint 0C. The OSC unblock was the second Alpaca
   safety driver (see 2026-09-26 Night-ops lesson). Keep the OSC setpoint at 0C
   so it matches `piggyback_dark_exposures=120` darks.
+- ONE PHD2 CONNECTION (2026-10-13): the RC16 telescope agent owns the PHD2
+  client (connection, event loop, pixel scale, RMS). The Piggy-600 agent
+  gets that client from the orchestrator through a read-only view
+  (`phd2_client.ReadOnlyPHD2`): it reads the metrics and app state and
+  registers listeners, but every control call (stop_capture, loop,
+  guide_pulse, start_guiding, setters, connect) raises, and scheduler
+  guiding commands are ignored by it. A Piggy-600 agent started alone
+  opens its own connection, still read-only.
 - GUIDING: PHD2 calibrated near Dec 0 / meridian via Calibration Assistant with
   "Auto restore calibration" ON and NINA Force Calibration OFF; ~0.36" RMS
   achieved. TPoint model built (4x4 bin, wait for dark, image scale 0.942"/px)

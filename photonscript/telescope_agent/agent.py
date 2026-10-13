@@ -26,7 +26,8 @@ from photonscript.shared.messagebus import get_message_bus
 from photonscript.shared.pushover import notify
 from photonscript.shared.star_measure import MEASURE_VERSION
 from photonscript.telescope_agent.nina_client import NinaClient
-from photonscript.telescope_agent.phd2_client import PHD2Client, guide_rms_text
+from photonscript.telescope_agent.phd2_client import (PHD2Client, ReadOnlyPHD2,
+                                                      guide_rms_text)
 from photonscript.telescope_agent.image_validator import validate_image
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,22 @@ class TelescopeAgent:
     - Report state and image events to the scheduler via message bus
     """
 
-    def __init__(self, config: PhotonScriptConfig, rig: str = "rc16"):
+    def __init__(self, config: PhotonScriptConfig, rig: str = "rc16",
+                 phd2: PHD2Client | None = None):
         self.config = config
         self.rig = rig  # "rc16" (main) or "piggyback" (2nd NINA, OSC)
         self.nina = NinaClient(config.nina_base_url)
-        self.phd2 = PHD2Client(config.phd2_host, config.phd2_port, config=config)
+        # One PHD2 connection (its guide camera is on the RC16's OAG): the
+        # RC16 agent owns it; the Piggy-600 agent gets the RC16 agent's
+        # client (orchestrator) and sees it through a read-only view, so it
+        # neither opens a second connection nor redoes the scale / RMS work
+        # nor can send a command. Without a shared client a non-RC16 agent
+        # opens its own connection, still read-only.
+        self._phd2_owned = phd2 is None
+        self._phd2_client = phd2 if phd2 is not None else PHD2Client(
+            config.phd2_host, config.phd2_port, config=config)
+        self.phd2 = (self._phd2_client if rig == "rc16"
+                     else ReadOnlyPHD2(self._phd2_client))
         self._rms_logged_at: float | None = None  # PS-70 RMS log rate limit
         self.bus = get_message_bus()
         self.state = TelescopeState(rig=rig)
@@ -150,7 +162,8 @@ class TelescopeAgent:
             logger.info("Telescope Agent shutting down")
         finally:
             await self.nina.close()
-            await self.phd2.disconnect()
+            if getattr(self, "_phd2_owned", True):   # never the shared one
+                await getattr(self, "_phd2_client", self.phd2).disconnect()
 
     async def stop(self):
         self._running = False
@@ -984,14 +997,21 @@ class TelescopeAgent:
             logger.debug("night event skipped: %s", e)
 
     async def _phd2_monitor(self):
-        """Connect to PHD2 and monitor guiding events."""
+        """Connect to PHD2 and monitor guiding events. A shared client (the
+        Piggy-600 agent reading the RC16 agent's) is run by its owner: no
+        second connection, scale refresh or event loop here."""
+        if not getattr(self, "_phd2_owned", True):
+            logger.info("%s agent: PHD2 read-only through the RC16 agent's "
+                        "connection", getattr(self, "rig", "?"))
+            return
+        client = getattr(self, "_phd2_client", self.phd2)
         while self._running:
-            connected = await self.phd2.connect()
+            connected = await client.connect()
             if connected:
-                await self.phd2.refresh_pixel_scale()
-                await self.phd2.refresh_exposure()   # PS-90
+                await client.refresh_pixel_scale()
+                await client.refresh_exposure()   # PS-90
             if connected:
-                loop_task = await self.phd2.start_event_loop()
+                loop_task = await client.start_event_loop()
                 if getattr(self, "calmgr", None) is not None:
                     # PS-93: is the active calibration still PHD2's?
                     self.calmgr.connected()
@@ -2117,6 +2137,8 @@ class TelescopeAgent:
             await self.nina.stop_sequence()
 
         elif action in ("start_guiding", "stop_guiding", "dither"):
+            if getattr(self, "rig", "rc16") != "rc16":
+                return    # PHD2 is the RC16 agent's (read-only view here)
             # PS-91: these now go through call(), so a refusal raises
             try:
                 await getattr(self.phd2, action)()

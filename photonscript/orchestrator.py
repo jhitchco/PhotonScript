@@ -253,8 +253,11 @@ def _telescope_agents(config: PhotonScriptConfig) -> list:
         pb_dir = getattr(config, "piggyback_image_watch_dir", "") or ""
         main_dir = str(getattr(config, "image_watch_dir", "") or "")
         if pb_dir and Path(pb_dir) != Path(main_dir):
+            # one PHD2 connection: the Piggy-600 agent reads the RC16
+            # agent's client through a read-only view (no control calls)
             agents.append(TelescopeAgent(rig_config(config, PIGGYBACK),
-                                         rig=PIGGYBACK))
+                                         rig=PIGGYBACK,
+                                         phd2=agents[0]._phd2_client))
             logger.info("Piggyback rig enabled — 2nd telescope agent watching %s",
                         pb_dir)
         else:
