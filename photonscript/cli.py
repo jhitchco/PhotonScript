@@ -15,6 +15,7 @@ Usage:
     photonscript optics-test-report [--date D] [--json]  # PS-148
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
+    photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events] [--timeline] [--json]
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
         [--library PATH] [--profile] [--feature-arcmin 60] [--json]
         [--camera-cal]                                            # PS-117
@@ -1467,6 +1468,80 @@ def guiding_report(
     else:
         console.print(format_report(rep), markup=False, highlight=False)
     raise typer.Exit(0 if rep.get("ok") else 1)
+
+
+@app.command("sub-doctor")
+def sub_doctor_cmd(
+    night: str = typer.Option("", "--night", help="Night (YYYY-MM-DD, the evening "
+                              "date); default the night that started last"),
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default both)"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Read a running PhotonScript instead (GET "
+                                 "/api/runs/<night> and /api/phd2/calibration)"),
+    nina_events: bool = typer.Option(False, "--nina-events",
+                                     help="With --url: also read both NINAs' event "
+                                          "history (:1888 / :1889, AF finish times; "
+                                          "NINA keeps only its current session)"),
+    timeline: bool = typer.Option(False, "--timeline",
+                                  help="Print every diagnosis, not only the first of each cause"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Sub doctor over a past night: replays the night's graded subs as the
+    live doctor would (rolling window, both rigs paired) and prints, per rig,
+    each cause the first time it would have fired, with the evidence and the
+    fix. Read only: no push, no remedy, nothing written.
+
+    photonscript sub-doctor --night 2026-10-12 --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler import sub_doctor as sd
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    d = night or _last_night()
+    if url:
+        import urllib.parse
+        import urllib.request
+
+        def _get(u, timeout=170):
+            with urllib.request.urlopen(u, timeout=timeout) as r:
+                return _json.loads(r.read().decode("utf-8"))
+        base = url.rstrip("/")
+        try:
+            run = _get(f"{base}/api/runs/{d}")
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not read {base}/api/runs/{d}: {e}[/red]")
+            raise typer.Exit(2)
+        try:
+            hist = _get(f"{base}/api/phd2/calibration", 60).get("history") or []
+        except Exception:  # noqa: BLE001
+            hist = []
+        nev = None
+        if nina_events:
+            host = urllib.parse.urlparse(base).hostname
+            nev = {}
+            for rg, port in (("rc16", 1888), ("piggyback", 1889)):
+                try:
+                    body = _get(f"http://{host}:{port}/v2/api/event-history", 30)
+                    nev[rg] = body.get("Response", body) if isinstance(body, dict) else body
+                except Exception:  # noqa: BLE001
+                    pass
+        rep = sd.replay_night(cfg, d, run.get("subs") or [], rig=rig or None,
+                              plan=run.get("plan"), cal_history=hist,
+                              nina_events=nev, solves={})
+    else:
+        rep = sd.local_night(cfg, d, rig or None)
+    if not timeline:
+        for r in (rep.get("rigs") or {}).values():
+            r["timeline_n"] = len(r.pop("timeline", []) or [])
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(sd.format_report(cfg, rep), markup=False, highlight=False)
+        if timeline:
+            for rg, r in (rep.get("rigs") or {}).items():
+                for x in r.get("timeline") or []:
+                    console.print(f"  {rg} {x.get('t')} {x.get('cause') or 'healthy'} "
+                                  f"{x.get('confidence') or ''} {x.get('file') or ''}",
+                                  markup=False, highlight=False)
 
 
 @app.command("optics-report")

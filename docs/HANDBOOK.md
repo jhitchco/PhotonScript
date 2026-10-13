@@ -779,6 +779,42 @@ Read only; a NINA that cannot be read shows "-".
   watchdog is muted and nothing is sent to NINA (pause the sideload in NINA
   itself); unsafe and stuck-imaging alerts stay on.
 
+### Sub doctor: why the subs are bad and the fix
+
+2026-10-12: armed unguided, PHD2 kept guiding (LostLock / Guiding) on a
+calibration graded FAIL (axes 78 deg from perpendicular) and every RC16 sub
+trailed; the scorer rejected them and nothing said why. Now after each
+graded light that failed (and until the rig is healthy again) the telescope
+agent judges the rig's last `sub_doctor_window` (3) subs, at least
+`sub_doctor_min_bad` (2) bad, each paired with the other rig's subs exposed at
+the same time (`scheduler/sub_pairs.py`: both soft and round = seeing, one
+soft = that rig's focus, both trailing = the mount, one trailing = that
+rig's guider or flexure, both star counts down = clouds), and names one
+cause with its evidence and fix (`scheduler/sub_doctor.py`): focuser
+(FOCPOS 0, AF stall), guider_conflict (PHD2 guiding on an unguided night,
+not guiding on a guided one, guiding on a FAIL calibration, RMS tiny or a
+PS-91 non-star lock while subs trail), pointing, tracking (trail direction
+from the star sidecar turned to the sky with the last plate solve: RA / Dec
+drift / field rotation, the trail rate, the PS-169 drift-capped length),
+clouds, seeing, focus (AF age, temperature since the last AF), other.
+`sub_doctor_mode` alert (default) pushes once per cause per rig per night
+(observe: chip and events only, off). Each diagnosis is a run event kind
+`sub_doctor` (cause, confidence, evidence, suggested_action {id: stop_phd2 |
+recalibrate_phd2 | reselect_guide_star | start_guiding | run_af |
+check_focuser | shorten_subs:<s> | check_tracking | check_pointing |
+wait_clouds | none}); a recovery writes cause "none". Opt-in remedies, all
+default off: `sub_doctor_stop_phd2_unguided` (PHD2 stop_capture on an
+unguided night, RC16 agent, never while another actor such as the PS-93
+calibration manager holds PHD2 or PHD2 calibrates),
+`sub_doctor_request_af` (ninaAPI auto-focus when the camera is idle, the
+other rig sharp; night-untested), `sub_doctor_shorten_subs` (caps unguided
+RC16 subs at the drift length at the armer's next dispatch; never
+re-dispatches). Dashboard chip (`GET /api/sub-doctor`), Runs page "What went
+wrong and the fix" (`GET /api/runs/{date}/sub-doctor`), the morning report
+line, pairs for other agents (`GET /api/sub-doctor/pairs`). Past nights:
+`photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events]
+[--timeline] [--json]` (read only).
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET

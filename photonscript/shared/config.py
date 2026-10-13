@@ -521,6 +521,30 @@ class PhotonScriptConfig(BaseSettings):
     af_stall_alert: bool = True
     af_stall_runs: int = 3
     af_stall_min_points: int = 4
+    # Sub doctor (2026-10-12: PHD2 guided on a FAIL calibration through an
+    # unguided night and nothing said why the subs trailed). After each
+    # graded light the last sub_doctor_window subs of a rig (and the other
+    # rig's subs at the same time) are classified into a cause with the fix:
+    # off | observe (state, run events, chip; no push) | alert (one push per
+    # cause per rig per night).
+    sub_doctor_mode: str = "alert"
+    sub_doctor_window: int = 3        # subs judged together
+    sub_doctor_min_bad: int = 2       # bad subs among them before a diagnosis
+    sub_doctor_tiny_rms_arcsec: float = 0.5  # PHD2 RMS under this while subs
+                                 # trail = suspect a non-star / hot-pixel lock
+    sub_doctor_wild_rms_arcsec: float = 2.0  # soft round subs under a PHD2 RMS
+                                 # over this count as a guider conflict too
+    sub_doctor_af_min_age_min: float = 30.0  # run_af remedy only when the last
+                                 # AF is at least this old
+    # opt-in remedies (default off; never restarts or re-arms anything)
+    sub_doctor_stop_phd2_unguided: bool = False  # stop PHD2 guiding on an
+                                 # unguided night (RC16 agent; never while the
+                                 # calibration manager or another actor holds
+                                 # PHD2, nor while PHD2 calibrates)
+    sub_doctor_request_af: bool = False  # soft round subs, other rig sharp:
+                                 # ask NINA for an autofocus (camera idle only)
+    sub_doctor_shorten_subs: bool = False  # unguided trailing: cap RC16 subs at
+                                 # the PS-169 drift length from the next dispatch
     slew_gate_pad_s: float = 10.0  # padding each side of a mount-log move
     slew_gate_min_move_arcmin: float = 5.0  # RC16 frames (older nights): a
                                  # pointing change this big between frames

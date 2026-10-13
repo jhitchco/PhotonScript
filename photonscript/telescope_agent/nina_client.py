@@ -139,6 +139,11 @@ class NinaClient:
         r = _unwrap(await self._get("/equipment/focuser/last-af"))
         return r if isinstance(r, dict) else {}
 
+    async def start_autofocus(self) -> dict:
+        """Start a NINA autofocus run (ninaAPI focuser/auto-focus). Used
+        only by the opt-in sub doctor remedy (sub_doctor_request_af)."""
+        return _unwrap(await self._get("/equipment/focuser/auto-focus"))
+
     async def get_event_history(self) -> list[dict]:
         """ninaAPI event history since NINA started (oldest first):
         [{"Event", "Time", ...}] (AUTOFOCUS-*, SAFETY-CHANGED, ...)."""

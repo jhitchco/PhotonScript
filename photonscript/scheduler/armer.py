@@ -1646,6 +1646,11 @@ class Armer:
             # PS-156: the fallback's remainder, per filter at the proven length
             from photonscript.scheduler.guide_fallback import cap_targets
             cap_targets(self.config, targets)
+        try:   # sub doctor shorten_subs remedy (opt-in): next dispatch only
+            from photonscript.scheduler.sub_doctor import apply_caps
+            apply_caps(self.config, targets, self.plan.get("night_of"))
+        except Exception as e:  # noqa: BLE001 - never block a dispatch
+            logger.warning("sub doctor caps skipped: %s", e)
         # PS-144: a one-shot focus-offset calibration first, inside the same
         # night sequence (focus_calibration_tonight; reset after the start)
         self._focus_cal_field = None
