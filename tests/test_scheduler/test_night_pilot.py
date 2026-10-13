@@ -94,6 +94,7 @@ class FakeIO(npil.PilotIO):
         self.calls = []
         self.pushes = []
         self.af_ok = True
+        self.direct_af = (True, "AUTOFOCUS-FINISHED, focuser 5200 -> 5260")
         self._store = ProjectStore(cfg)
 
     async def nina1_running(self, cfg):
@@ -111,6 +112,10 @@ class FakeIO(npil.PilotIO):
     async def nina1_wait_idle(self, cfg, max_s=300.0):
         self.calls.append("nina1_wait_idle")
         return True
+
+    async def nina1_autofocus(self, cfg):
+        self.calls.append("nina1_autofocus")
+        return self.direct_af
 
     async def piggy_af(self, cfg, armer):
         self.calls.append("piggy_af")
@@ -556,7 +561,7 @@ def test_restart_fails_twice_pushes_human(tmp_path):
 # ------------------------------------------------------------- 5. focus
 
 def test_focus_soft_one_rig_af_and_af_failing_twice(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, night_pilot_af_direct=False)    # the restart path
     armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
     for hm in ("04:07", "04:12", "04:17"):
         _sub(cfg, hm, 0.45, hfr=14.0)
@@ -586,7 +591,7 @@ def test_focus_soft_one_rig_af_and_af_failing_twice(tmp_path):
 
 
 def test_focus_af_works_and_both_soft_is_seeing(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, night_pilot_af_direct=False)
     armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
     _diag(cfg, "04:20", "focus", confidence="medium", hfr_px=14.0,
           other_rig_sharp=False)
@@ -934,3 +939,212 @@ def test_pilot_never_touches_roof_park_arm_or_calibration():
                 "safetymonitor", "set_connected", "nina_warm", "dawn_shutdown(",
                 "guider_start"):
         assert bad not in src, bad
+
+
+# ------------------------------------------------------------- 10. direct AF
+
+def _af_tree(*leaf_names, target="Heart Nebula"):
+    """A NINA #1 sequence tree: target container > block > leaves (RUNNING)."""
+    node = None
+    for name in reversed(leaf_names or ("Smart Exposure",)):
+        node = {"$type": "NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer"
+                if name == "Smart Exposure" else "NINA.Sequencer.Container.Sequential, x",
+                "Name": name, "Status": "RUNNING", "Items": [node] if node else []}
+    dso = {"$type": "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
+           "Name": target, "Status": "RUNNING",
+           "Items": [{"Name": f"{target} Ha filter block (cooler-gated)",
+                      "Status": "RUNNING", "Items": [node]}]}
+    return {"Name": "Sequence", "Status": "RUNNING",
+            "Items": [{"Name": "Targets", "Status": "RUNNING", "Items": [dso]}]}
+
+
+class FakeNina:
+    """ninaAPI GETs for direct_af: camera reads in order, the sequence
+    tree, the event history (the AF adds its events), the focuser."""
+
+    def __init__(self, cams=None, tree=None, af_events=None, accept=True,
+                 pos=(5200, 5260)):
+        self.cams = list(cams or [{"IsExposing": False, "CameraState": "Idle"}])
+        self.tree = tree if tree is not None else _af_tree()
+        self.hist = [{"Event": "SEQUENCE-STARTING", "Time": "2026-10-12T20:00:00-06:00"},
+                     {"Event": "AUTOFOCUS-FINISHED", "Time": "2026-10-12T20:10:00-06:00"}]
+        self.af_events = ["AUTOFOCUS-STARTING", "AUTOFOCUS-POINT-ADDED",
+                          "AUTOFOCUS-FINISHED"] if af_events is None else af_events
+        self.accept, self.pos, self.af = accept, pos, False
+        self.calls = []
+
+    async def get(self, path):
+        self.calls.append(path)
+        if path == "/equipment/camera/info":
+            return self.cams.pop(0) if len(self.cams) > 1 else self.cams[0]
+        if path == "/equipment/focuser/info":
+            return {"Position": self.pos[1] if self.af else self.pos[0]}
+        if path == "/event-history":
+            return list(self.hist)
+        if path == "/equipment/focuser/auto-focus":
+            if not self.accept:
+                return None
+            self.af = True
+            for i, ev in enumerate(self.af_events):
+                self.hist.append({"Event": ev, "Time": f"2026-10-12T22:4{i}:00-06:00"})
+            return "Autofocus started"
+        return None
+
+    async def read_tree(self):
+        return self.tree
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    async def sleep(self, s):
+        self.t += s
+
+
+def _direct(nina, **kw):
+    c = Clock()
+    return asyncio.run(npil.direct_af(nina.get, nina.read_tree, sleep=c.sleep,
+                                      clock=c, utcnow=lambda: T("04:40"), **kw))
+
+
+def test_direct_af_finished_and_new_position():
+    n = FakeNina()
+    r = _direct(n)
+    assert r["ok"] and not r["refused"]
+    assert r["detail"] == "AUTOFOCUS-FINISHED, focuser 5200 -> 5260"
+    assert r["position_before"] == 5200 and r["position_after"] == 5260
+    assert r["finished_t"] == "2026-10-13T04:42:00Z"
+    assert n.calls.count("/equipment/focuser/auto-focus") == 1
+    # the AF of 20:10 (before the request) never counts as this one
+    n2 = FakeNina(af_events=["AUTOFOCUS-STARTING"])
+    r2 = _direct(n2)
+    assert not r2["ok"] and not r2["refused"]
+    assert "no AUTOFOCUS-FINISHED" in r2["detail"]
+
+
+def test_direct_af_waits_for_the_sub_to_end():
+    busy = {"IsExposing": True, "CameraState": "Exposing",
+            "ExposureEndTime": "2026-10-13T04:41:00Z"}
+    idle = {"IsExposing": False, "CameraState": "Idle"}
+    n = FakeNina(cams=[busy, busy, {"IsExposing": False, "CameraState": "Download"},
+                       idle])
+    r = _direct(n)
+    assert r["ok"]
+    cam = [i for i, c in enumerate(n.calls) if c == "/equipment/camera/info"]
+    assert len(cam) == 4 and n.calls.index("/equipment/focuser/auto-focus") > cam[-1]
+    # a camera that never goes idle: refused, nothing sent
+    n2 = FakeNina(cams=[busy])
+    r2 = _direct(n2)
+    assert r2["refused"] and "never went idle" in r2["detail"]
+    assert "/equipment/focuser/auto-focus" not in n2.calls
+
+
+@pytest.mark.parametrize("tree,why", [
+    (_af_tree("Dusk flats", "Take Exposure"), "runs 'Dusk flats'"),
+    (_af_tree("Darks 300 s", "Take Exposure"), "runs 'Darks 300 s'"),
+    (_af_tree("TPoint mapping (60)", "Take Exposure"), "runs 'TPoint mapping (60)'"),
+    (_af_tree("Run Autofocus"), "runs 'Run Autofocus'"),
+    (_af_tree("Slew and center"), "runs 'Slew and center'"),
+    (_af_tree("Wait for time"), "not in an imaging block"),
+    ({"Name": "Sequence", "Status": "FINISHED", "Items": []}, "not running"),
+    (None, "unreadable"),
+])
+def test_direct_af_only_in_an_imaging_block(tree, why):
+    n = FakeNina(tree=tree)
+    if tree is None:
+        n.tree = None
+    r = _direct(n)
+    assert r["refused"] and why in r["detail"], r
+    assert "/equipment/focuser/auto-focus" not in n.calls
+
+
+def test_direct_af_target_named_dark_is_imaging():
+    n = FakeNina(tree=_af_tree("Smart Exposure", target="Dark Shark Nebula"))
+    assert _direct(n)["ok"]
+
+
+def test_direct_af_refused_failed_and_dead_focuser():
+    r = _direct(FakeNina(accept=False))
+    assert r["refused"] and r["detail"] == "ninaAPI refused the autofocus request"
+    r = _direct(FakeNina(af_events=[]))
+    assert r["refused"] and "did not start an autofocus" in r["detail"]
+    r = _direct(FakeNina(af_events=["AUTOFOCUS-STARTING", "AUTOFOCUS-POINT-ADDED",
+                                    "AUTOFOCUS-FAILED"]))
+    assert not r["ok"] and not r["refused"]
+    assert r["detail"] == "the autofocus ended with AUTOFOCUS-FAILED"
+    r = _direct(FakeNina(pos=(0, 0)))
+    assert not r["ok"] and "focuser reads 0" in r["detail"]
+    r = _direct(FakeNina(cams=[None]))
+    assert r["refused"] and "camera unreadable" in r["detail"]
+
+
+def test_pilot_focus_direct_af_instead_of_restart(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    for hm in ("04:07", "04:12", "04:17"):
+        _sub(cfg, hm, 0.45, hfr=14.0)
+
+    async def run():
+        _diag(cfg, "04:20", "focus", "run_af", confidence="medium", ecc=0.45,
+              hfr_px=14.0, other_rig_sharp=True)
+        await npil.tick(cfg, armer, io, now=T("04:21"))
+        await asyncio.sleep(0)
+        await npil.tick(cfg, armer, io, now=T("04:25"))
+    asyncio.run(run())
+    assert io.calls.count("nina1_autofocus") == 1 and armer.calls == []
+    a = npil.load_state(cfg, NIGHT)["actions"][0]
+    assert a["job"] == "direct_af" and a["status"] == "done"
+    assert a["effective_t"] == "2026-10-13T04:25:00Z"
+    assert "direct autofocus between subs" in io.pushes[0][1]
+    assert any("AUTOFOCUS-FINISHED, focuser 5200 -> 5260" in e["detail"]
+               for e in _pilot_events(cfg, "dispatched"))
+    _sub(cfg, "04:26", 0.45, hfr=9.5)
+    _sub(cfg, "04:31", 0.45, hfr=9.8)
+    _tick(cfg, armer, io, "04:37")
+    assert npil.load_state(cfg, NIGHT)["actions"][0]["result"] == "improved"
+
+
+def test_pilot_direct_af_refused_falls_back_to_restart(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    io.direct_af = (False, "ninaAPI refused the autofocus request")
+
+    async def run():
+        _diag(cfg, "04:20", "focus", "run_af", confidence="medium", hfr_px=14.0,
+              other_rig_sharp=True)
+        await npil.tick(cfg, armer, io, now=T("04:21"))
+        await asyncio.sleep(0)
+        await npil.tick(cfg, armer, io, now=T("04:22"))
+    asyncio.run(run())
+    assert io.calls.count("nina1_autofocus") == 1
+    assert armer.calls == [("restart", "after_exposure")]
+    a = npil.load_state(cfg, NIGHT)["actions"][0]
+    assert a["status"] == "pending" and a["fallback"].startswith("ninaAPI refused")
+    assert any("restart after the current sub instead" in e["detail"]
+               for e in _pilot_events(cfg, "retry"))
+    armer.last_restart = {"at": "2026-10-13T04:26:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:26")
+    assert npil.load_state(cfg, NIGHT)["actions"][0]["status"] == "done"
+
+
+def test_pilot_direct_af_advise_and_switch(tmp_path):
+    cfg = _cfg(tmp_path, night_pilot_mode="advise")
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    _diag(cfg, "04:20", "focus", "run_af", confidence="medium", hfr_px=14.0,
+          other_rig_sharp=True)
+    _tick(cfg, armer, io, "04:21")
+    assert io.calls.count("nina1_autofocus") == 0 and armer.calls == []
+    assert "(a direct ninaAPI autofocus between subs, a restart if NINA refuses it)" \
+        in io.pushes[-1][1]
+    assert PhotonScriptConfig(_env_file=None).night_pilot_af_direct is True
+    # the AF switch off: advise only, even with the direct switch on
+    cfg2 = _cfg(tmp_path / "b", night_pilot_af=False)
+    io2 = FakeIO(cfg2, phd2="Stopped")
+    _diag(cfg2, "04:20", "focus", "run_af", confidence="medium", hfr_px=14.0,
+          other_rig_sharp=True)
+    _tick(cfg2, armer, io2, "04:21")
+    assert "nina1_autofocus" not in io2.calls and "night_pilot_af is off" in io2.pushes[-1][1]

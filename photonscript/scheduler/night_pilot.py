@@ -42,8 +42,13 @@ night_pilot_verify_subs (2) subs of that rig:
                    human is asked; no more shortening tonight. A step that
                    helped can be followed by one more on a later diagnosis.
   focus            soft, round stars with the other rig sharp: run_af.
-                   RC16: Restart tonight from now after the current sub
-                   (every target start runs AF). Piggy-600: NINA #2 stopped
+                   RC16 (night_pilot_af_direct, on): a direct ninaAPI
+                   autofocus between two subs (direct_af: camera idle, an
+                   imaging block, never a flat / dark / bias / TPoint /
+                   calibration item; verified on AUTOFOCUS-FINISHED and
+                   the focuser position); refused or not finished, or the
+                   switch off: Restart tonight from now after the current
+                   sub (every target start runs AF). Piggy-600: NINA #2 stopped
                    after its sub and the companion re-dispatched (the PS-64
                    Resume path; its image pass starts with AF). Verified on
                    HFR; two AFs that do not help -> a human.
@@ -414,8 +419,13 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
             return out("annotate", why="soft on both rigs: seeing, not focus")
         if rig != "rc16" and not ctx.get("piggy"):
             return out("annotate", why="Piggy-600 not enabled")
+        how = ("a direct ninaAPI autofocus between subs, a restart if NINA "
+               "refuses it" if rig == "rc16" and af_direct_on(cfg) else
+               "a restart after the sub (the target start runs AF)"
+               if rig == "rc16" else "NINA #2 companion re-dispatch, AF first")
         return out("act", "run_af", what=f"asked for an autofocus on the "
-                   f"{_label(cfg, rig)}", why="soft round stars on this rig only")
+                   f"{_label(cfg, rig)}", why="soft round stars on this rig only",
+                   how=how)
     if fam == "pointing":
         n = _num(ev.get("plate_solve_errors")) or 0
         if rig == "rc16" and n >= lim["solve_failures"]:
@@ -487,6 +497,181 @@ def _hm(cfg, t: datetime | None) -> str:
         return _local_hm(cfg, t)
     except Exception:  # noqa: BLE001
         return t.strftime("%H:%MZ") if t else "?"
+
+
+# --------------------------------------------------------------------------
+# direct autofocus between subs (night_pilot_af_direct)
+# --------------------------------------------------------------------------
+
+AF_IDLE_MAX_S = 600.0     # wait at most this for the running sub to end
+AF_START_S = 90.0         # AUTOFOCUS-STARTING within this of the request
+AF_FINISH_S = 600.0       # AUTOFOCUS-FINISHED within this (an AF is ~2.5 min)
+AF_POLL_S = 5.0
+AF_CAMERA_POLL_S = 2.0
+AF_GRACE_S = 60.0         # download + save margin past the exposure end
+
+
+def af_direct_on(cfg) -> bool:
+    return bool(getattr(cfg, "night_pilot_af_direct", True))
+
+
+def _af_events_since(hist, n0: int, t0: datetime | None) -> list[dict]:
+    """The event-history rows after the request: by index (the history is
+    append-only since NINA started), by time when it got shorter (NINA
+    restarted)."""
+    from photonscript.scheduler.af_stall import parse_time
+    rows = [e for e in (hist if isinstance(hist, list) else []) if isinstance(e, dict)]
+    if len(rows) >= n0:
+        return rows[n0:]
+    out = []
+    for e in rows:
+        t = parse_time(e.get("Time"))
+        if t is not None and t0 is not None and t >= t0 - timedelta(seconds=5):
+            out.append(e)
+    return out
+
+
+def imaging_block(tree) -> tuple[bool, str]:
+    """(ok, why) for a direct AF: NINA #1's sequence runs, inside an
+    imaging block (a running exposure item: Smart Exposure, Take Exposure),
+    and nothing on the running path is a slew, center, AF, flat, dark,
+    bias, TPoint, tracking test or calibration (the running target's own
+    containers are skipped, so a "Dark Shark Nebula" is not a dark)."""
+    from photonscript.scheduler.off_target import NOT_IMAGING
+    from photonscript.scheduler.sideload import nina_running
+    from photonscript.scheduler.where_panel import sequence_position
+    if tree is None:
+        return False, "NINA #1 sequence unreadable"
+    names = nina_running(tree)
+    if not names:
+        return False, "NINA #1 sequence not running"
+    try:
+        tgt = str(sequence_position(tree).get("target") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        tgt = ""
+    exposing = False
+    for n in names:
+        low = str(n).strip().lower()
+        if tgt and (low == tgt or low.startswith(tgt)):
+            continue
+        for w in BUSY_WORDS + NOT_IMAGING:
+            if w in low:
+                return False, f"NINA #1 runs '{n}'"
+        if "exposure" in low:
+            exposing = True
+    if not exposing:
+        return False, "NINA #1 is not in an imaging block"
+    return True, "imaging block"
+
+
+async def direct_af(get, read_tree, *, sleep=asyncio.sleep, clock=None,
+                    utcnow=None) -> dict:
+    """One autofocus on NINA #1 between two subs, through ninaAPI (GET
+    /equipment/focuser/auto-focus), instead of a restart (stop, slew,
+    center, AF: ~6 min and a sub). get: async path -> ninaAPI Response
+    payload or None. read_tree: async () -> the sequence tree or None.
+
+    Only when the camera is idle between exposures (waits for the running
+    sub to end, at most AF_IDLE_MAX_S), the sequence is in an imaging block
+    and not in a flat / dark / bias / TPoint / tracking test / calibration
+    item (imaging_block). Verified: AUTOFOCUS-STARTING then
+    AUTOFOCUS-FINISHED in NINA's event history after the request, and a
+    focuser position read back. Returns {ok, refused (nothing was started:
+    the caller falls back to the restart path), detail, position_before,
+    position_after, finished_t}. Never raises."""
+    import time
+
+    from photonscript.scheduler.af_stall import FINISHED, POINT, START, parse_time
+    from photonscript.scheduler.night_pause import camera_busy, seconds_left
+    clock = clock or time.monotonic
+    utcnow = utcnow or datetime.utcnow
+    out = {"ok": False, "refused": True, "detail": "", "position_before": None,
+           "position_after": None, "finished_t": None}
+
+    def refuse(why):
+        out["detail"] = why
+        return out
+    try:
+        # 1. between exposures: wait for the running sub to end
+        t0 = clock()
+        cam = await get("/equipment/camera/info")
+        busy = camera_busy(cam)
+        if busy is None:
+            return refuse("NINA #1 camera unreadable")
+        if busy:
+            left = None
+            try:
+                from datetime import timezone
+                left = seconds_left(cam, utcnow().replace(tzinfo=timezone.utc))
+            except Exception:  # noqa: BLE001
+                left = None
+            limit = AF_IDLE_MAX_S if left is None else min(AF_IDLE_MAX_S,
+                                                           left + AF_GRACE_S)
+            while busy:
+                if clock() - t0 > limit:
+                    return refuse("the camera never went idle between subs")
+                await sleep(AF_CAMERA_POLL_S)
+                busy = camera_busy(await get("/equipment/camera/info"))
+                if busy is None:
+                    return refuse("NINA #1 camera unreadable")
+        # 2. in an imaging block, nothing calibrating
+        ok, why = imaging_block(await read_tree())
+        if not ok:
+            return refuse(why)
+        foc = await get("/equipment/focuser/info")
+        out["position_before"] = _num((foc or {}).get("Position")) \
+            if isinstance(foc, dict) else None
+        hist = await get("/event-history")
+        n0 = len(hist) if isinstance(hist, list) else 0
+        t_req = utcnow()
+        # 3. the request
+        if await get("/equipment/focuser/auto-focus") is None:
+            return refuse("ninaAPI refused the autofocus request")
+        # 4. NINA's event history: started, then finished
+        started = False
+        t1 = clock()
+        while True:
+            await sleep(AF_POLL_S)
+            new = _af_events_since(await get("/event-history"), n0, t_req)
+            names = [str(e.get("Event") or "").upper() for e in new]
+            if START in names:
+                started = True
+                out["refused"] = False
+                after = names[names.index(START) + 1:]
+                if FINISHED in after:
+                    fin = new[names.index(START) + 1 + after.index(FINISHED)]
+                    ft = parse_time(fin.get("Time"))
+                    out["finished_t"] = _iso(ft) if ft else _iso(utcnow())
+                    break
+                bad = [x for x in after if x.startswith("AUTOFOCUS-")
+                       and x not in (POINT, START, FINISHED)]
+                if bad:
+                    out["detail"] = f"the autofocus ended with {bad[-1]}"
+                    return out
+            waited = clock() - t1
+            if not started and waited > AF_START_S:
+                return refuse(f"NINA did not start an autofocus within "
+                              f"{AF_START_S:g} s")
+            if waited > AF_START_S + AF_FINISH_S:
+                out["detail"] = (f"no AUTOFOCUS-FINISHED within "
+                                 f"{(AF_START_S + AF_FINISH_S) / 60:g} min")
+                return out
+        # 5. the new focuser position
+        foc = await get("/equipment/focuser/info")
+        pos = _num((foc or {}).get("Position")) if isinstance(foc, dict) else None
+        out["position_after"] = pos
+        if not pos or pos <= 0:
+            out["detail"] = (f"AUTOFOCUS-FINISHED but the focuser reads "
+                             f"{pos if pos is not None else 'nothing'}")
+            return out
+        b = out["position_before"]
+        out["ok"] = True
+        out["detail"] = ("AUTOFOCUS-FINISHED, focuser "
+                         + (f"{b:g} -> {pos:g}" if b is not None else f"at {pos:g}"))
+        return out
+    except Exception as e:  # noqa: BLE001
+        out["detail"] = f"direct autofocus error: {e}"
+        return out
 
 
 # --------------------------------------------------------------------------
@@ -570,6 +755,28 @@ class PilotIO:
                 return True
             await asyncio.sleep(3.0)
         return False
+
+    async def nina1_autofocus(self, cfg) -> tuple[bool, str]:
+        """RC16 direct autofocus between subs (direct_af over ninaAPI GETs).
+        (ok, detail); not ok = the caller falls back to the restart."""
+        from photonscript.scheduler.nina_watchdog import rig_base
+        from photonscript.scheduler.night_pause import nina_get
+        from photonscript.scheduler.sideload import read_sequence_state
+        base = rig_base(cfg, "rc16")
+        if not base:
+            return False, "no NINA #1 URL"
+
+        async def get(path):
+            return await nina_get(base, path, timeout=30.0)
+
+        async def tree():
+            try:
+                t, _e = await asyncio.wait_for(read_sequence_state(base), 20)
+                return t
+            except Exception:  # noqa: BLE001
+                return None
+        res = await direct_af(get, tree)
+        return bool(res.get("ok")), str(res.get("detail") or "")
 
     async def piggy_af(self, cfg, armer) -> tuple[bool, str]:
         """Piggy-600 AF: stop NINA #2 after its sub (PS-64 night_pause),
@@ -1123,7 +1330,8 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
         a["status"] = "advised"
         if _note_once(st, f"advise|{rig}|{action}"):
             st.setdefault("actions", []).append(a)
-            dk = (dec.get("params") or {}).get("darks_text")
+            dk = (dec.get("params") or {}).get("darks_text") or \
+                (dec.get("params") or {}).get("how")
             msg = (f"Night pilot (advise): would have {dec['what']} because "
                    f"{a['because']}" + (f" ({dk})" if dk else "")
                    + f" ({why}; nothing was sent).")
@@ -1159,6 +1367,12 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
     if action == "unguided":
         _job(a, armer.fallback_unguided(f"night pilot: {a['because']}"))
         a.update(status="running", detail="re-dispatching the remainder unguided")
+        return
+    if action == "run_af" and a["rig"] == "rc16" and af_direct_on(cfg):
+        a["job"] = "direct_af"
+        _job(a, io.nina1_autofocus(cfg))
+        a.update(status="running", detail="direct autofocus between subs "
+                 "(ninaAPI); a restart after the sub if NINA refuses it")
         return
     if action == "run_af" and a["rig"] != "rc16":
         _job(a, io.piggy_af(cfg, armer))
@@ -1284,6 +1498,17 @@ async def _follow_up(cfg, armer, io, st, ctx, now) -> None:
                          detail=detail or a.get("detail"))
                 _event(cfg, st["night"], "dispatched", f"{a['what']}: "
                        f"{detail or 'done'}", now, rig=a["rig"], aid=a["id"])
+            elif a.get("job") == "direct_af" and not a.get("fallback"):
+                # the direct AF was refused or did not finish: the restart
+                # path (every target start runs AF), once
+                a["fallback"] = detail or "not done"
+                _event(cfg, st["night"], "retry", f"direct autofocus not done "
+                       f"({a['fallback']}); restart after the current sub "
+                       "instead", now, rig=a["rig"], aid=a["id"])
+                a["detail"] = f"direct autofocus not done ({a['fallback']})"
+                await _restart(cfg, armer, a, now)
+                if a["status"] == "failed":
+                    await _fail(cfg, io, st, a, now, a["detail"])
             else:
                 await _fail(cfg, io, st, a, now, detail or
                             f"{a['action']} failed ({getattr(armer, 'detail', '')})")

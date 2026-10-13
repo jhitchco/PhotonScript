@@ -150,6 +150,10 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_unguided_fallback: bool = True
     night_pilot_shorten_subs: bool = True
     night_pilot_af: bool = True
+    night_pilot_af_direct: bool = True  # RC16 AF: a direct ninaAPI autofocus
+                                 # between subs (camera idle, imaging block),
+                                 # restart path if refused; off = restart only.
+                                 # night_pilot_mode / night_pilot_af still govern
     night_pilot_skip_target: bool = True
     night_pilot_max_actions: int = 6
     night_pilot_rig_cooldown_min: float = 15.0
