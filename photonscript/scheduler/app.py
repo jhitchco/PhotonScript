@@ -585,6 +585,14 @@ async def _start_nina_watchdog():
 
 
 @app.on_event("startup")
+async def _start_night_pilot():
+    """Night pilot (2026-10-13): acts on the sub doctor's diagnoses while
+    the armer is RUNNING. Always started; idle when night_pilot_mode=off."""
+    from photonscript.scheduler.night_pilot import run_pilot
+    _spawn(run_pilot(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_dawn_mount_check():
     """PS-185: mount left unparked and tracking after astro dawn on a night
     the armer does not own. Always started; alert only, never parks."""
@@ -735,6 +743,20 @@ _CONFIG_FIELDS = [
     ("nina_offline_grace_min", "PS_NINA_OFFLINE_GRACE_MIN", "NINA offline watch: minutes a NINA API may not answer before the push", "Nanny / Alerts", "float", False, False),
     ("piggy_guard_mode", "PS_PIGGY_GUARD_MODE", "Piggy guard: alert (one push per night) | panel (run event + morning line, no push) | off, when NINA #2 takes lights while the RC16 mount is parked / not tracking / offline / unknown; never stops anything", "Nanny / Alerts", "str", False, False),
     ("piggy_guard_grace_min", "PS_PIGGY_GUARD_GRACE_MIN", "Piggy guard: minutes NINA #2 may take lights on a mount that does not track before the push", "Nanny / Alerts", "float", False, False),
+    ("night_pilot_mode", "PS_NIGHT_PILOT_MODE", "Night pilot: act (default: acts on the sub doctor's diagnoses while RUNNING, verifies on the next subs, pushes each step) | advise (pushes what it would do, sends nothing) | off. Never arms, parks, touches the roof or a PHD2 calibration", "Night pilot", "str", False, False),
+    ("night_pilot_stop_phd2", "PS_NIGHT_PILOT_STOP_PHD2", "Night pilot: stop PHD2 guiding (stop_capture) when it is active on an UNGUIDED night", "Night pilot", "bool", False, False),
+    ("night_pilot_unguided_fallback", "PS_NIGHT_PILOT_UNGUIDED_FALLBACK", "Night pilot: on a GUIDED night with a FAIL PHD2 calibration, re-dispatch the rest of tonight UNGUIDED (PS-156 fallback, once)", "Night pilot", "bool", False, False),
+    ("night_pilot_shorten_subs", "PS_NIGHT_PILOT_SHORTEN_SUBS", "Night pilot: RC16 trailing on an unguided night: cap the target's RC16 subs one step shorter for tonight and restart after the current sub (reverted at dawn)", "Night pilot", "bool", False, False),
+    ("night_pilot_af", "PS_NIGHT_PILOT_AF", "Night pilot: soft round stars on one rig while the other is sharp: AF (RC16: restart after the sub; Piggy-600: companion re-dispatch)", "Night pilot", "bool", False, False),
+    ("night_pilot_skip_target", "PS_NIGHT_PILOT_SKIP_TARGET", "Night pilot: repeated plate-solve failures: set the goal inactive for tonight and restart (once per night, reverted at dawn)", "Night pilot", "bool", False, False),
+    ("night_pilot_max_actions", "PS_NIGHT_PILOT_MAX_ACTIONS", "Night pilot: most actions per night", "Night pilot", "int", False, False),
+    ("night_pilot_rig_cooldown_min", "PS_NIGHT_PILOT_RIG_COOLDOWN_MIN", "Night pilot: at most one action per rig in this many minutes", "Night pilot", "float", False, False),
+    ("night_pilot_sub_steps", "PS_NIGHT_PILOT_SUB_STEPS", "Night pilot: RC16 sub length ladder for trailing, seconds, one step per action (e.g. 300,180,120)", "Night pilot", "str", False, False),
+    ("night_pilot_sub_floor_s", "PS_NIGHT_PILOT_SUB_FLOOR_S", "Night pilot: never shorten RC16 subs below this (s; a length the darks / bias can be scaled to)", "Night pilot", "float", False, False),
+    ("night_pilot_min_confidence", "PS_NIGHT_PILOT_MIN_CONFIDENCE", "Night pilot: act only on diagnoses at least this confident: high | medium | low", "Night pilot", "str", False, False),
+    ("night_pilot_verify_subs", "PS_NIGHT_PILOT_VERIFY_SUBS", "Night pilot: subs after an action that decide whether it helped", "Night pilot", "int", False, False),
+    ("night_pilot_verify_timeout_min", "PS_NIGHT_PILOT_VERIFY_TIMEOUT_MIN", "Night pilot: no subs this many minutes after an action = push for a human", "Night pilot", "float", False, False),
+    ("night_pilot_solve_failures", "PS_NIGHT_PILOT_SOLVE_FAILURES", "Night pilot: plate-solve failures that make a target unusable tonight", "Night pilot", "int", False, False),
     ("nina_watch_parked_after_dusk_min", "PS_NINA_WATCH_PARKED_AFTER_DUSK_MIN", "NINA watchdog (PS-154): page when the RC16 mount has not tracked yet this many min after astro dusk (armed RUNNING, roof safe)", "Nanny / Alerts", "float", False, False),
     ("flat_count", "PS_FLAT_COUNT", "Sky flats per filter", "Imaging", "int", False, False),
     ("library_dir", "PS_LIBRARY_DIR", "Accepted-lights library dir (point Syncthing here)", "NINA", "str", False, False),
@@ -3249,6 +3271,8 @@ from photonscript.scheduler.routers import safety as _safety_router  # noqa: E40
 app.include_router(_safety_router.router)   # PS-1
 from photonscript.scheduler.routers import nina_watch as _nina_watch_router  # noqa: E402
 app.include_router(_nina_watch_router.router)   # PS-150
+from photonscript.scheduler.routers import night_pilot as _night_pilot_router  # noqa: E402
+app.include_router(_night_pilot_router.router)   # night pilot (2026-10-13)
 from photonscript.scheduler.routers import autofile as _autofile_router  # noqa: E402
 app.include_router(_autofile_router.router)   # PS-157
 from photonscript.scheduler.routers import morning as _morning_router  # noqa: E402

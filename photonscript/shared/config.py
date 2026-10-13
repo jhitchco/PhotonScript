@@ -137,6 +137,28 @@ class PhotonScriptConfig(BaseSettings):
     # a morning report line. alert | panel (no push) | off. Observe only.
     piggy_guard_mode: str = "alert"
     piggy_guard_grace_min: float = 10.0
+    # Night pilot (2026-10-13, scheduler/night_pilot.py): turns the sub
+    # doctor's diagnoses into bounded adjustments while the armer is RUNNING
+    # (stop a stray PHD2, unguided remainder on a FAIL calibration, shorter
+    # RC16 subs for tonight, an AF, skip an unsolvable target), each verified
+    # on the next subs, logged, pushed and in the morning report. act
+    # (default, Jeremy's request) | advise (pushes what it would do, sends
+    # nothing) | off. Each action has its own switch (all on). Tonight-only
+    # goal changes are reverted at the dawn shutdown.
+    night_pilot_mode: str = "act"
+    night_pilot_stop_phd2: bool = True
+    night_pilot_unguided_fallback: bool = True
+    night_pilot_shorten_subs: bool = True
+    night_pilot_af: bool = True
+    night_pilot_skip_target: bool = True
+    night_pilot_max_actions: int = 6
+    night_pilot_rig_cooldown_min: float = 15.0
+    night_pilot_sub_steps: str = "300,180,120"
+    night_pilot_sub_floor_s: float = 120.0
+    night_pilot_min_confidence: str = "medium"   # high | medium | low
+    night_pilot_verify_subs: int = 2
+    night_pilot_verify_timeout_min: float = 60.0
+    night_pilot_solve_failures: int = 3
     nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0

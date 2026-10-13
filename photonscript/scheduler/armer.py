@@ -947,6 +947,13 @@ class Armer:
                          "failed": [s for s in steps if "FAILED" in s]}
         self.recipe = None   # PS-181: the night is over; the recipe was its
         self._persist()
+        try:   # night pilot: tonight-only goal changes (sub caps, skips) undone
+            from photonscript.scheduler.night_pilot import dawn_revert
+            np_txt = dawn_revert(self.config, (self.plan or {}).get("night_of"))
+            if np_txt:
+                steps.append(np_txt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("night pilot dawn revert failed: %s", e)
         # Verify + alert once NINA's warm has had time to finish (PS-77: the
         # 5 min check fired mid-warm on 2026-09-27, see _shutdown_verify_delay_s).
         asyncio.create_task(self._verify_shutdown(

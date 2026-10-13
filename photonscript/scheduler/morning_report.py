@@ -33,6 +33,9 @@ Built only from data other passes already keep (nothing is measured here):
   * sub doctor: "What went wrong and the fix: RC16: guider_conflict from
     04:27Z (fix: ...)" (sub_doctor.morning_line, the night replayed from
     its subs log; a healthy night has no line)
+  * Night pilot (night_pilot.morning_lines): "Night pilot: 04:31 stopped
+    PHD2 guiding -> worked (ecc 0.76 -> 0.52); ...", the tonight-only goal
+    changes restored at dawn, and "Night pilot learned: ..." suggestions
 
 The dashboard shows it as the "Morning report" card (GET
 /api/morning/report); the dawn "Night complete" push carries card_lines
@@ -190,7 +193,8 @@ def report_card(config, date: str | None = None, *, projects=None,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
-           "sub_doctor": None}
+           "sub_doctor": None,
+           "night_pilot": []}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -265,6 +269,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["sub_doctor"] = sd_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no sub doctor line: %s", e)
+    try:   # the night pilot's actions, restores and suggestions
+        from photonscript.scheduler.night_pilot import morning_lines as np_lines
+        out["night_pilot"] = np_lines(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no night pilot lines: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 
@@ -321,6 +330,7 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["piggy_guard"])
     if card.get("sub_doctor"):
         lines.append(card["sub_doctor"])
+    lines.extend(card.get("night_pilot") or [])
     if card.get("tracking"):
         lines.append(card["tracking"])
     if card.get("library"):
@@ -379,9 +389,10 @@ _RIG_LINE = re.compile(r"^[^:\n]{1,40}: \d+ kept / \d+ rejected")
 
 def card_line_priority(line: str) -> int:
     """PRI_RIG for a per-rig card line (_rig_line: "<rig>: N kept / M
-    rejected...") or the Piggy guard line, else PRI_DETAIL."""
-    if (_RIG_LINE.match(line or "") or str(line or "").startswith("Piggy guard:")
-            or str(line or "").startswith("What went wrong")):
+    rejected..."), the Piggy guard line, the sub doctor line or the night
+    pilot's action line, else PRI_DETAIL."""
+    if _RIG_LINE.match(line or "") or str(line or "").startswith(
+            ("Piggy guard:", "Night pilot:", "What went wrong")):
         return PRI_RIG
     return PRI_DETAIL
 

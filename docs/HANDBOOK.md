@@ -856,6 +856,64 @@ line, pairs for other agents (`GET /api/sub-doctor/pairs`). Past nights:
   30 s backoff) before it fails. 2026-10-13: the restart's load and start
   ran 1 s before NINA's SEQUENCE-FINISHED and the restart failed.
 
+### Night pilot: adjustments over the night (2026-10-13)
+
+Why: 2026-10-12 a stray PHD2 session (guiding on a FAIL calibration) on an
+UNGUIDED night trailed every RC16 sub for hours, 300 s trailed until a
+human switched to 180 s, and a restart race needed a manual retry.
+`scheduler/night_pilot.py` turns the sub doctor's diagnoses (run events
+kind `sub_doctor`) into bounded, logged, verified adjustments. Background
+loop every 60 s (`run_pilot`, app startup).
+
+| cause (sub doctor) | action | switch | max / night | cooldown | verified on |
+|---|---|---|---|---|---|
+| guider_conflict, UNGUIDED night, PHD2 active | stop PHD2 guiding (`stop_capture`) | `night_pilot_stop_phd2` | 2 | 30 min | ecc |
+| guider_conflict, GUIDED night, FAIL calibration | rest of tonight UNGUIDED (`fallback_unguided`, PS-156 caps) | `night_pilot_unguided_fallback` | 1 | - | ecc |
+| tracking, RC16 unguided, shared mount or measured drift | RC16 subs one step shorter for tonight (`night_pilot_sub_steps` 300,180,120, floor `night_pilot_sub_floor_s` 120) as goal exposure overrides + Restart tonight from now after the current sub | `night_pilot_shorten_subs` | 2 | 15 min | ecc |
+| focus, soft round stars, other rig sharp | AF: RC16 restart after the sub (target start runs AF); Piggy-600 NINA #2 stopped after its sub + companion re-dispatch | `night_pilot_af` | 2 | 30 min | HFR |
+| pointing, plate solves failing (>= `night_pilot_solve_failures` 3) | goal inactive for tonight + restart | `night_pilot_skip_target` | 1 | - | subs on another target |
+| clouds, seeing | nothing (run event only) | | | | |
+| focuser; guided trailing; reselect star | one push for a human, nothing sent | | | | |
+
+- `night_pilot_mode`: **act** (default, Jeremy's request) | advise (the
+  same decisions, one "Night pilot (advise): would have ..." push per rig
+  and action, no command) | off. A switch that is off makes that action
+  advise only. Diagnoses under `night_pilot_min_confidence` (medium) are
+  only noted.
+- Verification: the next `night_pilot_verify_subs` (2) subs of that rig
+  that started after the action took effect (a sub cap: only subs at the new
+  length) against the diagnosis' numbers: better = ecc down 0.05, HFR down
+  10%, or every sub passed QA. Not better: shorten goes one more step after
+  the cooldown, AF gets one more try; then one priority push for a human
+  and no more tries for that cause tonight (a PHD2 stop that did not help
+  pushes too, but a PHD2 that starts guiding again later is stopped again,
+  at most twice a night). No subs within
+  `night_pilot_verify_timeout_min` (60): a priority push.
+- Restart race: a restart the armer reports failed is retried once after
+  NINA #1 reads idle; the armer's re-dispatch also waits for NINA #1 to wind
+  down (cherry-picked ps-bugs-1013 fix).
+- Guardrails: acts only while the armer is RUNNING (never ARMED, PAUSED_*,
+  WATCHING, COMPLETE); never during a calibration capture job, an arm recipe
+  in progress, a NINA #1 TPoint / tracking test / PHD2 calibration / flat /
+  dark / bias / focus calibration item, or PHD2 calibrating; no re-dispatch
+  with under 45 min of dark; at most `night_pilot_max_actions` (6) per
+  night and one per rig per `night_pilot_rig_cooldown_min` (15); never
+  repeats a sub doctor remedy just done. Never arms, disarms, parks,
+  unparks, touches the roof / safety or a PHD2 calibration.
+- Every step is a run event (kind `night_pilot`: act, advise, held, human,
+  annotate, dispatched, retry, verify, failed, learned, revert) and each
+  action and its result one push: "Night pilot: <what> because
+  <evidence>; next check <HH:MM> local". State per night in
+  `<data_dir>/night_pilot/<night>.json`; `GET /api/night/pilot`; the
+  dashboard's Tonight's Run card has a "Night pilot" line (last action and
+  result); the morning report has its lines and "Night pilot learned: ..."
+  suggestions (never applied).
+- Tonight-only goal changes (sub caps, a skipped goal) are ledgered with
+  the original values and restored by the dawn shutdown (a step "night
+  pilot restored ..."), or by the next tick after a night that ended any
+  other way (disarm, error, service restart). A goal edited by hand since
+  the pilot changed it is left alone and said so.
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was
