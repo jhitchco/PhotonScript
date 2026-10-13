@@ -164,6 +164,10 @@
             <!-- PS-150: NINA watchdog chip (not running / API down / up but
                  silent), one line per rig, from /api/nina/watch. -->
             <div id="ninaWatchChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
+            <!-- Night pilot (2026-10-13): the last action and its result,
+                 from /api/night/pilot (scheduler/night_pilot.py). -->
+            <div id="nightPilotLine" hidden style="margin-bottom:.8rem;font-size:.85rem;
+                 padding:.35rem .6rem;border-radius:6px;border:1px solid #334155;"></div>
             <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
                  padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
                  background:rgba(125,211,252,.06);white-space:normal;"></div>
@@ -1054,9 +1058,28 @@
                 .map(([k, r]) => ((d.names || {})[k] || k) + ' OK').join(', ') + '</div>'
             : '');
     }
-    loadOutlook(); loadTimeline(); refreshArm(); refreshNinaWatch();
+    // Night pilot: one line, the last action and its result (red border
+    // when it failed or needs a human).
+    async function refreshNightPilot() {
+        const el = document.getElementById('nightPilotLine');
+        if (!el) return;
+        let d;
+        try { d = await (await fetch('/api/night/pilot')).json(); } catch (e) { return; }
+        if (!d || !d.line) { el.hidden = true; return; }
+        const last = d.last || {};
+        const bad = last.status === 'failed' || last.result === 'failed' ||
+            last.result === 'not_improved' || last.result === 'no_subs';
+        el.style.borderColor = bad ? 'rgba(239,68,68,.7)'
+            : (last.result === 'improved' ? 'rgba(74,222,128,.5)' : '#334155');
+        el.textContent = d.line;
+        el.title = (last.because ? 'Because: ' + last.because : '') +
+            (last.detail ? ' | ' + last.detail : '');
+        el.hidden = false;
+    }
+    loadOutlook(); loadTimeline(); refreshArm(); refreshNinaWatch(); refreshNightPilot();
     setInterval(refreshArm, 30000);
     setInterval(refreshNinaWatch, 30000);
+    setInterval(refreshNightPilot, 30000);
     </script>
 
     <script>
