@@ -599,6 +599,11 @@ SEASONAL_TARGETS: list[dict] = [
     {"name": 'NGC 2232', "catalog_id": 'NGC 2232', "ra": 6.46698, "dec": -4.84744, "type": 'open cluster', "mag": 3.9, "size": 9.9, "months": [1, 2, 11, 12], "hours": 6},
     {"name": 'NGC 3114', "catalog_id": 'NGC 3114', "ra": 10.04155, "dec": -60.13053, "type": 'open cluster', "mag": 4.2, "size": 12.3, "months": [1, 2, 3, 4], "hours": 6},
     {"name": 'IC 4628', "catalog_id": 'IC 4628', "ra": 16.94956, "dec": -40.45097, "type": 'nebula', "mag": None, "size": 89.1, "months": [4, 5, 6, 7], "hours": 20},
+    # 2026-10-13: RC16 targets the integrator could not place (catalog_coords
+    # None). J2000: NGC 6535 18h03m50.5s -00d17m52s (SEDS); NGC 2408 07h40m30s
+    # +71d40m (NGC/IC Project, Camelopardalis; a sparse cluster, size approximate)
+    {"name": 'NGC 6535', "catalog_id": 'NGC 6535', "ra": 18.06403, "dec": -0.29764, "type": 'globular cluster', "mag": 9.3, "size": 3.4, "months": [5, 6, 7, 8], "hours": 8},
+    {"name": 'NGC 2408', "catalog_id": 'NGC 2408', "ra": 7.675, "dec": 71.6667, "type": 'open cluster', "mag": None, "size": 15.0, "months": [12, 1, 2, 3], "hours": 6},
 ]
 
 

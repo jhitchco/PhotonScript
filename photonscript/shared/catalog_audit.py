@@ -41,6 +41,7 @@ NEAR_EQUATOR_SIGN: dict[str, int] = {
     "M 78": 1,        # +00 05
     "M 77": -1,       # -00 01
     "IC 1613": 1,     # +02 07
+    "NGC 6535": -1,   # -00 18
 }
 
 # Messier major-axis sizes in arcmin (SEDS), for the ones known reliably.

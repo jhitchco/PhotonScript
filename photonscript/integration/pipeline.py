@@ -52,7 +52,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from photonscript.integration import astrobin, calib, hdr, manifest, mono_color, pilock, pjsr, runner, scratch, star_qa
+from photonscript.integration import (astrobin, calib, hdr, manifest, mono_color, pilock, pjsr,
+                                      pointing_check, runner, scratch, star_qa)
 from photonscript.integration.frames import Frame
 from photonscript.integration.select import Selection, select_lights
 
@@ -84,6 +85,9 @@ class Options:
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
     lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
+    pointing_check: str = "warn"      # integrate_pointing_check: warn | refuse | off (pointing_check.py)
+    pointing_max_deg: float = 1.0     # integrate_pointing_max_deg: header RA / DEC this far from the catalog = off target
+    pointing_min_alt_deg: float = 20.0  # integrate_min_alt_deg: lights shot lower are flagged
     workers: int | None = None
     default_readout: str | None = None
     gradient: str = "auto"
@@ -154,6 +158,7 @@ def config_options(cfg, rig: str) -> dict:
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
         mono_color=bool(getattr(cfg, "integrate_mono_color", True)),
         lock_wait_min=pilock.wait_min(cfg),
+        **pointing_check.config_settings(cfg),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
         bortle=int(getattr(cfg, "observatory_bortle", 2)), tz=cfg.observatory_tz,
@@ -466,6 +471,28 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                                 f"({len(zero)}): focus unknown, nothing to stack")
     elif zero:
         echo(f"  WARNING: {len(zero)} light(s) with FOCPOS 0 kept (--keep-focuser-zero)")
+    # pointing sanity (pointing_check.py): header RA / DEC vs the catalog,
+    # altitude, a mount that was not tracking
+    t_ra, t_dec = catalog_coords(o.target)
+    try:
+        prep = pointing_check.check(sel.lights, t_ra, t_dec, mode=o.pointing_check,
+                                    max_deg=o.pointing_max_deg, min_alt_deg=o.pointing_min_alt_deg,
+                                    lat=(o.site or {}).get("lat"), lon=(o.site or {}).get("lon"))
+    except ValueError as e:
+        raise PipelineError(str(e)) from None
+    result["pointing"] = prep.summary()
+    for n in prep.notes:
+        echo("  pointing: " + n)
+    for line in prep.lines():
+        echo(("  " if o.pointing_check == "refuse" else "  WARNING: ") + "pointing: " + line)
+    for name, issues in list(prep.flagged.items())[:10]:
+        echo(f"    {name}: " + "; ".join(issues))
+    if o.pointing_check == "refuse" and prep.flagged:
+        gone = prep.files()
+        sel.lights = [f for f in sel.lights if f.name not in gone]
+        if not sel.lights:
+            raise PipelineError(f"every {o.rig} light for {o.target!r} failed the pointing check "
+                                f"({', '.join(prep.lines())}); integrate_pointing_check warn stacks them")
 
     rows, ref_i = [], None
     qa_by_file: dict[str, dict] = {}
@@ -638,6 +665,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                   "rejected": sum(1 for r in rows if r["action"] == "reject"),
                   "reasons": reasons.most_common(), "reference": reference,
                   "groups": star_qa.group_summary(rows) if rows else [],
+                  "pointing": result.get("pointing"),
                   "thresholds": star_qa.thresholds_dict(o.thresholds)}
     run_info = {"target": o.target, "rig": o.rig, "run_name": run_dir.name, "run_dir": str(run_dir),
                 "built": datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -816,6 +844,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                           f"no master_{k['stack']}.")
         if o.qa == "report":
             issues.append("Star QA ran in report mode: rejected subs were stacked anyway.")
+        issues += [f"Pointing: {x}." for x in prep.lines()]
         g0 = integrated[0] if integrated else lights[0]
         info = {
             "target": o.target, "rig_label": o.rig_label or o.rig, "run_name": run_dir.name,

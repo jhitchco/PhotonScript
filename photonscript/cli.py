@@ -3243,6 +3243,10 @@ def integrate_cmd(
     keep_focuser_zero: bool = typer.Option(False, "--keep-focuser-zero",
                                            help="Stack lights whose FOCPOS is 0 (focuser disconnected "
                                                 "or frozen; left out by default in every --qa mode)"),
+    pointing: str = typer.Option("", "--pointing",
+                                 help="Pointing sanity of the lights (header RA / DEC vs the catalog, "
+                                      "altitude, mount not tracking): warn | refuse | off "
+                                      "(default integrate_pointing_check, warn)"),
     hdr: Optional[bool] = typer.Option(None, "--hdr/--no-hdr",
                                        help="Mono: HDR combine a filter's exposure-length masters into "
                                             "master_<F>_hdr (default integrate_hdr_combine, on)"),
@@ -3293,6 +3297,8 @@ def integrate_cmd(
         kw["hdr_combine"] = hdr
     if mono_color is not None:
         kw["mono_color"] = mono_color
+    if pointing:
+        kw["pointing_check"] = pointing.strip().lower()
     opts = pl.Options(
         target=target, rig=rig, since=since, until=until,
         staging_root=root, out=Path(out) if out else None,

@@ -416,6 +416,15 @@ class PhotonScriptConfig(BaseSettings):
                                  # master_<F>_hdr (HDRComposition, else a fitted
                                  # replacement of the saturated pixels); the
                                  # finish and the blend prefer it. OSC: no effect
+    integrate_pointing_check: str = "warn"  # integrate (desktop .env): each
+                                 # light's header RA / DEC vs the target's
+                                 # catalog position, its altitude and a mount
+                                 # that was not tracking (pointing_check.py):
+                                 # warn = report and stack them; refuse = leave
+                                 # them out; off = no check
+    integrate_pointing_max_deg: float = 1.0  # off target: header RA / DEC
+                                 # more than this from the catalog position
+    integrate_min_alt_deg: float = 20.0  # low: lights shot below this altitude
     integrate_mono_color: bool = True  # mono (RC16) integrate: after the finish,
                                  # combine the per-filter masters into color
                                  # images: <target>_LRGB (RGB without L) from

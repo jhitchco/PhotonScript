@@ -29,6 +29,14 @@ def _i(v):
     return None if x is None else int(round(x))
 
 
+def _first(get, *keys):
+    for k in keys:
+        v = _f(get(k))
+        if v is not None:
+            return v
+    return None
+
+
 def _s(v) -> str:
     return "" if v is None else str(v).strip()
 
@@ -101,6 +109,8 @@ class Frame:
     site_elev: float | None = None
     ra_deg: float | None = None
     dec_deg: float | None = None
+    alt_deg: float | None = None   # CENTALT (mount altitude), else OBJCTALT
+    az_deg: float | None = None    # CENTAZ, else OBJCTAZ
     width: int | None = None
     height: int | None = None
     size: int = 0
@@ -178,6 +188,7 @@ def from_header(path, hdr, *, kind: str | None = None, tz: str = "America/Denver
         site_lat=_f(get("SITELAT")), site_lon=_f(get("SITELONG")),
         site_elev=_f(get("SITEELEV")),
         ra_deg=ra, dec_deg=dec,
+        alt_deg=_first(get, "CENTALT", "OBJCTALT"), az_deg=_first(get, "CENTAZ", "OBJCTAZ"),
         width=_i(get("NAXIS1")), height=_i(get("NAXIS2")),
         size=size,
     )

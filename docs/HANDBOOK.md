@@ -1255,6 +1255,16 @@ Color an existing mono run without restacking: `photonscript finish --mono-run
 <run folder> --color auto|lrgb|rgb|sho|hoo [--dry-run]` (NEW `Staging\Finish\`
 folder, ledger kind finish).
 
+Pointing sanity (2026-10-13: the "NGC 2408" lights were really M27): integrate
+checks each selected light's header RA / DEC against the target's catalog
+position (more than `integrate_pointing_max_deg`, 1 deg = off target), its
+altitude (CENTALT, else computed; below `integrate_min_alt_deg`, 20 deg) and
+a mount that was not tracking (alt pinned while RA ran at the sidereal
+rate). `integrate_pointing_check` (desktop `.env`, `--pointing`): warn
+(default: run log, ledger `qa.pointing`, AstroBin known issues; everything is
+stacked), refuse (those lights left out), off. Piggy-600 lights carry no RA /
+DEC: only counted.
+
 One PixInsight job at a time (2026-10-12 two scripts overlapped in the gap
 between one job's launches): a queue lock file
 `%LOCALAPPDATA%\PhotonScript\pixinsight.lock` (pid, command, start time;
