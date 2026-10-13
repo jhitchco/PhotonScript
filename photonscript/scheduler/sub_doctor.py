@@ -40,15 +40,21 @@ evidence {...numbers...}, fix (one sentence), action {id, text, auto,
 enabled}, secondary [other causes that also matched], t, file, n_window,
 n_bad}. Action ids: stop_phd2, recalibrate_phd2, reselect_guide_star,
 start_guiding, run_af, check_focuser, shorten_subs:<s>, check_tracking,
-check_pointing, wait_clouds, none.
+check_pointing, wait_clouds, none. auto: an action the night pilot can
+take; enabled: always False (kept for the event schema).
 
 record() keeps <data_dir>/sub_doctor/<night>.json (current diagnosis per rig,
-causes already pushed, remedies done), writes one run event per diagnosis
+causes already pushed), writes one run event per diagnosis
 (runs/<night>_events.jsonl, kind "sub_doctor", see EVENT_FIELDS) and a
 "none" event when a rig recovers, and decides the push (one per cause per
-rig per night, sub_doctor_mode alert) and the opt-in remedies
-(sub_doctor_stop_phd2_unguided, sub_doctor_request_af,
-sub_doctor_shorten_subs). Nothing is ever restarted or re-armed here.
+rig per night, sub_doctor_mode alert).
+
+One actor for remedies (2026-10-13): the doctor only diagnoses. The night
+pilot (scheduler/night_pilot.py) is the one actor that turns a
+suggested_action into a command (PHD2 stop, sub cap, AF, skip). The
+doctor's own opt-in remedies (sub_doctor_stop_phd2_unguided,
+sub_doctor_request_af, sub_doctor_shorten_subs) and its caps.json sub cap
+are retired: the config keys stay readable but have no effect.
 """
 from __future__ import annotations
 
@@ -72,7 +78,7 @@ HIGH, MEDIUM, LOW = "high", "medium", "low"
 ACTIVE_GUIDE = ("guiding", "settling", "lost_star", "calibrating")
 ALERT_TITLE = "PhotonScript sub doctor"
 EVENT_KIND = "sub_doctor"
-REMEDY_KIND = "sub_doctor_remedy"
+REMEDY_KIND = "sub_doctor_remedy"   # retired remedies: only in old event logs
 # the stable run-event schema the night pilot reads (kind "sub_doctor")
 EVENT_FIELDS = ("t", "rig", "src", "kind", "value", "cause", "confidence",
                 "headline", "evidence", "fix", "suggested_action", "secondary",
@@ -428,7 +434,6 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         rms_txt = (f", PHD2 RMS {phd2['rms_arcsec']:g}\"" if phd2["rms_arcsec"]
                    is not None else "")
         tiny = _fl(config, "sub_doctor_tiny_rms_arcsec", 0.5)
-        stop_ok = bool(getattr(config, "sub_doctor_stop_phd2_unguided", False))
         if armed == "unguided" and phd2["active"]:
             conf = HIGH if (phd2["state"] in ("guiding", "settling") or cal_fail) else MEDIUM
             add("guider_conflict", conf,
@@ -437,7 +442,7 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
                 "Stop PHD2 guiding (PHD2: Stop) so the mount tracks on TPoint + "
                 "ProTrack, or re-arm GUIDED after a good calibration near Dec 0 "
                 "and the meridian.",
-                _action("stop_phd2", "stop PHD2 guiding", auto=True, enabled=stop_ok),
+                _action("stop_phd2", "stop PHD2 guiding", auto=True),
                 g_ev)
         elif armed == "guided" and not phd2["active"] and trailing:
             add("guider_conflict", MEDIUM,
@@ -530,8 +535,7 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
                    + ("; Dec drift = polar alignment" if kind == "Dec drift" else "")
                    + ("; field rotation = polar alignment" if kind == "field rotation" else ""))
             act = _action(f"shorten_subs:{new_s:g}", f"cap subs at {new_s:g} s",
-                          auto=True,
-                          enabled=bool(getattr(config, "sub_doctor_shorten_subs", False)))
+                          auto=True)
         elif armed == "guided":
             fix = ("Guided subs trailing: check PHD2 (RMS, star, calibration) and the "
                    "pulse path (PS-167); if only one rig trails, check its flexure.")
@@ -598,8 +602,7 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
                 + (f" (AF {age} min ago" + (f" at {t_af:g} C, now {t_now:g} C" if dt is not None else "")
                    + ")" if age is not None else "")
                 + ".",
-                _action("run_af", "run autofocus", auto=can_af,
-                        enabled=bool(getattr(config, "sub_doctor_request_af", False))),
+                _action("run_af", "run autofocus", auto=can_af),
                 {"af_age_min": age, "af_temp_c": t_af, "temp_c": t_now,
                  "temp_change_c": dt, "other_rig_sharp": bool(pv.get(f"focus_{rig}"))})
 
@@ -782,17 +785,21 @@ def push_text(config, diag: dict) -> str:
     bits.append("Fix: " + diag["fix"])
     a = diag.get("action") or {}
     if a.get("auto"):
-        bits.append(f"Auto remedy {a['id']}: "
-                    + ("on" if a.get("enabled") else "off (System page)") + ".")
+        try:
+            from photonscript.scheduler.night_pilot import mode as pilot_mode
+            pm = pilot_mode(config)
+        except Exception:  # noqa: BLE001
+            pm = "?"
+        bits.append(f"Remedy {a['id']}: the night pilot's ({pm}).")
     return " ".join(bits)
 
 
 def record(config, night: str, rig: str, diag: dict | None,
            now: datetime | None = None) -> dict:
-    """Keep the state, write the run event, decide the push and remedy.
-    Returns {"event": rec or None, "push": text or None, "remedy": action
-    or None}. mode off: nothing. observe: state + events, no push, no
-    remedy."""
+    """Keep the state, write the run event, decide the push. Returns
+    {"event": rec or None, "push": text or None, "remedy": None} ("remedy"
+    stays for callers: the night pilot is the one actor now). mode off:
+    nothing. observe: state + events, no push."""
     from photonscript.shared import phd2_store as store
     from photonscript.shared.night_events import events_path
     now = now or datetime.utcnow()
@@ -829,94 +836,8 @@ def record(config, night: str, rig: str, diag: dict | None,
     if m == "alert" and diag["confidence"] != LOW and diag["cause"] not in r["pushed"]:
         r["pushed"].append(diag["cause"])
         out["push"] = push_text(config, diag)
-    a = diag.get("action") or {}
-    aid = str(a.get("id") or "").split(":")[0]
-    done = {str(x.get("id") or "").split(":")[0] for x in r.get("remedies") or []}
-    # remedies: opt-in, once per action per rig per night; stop_phd2 and
-    # shorten_subs only on a HIGH diagnosis, run_af on MEDIUM or better (the
-    # other rig sharp at the same time)
-    need = MEDIUM if aid == "run_af" else HIGH
-    rank = {LOW: 0, MEDIUM: 1, HIGH: 2}
-    if (m == "alert" and a.get("auto") and a.get("enabled") and aid not in done
-            and rank.get(diag["confidence"], 0) >= rank[need]):
-        out["remedy"] = a
     save_state(config, night, st)
     return out
-
-
-def note_remedy(config, night: str, rig: str, action: dict, ok: bool,
-                detail: str, now: datetime | None = None) -> None:
-    """Remember a remedy (once per action id per rig per night) and write
-    its run event (kind sub_doctor_remedy)."""
-    from photonscript.shared import phd2_store as store
-    from photonscript.shared.night_events import events_path
-    now = now or datetime.utcnow()
-    st = load_state(config, night)
-    r = st.setdefault("rigs", {}).setdefault(rig, {"pushed": [], "remedies": []})
-    rec = {"t": store.iso_z(now), "id": action.get("id"), "ok": bool(ok), "detail": detail}
-    r.setdefault("remedies", []).append(rec)
-    save_state(config, night, st)
-    try:
-        store.append_jsonl(events_path(config, night), {
-            "t": rec["t"], "rig": rig, "src": "photonscript", "kind": REMEDY_KIND,
-            "value": action.get("id"), "ok": bool(ok), "detail": detail})
-    except Exception as e:  # noqa: BLE001
-        logger.warning("sub doctor remedy event not written: %s", e)
-
-
-# --------------------------------------------------------------------------
-# shorten subs at the next dispatch (sub_doctor_shorten_subs)
-# --------------------------------------------------------------------------
-
-def caps_path(config) -> Path:
-    return Path(getattr(config, "data_dir", ".")) / "sub_doctor" / "caps.json"
-
-
-def set_cap(config, night: str, rig: str, seconds: float, why: str) -> dict:
-    from photonscript.shared import phd2_store as store
-    rec = {"night": night, "rig": rig, "exposure_s": float(seconds), "why": why,
-           "t": store.iso_z(datetime.utcnow())}
-    try:
-        store.write_json(caps_path(config), rec)
-    except OSError as e:
-        logger.warning("sub doctor cap not saved: %s", e)
-    return rec
-
-
-def cap_for(config, night: str | None, rig: str = "rc16") -> dict | None:
-    from photonscript.shared import phd2_store as store
-    c = store.read_json(caps_path(config)) or {}
-    if c.get("night") == night and c.get("rig") == rig and c.get("exposure_s"):
-        return c
-    return None
-
-
-def apply_caps(config, targets, night: str | None) -> list[str]:
-    """Armer dispatch hook: cap every unguided RC16 target's subs at
-    tonight's sub-doctor drift cap (set by the shorten_subs remedy). Only a
-    dispatch the armer makes anyway (unsafe resume, restart from now,
-    recalibration) picks it up: the doctor never re-dispatches."""
-    c = cap_for(config, night, "rc16")
-    if not c:
-        return []
-    from photonscript.scheduler import guide_blocks as gb
-    notes = []
-    s = float(c["exposure_s"])
-    for t in targets or []:
-        if (getattr(t, "start_guiding", False) or getattr(t, "tracking_test", False)
-                or getattr(t, "focus_calibration", False)):
-            continue
-        new = []
-        for e in t.exposures:
-            capped = gb._cap_plan(e, s)
-            if capped is not e:
-                notes.append(f"{t.name} {e.filter_type.value}: "
-                             f"{e.exposure_seconds:g} s -> {s:g} s (sub doctor)")
-            new.append(capped)
-        t.exposures = new
-    if notes:
-        logger.info("sub doctor caps: %s", "; ".join(notes))
-    return notes
 
 
 # --------------------------------------------------------------------------

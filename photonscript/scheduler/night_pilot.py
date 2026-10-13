@@ -26,17 +26,29 @@ night_pilot_verify_subs (2) subs of that rig:
                    with a good calibration, "start guiding": a human.
                    Verified on ecc.
   tracking         RC16, UNGUIDED, both rigs trailing (shared mount) or a
-                   measured drift: shorten_subs, one step of
+                   measured drift: shorten_subs, a step down
                    night_pilot_sub_steps (300 -> 180 -> 120) never below
-                   night_pilot_sub_floor_s, as tonight-only exposure
+                   night_pilot_sub_floor_s that prefers lengths with
+                   matched darks (the night dark quota or the library),
+                   then lengths whose darks scale from a bias at the same
+                   epoch (pick_step / dark_match; the push says which), as
+                   tonight-only exposure
                    overrides on the goal (ProjectStore.update), then
                    Restart tonight from now after the current sub (PS-143).
-                   Verified on ecc; not better -> the next step after the
-                   cooldown; nothing left -> a human ("shorter subs did not
-                   help: not a drift problem").
+                   Verified on ecc; a step that did not lower the ecc is
+                   undone (the previous length, or the goal default, and a
+                   restart after the current sub when the guards allow),
+                   "trailing is not drift-per-second" is recorded and a
+                   human is asked; no more shortening tonight. A step that
+                   helped can be followed by one more on a later diagnosis.
   focus            soft, round stars with the other rig sharp: run_af.
-                   RC16: Restart tonight from now after the current sub
-                   (every target start runs AF). Piggy-600: NINA #2 stopped
+                   RC16 (night_pilot_af_direct, on): a direct ninaAPI
+                   autofocus between two subs (direct_af: camera idle, an
+                   imaging block, never a flat / dark / bias / TPoint /
+                   calibration item; verified on AUTOFOCUS-FINISHED and
+                   the focuser position); refused or not finished, or the
+                   switch off: Restart tonight from now after the current
+                   sub (every target start runs AF). Piggy-600: NINA #2 stopped
                    after its sub and the companion re-dispatched (the PS-64
                    Resume path; its image pass starts with AF). Verified on
                    HFR; two AFs that do not help -> a human.
@@ -54,8 +66,9 @@ in progress, NINA #1 runs a TPoint / tracking test / PHD2 calibration /
 flat / dark / bias / focus calibration item, or PHD2 calibrates; never
 with under RESTART_DARK_MIN of dark left for a re-dispatch;
 night_pilot_max_actions (6) per night, one action per rig per
-night_pilot_rig_cooldown_min (15); never twice what the sub doctor's own
-opt-in remedy just did. It never arms, disarms, parks, unparks, touches the
+night_pilot_rig_cooldown_min (15). It is the one actor for remedies: the
+sub doctor's own opt-in remedies are retired (a sub_doctor_remedy event in
+an old log still holds the same action). It never arms, disarms, parks, unparks, touches the
 roof or safety, or changes a PHD2 calibration.
 
 Every decision is a run event (kind "night_pilot": act / advise / held /
@@ -187,6 +200,67 @@ def next_step(cfg, current_s) -> float | None:
     fl = sub_floor(cfg)
     lower = [s for s in sub_steps(cfg) if s < cur - 0.5 and s >= fl - 0.5]
     return max(lower) if lower else None
+
+
+def dark_match(cfg, rig: str, length_s: float) -> dict:
+    """Whether a sub length has darks: {"match": matched | scaled | none,
+    "text"}. matched: a length the night dark quota fills
+    (tracking_drift.dark_lengths, PS-160) or darks at it in the calibration
+    library (calibration.darks_have); scaled: no darks, but a usable bias at
+    the rig's epoch the darks can be scaled from
+    (calibration.newest_usable_bias); none: neither. Never raises."""
+    s = float(length_s)
+    try:
+        from photonscript.scheduler.tracking_drift import dark_lengths
+        if any(abs(s - d) < 0.5 for d in dark_lengths(cfg, rig)):
+            return {"match": "matched", "text": f"darks match: {s:g} s is in "
+                    "the night dark quota"}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("night pilot: dark lengths unavailable: %s", e)
+    try:
+        from photonscript.scheduler.calibration import darks_have
+        n = darks_have(cfg, rig, s)
+        if n:
+            return {"match": "matched", "text": f"darks match: {n} {s:g} s "
+                    "darks in the library"}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("night pilot: dark count unavailable: %s", e)
+    try:
+        from photonscript.scheduler.calibration import newest_usable_bias
+        b = newest_usable_bias(cfg, rig)
+        if b:
+            return {"match": "scaled", "text": f"no {s:g} s darks: scaled "
+                    f"from the {b} bias at this epoch"}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("night pilot: bias lookup unavailable: %s", e)
+    return {"match": "none", "text": f"no {s:g} s darks and no bias at this "
+            "epoch: darks owed"}
+
+
+def pick_step(cfg, current_s, status=None, rig: str = "rc16") -> tuple[float | None, dict | None]:
+    """The shorten step: of the ladder lengths below current_s and not
+    under the floor, the longest one with matched darks, else the longest
+    whose darks can be scaled from a bias, else the next step. (seconds,
+    dark_match info), (None, None) at the floor. status: test hook
+    (seconds -> dark_match dict)."""
+    try:
+        cur = float(current_s)
+    except (TypeError, ValueError):
+        return None, None
+    fl = sub_floor(cfg)
+    cands = [s for s in sub_steps(cfg) if s < cur - 0.5 and s >= fl - 0.5]
+    if not cands:
+        return None, None
+    status = status or (lambda x: dark_match(cfg, rig, x))
+    info = {}
+    for want in ("matched", "scaled"):
+        for s in cands:          # longest first
+            if s not in info:
+                info[s] = status(s) or {"match": "none", "text": ""}
+            if info[s].get("match") == want:
+                return s, info[s]
+    s = cands[0]
+    return s, info.get(s) or status(s)
 
 
 def limits(cfg) -> dict:
@@ -328,7 +402,7 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
             return out("annotate", why="trailing without a shared-mount or "
                                        "drift measurement")
         cur = _num(ctx.get("exp_s")) or _num(ev.get("exp_s"))
-        nxt = next_step(cfg, cur)
+        nxt, dk = pick_step(cfg, cur, ctx.get("dark_status"))
         if nxt is None:
             return out("human", what="look at the RC16 tracking",
                        why=f"subs already at {cur or '?'} s, the floor is "
@@ -338,14 +412,20 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
                    why="RC16 trailing" + (" on both rigs (shared mount)"
                                           if ev.get("shared_mount") else
                                           " with a measured drift"),
-                   from_s=cur, to_s=nxt)
+                   from_s=cur, to_s=nxt, darks=(dk or {}).get("match"),
+                   darks_text=(dk or {}).get("text"))
     if fam == "focus":
         if ev.get("other_rig_sharp") is False:
             return out("annotate", why="soft on both rigs: seeing, not focus")
         if rig != "rc16" and not ctx.get("piggy"):
             return out("annotate", why="Piggy-600 not enabled")
+        how = ("a direct ninaAPI autofocus between subs, a restart if NINA "
+               "refuses it" if rig == "rc16" and af_direct_on(cfg) else
+               "a restart after the sub (the target start runs AF)"
+               if rig == "rc16" else "NINA #2 companion re-dispatch, AF first")
         return out("act", "run_af", what=f"asked for an autofocus on the "
-                   f"{_label(cfg, rig)}", why="soft round stars on this rig only")
+                   f"{_label(cfg, rig)}", why="soft round stars on this rig only",
+                   how=how)
     if fam == "pointing":
         n = _num(ev.get("plate_solve_errors")) or 0
         if rig == "rc16" and n >= lim["solve_failures"]:
@@ -420,6 +500,181 @@ def _hm(cfg, t: datetime | None) -> str:
 
 
 # --------------------------------------------------------------------------
+# direct autofocus between subs (night_pilot_af_direct)
+# --------------------------------------------------------------------------
+
+AF_IDLE_MAX_S = 600.0     # wait at most this for the running sub to end
+AF_START_S = 90.0         # AUTOFOCUS-STARTING within this of the request
+AF_FINISH_S = 600.0       # AUTOFOCUS-FINISHED within this (an AF is ~2.5 min)
+AF_POLL_S = 5.0
+AF_CAMERA_POLL_S = 2.0
+AF_GRACE_S = 60.0         # download + save margin past the exposure end
+
+
+def af_direct_on(cfg) -> bool:
+    return bool(getattr(cfg, "night_pilot_af_direct", True))
+
+
+def _af_events_since(hist, n0: int, t0: datetime | None) -> list[dict]:
+    """The event-history rows after the request: by index (the history is
+    append-only since NINA started), by time when it got shorter (NINA
+    restarted)."""
+    from photonscript.scheduler.af_stall import parse_time
+    rows = [e for e in (hist if isinstance(hist, list) else []) if isinstance(e, dict)]
+    if len(rows) >= n0:
+        return rows[n0:]
+    out = []
+    for e in rows:
+        t = parse_time(e.get("Time"))
+        if t is not None and t0 is not None and t >= t0 - timedelta(seconds=5):
+            out.append(e)
+    return out
+
+
+def imaging_block(tree) -> tuple[bool, str]:
+    """(ok, why) for a direct AF: NINA #1's sequence runs, inside an
+    imaging block (a running exposure item: Smart Exposure, Take Exposure),
+    and nothing on the running path is a slew, center, AF, flat, dark,
+    bias, TPoint, tracking test or calibration (the running target's own
+    containers are skipped, so a "Dark Shark Nebula" is not a dark)."""
+    from photonscript.scheduler.off_target import NOT_IMAGING
+    from photonscript.scheduler.sideload import nina_running
+    from photonscript.scheduler.where_panel import sequence_position
+    if tree is None:
+        return False, "NINA #1 sequence unreadable"
+    names = nina_running(tree)
+    if not names:
+        return False, "NINA #1 sequence not running"
+    try:
+        tgt = str(sequence_position(tree).get("target") or "").strip().lower()
+    except Exception:  # noqa: BLE001
+        tgt = ""
+    exposing = False
+    for n in names:
+        low = str(n).strip().lower()
+        if tgt and (low == tgt or low.startswith(tgt)):
+            continue
+        for w in BUSY_WORDS + NOT_IMAGING:
+            if w in low:
+                return False, f"NINA #1 runs '{n}'"
+        if "exposure" in low:
+            exposing = True
+    if not exposing:
+        return False, "NINA #1 is not in an imaging block"
+    return True, "imaging block"
+
+
+async def direct_af(get, read_tree, *, sleep=asyncio.sleep, clock=None,
+                    utcnow=None) -> dict:
+    """One autofocus on NINA #1 between two subs, through ninaAPI (GET
+    /equipment/focuser/auto-focus), instead of a restart (stop, slew,
+    center, AF: ~6 min and a sub). get: async path -> ninaAPI Response
+    payload or None. read_tree: async () -> the sequence tree or None.
+
+    Only when the camera is idle between exposures (waits for the running
+    sub to end, at most AF_IDLE_MAX_S), the sequence is in an imaging block
+    and not in a flat / dark / bias / TPoint / tracking test / calibration
+    item (imaging_block). Verified: AUTOFOCUS-STARTING then
+    AUTOFOCUS-FINISHED in NINA's event history after the request, and a
+    focuser position read back. Returns {ok, refused (nothing was started:
+    the caller falls back to the restart path), detail, position_before,
+    position_after, finished_t}. Never raises."""
+    import time
+
+    from photonscript.scheduler.af_stall import FINISHED, POINT, START, parse_time
+    from photonscript.scheduler.night_pause import camera_busy, seconds_left
+    clock = clock or time.monotonic
+    utcnow = utcnow or datetime.utcnow
+    out = {"ok": False, "refused": True, "detail": "", "position_before": None,
+           "position_after": None, "finished_t": None}
+
+    def refuse(why):
+        out["detail"] = why
+        return out
+    try:
+        # 1. between exposures: wait for the running sub to end
+        t0 = clock()
+        cam = await get("/equipment/camera/info")
+        busy = camera_busy(cam)
+        if busy is None:
+            return refuse("NINA #1 camera unreadable")
+        if busy:
+            left = None
+            try:
+                from datetime import timezone
+                left = seconds_left(cam, utcnow().replace(tzinfo=timezone.utc))
+            except Exception:  # noqa: BLE001
+                left = None
+            limit = AF_IDLE_MAX_S if left is None else min(AF_IDLE_MAX_S,
+                                                           left + AF_GRACE_S)
+            while busy:
+                if clock() - t0 > limit:
+                    return refuse("the camera never went idle between subs")
+                await sleep(AF_CAMERA_POLL_S)
+                busy = camera_busy(await get("/equipment/camera/info"))
+                if busy is None:
+                    return refuse("NINA #1 camera unreadable")
+        # 2. in an imaging block, nothing calibrating
+        ok, why = imaging_block(await read_tree())
+        if not ok:
+            return refuse(why)
+        foc = await get("/equipment/focuser/info")
+        out["position_before"] = _num((foc or {}).get("Position")) \
+            if isinstance(foc, dict) else None
+        hist = await get("/event-history")
+        n0 = len(hist) if isinstance(hist, list) else 0
+        t_req = utcnow()
+        # 3. the request
+        if await get("/equipment/focuser/auto-focus") is None:
+            return refuse("ninaAPI refused the autofocus request")
+        # 4. NINA's event history: started, then finished
+        started = False
+        t1 = clock()
+        while True:
+            await sleep(AF_POLL_S)
+            new = _af_events_since(await get("/event-history"), n0, t_req)
+            names = [str(e.get("Event") or "").upper() for e in new]
+            if START in names:
+                started = True
+                out["refused"] = False
+                after = names[names.index(START) + 1:]
+                if FINISHED in after:
+                    fin = new[names.index(START) + 1 + after.index(FINISHED)]
+                    ft = parse_time(fin.get("Time"))
+                    out["finished_t"] = _iso(ft) if ft else _iso(utcnow())
+                    break
+                bad = [x for x in after if x.startswith("AUTOFOCUS-")
+                       and x not in (POINT, START, FINISHED)]
+                if bad:
+                    out["detail"] = f"the autofocus ended with {bad[-1]}"
+                    return out
+            waited = clock() - t1
+            if not started and waited > AF_START_S:
+                return refuse(f"NINA did not start an autofocus within "
+                              f"{AF_START_S:g} s")
+            if waited > AF_START_S + AF_FINISH_S:
+                out["detail"] = (f"no AUTOFOCUS-FINISHED within "
+                                 f"{(AF_START_S + AF_FINISH_S) / 60:g} min")
+                return out
+        # 5. the new focuser position
+        foc = await get("/equipment/focuser/info")
+        pos = _num((foc or {}).get("Position")) if isinstance(foc, dict) else None
+        out["position_after"] = pos
+        if not pos or pos <= 0:
+            out["detail"] = (f"AUTOFOCUS-FINISHED but the focuser reads "
+                             f"{pos if pos is not None else 'nothing'}")
+            return out
+        b = out["position_before"]
+        out["ok"] = True
+        out["detail"] = ("AUTOFOCUS-FINISHED, focuser "
+                         + (f"{b:g} -> {pos:g}" if b is not None else f"at {pos:g}"))
+        return out
+    except Exception as e:  # noqa: BLE001
+        out["detail"] = f"direct autofocus error: {e}"
+        return out
+
+
+# --------------------------------------------------------------------------
 # I/O (every command and read the pilot makes; tests replace it)
 # --------------------------------------------------------------------------
 
@@ -473,8 +728,14 @@ class PilotIO:
                     if str(st).lower() == "stopped":
                         break
                 return st
+        from photonscript.telescope_agent import phd2_ops
         try:
-            st = await asyncio.wait_for(asyncio.to_thread(_stop), 60)
+            # one PhotonScript actor commands PHD2 at a time (PS-91): the
+            # retired sub doctor remedy held this lock, so the pilot does too
+            async with phd2_ops.hold("night_pilot", wait_s=10):
+                st = await asyncio.wait_for(asyncio.to_thread(_stop), 60)
+        except phd2_ops.PHD2Busy as e:
+            return False, f"PHD2 held by {e.owner}: not stopped"
         except Exception as e:  # noqa: BLE001
             return False, f"PHD2 stop_capture failed: {e}"
         ok = str(st).lower() == "stopped"
@@ -494,6 +755,28 @@ class PilotIO:
                 return True
             await asyncio.sleep(3.0)
         return False
+
+    async def nina1_autofocus(self, cfg) -> tuple[bool, str]:
+        """RC16 direct autofocus between subs (direct_af over ninaAPI GETs).
+        (ok, detail); not ok = the caller falls back to the restart."""
+        from photonscript.scheduler.nina_watchdog import rig_base
+        from photonscript.scheduler.night_pause import nina_get
+        from photonscript.scheduler.sideload import read_sequence_state
+        base = rig_base(cfg, "rc16")
+        if not base:
+            return False, "no NINA #1 URL"
+
+        async def get(path):
+            return await nina_get(base, path, timeout=30.0)
+
+        async def tree():
+            try:
+                t, _e = await asyncio.wait_for(read_sequence_state(base), 20)
+                return t
+            except Exception:  # noqa: BLE001
+                return None
+        res = await direct_af(get, tree)
+        return bool(res.get("ok")), str(res.get("detail") or "")
 
     async def piggy_af(self, cfg, armer) -> tuple[bool, str]:
         """Piggy-600 AF: stop NINA #2 after its sub (PS-64 night_pause),
@@ -594,9 +877,10 @@ def _calibration_busy() -> str | None:
     return None
 
 
-def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
-          now: datetime) -> str | None:
-    """Why this action must not run now, else None."""
+def live_guard(cfg, armer, ctx: dict) -> str | None:
+    """The part of guard() that does not depend on the action: armer state,
+    calibration capture, arm recipe, NINA #1's running items, PHD2
+    calibrating. Why not now, else None."""
     from photonscript.scheduler.armer import WATCH_STATE
     state = str(getattr(armer, "state", "") or "")
     if state == WATCH_STATE:
@@ -619,7 +903,24 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
             return f"NINA #1 runs '{n}'"
     if str(ctx.get("phd2") or "").lower() == "calibrating":
         return "PHD2 is calibrating"
+    return None
+
+
+def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
+          now: datetime) -> str | None:
+    """Why this action must not run now, else None."""
+    why = live_guard(cfg, armer, ctx)
+    if why:
+        return why
     action, rig = dec["action"], d["rig"]
+    if action == "stop_phd2":
+        try:
+            from photonscript.telescope_agent import phd2_ops
+            if phd2_ops.busy():
+                return (f"another PhotonScript actor holds PHD2 "
+                        f"({phd2_ops.owner()})")
+        except Exception:  # noqa: BLE001
+            pass
     pol = POLICY[action]
     lim = limits(cfg)
     if pol["restart"] or action == "unguided":
@@ -800,6 +1101,31 @@ def _norm_ov(v) -> dict:
     return {str(k): float(x) for k, x in (v or {}).items() if x}
 
 
+def undo_sub_cap(st: dict, store, a: dict) -> tuple[bool, str]:
+    """Undo one shorten step that did not help: the goal's sub lengths go
+    back to what they were before it (the previous step's cap, or the goal
+    defaults). A goal edited by hand since is left alone. (ok, detail)."""
+    from photonscript.scheduler.integrations import resolve_project
+    p = a.get("params") or {}
+    target = p.get("target")
+    proj = resolve_project(target, store.projects.values()) if target else None
+    if proj is None:
+        return False, f"no goal for target {target!r}"
+    e = (st.get("ledger") or {}).get(proj.id)
+    if e is None or e.get("applied_overrides") is None:
+        return False, f"{proj.target.name}: no sub cap of tonight to undo"
+    if _norm_ov(proj.exposure_overrides) != _norm_ov(e["applied_overrides"]):
+        return False, (f"{proj.target.name}: sub lengths changed by hand "
+                       "since: left as they are")
+    prev = dict(p.get("prev_overrides") or {})
+    store.update(proj.id, exposure_overrides=prev)
+    e["applied_overrides"] = dict(prev)
+    e["changes"].append({"what": "sub cap undone", "to_s": p.get("from_s")})
+    back = (", ".join(f"{k} {float(v):g} s" for k, v in prev.items()) if prev
+            else "the goal defaults")
+    return True, f"{proj.target.name}: sub lengths back to {back}"
+
+
 def revert(cfg, st: dict, store, now: datetime | None = None,
            why: str = "dawn") -> list[str]:
     """Undo the night's goal changes (sub length overrides, skipped goals).
@@ -948,7 +1274,7 @@ async def tick(cfg, armer, io: PilotIO | None = None, now: datetime | None = Non
             diags[d["rig"]] = d
     ctx = await gather_ctx(cfg, armer, io, night, events, live=bool(diags))
     await _follow_up(cfg, armer, io, st, ctx, now)
-    await _verify(cfg, io, st, ctx, now)
+    await _verify(cfg, armer, io, st, ctx, now)
     # night ended without the dawn shutdown (disarmed, error): revert now
     from photonscript.scheduler.armer import LIVE_STATES
     if str(getattr(armer, "state", "")) not in LIVE_STATES and \
@@ -1004,8 +1330,11 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
         a["status"] = "advised"
         if _note_once(st, f"advise|{rig}|{action}"):
             st.setdefault("actions", []).append(a)
+            dk = (dec.get("params") or {}).get("darks_text") or \
+                (dec.get("params") or {}).get("how")
             msg = (f"Night pilot (advise): would have {dec['what']} because "
-                   f"{a['because']} ({why}; nothing was sent).")
+                   f"{a['because']}" + (f" ({dk})" if dk else "")
+                   + f" ({why}; nothing was sent).")
             _event(cfg, night, "advise", msg, now, rig=rig, action=action,
                    cause=d["cause"], aid=a["id"])
             await io.notify(cfg, msg, priority=0)
@@ -1039,6 +1368,12 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
         _job(a, armer.fallback_unguided(f"night pilot: {a['because']}"))
         a.update(status="running", detail="re-dispatching the remainder unguided")
         return
+    if action == "run_af" and a["rig"] == "rc16" and af_direct_on(cfg):
+        a["job"] = "direct_af"
+        _job(a, io.nina1_autofocus(cfg))
+        a.update(status="running", detail="direct autofocus between subs "
+                 "(ninaAPI); a restart after the sub if NINA refuses it")
+        return
     if action == "run_af" and a["rig"] != "rc16":
         _job(a, io.piggy_af(cfg, armer))
         a.update(status="running", detail="NINA #2 stops after its sub, then "
@@ -1047,12 +1382,16 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
     target = _goal_target(io.store(), (a["params"] or {}).get("target"),
                           ctx.get("target"), ctx.get("last_target"))
     if action == "shorten_subs":
+        prev = _goal_overrides(io.store(), target)
         ok, detail = apply_sub_cap(st, io.store(), target, a["params"]["to_s"])
         if not ok:
             a.update(status="failed", detail=detail)
             return
         a["params"]["target"] = target
+        a["params"]["prev_overrides"] = prev    # what an undo goes back to
         a["detail"] = detail + " for tonight"
+        if a["params"].get("darks_text"):
+            a["detail"] += "; " + a["params"]["darks_text"]
     elif action == "skip_target":
         ok, detail = apply_skip(st, io.store(), target)
         if not ok:
@@ -1061,6 +1400,16 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
         a["params"]["target"] = target
         a["detail"] = detail
     await _restart(cfg, armer, a, now)
+
+
+def _goal_overrides(store, target) -> dict | None:
+    """The goal's exposure overrides now (before a sub cap), None for none."""
+    from photonscript.scheduler.integrations import resolve_project
+    try:
+        proj = resolve_project(target, store.projects.values()) if target else None
+    except Exception:  # noqa: BLE001
+        proj = None
+    return (dict(proj.exposure_overrides or {}) or None) if proj is not None else None
 
 
 def _goal_target(store, *names) -> str | None:
@@ -1149,6 +1498,17 @@ async def _follow_up(cfg, armer, io, st, ctx, now) -> None:
                          detail=detail or a.get("detail"))
                 _event(cfg, st["night"], "dispatched", f"{a['what']}: "
                        f"{detail or 'done'}", now, rig=a["rig"], aid=a["id"])
+            elif a.get("job") == "direct_af" and not a.get("fallback"):
+                # the direct AF was refused or did not finish: the restart
+                # path (every target start runs AF), once
+                a["fallback"] = detail or "not done"
+                _event(cfg, st["night"], "retry", f"direct autofocus not done "
+                       f"({a['fallback']}); restart after the current sub "
+                       "instead", now, rig=a["rig"], aid=a["id"])
+                a["detail"] = f"direct autofocus not done ({a['fallback']})"
+                await _restart(cfg, armer, a, now)
+                if a["status"] == "failed":
+                    await _fail(cfg, io, st, a, now, a["detail"])
             else:
                 await _fail(cfg, io, st, a, now, detail or
                             f"{a['action']} failed ({getattr(armer, 'detail', '')})")
@@ -1183,7 +1543,7 @@ async def _follow_up(cfg, armer, io, st, ctx, now) -> None:
                         f"within {RESTART_FOLLOW_MIN:g} min")
 
 
-async def _verify(cfg, io, st, ctx, now) -> None:
+async def _verify(cfg, armer, io, st, ctx, now) -> None:
     lim = limits(cfg)
     for a in st.get("actions") or []:
         if a.get("kind") != "act" or a.get("status") != "done" or a.get("result"):
@@ -1227,7 +1587,10 @@ async def _verify(cfg, io, st, ctx, now) -> None:
             _learn(cfg, st, a, before, med, now)
             await io.notify(cfg, msg, priority=0)
             continue
-        esc, human = _escalate(cfg, st, a, now)
+        undo = None
+        if a["action"] == "shorten_subs":
+            undo = await _undo_shorten(cfg, armer, io, st, a, now)
+        esc, human = _escalate(cfg, st, a, now, undo)
         msg = f"Night pilot: '{a['what']}' did NOT help: {nums}. {esc}"
         _event(cfg, night, "verify", msg, now, rig=rig, aid=a["id"],
                result="not_improved", before=before, after=med, human=human)
@@ -1236,21 +1599,58 @@ async def _verify(cfg, io, st, ctx, now) -> None:
         await io.notify(cfg, msg, priority=1 if human else 0)
 
 
-def _escalate(cfg, st, a, now) -> tuple[str, bool]:
+async def _undo_shorten(cfg, armer, io, st, a, now) -> str:
+    """A shorten step that did not lower the ecc only cost signal per sub
+    (2026-10-12: 300, 180 and 120 s all trailed alike and the night stayed
+    at 120 s for nothing). Put the lengths back (undo_sub_cap), then
+    restart after the current sub so they take effect when the live guards
+    and the dark left allow; otherwise they apply at the next dispatch.
+    Returns the text for the push."""
+    ok, detail = undo_sub_cap(st, io.store(), a)
+    rec = {"t": _iso(now), "ok": ok, "detail": detail, "restart": None}
+    a["undo"] = rec
+    if not ok:
+        _event(cfg, st["night"], "revert", f"undo of '{a['what']}' not done: "
+               f"{detail}", now, rig=a["rig"], aid=a["id"])
+        return f"sub lengths NOT restored ({detail})"
+    try:
+        running, target = await io.nina1_running(cfg)
+    except Exception:  # noqa: BLE001
+        running, target = None, None
+    why = live_guard(cfg, armer, {"running": running, "target": target})
+    left = _dark_left_min(armer, now)
+    if why is None and left is not None and left < RESTART_DARK_MIN:
+        why = f"only {max(0, int(left))} min of dark left"
+    if why is None:
+        try:
+            res = await armer.restart(when="after_exposure", now=now)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "detail": str(e)}
+        rec["restart"] = {"ok": bool(res.get("ok")), "detail": res.get("detail")}
+        how = ("restart after the current sub" if res.get("ok") else
+               f"restart refused ({res.get('detail')}): from the next dispatch")
+    else:
+        rec["restart"] = {"ok": False, "detail": why}
+        how = f"from the next dispatch; no restart now: {why}"
+    txt = f"{detail} ({how})"
+    _event(cfg, st["night"], "revert", f"undid '{a['what']}': {txt}", now,
+           rig=a["rig"], aid=a["id"], why="did not help")
+    return txt
+
+
+def _escalate(cfg, st, a, now, undo: str | None = None) -> tuple[str, bool]:
     """What happens after an action that did not help: (text, human)."""
     key = f"{a['rig']}|{a['family']}"
     acts = [x for x in st.get("actions") or [] if x.get("kind") == "act"
             and x.get("action") == a["action"] and x.get("rig") == a["rig"]]
     if a["action"] == "shorten_subs":
-        to = _num(a["params"].get("to_s"))
-        nxt = next_step(cfg, to)
-        if nxt is not None and len(acts) < POLICY["shorten_subs"]["max"]:
-            return (f"Next: {nxt:g} s if the trailing goes on (after the "
-                    f"{limits(cfg)['rig_cooldown_min']:g} min cooldown).", False)
+        # one step that did not help is enough: trailing that does not
+        # follow the sub length is not a drift-per-second problem
         st.setdefault("given_up", {})[key] = _iso(now)
         return ("Shorter subs did not stop the trailing, so it is not a "
-                "drift-per-second problem: needs a human (PHD2 stopped? "
-                "TheSky tracking / ProTrack, flexure). No more tries tonight.", True)
+                f"drift-per-second problem: {undo or 'sub lengths unchanged'}. "
+                "Needs a human (PHD2 stopped? TheSky tracking / ProTrack, "
+                "flexure). No more shortening tonight.", True)
     if a["action"] == "run_af":
         fails = [x for x in acts if x.get("result") == "not_improved"]
         if len(fails) < 2 and len(acts) < POLICY["run_af"]["max"]:
@@ -1286,8 +1686,12 @@ def _learn(cfg, st, a, before, after, now) -> None:
                f"{after}): consider unguided_max_exposure_s {p.get('to_s'):g} or "
                f"the goal's sub length for {p.get('target')}")
     elif a["action"] == "shorten_subs":
-        txt = (f"RC16 trailing did not follow the sub length ({p.get('from_s'):g} s "
-               f"ecc {before}, {p.get('to_s'):g} s ecc {after}): look for a "
+        txt = (f"RC16 trailing is not drift-per-second: it did not follow the "
+               f"sub length ({p.get('from_s'):g} s ecc {before}, {p.get('to_s'):g} s "
+               f"ecc {after}"
+               + (f"; put back to {p.get('from_s'):g} s"
+                  if (a.get("undo") or {}).get("ok") else "")
+               + "): look for a "
                "non-drift cause (PHD2, flexure, mount) before shortening subs")
     elif a["action"] == "stop_phd2":
         txt = ("a PHD2 session left guiding on an unguided night trailed the "

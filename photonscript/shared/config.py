@@ -150,6 +150,10 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_unguided_fallback: bool = True
     night_pilot_shorten_subs: bool = True
     night_pilot_af: bool = True
+    night_pilot_af_direct: bool = True  # RC16 AF: a direct ninaAPI autofocus
+                                 # between subs (camera idle, imaging block),
+                                 # restart path if refused; off = restart only.
+                                 # night_pilot_mode / night_pilot_af still govern
     night_pilot_skip_target: bool = True
     night_pilot_max_actions: int = 6
     night_pilot_rig_cooldown_min: float = 15.0
@@ -572,17 +576,14 @@ class PhotonScriptConfig(BaseSettings):
                                  # trail = suspect a non-star / hot-pixel lock
     sub_doctor_wild_rms_arcsec: float = 2.0  # soft round subs under a PHD2 RMS
                                  # over this count as a guider conflict too
-    sub_doctor_af_min_age_min: float = 30.0  # run_af remedy only when the last
-                                 # AF is at least this old
-    # opt-in remedies (default off; never restarts or re-arms anything)
-    sub_doctor_stop_phd2_unguided: bool = False  # stop PHD2 guiding on an
-                                 # unguided night (RC16 agent; never while the
-                                 # calibration manager or another actor holds
-                                 # PHD2, nor while PHD2 calibrates)
-    sub_doctor_request_af: bool = False  # soft round subs, other rig sharp:
-                                 # ask NINA for an autofocus (camera idle only)
-    sub_doctor_shorten_subs: bool = False  # unguided trailing: cap RC16 subs at
-                                 # the PS-169 drift length from the next dispatch
+    sub_doctor_af_min_age_min: float = 30.0  # run_af is suggested as an auto
+                                 # action only when the last AF is this old
+    # SUPERSEDED (2026-10-13, one actor for remedies): the doctor's own
+    # opt-in remedies are retired; the night pilot (night_pilot_*) is the
+    # one actor. These keys stay readable (old .env files) and do nothing.
+    sub_doctor_stop_phd2_unguided: bool = False  # superseded: night_pilot_stop_phd2
+    sub_doctor_request_af: bool = False  # superseded: night_pilot_af
+    sub_doctor_shorten_subs: bool = False  # superseded: night_pilot_shorten_subs
     slew_gate_pad_s: float = 10.0  # padding each side of a mount-log move
     slew_gate_min_move_arcmin: float = 5.0  # RC16 frames (older nights): a
                                  # pointing change this big between frames
@@ -847,6 +848,11 @@ class PhotonScriptConfig(BaseSettings):
     # has not changed for 60 min while the NINA weather ambient moved > 1 C,
     # model moves use the ambient (+ the learned bias) instead.
     focus_frozen_temps: str = "21.29"
+    # Every AF point carries the NINA weather ambient at its time (sampled
+    # into focus_ambient.jsonl by the ingest loop). On: the fit uses ambient
+    # + the learned bias for an AF whose EAF temperature is a frozen reading
+    # (or missing). Off: the fit uses the EAF temperatures as stored.
+    focus_model_ambient_fit: bool = True
     focus_cfz_steps: int = 0  # RC16 critical focus zone in EAF steps; 0 =
                                  # use the median AF step size as the proxy
     focus_model_move_script: str = "C:\\astro\\PhotonScript\\deploy\\focus-model-move.cmd"

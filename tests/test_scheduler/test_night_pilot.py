@@ -5,7 +5,8 @@ needed a manual retry).
 
   1. the adapter (the sub doctor's run event schema) and the policy table;
   2. replay of tonight: guider conflict -> stop PHD2 -> subs improve;
-  3. trailing 300 s -> 180 s -> 120 s with verification, then a human;
+  3. trailing 300 s -> 180 s with verification; a step that did not
+     help is undone (trailing is not drift-per-second), a human;
   4. the restart race: one retry once NINA #1 reads idle;
   5. focus soft on one rig -> AF (RC16 restart, Piggy-600 companion), AF
      failing twice -> push; both rigs soft -> nothing;
@@ -93,6 +94,7 @@ class FakeIO(npil.PilotIO):
         self.calls = []
         self.pushes = []
         self.af_ok = True
+        self.direct_af = (True, "AUTOFOCUS-FINISHED, focuser 5200 -> 5260")
         self._store = ProjectStore(cfg)
 
     async def nina1_running(self, cfg):
@@ -110,6 +112,10 @@ class FakeIO(npil.PilotIO):
     async def nina1_wait_idle(self, cfg, max_s=300.0):
         self.calls.append("nina1_wait_idle")
         return True
+
+    async def nina1_autofocus(self, cfg):
+        self.calls.append("nina1_autofocus")
+        return self.direct_af
 
     async def piggy_af(self, cfg, armer):
         self.calls.append("piggy_af")
@@ -227,6 +233,50 @@ def test_ladder_and_policy_table(tmp_path):
     assert npil.decide(cfg, d("guider_conflict", "stop_phd2", conf="low"), ctx)["kind"] == "annotate"
 
 
+def test_pick_step_prefers_matched_darks_then_bias_scaled(tmp_path):
+    cfg = _cfg(tmp_path)
+
+    def st(table):
+        return lambda s: {"match": table.get(s, "none"), "text": f"{s:g}:{table.get(s)}"}
+    # 180 s darks: the next step
+    s, dk = npil.pick_step(cfg, 300, st({180.0: "matched", 120.0: "matched"}))
+    assert (s, dk["match"]) == (180.0, "matched")
+    # only 120 s darks: skip to 120 rather than 180 s without darks
+    s, dk = npil.pick_step(cfg, 300, st({180.0: "scaled", 120.0: "matched"}))
+    assert (s, dk["match"]) == (120.0, "matched")
+    # no matched darks: the longest length a bias can scale to
+    s, dk = npil.pick_step(cfg, 300, st({180.0: "none", 120.0: "scaled"}))
+    assert (s, dk["match"]) == (120.0, "scaled")
+    # nothing at all: the next step, said so
+    s, dk = npil.pick_step(cfg, 300, st({}))
+    assert (s, dk["match"]) == (180.0, "none")
+    assert npil.pick_step(cfg, 120, st({})) == (None, None)
+    # decide() carries it into the params (the push text)
+    d = npil.norm_diag({"t": "2026-10-13T04:00:00Z", "kind": "sub_doctor",
+                        "cause": "tracking", "confidence": "high",
+                        "evidence": {"shared_mount": True}})
+    dec = npil.decide(cfg, d, {"guided": False, "exp_s": 300,
+                               "dark_status": st({120.0: "matched"})})
+    assert dec["params"]["to_s"] == 120.0 and dec["params"]["darks"] == "matched"
+    # the real library: 180 s is in the default RC16 dark quota (600,180 +
+    # the 300 s unguided cap); 120 s has no darks and no bias here
+    assert npil.dark_match(cfg, "rc16", 180)["match"] == "matched"
+    assert "night dark quota" in npil.dark_match(cfg, "rc16", 180)["text"]
+    assert npil.dark_match(cfg, "rc16", 120) == {
+        "match": "none", "text": "no 120 s darks and no bias at this epoch: darks owed"}
+
+
+def test_pick_step_bias_scaled_from_the_library(tmp_path, monkeypatch):
+    from photonscript.scheduler import calibration as cal
+    monkeypatch.setattr(cal, "newest_usable_bias", lambda c, r="rc16": "2026-10-01")
+    cfg = _cfg(tmp_path)
+    s, dk = npil.pick_step(cfg, 180)
+    assert s == 120.0 and dk["match"] == "scaled"
+    assert dk["text"] == "no 120 s darks: scaled from the 2026-10-01 bias at this epoch"
+    monkeypatch.setattr(cal, "darks_have", lambda c, r, e, **k: 25 if e == 120 else 0)
+    assert npil.dark_match(cfg, "rc16", 120)["text"] == "darks match: 25 120 s darks in the library"
+
+
 # ------------------------------------------------------------- 2. tonight replay
 
 def _tonight_bad_subs(cfg):
@@ -311,7 +361,10 @@ def test_guided_fail_calibration_switches_to_unguided(tmp_path):
 
 # ------------------------------------------------------------- 3. trailing
 
-def test_trailing_300_to_180_to_120_then_human_then_dawn_revert(tmp_path):
+def test_trailing_step_that_did_not_help_is_undone_then_dawn_revert(tmp_path):
+    """2026-10-12 replay: 300 s trailed, 180 s trailed the same. The step is
+    undone (back to the goal default, restart after the sub), trailing is
+    recorded as not drift-per-second, and the night never goes to 120 s."""
     cfg = _cfg(tmp_path)
     armer, io = FakeArmer(guided=False), FakeIO(cfg, phd2="Stopped")
     proj = _heart(io)
@@ -328,8 +381,10 @@ def test_trailing_300_to_180_to_120_then_human_then_dawn_revert(tmp_path):
     assert all(e.exposure_seconds <= 180 for e in p.exposure_plans if e.rig == "rc16")
     assert "shortened RC16 subs 300 -> 180 s" in io.pushes[-1][1]
     assert "Heart Nebula: Ha 600 -> 180 s" in io.pushes[-1][1]
+    assert "darks match: 180 s is in the night dark quota" in io.pushes[-1][1]
     st = npil.load_state(cfg, NIGHT)
     assert st["actions"][0]["status"] == "pending"
+    assert st["actions"][0]["params"]["prev_overrides"] is None
     assert st["ledger"][proj.id]["original_overrides"] is None
     # restart dispatched at 04:35 (NINA #1 stopped after the 300 s sub)
     armer.last_restart = {"at": "2026-10-13T04:35:30Z", "ok": True}
@@ -342,46 +397,108 @@ def test_trailing_300_to_180_to_120_then_human_then_dawn_revert(tmp_path):
     _sub(cfg, "04:39", 0.723, exp=180)
     _tick(cfg, armer, io, "04:43")
     v = _pilot_events(cfg, "verify")[-1]
-    assert v["result"] == "not_improved" and v["human"] is False
-    assert "Next: 120 s" in io.pushes[-1][1] and io.pushes[-1][0] == 0
-    # next diagnosis inside the rig cooldown: held
-    _diag(cfg, "04:44", "tracking", ecc=0.73, exp_s=180, shared_mount=True)
-    _tick(cfg, armer, io, "04:44")
-    assert len(armer.calls) == 1
-    assert any("one action per rig" in e["detail"] for e in _pilot_events(cfg, "held"))
-    # after the cooldown: 180 -> 120
-    _diag(cfg, "04:47", "tracking", ecc=0.73, exp_s=180, shared_mount=True)
-    _tick(cfg, armer, io, "04:47")
-    assert len(armer.calls) == 2
-    assert set(io.store().projects[proj.id].exposure_overrides.values()) == {120.0}
-    armer.last_restart = {"at": "2026-10-13T04:51:00Z", "ok": True}
-    _tick(cfg, armer, io, "04:51")
-    _sub(cfg, "04:52", 0.74, exp=120)
-    _sub(cfg, "04:54", 0.75, exp=120)
-    _tick(cfg, armer, io, "04:57")
-    v = _pilot_events(cfg, "verify")[-1]
     assert v["result"] == "not_improved" and v["human"] is True
-    assert io.pushes[-1][0] == 1 and "not a drift-per-second problem" in io.pushes[-1][1]
-    # given up: a third diagnosis does nothing
-    _diag(cfg, "05:20", "tracking", ecc=0.75, exp_s=120, shared_mount=True)
-    _tick(cfg, armer, io, "05:20")
+    pri, msg = io.pushes[-1]
+    assert pri == 1 and "not a drift-per-second problem" in msg
+    assert ("Heart Nebula: sub lengths back to the goal defaults (restart after "
+            "the current sub)") in msg
+    assert "No more shortening tonight" in msg
+    # the cap is gone and the restart that applies it was asked for
+    assert io.store().projects[proj.id].exposure_overrides is None
+    assert armer.calls == [("restart", "after_exposure")] * 2
+    rv = _pilot_events(cfg, "revert")
+    assert rv and rv[-1]["detail"].startswith("undid 'shortened RC16 subs 300 -> 180 s'")
+    a = npil.load_state(cfg, NIGHT)["actions"][0]
+    assert a["undo"]["ok"] and a["undo"]["restart"]["ok"]
+    # the next trailing diagnoses: given up, nothing goes to 120 s
+    for hm in ("04:47", "05:20"):
+        _diag(cfg, hm, "tracking", ecc=0.73, exp_s=300, shared_mount=True)
+        _tick(cfg, armer, io, hm)
     assert len(armer.calls) == 2
+    assert io.store().projects[proj.id].exposure_overrides is None
     st = npil.load_state(cfg, NIGHT)
     assert st["given_up"].get("rc16|tracking")
-    assert any("did not follow the sub length" in x for x in st["learned"])
-    # dawn: restored, the planner's long-term settings unchanged
+    assert any(x.startswith("RC16 trailing is not drift-per-second") and
+               "put back to 300 s" in x for x in st["learned"])
+    # dawn: nothing left to change, the goal settings as they were
     txt = npil.dawn_revert(cfg, NIGHT, store=io.store(), now=T("12:30"))
     assert txt.startswith("night pilot restored Heart Nebula: sub lengths restored")
     p = io.store().projects[proj.id]
     assert p.exposure_overrides is None
     assert next(e for e in p.exposure_plans if e.filter_type.value == "Ha").exposure_seconds == 600
     assert npil.dawn_revert(cfg, NIGHT, store=io.store()) is None   # once
-    assert _pilot_events(cfg, "revert")
     lines = npil.morning_lines(cfg, NIGHT)
     assert lines[0].startswith("Night pilot: ")
     assert "shortened RC16 subs 300 -> 180 s -> did not help (ecc 0.76 -> 0.728)" in lines[0]
     assert "Night pilot restored tonight-only changes: Heart Nebula" in lines
-    assert any(x.startswith("Night pilot learned: RC16 trailing did not follow") for x in lines)
+    assert any(x.startswith("Night pilot learned: RC16 trailing is not drift-per-second")
+               for x in lines)
+
+
+def test_second_step_that_did_not_help_goes_back_to_the_first(tmp_path):
+    """300 -> 180 s helped; later 180 -> 120 s did not: back to 180 s."""
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    proj = _heart(io)
+    _tonight_bad_subs(cfg)
+    _diag(cfg, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg, armer, io, "04:30")
+    armer.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:35")
+    _sub(cfg, "04:36", 0.52, exp=180)
+    _sub(cfg, "04:39", 0.50, exp=180)
+    _tick(cfg, armer, io, "04:43")
+    assert npil.load_state(cfg, NIGHT)["actions"][0]["result"] == "improved"
+    cap180 = dict(io.store().projects[proj.id].exposure_overrides)
+    assert set(cap180.values()) == {180.0}
+    # later in the night 180 s trails too: one more step
+    _diag(cfg, "05:30", "tracking", ecc=0.70, exp_s=180, shared_mount=True)
+    _tick(cfg, armer, io, "05:30")
+    assert set(io.store().projects[proj.id].exposure_overrides.values()) == {120.0}
+    a2 = npil.load_state(cfg, NIGHT)["actions"][1]
+    assert a2["params"]["prev_overrides"] == cap180
+    armer.last_restart = {"at": "2026-10-13T05:33:00Z", "ok": True}
+    _tick(cfg, armer, io, "05:33")
+    _sub(cfg, "05:34", 0.71, exp=120)
+    _sub(cfg, "05:36", 0.70, exp=120)
+    _tick(cfg, armer, io, "05:39")
+    assert io.store().projects[proj.id].exposure_overrides == cap180
+    assert "sub lengths back to " in io.pushes[-1][1] and "180 s" in io.pushes[-1][1]
+    assert len(armer.calls) == 3    # two steps and the undo, nothing more
+
+
+def test_undo_without_dark_left_restores_for_the_next_dispatch(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    proj = _heart(io)
+    _tonight_bad_subs(cfg)
+    _diag(cfg, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg, armer, io, "04:30")
+    armer.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:35")
+    _sub(cfg, "04:36", 0.75, exp=180)
+    _sub(cfg, "04:39", 0.76, exp=180)
+    armer.dawn = T("05:00")            # 17 min of dark left at the check
+    _tick(cfg, armer, io, "04:43")
+    assert io.store().projects[proj.id].exposure_overrides is None
+    assert len(armer.calls) == 1        # no restart for the undo
+    assert "from the next dispatch; no restart now: only 17 min of dark left" \
+        in io.pushes[-1][1]
+    # a goal edited by hand since the cap is never undone
+    cfg2 = _cfg(tmp_path / "b")
+    armer2, io2 = FakeArmer(), FakeIO(cfg2, phd2="Stopped")
+    p2 = _heart(io2)
+    _diag(cfg2, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg2, armer2, io2, "04:30")
+    armer2.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg2, armer2, io2, "04:35")
+    io2.store().update(p2.id, exposure_overrides={"Ha": 240})
+    _sub(cfg2, "04:36", 0.75, exp=180)
+    _sub(cfg2, "04:39", 0.76, exp=180)
+    _tick(cfg2, armer2, io2, "04:43")
+    assert io2.store().projects[p2.id].exposure_overrides == {"Ha": 240.0}
+    assert "sub lengths NOT restored" in io2.pushes[-1][1]
+    assert len(armer2.calls) == 1
 
 
 def test_trailing_improves_learns_sub_length(tmp_path):
@@ -444,7 +561,7 @@ def test_restart_fails_twice_pushes_human(tmp_path):
 # ------------------------------------------------------------- 5. focus
 
 def test_focus_soft_one_rig_af_and_af_failing_twice(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, night_pilot_af_direct=False)    # the restart path
     armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
     for hm in ("04:07", "04:12", "04:17"):
         _sub(cfg, hm, 0.45, hfr=14.0)
@@ -474,7 +591,7 @@ def test_focus_soft_one_rig_af_and_af_failing_twice(tmp_path):
 
 
 def test_focus_af_works_and_both_soft_is_seeing(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, night_pilot_af_direct=False)
     armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
     _diag(cfg, "04:20", "focus", confidence="medium", hfr_px=14.0,
           other_rig_sharp=False)
@@ -601,6 +718,23 @@ def test_sub_doctor_remedy_not_doubled(tmp_path):
     assert "sub doctor already ran stop_phd2" in _pilot_events(cfg, "held")[0]["detail"]
 
 
+def test_stop_phd2_held_while_another_actor_holds_phd2(tmp_path):
+    """One actor at a time: the PS-93 calibration manager (or any PS-91
+    actor) holding PHD2 holds the pilot's stop; nothing is sent."""
+    from photonscript.telescope_agent import phd2_ops
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Guiding")
+    _diag(cfg, "04:23", "guider_conflict", "stop_phd2", ecc=0.76)
+    phd2_ops._reset_for_tests()
+    phd2_ops._try("calmanager")
+    try:
+        _tick(cfg, armer, io, "04:24")
+    finally:
+        phd2_ops._reset_for_tests()
+    assert "phd2_stop" not in io.calls
+    assert "holds PHD2 (calmanager)" in _pilot_events(cfg, "held")[0]["detail"]
+
+
 def test_clouds_annotate_only(tmp_path):
     cfg = _cfg(tmp_path)
     armer, io = FakeArmer(), FakeIO(cfg)
@@ -665,6 +799,7 @@ def test_advise_mode_sends_no_command(tmp_path):
     assert msgs[0].startswith("Night pilot (advise): would have stopped PHD2 guiding")
     assert "nothing was sent" in msgs[0]
     assert "would have shortened RC16 subs 300 -> 180 s" in msgs[1]
+    assert "(darks match: 180 s is in the night dark quota)" in msgs[1]
     assert len(_pilot_events(cfg, "advise")) == 2 and not _pilot_events(cfg, "act")
     assert "would have" in npil.status(cfg, NIGHT)["line"]
 
@@ -804,3 +939,212 @@ def test_pilot_never_touches_roof_park_arm_or_calibration():
                 "safetymonitor", "set_connected", "nina_warm", "dawn_shutdown(",
                 "guider_start"):
         assert bad not in src, bad
+
+
+# ------------------------------------------------------------- 10. direct AF
+
+def _af_tree(*leaf_names, target="Heart Nebula"):
+    """A NINA #1 sequence tree: target container > block > leaves (RUNNING)."""
+    node = None
+    for name in reversed(leaf_names or ("Smart Exposure",)):
+        node = {"$type": "NINA.Sequencer.SequenceItem.Imaging.SmartExposure, NINA.Sequencer"
+                if name == "Smart Exposure" else "NINA.Sequencer.Container.Sequential, x",
+                "Name": name, "Status": "RUNNING", "Items": [node] if node else []}
+    dso = {"$type": "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer",
+           "Name": target, "Status": "RUNNING",
+           "Items": [{"Name": f"{target} Ha filter block (cooler-gated)",
+                      "Status": "RUNNING", "Items": [node]}]}
+    return {"Name": "Sequence", "Status": "RUNNING",
+            "Items": [{"Name": "Targets", "Status": "RUNNING", "Items": [dso]}]}
+
+
+class FakeNina:
+    """ninaAPI GETs for direct_af: camera reads in order, the sequence
+    tree, the event history (the AF adds its events), the focuser."""
+
+    def __init__(self, cams=None, tree=None, af_events=None, accept=True,
+                 pos=(5200, 5260)):
+        self.cams = list(cams or [{"IsExposing": False, "CameraState": "Idle"}])
+        self.tree = tree if tree is not None else _af_tree()
+        self.hist = [{"Event": "SEQUENCE-STARTING", "Time": "2026-10-12T20:00:00-06:00"},
+                     {"Event": "AUTOFOCUS-FINISHED", "Time": "2026-10-12T20:10:00-06:00"}]
+        self.af_events = ["AUTOFOCUS-STARTING", "AUTOFOCUS-POINT-ADDED",
+                          "AUTOFOCUS-FINISHED"] if af_events is None else af_events
+        self.accept, self.pos, self.af = accept, pos, False
+        self.calls = []
+
+    async def get(self, path):
+        self.calls.append(path)
+        if path == "/equipment/camera/info":
+            return self.cams.pop(0) if len(self.cams) > 1 else self.cams[0]
+        if path == "/equipment/focuser/info":
+            return {"Position": self.pos[1] if self.af else self.pos[0]}
+        if path == "/event-history":
+            return list(self.hist)
+        if path == "/equipment/focuser/auto-focus":
+            if not self.accept:
+                return None
+            self.af = True
+            for i, ev in enumerate(self.af_events):
+                self.hist.append({"Event": ev, "Time": f"2026-10-12T22:4{i}:00-06:00"})
+            return "Autofocus started"
+        return None
+
+    async def read_tree(self):
+        return self.tree
+
+
+class Clock:
+    def __init__(self):
+        self.t = 0.0
+
+    def __call__(self):
+        return self.t
+
+    async def sleep(self, s):
+        self.t += s
+
+
+def _direct(nina, **kw):
+    c = Clock()
+    return asyncio.run(npil.direct_af(nina.get, nina.read_tree, sleep=c.sleep,
+                                      clock=c, utcnow=lambda: T("04:40"), **kw))
+
+
+def test_direct_af_finished_and_new_position():
+    n = FakeNina()
+    r = _direct(n)
+    assert r["ok"] and not r["refused"]
+    assert r["detail"] == "AUTOFOCUS-FINISHED, focuser 5200 -> 5260"
+    assert r["position_before"] == 5200 and r["position_after"] == 5260
+    assert r["finished_t"] == "2026-10-13T04:42:00Z"
+    assert n.calls.count("/equipment/focuser/auto-focus") == 1
+    # the AF of 20:10 (before the request) never counts as this one
+    n2 = FakeNina(af_events=["AUTOFOCUS-STARTING"])
+    r2 = _direct(n2)
+    assert not r2["ok"] and not r2["refused"]
+    assert "no AUTOFOCUS-FINISHED" in r2["detail"]
+
+
+def test_direct_af_waits_for_the_sub_to_end():
+    busy = {"IsExposing": True, "CameraState": "Exposing",
+            "ExposureEndTime": "2026-10-13T04:41:00Z"}
+    idle = {"IsExposing": False, "CameraState": "Idle"}
+    n = FakeNina(cams=[busy, busy, {"IsExposing": False, "CameraState": "Download"},
+                       idle])
+    r = _direct(n)
+    assert r["ok"]
+    cam = [i for i, c in enumerate(n.calls) if c == "/equipment/camera/info"]
+    assert len(cam) == 4 and n.calls.index("/equipment/focuser/auto-focus") > cam[-1]
+    # a camera that never goes idle: refused, nothing sent
+    n2 = FakeNina(cams=[busy])
+    r2 = _direct(n2)
+    assert r2["refused"] and "never went idle" in r2["detail"]
+    assert "/equipment/focuser/auto-focus" not in n2.calls
+
+
+@pytest.mark.parametrize("tree,why", [
+    (_af_tree("Dusk flats", "Take Exposure"), "runs 'Dusk flats'"),
+    (_af_tree("Darks 300 s", "Take Exposure"), "runs 'Darks 300 s'"),
+    (_af_tree("TPoint mapping (60)", "Take Exposure"), "runs 'TPoint mapping (60)'"),
+    (_af_tree("Run Autofocus"), "runs 'Run Autofocus'"),
+    (_af_tree("Slew and center"), "runs 'Slew and center'"),
+    (_af_tree("Wait for time"), "not in an imaging block"),
+    ({"Name": "Sequence", "Status": "FINISHED", "Items": []}, "not running"),
+    (None, "unreadable"),
+])
+def test_direct_af_only_in_an_imaging_block(tree, why):
+    n = FakeNina(tree=tree)
+    if tree is None:
+        n.tree = None
+    r = _direct(n)
+    assert r["refused"] and why in r["detail"], r
+    assert "/equipment/focuser/auto-focus" not in n.calls
+
+
+def test_direct_af_target_named_dark_is_imaging():
+    n = FakeNina(tree=_af_tree("Smart Exposure", target="Dark Shark Nebula"))
+    assert _direct(n)["ok"]
+
+
+def test_direct_af_refused_failed_and_dead_focuser():
+    r = _direct(FakeNina(accept=False))
+    assert r["refused"] and r["detail"] == "ninaAPI refused the autofocus request"
+    r = _direct(FakeNina(af_events=[]))
+    assert r["refused"] and "did not start an autofocus" in r["detail"]
+    r = _direct(FakeNina(af_events=["AUTOFOCUS-STARTING", "AUTOFOCUS-POINT-ADDED",
+                                    "AUTOFOCUS-FAILED"]))
+    assert not r["ok"] and not r["refused"]
+    assert r["detail"] == "the autofocus ended with AUTOFOCUS-FAILED"
+    r = _direct(FakeNina(pos=(0, 0)))
+    assert not r["ok"] and "focuser reads 0" in r["detail"]
+    r = _direct(FakeNina(cams=[None]))
+    assert r["refused"] and "camera unreadable" in r["detail"]
+
+
+def test_pilot_focus_direct_af_instead_of_restart(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    for hm in ("04:07", "04:12", "04:17"):
+        _sub(cfg, hm, 0.45, hfr=14.0)
+
+    async def run():
+        _diag(cfg, "04:20", "focus", "run_af", confidence="medium", ecc=0.45,
+              hfr_px=14.0, other_rig_sharp=True)
+        await npil.tick(cfg, armer, io, now=T("04:21"))
+        await asyncio.sleep(0)
+        await npil.tick(cfg, armer, io, now=T("04:25"))
+    asyncio.run(run())
+    assert io.calls.count("nina1_autofocus") == 1 and armer.calls == []
+    a = npil.load_state(cfg, NIGHT)["actions"][0]
+    assert a["job"] == "direct_af" and a["status"] == "done"
+    assert a["effective_t"] == "2026-10-13T04:25:00Z"
+    assert "direct autofocus between subs" in io.pushes[0][1]
+    assert any("AUTOFOCUS-FINISHED, focuser 5200 -> 5260" in e["detail"]
+               for e in _pilot_events(cfg, "dispatched"))
+    _sub(cfg, "04:26", 0.45, hfr=9.5)
+    _sub(cfg, "04:31", 0.45, hfr=9.8)
+    _tick(cfg, armer, io, "04:37")
+    assert npil.load_state(cfg, NIGHT)["actions"][0]["result"] == "improved"
+
+
+def test_pilot_direct_af_refused_falls_back_to_restart(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    io.direct_af = (False, "ninaAPI refused the autofocus request")
+
+    async def run():
+        _diag(cfg, "04:20", "focus", "run_af", confidence="medium", hfr_px=14.0,
+              other_rig_sharp=True)
+        await npil.tick(cfg, armer, io, now=T("04:21"))
+        await asyncio.sleep(0)
+        await npil.tick(cfg, armer, io, now=T("04:22"))
+    asyncio.run(run())
+    assert io.calls.count("nina1_autofocus") == 1
+    assert armer.calls == [("restart", "after_exposure")]
+    a = npil.load_state(cfg, NIGHT)["actions"][0]
+    assert a["status"] == "pending" and a["fallback"].startswith("ninaAPI refused")
+    assert any("restart after the current sub instead" in e["detail"]
+               for e in _pilot_events(cfg, "retry"))
+    armer.last_restart = {"at": "2026-10-13T04:26:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:26")
+    assert npil.load_state(cfg, NIGHT)["actions"][0]["status"] == "done"
+
+
+def test_pilot_direct_af_advise_and_switch(tmp_path):
+    cfg = _cfg(tmp_path, night_pilot_mode="advise")
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    _diag(cfg, "04:20", "focus", "run_af", confidence="medium", hfr_px=14.0,
+          other_rig_sharp=True)
+    _tick(cfg, armer, io, "04:21")
+    assert io.calls.count("nina1_autofocus") == 0 and armer.calls == []
+    assert "(a direct ninaAPI autofocus between subs, a restart if NINA refuses it)" \
+        in io.pushes[-1][1]
+    assert PhotonScriptConfig(_env_file=None).night_pilot_af_direct is True
+    # the AF switch off: advise only, even with the direct switch on
+    cfg2 = _cfg(tmp_path / "b", night_pilot_af=False)
+    io2 = FakeIO(cfg2, phd2="Stopped")
+    _diag(cfg2, "04:20", "focus", "run_af", confidence="medium", hfr_px=14.0,
+          other_rig_sharp=True)
+    _tick(cfg2, armer, io2, "04:21")
+    assert "nina1_autofocus" not in io2.calls and "night_pilot_af is off" in io2.pushes[-1][1]

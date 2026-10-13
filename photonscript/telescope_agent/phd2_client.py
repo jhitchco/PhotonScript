@@ -807,3 +807,50 @@ class PHD2Client:
             except Exception:
                 pass
         self._connected = False
+
+
+class PHD2ReadOnly(RuntimeError):
+    """A command was sent through a read-only PHD2 view."""
+
+
+class ReadOnlyPHD2:
+    """A read-only view of a PHD2Client, for the Piggy-600 agent.
+
+    Both rigs' agents watch the one PHD2 (its guide camera is on the RC16's
+    OAG). The Piggy-600 agent used to open a second connection to it and
+    redo the pixel-scale / RMS work; now it reads the RC16 agent's client
+    (orchestrator passes it) through this view: metrics, app state, frames,
+    lock position and listeners, and get_* RPCs. Every control call (loop,
+    stop_capture, find_star, guide_pulse, start_guiding, dither, the
+    setters, connect / disconnect / the event loop, the scale refresh)
+    raises PHD2ReadOnly, so the Piggy-600 agent can never command PHD2."""
+
+    CONTROL = frozenset({
+        "loop", "stop_capture", "find_star", "set_lock_position", "save_image",
+        "set_exposure", "set_algo_param", "set_dec_guide_mode", "guide_pulse",
+        "start_guiding", "stop_guiding", "dither", "connect", "disconnect",
+        "start_event_loop", "run_event_loop", "refresh_pixel_scale",
+        "refresh_exposure", "clear_frames"})
+
+    def __init__(self, inner: "PHD2Client"):
+        object.__setattr__(self, "_inner", inner)
+
+    @property
+    def inner(self) -> "PHD2Client":
+        return self._inner
+
+    async def call(self, method: str, params: list | None = None,
+                   timeout: float = 5.0):
+        if not str(method).startswith("get_"):
+            raise PHD2ReadOnly(f"read-only PHD2 view: {method} not sent")
+        return await self._inner.call(method, params, timeout=timeout)
+
+    def __getattr__(self, name):
+        if name in ReadOnlyPHD2.CONTROL:
+            async def refused(*_a, **_k):
+                raise PHD2ReadOnly(f"read-only PHD2 view: {name} not sent")
+            return refused
+        return getattr(self._inner, name)
+
+    def __setattr__(self, name, value):
+        raise PHD2ReadOnly(f"read-only PHD2 view: {name} not set")

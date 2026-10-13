@@ -8,7 +8,7 @@ import json
 import math
 import random
 import shutil
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -152,14 +152,28 @@ class TestIngestLoop:
                 (d / "new.json").write_text(json.dumps(rep))
             return ticks["n"] < 4
 
+        forces = []
+
+        async def amb(c, force=False):
+            # the NINA weather sample (a frozen EAF 21.29 C on the new AF)
+            forces.append(force)
+            if force:
+                fm.record_ambient(c, 8.5, now=datetime(2026, 10, 6, 0, 41))
+            return None
+
         orig = fm.ingest_af_reports
         fm.ingest_af_reports = spy
         try:
-            asyncio.run(fm.ingest_loop(lambda: cfg, sleep=fake_sleep))
+            asyncio.run(fm.ingest_loop(lambda: cfg, sleep=fake_sleep, ambient=amb))
         finally:
             fm.ingest_af_reports = orig
         assert calls == ["startup", "poll"]
-        assert len(fm.load_points(cfg)) == 2
+        pts = fm.load_points(cfg)
+        assert len(pts) == 2
+        # sampled every pass, forced right before the new report's ingest
+        assert forces == [False, False, True, False]
+        new_pt = next(p for p in pts if p["time"].startswith("2026-10-06T00:40"))
+        assert new_pt["ambient"] == 8.5 and new_pt["temp"] == 21.29
 
     def test_off_when_poll_zero(self, tmp_path):
         cfg = _cfg(tmp_path, nina_autofocus_reports_dir=str(
@@ -168,7 +182,10 @@ class TestIngestLoop:
         async def once(s):
             return False
 
-        asyncio.run(fm.ingest_loop(lambda: cfg, sleep=once))
+        async def amb(c, force=False):
+            return None
+
+        asyncio.run(fm.ingest_loop(lambda: cfg, sleep=once, ambient=amb))
         assert fm.load_points(cfg) == []
 
 

@@ -802,14 +802,15 @@ clouds, seeing, focus (AF age, temperature since the last AF), other.
 `sub_doctor` (cause, confidence, evidence, suggested_action {id: stop_phd2 |
 recalibrate_phd2 | reselect_guide_star | start_guiding | run_af |
 check_focuser | shorten_subs:<s> | check_tracking | check_pointing |
-wait_clouds | none}); a recovery writes cause "none". Opt-in remedies, all
-default off: `sub_doctor_stop_phd2_unguided` (PHD2 stop_capture on an
-unguided night, RC16 agent, never while another actor such as the PS-93
-calibration manager holds PHD2 or PHD2 calibrates),
-`sub_doctor_request_af` (ninaAPI auto-focus when the camera is idle, the
-other rig sharp; night-untested), `sub_doctor_shorten_subs` (caps unguided
-RC16 subs at the drift length at the armer's next dispatch; never
-re-dispatches). Dashboard chip (`GET /api/sub-doctor`), Runs page "What went
+wait_clouds | none}); a recovery writes cause "none". One actor for
+remedies (2026-10-13): the doctor only diagnoses and the night pilot is the
+only thing that acts on a suggested_action. The doctor's own opt-in
+remedies and its `<data_dir>/sub_doctor/caps.json` sub cap (the armer's
+dispatch hook) are retired; `sub_doctor_stop_phd2_unguided`,
+`sub_doctor_request_af` and `sub_doctor_shorten_subs` stay readable but
+have no effect (superseded by `night_pilot_stop_phd2`, `night_pilot_af`,
+`night_pilot_shorten_subs`). The push says "Remedy <id>: the night pilot's
+(<mode>)". Dashboard chip (`GET /api/sub-doctor`), Runs page "What went
 wrong and the fix" (`GET /api/runs/{date}/sub-doctor`), the morning report
 line, pairs for other agents (`GET /api/sub-doctor/pairs`). Past nights:
 `photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events]
@@ -876,8 +877,8 @@ loop every 60 s (`run_pilot`, app startup).
 |---|---|---|---|---|---|
 | guider_conflict, UNGUIDED night, PHD2 active | stop PHD2 guiding (`stop_capture`) | `night_pilot_stop_phd2` | 2 | 30 min | ecc |
 | guider_conflict, GUIDED night, FAIL calibration | rest of tonight UNGUIDED (`fallback_unguided`, PS-156 caps) | `night_pilot_unguided_fallback` | 1 | - | ecc |
-| tracking, RC16 unguided, shared mount or measured drift | RC16 subs one step shorter for tonight (`night_pilot_sub_steps` 300,180,120, floor `night_pilot_sub_floor_s` 120) as goal exposure overrides + Restart tonight from now after the current sub | `night_pilot_shorten_subs` | 2 | 15 min | ecc |
-| focus, soft round stars, other rig sharp | AF: RC16 restart after the sub (target start runs AF); Piggy-600 NINA #2 stopped after its sub + companion re-dispatch | `night_pilot_af` | 2 | 30 min | HFR |
+| tracking, RC16 unguided, shared mount or measured drift | RC16 subs a step shorter for tonight (`night_pilot_sub_steps` 300,180,120, floor `night_pilot_sub_floor_s` 120; the longest lower step with matched darks, i.e. in the night dark quota or in the library, else one whose darks scale from a bias at the same epoch, else the next step; the push says "darks match" / "scaled from the <date> bias" / "darks owed") as goal exposure overrides + Restart tonight from now after the current sub | `night_pilot_shorten_subs` | 2 | 15 min | ecc |
+| focus, soft round stars, other rig sharp | AF: RC16 a direct ninaAPI autofocus between subs (`GET /equipment/focuser/auto-focus`, `night_pilot_af_direct` on: waits for NINA #1's camera to go idle after the running sub, only inside an imaging block and never in a flat / dark / bias / TPoint / tracking test / calibration / slew / AF item; verified on AUTOFOCUS-STARTING then AUTOFOCUS-FINISHED in the event history and a non-zero focuser position read back); refused, not finished, or the switch off: restart after the sub (target start runs AF); Piggy-600 NINA #2 stopped after its sub + companion re-dispatch | `night_pilot_af` | 2 | 30 min | HFR |
 | pointing, plate solves failing (>= `night_pilot_solve_failures` 3) | goal inactive for tonight + restart | `night_pilot_skip_target` | 1 | - | subs on another target |
 | clouds, seeing | nothing (run event only) | | | | |
 | focuser; guided trailing; reselect star | one push for a human, nothing sent | | | | |
@@ -890,8 +891,15 @@ loop every 60 s (`run_pilot`, app startup).
 - Verification: the next `night_pilot_verify_subs` (2) subs of that rig
   that started after the action took effect (a sub cap: only subs at the new
   length) against the diagnosis' numbers: better = ecc down 0.05, HFR down
-  10%, or every sub passed QA. Not better: shorten goes one more step after
-  the cooldown, AF gets one more try; then one priority push for a human
+  10%, or every sub passed QA. Not better: a shorten step is undone (the
+  goal goes back to the length before it, or its default, with a restart
+  after the current sub when the guards and 45 min of dark allow, else
+  from the next dispatch), "trailing is not drift-per-second" is recorded
+  (morning report "learned"), one priority push asks a human and there is
+  no more shortening that night (2026-10-12 replay: 300, 180 and 120 s
+  trailed alike and the night would have stayed at 120 s for nothing); a
+  step that helped may be followed by one more on a later diagnosis. AF
+  gets one more try; then one priority push for a human
   and no more tries for that cause tonight (a PHD2 stop that did not help
   pushes too, but a PHD2 that starts guiding again later is stopped again,
   at most twice a night). No subs within
@@ -905,7 +913,7 @@ loop every 60 s (`run_pilot`, app startup).
   dark / bias / focus calibration item, or PHD2 calibrating; no re-dispatch
   with under 45 min of dark; at most `night_pilot_max_actions` (6) per
   night and one per rig per `night_pilot_rig_cooldown_min` (15); never
-  repeats a sub doctor remedy just done. Never arms, disarms, parks,
+  repeats a (retired, old-log) sub doctor remedy. Never arms, disarms, parks,
   unparks, touches the roof / safety or a PHD2 calibration.
 - Every step is a run event (kind `night_pilot`: act, advise, held, human,
   annotate, dispatched, retry, verify, failed, learned, revert) and each
@@ -1612,6 +1620,14 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   mount unguided) both at setpoint 0C. The OSC unblock was the second Alpaca
   safety driver (see 2026-09-26 Night-ops lesson). Keep the OSC setpoint at 0C
   so it matches `piggyback_dark_exposures=120` darks.
+- ONE PHD2 CONNECTION (2026-10-13): the RC16 telescope agent owns the PHD2
+  client (connection, event loop, pixel scale, RMS). The Piggy-600 agent
+  gets that client from the orchestrator through a read-only view
+  (`phd2_client.ReadOnlyPHD2`): it reads the metrics and app state and
+  registers listeners, but every control call (stop_capture, loop,
+  guide_pulse, start_guiding, setters, connect) raises, and scheduler
+  guiding commands are ignored by it. A Piggy-600 agent started alone
+  opens its own connection, still read-only.
 - GUIDING: PHD2 calibrated near Dec 0 / meridian via Calibration Assistant with
   "Auto restore calibration" ON and NINA Force Calibration OFF; ~0.36" RMS
   achieved. TPoint model built (4x4 bin, wait for dark, image scale 0.942"/px)

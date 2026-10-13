@@ -535,7 +535,12 @@ from the table.
   table position (`deployocus-model-move.cmd` -> POST
   `/api/focus/model-move`) instead of AF on L + offset; the temperature
   trigger re-moves after half a CFZ of drift (0.5 x CFZ / |slope|, 1 to 5 C),
-  the HFR trigger keeps the full AF, the target start keeps its AF, and a
+  its script call carries `--trigger`: NINA's temperature trigger measures
+  from the last AF, so once crossed it would run the move before every sub
+  until the next AF; the service holds such a re-fire (verdict HELD, no
+  move) until the temperature is a full step from the last table move
+  (`focus_model.trigger_gate`; an AF since the move lets NINA's trigger
+  stand), the HFR trigger keeps the full AF, the target start keeps its AF, and a
   verify AF runs every `focus_model_verify_af_min` (120). Other filters keep
   today's AF recipe. An AF after a meridian flip comes from NINA's profile
   (Options > Imaging > Meridian Flip > Autofocus after flip): no sequence
@@ -545,7 +550,14 @@ from the table.
   A model move uses the NINA weather (AARO station) ambient, plus the
   learned focuser-minus-ambient bias, when the focuser reads a value in
   `focus_frozen_temps` (21.29) or has not changed for 60 min while the
-  ambient moved > 1 C (`focus_temp_track.json`).
+  ambient moved > 1 C (`focus_temp_track.json`). The fit too: the ingest
+  loop samples the NINA weather Temperature every 5 min (and right before a
+  new AF report is ingested) into `focus_ambient.jsonl`; every AF point
+  gets `ambient` (the nearest sample within 15 min), and with
+  `focus_model_ambient_fit` (on) an AF whose EAF temperature is a frozen
+  reading or missing is fitted at ambient + the median focuser-minus-
+  ambient bias of the other points (`temp_eaf` keeps the EAF value, the
+  stored points are not rewritten).
 - Counter shifts: the EAF counter reset when it dropped off USB; Jeremy
   re-zeroed it at `focus_counter_epoch` (2026-10-12T20:20). After that time
   an AF with R^2 >= 0.9 more than 3 sigma from the model is flagged

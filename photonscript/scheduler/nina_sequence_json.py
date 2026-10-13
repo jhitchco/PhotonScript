@@ -842,13 +842,20 @@ def _autofocus_time_trigger(minutes: float = 60.0,
         TriggerRunner=_trigger_runner(runner or [_autofocus()]))
 
 
-def _focus_model_move(script: str, filter_type) -> dict:
+def _focus_model_move(script: str, filter_type, trigger: bool = False) -> dict:
     """PS-76 part 2 (focus_model_drive): ExternalScript that asks the service
     to move the RC16 focuser to the lookup-table position for this filter
     at the focuser's current temperature (deploy\\focus-model-move.cmd ->
     POST /api/focus/model-move). Always exits 0, ErrorBehavior 0: a failed
-    move never stops imaging (the HFR trigger and the verify AF remain)."""
-    return _external_script(script, filter_type.value)
+    move never stops imaging (the HFR trigger and the verify AF remain).
+
+    trigger=True: the run of the block's temperature trigger ("--trigger").
+    NINA's AutofocusAfterTemperatureChangeTrigger measures from the last AF,
+    and a table move is not an AF, so once crossed it fires before every
+    sub; the service's re-fire gate (focus_model.trigger_gate) then holds
+    until the temperature is a step away from the last table move."""
+    return _external_script(script, filter_type.value
+                            + (" --trigger" if trigger else ""))
 
 
 def _focus_drive_spec(cfg) -> dict | None:
@@ -1435,7 +1442,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                 # keep the full AF recipe
                 return [_autofocus_temp_trigger(
                             float(focus_drive.get("temp_c") or 1.0),
-                            [_focus_model_move(focus_drive["script"], f)]),
+                            [_focus_model_move(focus_drive["script"], f,
+                                               trigger=True)]),
                         _autofocus_hfr_trigger(10.0, 4, runner()),
                         _autofocus_time_trigger(focus_drive["verify_min"],
                                                 runner())]

@@ -4,19 +4,14 @@ after_sub(agent, night) runs once after each graded light is appended to
 the subs log: it gathers the live context (armer mode, PHD2 state and RMS,
 the active PHD2 calibration, the last NINA AF report and focuser
 temperature, autofocus stall events, the rig's last plate solve), asks
-sub_doctor.diagnose, keeps the state / run event through sub_doctor.record,
-pushes once per cause per rig per night and runs an opt-in remedy:
+sub_doctor.diagnose, keeps the state / run event through sub_doctor.record
+and pushes once per cause per rig per night.
 
-    stop_phd2      sub_doctor_stop_phd2_unguided: PHD2 stop_capture on an
-                   unguided night (RC16 agent only; never while another
-                   PhotonScript actor holds PHD2, e.g. the PS-93
-                   calibration manager, nor while PHD2 is calibrating)
-    run_af         sub_doctor_request_af: ninaAPI focuser auto-focus, only
-                   when the camera is idle at the check (retried on the
-                   next sub otherwise)
-    shorten_subs   sub_doctor_shorten_subs: the drift cap for the RC16's
-                   next dispatch (sub_doctor.set_cap / apply_caps); nothing
-                   is re-dispatched here
+Diagnosis only (2026-10-13, one actor for remedies): the doctor's own
+opt-in remedies (PHD2 stop_capture, ninaAPI autofocus, the caps.json sub
+cap) are retired. The night pilot (scheduler/night_pilot.py) reads the
+doctor's run events and is the only thing that acts on them, so a PHD2
+stop, an AF or a sub cap is never sent by two actors.
 
 Never raises; a failure costs the diagnosis, never the sub.
 """
@@ -99,87 +94,4 @@ async def after_sub(agent, night: str | None) -> dict | None:
                          else 0)
         except Exception as e:  # noqa: BLE001
             logger.warning("sub doctor push failed: %s", e)
-    if out.get("remedy"):
-        await remedy(agent, night, rig, diag, out["remedy"])
     return diag
-
-
-async def remedy(agent, night: str, rig: str, diag: dict, action: dict) -> bool | None:
-    """Run one opt-in remedy; returns ok, or None when it was not tried
-    (left for a later sub)."""
-    from photonscript.scheduler import sub_doctor as sd
-    config = agent.config
-    aid = str(action.get("id") or "")
-    try:
-        if aid == "stop_phd2":
-            return await _stop_phd2(agent, night, rig, action)
-        if aid == "run_af":
-            return await _run_af(agent, night, rig, action)
-        if aid.startswith("shorten_subs:"):
-            s = float(aid.split(":", 1)[1])
-            if rig != "rc16":
-                sd.note_remedy(config, night, rig, action, False,
-                               "Piggy-600 sub length is the companion's; not capped")
-                return False
-            c = sd.set_cap(config, night, rig, s, diag.get("headline") or "")
-            sd.note_remedy(config, night, rig, action, True,
-                           f"RC16 subs capped at {c['exposure_s']:g} s from the "
-                           "next dispatch (nothing re-dispatched now)")
-            return True
-    except Exception as e:  # noqa: BLE001
-        logger.warning("sub doctor remedy %s failed: %s", aid, e)
-        sd.note_remedy(config, night, rig, action, False, f"error: {e}")
-        return False
-    return None
-
-
-async def _stop_phd2(agent, night: str, rig: str, action: dict) -> bool | None:
-    from photonscript.scheduler import sub_doctor as sd
-    from photonscript.telescope_agent import phd2_ops
-    config = agent.config
-    if rig != "rc16":
-        return None                       # the RC16 agent owns PHD2 actions
-    if sd.armed_mode(config) != "unguided":
-        sd.note_remedy(config, night, rig, action, False,
-                       "not stopped: the night is no longer armed unguided")
-        return False
-    try:
-        async with phd2_ops.hold("sub_doctor", wait_s=0):
-            st = str(await agent.phd2.get_app_state() or "")
-            if st.lower() == "calibrating":
-                return None               # try again after the calibration
-            if st.lower() in ("stopped", "unknown", ""):
-                sd.note_remedy(config, night, rig, action, True,
-                               f"PHD2 already {st or 'unknown'}")
-                return True
-            await agent.phd2.stop_capture()
-    except phd2_ops.PHD2Busy as e:
-        logger.info("sub doctor: PHD2 busy (%s), stop left for a later sub", e.owner)
-        return None
-    sd.note_remedy(config, night, rig, action, True,
-                   f"PHD2 stopped (was {st}) on an unguided night")
-    try:
-        from photonscript.shared.pushover import notify
-        await notify(config, f"Sub doctor stopped PHD2 ({st}) on the unguided night; "
-                     "the mount now tracks on TPoint + ProTrack.",
-                     title=f"{sd.ALERT_TITLE}: remedy", priority=0)
-    except Exception:  # noqa: BLE001
-        pass
-    return True
-
-
-async def _run_af(agent, night: str, rig: str, action: dict) -> bool | None:
-    from photonscript.scheduler import sub_doctor as sd
-    config = agent.config
-    try:
-        cam = await agent.nina.get_camera_info()
-    except Exception:  # noqa: BLE001
-        return None
-    st = str((cam or {}).get("CameraState") or "").lower()
-    if not isinstance(cam, dict) or cam.get("IsExposing") or st in ("exposing", "download",
-                                                                    "downloading"):
-        return None                       # a frame is in flight: next sub
-    await agent.nina.start_autofocus()
-    sd.note_remedy(config, night, rig, action, True,
-                   "NINA autofocus requested (ninaAPI focuser auto-focus)")
-    return True

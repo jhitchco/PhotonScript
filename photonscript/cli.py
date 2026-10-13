@@ -662,6 +662,10 @@ def focus_move_cmd(
                                         "(deploy\\focus-model-move.cmd)"),
     dry_run: bool = typer.Option(False, "--dry-run",
                                  help="Say where it would move, do not move"),
+    trigger: bool = typer.Option(False, "--trigger",
+                                 help="Run by the block's temperature trigger: "
+                                      "the service holds a re-fire within the "
+                                      "step of the last table move"),
     url: str = typer.Option("http://127.0.0.1:8100", "--url",
                             help="The running PhotonScript service"),
 ):
@@ -674,7 +678,8 @@ def focus_move_cmd(
     import urllib.parse
     import urllib.request
     q = urllib.parse.urlencode({"filter": filter_name,
-                                "dry_run": "true" if dry_run else "false"})
+                                "dry_run": "true" if dry_run else "false",
+                                "trigger": "true" if trigger else "false"})
     try:
         req = urllib.request.Request(
             url.rstrip("/") + "/api/focus/model-move?" + q, data=b"",
