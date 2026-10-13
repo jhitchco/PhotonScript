@@ -312,10 +312,33 @@ class Armer:
         return True
 
     def _set_state(self, state: str, detail: str = ""):
+        prev = self.state
         self.state = state
         if detail:
             self.detail = detail
         self._persist()
+        if prev != state:
+            self._ledger(f"state {prev} -> {state}")
+
+    def _ledger_hourly(self, now: datetime) -> None:
+        """Settings ledger: one snapshot every settings_ledger_interval_min
+        while a night runs (stored only when something changed)."""
+        try:
+            from photonscript.scheduler.settings_ledger import hourly_due
+            if hourly_due(self.config, getattr(self, "_ledger_last", None), now):
+                self._ledger("hourly")
+        except Exception as e:  # noqa: BLE001
+            logger.debug("settings ledger hourly check failed: %s", e)
+
+    def _ledger(self, reason: str) -> None:
+        """Settings ledger snapshot in the background (read only; never
+        blocks, never raises). Off unless settings_ledger_enabled."""
+        try:
+            from photonscript.scheduler import settings_ledger
+            if settings_ledger.request(self.config, reason, str(self.state or "")):
+                self._ledger_last = datetime.utcnow()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("settings ledger request failed: %s", e)
 
     # -- public API ------------------------------------------------------------
 
@@ -476,6 +499,9 @@ class Armer:
         # PS-104: read-only TheSky / TPoint audit (no push, report only)
         if getattr(self.config, "thesky_audit_enabled", True):
             self._thesky_task = asyncio.create_task(self._thesky_audit_at_arm())
+        # Settings ledger: every program's settings now that the equipment
+        # is connected (read only, background)
+        self._ledger("arm")
         # Pre-imaging state: force the cooler + dew heater OFF now, so they stay
         # off from arm until the sequence turns them on cool_lead min before dark.
         # ONLY here in the fresh-arm path — never in connect_all/restore, which
@@ -2183,6 +2209,7 @@ class Armer:
         if companion:
             await self._dispatch_piggyback_companion()
         await self._send_block_alerts()   # PS-85: history decisions, once per target
+        self._ledger("dispatch")
         return True
 
     async def _dispatch_piggyback_companion(self) -> None:
@@ -3483,6 +3510,9 @@ class Armer:
     async def _tick(self):
         now = datetime.utcnow()
 
+        if self.state in ("RUNNING", WATCH_STATE):
+            self._ledger_hourly(now)
+
         if self.state == WATCH_STATE:
             await self._watch_tick(now)   # PS-136: observe, never dispatch
             return
@@ -3500,6 +3530,7 @@ class Armer:
             if preconfig - timedelta(minutes=60) <= now < preconfig:
                 await self._apps_alert("Pre-config in 60 min")   # PS-170
             if now >= preconfig:
+                self._ledger("pre-config")
                 if await self._dispatch_and_start():
                     self._set_state("RUNNING",
                                     "Sequence started — cooling, imaging at dark")

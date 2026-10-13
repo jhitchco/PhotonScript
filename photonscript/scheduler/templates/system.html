@@ -315,6 +315,14 @@
         <script src="/static/js/sync_hygiene_panel.js?v={{ version }}"></script>
         <script>PHD2.systemSummary('phd2Summary');</script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="settingsLedgerPanel">
+            <h2>Settings ledger</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">What NINA #1 / #2, PHD2, TheSky and PhotonScript are set to, judged against config/settings/desired_settings.toml. Snapshots at arm, pre-config, dispatch, every armer state change and hourly while a night runs; stored only when something changed. Read only: nothing here writes any program. <code>photonscript settings --sub FILE</code> shows what a sub was taken with.</p>
+            <div id="settingsLedger" class="bd">loading...</div>
+        </section>
+        <script src="/static/js/settings_ledger_panel.js?v={{ version }}"></script>
+        <script>SettingsLedger.load('settingsLedger');</script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Preflight Check</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system

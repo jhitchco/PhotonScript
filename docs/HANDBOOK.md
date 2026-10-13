@@ -879,6 +879,49 @@ night fresh driver instances.
   (Guider)" with camera + mount connected. Then set `app_lifecycle_enabled`
   on the System page. Remove: `install-app-lifecycle-tasks.ps1 -Uninstall`.
 
+### Settings ledger: what every program was set to, and when it changed
+
+Why: 2026-10-12 failed on settings (PHD2 guided on a FAIL calibration,
+AutoFind min SNR 50 vs a 28 SNR star, the pulse-guide alert silenced, NINA #1
+plate solve at bin 2, TheSky at time zone +0 after a reinstall, a guide-scale
+mismatch, the RC16 EAF counter reset), each found by hand afterwards.
+
+- **What:** `scheduler/settings_ledger.py` snapshots NINA #1 and #2 (the
+  active profile, `profile/show?active=true`, and every `equipment/*/info`),
+  PHD2 (the PS-89 audit's get_* reads, calibration data, the registry profile,
+  "don't show again" alerts, the PS-93 record, the dark library), TheSky (the
+  PS-104 read-only scripts) and PhotonScript's own config (secrets redacted).
+  READ ONLY: nothing is written to any program.
+- **When:** at arm, at pre-config, after dispatch, on every armer state change
+  and every `settings_ledger_interval_min` (60) while RUNNING / WATCHING. A
+  snapshot is hashed and stored only when a setting changed; temperatures,
+  focuser position, mount state and PHD2 state are kept as compact "live"
+  readings in every index line. An app that does not answer keeps its last
+  reading (marked "not read now"); PHD2 / TheSky never read yet fall back to
+  the newest stored audit.
+- **Where:** `<data_dir>/settings_ledger/<night>/` (index.jsonl, one
+  `<id>.json` per change, status.json) and `latest.json`. Each new sub record
+  carries `settings_id` (the snapshot in force); older subs are matched by
+  capture time.
+- **Rules:** `config/settings/desired_settings.toml` (edit it like the PS-89 /
+  PS-104 desired files: id, app, path, desired form, when, severity, why,
+  fix). Every snapshot is judged; the first FAIL of a rule each night sends
+  one Pushover (`settings_ledger_push`). System page > Settings ledger shows
+  the result, when each app was read and last changed, the exact fixes and a
+  diff "what changed since the last good night".
+- **CLI (read only):** `photonscript settings` (status),
+  `--night 2026-10-12 --at 23:40`, `--sub <file>`, `--diff last_good latest`
+  (also `YYYY-MM-DD`, `YYYY-MM-DD@HH:MM`, ids), `--full`, `--json`,
+  `--url http://host:8100` from the desktop. `photonscript settings-snapshot`
+  takes one now; `photonscript settings-backfill [--apply]` rebuilds past
+  nights from the PS-89 / PS-104 audits, the sub records (gain, offset,
+  readout, binning, setpoint, focuser position) and the PHD2 guide-log
+  headers. Not reconstructable: NINA profiles before the ledger, PHD2
+  registry-only settings (AutoFind SNR, the full profile), TheSky between
+  audits, PhotonScript config history.
+- **Off:** `settings_ledger_enabled` false; drop an app with
+  `settings_ledger_apps`.
+
 ### Add a target (PS-124)
 
 The Target Goals **Add** box takes a catalog name, catalog id or alias
