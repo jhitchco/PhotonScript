@@ -211,7 +211,8 @@ async def test_arm_with_recipe_dispatches_and_starts_the_recipe(armer, tmp_path)
     assert seq["Name"] == "PhotonScript_20261006_TT_M_2_then_Heart_Nebula"
     assert _dsos(seq)[:2] == ["Tracking test M 2", "Heart Nebula"]
     # stopped, loaded and STARTED by the armer (no hand Start)
-    assert a.calls == ["sequence_stop", "sequence_load", "sequence_start"]
+    assert a.calls == ["sequence_stop", "sequence_state", "sequence_load",
+                       "sequence_start"]   # 1013: waits for NINA #1 to stop
     r = a.recipe
     assert r["status"] == "dispatched" and r["container"] == "Tracking test M 2"
     assert r["sequence"] == seq["Name"] and r["field"]["name"] == "M 2"

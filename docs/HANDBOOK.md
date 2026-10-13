@@ -812,6 +812,13 @@ Read only; a NINA that cannot be read shows "-".
   calibration capture job runs, in ARMED / PAUSED_UNSAFE / other states and
   with under 40 min of dark. A failed re-dispatch stays paused. Events kind
   `restart` (request / stopped / dispatched / failed / refused), one push.
+  Every re-dispatch (Restart, Resume, the PS-77 safe-again resume) waits
+  after its sequence stop until NINA #1's `/sequence/state` reads not
+  running (poll 3 s, stop re-sent every 30 s, at most 10 min; an unreadable
+  state goes on after 3 polls), and a load/start that still answers
+  "Sequence is already running" is stopped and retried 3 times (5 / 15 /
+  30 s backoff) before it fails. 2026-10-13: the restart's load and start
+  ran 1 s before NINA's SEQUENCE-FINISHED and the restart failed.
 
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
