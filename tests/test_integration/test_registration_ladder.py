@@ -286,10 +286,37 @@ def test_run_reference_tie_never_goes_to_a_group_too_small_to_stack():
     assert rows[ref]["filter"] == "R"
 
 
-def test_run_reference_longest_exposure_still_wins():
+def test_run_reference_prefers_l_over_a_longer_star_poor_group():
+    # 2026-10-13: longest exposure first picked a 60-star B 300 s reference over L
     rows = _group("L", 10, 400, 3, 0)
     for r in rows:
         r["exp"] = 30.0
-    rows += _group("B", 4, 60, 4, 100)                               # 60 s, fewer stars
+    rows += _group("B", 4, 60, 4, 100)
+    for r in rows[10:]:
+        r["exp"] = 300.0
     ref = q.assess(rows, q.Thresholds())
-    assert rows[ref]["filter"] == "B" and rows[ref]["exp"] == 60.0
+    assert rows[ref]["filter"] == "L" and rows[ref]["exp"] == 30.0
+
+
+def test_run_reference_without_l_goes_to_the_most_stars_not_the_longest():
+    rows = _group("R", 8, 300, 3, 0)                                # 60 s, many stars
+    rows += _group("B", 4, 60, 4, 100)
+    for r in rows[8:]:
+        r["exp"] = 300.0                                            # longer, star-poor
+    ref = q.assess(rows, q.Thresholds())
+    assert rows[ref]["filter"] == "R"
+
+
+def test_run_reference_l_needs_a_stackable_group():
+    rows = _group("L", 2, 400, 3, 0) + _group("R", 6, 80, 1, 100)
+    ref = q.assess(rows, q.Thresholds())
+    assert rows[ref]["filter"] == "R"
+
+
+def test_run_rank_order():
+    rank = q.run_rank
+    assert rank("L", 5, 50, 30.0) > rank("B", 5, 900, 300.0)       # L first
+    assert rank("Lum", 5, 50, 30.0) > rank("R", 5, 900, 300.0)
+    assert rank("L", 5, 900, 30.0) > rank("L", 5, 100, 300.0)      # then stars
+    assert rank("R", 5, 100, 300.0) > rank("G", 5, 100, 60.0)      # then exposure
+    assert rank("B", 3, 10, 60.0) > rank("L", 2, 900, 300.0)       # too small never wins

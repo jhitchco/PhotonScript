@@ -548,9 +548,13 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                        "mixed_exposures": len(grp) > 1})
     if not reference and stacks:
         # the QA reference was left out (--limit, epoch, refused): the
-        # reference of the stack that holds the longest subs
-        longest = max(stacks, key=lambda s: max(g["exp"] for g in s["groups"]))
-        reference = longest["reference"]
+        # stack star_qa.run_rank prefers (L, then the reference with the
+        # most stars, then the longest subs)
+        stars_of = {Path(r["file"]).stem: r.get("stars") or 0 for r in rows}
+        best = max(stacks, key=lambda s: star_qa.run_rank(
+            s["filter"], len(stack_frames.get(s["name"], ())), stars_of.get(s["reference"], 0),
+            max(g["exp"] for g in s["groups"])))
+        reference = best["reference"]
     if reference:
         stacks.sort(key=lambda s: s["reference"] != reference)
 

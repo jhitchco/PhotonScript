@@ -33,7 +33,8 @@ registration, coherence vote and neighbor medians, so a 30 s sub is never
 measured against a 300 s reference (2026-10-08 M31 RC16 dry run: one
 L 300 s reference flagged 54 of 63 subs, mostly 30 s, for having fewer and
 fainter stars). The run's registration reference (shared by every
-PixInsight stack) is the reference of the group with the longest exposure.
+PixInsight stack) is the reference of a stackable L group when there is
+one, else of the group whose reference has the most stars (run_rank()).
 group_summary() reports keep / reject per group.
 
 Relative tests use the median of the 4 subs on each side in time within the
@@ -521,16 +522,32 @@ def _assess_group(rows: list[dict], thr: Thresholds) -> int:
     return ref_i
 
 
+L_FILTERS = ("L", "LUM", "LUMINANCE")
+
+
+def is_luminance(filt: str) -> bool:
+    return (filt or "").strip().upper() in L_FILTERS
+
+
+def run_rank(filt: str, n_subs: int, ref_stars: int | float | None, exp: float | None) -> tuple:
+    """Sort key (larger wins) for the run's registration reference among
+    the groups / stacks of a mono run: a group big enough to stack (3+
+    subs) first, then L (the deepest, star-richest channel), then the
+    group whose reference has the most stars, then the longer exposure,
+    then more subs. Longest-exposure-first chose a star-poor 300 s B
+    reference over L (2026-10-13), and on equal lengths R's 56-star
+    reference over L's 172 stars (legacy NGC 6535): StarAlignment then lost
+    R and L."""
+    return (n_subs >= 3, is_luminance(filt), ref_stars or 0, exp or 0, n_subs)
+
+
 def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
     """PS-177: split the measured rows into groups (group_key) and assess
     each against its own reference. Rows need _xy / _shape from measure_sub.
     Every row gets group / group_reference / is_reference (its group's) and
     is_run_reference. Returns the index of the run's registration
-    reference: the reference of the longest-exposure group. Ties (several
-    filters at one length): a group big enough to stack (3+ subs) first,
-    then the group whose reference has the most stars, then more subs
-    (2026-10-13 legacy NGC 6535: G, R and L all 60 s, the tie went to R's
-    56-star reference over L's 172 stars and StarAlignment lost R and L)."""
+    reference: the reference of the best group by run_rank() (stackable,
+    then L, then the most reference stars, then the longest exposure)."""
     thr = thr or Thresholds()
     if not rows:
         raise ValueError("no subs")
@@ -546,8 +563,7 @@ def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
         for r in sub:
             r["group"] = label
             r["group_reference"] = ref_file
-    best = max(groups, key=lambda k: ((k[1] or 0), len(groups[k]) >= 3,
-                                      rows[refs[k]].get("stars") or 0, len(groups[k])))
+    best = max(groups, key=lambda k: run_rank(k[0], len(groups[k]), rows[refs[k]].get("stars"), k[1]))
     run_ref = refs[best]
     for i, r in enumerate(rows):
         r["is_run_reference"] = i == run_ref

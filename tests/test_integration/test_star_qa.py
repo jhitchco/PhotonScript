@@ -178,7 +178,9 @@ def test_assess_flags_a_split_pointing_sub_and_keeps_clean_ones():
     ghost = _move(np.vstack([base, base[:250] + [400.0, 150.0]]), 15.0, 3.0)
     rows.append(_sub_row(9, ghost))
     ref_i = q.assess(rows, q.Thresholds(coherence_min_subs=5, coherence_votes=4))
-    assert ref_i == 0
+    # one 400 s sub cannot be stacked: the run reference is the 120 s
+    # group's own reference, never the ghosted sub
+    assert rows[0]["is_reference"] and rows[ref_i]["exp"] == 120.0 and ref_i != 9
     assert rows[9]["action"] == "reject" and "second_star_set" in rows[9]["reason"]
     assert all(rows[i]["action"] == "keep" for i in range(1, 9)), [r["reason"] for r in rows]
 
