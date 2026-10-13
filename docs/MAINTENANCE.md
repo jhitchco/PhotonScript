@@ -516,15 +516,43 @@ from the table.
   July table + ingested AFs, narrowband = L line + `focus_filter_offsets`.
   With no live focuser temperature at build time the first AF temperature of
   the last night stands in (`expected_temp` in `/api/focus`).
-- Drive mode (`focus_model_drive`, default **off** = advisory): once
-  `/api/focus` `rc16.model.trust.trusted` is true (>= 8 L AFs, a fitted
+- Focus table (`photonscript focus-table [--temp T] [--payoff] [--json]`,
+  GET `/api/focus/table`, the Focus card): per filter (L R G B Ha OIII SII)
+  `position = intercept_L + slope x T + offset`, the offset measured from
+  same-night pairs (an L AF, then the filter AF within 30 min and 1 C,
+  slope-corrected; 3+ pairs), else the model's intercept difference (3+ AFs
+  each side), else `focus_filter_offsets`, else 0. Each row has a confidence
+  and a drive verdict; `proposed_env` is the measured offsets as a
+  `PS_FOCUS_FILTER_OFFSETS` line. `--payoff` replays last week's AFs: how
+  many drive mode would have kept and the AF minutes / shutter hours saved.
+- Drive mode (`focus_model_drive`, default **seed** = the model seeds each
+  AF, the sequence keeps its AFs; the old `true` / `false` still parse as
+  drive / seed). `drive`: while the model is trusted (>= 8 L AFs, a fitted
   slope, scatter <= half the CFZ; `focus_cfz_steps`, else the AF step size),
-  turning it on makes each RC16 filter block with >= 5 AFs of its own move to
-  the table position (`deploy\focus-model-move.cmd` -> POST
+  each RC16 filter block whose table row is drive-ready (high confidence,
+  >= 5 AFs of its own, newest AF at most 14 days older than the newest RC16
+  AF and within one CFZ of the table, no pending counter shift) moves to the
+  table position (`deployocus-model-move.cmd` -> POST
   `/api/focus/model-move`) instead of AF on L + offset; the temperature
-  trigger runs the same move (1 C), the HFR trigger keeps the full AF, and a
-  verify AF runs every `focus_model_verify_af_min` (120). Moves are logged to
-  `focus_model_moves.jsonl` and shown on the card.
+  trigger re-moves after half a CFZ of drift (0.5 x CFZ / |slope|, 1 to 5 C),
+  the HFR trigger keeps the full AF, the target start keeps its AF, and a
+  verify AF runs every `focus_model_verify_af_min` (120). Other filters keep
+  today's AF recipe. An AF after a meridian flip comes from NINA's profile
+  (Options > Imaging > Meridian Flip > Autofocus after flip): no sequence
+  item can run an AF from the flip trigger. Moves are logged to
+  `focus_model_moves.jsonl` (with `temp_source`) and shown on the card.
+- Model temperature: the RC16 EAF thermometer freezes (21.29 C for hours).
+  A model move uses the NINA weather (AARO station) ambient, plus the
+  learned focuser-minus-ambient bias, when the focuser reads a value in
+  `focus_frozen_temps` (21.29) or has not changed for 60 min while the
+  ambient moved > 1 C (`focus_temp_track.json`).
+- Counter shifts: the EAF counter reset when it dropped off USB; Jeremy
+  re-zeroed it at `focus_counter_epoch` (2026-10-12T20:20). After that time
+  an AF with R^2 >= 0.9 more than 3 sigma from the model is flagged
+  "focuser counter shifted?" and the table re-anchors on it (older points are
+  translated, not averaged); the next AF confirms or reverts it, and nothing
+  drives while it is pending. After a re-zero, set the epoch to the re-zero
+  time.
 - Filter offsets (PS-144): `focus_filter_offsets` (System page,
   `PS_FOCUS_FILTER_OFFSETS`) defaults to `Ha:120,OIII:120,SII:120` (Ha
   measured +123 se 6.3 on 2026-10-06; the old -187 put every NB sub about

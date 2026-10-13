@@ -65,15 +65,29 @@ plus a forced pass once a day; the backfill hook stays. POST
 writes focus_ingest_status.json (what was read, parse failures, why reports
 were rejected or left out) for GET /api/focus.
 
-Model-driven focus (PS-76 part 2, focus_model_drive, default off)
------------------------------------------------------------------
+Model-driven focus (PS-76 part 2, focus_model_drive, default "seed")
+--------------------------------------------------------------------
 trust() says whether the RC16 model is good enough to replace the per-block
 AF: enough L points, a fitted slope, and a fit scatter well inside the
 critical focus zone (focus_cfz_steps, else the AF step size as a proxy).
-Advisory until Jeremy turns focus_model_drive on; then the sequence moves
-the focuser to the table position on filter and temperature changes
-(ExternalScript -> POST /api/focus/model-move) and keeps a periodic verify
-AF (focus_model_verify_af_min).
+focus_model_drive "seed" (the default, today's behavior): the model only
+seeds each AF. "drive": the sequence moves the focuser to the focus table
+position (focus_table.py) on filter and temperature changes (ExternalScript
+-> POST /api/focus/model-move) for the filters whose table row passes the
+per-filter trust checks, and keeps a periodic verify AF
+(focus_model_verify_af_min).
+
+Focuser counter shifts (focus table)
+------------------------------------
+The RC16 EAF dropped off USB twice in October 2026 and its step counter
+reset; Jeremy re-zeroed it (focus_counter_epoch). Points before the epoch
+are taken as they are. After it, an AF with a good curve (R^2 >=
+SHIFT_MIN_R2) landing more than 3 sigma from the model is a counter shift:
+counter_frame() re-anchors on that AF (every older point is translated by
+the jump, nothing is averaged) until the next good AF says otherwise (back
+in the old frame = a one-off bad AF, the shift is reverted). _rc16_points()
+returns the points in the CURRENT frame, so every consumer (seeds, table,
+moves, offsets) follows a shift with no extra code.
 """
 from __future__ import annotations
 
@@ -110,6 +124,15 @@ _TRUST_MIN_POINTS = 8
 _TRUST_CFZ_FRACTION = 0.5
 _TRUST_FALLBACK_SIGMA = 25.0
 _MOVE_DEADBAND_STEPS = 8   # model-move: closer than this, leave the focuser
+
+# Counter-shift detection (focus table): an AF this good landing more than
+# SHIFT_SIGMA x the model scatter from the model is a focuser counter jump.
+SHIFT_SIGMA = 3.0
+SHIFT_MIN_R2 = 0.9
+_SHIFT_MIN_BASE_POINTS = 8
+
+DRIVE_SEED = "seed"
+DRIVE_DRIVE = "drive"
 
 # Camera names that settle which rig wrote a report when a report carries
 # them (NINA's AF report JSON normally names no camera; a plugin or a newer
@@ -498,9 +521,11 @@ def _ingest_locked(config, rdir: str) -> dict:
             pts.sort(key=lambda p: str(p.get("time") or ""))
             if added[rig] or moved:
                 _write_json(_points_path(config, rig), pts)
+            fpts = pts if rig == "piggyback" else counter_frame(
+                pts, _counter_epoch(config), _ref_filter(config))["points"]
             _write_json(_model_path(config, rig),
-                        fit(pts, ref_filter=(OSC_FILTER if rig == "piggyback"
-                                             else _ref_filter(config))))
+                        fit(fpts, ref_filter=(OSC_FILTER if rig == "piggyback"
+                                              else _ref_filter(config))))
         logger.info("focus_model: %d AF report(s) read from %d file(s) "
                     "(%d unparseable), RC16 %d added / %d rejected / %d "
                     "stored, Piggy-600 %d added, %d other-rig, %d "
@@ -816,8 +841,154 @@ def af_skip_readiness(model: dict, min_points: int = _TRUST_MIN_POINTS,
     return {"ready": not reasons, "reasons": reasons}
 
 
-def _rc16_points(config) -> list[dict]:
+def _rc16_raw_points(config) -> list[dict]:
     return [p for p in load_points(config) if _point_rig(p, config) == "rc16"]
+
+
+def _rc16_points(config) -> list[dict]:
+    """The stored RC16 AF points in the CURRENT focuser counter frame
+    (counter_frame: identical to the stored points until a counter shift is
+    detected after focus_counter_epoch)."""
+    return counter_frame(_rc16_raw_points(config), _counter_epoch(config),
+                         _ref_filter(config))["points"]
+
+
+def drive_mode(config) -> str:
+    """focus_model_drive as "seed" (default: the model seeds each AF, the
+    sequence keeps its AFs) or "drive" (table moves for drive-ready
+    filters). The old boolean values still work: true/on/1 = drive."""
+    v = getattr(config, "focus_model_drive", DRIVE_SEED)
+    if isinstance(v, bool):
+        return DRIVE_DRIVE if v else DRIVE_SEED
+    v = str(v or "").strip().lower()
+    return DRIVE_DRIVE if v in (DRIVE_DRIVE, "true", "on", "1", "yes") \
+        else DRIVE_SEED
+
+
+def _counter_epoch(config) -> str:
+    return str(getattr(config, "focus_counter_epoch", "") or "").strip()
+
+
+_FRAME_CACHE: dict = {}
+
+
+def counter_frame(pts: list[dict], epoch: str, ref_filter: str = "L",
+                  sigma_mult: float = SHIFT_SIGMA,
+                  min_r2: float = SHIFT_MIN_R2) -> dict:
+    """Detect focuser counter shifts after `epoch` (a local
+    'YYYY-MM-DDTHH:MM:SS'; empty = detection off) and return the points in
+    the current counter frame.
+
+    The model fitted on the points before the epoch predicts each later AF
+    (in time order). A good AF (R^2 >= min_r2) more than sigma_mult x the
+    fit scatter away opens a shift event: the frame re-anchors on it (the
+    jump is the AF minus the prediction). The next good AF confirms it
+    (it agrees with the new frame) or reverts it (it agrees with the old
+    frame: the first AF was a one-off). Older points are translated into
+    the newest frame, so a fit over them is anchored on the new AF instead
+    of averaging it in.
+
+    {points, events [{time, filter, position, predicted, delta, r2, status,
+    prev_shift}], shift (steps, current frame minus the epoch frame),
+    pending (the unconfirmed event or None), threshold}."""
+    pts = list(pts or [])
+    if not epoch:
+        return {"points": pts, "events": [], "shift": 0, "pending": None,
+                "threshold": None}
+    pre = [p for p in pts if str(p.get("time") or "")[:19] < epoch]
+    post = sorted((p for p in pts if str(p.get("time") or "")[:19] >= epoch),
+                  key=lambda p: str(p.get("time") or ""))
+    out = {"points": pts, "events": [], "shift": 0, "pending": None,
+           "threshold": None}
+    if not post or len(pre) < _SHIFT_MIN_BASE_POINTS:
+        return out
+    # the base fit is the expensive part: cache it on the pre-epoch points
+    key = (epoch, ref_filter, tuple((p.get("time"), p.get("filter"),
+                                     p.get("position"), p.get("temp"))
+                                    for p in pre))
+    hit = _FRAME_CACHE.get("base")
+    if hit is not None and hit[0] == key:
+        base = hit[1]
+    else:
+        base = fit(pre, ref_filter=ref_filter)
+        _FRAME_CACHE["base"] = (key, base)
+    if base.get("sigma_steps") is None:
+        return out
+    thr = sigma_mult * max(float(base["sigma_steps"]), _MIN_SIGMA_STEPS)
+    slope = base.get("slope_steps_per_c") or 0.0
+    rows = base.get("filters") or {}
+    shift = 0.0
+    pending = None
+    shifts = []            # cumulative shift in force at each post point
+    events = []
+    for i, p in enumerate(post):
+        pos, t = _num(p.get("position")), _num(p.get("temp"))
+        row = rows.get(p.get("filter"))
+        r2 = _num(p.get("r2"))
+        good = r2 is not None and r2 >= min_r2
+        if pos is None or t is None or row is None or not good:
+            shifts.append(shift)
+            continue
+        pred = row["intercept"] + slope * t
+        res = pos - (pred + shift)
+        if pending is not None:
+            old = pos - (pred + pending["prev_shift"])
+            if abs(old) <= thr < abs(res):
+                # back in the old frame: the event AF was a one-off
+                shift = pending["prev_shift"]
+                for j in range(pending["idx"], len(shifts)):
+                    shifts[j] = shift
+                pending["status"] = "reverted"
+                pending = None
+                res = old
+            elif abs(res) <= thr:
+                pending["status"] = "confirmed"
+                pending = None
+        if abs(res) > thr and pending is None:
+            ev = {"time": p.get("time"), "filter": p.get("filter"),
+                  "position": int(round(pos)),
+                  "predicted": int(round(pred + shift)),
+                  "delta": int(round(res)), "r2": r2,
+                  "status": "provisional", "prev_shift": shift, "idx": i}
+            shift += res
+            events.append(ev)
+            pending = ev
+        shifts.append(shift)
+    final = shift
+    adj = {id(p): final - sh for p, sh in zip(post, shifts)}
+    framed = []
+    for p in pts:
+        d = adj.get(id(p), final)    # pre-epoch points carry the full shift
+        if round(d) and _num(p.get("position")) is not None:
+            framed.append(dict(p, position=round(float(p["position"]) + d),
+                               frame_shift=round(d)))
+        else:
+            framed.append(p)
+    for ev in events:
+        ev.pop("idx", None)
+        ev["prev_shift"] = round(ev["prev_shift"])
+    out = {"points": framed, "events": events, "shift": round(final),
+           "pending": next((e for e in events
+                            if e["status"] == "provisional"), None),
+           "threshold": round(thr, 1)}
+    return out
+
+
+def counter_status(config) -> dict:
+    """counter_frame() of the stored RC16 points, without the points:
+    {epoch, events, shift, pending, threshold, flag}. flag is the
+    "focuser counter shifted?" line while a shift waits for its next AF."""
+    fr = counter_frame(_rc16_raw_points(config), _counter_epoch(config),
+                       _ref_filter(config))
+    pend = fr["pending"]
+    return {"epoch": _counter_epoch(config) or None,
+            "events": fr["events"], "shift": fr["shift"], "pending": pend,
+            "threshold": fr["threshold"],
+            "flag": (f"focuser counter shifted? {pend['filter']} AF "
+                     f"{str(pend['time'])[:16]} landed {pend['delta']:+d} "
+                     "steps from the table (R^2 "
+                     f"{pend['r2']:.2f}); re-anchored on it until the next "
+                     "AF confirms") if pend else None}
 
 
 def cfz_steps(config, pts: list[dict] | None = None) -> tuple:
@@ -845,8 +1016,8 @@ def trust(config, model: dict | None = None,
     """Is the RC16 model good enough to move the focuser instead of running
     AF (PS-76 part 2)? trusted = af_skip_readiness with the scatter bar at
     _TRUST_CFZ_FRACTION x CFZ (or 25 steps with no CFZ). mode = "drive" only
-    when focus_model_drive is on AND the model is trusted; otherwise
-    "advisory" (the sequence keeps its AFs)."""
+    when focus_model_drive is "drive" AND the model is trusted; otherwise
+    "advisory" (the sequence keeps its AFs; the model seeds them)."""
     pts = _rc16_points(config) if pts is None else pts
     if model is None:
         model = fit(pts, ref_filter=_ref_filter(config))
@@ -854,11 +1025,11 @@ def trust(config, model: dict | None = None,
     limit = (round(_TRUST_CFZ_FRACTION * cfz, 1) if cfz
              else _TRUST_FALLBACK_SIGMA)
     rd = af_skip_readiness(model, _TRUST_MIN_POINTS, limit)
-    on = bool(getattr(config, "focus_model_drive", False))
+    on = drive_mode(config) == DRIVE_DRIVE
     return {"trusted": rd["ready"], "reasons": rd["reasons"],
             "cfz_steps": (round(cfz) if cfz else None), "cfz_source": src,
             "sigma_steps": model.get("sigma_steps"), "sigma_limit": limit,
-            "drive_enabled": on,
+            "drive_enabled": on, "drive_mode": drive_mode(config),
             "mode": "drive" if (on and rd["ready"]) else "advisory",
             "filters": drive_filters(model),
             "verify_af_min": float(getattr(config, "focus_model_verify_af_min",
@@ -899,32 +1070,38 @@ def expected_temp(config, today=None, max_age_days: int = 21) -> dict | None:
 
 
 def model_move_target(config, filter_name: str, temp) -> dict:
-    """Where a model-driven move (focus_model_drive) should put the focuser
-    for this filter at this focuser temperature, or why it should not move.
-    {move: bool, position?, reason, confidence?}. Read-only."""
-    if not bool(getattr(config, "focus_model_drive", False)):
-        return {"move": False, "reason": "focus_model_drive is off (advisory)"}
+    """Where a model-driven move (focus_model_drive "drive") should put the
+    focuser for this filter at this temperature, or why it should not move.
+    The position is the focus table row (focus_table.build_table: L
+    intercept + slope x T + the measured filter offset); the filter must be
+    drive-ready there and the row "high" confidence at this temperature.
+    {move: bool, position?, reason, confidence?, offset_source?}.
+    Read-only."""
+    if drive_mode(config) != DRIVE_DRIVE:
+        return {"move": False, "reason": "focus_model_drive is seed (the "
+                "model seeds each AF; no table moves)"}
     t = _num(temp)
     if t is None:
         return {"move": False, "reason": "no focuser temperature"}
-    pts = _rc16_points(config)
-    model = fit(pts, ref_filter=_ref_filter(config))
-    tr = trust(config, model, pts)
-    if not tr["trusted"]:
+    from photonscript.scheduler.focus_table import build_table
+    tab = build_table(config, temp=t)
+    if tab.get("error"):
+        return {"move": False, "reason": "focus table: " + tab["error"]}
+    if not tab.get("trusted"):
         return {"move": False, "reason": "model not trusted: "
-                + "; ".join(tr["reasons"])}
+                + "; ".join(tab.get("trust_reasons") or [])}
     filt = norm_filter(filter_name, config)
-    if filt not in tr["filters"]:
-        return {"move": False, "reason": f"{filt}: too few AF points of its "
-                "own for a model move"}
-    pr = predict(model, filt, t)
-    if pr is None or pr["confidence"] != "high":
-        return {"move": False, "reason": f"{filt} at {t:.1f} C: prediction "
-                f"confidence {pr and pr['confidence']} (needs high)"}
+    row = (tab.get("filters") or {}).get(filt)
+    if not row or row.get("position") is None:
+        return {"move": False, "reason": f"{filt}: no focus table row"}
+    if not row.get("drive_ready"):
+        return {"move": False, "reason": f"{filt} not drive-ready: "
+                + "; ".join(row.get("drive_reasons") or [])}
     from photonscript.scheduler.focus_seeds import _clamp
-    return {"move": True, "position": _clamp(pr["position"]),
-            "filter": filt, "temp": t, "confidence": pr["confidence"],
-            "reason": f"model {filt} at {t:.1f} C"}
+    return {"move": True, "position": _clamp(row["position"]),
+            "filter": filt, "temp": t, "confidence": row["confidence"],
+            "offset": row["offset"], "offset_source": row["offset_source"],
+            "reason": f"table {filt} at {t:.1f} C"}
 
 
 def record_move(config, entry: dict) -> None:
@@ -1017,7 +1194,14 @@ def summary(config) -> dict:
         "offset_check": offset_check(config, pts, model),
         "af_skip_readiness": {"ready": tr["trusted"],
                               "reasons": tr["reasons"]},
+        "table": _table(config, pts),
     }
+
+
+def _table(config, pts):
+    """focus_table.build_table for the summary (the Focus card)."""
+    from photonscript.scheduler.focus_table import build_table
+    return build_table(config, pts=pts)
 
 
 # --------------------------------------------------------------------------

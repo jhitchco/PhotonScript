@@ -344,7 +344,7 @@
                 (tr.cfz_steps!=null ? tr.cfz_steps+' steps ('+esc(tr.cfz_source)+')' : 'unknown')+
                 ', scatter limit '+fmt(tr.sigma_limit,0)+
                 (tr.reasons&&tr.reasons.length ? '; '+tr.reasons.map(esc).join('; ') : '')+
-                (tr.drive_enabled ? '' : ' &middot; focus_model_drive off')+'</div>';
+                (tr.drive_enabled ? '' : ' &middot; focus_model_drive '+esc(tr.drive_mode||'seed'))+'</div>';
         }
         // PS-144: configured offset vs same-night L / filter AF pairs
         let offs = '';
@@ -371,6 +371,36 @@
             exp = '<div class="muted">Seeds now'+(et ? ' (at '+fmt(et.temp,1)+
                 '&deg;C, '+esc(et.basis)+')' : ' (no temperature known)')+': '+
                 (sl||'&mdash;')+'</div>';
+        }
+        // focus table: one position per filter at the expected temperature,
+        // offsets from same-night AF pairs, and which filters may drive
+        let ftab = '';
+        const fx = (!osc && s.table && s.table.filters) ? s.table : null;
+        if (fx) {
+            const sg = v => (v>0?'+':'')+v;
+            const fr = Object.keys(fx.filters).map(f => {
+                const r = fx.filters[f];
+                return '<tr'+(r.drive_ready?'':' class="thin"')+'><td>'+esc(f)+'</td><td>'+
+                    (r.position!=null?r.position:'&mdash;')+'</td><td>'+sg(r.offset)+
+                    ' <span class="muted">'+esc(r.offset_source)+
+                    (r.offset_se!=null&&r.offset_source!=='reference'?' &plusmn;'+fmt(r.offset_se,0):'')+
+                    '</span></td><td>'+r.n_afs+'</td><td>'+r.n_pairs+'</td><td>'+
+                    esc(r.confidence)+'</td><td style="text-align:left;">'+
+                    (r.drive_ready ? '<b>ready</b>' : '<span class="muted">'+
+                     esc((r.drive_reasons||[]).join('; '))+'</span>')+'</td></tr>';
+            }).join('');
+            const ctr = fx.counter||{};
+            ftab = '<div class="muted" style="margin-top:.4rem;">Focus table'+
+                (fx.temp!=null ? ' at '+fmt(fx.temp,1)+'&deg;C ('+esc(fx.temp_basis)+')' : '')+
+                ': '+esc(fx.formula||'')+' &middot; focus_model_drive <b>'+esc(fx.drive_mode)+
+                '</b> &middot; drive-ready: <b>'+((fx.drive_ready||[]).map(esc).join(', ')||'none')+
+                '</b> &middot; re-move after '+fmt(fx.move_temp_step_c,1)+'&deg;C'+
+                (ctr.flag ? ' &middot; <b style="color:#fca5a5;">'+esc(ctr.flag)+'</b>' : '')+
+                '</div><table class="cal"><thead><tr><th>Filter</th><th>Position</th>'+
+                '<th>Offset</th><th>AFs</th><th>Pairs</th><th>Conf</th><th>Drive</th>'+
+                '</tr></thead><tbody>'+fr+'</tbody></table>'+
+                '<div class="muted">Measured offsets as a config line: '+
+                esc(fx.proposed_env||'')+'</div>';
         }
         // lookup table: rows = whole-degree temps, cols = filters
         let table = '';
@@ -415,7 +445,7 @@
             (osc ? '<div class="muted">Read-only: nothing seeds from it yet. '+
                    'Ingest status is on the RC16 card.</div>'
                  : ingestLine(s.ingest, s.enabled))+
-            scatter(series, null)+table+resT+movesT+'</div>';
+            scatter(series, null)+ftab+table+resT+movesT+'</div>';
     }
     loadFocus();
     setInterval(loadFocus, 60000);
