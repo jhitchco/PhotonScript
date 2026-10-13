@@ -184,13 +184,20 @@ def blend_candidate(o: AutoOptions, target: str, discover) -> tuple[object | Non
 # --- review image + notice -------------------------------------------------------
 
 def finals(run_dir: Path, blend: bool = False) -> list[Path]:
-    """The finished JPGs of a run: integrate *_final.jpg (+ *_hoo.jpg,
-    *_gold.jpg), or a blend's *_blend.jpg (+ *_core.jpg)."""
+    """The finished JPGs of a run: a mono run's color images first
+    (<target>_LRGB / _RGB / _SHO / _HOO.jpg), then integrate *_final.jpg
+    (+ *_hoo.jpg, *_gold.jpg); or a blend's *_blend.jpg (+ *_core.jpg).
+    make_review shows the first four."""
+    from photonscript.integration.mono_color import color_jpgs
     fin = Path(run_dir) / "out" / "final"
     pats = ("*_blend.jpg", "*_core.jpg") if blend else ("*_final.jpg", "*_hoo.jpg", "*_gold.jpg")
-    out: list[Path] = []
+    out: list[Path] = [] if blend else color_jpgs(Path(run_dir) / "out")
+    seen = {p.name.lower() for p in out}
     for pat in pats:
-        out += sorted(fin.glob(pat))
+        for p in sorted(fin.glob(pat)):
+            if p.name.lower() not in seen:     # Windows glob is case-blind: *_hoo matches _HOO
+                seen.add(p.name.lower())
+                out.append(p)
     return out
 
 
@@ -231,10 +238,12 @@ def notice_text(kind: str, target: str, rig: str, res: dict, why: str) -> str:
     integ = (res.get("integration") or {})
     fin = (res.get("finish") or {})
     h = res.get("hours_integrated")
+    made = (res.get("mono_color") or {}).get("made") or []   # mono: <target>_LRGB, _SHO ...
     return (f"Integrated {target} [{rig}] v{res.get('ledger_version', '?')}: "
             + (f"{h:.1f} h, " if isinstance(h, (int, float)) else "")
             + f"integration {'ok' if integ.get('ok') else 'FAILED'}"
             + (f", finish {'ok' if fin.get('ok') else 'FAILED'}" if fin else "")
+            + (", color " + ", ".join(made) if made else "")
             + f" ({Path(res.get('run_dir', '')).name}). {why}")
 
 

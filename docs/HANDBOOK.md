@@ -1246,6 +1246,11 @@ Mono runs also get color (config `integrate_mono_color`, default on;
 `_SHO` (R = SII, G = Ha, B = OIII, SCNR green + gold / blue hue curve) and
 `_HOO` (R = Ha, G = B = OIII; alone when SII is missing), each .xisf / .tif /
 .jpg, `mono_color_steps.json`, `out\color.log`, a `color` block in the ledger.
+The color image is then the run's final (ledger `final`, first in the Pushover
+review JPG, the AstroBin packet's Final image, in that order LRGB, RGB, SHO,
+HOO), the packet's processing text names ChannelCombination / LRGBCombination
+and the SHO / HOO mapping, and the dashboard, target and review pages list the
+color images of the latest ledger.
 Color an existing mono run without restacking: `photonscript finish --mono-run
 <run folder> --color auto|lrgb|rgb|sho|hoo [--dry-run]` (NEW `Staging\Finish\`
 folder, ledger kind finish).

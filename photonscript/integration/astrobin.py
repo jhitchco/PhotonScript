@@ -121,7 +121,8 @@ def packet_md(info: dict) -> str:
     calibration {bias, darks [(light exp, n, dark exp, scaled)], flats
     [(filter, n, note)], notes}, equipment {camera, optics, mount,
     software}, location {name, lat, lon, elev, bortle}, timing [(stage,
-    minutes)], integrated_by_pi, known_issues [str], final, processing."""
+    minutes)], integrated_by_pi, known_issues [str], final, processing, color_images
+    [str] (mono color JPGs, optional)."""
     t = info["target"]
     rows = info["rows"]
     L: list[str] = []
@@ -135,6 +136,7 @@ def packet_md(info: dict) -> str:
     L += _table(["Item", "State"], [
         ["Acquisition CSV", "Done (this run)"],
         ["Final image", info.get("final") or "Not made (finish not run)"],
+        *([["Color images", ", ".join(info["color_images"])]] if info.get("color_images") else []),
         ["Integration", "PixInsight run finished" if info.get("integrated_by_pi")
          else "PLANNED only: the counts below are the subs selected for stacking, not yet integrated"],
         ["AstroBin upload", "Not uploaded. Staging area only; Jeremy presses Publish"]])

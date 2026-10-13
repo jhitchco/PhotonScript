@@ -377,6 +377,14 @@ def catalog_coords(target: str) -> tuple[float | None, float | None]:
     return None, None
 
 
+def _color_processing(rc: dict | None) -> str:
+    """The packet's color sentence (mono runs), '' when no color image."""
+    if not rc:
+        return ""
+    txt = mono_color.processing_text(rc.get("items") or [], rc.get("made") or [])
+    return (" " + txt) if txt else ""
+
+
 # ----------------------------------------------------------------- run
 
 def workspace(o: Options, echo=print) -> scratch.Workspace | None:
@@ -755,6 +763,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                               "minutes": 0.0}
                 rc["notes"] = notes
                 result["mono_color"] = rc
+                # the color image is the run's final (ledger, review JPG, packet)
+                final_img = mono_color.preferred_final(out_dir, final_img)
     else:
         echo("  PixInsight not started (--no-pixinsight). Run it later with:")
         echo(f'    "{o.pixinsight}" -n --automation-mode --run={integ_js} --force-exit')
@@ -818,7 +828,9 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                            + "StarAlignment with distortion correction, LocalNormalization, "
                            "ImageIntegration with PSF Signal Weight and "
                            + ("Winsorized sigma clipping, " if len(integrated) >= 15 else "sigma clipping, ") +
-                           "GradientCorrection, plate solve, color calibration, linked stretch."),
+                           "GradientCorrection, plate solve, color calibration, linked stretch."
+                           + _color_processing(result.get("mono_color"))),
+            "color_images": [str(p) for p in mono_color.color_jpgs(out_dir)] if result.get("mono_color") else [],
             "timing": [(r[0], r[3]) for r in timer.rows],
             "known_issues": issues,
         }

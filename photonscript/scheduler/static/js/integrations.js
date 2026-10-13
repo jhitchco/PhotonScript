@@ -47,11 +47,17 @@
         return out;
     }
 
+    // mono runs: the color images (<target>_LRGB / _RGB / _SHO / _HOO.jpg)
+    function colorNames(L) {
+        return (L.color || []).map(p => String(p).split(/[\\/]/).pop().replace(/\.jpg$/i, ''));
+    }
+
     function row(r, opts) {
         const L = r.latest || {};
         const col = L.integrated_ok === false ? '#f87171' : (L.integrated_ok ? '#4ade80' : '#eab308');
         const tip = ['run ' + L.run, L.run_dir ? 'folder ' + L.run_dir : '',
                      L.packet ? 'packet ' + L.packet : '', L.final ? 'final ' + L.final : '',
+                     (L.color || []).length ? 'color ' + L.color.join(', ') : '',
                      L.calibration ? 'calibration ' + L.calibration : '',
                      L.trigger ? 'trigger: ' + L.trigger : ''].filter(Boolean).join(' | ');
         let h = '<div title="' + esc(tip) + '"><span style="color:' + col + ';">&#9679;</span> ' +
@@ -59,12 +65,14 @@
             (r.versions > 1 ? ' <span style="opacity:.6;">(' + r.versions + ' versions)</span>' : '') +
             ' &middot; <span style="color:' + (r.new_data_h >= 1 ? '#7dd3fc' : 'inherit') +
             ';">new data since: ' + Number(r.new_data_h || 0).toFixed(1) + ' h</span>' +
+            (colorNames(L).length ? ' &middot; color ' + esc(colorNames(L).join(', ')) : '') +
             (L.verdict ? ' &middot; verdict ' + esc(L.verdict) : '') +
             (L.open_asks ? ' &middot; ' + L.open_asks + ' open ask' + (L.open_asks > 1 ? 's' : '') : '') +
             '</div>';
         if (opts && opts.paths) {
-            const p = [['run folder', L.run_dir], ['AstroBin packet', L.packet], ['final', L.final],
-                       ['AstroBin', L.astrobin_url]].filter(x => x[1]);
+            const p = [['run folder', L.run_dir], ['AstroBin packet', L.packet], ['final', L.final]]
+                .concat((L.color || []).map(c => ['color', c]))
+                .concat([['AstroBin', L.astrobin_url]]).filter(x => x[1]);
             if (p.length) {
                 h += '<div style="opacity:.75;font-size:.72rem;margin-left:1rem;">' +
                     p.map(x => esc(x[0]) + ' <code>' + esc(x[1]) + '</code>').join('<br>') + '</div>';
@@ -195,6 +203,7 @@
         let h = '<div style="margin:.25rem 0;">';
         if (!compact) {
             h += '<div><b>' + esc(RIG[r.rig] || r.rig) + '</b> ' + esc(L.headline || '') +
+                (colorNames(L).length ? ' &middot; color ' + esc(colorNames(L).join(', ')) : '') +
                 (L.astrobin_url ? ' &middot; <a href="' + esc(L.astrobin_url) +
                  '" target="_blank" rel="noopener" style="color:#c084fc;">AstroBin</a>' : '') +
                 '</div>';

@@ -420,6 +420,7 @@ def run_mono_color(o: Options, echo=print) -> dict:
                                                        "sho_scnr")},
                    "color": mc.ledger_block(color or {"items": items, "outputs": outs}, res["notes"]),
                    "outputs": outs,
+                   "final": mc.preferred_final(out_dir),   # LRGB, RGB, SHO, then HOO
                    "timing": {"started_utc": timer.rows[0][1] if timer.rows else "",
                               "finished_utc": timer.rows[-1][2] if timer.rows else "",
                               "minutes": round(sum(float(r[3]) for r in timer.rows), 2),

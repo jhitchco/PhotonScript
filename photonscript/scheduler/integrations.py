@@ -176,6 +176,14 @@ def new_data_s(led: L.Ledger | None, rows: list[dict]) -> float:
     return tot
 
 
+def color_images(machine: dict) -> list[str]:
+    """A mono run's color JPGs from the ledger's color block
+    (<target>_LRGB / _RGB / _SHO / _HOO.jpg), in that order."""
+    outs = [str(p) for p in ((machine.get("color") or {}).get("outputs") or [])]
+    order = ("_LRGB.jpg", "_RGB.jpg", "_SHO.jpg", "_HOO.jpg")
+    return [p for sfx in order for p in outs if p.endswith(sfx)]
+
+
 def ledger_brief(led: L.Ledger) -> dict:
     m = led.machine
     ab = m.get("astrobin") or {}
@@ -189,6 +197,7 @@ def ledger_brief(led: L.Ledger) -> dict:
         "run_dir": m.get("run_dir", ""),
         "packet": ab.get("packet", ""), "csv": ab.get("csv", ""),
         "final": m.get("final") or "",
+        "color": color_images(m),
         "calibration": (m.get("calibration") or {}).get("status", ""),
         "verdict": led.review.verdict,
         "open_asks": len(led.open_asks()),

@@ -296,6 +296,58 @@ def run(run_dir: Path, cfg: dict, *, solver_block: str = "", exe: str, echo=prin
                 log=str(out_dir / LOG), outputs=outputs(out_dir, items))
 
 
+# the color kinds in the order a run's "final" image prefers them
+FINAL_ORDER = ("LRGB", "RGB", "SHO", "HOO")
+
+
+def color_jpgs(out_dir: Path) -> list[Path]:
+    """The color JPGs of a mono run, out/final/<prefix>_LRGB / _RGB / _SHO /
+    _HOO.jpg, in FINAL_ORDER. The suffix is matched case-sensitively, so
+    an OSC finish's <name>_hoo.jpg is not one of them."""
+    fin = Path(out_dir) / "final"
+    try:
+        names = sorted(p.name for p in fin.iterdir() if p.is_file())
+    except OSError:
+        return []
+    out: list[Path] = []
+    for kind in FINAL_ORDER:
+        out += [fin / n for n in names if n.endswith(f"_{kind}.jpg")]
+    return out
+
+
+def preferred_final(out_dir: Path, fallback: str = "") -> str:
+    """The run's "final" image: the first color JPG (LRGB, RGB, SHO, HOO)
+    when the color combine made one, else `fallback` (the per-filter
+    finish's *_final.jpg)."""
+    c = color_jpgs(out_dir)
+    return str(c[0]) if c else fallback
+
+
+def processing_text(items: list[dict], made_names: list[str] | None = None) -> str:
+    """AstroBin packet sentence for the color images actually made (every
+    item when made_names is None); '' when none."""
+    made_set = None if made_names is None else set(made_names)
+    parts = []
+    for it in items or []:
+        if made_set is not None and it.get("name") not in made_set:
+            continue
+        k = it.get("kind")
+        if k == "lrgb":
+            parts.append(f"{it['name']}: R, G and B combined with ChannelCombination, "
+                         "L applied with LRGBCombination")
+        elif k == "rgb":
+            parts.append(f"{it['name']}: R, G and B combined with ChannelCombination")
+        elif k == "sho":
+            parts.append(f"{it['name']}: SHO mapping (R = SII, G = Ha, B = OIII) with "
+                         "ChannelCombination, SCNR green and a gold / blue hue curve")
+        elif k == "hoo":
+            parts.append(f"{it['name']}: HOO mapping (R = Ha, G = B = OIII) with ChannelCombination")
+    if not parts:
+        return ""
+    return ("Color from the co-registered mono masters, each finished like the masters "
+            "(gradient, color calibration, stretch): " + "; ".join(parts) + ".")
+
+
 def ledger_block(res: dict | None, notes: list[str] | None = None) -> dict | None:
     """The ledger's color block (None when no combine was planned)."""
     if not res:
