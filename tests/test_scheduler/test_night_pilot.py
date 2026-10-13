@@ -5,7 +5,8 @@ needed a manual retry).
 
   1. the adapter (the sub doctor's run event schema) and the policy table;
   2. replay of tonight: guider conflict -> stop PHD2 -> subs improve;
-  3. trailing 300 s -> 180 s -> 120 s with verification, then a human;
+  3. trailing 300 s -> 180 s with verification; a step that did not
+     help is undone (trailing is not drift-per-second), a human;
   4. the restart race: one retry once NINA #1 reads idle;
   5. focus soft on one rig -> AF (RC16 restart, Piggy-600 companion), AF
      failing twice -> push; both rigs soft -> nothing;
@@ -311,7 +312,10 @@ def test_guided_fail_calibration_switches_to_unguided(tmp_path):
 
 # ------------------------------------------------------------- 3. trailing
 
-def test_trailing_300_to_180_to_120_then_human_then_dawn_revert(tmp_path):
+def test_trailing_step_that_did_not_help_is_undone_then_dawn_revert(tmp_path):
+    """2026-10-12 replay: 300 s trailed, 180 s trailed the same. The step is
+    undone (back to the goal default, restart after the sub), trailing is
+    recorded as not drift-per-second, and the night never goes to 120 s."""
     cfg = _cfg(tmp_path)
     armer, io = FakeArmer(guided=False), FakeIO(cfg, phd2="Stopped")
     proj = _heart(io)
@@ -330,6 +334,7 @@ def test_trailing_300_to_180_to_120_then_human_then_dawn_revert(tmp_path):
     assert "Heart Nebula: Ha 600 -> 180 s" in io.pushes[-1][1]
     st = npil.load_state(cfg, NIGHT)
     assert st["actions"][0]["status"] == "pending"
+    assert st["actions"][0]["params"]["prev_overrides"] is None
     assert st["ledger"][proj.id]["original_overrides"] is None
     # restart dispatched at 04:35 (NINA #1 stopped after the 300 s sub)
     armer.last_restart = {"at": "2026-10-13T04:35:30Z", "ok": True}
@@ -342,46 +347,108 @@ def test_trailing_300_to_180_to_120_then_human_then_dawn_revert(tmp_path):
     _sub(cfg, "04:39", 0.723, exp=180)
     _tick(cfg, armer, io, "04:43")
     v = _pilot_events(cfg, "verify")[-1]
-    assert v["result"] == "not_improved" and v["human"] is False
-    assert "Next: 120 s" in io.pushes[-1][1] and io.pushes[-1][0] == 0
-    # next diagnosis inside the rig cooldown: held
-    _diag(cfg, "04:44", "tracking", ecc=0.73, exp_s=180, shared_mount=True)
-    _tick(cfg, armer, io, "04:44")
-    assert len(armer.calls) == 1
-    assert any("one action per rig" in e["detail"] for e in _pilot_events(cfg, "held"))
-    # after the cooldown: 180 -> 120
-    _diag(cfg, "04:47", "tracking", ecc=0.73, exp_s=180, shared_mount=True)
-    _tick(cfg, armer, io, "04:47")
-    assert len(armer.calls) == 2
-    assert set(io.store().projects[proj.id].exposure_overrides.values()) == {120.0}
-    armer.last_restart = {"at": "2026-10-13T04:51:00Z", "ok": True}
-    _tick(cfg, armer, io, "04:51")
-    _sub(cfg, "04:52", 0.74, exp=120)
-    _sub(cfg, "04:54", 0.75, exp=120)
-    _tick(cfg, armer, io, "04:57")
-    v = _pilot_events(cfg, "verify")[-1]
     assert v["result"] == "not_improved" and v["human"] is True
-    assert io.pushes[-1][0] == 1 and "not a drift-per-second problem" in io.pushes[-1][1]
-    # given up: a third diagnosis does nothing
-    _diag(cfg, "05:20", "tracking", ecc=0.75, exp_s=120, shared_mount=True)
-    _tick(cfg, armer, io, "05:20")
+    pri, msg = io.pushes[-1]
+    assert pri == 1 and "not a drift-per-second problem" in msg
+    assert ("Heart Nebula: sub lengths back to the goal defaults (restart after "
+            "the current sub)") in msg
+    assert "No more shortening tonight" in msg
+    # the cap is gone and the restart that applies it was asked for
+    assert io.store().projects[proj.id].exposure_overrides is None
+    assert armer.calls == [("restart", "after_exposure")] * 2
+    rv = _pilot_events(cfg, "revert")
+    assert rv and rv[-1]["detail"].startswith("undid 'shortened RC16 subs 300 -> 180 s'")
+    a = npil.load_state(cfg, NIGHT)["actions"][0]
+    assert a["undo"]["ok"] and a["undo"]["restart"]["ok"]
+    # the next trailing diagnoses: given up, nothing goes to 120 s
+    for hm in ("04:47", "05:20"):
+        _diag(cfg, hm, "tracking", ecc=0.73, exp_s=300, shared_mount=True)
+        _tick(cfg, armer, io, hm)
     assert len(armer.calls) == 2
+    assert io.store().projects[proj.id].exposure_overrides is None
     st = npil.load_state(cfg, NIGHT)
     assert st["given_up"].get("rc16|tracking")
-    assert any("did not follow the sub length" in x for x in st["learned"])
-    # dawn: restored, the planner's long-term settings unchanged
+    assert any(x.startswith("RC16 trailing is not drift-per-second") and
+               "put back to 300 s" in x for x in st["learned"])
+    # dawn: nothing left to change, the goal settings as they were
     txt = npil.dawn_revert(cfg, NIGHT, store=io.store(), now=T("12:30"))
     assert txt.startswith("night pilot restored Heart Nebula: sub lengths restored")
     p = io.store().projects[proj.id]
     assert p.exposure_overrides is None
     assert next(e for e in p.exposure_plans if e.filter_type.value == "Ha").exposure_seconds == 600
     assert npil.dawn_revert(cfg, NIGHT, store=io.store()) is None   # once
-    assert _pilot_events(cfg, "revert")
     lines = npil.morning_lines(cfg, NIGHT)
     assert lines[0].startswith("Night pilot: ")
     assert "shortened RC16 subs 300 -> 180 s -> did not help (ecc 0.76 -> 0.728)" in lines[0]
     assert "Night pilot restored tonight-only changes: Heart Nebula" in lines
-    assert any(x.startswith("Night pilot learned: RC16 trailing did not follow") for x in lines)
+    assert any(x.startswith("Night pilot learned: RC16 trailing is not drift-per-second")
+               for x in lines)
+
+
+def test_second_step_that_did_not_help_goes_back_to_the_first(tmp_path):
+    """300 -> 180 s helped; later 180 -> 120 s did not: back to 180 s."""
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    proj = _heart(io)
+    _tonight_bad_subs(cfg)
+    _diag(cfg, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg, armer, io, "04:30")
+    armer.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:35")
+    _sub(cfg, "04:36", 0.52, exp=180)
+    _sub(cfg, "04:39", 0.50, exp=180)
+    _tick(cfg, armer, io, "04:43")
+    assert npil.load_state(cfg, NIGHT)["actions"][0]["result"] == "improved"
+    cap180 = dict(io.store().projects[proj.id].exposure_overrides)
+    assert set(cap180.values()) == {180.0}
+    # later in the night 180 s trails too: one more step
+    _diag(cfg, "05:30", "tracking", ecc=0.70, exp_s=180, shared_mount=True)
+    _tick(cfg, armer, io, "05:30")
+    assert set(io.store().projects[proj.id].exposure_overrides.values()) == {120.0}
+    a2 = npil.load_state(cfg, NIGHT)["actions"][1]
+    assert a2["params"]["prev_overrides"] == cap180
+    armer.last_restart = {"at": "2026-10-13T05:33:00Z", "ok": True}
+    _tick(cfg, armer, io, "05:33")
+    _sub(cfg, "05:34", 0.71, exp=120)
+    _sub(cfg, "05:36", 0.70, exp=120)
+    _tick(cfg, armer, io, "05:39")
+    assert io.store().projects[proj.id].exposure_overrides == cap180
+    assert "sub lengths back to " in io.pushes[-1][1] and "180 s" in io.pushes[-1][1]
+    assert len(armer.calls) == 3    # two steps and the undo, nothing more
+
+
+def test_undo_without_dark_left_restores_for_the_next_dispatch(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    proj = _heart(io)
+    _tonight_bad_subs(cfg)
+    _diag(cfg, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg, armer, io, "04:30")
+    armer.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:35")
+    _sub(cfg, "04:36", 0.75, exp=180)
+    _sub(cfg, "04:39", 0.76, exp=180)
+    armer.dawn = T("05:00")            # 17 min of dark left at the check
+    _tick(cfg, armer, io, "04:43")
+    assert io.store().projects[proj.id].exposure_overrides is None
+    assert len(armer.calls) == 1        # no restart for the undo
+    assert "from the next dispatch; no restart now: only 17 min of dark left" \
+        in io.pushes[-1][1]
+    # a goal edited by hand since the cap is never undone
+    cfg2 = _cfg(tmp_path / "b")
+    armer2, io2 = FakeArmer(), FakeIO(cfg2, phd2="Stopped")
+    p2 = _heart(io2)
+    _diag(cfg2, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg2, armer2, io2, "04:30")
+    armer2.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg2, armer2, io2, "04:35")
+    io2.store().update(p2.id, exposure_overrides={"Ha": 240})
+    _sub(cfg2, "04:36", 0.75, exp=180)
+    _sub(cfg2, "04:39", 0.76, exp=180)
+    _tick(cfg2, armer2, io2, "04:43")
+    assert io2.store().projects[p2.id].exposure_overrides == {"Ha": 240.0}
+    assert "sub lengths NOT restored" in io2.pushes[-1][1]
+    assert len(armer2.calls) == 1
 
 
 def test_trailing_improves_learns_sub_length(tmp_path):

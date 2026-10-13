@@ -31,9 +31,12 @@ night_pilot_verify_subs (2) subs of that rig:
                    night_pilot_sub_floor_s, as tonight-only exposure
                    overrides on the goal (ProjectStore.update), then
                    Restart tonight from now after the current sub (PS-143).
-                   Verified on ecc; not better -> the next step after the
-                   cooldown; nothing left -> a human ("shorter subs did not
-                   help: not a drift problem").
+                   Verified on ecc; a step that did not lower the ecc is
+                   undone (the previous length, or the goal default, and a
+                   restart after the current sub when the guards allow),
+                   "trailing is not drift-per-second" is recorded and a
+                   human is asked; no more shortening tonight. A step that
+                   helped can be followed by one more on a later diagnosis.
   focus            soft, round stars with the other rig sharp: run_af.
                    RC16: Restart tonight from now after the current sub
                    (every target start runs AF). Piggy-600: NINA #2 stopped
@@ -594,9 +597,10 @@ def _calibration_busy() -> str | None:
     return None
 
 
-def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
-          now: datetime) -> str | None:
-    """Why this action must not run now, else None."""
+def live_guard(cfg, armer, ctx: dict) -> str | None:
+    """The part of guard() that does not depend on the action: armer state,
+    calibration capture, arm recipe, NINA #1's running items, PHD2
+    calibrating. Why not now, else None."""
     from photonscript.scheduler.armer import WATCH_STATE
     state = str(getattr(armer, "state", "") or "")
     if state == WATCH_STATE:
@@ -619,6 +623,15 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
             return f"NINA #1 runs '{n}'"
     if str(ctx.get("phd2") or "").lower() == "calibrating":
         return "PHD2 is calibrating"
+    return None
+
+
+def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
+          now: datetime) -> str | None:
+    """Why this action must not run now, else None."""
+    why = live_guard(cfg, armer, ctx)
+    if why:
+        return why
     action, rig = dec["action"], d["rig"]
     pol = POLICY[action]
     lim = limits(cfg)
@@ -800,6 +813,31 @@ def _norm_ov(v) -> dict:
     return {str(k): float(x) for k, x in (v or {}).items() if x}
 
 
+def undo_sub_cap(st: dict, store, a: dict) -> tuple[bool, str]:
+    """Undo one shorten step that did not help: the goal's sub lengths go
+    back to what they were before it (the previous step's cap, or the goal
+    defaults). A goal edited by hand since is left alone. (ok, detail)."""
+    from photonscript.scheduler.integrations import resolve_project
+    p = a.get("params") or {}
+    target = p.get("target")
+    proj = resolve_project(target, store.projects.values()) if target else None
+    if proj is None:
+        return False, f"no goal for target {target!r}"
+    e = (st.get("ledger") or {}).get(proj.id)
+    if e is None or e.get("applied_overrides") is None:
+        return False, f"{proj.target.name}: no sub cap of tonight to undo"
+    if _norm_ov(proj.exposure_overrides) != _norm_ov(e["applied_overrides"]):
+        return False, (f"{proj.target.name}: sub lengths changed by hand "
+                       "since: left as they are")
+    prev = dict(p.get("prev_overrides") or {})
+    store.update(proj.id, exposure_overrides=prev)
+    e["applied_overrides"] = dict(prev)
+    e["changes"].append({"what": "sub cap undone", "to_s": p.get("from_s")})
+    back = (", ".join(f"{k} {float(v):g} s" for k, v in prev.items()) if prev
+            else "the goal defaults")
+    return True, f"{proj.target.name}: sub lengths back to {back}"
+
+
 def revert(cfg, st: dict, store, now: datetime | None = None,
            why: str = "dawn") -> list[str]:
     """Undo the night's goal changes (sub length overrides, skipped goals).
@@ -948,7 +986,7 @@ async def tick(cfg, armer, io: PilotIO | None = None, now: datetime | None = Non
             diags[d["rig"]] = d
     ctx = await gather_ctx(cfg, armer, io, night, events, live=bool(diags))
     await _follow_up(cfg, armer, io, st, ctx, now)
-    await _verify(cfg, io, st, ctx, now)
+    await _verify(cfg, armer, io, st, ctx, now)
     # night ended without the dawn shutdown (disarmed, error): revert now
     from photonscript.scheduler.armer import LIVE_STATES
     if str(getattr(armer, "state", "")) not in LIVE_STATES and \
@@ -1047,11 +1085,13 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
     target = _goal_target(io.store(), (a["params"] or {}).get("target"),
                           ctx.get("target"), ctx.get("last_target"))
     if action == "shorten_subs":
+        prev = _goal_overrides(io.store(), target)
         ok, detail = apply_sub_cap(st, io.store(), target, a["params"]["to_s"])
         if not ok:
             a.update(status="failed", detail=detail)
             return
         a["params"]["target"] = target
+        a["params"]["prev_overrides"] = prev    # what an undo goes back to
         a["detail"] = detail + " for tonight"
     elif action == "skip_target":
         ok, detail = apply_skip(st, io.store(), target)
@@ -1061,6 +1101,16 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
         a["params"]["target"] = target
         a["detail"] = detail
     await _restart(cfg, armer, a, now)
+
+
+def _goal_overrides(store, target) -> dict | None:
+    """The goal's exposure overrides now (before a sub cap), None for none."""
+    from photonscript.scheduler.integrations import resolve_project
+    try:
+        proj = resolve_project(target, store.projects.values()) if target else None
+    except Exception:  # noqa: BLE001
+        proj = None
+    return (dict(proj.exposure_overrides or {}) or None) if proj is not None else None
 
 
 def _goal_target(store, *names) -> str | None:
@@ -1183,7 +1233,7 @@ async def _follow_up(cfg, armer, io, st, ctx, now) -> None:
                         f"within {RESTART_FOLLOW_MIN:g} min")
 
 
-async def _verify(cfg, io, st, ctx, now) -> None:
+async def _verify(cfg, armer, io, st, ctx, now) -> None:
     lim = limits(cfg)
     for a in st.get("actions") or []:
         if a.get("kind") != "act" or a.get("status") != "done" or a.get("result"):
@@ -1227,7 +1277,10 @@ async def _verify(cfg, io, st, ctx, now) -> None:
             _learn(cfg, st, a, before, med, now)
             await io.notify(cfg, msg, priority=0)
             continue
-        esc, human = _escalate(cfg, st, a, now)
+        undo = None
+        if a["action"] == "shorten_subs":
+            undo = await _undo_shorten(cfg, armer, io, st, a, now)
+        esc, human = _escalate(cfg, st, a, now, undo)
         msg = f"Night pilot: '{a['what']}' did NOT help: {nums}. {esc}"
         _event(cfg, night, "verify", msg, now, rig=rig, aid=a["id"],
                result="not_improved", before=before, after=med, human=human)
@@ -1236,21 +1289,58 @@ async def _verify(cfg, io, st, ctx, now) -> None:
         await io.notify(cfg, msg, priority=1 if human else 0)
 
 
-def _escalate(cfg, st, a, now) -> tuple[str, bool]:
+async def _undo_shorten(cfg, armer, io, st, a, now) -> str:
+    """A shorten step that did not lower the ecc only cost signal per sub
+    (2026-10-12: 300, 180 and 120 s all trailed alike and the night stayed
+    at 120 s for nothing). Put the lengths back (undo_sub_cap), then
+    restart after the current sub so they take effect when the live guards
+    and the dark left allow; otherwise they apply at the next dispatch.
+    Returns the text for the push."""
+    ok, detail = undo_sub_cap(st, io.store(), a)
+    rec = {"t": _iso(now), "ok": ok, "detail": detail, "restart": None}
+    a["undo"] = rec
+    if not ok:
+        _event(cfg, st["night"], "revert", f"undo of '{a['what']}' not done: "
+               f"{detail}", now, rig=a["rig"], aid=a["id"])
+        return f"sub lengths NOT restored ({detail})"
+    try:
+        running, target = await io.nina1_running(cfg)
+    except Exception:  # noqa: BLE001
+        running, target = None, None
+    why = live_guard(cfg, armer, {"running": running, "target": target})
+    left = _dark_left_min(armer, now)
+    if why is None and left is not None and left < RESTART_DARK_MIN:
+        why = f"only {max(0, int(left))} min of dark left"
+    if why is None:
+        try:
+            res = await armer.restart(when="after_exposure", now=now)
+        except Exception as e:  # noqa: BLE001
+            res = {"ok": False, "detail": str(e)}
+        rec["restart"] = {"ok": bool(res.get("ok")), "detail": res.get("detail")}
+        how = ("restart after the current sub" if res.get("ok") else
+               f"restart refused ({res.get('detail')}): from the next dispatch")
+    else:
+        rec["restart"] = {"ok": False, "detail": why}
+        how = f"from the next dispatch; no restart now: {why}"
+    txt = f"{detail} ({how})"
+    _event(cfg, st["night"], "revert", f"undid '{a['what']}': {txt}", now,
+           rig=a["rig"], aid=a["id"], why="did not help")
+    return txt
+
+
+def _escalate(cfg, st, a, now, undo: str | None = None) -> tuple[str, bool]:
     """What happens after an action that did not help: (text, human)."""
     key = f"{a['rig']}|{a['family']}"
     acts = [x for x in st.get("actions") or [] if x.get("kind") == "act"
             and x.get("action") == a["action"] and x.get("rig") == a["rig"]]
     if a["action"] == "shorten_subs":
-        to = _num(a["params"].get("to_s"))
-        nxt = next_step(cfg, to)
-        if nxt is not None and len(acts) < POLICY["shorten_subs"]["max"]:
-            return (f"Next: {nxt:g} s if the trailing goes on (after the "
-                    f"{limits(cfg)['rig_cooldown_min']:g} min cooldown).", False)
+        # one step that did not help is enough: trailing that does not
+        # follow the sub length is not a drift-per-second problem
         st.setdefault("given_up", {})[key] = _iso(now)
         return ("Shorter subs did not stop the trailing, so it is not a "
-                "drift-per-second problem: needs a human (PHD2 stopped? "
-                "TheSky tracking / ProTrack, flexure). No more tries tonight.", True)
+                f"drift-per-second problem: {undo or 'sub lengths unchanged'}. "
+                "Needs a human (PHD2 stopped? TheSky tracking / ProTrack, "
+                "flexure). No more shortening tonight.", True)
     if a["action"] == "run_af":
         fails = [x for x in acts if x.get("result") == "not_improved"]
         if len(fails) < 2 and len(acts) < POLICY["run_af"]["max"]:
@@ -1286,8 +1376,12 @@ def _learn(cfg, st, a, before, after, now) -> None:
                f"{after}): consider unguided_max_exposure_s {p.get('to_s'):g} or "
                f"the goal's sub length for {p.get('target')}")
     elif a["action"] == "shorten_subs":
-        txt = (f"RC16 trailing did not follow the sub length ({p.get('from_s'):g} s "
-               f"ecc {before}, {p.get('to_s'):g} s ecc {after}): look for a "
+        txt = (f"RC16 trailing is not drift-per-second: it did not follow the "
+               f"sub length ({p.get('from_s'):g} s ecc {before}, {p.get('to_s'):g} s "
+               f"ecc {after}"
+               + (f"; put back to {p.get('from_s'):g} s"
+                  if (a.get("undo") or {}).get("ok") else "")
+               + "): look for a "
                "non-drift cause (PHD2, flexure, mount) before shortening subs")
     elif a["action"] == "stop_phd2":
         txt = ("a PHD2 session left guiding on an unguided night trailed the "

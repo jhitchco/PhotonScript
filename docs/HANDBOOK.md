@@ -883,8 +883,15 @@ loop every 60 s (`run_pilot`, app startup).
 - Verification: the next `night_pilot_verify_subs` (2) subs of that rig
   that started after the action took effect (a sub cap: only subs at the new
   length) against the diagnosis' numbers: better = ecc down 0.05, HFR down
-  10%, or every sub passed QA. Not better: shorten goes one more step after
-  the cooldown, AF gets one more try; then one priority push for a human
+  10%, or every sub passed QA. Not better: a shorten step is undone (the
+  goal goes back to the length before it, or its default, with a restart
+  after the current sub when the guards and 45 min of dark allow, else
+  from the next dispatch), "trailing is not drift-per-second" is recorded
+  (morning report "learned"), one priority push asks a human and there is
+  no more shortening that night (2026-10-12 replay: 300, 180 and 120 s
+  trailed alike and the night would have stayed at 120 s for nothing); a
+  step that helped may be followed by one more on a later diagnosis. AF
+  gets one more try; then one priority push for a human
   and no more tries for that cause tonight (a PHD2 stop that did not help
   pushes too, but a PHD2 that starts guiding again later is stopped again,
   at most twice a night). No subs within
