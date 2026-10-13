@@ -26,9 +26,13 @@ night_pilot_verify_subs (2) subs of that rig:
                    with a good calibration, "start guiding": a human.
                    Verified on ecc.
   tracking         RC16, UNGUIDED, both rigs trailing (shared mount) or a
-                   measured drift: shorten_subs, one step of
+                   measured drift: shorten_subs, a step down
                    night_pilot_sub_steps (300 -> 180 -> 120) never below
-                   night_pilot_sub_floor_s, as tonight-only exposure
+                   night_pilot_sub_floor_s that prefers lengths with
+                   matched darks (the night dark quota or the library),
+                   then lengths whose darks scale from a bias at the same
+                   epoch (pick_step / dark_match; the push says which), as
+                   tonight-only exposure
                    overrides on the goal (ProjectStore.update), then
                    Restart tonight from now after the current sub (PS-143).
                    Verified on ecc; a step that did not lower the ecc is
@@ -192,6 +196,67 @@ def next_step(cfg, current_s) -> float | None:
     return max(lower) if lower else None
 
 
+def dark_match(cfg, rig: str, length_s: float) -> dict:
+    """Whether a sub length has darks: {"match": matched | scaled | none,
+    "text"}. matched: a length the night dark quota fills
+    (tracking_drift.dark_lengths, PS-160) or darks at it in the calibration
+    library (calibration.darks_have); scaled: no darks, but a usable bias at
+    the rig's epoch the darks can be scaled from
+    (calibration.newest_usable_bias); none: neither. Never raises."""
+    s = float(length_s)
+    try:
+        from photonscript.scheduler.tracking_drift import dark_lengths
+        if any(abs(s - d) < 0.5 for d in dark_lengths(cfg, rig)):
+            return {"match": "matched", "text": f"darks match: {s:g} s is in "
+                    "the night dark quota"}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("night pilot: dark lengths unavailable: %s", e)
+    try:
+        from photonscript.scheduler.calibration import darks_have
+        n = darks_have(cfg, rig, s)
+        if n:
+            return {"match": "matched", "text": f"darks match: {n} {s:g} s "
+                    "darks in the library"}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("night pilot: dark count unavailable: %s", e)
+    try:
+        from photonscript.scheduler.calibration import newest_usable_bias
+        b = newest_usable_bias(cfg, rig)
+        if b:
+            return {"match": "scaled", "text": f"no {s:g} s darks: scaled "
+                    f"from the {b} bias at this epoch"}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("night pilot: bias lookup unavailable: %s", e)
+    return {"match": "none", "text": f"no {s:g} s darks and no bias at this "
+            "epoch: darks owed"}
+
+
+def pick_step(cfg, current_s, status=None, rig: str = "rc16") -> tuple[float | None, dict | None]:
+    """The shorten step: of the ladder lengths below current_s and not
+    under the floor, the longest one with matched darks, else the longest
+    whose darks can be scaled from a bias, else the next step. (seconds,
+    dark_match info), (None, None) at the floor. status: test hook
+    (seconds -> dark_match dict)."""
+    try:
+        cur = float(current_s)
+    except (TypeError, ValueError):
+        return None, None
+    fl = sub_floor(cfg)
+    cands = [s for s in sub_steps(cfg) if s < cur - 0.5 and s >= fl - 0.5]
+    if not cands:
+        return None, None
+    status = status or (lambda x: dark_match(cfg, rig, x))
+    info = {}
+    for want in ("matched", "scaled"):
+        for s in cands:          # longest first
+            if s not in info:
+                info[s] = status(s) or {"match": "none", "text": ""}
+            if info[s].get("match") == want:
+                return s, info[s]
+    s = cands[0]
+    return s, info.get(s) or status(s)
+
+
 def limits(cfg) -> dict:
     return {"max_actions": max(0, _i(cfg, "night_pilot_max_actions", 6)),
             "rig_cooldown_min": max(0.0, _f(cfg, "night_pilot_rig_cooldown_min", 15.0)),
@@ -331,7 +396,7 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
             return out("annotate", why="trailing without a shared-mount or "
                                        "drift measurement")
         cur = _num(ctx.get("exp_s")) or _num(ev.get("exp_s"))
-        nxt = next_step(cfg, cur)
+        nxt, dk = pick_step(cfg, cur, ctx.get("dark_status"))
         if nxt is None:
             return out("human", what="look at the RC16 tracking",
                        why=f"subs already at {cur or '?'} s, the floor is "
@@ -341,7 +406,8 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
                    why="RC16 trailing" + (" on both rigs (shared mount)"
                                           if ev.get("shared_mount") else
                                           " with a measured drift"),
-                   from_s=cur, to_s=nxt)
+                   from_s=cur, to_s=nxt, darks=(dk or {}).get("match"),
+                   darks_text=(dk or {}).get("text"))
     if fam == "focus":
         if ev.get("other_rig_sharp") is False:
             return out("annotate", why="soft on both rigs: seeing, not focus")
@@ -1042,8 +1108,10 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
         a["status"] = "advised"
         if _note_once(st, f"advise|{rig}|{action}"):
             st.setdefault("actions", []).append(a)
+            dk = (dec.get("params") or {}).get("darks_text")
             msg = (f"Night pilot (advise): would have {dec['what']} because "
-                   f"{a['because']} ({why}; nothing was sent).")
+                   f"{a['because']}" + (f" ({dk})" if dk else "")
+                   + f" ({why}; nothing was sent).")
             _event(cfg, night, "advise", msg, now, rig=rig, action=action,
                    cause=d["cause"], aid=a["id"])
             await io.notify(cfg, msg, priority=0)
@@ -1093,6 +1161,8 @@ async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
         a["params"]["target"] = target
         a["params"]["prev_overrides"] = prev    # what an undo goes back to
         a["detail"] = detail + " for tonight"
+        if a["params"].get("darks_text"):
+            a["detail"] += "; " + a["params"]["darks_text"]
     elif action == "skip_target":
         ok, detail = apply_skip(st, io.store(), target)
         if not ok:

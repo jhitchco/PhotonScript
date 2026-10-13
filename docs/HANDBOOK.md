@@ -869,7 +869,7 @@ loop every 60 s (`run_pilot`, app startup).
 |---|---|---|---|---|---|
 | guider_conflict, UNGUIDED night, PHD2 active | stop PHD2 guiding (`stop_capture`) | `night_pilot_stop_phd2` | 2 | 30 min | ecc |
 | guider_conflict, GUIDED night, FAIL calibration | rest of tonight UNGUIDED (`fallback_unguided`, PS-156 caps) | `night_pilot_unguided_fallback` | 1 | - | ecc |
-| tracking, RC16 unguided, shared mount or measured drift | RC16 subs one step shorter for tonight (`night_pilot_sub_steps` 300,180,120, floor `night_pilot_sub_floor_s` 120) as goal exposure overrides + Restart tonight from now after the current sub | `night_pilot_shorten_subs` | 2 | 15 min | ecc |
+| tracking, RC16 unguided, shared mount or measured drift | RC16 subs a step shorter for tonight (`night_pilot_sub_steps` 300,180,120, floor `night_pilot_sub_floor_s` 120; the longest lower step with matched darks, i.e. in the night dark quota or in the library, else one whose darks scale from a bias at the same epoch, else the next step; the push says "darks match" / "scaled from the <date> bias" / "darks owed") as goal exposure overrides + Restart tonight from now after the current sub | `night_pilot_shorten_subs` | 2 | 15 min | ecc |
 | focus, soft round stars, other rig sharp | AF: RC16 restart after the sub (target start runs AF); Piggy-600 NINA #2 stopped after its sub + companion re-dispatch | `night_pilot_af` | 2 | 30 min | HFR |
 | pointing, plate solves failing (>= `night_pilot_solve_failures` 3) | goal inactive for tonight + restart | `night_pilot_skip_target` | 1 | - | subs on another target |
 | clouds, seeing | nothing (run event only) | | | | |

@@ -228,6 +228,50 @@ def test_ladder_and_policy_table(tmp_path):
     assert npil.decide(cfg, d("guider_conflict", "stop_phd2", conf="low"), ctx)["kind"] == "annotate"
 
 
+def test_pick_step_prefers_matched_darks_then_bias_scaled(tmp_path):
+    cfg = _cfg(tmp_path)
+
+    def st(table):
+        return lambda s: {"match": table.get(s, "none"), "text": f"{s:g}:{table.get(s)}"}
+    # 180 s darks: the next step
+    s, dk = npil.pick_step(cfg, 300, st({180.0: "matched", 120.0: "matched"}))
+    assert (s, dk["match"]) == (180.0, "matched")
+    # only 120 s darks: skip to 120 rather than 180 s without darks
+    s, dk = npil.pick_step(cfg, 300, st({180.0: "scaled", 120.0: "matched"}))
+    assert (s, dk["match"]) == (120.0, "matched")
+    # no matched darks: the longest length a bias can scale to
+    s, dk = npil.pick_step(cfg, 300, st({180.0: "none", 120.0: "scaled"}))
+    assert (s, dk["match"]) == (120.0, "scaled")
+    # nothing at all: the next step, said so
+    s, dk = npil.pick_step(cfg, 300, st({}))
+    assert (s, dk["match"]) == (180.0, "none")
+    assert npil.pick_step(cfg, 120, st({})) == (None, None)
+    # decide() carries it into the params (the push text)
+    d = npil.norm_diag({"t": "2026-10-13T04:00:00Z", "kind": "sub_doctor",
+                        "cause": "tracking", "confidence": "high",
+                        "evidence": {"shared_mount": True}})
+    dec = npil.decide(cfg, d, {"guided": False, "exp_s": 300,
+                               "dark_status": st({120.0: "matched"})})
+    assert dec["params"]["to_s"] == 120.0 and dec["params"]["darks"] == "matched"
+    # the real library: 180 s is in the default RC16 dark quota (600,180 +
+    # the 300 s unguided cap); 120 s has no darks and no bias here
+    assert npil.dark_match(cfg, "rc16", 180)["match"] == "matched"
+    assert "night dark quota" in npil.dark_match(cfg, "rc16", 180)["text"]
+    assert npil.dark_match(cfg, "rc16", 120) == {
+        "match": "none", "text": "no 120 s darks and no bias at this epoch: darks owed"}
+
+
+def test_pick_step_bias_scaled_from_the_library(tmp_path, monkeypatch):
+    from photonscript.scheduler import calibration as cal
+    monkeypatch.setattr(cal, "newest_usable_bias", lambda c, r="rc16": "2026-10-01")
+    cfg = _cfg(tmp_path)
+    s, dk = npil.pick_step(cfg, 180)
+    assert s == 120.0 and dk["match"] == "scaled"
+    assert dk["text"] == "no 120 s darks: scaled from the 2026-10-01 bias at this epoch"
+    monkeypatch.setattr(cal, "darks_have", lambda c, r, e, **k: 25 if e == 120 else 0)
+    assert npil.dark_match(cfg, "rc16", 120)["text"] == "darks match: 25 120 s darks in the library"
+
+
 # ------------------------------------------------------------- 2. tonight replay
 
 def _tonight_bad_subs(cfg):
@@ -332,6 +376,7 @@ def test_trailing_step_that_did_not_help_is_undone_then_dawn_revert(tmp_path):
     assert all(e.exposure_seconds <= 180 for e in p.exposure_plans if e.rig == "rc16")
     assert "shortened RC16 subs 300 -> 180 s" in io.pushes[-1][1]
     assert "Heart Nebula: Ha 600 -> 180 s" in io.pushes[-1][1]
+    assert "darks match: 180 s is in the night dark quota" in io.pushes[-1][1]
     st = npil.load_state(cfg, NIGHT)
     assert st["actions"][0]["status"] == "pending"
     assert st["actions"][0]["params"]["prev_overrides"] is None
@@ -732,6 +777,7 @@ def test_advise_mode_sends_no_command(tmp_path):
     assert msgs[0].startswith("Night pilot (advise): would have stopped PHD2 guiding")
     assert "nothing was sent" in msgs[0]
     assert "would have shortened RC16 subs 300 -> 180 s" in msgs[1]
+    assert "(darks match: 180 s is in the night dark quota)" in msgs[1]
     assert len(_pilot_events(cfg, "advise")) == 2 and not _pilot_events(cfg, "act")
     assert "would have" in npil.status(cfg, NIGHT)["line"]
 
