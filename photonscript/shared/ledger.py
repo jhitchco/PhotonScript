@@ -226,7 +226,8 @@ def save(path: Path, led: Ledger) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(led.dump(), indent=1, ensure_ascii=True), encoding="ascii")
-    tmp.replace(path)
+    from photonscript.shared.fileops import replace_retry
+    replace_retry(tmp, path)   # Windows AV / indexer may hold the file a moment
     return path
 
 

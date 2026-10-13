@@ -151,7 +151,8 @@ def _write_json(p: Path, data) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
     tmp.write_text(json.dumps(data, indent=1, default=str), encoding="utf-8")
-    os.replace(tmp, p)
+    from photonscript.shared.fileops import replace_retry
+    replace_retry(tmp, p)   # Windows AV / indexer may hold the file a moment
 
 
 def save_store(config, rig: str, store: dict) -> None:
