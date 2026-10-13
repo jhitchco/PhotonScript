@@ -1095,6 +1095,16 @@ Mono runs HDR combine a filter's exposure-length masters (PS-177
 Re-finish one master without integrating: `photonscript finish --master <xisf>
 --name <NAME> [--palette gold] [--dry-run]` (NEW `Staging\Finish\` folder,
 ledger kind finish; replaces `run-finish-osc.ps1` for re-finishes).
+Mono runs also get color (config `integrate_mono_color`, default on;
+`--no-mono-color` skips it): after the finish, `color_run.js`
+(`deploy/finish_mono_color.js`, the finish_osc.js functions reused) makes
+`out\final\<target>_LRGB` (`_RGB` without L) from R G B (+ L, LRGBCombination),
+`_SHO` (R = SII, G = Ha, B = OIII, SCNR green + gold / blue hue curve) and
+`_HOO` (R = Ha, G = B = OIII; alone when SII is missing), each .xisf / .tif /
+.jpg, `mono_color_steps.json`, `out\color.log`, a `color` block in the ledger.
+Color an existing mono run without restacking: `photonscript finish --mono-run
+<run folder> --color auto|lrgb|rgb|sho|hoo [--dry-run]` (NEW `Staging\Finish\`
+folder, ledger kind finish).
 
 Fast scratch (desktop `.env` `PS_INTEGRATION_SCRATCH_ROOT=C:/Astro/Scratch`;
 blank = off): integrate / blend runs are built on the NVMe and, once a

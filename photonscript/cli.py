@@ -2951,6 +2951,10 @@ def integrate_cmd(
     hdr: Optional[bool] = typer.Option(None, "--hdr/--no-hdr",
                                        help="Mono: HDR combine a filter's exposure-length masters into "
                                             "master_<F>_hdr (default integrate_hdr_combine, on)"),
+    mono_color: Optional[bool] = typer.Option(None, "--mono-color/--no-mono-color",
+                                              help="Mono: after the finish, combine the filter masters into "
+                                                   "<target>_LRGB / _RGB / _SHO / _HOO (default "
+                                                   "integrate_mono_color, on)"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Select, QA and match only; write nothing"),
     use_scratch: bool = typer.Option(True, "--scratch/--no-scratch",
                                      help="Build the run on integration_scratch_root (when set) and "
@@ -2992,6 +2996,8 @@ def integrate_cmd(
         kw["scratch_root"] = None
     if hdr is not None:
         kw["hdr_combine"] = hdr
+    if mono_color is not None:
+        kw["mono_color"] = mono_color
     opts = pl.Options(
         target=target, rig=rig, since=since, until=until,
         staging_root=root, out=Path(out) if out else None,
@@ -3120,8 +3126,15 @@ def blend_cmd(
 
 @app.command("finish")
 def finish_cmd(
-    master: str = typer.Option(..., "--master", help="The master to finish (.xisf, linear)"),
-    name: str = typer.Option(..., "--name", help="Output name: <name>_final.{xisf,tif,jpg}"),
+    master: str = typer.Option("", "--master", help="The master to finish (.xisf, linear)"),
+    name: str = typer.Option("", "--name", help="Output name: <name>_final.{xisf,tif,jpg} (--mono-run: "
+                                               "<name>_LRGB ..., default the run's target)"),
+    mono_run: str = typer.Option("", "--mono-run",
+                                 help="Instead of --master: a mono (rc16) integrate run folder whose filter "
+                                      "masters are combined into color images"),
+    color: str = typer.Option("auto", "--color",
+                              help="--mono-run: auto | all | comma list of lrgb, rgb, sho, hoo "
+                                   "(auto: LRGB or RGB from R G B (+ L); SHO + HOO, or HOO without SII)"),
     target: str = typer.Option("", "--target", help="Catalog name for the plate solve seed "
                                                    "(default: the master's integrate run)"),
     rig: str = typer.Option("", "--rig", help="piggyback | rc16 (default: the master's integrate run, "
@@ -3152,6 +3165,11 @@ def finish_cmd(
     re-finishes.
 
     photonscript finish --master D:/.../out/master/master_OSC.xisf --name M31_v5 --palette gold --dry-run
+
+    Mono color (no restack): combine an rc16 run's filter masters into
+    <name>_LRGB / _RGB / _SHO / _HOO (deploy/finish_mono_color.js):
+
+    photonscript finish --mono-run "C:/Astro/Staging/M_27_rc16_20261012-2300" --color lrgb --dry-run
     """
     import json as _json
     from photonscript.integration import finish as fn
@@ -3167,20 +3185,28 @@ def finish_cmd(
     except ValueError as e:
         console.print(f"[red]finish:[/red] {e}", markup=True)
         raise typer.Exit(2)
+    if bool(master) == bool(mono_run):
+        console.print("[red]finish:[/red] pass exactly one of --master or --mono-run", markup=True)
+        raise typer.Exit(2)
+    if master and not name:
+        console.print("[red]finish:[/red] --master needs --name", markup=True)
+        raise typer.Exit(2)
     opts = fn.Options(
-        master=Path(master), name=name, target=target, rig=rig, staging_root=root,
+        master=Path(master) if master else None, name=name, target=target, rig=rig, staging_root=root,
         out=Path(out) if out else None, gradient=gradient, hoo=hoo, focal_mm=focal_mm, pixel_um=pixel_um,
-        run_pixinsight=pixinsight, dry_run=dry_run, pixinsight=pixinsight_exe, **kw,
+        run_pixinsight=pixinsight, dry_run=dry_run, pixinsight=pixinsight_exe,
+        mono_run=Path(mono_run) if mono_run else None, colors=color, **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
-        res = fn.run(opts, echo=say)
+        res = fn.run_mono_color(opts, echo=say) if mono_run else fn.run(opts, echo=say)
     except (pl.PipelineError, PixInsightBusy, FileNotFoundError, ValueError) as e:
         console.print(f"[red]finish:[/red] {e}", markup=True)
         raise typer.Exit(1)
     if as_json:
         print(_json.dumps(res, indent=1, default=str))
-    raise typer.Exit(0 if res.get("finish", {}).get("ok", True) else 1)
+    ok = res.get("finish", {}).get("ok", True) and res.get("color", {}).get("ok", True)
+    raise typer.Exit(0 if ok else 1)
 
 
 @app.command("integrate-watch")

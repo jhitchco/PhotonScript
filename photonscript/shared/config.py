@@ -387,6 +387,11 @@ class PhotonScriptConfig(BaseSettings):
                                  # master_<F>_hdr (HDRComposition, else a fitted
                                  # replacement of the saturated pixels); the
                                  # finish and the blend prefer it. OSC: no effect
+    integrate_mono_color: bool = True  # mono (RC16) integrate: after the finish,
+                                 # combine the per-filter masters into color
+                                 # images: <target>_LRGB (RGB without L) from
+                                 # R G B (+ L), <target>_SHO / _HOO from SII Ha
+                                 # OIII (deploy/finish_mono_color.js). OSC: no effect
     # --- Log directories (remote 2 AM triage) ---
     nina_logs_dir: str = "C:\\Users\\jeremy\\AppData\\Local\\NINA\\Logs"
     piggyback_nina_logs_dir: str = ""  # NINA #2 (OSC) log dir. Empty = same dir as
