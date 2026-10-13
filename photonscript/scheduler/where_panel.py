@@ -405,6 +405,8 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
     plan = _tonight_plan(cfg, getattr(armer, "plan", None))
     pause = status.get("pause")
     watch = status.get("watch") or {}
+    # 2026-10-13: a Resume / Restart re-dispatching in the background
+    busy = state == "PAUSED_OPERATOR" and (pause or {}).get("phase") == "resuming"
     off = _off_target(cfg, rc16, mnt, tel, state, projects, now)
     return {"at": _iso(now),
             "armer": {"state": state, "detail": status.get("detail"),
@@ -412,12 +414,12 @@ async def collect(cfg, armer, tel: dict | None = None, projects=None,
                       "watch_paused": bool(watch.get("operator_paused")),
                       "can_pause": state == "RUNNING" or (
                           state == "WATCHING" and not watch.get("operator_paused")),
-                      "can_resume": state == "PAUSED_OPERATOR" or bool(
+                      "can_resume": (state == "PAUSED_OPERATOR" and not busy) or bool(
                           state == "WATCHING" and watch.get("operator_paused")),
                       # PS-143: Restart tonight from now (refusals are the
                       # armer's; WATCHING shows the button to explain why)
                       "can_restart": state in ("RUNNING", "PAUSED_OPERATOR",
-                                               "WATCHING"),
+                                               "WATCHING") and not busy,
                       "restart": status.get("restart")},
             "rc16": rc16, "guiding": _guiding(status, tel),
             "cooler": {"rc16": _cooler(cfg, "rc16", cam1, state),

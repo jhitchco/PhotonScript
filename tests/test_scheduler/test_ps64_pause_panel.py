@@ -322,7 +322,11 @@ async def test_failed_stop_goes_back_to_running_with_priority_push(env):
 async def test_resume_redispatches_the_remainder(env):
     a = await _paused(env)
     res = await a.resume()
-    assert res["ok"] and res["redispatched"] is True
+    # 2026-10-13: the re-dispatch runs in the background (it can wait for
+    # NINA #1 to wind down); the request returns at once
+    assert res["ok"] and res["pending"] and a.pause_info["phase"] == "resuming"
+    assert "waiting for NINA #1" in res["detail"]
+    await a._pause_task
     assert a.dispatched == [(False, None)]      # the PS-77 / PS-93 path
     assert a.piggy_dispatched == []              # Piggy kept: untouched
     assert a.state == "RUNNING" and a.pause_info is None
@@ -342,6 +346,7 @@ async def test_resume_redispatches_a_paused_piggy_companion(env, monkeypatch):
     await a.pause(piggy="pause")
     await a._pause_task
     res = await a.resume()
+    await a._pause_task
     assert res["ok"] and a.piggy_dispatched == [1]
 
 
@@ -376,7 +381,10 @@ async def test_resume_dispatch_failure_stays_paused(env):
     a = await _paused(env)
     a.fake["dispatch_ok"] = False
     res = await a.resume()
-    assert res["ok"] is False and a.state == PAUSE_STATE
+    assert res["ok"] and res["pending"]
+    await a._pause_task
+    assert a.state == PAUSE_STATE and a.pause_info["phase"] == "paused"
+    assert "Resume FAILED" in a.detail
     assert [e["value"] for e in _events(a)][-1] == "resume_failed"
 
 
@@ -691,7 +699,12 @@ async def test_api_pause_resume_and_where(api):
     r = await _call(api.app, "GET", "/api/night/where")
     assert r.json()["armer"]["can_resume"] is True
     r = await _call(api.app, "POST", "/api/arm/resume")
-    assert r.status_code == 200 and r.json()["state"] == "RUNNING"
+    # the re-dispatch runs in the background: answered at once, still paused
+    assert r.status_code == 200 and r.json()["pending"] is True
+    assert r.json()["pause"]["phase"] == "resuming"
+    await api.armer._pause_task
+    r = await _call(api.app, "GET", "/api/night/where")
+    assert r.json()["armer"]["state"] == "RUNNING"
 
 
 # ------------------------------------------------------- 4. static checks

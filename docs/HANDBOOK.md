@@ -855,6 +855,13 @@ line, pairs for other agents (`GET /api/sub-doctor/pairs`). Past nights:
   "Sequence is already running" is stopped and retried 3 times (5 / 15 /
   30 s backoff) before it fails. 2026-10-13: the restart's load and start
   ran 1 s before NINA's SEQUENCE-FINISHED and the restart failed.
+  Resume and Restart from PAUSED_OPERATOR run that re-dispatch in the
+  background (like the pause's stop): the request answers at once
+  ("waiting for NINA #1"), pause.phase reads `resuming` with
+  pause.resume.step / restart.step as progress (the dashboard's state chip
+  shows it; Resume and Restart are hidden and refused meanwhile). A failure
+  goes back to phase `paused`; a PhotonScript restart mid re-dispatch
+  restores as paused (Resume again).
 
 ### Night pilot: adjustments over the night (2026-10-13)
 

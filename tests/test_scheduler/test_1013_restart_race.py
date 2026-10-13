@@ -221,5 +221,6 @@ async def test_resume_waits_for_the_wind_down_too(race):
     assert a.state == PAUSE_STATE
     fake.left = 2          # NINA #1 still finishing when Resume is pressed
     res = await a.resume()
-    assert res["ok"] and res["redispatched"], res
+    assert res["ok"] and res["pending"], res
+    await a._pause_task
     assert a.state == "RUNNING"

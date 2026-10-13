@@ -323,6 +323,16 @@ class Armer:
                 and (self.pause_info or {}).get("phase") == "stopping"):
             # restarted while waiting for the sub to end: finish the stop
             self._pause_task = asyncio.create_task(self._finish_pause())
+        elif (self.state == PAUSE_STATE
+              and (self.pause_info or {}).get("phase") == "resuming"):
+            # restarted mid re-dispatch: NINA #1 was already stopped; stay
+            # paused, the operator presses Resume (or Restart) again
+            p = self.pause_info
+            p["phase"] = "paused"
+            p.pop("resume", None)
+            p.pop("restart", None)
+            self.detail = ("Paused: a Resume / Restart re-dispatch was "
+                           "interrupted by a PhotonScript restart; Resume again")
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
         # Reconnect everything (esp. safety) after a restart so equipment that
@@ -2226,11 +2236,14 @@ class Armer:
         # request body; load 400s if a sequence is running, so stop first
         # and wait until NINA #1 has actually wound down (2026-10-13: the
         # restart's load and start ran 1 s before SEQUENCE-FINISHED).
+        self._dispatch_step("waiting for NINA #1 to stop")
         await self._nina("sequence_stop")  # harmless if nothing running
         await self._wait_nina1_stopped()
         content = json.loads(self.sequence_path.read_text(encoding="utf-8"))
         loaded = started = None
         for attempt in range(len(DISPATCH_BUSY_BACKOFF_S) + 1):
+            self._dispatch_step("loading and starting the sequence"
+                                + (f" (retry {attempt})" if attempt else ""))
             loaded = await self._nina("sequence_load", method="POST",
                                       json_body=content)
             # skipValidation: our sequence connects equipment in its start
@@ -2266,6 +2279,16 @@ class Armer:
         await self._send_block_alerts()   # PS-85: history decisions, once per target
         self._ledger("dispatch")
         return True
+
+    def _dispatch_step(self, step: str) -> None:
+        """Progress of a background Resume / Restart re-dispatch for the
+        dashboard: pause_info["resume" | "restart"]["step"]."""
+        p = getattr(self, "pause_info", None)
+        if not isinstance(p, dict) or p.get("phase") != "resuming":
+            return
+        for k in ("resume", "restart"):
+            if isinstance(p.get(k), dict):
+                p[k]["step"] = step
 
     async def _nina1_running(self) -> list[str] | None:
         """Names of NINA #1's RUNNING sequence items ([] = idle, also when
@@ -2312,6 +2335,8 @@ class Armer:
                 return True
             else:
                 misses = 0
+                self._dispatch_step(f"waiting for NINA #1 to stop ({i * poll_s:.0f} s, "
+                                    f"{(running or ['running'])[0]})")
             if i >= polls:
                 break
             await _armer_sleep(poll_s)
@@ -2960,18 +2985,51 @@ class Armer:
                          title="PhotonScript resumed")
             return {**self.status(), "ok": True, "detail": msg,
                     "redispatched": False}
+        if p.get("phase") == "resuming":
+            return {**self.status(), "ok": False,
+                    "detail": "already re-dispatching: " + str(self.detail or "")}
         left_min = (self._dawn() - now).total_seconds() / 60
         if left_min < RESUME_MIN_REMAINING_MIN:
             return {**self.status(), "ok": False,
                     "detail": f"only {max(0, int(left_min))} min of dark left: "
                               "not re-dispatching (the dawn shutdown will run)"}
+        # 2026-10-13: the re-dispatch first waits (up to STOP_IDLE_MAX_WAIT_S)
+        # for NINA #1 to wind down, so it runs in the background like
+        # _finish_pause; the request returns now and the dashboard follows
+        # pause.phase "resuming" and pause.resume.step
+        p["phase"] = "resuming"
+        p["resume"] = {"requested": _iso(now), "step": "waiting for NINA #1 to stop"}
+        self.pause_info = p
+        msg = ("Resuming: waiting for NINA #1 to stop, then the remainder is "
+               "re-dispatched")
+        self._set_state(PAUSE_STATE, msg)
+        self._pause_event("resume_request", msg, now)
+        self._pause_task = asyncio.create_task(self._finish_resume(now, p))
+        return {**self.status(), "ok": True, "detail": msg, "pending": True}
+
+    async def _finish_resume(self, now: datetime, p: dict) -> None:
+        """The background half of resume(): re-dispatch the remainder (after
+        NINA #1 has wound down) and the Piggy-600 companion when the pause
+        stopped it. A failure stays PAUSED_OPERATOR (phase "paused"): Resume
+        again. Never raises (except CancelledError: dawn, disarm, stop)."""
         self._reset_guiding_watchdog()
-        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        try:
+            ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("resume re-dispatch failed")
+            self.detail, ok = f"error: {e}", False
+        if self.state != PAUSE_STATE:
+            return   # disarmed / dawn while re-dispatching
+        now = datetime.utcnow()
+        left_min = (self._dawn() - now).total_seconds() / 60
         if not ok:
+            p["phase"] = "paused"
+            p.pop("resume", None)
+            self.pause_info = p
             msg = f"Resume FAILED: re-dispatch failed ({self.detail}); still paused"
             self._set_state(PAUSE_STATE, msg)
             self._pause_event("resume_failed", msg, now)
-            return {**self.status(), "ok": False, "detail": msg}
+            return
         pb = (p.get("rigs") or {}).get("piggyback")
         pb_txt = "Piggy-600 untouched"
         if p.get("piggy") == "pause" and isinstance(pb, dict) and pb.get("ok"):
@@ -2983,9 +3041,8 @@ class Armer:
         self._set_state("RUNNING", msg)
         self._pause_event("resume", msg, now, redispatched=True, piggy=pb_txt)
         await notify(self.config, f"RESUMED by the operator: the remainder is "
-                     f"re-dispatched ({left_min / 60:.1f} h of dark left); "
+                     f"re-dispatched ({max(0.0, left_min) / 60:.1f} h of dark left); "
                      f"{pb_txt}.", title="PhotonScript resumed")
-        return {**self.status(), "ok": True, "detail": msg, "redispatched": True}
 
     async def _paused_tick(self, now: datetime) -> None:
         """PAUSED_OPERATOR tick. Dawn: the normal dawn shutdown (as from
@@ -3129,6 +3186,9 @@ class Armer:
             self._pause_task = asyncio.create_task(self._finish_pause())
             return {**self.status(), "ok": True, "detail": msg, "pending": True}
         p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        if p.get("phase") == "resuming":
+            return refuse("already re-dispatching (a Resume or Restart is waiting "
+                          "for NINA #1): " + str(self.detail or ""))
         p["restart"] = req
         self.pause_info = p
         if p.get("phase") == "stopping":
@@ -3141,17 +3201,28 @@ class Armer:
             return {**self.status(), "ok": True, "detail": msg, "pending": True}
         self._restart_event("request", "from an operator pause (NINA #1 "
                             "already stopped)", now, from_state=PAUSE_STATE)
-        res = await self._restart_dispatch(now, p)
-        return {**self.status(), **res}
+        # 2026-10-13: the re-dispatch waits for NINA #1 to wind down (up to
+        # STOP_IDLE_MAX_WAIT_S): in the background, as from RUNNING
+        p["phase"] = "resuming"
+        req["step"] = "waiting for NINA #1 to stop"
+        msg = ("Restarting tonight from now: waiting for NINA #1 to stop, then "
+               "the rest of tonight is re-planned and re-dispatched")
+        self._set_state(PAUSE_STATE, msg)
+        self._pause_task = asyncio.create_task(self._restart_dispatch(now, p))
+        return {**self.status(), "ok": True, "detail": msg, "pending": True}
 
     async def _restart_dispatch(self, now: datetime, p: dict) -> dict:
         """NINA #1 is stopped: re-plan and re-dispatch the remainder. A
         failure stays PAUSED_OPERATOR (stopped, nothing parked): Resume or
-        Restart again. Returns {"ok", "detail", "redispatched"}."""
-        p.pop("restart", None)
-        p["phase"] = "paused"
+        Restart again. Returns {"ok", "detail", "redispatched"}. The restart
+        mark stays on pause_info while it runs (the dashboard's progress)."""
+        p["phase"] = "resuming"
+        if isinstance(p.get("restart"), dict):
+            p["restart"].setdefault("step", "waiting for NINA #1 to stop")
         left_min = (self._dawn() - now).total_seconds() / 60
         if left_min < RESUME_MIN_REMAINING_MIN:
+            p.pop("restart", None)
+            p["phase"] = "paused"
             self.pause_info = p
             msg = (f"Restart not dispatched: only {max(0, int(left_min))} min of "
                    "dark left; staying paused (the dawn shutdown will run)")
@@ -3161,7 +3232,17 @@ class Armer:
             await notify(self.config, msg + ".", title="PhotonScript restart")
             return {"ok": False, "detail": msg, "redispatched": False}
         self._reset_guiding_watchdog()
-        ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        try:
+            ok = await self._dispatch_and_start(companion=False, fail_state=None)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("restart re-dispatch failed")
+            self.detail, ok = f"error: {e}", False
+        p.pop("restart", None)
+        p["phase"] = "paused"
+        if self.state != PAUSE_STATE:
+            return {"ok": False, "detail": f"armer went {self.state} while "
+                    "re-dispatching", "redispatched": False}
+        now = datetime.utcnow()
         if not ok:
             # _dispatch_and_start already pushed the failure (priority)
             self.pause_info = p

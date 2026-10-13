@@ -367,7 +367,12 @@ async def test_restart_from_a_pause_redispatches_at_once(env):
     stops = a.calls.count("sequence_stop")
     env.notes.clear()
     res = await a.restart()
-    assert res["ok"] and res["redispatched"] is True and a.state == "RUNNING"
+    # 2026-10-13: re-dispatched in the background (the NINA #1 wind-down
+    # wait), the request answers at once with the progress
+    assert res["ok"] and res["pending"] and a.pause_info["phase"] == "resuming"
+    assert a.status()["restart"]["step"].startswith("waiting for NINA #1")
+    await a._pause_task
+    assert a.state == "RUNNING"
     assert a.calls.count("sequence_stop") == stops    # nothing stopped again
     assert a.dispatched == [(False, None)]
     assert _restart_events(a) == ["request", "dispatched"]
@@ -386,6 +391,7 @@ async def test_restart_from_a_pause_returns_a_paused_piggy(env, monkeypatch):
     await a.pause(piggy="pause")
     await a._pause_task
     res = await a.restart()
+    await a._pause_task
     assert res["ok"] and a.piggy_dispatched == [1]
 
 
@@ -453,7 +459,9 @@ async def test_restart_dispatch_failure_stays_paused(env):
     assert not set(a.calls) & NEVER_ON_RESTART
     # Resume (or another restart) can still pick it up
     a.fake["dispatch_ok"] = True
-    assert (await a.resume())["ok"] and a.state == "RUNNING"
+    assert (await a.resume())["ok"]
+    await a._pause_task
+    assert a.state == "RUNNING"
 
 
 async def test_restart_stop_failure_goes_back_to_running(env):
