@@ -1,0 +1,778 @@
+# Settings ledger sanity rules: what every program SHOULD be set to.
+# scheduler/settings_ledger.py evaluates every rule on every settings
+# snapshot (at arm, at dispatch, on every armer state change and hourly
+# while RUNNING), shows the result on the System page (Settings ledger) and
+# pushes ONE Pushover per rule per night the first time it FAILS. REPORT
+# ONLY: nothing here is ever written to NINA, PHD2, TheSky or the mount.
+#
+# The PS-89 PHD2 audit (config/phd2/desired_oag_rc16.toml) and the PS-104
+# TheSky audit (config/thesky/desired_rc16.toml) keep their own, deeper
+# rows; this file holds the cross-program rules and the settings those two
+# do not judge (NINA profiles, cameras, PHD2 star selection, alerts).
+#
+# Rule fields
+#   id, app, label     identity; app = nina1 | nina2 | phd2 | thesky |
+#                      photonscript (which snapshot section the path reads)
+#   rig                rc16 | piggyback (piggyback rules are skipped while
+#                      piggyback_enabled is false); optional
+#   path               dot path into the app's settings (list index as
+#                      .0); "live." reads the app's live readings instead.
+#                      Paths under devices.<device>. are skipped while that
+#                      device is not connected.
+#   one desired form   equals | one_of = [...] | min / max |
+#                      not_contains = "x" (a list must not hold x) |
+#                      any_true = [paths] | computed = "<name>"
+#                      (settings_ledger.COMPUTED) | report = true (shown,
+#                      never judged)
+#   tol                equals on numbers: allowed difference (default 1e-6)
+#   when               optional list, all must hold: running (armer
+#                      RUNNING), guiding (PHD2 Guiding), not_guiding,
+#                      tracking (the RC16 mount unparked and tracking)
+#   severity           fail | warn (the status when the value misses)
+#   why, fix           plain-language reason and the exact manual fix
+
+title = "AARO settings sanity (RC16 + Piggy-600)"
+
+# ------------------------------------------------------------ NINA #1 RC16
+
+[[rule]]
+id = "nina1_platesolve_binning"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 plate solve binning"
+path = "profile.PlateSolveSettings.Binning"
+equals = 1
+severity = "fail"
+why = "The RC16 is 0.236\"/px; ASTAP solves it fine at bin 1 and its star database is matched at that scale. Bin 2 (found 2026-10-12) halves the star count on faint fields and made Center fail and retry."
+fix = "NINA #1 > Options > Plate Solving: Binning 1x1."
+
+[[rule]]
+id = "nina1_platesolve_exposure"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 plate solve exposure (s)"
+path = "profile.PlateSolveSettings.ExposureTime"
+min = 2
+max = 30
+severity = "warn"
+why = "Long enough for 20+ stars through L at 3248 mm, short enough that a failed Center retry does not eat minutes."
+fix = "NINA #1 > Options > Plate Solving: Exposure time 5 to 20 s."
+
+[[rule]]
+id = "nina1_platesolve_threshold"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 Center tolerance (arcmin)"
+path = "profile.PlateSolveSettings.Threshold"
+min = 0.2
+max = 2
+severity = "warn"
+why = "The RC16 field is about 24 x 16 arcmin; a Center tolerance above 2' leaves framing visibly off, below 0.2' makes Center loop forever on mount backlash."
+fix = "NINA #1 > Options > Plate Solving: Pointing tolerance 1 arcmin."
+
+[[rule]]
+id = "nina1_platesolve_attempts"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 plate solve attempts"
+path = "profile.PlateSolveSettings.NumberOfAttempts"
+min = 2
+max = 10
+severity = "warn"
+why = "One attempt gives up on a single cloud; more than 10 burns a target's window."
+fix = "NINA #1 > Options > Plate Solving: Number of attempts 5."
+
+[[rule]]
+id = "nina1_platesolve_solver"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 plate solver"
+path = "profile.PlateSolveSettings.PlateSolverType"
+one_of = ["ASTAP"]
+severity = "warn"
+why = "PhotonScript's Image Link check (PS-104) and the pointing log assume ASTAP."
+fix = "NINA #1 > Options > Plate Solving: Plate solver ASTAP."
+
+[[rule]]
+id = "nina1_platesolve_search_radius"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 plate solve search radius (deg)"
+path = "profile.PlateSolveSettings.SearchRadius"
+min = 5
+max = 30
+severity = "warn"
+why = "The Paramount's first slews land within a few arcmin (PS-104); 30 deg is ASTAP's default and harmless, under 5 deg fails after a bad sync."
+fix = "NINA #1 > Options > Plate Solving: Search radius 30."
+
+[[rule]]
+id = "nina1_camera_gain"
+app = "nina1"
+rig = "rc16"
+label = "RC16 camera gain"
+path = "devices.camera.Gain"
+equals = 200
+severity = "fail"
+why = "Every RC16 calibration master (darks, bias, flats) and the PS-117 read noise / e-/ADU constants are at gain 200 HCG; another gain matches no dark."
+fix = "NINA #1 > Equipment > Camera: Gain 200 (and Options > Equipment > Camera default gain 200)."
+
+[[rule]]
+id = "nina1_camera_offset"
+app = "nina1"
+rig = "rc16"
+label = "RC16 camera offset"
+path = "devices.camera.Offset"
+equals = 256
+severity = "fail"
+why = "Offset 256 keeps the noise floor off zero (50 was clipping, 2026-07); the darks are at 256."
+fix = "NINA #1 > Equipment > Camera: Offset 256."
+
+[[rule]]
+id = "nina1_camera_readout"
+app = "nina1"
+rig = "rc16"
+label = "RC16 readout mode"
+path = "devices.camera.ReadoutModeName"
+equals = "High Conversion Gain"
+severity = "fail"
+why = "Every RC16 light since 2026-09-26 is HCG (camera_readout_mode); an LCG light matches no dark and has a different read noise. The sequence cannot set it: it is the NINA profile's readout mode."
+fix = "NINA #1 > Equipment > Camera: Readout mode for normal images = High Conversion Gain (and for snapshots)."
+
+[[rule]]
+id = "nina1_camera_binning"
+app = "nina1"
+rig = "rc16"
+label = "RC16 camera binning (now)"
+path = "devices.camera.BinX"
+equals = 1
+when = ["running"]
+severity = "warn"
+why = "RC16 lights are 1x1 (0.236\"/px); a camera left at 2x2 or 4x4 after an AF run or a plate solve means the next light is binned. Read between frames: a reading taken mid-AF can show the AF binning."
+fix = "Check the last light's XBINNING; if not 1, NINA #1 > Imaging: binning 1x1 and look for a sequence instruction that leaves it binned."
+
+[[rule]]
+id = "nina1_cooler_setpoint"
+app = "nina1"
+rig = "rc16"
+label = "RC16 cooler setpoint (C)"
+path = "devices.camera.TemperatureSetPoint"
+equals = 0
+tol = 0.5
+when = ["running"]
+severity = "fail"
+why = "The RC16 darks are at 0 C (camera_setpoint_c); a different setpoint matches no dark."
+fix = "NINA #1 > Equipment > Camera: cooler to 0 C (and Options > Equipment > Camera: Temperature 0)."
+
+[[rule]]
+id = "nina1_cooler_on"
+app = "nina1"
+rig = "rc16"
+label = "RC16 cooler on"
+path = "devices.camera.CoolerOn"
+equals = true
+when = ["running"]
+severity = "fail"
+why = "An uncooled AP26MC has a different dark current and amp glow than the 0 C darks."
+fix = "NINA #1 > Equipment > Camera: turn the cooler on (setpoint 0 C)."
+
+[[rule]]
+id = "nina1_profile_gain"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 profile default gain / offset"
+path = "profile.CameraSettings.Gain"
+equals = 200
+severity = "warn"
+why = "Instructions that say 'default gain' (-1) use this; it must match the 200 the darks are at."
+fix = "NINA #1 > Options > Equipment > Camera: Gain 200, Offset 256."
+
+[[rule]]
+id = "nina1_af_binning"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 autofocus binning"
+path = "profile.FocuserSettings.AutoFocusBinning"
+min = 1
+max = 4
+severity = "warn"
+why = "At 0.236\"/px the RC16 is heavily oversampled, so AF at bin 2 to 4 measures HFR well and downloads fast; above 4 the stars are a few pixels and the curve flattens."
+fix = "NINA #1 > Options > Autofocus: Binning 2 to 4."
+
+[[rule]]
+id = "nina1_af_exposure"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 autofocus exposure (s)"
+path = "profile.FocuserSettings.AutoFocusExposureTime"
+min = 2
+max = 30
+severity = "warn"
+why = "Under 2 s the HFR follows the seeing; over 30 s a 9-point run takes 5+ minutes per filter."
+fix = "NINA #1 > Options > Autofocus: Default exposure 4 to 10 s."
+
+[[rule]]
+id = "nina1_af_steps"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 autofocus initial offset steps"
+path = "profile.FocuserSettings.AutoFocusInitialOffsetSteps"
+min = 3
+max = 6
+severity = "warn"
+why = "3 to 6 steps each side gives the hyperbola 7 to 13 points; fewer cannot fit, more wastes time."
+fix = "NINA #1 > Options > Autofocus: Number of initial offset steps 4."
+
+[[rule]]
+id = "nina1_af_step_size"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 autofocus step size"
+path = "profile.FocuserSettings.AutoFocusStepSize"
+report = true
+why = "Reported so a change shows in the ledger (the PS-76 focus model is fitted at the current step size)."
+fix = ""
+
+[[rule]]
+id = "nina1_af_fitting"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 autofocus method / fitting"
+path = "profile.FocuserSettings.AutoFocusCurveFitting"
+one_of = ["HYPERBOLIC", "TRENDHYPERBOLIC"]
+severity = "warn"
+why = "Star HFR curves are hyperbolic; a parabola biases the minimum on an asymmetric run."
+fix = "NINA #1 > Options > Autofocus: Curve fitting Hyperbolic (method Star HFR)."
+
+[[rule]]
+id = "nina1_af_r2"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 autofocus R2 threshold"
+path = "profile.FocuserSettings.RSquaredThreshold"
+min = 0.5
+max = 0.95
+severity = "warn"
+why = "Under 0.5 NINA accepts a curve that fitted noise; over 0.95 every run in average seeing fails."
+fix = "NINA #1 > Options > Autofocus: R2 threshold 0.6 to 0.8."
+
+[[rule]]
+id = "nina1_focus_offsets_once"
+app = "nina1"
+rig = "rc16"
+label = "Filter focus offsets applied once"
+computed = "double_focus_offsets"
+severity = "fail"
+why = "PhotonScript moves the focuser by focus_filter_offsets after AF on L; if NINA's 'Use filter offsets' is on too, the offset is applied twice and narrowband subs are out of focus."
+fix = "Either NINA #1 > Options > Autofocus: Use filter offsets OFF (PhotonScript applies them), or empty PS_FOCUS_FILTER_OFFSETS on the System page."
+
+[[rule]]
+id = "nina1_focuser_reset"
+app = "nina1"
+rig = "rc16"
+label = "RC16 EAF position counter"
+computed = "focuser_counter_reset"
+reset_below = 1000
+drop_steps = 3000
+severity = "fail"
+why = "The RC16 EAF focuses near 5700 steps; a drop to about 0 between two readings means its counter was reset (2026-10-12), so every seed, offset and focus model position is now wrong by the old position."
+fix = "Do not refocus by hand from the new zero: compare the newest AF position with the focus seeds (System page > Focus), then re-seed (photonscript focus-ingest) or move the EAF back by the lost steps."
+
+[[rule]]
+id = "nina1_dither_vs_search"
+app = "nina1"
+rig = "rc16"
+label = "NINA dither inside PHD2 search region"
+computed = "dither_within_search_region"
+severity = "warn"
+why = "NINA dithers in guide pixels (PHD2GuiderScale PIXELS); a dither larger than PHD2's search region drops the star after the move (the PS-89 audit wants the region at least 1x the dither)."
+fix = "NINA #1 > Options > Equipment > Guider: Dither pixels below the PHD2 search region (PHD2 Brain > Guiding: Search region), e.g. dither 10 px with a 25 to 35 px region."
+
+[[rule]]
+id = "nina1_settle_arcsec"
+app = "nina1"
+rig = "rc16"
+label = "NINA settle threshold (arcsec)"
+computed = "settle_arcsec"
+min_arcsec = 0.5
+max_arcsec = 1.0
+severity = "warn"
+why = "NINA settles in guide pixels (PHD2GuiderScale PIXELS), so its threshold in arcsec is pixels x the PHD2 scale: 5 px at 0.38\"/px is 1.9\", nearly 8 RC16 pixels, and NINA starts the next sub before a dither has settled. The PS-89 audit wants 0.5 to 1\"."
+fix = "NINA #1 > Options > Equipment > Guider: Settle pixels = 1\" / the PHD2 scale (2.6 px at 0.381\"/px; 2.7 px with the ASI174MM Mini at 0.372\"/px)."
+
+[[rule]]
+id = "nina1_settle_timeout"
+app = "nina1"
+rig = "rc16"
+label = "NINA settle timeout (s)"
+path = "profile.GuiderSettings.SettleTimeout"
+min = 60
+severity = "warn"
+why = "A 3248 mm dither needs 30 to 60 s to settle; a shorter timeout starts the sub while the star still moves."
+fix = "NINA #1 > Options > Equipment > Guider: Settle timeout 60 to 120 s."
+
+[[rule]]
+id = "nina1_phd2_profile"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 PHD2 profile = PHD2's active profile"
+computed = "phd2_profile_matches"
+severity = "warn"
+why = "NINA's PHD2_Single guider can switch PHD2 to its own profile id on connect; a different profile means the PS-89 audit judged one profile and PHD2 guides with another."
+fix = "NINA #1 > Options > Equipment > Guider: PHD2 profile = the RC16 OAG profile (PHD2 Connect Equipment shows the id)."
+
+[[rule]]
+id = "nina1_meridian_recenter"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 meridian flip recenter"
+path = "profile.MeridianFlipSettings.Recenter"
+equals = true
+severity = "warn"
+why = "After a flip the target moves by the TPoint residual (minutes of arc on the RC16 field); without a recenter the second half of the night is framed differently."
+fix = "NINA #1 > Options > Imaging > Meridian flip: Recenter after flip ON."
+
+[[rule]]
+id = "nina1_meridian_settle"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 meridian flip settle (s)"
+path = "profile.MeridianFlipSettings.SettleTime"
+min = 10
+severity = "warn"
+why = "The Paramount rings for several seconds after a flip slew; the plate solve right after needs it settled."
+fix = "NINA #1 > Options > Imaging > Meridian flip: Settle time 30 s."
+
+[[rule]]
+id = "nina1_safety_connected"
+app = "nina1"
+rig = "rc16"
+label = "RC16 safety monitor connected"
+path = "devices.safetymonitor.Connected"
+equals = true
+when = ["running"]
+severity = "fail"
+check_disconnected = true
+why = "The armer's pause / park logic and NINA's own SafetyMonitor conditions read it; disconnected = imaging into a closed roof."
+fix = "NINA #1 > Equipment > Safety Monitor: connect AARO Safety Obs 2."
+
+[[rule]]
+id = "nina1_weather_connected"
+app = "nina1"
+rig = "rc16"
+label = "RC16 weather (observing conditions) connected"
+path = "devices.weather.Connected"
+equals = true
+when = ["running"]
+severity = "warn"
+check_disconnected = true
+why = "Humidity / dew point go into the FITS headers and the QA dew checks."
+fix = "NINA #1 > Equipment > Weather: connect AARO Conditions."
+
+[[rule]]
+id = "nina1_mount_tracking_rate"
+app = "nina1"
+rig = "rc16"
+label = "Mount tracking rate"
+path = "live.mount.TrackingMode"
+equals = "Sidereal"
+when = ["running", "tracking"]
+severity = "fail"
+why = "Every target is a deep-sky object; any other rate trails the subs."
+fix = "TheSky: Telescope > Tracking: Sidereal rate (or NINA #1 > Equipment > Mount: Tracking rate Sidereal)."
+
+[[rule]]
+id = "nina1_telescope_focal_length"
+app = "nina1"
+rig = "rc16"
+label = "NINA #1 telescope focal length (mm)"
+path = "profile.TelescopeSettings.FocalLength"
+min = 3150
+max = 3350
+severity = "warn"
+why = "NINA's framing, FITS FOCALLEN and the plate-solve scale hint use it (3248 nominal, 3286 from the 0.236\"/px solve)."
+fix = "NINA #1 > Options > Equipment > Telescope: Focal length 3248."
+
+# --------------------------------------------------------- NINA #2 Piggy-600
+
+[[rule]]
+id = "nina2_camera_gain"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 camera gain"
+path = "devices.camera.Gain"
+equals = 100
+severity = "fail"
+why = "The AP26CC masters and the PS-117 constants are at gain 100, offset 256, LCG, 0 C."
+fix = "NINA #2 > Equipment > Camera: Gain 100."
+
+[[rule]]
+id = "nina2_camera_offset"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 camera offset"
+path = "devices.camera.Offset"
+equals = 256
+severity = "fail"
+why = "The AP26CC darks and bias (bias 256.5 ADU) are at offset 256."
+fix = "NINA #2 > Equipment > Camera: Offset 256."
+
+[[rule]]
+id = "nina2_camera_readout"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 readout mode"
+path = "devices.camera.ReadoutModeName"
+equals = "Low Conversion Gain"
+severity = "fail"
+why = "The Piggy-600 always shoots LCG (piggyback_readout_mode); an HCG light matches no dark."
+fix = "NINA #2 > Equipment > Camera: Readout mode for normal images = Low Conversion Gain."
+
+[[rule]]
+id = "nina2_cooler_setpoint"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 cooler setpoint (C)"
+path = "devices.camera.TemperatureSetPoint"
+equals = 0
+tol = 0.5
+when = ["running"]
+severity = "fail"
+why = "The AP26CC darks are at 0 C (piggyback_setpoint_c)."
+fix = "NINA #2 > Equipment > Camera: cooler to 0 C."
+
+[[rule]]
+id = "nina2_cooler_on"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 cooler on"
+path = "devices.camera.CoolerOn"
+equals = true
+when = ["running"]
+severity = "fail"
+why = "An uncooled AP26CC does not match the 0 C darks."
+fix = "NINA #2 > Equipment > Camera: turn the cooler on (setpoint 0 C)."
+
+[[rule]]
+id = "nina2_platesolve_binning"
+app = "nina2"
+rig = "piggyback"
+label = "NINA #2 plate solve binning"
+path = "profile.PlateSolveSettings.Binning"
+one_of = [1, 2]
+severity = "warn"
+why = "The Piggy-600 is 1.29\"/px: bin 1 or 2 both solve; more starves ASTAP of stars."
+fix = "NINA #2 > Options > Plate Solving: Binning 1x1."
+
+[[rule]]
+id = "nina2_safety_connected"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 safety monitor connected"
+path = "devices.safetymonitor.Connected"
+equals = true
+when = ["running"]
+severity = "warn"
+check_disconnected = true
+why = "NINA #2's own sequence safety conditions read it."
+fix = "NINA #2 > Equipment > Safety Monitor: connect AARO Safety Obs 2."
+
+[[rule]]
+id = "nina2_no_phd2"
+app = "nina2"
+rig = "piggyback"
+label = "NINA #2 guider"
+path = "devices.guider.Connected"
+equals = false
+when = ["running"]
+severity = "warn"
+check_disconnected = true
+why = "One PHD2 guides the RC16 OAG; NINA #2 connected to it too can stop or dither the RC16's guiding."
+fix = "NINA #2 > Equipment > Guider: disconnect (No guider)."
+
+# ------------------------------------------------------------------ PHD2
+
+[[rule]]
+id = "phd2_min_snr"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 AutoFind minimum SNR"
+path = "profile.min_snr"
+min = 8
+max = 20
+severity = "fail"
+why = "Auto-select rejects every star under this SNR: at 50 (2026-10-12) the 28 SNR OAG star was never picked and guiding could not start. Behind the OAG prism 10 to 20 is a usable star."
+fix = "PHD2 Brain > Guiding: Star selection, Minimum star SNR for AutoFind 10 (8 to 20)."
+
+[[rule]]
+id = "phd2_min_hfd"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 minimum star HFD (px)"
+path = "profile.min_hfd_px"
+min = 1.5
+severity = "warn"
+why = "A hot pixel has HFD about 1 px; under 1.5 PHD2 can lock on one (the PS-91 non-star lock)."
+fix = "PHD2 Brain > Guiding: Minimum star HFD 1.5 to 2.0 px."
+
+[[rule]]
+id = "phd2_pulse_alert"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 pulse-guide-failed alert"
+path = "silenced_alerts"
+not_contains = "PulseGuideFailedAlert"
+severity = "warn"
+why = "Ticked 'don't show again' (found 2026-10-12): PHD2 then keeps 'guiding' while the mount ignores every pulse, and nobody sees it."
+fix = "PHD2 Brain > Global: Reset 'don't show again' messages (or delete HKCU\\Software\\StarkLabs\\PHDGuidingV2\\Confirm\\<profile>\\PulseGuideFailedAlert with PHD2 closed)."
+
+[[rule]]
+id = "phd2_darks_or_bpm"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 dark library or bad-pixel map in use"
+any_true = ["profile.auto_load_darks", "profile.auto_load_defect_map"]
+severity = "warn"
+why = "Without a dark or a defect map the GP678C's hot pixels look like stars to AutoFind and the guide algorithm (the PS-91 non-star locks)."
+fix = "PHD2 Darks menu: tick Use Dark Library (or Use Bad-pixel Map); rebuild the library if it is older than 30 days."
+
+[[rule]]
+id = "phd2_cal_guiding"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 guiding on a FAIL calibration"
+path = "calibration_record.grade"
+one_of = ["PASS", "WARN"]
+when = ["guiding"]
+severity = "fail"
+why = "2026-10-12: PHD2 kept guiding on a calibration with axes 78 deg from perpendicular; every correction pushed partly the wrong way."
+fix = "Stop guiding, recalibrate near Dec 0 and the meridian (System page > Calibrate at the next dispatch, PS-93), or re-arm unguided."
+
+[[rule]]
+id = "phd2_cal_grade"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 calibration on record"
+path = "calibration_record.grade"
+one_of = ["PASS", "WARN"]
+when = ["not_guiding"]
+severity = "warn"
+why = "The next guided night would start on this calibration."
+fix = "Guiding tab: Calibrate at the next dispatch (PS-93)."
+
+[[rule]]
+id = "phd2_guide_scale"
+app = "phd2"
+rig = "rc16"
+label = "Guide pixel scale: PHD2 vs PhotonScript"
+computed = "guide_scale_matches"
+tol_pct = 10
+severity = "fail"
+why = "PhotonScript turns PHD2's pixel errors into arcsec (guide RMS, settle, dither, the PS-91 lock guard) with its own scale; a 5x mismatch (2026-10-12) makes every guiding number and gate wrong."
+fix = "Make them agree: PHD2 Brain > Camera pixel size and binning, Brain > Global focal length 3248; on the System page PS_GUIDE_CAMERA_PIXEL_UM (2.0 GP678C, 5.86 ASI174MM Mini), PS_GUIDE_FOCAL_LENGTH_MM, PS_PHD2_PIXEL_SCALE_ARCSEC 0."
+
+[[rule]]
+id = "phd2_ra_algorithm"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 RA algorithm / aggressiveness / min move"
+path = "api.ra_params"
+report = true
+why = "Reported so a change shows in the ledger (the PS-89 audit judges the values)."
+fix = ""
+
+[[rule]]
+id = "phd2_dec_algorithm"
+app = "phd2"
+rig = "rc16"
+label = "PHD2 Dec algorithm / parameters"
+path = "api.dec_params"
+report = true
+why = "Reported so a change shows in the ledger (the PS-89 audit judges the values)."
+fix = ""
+
+# ---------------------------------------------------------------- TheSky
+
+[[rule]]
+id = "thesky_time_zone"
+app = "thesky"
+rig = "rc16"
+label = "TheSky time zone"
+path = "time_zone"
+equals = -7
+severity = "fail"
+why = "After the 2026-10 reinstall TheSky was at +0; TheSky computes the mount's sidereal time and ProTrack from local time + zone, so a wrong zone points the mount hours off and breaks the TPoint model."
+fix = "TheSky: Input > Location: Time zone -7 (Mountain), Daylight saving U.S. and Canada, Use computer clock on."
+
+[[rule]]
+id = "thesky_dst"
+app = "thesky"
+rig = "rc16"
+label = "TheSky daylight saving"
+path = "dst_index"
+equals = 17
+severity = "fail"
+why = "The observatory follows U.S. daylight saving (America/Denver); 'not observed' is one hour off half the year."
+fix = "TheSky: Input > Location: Daylight saving U.S. and Canada."
+
+[[rule]]
+id = "thesky_computer_clock"
+app = "thesky"
+rig = "rc16"
+label = "TheSky uses the computer clock"
+path = "use_computer_clock"
+equals = true
+severity = "fail"
+why = "A frozen TheSky clock drifts the sidereal time every minute."
+fix = "TheSky: Input > Location (or Date and Time): Use computer clock ON."
+
+[[rule]]
+id = "thesky_protrack"
+app = "thesky"
+rig = "rc16"
+label = "ProTrack on"
+path = "protrack_on"
+equals = true
+when = ["tracking"]
+severity = "fail"
+why = "Unguided nights depend on ProTrack; it is greyed (reads off) while parked, so it is judged only while the mount tracks."
+fix = "TheSky: Telescope > Bisque TCS > ProTrack: Activate ProTrack and Enable tracking adjustments (mount connected and tracking)."
+
+[[rule]]
+id = "thesky_tpoint_active"
+app = "thesky"
+rig = "rc16"
+label = "TPoint model applied"
+path = "tpoint_model_active"
+equals = true
+severity = "warn"
+why = "Without the model applied the first slews miss by 30+ arcmin and ProTrack has nothing to work from."
+fix = "TheSky: Telescope > TPoint: Apply corrections (Super Model) ON."
+
+[[rule]]
+id = "thesky_tpoint_points"
+app = "thesky"
+rig = "rc16"
+label = "TPoint model points"
+path = "tpoint_points"
+min = 50
+severity = "warn"
+why = "Bisque's minimum for ProTrack is about 50 points (tpoint_min_points)."
+fix = "Run a TPoint mapping (sideload recipe tpoint_mapping_then_tonight, PS-171)."
+
+[[rule]]
+id = "thesky_tpoint_rms"
+app = "thesky"
+rig = "rc16"
+label = "TPoint model RMS (arcsec)"
+path = "tpoint_rms_arcsec"
+max = 30
+severity = "warn"
+why = "A sky RMS above 30\" means the model fits poorly (or a bad point); ProTrack follows the model."
+fix = "TPoint: remove outliers / Super Model, or remap."
+
+[[rule]]
+id = "thesky_site_latitude"
+app = "thesky"
+rig = "rc16"
+label = "TheSky site latitude"
+path = "site_latitude"
+computed = "near_config"
+config_key = "observatory_lat"
+tol = 0.02
+severity = "fail"
+why = "The site drives refraction, the TPoint model and the sidereal time; a reinstall can reset it."
+fix = "TheSky: Input > Location: latitude 31.9069 N."
+
+[[rule]]
+id = "thesky_site_longitude"
+app = "thesky"
+rig = "rc16"
+label = "TheSky site longitude"
+path = "site_longitude"
+computed = "near_config_abs"
+config_key = "observatory_lon"
+tol = 0.02
+severity = "fail"
+why = "A wrong longitude shifts the sidereal time (4 min per degree); TheSky's sign convention is west positive, so the magnitude is compared."
+fix = "TheSky: Input > Location: longitude 109.021 W."
+
+# ------------------------------------------------- PhotonScript's own config
+
+[[rule]]
+id = "ps_default_gain"
+app = "photonscript"
+rig = "rc16"
+label = "PhotonScript RC16 gain / offset"
+path = "default_gain"
+equals = 200
+severity = "warn"
+why = "Sequences and the calibration plan use default_gain; it must match the RC16 masters (200)."
+fix = "System page: PS_DEFAULT_GAIN 200."
+
+[[rule]]
+id = "ps_default_offset"
+app = "photonscript"
+rig = "rc16"
+label = "PhotonScript RC16 offset"
+path = "default_offset"
+equals = 256
+severity = "warn"
+why = "Sequences and the calibration plan use default_offset (256)."
+fix = "System page: PS_DEFAULT_OFFSET 256."
+
+[[rule]]
+id = "ps_readout_mode"
+app = "photonscript"
+rig = "rc16"
+label = "PhotonScript RC16 readout mode"
+path = "camera_readout_mode"
+equals = "HCG"
+severity = "warn"
+why = "Darks, bias and readiness count at this mode (PS-128)."
+fix = "System page: PS_CAMERA_READOUT_MODE HCG."
+
+[[rule]]
+id = "ps_setpoint"
+app = "photonscript"
+rig = "rc16"
+label = "PhotonScript RC16 setpoint (C)"
+path = "camera_setpoint_c"
+equals = 0
+severity = "warn"
+why = "The sequence cools to this; the darks are at 0 C."
+fix = "System page: PS_CAMERA_SETPOINT_C 0."
+
+[[rule]]
+id = "ps_piggy_gain"
+app = "photonscript"
+rig = "piggyback"
+label = "PhotonScript Piggy-600 gain"
+path = "piggyback_default_gain"
+equals = 100
+severity = "warn"
+why = "The Piggy-600 sequence and its masters are at gain 100."
+fix = "System page: PS_PIGGYBACK_DEFAULT_GAIN 100."
+
+[[rule]]
+id = "ps_piggy_readout"
+app = "photonscript"
+rig = "piggyback"
+label = "PhotonScript Piggy-600 readout mode"
+path = "piggyback_readout_mode"
+equals = "LCG"
+severity = "warn"
+why = "The Piggy-600 darks count at this mode."
+fix = "System page: PS_PIGGYBACK_READOUT_MODE LCG."
+
+[[rule]]
+id = "ps_gain_matches_nina1"
+app = "photonscript"
+rig = "rc16"
+label = "RC16 camera gain = PhotonScript default_gain"
+computed = "config_matches_device"
+config_key = "default_gain"
+device_app = "nina1"
+device_path = "devices.camera.Gain"
+severity = "warn"
+why = "Subs shot at another gain than PhotonScript plans with match no master."
+fix = "Set NINA #1's camera gain and PS_DEFAULT_GAIN to the same value (200)."

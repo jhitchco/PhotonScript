@@ -51,3 +51,11 @@ def _ttl_cache_clear():
     ttl_cache.invalidate()
     yield
     ttl_cache.invalidate()
+
+
+@pytest.fixture(autouse=True)
+def _settings_ledger_off(monkeypatch):
+    """Settings ledger: the armer would snapshot NINA, PHD2 and TheSky (over
+    the network) on every state change; no test should. The ledger's own
+    tests (tests/test_scheduler/test_settings_ledger.py) turn it on."""
+    monkeypatch.setenv("PS_SETTINGS_LEDGER_ENABLED", "false")
