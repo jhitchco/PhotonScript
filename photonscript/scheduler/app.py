@@ -378,22 +378,24 @@ async def api_tonight_plan():
     config = get_config()
     obs = config.get_observatory()
     now = datetime.utcnow()
-    twilight = get_twilight_times(obs, now)
-    month = now.month
+    # the LOCAL night (noon to noon), not the UTC date: from 18:00 MDT the
+    # UTC date is tomorrow and this answered tomorrow night's twilight
+    from photonscript.shared.localtime import night_window
+    base, twilight = night_window(config, now)
 
     # Use existing projects if available, otherwise suggest seasonal
     stored = _stored_projects()
     if stored:
         projects = list(stored.values())
     else:
-        seasonal = get_seasonal_targets(month)
-        ranked = rank_targets_for_night(seasonal, obs, now)
+        seasonal = get_seasonal_targets(base.month)
+        ranked = rank_targets_for_night(seasonal, obs, base)
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
     sequence_targets = plan_night_sequence(projects, config, now)
 
     return {
-        "date": now.strftime("%Y-%m-%d"),
+        "date": base.strftime("%Y-%m-%d"),
         "twilight": {
             k: v.isoformat() if v else None
             for k, v in twilight.items()

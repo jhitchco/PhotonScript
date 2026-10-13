@@ -387,18 +387,24 @@ def plan(
     config = PhotonScriptConfig()
     obs = config.get_observatory()
 
+    from photonscript.shared.localtime import local_evening_utc, night_window
     if date:
+        # a local evening date; the planner takes an instant inside it
         dt = datetime.strptime(date, "%Y-%m-%d")
+        at = local_evening_utc(config, dt)
+        twilight = get_twilight_times(obs, dt)
     else:
-        dt = datetime.utcnow()
+        # the local night (noon to noon), not the UTC date (tomorrow from
+        # 18:00 MDT)
+        at = datetime.utcnow()
+        dt, twilight = night_window(config, at)
 
     if month == 0:
         month = dt.month
 
-    twilight = get_twilight_times(obs, dt)
     seasonal = get_seasonal_targets(month)
     projects = [create_project_from_target(t) for t in seasonal]
-    sequence = plan_night_sequence(projects, config, dt)
+    sequence = plan_night_sequence(projects, config, at)
 
     console.print(Panel(
         f"[bold]Tonight's Plan[/bold] — {dt.strftime('%B %d, %Y')}\n"

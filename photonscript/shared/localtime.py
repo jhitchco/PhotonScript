@@ -43,3 +43,30 @@ def night_base_date(config, now_utc: datetime | None = None) -> datetime:
     if local.hour < 12:
         local -= timedelta(days=1)
     return datetime(local.year, local.month, local.day)
+
+
+def night_window(config, now_utc: datetime | None = None) -> tuple[datetime, dict]:
+    """(base date, get_twilight_times() dict) of the night in progress or
+    the coming one: night_base_date(), rolled to the next evening once that
+    night's dawn has passed. The one anchor for "tonight" (the UTC date is
+    already tomorrow from 18:00 MDT, and after local midnight it is still
+    the night that began yesterday evening)."""
+    from photonscript.shared.astronomy import get_twilight_times
+    now_utc = now_utc or datetime.utcnow()
+    obs = config.get_observatory()
+    base = night_base_date(config, now_utc)
+    tw = get_twilight_times(obs, base)
+    dawn = tw.get("astro_dark_end")
+    if dawn and dawn.replace(tzinfo=None) < now_utc.replace(tzinfo=None):
+        base += timedelta(days=1)
+        tw = get_twilight_times(obs, base)
+    return base, tw
+
+
+def local_evening_utc(config, date: datetime) -> datetime:
+    """20:00 local on `date` (a local calendar date) as naive UTC: an
+    instant inside that date's night for planners that take a UTC "now"."""
+    local = datetime(date.year, date.month, date.day, 20)
+    # the offset at 20:00 UTC that day equals the one at 20:00 local (DST
+    # changes at 02:00 local)
+    return local - timedelta(hours=utc_offset_hours(config, local))
