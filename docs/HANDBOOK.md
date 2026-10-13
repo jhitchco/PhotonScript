@@ -802,14 +802,15 @@ clouds, seeing, focus (AF age, temperature since the last AF), other.
 `sub_doctor` (cause, confidence, evidence, suggested_action {id: stop_phd2 |
 recalibrate_phd2 | reselect_guide_star | start_guiding | run_af |
 check_focuser | shorten_subs:<s> | check_tracking | check_pointing |
-wait_clouds | none}); a recovery writes cause "none". Opt-in remedies, all
-default off: `sub_doctor_stop_phd2_unguided` (PHD2 stop_capture on an
-unguided night, RC16 agent, never while another actor such as the PS-93
-calibration manager holds PHD2 or PHD2 calibrates),
-`sub_doctor_request_af` (ninaAPI auto-focus when the camera is idle, the
-other rig sharp; night-untested), `sub_doctor_shorten_subs` (caps unguided
-RC16 subs at the drift length at the armer's next dispatch; never
-re-dispatches). Dashboard chip (`GET /api/sub-doctor`), Runs page "What went
+wait_clouds | none}); a recovery writes cause "none". One actor for
+remedies (2026-10-13): the doctor only diagnoses and the night pilot is the
+only thing that acts on a suggested_action. The doctor's own opt-in
+remedies and its `<data_dir>/sub_doctor/caps.json` sub cap (the armer's
+dispatch hook) are retired; `sub_doctor_stop_phd2_unguided`,
+`sub_doctor_request_af` and `sub_doctor_shorten_subs` stay readable but
+have no effect (superseded by `night_pilot_stop_phd2`, `night_pilot_af`,
+`night_pilot_shorten_subs`). The push says "Remedy <id>: the night pilot's
+(<mode>)". Dashboard chip (`GET /api/sub-doctor`), Runs page "What went
 wrong and the fix" (`GET /api/runs/{date}/sub-doctor`), the morning report
 line, pairs for other agents (`GET /api/sub-doctor/pairs`). Past nights:
 `photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events]
@@ -905,7 +906,7 @@ loop every 60 s (`run_pilot`, app startup).
   dark / bias / focus calibration item, or PHD2 calibrating; no re-dispatch
   with under 45 min of dark; at most `night_pilot_max_actions` (6) per
   night and one per rig per `night_pilot_rig_cooldown_min` (15); never
-  repeats a sub doctor remedy just done. Never arms, disarms, parks,
+  repeats a (retired, old-log) sub doctor remedy. Never arms, disarms, parks,
   unparks, touches the roof / safety or a PHD2 calibration.
 - Every step is a run event (kind `night_pilot`: act, advise, held, human,
   annotate, dispatched, retry, verify, failed, learned, revert) and each

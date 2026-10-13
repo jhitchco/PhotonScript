@@ -713,6 +713,23 @@ def test_sub_doctor_remedy_not_doubled(tmp_path):
     assert "sub doctor already ran stop_phd2" in _pilot_events(cfg, "held")[0]["detail"]
 
 
+def test_stop_phd2_held_while_another_actor_holds_phd2(tmp_path):
+    """One actor at a time: the PS-93 calibration manager (or any PS-91
+    actor) holding PHD2 holds the pilot's stop; nothing is sent."""
+    from photonscript.telescope_agent import phd2_ops
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Guiding")
+    _diag(cfg, "04:23", "guider_conflict", "stop_phd2", ecc=0.76)
+    phd2_ops._reset_for_tests()
+    phd2_ops._try("calmanager")
+    try:
+        _tick(cfg, armer, io, "04:24")
+    finally:
+        phd2_ops._reset_for_tests()
+    assert "phd2_stop" not in io.calls
+    assert "holds PHD2 (calmanager)" in _pilot_events(cfg, "held")[0]["detail"]
+
+
 def test_clouds_annotate_only(tmp_path):
     cfg = _cfg(tmp_path)
     armer, io = FakeArmer(), FakeIO(cfg)

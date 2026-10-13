@@ -303,7 +303,8 @@ def test_record_pushes_once_per_cause_and_writes_events(tmp_path):
     t0 = datetime(2026, 10, 13, 4, 28)
     o1 = sd.record(cfg, night, "rc16", diag, now=t0)
     assert o1["push"] and "Fix:" in o1["push"] and "stop_phd2" in o1["push"]
-    assert o1["remedy"] is None                        # remedy off by default
+    assert o1["remedy"] is None                        # the doctor never acts
+    assert "the night pilot's" in o1["push"]
     o2 = sd.record(cfg, night, "rc16", diag, now=t0)
     assert o2["push"] is None and o2["event"]          # every diagnosis: an event
     o3 = sd.record(cfg, night, "rc16", None, now=t0)
@@ -334,31 +335,24 @@ def test_record_observe_and_off(tmp_path):
                                                    "remedy": None}
 
 
-def test_record_remedy_when_enabled(tmp_path):
-    cfg = _cfg(tmp_path, sub_doctor_stop_phd2_unguided=True)
+def test_record_never_returns_a_remedy_even_with_the_old_keys(tmp_path):
+    """One actor (2026-10-13): the retired remedy keys are readable but do
+    nothing; the suggested action stays in the diagnosis for the pilot."""
+    cfg = _cfg(tmp_path, sub_doctor_stop_phd2_unguided=True,
+               sub_doctor_request_af=True, sub_doctor_shorten_subs=True)
     night, diag = _diag(cfg)
+    assert diag["action"]["id"] == "stop_phd2" and diag["action"]["auto"]
+    assert diag["action"]["enabled"] is False
     o = sd.record(cfg, night, "rc16", diag)
-    assert o["remedy"]["id"] == "stop_phd2"
-    sd.note_remedy(cfg, night, "rc16", o["remedy"], True, "stopped")
-    assert sd.record(cfg, night, "rc16", diag)["remedy"] is None   # once a night
+    assert o["remedy"] is None and o["event"]["suggested_action"]["id"] == "stop_phd2"
 
 
-# ------------------------------------------------------------- caps
-
-def test_apply_caps_only_unguided_rc16(tmp_path):
-    from photonscript.shared.models import ExposurePlan, FilterType
-    cfg = _cfg(tmp_path)
-    mk = lambda guided: SimpleNamespace(   # noqa: E731
-        name="Heart", start_guiding=guided, tracking_test=False, focus_calibration=False,
-        exposures=[ExposurePlan(filter_type=FilterType("Ha"), exposure_seconds=180, count=10)])
-    t_u, t_g = mk(False), mk(True)
-    assert sd.apply_caps(cfg, [t_u], "2026-10-12") == []
-    sd.set_cap(cfg, "2026-10-12", "rc16", 60, "trailing")
-    notes = sd.apply_caps(cfg, [t_u, t_g], "2026-10-12")
-    assert len(notes) == 1
-    assert t_u.exposures[0].exposure_seconds == 60 and t_u.exposures[0].count == 30
-    assert t_g.exposures[0].exposure_seconds == 180
-    assert sd.apply_caps(cfg, [mk(False)], "2026-10-13") == []   # another night
+def test_caps_json_cap_is_retired():
+    for name in ("apply_caps", "set_cap", "cap_for", "caps_path", "note_remedy"):
+        assert not hasattr(sd, name), name
+    src = (Path(__file__).resolve().parents[2] / "photonscript/scheduler/armer.py"
+           ).read_text(encoding="utf-8")
+    assert "apply_caps" not in src and "sub_doctor import" not in src
 
 
 # ------------------------------------------------------------- live agent side
@@ -404,7 +398,7 @@ def _arm_unguided(cfg, monkeypatch):
     assert sd.armed_mode(cfg) == "unguided"
 
 
-def test_after_sub_pushes_and_stops_phd2_when_enabled(tmp_path, monkeypatch):
+def test_after_sub_pushes_but_never_commands_phd2(tmp_path, monkeypatch):
     from photonscript.scheduler import phd2_calibration as pc
     from photonscript.telescope_agent import phd2_ops, sub_doctor_live as live
     cfg = _cfg(tmp_path, sub_doctor_stop_phd2_unguided=True)
@@ -423,34 +417,15 @@ def test_after_sub_pushes_and_stops_phd2_when_enabled(tmp_path, monkeypatch):
     d = asyncio.run(live.after_sub(ag, night))
     assert d["cause"] == "guider_conflict"
     assert pushes[0][0].startswith("PhotonScript sub doctor") and pushes[0][2] == 1
-    assert ag.phd2.stopped == 1
+    assert ag.phd2.stopped == 0                    # the night pilot's job
     st = sd.load_state(cfg, night)["rigs"]["rc16"]
-    assert st["remedies"][0]["id"] == "stop_phd2" and st["remedies"][0]["ok"]
-    # the next sub: no second push, no second stop
+    assert not st.get("remedies")
+    # the next sub: no second push
     n = len(pushes)
     asyncio.run(live.after_sub(ag, night))
-    assert ag.phd2.stopped == 1 and len(pushes) == n
-
-
-def test_stop_phd2_never_under_the_calibration_manager(tmp_path, monkeypatch):
-    from photonscript.telescope_agent import phd2_ops, sub_doctor_live as live
-    cfg = _cfg(tmp_path, sub_doctor_stop_phd2_unguided=True)
-    _arm_unguided(cfg, monkeypatch)
-    ag = _agent(cfg)
-    act = {"id": "stop_phd2", "auto": True, "enabled": True}
-    phd2_ops._reset_for_tests()
-    phd2_ops._try("calmanager")
-    try:
-        assert asyncio.run(live._stop_phd2(ag, "2026-10-12", "rc16", act)) is None
-    finally:
-        phd2_ops._reset_for_tests()
-    ag.phd2.state = "Calibrating"
-    assert asyncio.run(live._stop_phd2(ag, "2026-10-12", "rc16", act)) is None
-    assert ag.phd2.stopped == 0
-    # the Piggy-600 agent never commands PHD2
-    ag.phd2.state = "Guiding"
-    assert asyncio.run(live._stop_phd2(ag, "2026-10-12", "piggyback", act)) is None
-    assert ag.phd2.stopped == 0
+    assert ag.phd2.stopped == 0 and len(pushes) == n
+    for name in ("remedy", "_stop_phd2", "_run_af"):
+        assert not hasattr(live, name), name
 
 
 def test_after_sub_off_does_nothing(tmp_path):

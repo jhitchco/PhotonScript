@@ -61,8 +61,9 @@ in progress, NINA #1 runs a TPoint / tracking test / PHD2 calibration /
 flat / dark / bias / focus calibration item, or PHD2 calibrates; never
 with under RESTART_DARK_MIN of dark left for a re-dispatch;
 night_pilot_max_actions (6) per night, one action per rig per
-night_pilot_rig_cooldown_min (15); never twice what the sub doctor's own
-opt-in remedy just did. It never arms, disarms, parks, unparks, touches the
+night_pilot_rig_cooldown_min (15). It is the one actor for remedies: the
+sub doctor's own opt-in remedies are retired (a sub_doctor_remedy event in
+an old log still holds the same action). It never arms, disarms, parks, unparks, touches the
 roof or safety, or changes a PHD2 calibration.
 
 Every decision is a run event (kind "night_pilot": act / advise / held /
@@ -542,8 +543,14 @@ class PilotIO:
                     if str(st).lower() == "stopped":
                         break
                 return st
+        from photonscript.telescope_agent import phd2_ops
         try:
-            st = await asyncio.wait_for(asyncio.to_thread(_stop), 60)
+            # one PhotonScript actor commands PHD2 at a time (PS-91): the
+            # retired sub doctor remedy held this lock, so the pilot does too
+            async with phd2_ops.hold("night_pilot", wait_s=10):
+                st = await asyncio.wait_for(asyncio.to_thread(_stop), 60)
+        except phd2_ops.PHD2Busy as e:
+            return False, f"PHD2 held by {e.owner}: not stopped"
         except Exception as e:  # noqa: BLE001
             return False, f"PHD2 stop_capture failed: {e}"
         ok = str(st).lower() == "stopped"
@@ -699,6 +706,14 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
     if why:
         return why
     action, rig = dec["action"], d["rig"]
+    if action == "stop_phd2":
+        try:
+            from photonscript.telescope_agent import phd2_ops
+            if phd2_ops.busy():
+                return (f"another PhotonScript actor holds PHD2 "
+                        f"({phd2_ops.owner()})")
+        except Exception:  # noqa: BLE001
+            pass
     pol = POLICY[action]
     lim = limits(cfg)
     if pol["restart"] or action == "unguided":
