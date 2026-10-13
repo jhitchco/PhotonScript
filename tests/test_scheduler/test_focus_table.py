@@ -550,3 +550,183 @@ def test_api_focus_table(tmp_path, monkeypatch):
     assert "error" in focus.api_focus_table(rig="piggyback")
     s = fm.summary(cfg)
     assert s["table"]["drive_ready"] == out["drive_ready"]
+
+
+# ------------------------------------------------------------ ambient at each AF
+
+def _frozen_night(day=10, bias=2.0):
+    """An RC16 night with the EAF stuck at 21.29 C while it really cooled
+    20 -> 14 C; the AARO ambient reads bias C below the EAF."""
+    pts = []
+    start = datetime(2026, 10, day, 20, 0)
+    for i in range(10):
+        true_t = 20.0 - 6.0 * i / 9
+        p = _pt("L", start + timedelta(minutes=40 * i), true_t)
+        p.update(temp=21.29, ambient=round(true_t - bias, 2))
+        pts.append(p)
+    return pts
+
+
+def test_fit_temps_bypasses_a_frozen_eaf(tmp_path):
+    cfg = _cfg(tmp_path)
+    # noise-free AFs with a working EAF (16.5 to 25.5 C), ambient 2 C below
+    good = [_pt("L", datetime(2026, 10, 1, 20, 0) + timedelta(minutes=30 * i),
+                16.5 + 0.5 * i, ambient=round(14.5 + 0.5 * i, 2)) for i in range(19)]
+    frozen = _frozen_night()
+    use = fm.fit_temps(good + frozen, cfg)
+    fitted = fm.fit(use, ref_filter="L")
+    assert fitted["slope_steps_per_c"] == pytest.approx(SLOPE, abs=0.05)
+    sub = [p for p in use if p.get("temp_source") == "ambient"]
+    assert len(sub) == 10 and all(p["temp_eaf"] == 21.29 for p in sub)
+    assert sub[0]["temp"] == pytest.approx(20.0, abs=0.05)   # ambient + 2 C bias
+    assert sub[-1]["temp"] == pytest.approx(14.0, abs=0.05)
+    assert all("temp_source" not in p for p in use if p not in sub)
+    # the stored points are not rewritten; the switch off fits them as stored
+    assert all(p["temp"] == 21.29 for p in frozen)
+    off = _cfg(tmp_path / "off", focus_model_ambient_fit=False)
+    assert fm.fit_temps(good + frozen, off) == good + frozen
+    # no ambient recorded: a frozen point stays as it is
+    bare = [dict(p, ambient=None) for p in frozen]
+    assert fm.fit_temps(bare, cfg) == bare
+    # every consumer (table, seeds, moves) reads through _rc16_points
+    _store(cfg, good + frozen)
+    pts = fm._rc16_points(cfg)
+    assert sum(1 for p in pts if p.get("temp_source") == "ambient") == 10
+
+
+def test_ambient_samples_attach_to_af_points(tmp_path):
+    cfg = _cfg(tmp_path)
+    assert fm.record_ambient(cfg, 9.5, now=datetime(2026, 10, 10, 20, 5))
+    assert fm.record_ambient(cfg, 8.0, now=datetime(2026, 10, 10, 21, 0))
+    assert not fm.record_ambient(cfg, float("nan"))
+    assert not fm.record_ambient(cfg, None)
+    s = fm.load_ambient(cfg)
+    assert [v for _t, v in s] == [9.5, 8.0]
+    pts = [_pt("L", datetime(2026, 10, 10, 20, 0), 21.29),     # 5 min: 9.5
+           _pt("L", datetime(2026, 10, 10, 20, 32), 21.29),    # 28 min: none
+           _pt("L", datetime(2026, 10, 10, 20, 50), 21.29),    # 10 min: 8.0
+           dict(_pt("L", datetime(2026, 10, 10, 21, 0), 21.0), ambient=7.0)]
+    assert fm.attach_ambient(pts, s) == 2
+    assert [p.get("ambient") for p in pts] == [9.5, None, 8.0, 7.0]
+
+
+def test_sample_ambient_reads_nina_weather(tmp_path, monkeypatch):
+    from photonscript.scheduler import night_pause
+    cfg = _cfg(tmp_path)
+    seen = []
+    wx = {"Connected": True, "Temperature": 7.25}
+
+    async def fake_get(base, path, timeout=10.0):
+        seen.append(base + path)
+        return dict(wx)
+    monkeypatch.setattr(night_pause, "nina_get", fake_get)
+    monkeypatch.setitem(fm._ambient_last, "t", 0.0)
+    assert asyncio.run(fm.sample_ambient(cfg, force=True)) == 7.25
+    assert seen == [cfg.nina_base_url.rstrip("/") + "/equipment/weather/info"]
+    assert asyncio.run(fm.sample_ambient(cfg)) is None      # throttled
+    assert len(seen) == 1
+    wx["Connected"] = False
+    assert asyncio.run(fm.sample_ambient(cfg, force=True)) is None
+    assert [v for _t, v in fm.load_ambient(cfg)] == [7.25]
+
+
+# ------------------------------------------------------------ drive-move re-fire
+
+def _move(at, temp, verdict="MOVED"):
+    return {"verdict": verdict, "temp": temp, "at": at.isoformat(timespec="seconds")}
+
+
+def test_trigger_gate_resets_the_reference_to_the_last_move(tmp_path):
+    cfg = _cfg(tmp_path)
+    af = datetime(2026, 10, 13, 20, 0)
+    mv = [_move(datetime(2026, 10, 13, 21, 0), 15.0)]
+    g = fm.trigger_gate
+    # NINA's trigger crossed 1 C from the 20:00 AF at 16 C and keeps firing:
+    # held while within 1 C of the 21:00 move at 15 C
+    assert g(cfg, 14.6, 1.0, moves=mv, last_af=af)["hold"] is True
+    h = g(cfg, 14.2, 1.0, moves=mv, last_af=af)
+    assert h["hold"] and "re-fired" in h["reason"] and h["ref_temp"] == 15.0
+    assert g(cfg, 14.0, 1.0, moves=mv, last_af=af)["hold"] is False   # a full step
+    # an AF since the move: NINA's own reference is right again
+    assert g(cfg, 14.6, 1.0, moves=mv,
+             last_af=datetime(2026, 10, 13, 21, 30))["hold"] is False
+    # no move yet, NO_MOVE / HELD entries are no reference
+    assert g(cfg, 14.6, 1.0, moves=[], last_af=af)["hold"] is False
+    assert g(cfg, 14.6, 1.0, moves=[_move(datetime(2026, 10, 13, 21, 0), 15.0, "NO_MOVE"),
+                                    _move(datetime(2026, 10, 13, 21, 5), 15.0, "HELD")],
+             last_af=af)["hold"] is False
+    # IN_PLACE counts; default sources: the moves log and the stored AFs
+    _store(cfg, [_pt("L", datetime(2026, 10, 1, 20, 0), 16.0)])
+    fm.record_move(cfg, {"verdict": "IN_PLACE", "temp": 15.0})
+    assert g(cfg, 15.3, 1.0)["hold"] is True
+
+
+def test_temperature_trigger_runs_the_move_with_trigger(tmp_path):
+    from photonscript.scheduler import nina_sequence_json as nsj
+    from photonscript.shared.models import ExposurePlan, FilterType, NinaSequenceTarget
+    t = NinaSequenceTarget(name="Heart Nebula", ra_hours=2.55, dec_degrees=61.5,
+                           exposures=[ExposurePlan(filter_type=FilterType.HA,
+                                                   exposure_seconds=300, count=40,
+                                                   gain=100, offset=50)])
+    drive = {"script": str(tmp_path / "focus-model-move.cmd"),
+             "filters": {"Ha"}, "verify_min": 60, "temp_c": 2.0}
+    c = nsj._build_target_container(t, 30.0, loop_end=("NauticalDawnProvider", -10),
+                                    focus_drive=drive)
+    scripts, temp_runners = [], []
+
+    def walk(n, in_temp=False):
+        if isinstance(n, dict):
+            ty = str(n.get("$type") or "")
+            here = in_temp or "AutofocusAfterTemperatureChangeTrigger" in ty
+            if "ExternalScript" in ty:
+                (temp_runners if here else scripts).append(n["Script"])
+            for v in n.values():
+                walk(v, here)
+        elif isinstance(n, list):
+            for v in n:
+                walk(v, in_temp)
+    walk(c)
+    q = f'"{drive["script"]}"'
+    assert f"{q} Ha" in scripts                       # the block start
+    assert temp_runners and all(s == f"{q} Ha --trigger" for s in temp_runners)
+    cmd = (Path(__file__).resolve().parents[2] / "deploy/focus-model-move.cmd"
+           ).read_text(encoding="utf-8")
+    assert "focus-move %* --from-nina" in cmd
+
+
+def test_model_move_trigger_held_then_moves(tmp_path, monkeypatch):
+    from photonscript.scheduler import app
+    from photonscript.scheduler.routers import focus
+    cfg = _cfg(tmp_path, focus_model_drive="drive",
+               nina_base_url="http://x:1888/v2/api")
+    _store(cfg, _nights())
+    monkeypatch.setattr(app, "_config", cfg)
+    moves, temps = [], [20.0]
+
+    async def info(base):
+        return {"Temperature": temps[0], "Position": 5000}
+
+    async def wx(base):
+        return {}
+
+    async def move(base, pos):
+        moves.append(pos)
+        return {"Success": True}
+    monkeypatch.setattr(focus, "_nina_focuser", info)
+    monkeypatch.setattr(focus, "_nina_weather", wx)
+    monkeypatch.setattr(focus, "_nina_move", move)
+    first = asyncio.run(focus.api_focus_model_move(filter="L"))   # block start
+    assert first["verdict"] == "MOVED" and len(moves) == 1
+    temps[0] = 19.0     # the trigger fires before the next sub (5 C step)
+    out = asyncio.run(focus.api_focus_model_move(filter="L", trigger=True))
+    assert out["verdict"] == "HELD" and len(moves) == 1
+    assert fm.recent_moves(cfg)[-1]["verdict"] == "HELD"
+    out = asyncio.run(focus.api_focus_model_move(filter="L", trigger=True))
+    assert out["verdict"] == "HELD" and len(moves) == 1           # and again
+    temps[0] = 14.5     # a full step from the 20 C move
+    out = asyncio.run(focus.api_focus_model_move(filter="L", trigger=True))
+    assert out["verdict"] == "MOVED" and len(moves) == 2
+    # the block start (no trigger) is never held
+    temps[0] = 14.0
+    assert asyncio.run(focus.api_focus_model_move(filter="L"))["verdict"] in (
+        "MOVED", "IN_PLACE")

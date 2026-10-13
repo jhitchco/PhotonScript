@@ -832,6 +832,11 @@ class PhotonScriptConfig(BaseSettings):
     # has not changed for 60 min while the NINA weather ambient moved > 1 C,
     # model moves use the ambient (+ the learned bias) instead.
     focus_frozen_temps: str = "21.29"
+    # Every AF point carries the NINA weather ambient at its time (sampled
+    # into focus_ambient.jsonl by the ingest loop). On: the fit uses ambient
+    # + the learned bias for an AF whose EAF temperature is a frozen reading
+    # (or missing). Off: the fit uses the EAF temperatures as stored.
+    focus_model_ambient_fit: bool = True
     focus_cfz_steps: int = 0  # RC16 critical focus zone in EAF steps; 0 =
                                  # use the median AF step size as the proxy
     focus_model_move_script: str = "C:\\astro\\PhotonScript\\deploy\\focus-model-move.cmd"

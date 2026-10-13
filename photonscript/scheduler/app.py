@@ -870,6 +870,7 @@ _CONFIG_FIELDS = [
     ("focus_model_drive", "PS_FOCUS_MODEL_DRIVE", "Focus model: seed (default: the model seeds each AF) | drive (drive-ready filters move to the focus table instead of per-block AF; /api/focus/table)", "Imaging", "str", False, False),
     ("focus_model_verify_af_min", "PS_FOCUS_MODEL_VERIFY_AF_MIN", "Focus model drive: verify AF every N min", "Imaging", "float", False, False),
     ("focus_counter_epoch", "PS_FOCUS_COUNTER_EPOCH", "Focus table: RC16 EAF counter re-zeroed at (local YYYY-MM-DDTHH:MM:SS); later AFs > 3 sigma off re-anchor the table (empty = no shift detection)", "Imaging", "str", False, False),
+    ("focus_model_ambient_fit", "PS_FOCUS_MODEL_AMBIENT_FIT", "Focus model: fit an AF whose EAF temperature is a frozen reading (focus_frozen_temps) or missing at the NINA weather ambient recorded at the AF (+ the learned bias); off = EAF temperatures as stored", "Imaging", "bool", False, False),
     ("focus_frozen_temps", "PS_FOCUS_FROZEN_TEMPS", "Focus table: RC16 EAF temperatures known to be frozen readings (C, comma-separated); model moves use the NINA weather ambient there", "Imaging", "str", False, False),
     ("focus_cfz_steps", "PS_FOCUS_CFZ_STEPS", "RC16 critical focus zone (EAF steps; 0 = AF step size as proxy)", "Imaging", "int", False, False),
     ("focus_filter_offsets", "PS_FOCUS_FILTER_OFFSETS", "Focus offsets from L per filter (EAF steps, e.g. Ha:120,OIII:120,SII:120; PS-144)", "Imaging", "str", False, False),

@@ -129,7 +129,7 @@ async def _nina_move(base: str, position: int) -> dict:
 
 @router.post("/api/focus/model-move")
 async def api_focus_model_move(filter: str = "L", dry_run: bool = False,
-                               label: str = ""):
+                               label: str = "", trigger: bool = False):
     """Move the RC16 focuser to the lookup-table position for `filter` at the
     focuser's current temperature. Refuses (no move, verdict NO_MOVE) unless
     focus_model_drive is on, the model is trusted and the filter has enough
@@ -140,7 +140,13 @@ async def api_focus_model_move(filter: str = "L", dry_run: bool = False,
     The model temperature is the focuser's unless it looks frozen
     (focus_table.choose_temperature: a known frozen value, or unchanged for
     an hour while the NINA weather ambient moved > 1 C); temp_source says
-    which was used."""
+    which was used.
+
+    trigger=true (the block's temperature trigger, not the block start):
+    NINA's trigger measures from the last AF, so once crossed it re-fires
+    before every sub; focus_model.trigger_gate holds (verdict HELD, no
+    move) until the temperature is the focus table's step away from the
+    last table move."""
     from photonscript.scheduler import focus_model as fm
     from photonscript.scheduler.focus_table import choose_temperature
     cfg = _cfg()
@@ -156,7 +162,17 @@ async def api_focus_model_move(filter: str = "L", dry_run: bool = False,
         temp = ch["temp"]
         out.update(temp=temp, temp_source=ch["source"],
                    temp_reason=ch["reason"], focuser_temp=ch["focuser"],
-                   ambient_temp=ch["ambient"], position_before=pos)
+                   ambient_temp=ch["ambient"], position_before=pos,
+                   trigger=bool(trigger))
+        if trigger:
+            from photonscript.scheduler.focus_table import build_table
+            tab = await asyncio.to_thread(build_table, cfg, temp)
+            gate = await asyncio.to_thread(fm.trigger_gate, cfg, temp,
+                                           tab.get("move_temp_step_c"))
+            if gate["hold"]:
+                out.update(verdict="HELD", reason=gate["reason"])
+                fm.record_move(cfg, out)
+                return out
         tgt = fm.model_move_target(cfg, filter, temp)
         out.update(tgt)
         if not tgt.get("move"):

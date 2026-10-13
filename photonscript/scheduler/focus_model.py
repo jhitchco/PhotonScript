@@ -410,6 +410,155 @@ def _write_json(path: Path, obj) -> None:
     tmp.replace(path)
 
 
+# --------------------------------------------------------------------------
+# Ambient temperature at each AF (the frozen EAF thermometer)
+# --------------------------------------------------------------------------
+# The RC16 EAF thermometer freezes (21.29 C for hours, focus_frozen_temps),
+# and an AF report only carries the focuser's temperature. ingest_loop
+# samples the NINA weather (AARO station) Temperature into
+# focus_ambient.jsonl every AMBIENT_SAMPLE_S (and right before an ingest of
+# a new report); every AF point gets "ambient", the nearest sample within
+# AMBIENT_MATCH_MIN of its time; fit_temps() then fits a frozen reading at
+# ambient + the learned focuser-minus-ambient bias.
+
+AMBIENT_FILE = "focus_ambient.jsonl"
+AMBIENT_SAMPLE_S = 300.0
+AMBIENT_MATCH_MIN = 15.0
+AMBIENT_KEEP_LINES = 20000     # ~70 days at one sample per 5 min
+_MIN_BIAS_POINTS = 3
+_ambient_last = {"t": 0.0}
+
+
+def _ambient_path(config) -> Path:
+    return Path(config.data_dir) / AMBIENT_FILE
+
+
+def record_ambient(config, temp, now: datetime | None = None) -> bool:
+    """Append one ambient sample {time (scope PC local, as NINA's AF report
+    Timestamp), temp}. False when the value is not a temperature."""
+    t = _num(temp)
+    if t is None or not -60.0 < t < 60.0:
+        return False
+    now = now or datetime.now()
+    path = _ambient_path(config)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"time": now.isoformat(timespec="seconds"),
+                                "temp": round(t, 2)}) + "\n")
+        if path.stat().st_size > AMBIENT_KEEP_LINES * 60:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            path.write_text("\n".join(lines[-AMBIENT_KEEP_LINES:]) + "\n",
+                            encoding="utf-8")
+    except OSError as e:
+        logger.debug("focus_model: ambient sample not written: %s", e)
+        return False
+    return True
+
+
+def load_ambient(config) -> list[tuple]:
+    """[(local datetime, temp)] oldest first."""
+    out = []
+    try:
+        lines = _ambient_path(config).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for ln in lines:
+        try:
+            r = json.loads(ln)
+            t = datetime.fromisoformat(str(r.get("time"))[:19])
+        except (ValueError, TypeError):
+            continue
+        v = _num(r.get("temp"))
+        if v is not None:
+            out.append((t, v))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def ambient_at(samples: list[tuple], when, max_min: float = AMBIENT_MATCH_MIN):
+    """The sample nearest `when` within max_min minutes, else None."""
+    if when is None or not samples:
+        return None
+    best = min(samples, key=lambda s: abs((s[0] - when).total_seconds()))
+    return best[1] if abs((best[0] - when).total_seconds()) <= max_min * 60 else None
+
+
+def attach_ambient(pts: list[dict], samples: list[tuple]) -> int:
+    """Set "ambient" on every point that has none and a sample near its
+    time. Returns how many were set."""
+    n = 0
+    for p in pts:
+        if p.get("ambient") is not None:
+            continue
+        a = ambient_at(samples, _when(p))
+        if a is not None:
+            p["ambient"] = a
+            n += 1
+    return n
+
+
+def _frozen_temps(config) -> list[float]:
+    out = []
+    for tok in str(getattr(config, "focus_frozen_temps", "") or "").split(","):
+        if (v := _num(tok.strip())) is not None:
+            out.append(v)
+    return out
+
+
+def fit_temps(pts: list[dict], config=None) -> list[dict]:
+    """The points the fit should use: a point whose EAF temperature is a
+    known frozen reading (focus_frozen_temps) or missing, with an ambient
+    recorded at its AF, gets temp = ambient + the median focuser-minus-
+    ambient bias of the points with both (0 under _MIN_BIAS_POINTS), the
+    EAF value kept as temp_eaf and temp_source "ambient". Other points are
+    returned unchanged. focus_model_ambient_fit off: the points as stored."""
+    if config is not None and not getattr(config, "focus_model_ambient_fit", True):
+        return list(pts or [])
+    frozen = _frozen_temps(config) if config is not None else []
+
+    def is_frozen(t):
+        return t is None or any(abs(t - v) < 0.006 for v in frozen)
+    diffs = [float(p["temp"]) - float(p["ambient"]) for p in pts or []
+             if _num(p.get("temp")) is not None and _num(p.get("ambient")) is not None
+             and not is_frozen(_num(p.get("temp")))]
+    bias = _median(diffs) if len(diffs) >= _MIN_BIAS_POINTS else 0.0
+    out = []
+    for p in pts or []:
+        t, a = _num(p.get("temp")), _num(p.get("ambient"))
+        if a is not None and is_frozen(t):
+            out.append(dict(p, temp=round(a + bias, 2), temp_eaf=t,
+                            temp_source="ambient"))
+        else:
+            out.append(p)
+    return out
+
+
+async def sample_ambient(config, force: bool = False) -> float | None:
+    """Read NINA #1's weather Temperature (GET /equipment/weather/info,
+    read only) and record it, at most every AMBIENT_SAMPLE_S unless force.
+    None when skipped or unreadable. Never raises."""
+    now_m = time.monotonic()
+    if not force and now_m - _ambient_last["t"] < AMBIENT_SAMPLE_S:
+        return None
+    base = str(getattr(config, "nina_base_url", "") or "").rstrip("/")
+    if not base:
+        return None
+    _ambient_last["t"] = now_m
+    try:
+        from photonscript.scheduler.night_pause import nina_get
+        wx = await nina_get(base, "/equipment/weather/info", timeout=5.0)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("focus_model: no weather info: %s", e)
+        return None
+    if not isinstance(wx, dict) or wx.get("Connected") is False:
+        return None
+    t = _num(wx.get("Temperature"))
+    if t is None or not record_ambient(config, t):
+        return None
+    return t
+
+
 _INGEST_LOCK = threading.Lock()
 
 
@@ -517,12 +666,17 @@ def _ingest_locked(config, rdir: str) -> dict:
             seen[rig].add(_key(pt))
             stores[rig].append(pt)
             added[rig] += 1
+        amb = load_ambient(config)
         for rig, pts in stores.items():
             pts.sort(key=lambda p: str(p.get("time") or ""))
-            if added[rig] or moved:
+            # the NINA weather ambient at each AF (focus_ambient.jsonl),
+            # so the fit can bypass a frozen EAF thermometer
+            n_amb = attach_ambient(pts, amb)
+            if added[rig] or moved or n_amb:
                 _write_json(_points_path(config, rig), pts)
             fpts = pts if rig == "piggyback" else counter_frame(
-                pts, _counter_epoch(config), _ref_filter(config))["points"]
+                fit_temps(pts, config), _counter_epoch(config),
+                _ref_filter(config))["points"]
             _write_json(_model_path(config, rig),
                         fit(fpts, ref_filter=(OSC_FILTER if rig == "piggyback"
                                               else _ref_filter(config))))
@@ -564,7 +718,7 @@ def reports_signature(rdir: str) -> tuple | None:
         return None
 
 
-async def ingest_loop(get_config, sleep=None) -> None:
+async def ingest_loop(get_config, sleep=None, ambient=None) -> None:
     """Background ingest (started with the service): once at startup, then
     whenever the reports folder changes (a new NINA AF report), checked
     every focus_model_ingest_poll_s, plus a forced pass every 24 h. A poll
@@ -572,9 +726,10 @@ async def ingest_loop(get_config, sleep=None) -> None:
     The ingest itself runs in a worker thread. Never raises.
 
     sleep: test hook (an awaitable taking seconds); when it returns False
-    the loop stops."""
+    the loop stops. ambient: test hook for sample_ambient(cfg, force)."""
     import asyncio
     sleep = sleep or asyncio.sleep
+    ambient = ambient or sample_ambient
     last_sig = None
     last_full = 0.0
     first = True
@@ -588,6 +743,10 @@ async def ingest_loop(get_config, sleep=None) -> None:
             if poll > 0 and rdir:
                 sig = await asyncio.to_thread(reports_signature, rdir)
                 daily = time.time() - last_full >= 86400
+                new_report = sig is not None and sig != last_sig and not first
+                # the ambient at each AF: a sample every AMBIENT_SAMPLE_S
+                # and one right before a new report is ingested
+                await ambient(cfg, force=new_report)
                 if first or daily or (sig is not None and sig != last_sig):
                     trig = "startup" if first else ("daily" if daily
                                                     else "poll")
@@ -842,7 +1001,10 @@ def af_skip_readiness(model: dict, min_points: int = _TRUST_MIN_POINTS,
 
 
 def _rc16_raw_points(config) -> list[dict]:
-    return [p for p in load_points(config) if _point_rig(p, config) == "rc16"]
+    """The stored RC16 points, frozen EAF temperatures replaced by the
+    ambient at the AF (fit_temps)."""
+    return fit_temps([p for p in load_points(config)
+                      if _point_rig(p, config) == "rc16"], config)
 
 
 def _rc16_points(config) -> list[dict]:
@@ -1128,6 +1290,54 @@ def recent_moves(config, n: int = 10) -> list[dict]:
             out.append(json.loads(ln))
         except json.JSONDecodeError:
             continue
+    return out
+
+
+def trigger_gate(config, temp, step_c, now: datetime | None = None,
+                 moves: list[dict] | None = None,
+                 last_af: datetime | None = None) -> dict:
+    """The re-fire gate for a model move run by the block's temperature
+    trigger (drive mode). NINA's AutofocusAfterTemperatureChangeTrigger
+    measures from the LAST AF, and its runner here is a table move, not an
+    AF, so once the temperature has crossed the step it fires before every
+    sub until the next real AF. The gate moves the reference to the last
+    table move: when a move (MOVED or IN_PLACE) newer than the newest AF
+    was made within step_c of this temperature, hold (no move, no focuser
+    travel). {hold, reason, ref_temp, ref_at}. moves / last_af: test
+    hooks (default: focus_model_moves.jsonl and the newest stored AF)."""
+    t, step = _num(temp), _num(step_c) or 1.0
+    out = {"hold": False, "reason": "", "ref_temp": None, "ref_at": None}
+    if t is None:
+        return out
+    moves = recent_moves(config, 200) if moves is None else moves
+    ref = None
+    for m in reversed(moves or []):
+        if m.get("verdict") in ("MOVED", "IN_PLACE") and _num(m.get("temp")) is not None:
+            ref = m
+            break
+    if ref is None:
+        out["reason"] = "no table move yet: NINA's trigger stands"
+        return out
+    try:
+        ref_at = datetime.fromisoformat(str(ref.get("at"))[:19])
+    except (TypeError, ValueError):
+        return out
+    if last_af is None:
+        times = [w for p in load_points(config) if (w := _when(p)) is not None]
+        last_af = max(times) if times else None
+    out.update(ref_temp=_num(ref["temp"]), ref_at=ref_at.isoformat(timespec="seconds"))
+    if last_af is not None and last_af >= ref_at:
+        out["reason"] = "an AF since the last table move: NINA's trigger stands"
+        return out
+    dt = abs(t - out["ref_temp"])
+    if dt < step - 1e-9:
+        out.update(hold=True, reason=(
+            f"{t:.2f} C is {dt:.2f} C from the last table move "
+            f"({out['ref_temp']:.2f} C at {out['ref_at']}), under the "
+            f"{step:g} C step: the temperature trigger re-fired (it measures "
+            "from the last AF)"))
+    else:
+        out["reason"] = f"{dt:.2f} C since the last table move: move"
     return out
 
 
