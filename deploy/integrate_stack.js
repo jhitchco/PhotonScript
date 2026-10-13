@@ -11,7 +11,9 @@
 //     the dark length differs, flat if matched, 1000 DN literal pedestal)
 //     -> CosmeticCorrection (hot only after a dark) -> Debayer (CFA only)
 //     -> StarAlignment with distortion correction to ONE reference shared by
-//     every stack -> LocalNormalization (drops only frames without a map;
+//     every stack (a strict pass, a relaxed retry of the lost frames, else
+//     the stack's own reference and its master aligned onto the shared
+//     geometry: registerStack) -> LocalNormalization (drops only frames without a map;
 //     falls back to AdditiveWithScaling) -> ImageIntegration with PSF Signal
 //     Weight (falls back to equal weights on star-poor frames; PS-177: a
 //     stack that mixes exposure lengths falls back to exposure-time weights,
@@ -317,13 +319,119 @@ function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
    return made;
 }
 
+// ---------------------------------------------------------------- registration
+// Registration ladder (2026-10-13 legacy M 27 rc16, 3248 mm, 9..13 px stars
+// at 17..37 deg altitude: StarAlignment at the strict setting matched no B
+// sub and only half the G and R subs to the L reference, though star QA had
+// aligned every one of them; NGC 6535 lost R and L the same way):
+//   pass 1  every frame onto the shared reference, the long-standing strict
+//           detector (unchanged: a stack that registers here is untouched)
+//   pass 2  only the frames pass 1 lost, again onto the shared reference,
+//           with the relaxed detector integrate_sho.js uses for star-poor
+//           narrowband (sensitivity above 0.5 detects fainter stars)
+//   pass 3  still fewer than MIN_FRAMES or than half the stack, and the stack
+//           has its own star QA reference: every frame onto that own
+//           reference (relaxed), the master is integrated in that geometry
+//           and then aligned onto the shared reference (alignMaster), so the
+//           mono masters still line up for the color combine
+// A 180 deg pier-flip rotation needs no special case: StarAlignment's
+// triangle similarity matching is rotation invariant.
+var SA_STRICT = { name: "strict", sensitivity: CONFIG.cfa ? 0.60 : 0.30, peakResponse: 0.50,
+                  structureLayers: 5, noiseReduction: 0, maxStarDistortion: 0 };
+var SA_RELAXED = { name: "relaxed", sensitivity: 0.85, peakResponse: 0.40,
+                   structureLayers: 6, noiseReduction: 2, maxStarDistortion: 0.80 };
+
+// One StarAlignment run of `targets` onto `refPath`, output into outDir.
+// Returns executeGlobal's result; a throw counts as false. The caller lists
+// outDir for what registered (a false run can still have written some).
+function starAlignPass(refPath, targets, outDir, opt) {
+   var SA = new StarAlignment;
+   SA.referenceImage = refPath; SA.referenceIsFile = true;
+   SA.targets = targets.map(function (f) { return [true, true, f]; });
+   SA.outputDirectory = outDir; ensureDir(SA.outputDirectory);
+   SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
+   SA.distortionCorrection = true;
+   SA.structureLayers = opt.structureLayers;
+   SA.sensitivity = opt.sensitivity;
+   SA.peakResponse = opt.peakResponse;
+   SA.useTriangleSimilarity = true;
+   if (opt.noiseReduction) { try { SA.noiseReductionFilterRadius = opt.noiseReduction; } catch (e1) {} }
+   if (opt.maxStarDistortion) { try { SA.maxStarDistortion = opt.maxStarDistortion; } catch (e2) {} }
+   try { return !!SA.executeGlobal(); }
+   catch (e) { log("    StarAlignment (" + opt.name + ") threw: " + e); return false; }
+}
+
+// inputs with no registered output in outDir
+function missingFrom(inputs, outDir) {
+   var outB = {}, got = listFits(outDir);
+   for (var j = 0; j < got.length; ++j) outB[baseOf(got[j])] = true;
+   return inputs.filter(function (f) { return !outB[baseOf(f)]; });
+}
+
+// The ladder above. Returns { files: registered frames, selfRef: the own
+// reference path when pass 3 made them (the master needs alignMaster), else
+// null }.
+function registerStack(S, inputs, sharedRef, ownRef, SOUT) {
+   var regDir = SOUT + "/reg";
+   var ok1 = starAlignPass(sharedRef, inputs, regDir, SA_STRICT);
+   var lost = missingFrom(inputs, regDir);
+   log("[" + S + "] registration pass 1 (strict, shared reference): " + (inputs.length - lost.length) +
+       " of " + inputs.length + (ok1 ? "" : " (StarAlignment returned false)"));
+   if (lost.length) {
+      var ok2 = starAlignPass(sharedRef, lost, regDir, SA_RELAXED);
+      var still = missingFrom(inputs, regDir);
+      log("[" + S + "] registration pass 2 (relaxed detector, shared reference): " +
+          (lost.length - still.length) + " of " + lost.length + " recovered" +
+          (ok2 ? "" : " (StarAlignment returned false)"));
+      lost = still;
+   }
+   var n = inputs.length - lost.length;
+   if ((n < MIN_FRAMES || n < inputs.length / 2) && ownRef && baseOf(ownRef) !== baseOf(sharedRef)) {
+      var selfDir = SOUT + "/reg_self";
+      clearDir(selfDir);
+      var ok3 = starAlignPass(ownRef, inputs, selfDir, SA_RELAXED);
+      var n3 = inputs.length - missingFrom(inputs, selfDir).length;
+      log("[" + S + "] registration pass 3 (relaxed, own reference " + File.extractName(ownRef) + "): " +
+          n3 + " of " + inputs.length + (ok3 ? "" : " (StarAlignment returned false)") +
+          (n3 > n ? "; using it, the master is aligned to the shared reference after integration"
+                  : "; not better, keeping the shared-reference frames"));
+      if (n3 > n) return { files: listFits(selfDir), selfRef: ownRef };
+   }
+   return { files: listFits(regDir), selfRef: null };
+}
+
+// Pass 3 master: align it onto the shared geometry (the reference stack's
+// master when there is one: far more stars than one sub). On success the
+// aligned image replaces master_<S>.xisf and the own-geometry master is kept
+// as master/align_<S>/master_<S>_ownref.xisf; on failure master_<S>.xisf is
+// moved there too (so the color combine never uses a misaligned master) and
+// this throws, which skips the stack.
+function alignMaster(S, masterPath, reg) {
+   var target = (reg.master && File.exists(reg.master)) ? reg.master : reg.file;
+   var dir = OUT + "/master/align_" + S;
+   clearDir(dir);
+   // outside out/master itself: blend.masters() globs master_*.xisf there
+   var ownPath = dir + "/master_" + S + "_ownref.xisf";
+   if (File.exists(ownPath)) File.remove(ownPath);
+   var ok = starAlignPass(target, [masterPath], dir, SA_RELAXED);
+   var aligned = dir + "/" + File.extractName(masterPath) + "_r.xisf";
+   File.move(masterPath, ownPath);
+   if (!File.exists(aligned))
+      throw new Error("own-reference master could not be aligned to the shared reference " +
+                      File.extractName(target) + (ok ? "" : " (StarAlignment returned false)") +
+                      "; kept as " + File.extractName(ownPath) + ".xisf");
+   File.move(aligned, masterPath);
+   log("[" + S + "] master aligned onto the shared reference " + File.extractName(target) +
+       " (own-reference master kept as " + File.extractName(ownPath) + ".xisf)");
+}
+
 function runStack(stack, masters, reg) {
    var S = stack.name;
    TSTART(S, "stack total");
    var SOUT = OUT + "/" + S;
    ensureDir(SOUT);
    var stale = 0;
-   ["cal", "cc", "debayer", "reg", "ln"].forEach(function (d) { stale += clearDir(SOUT + "/" + d); });
+   ["cal", "cc", "debayer", "reg", "reg_self", "ln"].forEach(function (d) { stale += clearDir(SOUT + "/" + d); });
    stale += clearDir(SOUT);
    if (stale) log("[" + S + "] cleared " + stale + " stale files");
 
@@ -388,28 +496,26 @@ function runStack(stack, masters, reg) {
       TEND(S, "debayer");
    }
 
-   // one registration reference for every stack, so mono masters align
+   // one registration reference for every stack, so mono masters align.
+   // The run's star QA pick; a stack without it (the pick's stack was left
+   // out, or failed and released it) uses its own star QA group reference.
    if (!reg.file) {
       var hit = findByBase(rgbFiles, CONFIG.reference);
-      reg.file = hit || rgbFiles[Math.floor(rgbFiles.length / 2)];
-      log("registration reference: " + File.extractName(reg.file) + (hit ? " (star QA pick)" : " (mid-stack; QA pick not in this stack)"));
+      var own = hit ? null : (stack.reference ? findByBase(rgbFiles, stack.reference) : null);
+      reg.file = hit || own || rgbFiles[Math.floor(rgbFiles.length / 2)];
+      reg.owner = S;
+      log("registration reference: " + File.extractName(reg.file) + (hit ? " (star QA pick)"
+          : (own ? " (this stack's star QA reference; run pick not in this stack)" : " (mid-stack; QA pick not in this stack)")));
    }
    TSTART(S, "star alignment");
-   var SA = new StarAlignment;
-   SA.referenceImage = reg.file; SA.referenceIsFile = true;
-   SA.targets = rgbFiles.map(function (f) { return [true, true, f]; });
-   SA.outputDirectory = SOUT + "/reg"; ensureDir(SA.outputDirectory);
-   SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
-   SA.distortionCorrection = true;
-   SA.structureLayers = 5;
-   SA.sensitivity = CONFIG.cfa ? 0.60 : 0.30;
-   SA.peakResponse = 0.50;
-   SA.useTriangleSimilarity = true;
-   if (!SA.executeGlobal()) throw new Error("registration failed");
-   var regFiles = listFits(SOUT + "/reg");
+   var ownRef = stack.reference ? findByBase(rgbFiles, stack.reference) : null;
+   var R = registerStack(S, rgbFiles, reg.file, ownRef, SOUT);
+   var regFiles = R.files;
+   if (!regFiles.length) throw new Error("registration failed");
    assertFunnel("registration", rgbFiles.length, regFiles.length);
    logDrops("registration", rgbFiles, regFiles);
-   log("[" + S + "] stage registration: " + rgbFiles.length + " in -> " + regFiles.length + " out (" + groupCounts(stack, regFiles) + ")");
+   log("[" + S + "] stage registration: " + rgbFiles.length + " in -> " + regFiles.length + " out (" + groupCounts(stack, regFiles) + ")" +
+       (R.selfRef ? " onto its own reference " + File.extractName(R.selfRef) : ""));
    TEND(S, "star alignment");
    if (regFiles.length < MIN_FRAMES)
       throw new Error("[" + S + "] too few registered frames (" + regFiles.length + ", need " + MIN_FRAMES + ")");
@@ -505,6 +611,12 @@ function runStack(stack, masters, reg) {
       var rw = ImageWindow.windowById(rid); if (!rw.isNull) rw.forceClose(); });
    log("[" + S + "] master saved: " + masterPath + " (" + regFiles.length + " frames)");
    TEND(S, "integration");
+   if (R.selfRef) {
+      TSTART(S, "master alignment");
+      try { alignMaster(S, masterPath, reg); }
+      finally { TEND(S, "master alignment"); }
+   }
+   if (reg.owner === S) reg.master = masterPath;
 
    TSTART(S, "review jpg");
    try {
@@ -558,7 +670,9 @@ function main() {
       } catch (e) { log("master flat " + CONFIG.flats[f].filter + " skipped (" + e + "); that filter runs without a flat"); }
    }
    TEND("masters", "calibration masters");
-   var reg = { file: null };
+   // reg: the shared registration reference (file), the stack it came from
+   // (owner) and that stack's master (master, the alignMaster target)
+   var reg = { file: null, owner: null, master: null };
    var made = 0;
    for (var s = 0; s < CONFIG.stacks.length; ++s) {
       var SN = CONFIG.stacks[s].name;
@@ -567,6 +681,13 @@ function main() {
          else skipStack(SN, "no lights", false);
       } catch (e) {
          skipStack(SN, ("" + e).replace(/^Error: /, ""), true);
+         // 2026-10-13 NGC 6535: the R reference failed and took L down with
+         // it. Nothing registered to a reference whose own stack failed, so
+         // the next stack picks a new one.
+         if (reg.owner === SN && !made) {
+            log("registration reference " + File.extractName(reg.file) + " released (its stack " + SN + " made no master)");
+            reg.file = null; reg.owner = null; reg.master = null;
+         }
       }
    }
    if (SKIPPED.length)

@@ -526,8 +526,11 @@ def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
     each against its own reference. Rows need _xy / _shape from measure_sub.
     Every row gets group / group_reference / is_reference (its group's) and
     is_run_reference. Returns the index of the run's registration
-    reference: the reference of the longest-exposure group (ties: the group
-    with more subs)."""
+    reference: the reference of the longest-exposure group. Ties (several
+    filters at one length): a group big enough to stack (3+ subs) first,
+    then the group whose reference has the most stars, then more subs
+    (2026-10-13 legacy NGC 6535: G, R and L all 60 s, the tie went to R's
+    56-star reference over L's 172 stars and StarAlignment lost R and L)."""
     thr = thr or Thresholds()
     if not rows:
         raise ValueError("no subs")
@@ -543,7 +546,8 @@ def assess(rows: list[dict], thr: Thresholds | None = None) -> int:
         for r in sub:
             r["group"] = label
             r["group_reference"] = ref_file
-    best = max(groups, key=lambda k: ((k[1] or 0), len(groups[k])))
+    best = max(groups, key=lambda k: ((k[1] or 0), len(groups[k]) >= 3,
+                                      rows[refs[k]].get("stars") or 0, len(groups[k])))
     run_ref = refs[best]
     for i, r in enumerate(rows):
         r["is_run_reference"] = i == run_ref
