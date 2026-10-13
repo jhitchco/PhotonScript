@@ -1925,6 +1925,15 @@ class TelescopeAgent:
             if slew:   # PS-13: rigs riding the RC16 mount only
                 rec.update(slew_overlap_s=slew.get("overlap_s"),
                            slew_note=slew.get("note"))
+            try:  # sub doctor: the trail axis of the stars (PS-95 axial stats)
+                from photonscript.scheduler.sub_doctor import elongation
+                el = elongation(quality.star_table)
+                if el:
+                    rec.update(elong_axis_deg=el.get("axis_deg"),
+                               elong_r=el.get("R"),
+                               elong_tang=el.get("tangential_frac"))
+            except Exception as ee:  # noqa: BLE001
+                logger.debug("elongation skipped: %s", ee)
             # passed_qa, reason, qa_flag, scorecard, auto_verdict,
             # auto_reason, drivers (+ reviewed / review_source when all green)
             rec.update(card.record_fields())
@@ -1962,6 +1971,16 @@ class TelescopeAgent:
             logger.error("Sub record append FAILED (%s) — sub %s NOT recorded; "
                          "it will be missing from the runs page and library",
                          e, locals().get("rel_in_night", "?"))
+
+        # Sub doctor: why the last subs were bad and what to do (one push per
+        # cause per rig per night; opt-in remedies). Never costs the sub.
+        if night and (not quality.passed_qa
+                      or getattr(self, "_sd_active", False)):
+            try:
+                from photonscript.telescope_agent.sub_doctor_live import after_sub
+                self._sd_active = bool(await after_sub(self, night))
+            except Exception as de:  # noqa: BLE001
+                logger.warning("sub doctor errored: %s", de)
 
         # Nanny: consecutive rejects mean something systemic (clouds, dew,
         # focus loss, tracking) — a single bad sub is just a bad sub.

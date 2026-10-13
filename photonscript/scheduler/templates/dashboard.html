@@ -164,6 +164,9 @@
             <!-- PS-150: NINA watchdog chip (not running / API down / up but
                  silent), one line per rig, from /api/nina/watch. -->
             <div id="ninaWatchChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
+            <!-- Sub doctor chip: the current diagnosis per rig (cause + fix),
+                 from /api/sub-doctor; hidden while every rig is healthy. -->
+            <div id="subDoctorChip" hidden style="margin-bottom:.8rem;font-size:.85rem;"></div>
             <div id="coolerCountdown" hidden style="margin-bottom:.8rem;font-size:.85rem;
                  padding:.35rem .6rem;border-radius:6px;border:1px solid rgba(125,211,252,.25);
                  background:rgba(125,211,252,.06);white-space:normal;"></div>
@@ -1054,9 +1057,34 @@
                 .map(([k, r]) => ((d.names || {})[k] || k) + ' OK').join(', ') + '</div>'
             : '');
     }
-    loadOutlook(); loadTimeline(); refreshArm(); refreshNinaWatch();
+    // Sub doctor chip: one line per rig with a current diagnosis
+    async function refreshSubDoctor() {
+        const el = document.getElementById('subDoctorChip');
+        if (!el) return;
+        let d;
+        try { d = await (await fetch('/api/sub-doctor')).json(); } catch (e) { return; }
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const rows = [];
+        for (const [rig, r] of Object.entries(d.rigs || {})) {
+            const c = r.current;
+            if (!c || !c.cause) continue;
+            const col = c.confidence === 'high' ? 'rgba(239,68,68,.7)'
+                : (c.confidence === 'medium' ? 'rgba(251,191,36,.7)' : 'rgba(148,163,184,.5)');
+            rows.push('<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                'border:1px solid ' + col + ';background:rgba(148,163,184,.06);">' +
+                '&#9888; <b>Sub doctor ' + esc(r.name || rig) + ': ' + esc(c.cause) + '</b> (' +
+                esc(c.confidence) + ', since ' + esc(String(c.since || '').slice(11, 16)) + 'Z) ' +
+                esc(c.headline) + '<br><span style="opacity:.85">Fix: ' + esc(c.fix) + '</span>' +
+                ((r.pushed || []).includes(c.cause) ? ' &middot; pushed' : '') + '</div>');
+        }
+        el.hidden = rows.length === 0;
+        el.innerHTML = rows.join('');
+    }
+    loadOutlook(); loadTimeline(); refreshArm(); refreshNinaWatch(); refreshSubDoctor();
     setInterval(refreshArm, 30000);
     setInterval(refreshNinaWatch, 30000);
+    setInterval(refreshSubDoctor, 60000);
     </script>
 
     <script>

@@ -180,6 +180,8 @@
             <div id="calibration" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Phase Activity <span class="bd">(from NINA log, best-effort)</span></h2>
             <div id="phases" class="bd"></div>
+            <h2 style="margin-top:1.2rem;">What went wrong and the fix <span class="bd">(sub doctor: the night's subs replayed, both rigs paired)</span></h2>
+            <div id="subDoctor" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Piggy-600 split pointing <span class="bd">(subs through an RC16 move, PS-27; pass under 5%)</span></h2>
             <div id="splitPointing" class="bd"></div>
             <h2 style="margin-top:1.2rem;">Piggy-600 vs RC16 <span class="bd">(differential flexure, PS-96)</span></h2>
@@ -615,6 +617,7 @@
         renderGuiding(d.guiding, date);
         renderOptics(d.optics, date);
         loadOpticsTest(date);
+        loadSubDoctor(date);
         renderSubs();
         renderReviewBar(d);
         renderFlexure(d.flexure, date);
@@ -624,6 +627,30 @@
         loadSafety(date);
         loadScoreReport(date);
         maybeWarmThumbs(date);
+    }
+    // Sub doctor: each cause the first time it fired, with the evidence and fix
+    async function loadSubDoctor(date) {
+        const box = document.getElementById('subDoctor');
+        box.innerHTML = 'diagnosing...';
+        let r;
+        try { r = await (await fetch('/api/runs/' + encodeURIComponent(date) + '/sub-doctor')).json(); }
+        catch (e) { box.innerHTML = 'sub doctor unavailable'; return; }
+        if (currentDate !== date) return;
+        const esc = t => String(t == null ? '-' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const cls = {high: 'bad', medium: 'warn', low: ''};
+        const rows = [];
+        for (const [rig, x] of Object.entries(r.rigs || {})) {
+            const cnt = Object.entries(x.counts || {}).map(([k, v]) => k + ' x' + v).join(', ');
+            rows.push('<div style="margin-top:.3rem;"><b>' + esc(rig) + '</b>: ' + x.subs + ' subs' +
+                (cnt ? ' &middot; diagnoses ' + esc(cnt) : ' &middot; healthy') + '</div>' +
+                (x.fired || []).map(d => '<div style="margin:.2rem 0 .2rem 1rem;"><span class="' +
+                    (cls[d.confidence] || '') + '"><b>' + esc(String(d.t || '').slice(11, 16)) + 'Z ' +
+                    esc(d.cause) + '</b> (' + esc(d.confidence) + ')</span> ' + esc(d.headline) +
+                    '<br><span style="opacity:.85">Fix: ' + esc(d.fix) + '</span>' +
+                    ' <span style="opacity:.6">[' + esc((d.action || {}).id) + ']</span></div>').join(''));
+        }
+        box.innerHTML = rows.join('') || 'no subs';
     }
     // PS-148: through-focus optics test (only when the night has its subs)
     async function loadOpticsTest(date) {

@@ -926,6 +926,15 @@ _CONFIG_FIELDS = [
     ("af_stall_alert", "PS_AF_STALL_ALERT", "Push once per rig per night when autofocus keeps restarting without finishing (NINA event history; runs cut by an unsafe roof do not count)", "Quality", "bool", False, True),
     ("af_stall_runs", "PS_AF_STALL_RUNS", "Autofocus stall: this many AF runs in a row must fail before the push", "Quality", "int", False, True),
     ("af_stall_min_points", "PS_AF_STALL_MIN_POINTS", "Autofocus stall: a run with fewer points than this (or no completed fit) counts as failed", "Quality", "int", False, True),
+    ("sub_doctor_mode", "PS_SUB_DOCTOR_MODE", "Sub doctor: why the last subs were bad and the fix (guider conflict, tracking, focus, focuser, seeing, clouds, pointing): off | observe (chip + run events, no push) | alert (one push per cause per rig per night)", "Quality", "str", False, True),
+    ("sub_doctor_window", "PS_SUB_DOCTOR_WINDOW", "Sub doctor: subs judged together (rolling window)", "Quality", "int", False, True),
+    ("sub_doctor_min_bad", "PS_SUB_DOCTOR_MIN_BAD", "Sub doctor: bad subs in the window before a diagnosis", "Quality", "int", False, True),
+    ("sub_doctor_tiny_rms_arcsec", "PS_SUB_DOCTOR_TINY_RMS_ARCSEC", "Sub doctor: PHD2 RMS under this while subs trail = suspect a non-star lock (arcsec)", "Quality", "float", False, True),
+    ("sub_doctor_wild_rms_arcsec", "PS_SUB_DOCTOR_WILD_RMS_ARCSEC", "Sub doctor: soft subs under a PHD2 RMS over this count as a guider conflict (arcsec)", "Quality", "float", False, True),
+    ("sub_doctor_af_min_age_min", "PS_SUB_DOCTOR_AF_MIN_AGE_MIN", "Sub doctor: AF remedy only when the last AF is at least this old (min)", "Quality", "float", False, True),
+    ("sub_doctor_stop_phd2_unguided", "PS_SUB_DOCTOR_STOP_PHD2_UNGUIDED", "Sub doctor remedy: stop PHD2 guiding when it guides on an UNGUIDED night (never during a calibration; off = alert only)", "Quality", "bool", False, True),
+    ("sub_doctor_request_af", "PS_SUB_DOCTOR_REQUEST_AF", "Sub doctor remedy: ask NINA for an autofocus when subs are soft and round and the other rig is sharp (camera idle only; night-untested)", "Quality", "bool", False, True),
+    ("sub_doctor_shorten_subs", "PS_SUB_DOCTOR_SHORTEN_SUBS", "Sub doctor remedy: unguided trailing caps RC16 subs at the drift length from the next dispatch (never re-dispatches)", "Quality", "bool", False, True),
     ("slew_gate_pad_s", "PS_SLEW_GATE_PAD_S", "RC16 move window padding from the mount log (s, each side)", "Quality", "float", False, False),
     ("slew_gate_min_move_arcmin", "PS_SLEW_GATE_MIN_MOVE_ARCMIN", "RC16 move from its frames (nights without a mount log): pointing change above (arcmin)", "Quality", "float", False, False),
     ("pointing_solve_policy", "PS_POINTING_SOLVE_POLICY", "Dawn plate solves (PS-67): sampled (every Nth + flagged + first after a slew) | all | off", "Quality", "str", False, True),
@@ -3248,6 +3257,8 @@ from photonscript.scheduler.routers import apps as _apps_router  # noqa: E402
 app.include_router(_apps_router.router)   # PS-170
 from photonscript.scheduler.routers import tracking as _tracking_router  # noqa: E402
 app.include_router(_tracking_router.router)   # PS-168
+from photonscript.scheduler.routers import sub_doctor as _sub_doctor_router  # noqa: E402
+app.include_router(_sub_doctor_router.router)   # sub doctor
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,
