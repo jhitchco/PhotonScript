@@ -761,7 +761,7 @@ _CONFIG_FIELDS = [
     ("night_pilot_skip_target", "PS_NIGHT_PILOT_SKIP_TARGET", "Night pilot: repeated plate-solve failures: set the goal inactive for tonight and restart (once per night, reverted at dawn)", "Night pilot", "bool", False, False),
     ("night_pilot_max_actions", "PS_NIGHT_PILOT_MAX_ACTIONS", "Night pilot: most actions per night", "Night pilot", "int", False, False),
     ("night_pilot_rig_cooldown_min", "PS_NIGHT_PILOT_RIG_COOLDOWN_MIN", "Night pilot: at most one action per rig in this many minutes", "Night pilot", "float", False, False),
-    ("night_pilot_sub_steps", "PS_NIGHT_PILOT_SUB_STEPS", "Night pilot: RC16 sub length ladder for trailing, seconds, one step per action (e.g. 300,180,120)", "Night pilot", "str", False, False),
+    ("night_pilot_sub_steps", "PS_NIGHT_PILOT_SUB_STEPS", "Night pilot: RC16 sub length ladder for trailing, seconds, one step per action (e.g. 300,240,180,120)", "Night pilot", "str", False, False),
     ("night_pilot_sub_floor_s", "PS_NIGHT_PILOT_SUB_FLOOR_S", "Night pilot: never shorten RC16 subs below this (s; a length the darks / bias can be scaled to)", "Night pilot", "float", False, False),
     ("night_pilot_min_confidence", "PS_NIGHT_PILOT_MIN_CONFIDENCE", "Night pilot: act only on diagnoses at least this confident: high | medium | low", "Night pilot", "str", False, False),
     ("night_pilot_verify_subs", "PS_NIGHT_PILOT_VERIFY_SUBS", "Night pilot: subs after an action that decide whether it helped", "Night pilot", "int", False, False),

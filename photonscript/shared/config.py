@@ -157,7 +157,7 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_skip_target: bool = True
     night_pilot_max_actions: int = 6
     night_pilot_rig_cooldown_min: float = 15.0
-    night_pilot_sub_steps: str = "300,180,120"
+    night_pilot_sub_steps: str = "300,240,180,120"
     night_pilot_sub_floor_s: float = 120.0
     night_pilot_min_confidence: str = "medium"   # high | medium | low
     night_pilot_verify_subs: int = 2

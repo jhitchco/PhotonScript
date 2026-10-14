@@ -194,8 +194,9 @@ def test_norm_diag_sub_doctor_schema():
 
 def test_ladder_and_policy_table(tmp_path):
     cfg = _cfg(tmp_path)
-    assert npil.sub_steps(cfg) == [300.0, 180.0, 120.0]
-    assert npil.next_step(cfg, 300) == 180 and npil.next_step(cfg, 180) == 120
+    assert npil.sub_steps(cfg) == [300.0, 240.0, 180.0, 120.0]
+    assert npil.next_step(cfg, 300) == 240 and npil.next_step(cfg, 240) == 180
+    assert npil.next_step(cfg, 180) == 120
     assert npil.next_step(cfg, 120) is None and npil.next_step(cfg, 600) == 300
     assert npil.next_step(_cfg(tmp_path, night_pilot_sub_floor_s=180), 180) is None
     assert set(npil.POLICY) == {"stop_phd2", "unguided", "shorten_subs", "run_af",
@@ -249,7 +250,7 @@ def test_pick_step_prefers_matched_darks_then_bias_scaled(tmp_path):
     assert (s, dk["match"]) == (120.0, "scaled")
     # nothing at all: the next step, said so
     s, dk = npil.pick_step(cfg, 300, st({}))
-    assert (s, dk["match"]) == (180.0, "none")
+    assert (s, dk["match"]) == (240.0, "none")
     assert npil.pick_step(cfg, 120, st({})) == (None, None)
     # decide() carries it into the params (the push text)
     d = npil.norm_diag({"t": "2026-10-13T04:00:00Z", "kind": "sub_doctor",
@@ -1005,7 +1006,7 @@ def test_config_fields_defaults():
             c.night_pilot_shorten_subs, c.night_pilot_af,
             c.night_pilot_skip_target) == (True, True, True, True, True)
     assert c.night_pilot_max_actions == 6 and c.night_pilot_rig_cooldown_min == 15.0
-    assert c.night_pilot_sub_steps == "300,180,120" and c.night_pilot_sub_floor_s == 120.0
+    assert c.night_pilot_sub_steps == "300,240,180,120" and c.night_pilot_sub_floor_s == 120.0
     by_env = {f[1]: f for f in _CONFIG_FIELDS}
     for attr in [a for a in PhotonScriptConfig.model_fields if a.startswith("night_pilot_")]:
         f = by_env["PS_" + attr.upper()]

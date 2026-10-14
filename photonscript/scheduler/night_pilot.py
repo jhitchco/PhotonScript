@@ -177,8 +177,8 @@ def action_on(cfg, action: str) -> bool:
 
 
 def sub_steps(cfg) -> list[float]:
-    """night_pilot_sub_steps ("300,180,120") as seconds, longest first."""
-    raw = str(getattr(cfg, "night_pilot_sub_steps", "300,180,120") or "")
+    """night_pilot_sub_steps ("300,240,180,120") as seconds, longest first."""
+    raw = str(getattr(cfg, "night_pilot_sub_steps", "300,240,180,120") or "")
     out = set()
     for x in raw.replace(";", ",").split(","):
         try:
