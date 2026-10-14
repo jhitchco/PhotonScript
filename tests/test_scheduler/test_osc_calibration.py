@@ -237,6 +237,9 @@ def test_osc_resume_hold_orders_wait_hold_wait_before_autofocus():
     root = _osc_lights_root(piggyback_focus_seed=0)
     lights = _named(root, "OSC_LIGHTS_UNTIL_DAWN")
     items = lights["Items"]["$values"]
+    # 2026-10-14: a mid-night closed roof fills the owed OSC darks first
+    if items and items[0].get("Name") == "OSC_CLOSED_ROOF_DARKS":
+        items = items[1:]
     names = [i.get("Name") for i in items]
     assert names[0] == "WAIT_SAFE_OR_ASTRO_DAWN"   # PS-175
     assert names[1].startswith("OSC_RESUME_HOLD")

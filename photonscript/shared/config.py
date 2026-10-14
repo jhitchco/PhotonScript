@@ -163,6 +163,23 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_verify_subs: int = 2
     night_pilot_verify_timeout_min: float = 60.0
     night_pilot_solve_failures: int = 3
+    # Night pilot sub watch (2026-10-14, scheduler/sub_watch.py): judge every
+    # graded sub of both rigs (paired by time) and hand what it shows to the
+    # pilot. Each watch action has its own mode off | advise | act, default
+    # advise (Jeremy: advise until he says act); night_pilot_mode=advise
+    # caps them, act there does not make them act.
+    night_pilot_watch: bool = True
+    night_pilot_watch_subs: int = 3
+    night_pilot_watch_hfr_rise: float = 0.20
+    night_pilot_refocus_mode: str = "advise"
+    night_pilot_limit_subs_mode: str = "advise"
+    night_pilot_guider_stop_mode: str = "advise"
+    # Closed-roof darks (2026-10-14): the roof closes mid-night -> the
+    # Piggy-600 companion fills its owed darks (light length first) until
+    # safe or dawn (the RC16 UNSAFE branch already does); only idle time,
+    # same gates as the trusted pre-light darks. on | off.
+    closed_roof_darks: str = "on"
+    closed_roof_darks_min_left_min: float = 30.0
     nina_offline_grace_min: float = 3.0
     dawn_mount_check_mode: str = "alert"  # alert | off
     dawn_mount_check_after_dawn_min: float = 20.0

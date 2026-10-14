@@ -133,7 +133,23 @@ POLICY = {
     "skip_target": {"key": "night_pilot_skip_target", "max": 1,
                     "cooldown_min": 0.0, "metric": "target", "restart": True},
 }
+# Sub watch actions (2026-10-14, scheduler/sub_watch.py): each its own mode
+# key, off | advise | act, default advise (Jeremy: advise until he says act);
+# night_pilot_mode caps them (advise there makes every action advise).
+POLICY.update({
+    "refocus": {"key": None, "mode_key": "night_pilot_refocus_mode", "max": 2,
+                "cooldown_min": 30.0, "metric": "hfr", "restart": True},
+    "limit_subs": {"key": None, "mode_key": "night_pilot_limit_subs_mode", "max": 2,
+                   "cooldown_min": 30.0, "metric": "ecc", "restart": True},
+    "guider_stop": {"key": None, "mode_key": "night_pilot_guider_stop_mode", "max": 2,
+                    "cooldown_min": 30.0, "metric": "ecc", "restart": False},
+})
 ACTIONS = tuple(POLICY)
+# actions that do the same thing share their max per night and cooldown, so
+# a sub doctor diagnosis and a sub watch signal never both act
+GROUP = {"stop_phd2": "guider", "guider_stop": "guider", "run_af": "af",
+         "refocus": "af", "shorten_subs": "shorten", "limit_subs": "shorten"}
+ACTION_MODES = ("off", "advise", "act")
 # the sub doctor's remedy ids that do what a pilot action does
 REMEDY_SAME = {"stop_phd2": "stop_phd2", "run_af": "run_af",
                "shorten_subs": "shorten_subs"}
@@ -173,7 +189,32 @@ def _i(cfg, key: str, default: int) -> int:
 
 def action_on(cfg, action: str) -> bool:
     p = POLICY.get(action)
-    return bool(p and getattr(cfg, p["key"], True))
+    if not p:
+        return False
+    if p.get("mode_key"):
+        return action_mode(cfg, action) == "act"
+    return bool(getattr(cfg, p["key"], True))
+
+
+def action_mode(cfg, action: str) -> str:
+    """A sub watch action's own mode (off | advise | act, default advise);
+    the older actions answer act / advise from their on/off switch."""
+    p = POLICY.get(action) or {}
+    if not p.get("mode_key"):
+        return "act" if action_on(cfg, action) else "advise"
+    m = str(getattr(cfg, p["mode_key"], "advise") or "advise").strip().lower()
+    return m if m in ACTION_MODES else "advise"
+
+
+def group(action: str | None) -> str | None:
+    return GROUP.get(action or "", action)
+
+
+def switch_text(action: str) -> str:
+    p = POLICY.get(action) or {}
+    if p.get("mode_key"):
+        return f"{p['mode_key']}=advise"
+    return f"{p.get('key')} is off"
 
 
 def sub_steps(cfg) -> list[float]:
@@ -364,6 +405,8 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
         return {"kind": kind, "action": action, "params": params,
                 "what": what, "why": why}
 
+    if d.get("source") == "watch":
+        return decide_watch(cfg, d, ctx, low)
     if fam in ("clouds", "seeing"):
         return out("annotate", why=f"{fam}: nothing to change (roof safety "
                                    "owns clouds; seeing is the sky)")
@@ -437,6 +480,61 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
                        target=ctx.get("target"))
         return out("annotate", why="off target: the off-target alert owns it")
     return out("annotate", why="unknown cause")
+
+
+def decide_watch(cfg, d: dict, ctx: dict, low: bool) -> dict:
+    """decide() for a sub watch signal (scheduler/sub_watch.py): the signal
+    already names its action; this checks it still applies and words it."""
+    fam, rig, ev = d["family"], d["rig"], d.get("evidence") or {}
+    action = d.get("action") or "none"
+
+    def out(kind, action=None, what="", why="", **params):
+        return {"kind": kind, "action": action, "params": params,
+                "what": what, "why": why}
+
+    if ev.get("human"):
+        return out("human", what=f"check the {_label(cfg, rig)} tracking",
+                   why="a cause shorter subs do not fix: the pilot sends nothing")
+    if action == "none" or action not in POLICY:
+        return out("annotate", why=_because(d))
+    if low:
+        return out("annotate", why=f"{d.get('confidence')} confidence: watching "
+                                   f"only ({_because(d)})")
+    if action_mode(cfg, action) == "off":
+        return out("annotate", why=f"{POLICY[action]['mode_key']}=off ({_because(d)})")
+    if action == "guider_stop":
+        if ctx.get("guided"):
+            return out("annotate", why="guided night: PHD2 is meant to guide")
+        return out("act", "guider_stop", what="stopped PHD2 guiding (unguided "
+                   f"night, seen on the {_label(cfg, rig)} subs)",
+                   why="PHD2 is active on an UNGUIDED night")
+    if action == "refocus":
+        if rig != "rc16" and not ctx.get("piggy"):
+            return out("annotate", why="Piggy-600 not enabled")
+        how = ("a direct ninaAPI autofocus between subs, a restart if NINA "
+               "refuses it" if rig == "rc16" and af_direct_on(cfg) else
+               "a restart after the sub (the target start runs AF)"
+               if rig == "rc16" else "NINA #2 companion re-dispatch, AF first")
+        return out("act", "refocus", what=f"refocused the {_label(cfg, rig)} "
+                   f"(HFR drift)", why="HFR risen over the night's best, other "
+                   "rig steady", how=how, best_hfr=ev.get("best_hfr"))
+    if action == "limit_subs":
+        cur = _num(ctx.get("exp_s")) or _num(ev.get("exp_s"))
+        lim = _num(ev.get("limit_s"))
+        if cur is None or lim is None:
+            return out("annotate", why="sub length or limit unknown")
+        from photonscript.scheduler.unguided_limits import snap_length
+        to, dk = snap_length(cfg, rig, lim, cur, status=ctx.get("dark_status"))
+        if to is None or to >= cur - 0.5:
+            return out("annotate", why=f"no ladder length under {cur:g} s at or "
+                       f"under the limit {lim:g} s")
+        return out("act", "limit_subs",
+                   what=f"cut RC16 subs {cur:g} -> {to:g} s (learned unguided "
+                        f"limit, {ev.get('region')})",
+                   why="RC16 trailing past the region's learned unguided limit",
+                   from_s=cur, to_s=to, limit_s=lim, region=ev.get("region"),
+                   darks=(dk or {}).get("match"), darks_text=(dk or {}).get("text"))
+    return out("annotate", why=_because(d))
 
 
 def _label(cfg, rig: str) -> str:
@@ -836,6 +934,107 @@ class PilotIO:
         except Exception as e:  # noqa: BLE001
             logger.warning("night pilot push failed: %s", e)
 
+    # ---- the sub watch and the closed roof (2026-10-14)
+
+    def dark_status(self, cfg):
+        """seconds -> dark_match dict for the RC16 (None: dark_match)."""
+        return None
+
+    def limits_tables(self, cfg) -> dict:
+        """{rig: the learned unguided limits table} from the store (never
+        recomputed here)."""
+        try:
+            from photonscript.scheduler.unguided_limits import load
+            return dict(((load(cfg) or {}).get("rigs") or {}))
+        except Exception:  # noqa: BLE001
+            return {}
+
+    async def af_finished(self, cfg) -> dict:
+        """{rig: [AUTOFOCUS-FINISHED times, naive UTC]} from each NINA's
+        event history (GET only; NINA keeps its current session)."""
+        from photonscript.scheduler.af_stall import FINISHED, parse_time
+        from photonscript.scheduler.night_pause import nina_get
+        from photonscript.shared.rigs import PIGGYBACK, rig_config
+        out = {}
+        for rig in ("rc16", PIGGYBACK):
+            try:
+                base = rig_config(cfg, rig).nina_base_url.rstrip("/")
+                hist = await asyncio.wait_for(nina_get(base, "/event-history",
+                                                       timeout=20.0), 25)
+            except Exception:  # noqa: BLE001
+                continue
+            out[rig] = [t for t in (parse_time(e.get("Time")) for e in hist or []
+                                    if isinstance(e, dict)
+                                    and str(e.get("Event") or "").upper() == FINISHED)
+                        if t is not None]
+        return out
+
+    def roof_closed_since(self, cfg, now: datetime) -> datetime | None:
+        """When the current unsafe (roof closed) spell began, None when the
+        safety monitor reads safe (shared.safety_history)."""
+        try:
+            from photonscript.shared.safety_history import unsafe_windows
+            wins, _src = unsafe_windows(cfg, now - timedelta(hours=14), now)
+        except Exception:  # noqa: BLE001
+            return None
+        if wins and wins[-1][1] >= now - timedelta(seconds=1):
+            return wins[-1][0]
+        return None
+
+    def darks_owed(self, cfg) -> dict:
+        """{rig: [{exp_s, owed}]}: the night dark quota deficit per length
+        (calibration.night_dark_exposures + dark_quota, the Calibration owed
+        view's rule)."""
+        out = {}
+        try:
+            from photonscript.scheduler.calibration import dark_quota, night_dark_exposures
+            from photonscript.shared.rigs import PIGGYBACK, rig_config
+        except Exception:  # noqa: BLE001
+            return out
+        for rig in ("rc16", PIGGYBACK):
+            if rig == PIGGYBACK and not getattr(cfg, "piggyback_enabled", False):
+                continue
+            try:
+                rc = cfg if rig == "rc16" else rig_config(cfg, rig)
+                out[rig] = [{"exp_s": float(e), "owed": int(dark_quota(rc, rig, e)["need"])}
+                            for e in night_dark_exposures(rc, rig)]
+            except Exception as e:  # noqa: BLE001
+                logger.debug("night pilot: owed darks (%s) unavailable: %s", rig, e)
+        return out
+
+    def light_lengths(self, cfg, armer) -> dict:
+        """{rig: [sub lengths tonight's lights use]} (the plan; the Piggy-600
+        companion's lengths)."""
+        out = {"rc16": [], "piggyback": []}
+        plan = getattr(armer, "plan", None)
+        for t in (plan or {}).get("targets") or [] if isinstance(plan, dict) else []:
+            for e in t.get("exposures") or []:
+                v = _num(e.get("exp_s"))
+                if v:
+                    out["rc16"].append(v)
+        pl = ((plan or {}).get("piggy_length") or {}) if isinstance(plan, dict) else {}
+        for seg in pl.get("segments") or []:
+            v = _num((seg or {}).get("exp_s"))
+            if v:
+                out["piggyback"].append(v)
+        v = _num(getattr(cfg, "piggyback_exposure_s", None))
+        if v:
+            out["piggyback"].append(v)
+        return out
+
+    async def guider_hook(self, cfg, rig: str, evidence: dict, now: datetime):
+        """pilot_hooks.guider_active_unguided (the unguided guard's hook):
+        a result dict when it handled the stop, None to fall back."""
+        try:
+            from photonscript.scheduler import pilot_hooks
+            res = pilot_hooks.guider_active_unguided(cfg, rig, evidence, now)
+            if asyncio.iscoroutine(res):
+                res = await res
+            return res if isinstance(res, dict) else None
+        except Exception as e:  # noqa: BLE001
+            logger.warning("night pilot: unguided guard hook failed: %s", e)
+            return None
+
 
 class Monitor:
     """In-process: background jobs (fallback, Piggy AF) and the last tick."""
@@ -910,13 +1109,16 @@ def live_guard(cfg, armer, ctx: dict) -> str | None:
 
 
 def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
-          now: datetime) -> str | None:
-    """Why this action must not run now, else None."""
+          now: datetime, virtual: bool = False) -> str | None:
+    """Why this action must not run now, else None. virtual: the decision is
+    advise only; the night's advised actions count toward the max and the
+    cooldowns as if they had run, so the advise timeline is the one the
+    pilot would have acted on (rate limited, no flapping)."""
     why = live_guard(cfg, armer, ctx)
     if why:
         return why
     action, rig = dec["action"], d["rig"]
-    if action == "stop_phd2":
+    if action in ("stop_phd2", "guider_stop") and not virtual:
         try:
             from photonscript.telescope_agent import phd2_ops
             if phd2_ops.busy():
@@ -930,13 +1132,25 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
         left = _dark_left_min(armer, now)
         if left is not None and left < RESTART_DARK_MIN:
             return f"only {max(0, int(left))} min of dark left"
-    acts = [a for a in st.get("actions") or [] if a.get("kind") == "act"]
+    kinds = ("act", "advise") if virtual else ("act",)
+    acts = [a for a in st.get("actions") or [] if a.get("kind") in kinds]
+    if virtual:
+        p = dec.get("params") or {}
+        for a in acts:
+            q = a.get("params") or {}
+            if (a.get("kind") == "advise" and a.get("rig") == rig
+                    and group(a.get("action")) == group(action) == "shorten"
+                    and q.get("to_s") == p.get("to_s")
+                    and (q.get("target") or a.get("target")) == ctx.get("target")):
+                return (f"already advised {a.get('what')} at "
+                        f"{_hm(cfg, _parse_t(a.get('t')))}")
     if len(acts) >= lim["max_actions"]:
         return f"{len(acts)} actions tonight (max {lim['max_actions']})"
-    same = [a for a in acts if a.get("action") == action]
+    same = [a for a in acts if group(a.get("action")) == group(action)]
     if len(same) >= pol["max"]:
         return f"{action} done {len(same)} time(s) tonight (max {pol['max']})"
-    pend = [a for a in acts if a.get("rig") == rig and a.get("result") is None
+    pend = [a for a in acts if a.get("kind") == "act" and a.get("rig") == rig
+            and a.get("result") is None
             and a.get("status") in ("pending", "running", "done")]
     if pend:
         return f"waiting for the {pend[-1]['action']} check on the {_label(cfg, rig)}"
@@ -948,11 +1162,12 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
         if a.get("rig") == rig and age < lim["rig_cooldown_min"]:
             return (f"one action per rig per {lim['rig_cooldown_min']:g} min "
                     f"(last {age:.0f} min ago)")
-        if a.get("action") == action and age < pol["cooldown_min"]:
+        if group(a.get("action")) == group(action) and age < pol["cooldown_min"]:
             return f"{action} cooldown ({pol['cooldown_min']:g} min)"
     if st.get("given_up", {}).get(f"{rig}|{d['family']}"):
         return f"gave up on {d['family']} tonight (pushed for a human)"
-    rem = REMEDY_SAME.get(action)
+    rem = REMEDY_SAME.get({"guider_stop": "stop_phd2", "refocus": "run_af",
+                           "limit_subs": "shorten_subs"}.get(action, action))
     for r in ctx.get("remedies") or []:
         t = _parse_t(r.get("t"))
         if (rem and r.get("rig") == rig and str(r.get("value") or "").split(":")[0] == rem
@@ -1024,7 +1239,7 @@ def verify_pool(a: dict, subs: list[dict]) -> list[dict]:
     if eff is None:
         return []
     pool = [r for r in rig_subs(subs, a["rig"]) if _sub_start(r) >= eff]
-    if a["action"] == "shorten_subs":
+    if group(a["action"]) == "shorten":
         to = _num((a.get("params") or {}).get("to_s")) or 0
         pool = [r for r in pool if (_num(r.get("exp_s") or r.get("exposure")) or 0) <= to + 1]
     if a["action"] == "skip_target":
@@ -1231,7 +1446,7 @@ def _because(d: dict) -> str:
 
 
 async def gather_ctx(cfg, armer, io, night: str, events: list[dict],
-                     live: bool = True) -> dict:
+                     live: bool = True, subs: list[dict] | None = None) -> dict:
     """What the decisions need. live=False (no new diagnosis this tick)
     skips the NINA #1 and PHD2 reads: verification needs only the logs."""
     running, target = (await io.nina1_running(cfg)) if live else (None, None)
@@ -1239,7 +1454,7 @@ async def gather_ctx(cfg, armer, io, night: str, events: list[dict],
         guided = bool(armer._use_guiding())
     except Exception:  # noqa: BLE001
         guided = bool(getattr(cfg, "guided_default", False))
-    subs = io.subs(cfg, night)
+    subs = io.subs(cfg, night) if subs is None else subs
     rc = rig_subs(subs, "rc16")
     exp_s = _num(rc[-1].get("exp_s") or rc[-1].get("exposure")) if rc else None
     last_target = rc[-1].get("target") if rc else None
@@ -1275,7 +1490,34 @@ async def tick(cfg, armer, io: PilotIO | None = None, now: datetime | None = Non
         prev = diags.get(d["rig"])
         if prev is None or d["dt"] >= prev["dt"]:
             diags[d["rig"]] = d
-    ctx = await gather_ctx(cfg, armer, io, night, events, live=bool(diags))
+    # the sub watch (scheduler/sub_watch.py): every sub graded since the
+    # last tick, both rigs, paired by time
+    from photonscript.scheduler import sub_watch
+    subs = io.subs(cfg, night)
+    fresh = sub_watch.watch_on(cfg) and _fresh_subs(subs, st.get("watch_seen"))
+    ctx = await gather_ctx(cfg, armer, io, night, events,
+                           live=bool(diags) or fresh, subs=subs)
+    watch = []
+    if fresh:
+        ctx["limits"] = io.limits_tables(cfg)
+        ctx.setdefault("dark_status", io.dark_status(cfg))
+        ctx.setdefault("af_finished", None)
+        try:
+            seen0 = st.get("watch_seen")
+            watch, seen = sub_watch.signals(cfg, subs, ctx, seen0, now=now)
+            if any((w.get("evidence") or {}).get("needs_af") for w in watch):
+                # NINA's AF history (GET), only when a focus signal needs it
+                ctx["af_finished"] = await io.af_finished(cfg)
+                watch, seen = sub_watch.signals(cfg, subs, ctx, seen0, now=now)
+            st["watch_seen"] = seen
+            g = [v for k, v in seen.items() if k.endswith("|guiding")]
+            if g and not any(g):
+                st["guider_alert_open"] = False
+            # a sub doctor diagnosis of the same rig this tick speaks for it
+            watch = [w for w in watch if w["rig"] not in diags]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("night pilot sub watch failed: %s", e)
+            watch = []
     await _follow_up(cfg, armer, io, st, ctx, now)
     await _verify(cfg, armer, io, st, ctx, now)
     # night ended without the dawn shutdown (disarmed, error): revert now
@@ -1285,13 +1527,87 @@ async def tick(cfg, armer, io: PilotIO | None = None, now: datetime | None = Non
         revert(cfg, st, io.store(), now, why=f"armer {armer.state}")
     newest = max((d["dt"] for d in diags.values()), default=None)
     done = []
-    for d in sorted(diags.values(), key=lambda x: x["dt"]):
+    for d in sorted([*diags.values(), *watch], key=lambda x: x["dt"]):
         done.append(await _handle(cfg, armer, io, st, d, ctx, now, m))
     if newest is not None:
         st["seen_t"] = _iso(newest)
+    try:
+        await closed_roof(cfg, armer, io, st, now)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("night pilot closed-roof check failed: %s", e)
     save_state(cfg, st)
     MONITOR.last = {"t": _iso(now), "mode": m, "night": night, "handled": done}
     return {"state": m, "night": night, "handled": done}
+
+
+def _fresh_subs(subs: list[dict], seen: dict | None) -> bool:
+    """A sub graded after the watch's watermark on either rig."""
+    from photonscript.scheduler.sub_watch import graded_at
+    seen = seen or {}
+    for r in subs or []:
+        t = graded_at(r)
+        mark = _parse_t(seen.get(r.get("rig") or "rc16"))
+        if t is not None and (mark is None or t > mark):
+            return True
+    return False
+
+
+# --------------------------------------------------------------------------
+# closed roof: the idle time goes to owed darks (closed_roof_darks)
+# --------------------------------------------------------------------------
+
+def closed_roof_on(cfg) -> bool:
+    return str(getattr(cfg, "closed_roof_darks", "on") or "on").strip().lower() == "on"
+
+
+def closed_roof_min_left(cfg) -> float:
+    return max(0.0, _f(cfg, "closed_roof_darks_min_left_min", 30.0))
+
+
+async def closed_roof(cfg, armer, io, st: dict, now: datetime) -> dict | None:
+    """The roof closed mid-night (the safety monitor unsafe, the mount parked
+    by the sequence's UNSAFE branch) with more than closed_roof_darks_min_left_min
+    to dawn: the sequences shoot the owed darks themselves (the RC16 UNSAFE
+    branch's dark quota, PS-160; the Piggy-600 companion's
+    OSC_CLOSED_ROOF_DARKS, calibration._osc_closed_roof_darks), so nothing is
+    sent from here. The pilot records the spell and what fits in it (run event
+    kind night_pilot "closed_roof", one push), and the morning report says
+    what the closed roof was used for. Never opens, moves or commands
+    anything. Returns the spell record or None."""
+    if not closed_roof_on(cfg):
+        return None
+    from photonscript.scheduler.armer import LIVE_STATES
+    if str(getattr(armer, "state", "")) not in LIVE_STATES:
+        return None
+    since = io.roof_closed_since(cfg, now)
+    if since is None:
+        return None
+    key = _iso(since)
+    spells = st.setdefault("closed_roof", [])
+    if any(x.get("since") == key for x in spells):
+        return None
+    left = _dark_left_min(armer, now)
+    from photonscript.scheduler import sub_watch
+    rec = {"since": key, "t": _iso(now), "dark_left_min": None if left is None
+           else round(left)}
+    if left is None or left < closed_roof_min_left(cfg):
+        rec.update(plan=[], text=f"roof closed at {_hm(cfg, since)} with "
+                   f"{'?' if left is None else int(left)} min to dawn: under "
+                   f"{closed_roof_min_left(cfg):g} min, no closed-roof darks")
+    else:
+        plan = sub_watch.closed_roof_plan(io.darks_owed(cfg), left,
+                                          light_lengths=io.light_lengths(cfg, armer),
+                                          min_left_min=closed_roof_min_left(cfg))
+        rec.update(plan=plan, text=(
+            f"roof closed at {_hm(cfg, since)} with {int(left)} min to dawn: "
+            + (f"the sequences shoot owed darks until safe or dawn: "
+               f"{sub_watch.plan_text(cfg, plan)}" if plan else
+               "no darks owed on either rig")))
+    spells.append(rec)
+    _event(cfg, st["night"], "closed_roof", "Night pilot: " + rec["text"], now,
+           rig="rc16", plan=rec.get("plan"))
+    await io.notify(cfg, "Night pilot: " + rec["text"] + ".", priority=0)
+    return rec
 
 
 async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
@@ -1311,13 +1627,15 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
             await io.notify(cfg, msg, priority=0)
         return {"rig": rig, "kind": "human", "cause": d["cause"]}
     action = dec["action"]
-    why_not = guard(cfg, armer, st, d, dec, ctx, now)
+    advise = m == "advise" or not action_on(cfg, action)
+    if action == "guider_stop" and live_guard(cfg, armer, ctx) is None:
+        await _guider_alert(cfg, io, st, d, now, advise)
+    why_not = guard(cfg, armer, st, d, dec, ctx, now, virtual=advise)
     if why_not:
         if _note_once(st, f"held|{rig}|{action}|" + re.sub(r"\d+", "#", why_not)):
             _event(cfg, night, "held", f"{action} on the {_label(cfg, rig)} held: "
                    f"{why_not}", now, rig=rig, cause=d["cause"], action=action)
         return {"rig": rig, "kind": "held", "action": action, "why": why_not}
-    advise = m == "advise" or not action_on(cfg, action)
     st["seq"] = int(st.get("seq") or 0) + 1
     pol = POLICY[action]
     a = {"id": f"a{st['seq']}", "t": _iso(now), "rig": rig, "cause": d["cause"],
@@ -1327,12 +1645,18 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
          "baseline": {"metric": pol["metric"],
                       "value": baseline(d, pol["metric"], ctx["subs"])},
          "status": None, "result": None, "effective_t": None, "detail": ""}
+    if d.get("source"):
+        a["source"] = d["source"]
+    a["target"] = ctx.get("target")
     if advise:
         why = ("night_pilot_mode=advise" if m == "advise"
-               else f"{pol['key']} is off")
+               else switch_text(action))
         a["status"] = "advised"
+        # every advised decision that passes the guards is the timeline
+        # (the morning report's "would have"); one push and one run event
+        # per rig and action per night
+        st.setdefault("actions", []).append(a)
         if _note_once(st, f"advise|{rig}|{action}"):
-            st.setdefault("actions", []).append(a)
             dk = (dec.get("params") or {}).get("darks_text") or \
                 (dec.get("params") or {}).get("how")
             msg = (f"Night pilot (advise): would have {dec['what']} because "
@@ -1360,8 +1684,42 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
     return {"rig": rig, "kind": "act", "action": action, "status": a["status"]}
 
 
+async def _guider_alert(cfg, io, st, d, now, advise: bool) -> None:
+    """The immediate alert for PHD2 active on an UNGUIDED night (sub watch):
+    one priority push per spell (a spell ends when the newest sub of every
+    rig was exposed with PHD2 idle again), whatever the guider_stop mode,
+    and a run event."""
+    if st.get("guider_alert_open"):
+        return
+    st["guider_alert_open"] = True
+    st["guider_alert_t"] = _iso(now)
+    what = ("the pilot stops it" if not advise else
+            "the pilot only advises (night_pilot_guider_stop_mode); stop PHD2 "
+            "or let the unguided guard do it")
+    msg = f"Night pilot ALERT: {_because(d)}: {what}."
+    _event(cfg, st["night"], "alert", msg, now, rig=d["rig"], cause=d["cause"])
+    st.setdefault("alerts", []).append({"t": _iso(now), "rig": d["rig"], "text": msg})
+    await io.notify(cfg, msg, priority=1)
+
+
 async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
     action = a["action"]
+    if action == "guider_stop":
+        # the unguided guard's hook first (pilot_hooks; filled by the
+        # ps-unguided-guard branch), then PHD2 stop_capture
+        res = await io.guider_hook(cfg, a["rig"], {"because": a["because"],
+                                                   **(a.get("params") or {})}, now)
+        if isinstance(res, dict):
+            ok = bool(res.get("ok"))
+            a.update(status="done" if ok else "failed",
+                     detail=str(res.get("detail") or "unguided guard hook"),
+                     effective_t=_iso(now) if ok else None, hook=True)
+            return
+        action = "stop_phd2"
+    elif action == "refocus":
+        action = "run_af"
+    elif action == "limit_subs":
+        action = "shorten_subs"
     if action == "stop_phd2":
         ok, detail = await io.phd2_stop(cfg)
         a.update(status="done" if ok else "failed", detail=detail,
@@ -1662,13 +2020,13 @@ async def _verify(cfg, armer, io, st, ctx, now) -> None:
             await io.notify(cfg, msg, priority=0)
             continue
         undo = None
-        if a["action"] == "shorten_subs":
+        if group(a["action"]) == "shorten":
             undo = await _undo_shorten(cfg, armer, io, st, a, now)
         esc, human = _escalate(cfg, st, a, now, undo)
         msg = f"Night pilot: '{a['what']}' did NOT help: {nums}. {esc}"
         _event(cfg, night, "verify", msg, now, rig=rig, aid=a["id"],
                result="not_improved", before=before, after=med, human=human)
-        if a["action"] == "shorten_subs":
+        if group(a["action"]) == "shorten":
             _learn(cfg, st, a, before, med, now)
         await io.notify(cfg, msg, priority=1 if human else 0)
 
@@ -1719,8 +2077,8 @@ def _escalate(cfg, st, a, now, undo: str | None = None) -> tuple[str, bool]:
     """What happens after an action that did not help: (text, human)."""
     key = f"{a['rig']}|{a['family']}"
     acts = [x for x in st.get("actions") or [] if x.get("kind") == "act"
-            and x.get("action") == a["action"] and x.get("rig") == a["rig"]]
-    if a["action"] == "shorten_subs":
+            and group(x.get("action")) == group(a["action"]) and x.get("rig") == a["rig"]]
+    if group(a["action"]) == "shorten":
         # one step that did not help is enough: trailing that does not
         # follow the sub length is not a drift-per-second problem
         st.setdefault("given_up", {})[key] = _iso(now)
@@ -1728,14 +2086,14 @@ def _escalate(cfg, st, a, now, undo: str | None = None) -> tuple[str, bool]:
                 f"drift-per-second problem: {undo or 'sub lengths unchanged'}. "
                 "Needs a human (PHD2 stopped? TheSky tracking / ProTrack, "
                 "flexure). No more shortening tonight.", True)
-    if a["action"] == "run_af":
+    if group(a["action"]) == "af":
         fails = [x for x in acts if x.get("result") == "not_improved"]
         if len(fails) < 2 and len(acts) < POLICY["run_af"]["max"]:
             return ("One more AF at the next diagnosis.", False)
         st.setdefault("given_up", {})[key] = _iso(now)
         return ("Autofocus did not fix it twice: check the focuser (position, "
                 "USB) and the AF curve. No more tries tonight.", True)
-    if a["action"] == "stop_phd2":
+    if group(a["action"]) == "guider":
         # PHD2 stopped but the subs still trail: it was not (only) PHD2. Not
         # given up: PHD2 started again later (2026-10-12, 08:30Z) is stopped
         # again (max 2 per night, 30 min cooldown, only while PHD2 is active)
@@ -1757,12 +2115,12 @@ def _learn(cfg, st, a, before, after, now) -> None:
         pass
     p = a.get("params") or {}
     txt = None
-    if a["action"] == "shorten_subs" and a["result"] == "improved":
+    if group(a["action"]) == "shorten" and a["result"] == "improved":
         txt = (f"unguided RC16 needs <= {p.get('to_s'):g} s{model} "
                f"({p.get('from_s'):g} s ecc {before}, {p.get('to_s'):g} s ecc "
                f"{after}): consider unguided_max_exposure_s {p.get('to_s'):g} or "
                f"the goal's sub length for {p.get('target')}")
-    elif a["action"] == "shorten_subs":
+    elif group(a["action"]) == "shorten":
         txt = (f"RC16 trailing is not drift-per-second: it did not follow the "
                f"sub length ({p.get('from_s'):g} s ecc {before}, {p.get('to_s'):g} s "
                f"ecc {after}"
@@ -1770,11 +2128,11 @@ def _learn(cfg, st, a, before, after, now) -> None:
                   if (a.get("undo") or {}).get("ok") else "")
                + "): look for a "
                "non-drift cause (PHD2, flexure, mount) before shortening subs")
-    elif a["action"] == "stop_phd2":
+    elif group(a["action"]) == "guider":
         txt = ("a PHD2 session left guiding on an unguided night trailed the "
                f"RC16 (ecc {before} -> {after} once stopped): stop PHD2 before "
                "arming unguided")
-    elif a["action"] == "run_af":
+    elif group(a["action"]) == "af":
         txt = (f"{_label(cfg, a['rig'])} went soft mid-night and an AF fixed it "
                f"(HFR {before} -> {after}): consider a shorter AF interval / "
                "HFR trigger")
@@ -1807,6 +2165,15 @@ def _action_line(cfg, a: dict) -> str:
     return f"{t} {pre}{a['what']} -> {r}"
 
 
+def _would_line(cfg, a: dict) -> str:
+    """One "would have" item: "02:31 stopped PHD2 guiding (unguided night)
+    on the RC16"."""
+    t = _hm(cfg, _parse_t(a.get("t")))
+    what = str(a.get("what") or a.get("action"))
+    lab = _label(cfg, a.get("rig") or "rc16")
+    return f"{t} {what}" + ("" if lab in what else f" on the {lab}")
+
+
 def status(cfg, night: str | None = None, now: datetime | None = None) -> dict:
     """GET /api/night/pilot: mode, tonight's actions and the dashboard line."""
     from photonscript.shared.phd2_store import night_of
@@ -1828,7 +2195,17 @@ def status(cfg, night: str | None = None, now: datetime | None = None) -> dict:
     return {"mode": m, "night": night, "line": line, "last": last,
             "actions": acts, "limits": limits(cfg),
             "ledger": st.get("ledger") or {}, "learned": st.get("learned") or [],
-            "given_up": st.get("given_up") or {}, "tick": MONITOR.last}
+            "given_up": st.get("given_up") or {}, "tick": MONITOR.last,
+            "closed_roof": st.get("closed_roof") or [],
+            "alerts": st.get("alerts") or [],
+            "watch": {"on": _watch_on(cfg), "seen": st.get("watch_seen") or {},
+                      "modes": {k: action_mode(cfg, k) for k in
+                                ("refocus", "limit_subs", "guider_stop")}}}
+
+
+def _watch_on(cfg) -> bool:
+    from photonscript.scheduler.sub_watch import watch_on
+    return watch_on(cfg)
 
 
 def morning_lines(cfg, date: str) -> list[str]:
@@ -1838,11 +2215,19 @@ def morning_lines(cfg, date: str) -> list[str]:
     if not p.exists():
         return []
     st = load_state(cfg, date)
-    acts = [a for a in st.get("actions") or [] if a.get("kind") in ("act", "advise")]
+    acts = [a for a in st.get("actions") or [] if a.get("kind") == "act"]
+    adv = [a for a in st.get("actions") or [] if a.get("kind") == "advise"]
     out = []
     if acts:
         out.append("Night pilot: " + "; ".join(_action_line(cfg, a) for a in acts[:6])
                    + (f"; +{len(acts) - 6} more" if len(acts) > 6 else ""))
+    if adv:
+        out.append("Night pilot would have: "
+                   + "; ".join(_would_line(cfg, a) for a in adv[:10])
+                   + (f"; +{len(adv) - 10} more" if len(adv) > 10 else "")
+                   + " (advise: nothing was sent)")
+    for x in st.get("closed_roof") or []:
+        out.append("Night pilot closed roof: " + str(x.get("text") or ""))
     rev = [f"{e.get('target')}" for e in (st.get("ledger") or {}).values()
            if e.get("reverted")]
     left = [f"{e.get('target')}" for e in (st.get("ledger") or {}).values()

@@ -200,10 +200,10 @@ def test_ladder_and_policy_table(tmp_path):
     assert npil.next_step(cfg, 120) is None and npil.next_step(cfg, 600) == 300
     assert npil.next_step(_cfg(tmp_path, night_pilot_sub_floor_s=180), 180) is None
     assert set(npil.POLICY) == {"stop_phd2", "unguided", "shorten_subs", "run_af",
-                                "skip_target"}
+                                "skip_target", "refocus", "limit_subs", "guider_stop"}
     for p in npil.POLICY.values():
         assert {"key", "max", "cooldown_min", "metric", "restart"} <= set(p)
-        assert hasattr(cfg, p["key"])
+        assert hasattr(cfg, p["key"] or p["mode_key"])
     ctx = {"guided": False, "phd2": "Guiding", "exp_s": 300}
 
     def d(cause, action="none", conf="high", rig="rc16", **ev):
@@ -785,7 +785,9 @@ def test_max_actions_and_per_action_max(tmp_path):
         _sub(cfg2, (start + timedelta(minutes=5)).strftime("%H:%M"), 0.5)
         _tick(cfg2, armer, io2, (start + timedelta(minutes=11)).strftime("%H:%M"))
     assert io2.calls.count("phd2_stop") == 2
-    assert "stop_phd2 done 2 time(s) tonight" in _pilot_events(cfg2, "held")[-1]["detail"]
+    # (the sub watch's guider_stop shares the stop_phd2 max: held too)
+    assert any("stop_phd2 done 2 time(s) tonight" in e["detail"]
+               for e in _pilot_events(cfg2, "held"))
 
 
 def test_sub_doctor_remedy_not_doubled(tmp_path):

@@ -1086,6 +1086,89 @@ loop every 60 s (`run_pilot`, app startup).
   other way (disarm, error, service restart). A goal edited by hand since
   the pilot changed it is left alone and said so.
 
+### Night pilot sub watch and closed-roof darks (2026-10-14)
+
+Jeremy: "augment the night watch and pilot to watch the subs as they come in
+to adjust if something doesn't work", and "we did have some closed roof
+tonight, it would have been nice to have gotten some of those 450 second
+subs in". The sub doctor speaks only after failed subs; the **sub watch**
+(`scheduler/sub_watch.py`, `night_pilot_watch`, default on) reads every
+graded light of both rigs on each pilot tick, pairs it with the other rig's
+sub exposed at the same time, and hands what it shows to the pilot, which
+runs it through the same guards, rate limits, verification, ledger and dawn
+revert as a sub doctor diagnosis (run events kind `night_pilot`, field
+`source: "watch"`).
+
+| signal | when | action | mode key (default) |
+|---|---|---|---|
+| focus drift | HFR over the night's best for that target and filter (median of its 3 sharpest round subs) by `night_pilot_watch_hfr_rise` (20%) on each of the last `night_pilot_watch_subs` (3) round subs; the other rig's same-time subs did not rise (else "the sky, not focus"); no AF since the softening began that left the next sub as soft (else "the AF did not bring it back") | `refocus`: RC16 direct ninaAPI AF between subs (restart fallback), Piggy-600 companion re-dispatch; verified on HFR | `night_pilot_refocus_mode` (advise) |
+| trailing past the learned limit | UNGUIDED night, PHD2 idle, 2 of the last 3 RC16 subs fail ecc, stars not down, sub longer than the learned unguided limit of the region it points at; the Piggy-600 trails too (shared mount) or is round as the RC16's trail rate predicts at 1.29"/px | `limit_subs`: the goal's RC16 subs cut to the limit (`unguided_limits.snap_length`, matched darks first) for tonight, restart after the current sub; verified on ecc, undone if it did not help | `night_pilot_limit_subs_mode` (advise) |
+| only the RC16 trails | the Piggy-600 should trail at that rate but is round | a human (flexure, optics); nothing sent | |
+| PHD2 on an unguided night | the newest sub of either rig exposed with PHD2 guiding / settling / lost star, or PHD2 active now | priority ALERT push at once (once per spell, any mode); `guider_stop`: the unguided guard hook, else PHD2 stop_capture | `night_pilot_guider_stop_mode` (advise) |
+| clouds, roof | star counts down on both rigs; roof row failed | noted only | |
+
+- Modes: each watch action is off | advise | act on its own key, default
+  advise. `night_pilot_mode=advise` (the scope's setting) caps them all;
+  setting `night_pilot_mode=act` alone does NOT make them act: set the
+  action's own key to act when Jeremy says so.
+- One actor per remedy: `stop_phd2` / `guider_stop`, `run_af` / `refocus`
+  and `shorten_subs` / `limit_subs` share their max per night and cooldown,
+  and a sub doctor diagnosis of a rig in the same tick speaks for the
+  watch's signal on that rig.
+- Advise timeline: every advised decision that passes the guards is
+  recorded (rate limited as if it had run; the same cut on the same target
+  is advised once), one push and one run event per rig and action per
+  night. Morning report: "Night pilot would have: 21:48 cut RC16 subs 180
+  -> 120 s (learned unguided limit, Dec +30..+50, east); 02:31 stopped PHD2
+  guiding ... (advise: nothing was sent)".
+- **Unguided guard hook** (`scheduler/pilot_hooks.py`,
+  `guider_active_unguided(cfg, rig, evidence, now)`): the branch
+  ps-unguided-guard fills it. Return `{"ok", "detail"}` when it stopped
+  guiding, None to let the pilot fall back to PHD2 stop_capture. Called
+  only when `night_pilot_guider_stop_mode=act`.
+- NINA's AF history (GET `/event-history` on both NINAs) is read only when
+  a focus signal needs it.
+- Backtest (read only, nothing sent, scratch state):
+  `photonscript pilot-backtest --night 2026-10-13 --url
+  http://100.94.189.77:8100 [--no-limits] [--json]`
+  (`scheduler/pilot_backtest.py`). The limits table is today's (hindsight).
+  2026-10-13: 21:48 cut M31 RC16 subs 180 -> 120 s (Dec +30..+50 east),
+  21:52 a human (one RC16 sub at ~2.8"/min the Piggy-600 did not show),
+  22:33 Piggy-600 softer but the RC16 rose too (the sky, no refocus),
+  23:31 cut Heart RC16 subs 180 -> 120 s (Dec +50..+70 east), 02:31 ALERT
+  + stop PHD2 (NINA started guiding at the 02:28 flip), 03:00 ALERT +
+  03:03 stop again (NINA restarted guiding after the 02:52 AF), 04:21
+  closed roof with 99 min to dawn: Piggy-600 450 s x13 of 22 owed.
+
+**Closed-roof darks** (`closed_roof_darks` on | off, default on;
+`closed_roof_darks_min_left_min` 30). The RC16 has shot its dark quota in
+the UNSAFE branch since PS-160 (`unsafe_darks_enabled`), but the Piggy-600
+companion filled its quota only before the light loop, so a roof that
+closed mid-night (2026-10-13 04:20, 1.6 h before dawn) left NINA #2 idle
+with 22 x 450 s darks owed. Now every OSC_LIGHTS_UNTIL_DAWN pass starts with
+`OSC_CLOSED_ROOF_DARKS` (`calibration._osc_closed_roof_darks`):
+LoopWhileUnsafe (never with the roof open; ends after the dark in progress
+once safe, then the usual wait-for-safe and resume hold hand back to the
+lights), a TimeCondition at astro dawn minus the minimum, the PS-160 cooler
+gate (darks only at the setpoint), then the owed blocks (the night quota
+deficit, tonight's Piggy light lengths first, each block roof-gated and
+ending one exposure before astro dawn). No mount, cover, filter or guider
+instruction; refused by the PS-188 window `manual` without a cover; with
+the Wanderer Cover the pass closes it first (close_if_unsafe). Counts are
+the quota at dispatch; a second closed spell the same night may shoot a
+length again (idle time only). Default on because it only uses closed-roof
+idle time with the same gates as the trusted pre-light darks. The pilot
+records each spell (run event `closed_roof`, one push, morning line "Night
+pilot closed roof: roof closed at 04:20 with 99 min to dawn: the sequences
+shoot owed darks until safe or dawn: Piggy-600 450 s x13 (owed 22); ...");
+it never commands, opens or moves anything. The RC16 list is the one at
+dispatch (lengths learned later, e.g. 120 / 240 s from a dawn limits
+refresh, join at the next dispatch).
+
+Night test needed: an armed act-mode night for each watch action (one at a
+time), a mid-night roof closure with the new companion (NINA #2 darks start
+and hand back on safe), and the hook once ps-unguided-guard lands.
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was
