@@ -717,6 +717,10 @@ _CONFIG_FIELDS = [
     ("integrate_min_alt_deg", "PS_INTEGRATE_MIN_ALT_DEG", "Integrate pointing check: lights shot below N deg altitude are flagged (0 = off)", "Integration", "float", False, False),
     ("integrate_mono_color", "PS_INTEGRATE_MONO_COLOR", "Integrate (mono, desktop .env): combine the per-filter masters into color images (<target>_LRGB / _RGB from R G B + L, _SHO / _HOO from SII Ha OIII) after the finish", "Integration", "bool", False, False),
     ("blend_rc16_bxt", "PS_BLEND_RC16_BXT", "Blend (PS-153): BlurXTerminator pass on the RC16 L linear master first (when installed)", "Integration", "bool", False, False),
+    ("blend_nb_min_ha_h", "PS_BLEND_NB_MIN_HA_H", "Narrowband blend readiness: accepted RC16 Ha hours the NB blend needs (below it autointegrate skips the NB blend)", "Integration", "float", False, False),
+    ("blend_nb_min_oiii_h", "PS_BLEND_NB_MIN_OIII_H", "Narrowband blend readiness: accepted RC16 OIII hours to add OIII (G and B)", "Integration", "float", False, False),
+    ("blend_nb_min_sii_h", "PS_BLEND_NB_MIN_SII_H", "Narrowband blend readiness: accepted RC16 SII hours for the SHO core", "Integration", "float", False, False),
+    ("blend_nb_gate", "PS_BLEND_NB_GATE", "Autointegrate (desktop .env): skip a narrowband blend whose RC16 Ha master is below blend_nb_min_ha_h", "Integration", "bool", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
     ("library_pointing_check", "PS_LIBRARY_POINTING_CHECK", "Library filing (dawn filing / Approve): a light whose header RA / DEC is off the target's catalog position, or shot with the mount not tracking: warn (kept out of the target folder, back to review with the reason; a second Approve files it) | refuse (rejected) | off", "Imaging", "str", False, False),
     ("library_pointing_max_deg", "PS_LIBRARY_POINTING_MAX_DEG", "Library pointing check: off target when the header RA / DEC is more than N deg from the catalog position", "Imaging", "float", False, False),
@@ -731,6 +735,7 @@ _CONFIG_FIELDS = [
     ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
     ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
+    ("plan_nb_blend_ha_first", "PS_PLAN_NB_BLEND_HA_FIRST", "Ha first: a two-rig narrowband goal gives the night to RC16 Ha until it holds blend_nb_min_ha_h, then OIII / SII by the mix (a goal's ha_first_h overrides)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
     ("watch_sideload_auto", "PS_WATCH_SIDELOAD_AUTO", "Watch a sideloaded night (PS-136): enter WATCHING when tonight's RC16 sideload runs in NINA #1 (never dispatches)", "Imaging", "bool", False, False),
@@ -1626,8 +1631,11 @@ async def api_project_update(project_id: str, request: Request):
             # PS-117 (b): light-budget fields per target
             light_budget={k: body[k] for k in (
                 "goal_snr", "feature_signal_e_s",
-                "feature_rig", "feature_note") if k in body})
-    except ValueError as e:
+                "feature_rig", "feature_note") if k in body},
+            # Ha first for a two-rig NB blend (null = follow the config)
+            **({"ha_first_h": body["ha_first_h"]} if "ha_first_h" in body
+               else {}))
+    except (ValueError, TypeError) as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
     _projects[project_id] = updated
     return _project_json(updated)

@@ -19,7 +19,9 @@ desktop needs around that decision, one cycle per Scheduled Task tick
      HOO-mapped image with autointegrate_hoo; RC16: one master per filter),
      its ledger posted (queued when the scope is down);
   5. two-rig goals: `photonscript blend` (PS-153) once both rigs have
-     masters and the newest inputs were not blended yet;
+     masters and the newest inputs were not blended yet; a narrowband
+     blend also waits until the RC16 run integrated blend_nb_min_ha_h of Ha
+     (nb_gate: a weak Ha master makes a weak blend);
   6. a review JPG (<run>/review.jpg, the finals side by side, at most
      2048 px) sent with Pushover (autointegrate_notify).
 
@@ -56,6 +58,12 @@ class AutoOptions:
     hoo: bool = True
     interval_min: float = 30.0
     extra: dict = field(default_factory=dict)
+    # narrowband blend gate (config blend_nb_gate / blend_nb_min_*_h): an NB
+    # blend whose RC16 Ha master is thinner than nb_min_ha_h is skipped
+    nb_gate: bool = True
+    nb_min_ha_h: float = 2.0
+    nb_min_oiii_h: float = 1.5
+    nb_min_sii_h: float = 1.5
 
 
 # --- Syncthing settle ------------------------------------------------------------
@@ -174,11 +182,43 @@ def blend_candidate(o: AutoOptions, target: str, discover) -> tuple[object | Non
         inp = discover(target)
     except Exception as e:  # noqa: BLE001 - BlendError: a rig has no master yet
         return None, f"no blend: {e}"
+    held, depth_note = nb_gate(o, inp)
+    if held:
+        return None, held
     done = already_blended(o.watch.staging_root, target, blend_inputs_key(inp),
                            o.watch.scratch_root)
     if done:
         return None, f"already blended in {done}"
-    return inp, "both rigs have masters and these inputs are not blended yet"
+    return inp, ("both rigs have masters and these inputs are not blended yet"
+                 + (f" ({depth_note})" if depth_note else ""))
+
+
+def nb_gate(o: AutoOptions, inp) -> tuple[str | None, str]:
+    """(skip reason or None, depth note) for a narrowband blend. The RC16
+    run's ledger says how much Ha / OIII / SII it integrated; Ha under
+    nb_min_ha_h skips the blend (a weak Ha master makes a weak blend).
+    OIII / SII under their thresholds only go in the note: the blend uses
+    the masters it has. Unknown depth (no ledger, given paths) never
+    skips. An L blend is never gated."""
+    if getattr(inp, "mode", "l") != "nb":
+        return None, ""
+    from photonscript.integration.blend import rc16_depth
+    depth = rc16_depth(inp)
+    if depth is None:
+        return None, "RC16 depth unknown (no run ledger): not gated"
+    need = {"Ha": o.nb_min_ha_h, "OIII": o.nb_min_oiii_h, "SII": o.nb_min_sii_h}
+    bits = []
+    for f in ("Ha", "OIII", "SII"):
+        h = (depth.get(f) or {}).get("hours", 0.0)
+        if f in depth or f == "Ha":
+            bits.append(f"{f} {h:.1f}/{need[f]:g} h")
+    note = "RC16 " + ", ".join(bits)
+    ha_h = (depth.get("Ha") or {}).get("hours", 0.0)
+    if o.nb_gate and ha_h < float(o.nb_min_ha_h or 0.0):
+        return (f"no blend: narrowband blend waits for RC16 Ha "
+                f"{ha_h:.1f} h < {o.nb_min_ha_h:g} h (blend_nb_min_ha_h); "
+                + note), note
+    return None, note
 
 
 # --- review image + notice -------------------------------------------------------

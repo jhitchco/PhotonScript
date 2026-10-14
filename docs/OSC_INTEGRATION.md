@@ -405,6 +405,9 @@ Outputs in `<staging>\Blend\<target>_blend_nb_<time>\out\final\`:
 channel fits, `channels` = which master went where). Ledger kind `blend`
 with `machine.mode`, `machine.channels` (planned) and
 `machine.blend.channels_applied` (from the steps json).
+autointegrate holds the NB blend until the RC16 run's ledger shows
+`blend_nb_min_ha_h` (2 h) of Ha (`blend_nb_gate`); readiness per goal:
+`photonscript blend-readiness` (HANDBOOK, "Heart narrowband blend").
 
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):

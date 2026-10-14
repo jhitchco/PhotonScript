@@ -5,6 +5,9 @@ GET /target?name=                     per-target page
 GET /api/targets                      target cards (counts, goal, top reason)
 GET /api/targets/detail?name=         per-target facts, totals, nights, reasons
 GET /api/targets/readiness?name=      integration readiness (scheduler/readiness)
+GET /api/blend-readiness?target=      two-rig narrowband blend readiness
+                                      (scheduler/blend_readiness; every
+                                      active two-rig NB goal without target)
 GET /api/subs?target=&rig=&filter=&verdict=&night=&reason=&sort=&offset=&limit=
                                       paged sub rows (scheduler/sub_index)
 GET /api/target/history?name=         old per-target history (same shape as
@@ -105,6 +108,15 @@ def api_target_readiness(name: str):
                         "planned filter"}
     out = target_readiness(cfg, p, calibration_context(cfg, max_age_s=300))
     return {**out, "project": True}
+
+
+@router.get("/api/blend-readiness")
+def api_blend_readiness(target: str = ""):
+    """Narrowband two-rig blend readiness: accepted RC16 Ha / OIII / SII,
+    the Piggy-600 master, thresholds and nights to each from tonight's
+    plan (scheduler/blend_readiness). Read-only."""
+    from photonscript.scheduler import blend_readiness as br
+    return br.report(_cfg(), _projects(), target=target)
 
 
 @router.get("/api/target/light-budget")

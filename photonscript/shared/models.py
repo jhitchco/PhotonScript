@@ -242,6 +242,12 @@ class ImagingProject(BaseModel):
     # "fwhm_max": 2.5, "ecc_max": 0.5}, "piggyback": {...}}. None = the rig's
     # gates (PS-114). Read by shared.qa_rules.thresholds for every grader.
     qa_overrides: Optional[dict] = None
+    # Ha first for a two-rig narrowband blend (scheduler/target_planner
+    # ha_first_seconds): RC16 Ha hours the goal should hold before OIII /
+    # SII share a night by the mix. None = config (plan_nb_blend_ha_first,
+    # blend_nb_min_ha_h, two-rig goals only); 0 = off for this goal; > 0 =
+    # on for this goal at that many hours.
+    ha_first_h: Optional[float] = None
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)

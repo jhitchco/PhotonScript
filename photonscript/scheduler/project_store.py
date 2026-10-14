@@ -137,6 +137,7 @@ def allocate_exposures(kind: str, budget_hours: float, config,
     return plans
 
 
+_KEEP = object()   # update(): "leave this field as it is"
 RC16_RIG = "rc16"
 PIGGYBACK_RIG = "piggyback"
 
@@ -385,7 +386,8 @@ class ProjectStore:
                driving_rig: str | None = None,
                drop_rc16: bool = False,
                rc16_hours: float | None = None,
-               light_budget: dict | None = None) -> ImagingProject | None:
+               light_budget: dict | None = None,
+               ha_first_h=_KEEP) -> ImagingProject | None:
         """hdr / exposure_overrides: pass {} to clear, a dict to set, None to
         leave unchanged. Either change re-allocates the plans.
 
@@ -404,7 +406,12 @@ class ProjectStore:
         subs come back from the run history on the next goal sync.
 
         light_budget (PS-117): any of goal_snr, feature_signal_e_s,
-        feature_rig, feature_note; None or "" clears a value."""
+        feature_rig, feature_note; None or "" clears a value.
+
+        ha_first_h (Ha first for a two-rig NB blend, target_planner
+        ha_first_seconds): left out = leave, None or "" = follow the config,
+        0 = off for this goal, > 0 = RC16 Ha hours before OIII / SII share
+        a night. Never re-allocates the plans."""
         proj = self.projects.get(project_id)
         if proj is None:
             return None
@@ -422,6 +429,9 @@ class ProjectStore:
                 proj.feature_rig = v if v in (RC16_RIG, PIGGYBACK_RIG) else None
             elif k == "feature_note":
                 proj.feature_note = str(v or "")
+        if ha_first_h is not _KEEP:
+            proj.ha_first_h = (None if ha_first_h in (None, "")
+                               else max(0.0, float(ha_first_h)))
         plan_change = False
         if hdr is not None:
             proj.hdr = {k: float(v) for k, v in hdr.items() if v} or None
