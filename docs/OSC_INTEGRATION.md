@@ -597,6 +597,31 @@ kind `finish` that is never posted; `--dry-run` checks the script and
 writes nothing). The older launcher still works:
 `.\deploy\run-finish-osc.ps1 -Name Heart_OSC -Target IC1805 -Master <run>\out\master\master_OSC.xisf -OutDir <run>\out\final_gold -Palette gold -Wait`.
 
+The gold palette is for emission targets: the configured `finish_palette`
+only applies when the target's catalog type contains one of
+`finish_palette_kinds` (default `emission,nebula,remnant`); a galaxy or a
+cluster skips it with the reason in the output and in `finish.log` (step
+`palette` skipped). An unknown type keeps it; an explicit `--palette gold`
+always applies.
+
+Vivid variant (config `finish_vivid`, default on; `--vivid/--no-vivid`,
+`-Vivid on|off`; color masters only). More color for galaxies (M31: pink HII
+regions, warm core, blue arms) without a narrowband mapping. After the
+natural final is saved, from the same stretched starless image (copied just
+before the stars go back; no star split: the stretched image): saturation
+to `finish_vivid_sat_mid` (0.72; the natural uses 0.64) and a chroma lift
+(`finish_vivid_hue_boost`, 0.25 = up to x1.25, hue kept, never clips) of pink
+/ magenta everywhere, warm yellow in the core region and blue in the outer
+arms, both through a luminance-range mask that is 0 on the sky background
+(up to background + 0.02, full from + 0.12) and over the brightest core (L
+0.70 to 0.90), so the background stays neutral and the core does not shift;
+optional LocalHistogramEqualization through the same mask
+(`finish_vivid_lhe`, default 0 = off); the natural star layer screened back
+at `-StarStrength`; framing crop: `<Name>_vivid.{xisf,tif,jpg}`, step `vivid`
+in the steps json (ran / skipped / failed, with the curve, mask, hue bands
+and chroma before / after). The natural output is unchanged; a failure is
+logged as SKIPPED. Autointegrate's review JPG shows it next to `_final`.
+
 ## 2. Calibration capture — already built into the sequencer
 No new code needed; the machinery matches the light epoch via `rig_config(PIGGYBACK)`
 (gain 100 / offset 256 / 0 °C / `dark_exposures="120"`). Three ways to get it:

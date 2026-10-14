@@ -429,6 +429,19 @@ class PhotonScriptConfig(BaseSettings):
                                  # gold = also <name>_gold.{xisf,jpg}, the gold-blue
                                  # HOO-style look (Ha orange-gold, OIII teal-blue,
                                  # natural stars); `integrate --palette` overrides
+    finish_palette_kinds: str = "emission,nebula,remnant"  # finish_palette only for
+                                 # targets whose catalog type contains one of
+                                 # these (galaxies and clusters skip it, logged;
+                                 # an unknown type keeps it); blank = every target;
+                                 # an explicit --palette always applies
+    finish_vivid: bool = True    # OSC finish also writes <name>_vivid.{xisf,tif,jpg}:
+                                 # more saturation + a pink / warm / blue chroma
+                                 # lift through a luminance-range mask (background
+                                 # and brightest core untouched), natural stars
+    finish_vivid_sat_mid: float = 0.72  # vivid saturation midpoint (natural 0.64)
+    finish_vivid_hue_boost: float = 0.25  # vivid chroma lift of pink / warm / blue (0..1)
+    finish_vivid_lhe: float = 0.0  # vivid LocalHistogramEqualization amount
+                                 # through the mask (0..1; 0 = off)
     # PS-186 RC Astro in the finish (desktop .env; finish_osc.js detects the
     # processes inside PixInsight at run time and falls back per step)
     finish_use_rcastro: str = "auto"  # auto = BlurXTerminator / NoiseXTerminator

@@ -1616,6 +1616,12 @@ Mono runs HDR combine a filter's exposure-length masters (PS-177
 Re-finish one master without integrating: `photonscript finish --master <xisf>
 --name <NAME> [--palette gold] [--dry-run]` (NEW `Staging\Finish\` folder,
 ledger kind finish; replaces `run-finish-osc.ps1` for re-finishes).
+Every OSC finish also writes `<NAME>_vivid.{xisf,tif,jpg}` (config
+`finish_vivid`, `--no-vivid` skips it): more saturation and a pink / warm /
+blue lift through a mask that spares the background and the core, natural
+stars (OSC_INTEGRATION.md section 1b). The configured gold palette only runs
+for `finish_palette_kinds` targets (emission / nebula / remnant; galaxies and
+clusters skip it, logged); `--palette gold` forces it.
 Mono runs also get color (config `integrate_mono_color`, default on;
 `--no-mono-color` skips it): after the finish, `color_run.js`
 (`deploy/finish_mono_color.js`, the finish_osc.js functions reused) makes

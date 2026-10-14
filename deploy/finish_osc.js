@@ -32,6 +32,15 @@
 //      stars screened back (StarXTerminator, else StarNet2; neither: the
 //      whole image), linked stretch + saturation, a gentle hue curve
 //      (Ha orange-gold, OIII teal-blue) -> <Name>_gold.{xisf,jpg}]
+//   -> [VIVID = on, color masters only: after the natural final is saved, a
+//      second look from the same stretched starless image (copied just
+//      before the stars go back; no star split: the stretched image): more
+//      saturation (VIVID_SAT_MID instead of SAT_MID) and a selective chroma
+//      lift (pink / magenta everywhere, warm yellow in the core region, blue
+//      in the outer arms, VIVID_HUE_BOOST) through a luminance-range mask
+//      that leaves the sky background and the brightest core alone, optional
+//      LocalHistogramEqualization through the same mask (VIVID_LHE, 0 = off),
+//      the natural star layer screened back -> <Name>_vivid.{xisf,tif,jpg}]
 //
 // Why deconvolution and noise reduction sit here (PS-41): both model the
 // LINEAR signal. Deconvolution inverts a convolution, which only holds before
@@ -108,6 +117,12 @@ var HOO = "__HOO__";                      // on | off
 // Gold-blue palette for OSC finishes: off | gold (config finish_palette)
 var PALETTE  = "__PALETTE__";
 var GOLD_MIX = __GOLD_MIX__;              // Ha share of the green channel (0..1); OIII gets the rest
+var PALETTE_WHY = "__PALETTE_WHY__";      // why the palette is off (finish_palette_kinds); "" = not asked
+// Vivid variant (config finish_vivid): on = also <Name>_vivid.{xisf,tif,jpg}
+var VIVID           = "__VIVID__";          // on | off
+var VIVID_SAT_MID   = __VIVID_SAT_MID__;    // saturation midpoint of the vivid look (the natural has SAT_MID)
+var VIVID_HUE_BOOST = __VIVID_HUE_BOOST__;  // chroma lift of the selected hues (0 = none, 0.25 = up to x1.25)
+var VIVID_LHE       = __VIVID_LHE__;        // LocalHistogramEqualization amount through the mask (0 = off)
 // Hue curve after the gold stretch (CurvesTransformation H, linear, hue
 // 0 = red, 1/6 = yellow, 1/2 = cyan, 2/3 = blue): red-orange and yellow move
 // toward orange-gold, azure toward teal-blue. Monotonic, ends fixed.
@@ -143,6 +158,7 @@ var MASTERS = __MASTERS__;
 var LOGLINES = [];
 var STEPS = [];   // one record per pipeline step, written to <Name>_final_steps.json
 var RC = {};      // PS-186: per RC Astro tool (bxt, nxt, sxt): status, why, settings
+var PALETTE_SKIP_WHY = "";   // why the palette is off (finish_osc.js main sets it from PALETTE_WHY)
 // Steps whose tool goes into the output label (PSFINISH keyword, json "tag").
 var LABEL_STEPS = { color: 1, deconvolution: 1, noise_reduction: 1, star_reduction: 1 };
 function ensureDir(d) { if (!File.directoryExists(d)) File.createDirectory(d, true); }
@@ -904,6 +920,8 @@ function starRecombine(view, split) {
       var sigma = view.image.MAD() * 1.4826;
       var cs = Math.max(0, Math.min(0.5, STAR_FLOOR_SIGMA * sigma));
       applyHT(stv, cs, p.m);
+      // vivid variant (finish_osc.js only): copy the stretched starless + stars
+      if (typeof vividCapture === "function") vividCapture(slv, stv);
       var k = STAR_STRENGTH.toFixed(3);
       pixelMath(slv, "~(~$T * ~(" + stv.id + " * " + k + "))");
       view.beginProcess(UndoFlag_NoSwapFile);
@@ -1002,7 +1020,8 @@ function hooFinish(win) {
 // off, the master is mono or the copy fails.
 function paletteSource(view) {
    if (PALETTE !== "gold") {
-      step("palette", "PixelMath", "skipped", { reason: "-Palette off" });
+      if (PALETTE_SKIP_WHY) log(PALETTE_SKIP_WHY);
+      step("palette", "PixelMath", "skipped", { reason: PALETTE_SKIP_WHY || "-Palette off" });
       return null;
    }
    if (!view.image.isColor) {
@@ -1164,6 +1183,246 @@ function labelOutput(w) {
 
 // ==== PS_FINISH_LIB_END
 
+// ---------------------------------------------------------------- vivid variant
+// More color for galaxies (pink HII regions, warm core, blue arms) without
+// a narrowband mapping. Runs after the natural final is saved, on copies
+// only: the natural output is never touched, and any failure is logged as
+// SKIPPED and leaves it as it is.
+
+// ==== PS_VIVID_MATH_BEGIN (plain math, no PixInsight objects; tests run it in node)
+// Luminance-range mask: 0 on the sky background (up to BG + 0.02), full from
+// BG + 0.12, back to 0 over the brightest core (L 0.70 to 0.90).
+var VIVID_LO_START = 0.02, VIVID_LO_SPAN = 0.10;
+var VIVID_HI_START = 0.70, VIVID_HI_SPAN = 0.20;
+// Core region (warm yellows) vs outer arms (blue), by stretched luminance.
+var VIVID_CORE_LO = 0.30, VIVID_CORE_HI = 0.55;
+// Hue bands (HSV hue 0..1: 0 red, 1/6 yellow, 1/2 cyan, 2/3 blue, 5/6
+// magenta): [center, half width]
+var VIVID_PINK = [0.94, 0.12], VIVID_WARM = [0.10, 0.08], VIVID_BLUE = [0.60, 0.10];
+
+function vividSmooth(e0, e1, x) {
+   if (e1 <= e0) return x >= e1 ? 1 : 0;
+   var t = (x - e0) / (e1 - e0);
+   if (t <= 0) return 0;
+   if (t >= 1) return 1;
+   return t * t * (3 - 2 * t);
+}
+function vividMask(L, bg) {
+   return vividSmooth(bg + VIVID_LO_START, bg + VIVID_LO_START + VIVID_LO_SPAN, L) *
+          (1 - vividSmooth(VIVID_HI_START, VIVID_HI_START + VIVID_HI_SPAN, L));
+}
+// The saturation curve that takes an image already saturated with the
+// natural S curve (midpoint natMid) to one with midpoint vivMid. Each S curve
+// is modeled as the power curve through (0.5, mid), so the step between them
+// is the power curve x^(ln vivMid / ln natMid). Points for CurvesTransformation.S.
+function vividSatCurve(natMid, vivMid) {
+   var n = Math.max(0.01, Math.min(0.99, natMid)), w = Math.max(0.01, Math.min(0.99, vivMid));
+   var e = Math.log(w) / Math.log(n);
+   var xs = [0.05, 0.15, 0.3, 0.5, 0.7, 0.85], pts = [[0, 0]];
+   for (var i = 0; i < xs.length; ++i) pts.push([xs[i], +Math.pow(xs[i], e).toFixed(5)]);
+   pts.push([1, 1]);
+   return pts;
+}
+// HSV hue 0..1; -1 for a gray pixel.
+function vividHue(r, g, b) {
+   var mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+   if (d <= 1.0e-6) return -1;
+   var h;
+   if (mx === r) h = (g - b) / d;
+   else if (mx === g) h = 2 + (b - r) / d;
+   else h = 4 + (r - g) / d;
+   h /= 6;
+   return h < 0 ? h + 1 : h;
+}
+function vividBump(h, band) {
+   var d = Math.abs(h - band[0]);
+   if (d > 0.5) d = 1 - d;
+   if (d >= band[1]) return 0;
+   return 0.5 * (1 + Math.cos(Math.PI * d / band[1]));
+}
+// 0..1: how much of the hue lift a pixel of hue h at luminance L gets.
+function vividHueWeight(h, L) {
+   if (h < 0) return 0;
+   var wc = vividSmooth(VIVID_CORE_LO, VIVID_CORE_HI, L);
+   return Math.min(1, vividBump(h, VIVID_PINK) + wc * vividBump(h, VIVID_WARM) + (1 - wc) * vividBump(h, VIVID_BLUE));
+}
+// Largest chroma gain about Y that keeps channel value x inside 0..1.
+function vividGainCap(x, Y) {
+   var d = x - Y;
+   if (d > 1.0e-9) return (1 - Y) / d;
+   if (d < -1.0e-9) return Y / -d;
+   return 1.0e9;
+}
+// c: the stretched image (3 channel arrays, changed in place), s: the same
+// image after the vivid saturation curve. Per pixel: the hue lift on s
+// (chroma about its luminance x (1 + boost x hue weight), capped so no channel
+// clips, hue kept), then c + mask x (lifted - c). Returns the mask and the
+// mean chroma before / after (every 97th pixel).
+function vividBlend(c, s, N, bg, boost) {
+   var m = new Float32Array(N), sumW = 0, cb = 0, ca = 0, ns = 0;
+   for (var i = 0; i < N; ++i) {
+      var r0 = c[0][i], g0 = c[1][i], b0 = c[2][i];
+      var L = 0.2126 * r0 + 0.7152 * g0 + 0.0722 * b0;
+      var w = vividMask(L, bg);
+      m[i] = w;
+      sumW += w;
+      var smp = (i % 97 === 0);
+      if (smp) { cb += Math.abs(r0 - g0) + Math.abs(b0 - g0); ++ns; }
+      if (w > 0) {
+         var r = s[0][i], g = s[1][i], b = s[2][i];
+         var k = boost > 0 ? boost * vividHueWeight(vividHue(r, g, b), L) : 0;
+         if (k > 0) {
+            var Y = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+            var gain = Math.min(1 + k, vividGainCap(r, Y), vividGainCap(g, Y), vividGainCap(b, Y));
+            r = Y + (r - Y) * gain; g = Y + (g - Y) * gain; b = Y + (b - Y) * gain;
+         }
+         r0 += w * (r - r0); g0 += w * (g - g0); b0 += w * (b - b0);
+         c[0][i] = r0; c[1][i] = g0; c[2][i] = b0;
+      }
+      if (smp) ca += Math.abs(r0 - g0) + Math.abs(b0 - g0);
+   }
+   return { mask: m, mean_mask: N ? sumW / N : 0, chroma_before: ns ? cb / ns : 0, chroma_after: ns ? ca / ns : 0 };
+}
+// c + m x (e - c), per channel (the local contrast pass through the mask).
+function vividMix(c, e, m, N) {
+   for (var ch = 0; ch < c.length; ++ch)
+      for (var i = 0; i < N; ++i) if (m[i] > 0) c[ch][i] += m[i] * (e[ch][i] - c[ch][i]);
+}
+// ==== PS_VIVID_MATH_END
+
+var VIVID_SRC = null;   // { starless: window, stars: window or null }
+var VIVID_ERR = "";
+
+function vividRelease() {
+   if (!VIVID_SRC) return;
+   try { VIVID_SRC.starless.forceClose(); } catch (e) {}
+   if (VIVID_SRC.stars) try { VIVID_SRC.stars.forceClose(); } catch (e2) {}
+   VIVID_SRC = null;
+}
+
+// Copy the stretched (starless) image and, with a star split, the stretched
+// star layer, before the natural image gets them back. Never throws.
+function vividCapture(view, starsView) {
+   if (VIVID !== "on" || VIVID_SRC) return;
+   var sl = null;
+   try {
+      if (!view.image.isColor) return;
+      sl = dupWindow(view, "PS_vivid");
+      var st = starsView ? dupWindow(starsView, "PS_vivid_stars") : null;
+      VIVID_SRC = { starless: sl, stars: st };
+   } catch (e) {
+      if (sl) try { sl.forceClose(); } catch (e2) {}
+      VIVID_ERR = "copy failed (" + e + ")";
+      log("vivid: " + VIVID_ERR);
+   }
+}
+
+// The vivid look on the copies, saved as <Name>_vivid.{xisf,tif,jpg}; kw = the
+// natural final's FITS keywords, to16 = the natural tif was 16-bit.
+function vividFinish(kw, to16) {
+   if (VIVID !== "on") {
+      step("vivid", "CurvesTransformation", "skipped", { reason: "-Vivid off" });
+      return;
+   }
+   var src = VIVID_SRC;
+   VIVID_SRC = null;
+   if (!src) {
+      var why = VIVID_ERR || "mono master";
+      if (VIVID_ERR) log("vivid SKIPPED (" + VIVID_ERR + "); the natural final is unaffected");
+      step("vivid", "CurvesTransformation", VIVID_ERR ? "failed" : "skipped", { reason: why });
+      return;
+   }
+   var n0 = STEPS.length, dup = null, lhe = null, win = src.starless;
+   var st = { sat_mid: VIVID_SAT_MID, natural_sat_mid: SAT_MID, hue_boost: VIVID_HUE_BOOST,
+              lhe: VIVID_LHE, file: NAME + "_vivid.jpg",
+              mask: { background: [+(BG_TARGET + VIVID_LO_START).toFixed(4), +(BG_TARGET + VIVID_LO_START + VIVID_LO_SPAN).toFixed(4)],
+                      core: [VIVID_HI_START, VIVID_HI_START + VIVID_HI_SPAN] },
+              hues: { pink: VIVID_PINK, warm_core: VIVID_WARM, blue_arms: VIVID_BLUE },
+              stars: src.stars ? "natural star layer screened back" : "in the image (no star split)" };
+   try {
+      var v = win.mainView, img = v.image;
+      var W = img.width, H = img.height, N = W * H, rect = new Rect(W, H), ch;
+      dup = dupWindow(v, "PS_vivid_sat");
+      if (VIVID_SAT_MID !== SAT_MID) {
+         var curve = vividSatCurve(SAT_MID, VIVID_SAT_MID);
+         var CT = new CurvesTransformation;
+         CT.S = curve;
+         if (!CT.executeOn(dup.mainView, false)) throw new Error("CurvesTransformation returned false");
+         st.sat_curve = curve;
+      }
+      var c = [], s = [];
+      for (ch = 0; ch < 3; ++ch) {
+         c.push(new Float32Array(N)); img.getSamples(c[ch], rect, ch);
+         s.push(new Float32Array(N)); dup.mainView.image.getSamples(s[ch], rect, ch);
+      }
+      try { dup.forceClose(); } catch (e0) {}
+      dup = null;
+      var r = vividBlend(c, s, N, BG_TARGET, VIVID_HUE_BOOST);
+      s = null;
+      v.beginProcess(UndoFlag_NoSwapFile);
+      for (ch = 0; ch < 3; ++ch) img.setSamples(c[ch], rect, ch);
+      v.endProcess();
+      st.mean_mask = +r.mean_mask.toFixed(4);
+      st.chroma = [+r.chroma_before.toFixed(5), +r.chroma_after.toFixed(5)];
+      log("vivid: saturation " + SAT_MID + " -> " + VIVID_SAT_MID + ", hue lift " + VIVID_HUE_BOOST +
+          " (mean mask " + r.mean_mask.toFixed(3) + ", chroma " + r.chroma_before.toFixed(5) + " -> " +
+          r.chroma_after.toFixed(5) + ")");
+      if (VIVID_LHE > 0) {
+         try {
+            if (typeof LocalHistogramEqualization === "undefined") throw new Error("not installed");
+            lhe = dupWindow(v, "PS_vivid_lhe");
+            var LH = new LocalHistogramEqualization, set = {};
+            trySet(LH, "radius", 96, set);
+            trySet(LH, "slopeLimit", 1.5, set);
+            trySet(LH, "amount", VIVID_LHE, set);
+            if (!LH.executeOn(lhe.mainView, false)) throw new Error("LocalHistogramEqualization returned false");
+            var lh = [];
+            for (ch = 0; ch < 3; ++ch) { lh.push(new Float32Array(N)); lhe.mainView.image.getSamples(lh[ch], rect, ch); }
+            vividMix(c, lh, r.mask, N);
+            lh = null;
+            v.beginProcess(UndoFlag_NoSwapFile);
+            for (ch = 0; ch < 3; ++ch) img.setSamples(c[ch], rect, ch);
+            v.endProcess();
+            st.local_contrast = { tool: "LocalHistogramEqualization", settings: set };
+            log("vivid: local contrast (LocalHistogramEqualization amount " + VIVID_LHE + ") through the mask");
+         } catch (e1) {
+            log("vivid: local contrast SKIPPED (" + e1 + ")");
+            st.local_contrast = "skipped: " + e1;
+         }
+      } else st.local_contrast = "off";
+      c = null;
+      if (src.stars) {
+         var k = STAR_STRENGTH.toFixed(3);
+         pixelMath(v, "~(~$T * ~(" + src.stars.mainView.id + " * " + k + "))");
+         st.star_strength = +k;
+      }
+      frameCrop(v, EDGE_FRAC);
+      if (kw) try { win.keywords = kw; } catch (e2) {}
+      trySave(win, FINAL + "/" + NAME + "_vivid.xisf", "vivid xisf (32-bit)");
+      try {
+         if (to16) {
+            var SF = new SampleFormatConversion;
+            SF.format = SampleFormatConversion.prototype.To16Bit;
+            SF.executeOn(v, false);
+         }
+      } catch (e3) { log("vivid 16-bit conversion skipped (" + e3 + ")"); }
+      trySave(win, FINAL + "/" + NAME + "_vivid.tif", "vivid tif");
+      trySave(win, FINAL + "/" + NAME + "_vivid.jpg", "vivid jpg");
+      st.sub_steps = STEPS.splice(n0, STEPS.length - n0);
+      log("vivid: saved " + NAME + "_vivid.{xisf,tif,jpg} (stars: " + st.stars + ")");
+      step("vivid", "CurvesTransformation", "ran", st);
+   } catch (e) {
+      st.sub_steps = STEPS.splice(n0, STEPS.length - n0);
+      st.error = "" + e;
+      log("vivid SKIPPED (" + e + "); the natural final is unaffected");
+      step("vivid", "CurvesTransformation", "failed", st);
+   }
+   if (dup) try { dup.forceClose(); } catch (e4) {}
+   if (lhe) try { lhe.forceClose(); } catch (e5) {}
+   try { win.forceClose(); } catch (e6) {}
+   if (src.stars) try { src.stars.forceClose(); } catch (e7) {}
+}
+
 function main() {
    console.show();
    log("finish: " + MASTER + "  target=" + NAME + "  RA=" + RA_DEG + " Dec=" + DEC_DEG);
@@ -1184,6 +1443,7 @@ function main() {
    var solved = plateSolve(w);
    colorCalibrate(v, solved);
    var hooWin = hooSource(v);   // PS-161: before SCNR
+   PALETTE_SKIP_WHY = PALETTE_WHY;
    var palWin = paletteSource(v);   // gold palette: the same linear copy point
    removeGreen(v);
    trySave(w, FINAL + "/" + NAME + "_linear.xisf", "linear (color-calibrated)");
@@ -1192,9 +1452,11 @@ function main() {
    denoise(v);
    var split = starSplit(v);
    if (!split || !starRecombine(v, split)) {
+      vividRelease();   // a copy from a recombine that failed afterwards
       stretch(v);
       recoverCore(v);
    }
+   vividCapture(v, null);   // no star split: the vivid look starts from the stretched image
    frameCrop(v, EDGE_FRAC);
    try {
       var st = v.image, mm = [];
@@ -1204,6 +1466,8 @@ function main() {
    } catch (e) { log("stats skipped (" + e + ")"); }
    log("steps: " + stepTag());
    labelOutput(w);
+   var finalKw = null;
+   try { finalKw = w.keywords; } catch (e) {}
    trySave(w, FINAL + "/" + NAME + "_final.xisf", "final xisf (32-bit)");
    var to16 = false;
    try {
@@ -1215,6 +1479,7 @@ function main() {
    trySave(w, FINAL + "/" + NAME + "_final.tif", to16 ? "tif (16-bit)" : "tif (32-bit float)");
    trySave(w, FINAL + "/" + NAME + "_final.jpg", "jpg");
    w.forceClose();
+   vividFinish(finalKw, to16);
    if (hooWin) hooFinish(hooWin);
    if (palWin) paletteFinish(palWin);
    log("DONE");
@@ -1223,7 +1488,7 @@ function main() {
 var RUN = MASTERS ? MASTERS : [{ name: NAME, path: MASTER }];
 var NFAIL = 0;
 for (var mi = 0; mi < RUN.length; ++mi) {
-   NAME = RUN[mi].name; MASTER = RUN[mi].path; STEPS = []; RC = {};
+   NAME = RUN[mi].name; MASTER = RUN[mi].path; STEPS = []; RC = {}; vividRelease(); VIVID_ERR = "";
    var tf0 = Date.now();
    if (MASTERS) log("STAGE START " + NAME + " / finish");
    try { main(); writeSteps("ok"); }

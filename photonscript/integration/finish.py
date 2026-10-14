@@ -12,6 +12,7 @@ while PixInsight is open, log polled with short reads):
         finish_run.js  manifest.json  ledger.json (kind "finish")
         out/finish.log  out/timing.csv
         out/final/<name>_final.{xisf,tif,jpg}  <name>_linear.xisf
+                 <name>_vivid.{xisf,tif,jpg} (color masters, finish_vivid)
                  <name>_final_steps.json  [<name>_gold / _hoo ...]
 
 Defaults that integrate takes from the lights (focal length, pixel size,
@@ -72,6 +73,11 @@ class Options:
     bxt_nonstellar: float = pjsr.FINISH_DEFAULTS["bxt_nonstellar"]
     nxt_denoise: float = pjsr.FINISH_DEFAULTS["nxt_denoise"]
     palette: str = "off"
+    palette_kinds: str = ""           # finish_palette_kinds ("" = no filter, e.g. an explicit --palette)
+    vivid: bool = True                # finish_vivid: also <name>_vivid.{xisf,tif,jpg}
+    vivid_sat_mid: float = pjsr.FINISH_DEFAULTS["vivid_sat_mid"]
+    vivid_hue_boost: float = pjsr.FINISH_DEFAULTS["vivid_hue_boost"]
+    vivid_lhe: float = pjsr.FINISH_DEFAULTS["vivid_lhe"]
     hoo: bool = False
     focal_mm: float = 0.0             # 0 = the source run's, else the rig's
     pixel_um: float = 0.0
@@ -138,13 +144,17 @@ def resolve(o: Options) -> dict:
         notes.append("target coordinates unknown: the plate solve is skipped (pass --target)")
     focal = o.focal_mm or vals.get("FOCAL_MM") or RIG_OPTICS[rig][0]
     pixel = o.pixel_um or vals.get("PIXEL_UM") or RIG_OPTICS[rig][1]
+    palette, palette_why = pjsr.palette_for_target(o.palette, o.target or campaign, o.palette_kinds)
+    if palette_why:
+        notes.append(palette_why)
     m = re.match(r"^master_([A-Za-z0-9]+)$", master.stem)
     if m and (master.parent / f"master_{m.group(1)}_hdr.xisf").is_file():
         notes.append(f"master_{m.group(1)}_hdr.xisf exists beside it (the HDR combine of that "
                      "filter's exposure masters); pass it as --master to finish that one instead")
     return {"rig": rig, "campaign": campaign, "ra_deg": ra, "dec_deg": dec, "focal_mm": float(focal),
             "pixel_um": float(pixel), "source_run": str(src) if src else "",
-            "source_version": info.version if info else None, "notes": notes}
+            "source_version": info.version if info else None, "notes": notes,
+            "palette": palette, "palette_why": palette_why}
 
 
 def default_run_dir(o: Options, now: datetime | None = None) -> Path:
@@ -163,7 +173,10 @@ def finish_config(o: Options, res: dict, run_dir: Path) -> dict:
             "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
             "graxpert": gx, "graxpert_version": "unknown" if gx else "",
             "hoo": "on" if o.hoo else "off",            # finish_osc.js skips it on a mono master
-            "palette": pjsr.palette_mode(o.palette),    # same: color masters only
+            "palette": res.get("palette", pjsr.palette_mode(o.palette)),   # same: color masters only
+            "palette_why": res.get("palette_why", ""),
+            "vivid": "on" if o.vivid else "off",        # same: color masters only
+            "vivid_sat_mid": o.vivid_sat_mid, "vivid_hue_boost": o.vivid_hue_boost, "vivid_lhe": o.vivid_lhe,
             "masters": [{"name": safe_name(o.name), "path": pjsr.fwd(o.master)}]}
 
 
@@ -187,8 +200,9 @@ def build_ledger(o: Options, res: dict, run_dir: Path, cfg: dict, pi: dict | Non
                   "run": res["source_run"], "run_version": res["source_version"]},
         "notes": res["notes"],
         "options": {k: cfg.get(k) for k in ("gradient", "rc_mode", "use_rc", "bxt_stars", "bxt_nonstellar",
-                                            "nxt_denoise", "palette", "hoo", "focal_mm", "pixel_um",
-                                            "ra_deg", "dec_deg")},
+                                            "nxt_denoise", "palette", "palette_why", "hoo", "vivid",
+                                            "vivid_sat_mid", "vivid_hue_boost", "vivid_lhe", "focal_mm",
+                                            "pixel_um", "ra_deg", "dec_deg")},
         "finish": {"script": f"{SCRIPT} (deploy/finish_osc.js)", "ok": (pi or {}).get("ok"),
                    "minutes": (pi or {}).get("minutes"), "last_line": (pi or {}).get("last_line", ""),
                    "steps": finish_steps(out_dir), "log": str(out_dir / "finish.log")},

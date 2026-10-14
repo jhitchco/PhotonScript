@@ -104,6 +104,11 @@ class Options:
     trigger: dict = field(default_factory=dict)   # PS-31: why the watcher started this run
     hoo: bool = False                 # PS-161: OSC finish also writes <name>_hoo.{xisf,jpg}
     palette: str = "off"              # finish_palette: gold = OSC finish also writes <name>_gold.{xisf,jpg}
+    palette_kinds: str = ""           # finish_palette_kinds: catalog types the palette is for ("" = all)
+    vivid: bool = True                # finish_vivid: OSC finish also writes <name>_vivid.{xisf,tif,jpg}
+    vivid_sat_mid: float = pjsr.FINISH_DEFAULTS["vivid_sat_mid"]
+    vivid_hue_boost: float = pjsr.FINISH_DEFAULTS["vivid_hue_boost"]
+    vivid_lhe: float = pjsr.FINISH_DEFAULTS["vivid_lhe"]
     min_group_frames: int = 3         # PS-177: mono exposure groups below this are left out
     allow_uncalibrated: bool = False  # PS-178: stack a light length that has no dark
     keep_focuser_zero: bool = False   # stack lights with FOCPOS 0 anyway (focus unknown)
@@ -161,6 +166,8 @@ def config_options(cfg, rig: str) -> dict:
     return dict(
         **pjsr.rc_settings(cfg),
         palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
+        palette_kinds=str(getattr(cfg, "finish_palette_kinds", pjsr.PALETTE_KINDS) or ""),
+        **pjsr.vivid_settings(cfg),
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
         osc_hdr_core=bool(getattr(cfg, "integrate_osc_hdr_core", True)),
         osc_hdr_short_max_s=float(getattr(cfg, "integrate_osc_hdr_short_max_s", 180.0) or 180.0),
@@ -687,11 +694,14 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                   "groups": star_qa.group_summary(rows) if rows else [],
                   "pointing": result.get("pointing"),
                   "thresholds": star_qa.thresholds_dict(o.thresholds)}
+    palette, palette_why = pjsr.palette_for_target(o.palette, o.target, o.palette_kinds)
+    if palette_why and cfa:
+        echo("  " + palette_why)
     run_info = {"target": o.target, "rig": o.rig, "run_name": run_dir.name, "run_dir": str(run_dir),
                 "built": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "options": {"since": o.since, "until": o.until, "qa": o.qa, "flats": o.flats,
                             "library": str(o.library), "filters": o.filters,
-                            "palette": pjsr.palette_mode(o.palette),
+                            "palette": palette, "vivid": bool(o.vivid),
                             "rcastro": {"mode": o.rc_mode if o.use_rc else "off", "bxt_stars": o.bxt_stars,
                                         "bxt_nonstellar": o.bxt_nonstellar,
                                         "nxt_denoise": o.nxt_denoise}}}
@@ -739,7 +749,11 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                 "pi_library": pjsr.fwd(Path(o.pixinsight).parent.parent / "library"),
                 "graxpert": gx, "graxpert_version": "unknown" if gx else "",
                 "hoo": "on" if (o.hoo and cfa) else "off",   # PS-161: OSC only
-                "palette": pjsr.palette_mode(o.palette) if cfa else "off",   # gold-blue: OSC only
+                "palette": palette if cfa else "off",   # gold-blue: OSC only (finish_palette_kinds)
+                "palette_why": palette_why if cfa else "",
+                "vivid": "on" if (o.vivid and cfa) else "off",   # vivid look: OSC only
+                "vivid_sat_mid": o.vivid_sat_mid, "vivid_hue_boost": o.vivid_hue_boost,
+                "vivid_lhe": o.vivid_lhe,
                 "masters": [{"name": f"{safe_name(o.target)}_{s['name']}",
                              "path": pjsr.fwd(out_dir / "master" / f"master_{s['name']}.xisf")}
                             for s in stacks]}
