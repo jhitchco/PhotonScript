@@ -3309,6 +3309,8 @@ from photonscript.scheduler.routers import tracking as _tracking_router  # noqa:
 app.include_router(_tracking_router.router)   # PS-168
 from photonscript.scheduler.routers import sub_doctor as _sub_doctor_router  # noqa: E402
 app.include_router(_sub_doctor_router.router)   # sub doctor
+from photonscript.scheduler.routers import frame_check as _frame_check_router  # noqa: E402
+app.include_router(_frame_check_router.router)   # frame check (2026-10-14)
 # Re-export handlers + helper for callers/tests that import them from app:
 from photonscript.scheduler.routers.triage import (  # noqa: E402
     api_nina_log, api_notifications, api_phd2_log, api_ascom_log,

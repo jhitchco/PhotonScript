@@ -56,7 +56,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
@@ -1615,6 +1615,79 @@ def sub_doctor_cmd(
                     console.print(f"  {rg} {x.get('t')} {x.get('cause') or 'healthy'} "
                                   f"{x.get('confidence') or ''} {x.get('file') or ''}",
                                   markup=False, highlight=False)
+
+
+@app.command("frame-check")
+def frame_check_cmd(
+    rig: str = typer.Option("rc16", "--rig", help="rc16 | piggyback"),
+    last: int = typer.Option(2, "--last", help="Check NINA's last N frames"),
+    index: Optional[List[int]] = typer.Option(None, "--index",
+                                              help="NINA image-history index "
+                                                   "(repeatable; wins over --last)"),
+    image_type: str = typer.Option("", "--type",
+                                   help="Only this NINA ImageType for --last "
+                                        "(e.g. SNAPSHOT, LIGHT)"),
+    pa: Optional[float] = typer.Option(None, "--pa",
+                                       help="Camera position angle (deg) when "
+                                            "the FITS and the solves do not say"),
+    compare: bool = typer.Option(False, "--compare",
+                                 help="Verdict over the frames (A, B, ... "
+                                      "oldest first): round or trailing, along "
+                                      "RA / Dec, at what rate"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Ask a running PhotonScript instead (GET "
+                                 "/api/frame-check on the scope PC: small "
+                                 "JSON, no FITS over the network)"),
+    nina_url: str = typer.Option("", "--nina-url",
+                                 help="Read this NINA's image history (default "
+                                      "the rig's nina_base_url)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Grade NINA's last frames, snapshots included, with the sub star QA:
+    HFR, FWHM", eccentricity, star count, background, the elongation axis
+    and the trail (arcsec and "/min). Read only.
+
+    On the scope PC it reads NINA's image history and the files under NINA's
+    save path. Elsewhere, --url reads the scope's /api/frame-check; with no
+    file here and no --url it prints the command to run on the scope PC.
+
+    photonscript frame-check --last 2 --compare
+    photonscript frame-check --url http://100.94.189.77:8100 --compare
+    """
+    import json as _json
+    from photonscript.scheduler import frame_check as fc
+    if rig not in ("rc16", "piggyback"):
+        console.print("[red]--rig must be rc16 or piggyback[/red]")
+        raise typer.Exit(2)
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if url:
+        import urllib.parse
+        import urllib.request
+        q = [("rig", rig), ("last", last), ("compare", str(compare).lower())]
+        q += [("index", i) for i in (index or [])]
+        if image_type:
+            q.append(("type", image_type))
+        if pa is not None:
+            q.append(("pa", pa))
+        u = f"{url.rstrip('/')}/api/frame-check?{urllib.parse.urlencode(q)}"
+        try:
+            with urllib.request.urlopen(u, timeout=180) as r:
+                rep = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            console.print(f"Could not read {u}: {e}\nOn the scope PC run:\n  "
+                          + fc.scope_command(rig, last, index, compare, image_type, pa),
+                          markup=False, highlight=False)
+            raise typer.Exit(2)
+    else:
+        rep = fc.check(cfg, rig=rig, last=last, index=index or None,
+                       image_type=image_type, pa=pa, compare=compare,
+                       base_url=nina_url)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(fc.format_report(rep), markup=False, highlight=False)
+    if not rep.get("ok"):
+        raise typer.Exit(1)
 
 
 @app.command("optics-report")

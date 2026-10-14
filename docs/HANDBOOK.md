@@ -1760,6 +1760,21 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   recompute each pre-fix sub's RMS from the night's guide log, or set none
   with `guide_rms_frames` 0 where PHD2 was not guiding (`guide_rms_src`
   phd2_log | not_guiding); the scorecard row follows, human verdicts kept.
+- TEST FRAMES NEVER GRADED (2026-10-13: two 180 s NINA Imaging-tab
+  snapshots, ProTrack off then on, are ImageType SNAPSHOT, not sequence
+  lights, and pulling the raw FITS through ninaAPI timed out over
+  Tailscale): `photonscript frame-check [--rig rc16|piggyback] [--last N |
+  --index I ...] [--type SNAPSHOT] [--pa DEG] [--compare]` on the scope PC
+  reads NINA's image history, finds the files under NINA's save path
+  (`<FilePath>\<DATEMINUS12>\<IMAGETYPE>\`) and measures them like subs (HFR,
+  FWHM", ecc, stars, background) plus the elongation axis and the trail
+  (sqrt(12 (a^2 - b^2)) of the bright stars, arcsec and "/min); the axis is
+  named RA / Dec when the camera PA is known (FITS WCS, the rig's newest
+  plate solve, or --pa). `--compare` prints the verdict ("both round", "B
+  trails along RA at 0.66"/min"). From the desktop: `--url
+  http://100.94.189.77:8100` reads GET `/api/frame-check?rig=&last=` (small
+  JSON); with no file and no --url it prints the command for the scope PC.
+  ninaAPI has no star list or crop, only a stretched 8-bit preview.
 - AUTOFOCUS NOT FINISHING (same incident: 55 AUTOFOCUS-STARTING, 54 points,
   no finish, no page for three nights): while a rig's NINA is imaging, its
   agent reads NINA's event history (`/event-history`, plus `last-af`) every
