@@ -37,6 +37,8 @@ failing check is a driver); else any warn -> "needs-look"; else "approved"
   ecc_src, ecc_bright_n, ecc_all, fwhm_src, fwhm_moment_arcsec,
   fwhm_unreliable (PS-146: what the judged ecc and FWHM came from; notes on
   the ecc and FWHM rows only, the gates judge ecc and fwhm_arcsec as given),
+  core_sat_px, core_peak_adu (target core pixels at saturation and the peak
+  ADU, shared.core_sat; the "core" row notes or warns, never rejects),
   focpos (header FOCPOS, PS-164), focuser_live_pos (the live grader's
   focuser read at scoring time): either exactly 0 on a LIGHT rejects
   (focuser_zero, qa_focuser_zero_mode).
@@ -87,6 +89,9 @@ CHECKS: dict[str, tuple[str, str, str]] = {
     "tracking_jump": ("Tracking jump (doubled stars)", "",
                       "no mount jump doubling the stars"),
     "exposure": ("Exposure (clipping)", "", "no clipped pixels or blown star cores"),
+    "core": ("Target core clipped", "px",
+             "the target's bright core (galaxy nucleus) below saturation, "
+             "or HDR short subs to recover it"),
     "roof": ("Roof open / not parked", "",
              "a real sky frame (not a closed-roof or parked dark)"),
     "slew_straddle": ("Clear of RC16 moves", "s",
@@ -319,6 +324,9 @@ def thresholds(config, rig: str = "rc16", target: str | None = None,
         "score_reject": float(_f(config, "qa_score_reject", 60.0)),
         "score_weights_file": str(_f(config, "qa_score_weights_file", "") or ""),
         "saturation_adu": float(_f(config, "qa_saturation_adu", 65000.0)),
+        # target core clipped (shared.core_sat): note | warn | off, never fail
+        "core_mode": str(_f(config, "qa_core_mode", "note")).lower(),
+        "core_sat_warn_px": _core_warn_px(config, rig),
         "corner_spread_max": float(_f(cfg, "quality_corner_spread_max", 0.35)),
     }
     # PS-165: a sub exposed while PHD2 guided without correcting (PS-155
@@ -570,6 +578,8 @@ SKIP_TEXT = {
                      "mount log or RC16 frames cover the sub",
     "pointing": "no position (no header coordinates, mount log or solve) "
                 "or no known target coordinates",
+    "core": "not measured (target off the frame, graded before the core "
+            "check, or qa_core_mode off)",
 }
 
 
@@ -929,6 +939,7 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
                             f"{_num(m.get('swamp'))}): longer subs pay off"))
     else:
         checks.append(Check("exposure", ex, "ok", PASS))
+    checks.append(core_check(m, t))
     # roof closed / parked (PS-71 signatures)
     qa_flag = ""
     try:
@@ -1024,6 +1035,34 @@ def pointing_check(off, t: dict, note: str | None = None,
                else f"{only}, {UNCONFIRMED_WHY}")
         return Check("pointing", _r(off, 1), rej, WARN, f"{what} ({why})")
     return Check("pointing", _r(off, 1), rej, PASS)
+
+
+def _core_warn_px(config, rig: str) -> int:
+    from photonscript.shared.core_sat import warn_px
+    return warn_px(config, rig)
+
+
+def core_check(m: dict, t: dict) -> Check:
+    """Target core clipped (2026-10-13, shared.core_sat): pixels at or
+    above saturation inside the target's core disk. Never a fail: the long
+    subs are wanted for the faint parts, the HDR shorts recover the core.
+    qa_core_mode note (default) passes with the note, warn holds the sub for
+    a look, off skips."""
+    lim = int(t.get("core_sat_warn_px", 25))
+    cm = str(t.get("core_mode", "note")).lower()
+    n = _num(m.get("core_sat_px"))
+    if cm == "off":
+        return Check("core", None, lim, SKIP, "off (qa_core_mode)")
+    if n is None:
+        return Check("core", None, lim, SKIP)
+    n = int(n)
+    if n <= lim:
+        return Check("core", n, lim, PASS)
+    peak = _num(m.get("core_peak_adu"))
+    why = (f"target core clipped: {n} px at saturation"
+           + (f" (peak {peak:.0f} ADU)" if peak is not None else "")
+           + "; HDR short subs recover it (photonscript core-check)")
+    return Check("core", n, lim, WARN if cm == "warn" else PASS, why)
 
 
 def slew_straddle_check(overlap, t: dict, note: str | None = None) -> Check:
@@ -1255,6 +1294,8 @@ SHAPE_KEYS = ("ecc_src", "ecc_why", "ecc_bright_n", "ecc_all", "ecc_bin_all",
 
 
 UNGUIDED_IN_NAME = "unguided-in-name"   # PS-165 qa_flag
+# target core clipped (shared.core_sat): judged by the "core" row
+CORE_KEYS = ("core_sat_px", "core_peak_adu")
 
 
 def metrics_from_record(rec: dict) -> dict:
@@ -1268,7 +1309,8 @@ def metrics_from_record(rec: dict) -> dict:
         "exposure", "clipped_pct", "sat_stars_pct", "swamp",
         "pointing_offset_arcmin", "pointing_note", "pointing_src",
         "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-        "max_adu", "guide_nocorr", "focpos", "focuser_live_pos") + SHAPE_KEYS}
+        "max_adu", "guide_nocorr", "focpos", "focuser_live_pos") + CORE_KEYS
+        + SHAPE_KEYS}
     m["fwhm_arcsec"] = record_fwhm(rec)
     m["ecc"] = record_ecc(rec)
     m["ecc_bin"] = record_ecc(rec, "ecc_bin")
@@ -1283,5 +1325,6 @@ def record_metrics(**kw) -> dict:
             "doubled_frac", "exposure", "clipped_pct", "sat_stars_pct",
             "swamp", "pointing_offset_arcmin", "pointing_note", "pointing_src",
             "slew_overlap_s", "slew_note", "sat_px_pct", "zero_px_pct",
-            "max_adu", "guide_nocorr", "focpos", "focuser_live_pos") + SHAPE_KEYS
+            "max_adu", "guide_nocorr", "focpos",
+            "focuser_live_pos") + CORE_KEYS + SHAPE_KEYS
     return {k: kw.get(k) for k in keys}

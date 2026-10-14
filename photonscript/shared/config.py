@@ -665,6 +665,21 @@ class PhotonScriptConfig(BaseSettings):
     qa_saturation_adu: float = 65000.0  # a pixel at or above this counts as
                                  # saturated (FITS SATURATE wins when present);
                                  # same level as the PS-21 clipping gates
+    # Target core saturation (2026-10-13, shared.core_sat): the galaxy
+    # nucleus / bright core of the sub's target, which the frame-wide clip
+    # gates never see (a negligible fraction of 26 MP)
+    qa_core_mode: str = "note"  # note (default: scorecard row "core" passes
+                                 # with a note, nothing held) | warn (a
+                                 # clipped core holds the sub for a look) |
+                                 # off (not measured). Never a reject: the
+                                 # long subs are wanted for the faint parts
+    qa_core_radius_arcmin: float = 1.0  # core radius for galaxies; other
+                                 # targets 10% of the catalog size, 1x to 3x
+    qa_core_sat_warn_px: int = 25  # clipped core pixels above this = clipped
+    core_hdr_short_s: float = 30.0  # suggested HDR short length when no
+                                 # unclipped sub measures the core yet
+    core_hdr_min_short: int = 12  # short subs wanted per filter when the goal
+                                 # has no HDR set (project_store HDR_SHORT_COUNT)
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200
