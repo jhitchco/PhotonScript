@@ -156,6 +156,11 @@ def _hm(t) -> str:
     return d.strftime("%H:%M") + "Z" if d else "?"
 
 
+def _iso_t(t) -> str | None:
+    d = parse_utc(t) if not isinstance(t, datetime) else t
+    return d.replace(microsecond=0).isoformat() + "Z" if d else None
+
+
 def armed_mode(config) -> str | None:
     """'guided' / 'unguided' when a night is armed or watched, else None.
     The scheduler's armer when it runs in this process, else its persisted
@@ -444,12 +449,31 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         tiny = _fl(config, "sub_doctor_tiny_rms_arcsec", 0.5)
         if armed == "unguided" and phd2["active"]:
             conf = HIGH if (phd2["state"] in ("guiding", "settling") or cal_fail) else MEDIUM
+            # 2026-10-13: name what started it (the unguided guard's detect
+            # event, or NINA's event history): NINA's meridian flip / an
+            # autofocus resuming a guider that was connected
+            gs = ctx.get("guider_start") or None
+            if gs and gs.get("by"):
+                from photonscript.scheduler.unguided_guard import cause_text
+                g_ev["guider_start"] = {"by": gs["by"], "t": _iso_t(gs.get("t"))}
+                head = (f"{cause_text(gs['by'])} ({_hm(gs.get('t'))}) in an "
+                        f"unguided night: PHD2 is {phd2['state']}{cal_txt}{rms_txt}")
+                fix = ("NINA #1 had PHD2 connected as its guider, and NINA's "
+                       "meridian flip / autofocus resume guiding whenever one "
+                       "is connected. Disconnect the guider in NINA #1 "
+                       "(unguided_guider_policy=disconnect does it), stop PHD2, "
+                       "or re-arm GUIDED after a good calibration near Dec 0 "
+                       "and the meridian.")
+            else:
+                head = f"PHD2 is {phd2['state']} on an UNGUIDED night{cal_txt}{rms_txt}"
+                fix = ("Stop PHD2 guiding (PHD2: Stop) so the mount tracks on "
+                       "TPoint + ProTrack, and disconnect the guider in NINA #1 "
+                       "(its meridian flip / autofocus restart a connected "
+                       "guider), or re-arm GUIDED after a good calibration near "
+                       "Dec 0 and the meridian.")
             add("guider_conflict", conf,
-                f"PHD2 is {phd2['state']} on an UNGUIDED night{cal_txt}{rms_txt} "
-                f"while {label} subs trail (ecc {ev['ecc']}, HFR {ev['hfr_px']} px)",
-                "Stop PHD2 guiding (PHD2: Stop) so the mount tracks on TPoint + "
-                "ProTrack, or re-arm GUIDED after a good calibration near Dec 0 "
-                "and the meridian.",
+                f"{head} while {label} subs trail (ecc {ev['ecc']}, HFR "
+                f"{ev['hfr_px']} px)", fix,
                 _action("stop_phd2", "stop PHD2 guiding", auto=True),
                 g_ev)
         elif armed == "guided" and not phd2["active"] and trailing:
@@ -657,6 +681,17 @@ def _af_events(nina_events: list[dict] | None) -> list[datetime]:
     return sorted(out)
 
 
+def guider_start_at(nina1_events, run_events, until: datetime | None) -> dict | None:
+    """2026-10-13: the newest guider start at or before `until`, with what
+    started it (unguided_guard.attribute_starts over NINA #1's event
+    history, or the guard's own detect run events): {"t", "by"} or None."""
+    from photonscript.scheduler import unguided_guard as ug
+    cands = [c for c in (ug.latest_start(nina1_events, until=until) if nina1_events
+                         else None,
+                         ug.start_from_run_events(run_events, until=until)) if c]
+    return max(cands, key=lambda c: c["t"]) if cands else None
+
+
 def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None,
                  plan: dict | None = None, armed: str | None = None,
                  cal_history: list[dict] | None = None,
@@ -666,8 +701,9 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
     """Run the doctor over a stored night as if live: after each graded
     sub of each rig, the last sub_doctor_window subs. Read only, no push.
     Returns {night, armed, rigs: {rig: {timeline, fired, counts, subs}}}.
-    nina_events: {rig: ninaAPI event history} (only the AF finish times are
-    used); events: the night's run events (af_stall / guard non-star)."""
+    nina_events: {rig: ninaAPI event history} (the AF finish times, and NINA
+    #1's GUIDER-START attribution for both rigs); events: the night's run
+    events (af_stall / guard non-star / unguided_guard detect)."""
     armed = armed or plan_mode(plan)
     n = window_n(config)
     subs = [sp_norm(r) for r in subs or []]
@@ -699,7 +735,9 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
                    "focus": {"last_af_utc": last_af.isoformat() + "Z" if last_af else None,
                              "af_known": rg in (nina_events or {}),
                              "af_stall": st[-1] if st else None},
-                   "solve": solve, "now": t_end.isoformat() + "Z" if t_end else None}
+                   "solve": solve, "now": t_end.isoformat() + "Z" if t_end else None,
+                   "guider_start": guider_start_at(
+                       (nina_events or {}).get("rc16"), events, t_end)}
             d = diagnose(config, rg, win, subs=subs, ctx=ctx)
             cause = d["cause"] if d else None
             if d:

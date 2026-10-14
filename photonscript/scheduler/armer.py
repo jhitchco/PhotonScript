@@ -128,6 +128,9 @@ NINA_PATHS = {
     "camera_connect": ["/equipment/camera/connect"],
     "guider_start": ["/equipment/guider/start"],
     "guider_stop": ["/equipment/guider/stop"],
+    # 2026-10-13 unguided guard: the guider only, never the mount / camera
+    "guider_disconnect": ["/equipment/guider/disconnect"],
+    "event_history": ["/event-history"],
 }
 
 # 2026-10-13 restart race: ninaAPI's /sequence/stop only asks NINA to stop;
@@ -221,6 +224,7 @@ class Armer:
         self._tune_night: str | None = None    # PS-90: pre-dusk tune done
         self._tune_note: str | None = None
         self.guider_name: str | None = None  # PS-66: NINA's guider at arm
+        self._ug_state: dict | None = None    # 2026-10-13 unguided guard, per night
         self.watch: dict | None = None        # PS-136: the watched sideload
         self._watch_declined: str | None = None  # PS-136: sideload "t" stopped by hand
         self.last_validation: dict | None = None  # PS-132 check in dispatch_raw
@@ -340,6 +344,9 @@ class Armer:
         # sequence phase. Connect-only; safety still gates imaging.
         if getattr(self.config, "connect_all_on_arm", True):
             asyncio.create_task(self.connect_all_rigs())
+        if self.state != WATCH_STATE:
+            # 2026-10-13: a restart re-checks the unguided guard too
+            asyncio.create_task(self._unguided_guard("restore"))
         asyncio.create_task(notify(
             self.config, f"PhotonScript restarted mid-night — reattached in "
             f"state {self.state}.", title="PhotonScript restored"))
@@ -523,6 +530,9 @@ class Armer:
         # PS-66: which guider NINA has (Direct Guider vs PHD2), for the
         # unguided dither choice and a guided-arm sanity alert.
         await self._check_guider_at_arm()
+        # 2026-10-13: an unguided night must not have PHD2 connected in
+        # NINA #1 (the meridian flip / autofocus would start it)
+        await self._unguided_guard("arm")
         # PS-139: does NINA #2 hold slew / center / park instructions while
         # the RC16 is about to image? Read only, in the background.
         self._start_nina2_mount_check("arm")
@@ -618,6 +628,35 @@ class Armer:
                          f"{self.guider_name or 'unknown'}, not Direct Guider "
                          f"(unguided_dither needs it).",
                          title="PhotonScript guider")
+
+    def _guider_unwanted(self) -> bool:
+        """2026-10-13: tonight is an armed UNGUIDED night (not watching a
+        sideload), the unguided guard is on and no Direct Guider dithers
+        are asked for: NINA #1's guider stays disconnected."""
+        if self.state not in LIVE_STATES or self.state == WATCH_STATE:
+            return False
+        if self._use_guiding() or getattr(self.config, "unguided_dither", False):
+            return False
+        from photonscript.scheduler.unguided_guard import policy
+        return policy(self.config) != "off"
+
+    async def _unguided_guard(self, phase: str) -> dict | None:
+        """2026-10-13 unguided guard (scheduler/unguided_guard.py): on an
+        unguided night, a PHD2 guider connected in NINA #1 or anything
+        guiding is disconnected / stopped or paged, per
+        unguided_guider_policy. Guider commands only; never raises."""
+        try:
+            if self._use_guiding() or self.state == WATCH_STATE:
+                return None
+            from photonscript.scheduler import unguided_guard as ug
+            night = self.plan.get("night_of")
+            st = getattr(self, "_ug_state", None)
+            if not st or st.get("night") != night:
+                st = self._ug_state = ug.new_state(night)
+            return await ug.check(self.config, ug.GuardIO(self), st, phase=phase)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("unguided guard (%s) failed: %s", phase, e)
+            return None
 
     async def _phd2_audit_at_arm(self) -> None:
         """PS-89 settings audit at arm. Never raises."""
@@ -747,6 +786,11 @@ class Armer:
         cfg = rig_config(self.config, rig)
         results = {}
         for dev in rig_connect_devices(self.config, rig):   # PS-189: + flat device
+            if dev == "guider" and self._guider_unwanted():
+                # 2026-10-13: an unguided night leaves NINA's guider
+                # disconnected (the meridian flip would start PHD2)
+                results[dev] = "skipped (unguided night)"
+                continue
             try:
                 connected, _payload, err = await _ensure_connected(
                     cfg, dev, attempts=2)
@@ -2302,6 +2346,9 @@ class Armer:
         self._dispatch_step("waiting for NINA #1 to stop")
         await self._nina("sequence_stop")  # harmless if nothing running
         await self._wait_nina1_stopped()
+        # 2026-10-13: before every (re-)dispatch of an unguided night, no
+        # PHD2 guider connected in NINA #1
+        await self._unguided_guard("dispatch")
         content = json.loads(self.sequence_path.read_text(encoding="utf-8"))
         loaded = started = None
         for attempt in range(len(DISPATCH_BUSY_BACKOFF_S) + 1):
@@ -3845,6 +3892,7 @@ class Armer:
                 # Imaging (or looping to safe) — verify guiding actually runs,
                 # and that the cooler is actually holding setpoint (nanny).
                 await self._maybe_warn_not_guiding(now)
+                await self._unguided_guard("watch")   # 2026-10-13
                 await self._reconcile_cooler(now)
 
         elif self.state == PAUSE_STATE:

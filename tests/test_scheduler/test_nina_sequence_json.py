@@ -65,11 +65,16 @@ class TestNinaJsonGeneration:
         assert "DuskProvider" in waits[0]["SelectedProvider"]["$type"]
 
     def test_equipment_connect_block(self):
-        devices = [d["SelectedDevice"] for d in _walk(_gen())
+        devices = [d["SelectedDevice"] for d in _walk(_gen(start_guiding=True))
                    if isinstance(d, dict) and "ConnectEquipment" in d.get("$type", "")]
         for dev in ("Camera", "Filter Wheel", "Focuser", "Mount",
                     "Safety Monitor", "Guider", "Weather"):
             assert dev in devices
+        # 2026-10-13: an unguided night leaves the guider disconnected (NINA's
+        # meridian flip / autofocus would start a connected PHD2)
+        devices = [d["SelectedDevice"] for d in _walk(_gen())
+                   if isinstance(d, dict) and "ConnectEquipment" in d.get("$type", "")]
+        assert "Guider" not in devices and "Mount" in devices
 
     def test_smart_exposure_with_loop_and_core_filterinfo(self):
         data = _gen()

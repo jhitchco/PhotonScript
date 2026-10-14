@@ -1320,6 +1320,16 @@ def lint(seq: dict, guided: bool | None = None,
         if bad:
             kinds = sorted({d["$type"].split(",")[0].split(".")[-1] for d in bad})
             r.error("guiding", f"Unguided run contains guiding elements: {kinds}")
+        # 2026-10-13: a connected guider on an unguided night is started by
+        # NINA's meridian flip and resumed after every autofocus. Direct
+        # Guider (unguided_dither) is the one guider an unguided run needs.
+        if not unguided_dither and any(
+                "guider" in str(d.get("SelectedDevice") or "").lower()
+                for d in _find_type(seq, "ConnectEquipment")):
+            r.warn("unguided-guider",
+                   "Unguided run connects the guider: NINA's meridian flip "
+                   "and every autofocus after it would start PHD2 guiding "
+                   "(2026-10-13); leave the guider disconnected")
 
     # --- Per-target checks -------------------------------------------------
     # PS-26: the nested pier-West centering container of a Piggy-600-driven

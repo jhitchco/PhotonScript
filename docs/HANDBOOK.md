@@ -1086,6 +1086,48 @@ loop every 60 s (`run_pilot`, app startup).
   other way (disarm, error, service restart). A goal edited by hand since
   the pilot changed it is left alone and said so.
 
+### Unguided guard: nothing guides on an unguided night (2026-10-13)
+
+Why: 2026-10-12 and 10-13 were armed UNGUIDED but NINA #1 had PHD2
+connected as its guider (the armer's connect-all at arm and the sequence's
+Start area both connected it; on 10-13 also by hand, calibration FAIL).
+NINA's meridian flip resumes guiding whenever a guider is connected, even
+one that was not guiding (10-13: MOUNT-BEFORE-FLIP 02:24, GUIDER-START
+02:28:03, MOUNT-AFTER-FLIP 02:28:32), and each autofocus after it stopped
+and restarted it (02:57, 03:40, 04:18). The MeridianFlipTrigger has no
+setting for it, so the guard keeps the guider disconnected instead
+(`scheduler/unguided_guard.py`).
+
+- Sequences: an unguided night's Start area has an Annotation instead of
+  ConnectEquipment(Guider) (kept on a guided night and for PS-66 Direct
+  Guider dithers). Lint rule `unguided-guider` warns on an unguided run
+  that connects the guider.
+- Armer connect-all (arm, restart, the dashboard button) skips the guider
+  on an armed unguided night ("skipped (unguided night)").
+- Armer check at arm, at a restart, before every (re-)dispatch and every
+  tick while RUNNING: NINA #1's guider (`/equipment/guider/info`) and
+  PHD2's AppState (`get_app_state`). Direct Guider is left alone.
+- `unguided_guider_policy` disconnect (default) | alert | off:
+  disconnect = a connected PHD2 guider is disconnected in NINA
+  (`/equipment/guider/disconnect`); guiding / calibrating / lost lock is
+  stopped (`/equipment/guider/stop`, disconnect, then PHD2 `stop_capture`
+  if PHD2 still guides). Guider commands only: never the mount, the camera
+  or the sequence, never a start. At most one command per 2 min and 8 a
+  night. alert = the push with the manual step (NINA #1: Equipment >
+  Guider > Disconnect), nothing sent. off = no guard, connect-all connects
+  the guider as before.
+- One push per episode, naming the cause from NINA #1's event history
+  (`attribute_starts`: a GUIDER-START within 15 min of MOUNT-BEFORE-FLIP or
+  3 min before MOUNT-AFTER-FLIP = the flip, within 5 min after
+  AUTOFOCUS-FINISHED = an autofocus, within 3 min after MOUNT-CENTER = a
+  center), priority 2 when the stop failed. Run events kind
+  `unguided_guard` (detect, stopped, disconnected, failed, alert, clear).
+- The sub doctor's guider_conflict on an unguided night names it: "NINA
+  started PHD2 after the meridian flip (08:28Z) in an unguided night ..."
+  (the guard's detect event live, NINA #1's event history in a replay).
+- Not covered: a WATCHING sideloaded night (NINA's own), guided nights
+  (PS-85 per-block unguided blocks keep the guider).
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was

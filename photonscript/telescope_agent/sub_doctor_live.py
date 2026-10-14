@@ -52,6 +52,32 @@ def _focus(agent, config, night: str, rig: str) -> dict:
             "af_stall": stall[-1] if stall else None}
 
 
+async def _guider_start(agent, config, night: str, rig: str, ctx: dict) -> dict | None:
+    """2026-10-13: what started PHD2 on an unguided night (the unguided
+    guard's detect run event; the RC16 agent also reads NINA #1's event
+    history when PHD2 is active). None when not unguided or unknown."""
+    from photonscript.scheduler import sub_doctor as sd
+    if ctx.get("armed") != "unguided":
+        return None
+    try:
+        from photonscript.shared import phd2_store as store
+        from photonscript.shared.night_events import events_path
+        run_events = store.read_jsonl(events_path(config, night))
+    except Exception:  # noqa: BLE001
+        run_events = []
+    hist = None
+    active = str((ctx.get("phd2") or {}).get("state") or "") in sd.ACTIVE_GUIDE
+    if rig == "rc16" and active and getattr(agent, "nina", None) is not None:
+        try:
+            hist = await agent.nina.get_event_history()
+        except Exception:  # noqa: BLE001
+            hist = None
+    try:
+        return sd.guider_start_at(hist, run_events, None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def after_sub(agent, night: str | None) -> dict | None:
     """Diagnose the rig's last subs after a new one was graded."""
     from photonscript.scheduler import phd2_calibration as pc
@@ -77,6 +103,7 @@ async def after_sub(agent, night: str | None) -> dict | None:
         ctx = {"armed": sd.armed_mode(config), "phd2": _phd2_live(agent),
                "calibration": cal, "focus": _focus(agent, config, night, rig),
                "solve": cache[1], "now": datetime.utcnow().isoformat() + "Z"}
+        ctx["guider_start"] = await _guider_start(agent, config, night, rig, ctx)
         diag = sd.diagnose(config, rig, window, subs=subs, ctx=ctx)
         out = sd.record(config, night, rig, diag)
     except Exception as e:  # noqa: BLE001

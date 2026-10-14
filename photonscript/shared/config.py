@@ -782,6 +782,18 @@ class PhotonScriptConfig(BaseSettings):
                                  # Off until NINA's guider is switched to Direct
                                  # Guider; the armer checks the connected guider
                                  # at arm and drops dithers (one note) otherwise.
+    unguided_guider_policy: str = "disconnect"  # 2026-10-13 unguided guard
+                                 # (scheduler/unguided_guard.py): on an UNGUIDED
+                                 # night NINA #1 must not have PHD2 connected
+                                 # (its meridian flip and autofocus start a
+                                 # connected guider). disconnect (default):
+                                 # at arm, restart, every dispatch and while
+                                 # RUNNING, stop + disconnect NINA's guider
+                                 # (guider only, never mount / camera) and
+                                 # stop_capture a PHD2 that still guides, one
+                                 # push per episode | alert: push the manual
+                                 # step, send nothing | off: no guard (connect-
+                                 # all connects the guider again).
     unguided_max_exposure_s: float = 300.0  # PS-66: RC16 sub-length cap on every
                                  # unguided target (armed unguided or the
                                  # unguided fallback): a 600 s set becomes 300 s

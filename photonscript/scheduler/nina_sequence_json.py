@@ -611,6 +611,31 @@ def _stop_guiding() -> dict:
                        "NINA.Sequencer", ErrorBehavior=0, Attempts=1)
 
 
+# 2026-10-13 (third night lost, after 10-12): an UNGUIDED night whose Start
+# area connected the guider. NINA's meridian flip resumes guiding whenever a
+# guider is connected (it checks Connected, not whether it was guiding
+# before; the sequence's MeridianFlipTrigger has no setting for it), and
+# every later autofocus stopped and restarted it, so PHD2 guided on a FAIL
+# calibration for the rest of the night. An unguided night therefore never
+# connects the guider: with it disconnected, the flip, the autofocus, Center
+# and the dither trigger have nothing to start.
+UNGUIDED_NO_GUIDER_NOTE = (
+    "Guider NOT connected: unguided night (TPoint + ProTrack). NINA's "
+    "meridian flip and autofocus restart any connected guider, so this "
+    "sequence leaves it disconnected (2026-10-13).")
+
+
+def _guider_connect_item(guided: bool, unguided_dither: bool = False) -> dict:
+    """The Start area's guider step: ConnectEquipment(Guider) on a guided
+    night, or on an unguided one that dithers through NINA's Direct Guider
+    (PS-66: the armer sets unguided_dither only when NINA's guider read at
+    arm is Direct Guider, whose 'guiding' moves nothing); otherwise an
+    Annotation saying why it is left out."""
+    if guided or unguided_dither:
+        return _connect("Guider")
+    return _annotation(UNGUIDED_NO_GUIDER_NOTE)
+
+
 def _disconnect_all() -> dict:
     return _make_typed("NINA.Sequencer.SequenceItem.Connect."
                        "DisconnectAllEquipment, NINA.Sequencer",
@@ -2601,7 +2626,9 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _connect("Filter Wheel"),
         _connect("Focuser"),
         _connect("Mount"),
-        _connect("Guider"),
+        # 2026-10-13: an unguided night leaves the guider disconnected, so
+        # NINA's meridian flip / autofocus cannot start PHD2
+        _guider_connect_item(guided, unguided_dither),
         _connect("Weather"),
         _pushover("Startup", f"camera cooling to {temp:.0f}°C; if the night "
                   "starts UNSAFE the roof-closed time fills the dark-library "
