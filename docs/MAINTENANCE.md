@@ -532,7 +532,7 @@ from the table.
   each RC16 filter block whose table row is drive-ready (high confidence,
   >= 5 AFs of its own, newest AF at most 14 days older than the newest RC16
   AF and within one CFZ of the table, no pending counter shift) moves to the
-  table position (`deployocus-model-move.cmd` -> POST
+  table position (`deploy\focus-model-move.cmd` -> POST
   `/api/focus/model-move`) instead of AF on L + offset; the temperature
   trigger re-moves after half a CFZ of drift (0.5 x CFZ / |slope|, 1 to 5 C),
   its script call carries `--trigger`: NINA's temperature trigger measures
