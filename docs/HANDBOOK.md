@@ -1313,6 +1313,9 @@ Approve / Decline; a plan change shows its diff and goes through PATCH
 section 0b. Two-rig goals: `photonscript blend --target M31` puts the RC16 L
 core into the Piggy-600 color image (full field + RC16-scale core crop) in a
 new `Staging\Blend\` folder (PS-153, OSC_INTEGRATION.md section 0c).
+With RC16 Ha (OIII, SII) masters (the Heart) the same command picks the
+narrowband blend: Ha into red, OIII into green and blue, natural HaRGB +
+gold, RC16-scale SHO / HOO core (`--mode l|nb|auto`, section 0d).
 Mono runs HDR combine a filter's exposure-length masters (PS-177
 `master_L` + `master_L_30s`) into `master_<F>_hdr` before the finish
 (config `integrate_hdr_combine`, default on; the finish and blend prefer it).

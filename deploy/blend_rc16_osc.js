@@ -115,6 +115,36 @@ function writeSteps(result, extra) {
    } catch (e) { console.criticalln("steps json write failed: " + e); }
 }
 function removeQuiet(path) { try { if (File.exists(path)) File.remove(path); } catch (e) {} }
+
+// A float copy of a view in a new window (no keywords, no astrometric solution).
+function dupWindow(view, id) {
+   var img = view.image;
+   var w = newWindow(img.width, img.height, img.numberOfChannels, id);
+   w.mainView.beginProcess(UndoFlag_NoSwapFile);
+   w.mainView.image.assign(img);
+   w.mainView.endProcess();
+   return w;
+}
+
+function trySave(w, path, label) {
+   try {
+      if (w.saveAs(path, false, false, false, false)) { log("saved " + label + ": " + path); return true; }
+      log("save FAILED (returned false): " + path);
+   } catch (e) { log("save FAILED " + path + " (" + e + ")"); }
+   return false;
+}
+
+// A Crop invalidates the WCS; clear it first so PixInsight does not stop on a
+// Yes/No dialog in an unattended run.
+function clearWcs(view) {
+   try { view.window.clearAstrometricSolution(); } catch (e) { log("clearAstrometricSolution: " + e); }
+}
+
+// ==== PS_BLEND_LIB_BEGIN (deploy/blend_nb_osc.js reuses the functions from here to
+// PS_BLEND_LIB_END: registration, astrometry, color space, fit and mask. Keep them
+// free of placeholders and of names finish_osc.js defines; they read CONFIG
+// (solve, resolve, ra_deg, dec_deg, inset_frac, feather_frac), LIN, log and step.)
+
 function closeQuiet(w) { try { if (w && !w.isNull) w.forceClose(); } catch (e) {} }
 
 // ---------------------------------------------------------------- images
@@ -152,30 +182,6 @@ function windowFrom(arrs, W, H, id) {
    return w;
 }
 
-// A float copy of a view in a new window (no keywords, no astrometric solution).
-function dupWindow(view, id) {
-   var img = view.image;
-   var w = newWindow(img.width, img.height, img.numberOfChannels, id);
-   w.mainView.beginProcess(UndoFlag_NoSwapFile);
-   w.mainView.image.assign(img);
-   w.mainView.endProcess();
-   return w;
-}
-
-function trySave(w, path, label) {
-   try {
-      if (w.saveAs(path, false, false, false, false)) { log("saved " + label + ": " + path); return true; }
-      log("save FAILED (returned false): " + path);
-   } catch (e) { log("save FAILED " + path + " (" + e + ")"); }
-   return false;
-}
-
-// A Crop invalidates the WCS; clear it first so PixInsight does not stop on a
-// Yes/No dialog in an unattended run.
-function clearWcs(view) {
-   try { view.window.clearAstrometricSolution(); } catch (e) { log("clearAstrometricSolution: " + e); }
-}
-
 function cropTo(view, x0, y0, x1, y1) {
    clearWcs(view);
    var img = view.image;
@@ -204,7 +210,7 @@ function hasSolution(w) {
 
 // ImageSolver with a spiral search around the target (the Piggy-600 frame
 // centre is usually not the target; the RC16 is close to it).
-function plateSolve(w, what, p) {
+function solveSeeds(w, what, p) {
    if (hasSolution(w) && !CONFIG.resolve) {
       log("plate solve " + what + ": already solved (kept)");
       step("plate_solve_" + what, "existing", "ran", {});
@@ -525,6 +531,70 @@ function quantile(arr, use, n, q) {
    return s[Math.min(s.length - 1, Math.floor(q * s.length))];
 }
 
+// PS-186: BlurXTerminator on the RC16 luminance (linear stage only), before
+// the plate solve and the blend: a correct-only pass, then the sharpen pass
+// (CONFIG.rc16_bxt.stars / nonstellar, halos untouched, PSF auto). Detected
+// at run time (typeof BlurXTerminator === "function"), never assumed; a
+// failed pass is logged and the blend goes on with the luminance as it is.
+// Only the image in memory changes; the master file is never written.
+var RC16_BXT = null;   // the record for the steps json
+function rc16Bxt(rc) {
+   var cfg = CONFIG.rc16_bxt || { mode: "off", why_off: "not configured" };
+   var rec = { tool: "BlurXTerminator", mode: cfg.mode, filters: rc.used, status: "skipped" };
+   RC16_BXT = rec;
+   if (cfg.mode === "off") {
+      rec.why = cfg.why_off || "blend_rc16_bxt / finish_use_rcastro off";
+      step("rc16_bxt", "BlurXTerminator", "skipped", { reason: rec.why });
+      return;
+   }
+   if (typeof BlurXTerminator !== "function") {
+      rec.why = "not installed (no BlurXTerminator process in this PixInsight)";
+      log((cfg.mode === "on" ? "WARNING: rc16_bxt on but " : "") + "BlurXTerminator not installed; RC16 luminance unsharpened");
+      step("rc16_bxt", "BlurXTerminator", "skipped", { reason: rec.why });
+      return;
+   }
+   rec.passes = [];
+   rec.settings = {};
+   var view = rc.win.mainView;
+   try {
+      var B1 = new BlurXTerminator;
+      var s1 = {};
+      trySet(B1, "correct_only", true, s1);
+      if (!B1.executeOn(view, false)) throw new Error("returned false");
+      rcInfo(B1, rec);
+      rec.passes.push("correct_only");
+      rec.settings.correct = s1;
+   } catch (e1) {
+      log("RC16 BlurXTerminator correct-only pass failed (" + e1 + ")");
+      rec.correct_error = "" + e1;
+   }
+   try {
+      var B2 = new BlurXTerminator;
+      var s2 = {};
+      trySet(B2, "correct_only", false, s2);
+      trySet(B2, "correct_first", false, s2);
+      trySet(B2, "sharpen_stars", cfg.stars, s2);
+      trySet(B2, "sharpen_nonstellar", cfg.nonstellar, s2);
+      trySet(B2, "adjust_halos", 0.0, s2);
+      trySet(B2, "auto_nonstellar_psf", true, s2);
+      if (!B2.executeOn(view, false)) throw new Error("returned false");
+      rcInfo(B2, rec);
+      rec.passes.push("sharpen");
+      rec.settings.sharpen = s2;
+   } catch (e2) {
+      log("RC16 BlurXTerminator sharpen pass failed (" + e2 + ")");
+      rec.sharpen_error = "" + e2;
+   }
+   rec.status = rec.passes.length === 2 ? "used" : (rec.passes.length ? "partial" : "failed");
+   log("RC16 luminance BlurXTerminator: " + (rec.passes.join(" + ") || "nothing ran") +
+       " (stars " + cfg.stars + ", nonstellar " + cfg.nonstellar + ", PSF auto)");
+   step("rc16_bxt", "BlurXTerminator", rec.passes.length ? "ran" : "failed",
+        { passes: rec.passes, stars: cfg.stars, nonstellar: cfg.nonstellar, psf: "auto",
+          version: rec.version || "", ai_model: rec.ai_model || "" });
+}
+
+// ==== PS_BLEND_LIB_END
+
 // ---------------------------------------------------------------- stretch
 
 function mtfv(m, x) { if (x <= 0) return 0; if (x >= 1) return 1;
@@ -586,13 +656,6 @@ function rc16Luminance() {
    return { win: lw, used: used, solved_src: w0 };
 }
 
-// PS-186: BlurXTerminator on the RC16 luminance (linear stage only), before
-// the plate solve and the blend: a correct-only pass, then the sharpen pass
-// (CONFIG.rc16_bxt.stars / nonstellar, halos untouched, PSF auto). Detected
-// at run time (typeof BlurXTerminator === "function"), never assumed; a
-// failed pass is logged and the blend goes on with the luminance as it is.
-// Only the image in memory changes; the master file is never written.
-var RC16_BXT = null;   // the record for the steps json
 function trySet(P, prop, val, set) {
    try { P[prop] = val; set[prop] = val; } catch (e) { log("  " + prop + " not set (" + e + ")"); }
 }
@@ -601,60 +664,6 @@ function rcInfo(P, info) {
    try { if (typeof P.processVersion === "function") info.version = "" + P.processVersion(); } catch (e2) {}
    try { if (!info.version && P.version !== undefined && P.version !== null) info.version = "" + P.version; } catch (e3) {}
    return info;
-}
-function rc16Bxt(rc) {
-   var cfg = CONFIG.rc16_bxt || { mode: "off", why_off: "not configured" };
-   var rec = { tool: "BlurXTerminator", mode: cfg.mode, filters: rc.used, status: "skipped" };
-   RC16_BXT = rec;
-   if (cfg.mode === "off") {
-      rec.why = cfg.why_off || "blend_rc16_bxt / finish_use_rcastro off";
-      step("rc16_bxt", "BlurXTerminator", "skipped", { reason: rec.why });
-      return;
-   }
-   if (typeof BlurXTerminator !== "function") {
-      rec.why = "not installed (no BlurXTerminator process in this PixInsight)";
-      log((cfg.mode === "on" ? "WARNING: rc16_bxt on but " : "") + "BlurXTerminator not installed; RC16 luminance unsharpened");
-      step("rc16_bxt", "BlurXTerminator", "skipped", { reason: rec.why });
-      return;
-   }
-   rec.passes = [];
-   rec.settings = {};
-   var view = rc.win.mainView;
-   try {
-      var B1 = new BlurXTerminator;
-      var s1 = {};
-      trySet(B1, "correct_only", true, s1);
-      if (!B1.executeOn(view, false)) throw new Error("returned false");
-      rcInfo(B1, rec);
-      rec.passes.push("correct_only");
-      rec.settings.correct = s1;
-   } catch (e1) {
-      log("RC16 BlurXTerminator correct-only pass failed (" + e1 + ")");
-      rec.correct_error = "" + e1;
-   }
-   try {
-      var B2 = new BlurXTerminator;
-      var s2 = {};
-      trySet(B2, "correct_only", false, s2);
-      trySet(B2, "correct_first", false, s2);
-      trySet(B2, "sharpen_stars", cfg.stars, s2);
-      trySet(B2, "sharpen_nonstellar", cfg.nonstellar, s2);
-      trySet(B2, "adjust_halos", 0.0, s2);
-      trySet(B2, "auto_nonstellar_psf", true, s2);
-      if (!B2.executeOn(view, false)) throw new Error("returned false");
-      rcInfo(B2, rec);
-      rec.passes.push("sharpen");
-      rec.settings.sharpen = s2;
-   } catch (e2) {
-      log("RC16 BlurXTerminator sharpen pass failed (" + e2 + ")");
-      rec.sharpen_error = "" + e2;
-   }
-   rec.status = rec.passes.length === 2 ? "used" : (rec.passes.length ? "partial" : "failed");
-   log("RC16 luminance BlurXTerminator: " + (rec.passes.join(" + ") || "nothing ran") +
-       " (stars " + cfg.stars + ", nonstellar " + cfg.nonstellar + ", PSF auto)");
-   step("rc16_bxt", "BlurXTerminator", rec.passes.length ? "ran" : "failed",
-        { passes: rec.passes, stars: cfg.stars, nonstellar: cfg.nonstellar, psf: "auto",
-          version: rec.version || "", ai_model: rec.ai_model || "" });
 }
 
 // ---------------------------------------------------------------- products
@@ -847,8 +856,8 @@ function main() {
    step("rc16_luminance", rc.used.length > 1 ? "mean of masters" : "master", "ran", { filters: rc.used });
    try { rc16Bxt(rc); }
    catch (eb) { log("RC16 BlurXTerminator skipped (" + eb + ")"); step("rc16_bxt", "BlurXTerminator", "failed", { error: "" + eb }); }
-   plateSolve(osc, "osc", CONFIG.osc);
-   plateSolve(rc.solved_src || rc.win, "rc16", { scale: CONFIG.rc16_scale, pixel_um: CONFIG.rc16_pixel_um,
+   solveSeeds(osc, "osc", CONFIG.osc);
+   solveSeeds(rc.solved_src || rc.win, "rc16", { scale: CONFIG.rc16_scale, pixel_um: CONFIG.rc16_pixel_um,
                                                 step_deg: CONFIG.rc16_step_deg, rings: 2 });
    TEND("inputs", "open + plate solve");
 

@@ -231,13 +231,13 @@ def test_blend_rc16_bxt_mode_from_config():
     assert bl.rc16_bxt_mode(SimpleNamespace(blend_rc16_bxt=False, finish_use_rcastro="on")) == "off"
     assert bl.rc16_bxt_mode(SimpleNamespace(blend_rc16_bxt=True, finish_use_rcastro="off")) == "off"
     assert bl.config_bxt(SimpleNamespace(finish_use_rcastro="on", bxt_sharpen_nonstellar=0.9)) == {
-        "rc16_bxt": "on", "bxt_stars": 0.25, "bxt_nonstellar": 0.9}
+        "rc16_bxt": "on", "bxt_stars": 0.25, "bxt_nonstellar": 0.9, "rc_mode": "on", "nxt_denoise": 0.8}
 
 
 def test_blend_script_runs_bxt_on_the_rc16_luminance_before_the_solve():
     s = _js("blend_rc16_osc.js")
     main = _func(s, "main")
-    assert main.index("rc16Luminance()") < main.index("try { rc16Bxt(rc); }") < main.index('plateSolve(osc, "osc"')
+    assert main.index("rc16Luminance()") < main.index("try { rc16Bxt(rc); }") < main.index('solveSeeds(osc, "osc"')
     f = _func(s, "rc16Bxt")
     assert 'typeof BlurXTerminator !== "function"' in f
     assert f.index('cfg.mode === "off"') < f.index("new BlurXTerminator")

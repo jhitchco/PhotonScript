@@ -38,7 +38,7 @@ Usage:
     photonscript qa-focuser-zero [--since D] [--rig R] [--library P] [--apply] [--json]  # FOCPOS 0
     photonscript integrate-report [--dry-run]                     # PS-33 ledger queue
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
-    photonscript blend --target T [--osc P] [--rc16 P] [--stage linear|final]  # PS-153
+    photonscript blend --target T [--osc P] [--rc16 P] [--stage linear|final] [--mode l|nb|auto]  # PS-153
     photonscript finish --master P --name N [--target T] [--out DIR] [--dry-run]  # re-finish one master
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
@@ -3385,6 +3385,12 @@ def calibration_file_cmd(
         raise typer.Exit(1)
 
 
+def _blend_nb_defaults() -> dict:
+    """The narrowband blend weights (blend.NB_DEFAULTS) for the option defaults."""
+    from photonscript.integration.blend import NB_DEFAULTS
+    return NB_DEFAULTS
+
+
 def _pilock_wait(cfg) -> float:
     """pixinsight_lock_wait_min (integration/pilock.py)."""
     from photonscript.integration import pilock
@@ -3694,6 +3700,20 @@ def blend_cmd(
     rc16_bxt: str = typer.Option("", "--rc16-bxt",
                                  help="BlurXTerminator pass on the RC16 L linear master first: auto | on | off "
                                       "(default blend_rc16_bxt + finish_use_rcastro; PS-186)"),
+    mode: str = typer.Option("auto", "--mode",
+                             help="l (RC16 L core) | nb (RC16 Ha / OIII / SII: HaRGB + OIII, gold, SHO / HOO "
+                                  "core) | auto (nb when the RC16 run has an Ha master)"),
+    ha_weight: float = typer.Option(_blend_nb_defaults()["ha_weight"], "--ha-weight",
+                                    help="nb: Ha model share of the OSC red inside the mask (0..1)"),
+    oiii_weight: float = typer.Option(_blend_nb_defaults()["oiii_weight"], "--oiii-weight",
+                                      help="nb: OIII model share of the OSC green and blue (0..1)"),
+    ha_boost: float = typer.Option(_blend_nb_defaults()["ha_boost"], "--ha-boost",
+                                   help="nb: extra Ha line on top of red (0..1; 0 = replace only)"),
+    oiii_boost: float = typer.Option(_blend_nb_defaults()["oiii_boost"], "--oiii-boost",
+                                     help="nb: extra OIII line on top of green and blue (0..1)"),
+    nb_lum_weight: float = typer.Option(_blend_nb_defaults()["nb_lum_weight"], "--nb-lum-weight",
+                                        help="nb: Ha share of CIE L inside the mask (an RC16 L uses --weight)"),
+    palette: str = typer.Option("gold", "--palette", help="nb: gold = also <name>_haRGB_gold | off"),
     pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Find the inputs and check the script; write nothing"),
@@ -3709,6 +3729,12 @@ def blend_cmd(
     (weight 0.7); also an RC16-scale core crop with the OSC color. Runs in a
     NEW folder under <staging-root>/Blend, one PixInsight at a time. The
     ledger (kind blend) stays on the desktop.
+
+    --mode nb (auto picks it when the RC16 run has an Ha master, e.g. the
+    Heart Nebula): Ha into the OSC red, OIII into green and blue
+    (continuum-aware fits), Ha (or the RC16 L) into CIE L, the natural HaRGB
+    and gold palette finishes, and RC16-scale SHO / HOO core crops with the
+    OSC stars.
 
     photonscript blend --target M31 --dry-run
     """
@@ -3737,6 +3763,8 @@ def blend_cmd(
         lock_wait_min=_pilock_wait(cfg),
         osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
         rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
+        mode=mode, ha_weight=ha_weight, oiii_weight=oiii_weight, ha_boost=ha_boost, oiii_boost=oiii_boost,
+        nb_lum_weight=nb_lum_weight, palette=palette,
         **bxt,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731

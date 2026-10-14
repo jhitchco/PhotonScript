@@ -186,11 +186,14 @@ def blend_candidate(o: AutoOptions, target: str, discover) -> tuple[object | Non
 def finals(run_dir: Path, blend: bool = False) -> list[Path]:
     """The finished JPGs of a run: a mono run's color images first
     (<target>_LRGB / _RGB / _SHO / _HOO.jpg), then integrate *_final.jpg
-    (+ *_hoo.jpg, *_gold.jpg); or a blend's *_blend.jpg (+ *_core.jpg).
+    (+ *_hoo.jpg, *_gold.jpg); or a blend's *_blend.jpg (+ *_core.jpg), a
+    narrowband blend's *_haRGB.jpg, *_haRGB_gold.jpg, *_core_SHO.jpg,
+    *_core_HOO.jpg first.
     make_review shows the first four."""
     from photonscript.integration.mono_color import color_jpgs
     fin = Path(run_dir) / "out" / "final"
-    pats = ("*_blend.jpg", "*_core.jpg") if blend else ("*_final.jpg", "*_hoo.jpg", "*_gold.jpg")
+    pats = ("*_haRGB.jpg", "*_haRGB_gold.jpg", "*_core_SHO.jpg", "*_core_HOO.jpg",
+            "*_blend.jpg", "*_core.jpg") if blend else ("*_final.jpg", "*_hoo.jpg", "*_gold.jpg")
     out: list[Path] = [] if blend else color_jpgs(Path(run_dir) / "out")
     seen = {p.name.lower() for p in out}
     for pat in pats:
