@@ -420,6 +420,20 @@ class PhotonScriptConfig(BaseSettings):
                                  # (0..1; 0.5 to 0.9 is the useful range)
     nxt_denoise: float = 0.80  # NoiseXTerminator denoise on the linear image
                                  # (0..1; detail fixed at 0.15)
+    # Narrowband two-rig blend readiness (scheduler/blend_readiness): accepted
+    # RC16 hours the NB blend wants per channel. Ha is the blend's main input
+    # (below it autointegrate skips the NB blend), OIII adds G / B, SII (with
+    # OIII) makes the SHO core.
+    blend_nb_min_ha_h: float = 2.0
+    blend_nb_min_oiii_h: float = 1.5
+    blend_nb_min_sii_h: float = 1.5
+    blend_nb_gate: bool = True   # autointegrate: skip an NB blend whose RC16
+                                 # Ha master holds less than blend_nb_min_ha_h
+    plan_nb_blend_ha_first: bool = False  # planner: a two-rig narrowband goal
+                                 # (RC16 Ha plan + Piggy-600 plan) gives the
+                                 # night to RC16 Ha first until it holds
+                                 # blend_nb_min_ha_h, then OIII / SII by the
+                                 # mix; a goal's ha_first_h overrides
     blend_rc16_bxt: bool = True  # PS-153 blend: BlurXTerminator pass on the
                                  # RC16 L linear master before the blend (only
                                  # when installed and finish_use_rcastro not off)

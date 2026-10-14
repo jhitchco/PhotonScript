@@ -124,6 +124,78 @@ def _fit_by_moon(exposures, available_seconds, moon_tag):
     return exposures
 
 
+def _rc16_plan(proj, filt: str):
+    return next((e for e in getattr(proj, "exposure_plans", None) or []
+                 if (getattr(e, "rig", "rc16") or "rc16") == "rc16"
+                 and e.filter_type.value == filt), None)
+
+
+def feeds_nb_blend(proj) -> bool:
+    """A two-rig narrowband goal: an RC16 Ha plan (the NB blend's main input,
+    integration/blend.py --mode nb) and a Piggy-600 plan (the frame)."""
+    return (_rc16_plan(proj, "Ha") is not None
+            and any((getattr(e, "rig", "rc16") or "rc16") != "rc16"
+                    for e in proj.exposure_plans))
+
+
+def ha_first_seconds(proj, config) -> float:
+    """RC16 Ha seconds this goal should hold before OIII / SII share a night
+    by the mix; 0 = off (the default). The goal's ha_first_h wins (0 = off,
+    > 0 = on at that many hours, any goal with an RC16 Ha plan); unset, a
+    two-rig narrowband goal follows plan_nb_blend_ha_first at
+    blend_nb_min_ha_h."""
+    if _rc16_plan(proj, "Ha") is None:
+        return 0.0
+    v = getattr(proj, "ha_first_h", None)
+    if v is None:
+        if not bool(getattr(config, "plan_nb_blend_ha_first", False)):
+            return 0.0
+        if not feeds_nb_blend(proj):
+            return 0.0
+        v = getattr(config, "blend_nb_min_ha_h", 2.0)
+    try:
+        return max(0.0, float(v)) * 3600.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _fit_ha_first(exposures, available_seconds, moon_tag, ha_done_s: float,
+                  min_s: float):
+    """Ha first: tonight's time goes to RC16 Ha until the goal would hold
+    min_s accepted Ha seconds, then what is left is shared by the usual moon
+    rule (_fit_by_moon: the remaining counts, i.e. the mix). Ha is listed
+    first, so the sequence shoots it first. Without an Ha deficit this is
+    _fit_by_moon unchanged."""
+    import math
+    ha = next((e for e in exposures if e.filter_type.value == "Ha"
+               and e.count > 0), None)
+    deficit = min_s - ha_done_s
+    if ha is None or deficit <= 0 or not ha.exposure_seconds:
+        return _fit_by_moon(exposures, available_seconds, moon_tag)
+    exp = float(ha.exposure_seconds)
+    reserve = min(ha.count, math.ceil(deficit / exp - 1e-9),
+                  int(available_seconds // exp))
+    if reserve <= 0:
+        return _fit_by_moon(exposures, available_seconds, moon_tag)
+    left = available_seconds - reserve * exp
+    rest = []
+    for e in exposures:
+        if e is ha:
+            if e.count - reserve > 0:
+                rest.append(e.model_copy(update={"count": e.count - reserve}))
+        else:
+            rest.append(e)
+    shortest = min((float(e.exposure_seconds) for e in rest
+                    if e.exposure_seconds), default=0.0)
+    # the reserve can take the whole night: then nothing else is planned
+    fitted = (_fit_by_moon(rest, left, moon_tag)
+              if rest and shortest and left >= shortest else [])
+    extra = next((e for e in fitted if e.filter_type.value == "Ha"), None)
+    out_ha = ha.model_copy(update={
+        "count": reserve + (extra.count if extra is not None else 0)})
+    return [out_ha] + [e for e in fitted if e.filter_type.value != "Ha"]
+
+
 def remaining_copy(plan: ExposurePlan) -> ExposurePlan:
     """PS-105: tonight's copy of a plan carries only what is still owed.
 
@@ -307,7 +379,8 @@ def allocate_windows(entries: list[dict], start: datetime, end: datetime,
 
 def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
                    prio_by_name: dict, config, dark_start: datetime,
-                   dark_end: datetime, now: datetime, moon: dict | None):
+                   dark_end: datetime, now: datetime, moon: dict | None,
+                   ha_first_by_name: dict | None = None):
     """PS-180: allocate_windows over tonight's ordered targets, put the
     windows on them, drop the targets that get none, and fit each target's
     per-pass counts into its window (filter balance: every filter of a pass
@@ -350,7 +423,16 @@ def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
             # a run-once mosaic panel (PS-111) keeps its owed subs: the
             # handoff still bounds it
             longs = [e for e in t.exposures if e.count - e.acquired > 0]
-            _scale_group(longs, span_s * 0.85)
+            hf = (ha_first_by_name or {}).get(t.name)
+            if hf:
+                # Ha first holds inside the window too: the Ha reserve
+                # first, the rest of the pass scaled into what is left
+                done_s, min_s = hf
+                t.exposures = (_fit_ha_first(longs, span_s * 0.85, None,
+                                             done_s, min_s)
+                               + [e for e in t.exposures if e not in longs])
+            else:
+                _scale_group(longs, span_s * 0.85)
         kept.append(t)
     logger.info("Target windows: %s%s", "; ".join(
         f"{t.name} {t.window_start_utc:%H:%M}-{t.window_end_utc:%H:%M}Z"
@@ -510,6 +592,7 @@ def plan_night_sequence(
     remaining_hours = dark_hours
     # PS-180: per target, for the window allocation
     vis_by_name, need_by_name, prio_by_name = {}, {}, {}
+    ha_first_by_name = {}   # name -> (Ha seconds done, Ha first seconds)
     _gen_moon = None  # generator's moon window, fetched only if needed
 
     for vp in visible_projects:
@@ -541,8 +624,21 @@ def plan_night_sequence(
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
-        remaining_exposures = _fit_by_moon(
-            remaining_exposures, available_seconds, moon_tag)
+        ha_min_s = ha_first_seconds(proj, config)
+        if ha_min_s > 0:
+            # Ha first (two-rig NB blend): RC16 Ha until the goal holds
+            # ha_min_s accepted, then OIII / SII by the mix
+            ha_plan = _rc16_plan(proj, "Ha")
+            ha_done_s = (ha_plan.long_seconds_done() if ha_plan is not None
+                         else 0.0)
+            remaining_exposures = _fit_ha_first(
+                remaining_exposures, available_seconds, moon_tag,
+                ha_done_s, ha_min_s)
+            if ha_done_s < ha_min_s:
+                ha_first_by_name[proj.target.name] = (ha_done_s, ha_min_s)
+        else:
+            remaining_exposures = _fit_by_moon(
+                remaining_exposures, available_seconds, moon_tag)
         if not remaining_exposures:
             # e.g. a broadband-only target on a bright-moon night -> skip tonight
             continue
@@ -634,7 +730,7 @@ def plan_night_sequence(
                 moon = {}
         sequence_targets = _apply_windows(
             sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
-            dark_start, dark_end, date_utc, moon)
+            dark_start, dark_end, date_utc, moon, ha_first_by_name)
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",
