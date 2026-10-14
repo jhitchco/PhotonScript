@@ -188,3 +188,20 @@ def test_skip_log_line_carries_the_reason(tmp_path, monkeypatch, caplog):
     assert ("Skipping Andromeda Galaxy tonight: broadband-only and the moon "
             "defers broadband (moon 70% lit, up at dusk (alt 40 deg), sets "
             "03:00 local: broadband deferred") in caplog.text
+
+
+def test_moon_setting_soon_after_dusk_does_not_defer_broadband():
+    # 2026-10-14: 20% lit, alt 10 deg at dusk, sets ~1 h after astro dusk:
+    # the rest of the night is moonless, so broadband runs (it was 0 targets)
+    from datetime import datetime, timedelta
+    from photonscript.scheduler.moon import sets_soon_after_dusk
+    dusk = datetime(2026, 10, 15, 2, 5)
+    mw = {"available": True, "down_at_dusk": False, "illum_pct": 20,
+          "alt_at_dusk_deg": 10.0, "dusk_utc": dusk,
+          "set_utc": dusk + timedelta(hours=1), "set_local": "21:06"}
+    assert sets_soon_after_dusk(mw)
+    assert broadband_deferred(mw) is False
+    assert "sets within" in describe_moon(mw)
+    late = {**mw, "set_utc": dusk + timedelta(hours=4)}
+    assert broadband_deferred(late) is True
+    assert broadband_deferred({**mw, "set_utc": None}) is True

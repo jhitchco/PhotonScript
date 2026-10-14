@@ -17,6 +17,10 @@ _cache: dict[tuple, dict] = {}
 
 # broadband_deferred(): a moon up at dusk defers broadband from this lit %
 BROADBAND_DEFER_ILLUM_PCT = 20
+# ... unless it sets within this many hours of astro dusk: a young moon low in
+# the west at dusk (2026-10-14: 20% lit, alt 10 deg, set 1 h after dusk) left
+# the whole dark night with 0 broadband targets
+BROADBAND_MOONSET_GRACE_H = 1.5
 
 
 def night_moon(config, date_str: str, dark_start: datetime,
@@ -156,9 +160,22 @@ def broadband_deferred(mw: dict) -> bool:
         return True
     if mw.get("down_at_dusk"):
         return False
+    if sets_soon_after_dusk(mw):
+        return False
     illum = mw.get("illum_pct")
     # 0% is a real value (new moon up at dusk), not "unknown" (PS-106).
     return True if illum is None else illum >= BROADBAND_DEFER_ILLUM_PCT
+
+
+def sets_soon_after_dusk(mw: dict, grace_h: float = BROADBAND_MOONSET_GRACE_H) -> bool:
+    """The moon is up at dusk but sets within grace_h of astro dusk: the rest
+    of the night is moonless, so broadband is not deferred."""
+    if not mw or mw.get("down_at_dusk"):
+        return False
+    set_utc, dusk = mw.get("set_utc"), mw.get("dusk_utc")
+    if not set_utc or not dusk:
+        return False
+    return (set_utc - dusk).total_seconds() <= grace_h * 3600
 
 
 def describe_moon(mw: dict) -> str:
@@ -181,7 +198,12 @@ def describe_moon(mw: dict) -> str:
         where = "up at dusk" + alt_txt
         if mw.get("set_local"):
             where += f", sets {mw['set_local']} local"
-    verdict = ("broadband deferred: the moon is up at dusk and at least "
-               f"{BROADBAND_DEFER_ILLUM_PCT}% lit" if broadband_deferred(mw)
-               else "broadband OK")
+    if broadband_deferred(mw):
+        verdict = ("broadband deferred: the moon is up at dusk and at least "
+                   f"{BROADBAND_DEFER_ILLUM_PCT}% lit")
+    elif sets_soon_after_dusk(mw):
+        verdict = (f"broadband OK: the moon sets within "
+                   f"{BROADBAND_MOONSET_GRACE_H:g} h of dusk")
+    else:
+        verdict = "broadband OK"
     return f"moon {lit}, {where}: {verdict}"
