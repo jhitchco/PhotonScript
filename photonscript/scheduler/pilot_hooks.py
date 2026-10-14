@@ -20,7 +20,12 @@ Contract:
     own PHD2 stop_capture (PilotIO.phd2_stop, which never touches the PHD2
     calibration). Must not raise (the pilot logs and falls back if it does).
 
-Until the guard lands this returns None, so the pilot's fallback runs.
+Filled 2026-10-14: the unguided guard (scheduler/unguided_guard.py) already
+watches every 30 s tick while RUNNING and, with unguided_guider_policy
+"disconnect", stops NINA's guiding, disconnects NINA's guider and stops PHD2
+itself. So with that policy the pilot leaves it to the guard (one place
+acts) and verifies on the next subs like any action; with "alert" or "off"
+the guard does not stop anything and the pilot's own PHD2 stop runs.
 """
 from __future__ import annotations
 
@@ -29,5 +34,13 @@ from datetime import datetime
 
 def guider_active_unguided(cfg, rig: str, evidence: dict,
                             now: datetime | None = None) -> dict | None:
-    """Not handled here yet (the ps-unguided-guard branch fills it)."""
+    try:
+        from photonscript.scheduler import unguided_guard
+        if unguided_guard.policy(cfg) == "disconnect":
+            return {"ok": True,
+                    "detail": "left to the unguided guard (policy disconnect: "
+                              "it stops guiding and disconnects NINA's guider "
+                              "on its 30 s tick)"}
+    except Exception:  # noqa: BLE001
+        pass
     return None

@@ -452,8 +452,10 @@ def test_guider_stop_alert_once_per_spell_and_hook(tmp_path, monkeypatch):
     assert io3.calls.count("phd2_stop") == 1
 
 
-def test_default_hook_is_not_handled():
-    assert pilot_hooks.guider_active_unguided(None, "rc16", {}, None) is None
+def test_default_hook_defers_to_guard_default_policy():
+    # the guard's default policy is disconnect, so the pilot leaves it there
+    out = pilot_hooks.guider_active_unguided(None, "rc16", {}, None)
+    assert out and out["ok"]
 
 
 def test_watch_never_acts_unless_running(tmp_path):
@@ -621,3 +623,14 @@ def test_config_defaults_and_settings_rows():
         assert f'"{k}"' in src, k
     hb = (ROOT / "docs/HANDBOOK.md").read_text(encoding="utf-8")
     assert "night_pilot_refocus_mode" in hb and "OSC_CLOSED_ROOF_DARKS" in hb
+
+
+def test_pilot_hook_defers_to_unguided_guard_on_disconnect():
+    from types import SimpleNamespace
+    from photonscript.scheduler import pilot_hooks
+    out = pilot_hooks.guider_active_unguided(
+        SimpleNamespace(unguided_guider_policy="disconnect"), "rc16", {})
+    assert out and out["ok"] and "unguided guard" in out["detail"]
+    for pol in ("alert", "off"):
+        assert pilot_hooks.guider_active_unguided(
+            SimpleNamespace(unguided_guider_policy=pol), "rc16", {}) is None
