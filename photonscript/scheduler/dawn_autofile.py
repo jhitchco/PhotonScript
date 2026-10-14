@@ -87,6 +87,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 PIGGY = "piggyback"
@@ -647,7 +649,7 @@ def _write_record(config, date: str, rec: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(rec, indent=1, default=str), encoding="utf-8")
-    tmp.replace(p)
+    replace_retry(tmp, p)
 
 
 def _push(config, rec: dict) -> None:

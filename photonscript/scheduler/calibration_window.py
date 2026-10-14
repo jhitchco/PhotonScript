@@ -37,6 +37,8 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 DEFERRED_NAME = "calibration_deferred.json"
@@ -142,7 +144,7 @@ def _save(config, data: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
-        tmp.replace(p)
+        replace_retry(tmp, p)
     except OSError as e:
         logger.warning("deferred calibration plan not saved: %s", e)
 

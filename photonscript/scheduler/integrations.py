@@ -52,6 +52,7 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
 from photonscript.shared import ledger as L
 
 logger = logging.getLogger(__name__)
@@ -382,7 +383,7 @@ def _proc_update(config, fn) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(d, indent=1), encoding="ascii")
-    tmp.replace(path)
+    replace_retry(tmp, path)
 
 
 def _age_h(iso: str, now: datetime | None = None) -> float | None:

@@ -96,6 +96,8 @@ import statistics
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 MODES = ("act", "advise", "off")
@@ -474,7 +476,7 @@ def save_state(cfg, st: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(st, indent=1, default=str), encoding="utf-8")
-        tmp.replace(p)
+        replace_retry(tmp, p)
     except OSError as e:
         logger.warning("night pilot state not saved: %s", e)
 

@@ -25,6 +25,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 HIPS2FITS = "https://alasky.cds.unistra.fr/hips-image-services/hips2fits"
@@ -180,7 +182,7 @@ def reference(config, name: str, ra_deg: float, dec_deg: float,
             img.parent.mkdir(parents=True, exist_ok=True)
             tmp = img.with_name(img.name + ".part")
             tmp.write_bytes(data)
-            tmp.replace(img)
+            replace_retry(tmp, img)
             meta.write_text(json.dumps(side, indent=1), encoding="utf-8")
             fail.unlink(missing_ok=True)
         except OSError as e:

@@ -101,6 +101,8 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 POINTS_FILE = "focus_af_points.json"
@@ -407,7 +409,7 @@ def _write_json(path: Path, obj) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, indent=1), encoding="utf-8")
-    tmp.replace(path)
+    replace_retry(tmp, path)
 
 
 # --------------------------------------------------------------------------

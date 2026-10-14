@@ -62,6 +62,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
 from photonscript.shared import phd2_store as store
 
 logger = logging.getLogger(__name__)
@@ -287,7 +288,7 @@ def _write_compact(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, separators=(",", ":"), default=str), encoding="utf-8")
-    tmp.replace(path)
+    replace_retry(tmp, path)
 
 
 def nights(config) -> list[str]:

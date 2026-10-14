@@ -50,6 +50,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 REPORT_NAME = "calibration_filing.json"
@@ -329,7 +331,7 @@ def _save(config, rep: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(rep, indent=1, default=str), encoding="utf-8")
-        tmp.replace(p)
+        replace_retry(tmp, p)
     except OSError as e:
         logger.warning("calibration filing report not saved: %s", e)
 

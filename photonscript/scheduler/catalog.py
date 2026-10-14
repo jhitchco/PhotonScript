@@ -19,6 +19,7 @@ import logging
 import re
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
 from photonscript.shared import astronomy
 from photonscript.shared.target_names import target_key
 
@@ -162,7 +163,7 @@ def save_user_entry(config, entry: dict) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps({"targets": rows}, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    replace_retry(tmp, path)
     astronomy.set_user_targets(rows)
     return row
 

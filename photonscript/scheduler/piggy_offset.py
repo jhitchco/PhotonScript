@@ -52,6 +52,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
+
 logger = logging.getLogger(__name__)
 
 STORE_NAME = "piggy_offset.json"
@@ -366,7 +368,7 @@ def save(cfg, result: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(result, indent=1), encoding="utf-8")
-        tmp.replace(p)
+        replace_retry(tmp, p)
     except OSError as e:
         logger.warning("piggy offset store not written: %s", e)
 

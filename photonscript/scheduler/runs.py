@@ -28,6 +28,7 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
 from photonscript.shared.sub_file import norm_file, norm_record
 from photonscript.shared.target_names import (canonical_target,
                                               known_target_index, target_key)
@@ -1160,17 +1161,15 @@ def _write_text_atomic(p: Path, text: str) -> None:
     os.replace it in, so a crash mid-write leaves the old log intact. On
     Windows the replace is refused while a reader holds the file open:
     retry briefly, then fall back to the old in-place write (logged)."""
-    import time as _time
     tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
-        for attempt in range(6):
-            try:
-                os.replace(tmp, p)
-                return
-            except PermissionError:
-                _time.sleep(0.05 * (attempt + 1))
+        try:
+            replace_retry(tmp, p)
+            return
+        except PermissionError:
+            pass
         logger.warning("subs log %s busy: rewrote it in place", p.name)
         p.write_text(text, encoding="utf-8")
     finally:
@@ -3353,7 +3352,7 @@ def _save_png_atomic(img, out: Path) -> None:
         else:
             img.save(tmp, format="PNG")
         try:
-            os.replace(tmp, out)
+            replace_retry(tmp, out)
         except OSError:
             if not out.exists():
                 raise
@@ -3526,7 +3525,7 @@ def histogram(config, date: str, rel_file: str, refresh: bool = False) -> dict |
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_suffix(".tmp")
         tmp.write_text(json.dumps(res), encoding="utf-8")
-        os.replace(tmp, out)
+        replace_retry(tmp, out)
     except OSError as e:
         logger.debug("histogram cache write failed for %s: %s", rel_file, e)
     return res

@@ -19,10 +19,14 @@ REPLACE_DELAY_S = 0.05
 
 
 def replace_retry(src, dst, *, attempts: int = REPLACE_ATTEMPTS, delay_s: float = REPLACE_DELAY_S,
-                  sleep=time.sleep, replace=os.replace) -> Path:
+                  sleep=None, replace=None) -> Path:
     """os.replace(src, dst), retried on PermissionError up to `attempts`
     times with a growing short sleep (0.05, 0.10, ... s). Returns dst; the
-    last PermissionError propagates."""
+    last PermissionError propagates. `replace` / `sleep` default to
+    os.replace / time.sleep looked up at call time, so a test that patches
+    os.replace still reaches every writer that goes through here."""
+    replace = replace or os.replace
+    sleep = sleep or time.sleep
     n = max(1, int(attempts))
     for i in range(n):
         try:

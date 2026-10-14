@@ -43,6 +43,7 @@ import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from photonscript.shared.fileops import replace_retry
 from photonscript.shared.sub_file import norm_file
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,7 @@ def night_pass(config, night: str) -> dict:
         d.mkdir(parents=True, exist_ok=True)
         tmp = night_file(config, night).with_suffix(".tmp")
         tmp.write_text("".join(json.dumps(r) + "\n" for r in runs), encoding="utf-8")
-        tmp.replace(night_file(config, night))
+        replace_retry(tmp, night_file(config, night))
         meta_file(config, night).write_text(json.dumps(meta, indent=1), encoding="utf-8")
     except OSError as e:
         logger.warning("center log not saved for %s: %s", night, e)
