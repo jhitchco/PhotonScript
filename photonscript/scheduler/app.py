@@ -275,23 +275,24 @@ def setup_message_listeners():
 # Pages
 # ---------------------------------------------------------------------------
 
-_dashboard_cache: dict = {}  # (utc date, site) -> (twilight, ranked)
+_dashboard_cache: dict = {}  # (local night date, site) -> (twilight, ranked)
 
 
-def _dashboard_targets(obs, now: datetime):
-    """Tonight's twilight + ranked seasonal targets, cached per UTC date.
+def _dashboard_targets(obs, now: datetime, config=None):
+    """Tonight's twilight + ranked seasonal targets, cached per night.
 
-    Seconds are dropped before the astronomy so the result depends only on the
-    date (twilight scan starts 23:00, transit anchor 07:00): one computation
-    per day instead of one per page view.
+    The night is localtime.night_window's (the local evening date, noon to
+    noon, rolled once its dawn has passed), never the UTC date: from 18:00
+    MDT the UTC date is already tomorrow and the dashboard showed tomorrow's
+    night. One computation per night instead of one per page view.
     """
-    key = (now.date(), obs.latitude, obs.longitude, obs.elevation)
+    from photonscript.shared.localtime import night_window
+    base, twilight = night_window(config or get_config(), now, obs=obs)
+    key = (base.date(), obs.latitude, obs.longitude, obs.elevation)
     hit = _dashboard_cache.get(key)
     if hit is not None:
         return hit
-    day = now.replace(second=0, microsecond=0)
-    twilight = get_twilight_times(obs, day)
-    ranked = rank_targets_for_night(get_seasonal_targets(day.month), obs, day)
+    ranked = rank_targets_for_night(get_seasonal_targets(base.month), obs, base)
     _dashboard_cache.clear()  # only today's entry is ever useful
     _dashboard_cache[key] = (twilight, ranked)
     return twilight, ranked
@@ -310,7 +311,7 @@ async def dashboard(request: Request):
     now = datetime.utcnow()
     # Astronomy runs in a worker thread: on the event loop it froze every
     # other request (and the telescope agents, which share this loop).
-    twilight, ranked = await asyncio.to_thread(_dashboard_targets, obs, now)
+    twilight, ranked = await asyncio.to_thread(_dashboard_targets, obs, now, config)
 
     return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,

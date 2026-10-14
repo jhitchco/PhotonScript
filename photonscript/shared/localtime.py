@@ -45,15 +45,17 @@ def night_base_date(config, now_utc: datetime | None = None) -> datetime:
     return datetime(local.year, local.month, local.day)
 
 
-def night_window(config, now_utc: datetime | None = None) -> tuple[datetime, dict]:
+def night_window(config, now_utc: datetime | None = None,
+                 obs=None) -> tuple[datetime, dict]:
     """(base date, get_twilight_times() dict) of the night in progress or
     the coming one: night_base_date(), rolled to the next evening once that
     night's dawn has passed. The one anchor for "tonight" (the UTC date is
     already tomorrow from 18:00 MDT, and after local midnight it is still
-    the night that began yesterday evening)."""
+    the night that began yesterday evening). obs: the site (default the
+    config's observatory)."""
     from photonscript.shared.astronomy import get_twilight_times
     now_utc = now_utc or datetime.utcnow()
-    obs = config.get_observatory()
+    obs = obs or config.get_observatory()
     base = night_base_date(config, now_utc)
     tw = get_twilight_times(obs, base)
     dawn = tw.get("astro_dark_end")
