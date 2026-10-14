@@ -2258,6 +2258,52 @@ def slew_backfill(
         print(_json.dumps(results, indent=2, default=str))
 
 
+@app.command("guide-rms-backfill")
+def guide_rms_backfill_cmd(
+    date: str = typer.Option("", help="One night only (YYYY-MM-DD)"),
+    since: str = typer.Option("", help="First night (YYYY-MM-DD); with no "
+                                       "--date, every night from here on"),
+    apply: bool = typer.Option(False, "--apply/--dry-run",
+                               help="Write the recomputed guide_rms (default: "
+                                    "dry run, report only; human verdicts "
+                                    "never change)"),
+    examples: bool = typer.Option(False, "--examples",
+                                  help="Print a few old -> new values per night"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Recompute guide_rms of subs graded before the window-RMS fix (they
+    kept the rolling RMS at grading time, e.g. a constant 34.84" on the
+    2026-10-12 RC16 subs) from the night's PHD2 guide log, or set it to none
+    with guide_rms_frames 0 where PHD2 was not guiding. Run it where the
+    PHD2 guide logs are (the scope PC); stop PhotonScript or run in daytime
+    with --apply: it rewrites the subs log.
+
+    photonscript guide-rms-backfill --date 2026-10-12
+    photonscript guide-rms-backfill --since 2026-09-01 --apply
+    """
+    import json as _json
+    from photonscript.scheduler.guide_rms_backfill import format_line, night_pass
+    from photonscript.scheduler.runs import runs_dir
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if date:
+        nights = [date]
+    else:
+        nights = sorted(p.name[:10] for p in runs_dir(cfg).glob("*_subs.jsonl")
+                        if p.name[:10] >= (since or "0000"))
+    results = []
+    for d in nights:
+        r = night_pass(cfg, d, apply=apply)
+        results.append(r)
+        if not as_json and r["subs"]:
+            console.print(format_line(r), markup=False, highlight=False)
+            for x in (r["examples"] if examples else []):
+                console.print(f"    {x['file']}: {x['old']} -> {x['new']} "
+                              f"({x['frames']} frames, {x['src']})",
+                              markup=False, highlight=False)
+    if as_json:
+        print(_json.dumps(results, indent=2, default=str))
+
+
 @app.command("dawn-file")
 def dawn_file_cmd(
     night: str = typer.Option(..., "--night", help="The night (YYYY-MM-DD)"),

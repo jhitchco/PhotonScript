@@ -703,6 +703,35 @@ def _with_note(c: Check, note: str) -> Check:
     return c
 
 
+def guide_rms_check(m: dict, t: dict, wf: float, nocorr: bool = False,
+                    nonstar: bool = False) -> Check:
+    """The guide_rms row: the sub's guide RMS (metrics guide_rms /
+    guide_state), only judged while guiding and per qa_guide_rms_mode."""
+    rms = _num(m.get("guide_rms"))
+    gstate = str(m.get("guide_state") or "").lower()
+    if nocorr:
+        return Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
+                     "PHD2 sent no corrections: the RMS is not the mount's")
+    if nonstar:
+        return Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
+                     "guided on a non-star lock: the RMS is meaningless")
+    if rms is None:
+        return Check("guide_rms", None, t["guide_rms_max"], SKIP,
+                     "no guiding data")
+    if gstate not in ("guiding", "settling"):
+        return Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
+                     f"not guiding ({gstate or 'unknown'})")
+    if t.get("guide_rms_mode", "info") not in ("fail", "warn"):
+        return Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
+                     "recorded, not judged: PHD2 client units "
+                     "unverified until PS-70")
+    if rms > t["guide_rms_max"]:
+        return Check("guide_rms", _r(rms, 2), t["guide_rms_max"],
+                     FAIL if t["guide_rms_mode"] == "fail" else WARN,
+                     f"Tracking RMS {rms:.2f}\" > {t['guide_rms_max']:g}\"")
+    return _max_check("guide_rms", rms, t["guide_rms_max"], wf, "", nd=2)
+
+
 def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
     """Grade one sub. Pure function of the metrics and the context."""
     m = metrics or {}
@@ -875,34 +904,8 @@ def evaluate(metrics: dict, ctx: QAContext) -> Scorecard:
             "PHD2 guided but sent no corrections during this sub (PS-155): "
             f"judged on unguided limits (ecc {t['ecc_max']:g}, HFR "
             f"{t['hfr_max']:g} px)"))
-    # guiding RMS snapshot (only judged while guiding)
-    rms = _num(m.get("guide_rms"))
-    gstate = str(m.get("guide_state") or "").lower()
-    if nocorr:
-        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
-                            "PHD2 sent no corrections: the RMS is not "
-                            "the mount's"))
-    elif nonstar:
-        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
-                            "guided on a non-star lock: the RMS is meaningless"))
-    elif rms is None:
-        checks.append(Check("guide_rms", None, t["guide_rms_max"], SKIP,
-                            "no guiding data"))
-    elif gstate not in ("guiding", "settling"):
-        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
-                            f"not guiding ({gstate or 'unknown'})"))
-    elif t.get("guide_rms_mode", "info") not in ("fail", "warn"):
-        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"], SKIP,
-                            "recorded, not judged: PHD2 client units "
-                            "unverified until PS-70"))
-    elif rms > t["guide_rms_max"]:
-        checks.append(Check("guide_rms", _r(rms, 2), t["guide_rms_max"],
-                            FAIL if t["guide_rms_mode"] == "fail" else WARN,
-                            f"Tracking RMS {rms:.2f}\" > "
-                            f"{t['guide_rms_max']:g}\""))
-    else:
-        checks.append(_max_check("guide_rms", rms, t["guide_rms_max"], wf,
-                                 "", nd=2))
+    # guiding RMS during the sub (only judged while guiding)
+    checks.append(guide_rms_check(m, t, wf, nocorr=nocorr, nonstar=nonstar))
     # tracking jump (doubled stars)
     dbl = _num(m.get("doubled_frac"))
     if dbl is None:
@@ -1156,6 +1159,18 @@ def regrade_slew_straddle(rec: dict, overlap, t: dict, note: str | None = None):
     fields["slew_overlap_s"] = None if overlap is None else round(overlap, 1)
     fields["slew_note"] = note or None
     return fields
+
+
+def regrade_guide_rms(rec: dict, t: dict, rms) -> dict | None:
+    """Swap only the guide_rms row of a stored scorecard for a recomputed
+    during-the-sub RMS (the guide-rms-backfill pass) and return the new
+    record fields, or None when the record has no scorecard or the row is
+    unchanged. The guide_nocorr / non-star lock skips of evaluate hold."""
+    m = {**metrics_from_record(rec), "guide_rms": rms}
+    new = guide_rms_check(m, t, float(t.get("warn_fraction", 0.10)),
+                          nocorr=bool(m.get("guide_nocorr")),
+                          nonstar=str(m.get("guide_lock") or "").lower() == "non-star")
+    return _swap_row(rec, new, t, {"guide_rms": rms})
 
 
 def regrade_focuser_zero(rec: dict, t: dict, focpos="rec", image_type="LIGHT"):

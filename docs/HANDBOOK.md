@@ -1751,6 +1751,15 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   from the Library (read only) and this machine's subs logs; `--apply` ON
   THE SCOPE PC rejects them in the subs logs (row swap, human verdicts
   kept, Library links to `_rejected`).
+- STALE GUIDE RMS (2026-10-12: every RC16 sub read 34.84", the last rolling
+  sample, while PHD2 was stopped or LostLock): since 2026-10-13 a sub's
+  `guide_rms` comes only from the guide frames inside its exposure and the
+  record carries `guide_rms_frames`. Older records:
+  `photonscript guide-rms-backfill --date D | --since D [--examples]` (dry
+  run) and `--apply` ON THE SCOPE PC (where the PHD2 guide logs are)
+  recompute each pre-fix sub's RMS from the night's guide log, or set none
+  with `guide_rms_frames` 0 where PHD2 was not guiding (`guide_rms_src`
+  phd2_log | not_guiding); the scorecard row follows, human verdicts kept.
 - AUTOFOCUS NOT FINISHING (same incident: 55 AUTOFOCUS-STARTING, 54 points,
   no finish, no page for three nights): while a rig's NINA is imaging, its
   agent reads NINA's event history (`/event-history`, plus `last-af`) every
