@@ -13,6 +13,7 @@
 # Output: Staging\<Name>\out\final\<Name>_final.{xisf,tif,jpg} + <Name>_linear.xisf
 #         + <Name>_starless.xisf (when StarNet2 ran)
 #         + <Name>_gold.{xisf,jpg} with -Palette gold (color masters)
+#         + <Name>_vivid.{xisf,tif,jpg} (color masters; -Vivid off = none)
 #         + <Name>_final_steps.json (which step ran, tool, settings; tag also in
 #         the PSFINISH FITS keyword)
 # Log:    Staging\<Name>\out\finish.log (or <OutDir>\finish.log; ends EXIT OK, or an
@@ -72,6 +73,12 @@ param(
     # B = OIII; starless with the natural stars screened back when StarXTerminator / StarNet2 is installed)
     [ValidateSet('off','gold')][string]$Palette = 'off',
     [double]$GoldMix = 0.6,        # Ha share of the gold green channel
+    # Vivid variant: on = also <Name>_vivid.{xisf,tif,jpg} (more saturation + a pink / warm / blue
+    # chroma lift through a luminance-range mask that spares the background and the brightest core)
+    [ValidateSet('on','off')][string]$Vivid = 'on',
+    [double]$VividSatMid = 0.72,   # vivid saturation curve midpoint (the natural has -SatMid)
+    [double]$VividHueBoost = 0.25, # chroma lift of the selected hues (0 = none)
+    [double]$VividLhe = 0,         # LocalHistogramEqualization amount through the mask (0 = off)
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
     [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal',
     [double]$LockWaitMin = 60      # wait this long for another PixInsight job's queue lock
@@ -101,7 +108,8 @@ foreach ($pair in @(@('BgTarget', $BgTarget, 0.01, 0.5), @('ShadowSigma', $Shado
                     @('Denoise', $Denoise, 0, 1), @('DeconvStrength', $DeconvStrength, 0, 1),
                     @('StarStrength', $StarStrength, 0, 1), @('BxtStars', $BxtStars, 0, 1),
                     @('BxtNonstellar', $BxtNonstellar, 0, 1), @('NxtDenoise', $NxtDenoise, 0, 1),
-                    @('GoldMix', $GoldMix, 0, 1))) {
+                    @('GoldMix', $GoldMix, 0, 1), @('VividSatMid', $VividSatMid, 0.5, 0.95),
+                    @('VividHueBoost', $VividHueBoost, 0, 1), @('VividLhe', $VividLhe, 0, 1))) {
     if ($pair[1] -lt $pair[2] -or $pair[1] -gt $pair[3]) {
         Write-Error "-$($pair[0]) $($pair[1]) out of range $($pair[2])..$($pair[3])"; exit 1
     }
@@ -216,7 +224,9 @@ $js = $js.Replace('__GRAXPERT_AI__', (JsStr $GraXpertAiVersion)).Replace('__GRAX
 $js = $js.Replace('__GRAXPERT_TIMEOUT_MIN__', [string]$GraXpertTimeoutMin)
 $js = $js.Replace('__STARS__', $StarReduction).Replace('__STAR_STRENGTH__', (JsNum $StarStrength))
 $js = $js.Replace('__HOO__', $Hoo)
-$js = $js.Replace('__PALETTE__', $Palette).Replace('__GOLD_MIX__', (JsNum $GoldMix))
+$js = $js.Replace('__PALETTE__', $Palette).Replace('__GOLD_MIX__', (JsNum $GoldMix)).Replace('__PALETTE_WHY__', '')
+$js = $js.Replace('__VIVID__', $Vivid).Replace('__VIVID_SAT_MID__', (JsNum $VividSatMid))
+$js = $js.Replace('__VIVID_HUE_BOOST__', (JsNum $VividHueBoost)).Replace('__VIVID_LHE__', (JsNum $VividLhe))
 $js = $js.Replace('__MASTERS__', 'null')   # one master; photonscript integrate passes a list
 $runjs = Join-Path $(if ($OutDir) { $finalDir } else { $stage }) "finish_osc_run.js"
 # BOM-less write: PowerShell's UTF8 adds a BOM that breaks PixInsight's parser

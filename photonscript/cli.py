@@ -3645,6 +3645,23 @@ def calibration_status_cmd(
         raise typer.Exit(1)
 
 
+def _vivid_overrides(base: dict, vivid, sat_mid: float, hue_boost: float, lhe: float) -> dict:
+    """The vivid-variant settings: base (pjsr.vivid_settings of the config)
+    with the CLI values that were given (None / negative = keep). Raises
+    ValueError (PjsrError) on an out-of-range value."""
+    from photonscript.integration import pjsr
+    out = {k: base[k] for k in ("vivid", "vivid_sat_mid", "vivid_hue_boost", "vivid_lhe")}
+    if vivid is not None:
+        out["vivid"] = bool(vivid)
+    if sat_mid >= 0:
+        out["vivid_sat_mid"] = pjsr.vivid_sat_mid(sat_mid)
+    if hue_boost >= 0:
+        out["vivid_hue_boost"] = pjsr.unit_value("vivid_hue_boost", hue_boost)
+    if lhe >= 0:
+        out["vivid_lhe"] = pjsr.unit_value("vivid_lhe", lhe)
+    return out
+
+
 def _rc_overrides(rcastro: str, bxt_stars: float, bxt_nonstellar: float, nxt_denoise: float) -> dict:
     """PS-186: integrate's --rcastro / --bxt-* / --nxt-denoise over the config
     (blank / negative = keep the config value). Raises ValueError."""
@@ -3779,7 +3796,20 @@ def integrate_cmd(
                              help="OSC finish: also the HOO-mapped image (Ha = R, OIII = mean G, B; PS-161)"),
     palette: str = typer.Option("", "--palette",
                                 help="OSC finish: also a palette image, off | gold (gold-blue: "
-                                     "<name>_gold.{xisf,jpg}; default finish_palette, off)"),
+                                     "<name>_gold.{xisf,jpg}; default finish_palette, off; the configured "
+                                     "palette only applies to finish_palette_kinds targets)"),
+    vivid: Optional[bool] = typer.Option(None, "--vivid/--no-vivid",
+                                         help="OSC finish: also <name>_vivid.{xisf,tif,jpg} (more saturation + "
+                                              "a pink / warm / blue lift through a mask; default finish_vivid, on)"),
+    vivid_sat_mid: float = typer.Option(-1.0, "--vivid-sat-mid",
+                                        help="Vivid saturation midpoint 0.5..0.95 "
+                                             "(default finish_vivid_sat_mid, 0.72)"),
+    vivid_hue_boost: float = typer.Option(-1.0, "--vivid-hue-boost",
+                                          help="Vivid pink / warm / blue chroma lift 0..1 "
+                                               "(default finish_vivid_hue_boost, 0.25)"),
+    vivid_lhe: float = typer.Option(-1.0, "--vivid-lhe",
+                                    help="Vivid local contrast (LocalHistogramEqualization) amount 0..1, 0 = off "
+                                         "(default finish_vivid_lhe, 0)"),
     workers: int = typer.Option(0, "--workers", help="Star QA processes (0 = auto)"),
     min_group: int = typer.Option(3, "--min-group-frames",
                                   help="Mono: an exposure group with fewer subs is left out "
@@ -3835,6 +3865,8 @@ def integrate_cmd(
         if palette:
             from photonscript.integration import pjsr as _pjsr
             kw["palette"] = _pjsr.palette_mode(palette)
+            kw["palette_kinds"] = ""      # an explicit --palette always applies
+        kw.update(_vivid_overrides(kw, vivid, vivid_sat_mid, vivid_hue_boost, vivid_lhe))
     except ValueError as e:
         console.print(f"[red]integrate:[/red] {e}", markup=True)
         raise typer.Exit(2)
@@ -4140,7 +4172,21 @@ def finish_cmd(
     out: str = typer.Option("", "--out", help="Finish folder (NEW or empty; default "
                                               "<staging-root>/Finish/<name>_finish_<time>)"),
     staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
-    palette: str = typer.Option("", "--palette", help="off | gold (color masters; default finish_palette)"),
+    palette: str = typer.Option("", "--palette", help="off | gold (color masters; default finish_palette, "
+                                                      "which only applies to finish_palette_kinds targets; "
+                                                      "--palette gold forces it)"),
+    vivid: Optional[bool] = typer.Option(None, "--vivid/--no-vivid",
+                                         help="OSC finish: also <name>_vivid.{xisf,tif,jpg} (more saturation + "
+                                              "a pink / warm / blue lift through a mask; default finish_vivid, on)"),
+    vivid_sat_mid: float = typer.Option(-1.0, "--vivid-sat-mid",
+                                        help="Vivid saturation midpoint 0.5..0.95 "
+                                             "(default finish_vivid_sat_mid, 0.72)"),
+    vivid_hue_boost: float = typer.Option(-1.0, "--vivid-hue-boost",
+                                          help="Vivid pink / warm / blue chroma lift 0..1 "
+                                               "(default finish_vivid_hue_boost, 0.25)"),
+    vivid_lhe: float = typer.Option(-1.0, "--vivid-lhe",
+                                    help="Vivid local contrast (LocalHistogramEqualization) amount 0..1, 0 = off "
+                                         "(default finish_vivid_lhe, 0)"),
     gradient: str = typer.Option("auto", "--gradient", help="auto | abe | none"),
     rcastro: str = typer.Option("", "--rcastro",
                                 help="BlurX / NoiseX / StarXTerminator: auto | on | off "
@@ -4180,6 +4226,9 @@ def finish_cmd(
         kw = pjsr.rc_settings(cfg)
         kw.update(_rc_overrides(rcastro, bxt_stars, bxt_nonstellar, nxt_denoise))
         kw["palette"] = pjsr.palette_mode(palette or getattr(cfg, "finish_palette", "off"))
+        # an explicit --palette always applies; the configured one only to finish_palette_kinds
+        kw["palette_kinds"] = "" if palette else str(getattr(cfg, "finish_palette_kinds", pjsr.PALETTE_KINDS) or "")
+        kw.update(_vivid_overrides(pjsr.vivid_settings(cfg), vivid, vivid_sat_mid, vivid_hue_boost, vivid_lhe))
     except ValueError as e:
         console.print(f"[red]finish:[/red] {e}", markup=True)
         raise typer.Exit(2)

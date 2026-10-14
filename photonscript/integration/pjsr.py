@@ -181,6 +181,12 @@ FINISH_DEFAULTS = {
     "hoo": "off",                  # PS-161: on = also <name>_hoo.{xisf,jpg} (OSC only)
     # gold-blue OSC palette (config finish_palette): gold = also <name>_gold.{xisf,jpg}
     "palette": "off", "gold_mix": 0.6,
+    "palette_why": "",             # why the palette is off (finish_palette_kinds), logged by the finish
+    # vivid variant (config finish_vivid): on = also <name>_vivid.{xisf,tif,jpg},
+    # the natural starless image with more saturation (vivid_sat_mid) and a
+    # selective pink / warm / blue chroma lift (vivid_hue_boost) through a
+    # luminance-range mask, optional local contrast (vivid_lhe, 0 = off)
+    "vivid": "on", "vivid_sat_mid": 0.72, "vivid_hue_boost": 0.25, "vivid_lhe": 0.0,
     "focal_mm": 600.0, "pixel_um": 3.76,
 }
 
@@ -216,6 +222,69 @@ def palette_mode(v) -> str:
     if m not in PALETTES:
         raise PjsrError(f"palette must be one of {', '.join(PALETTES)} (got {v!r})")
     return m
+
+
+# finish_palette_kinds: the catalog types (substrings) the configured palette
+# applies to; galaxies and clusters keep the natural (+ vivid) only
+PALETTE_KINDS = "emission,nebula,remnant"
+
+
+def target_kind(target: str) -> str:
+    """The catalog type of a target ("galaxy", "emission nebula", ...), ""
+    when the target is not in the catalog."""
+    if not str(target or "").strip():
+        return ""
+    try:
+        from photonscript.shared.astronomy import find_catalog_entry
+        e = find_catalog_entry(target)
+    except Exception:  # noqa: BLE001 - catalog unavailable
+        return ""
+    return str((e or {}).get("type") or "").strip().lower()
+
+
+def palette_for_target(palette, target: str, kinds: str = PALETTE_KINDS) -> tuple[str, str]:
+    """(palette, why) for a configured palette and a target. kinds blank =
+    no filter (an explicit --palette). A target whose catalog type matches
+    none of kinds gets "off" and the why; an unknown type keeps the palette."""
+    mode = palette_mode(palette)
+    ks = [k.strip().lower() for k in str(kinds or "").split(",") if k.strip()]
+    if mode == "off" or not ks:
+        return mode, ""
+    kind = target_kind(target)
+    if not kind or any(k in kind for k in ks):
+        return mode, ""
+    return "off", (f"{mode} palette skipped: {target} is catalogued as {kind}, not one of finish_palette_kinds "
+                   f"({', '.join(ks)}); pass --palette {mode} to force it")
+
+
+def vivid_settings(cfg) -> dict:
+    """The vivid-variant finish settings from a PhotonScript config (missing
+    keys keep the FINISH_DEFAULTS): vivid (bool), vivid_sat_mid,
+    vivid_hue_boost, vivid_lhe."""
+    def get(key, dflt):
+        v = getattr(cfg, key, None) if cfg is not None else None
+        return dflt if v is None or v == "" else v
+    on = get("finish_vivid", True)
+    if isinstance(on, str):
+        on = on.strip().lower() not in ("off", "false", "no", "0")
+    return {"vivid": bool(on),
+            "vivid_sat_mid": vivid_sat_mid(get("finish_vivid_sat_mid", FINISH_DEFAULTS["vivid_sat_mid"])),
+            "vivid_hue_boost": unit_value("vivid_hue_boost",
+                                          get("finish_vivid_hue_boost", FINISH_DEFAULTS["vivid_hue_boost"])),
+            "vivid_lhe": unit_value("vivid_lhe", get("finish_vivid_lhe", FINISH_DEFAULTS["vivid_lhe"]))}
+
+
+def vivid_sat_mid(v) -> float:
+    f = float(v)
+    if not 0.5 <= f <= 0.95:
+        raise PjsrError(f"vivid_sat_mid must be within 0.5..0.95 (got {v!r})")
+    return f
+
+
+def on_off(v) -> str:
+    if isinstance(v, bool):
+        return "on" if v else "off"
+    return "on" if str(v or "off").strip().lower() in ("on", "true", "1", "yes") else "off"
 
 
 def unit_value(name: str, v) -> float:
@@ -310,6 +379,11 @@ def render_finish(cfg: dict, solver_block: str = "", deploy_dir: Path | None = N
         "HOO": "on" if str(c.get("hoo") or "off").lower() in ("on", "true", "1") else "off",
         "PALETTE": palette_mode(c.get("palette")),
         "GOLD_MIX": _js_num(unit_value("gold_mix", c["gold_mix"])),
+        "PALETTE_WHY": _js_str(c.get("palette_why") or ""),
+        "VIVID": on_off(c.get("vivid")),
+        "VIVID_SAT_MID": _js_num(vivid_sat_mid(c["vivid_sat_mid"])),
+        "VIVID_HUE_BOOST": _js_num(unit_value("vivid_hue_boost", c["vivid_hue_boost"])),
+        "VIVID_LHE": _js_num(unit_value("vivid_lhe", c["vivid_lhe"])),
         "MASTERS": json.dumps([{"name": m["name"], "path": str(m["path"]).replace("\\", "/")}
                                for m in masters], ensure_ascii=True),
     }
