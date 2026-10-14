@@ -31,6 +31,9 @@ PIGGYBACK_LOOP_CONTAINER_NAMES = (OSC_LIGHT_LOOP_NAME, OSC_IMAGE_PASS_NAME,
                                   OSC_LIGHTS_UNTIL_DAWN_NAME)
 # PS-25 resume debounce pieces (no exposures inside, so not structural loops).
 OSC_RESUME_HOLD_NAME = "OSC_RESUME_HOLD"
+# 2026-10-14: owed OSC darks while the roof is closed mid-night (no exposure
+# of a light inside, so not a structural light loop)
+OSC_CLOSED_ROOF_DARKS_NAME = "OSC_CLOSED_ROOF_DARKS"
 OSC_WAIT_SAFE_CONFIRM_NAME = "WAIT_SAFE_CONFIRM_OR_ASTRO_DAWN"
 OSC_ROOF_OPEN_NOTICE_NAME = "OSC_ROOF_OPEN_NOTICE"
 # PS-175: OSC lights only in astronomical dark. The first light waits for
@@ -769,7 +772,7 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
 
 
 def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
-                     gated=True):
+                     gated=True, first=None, end_margin=False):
     """OSC dark blocks for the piggyback, capped by its own library quota
     (count_matching_darks keys off the piggyback config's library_dir + OSC
     gain/offset/setpoint). Each block exits on the per-exposure count, the time
@@ -785,14 +788,22 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
     pb_gain, pb_offset = _pb_gain_offset(config)
     blocks = []
     # PS-122: same lengths and count as the Calibration owed view (PS-160:
-    # plus the lengths the lights used)
-    for exp_s in night_dark_exposures(config, "piggyback"):
+    # plus the lengths the lights used). first: lengths to shoot first (the
+    # closed-roof darks: tonight's light length), the rest keep their order.
+    lengths = list(night_dark_exposures(config, "piggyback"))
+    if first:
+        lead = [e for e in lengths if any(abs(e - float(f)) < 0.5 for f in first)]
+        lengths = lead + [e for e in lengths if e not in lead]
+    for exp_s in lengths:
         try:
             need = dark_quota(config, "piggyback", exp_s)["need"]
         except Exception:  # noqa: BLE001
             need = quota
         if need == 0:
             continue
+        # end_margin: the block ends one exposure before the provider time
+        # so its last dark finishes by then (the closed-roof darks: by dawn)
+        off = dawn_offset - (int(-(-float(exp_s) // 60)) if end_margin else 0)
         blocks.append(_seq_container(
             f"OSC DARKS_{exp_s:.0f}s (need {need} of {quota})",
             [_make_typed(
@@ -805,11 +816,65 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
             conditions=(
                 [_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
                              "NINA.Sequencer")] if gated else [])
-                + [_time_condition(dawn_provider, dawn_offset),
+                + [_time_condition(dawn_provider, off),
                    _make_typed("NINA.Sequencer.Conditions.LoopCondition, "
                                "NINA.Sequencer",
                                CompletedIterations=0, Iterations=need)]))
     return blocks
+
+
+def _osc_closed_roof_darks(config, light_lengths=None) -> dict | None:
+    """2026-10-14 (Jeremy: "we did have some closed roof tonight, it would
+    have been nice to have gotten some of those 450 second subs in"): the
+    companion's OSC darks while the roof is closed MID-NIGHT. Until now the
+    companion filled its quota only before the light loop (OSC_DARKS_IF_UNSAFE
+    at the night start), so a roof that closed after the lights began
+    (2026-10-13 04:20 local, 1.6 h before dawn) left NINA #2 idle with 22
+    450 s darks owed.
+
+    The first item of every OSC_LIGHTS_UNTIL_DAWN pass, so it runs whenever
+    a pass finds the roof closed: LoopWhileUnsafe (it never starts with the
+    roof open and ends after the dark in progress once it reads safe: the
+    pass then goes on to the usual wait-for-safe and resume hold, i.e. the
+    lights take over again), a TimeCondition at astro dawn minus
+    closed_roof_darks_min_left_min (no start with less left), run once per
+    pass; inside the PS-160 cooler gate (calibration_darks_gated: darks
+    only at the setpoint) and the owed blocks (_osc_dark_blocks: the night
+    quota deficit per length, tonight's light lengths first, each block
+    roof-gated and ending one exposure before astro dawn). No mount, cover,
+    filter or guider instruction: the same frames as the trusted pre-light
+    darks (the roof closed at night, PS-188 window unsafe-night; a Wanderer
+    Cover, when enabled, is closed by the pass's close_if_unsafe first).
+    None (nothing in the sequence) when closed_roof_darks is off, the PS-188
+    window is manual without a cover, or nothing is owed at dispatch."""
+    from photonscript.scheduler import flat_cover
+    from photonscript.scheduler.calibration_filing import dark_capture_window
+    from photonscript.scheduler.nina_sequence_json import (
+        _make_typed, _seq_container, _time_condition, _loop_once)
+    if str(getattr(config, "closed_roof_darks", "on") or "on").strip().lower() != "on":
+        return None
+    cover = flat_cover.enabled(config, "piggyback")
+    if not cover and dark_capture_window(config) == "manual":
+        return None
+    first = list(light_lengths or [])
+    if not first:
+        first = [float(getattr(config, "piggyback_exposure_s", 120.0))]
+    blocks = _osc_dark_blocks(config, *OSC_LIGHTS_DAWN, gated=True, first=first,
+                              end_margin=True)
+    if not blocks:
+        return None
+    try:
+        left = int(float(getattr(config, "closed_roof_darks_min_left_min", 30.0)))
+    except (TypeError, ValueError):
+        left = 30
+    setpoint = float(getattr(config, "camera_setpoint_c", 0.0))
+    return _seq_container(
+        OSC_CLOSED_ROOF_DARKS_NAME,
+        dark_gate_items(config, "piggyback", setpoint) + blocks,
+        conditions=[_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                "NINA.Sequencer"),
+                    _time_condition(OSC_LIGHTS_DAWN[0], OSC_LIGHTS_DAWN[1] - max(0, left)),
+                    _loop_once()])
 
 
 def bias_at_setpoint_block(config, rig: str, setpoint: float) -> dict:
@@ -1028,9 +1093,14 @@ def _osc_light_loop(config, segments: list | None = None) -> dict:
         [*_osc_resume_gate(config), *cover_open, *gate_items, *pre_af,
          _autofocus(), *settle, *inner_items],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
+    # 2026-10-14: a mid-night closed roof fills the owed darks first
+    lengths = ([float(x["exp_s"]) for x in segments] if segments and len(segments) > 1
+               else [exp_s])
+    crd = _osc_closed_roof_darks(config, lengths)
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
         [*cover_close,
+         *([crd] if crd is not None else []),
          _wait_safe_until(*dawn, name="WAIT_SAFE_OR_ASTRO_DAWN"),
          _osc_resume_hold(config, *dawn),
          _wait_safe_until(*dawn, name=OSC_WAIT_SAFE_CONFIRM_NAME),

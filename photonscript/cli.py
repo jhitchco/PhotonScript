@@ -17,6 +17,7 @@ Usage:
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events] [--timeline] [--json]
     photonscript unguided-limits [--rig R] [--refresh] [--url U] [--since D] [--json]
+    photonscript pilot-backtest --night D [--url U | --doc FILE] [--no-limits] [--json]
     photonscript core-check --target M31 [--rig rc16] [--night D] [--url U] [--measure DIR] [--json]
     photonscript blend-readiness [--target T] [--json] [--url U]   # two-rig NB blend
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
@@ -1618,6 +1619,75 @@ def sub_doctor_cmd(
                     console.print(f"  {rg} {x.get('t')} {x.get('cause') or 'healthy'} "
                                   f"{x.get('confidence') or ''} {x.get('file') or ''}",
                                   markup=False, highlight=False)
+
+
+@app.command("pilot-backtest")
+def pilot_backtest_cmd(
+    night: str = typer.Option("", "--night", help="Night (YYYY-MM-DD, the evening date)"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Read a running PhotonScript (GET /api/runs/<night>, "
+                                 "/api/tracking/unguided-limits, /api/calibration/owed, "
+                                 "both NINAs' /event-history at :1888 / :1889)"),
+    doc: str = typer.Option("", "--doc", help="A saved backtest document (JSON) instead"),
+    no_limits: bool = typer.Option(False, "--no-limits",
+                                   help="Replay without the learned unguided limits"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Night pilot backtest: replay a past night's graded subs through the
+    pilot (sub watch, policy, guards, rate limits, closed-roof check) in
+    advise mode and print what it would have done and when. Read only:
+    GETs only, nothing is sent, the pilot state goes to a scratch dir.
+
+    photonscript pilot-backtest --night 2026-10-13 --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler import pilot_backtest as pb
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if doc:
+        body = pb.load_doc(doc)
+    elif url:
+        import urllib.parse
+        import urllib.request
+
+        def _get(u, timeout=170):
+            with urllib.request.urlopen(u, timeout=timeout) as r:
+                return _json.loads(r.read().decode("utf-8"))
+        base = url.rstrip("/")
+        d = night or _last_night()
+        run = _get(f"{base}/api/runs/{d}")
+        host = urllib.parse.urlparse(base).hostname
+        nev = {}
+        for rg, port in (("rc16", 1888), ("piggyback", 1889)):
+            try:
+                b = _get(f"http://{host}:{port}/v2/api/event-history", 30)
+                nev[rg] = b.get("Response", b) if isinstance(b, dict) else b
+            except Exception:  # noqa: BLE001
+                nev[rg] = []
+        lim = {}
+        for rg in ("rc16", "piggyback"):
+            try:
+                lim[rg] = (_get(f"{base}/api/tracking/unguided-limits?rig={rg}", 60)
+                           .get("rigs") or {}).get(rg)
+            except Exception:  # noqa: BLE001
+                pass
+        owed = {}
+        try:
+            for r in _get(f"{base}/api/calibration/owed", 120).get("rigs") or []:
+                owed[r["rig"]] = [{"exp_s": x["exp_s"], "have": x["have"],
+                                   "owed": x["owed"]} for x in r.get("darks") or []]
+        except Exception:  # noqa: BLE001
+            pass
+        body = {"date": d, "plan": run.get("plan"), "subs": run.get("subs") or [],
+                "nina_events": nev, "unguided_limits": {"rigs": lim},
+                "darks_owed": owed}
+    else:
+        console.print("[red]--url or --doc is required[/red]")
+        raise typer.Exit(2)
+    rep = pb.run(cfg, body, use_limits=not no_limits)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+    else:
+        console.print(pb.format_report(rep), markup=False, highlight=False)
 
 
 @app.command("frame-check")

@@ -190,7 +190,11 @@ def test_companion_image_pass_starts_with_the_gate(gate_on):
     assert gate["ErrorBehavior"] == 1 and gate["Parent"] == {"$ref": ip["$id"]}
     r = lint(seq)
     assert not [f for f in r.findings if f.rule in ("cooler-gate", "parent-links")]
-    assert len(_gates(seq)) == 2      # PS-160: plus the gate in front of OSC_DARKS
+    # PS-160: plus the gate in front of OSC_DARKS; 2026-10-14: and the one in
+    # front of the mid-night OSC_CLOSED_ROOF_DARKS
+    assert len(_gates(seq)) == 3
+    crd = [d for d in _walk(seq) if d.get("Name") == "OSC_CLOSED_ROOF_DARKS"][0]
+    assert "cooler-gate" in _vals(crd, "Items")[0]["Script"]
 
 
 def test_companion_without_script_warns_in_its_start_area(monkeypatch, tmp_path):
