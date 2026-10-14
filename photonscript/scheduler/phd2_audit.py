@@ -1255,6 +1255,10 @@ async def run_audit(config, reason: str = "manual", *, client=None, nina=None,
              "fail_ids": [r["id"] for r in res["rows"] if r["status"] == FAIL]}
     if raw:
         audit["observed"] = {k: v for k, v in observed.items() if k != "_sources"}
+    try:
+        mark_ledger_paged(config, audit)
+    except Exception as e:  # noqa: BLE001 - never fail an audit over it
+        logger.debug("ledger-paged rows not marked: %s", e)
     if persist:
         save(config, audit)
     return audit
@@ -1331,12 +1335,33 @@ def push_text(audit: dict, head: str, rows: list[dict] | None = None) -> str:
             "System page > PHD2 settings audit for the fixes.")
 
 
+def mark_ledger_paged(config, audit: dict) -> None:
+    """Mark the rows the settings ledger pages itself
+    (settings_ledger.audit_rows_paged: a ledger rule with audit_row, e.g.
+    phd2_min_snr for min_snr) with paged_by. They stay in the report with
+    their status, and page once a night from the ledger only (2026-10-13:
+    the AutoFind min SNR could page from both)."""
+    from photonscript.scheduler.settings_ledger import audit_rows_paged
+    owned = audit_rows_paged(config)
+    for r in audit.get("rows") or []:
+        if r.get("id") in owned:
+            r["paged_by"] = f"settings ledger ({owned[r['id']]})"
+
+
+def page_fails(config, audit: dict | None) -> list[dict]:
+    """The FAIL rows this audit may page for: every FAIL not paged_by the
+    settings ledger (marked here too when the audit was not)."""
+    mark_ledger_paged(config, audit or {})
+    return [r for r in fails(audit) if not r.get("paged_by")]
+
+
 async def at_arm(config, **kw) -> dict:
     """The armer's hook: audit, then one Pushover only when there is at
     least one FAIL (once per night; the FAIL ids are latched so the
-    ConfigurationChange re-audit does not push them again)."""
+    ConfigurationChange re-audit does not push them again). Rows the
+    settings ledger pages are report-only here (page_fails)."""
     audit = await run_audit(config, reason="arm", **kw)
-    bad = fails(audit)
+    bad = page_fails(config, audit)
     if bad:
         night = audit["night"]
         first = store.alert_once(config, f"audit-arm-{night}")
@@ -1344,16 +1369,16 @@ async def at_arm(config, **kw) -> dict:
             store.alert_once(config, f"audit-{night}-{r['id']}")
         if first:
             from photonscript.shared import pushover
-            await pushover.notify(config, push_text(audit, "PHD2 settings at arm"),
+            await pushover.notify(config, push_text(audit, "PHD2 settings at arm", bad),
                                   title="PhotonScript PHD2 audit")
     return audit
 
 
 async def on_config_change(config, *, push: bool = True, **kw) -> dict:
     """Re-audit after a PHD2 ConfigurationChange; push only for a FAIL not
-    pushed before tonight."""
+    pushed before tonight (and not paged by the settings ledger)."""
     audit = await run_audit(config, reason="PHD2 configuration change", **kw)
-    new = [r for r in fails(audit)
+    new = [r for r in page_fails(config, audit)
            if store.alert_once(config, f"audit-{audit['night']}-{r['id']}")]
     if new and push:
         from photonscript.shared import pushover

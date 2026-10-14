@@ -101,9 +101,11 @@ def test_min_snr_row(tmp_path):
 def test_new_rows_push_once_per_night(tmp_path, monkeypatch):
     """The NINA rows and min_snr evaluating: the arm push is one per night
     and a ConfigurationChange re-audit (PHD2 sends bursts) re-pushes a FAIL
-    only the first time it is seen that night."""
+    only the first time it is seen that night. (Ledger off: with its pushes
+    on, min_snr pages from the settings ledger only, see
+    test_ps89_rows_the_ledger_pages_are_report_only.)"""
     from photonscript.shared import pushover
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, settings_ledger_enabled=False)
     pushes = []
 
     async def _push(c, msg, **k):
@@ -132,3 +134,58 @@ def test_new_rows_push_once_per_night(tmp_path, monkeypatch):
     night["v"] = "2026-10-14"                   # the next night pushes again, once
     asyncio.run(go())
     assert len(pushes) == 2
+
+
+def test_ps89_rows_the_ledger_pages_are_report_only(tmp_path, monkeypatch):
+    """One owner per page (2026-10-13): the settings-ledger rule
+    phd2_min_snr (audit_row min_snr) pages the AutoFind minimum SNR, so the
+    PS-89 min_snr row stays FAIL in the report, marked paged_by, and never
+    pages; the other PS-89 FAILs still do. Ledger off: PS-89 pages it."""
+    from photonscript.scheduler import settings_ledger as sl
+    from photonscript.shared import pushover
+    pushes = []
+
+    async def _push(c, msg, **k):
+        pushes.append(msg)
+    monkeypatch.setattr(pushover, "notify", _push)
+
+    def _audit(snr="50", focal=600):
+        rows = list(_eval(tmp_path, {"profile": {"min_snr": snr},
+                                     "api": {**LIVE_API, "focal_length_mm": focal}}
+                          ).values())
+        return {"night": "2026-10-13", "rows": rows}
+
+    cfg = _cfg(tmp_path, settings_ledger_enabled=True)   # conftest turns it off
+    assert sl.audit_rows_paged(cfg) == {"min_snr": "phd2_min_snr",
+                                        "guide_scale": "phd2_guide_scale"}
+    audit = _audit()
+    bad = pa.page_fails(cfg, audit)
+    snr = next(r for r in audit["rows"] if r["id"] == "min_snr")
+    assert snr["status"] == pa.FAIL                       # still in the report
+    assert snr["paged_by"] == "settings ledger (phd2_min_snr)"
+    assert "min_snr" not in [r["id"] for r in bad]
+    assert "focal_length_mm" in [r["id"] for r in bad]
+
+    async def _only_snr(config, reason="manual", **kw):
+        return _audit(focal=3248)
+    monkeypatch.setattr(pa, "run_audit", _only_snr)
+    asyncio.run(pa.at_arm(cfg))
+    asyncio.run(pa.on_config_change(cfg))
+    assert pushes == []                                   # the ledger pages it
+
+    for off in ({"settings_ledger_push": False}, {"settings_ledger_enabled": False},
+                {"settings_ledger_apps": "nina1,thesky"}):
+        c = _cfg(tmp_path / str(len(pushes)), **{"settings_ledger_enabled": True, **off})
+        assert sl.audit_rows_paged(c) == {}
+        asyncio.run(pa.at_arm(c))
+    assert len(pushes) == 3 and all("AutoFind minimum star SNR 50" in p for p in pushes)
+
+
+def test_every_ledger_audit_row_names_a_ps89_row(tmp_path):
+    from photonscript.scheduler import settings_ledger as sl
+    cfg = _cfg(tmp_path)
+    ids = {r["id"] for r in pa.load_desired(cfg).get("check") or []}
+    rules = sl.load_rules(cfg)
+    assert not rules.get("lint")
+    rows = [r["audit_row"] for r in rules["rule"] if r.get("audit_row")]
+    assert "min_snr" in rows and set(rows) <= ids

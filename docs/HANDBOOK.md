@@ -1025,6 +1025,15 @@ mismatch, the RC16 EAF counter reset), each found by hand afterwards.
   one Pushover (`settings_ledger_push`). System page > Settings ledger shows
   the result, when each app was read and last changed, the exact fixes and a
   diff "what changed since the last good night".
+- **One pager per setting:** a PHD2 rule that duplicates a PS-89 audit row
+  names it in `audit_row` (`phd2_min_snr` -> `min_snr`, `phd2_guide_scale` ->
+  `guide_scale`, `phd2_min_hfd`, `phd2_pulse_alert`, `phd2_darks_or_bpm`).
+  While the ledger can page it (FAIL severity, `settings_ledger_enabled`,
+  `settings_ledger_push`, phd2 in `settings_ledger_apps`) the ledger is the
+  only pager: the PS-89 row keeps its status in the audit report, marked
+  "pages from the settings ledger", and is left out of the PS-89 arm and
+  re-audit pushes. Ledger off or not pushing: PS-89 pages it as before.
+  (2026-10-13: the AutoFind min SNR could page from both in one night.)
 - **CLI (read only):** `photonscript settings` (status),
   `--night 2026-10-12 --at 23:40`, `--sub <file>`, `--diff last_good latest`
   (also `YYYY-MM-DD`, `YYYY-MM-DD@HH:MM`, ids), `--full`, `--json`,
