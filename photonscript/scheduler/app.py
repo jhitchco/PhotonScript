@@ -275,23 +275,24 @@ def setup_message_listeners():
 # Pages
 # ---------------------------------------------------------------------------
 
-_dashboard_cache: dict = {}  # (utc date, site) -> (twilight, ranked)
+_dashboard_cache: dict = {}  # (local night date, site) -> (twilight, ranked)
 
 
-def _dashboard_targets(obs, now: datetime):
-    """Tonight's twilight + ranked seasonal targets, cached per UTC date.
+def _dashboard_targets(obs, now: datetime, config=None):
+    """Tonight's twilight + ranked seasonal targets, cached per night.
 
-    Seconds are dropped before the astronomy so the result depends only on the
-    date (twilight scan starts 23:00, transit anchor 07:00): one computation
-    per day instead of one per page view.
+    The night is localtime.night_window's (the local evening date, noon to
+    noon, rolled once its dawn has passed), never the UTC date: from 18:00
+    MDT the UTC date is already tomorrow and the dashboard showed tomorrow's
+    night. One computation per night instead of one per page view.
     """
-    key = (now.date(), obs.latitude, obs.longitude, obs.elevation)
+    from photonscript.shared.localtime import night_window
+    base, twilight = night_window(config or get_config(), now, obs=obs)
+    key = (base.date(), obs.latitude, obs.longitude, obs.elevation)
     hit = _dashboard_cache.get(key)
     if hit is not None:
         return hit
-    day = now.replace(second=0, microsecond=0)
-    twilight = get_twilight_times(obs, day)
-    ranked = rank_targets_for_night(get_seasonal_targets(day.month), obs, day)
+    ranked = rank_targets_for_night(get_seasonal_targets(base.month), obs, base)
     _dashboard_cache.clear()  # only today's entry is ever useful
     _dashboard_cache[key] = (twilight, ranked)
     return twilight, ranked
@@ -310,7 +311,7 @@ async def dashboard(request: Request):
     now = datetime.utcnow()
     # Astronomy runs in a worker thread: on the event loop it froze every
     # other request (and the telescope agents, which share this loop).
-    twilight, ranked = await asyncio.to_thread(_dashboard_targets, obs, now)
+    twilight, ranked = await asyncio.to_thread(_dashboard_targets, obs, now, config)
 
     return templates.TemplateResponse(request, "dashboard.html", {"version": VERSION, 
         "observatory": obs,
@@ -717,6 +718,8 @@ _CONFIG_FIELDS = [
     ("integrate_mono_color", "PS_INTEGRATE_MONO_COLOR", "Integrate (mono, desktop .env): combine the per-filter masters into color images (<target>_LRGB / _RGB from R G B + L, _SHO / _HOO from SII Ha OIII) after the finish", "Integration", "bool", False, False),
     ("blend_rc16_bxt", "PS_BLEND_RC16_BXT", "Blend (PS-153): BlurXTerminator pass on the RC16 L linear master first (when installed)", "Integration", "bool", False, False),
     ("review_gate", "PS_REVIEW_GATE", "Review gate (approve subs before transfer)", "Imaging", "bool", False, False),
+    ("library_pointing_check", "PS_LIBRARY_POINTING_CHECK", "Library filing (dawn filing / Approve): a light whose header RA / DEC is off the target's catalog position, or shot with the mount not tracking: warn (kept out of the target folder, back to review with the reason; a second Approve files it) | refuse (rejected) | off", "Imaging", "str", False, False),
+    ("library_pointing_max_deg", "PS_LIBRARY_POINTING_MAX_DEG", "Library pointing check: off target when the header RA / DEC is more than N deg from the catalog position", "Imaging", "float", False, False),
     ("auto_approve_at_dawn", "PS_AUTO_APPROVE_AT_DAWN", "Dawn filing (PS-157): approve the night's QA-passing subs at dawn (both rigs; never test subs, '?' subs or subs sent back to review), then build the Library", "Imaging", "bool", False, False),
     ("dawn_filing_catchup_days", "PS_DAWN_FILING_CATCHUP_DAYS", "Dawn filing sweep: file an armed night of the last N days that has no filing record (disarmed or errored at dawn, restart killed the filing), 90 min after its dawn (0 = off: dawn shutdown only)", "Imaging", "int", False, False),
     ("unsafe_darks_enabled", "PS_UNSAFE_DARKS_ENABLED", "Darks during unsafe pauses (roof closed)", "Imaging", "bool", False, False),
@@ -791,7 +794,7 @@ _CONFIG_FIELDS = [
     ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
     ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
     ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
-    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once) | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once; PHD2 left uncalibrated falls back unguided) | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
     ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
     ("phd2_audit_enabled", "PS_PHD2_AUDIT_ENABLED", "PHD2 settings audit at each guided arm and on a PHD2 configuration change (PS-89; one push only on a FAIL)", "PHD2", "bool", False, False),
     ("phd2_audit_autofix", "PS_PHD2_AUDIT_AUTOFIX", "Allow PHD2 profile (registry) writes from the audit: PHD2 closed, armer idle, backup first (off until a daytime round trip is checked)", "PHD2", "bool", False, False),

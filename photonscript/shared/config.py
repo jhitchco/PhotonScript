@@ -211,6 +211,15 @@ class PhotonScriptConfig(BaseSettings):
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
+    library_pointing_check: str = "warn"  # Library filing (dawn / Approve):
+                                    # header RA / DEC more than
+                                    # library_pointing_max_deg from the target's
+                                    # catalog position, or the mount not
+                                    # tracking (integration.pointing_check).
+                                    # warn: kept out of the target folder, back
+                                    # to review with the reason (a second
+                                    # Approve files it); refuse: rejected; off
+    library_pointing_max_deg: float = 1.0
     auto_approve_at_dawn: bool = True  # PS-157: at dawn the night that ended
                                     # is attributed (RC16 timeline for the
                                     # Piggy-600), its QA-passing subs waiting
@@ -929,7 +938,9 @@ class PhotonScriptConfig(BaseSettings):
     phd2_cal_fail_action: str = "keep"  # second failed grade: "keep" guiding
                                  # on the poor calibration and alert once, or
                                  # "unguided" (armer.fallback_unguided, capped;
-                                 # default stays "keep" until Jeremy switches it)
+                                 # default stays "keep" until Jeremy switches it).
+                                 # keep with PHD2 left UNCALIBRATED falls back
+                                 # to unguided too (nothing to keep, 2026-10-13)
     phd2_flip_action: str = "alert"  # Dec runs away after a meridian flip:
                                  # "alert" (one push per night with the Reverse
                                  # Dec fix) or "off" (record only). In-place

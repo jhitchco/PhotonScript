@@ -180,7 +180,9 @@
                     '" title="dry run, then apply ' + esc(r.target) + ' (' + esc(r.apply) + ')">Apply</button>' :
                     (r.manual_hint ? '<span class="g-dim">' + esc(r.manual_hint) + '</span>' : '');
                 html += '<tr id="pa-' + esc(r.id) + '" class="' + rowClass(r.status, r.stale) + '"><td>' + chip(r.status) +
-                    '</td><td>' + esc(r.label) + '</td><td>' + esc(r.current) +
+                    '</td><td>' + esc(r.label) +
+                    (r.paged_by ? ' <span class="g-dim" title="report only here: this row pages from the settings ledger">(pages from the ' + esc(r.paged_by) + ')</span>' : '') +
+                    '</td><td>' + esc(r.current) +
                     ' <span class="g-dim">(' + esc(r.source_text || r.source) + ')</span>' + staleTag(r) +
                     '</td><td>' + esc(r.desired) +
                     '</td><td class="g-why">' + esc(r.why) + '</td><td>' + esc(r.note || (r.status === 'pass' ? '' : r.fix)) +

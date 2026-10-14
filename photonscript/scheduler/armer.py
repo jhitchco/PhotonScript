@@ -3423,9 +3423,10 @@ class Armer:
         and the guider, re-dispatch the remainder (companion untouched).
         Once per night, RUNNING only.
 
-        NOT reachable with the default config: guard_on_fail and
-        selftest_on_fail both default to "alert" until PS-85 caps unguided
-        sub lengths (an uncapped 600 s unguided sub at 3248 mm trails)."""
+        Reached with the default config only from a PHD2_CALIBRATION slot
+        that failed twice and left PHD2 uncalibrated (phd2_calmanager,
+        2026-10-14); guard_on_fail and selftest_on_fail default to "alert".
+        The re-dispatch caps the unguided subs (guide_fallback.cap_targets)."""
         night = self.plan.get("night_of")
         if self.state != "RUNNING" or not night or self._fallback_night == night:
             return False

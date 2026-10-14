@@ -250,6 +250,27 @@ def apps_enabled(config) -> list[str]:
     return out
 
 
+def audit_rows_paged(config) -> dict[str, str]:
+    """{PS-89 audit row id: ledger rule id} for the PS-89 rows the ledger
+    pages itself (a FAIL-severity phd2 rule naming it in audit_row, the
+    ledger on, pushing and reading PHD2). Those rows stay in the PS-89
+    report but never page from there: one owner per page (2026-10-13, the
+    AutoFind min SNR could page twice a night). Empty when the ledger would
+    not page, so PS-89 keeps paging them. Never raises."""
+    try:
+        if not (getattr(config, "settings_ledger_enabled", False)
+                and getattr(config, "settings_ledger_push", True)
+                and "phd2" in apps_enabled(config)):
+            return {}
+        return {str(r["audit_row"]): str(r.get("id"))
+                for r in load_rules(config).get("rule") or []
+                if r.get("audit_row") and r.get("app") == "phd2"
+                and not r.get("report") and r.get("severity") == FAIL}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("audit_rows_paged: %s", e)
+        return {}
+
+
 # --------------------------------------------------------------------------
 # paths and storage
 # --------------------------------------------------------------------------
@@ -686,6 +707,9 @@ def lint_rules(doc: dict) -> list[str]:
         for w in r.get("when") or []:
             if w not in WHEN:
                 out.append(f"{rid}: unknown when {w}")
+        if "audit_row" in r and (r.get("app") != "phd2"
+                                 or not isinstance(r["audit_row"], str)):
+            out.append(f"{rid}: audit_row names a PS-89 row and needs app phd2")
         for k, v in r.items():
             if isinstance(v, str) and not v.isascii():
                 out.append(f"{rid}: {k} is not plain ASCII")

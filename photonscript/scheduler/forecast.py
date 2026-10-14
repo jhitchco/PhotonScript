@@ -295,20 +295,25 @@ async def _fetch_forecast(config) -> dict:
     return await asyncio.to_thread(_score_forecast, config, data)
 
 
-def _score_forecast(config, data: dict) -> dict:
+def _score_forecast(config, data: dict, now: datetime | None = None) -> dict:
     import json as _json
     from photonscript.shared.astronomy import get_twilight_times
+    from photonscript.shared.localtime import night_window
 
     obs = config.get_observatory()
     utc_offset = data.get("utc_offset_seconds", 0) / 3600
     windows = []
-    now = datetime.utcnow()
+    now = now or datetime.utcnow()
+    # the 7 nights start at tonight's LOCAL evening date (night_window: noon
+    # to noon, rolled after dawn), never the UTC date: from 18:00 MDT that is
+    # already tomorrow, so the list skipped tonight and paired each date
+    # label with the next evening's dark window
+    base, _tw = night_window(config, now, obs=obs)
     for d in range(7):
-        night = now + timedelta(days=d)
-        tw = get_twilight_times(obs, night.replace(hour=0, minute=0,
-                                                   second=0, microsecond=0))
+        night = base + timedelta(days=d)
+        tw = get_twilight_times(obs, night)
         windows.append({
-            "date": (night + timedelta(hours=utc_offset)).strftime("%Y-%m-%d"),
+            "date": night.strftime("%Y-%m-%d"),
             "astro_dark_start": tw.get("astro_dark_start"),
             "astro_dark_end": tw.get("astro_dark_end"),
         })

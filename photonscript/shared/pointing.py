@@ -480,6 +480,27 @@ def iso_mid(start: datetime | None, exp_s) -> str | None:
 
 # ------------------------------------------------------------- one sub
 
+def clean_position(pos: dict | None) -> dict | None:
+    """A mount position as sub_pointing takes it, made safe: non-finite
+    numbers become None (so a missing altitude is recomputed, not kept as
+    NaN), and an offline-shaped one (RA 0, Dec 0, no alt / az:
+    mount_log.is_offline) is no position at all. The NaN in the 2026-10-06
+    sidecar was alt / az of exactly that: a pre-PS-173 mount-log line
+    written while NINA #1 had lost the mount, copied into the Piggy-600's
+    last record (with a 2560' "drift" to RA 0 / Dec 0)."""
+    if not pos:
+        return pos
+    from photonscript.shared.mount_log import is_offline
+    out = {k: (_num(v) if isinstance(v, float) else v) for k, v in pos.items()}
+    if out.get("mount_ra") is None or out.get("mount_dec") is None:
+        return out if out.get("mount_ra") is None and out.get("mount_dec") is None \
+            else None
+    if is_offline({"ra": out["mount_ra"], "dec": out["mount_dec"],
+                   "alt": out.get("alt"), "az": out.get("az")}):
+        return None
+    return out
+
+
 def sub_pointing(config, rig: str, hdr, start: datetime | None, exp_s,
                  target, mount_lines: list | None = None,
                  prev: dict | None = None, solve: dict | None = None,
@@ -493,16 +514,18 @@ def sub_pointing(config, rig: str, hdr, start: datetime | None, exp_s,
     re-reading headers)."""
     rig = rig or "rc16"
     mid = (start + timedelta(seconds=float(exp_s or 0) / 2.0)) if start else None
-    rec = dict(base) if base else (from_header(hdr) if hdr is not None else None)
+    rec = clean_position(dict(base) if base else
+                         (from_header(hdr) if hdr is not None else None))
     if rec is None and mount_lines and mid is not None:
         from photonscript.shared.mount_log import position_at
         m = position_at(mount_lines, mid)
         if m is not None:
-            rec = {"src": "mount-log", "mount_ra": m.get("ra"),
-                   "mount_dec": m.get("dec"), "alt": m.get("alt"),
-                   "az": m.get("az"), "airmass": None, "pier": m.get("pier"),
-                   "mount_epoch": mount_epoch_for(config, "mount-log",
-                                                  m.get("epoch"))}
+            rec = clean_position({
+                "src": "mount-log", "mount_ra": m.get("ra"),
+                "mount_dec": m.get("dec"), "alt": m.get("alt"),
+                "az": m.get("az"), "airmass": None, "pier": m.get("pier"),
+                "mount_epoch": mount_epoch_for(config, "mount-log",
+                                               m.get("epoch"))})
     rec = dict(rec or {"src": None})
     rec.update(rig=rig, t=iso_mid(start, exp_s), mount_src=rec.get("src"))
     if rec.get("mount_ra") is not None and not rec.get("mount_epoch"):

@@ -61,15 +61,18 @@ def _header(path) -> dict | None:
 
 
 def _base_from_stored(prev: dict | None) -> dict | None:
-    """A stored record's mount position (header / mount-log sources only)."""
+    """A stored record's mount position (header / mount-log sources only).
+    None for an offline-shaped one (RA 0 / Dec 0, no alt / az: a damaged
+    night like 2026-10-06 re-derives instead of reusing it)."""
     if not prev or prev.get("mount_ra") is None:
         return None
     src = prev.get("mount_src") or prev.get("src")
     if src in (None, "solve", "rc16-correlated"):
         return None      # re-derive: the RC16 neighbours may have changed
+    from photonscript.shared.pointing import clean_position
     b = {k: prev.get(k) for k in _POS_KEYS}
     b["src"] = src
-    return b
+    return clean_position(b)
 
 
 def _frames(config, subs: list[dict]) -> dict[str, list[dict]]:

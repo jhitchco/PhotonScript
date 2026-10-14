@@ -177,7 +177,11 @@ async def api_target_qa_overrides_set(request: Request):
 @router.get("/api/subs")
 def api_subs(target: str | None = None, rig: str = "", filter: str = "",  # noqa: A002
              verdict: str = "", night: str = "", reason: str = "",
-             sort: str = "time", offset: int = 0, limit: int = 60):
+             sort: str = "time", offset: int = 0, limit: int = 60,
+             date: str = ""):
+    # date= is an alias of night= (every /api/runs/<date> route says date;
+    # 2026-10-14: ?date= was ignored and listed every night's subs)
+    night = night or date
     cfg = _cfg()
     rows = sub_index.rows(cfg, _projects(), target=target, rig=rig or None,
                           filter=filter or None, verdict=verdict or None,

@@ -1025,6 +1025,15 @@ mismatch, the RC16 EAF counter reset), each found by hand afterwards.
   one Pushover (`settings_ledger_push`). System page > Settings ledger shows
   the result, when each app was read and last changed, the exact fixes and a
   diff "what changed since the last good night".
+- **One pager per setting:** a PHD2 rule that duplicates a PS-89 audit row
+  names it in `audit_row` (`phd2_min_snr` -> `min_snr`, `phd2_guide_scale` ->
+  `guide_scale`, `phd2_min_hfd`, `phd2_pulse_alert`, `phd2_darks_or_bpm`).
+  While the ledger can page it (FAIL severity, `settings_ledger_enabled`,
+  `settings_ledger_push`, phd2 in `settings_ledger_apps`) the ledger is the
+  only pager: the PS-89 row keeps its status in the audit report, marked
+  "pages from the settings ledger", and is left out of the PS-89 arm and
+  re-audit pushes. Ledger off or not pushing: PS-89 pages it as before.
+  (2026-10-13: the AutoFind min SNR could page from both in one night.)
 - **CLI (read only):** `photonscript settings` (status),
   `--night 2026-10-12 --at 23:40`, `--sub <file>`, `--diff last_good latest`
   (also `YYYY-MM-DD`, `YYYY-MM-DD@HH:MM`, ids), `--full`, `--json`,
@@ -1279,6 +1288,16 @@ rate). `integrate_pointing_check` (desktop `.env`, `--pointing`): warn
 (default: run log, ledger `qa.pointing`, AstroBin known issues; everything is
 stacked), refuse (those lights left out), off. Piggy-600 lights carry no RA /
 DEC: only counted.
+
+The same off-target and mount-stopped checks run on the scope PC when a light
+is first filed into a Library target folder (`scheduler/library_pointing.py`:
+dawn filing / `build_library`, and an Approve): `library_pointing_check` warn
+(default) keeps it out of `<Target>/<Filter>/` and sends it back to review
+with the reason (review_source `pointing`, `library_pointing` on the record;
+dawn filing never re-approves it; a person's Approve of it files it and
+records the override), refuse rejects it, off files as before
+(`library_pointing_max_deg`, 1 deg). Only new links are checked; altitude is
+not (a low sub is not a misfiled one).
 
 One PixInsight job at a time (2026-10-12 two scripts overlapped in the gap
 between one job's launches): a queue lock file
@@ -1649,9 +1668,18 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   the twilight AF and the PS-92 twilight self-test, before the imaging gate (on
   a late arm or re-dispatch: right after the unpark); with it no target forces
   a calibration. A FAIL inside the slot is retried once over PHD2 during the
-  hold; a second FAIL keeps guiding on it and alerts once
-  (`phd2_cal_fail_action=keep`). A profile / binning change or an uncalibrated
-  PHD2 mid-night triggers one re-dispatch with the slot (1 h of dark left).
+  hold (only once PHD2 has sat idle 10 s: NINA's PHD2 driver re-requests a
+  calibration itself after its 300 s guide-start timeout, and that counts as
+  the second attempt); a second FAIL keeps guiding on it and alerts once
+  (`phd2_cal_fail_action=keep`), unless PHD2 is left with NO calibration (a
+  failed one clears PHD2's): then the rest of the night falls back to
+  unguided (subs capped, one push) and goes straight back to the target.
+  A profile / binning change or an uncalibrated PHD2 mid-night triggers one
+  re-dispatch with the slot (1 h of dark left), never a second slot for "no
+  calibration" after tonight's slot failed. 2026-10-13: the slot's
+  StartGuiding ate 20 min (3 x 300 s), the night stayed guided on no
+  calibration, and the next PHD2 config change re-dispatched a second slot
+  that cancelled M31's autofocus and slewed back to M15.
   After a meridian flip the first 3 min of guiding are checked for a Dec
   runaway; a runaway alerts with the "Reverse Dec output after meridian flip"
   fix (`phd2_flip_action=alert`), a clean pass marks the pier side verified.

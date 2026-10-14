@@ -359,3 +359,111 @@ async def test_agent_flip_watch_hands_the_window_to_the_calmanager(tmp_path, mon
     await a._flip_watch(GuardContext(frames=fr, app_state="Guiding", scale=0.25,
                                      rates_px_s=(20.0, 20.0), now=fr[-1]["t"]))
     assert seen == [(120, "West", None)]
+
+
+# --- 2026-10-13 replay: NINA's own guide-start retry, PHD2 left uncalibrated ---
+
+async def _nina_slot_with_driver_retry(client, fake, attempts=2, gap=0.01):
+    """NINA's PHD2 driver on 2026-10-13: StartGuiding(ForceCalibration),
+    and when the calibration ends without guiding it re-requests the
+    calibration itself ("Start guiding has timed out after 300s. Retrying
+    to start guiding. Attempt 2 / 3") a few seconds later."""
+    for _ in range(attempts):
+        await client.start_guiding(recalibrate=True)
+        for _ in range(300):
+            if fake.app_state != "Calibrating":
+                break
+            await asyncio.sleep(0.01)
+        if fake.app_state == "Guiding":
+            break
+        await asyncio.sleep(gap)
+    await asyncio.sleep(0.05)
+    await client.stop_capture()
+
+
+async def test_replay_1013_nina_retry_is_the_second_attempt_and_falls_back_unguided(
+        tmp_path, pushes, monkeypatch):
+    """2026-10-13: PHD2 held no calibration; the slot's calibration was
+    stopped, NINA's driver re-requested it, the calmanager's own retry went
+    out 0.4 s after the failure on top of NINA's, and with
+    phd2_cal_fail_action=keep the night stayed guided on NO calibration, so
+    the next PHD2 config change asked for a second slot that slewed off M31.
+    Now: no retry over NINA's, the second FAIL with PHD2 uncalibrated falls
+    back to unguided (one push), and no second slot is asked for."""
+    import photonscript.scheduler.armer as armer_mod
+    monkeypatch.setattr(cm, "STOPPED_STABLE_S", 0.5)   # NINA re-requests sooner
+    fallback, asked = [], []
+
+    async def _fb(config, reason):
+        fallback.append(reason)
+        return True
+
+    async def _recal(config, reason):
+        asked.append(reason)
+        return True
+    monkeypatch.setattr(armer_mod, "request_fallback_unguided", _fb)
+    monkeypatch.setattr(armer_mod, "request_recalibration", _recal)
+    monkeypatch.setattr(armer_mod, "armer_guided_now", lambda cfg: True)
+    stopped = "Calibration manually stopped"
+    fake, client, task, mgr, cfg = await _setup(tmp_path, [stopped, stopped])
+    fake.calibration = {"calibrated": False}
+    try:
+        await _nina_slot_with_driver_retry(client, fake)
+        plan = await _settle(mgr, cfg)
+        assert await mgr.check_live("PHD2 configuration change") == \
+            "PHD2 has no calibration"
+        await fake.push({"Event": "ConfigurationChange"})
+        await asyncio.sleep(0.2)
+    finally:
+        await _close(fake, client, task)
+    guides = [r for r in fake.requests if r["method"] == "guide"]
+    assert len(guides) == 2                       # NINA's two, none of ours
+    assert plan["status"] == "failed" and plan["failures"] == 2
+    assert plan.get("attempts") == 0
+    assert fallback == ["PHD2 calibration failed (PHD2 left uncalibrated)"]
+    assert len(pushes["notify"]) == 1 and "unguided" in pushes["notify"][0]
+    assert asked == []                            # no second slot tonight
+    assert cm.slot_failed_tonight(cfg)
+
+
+async def test_nina_retry_that_succeeds_is_done_without_our_retry(tmp_path, pushes,
+                                                                   monkeypatch):
+    import photonscript.scheduler.armer as armer_mod
+    monkeypatch.setattr(cm, "STOPPED_STABLE_S", 0.5)
+    fallback = []
+
+    async def _fb(config, reason):
+        fallback.append(reason)
+        return True
+    monkeypatch.setattr(armer_mod, "request_fallback_unguided", _fb)
+    fake, client, task, mgr, cfg = await _setup(
+        tmp_path, ["Calibration manually stopped", GOOD])
+    fake.calibration = {"calibrated": False}
+    try:
+        await _nina_slot_with_driver_retry(client, fake)
+        plan = await _settle(mgr, cfg)
+    finally:
+        await _close(fake, client, task)
+    assert [r["method"] for r in fake.requests].count("guide") == 2
+    assert plan["status"] == "done" and plan["grade"] == pc.PASS
+    assert fallback == [] and not pushes["notify"]
+
+
+async def test_keep_with_a_calibration_left_still_keeps(tmp_path, pushes, monkeypatch):
+    """A second FAIL on a calibration PHD2 still holds (poor, not missing):
+    phd2_cal_fail_action=keep guides on it as approved."""
+    import photonscript.scheduler.armer as armer_mod
+    fallback = []
+
+    async def _fb(config, reason):
+        fallback.append(reason)
+        return True
+    monkeypatch.setattr(armer_mod, "request_fallback_unguided", _fb)
+    fake, client, task, mgr, cfg = await _setup(tmp_path, [BAD, BAD])
+    try:
+        await _nina_slot(client, fake)
+        plan = await _settle(mgr, cfg)
+    finally:
+        await _close(fake, client, task)
+    assert plan["status"] == "failed" and fallback == []
+    assert "keep" in pushes["notify"][0]

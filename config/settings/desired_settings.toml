@@ -30,6 +30,13 @@
 #                      tracking (the RC16 mount unparked and tracking)
 #   severity           fail | warn (the status when the value misses)
 #   why, fix           plain-language reason and the exact manual fix
+#   audit_row          optional, phd2 rules: the PS-89 row
+#                      (config/phd2/desired_oag_rc16.toml check id) this
+#                      rule duplicates. One owner per page: when this rule
+#                      can page (severity fail, settings_ledger_enabled and
+#                      settings_ledger_push on, phd2 in settings_ledger_apps)
+#                      the PS-89 row stays in its report, marked "pages
+#                      from the settings ledger", and never pages itself.
 
 title = "AARO settings sanity (RC16 + Piggy-600)"
 
@@ -495,6 +502,7 @@ fix = "NINA #2 > Equipment > Guider: disconnect (No guider)."
 id = "phd2_min_snr"
 app = "phd2"
 rig = "rc16"
+audit_row = "min_snr"
 label = "PHD2 AutoFind minimum SNR"
 path = "profile.min_snr"
 min = 8
@@ -507,6 +515,7 @@ fix = "PHD2 Brain > Guiding: Star selection, Minimum star SNR for AutoFind 10 (8
 id = "phd2_min_hfd"
 app = "phd2"
 rig = "rc16"
+audit_row = "min_hfd_px"
 label = "PHD2 minimum star HFD (px)"
 path = "profile.min_hfd_px"
 min = 1.5
@@ -518,6 +527,7 @@ fix = "PHD2 Brain > Guiding: Minimum star HFD 1.5 to 2.0 px."
 id = "phd2_pulse_alert"
 app = "phd2"
 rig = "rc16"
+audit_row = "silenced_alerts"
 label = "PHD2 pulse-guide-failed alert"
 path = "silenced_alerts"
 not_contains = "PulseGuideFailedAlert"
@@ -529,6 +539,7 @@ fix = "PHD2 Brain > Global: Reset 'don't show again' messages (or delete HKCU\\S
 id = "phd2_darks_or_bpm"
 app = "phd2"
 rig = "rc16"
+audit_row = "darks_or_defects"
 label = "PHD2 dark library or bad-pixel map in use"
 any_true = ["profile.auto_load_darks", "profile.auto_load_defect_map"]
 severity = "warn"
@@ -563,6 +574,7 @@ fix = "Guiding tab: Calibrate at the next dispatch (PS-93)."
 id = "phd2_guide_scale"
 app = "phd2"
 rig = "rc16"
+audit_row = "guide_scale"
 label = "Guide pixel scale: PHD2 vs PhotonScript"
 computed = "guide_scale_matches"
 tol_pct = 10
