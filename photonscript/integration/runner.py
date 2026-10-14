@@ -67,8 +67,8 @@ def launch_kwargs(window: str | None = None, priority: str | None = None) -> dic
         return {}
     if window is None or priority is None:
         try:
-            from photonscript.shared.config import get_config
-            cfg = get_config()
+            from photonscript.shared.config import PhotonScriptConfig
+            cfg = PhotonScriptConfig()
             window = window or getattr(cfg, "pixinsight_window", "minimized")
             priority = priority or getattr(cfg, "pixinsight_priority", "below_normal")
         except Exception:  # noqa: BLE001
