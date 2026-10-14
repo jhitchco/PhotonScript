@@ -34,6 +34,7 @@ that must not hold up the event loop (PS-24).
 from __future__ import annotations
 
 import logging
+import re
 
 from fastapi import APIRouter, Body
 from fastapi.responses import JSONResponse
@@ -178,15 +179,23 @@ def api_qa_ecc_scale(date: str, refresh: bool = False):
 
 
 @router.get("/api/runs/{date}/scorecard")
-def api_sub_scorecard(date: str, file: str):
+def api_sub_scorecard(date: str, file: str, rig: str = ""):
+    """One sub's scorecard. file= takes every form GET /api/subs returns:
+    the file (either separator), the key "date|rig|file" (its night and rig
+    win), the abs_path or a bare file name (sub_file.find_sub); rig=
+    narrows it when the two rigs could share a name."""
     from photonscript.shared import qa_rules
     from photonscript.scheduler.runs import _load_subs, score_legacy_on_read
+    from photonscript.shared.sub_file import find_sub, sub_ref
     cfg = _cfg()
+    night, _rig, _f = sub_ref(file)
+    if night and night != date and re.fullmatch(r"\d{4}-\d{2}-\d{2}", night):
+        date = night
     subs = _load_subs(cfg, date)
-    from photonscript.shared.sub_file import norm_file
-    hit = next((s for s in subs if s.get("file") == norm_file(file)), None)
+    hit = find_sub(subs, file, rig or None)
     if hit is None:
         return JSONResponse(status_code=404, content={"detail": "sub not found"})
+    file = hit["file"]
     if not hit.get("scorecard"):
         score_legacy_on_read(cfg, subs)
     card = hit.get("scorecard") or {}
