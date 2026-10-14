@@ -791,7 +791,7 @@ _CONFIG_FIELDS = [
     ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
     ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
     ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
-    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once) | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once; PHD2 left uncalibrated falls back unguided) | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
     ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
     ("phd2_audit_enabled", "PS_PHD2_AUDIT_ENABLED", "PHD2 settings audit at each guided arm and on a PHD2 configuration change (PS-89; one push only on a FAIL)", "PHD2", "bool", False, False),
     ("phd2_audit_autofix", "PS_PHD2_AUDIT_AUTOFIX", "Allow PHD2 profile (registry) writes from the audit: PHD2 closed, armer idle, backup first (off until a daytime round trip is checked)", "PHD2", "bool", False, False),

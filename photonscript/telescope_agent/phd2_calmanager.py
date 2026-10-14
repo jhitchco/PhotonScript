@@ -11,16 +11,26 @@ phd2_cal_hold_s. This listens to PHD2's own events:
                        (scheduler.phd2_calibration.grade) and store it;
   * inside the armer's plan (cal_plan.json, mount on the planned field) a
     FAIL is retried ONCE over PHD2 during the hold: wait until NINA has
-    stopped guiding, guide(recalibrate=True) under phd2_ops.hold("calmanager"),
-    grade the new one, stop_capture before the hold ends. A second FAIL (or
-    no time left) applies phd2_cal_fail_action: "keep" guiding on it with one
-    alert per night (the approved default), or "unguided" (PS-85 fallback);
+    stopped guiding (PHD2 idle for STOPPED_STABLE_S, no new calibration
+    started), guide(recalibrate=True) under phd2_ops.hold("calmanager"),
+    grade the new one, stop_capture before the hold ends. NINA's own
+    guide-start retry (its PHD2 driver re-requests the calibration after a
+    300 s timeout) counts as that second attempt, and no retry is sent over
+    it. A second FAIL (or no time left) applies phd2_cal_fail_action: "keep"
+    guiding on it with one alert per night (the approved default), or
+    "unguided" (PS-85 fallback). Fix 2026-10-14: a "keep" with PHD2 left
+    UNCALIBRATED (a failed calibration clears PHD2's) has nothing to keep,
+    so it falls back to unguided too (armer.fallback_unguided: subs capped,
+    one push): otherwise every target's StartGuiding recalibrates three
+    times and skips the target (2026-10-13: the M31 slot);
   * CalibrationDataFlipped  noted on the active record;
   * ConfigurationChange and every (re)connect: snapshot PHD2's profile,
     binning, scale and calibrated flag (live.json, read by the armer's
     needs_calibration); a profile / binning change against the active record,
     or PHD2 uncalibrated with its mount connected, while a night runs asks
     the armer for one re-dispatch with the slot (option C, 1 h of dark left).
+    Not for "PHD2 has no calibration" once tonight's slot has failed: a
+    second slot only slews off the target again (2026-10-13).
 
 flip_check() is called by the agent's PS-92 post-flip watch: a Dec runaway
 (phd2_calibration.dec_runaway) alerts with the Reverse Dec fix
@@ -69,6 +79,8 @@ class CalManager:
         self._waiter: asyncio.Future | None = None
         self._stopped_at: float | None = None
         self._outcome_at: float | None = None
+        self._cal_started_at: float | None = None
+        self._plan_lock = asyncio.Lock()
         self.tasks: set[asyncio.Task] = set()
         self.last: dict | None = None     # last graded record (tests, API)
 
@@ -86,6 +98,7 @@ class CalManager:
         t = ev.get("Event")
         if t == "StartCalibration":
             self._steps, self._moved = {}, {}
+            self._cal_started_at = self.clock()
         elif t == "Calibrating":
             d = _DIRS.get(str(ev.get("dir") or "").strip().lower())
             if d:
@@ -195,51 +208,73 @@ class CalManager:
 
     async def handle(self, outcome: dict) -> dict | None:
         """Grade a calibration that just ended; inside the plan, retry a FAIL
-        once during the hold. Never raises."""
+        once during the hold. Never raises. Outcomes are graded one at a
+        time (NINA's own retry can end while the first is still graded)."""
         try:
-            plan = pc.load_plan(self.config)
-            mount = await self._mount()
-            in_plan = self._in_plan(plan, mount)
-            rec = await self.grade_outcome(outcome, "plan" if in_plan else "other")
-            if not in_plan:
-                if rec["grade"] == pc.FAIL:
-                    await self._alert(rec, "PHD2 calibrated outside the PhotonScript "
-                                      "slot and the result FAILED")
-                return rec
-            if rec["grade"] != pc.FAIL:
-                plan.update(status="done", grade=rec["grade"])
+            async with self._plan_lock:
+                plan = pc.load_plan(self.config)
+                mount = await self._mount()
+                in_plan = self._in_plan(plan, mount)
+                rec = await self.grade_outcome(outcome, "plan" if in_plan else "other")
+                if not in_plan:
+                    if rec["grade"] == pc.FAIL:
+                        await self._alert(rec, "PHD2 calibrated outside the "
+                                          "PhotonScript slot and the result FAILED")
+                    return rec
+                if rec["grade"] != pc.FAIL:
+                    plan.update(status="done", grade=rec["grade"])
+                    pc.save_plan(self.config, plan)
+                    return rec
+                failures = int(plan.get("failures") or 0) + 1
+                plan["failures"] = failures
+                if int(plan.get("attempts") or 0) >= 1 or failures >= 2:
+                    # the second FAIL in the slot: ours, or NINA's own
+                    # guide-start retry while ours waited for PHD2 to go idle
+                    return await self._give_up(plan, rec)
+                plan.update(status="graded", grade=rec["grade"])
                 pc.save_plan(self.config, plan)
-                return rec
-            if int(plan.get("attempts") or 0) >= 1:
-                return await self._give_up(plan, rec)
-            plan.update(status="graded", grade=rec["grade"])
-            pc.save_plan(self.config, plan)
-            return await self._retry(plan, rec)
+            return await self._retry(plan, rec, since=outcome.get("t"))
         except Exception as e:  # noqa: BLE001
             logger.warning("calmanager: grading failed: %s", e)
             return None
 
-    async def _wait_stopped(self, since: float) -> float | None:
+    async def _wait_stopped(self, since: float) -> float | str | None:
         """When NINA's StopGuiding (or a failed calibration) left PHD2
-        stopped: the start of the hold. None if PHD2 keeps guiding."""
+        stopped for STOPPED_STABLE_S: the start of the hold. "superseded"
+        when a new calibration started meanwhile (NINA's own guide-start
+        retry: it is the second attempt, never retried over), None if PHD2
+        keeps guiding. 2026-10-13: the retry went out 0.4 s after the
+        failure, while NINA's StartGuiding was still re-requesting its own
+        calibration, and the two stopped each other."""
         deadline = self.clock() + STOP_WAIT_S
         idle_since = None
         while self.clock() < deadline:
-            if self._stopped_at is not None and self._stopped_at >= since:
-                return self._stopped_at
+            if self._cal_started_at is not None and self._cal_started_at > since:
+                return "superseded"
             state = getattr(self.phd2, "app_state", None)
-            if state in ("Stopped", "Looping", "Selected"):
+            stopped = self._stopped_at is not None and self._stopped_at >= since
+            if state in ("Stopped", "Looping", "Selected") or (state is None and stopped):
                 idle_since = idle_since or self.clock()
                 if self.clock() - idle_since >= STOPPED_STABLE_S:
                     return idle_since
+            elif state == "Calibrating":
+                return "superseded"
             else:
                 idle_since = None
             await asyncio.sleep(POLL_S)
         return None
 
-    async def _retry(self, plan: dict, first: dict) -> dict:
+    async def _retry(self, plan: dict, first: dict,
+                     since: float | None = None) -> dict:
         hold = float(plan.get("hold_s") or getattr(self.config, "phd2_cal_hold_s", 240))
-        t0 = await self._wait_stopped(self._outcome_at or self.clock())
+        t0 = await self._wait_stopped(since or self._outcome_at or self.clock())
+        if t0 == "superseded" or (pc.load_plan(self.config) or {}).get(
+                "status") in ("done", "failed"):
+            # NINA's own retry is the second attempt (graded by its own
+            # handle()), or a later outcome already settled the slot
+            logger.info("PHD2 calibration FAILED; NINA calibrated again on its "
+                        "own: no PhotonScript retry over it")
+            return first
         if t0 is None:
             return await self._give_up(plan, first, "NINA did not stop guiding "
                                        "after the calibration: no retry")
@@ -286,14 +321,25 @@ class CalManager:
         plan.update(status="failed", grade=rec.get("grade"))
         pc.save_plan(self.config, plan)
         action = str(getattr(self.config, "phd2_cal_fail_action", "keep") or "keep").lower()
-        tail = (" Switching the rest of the night to unguided."
-                if action == "unguided" else
-                " Guiding continues on this calibration (phd2_cal_fail_action=keep).")
+        # a failed calibration clears PHD2's own: "keep" has nothing to
+        # keep then (grade_outcome has just saved the live snapshot)
+        uncalibrated = pc.load_live(self.config).get("calibrated") is not True
+        unguided = action == "unguided" or uncalibrated
+        if action == "unguided":
+            tail = " Switching the rest of the night to unguided."
+        elif unguided:
+            tail = (" PHD2 is left with no calibration, so there is nothing to "
+                    "keep: switching the rest of the night to unguided (subs "
+                    "capped), back on the target.")
+        else:
+            tail = " Guiding continues on this calibration (phd2_cal_fail_action=keep)."
         await self._alert(rec, "PHD2 calibration FAILED" + (f" ({why})" if why else
                                                             " twice") + "." + tail)
-        if action == "unguided":
+        if unguided:
             from photonscript.scheduler.armer import request_fallback_unguided
-            await request_fallback_unguided(self.config, "PHD2 calibration failed")
+            await request_fallback_unguided(
+                self.config, "PHD2 calibration failed" +
+                ("" if action == "unguided" else " (PHD2 left uncalibrated)"))
         return rec
 
     async def _alert(self, rec: dict, head: str) -> None:
@@ -343,6 +389,15 @@ class CalManager:
         if reason is None:
             self._invalid = None
             return None
+        if reason == "PHD2 has no calibration" and slot_failed_tonight(self.config):
+            # the give-up already chose (keep, or the unguided fallback); a
+            # second slot would only slew off the target again (2026-10-13)
+            if reason != getattr(self, "_invalid", None):
+                self._invalid = reason
+                logger.info("PHD2 calibration invalid (%s, after %s); tonight's "
+                            "calibration slot already failed, no second slot",
+                            reason, why)
+            return reason
         from photonscript.scheduler.armer import (armer_guided_now,
                                                   request_recalibration)
         if not armer_guided_now(self.config):
@@ -379,6 +434,14 @@ class CalManager:
         elif r.get("runaway") is False and passive is None:
             pc.set_flip(self.config, pier, True, "Dec holds after the flip")
         return r
+
+
+def slot_failed_tonight(config) -> bool:
+    """Tonight's PHD2_CALIBRATION slot ran and gave up (plan status
+    "failed" for this night)."""
+    plan = pc.load_plan(config) or {}
+    return (plan.get("status") == "failed"
+            and plan.get("night") == store.night_of(config))
 
 
 def flip_alerts(config) -> bool:

@@ -1649,9 +1649,18 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   the twilight AF and the PS-92 twilight self-test, before the imaging gate (on
   a late arm or re-dispatch: right after the unpark); with it no target forces
   a calibration. A FAIL inside the slot is retried once over PHD2 during the
-  hold; a second FAIL keeps guiding on it and alerts once
-  (`phd2_cal_fail_action=keep`). A profile / binning change or an uncalibrated
-  PHD2 mid-night triggers one re-dispatch with the slot (1 h of dark left).
+  hold (only once PHD2 has sat idle 10 s: NINA's PHD2 driver re-requests a
+  calibration itself after its 300 s guide-start timeout, and that counts as
+  the second attempt); a second FAIL keeps guiding on it and alerts once
+  (`phd2_cal_fail_action=keep`), unless PHD2 is left with NO calibration (a
+  failed one clears PHD2's): then the rest of the night falls back to
+  unguided (subs capped, one push) and goes straight back to the target.
+  A profile / binning change or an uncalibrated PHD2 mid-night triggers one
+  re-dispatch with the slot (1 h of dark left), never a second slot for "no
+  calibration" after tonight's slot failed. 2026-10-13: the slot's
+  StartGuiding ate 20 min (3 x 300 s), the night stayed guided on no
+  calibration, and the next PHD2 config change re-dispatched a second slot
+  that cancelled M31's autofocus and slewed back to M15.
   After a meridian flip the first 3 min of guiding are checked for a Dec
   runaway; a runaway alerts with the "Reverse Dec output after meridian flip"
   fix (`phd2_flip_action=alert`), a clean pass marks the pier side verified.

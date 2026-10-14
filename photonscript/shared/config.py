@@ -929,7 +929,9 @@ class PhotonScriptConfig(BaseSettings):
     phd2_cal_fail_action: str = "keep"  # second failed grade: "keep" guiding
                                  # on the poor calibration and alert once, or
                                  # "unguided" (armer.fallback_unguided, capped;
-                                 # default stays "keep" until Jeremy switches it)
+                                 # default stays "keep" until Jeremy switches it).
+                                 # keep with PHD2 left UNCALIBRATED falls back
+                                 # to unguided too (nothing to keep, 2026-10-13)
     phd2_flip_action: str = "alert"  # Dec runs away after a meridian flip:
                                  # "alert" (one push per night with the Reverse
                                  # Dec fix) or "off" (record only). In-place
