@@ -816,6 +816,62 @@ line, pairs for other agents (`GET /api/sub-doctor/pairs`). Past nights:
 `photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events]
 [--timeline] [--json]` (read only).
 
+### Learned unguided limits (sub length per sky region)
+
+2026-10-13, unguided (TPoint + ProTrack): on M31 (Dec +41, east, alt about
+46 deg) 300 s RC16 subs trailed (ecc 0.79 / 0.71) while 180 s stayed round
+(ecc 0.43 to 0.55); near the meridian at Dec +12, 180 s was round. One cap
+(`unguided_max_exposure_s`) for the whole sky is wrong somewhere, so
+`scheduler/unguided_limits.py` learns the longest unguided sub that stays
+round per rig and region from the graded subs:
+
+- Evidence: lights of unguided nights (plan snapshot: target or PS-85 block
+  unguided; tracking-test subs count; no plan entry: PHD2 stopped) since the
+  TPoint model in force (`unguided_limit_since` overrides), over
+  `unguided_limit_lookback_days` (60). Left out and counted: PHD2 active
+  during the sub or within 10 min of an active sub on either rig, a sub
+  doctor `guider_conflict` diagnosis covering it (the 2026-10-12 Heart night
+  drops out whole), FOCPOS 0, star count under half the night median,
+  HFR over its gate while round (soft stars hide drift; FWHM over its gate
+  is seeing and is kept), test subs (TPoint, optics, focus calibration).
+- Region: Dec band (20 deg) x hour-angle band (east far, east, meridian,
+  west, west far); pooled per Dec band and for the whole sky as fallbacks.
+- Per region and sub length: subs and passes under the rig's ecc gate.
+  Limit = the longest ladder length (`unguided_limit_steps`
+  300,240,180,120, plus the rig's own length) with pass rate at least
+  `unguided_limit_pass_rate` (0.8) over at least `unguided_limit_min_subs`
+  (2) subs, or, untested, the drift model (elongation per second from every
+  sub, e(L) = kL / sqrt(1 + (kL)^2)) predicting ecc at least
+  `unguided_limit_model_margin` (0.05) under the gate. A shorter length that
+  fails on measurement caps it. Confidence high (8+ subs at the limit),
+  medium (4+), low; an uncertain region names the next longer step to probe.
+- Planner (armer dispatch, after the PS-66 cap and the PS-156 fallback):
+  each unguided RC16 set longer than the limit of the regions its target
+  crosses tonight (window sampled every 30 min, shortest wins) is cut to the
+  longest ladder length at or under it with matching darks, else darks
+  scalable from a bias (night pilot `dark_match`), never longer than the
+  goal; a goal's hand-set exposure override for that filter wins. The
+  Piggy-600 companion's sub length gets its own table the same way.
+  `unguided_auto_length` off | advise (default: logged, in the plan snapshot
+  `unguided_limits` and the morning report, nothing changes) | apply.
+- Probe (`unguided_limit_probe` off (default) | advise | apply): an
+  uncertain region gets `unguided_limit_probe_subs` (2) subs at the next
+  longer step ahead of the target's longest-owed set (its count reduced);
+  graded like any sub, they raise the limit at the next refresh only if
+  they pass.
+- Calibration: each region's limit, its probe step and (for a drift-model
+  limit) the step under it join the night dark quota
+  (`calibration.night_dark_exposures`) and the Calibration owed view
+  ("unguided limit learned"), at most `unguided_limit_darks_max` (3), so a
+  roof-closed night shoots 180 s and 240 s darks before the lights need
+  them.
+- Refresh: the dawn filing step, the Guiding page Refresh, `GET
+  /api/tracking/unguided-limits?rig=&refresh=true`, `photonscript
+  unguided-limits [--rig R] [--refresh] [--url U] [--since D] [--json]`
+  (`--url` computes from a running PhotonScript's runs, read-only). Store:
+  `<data_dir>/unguided_limits.json`. Morning report: "Unguided limits:
+  tonight M31 (Dec +41 east) 180 s 5/5, 300 s 0/2 round. Plan: ...".
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET

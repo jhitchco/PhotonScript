@@ -52,6 +52,7 @@
             <a href="#guardSec">Guide guard<span class="g-navc" data-navc="guardSec"></span></a>
             <a href="#tuneSec">Guide star<span class="g-navc" data-navc="tuneSec"></span></a>
             <a href="#blockSec">Per-block guiding</a>
+            <a href="#ulSec">Unguided limits</a>
             <a href="#glogSec">Tonight's guide log</a>
             <a href="#tpointSec">TheSky / TPoint<span class="g-navc" data-navc="tpointSec"></span></a>
         </nav>
@@ -147,6 +148,16 @@
             <div id="blockRows"></div>
         </section>
 
+        <section class="panel" id="ulSec">
+            <h2>Learned unguided limits</h2>
+            <p class="g-intro">The longest unguided (TPoint + ProTrack) sub that stays round, per rig and sky region (Dec band x hour angle), learned from the graded subs of unguided nights since the TPoint model in force. Subs with PHD2 active (or next to it), a focuser at 0, clouds, or soft but round stars are left out. A length is measured once it has enough subs (pass rate at least the target under the ecc gate); an untested length comes from the drift model (elongation per second). Mode advise only notes the planner's choice in the plan and the morning report; apply cuts unguided sets to the limit of the region the target crosses (darks matched, never longer than the goal, a hand-set override wins). The limits and the probe step join the night dark quota. Refreshed at dawn.</p>
+            <div class="bd" id="ulInfo">loading...</div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="ulRefresh" title="Re-read the nights' subs logs and recompute the table">Refresh</button>
+            </div>
+            <div id="ulRows"></div>
+        </section>
+
         <section class="panel" id="glogSec">
             <h2>Tonight's Guide Log (PS-88)</h2>
             <p class="g-intro">The night's PHD2 guide log analysed: RMS (all and settled), dropped and saturated frames, dithers, and the top findings with a fix each. Read on load and on Refresh only (it parses the whole log).</p>
@@ -210,7 +221,8 @@
     <script src="/static/js/phd2_panels.js?v={{ version }}"></script>
     <script src="/static/js/thesky_panels.js?v={{ version }}"></script>
     <script src="/static/js/piggy_offset_panel.js?v={{ version }}"></script>
-    <script>PHD2.initGuidingPage(); THESKY.init(); PIGGYOFFSET.init();</script>
+    <script src="/static/js/unguided_limits_panel.js?v={{ version }}"></script>
+    <script>PHD2.initGuidingPage(); THESKY.init(); PIGGYOFFSET.init(); UNGUIDEDLIMITS.init();</script>
     {% include "_footer.html" %}
 </body>
 </html>

@@ -50,6 +50,8 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
         "dusk_utc": plan.get("dusk_utc"),
         "dawn_utc": plan.get("dawn_utc"),
         "dark_hours": plan.get("dark_hours"),
+        # learned unguided limits: what was (advise) or would be cut, why
+        "unguided_limits": plan.get("unguided_limits"),
         "targets": [{
             "name": t.name,
             # dawn filing (2026-10-11): the planned window, the Piggy-600's

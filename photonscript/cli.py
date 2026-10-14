@@ -16,6 +16,7 @@ Usage:
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events] [--timeline] [--json]
+    photonscript unguided-limits [--rig R] [--refresh] [--url U] [--since D] [--json]
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
         [--library PATH] [--profile] [--feature-arcmin 60] [--json]
         [--camera-cal]                                            # PS-117
@@ -1688,6 +1689,75 @@ def frame_check_cmd(
         console.print(fc.format_report(rep), markup=False, highlight=False)
     if not rep.get("ok"):
         raise typer.Exit(1)
+
+
+@app.command("unguided-limits")
+def unguided_limits_cmd(
+    rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default both)"),
+    refresh: bool = typer.Option(False, "--refresh",
+                                 help="Recompute from this machine's nights and save the store"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Compute from a running PhotonScript instead (read-only "
+                                 "GET /api/runs/<night> per night; nothing saved)"),
+    nights: int = typer.Option(14, "--nights", help="With --url: nights back from today"),
+    since: str = typer.Option("", "--since", help="Evidence from this night on "
+                              "(overrides unguided_limit_since / the TPoint model date)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Learned unguided exposure limits per rig and sky region: per Dec /
+    hour-angle region the subs and passes (ecc gate) per sub length, the
+    drift rate, the longest length that stays round (measured or from the
+    drift model), its confidence and the probe step. Read only unless
+    --refresh (writes <data_dir>/unguided_limits.json).
+
+    photonscript unguided-limits --rig rc16 --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from datetime import timedelta as _td
+    from photonscript.scheduler import unguided_limits as ul
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if since:
+        cfg = cfg.model_copy(update={"unguided_limit_since": since})
+    today = datetime.now().strftime("%Y-%m-%d")
+    if url:
+        import urllib.request
+
+        def _get(u, timeout=170):
+            with urllib.request.urlopen(u, timeout=timeout) as r:
+                return _json.loads(r.read().decode("utf-8"))
+        base = url.rstrip("/")
+        d0 = datetime.now().date()
+        data = {}
+        for i in range(max(1, nights)):
+            n = (d0 - _td(days=i)).isoformat()
+            try:
+                run = _get(f"{base}/api/runs/{n}")
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[yellow]{n}: not read ({e})[/yellow]")
+                continue
+            if run.get("subs"):
+                data[n] = {"subs": run.get("subs") or [], "plan": run.get("plan")}
+        doc = ul.refresh(cfg, today, save=False, nights_data=data)
+    elif refresh:
+        doc = ul.refresh(cfg, today)
+    else:
+        doc = ul.table(cfg)
+    if not doc:
+        console.print("No unguided limits yet (no unguided nights in the lookback).")
+        raise typer.Exit(0)
+    if as_json:
+        out = doc if not rig else {**doc, "rigs": {rig: (doc.get("rigs") or {}).get(rig)}}
+        print(_json.dumps(out, indent=1, default=str))
+    else:
+        console.print(ul.format_table(doc, rig or None), markup=False, highlight=False)
+        for rg in (doc.get("rigs") or {}):
+            if rig and rg != rig:
+                continue
+            dl = ul.learned_dark_lengths(cfg, rg, doc)
+            if dl:
+                console.print(f"{rg}: darks owed for learned lengths: "
+                              + ", ".join(f"{x:g} s" for x in dl),
+                              markup=False, highlight=False)
 
 
 @app.command("optics-report")

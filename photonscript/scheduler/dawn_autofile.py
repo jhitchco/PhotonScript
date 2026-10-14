@@ -29,7 +29,8 @@ watched-night paths both call it):
    PS-182: and the readout fill (calibration_qa.fill_missing_readouts, up
    to calibration_readout_fill_at_dawn records): QA records of darks / bias
    with no readout recorded get their READOUTM from a header read, so the
-   July LCG bias stops counting as HCG.
+   July LCG bias stops counting as HCG. Then the learned unguided limits
+   refresh with the night in (scheduler/unguided_limits.py).
 5. One record per night, runs/<date>_autofile.json, and the line
    "Library: N subs filed for sync (targets...)" for the morning push, the
    runs page and GET /api/runs/{date}/autofile.
@@ -634,6 +635,16 @@ def file_night(config, date: str, push: bool = True,
         n = int(getattr(config, "calibration_readout_fill_at_dawn", 400) or 0)
         return {rg: fill_missing_readouts(config, rg, n) for rg in rig_ids(config)}
     rec["readout_fill"] = step("readout fill", _readout_fill)
+
+    def _unguided_limits():   # the learned unguided limits, with tonight in
+        from photonscript.scheduler import unguided_limits as ul
+        if ul.mode(config) == "off":
+            return {"skipped": "unguided_auto_length off"}
+        doc = ul.refresh(config, date)
+        return {rg: {"used": t.get("n_used"),
+                     "limit_s": (t.get("overall") or {}).get("limit_s")}
+                for rg, t in (doc.get("rigs") or {}).items()}
+    rec["unguided_limits"] = step("unguided limits", _unguided_limits)
     filed = step("count", lambda: filed_counts(config,
                                                runs._load_subs(config, date)))
     rec["filed"] = filed or {}

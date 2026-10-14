@@ -416,6 +416,14 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
     # PS-160: the lengths the lights used join the night quota (the same
     # rule calibration.night_dark_exposures applies at generation)
     extra = light_dark_lengths(view, rig, lights, quota=qlist)
+    # learned unguided limits (the same rule night_dark_exposures applies)
+    try:
+        from photonscript.scheduler.unguided_limits import learned_dark_lengths
+        learned = [e for e in learned_dark_lengths(view, rig)
+                   if not any(_same_exp(e, q) for q in [*qlist, *extra])]
+    except Exception:  # noqa: BLE001
+        logger.warning("learned unguided dark lengths failed", exc_info=True)
+        learned = []
     buckets: dict[tuple, dict] = {}
 
     def bucket(src: dict) -> dict:
@@ -443,6 +451,14 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
                     "xbin": 1, "readout": ep["readout"]})
         b["quota_list"] = True
         b["from_lights"] = True
+    for e in learned:
+        b = bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
+                    "offset": ep["offset"], "settemp": ep["setpoint"],
+                    "xbin": 1, "readout": ep["readout"]})
+        b["quota_list"] = True
+        b["from_unguided_limits"] = True
+        if "unguided limit learned" not in b["planned"]:
+            b["planned"].append("unguided limit learned")
     for li in lights:
         b = bucket(li)
         b["lights"] += 1
@@ -498,6 +514,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
             "assumed_epoch": b["assumed"], "on_epoch": on,
             "in_quota_list": b["quota_list"] and on, "auto_fill": auto,
             "from_lights": bool(b.get("from_lights")),
+            "from_unguided_limits": bool(b.get("from_unguided_limits")),
             "newest": nd["newest"], "age_days": _age(nd["newest"], datetime.now()),
             "ccd_temp_c": nd["ccd_temp_c"],
             "ccd_temp_max_off_c": nd["ccd_temp_max_off_c"],
