@@ -10,7 +10,6 @@ import json
 from datetime import datetime, timedelta
 from pathlib import Path
 
-
 from photonscript.scheduler import armer as armer_mod
 from photonscript.scheduler import unguided_guard as ug
 from photonscript.scheduler.armer import Armer
@@ -455,3 +454,91 @@ def test_sub_doctor_guider_conflict_headline(tmp_path, monkeypatch):
     ctx.pop("guider_start")
     d = sd.diagnose(cfg, "rc16", win, subs=win, ctx=ctx)
     assert d["headline"].startswith("PHD2 is guiding on an UNGUIDED night")
+
+
+# ---- 20:38:46 GUIDER-CONNECTED, 20:38:48 SEQUENCE-STARTING: no PhotonScript
+# path connects the guider on an unguided night ---------------------------------
+
+def _record_connects(monkeypatch):
+    from photonscript.scheduler import preflight
+    seen = []
+
+    async def _ensure(cfg, dev, attempts=2):
+        seen.append(dev)
+        return True, {}, None
+    monkeypatch.setattr(preflight, "_ensure_connected", _ensure)
+    return seen
+
+
+async def test_arm_unguided_never_connects_the_guider(tmp_path, monkeypatch):
+    seen = _record_connects(monkeypatch)
+    for mode, want in (("unguided", False), ("guided", True)):
+        a = Armer(_cfg(tmp_path / mode, cooler_off_until_precool=False,
+                       phd2_audit_enabled=False, thesky_audit_enabled=False))
+        monkeypatch.setattr(armer_mod, "notify", _anoop)
+        monkeypatch.setattr("photonscript.scheduler.night_plan.build_night_plan",
+                            lambda cfg: {"night_of": "2026-10-13", "targets": ["Heart"],
+                                         "preconfig_utc": "2026-10-14T00:30:00Z",
+                                         "dark_hours": 8.0})
+        monkeypatch.setattr(a, "_run", _anoop)
+        monkeypatch.setattr(a, "_apps_alert", _anoop)
+        monkeypatch.setattr(a, "_unguided_guard", _anoop)
+        monkeypatch.setattr(a, "_start_nina2_mount_check", lambda *x: None)
+        monkeypatch.setattr(a, "_nina", _anoop)
+        seen.clear()
+        await a.arm(mode)
+        assert "mount" in seen and ("guider" in seen) is want, (mode, seen)
+
+
+async def test_restore_unguided_never_connects_the_guider(tmp_path, monkeypatch):
+    """A PhotonScript restart mid-night (deploy, crash) reattaches and
+    connects everything again: not the guider on an unguided night."""
+    seen = _record_connects(monkeypatch)
+    cfg = _cfg(tmp_path)
+    p = tmp_path / "data" / "armer_state.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps({"state": "RUNNING", "plan": {"night_of": "2026-10-13"},
+                             "guiding_override": "unguided"}))
+    a = Armer(cfg)
+    created = []
+    monkeypatch.setattr(armer_mod.asyncio, "create_task",
+                        lambda coro: (created.append(coro), None)[1])
+    assert a.restore() is True
+    names = [c.cr_code.co_name for c in created]
+    assert "connect_all_rigs" in names and "_unguided_guard" in names
+    for c in created:
+        if c.cr_code.co_name == "connect_all_rigs":
+            await c
+        else:
+            c.close()
+    assert "mount" in seen and "guider" not in seen
+
+
+def test_redispatched_unguided_sequence_never_connects_the_guider(tmp_path, monkeypatch):
+    """The armer's own (re-)dispatch writes the sequence NINA starts: on an
+    unguided night it has no ConnectEquipment(Guider) anywhere."""
+    from photonscript.scheduler import app as app_mod
+    from photonscript.scheduler import target_planner
+
+    class _Store:
+        projects: dict = {}
+    t = NinaSequenceTarget(name="Heart", ra_hours=2.55, dec_degrees=61.45,
+                           exposures=[ExposurePlan(filter_type=FilterType.HA,
+                                                   exposure_seconds=300,
+                                                   count=10, gain=200)])
+    monkeypatch.setattr(app_mod, "_store", _Store())
+    monkeypatch.setattr(target_planner, "plan_night_sequence",
+                        lambda projects, config, now: [t])
+    monkeypatch.chdir(tmp_path)
+    a = Armer(_cfg(tmp_path, guided_default=True))
+    a.plan = {"night_of": "2026-10-13", "dusk_utc": "2026-10-14T01:30:00Z",
+              "dawn_utc": "2026-10-14T11:30:00Z"}
+    a.guiding_override = "unguided"
+    assert a._dispatch() is True
+    seq = json.loads(a.sequence_path.read_text(encoding="utf-8"))
+    assert "Guider" not in _connected_devices(seq)
+    assert "Mount" in _connected_devices(seq)
+
+
+async def _anoop(*a, **k):
+    return None
