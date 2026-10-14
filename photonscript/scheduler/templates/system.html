@@ -323,6 +323,29 @@
         <script src="/static/js/settings_ledger_panel.js?v={{ version }}"></script>
         <script>SettingsLedger.load('settingsLedger');</script>
 
+        <section class="panel" style="margin-top:1.5rem;" id="remoteCliPanel">
+            <h2>Remote commands</h2>
+            <p style="opacity:.7;margin-bottom:.6rem;">photonscript commands run on this PC from the desktop (<code>photonscript remote -- &lt;command&gt;</code>, POST /api/cli/run). Allowlisted reports and local data maintenance only (config/remote_cli.toml); nothing here moves hardware. Off unless PS_REMOTE_CLI_TOKEN is set in this PC's .env. Read only: newest first from the audit log.</p>
+            <div id="remoteCli" class="bd">loading...</div>
+        </section>
+        <script>
+        (function () {
+            function esc(v) { return String(v == null ? '-' : v).replace(/[&<>]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c]; }); }
+            fetch('/api/cli/jobs?limit=20').then(function (r) { return r.json(); }).then(function (d) {
+                var el = document.getElementById('remoteCli');
+                var head = d.enabled ? 'Enabled.' : 'Disabled (no PS_REMOTE_CLI_TOKEN).';
+                if (d.running && d.running.length) {
+                    head += ' Running: ' + d.running.map(function (j) { return esc(j.args.join(' ')); }).join('; ');
+                }
+                var rows = (d.audit || []).map(function (a) {
+                    var what = a.event === 'refused' ? 'refused ' + esc(a.status_code) + ': ' + esc(a.detail) : esc(a.status) + ', exit ' + esc(a.exit) + ', ' + esc(a.duration_s) + ' s';
+                    return '<tr><td>' + esc(a.t) + '</td><td><code>' + esc((a.args || []).join(' ')) + '</code></td><td>' + esc(a['class']) + '</td><td>' + what + '</td><td>' + esc(a.tailscale_user || a.ip) + '</td></tr>';
+                }).join('');
+                el.innerHTML = '<div style="margin-bottom:.4rem;">' + head + '</div>' + (rows ? '<table class="tbl" style="font-size:.8rem;"><thead><tr><th>UTC</th><th>Command</th><th>Class</th><th>Result</th><th>From</th></tr></thead><tbody>' + rows + '</tbody></table>' : '<div style="opacity:.7;">No remote commands yet.</div>');
+            }).catch(function () { document.getElementById('remoteCli').textContent = 'unavailable'; });
+        })();
+        </script>
+
         <section class="panel" style="margin-top:1.5rem;">
             <h2>Preflight Check</h2>
             <p style="opacity:.7; margin-bottom:1rem;">Runs the full daytime system
