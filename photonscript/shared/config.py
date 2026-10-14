@@ -391,6 +391,10 @@ class PhotonScriptConfig(BaseSettings):
     integration_report_url: str = "http://100.94.189.77:8100"  # scheduler the
                                  # desktop posts ledgers to and polls; "" =
                                  # ledgers stay queued in their run folders
+    pixinsight_window: str = "minimized"  # automation PixInsight starts
+                                 # minimized without taking focus | normal
+    pixinsight_priority: str = "below_normal"  # its CPU priority so the
+                                 # desktop stays responsive | normal
     integration_staging_root: str = ""  # run folders; "" = D:/Astrophotography/Staging
                                  # if it exists, else ~/Astrophotography/Staging
     integration_scratch_root: str = ""  # fast scratch: integrate / blend build

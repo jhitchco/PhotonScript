@@ -12,6 +12,7 @@ Success = the process exited and the log contains "EXIT OK".
 
 from __future__ import annotations
 
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -56,6 +57,33 @@ def read_new(path: Path, pos: int) -> tuple[str, int]:
     return data.decode("ascii", errors="replace"), pos + len(data)
 
 
+def launch_kwargs(window: str | None = None, priority: str | None = None) -> dict:
+    """Popen options so an automation PixInsight stays out of the way of the
+    desktop: its window starts minimized without taking focus
+    (pixinsight_window minimized | normal) and at below-normal CPU priority
+    (pixinsight_priority below_normal | normal). Windows only; {} elsewhere
+    or when both are normal. PixInsight runs the script the same either way."""
+    if os.name != "nt":
+        return {}
+    if window is None or priority is None:
+        try:
+            from photonscript.shared.config import get_config
+            cfg = get_config()
+            window = window or getattr(cfg, "pixinsight_window", "minimized")
+            priority = priority or getattr(cfg, "pixinsight_priority", "below_normal")
+        except Exception:  # noqa: BLE001
+            window, priority = window or "minimized", priority or "below_normal"
+    kw: dict = {}
+    if str(window).lower() == "minimized":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 7  # SW_SHOWMINNOACTIVE: minimized, focus stays put
+        kw["startupinfo"] = si
+    if str(priority).lower() == "below_normal":
+        kw["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    return kw
+
+
 def launch_args(exe: str, script: Path) -> list[str]:
     return [str(exe), "-n", "--automation-mode", f"--run={script}", "--force-exit"]
 
@@ -84,7 +112,10 @@ def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeou
     if not Path(exe).exists():
         raise FileNotFoundError(f"PixInsight not found at {exe}")
     t0 = time.time()
-    proc = popen(launch_args(exe, Path(script)))
+    args = launch_args(exe, Path(script))
+    # the real Popen gets the minimized / below-normal options; test fakes
+    # take the argument list only
+    proc = popen(args, **launch_kwargs()) if popen is subprocess.Popen else popen(args)
     pos, last, timed_out = 0, "", False
     while True:
         rc = proc.poll()

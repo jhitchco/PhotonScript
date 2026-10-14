@@ -72,3 +72,16 @@ def test_missing_exe(tmp_path):
     with pytest.raises(FileNotFoundError):
         runner.run_script(tmp_path / "s.js", tmp_path / "l", exe=str(tmp_path / "nope.exe"),
                           running=lambda: [])
+
+
+def test_launch_kwargs_minimized_below_normal():
+    import os
+    import subprocess
+    from photonscript.integration import runner
+    kw = runner.launch_kwargs("minimized", "below_normal")
+    if os.name != "nt":
+        assert kw == {}
+        return
+    assert kw["startupinfo"].wShowWindow == 7
+    assert kw["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
+    assert runner.launch_kwargs("normal", "normal") == {}
