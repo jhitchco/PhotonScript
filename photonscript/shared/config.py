@@ -1045,6 +1045,27 @@ class PhotonScriptConfig(BaseSettings):
     tracking_sub_floor_s: float = 30.0  # never recommend shorter subs
     tracking_drift_recent_min: float = 60.0  # tonight's drift counts when its
                                  # window ended this recently, else last night's
+    # Learned unguided limits (scheduler/unguided_limits.py): the longest
+    # unguided sub that stays round, per rig and sky region, from graded subs
+    unguided_auto_length: str = "advise"  # off | advise (log, plan snapshot,
+                                 # morning report; nothing changes) | apply
+                                 # (unguided sets cut to the learned limit)
+    unguided_limit_steps: str = "300,240,180,120"  # candidate sub lengths (s)
+    unguided_limit_pass_rate: float = 0.8  # a length passes at this share of
+                                 # subs under the ecc gate
+    unguided_limit_min_subs: int = 2  # subs at a length before it is judged
+                                 # on measurement (else the drift model)
+    unguided_limit_model_margin: float = 0.05  # drift model: predicted ecc
+                                 # must be this far under the gate
+    unguided_limit_lookback_days: int = 60
+    unguided_limit_since: str = ""  # evidence from this night on (empty =
+                                 # the TPoint model in force)
+    unguided_limit_darks_max: int = 3  # learned lengths added to the night
+                                 # dark quota (0 = none)
+    unguided_limit_probe: str = "off"  # off | advise (name the next longer
+                                 # step on an uncertain region) | apply (add
+                                 # unguided_limit_probe_subs subs at it)
+    unguided_limit_probe_subs: int = 2
     nb_exposure_s: float = 600.0  # narrowband subs: first-night data showed 300s
                                   # deeply read-noise-limited at f/8 + 3nm + SQM 23.9
     bb_exposure_s: float = 180.0  # broadband subs

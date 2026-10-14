@@ -26,6 +26,9 @@ Built only from data other passes already keep (nothing is measured here):
     runs in a row did not finish (points 1, 1, 1)"
   * tracking (PS-168): the night's drift line from the PHD2 guide log
     (tracking_drift.morning_line: RA / Dec "/min, 300 s smear, wobble)
+  * learned unguided limits (unguided_limits.morning_line): "Unguided
+    limits: tonight M31 (Dec +41 east) 180 s 2/2 round; 300 s 0/2. Plan:
+    ..." (what advise suggested or apply cut, the probe)
   * NINA log size (PS-174): a line only when a rig's newest NINA log is
     over nina_log_warn_mb or on pace to pass it (nina_log_watch)
   * Piggy guard (run events kind piggy_guard): "Piggy guard: NINA #2 took
@@ -253,6 +256,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["tracking"] = drift_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no tracking drift: %s", e)
+    try:   # learned unguided limits: tonight's evidence and the plan's use
+        from photonscript.scheduler.unguided_limits import morning_line as ul_line
+        out["unguided_limits"] = ul_line(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no unguided limits line: %s", e)
     try:   # PS-174: NINA log size watch (file sizes only, no log read)
         from photonscript.scheduler.nina_log_watch import log_sizes, morning_line
         sizes = log_sizes(config)
@@ -333,6 +341,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     lines.extend(card.get("night_pilot") or [])
     if card.get("tracking"):
         lines.append(card["tracking"])
+    if card.get("unguided_limits"):
+        lines.append(card["unguided_limits"])
     if card.get("library"):
         lines.append(card["library"])
     if (card.get("nina_logs") or {}).get("line"):

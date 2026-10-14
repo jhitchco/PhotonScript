@@ -1689,6 +1689,9 @@ class Armer:
             # PS-156: the fallback's remainder, per filter at the proven length
             from photonscript.scheduler.guide_fallback import cap_targets
             cap_targets(self.config, targets)
+        # learned unguided limits per sky region: advise records them in the
+        # plan; apply cuts the unguided sets (a hand-set override wins)
+        self._unguided_limits(targets, projects, now)
         # (the sub doctor's caps.json cap is retired: the night pilot's
         # tonight-only goal overrides are the one sub cap, 2026-10-13)
         # PS-144: a one-shot focus-offset calibration first, inside the same
@@ -1743,6 +1746,31 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.warning("Plan snapshot failed: %s", e)
         return True
+
+    def _unguided_limits(self, targets, projects, now: datetime) -> None:
+        """Learned unguided limits (scheduler/unguided_limits.py) on
+        tonight's unguided targets; the record goes into the plan snapshot
+        (plan["unguided_limits"]). Never raises: a failure plans as before."""
+        try:
+            from photonscript.scheduler import unguided_limits as ul
+            rec = ul.apply_targets(self.config, targets, projects, now=now)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("unguided limits skipped: %s", e)
+            rec = None
+        self.plan["unguided_limits"] = rec
+
+    def _piggy_unguided_cfg(self, pcfg):
+        """The Piggy-600 companion's config with the learned unguided limit
+        as its sub length (unguided_auto_length apply only; the record from
+        this dispatch's _unguided_limits)."""
+        pb = ((self.plan or {}).get("unguided_limits") or {}).get("piggyback") or {}
+        if not pb.get("applied") or not pb.get("to_s"):
+            return pcfg
+        try:
+            return pcfg.model_copy(update={"piggyback_exposure_s": float(pb["to_s"])})
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Piggy-600 unguided limit not applied: %s", e)
+            return pcfg
 
     # -- PS-144 dusk focus-offset calibration ---------------------------------
 
@@ -2392,6 +2420,7 @@ class Armer:
             # see the shared safety monitor (has_safety) — lights must be roof-gated.
             want_lights = bool(getattr(cfg, "piggyback_image_lights", True)
                                and has_safety)
+            pcfg = self._piggy_unguided_cfg(pcfg)
             seq_text = generate_piggyback_companion_json(
                 pcfg, has_safety=has_safety, with_lights=want_lights)
             seq_dir = self.sequence_path.parent

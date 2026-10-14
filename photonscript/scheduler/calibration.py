@@ -441,7 +441,16 @@ def night_dark_exposures(config, rig: str = "rc16") -> list[float]:
     except Exception:  # noqa: BLE001 - never break the quota over coverage
         logger.warning("lights-driven dark lengths failed", exc_info=True)
         extra = []
-    return base + [e for e in extra if not any(abs(e - b) < 0.5 for b in base)]
+    out = base + [e for e in extra if not any(abs(e - b) < 0.5 for b in base)]
+    # learned unguided limits: the lengths the planner will use (and the
+    # probe step) get darks before the lights need them
+    try:
+        from photonscript.scheduler.unguided_limits import learned_dark_lengths
+        learned = learned_dark_lengths(config, rig)
+    except Exception:  # noqa: BLE001
+        logger.warning("learned unguided dark lengths failed", exc_info=True)
+        learned = []
+    return out + [e for e in learned if not any(abs(e - b) < 0.5 for b in out)]
 
 
 def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
