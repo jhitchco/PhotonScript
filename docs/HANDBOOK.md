@@ -904,6 +904,34 @@ and ledger `machine.core_check`. CLI (read only):
 [--measure <Library folder>] [--json]`; `--measure` reads FITS directly
 (for nights graded before the core check).
 
+### Heart narrowband blend: Ha first and blend readiness (2026-10-14)
+
+The RC16 frames only the Heart core (24 x 16' of a 60' nebula), so its
+data reaches the full image through the narrowband two-rig blend
+(OSC_INTEGRATION.md 0d), whose main input is an RC16 Ha master. The planner
+shares a night by the goal's remaining counts (the mix), so a fresh goal
+gets Ha 30% of each pass (2026-10-13: Ha 32 / OIII 37 / SII 38 x 180 s).
+`plan_nb_blend_ha_first` (default off) gives a two-rig narrowband goal (an
+RC16 Ha plan and a Piggy-600 plan) the night to RC16 Ha first until it would
+hold `blend_nb_min_ha_h` (2 h) accepted, then OIII / SII share the rest by
+the mix; the PS-180 window rescale keeps that Ha reserve. Per goal,
+`ha_first_h` on PATCH /api/projects2 overrides it (null = the config, 0 =
+off, > 0 = on at that many hours). Readiness (`scheduler/blend_readiness.py`):
+per two-rig NB goal the accepted RC16 Ha / OIII / SII subs and hours, the
+newest Piggy-600 master (posted ledger), ready when there is a Piggy master
+and Ha >= `blend_nb_min_ha_h`, OIII added at `blend_nb_min_oiii_h` (1.5 h),
+the SHO core at `blend_nb_min_sii_h` (1.5 h, with OIII), and nights to each
+threshold from tonight's planned hours per filter (planned, not accepted:
+a night that rejects most RC16 subs takes longer). It is one morning card
+line ("Heart Nebula NB blend: not ready: Ha 0.0/2 h ..."), a block under
+Integration readiness on the target page, GET /api/blend-readiness
+[?target=] and `photonscript blend-readiness [--target T] [--json] [--url
+U]`. autointegrate skips a narrowband blend while the chosen RC16 run's
+ledger shows less Ha than `blend_nb_min_ha_h` ("no blend: narrowband blend
+waits for RC16 Ha 0.3 h < 2 h"); unknown depth and L blends are not gated,
+`blend_nb_gate=false` turns it off, and a manual `photonscript blend` is
+never gated.
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET
