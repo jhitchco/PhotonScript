@@ -368,6 +368,44 @@ first gets a BlurXTerminator pass (correct-only, then sharpen at
 the blend (the finish's `*_linear.xisf` is saved before its deconvolution).
 Recorded as step `rc16_bxt` and `rcastro.rc16_bxt` in `<name>_blend_steps.json`.
 
+## 0d. Narrowband two-rig blend: RC16 Ha / OIII / SII into the Piggy-600 (Heart)
+
+`photonscript blend --target "Heart Nebula"` takes this path by itself when
+the chosen RC16 run has an Ha master (`--mode auto`, the default; `--mode l`
+forces the PS-153 L blend, `--mode nb` needs Ha and `--stage linear`).
+autointegrate's two-rig blend step uses the same auto choice. Inputs are
+found as in 0c (finish `*_linear.xisf`, else raw masters; `master_<F>_hdr`
+preferred); filter spellings H / Halpha / O3 / S2 map to Ha / OIII / SII.
+
+deploy/blend_nb_osc.js (rendered to `blend_run.js` with the finish_osc.js
+PS_FINISH_LIB, finish_mono_color.js PS_MONO_LIB and blend_rc16_osc.js
+PS_BLEND_LIB regions copied in): plate solve, Ha + OIII Resampled to
+1.29"/px and StarAlignment onto the OSC (WCS affine fallback), the
+feathered footprint mask, then inside the footprint per channel a least
+squares fit X ~ a + b NB + c min(R, G, B) (R from Ha, G and B from OIII;
+min(R, G, B) is the continuum) and X' = X (1 - w m) + model w m + boost m b
+max(0, NB - NB_bg). The model matches the OSC background and scale (no
+seam), the line structure comes from the RC16, star color from the OSC.
+A fit with too few samples or b <= 0 leaves that channel alone; c < 0
+refits without the continuum term. Then the RC16 L (when the run has one,
+at `--weight`) or Ha (`--nb-lum-weight` 0.3) goes into CIE L. Weights:
+`--ha-weight` 0.8, `--oiii-weight` 0.6, `--ha-boost` 0.15, `--oiii-boost`
+0.3. The enhanced linear image is finished with the finish_osc.js chain
+(BXT, NXT, star split, stretch, core HDR) as the natural HaRGB and, with
+`--palette gold` (default), the gold palette. The core: the OSC on the RC16
+Ha grid gives a stretched star layer; SHO (needs SII) and HOO are made by
+finish_mono_color.js colorItem from the RC16 masters with those OSC stars.
+
+Outputs in `<staging>\Blend\<target>_blend_nb_<time>\out\final\`:
+`<name>_nb_linear.xisf`, `<name>_nb_mask.xisf`, `<name>_nb_blend.jpg` and
+`<name>_osc_ab.jpg` (same plain stretch, A/B), `<name>_haRGB.{xisf,tif,jpg}`,
+`<name>_haRGB_gold.{xisf,jpg}`, `<name>_haRGB_final_steps.json`,
+`<name>_core_SHO|HOO.{xisf,tif,jpg}` (+ `_linear`, `_steps.json`),
+`<name>_core_color_steps.json`, `<name>_blend_steps.json` (mode nb, the
+channel fits, `channels` = which master went where). Ledger kind `blend`
+with `machine.mode`, `machine.channels` (planned) and
+`machine.blend.channels_applied` (from the steps json).
+
 ## 1. PixInsight pipeline (clean stars)
 Files in `deploy/` (+ one Python helper):
 - `photonscript/image_processor/osc_cull.py`: **runs first** (called by

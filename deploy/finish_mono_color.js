@@ -139,6 +139,11 @@ function log(s) {
    writeLog();
 }
 
+// ==== PS_MONO_LIB_BEGIN (deploy/blend_nb_osc.js reuses the functions from here to
+// PS_MONO_LIB_END for its RC16-scale SHO / HOO core: colorItem and its helpers. Keep
+// them free of placeholders; they read the finish globals above plus STEPSFILE,
+// MC_TIMINGFILE, SHO_HUE, SHO_SCNR and the LRGB settings.)
+
 // ---------------------------------------------------------------- helpers
 
 var MC_RECORDS = [];
@@ -587,6 +592,8 @@ function colorItem(item) {
    }
    return rec.status === "ok";
 }
+
+// ==== PS_MONO_LIB_END
 
 function colorMain() {
    console.show();
