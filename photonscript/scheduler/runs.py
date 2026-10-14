@@ -2147,9 +2147,15 @@ def set_verdicts(config, date: str, files: list[str], state: str,
                 _apply_verdict(s_, state, why, now)
                 hits.append(s_)
     found = {h.get("file") for h in hits}
+    held: set[str] = set()
     if hits:
         plan_names = None
+        if state == "accepted":
+            plan_names = _plan_target_names(config, date)
+            held = _approve_pointing(config, date, hits, plan_names)
         for h in hits:
+            if norm_file(h.get("file")) in held:
+                continue      # back to review (or rejected): never linked
             try:  # keep the library consistent with the verdict
                 if state == "accepted" and plan_names is None:
                     plan_names = _plan_target_names(config, date)
@@ -2163,7 +2169,46 @@ def set_verdicts(config, date: str, files: list[str], state: str,
             sync_goal_progress(config)
     return {"subs": hits,
             "missing": [f for f in want if norm_file(f) not in found],
-            "counts": night_counts(subs)}
+            "counts": night_counts(_load_subs(config, date) if held else subs),
+            **({"pointing_held": sorted(held)} if held else {})}
+
+
+def _approve_pointing(config, date: str, hits: list[dict], plan_names) -> set[str]:
+    """2026-10-14: an Approve that would give a sub its FIRST Library link
+    runs the pointing sanity (scheduler.library_pointing) first; a flagged
+    sub goes back to review with the reason (or is rejected) instead of
+    being linked, and `hits` shows that. An Approve of a sub held for that
+    reason before is the person's override: recorded, then filed. Returns
+    the held files. Never raises."""
+    from photonscript.scheduler import library_pointing as lp
+    from photonscript.scheduler.qa_backfill import _library_links
+    if lp.mode(config) == "off":
+        return set()
+    try:
+        now = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        over = {norm_file(h.get("file")) for h in hits if lp.overridden(h)
+                and not (h.get("library_pointing") or {}).get("override")}
+        if over:
+            with edit_subs(config, date) as subs:
+                for s_ in subs:
+                    if norm_file(s_.get("file")) in over:
+                        s_["library_pointing"] = dict(s_["library_pointing"], override=now)
+            for h in hits:
+                if norm_file(h.get("file")) in over:
+                    h["library_pointing"] = dict(h["library_pointing"], override=now)
+        new = [h for h in hits if not lp.overridden(h) and not _library_links(config, h)]
+        flagged = lp.screen(config, new, lambda r: _resolve_target(
+            r.get("target"), r.get("file", ""), plan_names))
+        by = {norm_file(r.get("file")): r for r in lp.hold(config, date, flagged)}
+        for h in hits:
+            r = by.get(norm_file(h.get("file")))
+            if r is not None:
+                h.clear()
+                h.update(r)
+        return set(by)
+    except Exception as e:  # noqa: BLE001 - never block an Approve over it
+        logger.warning("library pointing check at approve skipped: %s", e)
+        return set()
 
 
 def set_manual_qa(config, date: str, rel_file: str,
@@ -2937,7 +2982,7 @@ def build_library(config, date: str | None = None) -> dict:
                         for f in runs_dir(config).glob("*_subs.jsonl")})
     review_gate = bool(getattr(config, "review_gate", True))
     linked = skipped = missing = rejected = pending_review = archived = 0
-    attributed = retagged = 0
+    attributed = retagged = pointing_held = 0
     # Target folders a sub could have been linked under before it was (re)named:
     # Library/_/ ('?' is not a legal path char) or another target after a
     # corrected attribution. Calibration, piggyback cal and the analysis
@@ -2963,7 +3008,14 @@ def build_library(config, date: str | None = None) -> dict:
             attributed += attribute_night(config, d).get("attributed", 0)
         plan_names = _plan_target_names(config, d)
         gone = archived_kinds(config, d)
-        for s_ in ([] if "lights" in gone else _load_subs(config, d)):
+        night_subs = [] if "lights" in gone else _load_subs(config, d)
+        # 2026-10-14: pointing sanity before a NEW link (library_pointing)
+        held_back = _library_pointing_hold(config, d, night_subs, lib, plan_names,
+                                           review_gate)
+        pointing_held += len(held_back)
+        for s_ in night_subs:
+            if norm_file(s_.get("file")) in held_back:
+                continue
             if not s_.get("passed_qa"):
                 rejected += 1
                 continue
@@ -3040,12 +3092,46 @@ def build_library(config, date: str | None = None) -> dict:
               "already_there": skipped, "rejected_excluded": rejected,
               "pending_review": pending_review, "missing_files": missing,
               "attributed": attributed, "retagged": retagged,
-              "rejected_copies_removed": dropped}
+              "rejected_copies_removed": dropped,
+              "pointing_held": pointing_held}
     pb = _build_piggyback_calibration(config, date)
     if pb is not None:
         result["piggyback_calibration"] = pb
     logger.info("Library update: %s", result)
     return result
+
+
+def _library_pointing_hold(config, date: str, subs: list[dict], lib: Path,
+                           plan_names, review_gate: bool) -> set[str]:
+    """build_library's pointing sanity (scheduler.library_pointing): the
+    subs that would get a NEW link into a target folder tonight (passing,
+    approved when the review gate is on, the FITS present, no link at the
+    destination yet) are checked; the flagged ones are held back (review or
+    rejected, written to the log) and their files returned. Never raises."""
+    from photonscript.scheduler import library_pointing as lp
+    if lp.mode(config) == "off" or not subs:
+        return set()
+
+    def target_of(r):
+        return _resolve_target(r.get("target"), r.get("file", ""), plan_names)
+    new = []
+    for s_ in subs:
+        if not s_.get("passed_qa") or (review_gate and not s_.get("reviewed")):
+            continue
+        src = Path(s_.get("abs_path") or "")
+        if not s_.get("abs_path") or not src.is_file():
+            continue
+        dest = (lib / _safe_name(target_of(s_)) / _safe_name(s_.get("filter", "?"))
+                / src.name)
+        if not dest.exists():
+            new.append(s_)
+    try:
+        flagged = lp.screen(config, new, target_of)
+        lp.hold(config, date, flagged)
+    except Exception as e:  # noqa: BLE001 - never block the Library over it
+        logger.warning("library pointing check skipped for %s: %s", date, e)
+        return set()
+    return {norm_file(f) for f in flagged}
 
 
 def _link_calibration_night(config, watch_dir: Path, lib: Path,

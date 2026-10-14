@@ -445,13 +445,16 @@ def _plan_fallback(config, date: str) -> dict:
 
 def approvable(rec: dict) -> bool:
     """A QA-passing sub still waiting for review that no person held back,
-    not a test / calibration sub, with a real target."""
+    not a test / calibration sub, with a real target, and not held back by
+    the Library pointing check (scheduler.library_pointing: a person files
+    those)."""
+    from photonscript.scheduler.library_pointing import held
     from photonscript.scheduler.runs import _human_verdict
     from photonscript.shared.qa_rules import REJECTED, is_test_record
     from photonscript.shared.target_names import canonical_target
     if not rec.get("passed_qa") or rec.get("reviewed"):
         return False
-    if rec.get("auto_verdict") == REJECTED or _human_verdict(rec):
+    if rec.get("auto_verdict") == REJECTED or _human_verdict(rec) or held(rec):
         return False
     if is_test_record(rec) or timeline_hold(rec):
         return False

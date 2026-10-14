@@ -211,6 +211,15 @@ class PhotonScriptConfig(BaseSettings):
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
     library_cal_days: int = 120  # only calibration newer than this enters the library
     review_gate: bool = True  # subs need human approval before entering the library/transfer
+    library_pointing_check: str = "warn"  # Library filing (dawn / Approve):
+                                    # header RA / DEC more than
+                                    # library_pointing_max_deg from the target's
+                                    # catalog position, or the mount not
+                                    # tracking (integration.pointing_check).
+                                    # warn: kept out of the target folder, back
+                                    # to review with the reason (a second
+                                    # Approve files it); refuse: rejected; off
+    library_pointing_max_deg: float = 1.0
     auto_approve_at_dawn: bool = True  # PS-157: at dawn the night that ended
                                     # is attributed (RC16 timeline for the
                                     # Piggy-600), its QA-passing subs waiting

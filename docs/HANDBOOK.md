@@ -1289,6 +1289,16 @@ rate). `integrate_pointing_check` (desktop `.env`, `--pointing`): warn
 stacked), refuse (those lights left out), off. Piggy-600 lights carry no RA /
 DEC: only counted.
 
+The same off-target and mount-stopped checks run on the scope PC when a light
+is first filed into a Library target folder (`scheduler/library_pointing.py`:
+dawn filing / `build_library`, and an Approve): `library_pointing_check` warn
+(default) keeps it out of `<Target>/<Filter>/` and sends it back to review
+with the reason (review_source `pointing`, `library_pointing` on the record;
+dawn filing never re-approves it; a person's Approve of it files it and
+records the override), refuse rejects it, off files as before
+(`library_pointing_max_deg`, 1 deg). Only new links are checked; altitude is
+not (a low sub is not a misfiled one).
+
 One PixInsight job at a time (2026-10-12 two scripts overlapped in the gap
 between one job's launches): a queue lock file
 `%LOCALAPPDATA%\PhotonScript\pixinsight.lock` (pid, command, start time;
