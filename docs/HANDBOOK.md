@@ -904,6 +904,47 @@ and ledger `machine.core_check`. CLI (read only):
 [--measure <Library folder>] [--json]`; `--measure` reads FITS directly
 (for nights graded before the core check).
 
+### Piggy-600 sub length per target (2026-10-14)
+
+Ticket "Piggy-600: shoot M31 at 120 s (nucleus clips at 300 s)". The core
+check of the Library: Piggy M31 300 s subs clip the nucleus on 122 of 162
+subs, 120 s on 1 of 98 (p99.9 86% of saturation). Before this, NINA #2's
+companion shot ONE length all night (`piggyback_exposure_s`, the learned
+unguided limit in apply), so a goal's OSC plan length never reached it.
+
+- **Set it on the goal**: the `"OSC"` key of `exposure_overrides` (`PATCH
+  /api/projects2/<id>`; the body replaces the whole dict, so send the RC16
+  keys too). `ProjectStore.update` resizes the goal's OSC plan to that
+  length (same goal hours, or `osc_hours` when given; accepted seconds
+  carried, PS-118) and, when only the OSC key changed, leaves the RC16 plans
+  alone. Removing the key leaves the plan length as it is.
+- **Tonight** (`scheduler/piggy_length.py`, armer `_piggy_lengths` after
+  the unguided limits): per RC16 target in plan order, the goal's OSC
+  override, else (`piggy_core_length` apply) the core-check length, else
+  `piggyback_exposure_s`, never above the applied unguided Piggy limit.
+  One length all night = the companion's `piggyback_exposure_s`; several =
+  one `OSC_LIGHT_LOOP` per run of equal lengths, each with the usual
+  Safety + astro-dawn guards, AF triggers and settle gates, ending at the
+  PS-180 handoff clock time of its last target (the last at astro dawn).
+  The record is `plan["piggy_length"]` (plan snapshot `piggy_length`) and a
+  log line "Piggy lengths: Andromeda Galaxy 120 s until 07:30Z, then Heart
+  Nebula 450 s". No override and the default mode: nothing changes. The
+  sideload preview's companion (no goals there) keeps `piggyback_exposure_s`.
+- **Advice** (`core_check.osc_advice`, config `piggy_core_length` off |
+  advise (default) | apply): a Piggy target whose longest length clips the
+  core gets status `osc_length` while the length shot on it is longer than
+  the longest measured unclipped length (at least 3 subs; else
+  `suggest_short`): morning report, sub doctor and target page read "Piggy
+  Andromeda Galaxy core clips at 300 s (core clipped on 122 of 162 subs
+  ...): set OSC to 120 s (exposure_overrides {"OSC": 120}; now 450 s from
+  piggyback_exposure_s) (120 s: 1 of 98 subs clip, core p99.9 86% of
+  saturation)". apply: the planner shoots that length on that target's
+  Piggy subs unless the goal has its own OSC override.
+- **Integration**: an OSC stack of several lengths gets the core combine
+  (OSC_INTEGRATION.md, "OSC core combine"): the short subs (<= 180 s)
+  stack apart and replace the clipped nucleus of `master_OSC` into
+  `master_OSC_hdr`.
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET

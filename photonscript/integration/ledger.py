@@ -167,10 +167,15 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
         machine["trigger"] = trigger
     if hdr:
         # mono exposure masters combined into master_<F>_hdr (hdr_combine.js)
-        machine["hdr"] = {"script": "hdr_run.js (deploy/hdr_combine.js)", "ok": hdr.get("ok"),
+        # (kind osc_core: the OSC nucleus from the short subs, osc_hdr.py)
+        machine["hdr"] = {"script": hdr.get("script_label") or "hdr_run.js (deploy/hdr_combine.js)",
+                          "ok": hdr.get("ok"),
                           "minutes": hdr.get("minutes"), "made": hdr.get("made") or [],
                           "items": hdr.get("items") or [], "steps": hdr.get("steps"),
-                          "log": str(out_dir / "hdr.log")}
+                          "log": hdr.get("log") or str(out_dir / "hdr.log")}
+        for k in ("kind", "status", "why", "long_check"):
+            if hdr.get(k) is not None:
+                machine["hdr"][k] = hdr[k]
     if core:
         # is the target core still clipped in the master the finish uses
         # (integration/core_master.py; HDR master first)

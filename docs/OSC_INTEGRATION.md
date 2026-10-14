@@ -74,6 +74,35 @@ Run on the desktop from the repo venv. What it does (code in
    still holds every exposure group (one debayered master); it is marked
    `mixed_exposures` and when PSF Signal Weight fails the PJSR falls back
    to exposure-time weights, never equal weights.
+   **OSC core combine (2026-10-14).** Config `integrate_osc_hdr_core`
+   (default on; `--no-hdr` turns it off with the mono combine) and
+   `integrate_osc_hdr_short_max_s` (180). When an OSC stack mixes lengths and
+   holds at least 3 subs at or under 180 s plus longer ones (Piggy-600 M31:
+   300 s subs burned the nucleus on 122 of 162, 120 s on 1 of 98),
+   `integrate_run.js` also integrates the short subs on their own from the
+   same registered frames (AdditiveWithScaling, no LocalNormalization, so
+   they keep their own level) into `out\master\osc_hdr\master_OSC_short.xisf`
+   (a subfolder: blend and the finish never take it for a filter master). The
+   full `master_OSC` is made exactly as before. After the integration,
+   `photonscript/integration/osc_hdr.py` runs core_master's plateau check on
+   `master_OSC`; only when the core is still clipped does `osc_hdr_run.js`
+   (`deploy/hdr_core_osc.js`) replace the nucleus: inside a disk of 3 core
+   radii around the plateau (feathered over 30% of it), per channel a least
+   squares fit of the short master to the full one over unclipped signal near
+   the core (slope within 3x of the exposure ratio, else the ratio), one
+   smoothstep mask from 0.65 to 0.80 of the core maximum for all channels (the
+   nucleus keeps its color), the whole image rescaled once when the new core
+   goes above 1. Out: `out\master\master_OSC_hdr.xisf` (PSHDR 'osc-core'),
+   `out\master\osc_hdr\osc_hdr_steps.json`, `out\osc_hdr.log`,
+   `out\timing_osc_hdr.csv`; "OSC core combine: ..." in the run log and
+   `out\pipeline.log`; the ledger's `machine.hdr` block with `kind`
+   `osc_core`, `status`, `why` and `long_check`. The finish then runs on
+   `master_OSC_hdr` (still named `<target>_OSC`), blend prefers it, the core
+   check reads it. Any failure (too few short subs, no short master, core not
+   clipped, a failed fit or save) leaves `master_OSC` as the master the
+   finish uses, as before. With `--no-pixinsight` the combine is not written
+   (it needs the core check after the integration); `restage` copies
+   `osc_hdr_run.js` and lists it right after the integration.
 4. **Stage** by COPY into a NEW run folder
    (`<staging-root>\<target>_<rig>_<yyyymmdd-hhmm>`, default staging root
    `D:\Astrophotography\Staging`), `manifest.json` / `manifest.csv`,

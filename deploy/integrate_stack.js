@@ -425,6 +425,69 @@ function alignMaster(S, masterPath, reg) {
        " (own-reference master kept as " + File.extractName(ownPath) + ".xisf)");
 }
 
+// OSC core combine, 2026-10-14 (photonscript/integration/osc_hdr.py): a
+// stack that mixes lengths may carry short_subset {name, groups, output}:
+// its short subs (<= 180 s) are also integrated on their own from the SAME
+// registered frames (no LocalNormalization: the maps scale every frame to
+// the stack reference, which would lift the short cores; AdditiveWithScaling
+// to the first short frame keeps them at their own level) into
+// short_subset.output, outside out/master itself. Optional: any failure is
+// logged and the stack's master stands as it is.
+function integrateShort(stack, regFiles, selfRef) {
+   var sub = stack.short_subset;
+   if (!sub) return null;
+   var S = stack.name, N = sub.name;
+   TSTART(N, "short subset integration");
+   try {
+      if (selfRef) throw new Error("the stack registered onto its own reference (pass 3), not the shared geometry");
+      var want = {};
+      for (var g = 0; g < sub.groups.length; ++g) want[sub.groups[g]] = true;
+      var files = regFiles.filter(function (f) { return want[groupOf(stack, f)] === true; });
+      log("[" + N + "] short subset of " + S + ": " + files.length + " registered frames (" + sub.groups.join(", ") + ")");
+      if (files.length < MIN_FRAMES) throw new Error("too few short frames (" + files.length + ", need " + MIN_FRAMES + ")");
+      var rej = files.length >= 15 ? "WinsorizedSigmaClip" : (files.length >= 6 ? "SigmaClip" : "PercentileClip");
+      var makeII = function (psf) {
+         var II = new ImageIntegration;
+         II.images = files.map(function (f) { return [true, f, "", ""]; });
+         II.combination = ImageIntegration.prototype.Average;
+         II.weightMode = psf ? ImageIntegration.prototype.PSFSignalWeight
+                             : (sub.groups.length > 1 ? ImageIntegration.prototype.ExposureTimeWeight
+                                                      : ImageIntegration.prototype.DontCare);
+         II.minWeight = 0.0;
+         II.generateIntegratedImage = true; II.generateRejectionMaps = false;
+         II.rejection = ImageIntegration.prototype[rej];
+         II.normalization = ImageIntegration.prototype.AdditiveWithScaling;
+         II.rejectionNormalization = ImageIntegration.prototype.Scale;
+         II.evaluateSNR = false;
+         return II;
+      };
+      var II = makeII(true), ok = false;
+      try { ok = II.executeGlobal(); } catch (e1) { log("[" + N + "] PSF Signal Weight integration failed (" + e1 + ")"); }
+      if (!ok) {
+         log("[" + N + "] retrying with " + (sub.groups.length > 1 ? "exposure-time" : "equal") + " weights");
+         II = makeII(false);
+         if (!II.executeGlobal()) throw new Error("integration failed");
+      }
+      var w = ImageWindow.windowById("integration");
+      if (w.isNull) throw new Error("no integration window");
+      var dir = sub.output.substring(0, sub.output.lastIndexOf("/"));
+      ensureDir(dir);
+      if (File.exists(sub.output)) File.remove(sub.output);
+      w.saveAs(sub.output, false, false, false, false);
+      w.forceClose();
+      ["rejection_low", "rejection_high", "slope"].forEach(function (rid) {
+         var rw = ImageWindow.windowById(rid); if (!rw.isNull) rw.forceClose(); });
+      log("[" + N + "] short master saved: " + sub.output + " (" + files.length + " frames)");
+      return sub.output;
+   } catch (e) {
+      log("[" + N + "] short master skipped (" + ("" + e).replace(/^Error: /, "") + "); master_" + S + " stands as it is");
+      ["integration", "rejection_low", "rejection_high", "slope"].forEach(function (id) {
+         try { var x = ImageWindow.windowById(id); if (!x.isNull) x.forceClose(); } catch (e2) {}
+      });
+      return null;
+   } finally { TEND(N, "short subset integration"); }
+}
+
 function runStack(stack, masters, reg) {
    var S = stack.name;
    TSTART(S, "stack total");
@@ -626,6 +689,7 @@ function runStack(stack, masters, reg) {
    } catch (e12) { log("[" + S + "] review jpg skipped (" + e12 + ")"); }
    w.forceClose();
    TEND(S, "review jpg");
+   if (stack.short_subset) integrateShort(stack, regFiles, R.selfRef);
    log("[" + S + "] funnel " + all.length + " staged -> " + work.length + " cal -> " + ccFiles.length + " cc -> " +
        rgbFiles.length + (CONFIG.cfa ? " debayer -> " : " -> ") + nReg + " reg -> " + regFiles.length + " integrated");
    TEND(S, "stack total");
