@@ -17,6 +17,9 @@ core_sat). This module reads them back:
     night_notes(config, subs, ...)           the sub doctor's report lines
     target_core(config, rows, project)       the target page block
     format_report(...)                       photonscript core-check
+    osc_advice(config, groups, long_s, project)
+                                             Piggy-600: the OSC sub length
+                                             to shoot (2026-10-14)
 
 A long length clips the core when at least half of its measured subs have
 more than qa_core_sat_warn_px (25) core pixels at saturation (another rig:
@@ -24,6 +27,16 @@ scaled by the pixel area, core_sat.warn_px). Shorts are
 the lengths at most 1/1.5 of the long one (ExposurePlan.is_short_exposure);
 "in the Library" counts approved shorts (pending ones are named apart).
 Wanted: the goal's hdr_short_count, else core_hdr_min_short (12).
+
+Piggy-600 (2026-10-14, "shoot M31 at 120 s"): the OSC rides the RC16 and
+has no HDR short set of its own, so a clipped OSC core first asks for a
+shorter Piggy length: status osc_length, "Piggy M31 core clips at 300 s:
+set OSC to 120 s (...)", while the length the companion shoots on that
+target (the goal's "OSC" exposure override, else piggyback_exposure_s)
+is longer than the suggestion. The suggestion is the longest measured
+length whose core does not clip (at least OSC_MIN_PROVEN measured subs),
+else suggest_short. piggy_core_length off drops the advice; apply makes
+the planner shoot it (scheduler/piggy_length.py).
 """
 
 from __future__ import annotations
@@ -36,6 +49,8 @@ SHORT_FRAC = 1.0 / 1.5    # a length at most this x the long one is a short
 NICE_S = (1, 2, 3, 5, 10, 15, 20, 30, 45, 60, 90, 120, 180, 240, 300, 600)
 OK, UNMEASURED, COVERED, TOO_FEW, NO_PLAN, SHORT_CLIPS = (
     "ok", "unmeasured", "covered", "too_few", "no_plan", "short_clips")
+OSC_LENGTH = "osc_length"
+OSC_MIN_PROVEN = 3        # measured subs a length needs to count as unclipped
 
 
 def _num(v):
@@ -247,17 +262,70 @@ def coverage(config, rows, project=None) -> list[dict]:
         else:
             rec["status"] = COVERED
             fill = ("the HDR combine fills the core" if rig == "rc16" else
-                    "OSC: integrate stacks every length in one master and there is "
-                    "no HDR combine, so the core stays clipped in the stack")
+                    "OSC: " + _osc_fill(config))
             rec["message"] = f"{head}: {clip}, covered by {have} short subs ({fill}){tune}"
         if rig != "rc16" and rec["status"] == TOO_FEW:
-            rec["message"] += (" (OSC: integrate stacks every length in one master, "
-                               "there is no HDR combine)")
+            rec["message"] += (" (OSC: " + _osc_fill(config) + ")")
+        if rig != "rc16":
+            adv = osc_advice(config, gs, long_s, project)
+            if adv:
+                rec["osc_advice"] = adv
+                rec["status"] = OSC_LENGTH
+                rec["message"] = (f"Piggy {target} core clips at {long_s:g} s ({clip}): "
+                                  + adv["action"] + f" ({adv['why']})")
         out.append(rec)
     return sorted(out, key=lambda r: (r["rig"] != "rc16", r["rig"], r["filter"]))
 
 
-GAPS = (NO_PLAN, TOO_FEW, SHORT_CLIPS)
+GAPS = (NO_PLAN, TOO_FEW, SHORT_CLIPS, OSC_LENGTH)
+
+
+def _osc_fill(config) -> str:
+    """What integrate does with an OSC stack of several lengths."""
+    if bool(getattr(config, "integrate_osc_hdr_core", True)):
+        mx = float(getattr(config, "integrate_osc_hdr_short_max_s", 180.0) or 180.0)
+        return (f"integrate stacks the subs up to {mx:g} s apart and replaces the "
+                "clipped nucleus from them (master_OSC_hdr)")
+    return ("integrate stacks every length in one master and the OSC core combine "
+            "is off (integrate_osc_hdr_core), so the core stays clipped in the stack")
+
+
+def osc_advice(config, groups: list[dict], long_s: float, project=None) -> dict | None:
+    """Piggy-600 sub length advice for one target (module doc), or None
+    (piggy_core_length off, the long length does not clip, or the length
+    shot on this target is already at or under the suggestion).
+    {suggest_s, shoot_s, source, why, action, mode}."""
+    from photonscript.scheduler.piggy_length import core_mode, osc_override
+    mode = core_mode(config)
+    lg = next((g for g in groups if abs(g["exp_s"] - long_s) < 1e-6), None)
+    if mode == "off" or lg is None or not _is_clipped(lg):
+        return None
+    meas = [g for g in groups if g["measured"]]
+    proven = sorted((g for g in meas if g["measured"] >= OSC_MIN_PROVEN
+                     and not _is_clipped(g) and g["exp_s"] < long_s),
+                    key=lambda g: -g["exp_s"])
+    if proven:
+        g = proven[0]
+        s = float(g["exp_s"])
+        sat = g["sat_adu"] or float(getattr(config, "qa_saturation_adu", 65000.0))
+        why = (f"{s:g} s: {g['clipped']} of {g['measured']} subs clip"
+               + (f", core p99.9 {100.0 * g['p999_median'] / sat:.0f}% of saturation"
+                  if g["p999_median"] is not None and sat else ""))
+    else:
+        s, why = suggest_short(config, groups, long_s)
+    ov = osc_override(project)
+    shoot = ov or float(getattr(config, "piggyback_exposure_s", 120.0) or 120.0)
+    src = "the goal's OSC override" if ov else "piggyback_exposure_s"
+    if shoot <= s + 0.5:
+        return None
+    if mode == "apply":
+        action = (f"the companion shoots {s:g} s on it (piggy_core_length apply; "
+                  f"exposure_overrides {{\"OSC\": {s:g}}} keeps it)")
+    else:
+        action = (f"set OSC to {s:g} s (exposure_overrides {{\"OSC\": {s:g}}}; "
+                  f"now {shoot:g} s from {src})")
+    return {"suggest_s": s, "shoot_s": shoot, "source": src, "why": why,
+            "action": action, "mode": mode}
 
 
 def _projects_by_key(projects) -> dict:

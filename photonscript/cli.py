@@ -1770,7 +1770,8 @@ def _goal_from_detail(detail: dict):
         plans.append(SimpleNamespace(
             filter_type=SimpleNamespace(value=p.get("filter")), rig=p.get("rig") or "rc16",
             hdr_short_seconds=hs.get("exposure_s"), hdr_short_count=hs.get("count") or 0))
-    return SimpleNamespace(exposure_plans=plans) if plans else None
+    return SimpleNamespace(exposure_plans=plans,
+                           exposure_overrides=g.get("exposure_overrides") or {}) if plans else None
 
 
 def _measure_folder(cfg, folder: Path, target: str, rig: str) -> list[dict]:
@@ -3573,7 +3574,9 @@ def integrate_cmd(
                                       "(default integrate_pointing_check, warn)"),
     hdr: Optional[bool] = typer.Option(None, "--hdr/--no-hdr",
                                        help="Mono: HDR combine a filter's exposure-length masters into "
-                                            "master_<F>_hdr (default integrate_hdr_combine, on)"),
+                                            "master_<F>_hdr (default integrate_hdr_combine, on). OSC: the "
+                                            "core combine from the short subs into master_OSC_hdr "
+                                            "(default integrate_osc_hdr_core, on)"),
     mono_color: Optional[bool] = typer.Option(None, "--mono-color/--no-mono-color",
                                               help="Mono: after the finish, combine the filter masters into "
                                                    "<target>_LRGB / _RGB / _SHO / _HOO (default "
@@ -3619,6 +3622,7 @@ def integrate_cmd(
         kw["scratch_root"] = None
     if hdr is not None:
         kw["hdr_combine"] = hdr
+        kw["osc_hdr_core"] = hdr
     if mono_color is not None:
         kw["mono_color"] = mono_color
     if pointing:

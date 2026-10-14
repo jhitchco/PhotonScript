@@ -429,6 +429,16 @@ class PhotonScriptConfig(BaseSettings):
                                  # master_<F>_hdr (HDRComposition, else a fitted
                                  # replacement of the saturated pixels); the
                                  # finish and the blend prefer it. OSC: no effect
+    integrate_osc_hdr_core: bool = True  # OSC (Piggy-600) integrate, 2026-10-14:
+                                 # when the subs come in several lengths, the
+                                 # short ones (<= integrate_osc_hdr_short_max_s)
+                                 # also make their own master, and when the
+                                 # core is clipped in the full master its
+                                 # nucleus is replaced from the short master
+                                 # (fitted, feathered) into master_OSC_hdr; any
+                                 # failure keeps the single master as before
+    integrate_osc_hdr_short_max_s: float = 180.0  # OSC subs at or under this
+                                 # length are the short set of the core combine
     integrate_pointing_check: str = "warn"  # integrate (desktop .env): each
                                  # light's header RA / DEC vs the target's
                                  # catalog position, its altitude and a mount
@@ -689,6 +699,14 @@ class PhotonScriptConfig(BaseSettings):
                                  # unclipped sub measures the core yet
     core_hdr_min_short: int = 12  # short subs wanted per filter when the goal
                                  # has no HDR set (project_store HDR_SHORT_COUNT)
+    piggy_core_length: str = "advise"  # Piggy-600 core clipped (2026-10-14,
+                                 # scheduler/piggy_length.py): off | advise
+                                 # (default: the morning report and target
+                                 # page say "Piggy M31 core clips at 300 s: set
+                                 # OSC to 120 s", nothing changes) | apply
+                                 # (the companion also shoots that length while
+                                 # the RC16 is on that target, unless the goal
+                                 # sets its own "OSC" exposure override)
 
     # --- Imaging defaults (AARO) ---
     default_gain: int = 200

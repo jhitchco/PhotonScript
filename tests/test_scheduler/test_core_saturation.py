@@ -494,4 +494,5 @@ def test_warn_px_scales_with_the_rig_pixel_area(tmp_path):
         [dict(_row(120, 0, p999=30000), rig="piggyback", filter="OSC") for _ in range(20)]
     c = cc.coverage(cfg, rows)[0]
     assert c["clipped"] and c["status"] == cc.COVERED
-    assert "no HDR combine" in c["message"]
+    # 2026-10-14: integrate's OSC core combine fills it (integrate_osc_hdr_core)
+    assert "master_OSC_hdr" in c["message"]
