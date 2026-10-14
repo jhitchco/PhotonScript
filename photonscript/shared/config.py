@@ -1162,6 +1162,13 @@ class PhotonScriptConfig(BaseSettings):
                                   # per-filter sub seconds always win; 0 =
                                   # bb_exposure_s for RGB too (the old rule)
 
+    # --- Remote CLI (POST /api/cli/run, scheduler/remote_cli.py) ---
+    remote_cli_token: str = ""  # shared secret for the remote CLI; "" =
+                                  # the feature is off (the default). Set
+                                  # PS_REMOTE_CLI_TOKEN in the scope PC's .env
+                                  # (and the desktop's, for the client) by
+                                  # hand; never via the dashboard config editor
+
     # --- Supervisor escalation ---
     pushover_user_key: str = ""
     pushover_api_token: str = ""

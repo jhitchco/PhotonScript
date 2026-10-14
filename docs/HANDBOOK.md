@@ -1329,6 +1329,74 @@ mismatch, the RC16 EAF counter reset), each found by hand afterwards.
 - **Off:** `settings_ledger_enabled` false; drop an app with
   `settings_ledger_apps`.
 
+### Remote CLI: run photonscript commands on the scope PC (2026-10-14)
+
+Why: Claude on the desktop reaches only the scope's HTTP API, so a one-off
+command that must run on the scope PC (`frame-check --last 3 --type SNAPSHOT
+--compare`, `settings-snapshot`, `unguided-limits --refresh`,
+`guide-rms-backfill --apply`, `calibration-status`, `sub-doctor`) needed
+Jeremy at the keyboard.
+
+- **What:** `POST /api/cli/run` `{"args": ["frame-check", "--last", "3"],
+  "timeout_s": 300}` runs `python -m photonscript <args>` on the scope PC
+  (the service's own venv and checkout; an argv list, never a shell) and
+  answers 202 with a job id. `GET /api/cli/jobs/{id}` gives status (running,
+  done, failed, timeout, error), exit code, duration and the stdout / stderr
+  tail (`?tail=N` bytes). `GET /api/cli/jobs` lists running jobs and the audit
+  log, metadata only; System page > Remote commands shows it.
+  Code: `scheduler/remote_cli.py`, `scheduler/routers/remote_cli.py`.
+- **Allowlist, not a denylist:** `config/remote_cli.toml`. A command runs only
+  when listed, with only its listed flags; each flag is also checked against
+  the command's own typer options (unknown flag 400, a real flag not allowed
+  remotely 403) and the whole argv is parsed by click before anything runs.
+  `<command> --help` is allowed for every command. Never listed: anything
+  that moves the mount / focuser / cover / roof, arms or disarms, starts or
+  stops a sequence, restarts or updates the service, deploys, notifies,
+  connects a device, runs PixInsight or moves / deletes files; also no
+  `--url` / `--nina-url` and no flag that takes a file or folder path.
+  Refused with 403 and a message. A test (`tests/test_scheduler/
+  test_remote_cli.py`) fails when the TOML names a flag the CLI does not have.
+- **Classes:** `read` = pure reports. `write` = local data maintenance
+  (`settings-snapshot --no-push`, `unguided-limits --refresh`,
+  `settings-backfill --apply`, `guide-rms-backfill --apply`): the request must
+  carry `"confirm": "write"`, and it is refused (409) while the armer is
+  RUNNING / WATCHING / PAUSED_* or a grading job writes, unless the command is
+  `night_safe` (only settings-snapshot, which the armer itself takes
+  mid-night). A remote settings-snapshot must carry `--no-push`.
+- **Limits:** one job at a time per class (409 otherwise); hard timeout
+  (default 300 s, max 1800 s) kills the child's whole process tree; the last
+  256 KB of each stream is kept; jobs live in memory (the last 50), so the
+  output of a job is gone after a restart (its audit line stays).
+- **Audit:** `<data_dir>/remote_cli/audit.jsonl`, one line per run (time,
+  client IP, the tailscale user when serve forwards it, args, class, status,
+  exit, duration, bytes) and per refusal (the status and why). The token is
+  never logged.
+- **Access:** the API stays tailnet only. POST and the job detail also need
+  the header `X-PhotonScript-Token` equal to `PS_REMOTE_CLI_TOKEN`; empty
+  (the default) or under 16 characters = the feature is off (403). The token
+  is not in the dashboard config editor (it can only be set in .env by hand)
+  and the settings ledger redacts it.
+- **Turn it on (scope PC, once):** make a random token on the desktop, e.g.
+  `python -c "import secrets; print(secrets.token_urlsafe(32))"`, add
+  `PS_REMOTE_CLI_TOKEN=<token>` to `C:\astro\PhotonScript\.env` on the scope
+  PC, then restart PhotonScript the normal way (the next deploy, or
+  `photonscript restart`). Check: `GET /api/cli/jobs` shows `"enabled": true`.
+  Turn it off: blank the line and restart.
+- **Desktop client:** put the same `PS_REMOTE_CLI_TOKEN=<token>` in the
+  desktop checkout's `.env` (`C:\Users\sleep\Claude\PhotonScript\.env`, never
+  committed); `photonscript remote` reads it from there (or the environment)
+  and sends it only in the header, never printed. Usage:
+  `photonscript remote -- frame-check --last 3 --type SNAPSHOT --compare`,
+  `photonscript remote --confirm-write -- unguided-limits --refresh`,
+  `--url` (default the tailscale serve URL; `PS_REMOTE_CLI_URL`),
+  `--no-wait` (print the job id), `--remote-timeout S`. It polls, prints the
+  output and exits with the remote exit code (2 refused / unreachable, 124 on
+  the remote hard timeout). Put the remote command after `--`.
+- **Adding a command:** read its code first; if it changes no hardware, sends
+  nothing and deletes nothing, add a `[commands.<name>]` block with `class`,
+  `flags` (and `write_flags`, `require`, `night_safe` when needed), run the
+  test, deploy.
+
 ### Add a target (PS-124)
 
 The Target Goals **Add** box takes a catalog name, catalog id or alias
@@ -1914,6 +1982,8 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   `Start-ScheduledTask PhotonScript`. Paths are `C:\astro`, NOT the desktop's
   `C:\dev`. Details: docs/MAINTENANCE.md "Running the service".
 - Scheduled tasks: `photonscript-morning-debrief` (daily 8:04 AM), `PhotonScript` (scope PC, at startup).
+- Scope-PC commands from the desktop: `photonscript remote -- <command>`
+  (allowlisted reports and local data maintenance only; section 4, Remote CLI).
 - Constraints: no GitHub pushes, no credentials, no AstroBin scraping for
   data tables, no writes into ninashare, scope deploys refused mid-night.
 

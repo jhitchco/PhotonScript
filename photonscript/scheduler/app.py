@@ -3359,3 +3359,5 @@ from photonscript.scheduler.routers import cover as _cover_router  # noqa: E402
 app.include_router(_cover_router.router)   # PS-189
 from photonscript.scheduler.routers import settings_ledger as _settings_ledger_router  # noqa: E402
 app.include_router(_settings_ledger_router.router)   # settings ledger
+from photonscript.scheduler.routers import remote_cli as _remote_cli_router  # noqa: E402
+app.include_router(_remote_cli_router.router)   # remote CLI (2026-10-14)

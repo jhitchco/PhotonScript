@@ -52,6 +52,7 @@ Usage:
     photonscript stop | restart
     photonscript notify "message"
     photonscript monitor [--url http://host:8100] [--grep cooler] [--level warning]
+    photonscript remote [--url U] [--no-wait] [--confirm-write] -- <command> [flags]  # remote CLI
 """
 
 from __future__ import annotations
@@ -3344,6 +3345,116 @@ def _config_for_repo(repo: Path):
     from photonscript.shared.config import PhotonScriptConfig
     env = repo / ".env"
     return PhotonScriptConfig(_env_file=str(env)) if env.exists() else PhotonScriptConfig()
+
+
+REMOTE_DEFAULT_URL = "https://teles-feb25.lobster-bleak.ts.net"
+
+
+def remote_run(url: str, token: str, args: list, *, confirm_write: bool = False,
+               timeout_s: float = 300, wait: bool = True, poll_s: float = 2.0,
+               client=None, out=None, err=None) -> int:
+    """POST /api/cli/run, then (wait) poll GET /api/cli/jobs/{id} and print
+    the output. Returns the exit code to leave with: the remote exit code,
+    2 when refused or unreachable, 124 on the remote hard timeout. The token
+    goes only into the X-PhotonScript-Token header and is never printed."""
+    import time as _time
+    import httpx
+    out = out or sys.stdout
+    err = err or sys.stderr
+    base = url.rstrip("/")
+    own = client is None
+    cl = client or httpx.Client(timeout=30)
+    hdr = {"X-PhotonScript-Token": token}
+    try:
+        body = {"args": list(args), "timeout_s": timeout_s}
+        if confirm_write:
+            body["confirm"] = "write"
+        try:
+            r = cl.post(f"{base}/api/cli/run", json=body, headers=hdr)
+        except Exception as e:  # noqa: BLE001
+            print(f"remote: {base} unreachable ({type(e).__name__})", file=err)
+            return 2
+        if r.status_code != 202:
+            try:
+                detail = r.json().get("detail")
+            except Exception:  # noqa: BLE001
+                detail = r.text[:300]
+            print(f"remote: refused ({r.status_code}): {detail}", file=err)
+            return 2
+        job = r.json()
+        if not wait:
+            print(f"remote job {job['id']} started ({job['class']}): "
+                  f"GET {base}/api/cli/jobs/{job['id']}", file=out)
+            return 0
+        deadline = _time.monotonic() + timeout_s + 120
+        while True:
+            _time.sleep(poll_s)
+            try:
+                r = cl.get(f"{base}/api/cli/jobs/{job['id']}", headers=hdr,
+                           params={"tail": 262144})
+                r.raise_for_status()
+                job = r.json()
+            except Exception as e:  # noqa: BLE001
+                if _time.monotonic() > deadline:
+                    print(f"remote: lost job {job['id']} ({type(e).__name__})", file=err)
+                    return 2
+                continue
+            if job.get("status") != "running":
+                break
+            if _time.monotonic() > deadline:
+                print(f"remote: job {job['id']} still running past its timeout", file=err)
+                return 2
+        if job.get("stdout"):
+            out.write(job["stdout"])
+        if job.get("stderr"):
+            err.write(job["stderr"])
+        if job.get("truncated"):
+            print("remote: output truncated to the last bytes kept (stdout "
+                  f"{job.get('stdout_bytes')} B, stderr {job.get('stderr_bytes')} B)",
+                  file=err)
+        if job.get("status") == "timeout":
+            return 124
+        code = job.get("exit_code")
+        return int(code) if isinstance(code, int) else 2
+    finally:
+        if own:
+            cl.close()
+
+
+@app.command("remote", context_settings={"allow_extra_args": True,
+                                         "ignore_unknown_options": True})
+def remote_cmd(
+    args: List[str] = typer.Argument(..., help="The photonscript command and its "
+                                     "flags, e.g. frame-check --last 3 --compare"),
+    url: str = typer.Option(REMOTE_DEFAULT_URL, "--url", envvar="PS_REMOTE_CLI_URL",
+                            help="Scope scheduler (default the tailscale serve URL)"),
+    wait: bool = typer.Option(True, "--wait/--no-wait",
+                              help="Wait for the job and print its output (default)"),
+    confirm_write: bool = typer.Option(False, "--confirm-write",
+                                       help="Needed for write commands (settings-"
+                                            "snapshot, unguided-limits --refresh, ...)"),
+    timeout_s: float = typer.Option(300, "--remote-timeout",
+                                    help="Hard timeout on the scope PC (s, max 1800)"),
+):
+    """Run an allowlisted photonscript command ON THE SCOPE PC (POST
+    /api/cli/run) and print its output; exits with the remote exit code.
+    Needs PS_REMOTE_CLI_TOKEN in this machine's .env (the scope PC's value).
+    Put the remote command after `--` so its flags never clash with these
+    options. The allowlist is config/remote_cli.toml.
+
+    photonscript remote -- frame-check --last 3 --type SNAPSHOT --compare
+    photonscript remote --confirm-write -- unguided-limits --refresh
+    """
+    import os as _os
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    token = (getattr(cfg, "remote_cli_token", "")
+             or _os.environ.get("PS_REMOTE_CLI_TOKEN", "")).strip()
+    if not token:
+        console.print("PS_REMOTE_CLI_TOKEN is not set in this machine's .env "
+                      "(docs/HANDBOOK.md, Remote CLI)", markup=False)
+        raise typer.Exit(2)
+    raise typer.Exit(remote_run(url, token, list(args), confirm_write=confirm_write,
+                                timeout_s=timeout_s, wait=wait))
 
 
 @app.command("autostart-check")
