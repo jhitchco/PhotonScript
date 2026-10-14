@@ -131,6 +131,7 @@
             <h2>Integration readiness</h2>
             <div id="tReady" class="muted">loading&hellip;</div>
             <div id="tInteg" style="margin-top:.5rem;font-size:.82rem;"></div>
+            <div id="tBlend" style="margin-top:.5rem;font-size:.82rem;" hidden></div>
         </section>
         <section class="panel" id="campPanel" hidden>
             <h2>Campaign review <span id="tCampChip" style="font-size:.8rem;"></span></h2>
@@ -479,6 +480,43 @@ async function loadReady() {
     } catch (e) { el.textContent = 'readiness unavailable'; }
 }
 
+// Narrowband two-rig blend readiness (/api/blend-readiness, scheduler/
+// blend_readiness): accepted RC16 Ha / OIII / SII against the thresholds,
+// the Piggy-600 master and nights to each from tonight's plan. Shown only
+// for a two-rig narrowband goal.
+async function loadBlend() {
+    const el = document.getElementById('tBlend');
+    try {
+        const r = await (await fetch('/api/blend-readiness?target=' +
+                                     encodeURIComponent(D.target))).json();
+        const t = (r.targets || [])[0];
+        if (!t) return;
+        if (t.error) { el.hidden = false; el.textContent = t.line; return; }
+        const col = ok => ok ? '#4ade80' : '#fbbf24';
+        const rows = Object.entries(t.channels || {}).map(([f, c]) => {
+            const when = c.met ? 'met' : (c.nights != null
+                ? '~' + c.nights + ' night' + (c.nights === 1 ? '' : 's') +
+                  ' at ' + c.planned_h_night.toFixed(1) + ' h/night'
+                : "not in tonight's plan");
+            return '<div><b style="color:' + col(c.met) + ';">' + esc(f) + '</b> ' +
+                c.subs + ' subs, ' + c.hours.toFixed(1) + ' / ' + c.need_h + ' h' +
+                ' <span class="dim">(' + esc(when) + ')</span></div>';
+        }).join('');
+        const pm = t.piggy_master;
+        const head = t.ready
+            ? 'ready: blend uses ' + t.uses.join(' + ') +
+              (t.core ? ', ' + t.core + ' core' : ', no SHO / HOO core yet')
+            : 'not ready';
+        el.innerHTML = '<div><b>Narrowband blend</b> <span style="color:' +
+            col(t.ready) + ';">' + esc(head) + '</span></div>' + rows +
+            '<div class="dim">Piggy-600 master: ' + (pm ? 'v' + pm.version + ' ' +
+            pm.hours + ' h (' + esc(pm.date) + ')' : 'none yet') +
+            ". Accepted RC16 subs; Ha is the blend's main input, OIII adds " +
+            'G / B, SII the SHO core. photonscript blend-readiness</div>';
+        el.hidden = false;
+    } catch (e) { /* no blend readiness: the block stays hidden */ }
+}
+
 // PS-142: campaign status chip + review panel (latest verdict + notes, asks
 // with Approve / Decline; a plan change shows its diff and needs a confirm)
 async function loadCampaign() {
@@ -600,6 +638,7 @@ fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     renderFacts(); renderTotals(); renderReasons(); renderChips(); renderWhere();
     loadGrid();
     loadReady();
+    if (D.project_id) loadBlend();
     if (!D.unattributed) loadBudget(); else document.getElementById('tBudget').textContent = 'n/a';
     if (D.project_id) { loadQa(); loadCampaign(); }
     if (!D.unattributed) { loadRef(); pollLive(); }

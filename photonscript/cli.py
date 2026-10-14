@@ -18,6 +18,7 @@ Usage:
     photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events] [--timeline] [--json]
     photonscript unguided-limits [--rig R] [--refresh] [--url U] [--since D] [--json]
     photonscript core-check --target M31 [--rig rc16] [--night D] [--url U] [--measure DIR] [--json]
+    photonscript blend-readiness [--target T] [--json] [--url U]   # two-rig NB blend
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
         [--library PATH] [--profile] [--feature-arcmin 60] [--json]
         [--camera-cal]                                            # PS-117
@@ -1876,6 +1877,46 @@ def core_check_cmd(
     console.print(cc.format_report(cfg, target, table, project, night or None,
                                    coverage_rows=rows),
                   markup=False, highlight=False)
+
+
+@app.command("blend-readiness")
+def blend_readiness_cmd(
+    target: str = typer.Option("", "--target", help="One goal (default: every active "
+                               "two-rig narrowband goal)"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Read a running PhotonScript (GET /api/blend-readiness) "
+                                 "instead of this machine's goal store"),
+    as_json: bool = typer.Option(False, "--json", help="Print the report as JSON"),
+):
+    """Narrowband two-rig blend readiness: per goal with an RC16 Ha plan and
+    a Piggy-600 plan, the accepted RC16 Ha / OIII / SII subs and hours the
+    NB blend would use, the Piggy-600 master, whether it is ready
+    (blend_nb_min_ha_h, blend_nb_min_oiii_h, blend_nb_min_sii_h) and nights
+    to each threshold from tonight's plan. Read only.
+
+    photonscript blend-readiness --target "Heart Nebula" --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler import blend_readiness as br
+    if url:
+        import urllib.parse
+        import urllib.request
+        u = (url.rstrip("/") + "/api/blend-readiness?"
+             + urllib.parse.urlencode({"target": target}))
+        try:
+            with urllib.request.urlopen(u, timeout=120) as r:
+                rep = _json.loads(r.read().decode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not read {u}: {e}[/red]")
+            raise typer.Exit(2)
+    else:
+        from photonscript.scheduler.calibration_plan import load_projects
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        rep = br.report(cfg, load_projects(cfg), target=target)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+        return
+    console.print(br.format_report(rep), markup=False, highlight=False)
 
 
 @app.command("optics-report")
@@ -4096,7 +4137,11 @@ def autointegrate_cmd(
         blend=bool(getattr(cfg, "autointegrate_blend", True)) if blend is None else blend,
         notify=bool(getattr(cfg, "autointegrate_notify", True)) if notify is None else notify,
         hoo=bool(getattr(cfg, "autointegrate_hoo", True)) if hoo is None else hoo,
-        interval_min=interval_min)
+        interval_min=interval_min,
+        nb_gate=bool(getattr(cfg, "blend_nb_gate", True)),
+        nb_min_ha_h=float(getattr(cfg, "blend_nb_min_ha_h", 2.0)),
+        nb_min_oiii_h=float(getattr(cfg, "blend_nb_min_oiii_h", 1.5)),
+        nb_min_sii_h=float(getattr(cfg, "blend_nb_min_sii_h", 1.5)))
     say(f"autointegrate: Library {lib}, staging {root}"
         + (f", scratch {wo.scratch_root}" if wo.scratch_root else "")
         + f", settle {o.settle_min:g} min"

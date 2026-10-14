@@ -494,6 +494,36 @@ def nb_config(o: Options, inp: Inputs, run_dir: Path) -> dict:
     return cfg
 
 
+def rc16_depth(inp: Inputs) -> dict[str, dict] | None:
+    """{Ha, OIII, SII: {subs, hours}} the chosen RC16 run integrated, from
+    its ledger (acquisition.subs_by_filter; PS-177 exposure groups such as
+    Ha_30s count toward Ha). None when unknown: given --rc16 paths, or the
+    run has no readable ledger."""
+    from photonscript.integration.mono_color import canonical
+    run = getattr(inp, "rc16_run", None)
+    if run is None:
+        return None
+    try:
+        led = json.loads((Path(run.run_dir) / "ledger.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    sbf = ((led.get("machine") or {}).get("acquisition") or {}).get("subs_by_filter")
+    if not isinstance(sbf, dict):
+        return None
+    out: dict[str, dict] = {}
+    for k, v in sbf.items():
+        m = _EXP_VARIANT.match(str(k))
+        c = canonical(m.group(1) if m else k)
+        if c not in NB_FILTERS or not isinstance(v, dict):
+            continue
+        b = out.setdefault(c, {"subs": 0, "hours": 0.0})
+        b["subs"] += int(v.get("integrated") or 0)
+        b["hours"] += float(v.get("integrated_s") or 0.0) / 3600.0
+    for b in out.values():
+        b["hours"] = round(b["hours"], 2)
+    return out
+
+
 def channel_plan(inp: Inputs, items: list[dict] | None = None) -> dict:
     """Which RC16 master is meant to go where (the steps json says what
     PixInsight actually applied): {R, G, B, L: [filters], core: [kinds]}."""

@@ -36,6 +36,9 @@ Built only from data other passes already keep (nothing is measured here):
   * sub doctor: "What went wrong and the fix: RC16: guider_conflict from
     04:27Z (fix: ...)" (sub_doctor.morning_line, the night replayed from
     its subs log; a healthy night has no line)
+  * narrowband blend readiness (blend_readiness.morning_line): "Heart
+    Nebula NB blend: not ready: Ha 0.0/2 h (0 subs), ~1 night at 2.8
+    h/night; OIII ...; Piggy master v2 3 h" per two-rig NB goal
   * Night pilot (night_pilot.morning_lines): "Night pilot: 04:31 stopped
     PHD2 guiding -> worked (ecc 0.76 -> 0.52); ...", the tonight-only goal
     changes restored at dawn, and "Night pilot learned: ..." suggestions
@@ -196,7 +199,7 @@ def report_card(config, date: str | None = None, *, projects=None,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
-           "sub_doctor": None, "core": None,
+           "sub_doctor": None, "core": None, "blend": None,
            "night_pilot": []}
     if not date:
         out["note"] = "no subs log yet"
@@ -282,6 +285,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["core"] = core_line(config, date, subs, projects)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no core line: %s", e)
+    try:   # two-rig narrowband blend readiness (blend_readiness)
+        from photonscript.scheduler.blend_readiness import morning_line as bl_line
+        out["blend"] = bl_line(config, projects)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no blend readiness line: %s", e)
     try:   # the night pilot's actions, restores and suggestions
         from photonscript.scheduler.night_pilot import morning_lines as np_lines
         out["night_pilot"] = np_lines(config, date)
@@ -350,6 +358,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["tracking"])
     if card.get("unguided_limits"):
         lines.append(card["unguided_limits"])
+    if card.get("blend"):
+        lines.append(card["blend"])
     if card.get("library"):
         lines.append(card["library"])
     if (card.get("nina_logs") or {}).get("line"):
