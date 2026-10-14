@@ -157,6 +157,29 @@ def osc_plan(hours: float, config, acquired: int = 0,
         acquired=min(acquired, count), rig=PIGGYBACK_RIG)
 
 
+OSC_KEY = FilterType.OSC.value
+
+
+def osc_override_s(overrides) -> float | None:
+    """The Piggy-600 OSC sub length a goal's exposure_overrides set ("OSC",
+    any case), else None. Piggy core 2026-10-14: it sizes the goal's OSC
+    plan and is the length NINA #2 shoots while the RC16 is on that target
+    (scheduler/piggy_length.py)."""
+    for k, v in (overrides or {}).items():
+        if str(k).strip().upper() == OSC_KEY:
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return None
+            return f if f > 0 else None
+    return None
+
+
+def _without_osc(overrides) -> dict:
+    return {k: v for k, v in (overrides or {}).items()
+            if str(k).strip().upper() != OSC_KEY}
+
+
 def _carry_seconds(new: ExposurePlan, old_len: float, old_s: float) -> None:
     """Carry accepted long-set seconds onto a rebuilt plan. Same sub length:
     keep partial seconds (PS-66, a lone capped sub). PS-118: a new sub length
@@ -436,10 +459,18 @@ class ProjectStore:
         if hdr is not None:
             proj.hdr = {k: float(v) for k, v in hdr.items() if v} or None
             plan_change = True
+        osc_len = None    # an "OSC" override set the Piggy-600 sub length
         if exposure_overrides is not None:
+            before = dict(proj.exposure_overrides or {})
             proj.exposure_overrides = {k: float(v) for k, v
                                        in exposure_overrides.items() if v} or None
-            plan_change = True
+            after = dict(proj.exposure_overrides or {})
+            osc_len = osc_override_s(after)
+            # Piggy core 2026-10-14: a change of only the "OSC" key sets the
+            # Piggy-600 sub length and leaves the RC16 plans alone (any other
+            # override change, or none at all, re-allocates them as before)
+            only_osc = (before != after and _without_osc(before) == _without_osc(after))
+            plan_change = plan_change or not only_osc
         if priority is not None:
             proj.priority = max(0, min(100, priority))
         if active is not None:
@@ -463,16 +494,25 @@ class ProjectStore:
         osc_only = not rc16 and bool(other) and not add_rc16
         if osc_only and budget_hours is not None and budget_hours > 0                 and osc_hours is None:
             osc_hours = proj.budget_hours
+        if osc_hours is None and osc_len:
+            # the "OSC" override on an existing Piggy plan: same goal hours
+            # at the new sub length (accepted seconds carried, PS-118)
+            old = next((p for p in other if p.filter_type == FilterType.OSC),
+                       None)
+            if old is not None and abs(old.exposure_seconds - osc_len) > 1e-6:
+                osc_hours = old.count * old.exposure_seconds / 3600.0
         if osc_hours is not None:
             old = next((p for p in other if p.filter_type == FilterType.OSC),
                        None)
             other = [p for p in other if p is not old]
             if osc_hours > 0:
                 # a resize keeps the plan's own sub length (PS-117: M31
-                # at 300 s); a new plan takes piggyback_exposure_s
+                # at 300 s); a new plan takes piggyback_exposure_s; the
+                # goal's "OSC" exposure override wins over both
+                ov = osc_override_s(proj.exposure_overrides)
                 new = osc_plan(osc_hours, self.config,
                                old.acquired if old else 0,
-                               exp_s=old.exposure_seconds if old else None)
+                               exp_s=ov or (old.exposure_seconds if old else None))
                 if old:
                     _carry_seconds(new, old.exposure_seconds,
                                    old.long_seconds_done())

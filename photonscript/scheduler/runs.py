@@ -52,6 +52,8 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
         "dark_hours": plan.get("dark_hours"),
         # learned unguided limits: what was (advise) or would be cut, why
         "unguided_limits": plan.get("unguided_limits"),
+        # Piggy core 2026-10-14: per-target Piggy-600 lengths (piggy_length.py)
+        "piggy_length": plan.get("piggy_length"),
         "targets": [{
             "name": t.name,
             # dawn filing (2026-10-11): the planned window, the Piggy-600's

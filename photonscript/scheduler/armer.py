@@ -1692,6 +1692,9 @@ class Armer:
         # learned unguided limits per sky region: advise records them in the
         # plan; apply cuts the unguided sets (a hand-set override wins)
         self._unguided_limits(targets, projects, now)
+        # Piggy core 2026-10-14: per-target Piggy-600 lengths (a goal's "OSC"
+        # override, piggy_core_length apply) for the companion
+        self._piggy_lengths(targets, projects)
         # (the sub doctor's caps.json cap is retired: the night pilot's
         # tonight-only goal overrides are the one sub cap, 2026-10-13)
         # PS-144: a one-shot focus-offset calibration first, inside the same
@@ -1758,6 +1761,41 @@ class Armer:
             logger.warning("unguided limits skipped: %s", e)
             rec = None
         self.plan["unguided_limits"] = rec
+
+    def _piggy_lengths(self, targets, projects) -> None:
+        """Piggy core 2026-10-14 (scheduler/piggy_length.py): tonight's
+        Piggy-600 length per RC16 target (the goal's "OSC" override, the
+        core-check length in piggy_core_length apply, the applied unguided
+        Piggy limit as a cap) into plan["piggy_length"]; the companion
+        dispatch reads it. Never raises: a failure plans as before."""
+        try:
+            from photonscript.scheduler import piggy_length as pl
+            pb = ((self.plan or {}).get("unguided_limits") or {}).get("piggyback") or {}
+            cap = float(pb["to_s"]) if pb.get("applied") and pb.get("to_s") else None
+            rec = pl.plan(self.config, targets, projects, cap_s=cap,
+                          core=pl.core_lengths(self.config, targets, projects))
+            line = pl.summary(rec)
+            if line:
+                logger.info("%s", line)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Piggy lengths skipped: %s", e)
+            rec = None
+        self.plan["piggy_length"] = rec
+
+    def _piggy_length_kwargs(self, pcfg):
+        """(pcfg, extra kwargs) for generate_piggyback_companion_json from
+        plan["piggy_length"]: one changed length = pcfg with it as
+        piggyback_exposure_s; several = osc_segments. Unchanged otherwise."""
+        try:
+            from photonscript.scheduler import piggy_length as pl
+            kw = pl.companion_kwargs((self.plan or {}).get("piggy_length"))
+            if "exp_s" in kw:
+                return pcfg.model_copy(update={"piggyback_exposure_s": kw["exp_s"]}), {}
+            if kw.get("segments"):
+                return pcfg, {"osc_segments": kw["segments"]}
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Piggy lengths not applied: %s", e)
+        return pcfg, {}
 
     def _piggy_unguided_cfg(self, pcfg):
         """The Piggy-600 companion's config with the learned unguided limit
@@ -2421,8 +2459,9 @@ class Armer:
             want_lights = bool(getattr(cfg, "piggyback_image_lights", True)
                                and has_safety)
             pcfg = self._piggy_unguided_cfg(pcfg)
+            pcfg, seg_kw = self._piggy_length_kwargs(pcfg)
             seq_text = generate_piggyback_companion_json(
-                pcfg, has_safety=has_safety, with_lights=want_lights)
+                pcfg, has_safety=has_safety, with_lights=want_lights, **seg_kw)
             seq_dir = self.sequence_path.parent
             seq_dir.mkdir(exist_ok=True)
             path = seq_dir / f"piggyback_companion_{datetime.now():%Y%m%d_%H%M}.json"

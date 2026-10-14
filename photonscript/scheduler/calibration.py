@@ -893,7 +893,7 @@ def _osc_af_triggers(config) -> list:
     return trig
 
 
-def _osc_light_loop(config) -> dict:
+def _osc_light_loop(config, segments: list | None = None) -> dict:
     """Dumb OSC light loop for the piggyback (§4.3 DUAL_RIG): shoot continuous
     OSC lights while the roof is safe, until astro dawn (PS-175), resilient to cloud
     gaps. No slew/center/dither/guide (those belong to the RC16); the
@@ -939,7 +939,12 @@ def _osc_light_loop(config) -> dict:
     a pass with no next item (0 s), so in the last 30 s before nautical dawn
     every child was a no-op and the loop spun thousands of passes a second
     (NINA #2, 2026-10-06 06:20). The pace makes each pass cost 30 s, and near
-    dawn the TimeCondition sees the 30 s item and ends the loop."""
+    dawn the TimeCondition sees the 30 s item and ends the loop.
+
+    segments (Piggy core 2026-10-14, scheduler/piggy_length.py): two or
+    more [{exp_s, until_utc}] = one OSC_LIGHT_LOOP per Piggy length, in
+    order, each until its RC16 handoff (the last until astro dawn). None or
+    one segment: the single loop at piggyback_exposure_s, as before."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _move_focuser,
         _safety_condition, _time_condition, _loop_once, _cooler_gate,
@@ -957,12 +962,13 @@ def _osc_light_loop(config) -> dict:
     from photonscript.scheduler.piggyback_focus import piggyback_seed_for
     focus_seed = piggyback_seed_for(config)
     pre_af = [_move_focuser(focus_seed)] if focus_seed > 0 else []
-    take = _make_typed(
-        "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
-        ExposureTime=exp_s, Gain=gain, Offset=offset,
-        Binning=_make_typed("NINA.Core.Model.Equipment.BinningMode, NINA.Core",
-                            X=1, Y=1),
-        ImageType="LIGHT", ExposureCount=0, ErrorBehavior=0, Attempts=1)
+    def take_of(s):
+        return _make_typed(
+            "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer",
+            ExposureTime=s, Gain=gain, Offset=offset,
+            Binning=_make_typed("NINA.Core.Model.Equipment.BinningMode, NINA.Core",
+                                X=1, Y=1),
+            ImageType="LIGHT", ExposureCount=0, ErrorBehavior=0, Attempts=1)
     dawn = OSC_LIGHTS_DAWN   # PS-175: astro dawn (was nautical dawn)
     # Inner loop: repeat exposures WHILE safe and before dawn (checked between
     # exposures, so the loop ends on its own at dawn); triggers refocus.
@@ -972,10 +978,37 @@ def _osc_light_loop(config) -> dict:
     # the gate first, the 0 s gate would pass the dawn check and the loop
     # would spin gate, gate, gate through the last exposure-length of night.
     settle = _osc_settle_gate(config)
-    inner = _seq_container(
-        OSC_LIGHT_LOOP_NAME, [take, *settle],
-        conditions=[_safety_condition(), _time_condition(*dawn)],
-        triggers=_osc_af_triggers(config))
+    if segments and len(segments) > 1:
+        # Piggy core 2026-10-14 (scheduler/piggy_length.py): one light loop
+        # per run of equal Piggy lengths, in the RC16 target order, each
+        # ending at the RC16 handoff of its last target (the PS-180 clock
+        # time NINA #1 uses too), the last at astro dawn. Every loop has the
+        # same name, guards, AF triggers and settle gates as the single loop
+        # (lint and split_guard find each one); a loop whose time has passed
+        # (a re-entry after an unsafe spell) is skipped by NINA.
+        from photonscript.scheduler.nina_sequence_json import _time_condition_at
+        from photonscript.shared.localtime import to_local
+        inner_items = []
+        for k, seg in enumerate(segments):
+            s = float(seg["exp_s"])
+            sg = _osc_settle_gate(config, s)
+            conds = [_safety_condition(), _time_condition(*dawn)]
+            until = seg.get("until_utc")
+            if until is not None and k < len(segments) - 1:
+                tl = to_local(config, until)
+                conds.insert(1, _time_condition_at(tl.hour, tl.minute))
+            if k:
+                inner_items += sg      # PS-27: a gate right before each loop
+            inner_items.append(_seq_container(
+                OSC_LIGHT_LOOP_NAME, [take_of(s), *sg], conditions=conds,
+                triggers=_osc_af_triggers(config)))
+        exp_s = float(segments[0]["exp_s"])
+        settle = _osc_settle_gate(config, exp_s)
+    else:
+        inner_items = [_seq_container(
+            OSC_LIGHT_LOOP_NAME, [take_of(exp_s), *settle],
+            conditions=[_safety_condition(), _time_condition(*dawn)],
+            triggers=_osc_af_triggers(config))]
     # config is the Piggy-600 view (rig_config), so camera_setpoint_c is the
     # piggyback setpoint the Start area cooled to
     gate = _cooler_gate_spec(config, float(getattr(config, "camera_setpoint_c", 0.0)))
@@ -993,7 +1026,7 @@ def _osc_light_loop(config) -> dict:
     image_pass = _seq_container(
         OSC_IMAGE_PASS_NAME,
         [*_osc_resume_gate(config), *cover_open, *gate_items, *pre_af,
-         _autofocus(), *settle, inner],
+         _autofocus(), *settle, *inner_items],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
@@ -1006,15 +1039,17 @@ def _osc_light_loop(config) -> dict:
         conditions=[_time_condition(*dawn)])
 
 
-def _osc_settle_gate(config) -> list:
+def _osc_settle_gate(config, exp_s: float | None = None) -> list:
     """PS-27: [the settle-gate ExternalScript] when the gate is on and its
-    script exists on this machine, else []. ErrorBehavior 0, Attempts 1."""
+    script exists on this machine, else []. ErrorBehavior 0, Attempts 1.
+    exp_s labels it (default piggyback_exposure_s)."""
     from photonscript.scheduler.nina_sequence_json import _external_script
     from photonscript.scheduler.split_guard import gate_script
     path = gate_script(config)
     if not path:
         return []
-    exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
+    if exp_s is None:
+        exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
     return [_external_script(path, f"--label=\"OSC {exp_s:g}s\"")]
 
 
@@ -1075,7 +1110,7 @@ def _osc_resume_hold(config, provider: str, minutes_offset: int = 0,
                     _time_condition(provider, minutes_offset)])
 
 
-def _osc_roof_open_notice(config) -> list:
+def _osc_roof_open_notice(config, label: str | None = None) -> list:
     """The "roof open, OSC lights" Pushover, once per night (PS-25). It sits
     before OSC_LIGHTS_UNTIL_DAWN, not inside it, because that container loops
     and resets its children on every safe re-entry. A bounded wait for safe
@@ -1085,13 +1120,14 @@ def _osc_roof_open_notice(config) -> list:
         _seq_container, _safety_condition, _time_condition, _loop_once,
         _pushover)
     exp_s = float(getattr(config, "piggyback_exposure_s", 120.0))
+    label = label or f"{exp_s:g}s"
     hold = _osc_resume_hold_seconds(config)
     dawn = OSC_LIGHTS_DAWN
     return [
         _wait_safe_until(*dawn, name="WAIT_SAFE_FOR_FIRST_OSC_LIGHTS"),
         _seq_container(
             OSC_ROOF_OPEN_NOTICE_NAME,
-            [_pushover("Piggyback", f"roof open: OSC lights {exp_s:g}s until "
+            [_pushover("Piggyback", f"roof open: OSC lights {label} until "
                        f"astro dawn, after a {hold} s resume hold")],
             conditions=[_safety_condition(), _loop_once(),
                         _time_condition(*dawn)]),
@@ -1121,7 +1157,8 @@ def osc_flat_dawn_offset(config) -> int:
 
 
 def generate_piggyback_companion_json(config, has_safety: bool = False,
-                                      with_lights: bool = False) -> str:
+                                      with_lights: bool = False,
+                                      osc_segments: list | None = None) -> str:
     """A full-night companion for the piggyback (NINA #2), meant to
     be dispatched alongside the RC16 armed sequence so ONE arm covers both
     scopes' calibration.
@@ -1142,6 +1179,11 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     has_safety=False (no safety monitor on NINA #2): darks/bias fire ungated
     (time-capped at dusk) with an annotation, and the dawn flats fire
     time-gated only. Returns the sequence JSON text.
+
+    osc_segments (Piggy core 2026-10-14): the per-target Piggy lengths of
+    tonight (piggy_length.companion_kwargs); two or more = one light loop
+    per length until its RC16 handoff. A single length goes in through
+    config.piggyback_exposure_s instead.
     """
     import json as _json
     from photonscript.scheduler.nina_sequence_json import (
@@ -1271,8 +1313,10 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         # window below instead of wedging in an unbounded WaitUntilSafe
         # (PS-36, 2026-09-26).
         target_items.append(_osc_wait_astro_dusk())
-        target_items += _osc_roof_open_notice(config)
-        target_items.append(_osc_light_loop(config))
+        segs = osc_segments if osc_segments and len(osc_segments) > 1 else None
+        target_items += _osc_roof_open_notice(config, "/".join(
+            f"{float(x['exp_s']):g}" for x in segs) + "s" if segs else None)
+        target_items.append(_osc_light_loop(config, segs))
         from photonscript.scheduler.nina_sequence_json import (
             _cooler_gate_spec, _cooler_gate_missing_notice)
         if _cooler_gate_spec(config, setpoint) is None:

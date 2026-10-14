@@ -52,8 +52,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from photonscript.integration import (astrobin, calib, hdr, manifest, mono_color, pilock, pjsr,
-                                      pointing_check, runner, scratch, star_qa)
+from photonscript.integration import (astrobin, calib, hdr, manifest, mono_color, osc_hdr, pilock,
+                                      pjsr, pointing_check, runner, scratch, star_qa)
 from photonscript.integration.frames import Frame
 from photonscript.integration.select import Selection, select_lights
 
@@ -115,6 +115,9 @@ class Options:
     core_check: bool = True           # qa_core_mode not off: is the target core still clipped in the master
     core_radius_arcmin: float = 1.0   # qa_core_radius_arcmin (galaxies; others by catalog size, shared.core_sat)
     core_warn_px: int = 25            # qa_core_sat_warn_px: more plateau px than this = still clipped
+    osc_hdr_core: bool = True         # integrate_osc_hdr_core: OSC short subs -> their own master, the
+                                      # clipped nucleus of master_OSC replaced from it (osc_hdr.py)
+    osc_hdr_short_max_s: float = 180.0   # integrate_osc_hdr_short_max_s: the short set of that combine
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -159,6 +162,8 @@ def config_options(cfg, rig: str) -> dict:
         **pjsr.rc_settings(cfg),
         palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
+        osc_hdr_core=bool(getattr(cfg, "integrate_osc_hdr_core", True)),
+        osc_hdr_short_max_s=float(getattr(cfg, "integrate_osc_hdr_short_max_s", 180.0) or 180.0),
         mono_color=bool(getattr(cfg, "integrate_mono_color", True)),
         core_check=str(getattr(cfg, "qa_core_mode", "note") or "").lower() != "off",
         core_radius_arcmin=float(getattr(cfg, "qa_core_radius_arcmin", 1.0) or 1.0),
@@ -174,6 +179,15 @@ def config_options(cfg, rig: str) -> dict:
         site={"name": cfg.observatory_name, "lat": round(cfg.observatory_lat, 3),
               "lon": round(cfg.observatory_lon, 3), "elev": int(cfg.observatory_elev),
               "bortle": cfg.observatory_bortle})
+
+
+def _core_r_px(o: Options, g0) -> float:
+    """The target's core radius in pixels of these lights (shared.core_sat)."""
+    from types import SimpleNamespace
+    from photonscript.shared.core_sat import radius_arcmin
+    scale = 206.265 * float(g0.pixel_um or 3.76) / float(g0.focallen or 600.0)
+    return radius_arcmin(SimpleNamespace(qa_core_radius_arcmin=o.core_radius_arcmin),
+                         o.target) * 60.0 / scale
 
 
 def safe_name(s: str) -> str:
@@ -691,6 +705,19 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         man = manifest.build(run_info, entries, calib_summary, qa_summary)
         manifest.write(run_dir, man)
 
+    # OSC core combine (osc_hdr.py): the short subs of a mixed OSC stack
+    # also make their own master (planned here, where out_dir is final)
+    stack_counts = {sp: {} for sp in stack_frames}
+    for f in lights:
+        for sname, names in stack_frames.items():
+            if f.name in names:
+                e = round(f.exp, 2)
+                stack_counts[sname][e] = stack_counts[sname].get(e, 0) + 1
+    if cfa and o.osc_hdr_core:
+        for n in osc_hdr.attach(stacks, stack_counts, out_dir, max_s=float(o.osc_hdr_short_max_s),
+                                min_frames=int(o.min_group_frames)):
+            echo("  " + n)
+
     with timer.stage("generate PixInsight scripts"):
         icfg = build_integrate_config(o, run_dir, stacks, plan, cfa, reference)
         integ_js = pjsr.write(run_dir / "integrate_run.js",
@@ -769,6 +796,22 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                 fcfg["masters"] = keep
                 finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
                 echo(f"  {finish_js.name} rewritten for {len(keep)} master(s)")
+        if pi_ok and cfa and o.osc_hdr_core:
+            # OSC core combine: only when the full master's core is clipped
+            # (core_master's plateau check); any failure keeps master_OSC
+            gone_osc = {k["stack"] for k in skipped}
+            for st in stacks:
+                if not st.get("short_subset") or st["name"] in gone_osc:
+                    continue
+                with timer.stage("OSC core combine (check + PixInsight)"):
+                    rh = osc_hdr.run(run_dir, st, stack_counts.get(st["name"], {}),
+                                     r_core_px=_core_r_px(o, g0), warn_px=o.core_warn_px,
+                                     exe=o.pixinsight, echo=echo)
+                result["hdr"] = rh
+                if rh["made"]:
+                    fcfg["masters"] = hdr.finish_masters(fcfg["masters"], rh["items"], rh["made"], out_dir)
+                    finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
+                    echo(f"  {finish_js.name} rewritten: the finish uses master_{rh['made'][0]}")
         if pi_ok and hdr_items:
             gone_stacks = {k["stack"] for k in skipped}
             items = hdr.plan(stacks, out_dir, made={s["name"] for s in stacks} - gone_stacks)
@@ -784,12 +827,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                     echo(f"  {finish_js.name} rewritten: the finish prefers the HDR master(s)")
         if pi_ok and o.core_check:
             # is the target core still clipped in the master the finish uses?
-            from types import SimpleNamespace
             from photonscript.integration import core_master
-            from photonscript.shared.core_sat import radius_arcmin
-            scale = 206.265 * float(g0.pixel_um or 3.76) / float(g0.focallen or 600.0)
-            r_px = radius_arcmin(SimpleNamespace(qa_core_radius_arcmin=o.core_radius_arcmin),
-                                 o.target) * 60.0 / scale
+            r_px = _core_r_px(o, g0)
             result["core_check"] = core_master.check_run(
                 out_dir, [s for s in stacks if s["name"] not in {k["stack"] for k in skipped}],
                 (result.get("hdr") or {}).get("made") or [], r_px=r_px,
@@ -826,6 +865,9 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         echo(f'    "{o.pixinsight}" -n --automation-mode --run={integ_js} --force-exit')
         if hdr_js:
             echo(f'    then "{o.pixinsight}" -n --automation-mode --run={hdr_js} --force-exit')
+        if any(st.get("short_subset") for st in stacks):
+            echo("    (the OSC core combine needs the core check after the integration: it runs "
+                 "only inside photonscript integrate)")
         if color_js:
             echo(f'    after the finish "{o.pixinsight}" -n --automation-mode --run={color_js} --force-exit')
 

@@ -9,7 +9,7 @@ mirror (read only: files are only opened for reading) into a NEW or empty
 folder under the same relative path (LIGHTS/<F>/<exp>, BIAS, DARKS/<e>s,
 FLATS/<F>), checking each source against the manifest size and each copy
 against its source, and copies the run's generated scripts
-(integrate_run.js, hdr_run.js, finish_run.js), reference.txt and
+(integrate_run.js, osc_hdr_run.js, hdr_run.js, finish_run.js), reference.txt and
 manifest.json with their paths rewritten to the new folder, so the exact
 same integration can run again. The ledger is NOT copied (one ledger per
 run: the archived one stays the record). restage.json records what was done.
@@ -31,7 +31,9 @@ from photonscript.integration import manifest as mf
 from photonscript.integration import scratch as sc
 
 STAGED_DIRS = ("LIGHTS", "BIAS", "DARKS", "FLATS")
-SCRIPTS = ("integrate_run.js", "hdr_run.js", "finish_run.js")
+# osc_hdr_run.js: the OSC core combine (osc_hdr.py), only in a run whose
+# full OSC master had a clipped core; it runs right after the integration
+SCRIPTS = ("integrate_run.js", "osc_hdr_run.js", "hdr_run.js", "finish_run.js")
 COPY_TEXT = SCRIPTS + ("reference.txt", "manifest.json", "manifest.csv")
 RECORD = "restage.json"
 MARGIN = 1.02

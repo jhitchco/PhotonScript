@@ -447,7 +447,9 @@ def _goal(project) -> dict | None:
         pct_done += min(long_done, long_goal) + min(short_done, short_goal)
     return {"pct": round(pct_done / h_goal * 100) if h_goal else 0,
             "hours_goal": round(h_goal / 3600, 1),
-            "hours_done": round(h_done / 3600, 1), "plans": plans}
+            "hours_done": round(h_done / 3600, 1), "plans": plans,
+            # Piggy core 2026-10-14: the "OSC" key sets the Piggy-600 length
+            "exposure_overrides": dict(getattr(project, "exposure_overrides", None) or {})}
 
 
 def _project_meta(p) -> dict:
