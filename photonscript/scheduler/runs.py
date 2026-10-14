@@ -598,7 +598,16 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
                         _start, _start + timedelta(seconds=_exp))
         except Exception as e:  # noqa: BLE001
             logger.debug("slew straddle skipped for %s: %s", path.name, e)
+    # target core clipped (shared.core_sat): a small cutout of the FITS
+    _core = {}
+    if "LIGHT" in str(hdr.get("IMAGETYP", "LIGHT")).upper():
+        from photonscript.shared.core_sat import sub_core
+        _ref = prewarm or stars_to or (None, None)
+        _core = sub_core(config, rig, path, hdr, target, night=_ref[0],
+                         rel_file=_ref[1])
     metrics = qa_rules.record_metrics(
+        core_sat_px=_core.get("core_sat_px"),
+        core_peak_adu=_core.get("core_peak_adu"),
         pointing_offset_arcmin=_point.get("off_target_arcmin"),
         pointing_note=_point.get("note"),
         pointing_src=_point.get("src"),
@@ -669,6 +678,7 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         # PS-108: sat_px, sat_px_pct, zero_px, zero_px_pct, max_adu, sat_adu,
         # bg_median, bg_mad (full resolution, same function as live)
         **px,
+        **_core,   # core_sat_px, core_peak_adu, core_p999, ... (shared.core_sat)
         "graded_by": m["graded_by"],
         "pointing_offset_arcmin": _point.get("off_target_arcmin"),
         "pointing_note": _point.get("note"),

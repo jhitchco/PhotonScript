@@ -93,6 +93,7 @@
                 <dl class="facts" id="tFacts"><dt>loading&hellip;</dt><dd></dd></dl>
                 <h2 style="margin-top:1rem;">Goal</h2>
                 <div id="tGoal" class="muted">loading&hellip;</div>
+                <div id="tCore" class="muted" style="margin-top:.35rem;"></div>
                 <div id="qaPanel" hidden>
                     <h2 style="margin-top:1rem;">QA gates for this target</h2>
                     <div id="tQa" class="muted"></div>
@@ -227,6 +228,14 @@ function renderFacts() {
                 '</div>';
         }).join('');
 }
+function renderCore() {
+    // target core clipped (core_check): one line per rig + filter
+    const c = D.core;
+    const el = document.getElementById('tCore');
+    if (!c || !c.lines || !c.lines.length) { el.textContent = ''; return; }
+    el.innerHTML = c.lines.map(t => '<div title="photonscript core-check">Core: ' +
+        esc(t) + '</div>').join('');
+}
 function renderTotals() {
     const t = D.totals;
     document.getElementById('tTotals').innerHTML =
@@ -303,7 +312,7 @@ function refreshDetail() {
             if (!r.ok) return;
             D = await r.json();
         } catch (e) { return; }
-        renderFacts(); renderTotals(); renderReasons(); renderChips();
+        renderFacts(); renderCore(); renderTotals(); renderReasons(); renderChips();
     }, 800);
 }
 function tileVerdict(r, state) {

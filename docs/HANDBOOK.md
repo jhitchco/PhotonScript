@@ -872,6 +872,38 @@ round per rig and region from the graded subs:
   `<data_dir>/unguided_limits.json`. Morning report: "Unguided limits:
   tonight M31 (Dec +41 east) 180 s 5/5, 300 s 0/2 round. Plan: ...".
 
+### Target core saturation: is the M31 nucleus clipped? (2026-10-13)
+
+sat_stars_pct and the frame-wide clip counts never see a galaxy nucleus or a
+bright nebula / cluster core (a negligible fraction of 26 MP). Both graders
+now measure the target's own core on each light (`shared/core_sat.py`, a
+small memmapped cutout): the core is placed by a WCS in the header, else
+this sub's stored plate solve (`solve_store`), else the header RA / DEC as
+the frame center with a search disk as wide as the offset from the target,
+else the frame center; inside the search the brightest block median marks
+it. The disk is `qa_core_radius_arcmin` (1') for galaxies, 10% of the
+catalog size (1x to 3x that) for other targets. Recorded per sub:
+`core_sat_px` (pixels >= the saturation level: FITS SATURATE, else
+`qa_saturation_adu`), `core_peak_adu`, `core_p999`, `core_src`, `core_xy`.
+Scorecard row "core" (weight 0, never a reject): `qa_core_mode` note
+(default: passes with "target core clipped: N px" above
+`qa_core_sat_warn_px` 25), warn (holds the sub for a look), off.
+HDR coverage (`scheduler/core_check.py`): per target and filter, when at
+least half of the longest subs clip the core, the goal's HDR set
+(`hdr_short_seconds` / `hdr_short_count`, else `core_hdr_min_short` 12) is
+compared with the approved shorts in the Library; a gap goes into the
+morning report ("Core clipped: ... add N x 30 s (enable the goal's HDR set,
+hdr {"L": 30})"), the sub doctor's report and the target page. The
+suggested short length scales the longest unclipped measured length so the
+core p99.9 lands at 80% of saturation (nothing unclipped yet:
+`core_hdr_short_s`, 30 s). Integration checks the master the finish uses
+(master_<F>_hdr, else the longest master) for a flat-topped core:
+"core clipped in master_L_hdr: 0 px" in the run log, `out\pipeline.log`
+and ledger `machine.core_check`. CLI (read only):
+`photonscript core-check --target M31 [--rig rc16] [--night D] [--url U]
+[--measure <Library folder>] [--json]`; `--measure` reads FITS directly
+(for nights graded before the core check).
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET

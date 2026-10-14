@@ -1853,6 +1853,12 @@ class TelescopeAgent:
         point = self._sub_pointing(hdr, start, exposure_seconds, target_name)
         slew = self._slew_straddle(start, exposure_seconds, night)
         metrics = image_metrics(quality)
+        # target core clipped (shared.core_sat): a small cutout of the FITS
+        from photonscript.shared.core_sat import sub_core
+        core = sub_core(self.config, self.rig, file_path, hdr or None,
+                        target_name, night=night, rel_file=rel_in_night)
+        metrics.update(core_sat_px=core.get("core_sat_px"),
+                       core_peak_adu=core.get("core_peak_adu"))
         metrics.update(exp_s=exposure_seconds,
                        ccd_temp=self.state.camera_temp_c,
                        set_temp=hdr.get("SET-TEMP"),
@@ -1959,6 +1965,8 @@ class TelescopeAgent:
                 "zero_px": quality.zero_px, "zero_px_pct": quality.zero_px_pct,
                 "max_adu": quality.max_adu, "sat_adu": quality.sat_adu,
                 "bg_median": quality.bg_median, "bg_mad": quality.bg_mad,
+                # target core: core_sat_px, core_peak_adu, core_p999, ...
+                **core,
                 # PS-67: offset from the named target (sidecar has the rest)
                 "pointing_offset_arcmin": point.get("off_target_arcmin"),
                 "pointing_note": point.get("note"),

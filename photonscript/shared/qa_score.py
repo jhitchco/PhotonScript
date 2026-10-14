@@ -49,14 +49,14 @@ _FALLBACK = {
         ("fwhm", 10), ("focuser_zero", 0), ("stars", 10), ("bg_rel", 5),
         ("bg_floor", 3),
         ("temp", 5), ("guide_lock", 5), ("guide_rms", 10),
-        ("tracking_jump", 10), ("exposure", 8), ("roof", 10),
+        ("tracking_jump", 10), ("exposure", 8), ("core", 0), ("roof", 10),
         ("slew_straddle", 0), ("pointing", 10))},
     "piggyback": {k: {"weight": w} for k, w in (
         ("ecc", 20), ("ecc_bin", 0), ("hfr", 25), ("hfr_rel", 10),
         ("fwhm", 5), ("focuser_zero", 0), ("stars", 10), ("bg_rel", 5),
         ("bg_floor", 3),
         ("temp", 5), ("guide_lock", 0), ("guide_rms", 0),
-        ("tracking_jump", 10), ("exposure", 10), ("roof", 10),
+        ("tracking_jump", 10), ("exposure", 10), ("core", 0), ("roof", 10),
         ("slew_straddle", 10), ("pointing", 5))},
 }
 
@@ -510,6 +510,7 @@ def panel_rows(rec: dict, card_rows: list[dict], t: dict,
         "none" if sw is None else "amber" if sw < 3 else "green", None,
         unit=" x RN^2")
     check_row("exposure", "Exposure verdict")
+    check_row("core", "Target core clipped", " px")
     check_row("temp", "Sensor temp", " C")
     check_row("guide_rms", "Guide RMS", "\"")
     check_row("guide_lock", "Guide star is a star")

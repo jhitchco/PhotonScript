@@ -142,6 +142,10 @@ why = "No mount jump doubling the stars."
 weight = 8
 why = "No blown star cores or clipped pixels; mono narrowband rarely clips, so moderate."
 
+[rc16.core]
+weight = 0
+why = "Target core clipped (galaxy nucleus): the long subs are wanted for the faint parts and the HDR shorts recover the core, so it is a note and never costs score."
+
 [rc16.roof]
 weight = 10
 why = "A real sky frame (capped to 0 when it fails)."
@@ -211,6 +215,10 @@ why = "No mount jump doubling the stars."
 [piggyback.exposure]
 weight = 10
 why = "OSC star color dies when cores clip, and 400 s broadband subs saturate bright stars, so it counts more than on the mono RC16."
+
+[piggyback.core]
+weight = 0
+why = "Target core clipped (galaxy nucleus): the long subs are wanted for the faint parts and the HDR shorts recover the core, so it is a note and never costs score."
 
 [piggyback.roof]
 weight = 10

@@ -384,6 +384,14 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
           "exp_s": _med([s["exp_s"] for s in bs], 0),
           "fails": dict(Counter(f for s in bs for f in s["fails"])),
           "pair": dict(pv)}
+    try:   # target core clipped (shared.core_sat): evidence only, not a cause
+        from photonscript.shared.core_sat import warn_px
+        thr = warn_px(config, rig)
+        nc = sum(1 for r in window if (_num(r.get("core_sat_px")) or 0) > thr)
+        if nc:
+            ev["core_clipped_subs"] = nc
+    except Exception:  # noqa: BLE001
+        pass
     phd2 = _phd2_view(states, ctx.get("phd2"))
     cal = _cal_view(ctx.get("calibration"))
     armed = ctx.get("armed")
@@ -732,6 +740,13 @@ def local_night(config, night: str, rig: str | None = None) -> dict:
         hist = []
     rep = replay_night(config, night, subs, rig=rig, plan=plan, cal_history=hist,
                        events=store.read_jsonl(events_path(config, night)))
+    try:   # target core clipped with too few HDR shorts (core_check)
+        from photonscript.scheduler import core_check
+        from photonscript.scheduler.calibration_plan import load_projects
+        rep["core"] = [c["message"] for c in core_check.night_notes(
+            config, subs, load_projects(config))]
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sub doctor core notes skipped: %s", e)
     st = load_state(config, night)
     if st.get("rigs"):
         rep["live"] = st
@@ -883,6 +898,8 @@ def format_report(config, rep: dict) -> str:
             out.append(f"      fix: {d['fix']}  [action {d['action']['id']}]")
             for s in d.get("secondary") or []:
                 out.append(f"      also: {s['cause']} ({s['confidence']})")
+    for line in rep.get("core") or []:
+        out.append(f"\nCore clipped, too few short subs: {line}")
     if rep.get("note"):
         out.append(rep["note"])
     return "\n".join(out)

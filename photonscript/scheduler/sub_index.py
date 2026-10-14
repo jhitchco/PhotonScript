@@ -218,6 +218,12 @@ def _build_row(date: str, rec: dict, known, by_key: dict) -> dict:
             "rn_penalty_pct": _num(rec.get("rn_penalty_pct")),
             "swamp": _num(rec.get("swamp")),
             "sat_stars_pct": _num(rec.get("sat_stars_pct")),
+            # target core clipped (shared.core_sat; core-check, target page)
+            "core_sat_px": _num(rec.get("core_sat_px")),
+            "core_peak_adu": _num(rec.get("core_peak_adu")),
+            "core_p999": _num(rec.get("core_p999")),
+            "core_sat_adu": _num(rec.get("core_sat_adu") or rec.get("sat_adu")),
+            "offset": _num(rec.get("offset")),
         },
         "readout": rec.get("readout"),
         "thumb": f"/api/runs/{date}/thumb?file={quote(file, safe='')}"
@@ -527,6 +533,13 @@ def target_detail(config, name: str, projects: Iterable = ()) -> dict:
     tdirs = library_target_dirs(lib, canon, projects or None) \
         if k != UNATTRIBUTED else []
     desk = Path(getattr(config, "desktop_library_dir", "") or "")
+    core = None
+    if k != UNATTRIBUTED and rs:
+        try:   # target core clipped and the HDR shorts (core_check)
+            from photonscript.scheduler.core_check import target_core
+            core = target_core(config, rs, p)
+        except Exception:  # noqa: BLE001 - the page loads without it
+            core = None
     return {
         "target": canon, "key": k, "unattributed": k == UNATTRIBUTED,
         "found": bool(rs or p),
@@ -534,6 +547,7 @@ def target_detail(config, name: str, projects: Iterable = ()) -> dict:
         "facts": target_facts(canon, p, constellation=True)
         if k != UNATTRIBUTED else None,
         "goal": _goal(p),
+        "core": core,
         "totals": _counts(rs),
         "by_filter_rig": [
             {"filter": f, "rig": rg, "rig_label": rig_label(config, rg),
