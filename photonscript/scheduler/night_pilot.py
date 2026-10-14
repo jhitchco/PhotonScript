@@ -37,7 +37,8 @@ night_pilot_verify_subs (2) subs of that rig:
                    Restart tonight from now after the current sub (PS-143).
                    Verified on ecc; a step that did not lower the ecc is
                    undone (the previous length, or the goal default, and a
-                   restart after the current sub when the guards allow),
+                   restart after the current sub when the guards allow,
+                   followed up like an action's: one retry on the race),
                    "trailing is not drift-per-second" is recorded and a
                    human is asked; no more shortening tonight. A step that
                    helped can be followed by one more on a later diagnosis.
@@ -1429,7 +1430,21 @@ def _goal_target(store, *names) -> str | None:
     return given[0] if given else None
 
 
+def _restart_when(armer) -> str:
+    """How a requested restart takes effect, read BEFORE asking (the request
+    turns RUNNING into the pause): from RUNNING NINA #1 stops after the
+    current sub; from an operator pause NINA #1 has already stopped (or the
+    pause's own stop is still waiting for the sub to end)."""
+    if str(getattr(armer, "state", "")) == "RUNNING":
+        return "restart after the current sub"
+    p = getattr(armer, "pause_info", None)
+    if isinstance(p, dict) and p.get("phase") == "stopping":
+        return "restart once the pause's stop ends (after the current sub)"
+    return "restart from the pause (NINA #1 already stopped)"
+
+
 async def _restart(cfg, armer, a: dict, now: datetime, retry: bool = False) -> None:
+    when = _restart_when(armer)
     try:
         res = await armer.restart(when="after_exposure", now=now)
     except Exception as e:  # noqa: BLE001
@@ -1447,7 +1462,7 @@ async def _restart(cfg, armer, a: dict, now: datetime, retry: bool = False) -> N
         a["status"] = "pending"
         if not retry:
             a["detail"] = (a.get("detail", "") + "; " if a.get("detail") else "") \
-                + "restart after the current sub"
+                + when
 
 
 def _job(a: dict, coro) -> None:
@@ -1517,32 +1532,89 @@ async def _follow_up(cfg, armer, io, st, ctx, now) -> None:
             continue
         if a.get("status") != "pending":
             continue
-        req = _parse_t((a.get("restart") or {}).get("req_t"))
-        lr = getattr(armer, "last_restart", None) or {}
-        at = _parse_t(lr.get("at"))
-        if req is not None and at is not None and at >= req - timedelta(seconds=1):
-            if lr.get("ok"):
-                a.update(status="done", effective_t=_iso(at))
-                _event(cfg, st["night"], "dispatched", f"{a['what']}: restart "
-                       "dispatched", now, rig=a["rig"], aid=a["id"])
-                continue
-            if not (a.get("restart") or {}).get("retried"):
-                # 2026-10-13: the restart's load ran before NINA #1 had wound
-                # down. Wait until it reads idle, then one retry.
-                idle = await io.nina1_wait_idle(cfg)
-                _event(cfg, st["night"], "retry", f"restart failed "
-                       f"({lr.get('detail')}); NINA #1 idle={idle}; retrying once",
-                       now, rig=a["rig"], aid=a["id"])
-                a["restart"]["retried"] = True
-                await _restart(cfg, armer, a, now, retry=True)
-                if a["status"] == "failed":
-                    await _fail(cfg, io, st, a, now, a["detail"])
-                continue
-            await _fail(cfg, io, st, a, now, f"restart failed twice: {lr.get('detail')}")
-            continue
-        if req is not None and (now - req).total_seconds() / 60 > RESTART_FOLLOW_MIN:
-            await _fail(cfg, io, st, a, now, "the restart was not dispatched "
-                        f"within {RESTART_FOLLOW_MIN:g} min")
+
+        async def _again(a=a):
+            await _restart(cfg, armer, a, now, retry=True)
+            return a["detail"] if a["status"] == "failed" else None
+        out, at = await _pending_restart(cfg, armer, io, st, a.setdefault("restart", {}),
+                                         now, what=a["what"], rig=a["rig"],
+                                         aid=a["id"], retry=_again)
+        if out == "ok":
+            a.update(status="done", effective_t=_iso(at))
+        elif out not in (None, "retried"):
+            await _fail(cfg, io, st, a, now, out)
+    # the restart that applies an undo (shorter subs that did not help) gets
+    # the same follow-up: one retry once NINA #1 reads idle
+    for a in st.get("actions") or []:
+        r = (a.get("undo") or {}).get("restart")
+        if isinstance(r, dict) and r.get("status") == "pending":
+            await _follow_undo_restart(cfg, armer, io, st, a, r, now)
+
+
+async def _pending_restart(cfg, armer, io, st, r: dict, now, *, what: str,
+                           rig: str, aid: str, retry, label: str = "") -> tuple:
+    """Follow up one requested restart `r` ({req_t, retried}) against the
+    armer's last restart: ("ok", at) once dispatched; (None, None) while
+    waiting; ("retried", None) after the one retry (2026-10-13: the
+    restart's load ran before NINA #1 had wound down, so wait until it reads
+    idle, then retry once); else (failure text, None). `retry` is an async
+    callable that asks again and returns a failure text or None."""
+    req = _parse_t(r.get("req_t"))
+    lr = getattr(armer, "last_restart", None) or {}
+    at = _parse_t(lr.get("at"))
+    if req is not None and at is not None and at >= req - timedelta(seconds=1):
+        if lr.get("ok"):
+            _event(cfg, st["night"], "dispatched", f"{what}: restart "
+                   "dispatched", now, rig=rig, aid=aid)
+            return "ok", at
+        if not r.get("retried"):
+            idle = await io.nina1_wait_idle(cfg)
+            _event(cfg, st["night"], "retry", f"{label}restart failed "
+                   f"({lr.get('detail')}); NINA #1 idle={idle}; retrying once",
+                   now, rig=rig, aid=aid)
+            r["retried"] = True
+            bad = await retry()
+            return (bad, None) if bad else ("retried", None)
+        return f"restart failed twice: {lr.get('detail')}", None
+    if req is not None and (now - req).total_seconds() / 60 > RESTART_FOLLOW_MIN:
+        return ("the restart was not dispatched within "
+                f"{RESTART_FOLLOW_MIN:g} min"), None
+    return None, None
+
+
+async def _ask_restart(armer, now) -> dict:
+    try:
+        return await armer.restart(when="after_exposure", now=now)
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "detail": str(e)}
+
+
+async def _follow_undo_restart(cfg, armer, io, st, a, r: dict, now) -> None:
+    """An undo's restart: dispatched, retried once, or given up with a push
+    (the restored lengths then apply from the next dispatch)."""
+    what = f"undo of '{a['what']}'"
+
+    async def _again():
+        res = await _ask_restart(armer, now)
+        if not res.get("ok"):
+            return f"restart refused: {res.get('detail')}"
+        r["req_t"] = _iso(now)
+        if res.get("redispatched"):
+            r.update(status="done", at=_iso(now))
+        return None
+    out, at = await _pending_restart(cfg, armer, io, st, r, now, what=what,
+                                     rig=a["rig"], aid=a["id"], retry=_again,
+                                     label=f"{what}: ")
+    if out == "ok":
+        r.update(status="done", at=_iso(at))
+    elif out not in (None, "retried"):
+        r.update(status="failed", ok=False, detail=out)
+        msg = (f"Night pilot: the restart that applies the {what} did not "
+               f"happen ({out}): the restored sub lengths apply from the next "
+               "dispatch. Check NINA #1.")
+        _event(cfg, st["night"], "failed", msg, now, rig=a["rig"], aid=a["id"],
+               action="undo_restart")
+        await io.notify(cfg, msg, priority=1)
 
 
 async def _verify(cfg, armer, io, st, ctx, now) -> None:
@@ -1624,12 +1696,15 @@ async def _undo_shorten(cfg, armer, io, st, a, now) -> str:
     if why is None and left is not None and left < RESTART_DARK_MIN:
         why = f"only {max(0, int(left))} min of dark left"
     if why is None:
-        try:
-            res = await armer.restart(when="after_exposure", now=now)
-        except Exception as e:  # noqa: BLE001
-            res = {"ok": False, "detail": str(e)}
-        rec["restart"] = {"ok": bool(res.get("ok")), "detail": res.get("detail")}
-        how = ("restart after the current sub" if res.get("ok") else
+        when = _restart_when(armer)
+        res = await _ask_restart(armer, now)
+        ok = bool(res.get("ok"))
+        # followed up in _follow_up like an action's restart (race retry)
+        rec["restart"] = {"ok": ok, "detail": res.get("detail"),
+                          "req_t": _iso(now), "retried": False,
+                          "status": ("done" if res.get("redispatched") else "pending")
+                          if ok else "refused"}
+        how = (when if ok else
                f"restart refused ({res.get('detail')}): from the next dispatch")
     else:
         rec["restart"] = {"ok": False, "detail": why}

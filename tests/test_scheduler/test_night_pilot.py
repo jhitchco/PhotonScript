@@ -543,6 +543,87 @@ def test_restart_race_one_retry_after_nina_idle(tmp_path):
     assert _pilot_events(cfg, "retry")
 
 
+def _undone_at_0443(tmp_path):
+    """300 -> 180 s at 04:30, dispatched 04:35, did not help: undone with a
+    restart request at 04:43."""
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    _heart(io)
+    _tonight_bad_subs(cfg)
+    _diag(cfg, "04:23", "tracking", ecc=0.76, exp_s=300, shared_mount=True)
+    _tick(cfg, armer, io, "04:30")
+    armer.last_restart = {"at": "2026-10-13T04:35:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:35")
+    _sub(cfg, "04:36", 0.75, exp=180)
+    _sub(cfg, "04:39", 0.76, exp=180)
+    _tick(cfg, armer, io, "04:43")
+    r = npil.load_state(cfg, NIGHT)["actions"][0]["undo"]["restart"]
+    assert r["ok"] and r["status"] == "pending" and r["req_t"] == "2026-10-13T04:43:00Z"
+    assert len(armer.calls) == 2
+    return cfg, armer, io
+
+
+def test_undo_restart_race_one_retry_after_nina_idle(tmp_path):
+    cfg, armer, io = _undone_at_0443(tmp_path)
+    armer.state = "PAUSED_OPERATOR"
+    armer.last_restart = {"at": "2026-10-13T04:46:00Z", "ok": False,
+                          "detail": "Restart FAILED: Sequence is already running"}
+    _tick(cfg, armer, io, "04:47")
+    assert "nina1_wait_idle" in io.calls and len(armer.calls) == 3
+    r = npil.load_state(cfg, NIGHT)["actions"][0]["undo"]["restart"]
+    assert r["retried"] is True and r["status"] == "pending"
+    assert r["req_t"] == "2026-10-13T04:47:00Z"
+    assert any(e["detail"].startswith("undo of 'shortened RC16 subs 300 -> 180 s': "
+                                      "restart failed") for e in _pilot_events(cfg, "retry"))
+    armer.last_restart = {"at": "2026-10-13T04:48:00Z", "ok": True}
+    _tick(cfg, armer, io, "04:49")
+    r = npil.load_state(cfg, NIGHT)["actions"][0]["undo"]["restart"]
+    assert r["status"] == "done" and r["at"] == "2026-10-13T04:48:00Z"
+    assert len(armer.calls) == 3
+    assert any("undo of" in e["detail"] for e in _pilot_events(cfg, "dispatched"))
+
+
+def test_undo_restart_fails_twice_pushes_human(tmp_path):
+    cfg, armer, io = _undone_at_0443(tmp_path)
+    armer.last_restart = {"at": "2026-10-13T04:46:00Z", "ok": False, "detail": "busy"}
+    _tick(cfg, armer, io, "04:47")
+    armer.last_restart = {"at": "2026-10-13T04:52:00Z", "ok": False, "detail": "busy"}
+    _tick(cfg, armer, io, "04:53")
+    r = npil.load_state(cfg, NIGHT)["actions"][0]["undo"]["restart"]
+    assert r["status"] == "failed" and r["ok"] is False
+    pri, msg = io.pushes[-1]
+    assert pri == 1 and "restart failed twice: busy" in msg
+    assert "apply from the next dispatch" in msg
+    _tick(cfg, armer, io, "04:58")
+    assert len(armer.calls) == 3 and io.pushes[-1][1] == msg     # once
+
+
+def test_undo_restart_refused_on_retry_is_given_up(tmp_path):
+    cfg, armer, io = _undone_at_0443(tmp_path)
+    armer.last_restart = {"at": "2026-10-13T04:46:00Z", "ok": False, "detail": "busy"}
+    armer.restart_result = {"ok": False, "detail": "armer is DONE"}
+    _tick(cfg, armer, io, "04:47")
+    r = npil.load_state(cfg, NIGHT)["actions"][0]["undo"]["restart"]
+    assert r["status"] == "failed" and "restart refused: armer is DONE" in r["detail"]
+
+
+def test_restart_text_from_a_pause(tmp_path):
+    """A restart asked from an operator pause does not wait for a sub: the
+    pending text says so (it used to say 'restart after the current sub')."""
+    armer = FakeArmer(state="PAUSED_OPERATOR")
+    a = {"detail": "Heart Nebula: Ha 600 -> 180 s"}
+    asyncio.run(npil._restart(None, armer, a, T("04:30")))
+    assert a["status"] == "pending"
+    assert a["detail"].endswith("; restart from the pause (NINA #1 already stopped)")
+    armer.pause_info = {"phase": "stopping"}
+    a = {"detail": ""}
+    asyncio.run(npil._restart(None, armer, a, T("04:30")))
+    assert a["detail"] == "restart once the pause's stop ends (after the current sub)"
+    a = {}
+    asyncio.run(npil._restart(None, FakeArmer(), a, T("04:30")))
+    assert a["detail"] == "restart after the current sub"
+
+
 def test_restart_fails_twice_pushes_human(tmp_path):
     cfg = _cfg(tmp_path)
     armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
