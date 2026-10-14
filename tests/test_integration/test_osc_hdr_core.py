@@ -355,3 +355,29 @@ def test_config_keys_and_cli_flag():
     assert o["osc_hdr_core"] is False and o["osc_hdr_short_max_s"] == 150.0
     src = (Path(pl.__file__).parents[1] / "cli.py").read_text(encoding="utf-8")
     assert re.search(r'kw\["hdr_combine"\] = hdr\n\s+kw\["osc_hdr_core"\] = hdr', src)
+
+
+def test_read_xisf_pixinsight_header_with_xsi_schema(tmp_path):
+    # real PixInsight headers carry xmlns:xsi + xsi:schemaLocation; stripping
+    # the xmlns left an unbound prefix (2026-10-14 M31 master)
+    import struct
+    import numpy as np
+    from photonscript.integration import core_master as cm
+    data = (np.arange(12, dtype=np.float32) / 12).reshape(1, 3, 4)
+    head = ('<?xml version="1.0" encoding="UTF-8"?><xisf version="1.0" '
+            'xmlns="http://www.pixinsight.com/xisf" '
+            'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+            'xsi:schemaLocation="http://www.pixinsight.com/xisf '
+            'http://pixinsight.com/xisf/xisf-1.0.xsd">'
+            '<Image geometry="4:3:1" sampleFormat="Float32" bounds="0:1" '
+            'location="attachment:{off}:48"/></xisf>')
+    off = 16 + len(head.format(off=0)) + 8
+    xml = head.format(off=off).encode()
+    off = 16 + len(xml)
+    xml = head.format(off=off).encode()
+    p = tmp_path / "m.xisf"
+    p.write_bytes(b"XISF0100" + struct.pack("<I", len(xml)) + b"\0" * 4 + xml
+                  + data.tobytes())
+    out = cm.read_xisf(p)
+    assert out is not None and out.shape == (1, 3, 4)
+    assert np.allclose(out, data)

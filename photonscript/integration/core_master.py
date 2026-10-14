@@ -50,6 +50,10 @@ def read_xisf(path) -> np.ndarray | None:
         fh.read(4)
         xml = fh.read(hlen).decode("utf-8", errors="replace")
     xml = re.sub(r'\sxmlns(:\w+)?="[^"]*"', "", xml, count=0)
+    # PixInsight writes xsi:schemaLocation; with its xmlns:xsi stripped the
+    # prefix is unbound ("unbound prefix" on every real master), so drop
+    # prefixed attributes too
+    xml = re.sub(r'\s[A-Za-z_][\w.-]*:[\w.-]+="[^"]*"', "", xml)
     root = ET.fromstring(xml)
     img = next((e for e in root.iter() if e.tag.split("}")[-1] == "Image"), None)
     if img is None:
