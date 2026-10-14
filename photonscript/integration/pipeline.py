@@ -112,6 +112,9 @@ class Options:
     hdr_combine: bool = True          # integrate_hdr_combine: mono master_<F> + master_<F>_<exp> -> master_<F>_hdr
     flat_temp_tol: float = 5.0        # flats within this many C of the lights (legacy imports: wider)
     mono_color: bool = True           # integrate_mono_color: mono masters -> <target>_LRGB / _RGB / _SHO / _HOO
+    core_check: bool = True           # qa_core_mode not off: is the target core still clipped in the master
+    core_radius_arcmin: float = 1.0   # qa_core_radius_arcmin (galaxies; others by catalog size, shared.core_sat)
+    core_warn_px: int = 25            # qa_core_sat_warn_px: more plateau px than this = still clipped
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -157,6 +160,9 @@ def config_options(cfg, rig: str) -> dict:
         palette=pjsr.palette_mode(getattr(cfg, "finish_palette", "off")),
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
         mono_color=bool(getattr(cfg, "integrate_mono_color", True)),
+        core_check=str(getattr(cfg, "qa_core_mode", "note") or "").lower() != "off",
+        core_radius_arcmin=float(getattr(cfg, "qa_core_radius_arcmin", 1.0) or 1.0),
+        core_warn_px=int(getattr(cfg, "qa_core_sat_warn_px", 25) or 25),
         lock_wait_min=pilock.wait_min(cfg),
         **pointing_check.config_settings(cfg),
         library=default_library(cfg),
@@ -776,6 +782,18 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                     fcfg["masters"] = hdr.finish_masters(fcfg["masters"], items, rh["made"], out_dir)
                     finish_js = pjsr.write(run_dir / "finish_run.js", pjsr.render_finish(fcfg, block))
                     echo(f"  {finish_js.name} rewritten: the finish prefers the HDR master(s)")
+        if pi_ok and o.core_check:
+            # is the target core still clipped in the master the finish uses?
+            from types import SimpleNamespace
+            from photonscript.integration import core_master
+            from photonscript.shared.core_sat import radius_arcmin
+            scale = 206.265 * float(g0.pixel_um or 3.76) / float(g0.focallen or 600.0)
+            r_px = radius_arcmin(SimpleNamespace(qa_core_radius_arcmin=o.core_radius_arcmin),
+                                 o.target) * 60.0 / scale
+            result["core_check"] = core_master.check_run(
+                out_dir, [s for s in stacks if s["name"] not in {k["stack"] for k in skipped}],
+                (result.get("hdr") or {}).get("made") or [], r_px=r_px,
+                warn_px=o.core_warn_px, echo=echo)
         if pi_ok and o.finish:
             with timer.stage("PixInsight finish (launch to exit)"):
                 r2 = runner.run_script(finish_js, out_dir / "finish.log", exe=o.pixinsight, echo=echo)
@@ -891,7 +909,8 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         qa=qa_summary, calibration=calib_summary, integration=result.get("integration"),
         finish=result.get("finish"), timing=timer.rows, packet=str(md_path), csv=str(csv_path),
         final=final_img, trigger=o.trigger or None, hdr=result.get("hdr"),
-        color=mono_color.ledger_block(result.get("mono_color")))
+        color=mono_color.ledger_block(result.get("mono_color")),
+        core=result.get("core_check"))
     result["ledger"] = str(ledger_writer.write_for_run(led, run_dir, o.staging_root,
                                                        scratch_root=o.scratch_root))
     result["ledger_version"] = led.version

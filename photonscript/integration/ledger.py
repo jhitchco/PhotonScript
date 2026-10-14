@@ -101,7 +101,8 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
           staged: list, integrated: list, dropped: set[str], qa: dict, calibration: dict,
           integration: dict | None, finish: dict | None, timing: list, packet: str,
           csv: str, final: str, trigger: dict | None = None,
-          version: int = 0, hdr: dict | None = None, color: dict | None = None) -> L.Ledger:
+          version: int = 0, hdr: dict | None = None, color: dict | None = None,
+          core: list | None = None) -> L.Ledger:
     """Assemble the ledger from the pipeline's plain data. `selected`,
     `staged`, `integrated` are integration.frames.Frame lists."""
     run_dir = Path(run_dir)
@@ -170,6 +171,12 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
                           "minutes": hdr.get("minutes"), "made": hdr.get("made") or [],
                           "items": hdr.get("items") or [], "steps": hdr.get("steps"),
                           "log": str(out_dir / "hdr.log")}
+    if core:
+        # is the target core still clipped in the master the finish uses
+        # (integration/core_master.py; HDR master first)
+        machine["core_check"] = [{k: c.get(k) for k in ("master", "clipped_px", "still_clipped",
+                                                        "peak", "x", "y", "r_px", "error", "line")
+                                  if c.get(k) is not None} for c in core]
     if color:
         # mono masters combined into color images (mono_color.py, finish_mono_color.js)
         machine["color"] = color

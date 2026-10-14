@@ -16,6 +16,7 @@ Usage:
     photonscript guiding-report [--date D] [--url http://host:8100] [--json]  # PS-88
     photonscript optics-report [--date D] [--rig rc16] [--json]  # PS-95
     photonscript sub-doctor --night D [--rig R] [--url U] [--nina-events] [--timeline] [--json]
+    photonscript core-check --target M31 [--rig rc16] [--night D] [--url U] [--measure DIR] [--json]
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
         [--library PATH] [--profile] [--feature-arcmin 60] [--json]
         [--camera-cal]                                            # PS-117
@@ -1615,6 +1616,125 @@ def sub_doctor_cmd(
                     console.print(f"  {rg} {x.get('t')} {x.get('cause') or 'healthy'} "
                                   f"{x.get('confidence') or ''} {x.get('file') or ''}",
                                   markup=False, highlight=False)
+
+
+def _goal_from_detail(detail: dict):
+    """A project-like object (exposure_plans with the HDR short set) from
+    /api/targets/detail's goal block, for core_check.coverage."""
+    from types import SimpleNamespace
+    g = (detail or {}).get("goal") or {}
+    plans = []
+    for p in g.get("plans") or []:
+        hs = p.get("hdr_short") or {}
+        plans.append(SimpleNamespace(
+            filter_type=SimpleNamespace(value=p.get("filter")), rig=p.get("rig") or "rc16",
+            hdr_short_seconds=hs.get("exposure_s"), hdr_short_count=hs.get("count") or 0))
+    return SimpleNamespace(exposure_plans=plans) if plans else None
+
+
+def _measure_folder(cfg, folder: Path, target: str, rig: str) -> list[dict]:
+    """core_check rows measured from the FITS under `folder` (read only;
+    a Library folder: every light counts as approved)."""
+    from astropy.io import fits as _fits
+    from photonscript.shared.core_sat import sub_core
+    rev = cfg.reverse_filter_map()
+    out = []
+    for f in sorted(folder.rglob("*.fit*")):
+        try:
+            hdr = _fits.getheader(f)
+        except Exception:  # noqa: BLE001
+            continue
+        if "LIGHT" not in str(hdr.get("IMAGETYP", "LIGHT")).upper():
+            continue
+        if bool(hdr.get("BAYERPAT")) != (rig == "piggyback"):
+            continue        # the other rig's frames (OSC = Piggy-600)
+        c = sub_core(cfg, rig, f, hdr, target)
+        flt = "OSC" if rig == "piggyback" else str(hdr.get("FILTER") or "?").strip()
+        out.append({"date": str(hdr.get("DATE-OBS", ""))[:10], "target": target,
+                    "rig": rig, "filter": rev.get(flt, flt),
+                    "exp_s": float(hdr.get("EXPTIME") or 0) or None,
+                    "verdict": "approved", "core_sat_px": c.get("core_sat_px"),
+                    "core_peak_adu": c.get("core_peak_adu"),
+                    "core_p999": c.get("core_p999"), "sat_adu": c.get("core_sat_adu"),
+                    "offset": hdr.get("OFFSET"), "file": f.name,
+                    "core_src": c.get("core_src")})
+    return out
+
+
+@app.command("core-check")
+def core_check_cmd(
+    target: str = typer.Option(..., "--target", help="Target (M31, NGC 7331, ...)"),
+    rig: str = typer.Option("rc16", "--rig", help="rc16 | piggyback | all"),
+    night: str = typer.Option("", "--night", help="Only this night's subs in the table "
+                              "(the HDR coverage always counts every night)"),
+    url: str = typer.Option("", "--url", envvar="PS_MONITOR_URL",
+                            help="Read a running PhotonScript (GET /api/subs and "
+                                 "/api/targets/detail) instead of this machine's logs"),
+    measure: str = typer.Option("", "--measure", help="Measure the FITS under this folder "
+                                "now (read only), e.g. the desktop Library's target folder"),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows and coverage as JSON"),
+):
+    """Is the target's core (galaxy nucleus, bright core) clipped? Per filter
+    and sub length: subs, measured, clipped, median / max clipped core px,
+    peak and p99.9 ADU; then per filter whether the HDR short subs cover it
+    and a short length that puts the core near 80% of saturation. Read only.
+
+    photonscript core-check --target M31 --rig rc16 --url http://100.94.189.77:8100
+    """
+    import json as _json
+    from photonscript.scheduler import core_check as cc
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    rg = "" if rig in ("", "all") else rig
+    project = None
+    if measure:
+        rows = _measure_folder(cfg, Path(measure), target, rg or "rc16")
+    elif url:
+        import urllib.parse
+        import urllib.request
+        base = url.rstrip("/")
+
+        def _get(u, timeout=120):
+            with urllib.request.urlopen(u, timeout=timeout) as r:
+                return _json.loads(r.read().decode("utf-8"))
+        rows, off = [], 0
+        try:
+            while True:
+                q = urllib.parse.urlencode({"target": target, "rig": rg, "offset": off,
+                                            "limit": 200})
+                page = _get(f"{base}/api/subs?{q}")
+                rows += page.get("rows") or []
+                off += 200
+                if off >= int(page.get("total") or 0):
+                    break
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not read {base}/api/subs: {e}[/red]")
+            raise typer.Exit(2)
+        try:
+            project = _goal_from_detail(_get(f"{base}/api/targets/detail?"
+                                             + urllib.parse.urlencode({"name": target})))
+        except Exception:  # noqa: BLE001
+            project = None
+        rows = [cc.norm(r) for r in rows]
+    else:
+        from photonscript.scheduler import sub_index
+        from photonscript.scheduler.calibration_plan import load_projects
+        from photonscript.shared.target_names import target_key
+        projects = load_projects(cfg)
+        rows = [cc.norm(r) for r in sub_index.rows(cfg, projects, target=target,
+                                                   rig=rg or None)]
+        project = next((p for p in projects
+                        if target_key(p.target.name) == target_key(target)), None)
+    table = [r for r in rows if not night or r.get("date") == night]
+    if as_json:
+        print(_json.dumps({"target": target, "night": night or None,
+                           "groups": cc.summarize(cfg, table),
+                           "coverage": [{k: v for k, v in c.items() if k != "shorts"}
+                                        for c in cc.coverage(cfg, rows, project)]},
+                          indent=1, default=str))
+        return
+    console.print(cc.format_report(cfg, target, table, project, night or None,
+                                   coverage_rows=rows),
+                  markup=False, highlight=False)
 
 
 @app.command("optics-report")

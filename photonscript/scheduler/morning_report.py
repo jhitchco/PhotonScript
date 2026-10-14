@@ -193,7 +193,7 @@ def report_card(config, date: str | None = None, *, projects=None,
            "generated": datetime.utcnow().isoformat(timespec="seconds") + "Z",
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
-           "sub_doctor": None,
+           "sub_doctor": None, "core": None,
            "night_pilot": []}
     if not date:
         out["note"] = "no subs log yet"
@@ -269,6 +269,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["sub_doctor"] = sd_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no sub doctor line: %s", e)
+    try:   # target core clipped and whether HDR short subs cover it
+        from photonscript.scheduler.core_check import morning_line as core_line
+        out["core"] = core_line(config, date, subs, projects)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no core line: %s", e)
     try:   # the night pilot's actions, restores and suggestions
         from photonscript.scheduler.night_pilot import morning_lines as np_lines
         out["night_pilot"] = np_lines(config, date)
@@ -330,6 +335,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["piggy_guard"])
     if card.get("sub_doctor"):
         lines.append(card["sub_doctor"])
+    if card.get("core"):
+        lines.append(card["core"])
     lines.extend(card.get("night_pilot") or [])
     if card.get("tracking"):
         lines.append(card["tracking"])
