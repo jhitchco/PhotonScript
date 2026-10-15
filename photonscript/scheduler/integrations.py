@@ -257,11 +257,34 @@ def _owed_items(config, rig: str, projects) -> list[str]:
         return []
 
 
-def candidates(config, projects, *, with_calibration: bool = True) -> dict:
-    """PS-31 watcher facts, one row per ACTIVE goal + rig: goal progress of
-    that rig's plans, approved hours, the last ledger, new data since it,
+def _closed(p) -> bool:
+    """An explicit done / archived marker on the goal (none in the model
+    today; honoured if one appears)."""
+    return any(bool(getattr(p, k, False)) for k in ("archived", "done", "finished"))
+
+
+def _recent_new(config, led, rows: list[dict], days: int, now=None) -> float:
+    """Seconds of approved subs not in the ledger (all of them without
+    one) from nights within the last `days`."""
+    from datetime import timedelta
+    from photonscript.shared.phd2_store import night_of
+    cut = (datetime.strptime(night_of(config, now), "%Y-%m-%d")
+           - timedelta(days=int(days))).strftime("%Y-%m-%d")
+    return new_data_s(led, [r for r in rows if str(r.get("date") or "") >= cut])
+
+
+def candidates(config, projects, *, with_calibration: bool = True,
+               now=None) -> dict:
+    """PS-31 watcher facts, one row per goal + rig: goal progress of that
+    rig's plans, approved hours, the last ledger, new data since it,
     readiness (calibration missing for the planned filters) and the rig's
-    calibration owed list. The watcher decides; this only reports."""
+    calibration owed list. The watcher decides; this only reports.
+
+    Which goals (2026-10-15: Heart and M31 inactive for one night with 3 h
+    of new Heart Piggy subs read "nothing to integrate"): every active goal,
+    plus an inactive one whose rig has approved subs newer than its last
+    integration from the last autointegrate_inactive_days nights (row
+    "inactive": true). A goal with a done / archived marker never."""
     from photonscript.scheduler.readiness import (calibration_context,
                                                   calibration_missing,
                                                   project_rigs, target_readiness)
@@ -269,13 +292,19 @@ def candidates(config, projects, *, with_calibration: bool = True) -> dict:
     ctxs: dict = {}
     owed: dict = {}
     rows_out = []
+    try:
+        days = int(getattr(config, "autointegrate_inactive_days", 14) or 0)
+    except (TypeError, ValueError):
+        days = 14
     for p in projects:
-        if not p.active:
+        if _closed(p) or (not p.active and days <= 0):
             continue
         for rig in project_rigs(p):
             rows = _approved_rows(config, projects, p.target.name, rig)
             mine = ledgers_for(config, p.id, rig)
             last = mine[0] if mine else None
+            if not p.active and _recent_new(config, last, rows, days, now) <= 0:
+                continue
             ready: dict = {}
             if with_calibration:
                 try:
@@ -298,6 +327,7 @@ def candidates(config, projects, *, with_calibration: bool = True) -> dict:
                 "new_data_h": round(new_data_s(last, rows) / 3600, 2),
                 "readiness": ready,
                 "calibration_owed": owed.get(rig, []),
+                "inactive": not p.active,
             })
     return {"candidates": rows_out, "thresholds": thresholds(config)}
 

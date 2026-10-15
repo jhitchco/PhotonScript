@@ -1956,8 +1956,19 @@
                     'title="' + Object.entries(p.qa_overrides).map(([r, g]) => r + ': ' +
                     Object.entries(g).map(([k, v]) => k + ' ' + v).join(', ')).join('; ') +
                     '">QA gates: target override</a>' : '') + '</div>' +
-                '<span style="cursor:pointer;opacity:.55;font-size:.78rem;" onclick="patchProject(\'' +
-                p.id + '\', {active: ' + !p.active + '})">' + (p.active ? 'pause' : 'resume') + '</span>' +
+                // tonight-only pause: inactive until the dawn shutdown
+                (p.paused_tonight
+                  ? '<span style="cursor:pointer;color:#eab308;font-size:.78rem;" ' +
+                    'title="paused for tonight only: the dawn shutdown sets it active again" ' +
+                    'onclick="patchProject(\'' + p.id + '\', {paused_tonight: false})">' +
+                    'paused tonight: resume</span>'
+                  : (p.active ? '<span style="cursor:pointer;opacity:.55;font-size:.78rem;" ' +
+                      'title="inactive for tonight only: the dawn shutdown sets it active again" ' +
+                      'onclick="patchProject(\'' + p.id + '\', {paused_tonight: true})">' +
+                      'pause tonight</span>' : '') +
+                    '<span style="cursor:pointer;opacity:.55;font-size:.78rem;" onclick="patchProject(\'' +
+                    p.id + '\', {active: ' + !p.active + '})">' + (p.active ? 'pause' : 'resume') +
+                    '</span>') +
                 '<span style="cursor:pointer;color:#f87171;opacity:.55;font-size:.78rem;" ' +
                 'onclick="deleteProject(\'' + p.id + '\')">remove</span></div>' +
                 // goal line: editable hours + total progress

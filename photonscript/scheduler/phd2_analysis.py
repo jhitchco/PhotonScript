@@ -1372,6 +1372,39 @@ _TL_TTL_S = 300.0
 LOCK_MIN_FRAMES = 30   # guided frames in a sub before its scatter is judged
 
 
+def cached_timeline(config, date: str) -> GuideTimeline | None:
+    """night_timeline, cached _TL_TTL_S per night (None: no guide log)."""
+    import time as _time
+    hit = _TL_CACHE.get(date)
+    if hit is None or _time.monotonic() - hit[0] > _TL_TTL_S:
+        try:
+            tl = night_timeline(config, date)
+        except Exception:  # noqa: BLE001
+            tl = None
+        if len(_TL_CACHE) > 4:
+            _TL_CACHE.clear()
+        _TL_CACHE[date] = hit = (_time.monotonic(), tl)
+    return hit[1]
+
+
+def guide_activity(timeline: GuideTimeline | None, start_utc: datetime | None,
+                   end_utc: datetime | None) -> dict | None:
+    """2026-10-14: was PHD2 really guiding between start_utc and end_utc?
+    {"frames": guide-log frames (dropped ones too: LostLock while guiding),
+    "pulses": guided frames that sent a correction}. None when there is no
+    guide log for the night (unknown, not "no guiding"). Looping writes no
+    guide-log frames, so a PHD2 left looping on a lost star reads 0 / 0."""
+    if timeline is None or start_utc is None or end_utc is None:
+        return None
+    lo = bisect.bisect_left(timeline._keys, start_utc)
+    hi = bisect.bisect_right(timeline._keys, end_utc)
+    win = timeline.frames[lo:hi]
+    return {"frames": len(win),
+            "pulses": sum(1 for _, f, _, _ in win
+                          if not f["drop"] and f.get("output", True)
+                          and ((f.get("ra_ms") or 0) > 0 or (f.get("dec_ms") or 0) > 0))}
+
+
 def sub_guide_lock(config, date: str, start_utc: datetime, exp_s: float,
                    timeline: GuideTimeline | None = None) -> str | None:
     """PS-91 backfill: was the RC16 guided on a real star during this sub?
@@ -1392,17 +1425,7 @@ def sub_guide_lock(config, date: str, start_utc: datetime, exp_s: float,
     except Exception:  # noqa: BLE001 - no guard log is fine
         pass
     if timeline is None:
-        import time as _time
-        hit = _TL_CACHE.get(date)
-        if hit is None or _time.monotonic() - hit[0] > _TL_TTL_S:
-            try:
-                tl = night_timeline(config, date)
-            except Exception:  # noqa: BLE001
-                tl = None
-            if len(_TL_CACHE) > 4:
-                _TL_CACHE.clear()
-            _TL_CACHE[date] = hit = (_time.monotonic(), tl)
-        timeline = hit[1]
+        timeline = cached_timeline(config, date)
     if timeline is None:
         return None
     g = timeline.stats(start_utc, float(exp_s))

@@ -88,6 +88,15 @@ def api_target_detail(name: str):
     if not d["found"]:
         return JSONResponse(status_code=404, content={
             "detail": f"no project and no subs for {name!r}", **d})
+    d["paused_tonight"] = False
+    if d.get("project_id"):
+        try:   # tonight-only pause (tonight_pause.py)
+            from photonscript.scheduler import tonight_pause as tp
+            from photonscript.scheduler.app import get_armer
+            d["paused_tonight"] = d["project_id"] in tp.paused_ids(
+                _cfg(), tp.current_night(_cfg(), get_armer()))
+        except Exception:  # noqa: BLE001
+            pass
     return d
 
 

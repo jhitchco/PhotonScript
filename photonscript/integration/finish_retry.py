@@ -355,6 +355,7 @@ def core_combine(need: Need, *, exe: str, echo=print, core_radius_arcmin: float 
         r_am = radius_arcmin(SimpleNamespace(qa_core_radius_arcmin=core_radius_arcmin), need.target)
         r_px = r_am * 60.0 / (206.265 * float(pixel) / float(focal))
         return osc_hdr.run(need.run_dir, st, stack_counts(need.run_dir, st), r_core_px=r_px,
-                           warn_px=warn_px, exe=exe, echo=echo, check=check)
+                           warn_px=warn_px, exe=exe, echo=echo, check=check,
+                           target=need.target)
     except Exception as e:  # noqa: BLE001 - the finish runs on master_OSC without it
         return {"status": "failed", "why": str(e), "made": []}

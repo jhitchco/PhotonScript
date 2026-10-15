@@ -8,7 +8,8 @@ or let it loop):
      `reported: false`, e.g. the scope was down after the last run);
   2. stop if PixInsight is running (Jeremy is working, or a run is going);
   3. GET /api/integrations/candidates from the scheduler: per active goal +
-     rig its goal progress, approved hours, last ledger, new data since it,
+     rig (and an inactive one with approved subs newer than its last
+     integration within autointegrate_inactive_days) its goal progress, approved hours, last ledger, new data since it,
      readiness (calibration missing) and the rig's calibration owed list,
      plus the thresholds set on the System page;
   4. decide() per candidate (pure, tested): a goal whose rig is watched

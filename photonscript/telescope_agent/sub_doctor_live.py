@@ -52,6 +52,21 @@ def _focus(agent, config, night: str, rig: str) -> dict:
             "af_stall": stall[-1] if stall else None}
 
 
+def _pointing(agent, config, night: str, rig: str, last: dict) -> dict | None:
+    """The PS-67 pointing record of the last sub (pier, ha_h), else the
+    mount's live pier side."""
+    try:
+        from photonscript.shared import pointing as pt
+        from photonscript.shared.sub_file import norm_file
+        rec = pt.load(config, night).get((rig, norm_file(last.get("file"))))
+        if rec:
+            return rec
+    except Exception:  # noqa: BLE001
+        pass
+    side = getattr(getattr(agent, "state", None), "mount_side_of_pier", None)
+    return {"pier": side} if side else None
+
+
 async def _guider_start(agent, config, night: str, rig: str, ctx: dict) -> dict | None:
     """2026-10-13: what started PHD2 on an unguided night (the unguided
     guard's detect run event; the RC16 agent also reads NINA #1's event
@@ -104,6 +119,10 @@ async def after_sub(agent, night: str | None) -> dict | None:
                "calibration": cal, "focus": _focus(agent, config, night, rig),
                "solve": cache[1], "now": datetime.utcnow().isoformat() + "Z"}
         ctx["guider_start"] = await _guider_start(agent, config, night, rig, ctx)
+        # 2026-10-14: guider_conflict needs PHD2 really guiding (the guide
+        # log over the window); the pier side / HA name a tracking trail
+        ctx["guide_log"] = sd.guide_log(config, night, window)
+        ctx["pointing"] = _pointing(agent, config, night, rig, window[-1])
         diag = sd.diagnose(config, rig, window, subs=subs, ctx=ctx)
         out = sd.record(config, night, rig, diag)
     except Exception as e:  # noqa: BLE001

@@ -182,7 +182,8 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
         # is the target core still clipped in the master the finish uses
         # (integration/core_master.py; HDR master first)
         machine["core_check"] = [{k: c.get(k) for k in ("master", "clipped_px", "still_clipped",
-                                                        "peak", "x", "y", "r_px", "error", "line")
+                                                        "peak", "x", "y", "r_px", "error",
+                                                        "warn_px", "skipped", "line")
                                   if c.get(k) is not None} for c in core]
     if color:
         # mono masters combined into color images (mono_color.py, finish_mono_color.js)

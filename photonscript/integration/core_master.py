@@ -109,11 +109,31 @@ def check_master(path, r_px: float, warn_px: int = 25) -> dict:
     except Exception as e:  # noqa: BLE001
         return {"master": name, "path": str(p), "error": str(e),
                 "line": f"core clipped in {name}: not checked ({e})"}
-    n = int(res["clipped_px"])
-    still = n > int(warn_px)
-    return {"master": name, "path": str(p), **res, "still_clipped": still,
-            "line": f"core clipped in {name}: {n} px"
-            + (" still clipped" if still else "")}
+    return {"master": name, "path": str(p), **res, "warn_px": int(warn_px),
+            **verdict(name, res["clipped_px"], warn_px)}
+
+
+def verdict(name: str, clipped_px, warn_px: int) -> dict:
+    """{still_clipped, line}: one rule and one wording for every core line
+    (2026-10-15: Heart printed "core not clipped in master_OSC (13 px)" and
+    "core clipped in master_OSC: 13 px" for the same master). Clipped =
+    more plateau pixels than warn_px."""
+    n, w = int(clipped_px or 0), int(warn_px)
+    still = n > w
+    return {"still_clipped": still,
+            "line": (f"core clipped in {name}: {n} px (over {w})" if still else
+                     f"core not clipped in {name}: {n} px (limit {w})")}
+
+
+def skip_line(target, object_type: str | None = None) -> str | None:
+    """'core check skipped: ...' for a target with no compact core (an
+    emission nebula, a cluster: shared.core_sat.compact_core), else None."""
+    from photonscript.shared.core_sat import compact_core
+    ok, kind = compact_core(target, object_type)
+    if ok:
+        return None
+    art = "an" if str(kind or "")[:1].lower() in "aeiou" else "a"
+    return f"core check skipped: {target} is {art} {kind} (no compact core)"
 
 
 def masters_to_check(out_dir: Path, stacks: list[dict], made) -> list[Path]:
@@ -140,13 +160,20 @@ def masters_to_check(out_dir: Path, stacks: list[dict], made) -> list[Path]:
 
 
 def check_run(out_dir: Path, stacks: list[dict], made, *, r_px: float,
-              warn_px: int = 25, echo=print) -> list[dict]:
+              warn_px: int = 25, echo=print, target=None,
+              object_type: str | None = None) -> list[dict]:
     """Check every filter's master, echo the lines and append them to
-    out/pipeline.log. Returns the per-master results (the ledger block)."""
+    out/pipeline.log. Returns the per-master results (the ledger block).
+    A target with no compact core (skip_line) is not checked: one
+    {"skipped", "line"} result."""
     out_dir = Path(out_dir)
     res = []
+    skip = skip_line(target, object_type) if target else None
+    if skip:
+        res.append({"skipped": "no compact core", "line": skip})
+        echo("  " + skip)
     try:
-        for m in masters_to_check(out_dir, stacks, made):
+        for m in ([] if skip else masters_to_check(out_dir, stacks, made)):
             r = check_master(m, r_px, warn_px)
             res.append(r)
             echo("  " + r["line"])

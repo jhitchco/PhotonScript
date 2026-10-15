@@ -1110,6 +1110,13 @@ class Armer:
                 steps.append(np_txt)
         except Exception as e:  # noqa: BLE001
             logger.warning("night pilot dawn revert failed: %s", e)
+        try:   # goals paused for tonight only (PATCH paused_tonight) back
+            from photonscript.scheduler.tonight_pause import dawn_restore
+            tp_txt = dawn_restore(self.config, (self.plan or {}).get("night_of"))
+            if tp_txt:
+                steps.append(tp_txt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("tonight pause dawn restore failed: %s", e)
         # Verify + alert once NINA's warm has had time to finish (PS-77: the
         # 5 min check fired mid-warm on 2026-09-27, see _shutdown_verify_delay_s).
         asyncio.create_task(self._verify_shutdown(
