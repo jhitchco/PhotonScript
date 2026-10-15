@@ -69,6 +69,10 @@ function card(t) {
         (t.mosaic ? '<span class="tag" title="mosaic panel, row ' + t.mosaic.row + ', col ' +
              t.mosaic.col + '">panel ' + t.mosaic.panel + '/' + t.mosaic.of + '</span>' : '') +
         (t.active === false ? '<span class="tag">paused</span>' : '') +
+        // target links: a badge only (the card is itself a link); open them on the target page
+        ((t.links || []).length ? '<span class="tag" title="links: ' +
+             esc(t.links.map(l => l.label).join(', ')) + '">&#8599; ' + t.links.length +
+             ' link' + (t.links.length === 1 ? '' : 's') + '</span>' : '') +
         (t.project_id == null && !t.unattributed ? '<span class="tag">no project</span>' : '') +
         '</h3><div class="muted">' + esc(sub) + '</div>' +
         (g ? '<div class="bar" title="goal ' + g.pct + '%: ' + g.hours_done + ' of ' +

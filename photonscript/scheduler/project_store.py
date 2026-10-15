@@ -22,7 +22,8 @@ import logging
 from pathlib import Path
 
 from photonscript.shared.models import (CelestialTarget, ExposurePlan,
-                                        FilterType, ImagingProject)
+                                        FilterType, ImagingProject,
+                                        TargetLink)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +139,45 @@ def allocate_exposures(kind: str, budget_hours: float, config,
 
 
 _KEEP = object()   # update(): "leave this field as it is"
+
+LINK_LABEL_MAX = 60
+LINKS_MAX = 10
+
+
+def clean_links(links) -> list[dict]:
+    """Validate a goal's target links (PATCH /api/projects2 {"links": [...]}).
+
+    links: a list of {"label", "url"}; [] or None clears. Labels are
+    trimmed, 1-60 chars and unique (case-insensitive); urls must be http(s)
+    with a host; at most 10. Raises ValueError naming the bad entry."""
+    from urllib.parse import urlparse
+    if links is None:
+        return []
+    if not isinstance(links, list):
+        raise ValueError("links: expected a list of {label, url}")
+    if len(links) > LINKS_MAX:
+        raise ValueError(f"links: at most {LINKS_MAX} (got {len(links)})")
+    out: list[dict] = []
+    seen: set[str] = set()
+    for i, x in enumerate(links):
+        if not isinstance(x, dict):
+            raise ValueError(f"links[{i}]: expected {{label, url}}")
+        label = str(x.get("label") or "").strip()
+        url = str(x.get("url") or "").strip()
+        if not label:
+            raise ValueError(f"links[{i}]: label is empty")
+        if len(label) > LINK_LABEL_MAX:
+            raise ValueError(f"links[{i}]: label longer than "
+                             f"{LINK_LABEL_MAX} chars")
+        u = urlparse(url)
+        if (u.scheme.lower() not in ("http", "https") or not u.netloc
+                or any(c.isspace() for c in url)):
+            raise ValueError(f"links[{i}]: not an http(s) url ({url!r})")
+        if label.lower() in seen:
+            raise ValueError(f"links[{i}]: duplicate label {label!r}")
+        seen.add(label.lower())
+        out.append({"label": label, "url": url})
+    return out
 RC16_RIG = "rc16"
 PIGGYBACK_RIG = "piggyback"
 
@@ -410,7 +450,8 @@ class ProjectStore:
                drop_rc16: bool = False,
                rc16_hours: float | None = None,
                light_budget: dict | None = None,
-               ha_first_h=_KEEP) -> ImagingProject | None:
+               ha_first_h=_KEEP,
+               links=_KEEP) -> ImagingProject | None:
         """hdr / exposure_overrides: pass {} to clear, a dict to set, None to
         leave unchanged. Either change re-allocates the plans.
 
@@ -434,10 +475,16 @@ class ProjectStore:
         ha_first_h (Ha first for a two-rig NB blend, target_planner
         ha_first_seconds): left out = leave, None or "" = follow the config,
         0 = off for this goal, > 0 = RC16 Ha hours before OIII / SII share
-        a night. Never re-allocates the plans."""
+        a night. Never re-allocates the plans.
+
+        links (target links, clean_links): left out = leave, a list replaces
+        them, [] or None clears. Validated before anything changes; never
+        re-allocates the plans."""
         proj = self.projects.get(project_id)
         if proj is None:
             return None
+        if links is not _KEEP:
+            new_links = clean_links(links)   # ValueError before any change
         add_rc16 = rc16_hours is not None and rc16_hours > 0
         if rc16_hours is not None and not add_rc16:
             if not any(p.rig != RC16_RIG for p in proj.exposure_plans)                     and not (osc_hours and osc_hours > 0):
@@ -452,6 +499,8 @@ class ProjectStore:
                 proj.feature_rig = v if v in (RC16_RIG, PIGGYBACK_RIG) else None
             elif k == "feature_note":
                 proj.feature_note = str(v or "")
+        if links is not _KEEP:
+            proj.links = [TargetLink(**x) for x in new_links]
         if ha_first_h is not _KEEP:
             proj.ha_first_h = (None if ha_first_h in (None, "")
                                else max(0.0, float(ha_first_h)))

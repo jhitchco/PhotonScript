@@ -464,6 +464,10 @@ def _project_meta(p) -> dict:
     return {"project_id": p.id if p is not None else None,
             "active": bool(p.active) if p is not None else None,
             "priority": p.priority if p is not None else None,
+            # target links (progression sheets etc.), PATCH /api/projects2
+            "links": ([{"label": x.label, "url": x.url}
+                       for x in (getattr(p, "links", None) or [])]
+                      if p is not None else []),
             "mosaic": ({k: m.get(k) for k in ("id", "name", "panel", "row",
                                               "col", "of")}
                        if isinstance(m, dict) and m.get("id") else None)}

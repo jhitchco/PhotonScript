@@ -1702,7 +1702,9 @@ async def api_project_update(project_id: str, request: Request):
                 "feature_rig", "feature_note") if k in body},
             # Ha first for a two-rig NB blend (null = follow the config)
             **({"ha_first_h": body["ha_first_h"]} if "ha_first_h" in body
-               else {}))
+               else {}),
+            # target links: replace the list ([] clears), validated
+            **({"links": body["links"]} if "links" in body else {}))
     except (ValueError, TypeError) as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
     _projects[project_id] = updated
