@@ -596,6 +596,11 @@ async def _handle(cfg, armer, io, st, rig, v, events, win, now, night) -> dict:
         return {**_short(v), "episode": None}
     if v["state"] != "stuck":
         return _short(v)
+    names, target = (await io.nina1_running(cfg)) if rig == "rc16" else (None, None)
+    busy = _busy_item(names, target)
+    if busy:   # a planned calibration / dark / TPoint slot, not a loop
+        return {**_short(v), "state": "hold", "why": f"NINA #1 runs '{busy}'",
+                "episode": None}
     # a new episode
     steps = steps_text(cfg, rig, v, now)
     cause = cause_text(cfg, rig, v, events, win.get("guided"))
@@ -620,7 +625,8 @@ async def _handle(cfg, armer, io, st, rig, v, events, win, now, night) -> dict:
                     "nothing sent (night_pilot_stuck_loop_mode=advise).")
         _event(cfg, night, "advise", f"would {what}: {steps}", now, rig=rig)
     else:
-        act_text = await _act(cfg, armer, io, st, rig, ep, what, steps, now, night)
+        act_text = await _act(cfg, armer, io, st, rig, ep, what, steps, now, night,
+                              names, target)
     msg = f"{steps}. Target {win.get('name') or '?'}. Likely: {cause}{act_text}"
     if ep["action"] != "act":
         # an act episode ends with the restart: the clock starts again there
@@ -633,9 +639,23 @@ async def _handle(cfg, armer, io, st, rig, v, events, win, now, night) -> dict:
     return {**_short(v), "episode": "new", "action": ep["action"], "text": msg}
 
 
-async def _act(cfg, armer, io, st, rig, ep, what, steps, now, night) -> str:
+def _busy_item(names, target) -> str | None:
+    """A NINA #1 running item that is a calibration / dark / flat / TPoint /
+    tracking test slot (night_pilot.BUSY_WORDS), else None."""
+    from photonscript.scheduler.night_pilot import BUSY_WORDS
+    tgt = str(target or "").strip().lower()
+    for n in names or []:
+        low = str(n).lower()
+        if tgt and low.strip() == tgt:
+            continue
+        if any(w in low for w in BUSY_WORDS):
+            return str(n)
+    return None
+
+
+async def _act(cfg, armer, io, st, rig, ep, what, steps, now, night,
+               names=None, target=None) -> str:
     from photonscript.scheduler import night_pilot as npil
-    names, target = (await io.nina1_running(cfg)) if rig == "rc16" else (None, None)
     why = npil.live_guard(cfg, armer, {"running": names, "target": target, "phd2": None})
     left = npil._dark_left_min(armer, now)
     if why is None and left is not None and left < npil.RESTART_DARK_MIN:
@@ -649,7 +669,7 @@ async def _act(cfg, armer, io, st, rig, ep, what, steps, now, night) -> str:
         res = await io.restart(armer, now)
         if not res.get("ok"):
             ep["action"] = "failed"
-            st["restarts"][rig]["failed"] = str(res.get("detail"))
+            st["restarts"].pop(rig, None)    # not tried: a later episode may
             _event(cfg, night, "failed", f"restart refused: {res.get('detail')}", now, rig=rig)
             return f" Night pilot: Restart tonight from now refused ({res.get('detail')})."
         ep["action"] = "act"

@@ -317,13 +317,23 @@ def test_act_restarts_once_then_alert_only(tmp_path):
     assert [k for k, _ in kinds(cfg)] == ["act", "alert", "repeat", "alert"]
 
 
-def test_act_held_by_guards(tmp_path):
+def test_calibration_slot_is_not_a_loop(tmp_path):
     cfg = _cfg(tmp_path, night_pilot_stuck_loop_mode="act")
     armer, io = FakeArmer(cfg), FakeIO(LOOP, running=["Take dark frames"])
     _prime(cfg, armer, io)
     r = _check(cfg, armer, io, "22:34")
+    assert r["rc16"]["state"] == "hold" and "dark" in r["rc16"]["why"]
+    assert io.pushes == [] and armer.restarts == []
+
+
+def test_act_held_by_guards(tmp_path):
+    cfg = _cfg(tmp_path, night_pilot_stuck_loop_mode="act")
+    armer, io = FakeArmer(cfg), FakeIO(LOOP)
+    armer._dawn = lambda: U("23:00")          # 26 min of dark left
+    _prime(cfg, armer, io)
+    r = _check(cfg, armer, io, "22:34")
     assert r["rc16"]["action"] == "held" and armer.restarts == []
-    assert "held" in io.pushes[-1][0]
+    assert "held (only 26 min of dark left)" in io.pushes[-1][0]
 
 
 def test_mode_caps(tmp_path):

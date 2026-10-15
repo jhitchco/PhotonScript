@@ -1343,6 +1343,8 @@ watchdog's).
 | restarts | `stuck_loop_repeats` 2 AF + MOUNT-CENTER cycles with no light, confirmed by a 3rd cycle, a park after the last center, or no light a sub + 5 min after it |
 | park_cycle | `stuck_loop_park_cycles` 2 park -> unpark with no light and no unsafe SAFETY-CHANGED between |
 
+- Not a loop: NINA #1 running a calibration / dark / flat / bias / TPoint /
+  tracking test item (the pilot's BUSY_WORDS) is a planned slot, no alert.
 - One priority push per episode (an episode ends with a light, or with the
   pilot's restart) naming the steps from the event history: "RC16 looping:
   AF 22:21, 22:29; center x2; park/unpark x2; no light in 16 min. Target
