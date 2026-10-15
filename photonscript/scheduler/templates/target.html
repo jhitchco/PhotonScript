@@ -429,7 +429,7 @@ function renderLinks() {
     const ls = D.links || [];
     document.getElementById('tLinks').innerHTML = ls.length ? ls.map(l =>
         '<a href="' + esc(l.url) + '" target="_blank" rel="noopener" style="color:#7dd3fc;">' +
-        esc(l.label) + ' &#8599;</a>').join(' · ') : '<span class="dim">–</span>';
+        esc(l.label) + ' &#8599;</a>').join(' \u00b7 ') : '<span class="dim">\u2013</span>';
     document.getElementById('tLinksRows').innerHTML = ls.map((l, i) =>
         '<div style="margin-top:.2rem;">' + esc(l.label) + ' <span class="dim">' + esc(l.url) +
         '</span> <button class="btn btn-secondary copy" data-rm="' + i + '">Remove</button></div>').join('');
@@ -438,7 +438,7 @@ function renderLinks() {
 }
 async function saveLinks(links) {
     const msg = document.getElementById('linkMsg');
-    msg.textContent = 'saving…';
+    msg.textContent = 'saving\u2026';
     let d = {};
     try {
         const r = await fetch('/api/projects2/' + encodeURIComponent(D.project_id), {

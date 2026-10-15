@@ -170,7 +170,8 @@ def clean_links(links) -> list[dict]:
             raise ValueError(f"links[{i}]: label longer than "
                              f"{LINK_LABEL_MAX} chars")
         u = urlparse(url)
-        if u.scheme.lower() not in ("http", "https") or not u.netloc                 or any(c.isspace() for c in url):
+        if (u.scheme.lower() not in ("http", "https") or not u.netloc
+                or any(c.isspace() for c in url)):
             raise ValueError(f"links[{i}]: not an http(s) url ({url!r})")
         if label.lower() in seen:
             raise ValueError(f"links[{i}]: duplicate label {label!r}")
