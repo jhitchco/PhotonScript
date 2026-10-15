@@ -76,9 +76,9 @@ param(
     # Vivid variant: on = also <Name>_vivid.{xisf,tif,jpg} (more saturation + a pink / warm / blue
     # chroma lift through a luminance-range mask that spares the background and the brightest core)
     [ValidateSet('on','off')][string]$Vivid = 'on',
-    [double]$VividSatMid = 0.72,   # vivid saturation curve midpoint (the natural has -SatMid)
-    [double]$VividHueBoost = 0.25, # chroma lift of the selected hues (0 = none)
-    [double]$VividLhe = 0,         # LocalHistogramEqualization amount through the mask (0 = off)
+    [double]$VividSatMid = 0.74,   # vivid saturation curve midpoint (the natural has -SatMid)
+    [double]$VividHueBoost = 0.35, # chroma lift of the selected hues (0 = none)
+    [double]$VividLhe = 0.25,        # LocalHistogramEqualization amount through the mask (0 = off)
     [switch]$Wait,                 # run PixInsight unattended (--automation-mode --force-exit), wait, check EXIT OK
     [ValidateSet('Idle','BelowNormal','Normal')][string]$Priority = 'BelowNormal',
     [double]$LockWaitMin = 60      # wait this long for another PixInsight job's queue lock

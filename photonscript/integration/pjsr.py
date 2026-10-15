@@ -186,7 +186,7 @@ FINISH_DEFAULTS = {
     # the natural starless image with more saturation (vivid_sat_mid) and a
     # selective pink / warm / blue chroma lift (vivid_hue_boost) through a
     # luminance-range mask, optional local contrast (vivid_lhe, 0 = off)
-    "vivid": "on", "vivid_sat_mid": 0.72, "vivid_hue_boost": 0.25, "vivid_lhe": 0.0,
+    "vivid": "on", "vivid_sat_mid": 0.74, "vivid_hue_boost": 0.35, "vivid_lhe": 0.25,
     "focal_mm": 600.0, "pixel_um": 3.76,
 }
 

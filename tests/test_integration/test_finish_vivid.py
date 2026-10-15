@@ -51,8 +51,8 @@ def _node(body: str) -> dict:
 def test_render_defaults_and_overrides():
     out = pjsr.render_finish(FCFG)
     assert pjsr.check(out) == []
-    assert _var(out, "VIVID") == '"on"' and _var(out, "VIVID_SAT_MID") == "0.72"
-    assert _var(out, "VIVID_HUE_BOOST") == "0.25" and _var(out, "VIVID_LHE") == "0.0"
+    assert _var(out, "VIVID") == '"on"' and _var(out, "VIVID_SAT_MID") == "0.74"
+    assert _var(out, "VIVID_HUE_BOOST") == "0.35" and _var(out, "VIVID_LHE") == "0.25"
     assert _var(out, "PALETTE_WHY") == '""' and _var(out, "SAT_MID") == "0.64"
     off = pjsr.render_finish({**FCFG, "vivid": "off", "vivid_sat_mid": 0.8, "vivid_hue_boost": 0.4,
                               "vivid_lhe": 0.3, "palette_why": "gold palette skipped: M31 is a galaxy"})
@@ -292,11 +292,11 @@ console.log(JSON.stringify(a));
 
 def test_config_defaults_and_settings():
     c = PhotonScriptConfig(_env_file=None)
-    assert c.finish_vivid is True and c.finish_vivid_sat_mid == 0.72
-    assert c.finish_vivid_hue_boost == 0.25 and c.finish_vivid_lhe == 0.0
+    assert c.finish_vivid is True and c.finish_vivid_sat_mid == 0.74
+    assert c.finish_vivid_hue_boost == 0.35 and c.finish_vivid_lhe == 0.25
     assert c.finish_palette_kinds == "emission,nebula,remnant" == pjsr.PALETTE_KINDS
-    assert pjsr.vivid_settings(c) == {"vivid": True, "vivid_sat_mid": 0.72, "vivid_hue_boost": 0.25,
-                                      "vivid_lhe": 0.0}
+    assert pjsr.vivid_settings(c) == {"vivid": True, "vivid_sat_mid": 0.74, "vivid_hue_boost": 0.35,
+                                      "vivid_lhe": 0.25}
     opts = pl.config_options(c, "piggyback")
     assert opts["vivid"] is True and opts["palette_kinds"] == "emission,nebula,remnant"
     c2 = PhotonScriptConfig(_env_file=None, finish_vivid=False, finish_vivid_sat_mid=0.8)
@@ -337,7 +337,7 @@ def test_finish_dry_run_gates_the_palette_and_plumbs_vivid(tmp_path):
     c = res["config"]
     assert c["palette"] == "off" and "galaxy" in c["palette_why"] and res["script_problems"] == []
     assert any("gold palette skipped" in m for m in msgs)
-    assert c["vivid"] == "on" and c["vivid_sat_mid"] == 0.72
+    assert c["vivid"] == "on" and c["vivid_sat_mid"] == 0.74
     js = pjsr.render_finish(c)
     assert _var(js, "PALETTE") == '"off"' and "galaxy" in _var(js, "PALETTE_WHY")
     res = fn.run(fn.Options(target="Heart Nebula", **base), echo=lambda s: None)
@@ -360,7 +360,7 @@ def test_cli_finish_dry_run_vivid_and_palette(tmp_path, monkeypatch):
 
     c = run()
     assert c["palette"] == "off" and "galaxy" in c["palette_why"]       # configured gold, galaxy target
-    assert c["vivid"] == "on" and c["vivid_sat_mid"] == 0.72 and c["vivid_lhe"] == 0.0
+    assert c["vivid"] == "on" and c["vivid_sat_mid"] == 0.74 and c["vivid_lhe"] == 0.25
     c = run("--palette", "gold", "--no-vivid")
     assert c["palette"] == "gold" and c["palette_why"] == "" and c["vivid"] == "off"
     c = run("--vivid-sat-mid", "0.8", "--vivid-hue-boost", "0.4", "--vivid-lhe", "0.2")

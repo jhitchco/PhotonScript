@@ -581,7 +581,7 @@ def test_vivid_wanted_for_galaxy_l_blends_only():
 def test_render_vivid_is_clean_pjsr(tmp_path):
     cfg = bl.vivid_config(bl.Options(target="M31"), tmp_path / "Blend" / "M31_blend_1")
     assert cfg["name"] == "M31_blend" and cfg["input"].endswith("out/final/M31_blend.xisf")
-    assert cfg["sat_mid"] == 0.5 and cfg["vivid_sat_mid"] == 0.72
+    assert cfg["sat_mid"] == 0.5 and cfg["vivid_sat_mid"] == 0.74
     t = bl.render_vivid(cfg)
     assert pjsr.check(t) == []
     import re

@@ -495,9 +495,9 @@ class PhotonScriptConfig(BaseSettings):
                                  # more saturation + a pink / warm / blue chroma
                                  # lift through a luminance-range mask (background
                                  # and brightest core untouched), natural stars
-    finish_vivid_sat_mid: float = 0.72  # vivid saturation midpoint (natural 0.64)
-    finish_vivid_hue_boost: float = 0.25  # vivid chroma lift of pink / warm / blue (0..1)
-    finish_vivid_lhe: float = 0.0  # vivid LocalHistogramEqualization amount
+    finish_vivid_sat_mid: float = 0.74  # vivid saturation midpoint (natural 0.64)
+    finish_vivid_hue_boost: float = 0.35  # vivid chroma lift of pink / warm / blue (0..1)
+    finish_vivid_lhe: float = 0.25  # vivid LocalHistogramEqualization amount
                                  # through the mask (0..1; 0 = off)
     # PS-186 RC Astro in the finish (desktop .env; finish_osc.js detects the
     # processes inside PixInsight at run time and falls back per step)

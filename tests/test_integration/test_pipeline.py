@@ -177,7 +177,7 @@ def test_osc_run_skips_the_configured_gold_for_a_galaxy_and_renders_vivid(lib, t
     pl.run(_opts(lib, tmp_path, out=out, palette="gold", palette_kinds=pjsr.PALETTE_KINDS), echo=msgs.append)
     fin = (out / "finish_run.js").read_text()
     assert 'var PALETTE  = "off";' in fin and "is catalogued as galaxy" in fin and pjsr.check(fin) == []
-    assert 'var VIVID           = "on";' in fin and "var VIVID_SAT_MID   = 0.72;" in fin
+    assert 'var VIVID           = "on";' in fin and "var VIVID_SAT_MID   = 0.74;" in fin
     assert any("gold palette skipped" in m for m in msgs)
     man = json.loads((out / "manifest.json").read_text())["options"]
     assert man["palette"] == "off" and man["vivid"] is True
