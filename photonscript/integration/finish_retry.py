@@ -22,7 +22,10 @@ The retry runs the finish only, into a NEW Staging/Finish folder
 (`photonscript finish` for an OSC master, `finish --mono-run` color for a
 mono run with color items): the 1st attempt as integrate would, the 2nd
 without the plate solve (finish.Options.solve False: a solve that hung
-once is not given a second hour). An OSC run whose core check errored
+once is not given a second hour). When the run's own finish (or color
+combine) was closed by the runner's hang watchdog (machine.finish.hung /
+machine.color.hung, "hung: no log progress N min in <stage>"), the 1st
+retry already goes without the solve. An OSC run whose core check errored
 (machine.hdr.long_check.error) and has its short master but no
 master_<S>_hdr gets the OSC core combine again first (osc_hdr.run).
 Every attempt goes into the run's ledger (machine.finish_retry), and a
@@ -183,10 +186,13 @@ def need_for(ledger_path: Path, led, *, roots=(), max_retries: int = 2,
         why = "finish failed" if fin_ok is False else "no finished image"
     hist = list(((m.get(RETRY_KEY) or {}).get("attempts")) or [])
     n = len(hist)
+    hung = (m.get("finish") or {}).get("hung") or (m.get("color") or {}).get("hung") or ""
+    if hung:
+        why += f" ({hung})"
     need = Need(run_dir=run_dir, ledger=Path(ledger_path), target=led.campaign, rig=led.rig,
                 version=led.version, kind=kind, attempt=n + 1, max_retries=max_retries,
                 master=master, core=(not mono and _core_redo(run_dir, m)),
-                solve=(n == 0), why=why, history=hist)
+                solve=(n == 0 and not hung), why=why, history=hist)
     if n >= max_retries:
         need.exhausted = True
         need.why = f"{why}; {n} finish-only retr{'y' if n == 1 else 'ies'} used (autointegrate_finish_retries)"
@@ -273,6 +279,8 @@ def run(need: Need, *, run_finish, run_color, run_core=None, roots=(), echo=prin
             entry["master"] = str(master) if master else ""
         entry["run_dir"] = res.get("run_dir", "")
         entry["minutes"] = (res.get("finish") or res.get("color") or {}).get("minutes")
+        if (res.get("finish") or res.get("color") or {}).get("hung"):
+            entry["hung"] = (res.get("finish") or res.get("color") or {}).get("hung")
         jpgs = run_jpgs(need.run_dir, roots)
         entry["ok"] = ok and bool(jpgs)
         entry["finals"] = [str(p) for p in jpgs]

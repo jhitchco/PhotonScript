@@ -277,6 +277,17 @@ function plateSolve(window) {
       step("plate_solve", "ImageSolver", "skipped", { reason: "no coordinates" });
       return false;
    }
+   // the STAGE lines let the runner's hang watchdog use its shorter solve
+   // limit (pixinsight_solve_stall_min): ImageSolver logs nothing here, and
+   // with no Gaia database it falls back to a VizieR download that can hang
+   log("STAGE START " + NAME + " / plate solve");
+   var solved = false;
+   try { solved = plateSolveSeeds(window); }
+   finally { log("STAGE END   " + NAME + " / plate solve"); }
+   return solved;
+}
+
+function plateSolveSeeds(window) {
    var scale = (PIXEL_UM / FOCAL_MM) * 206.265;   // arcsec/px
    var offsets = [[0, 0]];
    var stepDeg = 0.6;
@@ -387,18 +398,22 @@ function colorCalibrate(view, solved) {
    else if (!solved) why = "no astrometric solution";
    else if (typeof SpectrophotometricColorCalibration === "undefined") why = "SPCC process not installed";
    if (!why) {
-      var g = gaiaDr3SpReady();
-      if (g.ok) log("color: " + g.why);
-      if (!g.ok && COLOR !== "spcc") why = g.why;
-   }
-   if (!why) {
+      // a STAGE of its own for the hang watchdog's solve limit (see plateSolve)
+      log("STAGE START " + NAME + " / SPCC");
       try {
-         var used = spcc(view);
-         log("color: SPCC applied (catalog " + used.catalog + ", QE " + used.qe + ", RGB " +
-             used.red + " / " + used.green + " / " + used.blue + ", white " + used.white + ")");
-         step("color", "SPCC", "ran", used);
-         return;
-      } catch (e) { why = "SPCC failed (" + e + ")"; }
+         var g = gaiaDr3SpReady();
+         if (g.ok) log("color: " + g.why);
+         if (!g.ok && COLOR !== "spcc") why = g.why;
+         if (!why) {
+            try {
+               var used = spcc(view);
+               log("color: SPCC applied (catalog " + used.catalog + ", QE " + used.qe + ", RGB " +
+                   used.red + " / " + used.green + " / " + used.blue + ", white " + used.white + ")");
+               step("color", "SPCC", "ran", used);
+               return;
+            } catch (e) { why = "SPCC failed (" + e + ")"; }
+         }
+      } finally { log("STAGE END   " + NAME + " / SPCC"); }
    }
    log("color: " + why + " -> BN + ColorCalibration fallback");
    try {

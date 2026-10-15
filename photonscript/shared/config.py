@@ -452,6 +452,20 @@ class PhotonScriptConfig(BaseSettings):
                                  # job's lock, then stop with a message naming
                                  # it; 0 = never wait. integrate-watch and
                                  # autointegrate never wait (next cycle)
+    pixinsight_stall_min: float = 60.0  # hang watchdog (integration/runner.py):
+                                 # an automation PixInsight whose log has not
+                                 # grown for this many minutes is hung (0 = off)
+    pixinsight_solve_stall_min: float = 20.0  # the same while the open log
+                                 # STAGE is a plate solve / SPCC / VizieR one
+    pixinsight_hang_action: str = "close"  # on a hang: close = Pushover alert,
+                                 # then close the PixInsight the runner started
+                                 # (by pid; never another) and fail the step;
+                                 # alert = only the alert, keep waiting
+    pixinsight_gaia_check: bool = True  # before a finish that plate-solves:
+                                 # check the Gaia DR3 / DR3/SP paths in the
+                                 # PixInsight settings exist on disk; DR3
+                                 # missing = finish without the solve (no
+                                 # online VizieR fallback that can hang)
     finish_palette: str = "off"  # OSC finish palette image (desktop .env): off |
                                  # gold = also <name>_gold.{xisf,jpg}, the gold-blue
                                  # HOO-style look (Ha orange-gold, OIII teal-blue,

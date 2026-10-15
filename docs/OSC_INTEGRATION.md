@@ -310,6 +310,30 @@ re-integrates without new approved data, nothing while PixInsight is open):
   Each attempt is recorded in the run's ledger (`machine.finish_retry`); a
   successful one sets `final` / `finals` and re-posts the ledger (same run,
   same version, no ping). A goal's blend waits while its retry is pending.
+  A finish the hang watchdog closed (`machine.finish.hung`) gets its 1st
+  retry already without the plate solve.
+- **PixInsight hang watchdog** (`integration/runner.py`, after the
+  2026-10-14 M31 v6 finish hung 3.5 h in a VizieR download). Every
+  automation PixInsight's log must keep growing: no new log text for
+  `pixinsight_solve_stall_min` (20) while the open log STAGE is a plate
+  solve / SPCC one (finish_osc.js logs `STAGE START <name> / plate solve`
+  and `/ SPCC`), or `pixinsight_stall_min` (60) in any other stage, is a
+  hang. Then a Pushover alert and, with `pixinsight_hang_action` `close`
+  (default), the runner closes the PixInsight process tree it started (its
+  own pid only; never another PixInsight) and the step fails with
+  `hung: no log progress N min in <stage>`. `alert` only alerts and keeps
+  waiting (the 6 h timeout still never kills).
+- **Gaia preflight** (`integration/pigaia.py`). Before a finish that
+  plate-solves (integrate, finish, the retry, the mono color combine) the
+  PixInsight settings of the slot the automation instance uses
+  (`%APPDATA%\Pleiades\core-00N-pxi.settings`, slot 1 when no other
+  PixInsight runs) are read: the Gaia DR3 (`DR3DatabaseFilePathNN`, plate
+  solve) and DR3/SP (`DR3SPDatabaseFilePathNN`, SPCC) paths must exist on
+  disk. DR3 not usable = the finish runs without the solve (no coordinates,
+  so no online fallback). `pixinsight_gaia_check` (true) turns it off.
+  `photonscript pixinsight-gaia-check` prints the per-slot state;
+  `--fix` (only while no PixInsight runs) copies the Gaia keys from core-001
+  into the slot files that lack them, after a `.bak-<time>-gaia` backup.
 - **Final JPG list on the scope.** autointegrate stamps every final JPG of a
   run into its ledger (`machine.finals`) before posting it; the scope's
   ledger brief lists them (`finals`).

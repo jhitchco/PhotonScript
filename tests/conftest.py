@@ -71,3 +71,12 @@ def _pixinsight_lock_isolated(monkeypatch, tmp_path):
     pilock._held.clear()
     yield
     pilock._held.clear()
+
+
+@pytest.fixture(autouse=True)
+def _pixinsight_settings_isolated(monkeypatch, tmp_path_factory):
+    """Gaia preflight (integration/pigaia.py): no test reads the desktop's
+    real %APPDATA%/Pleiades settings; an empty folder = Gaia unknown, the
+    finish keeps its plate solve. tests/test_integration/test_pi_watchdog.py
+    points it at fabricated settings."""
+    monkeypatch.setenv("PS_PIXINSIGHT_SETTINGS_DIR", str(tmp_path_factory.mktemp("pleiades-none")))

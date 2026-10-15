@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from photonscript.integration import pilock, pjsr, runner
+from photonscript.integration import pigaia, pilock, pjsr, runner
 from photonscript.integration.pipeline import PipelineError, Timer, catalog_coords, is_inside, safe_name
 
 FINISH_DIR = "Finish"
@@ -89,10 +89,31 @@ class Options:
     colors: str = "auto"              # --color: auto | all | lrgb,rgb,sho,hoo
     solve: bool = True                # False (--no-solve, the 2nd finish-only retry): no plate solve,
                                       # color calibration without SPCC (a solve that hung)
+    gaia_check: bool = True           # pixinsight_gaia_check: Gaia DR3 missing in the PixInsight
+                                      # settings = no plate solve (pigaia.py)
 
 
 NO_SOLVE_NOTE = ("plate solve off (--no-solve): no coordinates passed, color calibration "
                  "without SPCC")
+GAIA_NOTE = ("plate solve off: {why} (pixinsight-gaia-check); no coordinates passed so "
+             "ImageSolver cannot fall back to an online VizieR download, color calibration "
+             "without SPCC")
+
+
+def gaia_gate(o: Options, res: dict, echo=print, preflight=None) -> dict | None:
+    """Before a finish that plate-solves (coordinates known, solve on): the
+    Gaia preflight (pigaia.preflight). DR3 not usable = the coordinates are
+    dropped (the finish skips the solve, like --no-solve) and a note says
+    why. Returns the preflight result, or None when there is no solve."""
+    if not o.solve or not o.gaia_check or res.get("ra_deg") is None:
+        return None
+    g = (preflight or pigaia.preflight)(echo)
+    res["gaia"] = g
+    if not g.get("solve", True):
+        res["ra_deg"] = res["dec_deg"] = None
+        res["notes"].append(GAIA_NOTE.format(why=g.get("why") or "Gaia DR3 not usable"))
+    return g
+
 
 
 # ----------------------------------------------------------------- source run
@@ -214,6 +235,7 @@ def build_ledger(o: Options, res: dict, run_dir: Path, cfg: dict, pi: dict | Non
                                             "pixel_um", "ra_deg", "dec_deg")},
         "finish": {"script": f"{SCRIPT} (deploy/finish_osc.js)", "ok": (pi or {}).get("ok"),
                    "minutes": (pi or {}).get("minutes"), "last_line": (pi or {}).get("last_line", ""),
+                   "hung": (pi or {}).get("hung", ""),
                    "steps": finish_steps(out_dir), "log": str(out_dir / "finish.log")},
         "outputs": outputs(out_dir),
         "timing": {"started_utc": timing[0][1] if timing else "",
@@ -244,6 +266,7 @@ def _run(o: Options, echo=print) -> dict:
     if safe_name(o.name) != o.name:
         echo(f"  name {o.name!r} -> {safe_name(o.name)!r} (file-name safe)")
     res = resolve(o)
+    gaia_gate(o, res, echo)
     for n in res["notes"]:
         echo("  " + n)
     run_dir = Path(o.out) if o.out else default_run_dir(o)
@@ -392,6 +415,7 @@ def _run_mono_color(o: Options, echo=print) -> dict:
     if "OSC" in masters:
         raise FinishError(f"{src} is an OSC run (master_OSC): the color combine is for mono runs")
     res = resolve_mono(o, src)
+    gaia_gate(o, res, echo)
     name = safe_name(o.name or res["campaign"])
     items, plan_notes = mc.plan(masters, name, colors)
     res["notes"] += plan_notes
