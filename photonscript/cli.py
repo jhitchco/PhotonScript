@@ -4090,6 +4090,9 @@ def blend_cmd(
     nb_lum_weight: float = typer.Option(_blend_nb_defaults()["nb_lum_weight"], "--nb-lum-weight",
                                         help="nb: Ha share of CIE L inside the mask (an RC16 L uses --weight)"),
     palette: str = typer.Option("gold", "--palette", help="nb: gold = also <name>_haRGB_gold | off"),
+    vivid: Optional[bool] = typer.Option(None, "--vivid/--no-vivid",
+                                         help="L blend: also <name>_blend_vivid.{xisf,tif,jpg} (the finish vivid "
+                                              "look on the stretched blend; default blend_vivid, galaxies)"),
     pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Find the inputs and check the script; write nothing"),
@@ -4126,6 +4129,11 @@ def blend_cmd(
         bxt = bl.config_bxt(cfg)
         if rc16_bxt:
             bxt["rc16_bxt"] = pjsr.rc_mode(rc16_bxt)
+        viv = bl.config_vivid(cfg)
+        if vivid is not None:
+            viv["vivid"] = vivid
+            if vivid:
+                viv["vivid_kinds"] = ""          # an explicit --vivid applies to any target
     except ValueError as e:
         console.print(f"[red]blend:[/red] {e}", markup=True)
         raise typer.Exit(2)
@@ -4140,8 +4148,8 @@ def blend_cmd(
         osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
         rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
         mode=mode, ha_weight=ha_weight, oiii_weight=oiii_weight, ha_boost=ha_boost, oiii_boost=oiii_boost,
-        nb_lum_weight=nb_lum_weight, palette=palette,
-        **bxt,
+        nb_lum_weight=nb_lum_weight, palette=palette, extra_roots=bl.extra_roots(cfg),
+        **bxt, **viv,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
@@ -4195,6 +4203,8 @@ def finish_cmd(
     bxt_nonstellar: float = typer.Option(-1.0, "--bxt-nonstellar", help="BlurXTerminator sharpen nonstellar 0..1"),
     nxt_denoise: float = typer.Option(-1.0, "--nxt-denoise", help="NoiseXTerminator denoise 0..1"),
     hoo: bool = typer.Option(False, "--hoo/--no-hoo", help="Color masters: also the HOO-mapped image"),
+    solve: bool = typer.Option(True, "--solve/--no-solve",
+                               help="Plate solve (SPCC color); --no-solve skips it (a solve that hung)"),
     focal_mm: float = typer.Option(0.0, "--focal-mm", help="0 = the master's run, else the rig's"),
     pixel_um: float = typer.Option(0.0, "--pixel-um", help="0 = the master's run, else 3.76"),
     pixinsight: bool = typer.Option(True, "--pixinsight/--no-pixinsight", help="Run PixInsight (else script only)"),
@@ -4242,7 +4252,8 @@ def finish_cmd(
         master=Path(master) if master else None, name=name, target=target, rig=rig, staging_root=root,
         out=Path(out) if out else None, gradient=gradient, hoo=hoo, focal_mm=focal_mm, pixel_um=pixel_um,
         run_pixinsight=pixinsight, dry_run=dry_run, pixinsight=pixinsight_exe,
-        mono_run=Path(mono_run) if mono_run else None, colors=color, lock_wait_min=_pilock_wait(cfg), **kw,
+        mono_run=Path(mono_run) if mono_run else None, colors=color, lock_wait_min=_pilock_wait(cfg),
+        solve=solve, **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
@@ -4330,6 +4341,9 @@ def autointegrate_cmd(
     blend: Optional[bool] = typer.Option(None, "--blend/--no-blend", help="Override autointegrate_blend"),
     notify: Optional[bool] = typer.Option(None, "--notify/--no-notify", help="Override autointegrate_notify"),
     hoo: Optional[bool] = typer.Option(None, "--hoo/--no-hoo", help="Override autointegrate_hoo (OSC HOO image)"),
+    guard: bool = typer.Option(True, "--guard/--no-guard",
+                               help="Desktop-load guard (autointegrate_idle_min / _max_cpu_pct); "
+                                    "--no-guard starts PixInsight even while the desktop is in use"),
     qa: str = typer.Option("report", "--qa", help="Star QA mode for the runs (report | apply | off)"),
     interval_min: float = typer.Option(30.0, "--interval-min", help="Minutes between cycles without --once"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
@@ -4339,8 +4353,12 @@ def autointegrate_cmd(
     has settled the target's Library folders (no temp files, file count
     stable for autointegrate_settle_min), runs `photonscript integrate`
     (OSC natural color + HOO image; RC16 per filter), posts the ledger,
-    blends two-rig goals once both masters exist (PS-153), and sends a
-    review JPG with Pushover. Nothing while PixInsight is open; one
+    blends two-rig goals once both masters exist and an input is newer
+    than the last blend's (PS-153), and sends a review JPG with Pushover.
+    A run whose finish failed gets a finish-only retry (at most
+    autointegrate_finish_retries); the first cycle after
+    autointegrate_summary_hour writes the morning summary. Nothing while
+    PixInsight is open or the desktop is in use (--no-guard); one
     PixInsight at a time; never re-integrates without new subs. Install it
     yourself with deploy\\install-autointegrate-task.ps1 (this command
     installs nothing).
@@ -4375,7 +4393,12 @@ def autointegrate_cmd(
         nb_gate=bool(getattr(cfg, "blend_nb_gate", True)),
         nb_min_ha_h=float(getattr(cfg, "blend_nb_min_ha_h", 2.0)),
         nb_min_oiii_h=float(getattr(cfg, "blend_nb_min_oiii_h", 1.5)),
-        nb_min_sii_h=float(getattr(cfg, "blend_nb_min_sii_h", 1.5)))
+        nb_min_sii_h=float(getattr(cfg, "blend_nb_min_sii_h", 1.5)),
+        finish_retries=int(getattr(cfg, "autointegrate_finish_retries", 2)),
+        idle_min=(float(getattr(cfg, "autointegrate_idle_min", 10.0)) if guard else 0.0),
+        max_cpu_pct=(float(getattr(cfg, "autointegrate_max_cpu_pct", 80.0)) if guard else 0.0),
+        summary_hour=float(getattr(cfg, "autointegrate_summary_hour", 8.0)),
+        extra_roots=bl.extra_roots(cfg))
     say(f"autointegrate: Library {lib}, staging {root}"
         + (f", scratch {wo.scratch_root}" if wo.scratch_root else "")
         + f", settle {o.settle_min:g} min"
@@ -4391,20 +4414,75 @@ def autointegrate_cmd(
     def _blend_opts(target: str, dry: bool) -> bl.Options:
         return bl.Options(
             target=target, staging_root=root, dry_run=dry, pixinsight=pixinsight_exe,
-            scratch_root=wo.scratch_root,
+            scratch_root=wo.scratch_root, extra_roots=o.extra_roots,
             osc_scale=float(getattr(cfg, "piggyback_pixel_scale_arcsec", bl.OSC_SCALE) or bl.OSC_SCALE),
             rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
-            **bl.config_bxt(cfg))
+            **bl.config_bxt(cfg), **bl.config_vivid(cfg))
+
+    def run_retry(need):
+        from photonscript.integration import finish as fn
+        from photonscript.integration import finish_retry as fr
+        from photonscript.integration import pjsr
+        kw = pjsr.rc_settings(cfg)
+        kw["palette"] = pjsr.palette_mode(getattr(cfg, "finish_palette", "off"))
+        kw["palette_kinds"] = str(getattr(cfg, "finish_palette_kinds", pjsr.PALETTE_KINDS) or "")
+        kw.update(pjsr.vivid_settings(cfg))
+        common = dict(target=need.target, rig=need.rig, staging_root=root, solve=need.solve,
+                      pixinsight=pixinsight_exe, lock_wait_min=_pilock_wait(cfg), **kw)
+
+        def run_finish(master, n):
+            filt = "OSC" if master.stem.startswith("master_OSC") else bl.filter_of(master)
+            return fn.run(fn.Options(master=master, name=f"{pl.safe_name(n.target)}_{filt}",
+                                     hoo=o.hoo and filt == "OSC", **common), echo=say)
+
+        def run_color(n):
+            return fn.run_mono_color(fn.Options(master=None, name=pl.safe_name(n.target),
+                                                mono_run=n.run_dir, colors="auto", **common), echo=say)
+
+        def run_core(n):
+            return fr.core_combine(n, exe=pixinsight_exe, echo=say,
+                                   core_radius_arcmin=float(getattr(cfg, "qa_core_radius_arcmin", 1.0) or 1.0),
+                                   warn_px=int(getattr(cfg, "qa_core_sat_warn_px", 25) or 25))
+        return fr.run(need, run_finish=run_finish, run_color=run_color, run_core=run_core,
+                      roots=bl.discovery_roots(root, wo.scratch_root, o.extra_roots), echo=say)
 
     try:
         ai.loop(o, once=once, echo=say,
                 run_integrate=run_integrate,
                 run_blend=lambda t: bl.run(_blend_opts(t, False), echo=say),
                 discover_blend=lambda t: bl.discover(_blend_opts(t, True)),
+                run_retry=run_retry,
                 send=ai.pushover_sender(cfg))
     except Exception as e:  # noqa: BLE001
         console.print(f"[red]autointegrate:[/red] {e}", markup=True)
         raise typer.Exit(1)
+
+
+@app.command("autointegrate-summary")
+def autointegrate_summary_cmd(
+    hours: float = typer.Option(0.0, "--hours", help="Look back this many hours (0 = since yesterday noon)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+):
+    """The autointegrate morning summary now (read-only): one line per goal,
+    what was stacked / finished / blended, with file:/// links to the final
+    JPGs. autointegrate itself writes it to <staging>/Summaries/<date>.txt
+    and Pushovers it once a day after autointegrate_summary_hour.
+
+    photonscript autointegrate-summary --hours 24
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from photonscript.integration import blend as bl
+    from photonscript.integration import night_summary as ns
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import scratch as sc
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    root = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    now = datetime.now()
+    since = (now - timedelta(hours=hours)) if hours > 0 else \
+        datetime.combine(now.date() - timedelta(days=1), datetime.min.time()) + timedelta(hours=12)
+    roots = bl.discovery_roots(root, sc.configured_root(cfg), bl.extra_roots(cfg))
+    print(ns.render(ns.collect(roots, since.astimezone(timezone.utc)), now.date().isoformat()))
 
 
 @app.command("ledger-import")

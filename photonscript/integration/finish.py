@@ -87,6 +87,12 @@ class Options:
     lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
     mono_run: Path | None = None      # --mono-run: color combine of this run's filter masters
     colors: str = "auto"              # --color: auto | all | lrgb,rgb,sho,hoo
+    solve: bool = True                # False (--no-solve, the 2nd finish-only retry): no plate solve,
+                                      # color calibration without SPCC (a solve that hung)
+
+
+NO_SOLVE_NOTE = ("plate solve off (--no-solve): no coordinates passed, color calibration "
+                 "without SPCC")
 
 
 # ----------------------------------------------------------------- source run
@@ -140,7 +146,10 @@ def resolve(o: Options) -> dict:
         notes.append("coordinates from the source run's finish_run.js")
     elif ra is None and info:
         ra, dec = catalog_coords(info.campaign)
-    if ra is None:
+    if not o.solve:
+        ra = dec = None
+        notes.append(NO_SOLVE_NOTE)
+    elif ra is None:
         notes.append("target coordinates unknown: the plate solve is skipped (pass --target)")
     focal = o.focal_mm or vals.get("FOCAL_MM") or RIG_OPTICS[rig][0]
     pixel = o.pixel_um or vals.get("PIXEL_UM") or RIG_OPTICS[rig][1]
@@ -328,7 +337,10 @@ def resolve_mono(o: Options, run_dir: Path) -> dict:
         notes.append("coordinates from the run's finish_run.js")
     elif ra is None and info:
         ra, dec = catalog_coords(info.campaign)
-    if ra is None:
+    if not o.solve:
+        ra = dec = None
+        notes.append(NO_SOLVE_NOTE + "; RGB color falls back to BN + ColorCalibration")
+    elif ra is None:
         notes.append("target coordinates unknown: the plate solve is skipped (pass --target); "
                      "RGB color falls back to BN + ColorCalibration")
     focal = o.focal_mm or vals.get("FOCAL_MM") or RIG_OPTICS[rig][0]

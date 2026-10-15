@@ -198,6 +198,7 @@ def ledger_brief(led: L.Ledger) -> dict:
         "run_dir": m.get("run_dir", ""),
         "packet": ab.get("packet", ""), "csv": ab.get("csv", ""),
         "final": m.get("final") or "",
+        "finals": [str(x) for x in (m.get("finals") or [])],   # every final JPG (autointegrate)
         "color": color_images(m),
         "calibration": (m.get("calibration") or {}).get("status", ""),
         "verdict": led.review.verdict,
@@ -304,13 +305,19 @@ def candidates(config, projects, *, with_calibration: bool = True) -> dict:
 def thresholds(config) -> dict:
     """The watcher thresholds set on the scope (System page, Integration)."""
     return {
-        "rigs": [r.strip() for r in str(getattr(config, "integrate_watch_rigs", "piggyback")
+        "rigs": [r.strip() for r in str(getattr(config, "integrate_watch_rigs", "piggyback,rc16")
                                         or "").split(",") if r.strip()],
         "new_data_h": float(getattr(config, "integrate_watch_new_data_h", 1.0)),
         "first_h": float(getattr(config, "integrate_watch_first_h", 0.0)),
         "min_interval_h": float(getattr(config, "integrate_watch_min_interval_h", 12.0)),
         "require_calibration": bool(getattr(config, "integrate_watch_require_calibration",
                                             False)),
+        # per-rig overrides (2026-10-15: the RC16 watched with its own first
+        # run and new-data hours); a negative value = the general one
+        "per_rig": {"rc16": {
+            k: float(getattr(config, f"integrate_watch_rc16_{k}", 1.0))
+            for k in ("new_data_h", "first_h")
+            if float(getattr(config, f"integrate_watch_rc16_{k}", 1.0)) >= 0}},
     }
 
 
@@ -458,14 +465,18 @@ def ready_to_process(c: dict, thr: dict) -> tuple[bool, str]:
         return False, "no approved subs"
     goal = c.get("goal") or {}
     last = c.get("last")
+    per = (thr.get("per_rig") or {}).get(c.get("rig", "")) or {}
+
+    def val(k):                       # the rig's own threshold first (watch.rig_threshold)
+        return per.get(k) if per.get(k) is not None else thr.get(k)
     if last is None:
         if float(goal.get("pct") or 0) >= 100:
             return True, f"goal met ({goal.get('hours_done')} of {goal.get('hours_goal')} h)"
-        first = float(thr.get("first_h") or 0)
+        first = float(val("first_h") or 0)
         if first > 0 and float(c.get("approved_h") or 0) >= first:
             return True, f"{c.get('approved_h')} h approved (first run at {first:g} h)"
         return False, f"goal {float(goal.get('pct') or 0):.0f}%"
-    need = float(thr.get("new_data_h") or 0)
+    need = float(val("new_data_h") or 0)
     new_h = float(c.get("new_data_h") or 0)
     if need > 0 and new_h >= need:
         return True, f"{new_h:.1f} h new since v{last.get('version')}"

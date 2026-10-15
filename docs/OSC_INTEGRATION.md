@@ -247,9 +247,12 @@ approved hours not in that ledger's sub list. Asks change status only
 3. reads `GET /api/integrations/candidates` (per active goal and rig: goal
    progress, approved hours, last ledger, new data since it, calibration
    missing, calibration owed) and the thresholds set on the System page
-   (Integration group): `integrate_watch_rigs` (piggyback),
-   `integrate_watch_new_data_h` (1.0), `integrate_watch_first_h` (0 = first
-   run only when the goal is met), `integrate_watch_min_interval_h` (12),
+   (Integration group): `integrate_watch_rigs` (piggyback,rc16 since
+   2026-10-15), `integrate_watch_new_data_h` (1.0), `integrate_watch_first_h`
+   (0 = first run only when the goal is met), the RC16's own
+   `integrate_watch_rc16_first_h` (1.0: its first run once 1 h is approved,
+   not at the goal) and `integrate_watch_rc16_new_data_h` (1.0; -1 = the
+   general value), `integrate_watch_min_interval_h` (12, per goal + rig),
    `integrate_watch_require_calibration` (off: integrate anyway and record
    what was missing). Command line flags override them;
 4. runs at most one `photonscript integrate` (QA report mode) into a new
@@ -279,6 +282,53 @@ re-integrates without new approved data, nothing while PixInsight is open):
 4. writes `<run>\review.jpg` (the finals side by side, at most 2048 px) and
    sends it with Pushover (`autointegrate_notify`; the desktop .env needs the
    Pushover keys).
+
+2026-10-15 additions (the 2026-10-14 night needed four manual steps):
+- **RC16 watched.** The RC16 runs end to end like the Piggy: `integrate
+  --rig rc16` stacks one master per filter and exposure, HDR-combines the L
+  shorts into `master_L_hdr`, finishes, and makes the LRGB / SHO / HOO
+  color (the `finish --mono-run` combine), then the goal blends. Its first
+  run comes at `integrate_watch_rc16_first_h` approved hours, later runs
+  after `integrate_watch_rc16_new_data_h` new hours, 12 h apart per goal +
+  rig as before.
+- **Desktop-load guard.** No PixInsight start (integrate, retry, blend)
+  while the desktop had keyboard / mouse input in the last
+  `autointegrate_idle_min` (10) minutes or its CPU is at or above
+  `autointegrate_max_cpu_pct` (80); the cycle says why and the next one
+  tries again. `--no-guard` turns it off for one run.
+- **Finish-only retry** (`integration/finish_retry.py`). A newest run (at
+  most 72 h old) whose integration made masters but whose finish failed (or,
+  started by the watcher, has no finish) and that nothing finished since (no
+  final JPG in its `out\final`, in a re-finish nested in it such as
+  `out\final_v6\out\final`, or in a `Staging\Finish\<name>` folder whose
+  ledger names it) gets the finish again in a cycle that integrates nothing:
+  `photonscript finish` of `master_OSC_hdr` (else `master_OSC`) into a new
+  `Staging\Finish` folder, or the mono color combine for an RC16 run without
+  a color image. At most `autointegrate_finish_retries` (2) times; the 2nd
+  without the plate solve (`finish --no-solve`: a solve that hung once). An
+  OSC run whose core check errored gets the OSC core combine again first.
+  Each attempt is recorded in the run's ledger (`machine.finish_retry`); a
+  successful one sets `final` / `finals` and re-posts the ledger (same run,
+  same version, no ping). A goal's blend waits while its retry is pending.
+- **Final JPG list on the scope.** autointegrate stamps every final JPG of a
+  run into its ledger (`machine.finals`) before posting it; the scope's
+  ledger brief lists them (`finals`).
+- **Blend staleness.** A blend runs when an input is newer than the last
+  successful blend's (same mode): per role (OSC, RC16) by the source
+  integrate version (a re-finish counts as its run's version, so a
+  re-finish of the same master does not re-blend), else by file time.
+  Hand blends without a manifest are read from their ledger.
+- **Every root.** Blend discovery, the retry and the summary read the
+  staging root, the fast scratch root and `integration_extra_roots`
+  (`C:/Astro/Staging`, the pre-scratch `--out` root). A folder name found
+  twice counts once, the copy with the higher ledger version winning (a
+  manifest-only stub on D: never hides the real run on C:). Newest run =
+  version, then created time, then an HDR L master.
+- **Morning summary.** The first cycle after `autointegrate_summary_hour`
+  (8, local) writes `<staging>\Summaries\<date>.txt` (one line per goal:
+  stacked / finished / blended since yesterday noon, `file:///` links to the
+  final JPGs) and Pushovers the short form; `photonscript
+  autointegrate-summary [--hours N]` prints it any time.
 The Library mirror is `integration_library_dir`, else the first that exists
 of `D:\ninashare\Library` (the mirror since 2026-10; `C:\Users\sleep\ninashare`
 becomes a junction to it), `desktop_library_dir`, `~\ninashare\Library`;
@@ -363,10 +413,13 @@ photonscript blend --target M31 --dry-run     # which masters, script check
 photonscript blend --target M31               # weight 0.7, both products
 ```
 Inputs: the newest piggyback run and the newest rc16 run of the target under
-the staging root. Stage `linear` (default) takes the finish's
+the staging root, the fast scratch root and `integration_extra_roots`
+(`C:/Astro/Staging`). Stage `linear` (default) takes the finish's
 `*_linear.xisf` (gradient removed, color calibrated; a finished run beats a
-newer unfinished one) and falls back to the raw `master_*.xisf`; `--stage
-final` takes the stretched `*_final.xisf`. `--osc PATH` / `--rc16 P1,P2`
+newer unfinished one; the newest re-finish of the run counts: a hand `--out`
+nested in it, or a `Staging\Finish` folder whose ledger names the run) and
+falls back to the raw `master_*.xisf`; `--stage final` takes the stretched
+`*_final.xisf`. `--osc PATH` / `--rc16 P1,P2`
 override. RC16 luminance = the L master, else the mean of the given masters.
 
 deploy/blend_rc16_osc.js (rendered to `blend_run.js`): plate solve both
@@ -389,7 +442,15 @@ Outputs in `<staging>\Blend\<target>_blend_<time>\out\final\`:
 piggyback). Blend ledgers live one level below the staging root, so they are
 not integration versions, do not trip integrate-watch and are not posted.
 The stretch is the finish's linked stretch only (no noise reduction or star
-reduction on the blend yet). PS-186: at the linear stage the RC16 luminance
+reduction on the blend yet). Vivid (`blend_vivid`, on; galaxies only by
+`blend_vivid_kinds`; L blends; `--vivid/--no-vivid`): after an OK blend a
+second short PixInsight script (deploy/blend_vivid.js, rendered to
+`blend_vivid_run.js`, the finish_osc.js vivid section between its
+PS_VIVID_LIB markers) puts the finish vivid look (`finish_vivid_sat_mid` /
+`_hue_boost` / `_lhe`, from no saturation curve since the blend has none) on
+`<name>_blend.xisf` with the stars in the image, into
+`<name>_blend_vivid.{xisf,tif,jpg}` (`out\blend_vivid.log`; manifest and
+ledger `vivid`). A failed vivid never fails the blend. PS-186: at the linear stage the RC16 luminance
 first gets a BlurXTerminator pass (correct-only, then sharpen at
 `bxt_sharpen_stars` / `bxt_sharpen_nonstellar`) when the process is installed,
 `blend_rc16_bxt` is on (default) and `finish_use_rcastro` is not off;

@@ -373,8 +373,15 @@ class PhotonScriptConfig(BaseSettings):
     # --- Integration ledger + watcher (PS-33 / PS-31, desktop integrate) ---
     # Scope side: the thresholds the desktop watcher reads from
     # GET /api/integrations/candidates (editable on the System page).
-    integrate_watch_rigs: str = "piggyback"  # rigs the watcher integrates
-                                 # (comma list: piggyback, rc16)
+    integrate_watch_rigs: str = "piggyback,rc16"  # rigs the watcher integrates
+                                 # (comma list: piggyback, rc16); rc16 since
+                                 # 2026-10-15 (its own thresholds below)
+    integrate_watch_rc16_new_data_h: float = 1.0  # rc16: re-integrate after
+                                 # this many new approved hours (-1 = the
+                                 # integrate_watch_new_data_h)
+    integrate_watch_rc16_first_h: float = 1.0  # rc16: first integration once
+                                 # this many approved hours exist (0 = only at
+                                 # the goal; -1 = integrate_watch_first_h)
     integrate_watch_new_data_h: float = 1.0  # re-integrate a goal once this
                                  # many approved hours arrived since the
                                  # last ledger
@@ -418,6 +425,20 @@ class PhotonScriptConfig(BaseSettings):
                                  # rigs have masters and the inputs changed
     autointegrate_notify: bool = True  # Pushover the review JPG after a run
     autointegrate_hoo: bool = True  # OSC finish also writes the HOO-mapped image
+    autointegrate_finish_retries: int = 2  # a run with a master but no finished
+                                 # images gets this many finish-only retries
+                                 # (the 2nd without the plate solve); 0 = off
+    autointegrate_idle_min: float = 10.0  # desktop-load guard: start PixInsight
+                                 # only when the desktop had no keyboard / mouse
+                                 # input for this many minutes (0 = off)
+    autointegrate_max_cpu_pct: float = 80.0  # desktop-load guard: and the CPU
+                                 # is below this (percent; 0 = off)
+    autointegrate_summary_hour: float = 8.0  # local hour after which the first
+                                 # cycle writes + Pushovers the morning summary
+                                 # (one line per goal; -1 = off)
+    integration_extra_roots: str = "C:/Astro/Staging"  # more folders holding
+                                 # integrate runs (the pre-scratch --out root):
+                                 # blend discovery reads them too (comma list)
     pixinsight_lock_wait_min: float = 60.0  # one PixInsight job at a time
                                  # (integration/pilock.py, a lock file in
                                  # %LOCALAPPDATA%\PhotonScript): integrate /
@@ -468,6 +489,11 @@ class PhotonScriptConfig(BaseSettings):
                                  # night to RC16 Ha first until it holds
                                  # blend_nb_min_ha_h, then OIII / SII by the
                                  # mix; a goal's ha_first_h overrides
+    blend_vivid: bool = True     # blend: also <name>_vivid.{xisf,tif,jpg} from the
+                                 # stretched blend (finish_vivid look, L blends of
+                                 # blend_vivid_kinds targets)
+    blend_vivid_kinds: str = "galaxy"  # catalog types the blend vivid is for
+                                 # (blank = every target)
     blend_rc16_bxt: bool = True  # PS-153 blend: BlurXTerminator pass on the
                                  # RC16 L linear master before the blend (only
                                  # when installed and finish_use_rcastro not off)

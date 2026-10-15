@@ -165,6 +165,29 @@ class Options:
     pixinsight: str = runner.DEFAULT_EXE
     lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
     scratch_root: Path | None = None  # fast scratch: build here, archive to staging_root/Blend
+    extra_roots: list[Path] = field(default_factory=list)   # integration_extra_roots (C:/Astro/Staging)
+    vivid: bool = True                # blend_vivid: <name>_vivid from the stretched L blend
+    vivid_kinds: str = "galaxy"       # blend_vivid_kinds ("" = every target)
+    vivid_sat_mid: float = pjsr.FINISH_DEFAULTS["vivid_sat_mid"]
+    vivid_hue_boost: float = pjsr.FINISH_DEFAULTS["vivid_hue_boost"]
+    vivid_lhe: float = pjsr.FINISH_DEFAULTS["vivid_lhe"]
+
+
+def extra_roots(cfg) -> list[Path]:
+    """integration_extra_roots (comma list) as Paths; blank = none."""
+    raw = str(getattr(cfg, "integration_extra_roots", "") or "") if cfg is not None else ""
+    return [Path(x.strip()) for x in raw.split(",") if x.strip()]
+
+
+def config_vivid(cfg) -> dict:
+    """Options fields for the blend vivid from the config: blend_vivid,
+    blend_vivid_kinds and the finish_vivid_* look."""
+    v = pjsr.vivid_settings(cfg)
+    kinds = getattr(cfg, "blend_vivid_kinds", None) if cfg is not None else None
+    return {"vivid": bool(getattr(cfg, "blend_vivid", True)) if cfg is not None else True,
+            "vivid_kinds": "galaxy" if kinds is None else str(kinds),
+            "vivid_sat_mid": v["vivid_sat_mid"], "vivid_hue_boost": v["vivid_hue_boost"],
+            "vivid_lhe": v["vivid_lhe"]}
 
 
 def rc16_bxt_mode(cfg) -> str:
@@ -278,62 +301,178 @@ def masters(run_dir: Path) -> dict[str, Path]:
     return out
 
 
-def finished(run_dir: Path, kind: str) -> dict[str, Path]:
-    """filter -> out/final/<name>_<F>_<kind>.xisf (kind: linear | final),
-    matched to the run's masters by the filter suffix."""
-    out = {}
-    finals = sorted((Path(run_dir) / "out" / "final").glob(f"*_{kind}.xisf"))
-    for f in masters(run_dir):
-        hit = [p for p in finals if p.stem.endswith(f"_{f}_{kind}")]
-        if hit:
-            out[f] = hit[0]
+FINISH_DIR = "Finish"                  # integration/finish.py FINISH_DIR
+_NOT_RUNS = {BLEND_DIR.lower(), FINISH_DIR.lower()}
+
+
+def discovery_roots(staging_root: Path, scratch_root: Path | None = None,
+                    extra: list[Path] | tuple = ()) -> list[Path]:
+    """Every folder that holds integrate runs: the staging (archive) root,
+    the fast scratch root, then integration_extra_roots (the pre-scratch
+    C:/Astro/Staging); each once."""
+    out: list[Path] = []
+    seen: set[str] = set()
+    for r in [*scratch.run_roots(staging_root, scratch_root), *[Path(x) for x in extra or ()]]:
+        k = _norm(r)
+        if k not in seen:
+            seen.add(k)
+            out.append(Path(r))
     return out
 
 
-def files_for(run_dir: Path, stage: str) -> tuple[dict[str, Path], str]:
+def _norm(p) -> str:
+    return str(scratch._resolve(Path(p))).lower()
+
+
+def _ledger_json(d: Path) -> dict | None:
+    try:
+        return json.loads((Path(d) / "ledger.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def finish_source(d: Path) -> str:
+    """The integrate run a finish folder was made from (its kind finish
+    ledger's input.run / input.mono_run, else its manifest), else ""."""
+    led = _ledger_json(d)
+    if led and led.get("kind") == "finish":
+        inp = (led.get("machine") or {}).get("input") or {}
+        return str(inp.get("run") or inp.get("mono_run") or "")
+    try:
+        m = json.loads((Path(d) / "manifest.json").read_text(encoding="ascii"))
+    except (OSError, ValueError):
+        return ""
+    if m.get("kind") == "finish":
+        return str(m.get("source_run") or m.get("mono_run") or "")
+    return ""
+
+
+def same_run(ref: str, run_dir: Path) -> bool:
+    """Does a recorded run path name this run folder? The same path, or
+    (a scratch path archived since) the same folder name when the recorded
+    path is gone."""
+    if not ref:
+        return False
+    r = Path(ref)
+    if _norm(r) == _norm(run_dir):
+        return True
+    try:
+        gone = not r.is_dir()
+    except OSError:
+        gone = True
+    return gone and r.name.lower() == Path(run_dir).name.lower()
+
+
+def final_dirs(run_dir: Path, roots: list[Path] | tuple = ()) -> list[Path]:
+    """The out/final folders holding finish products of this run: its own,
+    a re-finish nested in it (<run>/out/<x>/out/final, a hand --out such as
+    out/final_v6), and every <root>/Finish/<name> whose ledger names this
+    run as its input (`photonscript finish`, the finish-only retry)."""
+    run_dir = Path(run_dir)
+    out = []
+    own = run_dir / "out" / "final"
+    if own.is_dir():
+        out.append(own)
+    try:
+        nested = sorted(p for p in (run_dir / "out").iterdir()
+                        if p.is_dir() and p.name.lower() not in ("final", "master", "work"))
+    except OSError:
+        nested = []
+    for d in nested:
+        if (d / "out" / "final").is_dir():
+            out.append(d / "out" / "final")
+    for root in roots or ():
+        try:
+            subs = sorted(p for p in (Path(root) / FINISH_DIR).iterdir() if p.is_dir())
+        except OSError:
+            continue
+        for d in subs:
+            if (d / "out" / "final").is_dir() and same_run(finish_source(d), run_dir):
+                out.append(d / "out" / "final")
+    return out
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return Path(p).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def finished(run_dir: Path, kind: str, roots: list[Path] | tuple = ()) -> dict[str, Path]:
+    """filter -> <name>_<F>_<kind>.xisf (kind: linear | final), matched to
+    the run's masters by the filter suffix: the newest such file among the
+    run's own out/final and its re-finishes (final_dirs)."""
+    out: dict[str, Path] = {}
+    finals = [p for d in final_dirs(run_dir, roots) for p in sorted(d.glob(f"*_{kind}.xisf"))]
+    for f in masters(run_dir):
+        hit = [p for p in finals if p.stem.endswith(f"_{f}_{kind}")]
+        if hit:
+            out[f] = max(hit, key=_mtime)
+    return out
+
+
+def files_for(run_dir: Path, stage: str, roots: list[Path] | tuple = ()) -> tuple[dict[str, Path], str]:
     """(filter -> image, what) for a run at a stage. linear: the finish's
-    *_linear.xisf per filter, else the raw master; final: *_final.xisf."""
+    *_linear.xisf per filter (the newest re-finish counts), else the raw
+    master; final: *_final.xisf."""
     if stage == "final":
-        return finished(run_dir, "final"), "finish *_final.xisf"
-    lin = finished(run_dir, "linear")
+        return finished(run_dir, "final", roots), "finish *_final.xisf"
+    lin = finished(run_dir, "linear", roots)
     raw = masters(run_dir)
     got = {f: lin.get(f) or raw[f] for f in raw}
     what = ("finish *_linear.xisf" if lin and len(lin) == len(raw)
             else "raw master_*.xisf" if not lin else "mixed linear / raw")
+    if any(_norm(p.parent) != _norm(Path(run_dir) / "out" / "final") for p in lin.values()):
+        what += " (re-finish)"
     return got, what
 
 
+def _has_hdr_l(run_dir: Path) -> bool:
+    return (Path(run_dir) / "out" / "master" / f"master_L{_HDR}.xisf").is_file()
+
+
 def find_runs(staging_root: Path, target: str, rig: str,
-              scratch_root: Path | None = None) -> list[RunInfo]:
-    """Integrate runs of `target` + `rig` under the staging root (and the
-    fast scratch root; a folder name in the staging root wins), newest
-    first (version, then created time, then folder name)."""
+              scratch_root: Path | None = None, extra_roots: list[Path] | tuple = ()) -> list[RunInfo]:
+    """Integrate runs of `target` + `rig` under every discovery root (the
+    staging root, the fast scratch root, integration_extra_roots), newest
+    first: version, then created time, then an HDR L master, then the
+    folder name. A folder name found in two roots counts once: the copy
+    with the higher (version, created time) wins, the earlier root on a
+    tie (so a manifest-only stub never hides the real run and its ledger)."""
     from photonscript.integration.ledger import same_campaign
-    out, seen = [], set()
-    for root in scratch.run_roots(staging_root, scratch_root):
-        if not root.is_dir():
+    best: dict[str, RunInfo] = {}
+    for root in discovery_roots(staging_root, scratch_root, extra_roots):
+        try:
+            dirs = sorted(p for p in Path(root).iterdir()
+                          if p.is_dir() and p.name.lower() not in _NOT_RUNS)
+        except OSError:
             continue
-        for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name != BLEND_DIR):
-            if d.name in seen:
-                continue
+        for d in dirs:
             info = run_info(d)
-            if info and info.rig == rig and same_campaign(info.campaign, target):
-                out.append(info)
-                seen.add(d.name)
-    return sorted(out, key=lambda r: (r.version, r.created_at, r.run_dir.name), reverse=True)
+            if not (info and info.rig == rig and same_campaign(info.campaign, target)):
+                continue
+            k = d.name.lower()
+            cur = best.get(k)
+            if cur is None or (info.version, info.created_at) > (cur.version, cur.created_at):
+                best[k] = info
+    return sorted(best.values(), key=lambda r: (r.version, r.created_at, _has_hdr_l(r.run_dir),
+                                                r.run_dir.name), reverse=True)
 
 
-def _pick(runs: list[RunInfo], stage: str, want) -> tuple[RunInfo | None, dict[str, Path], str]:
+def _pick(runs: list[RunInfo], stage: str, want,
+          roots: list[Path] | tuple = ()) -> tuple[RunInfo | None, dict[str, Path], str]:
     """Newest run with what `want` needs. Linear: a run whose finish made
-    the *_linear files (gradient removed, color calibrated) beats a newer
-    run that only has raw masters; raw masters are the fallback."""
+    the *_linear files (gradient removed, color calibrated; its own or a
+    re-finish, final_dirs) beats a newer run that only has raw masters;
+    raw masters are the fallback."""
     passes = [True, False] if stage == "linear" else [False]
     for finished_only in passes:
         for r in runs:
-            got, what = files_for(r.run_dir, stage)
+            got, what = files_for(r.run_dir, stage, roots)
             if finished_only:
                 got = {f: p for f, p in got.items() if p.stem.endswith("_linear")}
-                what = "finish *_linear.xisf"
+                what = "finish *_linear.xisf" + (" (re-finish)" if "re-finish" in what else "")
             if want(got):
                 return r, got, what
     return None, {}, ""
@@ -358,11 +497,12 @@ def discover(o: Options) -> Inputs:
         raise BlendError(f"--stage must be one of {', '.join(STAGES)}")
     notes: list[str] = []
     osc_run = rc_run = None
+    roots = discovery_roots(o.staging_root, o.scratch_root, o.extra_roots)
     if o.osc:
         osc = Path(o.osc)
     else:
-        runs = find_runs(o.staging_root, o.target, "piggyback", o.scratch_root)
-        osc_run, got, what = _pick(runs, o.stage, lambda g: "OSC" in g)
+        runs = find_runs(o.staging_root, o.target, "piggyback", o.scratch_root, o.extra_roots)
+        osc_run, got, what = _pick(runs, o.stage, lambda g: "OSC" in g, roots)
         if not osc_run:
             raise BlendError(f"no Piggy-600 OSC {o.stage} master for {o.target!r} under {o.staging_root} "
                              f"({len(runs)} piggyback run(s) found); run `photonscript integrate "
@@ -375,15 +515,16 @@ def discover(o: Options) -> Inputs:
         for p in o.rc16:
             rc16.setdefault(filter_of(p), Path(p))
     else:
-        runs = find_runs(o.staging_root, o.target, "rc16", o.scratch_root)
+        runs = find_runs(o.staging_root, o.target, "rc16", o.scratch_root, o.extra_roots)
         want = (lambda g: "Ha" in nb_masters(g)) if mode == "nb" else bool
-        rc_run, rc16, what = _pick(runs, o.stage, want)
+        rc_run, rc16, what = _pick(runs, o.stage, want, roots)
         if not rc_run:
             raise BlendError(f"no RC16 {o.stage} master for {o.target!r} under {o.staging_root} "
                              f"({len(runs)} rc16 run(s) found); run `photonscript integrate "
                              f"--target \"{o.target}\" --rig rc16` or pass --rc16")
         notes.append(f"RC16 from {rc_run.run_dir.name} (v{rc_run.version}): {what}, "
-                     f"filters {', '.join(sorted(rc16, key=_filter_rank))}")
+                     f"filters {', '.join(sorted(rc16, key=_filter_rank))}"
+                     + (" (L from the HDR master)" if "L" in rc16 and _has_hdr_l(rc_run.run_dir) else ""))
     missing = [str(p) for p in [osc, *rc16.values()] if not Path(p).is_file()]
     if missing:
         raise BlendError("missing input file(s): " + ", ".join(missing))
@@ -572,6 +713,84 @@ def config_for(o: Options, inp: Inputs, run_dir: Path) -> dict:
     return nb_config(o, inp, run_dir) if inp.mode == "nb" else blend_config(o, inp, run_dir)
 
 
+# ----------------------------------------------------------------- vivid
+
+VIVID_TEMPLATE = "blend_vivid.js"
+VIVID_SCRIPT = "blend_vivid_run.js"
+VIVID_LOG = "blend_vivid.log"
+VIVID_LIB_MARK = "//__VIVID_LIB__"
+VIVID_LIB_BEGIN = "// ==== PS_VIVID_LIB_BEGIN"
+VIVID_LIB_END = "// ==== PS_VIVID_LIB_END"
+BLEND_SAT_MID = 0.5        # the blend's stretch has no saturation curve
+
+
+def vivid_wanted(o: Options, inp: Inputs) -> tuple[bool, str]:
+    """(make the vivid blend?, why not). L blends only (a narrowband blend
+    has its own HaRGB / gold / SHO products), blend_vivid on, and the
+    target's catalog type one of blend_vivid_kinds (an unknown type keeps
+    it, like finish_palette_kinds)."""
+    if not o.vivid:
+        return False, "blend_vivid off"
+    if inp.mode != "l":
+        return False, "narrowband blend (HaRGB / gold / SHO products instead)"
+    ks = [k.strip().lower() for k in str(o.vivid_kinds or "").split(",") if k.strip()]
+    kind = pjsr.target_kind(o.target) if ks else ""
+    if ks and kind and not any(k in kind for k in ks):
+        return False, f"{o.target} is catalogued as {kind}, not one of blend_vivid_kinds ({', '.join(ks)})"
+    return True, ""
+
+
+def vivid_config(o: Options, run_dir: Path) -> dict:
+    out_dir = Path(run_dir) / "out"
+    name = f"{safe_name(o.target)}_blend"
+    return {"name": name, "input": pjsr.fwd(out_dir / "final" / f"{name}.xisf"),
+            "final": pjsr.fwd(out_dir / "final"), "out": pjsr.fwd(out_dir),
+            "sat_mid": BLEND_SAT_MID, "bg_target": float(o.bg_target),
+            "vivid_sat_mid": pjsr.vivid_sat_mid(o.vivid_sat_mid),
+            "vivid_hue_boost": pjsr.unit_value("vivid_hue_boost", o.vivid_hue_boost),
+            "vivid_lhe": pjsr.unit_value("vivid_lhe", o.vivid_lhe)}
+
+
+def render_vivid(cfg: dict, deploy_dir: Path | None = None) -> str:
+    """deploy/blend_vivid.js with the finish_osc.js libraries (PS_FINISH_LIB,
+    PS_VIVID_LIB) copied in and CONFIG filled."""
+    from photonscript.integration import mono_color
+    t = pjsr.template(VIVID_TEMPLATE, deploy_dir)
+    for mark in (FINISH_LIB_MARK, VIVID_LIB_MARK):
+        if mark not in t:
+            raise pjsr.PjsrError(f"{VIVID_TEMPLATE} has no {mark}")
+    t = t.replace(FINISH_LIB_MARK, mono_color.finish_library(deploy_dir))
+    t = t.replace(VIVID_LIB_MARK, library(pjsr.template(pjsr.FINISH_TEMPLATE, deploy_dir),
+                                          VIVID_LIB_BEGIN, VIVID_LIB_END, pjsr.FINISH_TEMPLATE))
+    return pjsr.render(t, cfg)
+
+
+def run_vivid(o: Options, run_dir: Path, echo=print) -> dict:
+    """The vivid blend in PixInsight after a successful L blend. Never
+    raises: {ok, why, minutes, outputs, script}."""
+    cfg = vivid_config(o, run_dir)
+    src = Path(cfg["input"])
+    res: dict = {"ok": False, "why": "", "minutes": 0.0, "outputs": []}
+    if not src.is_file():
+        res["why"] = f"no stretched blend {src.name}"
+        echo(f"  vivid: not made ({res['why']})")
+        return res
+    try:
+        js = pjsr.write(Path(run_dir) / VIVID_SCRIPT, render_vivid(cfg))
+        res["script"] = str(js)
+        r = runner.run_script(js, Path(run_dir) / "out" / VIVID_LOG, exe=o.pixinsight, echo=echo)
+        jpg = Path(run_dir) / "out" / "final" / f"{cfg['name']}_vivid.jpg"
+        res.update(ok=bool(r.get("ok")) and jpg.is_file(), minutes=r.get("minutes", 0.0),
+                   last_line=r.get("last_line", ""))
+        res["outputs"] = [str(p) for p in sorted(jpg.parent.glob(f"{cfg['name']}_vivid.*"))]
+        if not res["ok"]:
+            res["why"] = r.get("last_line") or "no vivid JPG"
+    except Exception as e:  # noqa: BLE001 - the natural blend stands without it
+        res["why"] = str(e)
+    echo(f"  vivid: {'made ' + cfg['name'] + '_vivid.jpg' if res['ok'] else 'FAILED (' + res['why'] + ')'}")
+    return res
+
+
 # ----------------------------------------------------------------- records
 
 def _file_entry(p: Path, role: str, filt: str, run: RunInfo | None) -> dict:
@@ -630,6 +849,7 @@ def build_ledger(o: Options, inp: Inputs, run_dir: Path, man: dict, pi: dict | N
                   "products": (st or {}).get("products"), "steps": st,
                   "channels_applied": (st or {}).get("channels"),
                   "log": str(out_dir / "blend.log")},
+        "vivid": man.get("vivid"),
         "outputs": man["outputs"],
         "timing": {"started_utc": timing[0][1] if timing else "",
                    "finished_utc": timing[-1][2] if timing else "",
@@ -743,12 +963,21 @@ def _run_in(o: Options, inp: Inputs, run_dir: Path, ws: scratch.Workspace | None
             pi = runner.run_script(js, out_dir / "blend.log", exe=o.pixinsight, echo=echo)
             echo(f"  blend: {'EXIT OK' if pi['ok'] else 'FAILED'} in {pi['minutes']} min ({pi['last_line']})")
         result["blend"] = pi
+        want, why = vivid_wanted(o, inp)
+        if pi.get("ok") and want:
+            with timer.stage("PixInsight blend vivid (launch to exit)"):
+                result["vivid"] = run_vivid(o, run_dir, echo)
+        else:
+            result["vivid"] = {"ok": None, "why": why if not want else "blend failed"}
+            echo(f"  vivid: not made ({result['vivid']['why']})")
     else:
         echo("  PixInsight not started (--no-pixinsight). Run it later with:")
         echo(f'    "{o.pixinsight}" -n --automation-mode --run={js} --force-exit')
 
     with timer.stage("manifest + ledger"):
         man = build_manifest(o, inp, run_dir, cfg, pi, timer.rows)
+        if result.get("vivid") is not None:
+            man["vivid"] = result["vivid"]
         (run_dir / "manifest.json").write_text(json.dumps(man, indent=1, ensure_ascii=True, default=str),
                                                encoding="ascii")
         led = build_ledger(o, inp, run_dir, man, pi, timer.rows)

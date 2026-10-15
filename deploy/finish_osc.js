@@ -1183,6 +1183,8 @@ function labelOutput(w) {
 
 // ==== PS_FINISH_LIB_END
 
+// ==== PS_VIVID_LIB_BEGIN (deploy/blend_vivid.js reuses the vivid section from here to
+// PS_VIVID_LIB_END on the stretched blend; keep it free of placeholders)
 // ---------------------------------------------------------------- vivid variant
 // More color for galaxies (pink HII regions, warm core, blue arms) without
 // a narrowband mapping. Runs after the natural final is saved, on copies
@@ -1422,6 +1424,7 @@ function vividFinish(kw, to16) {
    try { win.forceClose(); } catch (e6) {}
    if (src.stars) try { src.stars.forceClose(); } catch (e7) {}
 }
+// ==== PS_VIVID_LIB_END
 
 function main() {
    console.show();

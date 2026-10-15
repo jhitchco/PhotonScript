@@ -1598,7 +1598,14 @@ Every run writes `ledger.json` and reports it to the scheduler (PS-33);
 met or enough new data arrived (PS-31); `photonscript autointegrate --once`
 (PS-161, deploy\install-autointegrate-task.ps1) adds the Syncthing settle
 wait, the two-rig blend, the OSC HOO image and a Pushover review JPG
-(OSC_INTEGRATION.md "Auto-integrate"). PS-142: each goal shows a campaign
+(OSC_INTEGRATION.md "Auto-integrate"). Since 2026-10-15 it watches the RC16
+too (first run at 1 h, `integrate_watch_rc16_*`), waits while the desktop is
+in use (`autointegrate_idle_min` / `_max_cpu_pct`), retries a failed finish
+alone (`autointegrate_finish_retries`, the 2nd without the plate solve),
+re-blends when an input is newer (runs found under every root incl.
+`C:/Astro/Staging`, `integration_extra_roots`), makes the vivid blend for
+galaxies (`blend_vivid`) and writes a morning summary
+(`Staging\Summaries\<date>.txt`, Pushover; `photonscript autointegrate-summary`). PS-142: each goal shows a campaign
 status chip (Acquiring / Ready to process / Processing / Processed (vN) /
 Published (vN)) and the target page a review panel (verdict, notes, asks with
 Approve / Decline; a plan change shows its diff and goes through PATCH

@@ -69,16 +69,35 @@ class Decision:
     candidate: dict = field(default_factory=dict)
 
 
+# per-rig thresholds when the scope sends none (an older scheduler): the RC16
+# integrates from its first hour and again after each new hour
+PER_RIG_DEFAULT = {"rc16": {"new_data_h": 1.0, "first_h": 1.0}}
+
+
 def merged_thresholds(server: dict, o: WatchOptions) -> dict:
-    """The scope's thresholds with the command line's overrides on top."""
-    t = {"rigs": ["piggyback"], "new_data_h": 1.0, "first_h": 0.0, "min_interval_h": 12.0,
-         "require_calibration": False}
-    t.update({k: v for k, v in (server or {}).items() if v is not None})
+    """The scope's thresholds with the command line's overrides on top.
+    per_rig = {rig: {new_data_h, first_h}} replaces the general values for
+    that rig; a command line --new-data-h / --first-h overrides every rig."""
+    t = {"rigs": ["piggyback", "rc16"], "new_data_h": 1.0, "first_h": 0.0, "min_interval_h": 12.0,
+         "require_calibration": False, "per_rig": {}}
+    server = dict(server or {})
+    if "per_rig" not in server:
+        server["per_rig"] = {r: dict(v) for r, v in PER_RIG_DEFAULT.items()}
+    t.update({k: v for k, v in server.items() if v is not None})
     for k in ("rigs", "new_data_h", "first_h", "min_interval_h", "require_calibration"):
         v = getattr(o, k)
         if v is not None:
             t[k] = v
+            if k in ("new_data_h", "first_h"):
+                for r in (t.get("per_rig") or {}).values():
+                    r.pop(k, None)
     return t
+
+
+def rig_threshold(thr: dict, rig: str, key: str):
+    """thr[key] for this rig: its per_rig value when there is one."""
+    v = ((thr.get("per_rig") or {}).get(rig) or {}).get(key)
+    return thr.get(key) if v is None else v
 
 
 def _hours_since(iso: str, now: datetime) -> float | None:
@@ -145,12 +164,12 @@ def decide(c: dict, thr: dict, local: dict, now: datetime | None = None) -> Deci
     if last is None:
         if pct >= 100:
             return d(True, f"goal met ({goal.get('hours_done')} of {goal.get('hours_goal')} h)")
-        first = float(thr.get("first_h") or 0)
+        first = float(rig_threshold(thr, rig, "first_h") or 0)
         if first > 0 and float(c.get("approved_h") or 0) >= first:
             return d(True, f"first integration: {c.get('approved_h')} h approved (>= {first:g} h)")
         return d(False, f"goal {pct:.0f}% and no integration yet (first at goal"
                         + (f" or {first:g} h" if first > 0 else "") + ")")
-    need = float(thr.get("new_data_h") or 0)
+    need = float(rig_threshold(thr, rig, "new_data_h") or 0)
     if need > 0 and new_h >= need:
         return d(True, f"{new_h:.2f} h new since v{last.get('version')} (>= {need:g} h)")
     return d(False, f"{new_h:.2f} h new since v{last.get('version')} (< {need:g} h)")
