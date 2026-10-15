@@ -48,6 +48,7 @@ Usage:
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
+    photonscript reentry-gate af|slew|center --label T [--filter L] [--ra H --dec D]  # 2026-10-15
     photonscript focus-table [--rig rc16] [--temp T] [--payoff] [--local] [--json]  # focus table
     photonscript supervise [--mode full]      # keep it running (PS-44)
     photonscript self-update [--dry-run]      # staged, smoke-checked pull (PS-58)
@@ -746,6 +747,50 @@ def cooler_gate_cmd(
     except Exception as e:  # noqa: BLE001
         print(f"cooler gate not run ({e}); imaging anyway")
         rep = {"verdict": "UNKNOWN"}
+    raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
+
+
+@app.command("reentry-gate")
+def reentry_gate_cmd(
+    kind: str = typer.Argument("af", help="af | slew | center"),
+    label: str = typer.Option("", "--label", help="The target"),
+    filter_name: str = typer.Option("", "--filter",
+                                    help="af: the filter the AF would run in"),
+    ra: Optional[float] = typer.Option(None, "--ra", help="slew / center: "
+                                       "target RA (J2000 hours)"),
+    dec: Optional[float] = typer.Option(None, "--dec", help="slew / center: "
+                                        "target Dec (J2000 deg)"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA's ExternalScript item "
+                                        "(deploy\\reentry-gate.cmd)"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """2026-10-15 re-entry gate: ask the service whether a target's start
+    AF / slew / center can be skipped (POST /api/reentry/gate). Exit 3 ONLY
+    when it says SKIP (deploy\\reentry-gate.cmd turns that into exit 1 and
+    NINA skips those items); exit 0 on RUN and on any error (the gate fails
+    open: the step runs)."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    from photonscript.scheduler.reentry import EXIT_SKIP
+    q = {"kind": kind, "label": label}
+    if filter_name:
+        q["filter"] = filter_name
+    if ra is not None and dec is not None:
+        q["ra"], q["dec"] = f"{ra:.6f}", f"{dec:.6f}"
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/reentry/gate?" + urllib.parse.urlencode(q),
+            data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=180) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+        print(f"re-entry gate {kind} ({label}{', from NINA' if from_nina else ''}"
+              f"): {rep.get('verdict')} - {rep.get('why', '')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"re-entry gate not run ({e}); running the step")
+        rep = {"verdict": "RUN"}
     raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
 
 

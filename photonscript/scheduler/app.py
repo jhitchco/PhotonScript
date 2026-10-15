@@ -979,6 +979,14 @@ _CONFIG_FIELDS = [
     ("rc16_af_temp_change_c", "PS_RC16_AF_TEMP_CHANGE_C", "RC16 smart AF: refocus after a temperature change of (C)", "Imaging", "float", False, False),
     ("rc16_af_hfr_increase_pct", "PS_RC16_AF_HFR_INCREASE_PCT", "RC16 smart AF: refocus after an HFR rise of (%)", "Imaging", "float", False, False),
     ("rc16_af_interval_min", "PS_RC16_AF_INTERVAL_MIN", "RC16 smart AF: refocus at least every N min (0 = off)", "Imaging", "float", False, False),
+    ("reentry_optimize", "PS_REENTRY_OPTIMIZE", "Re-entry gates (2026-10-15): skip a target's start AF when the last AF is recent, the temperature steady and the filter offset known; in on also the slew / center when the mount still tracks on the target: off | advise (log only) | af (default) | on", "Imaging", "str", False, False),
+    ("reentry_af_skip_min", "PS_REENTRY_AF_SKIP_MIN", "Re-entry gate: the start AF is skipped only when the last AF finished under N min ago", "Imaging", "float", False, False),
+    ("reentry_af_temp_c", "PS_REENTRY_AF_TEMP_C", "Re-entry gate: ... and the focuser temperature moved at most this since it (C; a frozen sensor is ignored)", "Imaging", "float", False, False),
+    ("reentry_frozen_h", "PS_REENTRY_FROZEN_H", "Re-entry gate: a focuser temperature unchanged (0.01 C) this long is frozen: time rule only (h)", "Imaging", "float", False, False),
+    ("reentry_center_arcmin", "PS_REENTRY_CENTER_ARCMIN", "Re-entry gate (on): skip the center when the newest light solved within this of the target (arcmin)", "Imaging", "float", False, False),
+    ("reentry_center_max_age_min", "PS_REENTRY_CENTER_MAX_AGE_MIN", "Re-entry gate (on): ... and that light ended under N min ago", "Imaging", "float", False, False),
+    ("reentry_mount_arcmin", "PS_REENTRY_MOUNT_ARCMIN", "Re-entry gate (on): skip the slew when the tracking mount is within this of the target (arcmin)", "Imaging", "float", False, False),
+    ("reentry_gate_script", "PS_REENTRY_GATE_SCRIPT", "Re-entry gate script NINA runs (deploy\\reentry-gate.cmd on the scope PC)", "Imaging", "str", False, False),
     ("rc16_rgb_exposure_s", "PS_RC16_RGB_EXPOSURE_S", "RC16 R/G/B sub length for new / re-allocated goals (s; a goal's own sub seconds win; 0 = broadband sub length; PS-176)", "Imaging", "float", False, False),
     ("quality_fwhm_max", "PS_QUALITY_FWHM_MAX", "Max FWHM (arcsec)", "Quality", "float", False, False),
     ("camera_read_noise_adu", "PS_CAMERA_READ_NOISE_ADU", "RC16 read noise, HCG (ADU16; floor for the exposure swamp score, PS-117)", "Quality", "float", False, False),
@@ -3479,3 +3487,5 @@ from photonscript.scheduler.routers import settings_ledger as _settings_ledger_r
 app.include_router(_settings_ledger_router.router)   # settings ledger
 from photonscript.scheduler.routers import remote_cli as _remote_cli_router  # noqa: E402
 app.include_router(_remote_cli_router.router)   # remote CLI (2026-10-14)
+from photonscript.scheduler.routers import reentry as _reentry_router  # noqa: E402
+app.include_router(_reentry_router.router)   # re-entry gates (2026-10-15)

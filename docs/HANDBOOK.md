@@ -1506,6 +1506,65 @@ watchdog's).
 
 Night test needed: an armed act-mode night with a sequence that loops.
 
+### Re-entry gates: no AF / re-acquire when nothing changed (2026-10-15)
+
+Why: 2026-10-14 NINA #1 autofocused at 22:21, 22:29, 22:35 and 22:41 and
+every run landed on 5719 (L, HFR 7.13 / 6.19 / 6.64). Every entry into a
+target container (the SAFE_LOOP coming back after a park, an armer restart,
+Resume, a sub-length change) re-runs slew, the start AF (~3.3 min), center
+and StartGuiding.
+
+Mechanism (`scheduler/reentry.py`, the PS-61 cooler-gate pattern): NINA has
+no "autofocus only if the last one is old" instruction; its AF triggers
+ride on the light SmartExposures, so they cannot stand in for the start AF
+that tightens the stars before the center. So each gated step sits in a
+small container of its own whose first item is an ExternalScript,
+`deploy\reentry-gate.cmd` -> `photonscript reentry-gate` -> `POST
+/api/reentry/gate`, ErrorBehavior 1 (SkipInstructionSetOnError). The
+service answers when NINA reaches the item, from NINA's own state, so the
+same gate covers an armer re-dispatch and the in-sequence SAFE_LOOP
+re-entry, and a decision cannot go stale between a dispatch and the
+target. SKIP: the script exits 1 and NINA skips the rest of that small
+container only. RUN, the service down, a timeout, any error: exit 0 and
+the step runs as before.
+
+| container | skipped when |
+|---|---|
+| `<target> start AF (re-entry gate)` = gate, seed move, RunAutofocus | the newest finished AF in NINA #1's `/event-history` (runs cut by an unsafe spell or a sequence stop are ignored; a later failed AF = RUN) ended under `reentry_af_skip_min` (45) min ago; its NINA AF report (ninaAPI `focuser/last-af`, else `nina_autofocus_reports_dir`) is a good fit; the focuser temperature moved at most `reentry_af_temp_c` (1.0 C) since (frozen sensor: a `focus_frozen_temps` value, or unchanged to 0.01 C for `reentry_frozen_h` 6 h by the focus table's track or the AF reports: time only); the offset from the AF's filter to the start filter is known (same filter, PS-76 measured or `focus_filter_offsets`). The service then moves the focuser to that AF's best focus + the offset and reads it back (3 steps); a failed move answers RUN. |
+| `<target> slew (re-entry gate)` (mode on) | the mount is connected, tracking, not parked, not slewing and within `reentry_mount_arcmin` (10') of the target's NINA coordinates |
+| `<target> center (re-entry gate)` (mode on) | the slew gate skipped AND the newest RC16 light (ended under `reentry_center_max_age_min` 60 min ago, no park / unpark / flip / center / mount disconnect since it started) plate-solves (stored solve, else ASTAP now) within `reentry_center_arcmin` (2') of the target. Pointing error unknown: the cheap re-center (slew skipped, center runs). |
+
+- `reentry_optimize`: off (no gates, the old sequence) | advise (all gates,
+  always RUN, decisions logged) | **af** (default: the AF gate only) | on
+  (AF + slew + center). Default af because every AF rule is measured from
+  NINA at that moment (event history, AF report, live focuser
+  temperature), any doubt answers RUN, and NINA's own triggers stay as the
+  net: every light SmartExposure keeps its HFR-increase and temperature AF
+  triggers (smart policy: also the timed AF), which NINA measures from the
+  same last AF the gate checked. The slew / center skip waits for a
+  supervised night (on).
+- Mode on, dispatch after dusk (restart, Resume): the Start area no longer
+  stops tracking ("holding until nautical dusk"), which drifted the field
+  15"/s until the target; the SetTracking stopped moves to the End area
+  after the park. A dusk-gated arm is unchanged.
+- Script missing on the machine (`reentry_gate_script`): no gates, a
+  Start-area annotation says so. Lint rule `reentry-gate` (ERROR): the
+  gate is the first item of a one-pass container without triggers that
+  holds its step and nothing that shoots, ErrorBehavior 1, Attempts 1.
+- Log: run events kind `reentry` (skip_af / run_af / advise_af, the same
+  for slew and center; detail, AF age, dT, target position, saved_s),
+  `GET /api/reentry` (tonight's decisions), morning report line
+  "Re-entry: 3 skip(s), ~10 min saved (22:29 NGC 604 AF; ...); 1 ran".
+- Replay of 10-14 (`tests/test_scheduler/test_reentry.py`: the stuck-loop
+  fixture's event history, AF reports synthesized from it): RUN at 22:21
+  (no AF since NINA started), SKIP at 22:29, 22:35 and 22:41 (last AF 3 to
+  4 min old, dT 0, focuser to 5719): 8.2 min of AF NINA actually ran
+  (3.3 + 3.2 + 1.7 cut short), ~10 min at full AF length. Mode on would
+  only have skipped the slew at 22:41 (no light solved yet: re-center).
+
+Night test: `reentry_optimize=advise` first (decisions only), Pause +
+Resume mid-target and read `GET /api/reentry`; then af; then on.
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was

@@ -151,6 +151,56 @@ def _check_af_runner_filter(seq: dict, r: LintResult) -> None:
                 + "; ".join(bad[:3]) + more)
 
 
+_REENTRY_GUARDS = {"af": "Autofocus.RunAutofocus",
+                   "slew": "Telescope.SlewScopeToRaDec",
+                   "center": "Platesolving.Center"}
+_REENTRY_ALLOWED = ("Utility.ExternalScript", "Autofocus.RunAutofocus",
+                    "Focuser.MoveFocuserAbsolute", "Telescope.SlewScopeToRaDec",
+                    "Platesolving.Center", "Utility.Annotation",
+                    "SendToPushover")
+
+
+def _check_reentry_gates(seq: dict, r: LintResult) -> None:
+    """2026-10-15 rule reentry-gate: a re-entry gate ExternalScript
+    (scheduler/reentry.py) skips the rest of its own container on SKIP, so
+    it must be the FIRST item of a plain one-pass container (no conditions,
+    no triggers) that holds the step it guards and nothing that shoots
+    (no exposure, no filter switch, no guiding: a skip must never skip
+    lights). ErrorBehavior 1, Attempts 1."""
+    import re
+    from photonscript.scheduler.reentry import is_gate
+    for d in _walk_dicts(seq):
+        items = _vals(d.get("Items"))
+        gates = [i for i, it in enumerate(items) if is_gate(it)]
+        if not gates:
+            continue
+        name = d.get("Name") or "?"
+        if gates != [0]:
+            r.error("reentry-gate", f"[{name}] the re-entry gate must be the "
+                    "container's first and only gate")
+            continue
+        g = items[0]
+        m = re.search(r'reentry-gate[^"]*"\s+(\w+)', str(g.get("Script", "")))
+        kind = m.group(1) if m else "?"
+        if g.get("ErrorBehavior") != 1 or g.get("Attempts") != 1:
+            r.error("reentry-gate", f"[{name}] gate needs ErrorBehavior 1 "
+                    "(SkipInstructionSetOnError) and Attempts 1")
+        if _vals(d.get("Conditions")) or _vals(d.get("Triggers")):
+            r.error("reentry-gate", f"[{name}] a gated container must not "
+                    "loop or carry triggers")
+        want = _REENTRY_GUARDS.get(kind)
+        if want is None or not any(want in it.get("$type", "")
+                                   for it in items[1:]):
+            r.error("reentry-gate", f"[{name}] gate '{kind}' does not guard "
+                    f"its step ({want or 'unknown kind'})")
+        bad = [it.get("$type", "").split(",")[0].split(".")[-1]
+               for it in items[1:]
+               if not any(a in it.get("$type", "") for a in _REENTRY_ALLOWED)]
+        if bad:
+            r.error("reentry-gate", f"[{name}] a SKIP would also skip "
+                    f"{', '.join(sorted(set(bad)))}")
+
+
 def _check_readout_mode(seq: dict, r: LintResult) -> None:
     """PS-128: darks and bias must be shot at the lights' camera readout mode
     (the AP26MC's HCG vs LCG: 0.25 vs 0.79 e-/ADU, a different bias and dark
@@ -1256,6 +1306,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_focus_moves(seq, r)
     _check_offset_blocks(seq, r)    # PS-176
     _check_af_runner_filter(seq, r)  # PS-176
+    _check_reentry_gates(seq, r)     # 2026-10-15
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)
     _check_loop_spin(seq, r)   # PS-149
