@@ -136,11 +136,9 @@ def _read_json(p: Path) -> dict | None:
 
 
 def _write_json(p: Path, d: dict) -> None:
+    from photonscript.shared.phd2_store import write_json
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        tmp = p.with_suffix(p.suffix + ".tmp")
-        tmp.write_text(json.dumps(d, indent=2, default=str), encoding="utf-8")
-        tmp.replace(p)
+        write_json(p, d)          # tmp + fileops.replace_retry
     except OSError as e:
         logger.warning("TPoint watch: %s not saved: %s", p.name, e)
 
