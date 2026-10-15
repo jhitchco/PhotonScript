@@ -1235,6 +1235,42 @@ setting for it, so the guard keeps the guider disconnected instead
 - Not covered: a WATCHING sideloaded night (NINA's own), guided nights
   (PS-85 per-block unguided blocks keep the guider).
 
+### Dispatch gate: lint every night against the arm (PS-197, 2026-10-15)
+
+Why: 2026-10-14 armed UNGUIDED, deep night on NGC 604. The NGC 604
+container held a StartGuiding; the guard had disconnected the guider, so it
+failed 3 attempts, SkipInstructionSetOnError skipped the container and the
+night loop parked, unparked, slewed, centered and focused on NGC 604 for
+20 min with no lights. The armer's lint was told the guiding mode the
+TARGETS carried (`any(t.start_guiding)`), so a guided plan linted clean.
+
+- One place sets the guiding flag: `target_planner.apply_guiding(targets,
+  guided)`. `plan_night_sequence(..., guided=)` applies the arm's mode to
+  every target it returns (split, deep, the split around a deep pick, a
+  Piggy-driven hold, the fill); the armer passes `guided=_use_guiding()`
+  and applies it again (unguided also clears PS-85 per-block flags).
+- `scheduler/dispatch_gate.py` checks the generated JSON against the ARMED
+  mode in `Armer._dispatch`, so before every NINA #1 load (arm, resume,
+  restart, unguided fallback, deep): unguided = no StartGuiding and no
+  ConnectEquipment(Guider) (Direct Guider dithers excepted); guided = a
+  StartGuiding in every target the plan kept guided (per-block counts);
+  always = at least one target container with exposure items. The
+  sequence_lint ERRORs count too.
+- ERROR: nothing is loaded. The same goals are planned again in split
+  mode once (when the refused plan was not split already); clean = that
+  night is loaded and a priority push says so ("Dispatch gate refused
+  tonight's deep plan (...). Loading a split plan of the same goals
+  instead"). Otherwise NINA #1 is left idle and "Dispatch FAILED: dispatch
+  gate refused the night (...)" is pushed (priority 1).
+- Run events kind `dispatch_gate` (ok, refused, fallback, failed);
+  `GET /api/arm` has `dispatch_gate` (ok, action, line, errors) and the
+  Arm card shows it as a small "Dispatch lint" line.
+- Unguided guard: at arm, restore and right after each dispatch's load
+  (phase `loaded`) it also reads NINA #1's loaded sequence (GET
+  /sequence/state) for StartGuiding not yet finished. Found = run event
+  `unguided_guard` / `loaded_start_guiding`; a priority push once per
+  night when that sequence runs (or after our own load).
+
 ### Night pilot sub watch and closed-roof darks (2026-10-14)
 
 Jeremy: "augment the night watch and pilot to watch the subs as they come in

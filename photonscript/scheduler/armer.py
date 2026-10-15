@@ -211,6 +211,10 @@ class Armer:
         self._unsafe_tree_misses = 0
         self._hotpix_tried: str | None = None   # PS-91: night of the last map try
         self._fallback_night: str | None = None  # PS-91/92: unguided fallback done
+        # PS-197 dispatch gate: the last verdict (Arm card line) and a
+        # pending "fell back to split" push
+        self.last_gate: dict | None = None
+        self._gate_alert: str | None = None
         self.guide_fallback_rec: dict | None = None  # PS-156: tonight's decision
         # PS-85: tonight's per-block guiding decisions (mode auto) that the
         # dispatch applies: {"night", "blocks": {"<target>|<filter>": {...}},
@@ -274,6 +278,7 @@ class Armer:
                 # 2026-10-14: the unguided guard's per-night state (episode,
                 # action count, alert latches) survives a restart
                 "unguided_guard": getattr(self, "_ug_state", None),
+                "dispatch_gate": getattr(self, "last_gate", None),   # PS-197
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -328,6 +333,10 @@ class Armer:
         ug = saved.get("unguided_guard")
         if isinstance(ug, dict) and ug.get("night") == self.plan.get("night_of"):
             self._ug_state = ug
+        lg = saved.get("dispatch_gate")   # PS-197: the Arm card line
+        self.last_gate = (lg if isinstance(lg, dict)
+                          and lg.get("night") == self.plan.get("night_of")
+                          else None)
         # 2026-10-14: a settled operator pause belongs to the operator (a
         # TPoint run in TheSky, polar alignment in SharpCap): the restore
         # sends NO device command. No connect-all, no unguided guard, and
@@ -460,7 +469,17 @@ class Armer:
                           if self.state == PAUSE_STATE else None),   # PS-64
                 "restart": self._restart_status(),                  # PS-143
                 "recipe": self._recipe_tonight(),                   # PS-181
-                "noon_arm": self._noon_arm_status()}
+                "noon_arm": self._noon_arm_status(),
+                "dispatch_gate": self._gate_status()}               # PS-197
+
+    def _gate_status(self) -> dict | None:
+        """PS-197: the last dispatch gate verdict for the Arm card (this
+        night only)."""
+        g = getattr(self, "last_gate", None)
+        if not isinstance(g, dict) or g.get("night") != self.plan.get("night_of"):
+            return None
+        return {k: g.get(k) for k in ("ok", "level", "action", "line", "at",
+                                      "guided", "mode", "errors")}
 
     def _nina2_mount_status(self) -> dict | None:
         """PS-139: tonight's NINA #2 mount-instruction finding (chip)."""
@@ -1742,20 +1761,108 @@ class Armer:
     # -- dispatch -----------------------------------------------------------------
 
     def _dispatch(self) -> bool:
-        """Generate, lint, write tonight's sequence (remainder-aware).
+        """Generate, lint, gate and write tonight's sequence (remainder-aware).
 
         The planner reads each project's acquired counts, so a re-dispatch
         after a pause only schedules what's still missing.
+
+        PS-197 dispatch gate (scheduler/dispatch_gate.py): every night is
+        checked against the ARMED guiding mode before it is written (and so
+        before any NINA #1 load: arm, resume, restart, unguided fallback,
+        deep). An ERROR refuses it; the same goals are planned again in
+        split mode once, and that night is used when it is clean (the
+        alert says so). Otherwise nothing is written, the caller does not
+        load NINA #1, and self.detail carries the reason.
         """
+        now = datetime.utcnow()
+        self._gate_alert = None
+        built = self._build_night(now)
+        if built is None:
+            return False
+        gate = self._gate_verdict(built)
+        action = "ok"
+        if not gate["ok"]:
+            first = gate
+            self._gate_event("refused", first)
+            planned_mode = built["plan_info"].get("mode") or "split"
+            fb = (self._build_night(now, night_mode="split", recipe=False)
+                  if planned_mode != "split" else None)
+            if fb is not None:
+                gate = self._gate_verdict(fb)
+            if fb is None or not gate["ok"]:
+                why = "; ".join(first["errors"])
+                if planned_mode == "split":
+                    tail = ""
+                elif fb is None:
+                    tail = "; a split plan of the same goals could not be built"
+                else:
+                    tail = ("; a split plan of the same goals was refused too: "
+                            + "; ".join(gate["errors"]))
+                self.last_gate = {**first, "ok": False, "level": "ERROR",
+                                  "at": now.isoformat() + "Z",
+                                  "night": self.plan.get("night_of"),
+                                  "action": "refused",
+                                  "line": f"ERROR, NINA #1 not loaded: {why}{tail}"}
+                self._gate_event("failed", self.last_gate)
+                self.detail = (f"dispatch gate refused the night ({why}{tail}); "
+                               "NINA #1 not loaded")
+                self._persist()
+                return False
+            built = fb
+            self._gate_alert = (
+                f"Dispatch gate refused tonight's {planned_mode} plan "
+                f"({'; '.join(first['errors'])}). Loading a split plan of the "
+                f"same goals instead ({', '.join(fb['names']) or 'none'}): "
+                f"{gate['line']}.")
+            gate = {**gate, "fallback_from": {"mode": planned_mode,
+                                              "errors": first["errors"]},
+                    "line": f"fell back to split ({planned_mode} refused: "
+                            f"{'; '.join(first['errors'])}): {gate['line']}"}
+            action = "fallback"
+        self.last_gate = {**gate, "at": now.isoformat() + "Z",
+                          "night": self.plan.get("night_of"), "action": action}
+        self._gate_event(action, self.last_gate)
+        targets, plan_info = built["targets"], built["plan_info"]
+        self.last_dispatch_targets = built["names"]
+        out = (Path.cwd() / "sequences"
+               / f"PhotonScript_{self.plan['night_of']}_{now:%H%M}.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(built["content"])
+        self.sequence_path = out
+        # deep night: the mode and pick this dispatch planned (plan snapshot
+        # and the morning report's "Deep night on ..." line)
+        if plan_info.get("mode"):
+            self.plan["night_mode"] = {"mode": plan_info.get("mode"),
+                                       "source": plan_info.get("mode_source"),
+                                       "deep_pick": plan_info.get("deep_pick"),
+                                       "note": plan_info.get("deep_note")}
+            from photonscript.scheduler.deep_night import record_dispatch
+            record_dispatch(self.config, self.plan["night_of"], plan_info, now)
+        self._persist()
+        try:
+            from photonscript.scheduler.runs import save_plan_snapshot
+            save_plan_snapshot(self.config, self.plan["night_of"],
+                               self.plan, targets)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Plan snapshot failed: %s", e)
+        return True
+
+    def _build_night(self, now: datetime, night_mode: str | None = None,
+                     recipe: bool = True) -> dict | None:
+        """Plan, generate and lint tonight's RC16 night (no file written).
+        night_mode: None = config / tonight's override; "split" for the
+        dispatch gate's fallback. Returns {"content", "targets",
+        "plan_info", "names", "use_guiding", "armed_guided", "u_dither",
+        "guided_targets"}, or None with self.detail set (no targets, or the
+        lint failed)."""
         from photonscript.shared.astronomy import get_seasonal_targets
         from photonscript.shared.localtime import to_local
         from photonscript.scheduler.target_planner import (
-            cap_unguided, create_project_from_target, plan_night_sequence)
+            apply_guiding, cap_unguided, create_project_from_target,
+            plan_night_sequence, plan_with_info)
         from photonscript.scheduler.nina_sequence import build_sequence_for_night
         from photonscript.scheduler.nina_sequence_json import generate_nina_json
         from photonscript.scheduler.sequence_lint import lint
-
-        now = datetime.utcnow()
 
         # Prefer stored projects (priority + budgets); fall back to seasonal
         try:
@@ -1767,19 +1874,24 @@ class Armer:
             projects = [create_project_from_target(t)
                         for t in get_seasonal_targets(now.month)]
 
-        from photonscript.scheduler.target_planner import plan_with_info
+        # PS-197: the arm's guiding mode goes into the planner, so every
+        # planner mode (split, deep, the split around a deep pick) returns
+        # targets that carry it; applied again for a planner stand-in
+        armed_guided = self._use_guiding()
         targets, plan_info = plan_with_info(plan_night_sequence, projects,
-                                            self.config, now)
-        self.last_dispatch_targets = [str(getattr(t, "name", "?")) for t in targets or []]
+                                            self.config, now,
+                                            guided=armed_guided,
+                                            night_mode=night_mode)
+        names = [str(getattr(t, "name", "?")) for t in targets or []]
+        if night_mode is None:
+            self.last_dispatch_targets = names
         if not targets:
             self.detail = "No targets with remaining subs visible tonight"
-            return False
-        use_guiding = self._use_guiding()
-        for t in targets:
-            t.start_guiding = use_guiding
+            return None
+        apply_guiding(targets, armed_guided)
         # PS-85: per-block guiding (tonight's decisions plus history); may
         # turn blocks, or a whole target, unguided
-        if use_guiding:
+        if armed_guided:
             self._apply_block_decisions(targets)
         use_guiding = any(t.start_guiding for t in targets)
         # PS-66: unguided targets get the sub-length cap (same integration).
@@ -1829,36 +1941,67 @@ class Armer:
                                      unguided_dither=u_dither)
         result = lint(json.loads(content), guided=use_guiding,
                       unguided_dither=u_dither)
-        if not result.ok:
-            self.detail = "; ".join(f.detail for f in result.findings
-                                    if f.level == "ERROR")
-            return False
+        # PS-197: lint ERRORs go to the dispatch gate (refuse, split fallback)
+        lint_errors = [f.detail for f in result.findings if f.level == "ERROR"]
         # PS-181: the armed recipe's one-shot test first (falls back to the
         # normal plan above when it does not build or lint)
-        content = self._recipe_content(content, seq.name, use_guiding,
-                                       u_dither, now)
-        out = (Path.cwd() / "sequences"
-               / f"PhotonScript_{self.plan['night_of']}_{now:%H%M}.json")
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(content)
-        self.sequence_path = out
-        # deep night: the mode and pick this dispatch planned (plan snapshot
-        # and the morning report's "Deep night on ..." line)
-        if plan_info.get("mode"):
-            self.plan["night_mode"] = {"mode": plan_info.get("mode"),
-                                       "source": plan_info.get("mode_source"),
-                                       "deep_pick": plan_info.get("deep_pick"),
-                                       "note": plan_info.get("deep_note")}
-            from photonscript.scheduler.deep_night import record_dispatch
-            record_dispatch(self.config, self.plan["night_of"], plan_info, now)
-        self._persist()
+        if recipe and not lint_errors:
+            content = self._recipe_content(content, seq.name, use_guiding,
+                                           u_dither, now)
+        else:
+            self._recipe_pending = None
+        return {"content": content, "targets": targets, "plan_info": plan_info,
+                "names": names, "use_guiding": use_guiding,
+                "armed_guided": armed_guided, "u_dither": u_dither,
+                "lint_errors": lint_errors,
+                "guided_targets": [t.name for t in targets if t.start_guiding]}
+
+    def _gate_verdict(self, built: dict) -> dict:
+        """PS-197: the dispatch gate (scheduler/dispatch_gate.py) on a built
+        night, against the ARMED guiding mode."""
+        from photonscript.scheduler import dispatch_gate
+        bad = list(built.get("lint_errors") or [])
         try:
-            from photonscript.scheduler.runs import save_plan_snapshot
-            save_plan_snapshot(self.config, self.plan["night_of"],
-                               self.plan, targets)
+            seq = json.loads(built["content"])
+        except (TypeError, ValueError) as e:
+            seq = {}
+            bad.append(f"not JSON: {e}")
+        return dispatch_gate.check(
+            seq, guided=built["armed_guided"],
+            unguided_dither=built["u_dither"],
+            guided_targets=built["guided_targets"], lint_errors=bad,
+            mode=(built["plan_info"] or {}).get("mode"))
+
+    def _gate_event(self, value: str, verdict: dict) -> None:
+        """One kind "dispatch_gate" line in runs/<night>_events.jsonl
+        (ok | refused | fallback | failed). Never raises."""
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            now = datetime.utcnow()
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                          "kind": "dispatch_gate", "value": value,
+                          "detail": verdict.get("line"),
+                          "errors": verdict.get("errors") or [],
+                          "guided": verdict.get("guided"),
+                          "mode": verdict.get("mode")})
         except Exception as e:  # noqa: BLE001
-            logger.warning("Plan snapshot failed: %s", e)
-        return True
+            logger.warning("dispatch gate event (%s) not logged: %s", value, e)
+        (logger.info if value == "ok" else logger.warning)(
+            "dispatch gate %s: %s", value, verdict.get("line"))
+
+    async def _send_gate_alert(self) -> None:
+        """PS-197: the gate refused the planned night and the split fallback
+        is being loaded: one priority push saying so. Never raises."""
+        msg, self._gate_alert = getattr(self, "_gate_alert", None), None
+        if not msg:
+            return
+        try:
+            await notify(self.config, msg, title="PhotonScript dispatch gate",
+                         priority=1)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("dispatch gate push failed: %s", e)
 
     def _unguided_limits(self, targets, projects, now: datetime) -> None:
         """Learned unguided limits (scheduler/unguided_limits.py) on
@@ -2403,6 +2546,7 @@ class Armer:
                          title="PhotonScript ERROR", priority=1)
             return False
         await self._send_recipe_alert()   # PS-181: fallback page, once
+        await self._send_gate_alert()     # PS-197: split fallback page
         # PS-152: note a finished dusk calibration before the stop clears it
         await self._check_focus_cal_before_redispatch()
         # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the
@@ -2453,6 +2597,9 @@ class Armer:
         if companion:
             await self._dispatch_piggyback_companion()
         await self._send_block_alerts()   # PS-85: history decisions, once per target
+        # PS-197: what NINA #1 actually holds now (a load that kept an older
+        # sequence would still guide on an unguided night)
+        await self._unguided_guard("loaded")
         self._ledger("dispatch")
         return True
 

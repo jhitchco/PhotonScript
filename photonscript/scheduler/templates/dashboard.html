@@ -448,6 +448,15 @@
                     '</b>' + (rc.opts && rc.opts.add ? ' (TPoint add ' + rc.opts.add + ')' : '') +
                     ' &middot; ' + st + '</div>');
             }
+            // PS-197: the dispatch gate's verdict on the last NINA #1 night
+            const dg = d.dispatch_gate;
+            if (dg && dg.line) {
+                const bad = !dg.ok, fb = dg.action === 'fallback';
+                chips.push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + (bad ? 'rgba(239,68,68,.7)' : fb ? 'rgba(251,191,36,.6)' : 'rgba(74,222,128,.3)') +
+                    ';"><b>Dispatch lint</b>: ' + String(dg.line).replace(/</g, '&lt;') +
+                    ' <span style="opacity:.6">(' + String(dg.at || '').slice(11, 16) + ' UTC)</span></div>');
+            }
             // PS-139: NINA #2 holds slew / center / park instructions tonight
             const nm = d.nina2_mount;
             if (nm && (nm.items || []).length) {
