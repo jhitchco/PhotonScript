@@ -925,6 +925,49 @@ def _smart_af_spec(cfg, af_filter) -> dict | None:
         return None
 
 
+def _reentry_kinds(cfg) -> set:
+    """The re-entry gates the config asks for (2026-10-15), script or not."""
+    try:
+        from photonscript.scheduler.reentry import gate_kinds
+        return gate_kinds(cfg)
+    except Exception:  # noqa: BLE001
+        return set()
+
+
+def _reentry_spec(cfg) -> dict | None:
+    """{"script", "kinds"} when the RC16 target containers carry the
+    re-entry gates (scheduler/reentry.py), else None (reentry_optimize off,
+    or the script missing on this machine: the old items)."""
+    try:
+        from photonscript.scheduler.reentry import gate_script
+        kinds = _reentry_kinds(cfg)
+        script = gate_script(cfg) if kinds else None
+    except Exception:  # noqa: BLE001
+        return None
+    return {"script": script, "kinds": kinds} if script else None
+
+
+def _reentry_notice(cfg, spec: dict | None) -> list:
+    """One Start-area annotation saying what the re-entry gates do tonight
+    (or that the script is missing)."""
+    kinds = _reentry_kinds(cfg)
+    if not kinds:
+        return []
+    from photonscript.scheduler.reentry import mode
+    if spec is None:
+        path = str(getattr(cfg, "reentry_gate_script", "") or "")
+        return [_annotation(f"Re-entry gates OFF tonight: script "
+                            f"{path or '(unset)'} not found, every target "
+                            "entry runs its AF, slew and center")]
+    what = " + ".join(k for k in ("af", "slew", "center") if k in kinds)
+    return [_annotation(f"Re-entry gates ({mode(cfg)}): {what}. The gate "
+                        "skips the start AF when the last AF is recent, the "
+                        "focuser temperature has not moved and the filter "
+                        "offset is known (the focuser goes to that AF's "
+                        "focus first); slew / center when the mount still "
+                        "tracks on the target. Any doubt runs them.")]
+
+
 def _meridian_flip_trigger() -> dict:
     return _make_typed(
         "NINA.Sequencer.Trigger.MeridianFlip.MeridianFlipTrigger, NINA.Sequencer",
@@ -1170,7 +1213,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             focus_drive: dict | None = None,
                             followed: bool = False,
                             smart: dict | None = None,
-                            fill: bool = False) -> dict:
+                            fill: bool = False,
+                            reentry: dict | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> [HDR shorts once] -> exposures.
@@ -1228,7 +1272,16 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     the DSO container, so the sequence moves on to the next target instead
     of repeating while safe and up all night. fill=True builds the final
     "<target> fill (rest of the night)" container instead: same plan, no
-    handoff, it runs to the loop end."""
+    handoff, it runs to the loop end.
+
+    reentry (2026-10-15, _reentry_spec; None = the old items): {"script",
+    "kinds"}. "af" puts the start AF (seed + RunAutofocus) in a container
+    "<target> start AF (re-entry gate)" that starts with the re-entry gate
+    ExternalScript (ErrorBehavior 1): when the last AF is recent, the
+    temperature has not moved and the filter offset is known, the service
+    moves the focuser to that AF's focus and the gate skips the AF.
+    "slew" / "center" do the same for SlewScopeToRaDec and Center when the
+    mount is still tracking on the target (scheduler/reentry.py)."""
     if getattr(target, "focus_calibration", False):
         return _build_focus_calibration_container(target, min_altitude,
                                                   af_filter, focus_offsets,
@@ -1295,13 +1348,30 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     total_h = sum(e.exposure_seconds * max(0, e.count - e.acquired)
                   + (e.hdr_short_seconds or 0) * e.short_remaining()
                   for e in active) / 3600
+    gates = (set((reentry or {}).get("kinds") or ())
+             if (reentry or {}).get("script") else set())
+
+    def _gated(kind: str, suffix: str, guarded: list, **kw) -> list:
+        """2026-10-15 re-entry gate: [gate, *guarded] in a container of
+        its own, so a SKIP skips only these items."""
+        if kind not in gates:
+            return guarded
+        from photonscript.scheduler.reentry import (GATE_ERROR_BEHAVIOR,
+                                                    script_args)
+        g = _external_script(reentry["script"],
+                             script_args(kind, target.name, **kw))
+        g["ErrorBehavior"] = GATE_ERROR_BEHAVIOR
+        return [_seq_container(f"{target.name}{suffix}", [g] + guarded)]
+
+    from photonscript.scheduler.reentry import (AF_SUFFIX, CENTER_SUFFIX,
+                                                SLEW_SUFFIX)
     items = [
         _pushover("Imaging", f"{target.name}: slewing "
                   f"(RA {target.ra_hours:.2f}h Dec {target.dec_degrees:+.1f}°) "
                   f"— plan {plan_desc} (~{total_h:.1f}h)"),
         _set_tracking(0),
-        _slew(center_t),
-    ]
+    ] + _gated("slew", SLEW_SUFFIX, [_slew(center_t)],
+               ra_hours=center_t.ra_hours, dec_deg=center_t.dec_degrees)
     if piggy_note:
         items.insert(0, _annotation(piggy_note))
     # Autofocus on the bright AF filter (L) when configured, else the imaging
@@ -1314,20 +1384,29 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         items.append(_switch_filter(focus_filter))
     if target.auto_focus_on_start and active:
         seed0 = _seed_position(focus_filter)
+        af_items = []
         if narrate_steps:
-            items.append(_pushover("Imaging",
-                                   f"{target.name}: slew done — seeding focuser "
-                                   f"to {seed0} for {focus_filter.value}, "
-                                   "autofocusing, then plate solve & center"))
-        items.append(_move_focuser(seed0))
-        items.append(_autofocus())
+            af_items.append(_pushover("Imaging",
+                                      f"{target.name}: slew done — seeding "
+                                      f"focuser to {seed0} for "
+                                      f"{focus_filter.value}, autofocusing, "
+                                      "then plate solve & center"))
+        af_items.append(_move_focuser(seed0))
+        af_items.append(_autofocus())
+        items.extend(_gated("af", AF_SUFFIX, af_items,
+                            filter_name=focus_filter.value))
     elif target.auto_focus_on_start:
+        af_items = []
         if narrate_steps:
-            items.append(_pushover("Imaging",
-                                   f"{target.name}: slew done — autofocusing, "
-                                   "then plate solve & center"))
-        items.append(_autofocus())
-    items.append(_center(center_t))
+            af_items.append(_pushover("Imaging",
+                                      f"{target.name}: slew done — "
+                                      "autofocusing, then plate solve & "
+                                      "center"))
+        af_items.append(_autofocus())
+        items.extend(_gated("af", AF_SUFFIX, af_items))
+    items.extend(_gated("center", CENTER_SUFFIX, [_center(center_t)],
+                        ra_hours=center_t.ra_hours,
+                        dec_deg=center_t.dec_degrees))
     if piggy_west is not None:
         items.append(piggy_west)   # PS-26: pier-West center before transit
     items.append(_set_tracking(0))
@@ -2642,9 +2721,15 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _wait_until_safe(),
         _pushover("Startup", "safety monitor SAFE — unparking"),
         _unpark(),
-        _set_tracking(5),
-        _pushover("Startup", "holding until nautical dusk"),
     ]
+    # 2026-10-15: a dispatch after dusk (restart, Resume) with the slew
+    # re-entry gate leaves the mount tracking on the target (stopping it
+    # here drifted the field 15"/s until the target container); the
+    # stopped-tracking instruction moves to the End area, after the park
+    keep_tracking = (not gate_dark and "slew" in (_reentry_kinds(_cfg)))
+    if not keep_tracking:
+        start_items += [_set_tracking(5),
+                        _pushover("Startup", "holding until nautical dusk")]
     # PS-93: the PHD2 calibration slot (guided nights that need one only)
     cal_slot = (_build_phd2_calibration_container(
         cal_field, int(getattr(_cfg, "phd2_cal_hold_s", 240) or 240))
@@ -2700,6 +2785,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
         start_items += _cooler_gate_missing_notice(_cfg)
     focus_drive = _focus_drive_spec(_cfg)   # PS-76 part 2, None by default
     smart = _smart_af_spec(_cfg, af_ft)     # PS-176, None = every_block
+    reentry = _reentry_spec(_cfg)           # 2026-10-15, None = no gates
+    start_items += _reentry_notice(_cfg, reentry)
     target_containers = []
     first_guided = True
     force_first_cal = bool(getattr(_cfg, "guiding_force_first_calibration", False))
@@ -2718,7 +2805,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     cooler_gate=gate,
                                     focus_drive=focus_drive,
                                     followed=len(sequence.targets) > 1,
-                                    smart=smart)
+                                    smart=smart, reentry=reentry)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
@@ -2749,7 +2836,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     cooler_gate=gate,
                                     focus_drive=focus_drive,
                                     followed=False, fill=True,
-                                    smart=smart)
+                                    smart=smart, reentry=reentry)
         if c is not None:
             target_containers.append(c)
 
@@ -2880,6 +2967,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
     end_items.append(_stop_guiding())
     if sequence.park_on_finish:
         end_items.append(_park())
+    if keep_tracking:
+        end_items.append(_set_tracking(5))   # moved from the Start area
     # Imaging done: turn the dew heater OFF explicitly (warm handles the cooler).
     end_items.append(_dew_heater(False))
     if sequence.warm_camera_on_finish:

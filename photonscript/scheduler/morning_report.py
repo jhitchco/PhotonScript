@@ -314,6 +314,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["night_pilot"] = list(out.get("night_pilot") or []) + sl_lines(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no stuck-loop lines: %s", e)
+    try:   # re-entry gates: AF / slew / center skipped (2026-10-15)
+        from photonscript.scheduler.reentry import morning_lines as re_lines
+        out["night_pilot"] = list(out.get("night_pilot") or []) + re_lines(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no re-entry lines: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 

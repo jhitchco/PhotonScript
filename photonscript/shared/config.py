@@ -1037,6 +1037,23 @@ class PhotonScriptConfig(BaseSettings):
                                  # this much over the last AF's (%)
     rc16_af_interval_min: float = 60.0  # smart: AF at least this often
                                  # (min; 0 = no timed AF)
+    # Re-entry gates (2026-10-15, scheduler/reentry.py): ExternalScript
+    # gates in every RC16 target container that skip the start AF when the
+    # last AF on NINA #1 finished under reentry_af_skip_min ago, the focuser
+    # temperature moved at most reentry_af_temp_c since (a frozen sensor:
+    # time only) and the filter offset is known (the focuser goes to that
+    # AF's focus first); in "on" also the slew / center when the mount still
+    # tracks on the target (the center only with a light solved within
+    # reentry_center_arcmin, under reentry_center_max_age_min old).
+    # off | advise (gates log, never skip) | af (default) | on.
+    reentry_optimize: str = "af"
+    reentry_af_skip_min: float = 45.0
+    reentry_af_temp_c: float = 1.0
+    reentry_frozen_h: float = 6.0
+    reentry_center_arcmin: float = 2.0
+    reentry_center_max_age_min: float = 60.0
+    reentry_mount_arcmin: float = 10.0
+    reentry_gate_script: str = "C:\\astro\\PhotonScript\\deploy\\reentry-gate.cmd"
     guiding_auto_recover: bool = True  # when the watchdog sees guiding stay down
                                  # (idle OR stuck calibrating/looping) well past
                                  # the grace, attempt ONE automatic PHD2 guider
