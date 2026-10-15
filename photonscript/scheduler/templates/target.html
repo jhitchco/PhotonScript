@@ -434,7 +434,7 @@ document.addEventListener('click', async ev => {
     const a = ev.target.closest ? ev.target.closest('#pauseTonight') : null;
     if (!a || !D || !D.project_id) return;
     ev.preventDefault();
-    a.textContent = 'saving…';
+    a.textContent = 'saving\u2026';
     let d = {};
     try {
         const r = await fetch('/api/projects2/' + encodeURIComponent(D.project_id), {
