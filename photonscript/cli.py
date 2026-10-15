@@ -20,6 +20,7 @@ Usage:
     photonscript pilot-backtest --night D [--url U | --doc FILE] [--no-limits] [--json]
     photonscript core-check --target M31 [--rig rc16] [--night D] [--url U] [--measure DIR] [--json]
     photonscript blend-readiness [--target T] [--json] [--url U]   # two-rig NB blend
+    photonscript target-links --target T [--add LABEL URL] [--remove LABEL] [--url U] [--json]  # goal links
     photonscript exposure-report --target M31 [--rig piggyback] [--filter OSC]
         [--library PATH] [--profile] [--feature-arcmin 60] [--json]
         [--camera-cal]                                            # PS-117
@@ -2008,6 +2009,88 @@ def blend_readiness_cmd(
         print(_json.dumps(rep, indent=1, default=str))
         return
     console.print(br.format_report(rep), markup=False, highlight=False)
+
+
+def _target_links_http(method: str, url: str, body=None, timeout: float = 30):
+    """One JSON request for target-links; (status, parsed body)."""
+    import json as _json
+    import urllib.error
+    import urllib.request
+    data = None if body is None else _json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method=method, headers=(
+        {"Content-Type": "application/json"} if data is not None else {}))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, _json.loads(r.read().decode("utf-8") or "null")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, _json.loads(e.read().decode("utf-8") or "null")
+        except Exception:  # noqa: BLE001
+            return e.code, None
+
+
+@app.command("target-links")
+def target_links_cmd(
+    target: str = typer.Option(..., "--target", help="Goal name, catalog id or alias"),
+    add: Optional[tuple[str, str]] = typer.Option(
+        (None, None), "--add", help="LABEL URL: add a link (replaces one with "
+                                   "the same label)"),
+    remove: Optional[str] = typer.Option(None, "--remove",
+                                         help="Remove the link with this label"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url", envvar="PS_MONITOR_URL",
+                            help="The running PhotonScript to read and PATCH"),
+    as_json: bool = typer.Option(False, "--json", help="Print the links as JSON"),
+):
+    """List, add or remove a goal's target links (shown on its target page).
+
+    Resolves the goal with GET /api/targets/detail, then PATCHes
+    /api/projects2/{id} {"links": [...]} (the whole list). Desktop-side.
+
+    photonscript target-links --target M31 --add "Progression sheet" https://claude.ai/artifact/P5vqZKUQW2eQxyRhhaNRcq --url http://100.94.189.77:8100
+    """
+    import json as _json
+    import urllib.parse
+    base = url.rstrip("/")
+    u = base + "/api/targets/detail?" + urllib.parse.urlencode({"name": target})
+    try:
+        st, d = _target_links_http("GET", u)
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[red]Could not read {u}: {e}[/red]")
+        raise typer.Exit(2)
+    if st != 200 or not isinstance(d, dict) or not d.get("project_id"):
+        console.print(f"[red]No imaging project for {target!r} at {base}[/red]")
+        raise typer.Exit(1)
+    links = [{"label": x["label"], "url": x["url"]} for x in d.get("links") or []]
+    add_label, add_url = add if add else (None, None)
+    if add_label or remove:
+        if remove:
+            keep = [x for x in links if x["label"].lower() != remove.strip().lower()]
+            if len(keep) == len(links):
+                console.print(f"[red]No link labelled {remove!r} on {d['target']}[/red]")
+                raise typer.Exit(1)
+            links = keep
+        if add_label:
+            links = [x for x in links if x["label"].lower() != add_label.strip().lower()]
+            links.append({"label": add_label.strip(), "url": (add_url or "").strip()})
+        pu = base + "/api/projects2/" + urllib.parse.quote(d["project_id"])
+        try:
+            st, r = _target_links_http("PATCH", pu, {"links": links})
+        except Exception as e:  # noqa: BLE001
+            console.print(f"[red]Could not PATCH {pu}: {e}[/red]")
+            raise typer.Exit(2)
+        if st != 200:
+            detail = r.get("detail") if isinstance(r, dict) else r
+            console.print(f"[red]Not saved ({st}): {detail}[/red]")
+            raise typer.Exit(1)
+        links = r.get("links") or []
+    if as_json:
+        print(_json.dumps({"target": d["target"], "project_id": d["project_id"],
+                           "links": links}, indent=1))
+        return
+    print(f"{d['target']} ({d['project_id']}): {len(links)} link"
+          f"{'' if len(links) == 1 else 's'}")
+    for x in links:
+        print(f"  {x['label']}: {x['url']}")
 
 
 @app.command("optics-report")

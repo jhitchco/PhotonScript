@@ -91,6 +91,19 @@
             <section class="panel">
                 <h2>What it is</h2>
                 <dl class="facts" id="tFacts"><dt>loading&hellip;</dt><dd></dd></dl>
+                <div id="linksPanel" hidden>
+                    <dl class="facts" style="margin-top:.3rem;"><dt>Links</dt><dd id="tLinks"></dd></dl>
+                    <details id="tLinksEdit" style="margin-top:.25rem;font-size:.8rem;">
+                        <summary class="dim">edit links</summary>
+                        <div id="tLinksRows"></div>
+                        <div style="margin-top:.3rem;">
+                            <input id="linkLabel" type="text" maxlength="60" placeholder="label" style="width:9rem;">
+                            <input id="linkUrl" type="url" placeholder="https://..." style="width:16rem;">
+                            <button class="btn btn-secondary copy" id="linkAdd">Add</button>
+                            <span class="dim" id="linkMsg"></span>
+                        </div>
+                    </details>
+                </div>
                 <h2 style="margin-top:1rem;">Goal</h2>
                 <div id="tGoal" class="muted">loading&hellip;</div>
                 <div id="tCore" class="muted" style="margin-top:.35rem;"></div>
@@ -407,6 +420,48 @@ async function loadBudget() {
         });
     } catch (e) { el.textContent = 'light budget unavailable'; }
 }
+// Target links (progression sheets etc.): PATCH /api/projects2/{id}
+// {"links": [{label, url}]} replaces the list; [] clears.
+function renderLinks() {
+    const panel = document.getElementById('linksPanel');
+    if (!D || !D.project_id) { panel.hidden = true; return; }
+    panel.hidden = false;
+    const ls = D.links || [];
+    document.getElementById('tLinks').innerHTML = ls.length ? ls.map(l =>
+        '<a href="' + esc(l.url) + '" target="_blank" rel="noopener" style="color:#7dd3fc;">' +
+        esc(l.label) + ' &#8599;</a>').join(' · ') : '<span class="dim">–</span>';
+    document.getElementById('tLinksRows').innerHTML = ls.map((l, i) =>
+        '<div style="margin-top:.2rem;">' + esc(l.label) + ' <span class="dim">' + esc(l.url) +
+        '</span> <button class="btn btn-secondary copy" data-rm="' + i + '">Remove</button></div>').join('');
+    document.querySelectorAll('#tLinksRows button[data-rm]').forEach(b => b.onclick = () =>
+        saveLinks(ls.filter((_, i) => i !== Number(b.dataset.rm))));
+}
+async function saveLinks(links) {
+    const msg = document.getElementById('linkMsg');
+    msg.textContent = 'saving…';
+    let d = {};
+    try {
+        const r = await fetch('/api/projects2/' + encodeURIComponent(D.project_id), {
+            method: 'PATCH', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({links: links})});
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) { msg.textContent = 'not saved: ' + (d.detail || r.status); return false; }
+    } catch (e) { msg.textContent = 'not saved: offline'; return false; }
+    D.links = d.links || [];
+    renderLinks();
+    msg.textContent = 'saved';
+    return true;
+}
+document.getElementById('linkAdd').onclick = async () => {
+    const label = document.getElementById('linkLabel').value.trim();
+    const url = document.getElementById('linkUrl').value.trim();
+    if (!label || !url) { document.getElementById('linkMsg').textContent = 'label and url needed'; return; }
+    const ls = (D.links || []).filter(l => l.label.toLowerCase() !== label.toLowerCase());
+    if (await saveLinks(ls.concat([{label: label, url: url}]))) {
+        document.getElementById('linkLabel').value = '';
+        document.getElementById('linkUrl').value = '';
+    }
+};
 // PS-48: per-target HFR / FWHM / ecc gates per rig (blank = the rig's gate)
 async function loadQa() {
     const box = document.getElementById('tQa');
@@ -635,7 +690,7 @@ fetch('/api/targets/detail?name=' + encodeURIComponent(NAME)).then(async r => {
     document.getElementById('tRaw').textContent = !D.found ? 'no project and no subs for this name'
         : D.raw_names.length ? 'also recorded as: ' + D.raw_names.join(' \u00b7 ') : '';
     if (!D.found) return;
-    renderFacts(); renderTotals(); renderReasons(); renderChips(); renderWhere();
+    renderFacts(); renderLinks(); renderTotals(); renderReasons(); renderChips(); renderWhere();
     loadGrid();
     loadReady();
     if (D.project_id) loadBlend();

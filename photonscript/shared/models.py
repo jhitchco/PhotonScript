@@ -190,6 +190,12 @@ class ExposurePlan(BaseModel):
         return abs(s - self.hdr_short_seconds) < abs(s - self.exposure_seconds)
 
 
+class TargetLink(BaseModel):
+    """An external page about a goal (e.g. a progression contact sheet)."""
+    label: str
+    url: str
+
+
 class ImagingProject(BaseModel):
     """A full imaging project for one target with multiple filters."""
     id: Optional[str] = None
@@ -248,6 +254,10 @@ class ImagingProject(BaseModel):
     # blend_nb_min_ha_h, two-rig goals only); 0 = off for this goal; > 0 =
     # on for this goal at that many hours.
     ha_first_h: Optional[float] = None
+    # Target links: external pages about this goal (progression sheets,
+    # AstroBin, notes), shown on the target page. Set with PATCH
+    # /api/projects2/{id} {"links": [{label, url}]} (project_store.clean_links).
+    links: list[TargetLink] = Field(default_factory=list)
 
     def compute_completion(self) -> float:
         total = sum(p.count + (p.hdr_short_count if p.hdr_short_seconds else 0)

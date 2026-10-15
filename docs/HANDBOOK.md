@@ -1663,6 +1663,29 @@ sign). No network: names resolve against `SEASONAL_TARGETS` in
   "dec_degrees", "type"?, "size_arcmin"?, "budget_hours"?}`,
   `GET /api/catalog/user`, `GET /api/catalog/lookup?q=`.
 
+### Target links: progression sheets on the target page (2026-10-15)
+
+A goal can carry up to 10 external links (`ImagingProject.links`, each
+`{label, url}`): the target page shows them as a "Links" row under "What it
+is" (opens in a new tab), with an "edit links" add / remove box, and the
+/targets card shows a small "N links" badge. Labels are 1-60 chars and
+unique per goal; urls must be http(s). Nothing else reads them.
+
+- API: `PATCH /api/projects2/{id} {"links": [{"label", "url"}, ...]}`
+  replaces the whole list; `{"links": []}` clears; a bad entry is a 400
+  and changes nothing. Links ride in `/api/projects2`,
+  `/api/targets` and `/api/targets/detail`.
+- Desktop CLI (not on the remote CLI allowlist): `photonscript
+  target-links --target M31 [--add LABEL URL] [--remove LABEL] [--url U]
+  [--json]` lists, or GETs the list and PATCHes it back.
+- Current sheets (Claude artifacts): M31
+  `https://claude.ai/artifact/P5vqZKUQW2eQxyRhhaNRcq`, Heart Nebula
+  `https://claude.ai/artifact/JBqqooj2QLSh45Ys6HJQbe`, both labelled
+  "Progression sheet":
+  `photonscript target-links --target M31 --add "Progression sheet"
+  https://claude.ai/artifact/P5vqZKUQW2eQxyRhhaNRcq --url
+  http://100.94.189.77:8100`.
+
 ### Mosaic goals (PS-111)
 
 A mosaic is ONE goal made of RC16 panel goals: each panel is its own project
