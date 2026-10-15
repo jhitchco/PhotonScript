@@ -25,6 +25,9 @@ Three layers, one policy (`unguided_guider_policy`):
      through the ninaAPI (policy disconnect) or paged with the manual step
      (alert).
   3. Live watch, every armer tick while RUNNING: check(phase="watch").
+  4. PS-197: at arm, restore and right after a dispatch's load, NINA #1's
+     loaded sequence is read (GET only) for StartGuiding; one found on an
+     unguided night is an event, and a push when that sequence runs.
      NINA #1's guider guiding / calibrating / lost lock, or PHD2's own
      AppState doing so: per the policy, stop it (ninaAPI guider stop, then
      disconnect; PHD2 stop_capture when PHD2 still guides) and page once
@@ -260,10 +263,95 @@ def _may_act(st: dict, now: datetime) -> bool:
     return True
 
 
+# PS-197: phases that also read NINA #1's loaded sequence for StartGuiding
+# (at arm a re-arm UNGUIDED over a running guided night; at restore; right
+# after a dispatch's load, which must hold no StartGuiding on an unguided
+# night). A StartGuiding there fails against the disconnected guider and
+# SkipInstructionSetOnError skips its whole target container (2026-10-14).
+SEQUENCE_PHASES = ("arm", "restore", "loaded")
+DONE_STATUSES = {"finished", "skipped", "disabled", "failed"}
+
+
+def _sname(node: dict) -> str:
+    n = str(node.get("Name") or "")
+    return n[: -len("_Container")] if n.endswith("_Container") else n
+
+
+def _is_start_guiding(node: dict) -> bool:
+    t = str(node.get("$type") or "").split(",")[0].strip()
+    if t:
+        return t.endswith(".StartGuiding") or t == "StartGuiding"
+    return norm_state(node.get("Name")) == "startguiding"
+
+
+def loaded_start_guiding(tree) -> dict:
+    """StartGuiding items in a sequence tree (ninaAPI /sequence/state or
+    /sequence/json, or a sequence file): {"items": [{"where", "status"}],
+    "pending": n not finished / skipped, "running": the sequence runs}."""
+    items, running = [], [False]
+
+    def visit(node, path: str) -> None:
+        if isinstance(node, list):
+            for ch in node:
+                visit(ch, path)
+            return
+        if not isinstance(node, dict):
+            return
+        if norm_state(node.get("Status")) == "running":
+            running[0] = True
+        if _is_start_guiding(node):
+            items.append({"where": path or "root",
+                          "status": norm_state(node.get("Status")) or None})
+        name = _sname(node)
+        here = (f"{path}/{name}" if path else name) if name else path
+        for k, v in node.items():
+            if isinstance(v, (dict, list)):
+                visit(v, here)
+
+    if isinstance(tree, dict) and "Response" in tree and "$type" not in tree:
+        tree = tree.get("Response")
+    visit(tree, "")
+    pending = [i for i in items if (i["status"] or "") not in DONE_STATUSES]
+    return {"items": items, "pending": len(pending), "running": running[0]}
+
+
+async def _loaded_sequence(config, io, st, phase, now) -> dict | None:
+    """PS-197: NINA #1's loaded sequence on an unguided night must hold no
+    StartGuiding. Read only: an event every time one is found, a push once
+    per night when the sequence runs (or right after our own load)."""
+    reader = getattr(io, "nina_sequence", None)
+    if reader is None:
+        return None
+    tree = await reader()
+    if tree is None:
+        return {"readable": False}
+    seq = loaded_start_guiding(tree)
+    out = {"readable": True, "start_guiding": len(seq["items"]),
+           "pending": seq["pending"], "running": seq["running"]}
+    if not seq["pending"]:
+        return out
+    where = sorted({i["where"] for i in seq["items"]
+                    if (i["status"] or "") not in DONE_STATUSES})
+    text = (f"NINA #1's loaded sequence has {seq['pending']} StartGuiding on an "
+            f"UNGUIDED night ({'; '.join(where[:3])}): with the guider "
+            "disconnected each fails and skips its whole target container, "
+            "so the night loops slew / center / autofocus with no lights "
+            "(2026-10-14).")
+    await io.event("loaded_start_guiding", text, phase=phase,
+                   running=seq["running"], pending=seq["pending"])
+    if (seq["running"] or phase == "loaded") and not st.get("sequence_alerted"):
+        st["sequence_alerted"] = True
+        await io.notify(text + " Restart tonight from now (it re-plans "
+                        "unguided and the dispatch gate checks it), or re-arm.",
+                        1)
+    out["alerted"] = bool(st.get("sequence_alerted"))
+    return out
+
+
 async def check(config, io, st: dict, *, phase: str,
                 now: datetime | None = None) -> dict:
     """One look at NINA #1's guider and PHD2 on an unguided night, and the
-    policy's response. phase: arm | restore | dispatch | watch. `st` is the
+    policy's response. phase: arm | restore | dispatch | loaded | watch. `st` is the
     caller's per-night state (new_state), updated in place. `io` (GuardIO
     on the scope, a fake in tests) provides nina_guider, nina_stop,
     nina_disconnect, nina_events, phd2_state, phd2_stop, notify, event.
@@ -273,11 +361,20 @@ async def check(config, io, st: dict, *, phase: str,
     pol = policy(config)
     if pol == "off":
         return {"status": "off"}
+    seq_out = None
+    if phase in SEQUENCE_PHASES:
+        try:
+            seq_out = await _loaded_sequence(config, io, st, phase, now)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("unguided guard sequence read (%s) failed: %s", phase, e)
     try:
-        return await _check(config, io, st, phase, now, pol)
+        res = await _check(config, io, st, phase, now, pol)
     except Exception as e:  # noqa: BLE001
         logger.warning("unguided guard (%s) failed: %s", phase, e)
-        return {"status": "error", "error": str(e)}
+        res = {"status": "error", "error": str(e)}
+    if seq_out is not None:
+        res["loaded_sequence"] = seq_out
+    return res
 
 
 async def _check(config, io, st, phase, now, pol) -> dict:
@@ -443,6 +540,11 @@ class GuardIO:
 
     async def nina_events(self):
         return await self._nina("event_history")
+
+    async def nina_sequence(self):
+        """PS-197: NINA #1's loaded sequence (GET /sequence/state, falls
+        back to /sequence/json). Read only."""
+        return await self._nina("sequence_state")
 
     async def phd2_state(self):
         try:

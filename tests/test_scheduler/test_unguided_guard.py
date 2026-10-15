@@ -360,7 +360,9 @@ async def test_armer_guard_runs_only_unguided_and_uses_guider_paths(tmp_path, mo
     monkeypatch.setattr("photonscript.shared.pushover.notify", _notify)
     r = await a._unguided_guard("arm")
     assert r["action"] == "disconnected"
-    assert set(keys) <= {"guider", "guider_disconnect"}
+    # PS-197: at arm it also reads (GET) the loaded sequence
+    assert set(keys) <= {"guider", "guider_disconnect", "sequence_state"}
+    assert armer_mod.NINA_PATHS["sequence_state"][0] == "/sequence/state"
     assert pushes and pushes[0][0] == ug.ALERT_TITLE
     assert armer_mod.NINA_PATHS["guider_disconnect"] == ["/equipment/guider/disconnect"]
     ev = (tmp_path / "data" / "runs").glob("*_events.jsonl")

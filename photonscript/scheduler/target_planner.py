@@ -614,6 +614,7 @@ def plan_night_sequence(
     night_mode: Optional[str] = None,
     deep_target: Optional[str] = None,
     info: Optional[dict] = None,
+    guided: Optional[bool] = None,
 ) -> list[NinaSequenceTarget]:
     """Build an ordered list of NINA sequence targets for tonight.
 
@@ -628,6 +629,13 @@ def plan_night_sequence(
     a project id that wins the deep pick. info (a dict, filled in place):
     mode, mode_source, night, deep_pick (score breakdown, window,
     fallback), deep_scores, deep_note.
+
+    guided (PS-197): the arm's guiding mode. When given, every target this
+    returns carries it (apply_guiding), whatever the mode (split, deep, the
+    split before / after a deep pick, a Piggy-driven hold, the fill), so
+    no planner mode can hand the generator a guiding flag the arm did not
+    choose. None leaves start_guiding at the model default (the caller
+    sets it).
     """
     from photonscript.scheduler import deep_night
     if date_utc is None:
@@ -932,20 +940,39 @@ def plan_night_sequence(
         len(sequence_targets),
         dark_hours - remaining_hours,
     )
+    if guided is not None:
+        apply_guiding(sequence_targets, guided)
+        info["guided"] = bool(guided)
     return sequence_targets
 
 
-def plan_with_info(planner, projects, config, now) -> tuple[list, dict]:
+def apply_guiding(targets, guided: bool) -> list:
+    """PS-197: the arm's guiding mode on every planned target, the one place
+    it is set. Unguided also clears PS-85 per-block flags (a per-block
+    decision only exists inside a guided target). Returns the targets."""
+    for t in targets or []:
+        t.start_guiding = bool(guided)
+        if not guided and getattr(t, "unguided_filters", None):
+            t.unguided_filters = []
+    return targets
+
+
+def plan_with_info(planner, projects, config, now, **kw) -> tuple[list, dict]:
     """(targets, info) from a plan_night_sequence-like callable: info (deep
     night mode and pick) when the planner takes it, {} for a stand-in that
-    does not (a caller's own wrapper or a test double)."""
+    does not (a caller's own wrapper or a test double). kw (guided,
+    night_mode, deep_target) go to a planner that takes them; the caller
+    applies guiding itself for one that does not (apply_guiding)."""
     import inspect
     info: dict = {}
     try:
-        params = inspect.signature(planner).parameters.values()
+        params = list(inspect.signature(planner).parameters.values())
     except (TypeError, ValueError):
         params = []
-    if any(p.name == "info" or p.kind is inspect.Parameter.VAR_KEYWORD
-           for p in params):
-        return planner(projects, config, now, info=info), info
-    return planner(projects, config, now), info
+    var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params)
+    names = {p.name for p in params}
+    extra = {k: v for k, v in kw.items()
+             if v is not None and (var_kw or k in names)}
+    if var_kw or "info" in names:
+        extra["info"] = info
+    return planner(projects, config, now, **extra), info
