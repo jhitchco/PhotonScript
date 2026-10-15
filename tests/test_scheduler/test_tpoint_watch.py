@@ -162,6 +162,21 @@ def test_a_run_seen_after_it_ended_is_not_pushed_but_seeds_the_history(tmp_path)
     assert len(tw.history(cfg)) == 2
 
 
+def test_a_paused_run_compares_with_the_model_before_it(tmp_path):
+    # first seen 20 min after its last point (idle: the history records
+    # that partial model), then it grows again and finishes
+    root = _tree(tmp_path, age_s=20 * 60, n=60)
+    cfg = _cfg(tmp_path, root)
+    now = _now()
+    assert tw.step(cfg, now)["state"]["status"] == "idle"
+    assert len(tw.history(cfg)) == 2
+    _put(root / "TPoint" / "TPoint base run in.dat", RUN_IN.read_bytes(), 0)
+    assert tw.step(cfg, now + timedelta(seconds=30))["state"]["status"] == "running"
+    r = tw.step(cfg, now + timedelta(hours=2))
+    assert r["state"]["status"] == "finished"
+    assert "(was 19.94\")" in r["push"] and "MA -75.8\" (was -160.1\")" in r["push"]
+
+
 def test_tick_pushes_in_alert_mode_only(tmp_path):
     sent = []
 

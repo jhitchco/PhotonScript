@@ -605,10 +605,17 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
             new = summarize(cfg, st, listing)
             prev = state.get("baseline")
             hist = history(cfg)
-            if prev and not hist:
+            # the newest recorded model written before this run began (the
+            # run's own autosaves never count as the previous model)
+            start = _parse(run.get("first_seen_utc")) or last
+            if run.get("pace_s"):
+                start = min(start, last - timedelta(
+                    seconds=run["pace_s"] * max(0, int(run.get("points") or 0) - 1)))
+            before = [h for h in hist if (_parse(h.get("model_mtime")) or now) < start]
+            if before:
+                prev = before[-1]
+            elif prev and all(_sig(h) != _sig(prev) for h in hist):
                 _append_history(cfg, {"t_utc": _iso(now), **prev})
-            elif hist:
-                prev = hist[-1]
             epoch = None
             if new and (not prev or _sig(prev) != _sig(new)):
                 new = {"t_utc": _iso(now), **new, "source": "watch",
