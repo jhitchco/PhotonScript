@@ -707,7 +707,102 @@ missing = frames only), `tpoint_sample_add` (off | auto),
 default Documents path), `tpoint_watch_mode` (alert | observe | off),
 `tpoint_run_target_points` (0), `tpoint_watch_poll_s` (60; 5x idle),
 `tpoint_watch_quiet_min` (15), `tpoint_watch_fit_wait_min` (45),
-`tpoint_epoch_polar_shift_arcsec` (30; 0 = never).
+`tpoint_epoch_polar_shift_arcsec` (30; 0 = never). Coverage (next
+section): `tpoint_coverage_thin` (4), `tpoint_coverage_target` (6),
+`tpoint_coverage_min_alt` (30), `tpoint_coverage_pace_s` (35),
+`tpoint_coverage_arm_warn` (alert | observe | off),
+`unguided_limit_uncovered_s` (0 = the shortest ladder step).
+
+### TPoint coverage check: where the model has samples (2026-10-15)
+
+2026-10-14, M33 unguided: subs round from 22:00 to 01:00 MDT (RC16 ecc
+0.49 to 0.55 at 120 s, Piggy-600 0.45 to 0.58 at 450 s), then from the
+meridian flip (about 01:00) both rigs trailed (RC16 0.68 to 0.75, Piggy
+0.77 to 0.89). The TPoint base run in force (99 samples, 22-term super
+model, sky RMS 12.4") had every sample EAST of the meridian: after the
+flip ProTrack ran on a model with no data on that pier side. A low RMS
+says nothing about where the samples are; `scheduler/tpoint_coverage.py`
+does.
+
+Input: the base model's data file (`TPoint\<run> in.dat`, the one
+`tpoint-stats` pairs with the model; read only). TheSky 10.5 row format:
+star RA (h m s), star Dec (d m s), scope RA (h m s), scope Dec (d m s),
+LST (h m.mmm); the site line gives the latitude. Per sample: HA = LST -
+star RA, Dec, altitude / azimuth at the site, pier side.
+
+Pier side convention (TPOINT through-the-pole notation): the mount
+reports one pier side with the scope Dec beyond the pole (|Dec| > 90, RA
+12 h away). On 2026-10-14, 94 of 99 rows are beyond the pole and all of
+them are east of the meridian (HA -8.6 to -0.2 h), so beyond the pole =
+the east-looking side (before the flip). The 5 rows under 90 sit within
+0.14 h of the meridian (alt 66 to 89 deg): the mount was on the other
+side there, as the Paramount may be near the meridian; they are counted
+as "meridian zone" samples, not as west coverage. The convention is
+re-derived from every file (samples 1 h or more from the meridian vote);
+with none, the 2026-10-14 mapping is assumed.
+
+Grid: HA band east far (< -3 h) / east (-3..0) on the east-looking side,
+west (0..3) / west far (> 3 h) on the west-looking side (after the flip),
+x Dec band < 0 / 0-30 / 30-60 / 60+. A cell is usable when at least 20 %
+of it (HA up to `tpoint_mapping_max_ha_h`, Dec down to the horizon) is
+above `tpoint_coverage_min_alt` (30 deg). Per usable cell: empty (0),
+thin (under `tpoint_coverage_thin`, 4) or ok. Overall: east-only /
+west-only (one side has nothing), full (every usable cell ok), partial.
+Top-up: every usable cell to `tpoint_coverage_target` (6) samples, timed
+at the run's measured pace (the TPoint watcher's, else the file's own LST
+gaps, else `tpoint_coverage_pace_s`, 35 s), with a target HA / Dec / alt /
+az per cell.
+
+The current model (base run of 2026-10-14, read 2026-10-15):
+
+    Dec       east far    east     west     west far
+    60+          9         5        0         0
+    30-60       19        12        0         0
+    0-30        13        17        0         0
+    <0           5        14        0         -  (under 30 deg)
+
+EAST-ONLY: 99 samples (east far 46, east 53, west 0), 7 usable west cells
+empty, "east Dec 60+" one short of 6. Top-up: 43 points (west 42, east 1),
+about 34 min at the run's 48 s per point.
+
+Where it shows:
+- `photonscript tpoint-stats` (and `--json`, key `coverage`) and `GET
+  /api/thesky/tpoint` (`coverage`, `coverage_text`): the grid, the
+  convention, the top-up per cell. Saved as
+  `<data_dir>/tpoint/coverage_latest.json`.
+- TPoint watcher: each model history entry carries `coverage` (overall,
+  points per side, empty / thin cells, top-up); the finish push and the
+  morning "TPoint: ..." line add the coverage line; during a run the status
+  line says "so far east N / west M of the meridian".
+- Guiding page, TheSky / TPoint section: under the watcher line, the
+  one-line summary and a small Dec x HA grid (green ok, amber thin, red
+  empty, "-" under the altitude floor); during a run the grid is the run so
+  far.
+- Morning report: "TPoint coverage: east-only (...). Top-up: 43 points in 8
+  cells, about 34 min" while any usable cell is empty or thin.
+- Arm / every dispatch (`tpoint_coverage_arm_warn` alert | observe | off):
+  tonight's planned target windows are sampled every 10 min; the side is
+  taken from the HA (west of the meridian = after the flip). A target with
+  15 min or more in empty / thin cells gives one warning a night (run event
+  `tpoint_coverage`, plan snapshot `tpoint_coverage`, and in alert one
+  Pushover "PhotonScript TPoint coverage"), e.g. "M33 spends 4 h 15 min of
+  its 7 h 30 min window in TPoint cells with no samples (after the flip,
+  west of the meridian): west Dec 30-60 0 pts, ...". A warning only: the
+  arm goes ahead.
+- Learned unguided limits: a sample in an empty TPoint cell is unknown sky.
+  Only a limit measured in that same region counts; no Dec band or
+  whole-sky limit is carried in; else `unguided_limit_uncovered_s` (0 = the
+  shortest ladder step, negative = ignore coverage), and the plan's why
+  says "unknown sky: TPoint has no samples in west Dec 30-60". The limits
+  regions (20 deg Dec bands x five HA bands with a meridian band) map onto
+  the TPoint cells per sample position; the table (`photonscript
+  unguided-limits`, `GET /api/tracking/unguided-limits` row `tpoint`)
+  marks a region "[TPoint empty]" (no sample in any overlapping cell) or
+  "[TPoint partial]" (the meridian band straddles both sides).
+
+Fix: a top-up calibration run that covers the west side (TheSky's
+Automated Pointing Calibration, or the mapping recipe's west strips), then
+refit; the watcher reports the new coverage when the run finishes.
 
 ### A safe hand-built NINA #2 sequence (PS-139)
 
@@ -885,7 +980,10 @@ round per rig and region from the graded subs:
   HFR over its gate while round (soft stars hide drift; FWHM over its gate
   is seeing and is kept), test subs (TPoint, optics, focus calibration).
 - Region: Dec band (20 deg) x hour-angle band (east far, east, meridian,
-  west, west far); pooled per Dec band and for the whole sky as fallbacks.
+  west, west far); pooled per Dec band and for the whole sky as fallbacks,
+  except in sky the TPoint model has no samples in (section "TPoint
+  coverage check"): there only the region's own measured limit counts,
+  else the shortest step.
 - Per region and sub length: subs and passes under the rig's ecc gate.
   Limit = the longest ladder length (`unguided_limit_steps`
   300,240,180,120, plus the rig's own length) with pass rate at least

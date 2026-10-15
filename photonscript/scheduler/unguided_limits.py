@@ -70,6 +70,23 @@ report; nothing changes) | apply (the sets are cut, same integration).
 The Piggy-600 companion (one sub length all night) gets the shortest
 Piggy limit over tonight's targets the same way.
 
+TPoint coverage (scheduler/tpoint_coverage.py, 2026-10-15): a sample
+whose TPoint cell (the side the mount is on there: east of the meridian
+before the flip, west after it; HA band east far / east / west / west far
+x Dec band < 0 / 0-30 / 30-60 / 60+) has no samples is unknown sky: the
+pointing model and ProTrack extrapolate there (2026-10-14: M33 round on
+the east side at 120 s, trailed after the flip on an east-only model). No
+limit is carried in from other regions (the Dec band or whole-sky pools):
+only a limit measured in that same region counts, else
+unguided_limit_uncovered_s (0 = the shortest ladder step), and the why
+says so. The regions here (20 deg Dec bands x five HA bands with a
+meridian band) map onto the TPoint cells per sample position, so a region
+straddling two cells takes the cell of each sample; region_coverage()
+reports the overlap for the table (empty / partial / covered). Coverage
+comes from <data_dir>/tpoint/coverage_latest.json (the TPoint watcher,
+tpoint-stats and GET /api/thesky/tpoint keep it); unknown coverage changes
+nothing. A negative unguided_limit_uncovered_s turns this off.
+
 Probe (unguided_limit_probe off | advise | apply, default off): on an
 uncertain region, advise names the next longer step to try; apply adds
 unguided_limit_probe_subs (2) subs at that step in front of the target's
@@ -771,11 +788,60 @@ def _entry_limit(e: dict, steps: list[float]) -> float:
     return float(min(steps))          # fails even at the shortest step
 
 
+def uncovered_fallback(config, steps: list[float]) -> float | None:
+    """The sub length for sky the TPoint model has no samples in:
+    unguided_limit_uncovered_s, 0 = the shortest ladder step; None when
+    the TPoint coverage gate is off (negative)."""
+    v = _f(config, "unguided_limit_uncovered_s", 0.0)
+    if v < 0:
+        return None
+    return float(v) if v > 0 else float(min(steps))
+
+
+def tpoint_coverage(config) -> dict | None:
+    """The saved TPoint coverage (tpoint_coverage.saved), or None."""
+    try:
+        from photonscript.scheduler import tpoint_coverage as tc
+        return tc.saved(config)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TPoint coverage not read: %s", e)
+        return None
+
+
+def _uncovered_entry(config, tbl: dict, coverage: dict | None, dec: float, ha: float,
+                     steps: list[float]) -> dict | None:
+    """For a position whose TPoint cell has no samples: the region's own
+    decided entry (measured there), else the fallback entry. None when the
+    cell is covered, the coverage is unknown or the gate is off."""
+    if not coverage:
+        return None
+    fb = uncovered_fallback(config, steps)
+    if fb is None:
+        return None
+    from photonscript.scheduler import tpoint_coverage as tc
+    cell = tc.uncovered(coverage, dec, ha)
+    if cell is None:
+        return None
+    lbl = tc.cell_label(cell["ha_band"], cell["dec_band"])
+    k = region_key(dec, ha)
+    for r in tbl.get("regions") or []:
+        if r.get("key") == k and _decided(r):
+            return {**r, "scope": "region (TPoint cell empty)", "tpoint_cell": lbl}
+    db, hb = dec_band(dec), ha_band(ha)
+    return {"label": region_label(db[0], db[1], hb[2]) if db and hb else "?",
+            "limit_s": fb, "scope": "TPoint uncovered", "source": "fallback",
+            "confidence": "low", "uncertain": False, "probe_s": None, "n": 0,
+            "tpoint_cell": lbl, "tpoint_overall": coverage.get("overall")}
+
+
 def plan_target(config, tbl: dict | None, ra_hours: float, dec_deg: float,
-                start: datetime | None, end: datetime | None) -> dict | None:
+                start: datetime | None, end: datetime | None,
+                coverage: dict | None = None) -> dict | None:
     """The learned limit over a target's window: the shortest limit of the
     regions the target passes (sampled every SAMPLE_MIN). None when the
-    table has nothing for it."""
+    table has nothing for it. coverage (tpoint_coverage, compact): a
+    sample in a TPoint cell with no samples takes only its own region's
+    measured limit, else the uncovered fallback (module doc)."""
     if not tbl:
         return None
     steps = list(tbl.get("ladder") or ladder(config, tbl.get("rig")))
@@ -784,7 +850,9 @@ def plan_target(config, tbl: dict | None, ra_hours: float, dec_deg: float,
     t, best = start, None
     while True:
         alt, ha = alt_ha(float(ra_hours) * 15.0, float(dec_deg), t, config)
-        e = lookup(tbl, float(dec_deg), ha)
+        e = _uncovered_entry(config, tbl, coverage, float(dec_deg), ha, steps)
+        if e is None:
+            e = lookup(tbl, float(dec_deg), ha)
         if e is not None:
             lim = _entry_limit(e, steps)
             if best is None or lim < best["limit_s"] - 0.5:
@@ -796,6 +864,7 @@ def plan_target(config, tbl: dict | None, ra_hours: float, dec_deg: float,
                         "fails_all": bool(e.get("fails_all")),
                         "uncertain": bool(e.get("uncertain")),
                         "probe_s": e.get("probe_s"), "n": e.get("n"),
+                        "tpoint_cell": e.get("tpoint_cell"),
                         "at": t.replace(microsecond=0).isoformat() + "Z"}
         if t >= end:
             break
@@ -807,6 +876,14 @@ def plan_target(config, tbl: dict | None, ra_hours: float, dec_deg: float,
                           f"{best['confidence']})"))
         if best["fails_all"]:
             best["why"] += f": trails even at {best['limit_s']:g} s"
+        if best.get("tpoint_cell"):
+            if best["scope"] == "TPoint uncovered":
+                best["why"] = (f"unknown sky: TPoint has no samples in {best['tpoint_cell']} "
+                               f"(Dec {best['dec']:+.0f} {best['side']}), so no learned limit is "
+                               f"carried in from other regions; {best['limit_s']:g} s "
+                               "(the shortest step / unguided_limit_uncovered_s)")
+            else:
+                best["why"] += f" (TPoint has no samples in {best['tpoint_cell']})"
     return best
 
 
@@ -859,8 +936,11 @@ def _overrides_for(projects, name: str) -> dict:
     return {}
 
 
+_UNSET = object()
+
+
 def apply_targets(config, targets, projects=None, *, tbl: dict | None = None,
-                  status=None, now: datetime | None = None) -> dict:
+                  status=None, now: datetime | None = None, coverage=_UNSET) -> dict:
     """Planner integration (module doc). Edits targets in place only in
     mode apply (and the probe only in probe mode apply). Returns the plan
     record: {mode, probe_mode, targets: [{target, filter, from_s, to_s,
@@ -872,6 +952,8 @@ def apply_targets(config, targets, projects=None, *, tbl: dict | None = None,
     doc = tbl if tbl is not None else table(config)
     rc = ((doc or {}).get("rigs") or {}).get("rc16") if doc else None
     pg = ((doc or {}).get("rigs") or {}).get("piggyback") if doc else None
+    cov = tpoint_coverage(config) if coverage is _UNSET else coverage
+    rec["tpoint_coverage"] = (cov or {}).get("overall")
     piggy_best = None
     for t in targets or []:
         if getattr(t, "focus_calibration", False) or getattr(t, "tracking_test", False) \
@@ -888,10 +970,11 @@ def apply_targets(config, targets, projects=None, *, tbl: dict | None = None,
         except (TypeError, ValueError, AttributeError):
             continue
         if pg:
-            pb = plan_target(config, pg, dec_ra[0], dec_ra[1], w0, w1)
+            pb = plan_target(config, pg, dec_ra[0], dec_ra[1], w0, w1, coverage=cov)
             if pb and (piggy_best is None or pb["limit_s"] < piggy_best["limit_s"]):
                 piggy_best = {**pb, "target": t.name}
-        lim = plan_target(config, rc, dec_ra[0], dec_ra[1], w0, w1) if rc else None
+        lim = (plan_target(config, rc, dec_ra[0], dec_ra[1], w0, w1, coverage=cov)
+               if rc else None)
         if not lim:
             continue
         ov = _overrides_for(projects, t.name)
@@ -1032,9 +1115,22 @@ def _rate_txt(d: dict) -> str:
     return f"{d['pass']}/{d['n']}"
 
 
-def table_rows(tbl: dict) -> list[dict]:
+def region_coverage(coverage: dict | None, row: dict) -> str | None:
+    """TPoint coverage of one region row: "empty" (no sample in any
+    overlapping TPoint cell: its limit is not used there), "partial",
+    "covered", or None (unknown, or not a region)."""
+    if not coverage or not row.get("dec_band") or not row.get("ha_band"):
+        return None
+    from photonscript.scheduler import tpoint_coverage as tc
+    d0, d1 = row["dec_band"]
+    h0, h1 = row["ha_band"]
+    return tc.region_status(coverage, d0, d1, h0, h1)
+
+
+def table_rows(tbl: dict, coverage: dict | None = None) -> list[dict]:
     """Flat rows for the dashboard / CLI table (regions, then Dec bands,
-    then the whole sky)."""
+    then the whole sky); with coverage, each region row says how TPoint
+    covers it ("tpoint": empty / partial / covered)."""
     out = []
     for scope, grp in (("region", tbl.get("regions") or []),
                        ("dec band", tbl.get("dec_bands") or []),
@@ -1050,11 +1146,12 @@ def table_rows(tbl: dict) -> list[dict]:
                         "confidence": r.get("confidence"),
                         "fails_all": r.get("fails_all"),
                         "uncertain": r.get("uncertain"), "probe_s": r.get("probe_s"),
-                        "nights": r.get("nights")})
+                        "nights": r.get("nights"),
+                        "tpoint": region_coverage(coverage, r) if scope == "region" else None})
     return out
 
 
-def format_table(doc: dict, rig: str | None = None) -> str:
+def format_table(doc: dict, rig: str | None = None, coverage: dict | None = None) -> str:
     lines = [f"Unguided limits (refreshed {doc.get('refreshed_at')}, evidence since "
              f"{doc.get('since') or 'lookback start'}, mode {doc.get('mode')}, "
              f"probe {doc.get('probe')})"]
@@ -1067,7 +1164,7 @@ def format_table(doc: dict, rig: str | None = None) -> str:
                      f"{tbl.get('n_used')} subs used, excluded "
                      + (", ".join(f"{k} {v}" for k, v in sorted(
                          (tbl.get('excluded') or {}).items())) or "none"))
-        rows = table_rows(tbl)
+        rows = table_rows(tbl, coverage)
         if not rows:
             lines.append("  no unguided evidence yet")
         for r in rows:
@@ -1079,7 +1176,13 @@ def format_table(doc: dict, rig: str | None = None) -> str:
                 + (f"  drift {r['drift_arcsec_min']}\"/min" if r["drift_arcsec_min"] else "")
                 + f"  limit {lim}"
                 + (f" ({r['source']}, {r['confidence']})" if r["limit_s"] else "")
-                + (f" probe {r['probe_s']:g} s" if r["probe_s"] else ""))
+                + (f" probe {r['probe_s']:g} s" if r["probe_s"] else "")
+                + (f"  [TPoint {r['tpoint']}]" if r.get("tpoint") in ("empty", "partial") else ""))
+    if coverage and coverage.get("overall") not in (None, "full"):
+        lines.append(f"TPoint coverage {coverage.get('overall')}: sky in empty TPoint cells is "
+                     "unknown (only a limit measured in that region counts, else the "
+                     "shortest step / unguided_limit_uncovered_s; no Dec band or whole-sky "
+                     "limit carried in)")
     return "\n".join(lines)
 
 

@@ -8,7 +8,9 @@
  *   pointing   GET  /api/thesky/pointing?nights=14
  *   rotation   GET  /api/rotation/report?nights=14 (PS-97, routers/rotation.py)
  *   watch      GET  /api/thesky/tpoint/watch (the TPoint run watcher's status
- *              line: run in progress with points, pace, ETA, or the last model)
+ *              line: run in progress with points, pace, ETA, or the last model;
+ *              its "coverage" / "run_coverage" fill #tsCoverage: the TPoint
+ *              coverage line and a small Dec x HA grid, tpoint_coverage.py)
  *   manual     GET  /api/thesky/manual, POST /api/thesky/manual,
  *              POST /api/thesky/manual/use-files (the operator's "Use file
  *              values" when TPoint's files hold a newer model)
@@ -331,7 +333,27 @@
             var run = d.status === 'running' || d.status === 'stopped';
             var cls = run ? 'badge-warn' : (d.status === 'off' || d.mode === 'off' ? 'badge-unknown' : 'badge-pass');
             setHTML('tsWatch', '<span class="badge ' + cls + '">' + esc(run ? d.status : 'TPoint') + '</span> ' + esc(d.text || '-'));
+            renderCoverage(run && d.run_coverage ? d.run_coverage : d.coverage, run && d.run_coverage);
         } catch (e) { setText('tsWatch', 'TPoint watcher: ' + e); }
+    }
+
+    // ---- TPoint coverage: one line + a small Dec x HA grid -----------------
+    function renderCoverage(c, live) {
+        if (!c || !c.grid) { setHTML('tsCoverage', ''); return; }
+        var ov = String(c.overall || '?');
+        var cls = ov === 'full' ? 'badge-pass' : (ov === 'partial' ? 'badge-warn' : 'badge-fail');
+        var head = '<span class="badge ' + cls + '">' + esc(live ? 'run so far' : 'coverage') + '</span> ' + esc(c.line || ov);
+        var h = '<table class="tc-grid"><tr><th>Dec</th><th>east far</th><th>east</th><th>west</th><th>west far</th></tr>';
+        c.grid.forEach(function (row) {
+            h += '<tr><th>' + esc(row.dec_band) + '</th>';
+            (row.cells || []).forEach(function (x) {
+                var v = String(x.verdict || '?');
+                h += '<td class="tc-' + esc(v) + '" title="' + esc(x.side + ' pier side, ' + x.ha_band + ', Dec ' + row.dec_band + ': ' + v) + '">' + (v === 'below' ? '-' : esc(x.n)) + '</td>';
+            });
+            h += '</tr>';
+        });
+        h += '</table>';
+        setHTML('tsCoverage', head + h);
     }
 
     function on(id, fn) { var el = $(id); if (el) el.onclick = fn; }

@@ -215,6 +215,8 @@ class Armer:
         # pending "fell back to split" push
         self.last_gate: dict | None = None
         self._gate_alert: str | None = None
+        self._tpcov_alert: str | None = None   # TPoint coverage push (once a night)
+        self._tpcov_night: str | None = None
         self.guide_fallback_rec: dict | None = None  # PS-156: tonight's decision
         # PS-85: tonight's per-block guiding decisions (mode auto) that the
         # dispatch applies: {"night", "blocks": {"<target>|<filter>": {...}},
@@ -1824,6 +1826,8 @@ class Armer:
         self._gate_event(action, self.last_gate)
         targets, plan_info = built["targets"], built["plan_info"]
         self.last_dispatch_targets = built["names"]
+        # TPoint coverage: tonight's windows in empty / thin model cells
+        self._tpoint_coverage_check(targets, now)
         out = (Path.cwd() / "sequences"
                / f"PhotonScript_{self.plan['night_of']}_{now:%H%M}.json")
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -2002,6 +2006,54 @@ class Armer:
                          priority=1)
         except Exception as e:  # noqa: BLE001
             logger.warning("dispatch gate push failed: %s", e)
+
+    def _tpoint_coverage_check(self, targets, now: datetime) -> None:
+        """TPoint coverage check (scheduler/tpoint_coverage.py): the minutes
+        each of tonight's target windows spends in TPoint cells with no or
+        few samples on the side the mount will be on (west of the meridian
+        after the flip). The record goes into plan["tpoint_coverage"]; a
+        warning is a run event and (tpoint_coverage_arm_warn alert) one push
+        per night. Reads TPoint's files only; never raises, never blocks."""
+        try:
+            from photonscript.scheduler import tpoint_coverage as tc
+            mode = tc.arm_mode(self.config)
+            if mode == "off":
+                return
+            cov = tc.current(self.config, refresh=True)
+            rec = tc.window_check(self.config, cov, targets, now=now)
+            self.plan["tpoint_coverage"] = {k: rec.get(k) for k in
+                                            ("warn", "overall", "line", "targets")}
+            night = self.plan.get("night_of")
+            if not rec.get("warn"):
+                logger.info("%s", rec.get("line"))
+                return
+            logger.warning("%s", rec.get("line"))
+            if getattr(self, "_tpcov_night", None) == night:
+                return
+            self._tpcov_night = night
+            try:
+                from photonscript.shared.night_events import events_path
+                from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+                append_jsonl(events_path(self.config, night_of(self.config, now)),
+                             {"t": iso_z(now), "rig": "rc16", "src": "photonscript",
+                              "kind": "tpoint_coverage", "value": "warn",
+                              "detail": rec.get("line"), "overall": rec.get("overall"),
+                              "targets": rec.get("targets")})
+            except Exception as e:  # noqa: BLE001
+                logger.warning("TPoint coverage event not logged: %s", e)
+            if mode == "alert":
+                self._tpcov_alert = rec.get("line")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TPoint coverage check skipped: %s", e)
+
+    async def _send_tpcov_alert(self) -> None:
+        msg, self._tpcov_alert = getattr(self, "_tpcov_alert", None), None
+        if not msg:
+            return
+        try:
+            await notify(self.config, msg, title="PhotonScript TPoint coverage")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TPoint coverage push failed: %s", e)
 
     def _unguided_limits(self, targets, projects, now: datetime) -> None:
         """Learned unguided limits (scheduler/unguided_limits.py) on
@@ -2547,6 +2599,7 @@ class Armer:
             return False
         await self._send_recipe_alert()   # PS-181: fallback page, once
         await self._send_gate_alert()     # PS-197: split fallback page
+        await self._send_tpcov_alert()    # TPoint coverage, once a night
         # PS-152: note a finished dusk calibration before the stop clears it
         await self._check_focus_cal_before_redispatch()
         # Per ninaAPI spec: POST /sequence/load with the sequence JSON as the

@@ -548,7 +548,7 @@ def stats(config, listing: dict | None = None) -> dict:
                 text = text_of(f)
                 d = parse_data(text) if text is not None else None
                 if d:
-                    return {**d, "file": f["rel"], "mtime": f["mtime"]}
+                    return {**d, "file": f["rel"], "mtime": f["mtime"], "path": f["path"]}
             return None
 
         main = base or recal
@@ -558,11 +558,12 @@ def stats(config, listing: dict | None = None) -> dict:
                 text = text_of(f)
                 d = parse_data(text) if text is not None else None
                 if d:
-                    data = {**d, "file": f["rel"], "mtime": f["mtime"]}
+                    data = {**d, "file": f["rel"], "mtime": f["mtime"], "path": f["path"]}
                     break
         lim = float(getattr(config, "tpoint_polar_max_arcmin", 3.0) or 3.0)
         if data:
             out.update(points=data["points"], data_file=data["file"],
+                       data_path=data.get("path"),
                        data_date=data.get("date") or _date(data["mtime"]))
         if main:
             out.update(model_file=main["file"], terms=main["terms"],

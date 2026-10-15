@@ -867,7 +867,9 @@ def tpoint_stats_cmd(
 ):
     """PS-171: the TPoint model's numbers from TPoint's own files (TheSky64
     has no TPoint scripting object): points, sky RMS, terms, polar
-    alignment (ME / MA and what to adjust), ProTrack, model date. Read only.
+    alignment (ME / MA and what to adjust), ProTrack, model date, and the
+    coverage of the model's samples (pier side x HA x Dec grid, empty /
+    thin cells, the top-up run to fill them). Read only.
 
     photonscript tpoint-stats
     photonscript tpoint-stats --history
@@ -888,13 +890,20 @@ def tpoint_stats_cmd(
                 console.print("  watcher: " + tw.status_text(cfg, st), markup=False,
                               highlight=False)
         raise typer.Exit(0)
+    from photonscript.scheduler import tpoint_coverage as tc
     lst = tf.list_files(cfg)
     st = tf.stats(cfg, lst)
     tf.save(cfg, st)
+    try:   # where on the sky the base model has samples
+        cov = tc.from_stats(cfg, st)
+    except Exception as e:  # noqa: BLE001
+        cov = {"ok": False, "note": f"{type(e).__name__}: {e}"}
     if as_json:
-        print(_json.dumps(st, indent=2, default=str))
+        print(_json.dumps({**st, "coverage": cov}, indent=2, default=str))
     else:
         console.print(tf.format_stats(st), markup=False, highlight=False)
+        if cov:
+            console.print(tc.format_text(cov), markup=False, highlight=False)
     if files:
         for r in lst["roots"]:
             print(f"root {r['path']}: {'found' if r['exists'] else 'missing'}")
@@ -1842,7 +1851,8 @@ def unguided_limits_cmd(
         out = doc if not rig else {**doc, "rigs": {rig: (doc.get("rigs") or {}).get(rig)}}
         print(_json.dumps(out, indent=1, default=str))
     else:
-        console.print(ul.format_table(doc, rig or None), markup=False, highlight=False)
+        console.print(ul.format_table(doc, rig or None, ul.tpoint_coverage(cfg)),
+                      markup=False, highlight=False)
         for rg in (doc.get("rigs") or {}):
             if rig and rg != rig:
                 continue

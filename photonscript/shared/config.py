@@ -1228,6 +1228,10 @@ class PhotonScriptConfig(BaseSettings):
                                  # the TPoint model in force)
     unguided_limit_darks_max: int = 3  # learned lengths added to the night
                                  # dark quota (0 = none)
+    unguided_limit_uncovered_s: float = 0.0  # sky with no TPoint samples (an
+                                 # empty coverage cell): this length, 0 = the
+                                 # shortest ladder step, negative = ignore
+                                 # TPoint coverage
     unguided_limit_probe: str = "off"  # off | advise (name the next longer
                                  # step on an uncertain region) | apply (add
                                  # unguided_limit_probe_subs subs at it)
@@ -1707,6 +1711,16 @@ class PhotonScriptConfig(BaseSettings):
     tpoint_epoch_polar_shift_arcsec: float = 30.0  # a new base model's MA or
                                  # ME moved more = the learned unguided limits
                                  # restart at its night (0 = never)
+    # TPoint coverage check (scheduler/tpoint_coverage.py): where the model
+    # has samples (pier side x HA band x Dec band), read only
+    tpoint_coverage_thin: int = 4        # a usable cell with fewer samples = thin
+    tpoint_coverage_target: int = 6      # top-up aims for this many per usable cell
+    tpoint_coverage_min_alt: float = 30.0  # a cell mostly under this altitude is not usable
+    tpoint_coverage_pace_s: float = 35.0  # s per point for the top-up estimate
+                                 # when no run pace is known
+    tpoint_coverage_arm_warn: str = "alert"  # alert (one push a night) | observe
+                                 # (log, run event, plan) | off: tonight's
+                                 # windows in empty / thin TPoint cells
     # PS-171 TPoint mapping run (sideload recipe tpoint_mapping_then_tonight,
     # scheduler/tpoint_mapping.py). Only used when that recipe is loaded.
     tpoint_mapping_points: int = 60      # first run; at most 300
