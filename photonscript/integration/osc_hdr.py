@@ -152,7 +152,8 @@ def _log(out_dir: Path, lines: list[str]) -> None:
 
 
 def run(run_dir: Path, stack: dict, counts: dict, *, r_core_px: float, warn_px: int,
-        exe: str, echo=print, check=None) -> dict:
+        exe: str, echo=print, check=None, target=None,
+        object_type: str | None = None) -> dict:
     """After integrate_run.js: check the full master's core, combine when it
     is clipped. Never raises. Returns the ledger's hdr block shape: {kind,
     ok, made, items, steps, status, why, script, log, minutes}."""
@@ -180,21 +181,24 @@ def run(run_dir: Path, stack: dict, counts: dict, *, r_core_px: float, warn_px: 
                                    "(the short subs made no master, see pipeline.log): "
                                    f"master_{stack['name']} kept")
         from photonscript.integration import core_master
+        skip = core_master.skip_line(target, object_type) if target else None
+        if skip:   # an emission nebula / cluster: no nucleus to combine
+            return done("skipped", f"{skip}: single master kept")
         chk = (check or core_master.check_master)(lp, r_core_px, warn_px)
         res["long_check"] = {k: chk.get(k) for k in ("clipped_px", "still_clipped", "x", "y",
                                                        "r_px", "error", "line") if k in chk}
         if chk.get("error"):
             return done("skipped", f"core of master_{stack['name']} not checked ({chk['error']}): "
                                    "single master kept")
-        if not chk.get("still_clipped"):
-            return done("skipped", f"core not clipped in master_{stack['name']} "
-                                   f"({chk.get('clipped_px', 0)} px): single master kept")
+        # the same rule and words as the core check line (core_master.verdict)
+        v = core_master.verdict(f"master_{stack['name']}", chk.get("clipped_px"), warn_px)
+        if not v["still_clipped"]:
+            return done("skipped", f"{v['line']}: single master kept")
         it = item_for(stack, counts, out_dir, chk, r_core_px)
         res["items"] = [it]
         js = pjsr.write(run_dir / SCRIPT, render(out_dir, it))
         res["script"] = str(js)
-        echo(f"  OSC core combine: core clipped in master_{stack['name']} "
-             f"({chk.get('clipped_px')} px): {js.name}")
+        echo(f"  OSC core combine: {v['line']}: {js.name}")
         r = runner.run_script(js, out_dir / LOG, exe=exe, echo=echo)
         res.update(ok=bool(r.get("ok")), minutes=r.get("minutes", 0.0),
                    last_line=r.get("last_line", ""))

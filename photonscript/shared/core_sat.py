@@ -117,6 +117,31 @@ def radius_arcmin(config, target) -> float:
     return round(min(OTHER_MAX_X * base, max(base, OTHER_FRAC * size)), 3)
 
 
+# 2026-10-15: kinds with no compact core to clip (the integration core
+# check is skipped for them); galaxies, globular clusters, planetary nebulae
+# and unknown targets are checked
+NO_CORE_KINDS = ("emission nebula", "reflection nebula", "dark nebula",
+                 "supernova remnant", "open cluster", "association", "nebula",
+                 "cluster", "star cloud", "asterism")
+
+
+def compact_core(target, object_type: str | None = None) -> tuple[bool, str | None]:
+    """(has a compact core, its kind): the catalog type of `target` (or
+    `object_type`); a kind in NO_CORE_KINDS (a globular cluster excepted)
+    has none. Unknown targets count as having one."""
+    kind = str(object_type or "").strip().lower() or None
+    if kind is None and target:
+        try:
+            from photonscript.shared.astronomy import find_catalog_entry
+            e = find_catalog_entry(str(target))
+        except Exception:  # noqa: BLE001
+            e = None
+        kind = str((e or {}).get("type") or "").strip().lower() or None
+    if not kind or "globular" in kind or "galaxy" in kind or "planetary" in kind:
+        return True, kind
+    return (not any(k in kind for k in NO_CORE_KINDS)), kind
+
+
 def _num(v):
     try:
         x = float(v)

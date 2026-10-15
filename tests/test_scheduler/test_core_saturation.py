@@ -355,9 +355,10 @@ def test_master_check_plateau(tmp_path):
     from photonscript.integration.core_master import check_master
     r = check_master(_write_xisf(tmp_path / "master_L.xisf", _master(True)), 60.0, 25)
     assert r["still_clipped"] and r["clipped_px"] > 25
-    assert r["line"].startswith("core clipped in master_L: ") and "still clipped" in r["line"]
+    assert r["line"] == f"core clipped in master_L: {r['clipped_px']} px (over 25)"
     r = check_master(_write_xisf(tmp_path / "master_L_hdr.xisf", _master(False)), 60.0, 25)
-    assert not r["still_clipped"] and r["line"] == f"core clipped in master_L_hdr: {r['clipped_px']} px"
+    assert not r["still_clipped"]
+    assert r["line"] == f"core not clipped in master_L_hdr: {r['clipped_px']} px (limit 25)"
     bad = check_master(tmp_path / "missing.xisf", 60.0)
     assert "not checked" in bad["line"]
 
@@ -378,7 +379,7 @@ def test_master_check_run_prefers_hdr_and_logs(tmp_path):
     assert [r["master"] for r in res] == ["master_L_hdr", "master_R"]
     assert not res[0]["still_clipped"] and res[1]["still_clipped"]
     log = (out / "pipeline.log").read_text(encoding="ascii")
-    assert "core clipped in master_L_hdr: " in log and "still clipped" in log
+    assert "core not clipped in master_L_hdr: " in log and "core clipped in master_R: " in log
     # no HDR made: the long master
     res = cm.check_run(out, stacks, [], r_px=60.0, echo=lambda s: None)
     assert res[0]["master"] == "master_L" and res[0]["still_clipped"]
@@ -480,8 +481,8 @@ def test_pipeline_checks_the_hdr_master_into_ledger_and_log(mono_lib, tmp_path, 
     led = json.loads(Path(res["ledger"]).read_text())
     assert any(c["master"] == "master_L_hdr" for c in led["machine"]["core_check"])
     log = (out / "out" / "pipeline.log").read_text(encoding="ascii")
-    assert "core clipped in master_L_hdr: " in log
-    assert any("core clipped in master_L_hdr" in m for m in msgs)
+    assert "core not clipped in master_L_hdr: " in log
+    assert any("core not clipped in master_L_hdr" in m for m in msgs)
 
 
 def test_warn_px_scales_with_the_rig_pixel_area(tmp_path):

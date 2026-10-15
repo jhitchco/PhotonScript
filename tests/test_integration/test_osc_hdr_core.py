@@ -381,3 +381,63 @@ def test_read_xisf_pixinsight_header_with_xsi_schema(tmp_path):
     out = cm.read_xisf(p)
     assert out is not None and out.shape == (1, 3, 4)
     assert np.allclose(out, data)
+
+
+# ------------------------------------------------- 2026-10-15 core wording
+
+def _heart_run(tmp_path, clipped_px, target=None):
+    st = _st([120, 300])
+    osc_hdr.attach([st], {"OSC": {120.0: 5, 300.0: 5}}, tmp_path / "out", max_s=180, min_frames=3)
+    _write_xisf(tmp_path / "out" / "master" / "master_OSC.xisf", _galaxy(False))
+    _write_xisf(Path(st["short_subset"]["output"]), _galaxy(False))
+    lines = []
+
+    def check(path, r_px, warn_px):
+        from photonscript.integration.core_master import verdict
+        return {"master": "master_OSC", "clipped_px": clipped_px,
+                **verdict("master_OSC", clipped_px, warn_px)}
+    r = osc_hdr.run(tmp_path, st, {120.0: 5, 300.0: 5}, r_core_px=46.4, warn_px=25, exe="x",
+                    echo=lines.append, check=check, target=target)
+    return r, lines
+
+
+def test_combine_line_and_core_check_line_agree(tmp_path):
+    """Heart 2026-10-15 printed "core not clipped in master_OSC (13 px)" and
+    "core clipped in master_OSC: 13 px": one rule (over warn_px) and one
+    wording now."""
+    from photonscript.integration.core_master import verdict
+    r, lines = _heart_run(tmp_path, 13)
+    v = verdict("master_OSC", 13, 25)
+    assert not v["still_clipped"] and v["line"] == "core not clipped in master_OSC: 13 px (limit 25)"
+    assert r["status"] == "skipped"
+    assert lines[-1] == "  OSC core combine: " + v["line"] + ": single master kept"
+    hot = verdict("master_OSC", 26, 25)
+    assert hot["still_clipped"] and hot["line"] == "core clipped in master_OSC: 26 px (over 25)"
+    assert verdict("master_OSC", 25, 25)["still_clipped"] is False      # the limit itself
+
+
+def test_no_compact_core_skips_the_check_with_one_line(tmp_path):
+    from photonscript.integration import core_master as cm
+    from photonscript.shared.core_sat import compact_core
+    assert compact_core("M31") == (True, "galaxy")
+    assert compact_core("M13")[0] and compact_core("NGC 6543")[0]       # globular, planetary
+    assert compact_core("Heart Nebula") == (False, "emission nebula")
+    assert compact_core("M45") == (False, "open cluster")
+    assert compact_core("Not A Catalog Thing")[0]                       # unknown: checked
+    assert compact_core("x", "Supernova Remnant") == (False, "supernova remnant")
+    r, lines = _heart_run(tmp_path, 13, target="Heart Nebula")
+    assert r["status"] == "skipped" and "long_check" not in r
+    assert lines == ["  OSC core combine: core check skipped: Heart Nebula is an emission "
+                     "nebula (no compact core): single master kept"]
+    echo = []
+    res = cm.check_run(tmp_path / "out", [_st([300])], [], r_px=46.4, warn_px=25,
+                       echo=echo.append, target="Heart Nebula")
+    assert res == [{"skipped": "no compact core",
+                    "line": "core check skipped: Heart Nebula is an emission nebula "
+                            "(no compact core)"}]
+    assert echo == ["  " + res[0]["line"]]
+    assert res[0]["line"] in (tmp_path / "out" / "pipeline.log").read_text("ascii")
+    # a galaxy is still checked
+    res = cm.check_run(tmp_path / "out", [_st([300])], [], r_px=46.4, warn_px=25,
+                       echo=lambda s: None, target="M31")
+    assert res and res[0].get("master") == "master_OSC"

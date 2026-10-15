@@ -831,7 +831,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
                 with timer.stage("OSC core combine (check + PixInsight)"):
                     rh = osc_hdr.run(run_dir, st, stack_counts.get(st["name"], {}),
                                      r_core_px=_core_r_px(o, g0), warn_px=o.core_warn_px,
-                                     exe=o.pixinsight, echo=echo)
+                                     exe=o.pixinsight, echo=echo, target=o.target)
                 result["hdr"] = rh
                 if rh["made"]:
                     fcfg["masters"] = hdr.finish_masters(fcfg["masters"], rh["items"], rh["made"], out_dir)
@@ -857,7 +857,7 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
             result["core_check"] = core_master.check_run(
                 out_dir, [s for s in stacks if s["name"] not in {k["stack"] for k in skipped}],
                 (result.get("hdr") or {}).get("made") or [], r_px=r_px,
-                warn_px=o.core_warn_px, echo=echo)
+                warn_px=o.core_warn_px, echo=echo, target=o.target)
         if pi_ok and o.finish:
             with timer.stage("PixInsight finish (launch to exit)"):
                 r2 = runner.run_script(finish_js, out_dir / "finish.log", exe=o.pixinsight, echo=echo)
