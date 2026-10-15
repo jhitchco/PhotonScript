@@ -977,8 +977,23 @@ def tpoint_autocal_cmd(
     binning: Optional[int] = typer.Option(None, "--binning"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan, "
                                  "the preflight and every script; send nothing"),
-    go: bool = typer.Option(False, "--go", help="The live run (NOT "
-                            "IMPLEMENTED yet)"),
+    go: bool = typer.Option(False, "--go", help="The live run (loop mode "
+                            "only; operator at the console; untested on "
+                            "hardware: start with --test)"),
+    side: str = typer.Option("both", "--side", help="east | west | both "
+                             "(which side of the meridian to sample)"),
+    from_coverage: bool = typer.Option(False, "--from-coverage", help="Pick "
+                                       "the points from the TPoint coverage "
+                                       "module when this build has one, else "
+                                       "the grid + --side"),
+    test: bool = typer.Option(False, "--test", help="Supervised first test: "
+                              "--points 3 --side west, verbose, and a pause "
+                              "after point 1 to check TPoint by eye"),
+    verbose: bool = typer.Option(False, "--verbose", help="Print every "
+                                 "TheSky script call and reply"),
+    slew_timeout: float = typer.Option(180.0, "--slew-timeout",
+                                       help="Seconds before a slew counts "
+                                       "as stuck (abort + stop)"),
     status: bool = typer.Option(False, "--status", help="Dry run: also read "
                                 "the scheduler's GET /api/arm and GET "
                                 "/api/apps/status for the preflight"),
@@ -989,11 +1004,14 @@ def tpoint_autocal_cmd(
     as_json: bool = typer.Option(False, "--json", help="Print JSON"),
 ):
     """TPoint autocal: grow the TPoint model with TheSky's own camera,
-    operator-started and supervised (docs/TPOINT_AUTOCAL.md). Only the dry
-    run exists: it prints the preflight, the NINA camera hand-off and every
-    TheSky script, and sends nothing to TheSky or NINA. Never arms.
+    operator-started and supervised (docs/TPOINT_AUTOCAL.md). --dry-run
+    prints the preflight, the points, the NINA camera hand-off and every
+    TheSky script, and sends nothing. --go --mode loop runs it live (never
+    arms, never syncs, never parks; Ctrl+C stops and gives the camera back).
 
-    photonscript tpoint-autocal --points 30 --dry-run
+    photonscript tpoint-autocal --side west --points 20 --dry-run
+    photonscript tpoint-autocal --go --test
+    photonscript tpoint-autocal --go --side west --points 20
     """
     import json as _json
     from datetime import datetime as _dt
@@ -1001,16 +1019,54 @@ def tpoint_autocal_cmd(
     if dry_run and go:
         console.print("pick one of --dry-run and --go", markup=False)
         raise typer.Exit(2)
-    if go:
+    if mode not in ta.MODES:
+        console.print(f"--mode must be one of {', '.join(ta.MODES)}", markup=False)
+        raise typer.Exit(2)
+    if go and mode != "loop":
         try:
             ta.run_go()
         except NotImplementedError as e:
             console.print(str(e), markup=False)
             raise typer.Exit(2)
-    if mode not in ta.MODES:
-        console.print(f"--mode must be one of {', '.join(ta.MODES)}", markup=False)
+    from photonscript.telescope_agent import tpoint_autocal_live as tal
+    if side not in tal.SIDES:
+        console.print(f"--side must be one of {', '.join(tal.SIDES)}", markup=False)
         raise typer.Exit(2)
+    if test:
+        points, side = tal.TEST_POINTS, tal.TEST_SIDE
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if mode == "loop":
+        _now = _dt.utcnow()
+        _exp = float(exposure_s if exposure_s is not None else
+                     getattr(cfg, "tpoint_mapping_exposure_s", 5.0) or 5.0)
+        sel = tal.select_points(cfg, points, side, _now, _exp,
+                                tal.dark_end(cfg, _now),
+                                from_coverage=from_coverage)
+    if go:
+        say = lambda m: console.print(m, markup=False, highlight=False)  # noqa: E731
+        say("TPoint autocal LIVE, loop mode" + (" (TEST: 3 west points)" if test else "")
+            + ". It will borrow the scope and NINA #1's camera; it never arms, "
+            "syncs or parks.")
+        say(tal.format_points(sel))
+        if not sel["points"]:
+            say("No usable points: nothing to do.")
+            raise typer.Exit(1)
+        b = int(binning if binning is not None else
+                getattr(cfg, "tpoint_mapping_binning", 2) or 2)
+        opts = tal.Opts(exposure_s=exposure_s, binning=b,
+                        image_scale_per_bin1=float(getattr(cfg, "pixel_scale_arcsec", 0.236)
+                                                   or 0.236),
+                        test=test, verbose=verbose or test,
+                        slew_timeout_s=slew_timeout,
+                        csv_path=tal.csv_path(cfg, _now),
+                        auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
+                        auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)),
+                        min_alt=float(sel["min_alt"]))
+        res = tal.run_loop(cfg, sel["points"], tal.live_deps(cfg, url, say=say), opts)
+        if as_json:
+            print(_json.dumps({k: v for k, v in res.items() if k != "rows"},
+                              indent=2, default=str))
+        raise typer.Exit(0 if res["status"] == "done" else 1)
     arm = apps = None
     if status:   # read-only GETs on PhotonScript's own scheduler
         import httpx
@@ -1033,13 +1089,18 @@ def tpoint_autocal_cmd(
                        auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
                        auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)))
     plan = ta.build_plan(cfg, points=points, mode=mode, exposure_s=exposure_s,
-                         binning=binning)
+                         binning=binning,
+                         sky_points=sel["points"] if mode == "loop" else None)
     if as_json:
         print(_json.dumps({"dry_run": True, "preflight": pre, "backup": backup,
-                           "plan": plan}, indent=2, default=str))
+                           "plan": plan, "selection": sel if mode == "loop" else None},
+                          indent=2, default=str))
     else:
         console.print(ta.format_plan(plan, pre, show_scripts=scripts),
                       markup=False, highlight=False)
+        if mode == "loop":
+            console.print("Points for --go:\n" + tal.format_points(sel),
+                          markup=False, highlight=False)
     raise typer.Exit(0)
 
 

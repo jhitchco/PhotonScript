@@ -1,7 +1,9 @@
 """TPoint autocal (docs/TPOINT_AUTOCAL.md): the preflight, the backup plan,
 the NINA hand-off description, the TheSky script builders, the dry-run CLI
-and the safety fences (nothing in the module can send; --go is not
-implemented; the write scripts never join the read-only TheSky set)."""
+and the safety fences (nothing in the module can send; --go --mode window
+is not implemented, loop mode lives in tpoint_autocal_live and is tested in
+test_tpoint_autocal_loop; the write scripts never join the read-only TheSky
+set)."""
 import re
 from datetime import datetime
 from pathlib import Path
@@ -223,7 +225,8 @@ def test_build_plan_loop_and_window(tmp_path):
     with pytest.raises(ValueError):
         ta.build_plan(cfg, mode="auto")
     txt = ta.format_plan(p, ta.preflight(None, None, None, None))
-    assert "DRY RUN" in txt and "NO GO" in txt and "not implemented" in txt
+    assert "DRY RUN" in txt and "NO GO" in txt and "--test" in txt
+    assert "not implemented" in ta.format_plan(w)
     assert txt.isascii()
 
 
@@ -242,7 +245,8 @@ def test_cli_dry_run_sends_nothing(tmp_path, monkeypatch):
     assert r.exit_code == 0, r.output
     assert "DRY RUN" in r.output and "NO GO" in r.output
     assert "equipment/camera/disconnect" in r.output
-    r = CliRunner().invoke(cli.app, ["tpoint-autocal", "--go"])
+    assert "Points for --go" in r.output
+    r = CliRunner().invoke(cli.app, ["tpoint-autocal", "--go", "--mode", "window"])
     assert r.exit_code == 2 and "not implemented" in r.output
     r = CliRunner().invoke(cli.app, ["tpoint-autocal", "--go", "--dry-run"])
     assert r.exit_code == 2

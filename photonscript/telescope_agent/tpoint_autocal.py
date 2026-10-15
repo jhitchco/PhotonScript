@@ -1,5 +1,5 @@
-"""TPoint autocal: grow the TPoint model with TheSky's own camera (design +
-offline building blocks only, docs/TPOINT_AUTOCAL.md).
+"""TPoint autocal: grow the TPoint model with TheSky's own camera (the pure
+building blocks; the live loop is tpoint_autocal_live, docs/TPOINT_AUTOCAL.md).
 
 Why: the scripted TPoint add does not add points (PS-187: TheSky's Add
 Pointing Sample acts on TheSky's own camera Image Link, not on a scripted
@@ -25,8 +25,10 @@ What is here (all pure, nothing is sent anywhere):
   poll, abort, open the Automated Pointing Calibration window.
 * build_plan() / format_plan(): the whole procedure as numbered steps, for
   ``photonscript tpoint-autocal --dry-run``.
-* run_go(): NOT IMPLEMENTED (raises). No code path in this module opens a
-  socket or an HTTP connection; a test greps for that.
+* run_go(): window mode is NOT IMPLEMENTED (raises). Loop mode runs live
+  in tpoint_autocal_live (adapters for TheSky / NINA / the scheduler); no
+  code path in THIS module opens a socket or an HTTP connection, a test
+  greps for that.
 
 Confirmed vs candidate (see the doc's "What is confirmed" table): the
 ccdsoftCamera / sky6RASCOMTele / ImageLink / AutomatedImageLinkSettings
@@ -63,10 +65,11 @@ OVERHEAD_S = 35.0
 PASS, WARN, FAIL, UNKNOWN = "pass", "warn", "fail", "unknown"
 
 GO_NOT_IMPLEMENTED = (
-    "tpoint-autocal --go is not implemented yet: this build only plans "
-    "(--dry-run). Run TheSky's Automated Pointing Calibration by hand as on "
-    "2026-10-10, or see docs/TPOINT_AUTOCAL.md for the supervised first "
-    "test that must pass before --go is written.")
+    "tpoint-autocal --go --mode window is not implemented: open TheSky's "
+    "Automated Pointing Calibration by hand as on 2026-10-10. The live loop "
+    "mode is --go --mode loop (start with --test, docs/TPOINT_AUTOCAL.md).")
+GO_LOOP_NOTE = ("--go --mode loop runs this live (telescope_agent."
+                "tpoint_autocal_live; untested on hardware: start with --test)")
 
 
 # --------------------------------------------------------------- preflight
@@ -533,11 +536,11 @@ def format_plan(plan: dict, pre: dict | None = None,
             out.append(f"        {r['method']} {r['url']}  ({r['why']})")
         if show_scripts and s.get("script"):
             out.append(f"        JS: {s['script']}")
-    out.append("--go is not implemented: " + GO_NOT_IMPLEMENTED)
+    out.append(GO_LOOP_NOTE if plan["mode"] == "loop" else GO_NOT_IMPLEMENTED)
     return "\n".join(out)
 
 
 def run_go(*_args, **_kwargs):
-    """The live run. Deliberately not implemented (docs/TPOINT_AUTOCAL.md:
-    the supervised first test comes first)."""
+    """The window-mode live run: deliberately not implemented (the loop
+    mode lives in tpoint_autocal_live)."""
     raise NotImplementedError(GO_NOT_IMPLEMENTED)

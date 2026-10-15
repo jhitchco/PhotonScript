@@ -1,10 +1,113 @@
-# TPoint autocal (design, operator-started, supervised)
+# TPoint autocal (operator-started, supervised)
 
-Status: DESIGN plus offline building blocks. `photonscript tpoint-autocal
---dry-run` prints the plan, the preflight and every TheSky script and sends
-nothing. `--go` is NOT implemented (it raises with a message). Code:
-`photonscript/telescope_agent/tpoint_autocal.py`, tests
-`tests/test_scheduler/test_tpoint_autocal.py`.
+Status (2026-10-15): LOOP MODE LIVE RUN IMPLEMENTED, UNTESTED ON HARDWARE.
+`photonscript tpoint-autocal --go --mode loop` (the default mode) runs the
+loop below with TheSky's own camera. Window mode `--go` is still not
+implemented. `--dry-run` prints the preflight, the chosen points and every
+TheSky script and sends nothing. Code:
+`photonscript/telescope_agent/tpoint_autocal.py` (pure: preflight, backup
+plan, script builders, dry-run plan) and
+`photonscript/telescope_agent/tpoint_autocal_live.py` (point selection and
+the live loop, every outside call through a small adapter). Tests:
+`tests/test_scheduler/test_tpoint_autocal.py`,
+`tests/test_scheduler/test_tpoint_autocal_loop.py` (fakes only).
+
+## Commands
+
+Run them on the scope PC, in a console Jeremy watches (they ask
+questions; Ctrl+C stops safely).
+
+| What | Command |
+|---|---|
+| See the points, send nothing | `photonscript tpoint-autocal --side west --points 20 --dry-run --no-scripts` |
+| Supervised 3-point first test | `photonscript tpoint-autocal --go --test` |
+| West-side top-up | `photonscript tpoint-autocal --go --side west --points 20` |
+| Both sides | `photonscript tpoint-autocal --go --points 40` |
+
+Options: `--side east|west|both` (default both), `--points N` (1..500),
+`--from-coverage` (points from a TPoint coverage module when the build has
+one; today it falls back to the grid + `--side`, and says so),
+`--exposure-s` (default: TheSky's Automated Image Link exposure, else
+`tpoint_mapping_exposure_s`), `--binning` (default
+`tpoint_mapping_binning` 2), `--slew-timeout` (180 s), `--verbose` (every
+TheSky script call and reply), `--url` (the scheduler, for the GET
+preflight), `--json` (the summary as JSON at the end). `--test` = `--points
+3 --side west --verbose` plus a pause after the first solved point to look
+at TPoint's pointing data.
+
+### What `--go --mode loop` does
+
+1. **Points.** `tpoint_mapping.plan_points` (equal-area grid above
+   `tpoint_mapping_min_alt`, meridian band, under-pole and moon skipped),
+   filtered to `--side` (and, for east / west, at least 0.5 h from the
+   meridian so the mount cannot pick the other pier side), thinned evenly
+   to N, walked serpentine (hour-angle strips, Dec up / down, east before
+   west). Each point gets a slot time (now + i x ~40 s: 5 s exposure + 35 s
+   overhead, plus 90 s for the pier flip between halves). The mount slews
+   to a fixed alt / az and then tracks, so a point is dropped when its
+   tracked position would set below min alt, or (east) drift into the
+   meridian band, before its slot ends; slots after astronomical dawn are
+   dropped. The list (with UTC times) is printed first.
+2. **Preflight** (refuses on any fail or unknown): GET `/api/arm` DISARMED,
+   GET `/api/apps/status` (both NINAs no RUNNING item, no calibration
+   capture job, TheSky answering with the mount connected, sun <= -12),
+   NINA #1 safety monitor IsSafe, `PS_AUTO_ARM_ENABLED` false, TPoint files
+   found to back up.
+3. **Backup.** Copies every TPoint file to
+   `C:\astro\tpoint_backup\<UTC stamp>\`, reads the TPoint input-data
+   row count (`in.dat` / `Indat.dat` files), then asks Jeremy to note
+   TPoint's point count, save unsaved points, check TheSky's Camera Setup
+   and PHD2, and type `yes`. Anything else: nothing is sent.
+4. **Lend the camera.** NINA #1 sequence idle again, camera info recorded
+   (cooler, setpoint), `/equipment/camera/disconnect`, wait for Connected
+   false; TheSky reads its selected camera, `ccdsoftCamera.Connect()`.
+5. **Setup.** TheSky camera exposure / bin / light / autosave / async;
+   Automated Image Link scale (`pixel_scale_arcsec` x bin) and exposure.
+6. **Per point.** Re-check: armer DISARMED, roof safe, NINA #1 idle (else
+   stop). `SlewToAzAlt` async, poll `IsSlewComplete` (timeout = stop),
+   settle 2 s, `TakeImage` async, poll `IsExposureComplete` (exposure +
+   120 s), `AutoMap()`, read the TPoint input-data count again, one CSV
+   row in `runs/<night>_tpoint_autocal.csv`, an ETA line.
+7. **Confirm AutoMap adds.** After the first solved point: if the file
+   count went up, AutoMap adds points (`--test` asks Jeremy to confirm
+   anyway). If it did not (TPoint may only write the file on save) Jeremy
+   looks at TPoint's pointing data: yes = go on (later points rely on
+   AutoMap's solve), no = stop, "AutoMap did not add a sample".
+8. **Stop rules.** 2 AutoMap failures in a row (not solved, or solved with
+   no sample while the file count is live), slew or exposure timeout, a
+   TheSky error, the armer leaving DISARMED, the roof unsafe, NINA #1
+   running, Ctrl+C. Abort (`ccdsoftCamera.Abort()` + `sky6RASCOMTele.Abort()`)
+   is sent only while a slew or exposure may be in flight.
+9. **Hand-back (always).** TheSky `ccdsoftCamera.Disconnect()`, NINA #1
+   `/equipment/camera/connect`, wait for Connected true, cooler re-applied
+   at the old setpoint if it was on. Not connected: a loud console block
+   and a Pushover, no retry loop.
+10. **Summary.** Points attempted / solved / failed, samples confirmed in
+    the file (or by eye), time, the in.dat count before / after, whether
+    the camera is back, and the next step: refit the Super Model in TPoint
+    by hand, save, Apply corrections / ProTrack, `photonscript
+    tpoint-stats`.
+
+Never arms, never dispatches, never loads or starts a NINA sequence, never
+syncs (no ClosedLoopSlew), never parks, never changes tracking.
+
+### Known unknowns (the 3-point test answers them)
+
+- Does `sky6RASCOMTheSky.AutoMap()` add a TPoint sample on build 14139
+  (and without a dialog)? The whole loop depends on it.
+- Does NINA #1 release the AP26MC so TheSky's Connect works (ASCOM vs
+  native driver), and does NINA reconnect cleanly (cooler state)?
+- Does TPoint write `in.dat` / `Indat.dat` as samples are added, or only on
+  save? (If only on save, step 7's operator check carries the run.)
+- `SlewToAzAlt` pier side for west points near 0.5 h HA; `IsSlewComplete`
+  and `IsExposureComplete` read as 1 / 0 or true / false over TCP (both
+  handled).
+- The TCP call for AutoMap blocks for the Image Link solve: the client
+  timeout is raised to 60 s for the run; a slower solve reads as a TheSky
+  error and stops the run.
+- No scheduler-wide "camera lent to TheSky" lock yet: preflight refuses
+  with auto-arm on and warns on dusk flats; do not start a calibration
+  capture by hand during a run.
 
 ## Why
 
@@ -65,7 +168,7 @@ and does the return hand-off and the before / after stats when Jeremy says
 the run is over. This is the 2026-10-10 procedure with the plumbing done
 for him.
 
-## The procedure (`photonscript tpoint-autocal --points N --mode loop|window`)
+## The procedure as designed (`--mode loop|window`; loop is built, see above)
 
 1. **Preflight (PhotonScript, read only).** GET `/api/arm` (state must be
    DISARMED; any of ARMED, RUNNING, PAUSED_UNSAFE, PAUSED_OPERATOR,
