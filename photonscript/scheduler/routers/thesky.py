@@ -19,7 +19,10 @@ GET  /api/thesky/onsite-script           the read-only script for TheSky's
                                          Run Java Script window (on-site check)
 GET  /api/thesky/tpoint                  PS-171: TPoint numbers from TPoint's own
                                          files (points, sky RMS, terms, polar
-                                         ME / MA, ProTrack, model date)
+                                         ME / MA, ProTrack, model date) and the
+                                         coverage of the base model's samples
+                                         (tpoint_coverage: pier side x HA x Dec
+                                         grid, top-up suggestion)
 GET  /api/thesky/tpoint/files            the TPoint files under TheSky's user
                                          folder (names, sizes, dates)
 GET  /api/thesky/tpoint/file?rel=        the head of one listed file
@@ -175,10 +178,20 @@ async def api_thesky_tpoint():
     """TPoint numbers from TPoint's own files (read only; TheSky64 has no
     TPoint scripting object). Saves stats_latest / a history line."""
     from photonscript.scheduler import tpoint_files
+    from photonscript.scheduler import tpoint_coverage as tc
     cfg = _cfg()
     st = await asyncio.to_thread(tpoint_files.stats, cfg)
     await asyncio.to_thread(tpoint_files.save, cfg, st)
     st["text"] = tpoint_files.format_stats(st)
+    try:   # where on the sky the base model has samples (TPoint coverage)
+        cov = await asyncio.to_thread(tc.from_stats, cfg, st)
+    except Exception as e:  # noqa: BLE001
+        cov = {"ok": False, "note": f"{type(e).__name__}: {e}"}
+    st["coverage"] = cov
+    if cov:
+        st["coverage_text"] = tc.format_text(cov)
+        st["text"] += "\n" + st["coverage_text"]
+    st.pop("data_path", None)
     return st
 
 

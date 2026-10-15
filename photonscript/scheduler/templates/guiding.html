@@ -18,6 +18,14 @@
         .g-jump a { color: #7dd3fc; text-decoration: none; }
         .btn-sm { padding: .2rem .6rem; font-size: .75rem; }
         button[disabled] { opacity: .5; }
+        /* TPoint coverage grid (Dec band x HA band) */
+        .tc-grid { border-collapse: collapse; margin: .3rem 0 .5rem; font-size: .75rem; }
+        .tc-grid th, .tc-grid td { padding: .1rem .45rem; text-align: center; }
+        .tc-grid th { opacity: .7; font-weight: 600; }
+        .tc-ok { background: #14532d; color: #86efac; }
+        .tc-thin { background: #713f12; color: #fde047; }
+        .tc-empty { background: #7f1d1d; color: #fca5a5; }
+        .tc-below { opacity: .4; }
         /* PS-119: What to change, nav counts, "N passing" collapse */
         .g-row-fail > td:first-child, .g-attn.g-row-fail { border-left: 3px solid #ef4444; }
         .g-row-warn > td:first-child, .g-attn.g-row-warn { border-left: 3px solid #f59e0b; }
@@ -171,6 +179,7 @@
         <section class="panel" id="tpointSec">
             <h2>TheSky / TPoint Audit (PS-104)</h2>
             <div class="bd" id="tsWatch" title="TPoint run watcher: reads TPoint's files only (GET /api/thesky/tpoint/watch); history: GET /api/thesky/tpoint/history">TPoint: loading...</div>
+            <div class="bd" id="tsCoverage" title="TPoint coverage: where the model has samples, by HA band (east of the meridian before the flip, west after it) and Dec band. Empty / thin cells = the pointing model extrapolates there. Full table and top-up: photonscript tpoint-stats or GET /api/thesky/tpoint"></div>
             <p class="g-intro">Report only: TheSky's settings (read through its TCP scripting with read-only scripts), the ASTAP Image Link check on the newest RC16 L frame, NINA's first-slew error from its Center log, and the TPoint record you enter below, against config/thesky/desired_rc16.toml. Nothing here writes TheSky, moves the mount or takes an image. Runs at arm and on Refresh. TPoint numbers, ProTrack, catalogs and the run binning are not in TheSky's scripting API: enter them after each TPoint session. Unknown = no source could read it.</p>
             <div class="bd" id="tsInfo">loading...</div>
             <div class="g-bar">

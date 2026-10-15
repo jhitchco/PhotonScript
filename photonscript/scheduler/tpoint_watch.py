@@ -306,6 +306,9 @@ def summarize(cfg, st: dict, listing: dict | None = None) -> dict | None:
            "polar_true_arcmin": pol.get("true_pole_arcmin"),
            "polar_ma_arcsec": pol.get("ma_arcsec"),
            "polar_me_arcsec": pol.get("me_arcsec")}
+    cov = coverage_brief(cfg, st)
+    if cov:
+        rec["coverage"] = cov
     if rc and rc.get("has_data") and rc.get("after_base"):
         rt = rc.get("terms") or {}
         rec["recal"] = {"model_date": rc.get("model_date"), "points": rc.get("points"),
@@ -314,6 +317,21 @@ def summarize(cfg, st: dict, listing: dict | None = None) -> dict | None:
                         "terms": {k: round(rt[k]["value"], 1) for k in MAIN_TERMS
                                   if (rt.get(k) or {}).get("value") is not None}}
     return rec
+
+
+def coverage_brief(cfg, st: dict | None) -> dict | None:
+    """The coverage of the model's data file for a history record (overall,
+    points per side, empty / thin cells, top-up), or None."""
+    try:
+        from photonscript.scheduler import tpoint_coverage as tc
+        cov = tc.compact(tc.from_stats(cfg, st, save_it=False))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TPoint coverage not read: %s", e)
+        return None
+    if not cov:
+        return None
+    return {k: cov.get(k) for k in ("overall", "points", "by_side", "empty", "thin",
+                                    "topup_points", "topup_minutes", "line")}
 
 
 def _sig(rec: dict | None) -> tuple:
@@ -469,6 +487,10 @@ def status_text(cfg, state: dict, now: datetime | None = None) -> str:
             bits.append(f"no new point since {_local_hm(cfg, last)} local, waiting for the model fit")
         elif last:
             bits.append(f"last point {_local_hm(cfg, last)} local")
+        rc = state.get("run_coverage") or {}
+        if rc.get("by_side"):
+            bits.append(f"so far east {rc['by_side'].get('east', 0)} / west "
+                        f"{rc['by_side'].get('west', 0)} of the meridian")
         return f"TPoint run in progress ({run.get('name') or 'run'}): " + ", ".join(bits)
     m = state.get("last_model") or (history(cfg) or [None])[-1]
     if not m:
@@ -478,7 +500,16 @@ def status_text(cfg, state: dict, now: datetime | None = None) -> str:
             f"{m.get('fitted_terms', '?')} terms, polar {_num(m.get('polar_arcmin'), 2)}' "
             f"(MA {_arc((m.get('terms') or {}).get('MA'))}, ME {_arc((m.get('terms') or {}).get('ME'))})"
             + (f"; last run finished {_local_hm(cfg, _parse(run.get('finished_utc')))} local"
-               if run.get("finished_utc") and st == "finished" else ""))
+               if run.get("finished_utc") and st == "finished" else "")
+            + (f"; coverage {cov_overall(state, m)}" if cov_overall(state, m) else ""))
+
+
+def cov_overall(state: dict, m: dict | None) -> str | None:
+    c = state.get("coverage") or (m or {}).get("coverage") or {}
+    if not c.get("overall"):
+        return None
+    tp = c.get("topup_points")
+    return c["overall"] + (f" (top-up {tp} points, ~{c.get('topup_minutes')} min)" if tp else "")
 
 
 def short_line(cfg, run: dict, new: dict | None, prev: dict | None,
@@ -500,6 +531,11 @@ def short_line(cfg, run: dict, new: dict | None, prev: dict | None,
               f"polar {_num(new.get('polar_arcmin'), 2)}'{was(p.get('polar_arcmin'), 2, chr(39))}, "
               f"MA {_arc(nt.get('MA'))}" + (f" (was {_arc(pt['MA'])})" if "MA" in pt else "")
               + f", ME {_arc(nt.get('ME'))}" + (f" (was {_arc(pt['ME'])})" if "ME" in pt else ""))
+    cov = (new or {}).get("coverage") or {}
+    if cov.get("overall"):
+        s += (f"; coverage {cov['overall']}"
+              + (f" (top-up {cov['topup_points']} points, ~{cov.get('topup_minutes')} min)"
+                 if cov.get("topup_points") else ""))
     if epoch:
         s += f". {epoch_line(epoch)}"
     return s
@@ -518,6 +554,9 @@ def finish_text(cfg, run: dict, new: dict | None, prev: dict | None,
     lines = [head, *c["lines"]]
     if prev:
         lines.append(f"previous: {prev.get('model_date') or '?'} {prev.get('model_file') or ''}".rstrip())
+    cov = new.get("coverage") or {}
+    if cov.get("line"):
+        lines.append(cov["line"])
     if epoch:
         lines.append(epoch_line(epoch))
     return "\n".join(lines)
@@ -579,6 +618,7 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
                     status = "running"
             run["pace_s"] = pace_s(lst) or run.get("pace_s")
             state["file_sig"] = sig
+            state["run_coverage"] = _coverage_of_text(cfg, text, f["rel"], run.get("pace_s"))
         run["target_points"] = target_points(cfg) or None
         if run.get("pace_s") and run.get("target_points") and status == "running":
             left = max(0, run["target_points"] - int(run.get("points") or 0))
@@ -631,13 +671,16 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
                     _event(cfg, night, "epoch", epoch_line(epoch), now, epoch=epoch)
                 push = text
             state["last_model"] = new or state.get("last_model")
+            state["coverage"] = _save_coverage(cfg, st) or state.get("coverage")
             state["models_ts"] = max((x.get("_ts", 0) for x in listing.get("files") or []),
                                      default=0)
     elif status in ("idle", "finished"):
         # a refit / recal while no run is in progress
         newest = max((x.get("_ts", 0) for x in listing.get("files") or []), default=0)
         if newest and newest != state.get("models_ts"):
-            res = record_model(cfg, listing, now)
+            st_now = tf.stats(cfg, listing)
+            res = record_model(cfg, listing, now, st_now)
+            state["coverage"] = _save_coverage(cfg, st_now) or state.get("coverage")
             state["models_ts"] = newest
             if res["added"]:
                 state["last_model"] = res["added"]
@@ -649,6 +692,26 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
     state["text"] = status_text(cfg, state, now)
     _write_json(state_path(cfg), state)
     return {"state": state, "push": push}
+
+
+def _coverage_of_text(cfg, text: str, rel: str, pace: float | None) -> dict | None:
+    try:
+        from photonscript.scheduler import tpoint_coverage as tc
+        return tc.compact(tc.analyze(text, cfg, file=rel, pace_s=pace,
+                                     pace_source="this run" if pace else None))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TPoint run coverage not computed: %s", e)
+        return None
+
+
+def _save_coverage(cfg, st: dict | None) -> dict | None:
+    """The base model's coverage (saved as coverage_latest.json), compact."""
+    try:
+        from photonscript.scheduler import tpoint_coverage as tc
+        return tc.compact(tc.from_stats(cfg, st))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TPoint coverage not saved: %s", e)
+        return None
 
 
 def _ts_of(dt: datetime) -> float:

@@ -33,6 +33,9 @@ Built only from data other passes already keep (nothing is measured here):
     23:58 local (model fitted): sky RMS ... (was ...), polar ... MA / ME
     (was ...)" and, when the polar axis moved, "Unguided limits: evidence
     restarts <night>"
+  * TPoint coverage (tpoint_coverage.morning_line): while the model has
+    empty / thin cells, "TPoint coverage: east-only (99 points ...): west 7
+    empty of 7 cells. Top-up: 43 points in 8 cells, about 34 min"
   * NINA log size (PS-174): a line only when a rig's newest NINA log is
     over nina_log_warn_mb or on pace to pass it (nina_log_watch)
   * Piggy guard (run events kind piggy_guard): "Piggy guard: NINA #2 took
@@ -204,7 +207,8 @@ def report_card(config, date: str | None = None, *, projects=None,
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
            "sub_doctor": None, "core": None, "blend": None,
-           "night_pilot": [], "deep_night": None, "tpoint": None}
+           "night_pilot": [], "deep_night": None, "tpoint": None,
+           "tpoint_coverage": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -278,6 +282,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["tpoint"] = tp_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no TPoint line: %s", e)
+    try:   # TPoint coverage: a line while the model has empty / thin cells
+        from photonscript.scheduler.tpoint_coverage import morning_line as tc_line
+        out["tpoint_coverage"] = tc_line(config)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no TPoint coverage line: %s", e)
     try:   # PS-174: NINA log size watch (file sizes only, no log read)
         from photonscript.scheduler.nina_log_watch import log_sizes, morning_line
         sizes = log_sizes(config)
@@ -380,6 +389,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["unguided_limits"])
     if card.get("tpoint"):
         lines.append(card["tpoint"])
+    if card.get("tpoint_coverage"):
+        lines.append(card["tpoint_coverage"])
     if card.get("blend"):
         lines.append(card["blend"])
     if card.get("library"):

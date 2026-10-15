@@ -39,12 +39,14 @@ def api_unguided_limits(rig: str = "", refresh: bool = False):
     doc = ul.refresh(cfg) if refresh else ul.table(cfg)
     if not doc:
         return {"mode": ul.mode(cfg), "probe": ul.probe_mode(cfg), "rigs": {}}
+    cov = ul.tpoint_coverage(cfg)
     rigs = {}
     for rg, t in (doc.get("rigs") or {}).items():
         if rig and rg != rig:
             continue
         rigs[rg] = {**{k: v for k, v in t.items() if k != "evidence"},
-                    "rows": ul.table_rows(t),
+                    "rows": ul.table_rows(t, cov),
                     "dark_lengths": ul.learned_dark_lengths(cfg, rg, doc)}
     return {"refreshed_at": doc.get("refreshed_at"), "since": doc.get("since"),
-            "mode": ul.mode(cfg), "probe": ul.probe_mode(cfg), "rigs": rigs}
+            "mode": ul.mode(cfg), "probe": ul.probe_mode(cfg), "rigs": rigs,
+            "tpoint_coverage": (cov or {}).get("overall")}
