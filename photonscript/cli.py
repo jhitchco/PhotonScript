@@ -858,16 +858,34 @@ def tpoint_stats_cmd(
     as_json: bool = typer.Option(False, "--json", help="Print JSON"),
     files: bool = typer.Option(False, "--files", help="Also list the TPoint "
                                "files found under TheSky's user folder"),
+    show_history: bool = typer.Option(
+        False, "--history", help="The fitted-model history the TPoint watcher "
+        "keeps (date, points, RMS, popn SD, terms, IH / ID / MA / ME / CH / NP, "
+        "polar error) and the unguided limits epoch; reads no TPoint file"),
 ):
     """PS-171: the TPoint model's numbers from TPoint's own files (TheSky64
     has no TPoint scripting object): points, sky RMS, terms, polar
     alignment (ME / MA and what to adjust), ProTrack, model date. Read only.
 
     photonscript tpoint-stats
+    photonscript tpoint-stats --history
     """
     import json as _json
     from photonscript.scheduler import tpoint_files as tf
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if show_history:
+        from photonscript.scheduler import tpoint_watch as tw
+        recs = tw.history(cfg)
+        if as_json:
+            print(_json.dumps({"models": recs, "epoch": tw.load_epoch(cfg),
+                               "watch": tw.load_state(cfg)}, indent=2, default=str))
+        else:
+            console.print(tw.format_history(cfg, recs), markup=False, highlight=False)
+            st = tw.load_state(cfg)
+            if st:
+                console.print("  watcher: " + tw.status_text(cfg, st), markup=False,
+                              highlight=False)
+        raise typer.Exit(0)
     lst = tf.list_files(cfg)
     st = tf.stats(cfg, lst)
     tf.save(cfg, st)

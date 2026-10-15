@@ -629,6 +629,45 @@ probe, and every change is a line in `<data_dir>/tpoint/stats_history.jsonl`
 that the PS-168 drift trend uses to key nights by model (date, points)
 when the audit has no record for that night.
 
+TPoint run watcher (2026-10-14, `scheduler/tpoint_watch.py`, a scheduler
+background task; reads TPoint's files only, never TheSky or the mount).
+During a calibration run TheSky autosaves `TPoint\<run> in.dat` and
+`<run> outmod.dat` (6 basic terms) after every point. The watcher follows
+the newest raw-input data file (read only when its size or mtime changes):
+- running: its point count grew. Pace = mean gap between points from the
+  LST column of each observation (gaps over 10 min left out), ETA to
+  `tpoint_run_target_points` when set (0 = pace only);
+- stopped: no new point for `tpoint_watch_quiet_min` (15) and no fitted
+  model: waiting for the fit;
+- finished: a model file written at or after the last point with more than
+  the 6 basic terms fitted (the Super Model fit), or stopped for
+  `tpoint_watch_fit_wait_min` (45) more. Once per run: one Pushover
+  ("PhotonScript TPoint run finished", `tpoint_watch_mode` alert; observe
+  = no push) with points, pace, sky RMS, popn SD, terms fitted, points and
+  MA / ME / polar error against the previous model, a `tpoint_watch` run
+  event and a "TPoint: ..." morning report line (a TPoint night has no
+  subs log, so the line also shows on the next morning card whose night is
+  earlier). A run seen only after it ended is never pushed.
+Model history: `<data_dir>/tpoint/models.jsonl`, one line per fitted model
+(date, local night, points, points in the fit, sky RMS, popn SD, terms
+fitted, IH ID MA ME CH NP of the base model, an active recal, the polar
+error), appended when the model in TPoint's files changes while no run is
+in progress; an empty history is seeded with the model before the newest
+run and the current one. `GET /api/thesky/tpoint/history`, `photonscript
+tpoint-stats --history` (remote CLI: read). The Guiding tab's TheSky /
+TPoint section opens with the watcher's status line (`GET
+/api/thesky/tpoint/watch`): "TPoint run in progress: 89 points of 228, 45
+s/point, ETA 23:33 local" or "TPoint model 2026-10-15: 228 points, sky RMS
+..., polar ...' (MA ..., ME ...)".
+Unguided limits epoch: a new BASE model whose MA or ME moved more than
+`tpoint_epoch_polar_shift_arcsec` (30") from the previous base model (the
+polar axis was moved, e.g. the 2026-10-14 SharpCap alignment: MA -160" to
+-76", ME -80" to +8") writes `<data_dir>/tpoint/unguided_epoch.json`; the
+learned unguided limits then take evidence from that model's local night
+on (the later of it and the TPoint model in force; `unguided_limit_since`
+still overrides both), the table is refreshed at once and the morning line
+says "Unguided limits: evidence restarts <night>".
+
 TPoint Command Line from a script: not available on build 14139. There is
 no TPoint scripting object, `TheSkyXAction`'s TPoint members
 (`TPointAddOn2` = 147, `TPointModule`) are action ids that open TPoint's
@@ -659,7 +698,10 @@ Config: `tpoint_mapping_points` (60, 3 to 300), `tpoint_mapping_min_alt`
 missing = frames only), `tpoint_sample_add` (off | auto),
 `tpoint_sample_add_method` ("" = the probe's first; or one candidate id),
 `thesky_user_dir` (TheSky's user folder for the TPoint files; "" = the
-default Documents path).
+default Documents path), `tpoint_watch_mode` (alert | observe | off),
+`tpoint_run_target_points` (0), `tpoint_watch_poll_s` (60; 5x idle),
+`tpoint_watch_quiet_min` (15), `tpoint_watch_fit_wait_min` (45),
+`tpoint_epoch_polar_shift_arcsec` (30; 0 = never).
 
 ### A safe hand-built NINA #2 sequence (PS-139)
 
@@ -827,7 +869,9 @@ round per rig and region from the graded subs:
 
 - Evidence: lights of unguided nights (plan snapshot: target or PS-85 block
   unguided; tracking-test subs count; no plan entry: PHD2 stopped) since the
-  TPoint model in force (`unguided_limit_since` overrides), over
+  TPoint model in force, or the TPoint watcher's epoch when a new base
+  model moved the polar axis and that is later (section "TPoint run
+  watcher"; `unguided_limit_since` overrides both), over
   `unguided_limit_lookback_days` (60). Left out and counted: PHD2 active
   during the sub or within 10 min of an active sub on either rig, a sub
   doctor `guider_conflict` diagnosis covering it (the 2026-10-12 Heart night

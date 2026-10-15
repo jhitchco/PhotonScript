@@ -29,6 +29,10 @@ Built only from data other passes already keep (nothing is measured here):
   * learned unguided limits (unguided_limits.morning_line): "Unguided
     limits: tonight M31 (Dec +41 east) 180 s 2/2 round; 300 s 0/2. Plan:
     ..." (what advise suggested or apply cut, the probe)
+  * TPoint (tpoint_watch.morning_line): "TPoint: 228-point run finished
+    23:58 local (model fitted): sky RMS ... (was ...), polar ... MA / ME
+    (was ...)" and, when the polar axis moved, "Unguided limits: evidence
+    restarts <night>"
   * NINA log size (PS-174): a line only when a rig's newest NINA log is
     over nina_log_warn_mb or on pace to pass it (nina_log_watch)
   * Piggy guard (run events kind piggy_guard): "Piggy guard: NINA #2 took
@@ -200,7 +204,7 @@ def report_card(config, date: str | None = None, *, projects=None,
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
            "sub_doctor": None, "core": None, "blend": None,
-           "night_pilot": [], "deep_night": None}
+           "night_pilot": [], "deep_night": None, "tpoint": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -269,6 +273,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["unguided_limits"] = ul_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no unguided limits line: %s", e)
+    try:   # TPoint run watcher: a run that finished, the unguided epoch
+        from photonscript.scheduler.tpoint_watch import morning_line as tp_line
+        out["tpoint"] = tp_line(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no TPoint line: %s", e)
     try:   # PS-174: NINA log size watch (file sizes only, no log read)
         from photonscript.scheduler.nina_log_watch import log_sizes, morning_line
         sizes = log_sizes(config)
@@ -364,6 +373,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["tracking"])
     if card.get("unguided_limits"):
         lines.append(card["unguided_limits"])
+    if card.get("tpoint"):
+        lines.append(card["tpoint"])
     if card.get("blend"):
         lines.append(card["blend"])
     if card.get("library"):

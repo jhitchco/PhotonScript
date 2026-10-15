@@ -18,3 +18,4 @@
 
 # PS-171: real TheSky64 TPoint files, kept byte for byte (CRLF)
 tests/test_scheduler/fixtures/tpoint/thesky64_* -text
+tests/test_scheduler/fixtures/tpoint/2026-10-14/* -text

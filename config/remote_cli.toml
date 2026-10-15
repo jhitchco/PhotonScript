@@ -44,6 +44,10 @@ class = "read"
 flags = ["--rig", "--refresh", "--since", "--json"]
 write_flags = ["--refresh"]   # writes <data_dir>/unguided_limits.json (the night pilot reads it)
 
+[commands.tpoint-stats]
+class = "read"
+flags = ["--json", "--files", "--history"]   # TPoint's own files, read only
+
 [commands.core-check]
 class = "read"
 flags = ["--target", "--rig", "--night", "--json"]
