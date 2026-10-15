@@ -4030,6 +4030,8 @@ class Armer:
                 await self._maybe_warn_not_guiding(now)
                 await self._unguided_guard("watch")   # 2026-10-13
                 await self._reconcile_cooler(now)
+                from photonscript.scheduler import stuck_loop   # 2026-10-15
+                stuck_loop.armer_tick(self, now)
 
         elif self.state == PAUSE_STATE:
             await self._paused_tick(now)   # PS-64

@@ -309,6 +309,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["night_pilot"] = np_lines(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no night pilot lines: %s", e)
+    try:   # stuck-loop episodes (2026-10-15, scheduler/stuck_loop.py)
+        from photonscript.scheduler.stuck_loop import morning_lines as sl_lines
+        out["night_pilot"] = list(out.get("night_pilot") or []) + sl_lines(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no stuck-loop lines: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 

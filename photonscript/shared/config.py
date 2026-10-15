@@ -174,6 +174,18 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_refocus_mode: str = "advise"
     night_pilot_limit_subs_mode: str = "advise"
     night_pilot_guider_stop_mode: str = "advise"
+    # Stuck-loop detector (2026-10-15, scheduler/stuck_loop.py): a rig that
+    # should be imaging saves no light (the 10-14 AF / center / park loop).
+    # stuck_loop_mode alert | off; the pilot's action off | advise | act
+    # (act = Restart tonight from now once per rig per night).
+    stuck_loop_mode: str = "alert"
+    stuck_loop_poll_s: float = 60.0
+    stuck_loop_gap_subs: float = 3.0
+    stuck_loop_gap_margin_min: float = 10.0
+    stuck_loop_gap_min: float = 20.0
+    stuck_loop_repeats: int = 2
+    stuck_loop_park_cycles: int = 2
+    night_pilot_stuck_loop_mode: str = "advise"
     # Closed-roof darks (2026-10-14): the roof closes mid-night -> the
     # Piggy-600 companion fills its owed darks (light length first) until
     # safe or dawn (the RC16 UNSAFE branch already does); only idle time,
