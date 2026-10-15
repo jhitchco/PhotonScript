@@ -1318,6 +1318,60 @@ Night test needed: an armed act-mode night for each watch action (one at a
 time), a mid-night roof closure with the new companion (NINA #2 darks start
 and hand back on safe), and the hook once ps-unguided-guard lands.
 
+### Stuck-loop detector: should be imaging, no lights (2026-10-15)
+
+Why: 2026-10-14 22:21 to 22:41 MDT NINA #1 ran AF, center, park, unpark
+three times with zero lights (a StartGuiding in the target container failed
+on an unguided night, the container was skipped and the night loop started
+it again). Nothing paged; Jeremy saw it in NINA.
+
+`scheduler/stuck_loop.py`, called from the armer's tick while RUNNING and
+the roof is not unsafe (`stuck_loop.armer_tick`, a background check at most
+every `stuck_loop_poll_s` 60 s), only inside a planned target window between
+astro dusk and dawn. GET only: NINA #1 / #2 `/event-history` and the subs
+log. Per rig the clock starts at the latest of the window start, dusk, the
+last light or IMAGE-SAVE (darks and flats count as busy), the roof turning
+safe again, the armer coming back to RUNNING (a pause / unsafe spell / a
+restart: no tick for 3+ min) and the detector's own restart. The
+Piggy-600 is judged only while NINA #2's event history shows its sequence
+running (a companion not dispatched tonight or ended is the NINA
+watchdog's).
+
+| signal | rule (defaults) |
+|---|---|
+| no_light | no light for max(`stuck_loop_gap_subs` 3 x the planned sub + `stuck_loop_gap_margin_min` 10, `stuck_loop_gap_min` 20) min (RC16 120 s: 20 min; Piggy-600 450 s: 32.5 min); held while an AF (< 15 min) or a meridian flip (< 20 min) runs |
+| restarts | `stuck_loop_repeats` 2 AF + MOUNT-CENTER cycles with no light, confirmed by a 3rd cycle, a park after the last center, or no light a sub + 5 min after it |
+| park_cycle | `stuck_loop_park_cycles` 2 park -> unpark with no light and no unsafe SAFETY-CHANGED between |
+
+- Not a loop: NINA #1 running a calibration / dark / flat / bias / TPoint /
+  tracking test item (the pilot's BUSY_WORDS) is a planned slot, no alert.
+- One priority push per episode (an episode ends with a light, or with the
+  pilot's restart) naming the steps from the event history: "RC16 looping:
+  AF 22:21, 22:29; center x2; park/unpark x2; no light in 16 min. Target
+  NGC 604. Likely: the target container keeps failing ... the guider was
+  disconnected at 22:21: a StartGuiding on an unguided night fails".
+- `night_pilot_stuck_loop_mode` off | **advise** (default) | act;
+  `night_pilot_mode=advise` caps it, `off` turns it off. act = Restart
+  tonight from now (after the current sub) for the RC16, NINA #2 stopped
+  after its sub + companion re-dispatch for the Piggy-600, once per rig per
+  night behind the pilot's live guard (RUNNING, no calibration job, arm
+  recipe or busy NINA #1 item) and 45 min of dark. A second episode that
+  night is an alert only ("already restarted it at 22:35").
+- Run events kind `stuck_loop` (alert, advise, act, held, failed, repeat,
+  clear), state `<data_dir>/stuck_loop/<night>.json`, morning report lines
+  "Stuck loop 22:35: RC16 looping: ... (advise: the pilot would have
+  restarted it, cleared 22:47)". `stuck_loop_mode=off` disables it.
+- NINA quirk: event history MOUNT-CENTER rows carry a naive LOCAL time
+  ("2026-10-14T22:25:09.4002"), every other row an offset; the detector
+  reads a naive Time as observatory local time (`stuck_loop.event_time`).
+- Backtest (`stuck_loop.backtest(doc, cfg)`, nothing sent; fixtures
+  `tests/test_scheduler/fixtures/stuck_loop/2026-10-14.json` and
+  `pilot_watch/2026-10-13.json`): 10-14 alerts once at 22:35 (restarts +
+  park_cycle, six minutes before the hand restart at 22:41); 10-13 (AF
+  every ~40 min, lights between) no alert on either rig.
+
+Night test needed: an armed act-mode night with a sequence that loops.
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was
