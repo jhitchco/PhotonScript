@@ -1397,6 +1397,49 @@ Jeremy at the keyboard.
   `flags` (and `write_flags`, `require`, `night_safe` when needed), run the
   test, deploy.
 
+### Target aliases: no placeholder names (2026-10-14)
+
+Why: the Heart Nebula page read "also recorded as: ? . Heart Nebula imaging
+(repeats while safe and up)_Container . OSC_LIGHTS_UNTIL_DAWN_Container .
+OSC_LIGHT_LOOP_Container", M 31 "? . M 31". The subs were already credited
+to the right goal (PS-78 canonicalizes on read); the list printed each sub's
+provenance `target_raw`: '?' (Piggy subs written unattributed, named later
+by the RC16 timeline / Piggy attribution / PS-51 correlation) and the
+container names the agent used before PS-77 (kept by the PS-78 rename).
+
+- **Rule** (`shared/target_names.py`): `is_placeholder_name` is true for
+  blank, '?', anything ending in `_Container`, every generator container or
+  loop name, and any UPPER_SNAKE name that is not a known target (an
+  unlisted loop such as a future `OSC_NEW_LOOP`; catalog ids like NGC_7000
+  excepted). `canonical_target` returns None for the UPPER_SNAKE case too,
+  so such a name is never a target. `recorded_alias(raw, target)` gives the
+  raw name only when it is a real other spelling ("M 31").
+- **Read side**: sub_index rows carry `target_raw` = the alias or the
+  target, and `target_recorded` = what the log holds; `raw_names` ("also
+  recorded as") and `/api/target/history` use the clean value. The runs page
+  hover uses `target_alias` from `/api/runs/{date}`. Logs are not rewritten:
+  `target_raw` stays as provenance (writers rely on '?' meaning "was
+  unattributed").
+- **Report / backfill**: `photonscript target-aliases [--date D] [--json]`
+  (remote CLI allowed) lists per target the hidden placeholder names and
+  re-attributes any sub still stored under a container name (canonical
+  target, or '?' for a loop) or still '?' where the RC16 target imaged at
+  that time names it (PS-51; parked / slewing stay '?'). `--apply` rewrites
+  the subs logs only, never a Library file or FITS; the next build_library
+  refiles a re-attributed accepted sub as usual; then POST
+  /api/projects2/recount. Dry run 2026-10-14 from the live API: 0 subs to
+  re-attribute, 656 placeholder raws hidden (Heart 331, Cat's Eye 141,
+  Andromeda 164, Crescent 10, NGC 604 8, 2 test targets), 427 subs stay
+  unattributed (289 Piggy outside any RC16 window, 138 RC16 on 2025-12-14,
+  2025-12-18, 2026-04-06).
+- **Why the companion writes no name**: NINA #2's OSC_LIGHT_LOOP sits in no
+  DeepSkyObjectContainer, so OBJECT and the $$TARGETNAME$$ file token are
+  empty ("2026-10-14_04-08-10__0.00_450.00s_0058.fits"). Not changed: the
+  loop is time-driven (segments end at RC16 handoff clock times), so a
+  static target name would mislabel subs whenever the RC16 runs early or
+  late, and a named sub skips the RC16 timeline / PS-51 correlation that
+  places it today. Lint and split_guard also find the loop by its name.
+
 ### Add a target (PS-124)
 
 The Target Goals **Add** box takes a catalog name, catalog id or alias

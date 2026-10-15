@@ -197,7 +197,9 @@ def test_rows_normalize_names_rigs_and_verdicts(tmp_path):
     rows = sub_index.all_rows(cfg, PROJECTS)
     by = {r["file"].split("/")[-1]: r for r in rows}
     h1 = by["h1.fits"]
-    assert h1["target"] == "Heart Nebula" and h1["target_raw"] == HEART_C
+    # 2026-10-14 alias hygiene: a container name is provenance, not an alias
+    assert h1["target"] == "Heart Nebula" and h1["target_raw"] == "Heart Nebula"
+    assert h1["target_recorded"] == HEART_C
     assert h1["project_id"] == "p1" and h1["key"] == f"{NIGHT}|rc16|LIGHT/h1.fits"
     assert h1["verdict"] == "approved" and h1["pointing"] is None
     assert h1["thumb"] == f"/api/runs/{NIGHT}/thumb?file=LIGHT%2Fh1.fits&w=264"
@@ -294,7 +296,7 @@ def test_target_detail(tmp_path):
     _seed(cfg)
     d = sub_index.target_detail(cfg, HEART_C, PROJECTS)
     assert d["target"] == "Heart Nebula" and d["found"]
-    assert d["raw_names"] == [HEART_C]
+    assert d["raw_names"] == []      # container names are no aliases
     assert d["totals"]["approved"] == 2 and d["totals"]["hours"]["approved"] \
         == round(600 / 3600, 2)
     assert d["nights"][0]["date"] == NIGHT and d["nights"][0]["total"] == 5
