@@ -194,8 +194,9 @@ def test_summary_and_candidates(client, monkeypatch):
     assert s[0]["latest"]["headline"] == "Integrated 9.4 h on 2026-10-06 (v2), packet ready"
     assert s[0]["latest"]["packet"].endswith("M31_packet.md")
     c = client.get("/api/integrations/candidates", params={"calibration": False}).json()
-    assert c["thresholds"] == {"rigs": ["piggyback"], "new_data_h": 1.0, "first_h": 0.0,
-                               "min_interval_h": 12.0, "require_calibration": False}
+    assert c["thresholds"] == {"rigs": ["piggyback", "rc16"], "new_data_h": 1.0, "first_h": 0.0,
+                               "min_interval_h": 12.0, "require_calibration": False,
+                               "per_rig": {"rc16": {"new_data_h": 1.0, "first_h": 1.0}}}
     row = next(x for x in c["candidates"] if x["rig"] == "piggyback")
     assert row["target"] == "Andromeda Galaxy" and row["approved_h"] == 1.5
     assert row["last"]["version"] == 2 and row["new_data_h"] == 0.5
