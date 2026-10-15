@@ -20,6 +20,9 @@ canonical_target() maps any of those names back to the target:
   targets (project names, catalog ids) and returns the known spelling;
 * PS-135: a known target's catalog aliases match too (catalog_aliases:
   "NGC 224", "M31", "Messier 31", "Andromeda" all name the M 31 project).
+* 2026-10-14 alias hygiene: an unlisted UPPER_SNAKE loop name is no target
+  either, and is_placeholder_name / recorded_alias keep '?', "*_Container"
+  and every generator container name out of the "also recorded as" list.
 
 The suffixes and loop names are imported from the sequence generator
 (nina_sequence_json, calibration) and the NINA client, never duplicated, so a
@@ -90,6 +93,21 @@ def strip_container_name(name: Any) -> str:
                 changed = True
                 break
     return s
+
+
+# 2026-10-14 alias hygiene: the generator names its structural loops in
+# UPPER_SNAKE_CASE (SAFE_LOOP, OSC_LIGHT_LOOP, OSC_LIGHTS_UNTIL_DAWN, ...).
+# A name of that shape that is not a known target is a loop the generator
+# added after this module last listed it, never a target. Catalog ids written
+# with underscores ("NGC_7000", "SH2_101") are not loops.
+_LOOP_SHAPE = re.compile(r"^[A-Z]{2,}(?:_[A-Z0-9]+)+$")
+_CATALOG_HEADS = frozenset({"NGC", "IC", "SH", "SH2", "LDN", "LBN", "VDB",
+                            "ABELL", "UGC", "PGC", "HCG", "ARP", "CED", "MEL",
+                            "CR", "PK", "DWB", "GUM", "RCW", "SNR"})
+
+
+def _loop_shaped(s: str) -> bool:
+    return bool(_LOOP_SHAPE.match(s)) and s.split("_")[0] not in _CATALOG_HEADS
 
 
 def is_container_name(name: Any) -> bool:
@@ -196,6 +214,8 @@ def canonical_target(name: Any, known_targets: Any = None) -> str | None:
         hit = idx.get(target_key(s))
         if hit:
             return hit
+    if _loop_shaped(s):
+        return None   # an unlisted UPPER_SNAKE loop container, not a target
     return s
 
 
@@ -209,6 +229,33 @@ def same_target(a: Any, b: Any, known_targets: Any = None) -> bool:
     ca = canonical_target(a, known_targets)
     cb = canonical_target(b, known_targets)
     return bool(ca and cb and target_key(ca) == target_key(cb))
+
+
+def is_placeholder_name(name: Any) -> bool:
+    """True when a recorded name is not a target spelling at all: blank, '?',
+    anything ending in "_Container" (ninaAPI's live container name), one of
+    the generator's container names (a target wrapped in an imaging / block
+    suffix, or a structural loop such as OSC_LIGHT_LOOP), or an
+    UPPER_SNAKE loop name. Such a name never becomes a target or an alias
+    (2026-10-14: the Heart page read "also recorded as: ? . Heart Nebula
+    imaging (repeats while safe and up)_Container . OSC_LIGHT_LOOP_Container")."""
+    s = str(name or "").strip()
+    if not s or s == UNATTRIBUTED:
+        return True
+    if s.lower().endswith(generator_names()["container_suffix"].lower()):
+        return True
+    return canonical_target(s) != s
+
+
+def recorded_alias(raw: Any, target: Any) -> str | None:
+    """The name a sub was recorded under when it is a real other spelling of
+    its target ("M 31" for the "Andromeda Galaxy" goal), else None: a
+    placeholder (is_placeholder_name) or the target itself. The one rule for
+    the "also recorded as" list and the "recorded as" hover."""
+    s = str(raw or "").strip()
+    if is_placeholder_name(s) or target_key(s) == target_key(target):
+        return None
+    return s
 
 
 def names_for(target: str, raw_names: Iterable[str],

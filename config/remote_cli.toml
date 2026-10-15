@@ -138,3 +138,8 @@ write_flags = ["--apply"]
 class = "read"                # dry run unless --apply; --apply rewrites the subs log
 flags = ["--date", "--since", "--apply", "--dry-run", "--examples", "--json"]
 write_flags = ["--apply"]
+
+[commands.target-aliases]
+class = "read"                # dry run unless --apply; --apply rewrites the subs logs only (no Library moves)
+flags = ["--date", "--apply", "--json"]
+write_flags = ["--apply"]

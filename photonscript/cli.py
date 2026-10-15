@@ -2934,6 +2934,60 @@ def rename_targets(
         console.print("[yellow]Dry run only. Add --apply to write.[/yellow]")
 
 
+@app.command("target-aliases")
+def target_aliases_cmd(
+    apply: bool = typer.Option(False, "--apply",
+                               help="Rewrite the local subs logs only "
+                                    "(default: dry run; never the Library)"),
+    date: list[str] = typer.Option(
+        [], help="Only these nights (YYYY-MM-DD, repeatable; default all)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """2026-10-14 alias hygiene: report the '?' / *_Container / loop names
+    the target pages no longer list as "also recorded as", and re-attribute
+    any sub still stored under a container name, or still unattributed where
+    the RC16 target imaged at that time names it (PS-51). Dry run unless
+    --apply; --apply rewrites only the subs logs (target_raw keeps the old
+    name), never moves a Library file. Afterwards: POST
+    /api/projects2/recount."""
+    import json as _json
+
+    from photonscript.scheduler.target_alias_report import run
+    from photonscript.shared.config import PhotonScriptConfig
+
+    r = run(PhotonScriptConfig(), dates=date or None, apply=apply)
+    if as_json:
+        console.print_json(_json.dumps(r))
+        return
+    title = "APPLIED" if r["applied"] else "DRY RUN"
+    t = Table(title=f"{title} - target aliases ({r['nights_scanned']} nights)")
+    for c in ("Target", "Re-attributed", "Hidden aliases (subs)"):
+        t.add_column(c)
+    names = sorted(set(r["reattributed_by_target"])
+                   | set(r["hidden_aliases_by_target"]))
+    for n in names:
+        h = r["hidden_aliases_by_target"].get(n, {})
+        t.add_row(n, str(r["reattributed_by_target"].get(n, 0)),
+                  "; ".join(f"{k} ({v})" for k, v in h.items()) or "-")
+    console.print(t)
+    for n in r["nights_changed"]:
+        for x in n["renamed"]:
+            console.print(f"  {n['date']} {x['rig']}: {x['from']} -> "
+                          f"{x['to']} ({x['subs']})")
+        for name, k in n["correlated"].items():
+            console.print(f"  {n['date']} piggyback: ? -> {name} ({k}, "
+                          "RC16 at that time)")
+    console.print(f"Re-attributed: {r['reattributed']} (accepted, refiled by "
+                  f"the next build_library: {r['accepted_to_refile']}); "
+                  f"hidden alias subs: {r['hidden_alias_subs']}; still "
+                  f"unattributed: {r['still_unattributed']}")
+    if r["applied"]:
+        console.print("[green]Done (subs logs only). Now resync goals: POST "
+                      "/api/projects2/recount[/green]")
+    else:
+        console.print("[yellow]Dry run only. Add --apply to write.[/yellow]")
+
+
 @app.command("piggy-attribution")
 def piggy_attribution_cmd(
     date: list[str] = typer.Option(

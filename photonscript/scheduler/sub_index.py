@@ -8,7 +8,8 @@ project changes. Never touches Syncthing or FITS files (PS-24 pitfall).
 Row (treat as read-only, rows are shared between callers)::
 
     key "date|rig|file", date, rig (missing = rc16), file, abs_path, time,
-    target_raw, target (canonical, "?" = unattributed), target_key,
+    target_raw (a real other spelling, else = target), target_recorded (the
+    log's raw name, provenance only), target (canonical, "?" = unattributed), target_key,
     project_id, filter, exp_s, hdr_short, verdict (pending|approved|
     rejected), verdict_by (auto|manual), reasons[], reason_codes[], qa_flag,
     metrics{hfr, fwhm_arcsec, ecc, ecc_bin, stars, background, ccd_temp,
@@ -42,6 +43,7 @@ from photonscript.shared.target_names import (
     UNATTRIBUTED,
     canonical_target,
     known_target_index,
+    recorded_alias,
     target_key,
 )
 
@@ -194,7 +196,11 @@ def _build_row(date: str, rec: dict, known, by_key: dict) -> dict:
         "date": date, "rig": rig, "file": file,
         "abs_path": rec.get("abs_path") or "",
         "time": rec.get("time") or "",
-        "target_raw": raw if raw not in (None, "") else UNATTRIBUTED,
+        # 2026-10-14 alias hygiene: a real other spelling ("M 31") only; a
+        # placeholder ('?', "*_Container", a generator loop name) reads as
+        # the target itself. What the log holds stays in target_recorded.
+        "target_raw": recorded_alias(raw, canon) or canon,
+        "target_recorded": raw if raw not in (None, "") else UNATTRIBUTED,
         "target": canon, "target_key": tkey,
         "project_id": proj.id if proj is not None else None,
         "filter": flt, "exp_s": exp_s, "hdr_short": hdr_short,

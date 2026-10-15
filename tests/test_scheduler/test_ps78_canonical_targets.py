@@ -249,8 +249,9 @@ def test_target_history_and_library_dirs(tmp_path, monkeypatch):
         assert h["target"] == "Heart Nebula"
         assert h["totals"]["accepted"] == 2 and h["totals"]["rejected"] == 1
         assert h["totals"]["in_library"] == 2
+        # 2026-10-14 alias hygiene: the container name is no alias
         assert {r["target_raw"] for r in h["nights"][0]["subs"]} == {
-            HEART_C, "Heart Nebula"}
+            "Heart Nebula"}
 
 
 # --- backfill command ---------------------------------------------------------

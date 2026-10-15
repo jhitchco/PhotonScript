@@ -2484,6 +2484,17 @@ def _note_raw_targets(subs: list[dict]) -> None:
             s_["target_raw"] = raw
 
 
+def _mark_aliases(subs: list[dict]) -> None:
+    """2026-10-14: `target_alias` is the recorded name the runs page may show
+    as "recorded as" (a real other spelling of the target), or None for '?',
+    "*_Container" and generator loop names (shared.target_names.
+    recorded_alias). Read side only: target_raw stays as logged."""
+    from photonscript.shared.target_names import recorded_alias
+    for s_ in subs:
+        s_["target_alias"] = recorded_alias(s_.get("target_raw"),
+                                            s_.get("target"))
+
+
 def list_runs(config) -> list[dict]:
     """Nights with any evidence: plan, subs log, or FITS folder."""
     dates = set()
@@ -2674,6 +2685,7 @@ def night_detail(config, date: str, backfill: bool = True) -> dict:
     score_legacy_on_read(config, subs)
     _ecc_display_sqrt(subs)
     _flag_test_subs(subs)   # PS-152
+    _mark_aliases(subs)     # 2026-10-14 alias hygiene
 
     planned, table = _plan_vs_actual(plan, subs)
     cal_tonight, report = _cached_night_extras(config, date, len(subs))
