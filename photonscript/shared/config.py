@@ -406,6 +406,11 @@ class PhotonScriptConfig(BaseSettings):
     integrate_watch_first_h: float = 0.0  # first integration of a goal once
                                  # this many approved hours exist; 0 = only
                                  # when the rig's goal is met
+    autointegrate_inactive_days: int = 14  # 2026-10-15: an INACTIVE goal is
+                                 # still an integration candidate when it has
+                                 # approved subs newer than its last
+                                 # integration from this many nights back
+                                 # (0 = active goals only)
     integrate_watch_min_interval_h: float = 12.0  # never re-run a goal + rig
                                  # sooner than this after its last run
     integrate_watch_require_calibration: bool = False  # True = wait while

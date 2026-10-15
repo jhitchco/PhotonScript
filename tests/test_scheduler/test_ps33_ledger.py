@@ -217,3 +217,59 @@ def test_candidates_with_calibration_reports_missing(client, monkeypatch):
 
 def test_summary_page_is_empty_without_ledgers(client):
     assert client.get("/api/integrations/summary").json() == {"integrations": []}
+
+
+# --- 2026-10-15: inactive goals with new approved subs -----------------------------
+
+def test_inactive_goal_with_new_subs_is_still_a_candidate(client, monkeypatch):
+    """Heart and M31 inactive for one night with 3 h of new Heart Piggy
+    subs: the watcher said "nothing to integrate" (candidates were active
+    goals only)."""
+    from datetime import datetime
+    store = app.get_store()
+    heart = store.add_from_target(CelestialTarget(
+        name="Heart Nebula", catalog_id="IC 1805", ra_hours=2.55, dec_degrees=61.45,
+        object_type="emission nebula"), budget_hours=6.0)
+    store.update(heart.id, osc_hours=6.0, drop_rc16=True, driving_rig="piggyback")
+    store.update(heart.id, active=False)
+    store.update(client.pid, active=False)                      # M31, nothing new
+    now = datetime(2026, 10, 15, 18, 0)
+
+    def rows(cfg, projects, name, rig):
+        if rig != "piggyback":
+            return []
+        if name == "Heart Nebula":
+            return _rows([f"h{i}.fits" for i in range(36)], exp=300.0, date="2026-10-14")
+        return _rows(["a.fits", "b.fits"], exp=1800.0, date="2026-10-14")
+    monkeypatch.setattr(integ, "_approved_rows", rows)
+    client.post("/api/integrations", json=_ledger(version=2))  # M31: a, b integrated
+    c = integ.candidates(client.cfg, list(store.projects.values()),
+                         with_calibration=False, now=now)["candidates"]
+    names = {(x["target"], x["rig"]): x for x in c}
+    row = names[("Heart Nebula", "piggyback")]
+    assert row["inactive"] is True and row["new_data_h"] == 3.0 and row["last"] is None
+    assert ("Andromeda Galaxy", "piggyback") not in names      # no new subs
+    # old subs only (beyond autointegrate_inactive_days): not a candidate
+    monkeypatch.setattr(integ, "_approved_rows", lambda cfg, projects, name, rig:
+                        _rows(["h1.fits"], exp=3600.0, date="2026-09-01"))
+    c = integ.candidates(client.cfg, list(store.projects.values()),
+                         with_calibration=False, now=now)["candidates"]
+    assert not c
+    # 0 = active goals only
+    monkeypatch.setattr(integ, "_approved_rows", rows)
+    client.cfg.autointegrate_inactive_days = 0
+    assert not integ.candidates(client.cfg, list(store.projects.values()),
+                                with_calibration=False, now=now)["candidates"]
+
+
+def test_active_goal_row_and_closed_marker(client, monkeypatch):
+    monkeypatch.setattr(integ, "_approved_rows", lambda *a: [])
+    store = app.get_store()
+    c = integ.candidates(client.cfg, list(store.projects.values()),
+                         with_calibration=False)["candidates"]
+    assert c and c[0]["inactive"] is False                      # active: always
+    from types import SimpleNamespace
+    p = store.projects[client.pid]
+    assert not integ._closed(p)                                 # no marker today
+    assert integ._closed(SimpleNamespace(archived=True))
+    assert integ._closed(SimpleNamespace(done=True))

@@ -719,6 +719,7 @@ _CONFIG_FIELDS = [
     ("integrate_watch_new_data_h", "PS_INTEGRATE_WATCH_NEW_DATA_H", "Integrate watcher: re-integrate after this many new approved hours", "Integration", "float", False, False),
     ("integrate_watch_first_h", "PS_INTEGRATE_WATCH_FIRST_H", "Integrate watcher: first integration at this many approved hours (0 = only when the goal is met)", "Integration", "float", False, False),
     ("integrate_watch_min_interval_h", "PS_INTEGRATE_WATCH_MIN_INTERVAL_H", "Integrate watcher: at least this many hours between runs of one goal + rig", "Integration", "float", False, False),
+    ("autointegrate_inactive_days", "PS_AUTOINTEGRATE_INACTIVE_DAYS", "Integrate watcher: an inactive goal is still a candidate when it has approved subs newer than its last integration from this many nights back (0 = active goals only)", "Integration", "int", False, False),
     ("integrate_watch_require_calibration", "PS_INTEGRATE_WATCH_REQUIRE_CALIBRATION", "Integrate watcher: wait while darks / flats / bias are missing (off = integrate, the ledger notes it)", "Integration", "bool", False, False),
     ("integration_report_url", "PS_INTEGRATION_REPORT_URL", "Desktop .env: scheduler URL the integrator posts ledgers to and polls", "Integration", "str", False, False),
     ("integration_staging_root", "PS_INTEGRATION_STAGING_ROOT", "Desktop .env: staging root for integrate runs (blank = D:/Astrophotography/Staging)", "Integration", "str", False, False),

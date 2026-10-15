@@ -254,7 +254,9 @@ approved hours not in that ledger's sub list. Asks change status only
    not at the goal) and `integrate_watch_rc16_new_data_h` (1.0; -1 = the
    general value), `integrate_watch_min_interval_h` (12, per goal + rig),
    `integrate_watch_require_calibration` (off: integrate anyway and record
-   what was missing). Command line flags override them;
+   what was missing), `autointegrate_inactive_days` (14: an inactive goal
+   stays a candidate while it has approved subs newer than its last
+   integration from that many nights back). Command line flags override them;
 4. runs at most one `photonscript integrate` (QA report mode) into a new
    staging folder and posts its ledger.
 
