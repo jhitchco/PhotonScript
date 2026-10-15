@@ -542,3 +542,13 @@ def test_redispatched_unguided_sequence_never_connects_the_guider(tmp_path, monk
 
 async def _anoop(*a, **k):
     return None
+
+
+def test_naive_center_time_is_local_not_utc():
+    # NINA writes MOUNT-CENTER without an offset (local MDT); 2026-10-14
+    from photonscript.scheduler import unguided_guard as ug
+    ev = {"Response": [
+        {"Event": "MOUNT-CENTER", "Time": "2026-10-14T22:25:09.4002"},
+        {"Event": "GUIDER-START", "Time": "2026-10-14T22:26:00.0000000-06:00"}]}
+    starts = ug.attribute_starts(ev)
+    assert starts and starts[0]["by"] == "center"

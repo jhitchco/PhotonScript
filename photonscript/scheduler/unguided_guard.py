@@ -143,9 +143,22 @@ def _events_list(events) -> list[dict]:
     return [e for e in (events or []) if isinstance(e, dict)]
 
 
+_CFG = None
+
+
 def _t(e) -> datetime | None:
-    from photonscript.scheduler.af_stall import parse_time
-    return parse_time((e or {}).get("Time"))
+    """Event Time -> naive UTC. NINA writes MOUNT-CENTER with no offset, as
+    observatory local time (2026-10-14); reading it as UTC put every center
+    6 h off, so the "started after a center" attribution never matched."""
+    global _CFG
+    from photonscript.scheduler.stuck_loop import event_time
+    if _CFG is None:
+        try:
+            from photonscript.shared.config import PhotonScriptConfig
+            _CFG = PhotonScriptConfig()
+        except Exception:  # noqa: BLE001
+            _CFG = False
+    return event_time(_CFG or None, (e or {}).get("Time"))
 
 
 def attribute_starts(events) -> list[dict]:
