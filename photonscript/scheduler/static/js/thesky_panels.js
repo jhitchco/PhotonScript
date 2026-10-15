@@ -7,6 +7,8 @@
  *   imagelink  GET  /api/thesky/imagelink-check[?refresh=1][&thesky=1]
  *   pointing   GET  /api/thesky/pointing?nights=14
  *   rotation   GET  /api/rotation/report?nights=14 (PS-97, routers/rotation.py)
+ *   watch      GET  /api/thesky/tpoint/watch (the TPoint run watcher's status
+ *              line: run in progress with points, pace, ETA, or the last model)
  *   manual     GET  /api/thesky/manual, POST /api/thesky/manual,
  *              POST /api/thesky/manual/use-files (the operator's "Use file
  *              values" when TPoint's files hold a newer model)
@@ -322,6 +324,16 @@
         } catch (e) { setText('tsManualStatus', ' error: ' + e); }
     }
 
+    // ---- TPoint run watcher status line ------------------------------------
+    async function loadWatch() {
+        try {
+            var d = await getJSON('/api/thesky/tpoint/watch');
+            var run = d.status === 'running' || d.status === 'stopped';
+            var cls = run ? 'badge-warn' : (d.status === 'off' || d.mode === 'off' ? 'badge-unknown' : 'badge-pass');
+            setHTML('tsWatch', '<span class="badge ' + cls + '">' + esc(run ? d.status : 'TPoint') + '</span> ' + esc(d.text || '-'));
+        } catch (e) { setText('tsWatch', 'TPoint watcher: ' + e); }
+    }
+
     function on(id, fn) { var el = $(id); if (el) el.onclick = fn; }
     function init() {
         if (!$('tpointSec')) return;
@@ -335,6 +347,8 @@
         loadPointing();
         loadRotation();
         loadManual();
+        loadWatch();
+        setInterval(function () { if (!document.hidden) loadWatch(); }, 60000);
         // the stored audit every 60 s (never re-run on a timer, never while
         // an action is in flight or the tab is hidden)
         setInterval(function () {
@@ -345,5 +359,5 @@
 
     window.THESKY = {init: init, loadAudit: loadAudit, loadImagelink: loadImagelink,
                      loadPointing: loadPointing, loadRotation: loadRotation,
-                     loadManual: loadManual};
+                     loadManual: loadManual, loadWatch: loadWatch};
 })();

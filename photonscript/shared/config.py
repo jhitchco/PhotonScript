@@ -1666,6 +1666,17 @@ class PhotonScriptConfig(BaseSettings):
     tpoint_min_points: int = 50         # ProTrack's minimum per Bisque
     tpoint_rms_max_arcsec: float = 30.0
     tpoint_polar_max_arcmin: float = 3.0  # PS-120: TPoint advised leaving 2.79'
+    # TPoint run watcher (scheduler/tpoint_watch.py): reads TPoint's files
+    # only, never TheSky or the mount
+    tpoint_watch_mode: str = "alert"     # alert (one push per finished run) | observe | off
+    tpoint_watch_poll_s: float = 60.0    # while a run is in progress; 5x idle
+    tpoint_watch_quiet_min: float = 15.0  # no new point this long = stopped
+    tpoint_watch_fit_wait_min: float = 45.0  # stopped this long without a
+                                 # fitted model (> 6 terms) = finished anyway
+    tpoint_run_target_points: int = 0    # points the run aims for (ETA); 0 = unknown
+    tpoint_epoch_polar_shift_arcsec: float = 30.0  # a new base model's MA or
+                                 # ME moved more = the learned unguided limits
+                                 # restart at its night (0 = never)
     # PS-171 TPoint mapping run (sideload recipe tpoint_mapping_then_tonight,
     # scheduler/tpoint_mapping.py). Only used when that recipe is loaded.
     tpoint_mapping_points: int = 60      # first run; at most 300

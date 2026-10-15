@@ -23,6 +23,11 @@ GET  /api/thesky/tpoint                  PS-171: TPoint numbers from TPoint's ow
 GET  /api/thesky/tpoint/files            the TPoint files under TheSky's user
                                          folder (names, sizes, dates)
 GET  /api/thesky/tpoint/file?rel=        the head of one listed file
+GET  /api/thesky/tpoint/history?limit=   the fitted-model history and the
+                                         unguided limits epoch (tpoint_watch)
+GET  /api/thesky/tpoint/watch            the TPoint run watcher: run in
+                                         progress (points, pace, ETA) or the
+                                         last model, as one status line
 GET  /api/tpoint/samples?date=YYYY-MM-DD PS-187: that night's tpoint-sample CSV
                                          rows (runs/<date>_tpoint.csv) and a
                                          summary (solved / added / add errors)
@@ -174,6 +179,34 @@ async def api_thesky_tpoint():
     st = await asyncio.to_thread(tpoint_files.stats, cfg)
     await asyncio.to_thread(tpoint_files.save, cfg, st)
     st["text"] = tpoint_files.format_stats(st)
+    return st
+
+
+@router.get("/api/thesky/tpoint/history")
+async def api_thesky_tpoint_history(limit: int = 50):
+    """The fitted-model history the TPoint watcher keeps (tpoint_watch:
+    <data_dir>/tpoint/models.jsonl, newest last) and the unguided limits
+    epoch. Reads PhotonScript's own files only."""
+    from photonscript.scheduler import tpoint_watch as tw
+    cfg = _cfg()
+    recs = await asyncio.to_thread(tw.history, cfg)
+    n = max(1, min(int(limit), 500))
+    return {"models": recs[-n:], "count": len(recs), "epoch": tw.load_epoch(cfg),
+            "text": tw.format_history(cfg, recs, n)}
+
+
+@router.get("/api/thesky/tpoint/watch")
+async def api_thesky_tpoint_watch():
+    """The TPoint run watcher's last state (status idle / running /
+    stopped / finished, points, pace, ETA, the last model) and its one-line
+    text. Reads the watcher's saved state only (no TPoint file read)."""
+    from photonscript.scheduler import tpoint_watch as tw
+    cfg = _cfg()
+    st = await asyncio.to_thread(tw.load_state, cfg)
+    st.pop("file_sig", None)
+    st["mode"] = tw.mode(cfg)
+    st["text"] = (tw.status_text(cfg, st) if tw.mode(cfg) != "off"
+                  else "TPoint watcher off (tpoint_watch_mode)")
     return st
 
 

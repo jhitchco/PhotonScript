@@ -13,7 +13,9 @@ per region, from the graded subs themselves.
 
 Evidence (collect): every graded light of the rig in the lookback window
 (unguided_limit_lookback_days, 60) on nights since the TPoint model in
-force (tracking_drift.tpoint_model; unguided_limit_since overrides), that
+force (tracking_drift.tpoint_model, or the TPoint watcher's epoch when a
+new base model moved the polar axis and that is later; unguided_limit_since
+overrides both), that
 ran unguided: the plan snapshot says the target (or its PS-85 block) was
 unguided, a tracking-test target, or (no plan entry) PHD2 was not active.
 Excluded, and counted by reason:
@@ -629,17 +631,28 @@ def load(config) -> dict | None:
 
 def since_date(config, today: str) -> str | None:
     """Evidence starts at the TPoint model in force (a new model changes
-    the tracking), unless unguided_limit_since names a date."""
+    the tracking), or at the TPoint watcher's epoch when that is later (a
+    new base model with a moved polar axis, tpoint_watch.check_epoch),
+    unless unguided_limit_since names a date."""
     s = str(getattr(config, "unguided_limit_since", "") or "").strip()
     if s:
         return s
+    d = None
     try:
         from photonscript.scheduler.tracking_drift import tpoint_model
         m = tpoint_model(config, today) or {}
-        return str(m["model_date"])[:10] if m.get("model_date") else None
+        d = str(m["model_date"])[:10] if m.get("model_date") else None
     except Exception as e:  # noqa: BLE001
         logger.debug("unguided limits: no TPoint model date: %s", e)
-        return None
+    try:
+        from photonscript.scheduler.tpoint_watch import epoch_since
+        ep = epoch_since(config)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("unguided limits: no TPoint epoch: %s", e)
+        ep = None
+    if ep and ep <= today and (d is None or ep > d):
+        return ep
+    return d
 
 
 def local_nights(config, today: str, since: str | None) -> list[str]:

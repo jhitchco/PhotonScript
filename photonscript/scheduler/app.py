@@ -617,6 +617,15 @@ async def _start_dawn_mount_check():
 
 
 @app.on_event("startup")
+async def _start_tpoint_watch():
+    """TPoint run watcher: a calibration run's progress, its finish (one
+    push), the fitted-model history and the unguided limits epoch. Reads
+    TPoint's files only; idle when tpoint_watch_mode=off."""
+    from photonscript.scheduler.tpoint_watch import run_watch
+    _spawn(run_watch(get_config))
+
+
+@app.on_event("startup")
 async def _start_dawn_filing_sweep():
     """Dawn filing sweep (2026-10-11): an armed night the armer's dawn
     shutdown did not file (disarmed, error, a restart) files itself once.
@@ -867,6 +876,12 @@ _CONFIG_FIELDS = [
     ("tpoint_sample_add_method", "PS_TPOINT_SAMPLE_ADD_METHOD", "TPoint mapping: pin the add method (an id the probe found, e.g. action_execute_id_AddPointingSample); empty = the probe's first", "PHD2", "str", False, False),
     ("thesky_user_dir", "PS_THESKY_USER_DIR", "TheSky user folder with TPoint's files (read only, PS-171 tpoint-stats); empty = Documents\\Software Bisque\\TheSky Professional Edition 64", "PHD2", "str", False, False),
     ("tpoint_polar_max_arcmin", "PS_TPOINT_POLAR_MAX_ARCMIN", "TPoint polar alignment error at most N arcmin", "PHD2", "float", False, False),
+    ("tpoint_watch_mode", "PS_TPOINT_WATCH_MODE", "TPoint run watcher (reads TPoint's files only): alert = one Pushover when a calibration run finishes, with the model against the previous one | observe = dashboard / history / morning report only | off", "PHD2", "str", False, False),
+    ("tpoint_run_target_points", "PS_TPOINT_RUN_TARGET_POINTS", "TPoint run watcher: points the run aims for, for the ETA (0 = unknown: pace only)", "PHD2", "int", False, False),
+    ("tpoint_watch_poll_s", "PS_TPOINT_WATCH_POLL_S", "TPoint run watcher: check every N s while a run is in progress (5x that while idle)", "PHD2", "float", False, False),
+    ("tpoint_watch_quiet_min", "PS_TPOINT_WATCH_QUIET_MIN", "TPoint run watcher: no new point for N min = run stopped", "PHD2", "float", False, False),
+    ("tpoint_watch_fit_wait_min", "PS_TPOINT_WATCH_FIT_WAIT_MIN", "TPoint run watcher: after a stop, wait up to N min for the model fit (more than the 6 basic terms) before reporting the run finished", "PHD2", "float", False, False),
+    ("tpoint_epoch_polar_shift_arcsec", "PS_TPOINT_EPOCH_POLAR_SHIFT_ARCSEC", "A new TPoint base model whose MA or ME moved more than N arcsec restarts the learned unguided limits' evidence at its night (0 = never)", "PHD2", "float", False, False),
     ("pointing_first_slew_warn_arcmin", "PS_POINTING_FIRST_SLEW_WARN_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = warn", "PHD2", "float", False, False),
     ("pointing_first_slew_fail_arcmin", "PS_POINTING_FIRST_SLEW_FAIL_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = fail / rebuild", "PHD2", "float", False, False),
     ("thesky_manual_max_age_days", "PS_THESKY_MANUAL_MAX_AGE_DAYS", "Manual TPoint record older than N days reads unknown", "PHD2", "float", False, False),
