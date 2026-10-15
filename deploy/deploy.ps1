@@ -4,6 +4,8 @@
 #   .\deploy\deploy.ps1 -IncludeWorkingTree "msg"   # commit EVERYTHING in the
 #                                                    # tree (shows it, asks first)
 #   .\deploy\deploy.ps1 -SkipTests                   # emergency bypass of the gate
+#   .\deploy\deploy.ps1 -AllowArmed                  # restart while ARMED
+#   .\deploy\deploy.ps1 -AllowPaused                 # restart while PAUSED_OPERATOR
 #
 # Why: this checkout also holds other sessions' unfinished work. The old
 # `git add -A` swept 24 files / ~1,700 lines of it into one deploy (6ec7149,
@@ -17,8 +19,10 @@
 # and rolls back to the previous SHA if /api/health does not come up on the
 # new one. This script reads that outcome from /api/health ("update") and
 # says so instead of just timing out. The scope refuses (409) while a night
-# runs, while ARMED (-AllowArmed overrides: the armed night is restored) and
-# while a grading job is writing.
+# runs, while ARMED (-AllowArmed overrides: the armed night is restored),
+# while PAUSED_OPERATOR (-AllowPaused overrides, only with the pause settled
+# and NINA #1 and #2 idle: the paused night comes back PAUSED with no device
+# command, no park / warm / connect / load) and while a grading job is writing.
 
 param(
     [string]$Message = "",
@@ -30,6 +34,10 @@ param(
     [switch]$SkipTests,
     [switch]$IncludeWorkingTree,
     [switch]$AllowArmed,
+    # 2026-10-14: restart while PAUSED_OPERATOR (e.g. mid TPoint run). A
+    # separate switch on purpose: -AllowArmed is routine before dusk, this
+    # one restarts mid-night with the operator on the devices.
+    [switch]$AllowPaused,
     # graceful stop + staging import check + start + health verify
     [int]$VerifySeconds = 240
 )
@@ -131,7 +139,10 @@ if ($outgoing.Count -eq 0) {
 # --- 5. Ask the scope to pull + restart ---------------------------------------
 $posted = $false
 $updateUrl = "$Scope/api/update"
-if ($AllowArmed) { $updateUrl = "$updateUrl`?allow_armed=true" }
+$updateQuery = @()
+if ($AllowArmed) { $updateQuery += "allow_armed=true" }
+if ($AllowPaused) { $updateQuery += "allow_paused=true" }
+if ($updateQuery.Count -gt 0) { $updateUrl = "$updateUrl`?" + ($updateQuery -join "&") }
 try {
     Invoke-RestMethod -Method Post $updateUrl | Out-Null
     $posted = $true
@@ -143,7 +154,7 @@ try {
         $detail = ""
         try { $detail = ($_.ErrorDetails.Message | ConvertFrom-Json).detail } catch {}
         Write-Warning "Pushed, but the scope REFUSED to restart: $detail"
-        Write-Warning "It will pick the code up on the next restart - or rerun deploy when that clears (-AllowArmed if it is only ARMED)."
+        Write-Warning "It will pick the code up on the next restart - or rerun deploy when that clears (-AllowArmed if it is only ARMED, -AllowPaused if it is PAUSED_OPERATOR)."
     } else {
         Write-Warning "Could not reach the scope PC at $Scope - update it manually."
     }

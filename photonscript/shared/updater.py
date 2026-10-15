@@ -10,7 +10,9 @@ the code that is ALREADY on disk and known to start):
 1. ``git fetch``; the target is the upstream of the current branch.
 2. Refuse (keep the old code, Pushover) when the tree is dirty, the target is
    not a fast-forward, the target is the SHA that was just rolled back, or a
-   night is active in ``armer_state.json`` (deferred, not an error).
+   night is active in ``armer_state.json`` (deferred, not an error). A
+   PAUSED_OPERATOR night goes ahead only with the one-shot allowance POST
+   /api/update?allow_paused=true wrote (consume_paused_allowance).
 3. Check the target out into a STAGING worktree (``<data_dir>/update-staging``)
    and import every ``photonscript`` module from it with the service's own
    Python (catches syntax errors, missing dependencies and import-time
@@ -72,6 +74,16 @@ SMOKE_TESTS = ("tests/test_supervisor.py", "tests/test_updater.py",
 # armer restores it after a restart, and POST /api/update decides about it.
 _NIGHT_RUNNING = ("RUNNING", "PAUSED_UNSAFE", "WATCHING",  # PS-136 watched
                   "PAUSED_OPERATOR")                       # PS-64 paused
+
+
+# 2026-10-14: POST /api/update?allow_paused=true hands self-update a one-shot
+# allowance for a PAUSED_OPERATOR night (written by the armer once the pause
+# is settled and both NINAs read idle). Bound to that night and that pause,
+# and only valid for PAUSED_ALLOW_TTL_S: the wrapper runs self-update within
+# seconds of the graceful exit.
+PAUSED_ALLOW_NAME = "update_allow_paused.json"
+PAUSED_ALLOW_TTL_S = 600
+PAUSED_STATE = "PAUSED_OPERATOR"
 
 
 def _now() -> str:
@@ -171,6 +183,60 @@ def night_active(config) -> Optional[str]:
         except ValueError:
             pass
     return state
+
+
+def write_paused_allowance(config, night_of, pause_since) -> dict:
+    """The /api/update side: allow the next self-update while this exact
+    pause (night_of + pause since) is still the armer's state."""
+    rec = {"night_of": night_of, "pause_since": pause_since, "at": _now()}
+    p = Path(config.data_dir) / PAUSED_ALLOW_NAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(rec, indent=1), encoding="utf-8")
+    os.replace(tmp, p)
+    return rec
+
+
+def consume_paused_allowance(config, now: Optional[datetime] = None) -> Optional[str]:
+    """The self-update side: read and DELETE the allowance (one shot, used or
+    not). Returns why it does not apply, or None when it does: fresh, and
+    armer_state.json still shows the same night, PAUSED_OPERATOR, the same
+    pause, settled ("paused"). A missing file returns "no allowance"."""
+    p = Path(config.data_dir) / PAUSED_ALLOW_NAME
+    try:
+        rec = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        rec = None
+    try:
+        p.unlink()
+    except OSError:
+        pass
+    if not isinstance(rec, dict):
+        return "no allowance"
+    now = now or datetime.now(timezone.utc)
+    try:
+        at = datetime.fromisoformat(str(rec.get("at")))
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return "allowance unreadable"
+    if not 0 <= (now - at).total_seconds() <= PAUSED_ALLOW_TTL_S:
+        return "allowance expired"
+    try:
+        saved = json.loads((Path(config.data_dir) / "armer_state.json")
+                           .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return "armer state unreadable"
+    pause = saved.get("pause") if isinstance(saved.get("pause"), dict) else {}
+    if str(saved.get("state") or "") != PAUSED_STATE:
+        return f"armer is {saved.get('state')}, not {PAUSED_STATE}"
+    if (saved.get("plan") or {}).get("night_of") != rec.get("night_of"):
+        return "allowance is for another night"
+    if pause.get("since") != rec.get("pause_since"):
+        return "allowance is for another pause"
+    if pause.get("phase") != "paused":
+        return f"pause phase is {pause.get('phase')}"
+    return None
 
 
 # --- staging smoke check --------------------------------------------------------------
@@ -336,6 +402,8 @@ def self_update(config, repo: Path, *, python: str = sys.executable,
 
     if dry_run:
         return _dry_run(config, repo, target, python, bool(run_tests), smoke)
+    # one shot: consumed here whatever happens next (unchanged, refused...)
+    paused_no = consume_paused_allowance(config)
     if target == head:
         return UNCHANGED, f"up to date at {head[:7]}"
     st = load_state(config)
@@ -343,7 +411,15 @@ def self_update(config, repo: Path, *, python: str = sys.executable,
         return refuse(f"{target[:7]} was rolled back earlier (bad start); "
                       "push a fix to deploy again", target, alert=False)
     active = night_active(config)
-    if active:
+    if active == PAUSED_STATE and paused_no is None:
+        # 2026-10-14: POST /api/update?allow_paused=true checked the pause
+        # (settled, NINA #1 and #2 idle); the armer restores it as is
+        logger.info("Update to %s while %s: allowed by allow_paused (the "
+                    "paused night is restored after the restart)",
+                    target[:7], active)
+    elif active:
+        if active == PAUSED_STATE and paused_no != "no allowance":
+            logger.info("allow_paused not used: %s", paused_no)
         logger.info("Update to %s deferred: armer is %s", target[:7], active)
         return DEFERRED, f"night active ({active}); update deferred"
     if _git(repo, "merge-base", "--is-ancestor", head, target).returncode != 0:

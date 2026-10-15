@@ -2963,14 +2963,20 @@ def api_update_check():
 _UPDATE_HARD_EXIT_S = 15.0   # graceful shutdown budget before os._exit(42)
 
 
-def _update_blockers(allow_armed: bool) -> list[str]:
-    """Why a restart for an update must wait (PS-58). Empty = go."""
+def _update_blockers(allow_armed: bool, allow_paused: bool = False) -> list[str]:
+    """Why a restart for an update must wait (PS-58). Empty = go. A
+    PAUSED_OPERATOR night with allow_paused passes here; api_update then
+    asks the armer (update_paused_blockers: settled pause, NINAs idle)."""
     why = []
     st_name = str(get_armer().state or "").upper()
-    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING",   # PS-136
-                   "PAUSED_OPERATOR"):                      # PS-64
+    if st_name in ("RUNNING", "PAUSED_UNSAFE", "WATCHING"):  # PS-136
         why.append(f"armer is {st_name}: refusing to restart mid-night. "
                    "Stop the run first.")
+    elif st_name == "PAUSED_OPERATOR" and not allow_paused:  # PS-64
+        why.append("armer is PAUSED_OPERATOR: refusing to restart mid-night. "
+                   "Stop the run first, or pass allow_paused=true (the paused "
+                   "night is restored after the restart with no device "
+                   "command; needs the pause settled and NINA #1 and #2 idle)")
     elif st_name == "ARMED" and not allow_armed:
         why.append("armer is ARMED: disarm first, or pass allow_armed=true "
                    "(the armed night is restored after the restart)")
@@ -2986,18 +2992,32 @@ def _update_blockers(allow_armed: bool) -> list[str]:
 
 
 @app.post("/api/update")
-async def api_update(allow_armed: bool = False):
+async def api_update(allow_armed: bool = False, allow_paused: bool = False):
     """Graceful restart with exit code 42; the run-photonscript.ps1 wrapper
     then stages, smoke-checks and fast-forwards the new code (PS-58).
 
     Refused (409) while a sequence runs, while ARMED (unless allow_armed),
-    and while a grading job is writing. The service shuts down through the
-    orchestrator's stop path (uvicorn, agents, PID file); a hard os._exit(42)
-    follows only if that takes longer than 15 s.
+    while PAUSED_OPERATOR (unless allow_paused, and then only with the pause
+    settled, nothing in flight and NINA #1 and #2 idle) and while a grading
+    job is writing. The service shuts down through the orchestrator's stop
+    path (uvicorn, agents, PID file); a hard os._exit(42) follows only if
+    that takes longer than 15 s.
     """
-    why = _update_blockers(allow_armed)
+    why = _update_blockers(allow_armed, allow_paused)
+    armer = get_armer()
+    paused = str(armer.state or "").upper() == "PAUSED_OPERATOR"
+    if not why and paused:
+        why = await armer.update_paused_blockers()
+        if why:
+            why = ["armer is PAUSED_OPERATOR but not ready for a restart:"] + [
+                "; ".join(why) + "."]
     if why:
         return JSONResponse(status_code=409, content={"detail": " ".join(why)})
+    if paused:
+        # one-shot allowance for self-update + the mark restore() closes
+        armer.prepare_update_restart()
+        logger.warning("Update while PAUSED_OPERATOR (allow_paused): the "
+                       "paused night is restored after the restart")
     logger.warning("Update requested via API: graceful stop with exit 42 so "
                    "the wrapper can stage the new code and restart")
     import os as _os

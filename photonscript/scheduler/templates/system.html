@@ -683,6 +683,10 @@
             confirm(d.detail + '\n\nRestart anyway? The armed night is restored after the restart.')) {
             r = await fetch('/api/update?allow_armed=true', {method: 'POST'});
             d = await r.json();
+        } else if (r.status === 409 && /allow_paused/.test(d.detail || '') &&
+            confirm(d.detail + '\n\nRestart anyway? The paused night comes back PAUSED: nothing parks, warms, connects or loads.')) {
+            r = await fetch('/api/update?allow_paused=true', {method: 'POST'});
+            d = await r.json();
         }
         if (!r.ok) { st.textContent = d.detail; return; }
         st.textContent = 'Restarting… this page will come back in ~20 s.';

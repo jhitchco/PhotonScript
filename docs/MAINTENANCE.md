@@ -47,6 +47,64 @@ Signing out of jeremy's session stops an Interactive task; disconnect Remote
 Desktop instead of signing out. If an S4U task will not start with a logon
 error, re-run the installer with `-LogonType Password`.
 
+### Deploying while paused (-AllowPaused, 2026-10-14)
+
+For new code while the night is PAUSED_OPERATOR (Pause on the dashboard:
+NINA #1 stopped, Piggy-600 stopped or kept, coolers / tracking / PHD2 on),
+e.g. during a TPoint run in TheSky or polar alignment in SharpCap:
+
+```powershell
+.\deploy\deploy.ps1 -AllowPaused
+```
+
+(POST `/api/update?allow_paused=true`; the System page's "Pull latest &
+restart" offers the same after its 409.) `-AllowArmed` does not cover it on
+purpose: that switch is routine before dusk, this one restarts mid-night with
+the operator on the devices.
+
+Allowed only when ALL hold, else 409 with the reason:
+- the armer is PAUSED_OPERATOR with the pause settled (phase `paused`: not
+  still stopping, no Resume / Restart re-dispatch in flight);
+- NINA #1 and NINA #2 (when the Piggy-600 is enabled) read no running
+  sequence; an unreadable NINA blocks, and a pause that KEPT the Piggy-600
+  imaging blocks (pause it too, or wait);
+- no calibration capture job and no grading job is writing.
+RUNNING, PAUSED_UNSAFE and WATCHING are always refused.
+
+What happens: the armer marks the pause (`pause.update_restart`) and writes a
+one-shot allowance `<data_dir>\update_allow_paused.json` (night + pause
+start, valid 10 min). The wrapper's `self-update` consumes it (deleted
+whether used or not) and stages / smoke-checks / fast-forwards as usual; with
+no valid allowance a paused night still defers the update. On start the armer
+restores the night from `armer_state.json` (night_of, guiding mode, recipe,
+pause incl. Piggy keep / pause and parked flag, unguided-guard latches; the
+deep-night override and the night pilot ledger live in their own files) and,
+because the pause is settled, sends NO device command: no connect-all, no
+unguided guard, no make_safe / park / warm / cooler change / sequence load.
+Push "PhotonScript restarted for an update while paused". Resume works as
+usual on the new code (re-plans from now).
+
+What still runs after the restart, exactly as during the pause before it:
+the paused tick (safety read; parks only if unsafe for unsafe_stop_grace_s;
+the cooler nanny re-asserts the setpoint only if a cooler reads off / too
+warm), the telescope agents (NINA / PHD2 polling, the safety-monitor
+reconnect watchdog, the cooling watchdog), the NINA watchdog (observe only).
+The PHD2 calibration manager's reconnect check reads PHD2 only (a
+recalibration needs RUNNING). Nothing at startup talks to TheSky (the TheSky
+audit runs at arm; the settings ledger snapshots at armer state changes, and
+a restore is not one).
+
+Failure: a refused smoke check keeps the old code; a failed health check
+rolls back (`git reset --hard <prev>`, "PhotonScript rolled back"); in both
+cases the old code restores the same PAUSED_OPERATOR night from
+`armer_state.json`. Note the old code must already include this change for
+its restore to skip the device commands: before it lands, a paused restore
+runs connect-all (connect only) and the unguided guard (guider commands).
+
+First deploy of this feature: the running code decides, so it cannot be
+deployed with `-AllowPaused` while paused; ship it while DISARMED / COMPLETE
+(or ARMED with `-AllowArmed`).
+
 ### Slow or stalled service (PS-55)
 
 - `GET /api/health` (PS-57) answers from memory only: version, commit (full

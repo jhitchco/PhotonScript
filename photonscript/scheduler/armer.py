@@ -271,6 +271,9 @@ class Armer:
                 "pause": getattr(self, "pause_info", None),
                 "focus_cal": getattr(self, "focus_cal", None),   # PS-152
                 "recipe": getattr(self, "recipe", None),         # PS-181
+                # 2026-10-14: the unguided guard's per-night state (episode,
+                # action count, alert latches) survives a restart
+                "unguided_guard": getattr(self, "_ug_state", None),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -322,6 +325,16 @@ class Armer:
         self.pause_info = saved.get("pause")  # PS-64
         self.focus_cal = saved.get("focus_cal")  # PS-152
         self.recipe = saved.get("recipe")        # PS-181
+        ug = saved.get("unguided_guard")
+        if isinstance(ug, dict) and ug.get("night") == self.plan.get("night_of"):
+            self._ug_state = ug
+        # 2026-10-14: a settled operator pause belongs to the operator (a
+        # TPoint run in TheSky, polar alignment in SharpCap): the restore
+        # sends NO device command. No connect-all, no unguided guard, and
+        # (as for every restore) no make_safe, park, warm, cooler change or
+        # sequence load. The paused tick carries on as before the restart.
+        quiet = (self.state == PAUSE_STATE
+                 and (self.pause_info or {}).get("phase") == "paused")
         self._task = asyncio.create_task(self._run())
         if (self.state == PAUSE_STATE
                 and (self.pause_info or {}).get("phase") == "stopping"):
@@ -339,6 +352,19 @@ class Armer:
                            "interrupted by a PhotonScript restart; Resume again")
         logger.info("Armer restored: %s for %s", self.state,
                     self.plan.get("night_of"))
+        if quiet:
+            ur = self._note_update_restored()
+            logger.info("Restored a settled operator pause%s: no device "
+                        "commands (connect-all and the unguided guard skipped)",
+                        " after an update restart" if ur else "")
+            asyncio.create_task(notify(
+                self.config, "PhotonScript restarted"
+                + (" for an update" if ur else "")
+                + " while paused by the operator: still PAUSED, nothing was "
+                "connected, parked, warmed or loaded. Resume when ready (it "
+                "re-plans from now on the running code).",
+                title="PhotonScript restored"))
+            return True
         # Reconnect everything (esp. safety) after a restart so equipment that
         # dropped while we were down comes back without waiting for the next
         # sequence phase. Connect-only; safety still gates imaging.
@@ -351,6 +377,28 @@ class Armer:
             self.config, f"PhotonScript restarted mid-night — reattached in "
             f"state {self.state}.", title="PhotonScript restored"))
         return True
+
+    def _note_update_restored(self) -> dict | None:
+        """restore(): close the update_restart mark prepare_update_restart
+        left on the pause (None when there is none)."""
+        p = self.pause_info if isinstance(self.pause_info, dict) else None
+        ur = (p or {}).get("update_restart")
+        if not isinstance(ur, dict):
+            return None
+        now = datetime.utcnow()
+        try:
+            from photonscript.shared.version import repo_version
+            ur["restored_on"] = repo_version()
+        except Exception:  # noqa: BLE001
+            pass
+        ur["restored"] = _iso(now)
+        # closed: a later plain restart is not reported as an update
+        p["update_restarted"] = p.pop("update_restart")
+        self._persist()
+        self._pause_event("update_restored",
+                          "restarted for an update: still paused, no device "
+                          "commands", now, version=ur.get("restored_on"))
+        return ur
 
     def _set_state(self, state: str, detail: str = ""):
         prev = self.state
@@ -3263,6 +3311,76 @@ class Armer:
         except Exception:  # noqa: BLE001
             return None
         return None
+
+    # -- 2026-10-14: code update while PAUSED_OPERATOR -------------------------
+    # POST /api/update?allow_paused=true (deploy.ps1 -AllowPaused): restart
+    # for an update while the operator holds the night (2026-10-14: a TPoint
+    # run in TheSky). Only when the pause is settled and both NINAs read idle;
+    # restore() brings it back PAUSED_OPERATOR with no device command.
+
+    async def _nina2_running(self) -> list[str] | None:
+        """NINA #2's RUNNING items ([] = idle, or no Piggy-600 enabled),
+        None when its state cannot be read."""
+        from photonscript.shared.rigs import PIGGYBACK, rig_config, rig_ids
+        if PIGGYBACK not in rig_ids(self.config):
+            return []
+        from photonscript.scheduler.sideload import (nina_running,
+                                                     read_sequence_state)
+        try:
+            tree, _err = await read_sequence_state(
+                rig_config(self.config, PIGGYBACK).nina_base_url)
+        except Exception:  # noqa: BLE001
+            return None
+        return None if tree is None else nina_running(tree)
+
+    async def update_paused_blockers(self) -> list[str]:
+        """Why a PAUSED_OPERATOR night may not restart for an update now.
+        Empty = go. Read only; fails closed (an unreadable NINA blocks)."""
+        if self.state != PAUSE_STATE:
+            return [f"armer is {self.state}, not {PAUSE_STATE}"]
+        p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        why = []
+        if p.get("phase") != "paused":
+            why.append(f"the pause is {p.get('phase') or 'unknown'}, not "
+                       "settled: wait until it reads paused")
+        if p.get("restart") or p.get("resume"):
+            why.append("a Restart / Resume re-dispatch is in flight")
+        t = getattr(self, "_pause_task", None)
+        if t is not None and not t.done():
+            why.append("a pause / resume step is still running")
+        cal = self._calibration_busy()
+        if cal:
+            why.append(f"a calibration capture job runs on {cal}")
+        if why:
+            return why
+        r1 = await self._nina1_running()
+        if r1 is None:
+            why.append("NINA #1 sequence state unreadable")
+        elif r1:
+            why.append("NINA #1 is running " + ", ".join(r1[:3]))
+        r2 = await self._nina2_running()
+        if r2 is None:
+            why.append("NINA #2 sequence state unreadable")
+        elif r2:
+            why.append("NINA #2 is running " + ", ".join(r2[:3])
+                       + " (the pause kept the Piggy-600 imaging)")
+        return why
+
+    def prepare_update_restart(self, now: datetime | None = None) -> dict:
+        """Mark the pause and hand self-update its one-shot allowance. Sends
+        nothing to any device; the state stays PAUSED_OPERATOR."""
+        now = now or datetime.utcnow()
+        p = self.pause_info if isinstance(self.pause_info, dict) else {}
+        rec = {"requested": _iso(now), "night_of": self.plan.get("night_of")}
+        p["update_restart"] = rec
+        self.pause_info = p
+        self._persist()
+        from photonscript.shared.updater import write_paused_allowance
+        write_paused_allowance(self.config, self.plan.get("night_of"),
+                               p.get("since"))
+        self._pause_event("update_restart", "restart for an update while "
+                          "paused: the pause is restored after it", now)
+        return rec
 
     async def restart(self, when: str = "after_exposure",
                       now: datetime | None = None) -> dict:

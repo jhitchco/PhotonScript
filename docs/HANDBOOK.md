@@ -70,8 +70,14 @@ other sessions leave unfinished work in this checkout; `-IncludeWorkingTree
 pulls --rebase, runs the test gate on exactly what ships, shows
 `origin/main..HEAD`, pushes, POSTs `/api/update` on the scope, which stops
 gracefully (exit 42), and waits for `GET /api/health` to report the pushed SHA.
-Refused with 409 while RUNNING, PAUSED_UNSAFE or PAUSED_OPERATOR (PS-64), while a grading job writes,
-and while ARMED unless `-AllowArmed` (the armed night is restored).
+Refused with 409 while RUNNING, PAUSED_UNSAFE or WATCHING, while a grading job writes,
+while ARMED unless `-AllowArmed` (the armed night is restored), and while
+PAUSED_OPERATOR (PS-64) unless `-AllowPaused` (2026-10-14): then only with the
+pause settled ("paused", no Resume / Restart in flight), NINA #1 and #2 idle
+and no capture job, and the night comes back PAUSED_OPERATOR with NO device
+command (no connect-all, unguided guard, park, warm, cooler, load). Made for a
+TPoint run or polar alignment during a pause; Resume afterwards re-plans on the
+new code. Details: MAINTENANCE.md "Deploying while paused".
 PS-58: the scope wrapper runs `photonscript self-update` with the OLD code:
 fetch, check the new commit out into a staging worktree, import every module
 from it (and the fast tests if `PS_UPDATE_SMOKE_TESTS=true`), and only then
