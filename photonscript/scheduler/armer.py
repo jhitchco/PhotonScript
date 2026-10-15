@@ -1027,6 +1027,13 @@ class Armer:
                          "failed": [s for s in steps if "FAILED" in s]}
         self.recipe = None   # PS-181: the night is over; the recipe was its
         self._persist()
+        try:   # deep night: the tonight-only mode override was this night's
+            from photonscript.scheduler.deep_night import clear_at_dawn
+            dn_txt = clear_at_dawn(self.config, (self.plan or {}).get("night_of"))
+            if dn_txt:
+                steps.append(dn_txt)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("night mode dawn clear failed: %s", e)
         try:   # night pilot: tonight-only goal changes (sub caps, skips) undone
             from photonscript.scheduler.night_pilot import dawn_revert
             np_txt = dawn_revert(self.config, (self.plan or {}).get("night_of"))
@@ -1712,7 +1719,9 @@ class Armer:
             projects = [create_project_from_target(t)
                         for t in get_seasonal_targets(now.month)]
 
-        targets = plan_night_sequence(projects, self.config, now)
+        from photonscript.scheduler.target_planner import plan_with_info
+        targets, plan_info = plan_with_info(plan_night_sequence, projects,
+                                            self.config, now)
         self.last_dispatch_targets = [str(getattr(t, "name", "?")) for t in targets or []]
         if not targets:
             self.detail = "No targets with remaining subs visible tonight"
@@ -1785,6 +1794,15 @@ class Armer:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(content)
         self.sequence_path = out
+        # deep night: the mode and pick this dispatch planned (plan snapshot
+        # and the morning report's "Deep night on ..." line)
+        if plan_info.get("mode"):
+            self.plan["night_mode"] = {"mode": plan_info.get("mode"),
+                                       "source": plan_info.get("mode_source"),
+                                       "deep_pick": plan_info.get("deep_pick"),
+                                       "note": plan_info.get("deep_note")}
+            from photonscript.scheduler.deep_night import record_dispatch
+            record_dispatch(self.config, self.plan["night_of"], plan_info, now)
         self._persist()
         try:
             from photonscript.scheduler.runs import save_plan_snapshot

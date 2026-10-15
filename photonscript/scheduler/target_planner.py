@@ -387,6 +387,21 @@ def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
     is shot inside the window; the loop repeats the pass until the
     handoff). Returns the targets that keep a window."""
     start = max(dark_start, now)
+    entries = _window_entries(sequence_targets, vis_by_name, need_by_name,
+                              prio_by_name, dark_end, moon)
+    alloc = allocate_windows(entries, start, dark_end, _min_window_s(config))
+    return _put_windows(sequence_targets, alloc, ha_first_by_name)
+
+
+def _min_window_s(config) -> float:
+    return 60.0 * float(getattr(config, "plan_window_min_minutes", 30) or 30)
+
+
+def _window_entries(sequence_targets, vis_by_name: dict, need_by_name: dict,
+                    prio_by_name: dict, dark_end: datetime,
+                    moon: dict | None) -> list[dict]:
+    """allocate_windows entries for tonight's targets (usable span, the
+    moonrise cap for a broadband-only target, priority, need)."""
     moon = moon or {}
     rise = moon.get("rise_utc") if moon.get("down_at_dusk") else None
     entries = []
@@ -404,9 +419,14 @@ def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
                         "up_until": up_until,
                         "priority": prio_by_name.get(t.name, 50),
                         "need_s": need_by_name.get(t.name, 0.0)})
-    alloc = allocate_windows(
-        entries, start, dark_end,
-        60.0 * float(getattr(config, "plan_window_min_minutes", 30) or 30))
+    return entries
+
+
+def _put_windows(sequence_targets, alloc: dict,
+                 ha_first_by_name: dict | None = None):
+    """Put allocate_windows' windows on the targets (in list order), drop
+    the ones without a window, fit each target's per-pass counts into its
+    window. Returns the kept targets."""
     kept = []
     for t in sequence_targets:
         win = alloc["windows"].get(t.name)
@@ -440,6 +460,96 @@ def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
         (f"; fill {alloc['fill'][0]} from {alloc['fill'][1]:%H:%M}Z"
          if alloc["fill"] else ""))
     return kept
+
+
+def allocate_deep(entries: list[dict], pick: str, start: datetime,
+                  end: datetime, min_window_s: float = 1800.0) -> dict | None:
+    """Deep night: the pick gets the dark window while it is up and owes
+    time; split (allocate_windows) fills the time before it rises and after
+    it sets or is done. Same entries and result shape as allocate_windows,
+    plus "pick_window" and "fallback" (None, or "sets HH:MMZ" / "done
+    HH:MMZ" when the rest of the night is split). None when the pick cannot
+    get min_window_s tonight (the caller plans split)."""
+    min_win = timedelta(seconds=max(60.0, float(min_window_s or 0)))
+    pe = next((e for e in entries if e["name"] == pick), None)
+    if pe is None:
+        return None
+    lo = max(start, pe.get("up_from") or start)
+    hi = min(end, pe.get("up_until") or end)
+    if hi - lo < min_win:
+        return None
+    need = timedelta(seconds=max(0.0, float(pe.get("need_s") or 0)))
+    p_end = min(hi, lo + max(min_win, need))
+    others = [e for e in entries if e["name"] != pick]
+    windows: dict = {}
+    handoff: dict = {}
+    fill = None
+    if others and lo - start >= min_win:
+        b = allocate_windows(others, start, lo, min_window_s)
+        windows.update(b["windows"])
+        if windows:
+            # the time before the pick rises: every window hands off, the
+            # last one stretched to the pick's rise when still up
+            last = max(windows, key=lambda n: windows[n][1])
+            le = next(e for e in others if e["name"] == last)
+            if windows[last][1] < lo and (le.get("up_until") or end) >= lo:
+                windows[last] = (windows[last][0], lo)
+            handoff.update({n: w[1] for n, w in windows.items()})
+    rest = [e for e in others if e["name"] not in windows]
+    after = None
+    if rest and end - p_end >= min_win:
+        after = allocate_windows(rest, p_end, end, min_window_s)
+        if not after["windows"]:
+            after = None
+    fallback = None
+    if after is None:
+        # nothing else can use the rest: the pick keeps the mount while up
+        p_end = hi
+    else:
+        windows.update(after["windows"])
+        handoff.update(after["handoff"])
+        fill = after["fill"]
+        fallback = ("done" if p_end < hi else "sets") + f" {p_end:%H:%M}Z"
+    windows[pick] = (lo, p_end)
+    if after is not None:
+        handoff[pick] = p_end
+    dropped = [e["name"] for e in others if e["name"] not in windows]
+    return {"windows": windows, "handoff": handoff, "fill": fill,
+            "dropped": dropped, "pick_window": (lo, p_end),
+            "fallback": fallback}
+
+
+def _apply_deep_windows(sequence_targets, pick: str, vis_by_name: dict,
+                        need_by_name: dict, prio_by_name: dict, config,
+                        dark_start: datetime, dark_end: datetime,
+                        now: datetime, moon: dict | None,
+                        ha_first_by_name: dict | None = None):
+    """allocate_deep over tonight's targets: (kept targets in window order,
+    the allocation), or (None, None) when the pick gets no window (the
+    caller plans split)."""
+    start = max(dark_start, now)
+    entries = _window_entries(sequence_targets, vis_by_name, need_by_name,
+                              prio_by_name, dark_end, moon)
+    alloc = allocate_deep(entries, pick, start, dark_end, _min_window_s(config))
+    if alloc is None:
+        return None, None
+    ordered = sorted((t for t in sequence_targets if t.name in alloc["windows"]),
+                     key=lambda t: alloc["windows"][t.name][0])
+    ordered += [t for t in sequence_targets if t.name not in alloc["windows"]]
+    return _put_windows(ordered, alloc, ha_first_by_name), alloc
+
+
+def _deep_moon(config, date_utc: datetime) -> dict:
+    """moon.moon_window_tonight for the deep-night score ({} when
+    moon-aware planning is off or the moon is unavailable)."""
+    if not getattr(config, "moon_aware_planning", True):
+        return {}
+    try:
+        from photonscript.scheduler.moon import moon_window_tonight
+        return moon_window_tonight(config, now=date_utc) or {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("moon window unavailable: %s", e)
+        return {}
 
 
 def _panel_note(proj, held: list) -> str:
@@ -500,6 +610,10 @@ def plan_night_sequence(
     projects: list[ImagingProject],
     config: PhotonScriptConfig,
     date_utc: Optional[datetime] = None,
+    *,
+    night_mode: Optional[str] = None,
+    deep_target: Optional[str] = None,
+    info: Optional[dict] = None,
 ) -> list[NinaSequenceTarget]:
     """Build an ordered list of NINA sequence targets for tonight.
 
@@ -508,7 +622,14 @@ def plan_night_sequence(
     2. Filter to targets visible tonight (> 30° altitude)
     3. Order by transit time so the scope moves west-to-east through the night
     4. Allocate exposures proportionally to remaining needs
+
+    Deep night (scheduler/deep_night.py): night_mode "split" | "deep"
+    (None = tonight's override, else config plan_night_mode); deep_target
+    a project id that wins the deep pick. info (a dict, filled in place):
+    mode, mode_source, night, deep_pick (score breakdown, window,
+    fallback), deep_scores, deep_note.
     """
+    from photonscript.scheduler import deep_night
     if date_utc is None:
         date_utc = datetime.utcnow()
 
@@ -587,13 +708,46 @@ def plan_night_sequence(
     # transit-ordered at the end to minimize slewing.
     visible_projects.sort(key=lambda vp: -vp["project"].priority)
 
+    # Deep night: one goal for the whole dark window (split before it rises
+    # and after it sets or is done)
+    info = info if info is not None else {}
+    night = deep_night.night_label(config, dark_start)
+    mode, deep_target, mode_src = deep_night.resolve(config, night, night_mode,
+                                                     deep_target)
+    info.update(mode=mode, mode_source=mode_src, night=night, deep_pick=None,
+                deep_scores=[], deep_note=None)
+    pick = pick_proj = None
+    _gen_moon = None  # generator's moon window, fetched only if needed
+    if mode == "deep":
+        _gen_moon = _deep_moon(config, date_utc)
+        bb_ok = True
+        if getattr(config, "moon_aware_planning", True):
+            from photonscript.scheduler.moon import broadband_deferred
+            bb_ok = not broadband_deferred(_gen_moon)
+        rise = (_gen_moon.get("rise_utc") if _gen_moon.get("down_at_dusk")
+                else None)
+        pick, scores = deep_night.choose(
+            visible_projects, max(dark_start, date_utc), dark_end, dark_start,
+            dark_end, target=deep_target, bb_ok=bb_ok, moonrise=rise)
+        info["deep_scores"] = [deep_night.json_pick(s) for s in scores]
+        if pick is None:
+            info["deep_note"] = (
+                f"deep target {deep_target} is not up or not active tonight: split"
+                if deep_target else "no goal can use tonight: split")
+        else:
+            pick_proj = next(vp["project"] for vp in visible_projects
+                             if vp["project"].id == pick["project_id"]
+                             and vp["project"].target.name == pick["target"])
+            visible_projects.sort(key=lambda vp: vp["project"] is not pick_proj)
+            logger.info("Deep night pick: %s (score %.1f%s)", pick["target"],
+                        pick["score"], ", explicit" if pick.get("explicit") else "")
+
     # Build sequence targets
     sequence_targets = []
     remaining_hours = dark_hours
     # PS-180: per target, for the window allocation
     vis_by_name, need_by_name, prio_by_name = {}, {}, {}
     ha_first_by_name = {}   # name -> (Ha seconds done, Ha first seconds)
-    _gen_moon = None  # generator's moon window, fetched only if needed
 
     for vp in visible_projects:
         if remaining_hours <= 0.3:
@@ -614,6 +768,10 @@ def plan_night_sequence(
         if not remaining_exposures:
             # PS-134: the Piggy-600 drives and still owes time
             hold = piggy_hold_exposure(proj)
+            if hold is None and proj is pick_proj:
+                # deep night on a goal without an RC16 plan (Piggy-driven):
+                # the mount points at it all night, the RC16 shoots bonus subs
+                hold = deep_night.rc16_hold(proj, vis_hours * 3600 * 0.85)
             if hold is not None:
                 remaining_exposures.append(hold)
 
@@ -621,6 +779,10 @@ def plan_night_sequence(
             continue
         # PS-180: what the goal still needs (before tonight's scale-down)
         need_s = sum(owed_seconds(e) for e in remaining_exposures) * 1.15
+        if proj is pick_proj:
+            # deep: the goal keeps the mount while EITHER rig owes time
+            owed = deep_night.owed_by_kind(proj)
+            need_s = max(owed["NB"] + owed["BB"], owed["OSC"]) * 1.15
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
@@ -665,7 +827,12 @@ def plan_night_sequence(
                     continue
 
         alloc_time = sum(owed_seconds(e) for e in remaining_exposures) / 3600
-        remaining_hours -= alloc_time * 1.15  # account for overhead
+        if proj is pick_proj:
+            # the pick holds its time up (or until done); the rest stays for
+            # the split before / after it
+            remaining_hours -= min(vis_hours, need_s / 3600)
+        else:
+            remaining_hours -= alloc_time * 1.15  # account for overhead
 
         seq_target = NinaSequenceTarget(
             name=proj.target.name,
@@ -716,7 +883,12 @@ def plan_night_sequence(
     # PS-180: each target gets a time window and hands the mount on at its
     # end, so the first repeating target no longer holds the RC16 all night
     # (2026-10-07: 281 M31 subs, NGC 604 and the Heart never ran)
-    if sequence_targets and bool(getattr(config, "plan_target_windows", True)):
+    deep_on = (pick is not None
+               and any(t.name == pick["target"] for t in sequence_targets))
+    if pick is not None and not deep_on:
+        info["deep_note"] = (f"{pick['target']} has nothing the moon allows "
+                             "tonight: split")
+    if sequence_targets and (deep_on or bool(getattr(config, "plan_target_windows", True))):
         moon = None
         if getattr(config, "moon_aware_planning", True):
             # the generator's own moon window: the window cap and the
@@ -728,9 +900,32 @@ def plan_night_sequence(
             except Exception as e:  # noqa: BLE001
                 logger.warning("moon window unavailable: %s", e)
                 moon = {}
-        sequence_targets = _apply_windows(
-            sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
-            dark_start, dark_end, date_utc, moon, ha_first_by_name)
+        deep_alloc = None
+        if deep_on:
+            kept, deep_alloc = _apply_deep_windows(
+                sequence_targets, pick["target"], vis_by_name, need_by_name,
+                prio_by_name, config, dark_start, dark_end, date_utc, moon,
+                ha_first_by_name)
+            if deep_alloc is None:
+                info["deep_note"] = (f"{pick['target']} gets less than the "
+                                     "minimum window tonight: split")
+            else:
+                sequence_targets = kept
+                w0, w1 = deep_alloc["pick_window"]
+                pick.update(window_start_utc=w0, window_end_utc=w1,
+                            fallback=(f"{pick['target']} {deep_alloc['fallback']}"
+                                      ", split after" if deep_alloc["fallback"]
+                                      else None),
+                            split_targets=[t.name for t in kept
+                                           if t.name != pick["target"]])
+                info["deep_pick"] = deep_night.json_pick(pick)
+                logger.info("Deep night: %s %s-%sZ%s", pick["target"],
+                            f"{w0:%H:%M}", f"{w1:%H:%M}",
+                            f"; {pick['fallback']}" if pick.get("fallback") else "")
+        if deep_alloc is None and bool(getattr(config, "plan_target_windows", True)):
+            sequence_targets = _apply_windows(
+                sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
+                dark_start, dark_end, date_utc, moon, ha_first_by_name)
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",
@@ -738,3 +933,19 @@ def plan_night_sequence(
         dark_hours - remaining_hours,
     )
     return sequence_targets
+
+
+def plan_with_info(planner, projects, config, now) -> tuple[list, dict]:
+    """(targets, info) from a plan_night_sequence-like callable: info (deep
+    night mode and pick) when the planner takes it, {} for a stand-in that
+    does not (a caller's own wrapper or a test double)."""
+    import inspect
+    info: dict = {}
+    try:
+        params = inspect.signature(planner).parameters.values()
+    except (TypeError, ValueError):
+        params = []
+    if any(p.name == "info" or p.kind is inspect.Parameter.VAR_KEYWORD
+           for p in params):
+        return planner(projects, config, now, info=info), info
+    return planner(projects, config, now), info

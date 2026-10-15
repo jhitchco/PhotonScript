@@ -194,6 +194,12 @@ class PhotonScriptConfig(BaseSettings):
     plan_target_windows: bool = True
     plan_window_min_minutes: int = 30  # shortest window worth a slew + AF +
     # center; a target that cannot get this much tonight is left out
+    # Deep night (scheduler/deep_night.py): "split" = the night is shared
+    # among the goals by priority (PS-180 windows); "deep" = ONE goal (the
+    # best deep-night score, or the tonight-only override's target) gets
+    # the whole dark window on both rigs, split after it sets or is done.
+    # POST /api/tonight/mode overrides it for one night.
+    plan_night_mode: str = "split"
     campaign_min_alt_deg: float = 30.0  # PS-30: campaign planner altitude floor
     # (deg) for a target's usable 10-min slots; a project's min_alt_deg overrides.
     # Flat 30 deg at AARO Pier 3 (Jeremy, 2026-09-26: no roof/terrain profile).

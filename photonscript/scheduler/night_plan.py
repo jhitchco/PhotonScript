@@ -141,7 +141,9 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     if not projects:
         seasonal = get_seasonal_targets(dusk.month)
         projects = [create_project_from_target(t) for t in seasonal]
-    targets = plan_night_sequence(projects, config, now)
+    from photonscript.scheduler.target_planner import plan_with_info
+    targets, plan_info = plan_with_info(plan_night_sequence, projects, config,
+                                        now)
 
     from photonscript.shared.localtime import utc_offset_hours as _tz_off
     utc_off = _tz_off(config, dusk)  # DST-aware (MDT -6 / MST -7)
@@ -280,6 +282,12 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         "sunrise_utc": (tw_all["sunrise"].isoformat() + "Z"
                         if tw_all.get("sunrise") else None),
         "dark_hours": round(dark_hours, 1),
+        # deep night (scheduler/deep_night.py): the dashboard timeline's
+        # "Deep night: <target>" line
+        "night_mode": plan_info.get("mode"),
+        "night_mode_source": plan_info.get("mode_source"),
+        "deep_pick": plan_info.get("deep_pick"),
+        "deep_note": plan_info.get("deep_note"),
         "targets": target_names,
         "events": events,
         "twilight": twilight,

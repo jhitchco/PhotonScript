@@ -973,6 +973,63 @@ unguided limit in apply), so a goal's OSC plan length never reached it.
   stack apart and replace the clipped nucleus of `master_OSC` into
   `master_OSC_hdr`.
 
+### Deep night: one goal all night (2026-10-14)
+
+Jeremy: "it's kinda nice to be able to image a target a night and create
+those deep, vivid images (lots of texture)". The default planner ("split",
+PS-180 windows) shares each night among the goals by priority, so each gets
+a slice (10-14: M31, NGC 604, Heart). "Deep" gives the dark window to ONE
+goal on both rigs and falls back to split for what is left.
+
+- **Mode**: config `plan_night_mode` = `split` (default) | `deep` (System
+  page, Imaging). Tonight only: the dashboard's Tonight's Run panel, "Night
+  mode" select (default / split / deep, and with deep a goal or "best
+  score"), or `POST /api/tonight/mode {"mode": "deep", "target": <project
+  id, optional>}` (`"default"` removes it; `GET /api/tonight/mode` shows
+  it). Stored with the night like the night pilot's ledger
+  (`<data_dir>/night_mode/<night>.json`, keyed by the local evening date,
+  so it never applies to another night) and marked cleared by the dawn
+  shutdown (a shutdown step "night mode override (deep) cleared"). Setting
+  it sends nothing to NINA: it is planned at the next dispatch (arm, Resume,
+  or Restart tonight from now).
+- **The pick** (`scheduler/deep_night.py`): the explicit target wins
+  (any active goal up tonight, mosaic panels included); else the best
+  score over tonight's visible goals, 0 to 100: hours above the altitude
+  floor from now to dawn / dark hours (35), fill = owed hours on the busier
+  rig (RC16 and Piggy run in parallel) / hours up, capped at 1 (25),
+  priority / 100 (20), moon = share of the owed seconds tonight's moon
+  allows (10: narrowband always; broadband and OSC by the one moon rule,
+  `moon.broadband_deferred`, so a moon that sets within 1.5 h of dusk
+  allows them, and only until moonrise when the moon rises later; 0 = not
+  eligible), transit = 1 at the dark-window midpoint down to 0 at 6 h from
+  it (10). Mosaic panels are not auto-picked.
+- **The night**: the pick gets its time up (from its rise above the floor,
+  or now, to its set or dawn), or until both rigs are done (need = the
+  larger of RC16 owed and Piggy OSC owed, + 15%). The RC16 shoots its
+  filters by the mix (the usual moon fit, one pass repeating to the window
+  end); the Piggy-600 companion shoots OSC on the same pointing all night.
+  Time before the pick rises and after it sets or is done is split among
+  the other goals (PS-180 rule); "Andromeda Galaxy done 03:46Z, split
+  after". A Piggy-driven goal with no RC16 plan can be picked: the mount
+  centers for the Piggy frame and the RC16 shoots bonus subs of the
+  target type's default plan (not counted toward the goal). If the moon
+  rule drops the pick or it gets less than `plan_window_min_minutes`, the
+  night is planned split and `deep_note` says why.
+- **Shown**: `GET /api/tonight` has `mode`, `mode_source` (config |
+  tonight), `deep_pick` (score, components with value / norm / points,
+  window, fallback, split_targets), `deep_scores` (every goal, best first,
+  with `why` when not eligible) and `deep_note`; `/api/nightplan` has
+  `night_mode` and `deep_pick` and the timeline shows "Deep night: NGC 604
+  (score 88.4: hours up 33.5, fill 24.2, priority 11.0, moon 10.0, transit
+  9.7)". The armer records the dispatched mode in `plan["night_mode"]`
+  and the morning report leads with "Deep night on NGC 604: 6.2 h RC16,
+  8.4 h Piggy" (accepted lights on the pick).
+- **10-14/15 at 02:10Z** (fixture `tests/test_scheduler/fixtures/deep_night`,
+  from /api/projects2): NGC 604 88.4 (hours up 9.4: 33.5, fill RC16 6.0 h /
+  Piggy 9.1 h: 24.2, priority 55: 11.0, moon 10.0, transit 0.2 h: 9.7),
+  Heart 84.5 (32.9, RC16 8.0 / Piggy 3.1 h: 21.6, 12.0, 10.0, 8.0), M31
+  69.1 (33.5, RC16 1.4 / Piggy 0 h: 3.7, 13.0, 10.0, 8.9).
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET
