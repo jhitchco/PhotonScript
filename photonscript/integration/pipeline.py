@@ -85,6 +85,7 @@ class Options:
     dry_run: bool = False
     pixinsight: str = runner.DEFAULT_EXE
     lock_wait_min: float = 60.0       # pixinsight_lock_wait_min: wait this long for the PixInsight queue lock
+    gaia_check: bool = True           # pixinsight_gaia_check: no plate solve when Gaia DR3 is missing (pigaia.py)
     pointing_check: str = "warn"      # integrate_pointing_check: warn | refuse | off (pointing_check.py)
     pointing_max_deg: float = 1.0     # integrate_pointing_max_deg: header RA / DEC this far from the catalog = off target
     pointing_min_alt_deg: float = 20.0  # integrate_min_alt_deg: lights shot lower are flagged
@@ -176,6 +177,7 @@ def config_options(cfg, rig: str) -> dict:
         core_radius_arcmin=float(getattr(cfg, "qa_core_radius_arcmin", 1.0) or 1.0),
         core_warn_px=int(getattr(cfg, "qa_core_sat_warn_px", 25) or 25),
         lock_wait_min=pilock.wait_min(cfg),
+        gaia_check=bool(getattr(cfg, "pixinsight_gaia_check", True)),
         **pointing_check.config_settings(cfg),
         library=default_library(cfg),
         default_readout=rig_readout(cfg, rig),
@@ -736,6 +738,15 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
         if missing:
             echo(f"  ImageSolver files missing ({', '.join(missing)}): the finish skips the plate solve")
         ra, dec = catalog_coords(o.target)
+        if ra is not None and o.gaia_check and o.run_pixinsight and o.finish:
+            # Gaia DR3 missing in PixInsight's settings: no solve, so no online
+            # VizieR fallback that can hang (2026-10-14); pigaia.py
+            from photonscript.integration import pigaia
+            gp = pigaia.preflight(echo)
+            result["gaia"] = gp
+            if not gp["solve"]:
+                ra = dec = None
+                echo(f"  plate solve off: {gp['why']} (photonscript pixinsight-gaia-check)")
         g0 = lights[0]
         # PS-22/PS-46: the finish is deploy/finish_osc.js, the same script
         # run-finish-osc.ps1 runs (SPCC with Gaia DR3/SP, NR + deconvolution,

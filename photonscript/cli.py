@@ -43,6 +43,7 @@ Usage:
     photonscript integrate-watch [--once] [--dry-run]             # PS-31
     photonscript blend --target T [--osc P] [--rc16 P] [--stage linear|final] [--mode l|nb|auto]  # PS-153
     photonscript finish --master P --name N [--target T] [--out DIR] [--dry-run]  # re-finish one master
+    photonscript pixinsight-gaia-check [--fix]                   # Gaia DR3 / DR3SP paths per PixInsight slot
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
@@ -4325,7 +4326,7 @@ def finish_cmd(
         out=Path(out) if out else None, gradient=gradient, hoo=hoo, focal_mm=focal_mm, pixel_um=pixel_um,
         run_pixinsight=pixinsight, dry_run=dry_run, pixinsight=pixinsight_exe,
         mono_run=Path(mono_run) if mono_run else None, colors=color, lock_wait_min=_pilock_wait(cfg),
-        solve=solve, **kw,
+        solve=solve, gaia_check=bool(getattr(cfg, "pixinsight_gaia_check", True)), **kw,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
     try:
@@ -4337,6 +4338,47 @@ def finish_cmd(
         print(_json.dumps(res, indent=1, default=str))
     ok = res.get("finish", {}).get("ok", True) and res.get("color", {}).get("ok", True)
     raise typer.Exit(0 if ok else 1)
+
+
+@app.command("pixinsight-gaia-check")
+def pixinsight_gaia_check_cmd(
+    fix: bool = typer.Option(False, "--fix",
+                             help="Copy the Gaia DR3 / DR3/SP paths into the other core-00N slot files "
+                                  "(only while no PixInsight runs; each file backed up first)"),
+    settings_dir: str = typer.Option("", "--settings-dir",
+                                      help=r"Default %APPDATA%\Pleiades (env PS_PIXINSIGHT_SETTINGS_DIR)"),
+):
+    """Gaia preflight (integration/pigaia.py), read-only: which PixInsight
+    instance slot an automation run uses (core-00N-pxi.settings), the Gaia
+    DR3 (plate solve) and DR3/SP (SPCC) paths set there, and whether the
+    files exist. DR3 not usable = finishes skip the plate solve (no online
+    VizieR fallback, the 2026-10-14 hang). --fix copies the Gaia keys into
+    the slot files that lack them (refused while PixInsight runs).
+
+    photonscript pixinsight-gaia-check
+    """
+    from photonscript.integration import pigaia
+    from photonscript.integration.runner import pixinsight_running
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    d = Path(settings_dir) if settings_dir else None
+    # the runner starts PixInsight only while none runs: its instance takes slot 1
+    st = pigaia.check(d, running_count=0)
+    for line in pigaia.report_lines(st):
+        say(line)
+    busy = pixinsight_running()
+    if busy:
+        say(f"note: PixInsight is running now (pid {', '.join(map(str, busy))}): a -n instance started "
+            f"by hand now would use slot {pigaia.automation_slot(len(busy))}; the runner refuses to "
+            "start while it runs, then uses slot 1")
+    if fix:
+        try:
+            done = pigaia.fix(d, echo=say)
+        except pigaia.GaiaFixError as e:
+            console.print(f"[red]pixinsight-gaia-check --fix:[/red] {e}", markup=True)
+            raise typer.Exit(1)
+        say(f"fixed {len(done)} slot file(s)" if done else "nothing to fix: every slot has the Gaia DR3 paths")
+        st = pigaia.check(d, running_count=0)
+    raise typer.Exit(0 if (st.dr3_ok or st.unknown) else 1)
 
 
 @app.command("integrate-watch")
@@ -4500,6 +4542,7 @@ def autointegrate_cmd(
         kw["palette_kinds"] = str(getattr(cfg, "finish_palette_kinds", pjsr.PALETTE_KINDS) or "")
         kw.update(pjsr.vivid_settings(cfg))
         common = dict(target=need.target, rig=need.rig, staging_root=root, solve=need.solve,
+                      gaia_check=bool(getattr(cfg, "pixinsight_gaia_check", True)),
                       pixinsight=pixinsight_exe, lock_wait_min=_pilock_wait(cfg), **kw)
 
         def run_finish(master, n):

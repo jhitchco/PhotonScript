@@ -154,6 +154,8 @@ def build(*, target: str, rig: str, run_dir: Path, options: dict, selected: list
         "finish": {"script": "finish_run.js (deploy/finish_osc.js)",
                    "ok": (finish or {}).get("ok"),
                    "minutes": (finish or {}).get("minutes"),
+                   # runner hang watchdog: "hung: no log progress N min in <stage>"
+                   "hung": (finish or {}).get("hung", ""),
                    "steps": finish_steps(out_dir),
                    "log": str(out_dir / "finish.log")},
         "outputs": outputs(out_dir),

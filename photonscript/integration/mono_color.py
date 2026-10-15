@@ -357,4 +357,5 @@ def ledger_block(res: dict | None, notes: list[str] | None = None) -> dict | Non
             "items": [{k: it.get(k) for k in ("kind", "name", "channels", "L", "stars_from")}
                       for it in res.get("items") or []],
             "outputs": res.get("outputs") or [], "steps": res.get("steps"),
-            "notes": list(notes or res.get("notes") or []), "log": res.get("log", "")}
+            "notes": list(notes or res.get("notes") or []), "log": res.get("log", ""),
+            "hung": res.get("hung", "")}
