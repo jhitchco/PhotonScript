@@ -1590,6 +1590,12 @@ def _project_json(p) -> dict:
     d = p.model_dump(mode="json")
     d["kind"] = target_kind(p.target)
     d["mix"] = p.filter_mix or default_mix(d["kind"])
+    try:   # tonight-only pause (tonight_pause.py)
+        from photonscript.scheduler import tonight_pause as tp
+        d["paused_tonight"] = p.id in tp.paused_ids(
+            get_config(), tp.current_night(get_config(), get_armer()))
+    except Exception:  # noqa: BLE001
+        d["paused_tonight"] = False
     # PS-118: % from accepted seconds, each plan capped at its goal (the
     # campaign's plan_seconds rule)
     from photonscript.scheduler.campaign import plan_seconds
@@ -1637,6 +1643,12 @@ def _project_json(p) -> dict:
 def api_projects2():
     from photonscript.scheduler.runs import nights_by_target
     store = get_store()
+    try:   # a tonight-only pause the dawn shutdown missed (disarm, crash)
+        from photonscript.scheduler import tonight_pause as tp
+        tp.restore_stale(get_config(), tp.current_night(get_config(), get_armer()),
+                         store)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("tonight pause stale restore failed: %s", e)
     out = sorted((_project_json(p) for p in store.projects.values()),
                  key=lambda d: -d["priority"])
     try:
@@ -1677,6 +1689,22 @@ async def api_project_update(project_id: str, request: Request):
     proj = store.projects.get(project_id)
     if proj is None:
         return JSONResponse(status_code=404, content={"detail": "not found"})
+    pause_note = None
+    if "paused_tonight" in body:   # tonight-only pause (tonight_pause.py)
+        from photonscript.scheduler import tonight_pause as tp
+        cfg = get_config()
+        night = tp.current_night(cfg, get_armer())
+        tp.restore_stale(cfg, night, store)
+        ok, pause_note = (tp.pause if body["paused_tonight"] else tp.unpause)(
+            cfg, store, project_id, night)
+        if not ok:
+            return JSONResponse(status_code=409, content={"detail": pause_note})
+        proj = store.projects.get(project_id)
+        if not (set(body) - {"paused_tonight"}):
+            _projects[project_id] = proj
+            out = _project_json(proj)
+            out["pause_note"] = pause_note
+            return out
     priority = proj.priority + int(body["priority_delta"]) \
         if "priority_delta" in body else body.get("priority")
     budget = proj.budget_hours + float(body["budget_delta"]) \
@@ -1708,7 +1736,10 @@ async def api_project_update(project_id: str, request: Request):
     except (ValueError, TypeError) as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
     _projects[project_id] = updated
-    return _project_json(updated)
+    out = _project_json(updated)
+    if pause_note:
+        out["pause_note"] = pause_note
+    return out
 
 
 @app.delete("/api/projects2/{project_id}")

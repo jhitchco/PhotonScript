@@ -210,11 +210,12 @@ function renderFacts() {
     const rows = [['Catalog', f.catalog_id], ['Type', f.object_type],
         ['Magnitude', f.magnitude], ['Size', f.size_arcmin != null ? f.size_arcmin + "'" : ''],
         ['Constellation', f.constellation], ['RA', f.ra_text], ['Dec', f.dec_text],
-        ['Project', D.project_id ? (D.active ? 'active' : 'paused') + ' \u00b7 priority ' +
-            D.priority : 'none']];
+        ['Project', D.project_id ? (D.paused_tonight ? 'paused tonight' :
+            D.active ? 'active' : 'paused') + ' \u00b7 priority ' + D.priority : 'none']];
     document.getElementById('tFacts').innerHTML = rows.map(([k, v]) =>
         '<dt>' + k + '</dt><dd>' + (v == null || v === '' ? '<span class="dim">\u2013</span>'
-                                    : esc(v)) + '</dd>').join('');
+                                    : esc(v)) + (k === 'Project' ? pauseTonightLink() : '') +
+        '</dd>').join('');
     const g = D.goal;
     if (!g) { document.getElementById('tGoal').textContent = 'no imaging project'; return; }
     document.getElementById('tGoal').innerHTML = '<div title="long and HDR short subs">' + g.pct +
@@ -420,6 +421,32 @@ async function loadBudget() {
         });
     } catch (e) { el.textContent = 'light budget unavailable'; }
 }
+// Tonight-only pause: PATCH /api/projects2/{id} {"paused_tonight": bool};
+// the dawn shutdown sets the goal active again (tonight_pause.py).
+function pauseTonightLink() {
+    if (!D || !D.project_id || (!D.active && !D.paused_tonight)) return '';
+    return ' <a href="#" id="pauseTonight" style="color:' +
+        (D.paused_tonight ? '#eab308' : '#7dd3fc') + ';font-size:.8rem;" ' +
+        'title="inactive for tonight only: the dawn shutdown sets it active again">' +
+        (D.paused_tonight ? 'resume tonight' : 'pause tonight') + '</a>';
+}
+document.addEventListener('click', async ev => {
+    const a = ev.target.closest ? ev.target.closest('#pauseTonight') : null;
+    if (!a || !D || !D.project_id) return;
+    ev.preventDefault();
+    a.textContent = 'saving…';
+    let d = {};
+    try {
+        const r = await fetch('/api/projects2/' + encodeURIComponent(D.project_id), {
+            method: 'PATCH', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({paused_tonight: !D.paused_tonight})});
+        try { d = await r.json(); } catch (e) {}
+        if (!r.ok) { a.textContent = 'not saved: ' + (d.detail || r.status); return; }
+    } catch (e) { a.textContent = 'not saved: offline'; return; }
+    D.active = d.active;
+    D.paused_tonight = !!d.paused_tonight;
+    renderFacts();
+});
 // Target links (progression sheets etc.): PATCH /api/projects2/{id}
 // {"links": [{label, url}]} replaces the list; [] clears.
 function renderLinks() {

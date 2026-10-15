@@ -46,6 +46,8 @@ Built only from data other passes already keep (nothing is measured here):
   * Night pilot (night_pilot.morning_lines): "Night pilot: 04:31 stopped
     PHD2 guiding -> worked (ecc 0.76 -> 0.52); ...", the tonight-only goal
     changes restored at dawn, and "Night pilot learned: ..." suggestions
+  * tonight-only pauses (tonight_pause.morning_lines): "Paused for tonight
+    only, back at dawn: Heart Nebula, M31"
 
 The dashboard shows it as the "Morning report" card (GET
 /api/morning/report); the dawn "Night complete" push carries card_lines
@@ -204,7 +206,8 @@ def report_card(config, date: str | None = None, *, projects=None,
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
            "sub_doctor": None, "core": None, "blend": None,
-           "night_pilot": [], "deep_night": None, "tpoint": None}
+           "night_pilot": [], "deep_night": None, "tpoint": None,
+           "paused_tonight": []}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -314,6 +317,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["night_pilot"] = list(out.get("night_pilot") or []) + sl_lines(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no stuck-loop lines: %s", e)
+    try:   # goals paused for tonight only, back at dawn (tonight_pause)
+        from photonscript.scheduler.tonight_pause import morning_lines as tp_lines
+        out["paused_tonight"] = tp_lines(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no tonight pause lines: %s", e)
     out["lines"] = card_lines(out, calibration=calibration)
     return out
 
@@ -374,6 +382,7 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     if card.get("core"):
         lines.append(card["core"])
     lines.extend(card.get("night_pilot") or [])
+    lines.extend(card.get("paused_tonight") or [])
     if card.get("tracking"):
         lines.append(card["tracking"])
     if card.get("unguided_limits"):
