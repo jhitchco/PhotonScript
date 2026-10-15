@@ -393,10 +393,19 @@ async def api_tonight_plan():
         ranked = rank_targets_for_night(seasonal, obs, base)
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
-    sequence_targets = plan_night_sequence(projects, config, now)
+    from photonscript.scheduler.target_planner import plan_with_info
+    sequence_targets, info = plan_with_info(plan_night_sequence, projects,
+                                            config, now)
 
     return {
         "date": base.strftime("%Y-%m-%d"),
+        # deep night (scheduler/deep_night.py): split | deep, where from
+        # (config | tonight), and the pick with its score breakdown
+        "mode": info.get("mode"),
+        "mode_source": info.get("mode_source"),
+        "deep_pick": info.get("deep_pick"),
+        "deep_note": info.get("deep_note"),
+        "deep_scores": info.get("deep_scores") or [],
         "twilight": {
             k: v.isoformat() if v else None
             for k, v in twilight.items()
@@ -407,6 +416,10 @@ async def api_tonight_plan():
                 "ra": st.ra_hours,
                 "dec": st.dec_degrees,
                 "exposures": [e.model_dump(mode="json") for e in st.exposures],
+                "window_start_utc": (st.window_start_utc.isoformat() + "Z"
+                                     if st.window_start_utc else None),
+                "window_end_utc": (st.window_end_utc.isoformat() + "Z"
+                                   if st.window_end_utc else None),
             }
             for st in sequence_targets
         ],
@@ -739,6 +752,7 @@ _CONFIG_FIELDS = [
     ("meridian_guard_min", "PS_MERIDIAN_GUARD_MIN", "Don't open the run on a target within N min of a meridian flip at dark-start", "Imaging", "int", False, False),
     ("plan_target_windows", "PS_PLAN_TARGET_WINDOWS", "Target windows (PS-180): each target's loop hands the mount to the next at its planned window end; leftover time goes to the highest-priority target still up", "Imaging", "bool", False, False),
     ("plan_window_min_minutes", "PS_PLAN_WINDOW_MIN_MINUTES", "Target windows: shortest window (min) a target is planned for tonight", "Imaging", "int", False, False),
+    ("plan_night_mode", "PS_PLAN_NIGHT_MODE", "Night mode (deep night): split (each night shared among the goals by priority) | deep (one goal gets the whole dark window, both rigs; split after it sets or is done). The dashboard can set tonight only", "Imaging", "str", False, False),
     ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
     ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),
@@ -3322,6 +3336,8 @@ from photonscript.scheduler.routers import piggy_offset as _piggy_offset_router 
 app.include_router(_piggy_offset_router.router)
 from photonscript.scheduler.routers import mosaic as _mosaic_router  # noqa: E402
 app.include_router(_mosaic_router.router)
+from photonscript.scheduler.routers import night_mode as _night_mode_router  # noqa: E402
+app.include_router(_night_mode_router.router)
 from photonscript.scheduler.routers import viewer as _viewer_router  # noqa: E402
 app.include_router(_viewer_router.router)
 from photonscript.scheduler.routers import focus as _focus_router  # noqa: E402

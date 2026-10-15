@@ -140,6 +140,24 @@
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <!-- Deep night (scheduler/deep_night.py): tonight's night mode.
+                 split = the night shared among the goals; deep = one goal
+                 all night on both rigs. Tonight only (POST /api/tonight/mode,
+                 cleared at dawn); planned at the next arm / Resume / Restart. -->
+            <div id="nightModeBox" style="margin-bottom:.8rem;font-size:.85rem;
+                 padding:.45rem .6rem;border-radius:6px;border:1px solid #334155;"
+                 title="Deep night: one goal gets the whole dark window (RC16 by its filter mix, Piggy-600 OSC all night); split after it sets or is done. Tonight only; planned at the next arm, Resume or Restart tonight from now.">
+                <b>Night mode</b>
+                <select id="nightModeSel">
+                    <option value="default">default</option>
+                    <option value="split">split (share the night)</option>
+                    <option value="deep">deep (one goal all night)</option>
+                </select>
+                <select id="nightModeTarget" style="display:none;">
+                    <option value="">best score</option>
+                </select>
+                <span id="nightModeLine" style="opacity:.8;margin-left:.4rem;"></span>
+            </div>
             <!-- PS-125: automatic arm switches (saved via POST /api/config,
                  same as the System page) and the last auto-arm decision.
                  Filled by static/js/auto_arm_panel.js from /api/auto-arm. -->
@@ -879,6 +897,50 @@
             '<div style="font-size:.62rem;letter-spacing:.08em;opacity:.5;text-transform:uppercase;">' +
             label + '</div></div>';
     }
+    // Deep night: tonight's mode control (GET/POST /api/tonight/mode) and
+    // the pick with its score (GET /api/tonight deep_pick)
+    function deepPickText(p, note) {
+        if (!p) return note ? ('Split tonight: ' + note) : '';
+        const c = p.components || {};
+        const pts = Object.keys(c).map(k => k.replace('_', ' ') + ' ' + c[k].points).join(', ');
+        return 'Deep night: ' + p.target + ' (score ' + p.score + (p.explicit ? ', chosen' : '') +
+            ': ' + pts + ')' + (p.fallback ? '; ' + p.fallback : '');
+    }
+    async function loadNightMode(withPick) {
+        let d;
+        try { d = await (await fetch('/api/tonight/mode')).json(); } catch (e) { return; }
+        const sel = document.getElementById('nightModeSel');
+        const tgt = document.getElementById('nightModeTarget');
+        sel.options[0].text = 'default (' + d.config_mode + ')';
+        sel.value = d.source === 'tonight' ? d.mode : 'default';
+        tgt.innerHTML = '<option value="">best score</option>' + (d.goals || []).map(g =>
+            '<option value="' + g.id + '">' + g.name + '</option>').join('');
+        tgt.value = d.target || '';
+        tgt.style.display = d.mode === 'deep' ? '' : 'none';
+        const line = document.getElementById('nightModeLine');
+        line.textContent = d.mode === 'deep' ? 'Deep night tonight' +
+            (d.target_name ? ': ' + d.target_name : '') : 'Split tonight';
+        if (d.mode !== 'deep' || !withPick) return;
+        try {
+            const t = await (await fetch('/api/tonight')).json();
+            line.textContent = deepPickText(t.deep_pick, t.deep_note) || line.textContent;
+        } catch (e) { /* keep the cheap line */ }
+    }
+    async function postNightMode() {
+        const mode = document.getElementById('nightModeSel').value;
+        const target = mode === 'deep' ? document.getElementById('nightModeTarget').value : '';
+        const r = await fetch('/api/tonight/mode', {method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(target ? {mode, target} : {mode})});
+        if (!r.ok) {
+            const e = await r.json().catch(() => ({}));
+            alert('Refused: ' + (e.detail || r.status));
+        }
+        await loadNightMode(true);
+        loadTimeline();
+    }
+    document.getElementById('nightModeSel').addEventListener('change', postNightMode);
+    document.getElementById('nightModeTarget').addEventListener('change', postNightMode);
     async function loadTimeline() {
         const r = await fetch('/api/nightplan');
         const d = await r.json();
@@ -893,6 +955,11 @@
             twCard('Sunset', tw.sunset) +
             twCard('Astro Dusk', tw.astro_dusk, true) + twCard('Astro Dawn', tw.astro_dawn, true) +
             twCard('Sunrise', tw.sunrise) + '</div>';
+        if (d.night_mode === 'deep' || d.deep_note) {
+            html += '<div style="font-size:.85rem;margin-bottom:.6rem;padding:.35rem .6rem;' +
+                'border-radius:6px;border:1px solid rgba(192,132,252,.35);background:rgba(192,132,252,.06);">' +
+                deepPickText(d.deep_pick, d.deep_note) + '</div>';
+        }
         const st = d.stats || {};
         html += '<div style="display:flex;gap:.7rem;margin-bottom:1rem;">' +
             statCard(st.dark_hours + 'h', 'Dark Hours', '#7dd3fc') +
@@ -1104,6 +1171,7 @@
         el.hidden = false;
     }
     loadOutlook(); loadTimeline(); refreshArm(); refreshNinaWatch(); refreshSubDoctor(); refreshNightPilot();
+    loadNightMode(true);
     setInterval(refreshArm, 30000);
     setInterval(refreshNinaWatch, 30000);
     setInterval(refreshSubDoctor, 60000);

@@ -200,7 +200,7 @@ def report_card(config, date: str | None = None, *, projects=None,
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
            "sub_doctor": None, "core": None, "blend": None,
-           "night_pilot": []}
+           "night_pilot": [], "deep_night": None}
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -234,6 +234,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         if rig == "rc16":
             r["guiding"] = _guiding(config, date, subs)
         out["rigs"].append(r)
+    try:   # deep night: the one goal's hours on both rigs
+        from photonscript.scheduler.deep_night import morning_line as dn_line
+        out["deep_night"] = dn_line(config, date, out["rigs"])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no deep night line: %s", e)
     if calibration:
         try:
             from photonscript.scheduler.calibration_owed import morning_note
@@ -345,8 +350,9 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     library and calibration)."""
     if not card.get("date"):
         return ["Morning report: no subs log yet"]
-    lines = [_rig_line(r) for r in card.get("rigs") or []
-             if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall")]
+    lines = [card["deep_night"]] if card.get("deep_night") else []
+    lines += [_rig_line(r) for r in card.get("rigs") or []
+              if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall")]
     if card.get("piggy_guard"):
         lines.append(card["piggy_guard"])
     if card.get("sub_doctor"):
@@ -416,10 +422,11 @@ _RIG_LINE = re.compile(r"^[^:\n]{1,40}: \d+ kept / \d+ rejected")
 
 def card_line_priority(line: str) -> int:
     """PRI_RIG for a per-rig card line (_rig_line: "<rig>: N kept / M
-    rejected..."), the Piggy guard line, the sub doctor line or the night
-    pilot's action line, else PRI_DETAIL."""
+    rejected..."), the Piggy guard line, the sub doctor line, the night
+    pilot's action line or the deep night line, else PRI_DETAIL."""
     if _RIG_LINE.match(line or "") or str(line or "").startswith(
-            ("Piggy guard:", "Night pilot:", "What went wrong")):
+            ("Piggy guard:", "Night pilot:", "What went wrong",
+             "Deep night on ")):
         return PRI_RIG
     return PRI_DETAIL
 
