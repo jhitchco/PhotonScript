@@ -314,9 +314,11 @@ re-integrates without new approved data, nothing while PixInsight is open):
   retry already without the plate solve.
 - **PixInsight hang watchdog** (`integration/runner.py`, after the
   2026-10-14 M31 v6 finish hung 3.5 h in a VizieR download). Every
-  automation PixInsight's log must keep growing: no new log text for
-  `pixinsight_solve_stall_min` (20) while the open log STAGE is a plate
-  solve / SPCC one (finish_osc.js logs `STAGE START <name> / plate solve`
+  automation PixInsight's log must keep growing, or its process tree must
+  keep using CPU (the v6 integration logged nothing for 145 min while it
+  debayered): no new log text and under `pixinsight_stall_cpu_pct` (10) of
+  one core for `pixinsight_solve_stall_min` (20) while the open log STAGE
+  is a plate solve / SPCC one (finish_osc.js logs `STAGE START <name> / plate solve`
   and `/ SPCC`), or `pixinsight_stall_min` (60) in any other stage, is a
   hang. Then a Pushover alert and, with `pixinsight_hang_action` `close`
   (default), the runner closes the PixInsight process tree it started (its

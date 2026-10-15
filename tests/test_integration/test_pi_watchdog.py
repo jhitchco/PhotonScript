@@ -64,6 +64,8 @@ def _run(tmp_path, proc, clock, **kw):
     kw.setdefault("stall_min", 60)
     kw.setdefault("solve_stall_min", 20)
     kw.setdefault("hang_action", "close")
+    kw.setdefault("stall_cpu_pct", 10)
+    kw.setdefault("cpu", lambda pid: None)      # never a real process's CPU
     r = runner.run_script(tmp_path / "finish_run.js", proc.log, exe=str(_exe(tmp_path)), running=lambda: [],
                           popen=lambda a: proc, sleep=clock.sleep, clock=clock, poll_s=15,
                           echo=lambda s: None, notify=notes.append, kill=kill, **kw)
@@ -121,6 +123,46 @@ def test_progress_resets_the_stall_clock(tmp_path):
     assert r["ok"] and not r["hung"] and notes == [] and kills == []
 
 
+def test_busy_cpu_without_log_lines_is_not_a_hang(tmp_path):
+    """The v6 integration: 145 min of debayer without a log line, at full CPU."""
+    clock = Clock()
+    lines = ["x  STAGE START OSC / debayer"]
+    proc = StallingProc(tmp_path / "pipeline.log", lines + ["EXIT OK"], exit_after=700)   # ~175 min
+    used = {"s": 0.0}
+
+    def cpu(pid):
+        assert pid == 4321
+        used["s"] += 15 * 6.0                 # six cores busy per 15 s poll
+        return used["s"]
+    r, notes, kills = _run(tmp_path, proc, clock, cpu=cpu)
+    assert r["ok"] and not r["hung"] and notes == [] and kills == []
+
+
+def test_idle_cpu_without_log_lines_is_a_hang(tmp_path):
+    clock = Clock()
+    proc = StallingProc(tmp_path / "finish.log", SOLVE_LINES)
+    used = {"s": 50.0}
+
+    def cpu(pid):
+        used["s"] += 0.2                      # ~1 % of a core: waiting on a dead download
+        return used["s"]
+    r, notes, kills = _run(tmp_path, proc, clock, cpu=cpu)
+    assert r["hung"].startswith("hung: no log progress 20 min") and kills == [4321]
+
+
+def test_tree_cpu_seconds_sums_the_tree():
+    class T:
+        def __init__(self, u, s):
+            self.user, self.system = u, s
+    a = FakeP(10, [FakeP(11)])
+    a.cpu_times = lambda: T(3.0, 1.0)
+    a.kids[0].cpu_times = lambda: T(2.0, 0.5)
+    ps = FakePsutil([a, a.kids[0]])
+    assert runner.tree_cpu_seconds(10, psutil_mod=ps) == 6.5
+    assert runner.tree_cpu_seconds(None, psutil_mod=ps) is None
+    assert runner.tree_cpu_seconds(77, psutil_mod=ps) is None
+
+
 def test_alert_action_only_alerts_and_keeps_waiting(tmp_path):
     clock = Clock()
     proc = StallingProc(tmp_path / "finish.log", SOLVE_LINES + ["EXIT OK"], exit_after=400)
@@ -159,9 +201,9 @@ def test_stage_tracker_nesting_and_solve_detection():
 
 
 def test_watchdog_settings_defaults_and_bad_action():
-    w = runner.watchdog_settings(60, 20, "explode")
-    assert w == {"stall_min": 60.0, "solve_stall_min": 20.0, "hang_action": "close"}
-    assert runner.watchdog_settings(5, 2, "ALERT")["hang_action"] == "alert"
+    w = runner.watchdog_settings(60, 20, "explode", 10)
+    assert w == {"stall_min": 60.0, "solve_stall_min": 20.0, "hang_action": "close", "cpu_pct": 10.0}
+    assert runner.watchdog_settings(5, 2, "ALERT", 0)["hang_action"] == "alert"
 
 
 def test_config_defaults():
@@ -170,7 +212,8 @@ def test_config_defaults():
     c = PhotonScriptConfig(_env_file=None)
     names = {f[0] for f in _CONFIG_FIELDS}
     for k, v in (("pixinsight_stall_min", 60.0), ("pixinsight_solve_stall_min", 20.0),
-                 ("pixinsight_hang_action", "close"), ("pixinsight_gaia_check", True)):
+                 ("pixinsight_hang_action", "close"), ("pixinsight_gaia_check", True),
+                 ("pixinsight_stall_cpu_pct", 10.0)):
         assert getattr(c, k) == v and k in names, k
 
 

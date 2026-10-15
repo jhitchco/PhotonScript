@@ -12,10 +12,13 @@ Success = the process exited and the log contains "EXIT OK".
 Hang watchdog (2026-10-14: the M31 v6 finish hung 3.5 h in a VizieR
 download after "No database files have been selected"; PixInsight showed
 Not Responding and the queue stayed blocked until it was closed by hand):
-the log must keep growing. No new log text for pixinsight_solve_stall_min
-(default 20) while the innermost open STAGE is a plate solve / astrometry /
-SPCC / VizieR / Gaia stage, or pixinsight_stall_min (default 60) in any
-other stage, is a hang. Then: a Pushover alert, and with
+the log must keep growing, or the PixInsight tree must keep using CPU (the
+v6 integration logged nothing for 145 min while it debayered 23 h of subs,
+at full CPU; the hung VizieR download sat idle). No new log text and less
+than pixinsight_stall_cpu_pct (default 10) percent of one core for
+pixinsight_solve_stall_min (default 20) while the innermost open STAGE is
+a plate solve / astrometry / SPCC / VizieR / Gaia stage, or
+pixinsight_stall_min (default 60) in any other stage, is a hang. Then: a Pushover alert, and with
 pixinsight_hang_action close (the default) the PixInsight process tree
 THIS call started (its Popen pid and that pid's children, nothing else) is
 terminated and the step fails with reason "hung: no log progress N min in
@@ -37,6 +40,7 @@ DEFAULT_EXE = r"C:\Program Files\PixInsight\bin\PixInsight.exe"
 
 STALL_MIN = 60.0          # pixinsight_stall_min: no log growth this long = hung
 SOLVE_STALL_MIN = 20.0    # pixinsight_solve_stall_min: same inside a solve / SPCC stage
+STALL_CPU_PCT = 10.0      # pixinsight_stall_cpu_pct: CPU use (percent of one core) that counts as progress
 HANG_ACTIONS = ("close", "alert")
 SOLVE_STAGE = re.compile(r"solve|astrometr|spcc|vizier|gaia|imagesolver", re.I)
 _STAGE_START = re.compile(r"STAGE START\s+(.*?)\s*$")
@@ -144,10 +148,11 @@ class StageTracker:
         return bool(self.open) and bool(SOLVE_STAGE.search(self.open[-1]))
 
 
-def watchdog_settings(stall_min=None, solve_stall_min=None, hang_action=None) -> dict:
-    """pixinsight_stall_min / pixinsight_solve_stall_min / pixinsight_hang_action
-    from the config for whatever was not passed (<= 0 minutes = that limit off)."""
-    if stall_min is None or solve_stall_min is None or hang_action is None:
+def watchdog_settings(stall_min=None, solve_stall_min=None, hang_action=None, cpu_pct=None) -> dict:
+    """pixinsight_stall_min / pixinsight_solve_stall_min / pixinsight_hang_action /
+    pixinsight_stall_cpu_pct from the config for whatever was not passed
+    (<= 0 minutes = that limit off; cpu_pct <= 0 = the log alone counts)."""
+    if stall_min is None or solve_stall_min is None or hang_action is None or cpu_pct is None:
         try:
             from photonscript.shared.config import PhotonScriptConfig
             cfg = PhotonScriptConfig()
@@ -159,6 +164,8 @@ def watchdog_settings(stall_min=None, solve_stall_min=None, hang_action=None) ->
             solve_stall_min = getattr(cfg, "pixinsight_solve_stall_min", SOLVE_STALL_MIN)
         if hang_action is None:
             hang_action = getattr(cfg, "pixinsight_hang_action", "close")
+        if cpu_pct is None:
+            cpu_pct = getattr(cfg, "pixinsight_stall_cpu_pct", STALL_CPU_PCT)
     action = str(hang_action or "close").strip().lower()
     if action not in HANG_ACTIONS:
         action = "close"
@@ -170,12 +177,43 @@ def watchdog_settings(stall_min=None, solve_stall_min=None, hang_action=None) ->
         solve = float(solve_stall_min)
     except (TypeError, ValueError):
         solve = SOLVE_STALL_MIN
-    return {"stall_min": stall, "solve_stall_min": solve, "hang_action": action}
+    try:
+        cpu = float(cpu_pct)
+    except (TypeError, ValueError):
+        cpu = STALL_CPU_PCT
+    return {"stall_min": stall, "solve_stall_min": solve, "hang_action": action, "cpu_pct": cpu}
 
 
 def stall_limit_min(tracker: StageTracker, w: dict) -> float:
     """The no-progress limit (minutes, <= 0 = off) for the current stage."""
     return w["solve_stall_min"] if tracker.solving else w["stall_min"]
+
+
+def tree_cpu_seconds(pid: int | None, *, psutil_mod=None) -> float | None:
+    """CPU seconds (user + system) used so far by process `pid` and its
+    children; None when it cannot be read."""
+    if not pid:
+        return None
+    try:
+        ps = psutil_mod
+        if ps is None:
+            import psutil as ps
+        root = ps.Process(int(pid))
+        procs = [root]
+        try:
+            procs += root.children(recursive=True)
+        except Exception:  # noqa: BLE001
+            pass
+        total = 0.0
+        for p in procs:
+            try:
+                t = p.cpu_times()
+                total += float(t.user) + float(t.system)
+            except Exception:  # noqa: BLE001 - a child that just exited
+                continue
+        return total
+    except Exception:  # noqa: BLE001 - gone, or not allowed
+        return None
 
 
 def kill_tree(pid: int | None, *, psutil_mod=None, wait_s: float = 15.0) -> list[int]:
@@ -233,28 +271,30 @@ def run_script(script: Path, log_path: Path, *, exe: str = DEFAULT_EXE, poll_s: 
                timeout_s: float = 6 * 3600, echo=print, popen=subprocess.Popen,
                running=pixinsight_running, sleep=time.sleep, ok_marker: str = "EXIT OK",
                stall_min: float | None = None, solve_stall_min: float | None = None,
-               hang_action: str | None = None, notify=None, kill=None,
-               clock=time.monotonic) -> dict:
+               hang_action: str | None = None, stall_cpu_pct: float | None = None, notify=None,
+               kill=None, cpu=None, clock=time.monotonic) -> dict:
     """Run `script` in a fresh PixInsight and wait for it. Returns
     {ok, exit_code, minutes, last_line, timed_out, hung, hang_stage,
     killed}. Raises PixInsightBusy if PixInsight is already running or
     another job holds the PixInsight queue lock (pilock.py; nothing is
     started then). The hang watchdog (module doc): stall_min /
-    solve_stall_min / hang_action default to the config; notify(message)
-    defaults to Pushover, kill(pid) to kill_tree."""
+    solve_stall_min / hang_action / stall_cpu_pct default to the config;
+    notify(message) defaults to Pushover, kill(pid) to kill_tree,
+    cpu(pid) (CPU seconds of the tree) to tree_cpu_seconds."""
     from photonscript.integration import pilock
     # the queue lock (pilock.py): a no-op nest inside a job that holds it
     # (integrate / blend / finish), else this one launch takes it
     with pilock.acquire(f"PixInsight {Path(script).name}", wait_s=0, echo=echo):
         return _run_script(script, log_path, exe=exe, poll_s=poll_s, timeout_s=timeout_s, echo=echo,
                            popen=popen, running=running, sleep=sleep, ok_marker=ok_marker,
-                           watchdog=watchdog_settings(stall_min, solve_stall_min, hang_action),
-                           notify=notify, kill=kill, clock=clock)
+                           watchdog=watchdog_settings(stall_min, solve_stall_min, hang_action,
+                                                      stall_cpu_pct),
+                           notify=notify, kill=kill, cpu=cpu, clock=clock)
 
 
 def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeout_s: float, echo,
                 popen, running, sleep, ok_marker: str, watchdog: dict | None = None, notify=None,
-                kill=None, clock=time.monotonic) -> dict:
+                kill=None, cpu=None, clock=time.monotonic) -> dict:
     busy = running()
     if busy:
         raise PixInsightBusy(f"PixInsight is already running (pid {', '.join(map(str, busy))}); "
@@ -268,7 +308,10 @@ def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeou
     proc = popen(args, **launch_kwargs()) if popen is subprocess.Popen else popen(args)
     # the only process the watchdog may ever close: the one started here
     own_pid = getattr(proc, "pid", None)
-    w = watchdog or {"stall_min": 0.0, "solve_stall_min": 0.0, "hang_action": "alert"}
+    w = watchdog or {"stall_min": 0.0, "solve_stall_min": 0.0, "hang_action": "alert", "cpu_pct": 0.0}
+    cpu = cpu or tree_cpu_seconds
+    cpu_pct = float(w.get("cpu_pct") or 0.0)
+    cpu_prev = (cpu(own_pid), clock()) if cpu_pct > 0 else (None, 0.0)
     tracker = StageTracker()
     pos, last, timed_out = 0, "", False
     hung, hang_stage, alerted, killed = "", "", False, []
@@ -279,6 +322,15 @@ def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeou
         if new_pos != pos or txt:
             seen_at = clock()
         pos = new_pos
+        if cpu_pct > 0:
+            # a busy PixInsight (debayer, star alignment: no log line for
+            # hours) is working, not hung
+            c_now, t_now = cpu(own_pid), clock()
+            c0, t0c = cpu_prev
+            if c_now is not None and c0 is not None and t_now > t0c \
+                    and (c_now - c0) >= cpu_pct / 100.0 * (t_now - t0c):
+                seen_at = t_now
+            cpu_prev = (c_now, t_now)
         for line in txt.splitlines():
             if line.strip():
                 last = line.strip()

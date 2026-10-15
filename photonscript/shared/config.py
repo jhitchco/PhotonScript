@@ -457,6 +457,10 @@ class PhotonScriptConfig(BaseSettings):
                                  # grown for this many minutes is hung (0 = off)
     pixinsight_solve_stall_min: float = 20.0  # the same while the open log
                                  # STAGE is a plate solve / SPCC / VizieR one
+    pixinsight_stall_cpu_pct: float = 10.0  # ...and its process tree used less
+                                 # than this percent of one core (a debayer
+                                 # logs nothing for hours but is busy); 0 =
+                                 # the log alone counts
     pixinsight_hang_action: str = "close"  # on a hang: close = Pushover alert,
                                  # then close the PixInsight the runner started
                                  # (by pid; never another) and fail the step;
