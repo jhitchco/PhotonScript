@@ -1,0 +1,164 @@
+{
+ "_source": "Synthesized 2026-10-15 from the read-only NINA #1 event history of 2026-10-14 (fixtures/stuck_loop/2026-10-14.json): one NINA AF report per finished AF, best focus = the lowest-HFR point (5719 all three), filter L, Temperature 18.29 C (the RC16 EAF reading that night). NINA #1 was not reachable for a fresh GET when this was built.",
+ "reports": [
+  {
+   "Timestamp": "2026-10-14T22:25:09.3282928-06:00",
+   "Filter": "L",
+   "Temperature": 18.29,
+   "CalculatedFocusPoint": {
+    "Position": 5719,
+    "Value": 7.13
+   },
+   "InitialFocusPoint": {
+    "Position": 6159
+   },
+   "MeasurePoints": [
+    {
+     "Position": 6159,
+     "Value": 12.37
+    },
+    {
+     "Position": 6049,
+     "Value": 11.07
+    },
+    {
+     "Position": 5939,
+     "Value": 7.99
+    },
+    {
+     "Position": 5829,
+     "Value": 7.76
+    },
+    {
+     "Position": 5719,
+     "Value": 7.13
+    },
+    {
+     "Position": 5609,
+     "Value": 8.29
+    },
+    {
+     "Position": 5499,
+     "Value": 9.79
+    },
+    {
+     "Position": 5389,
+     "Value": 13.59
+    },
+    {
+     "Position": 5279,
+     "Value": 15.43
+    }
+   ],
+   "RSquares": {
+    "Hyperbolic": 0.97
+   }
+  },
+  {
+   "Timestamp": "2026-10-14T22:32:53.4592589-06:00",
+   "Filter": "L",
+   "Temperature": 18.29,
+   "CalculatedFocusPoint": {
+    "Position": 5719,
+    "Value": 6.19
+   },
+   "InitialFocusPoint": {
+    "Position": 6159
+   },
+   "MeasurePoints": [
+    {
+     "Position": 6159,
+     "Value": 12.35
+    },
+    {
+     "Position": 6049,
+     "Value": 9.63
+    },
+    {
+     "Position": 5939,
+     "Value": 7.74
+    },
+    {
+     "Position": 5829,
+     "Value": 6.4
+    },
+    {
+     "Position": 5719,
+     "Value": 6.19
+    },
+    {
+     "Position": 5609,
+     "Value": 7.5
+    },
+    {
+     "Position": 5499,
+     "Value": 10.55
+    },
+    {
+     "Position": 5389,
+     "Value": 12.78
+    },
+    {
+     "Position": 5279,
+     "Value": 15.42
+    }
+   ],
+   "RSquares": {
+    "Hyperbolic": 0.97
+   }
+  },
+  {
+   "Timestamp": "2026-10-14T22:38:57.4003167-06:00",
+   "Filter": "L",
+   "Temperature": 18.29,
+   "CalculatedFocusPoint": {
+    "Position": 5719,
+    "Value": 6.64
+   },
+   "InitialFocusPoint": {
+    "Position": 6159
+   },
+   "MeasurePoints": [
+    {
+     "Position": 6159,
+     "Value": 12.51
+    },
+    {
+     "Position": 6049,
+     "Value": 10.4
+    },
+    {
+     "Position": 5939,
+     "Value": 8.14
+    },
+    {
+     "Position": 5829,
+     "Value": 6.76
+    },
+    {
+     "Position": 5719,
+     "Value": 6.64
+    },
+    {
+     "Position": 5609,
+     "Value": 7.88
+    },
+    {
+     "Position": 5499,
+     "Value": 9.58
+    },
+    {
+     "Position": 5389,
+     "Value": 13.01
+    },
+    {
+     "Position": 5279,
+     "Value": 15.44
+    }
+   ],
+   "RSquares": {
+    "Hyperbolic": 0.97
+   }
+  }
+ ]
+}
