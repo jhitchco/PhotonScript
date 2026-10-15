@@ -32,6 +32,14 @@ from photonscript.shared.config import PhotonScriptConfig
 FIX = Path(__file__).parent / "fixtures" / "sub_doctor"
 
 
+@pytest.fixture(autouse=True)
+def _no_local_phd2_logs(monkeypatch):
+    """The doctor reads the night's PHD2 guide log when this machine has one
+    (2026-10-14); a desktop with real PHD2 logs must not change a test."""
+    from photonscript.scheduler import phd2_analysis as pa
+    monkeypatch.setattr(pa, "cached_timeline", lambda config, date: None)
+
+
 def _cfg(tmp_path, **kw):
     (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     return PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path / "data"),
@@ -469,3 +477,114 @@ def test_api_endpoints(tmp_path, monkeypatch):
     assert p["rig"] == "rc16" and p["n"] == 3
     s = client.get(f"/api/sub-doctor?date={night}").json()
     assert s["mode"] == "alert" and set(s["rigs"]) == {"rc16", "piggyback"}
+
+
+# ------------------------------------------------------------- 2026-10-14
+
+def _trailing_pair(guide_state="lost_star"):
+    """Both rigs trailing together after the meridian flip (2026-10-14):
+    unguided, PHD2 open but LostStar / Looping, no guiding session."""
+    subs = []
+    for a, b in (("06:00:00", "06:05:00"), ("06:05:10", "06:10:10"),
+                 ("06:10:20", "06:15:20")):
+        r = _rec("rc16", a, b, ecc=0.72, hfr=6.0, fails=("ecc",))
+        r.update(exp_s=300, guide_state=guide_state, guide_rms=34.8,
+                 elong_axis_deg=88.0, elong_r=0.8)
+        q = _rec("piggyback", a, b, ecc=0.7, hfr=3.0, fails=("ecc",))
+        q.update(exp_s=300, guide_state=guide_state, guide_rms=34.8)
+        subs += [r, q]
+    return subs
+
+
+def test_1014_lost_star_no_guide_log_session_is_tracking_not_guider(tmp_path):
+    cfg = _cfg(tmp_path)
+    subs = _trailing_pair()
+    old_cal = {"grade": "FAIL", "t_utc": "2026-10-10T03:00:00Z",
+               "reasons": ["axes 78 deg from perpendicular"]}
+    for rig in ("rc16", "piggyback"):
+        win = sp.rig_subs(subs, rig)
+        d = sd.diagnose(cfg, rig, win, subs=subs, ctx={
+            "armed": "unguided", "phd2": {"state": "lost_star"},
+            "calibration": old_cal,
+            "guide_log": {"frames": 0, "pulses": 0},
+            "pointing": {"pier": "West", "ha_h": 1.23}})
+        assert d["cause"] == "tracking", (rig, d["headline"])
+        assert "guider_conflict" not in [x["cause"] for x in d["secondary"]]
+        ev = d["evidence"]
+        assert ev["shared_mount"] and ev["pier"] == "West" and ev["ha_h"] == 1.23
+        assert ev["phd2_guiding"] is False
+        assert "pier West, HA +1.2 h" in d["headline"]
+        assert "TPoint model has samples on that side" in d["fix"]
+        assert "not the guider" in d["fix"]
+
+
+def test_1014_lost_star_without_a_log_needs_tonight_evidence(tmp_path):
+    cfg = _cfg(tmp_path)
+    subs = _trailing_pair()
+    win = sp.rig_subs(subs, "rc16")
+    base = {"armed": "unguided", "phd2": {"state": "lost_star"}}
+    # no log, no calibration / guider start tonight: the mount, not PHD2
+    d = sd.diagnose(cfg, "rc16", win, subs=subs, ctx=dict(base))
+    assert d["cause"] == "tracking"
+    # Looping reads as stopped: never the guider
+    d = sd.diagnose(cfg, "rc16", win, subs=subs,
+                    ctx={**base, "phd2": {"state": "stopped"}})
+    assert d["cause"] == "tracking"
+    # a calibration tonight (the 2026-10-12 shape): PHD2 was guiding
+    d = sd.diagnose(cfg, "rc16", win, subs=subs, ctx={
+        **base, "calibration": {"grade": "FAIL", "t_utc": "2026-10-13T05:30:00Z"}})
+    assert d["cause"] == "guider_conflict" and d["confidence"] == "high"
+    # the guide log shows a guiding session over the window: guiding
+    d = sd.diagnose(cfg, "rc16", win, subs=subs, ctx={
+        **base, "guide_log": {"frames": 40, "pulses": 31}})
+    assert d["cause"] == "guider_conflict"
+    assert d["evidence"]["phd2_guiding"] and d["evidence"]["guide_log"]["pulses"] == 31
+    # Guiding needs no log
+    d = sd.diagnose(cfg, "rc16", win, subs=subs, ctx={
+        **base, "phd2": {"state": "guiding"}, "guide_log": {"frames": 0, "pulses": 0}})
+    assert d["cause"] == "guider_conflict"
+
+
+def test_guide_activity_counts_frames_and_pulses():
+    from datetime import timedelta
+    from photonscript.scheduler import phd2_analysis as pa
+    assert pa.guide_activity(None, datetime(2026, 10, 15, 6), datetime(2026, 10, 15, 7)) is None
+    empty = pa.GuideTimeline([], SimpleNamespace(observatory_tz="UTC"))
+    assert pa.guide_activity(empty, datetime(2026, 10, 15, 6),
+                             datetime(2026, 10, 15, 7)) == {"frames": 0, "pulses": 0}
+    t0 = datetime(2026, 10, 15, 6)
+    tl = pa.GuideTimeline([], SimpleNamespace(observatory_tz="UTC"))
+    fr = [{"drop": False, "ra_ms": 120, "dec_ms": 0},
+          {"drop": False, "ra_ms": 0, "dec_ms": 0},
+          {"drop": True, "ra_ms": 0, "dec_ms": 0}]
+    tl.frames = [(t0 + timedelta(seconds=10 * i), f, 1.0, 1) for i, f in enumerate(fr)]
+    tl._keys = [x[0] for x in tl.frames]
+    a = pa.guide_activity(tl, t0, t0 + timedelta(minutes=5))
+    assert a == {"frames": 3, "pulses": 1}
+
+
+def test_after_sub_1014_reads_the_guide_log_and_pier(tmp_path, monkeypatch):
+    from photonscript.scheduler import phd2_calibration as pc
+    from photonscript.scheduler.runs import append_sub_record
+    from photonscript.telescope_agent import sub_doctor_live as live
+    cfg = _cfg(tmp_path)
+    night = "2026-10-12"
+    for r in _trailing_pair():
+        append_sub_record(cfg, night, r)
+    _arm_unguided(cfg, monkeypatch)
+    monkeypatch.setattr(pc, "load_active", lambda config, seed=False: None)
+    seen = {}
+
+    def fake_log(config, n, window, timeline=None):
+        seen["n"] = len(window)
+        return {"frames": 0, "pulses": 0}
+    monkeypatch.setattr(sd, "guide_log", fake_log)
+
+    async def fake_notify(*a, **k):
+        return True
+    monkeypatch.setattr("photonscript.shared.pushover.notify", fake_notify)
+    ag = _agent(cfg, state="lost_star")
+    ag.state.mount_side_of_pier = "West"
+    d = asyncio.run(live.after_sub(ag, night))
+    assert seen["n"] == 3
+    assert d["cause"] == "tracking" and d["evidence"]["pier"] == "West"

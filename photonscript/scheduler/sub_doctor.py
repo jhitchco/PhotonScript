@@ -16,10 +16,13 @@ other rig exposed at the same time (sub_pairs) and the guiding context:
     focuser          FOCPOS 0 / a live focuser read of 0, or autofocus that
                      keeps restarting without finishing (af_stall) while
                      the subs are soft
-    guider_conflict  PHD2 guiding (or trying to: LostLock) on an UNGUIDED
-                     night; PHD2 not guiding on a GUIDED night; PHD2 guiding
-                     on a FAIL calibration; PHD2 RMS tiny while the subs trail
-                     (non-star lock, PS-91)
+    guider_conflict  PHD2 guiding on an UNGUIDED night; PHD2 not guiding on
+                     a GUIDED night; PHD2 guiding on a FAIL calibration;
+                     PHD2 RMS tiny while the subs trail (non-star lock,
+                     PS-91). "Guiding" (2026-10-14) means AppState Guiding,
+                     or the guide log shows a guiding session over the
+                     window; LostStar / Looping / Stopped / Calibrating
+                     without one fall through to tracking
     pointing         off target (the pointing gate failed) or plate solves
                      failing
     tracking         stars stretched one way (ecc gate failing) with no
@@ -76,6 +79,11 @@ CAUSES = ("focuser", "guider_conflict", "pointing", "tracking", "clouds",
           "seeing", "focus", "other")
 HIGH, MEDIUM, LOW = "high", "medium", "low"
 ACTIVE_GUIDE = ("guiding", "settling", "lost_star", "calibrating")
+# 2026-10-14: only these mean PHD2 is moving the mount. lost_star is
+# ambiguous (StarLost fires while looping too), so it counts only with the
+# guide log (or a calibration / guider start tonight) behind it.
+GUIDING = ("guiding", "settling")
+TONIGHT_H = 12.0           # a calibration this recent counts as tonight's
 ALERT_TITLE = "PhotonScript sub doctor"
 EVENT_KIND = "sub_doctor"
 REMEDY_KIND = "sub_doctor_remedy"   # retired remedies: only in old event logs
@@ -325,6 +333,46 @@ def _phd2_view(states: list[dict], live: dict | None) -> dict:
             "snr": _num(live.get("snr")), "hfd_px": _num(live.get("hfd_px"))}
 
 
+def _guiding(phd2: dict, log: dict | None, cal: dict | None, gs: dict | None,
+             t_end: datetime | None) -> tuple[bool, str]:
+    """2026-10-14: is PHD2 actually guiding over the window? (yes/no, why).
+    Guiding / Settling (live, or any sub in the window) is; otherwise the
+    guide log decides when there is one (frames in a guiding session over
+    the window: 2026-10-14 had PHD2 open, LostStar / Looping, 0 sessions,
+    while both rigs trailed after the meridian flip). Without a log a
+    LostStar counts only when PHD2 calibrated or a guider start was seen
+    tonight; Looping / Stopped / Calibrating never do."""
+    st = phd2.get("state")
+    subs_guiding = any(k in GUIDING for k in (phd2.get("sub_states") or {}))
+    if st in GUIDING or (phd2.get("source") == "subs" and subs_guiding):
+        return True, f"PHD2 {st}"
+    if log is not None:
+        if log.get("pulses") or log.get("frames"):
+            return True, (f"PHD2 guide log: {log.get('frames')} frames, "
+                          f"{log.get('pulses')} corrections in the window")
+        return False, "PHD2 guide log: no guiding in the window"
+    if st == "lost_star":
+        ct = parse_utc((cal or {}).get("t_utc"))
+        if ct and t_end and timedelta(0) <= t_end - ct <= timedelta(hours=TONIGHT_H):
+            return True, "PHD2 lost_star after a calibration tonight"
+        if gs and gs.get("by"):
+            return True, "PHD2 lost_star after a guider start tonight"
+    return False, f"PHD2 {st or 'unknown'}, not guiding"
+
+
+def _pier_ha(window: list[dict], pointing: dict | None) -> tuple[str | None, float | None]:
+    """The last sub's pier side (East | West) and hour angle (h), from the
+    PS-67 pointing record (ctx) or the sub record itself."""
+    from photonscript.shared.pointing import pier_name
+    p = pointing or {}
+    last = window[-1] if window else {}
+    pier = pier_name(p.get("pier") or last.get("pier") or last.get("pier_side"))
+    ha = _num(p.get("ha_h"))
+    if ha is None:
+        ha = _num(last.get("ha_h"))
+    return pier, (round(ha, 2) if ha is not None else None)
+
+
 def _cal_view(cal: dict | None) -> dict | None:
     if not cal:
         return None
@@ -400,6 +448,10 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
     phd2 = _phd2_view(states, ctx.get("phd2"))
     cal = _cal_view(ctx.get("calibration"))
     armed = ctx.get("armed")
+    w_last = sub_window(last)
+    guiding, guiding_why = _guiding(phd2, ctx.get("guide_log"), cal,
+                                    ctx.get("guider_start"),
+                                    w_last[1] if w_last else None)
     nonstar = bool(ctx.get("nonstar")) or any(
         r.get("guide_lock") == "non-star" for r in window)
     found: list[dict] = []
@@ -438,7 +490,9 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         g_ev = {"armed": armed, "phd2_state": phd2["state"],
                 "phd2_source": phd2["source"], "phd2_sub_states": phd2["sub_states"],
                 "phd2_rms_arcsec": phd2["rms_arcsec"], "phd2_snr": phd2["snr"],
-                "phd2_hfd_px": phd2["hfd_px"], "calibration": cal}
+                "phd2_hfd_px": phd2["hfd_px"], "calibration": cal,
+                "phd2_guiding": guiding, "phd2_guiding_why": guiding_why,
+                "guide_log": ctx.get("guide_log")}
         cal_fail = bool(cal and cal.get("grade") == "FAIL")
         cal_txt = ""
         if cal:
@@ -447,7 +501,7 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         rms_txt = (f", PHD2 RMS {phd2['rms_arcsec']:g}\"" if phd2["rms_arcsec"]
                    is not None else "")
         tiny = _fl(config, "sub_doctor_tiny_rms_arcsec", 0.5)
-        if armed == "unguided" and phd2["active"]:
+        if armed == "unguided" and guiding:
             conf = HIGH if (phd2["state"] in ("guiding", "settling") or cal_fail) else MEDIUM
             # 2026-10-13: name what started it (the unguided guard's detect
             # event, or NINA's event history): NINA's meridian flip / an
@@ -476,21 +530,21 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
                 f"{ev['hfr_px']} px)", fix,
                 _action("stop_phd2", "stop PHD2 guiding", auto=True),
                 g_ev)
-        elif armed == "guided" and not phd2["active"] and trailing:
+        elif armed == "guided" and not guiding and trailing:
             add("guider_conflict", MEDIUM,
                 f"PHD2 is {phd2['state'] or 'not guiding'} on a GUIDED night while "
                 f"{label} subs trail (ecc {ev['ecc']})",
                 "Start guiding in PHD2 (or let NINA's next StartGuiding run); if "
                 "PHD2 cannot find a star, check the guide camera and focus.",
                 _action("start_guiding", "start PHD2 guiding"), g_ev)
-        elif phd2["active"] and cal_fail:
+        elif guiding and cal_fail:
             add("guider_conflict", HIGH,
                 f"PHD2 is guiding{cal_txt}{rms_txt} while {label} subs are bad "
                 f"(ecc {ev['ecc']}, HFR {ev['hfr_px']} px)",
                 "Recalibrate PHD2 within 20 deg of Dec 0 and 3 h of the meridian "
                 "(PS-93 calibration plan), or run unguided.",
                 _action("recalibrate_phd2", "recalibrate PHD2"), g_ev)
-        elif (phd2["active"] and trailing and phd2["rms_arcsec"] is not None
+        elif (guiding and trailing and phd2["rms_arcsec"] is not None
               and phd2["rms_arcsec"] < tiny) or (nonstar and trailing):
             small = phd2["rms_arcsec"] is not None and phd2["rms_arcsec"] < tiny
             lead = (f"PHD2 RMS {phd2['rms_arcsec']}\" looks perfect while {label} subs "
@@ -559,13 +613,28 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         cur = ev["exp_s"] or 0
         dirn = (f" along {sky['along']} (sky PA {sky['sky_pa_deg']:g} deg)"
                 if sky.get("along") else "")
+        pier, ha = _pier_ha(window, ctx.get("pointing"))
+        pos = ", ".join(x for x in (f"pier {pier}" if pier else "",
+                                    f"HA {ha:+.1f} h" if ha is not None else "") if x)
+        if pos:
+            dirn += f" ({pos})"
+        side = ""
+        if pier:
+            side = (f"; the mount is on the {pier} side"
+                    + (f" at HA {ha:+.1f} h" if ha is not None else "")
+                    + ": check the TPoint model has samples on that side (a "
+                    "model built on one side only trails after the meridian flip)")
+        phd2_txt = ""
+        if armed != "guided" and phd2["state"] and not guiding:
+            phd2_txt = f"; PHD2 {phd2['state']} but not guiding, so not the guider"
         head = (f"{label} subs trail{dirn}: ecc {ev['ecc']}, ~{trail.get('length_arcsec', '?')}\" "
                 f"in {cur:g} s (~{rate if rate is not None else '?'}\"/min); {where}")
         if armed == "unguided" and new_s and new_s < cur - 0.5:
             fix = (f"Shorten {label} subs to {new_s:g} s (drift budget), or check "
                    "TheSky tracking rate / ProTrack and the TPoint model"
                    + ("; Dec drift = polar alignment" if kind == "Dec drift" else "")
-                   + ("; field rotation = polar alignment" if kind == "field rotation" else ""))
+                   + ("; field rotation = polar alignment" if kind == "field rotation" else "")
+                   + side + phd2_txt)
             act = _action(f"shorten_subs:{new_s:g}", f"cap subs at {new_s:g} s",
                           auto=True)
         elif armed == "guided":
@@ -575,12 +644,15 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         else:
             fix = ("Check TheSky tracking rate / ProTrack and the TPoint model"
                    + ("; Dec drift points at polar alignment" if kind == "Dec drift" else "")
-                   + ("; if only one rig trails, check that rig's flexure / camera" if only else ""))
+                   + ("; if only one rig trails, check that rig's flexure / camera" if only else "")
+                   + side + phd2_txt)
             act = _action("check_tracking", "check the mount tracking")
         add("tracking", conf, head, fix, act,
             {"trail": trail, "kind": kind, "axis_deg": axes[-1] if axes else None,
              "axis_spread_deg": spread, "axis_r": _med(rs), "sky": sky or None,
              "shared_mount": bool(mount), "this_rig_only": bool(only),
+             "pier": pier, "ha_h": ha, "phd2_state": phd2["state"],
+             "phd2_guiding": guiding, "phd2_guiding_why": guiding_why,
              "drift_cap": {k: (rec or {}).get(k) for k in
                            ("exposure_s", "drift_max_s", "why", "budget_arcsec")}
              if rec else None})
@@ -692,18 +764,42 @@ def guider_start_at(nina1_events, run_events, until: datetime | None) -> dict | 
     return max(cands, key=lambda c: c["t"]) if cands else None
 
 
+def window_span(window: list[dict]) -> tuple[datetime | None, datetime | None]:
+    ws = [w for w in (sub_window(r) for r in window or []) if w]
+    if not ws:
+        return None, None
+    return min(w[0] for w in ws), max(w[1] for w in ws)
+
+
+def guide_log(config, night: str, window: list[dict], timeline=None) -> dict | None:
+    """2026-10-14: PHD2 guide-log activity over the window's subs
+    (phd2_analysis.guide_activity); None when the night has no guide log
+    on this machine or it cannot be read."""
+    try:
+        from photonscript.scheduler import phd2_analysis as pa
+        tl = timeline if timeline is not None else pa.cached_timeline(config, night)
+        a, b = window_span(window)
+        return pa.guide_activity(tl, a, b)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sub doctor guide log skipped: %s", e)
+        return None
+
+
 def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None,
                  plan: dict | None = None, armed: str | None = None,
                  cal_history: list[dict] | None = None,
                  events: list[dict] | None = None,
                  nina_events: dict | None = None,
-                 solves: dict | None = None) -> dict:
+                 solves: dict | None = None, guide_timeline=None,
+                 pointing: dict | None = None) -> dict:
     """Run the doctor over a stored night as if live: after each graded
     sub of each rig, the last sub_doctor_window subs. Read only, no push.
     Returns {night, armed, rigs: {rig: {timeline, fired, counts, subs}}}.
     nina_events: {rig: ninaAPI event history} (the AF finish times, and NINA
     #1's GUIDER-START attribution for both rigs); events: the night's run
-    events (af_stall / guard non-star / unguided_guard detect)."""
+    events (af_stall / guard non-star / unguided_guard detect);
+    guide_timeline: the night's PHD2 guide log (phd2_analysis.GuideTimeline,
+    None = unknown); pointing: the PS-67 records {(rig, file): rec}."""
     armed = armed or plan_mode(plan)
     n = window_n(config)
     subs = [sp_norm(r) for r in subs or []]
@@ -737,7 +833,10 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
                              "af_stall": st[-1] if st else None},
                    "solve": solve, "now": t_end.isoformat() + "Z" if t_end else None,
                    "guider_start": guider_start_at(
-                       (nina_events or {}).get("rc16"), events, t_end)}
+                       (nina_events or {}).get("rc16"), events, t_end),
+                   "guide_log": (guide_log(config, night, win, guide_timeline)
+                                 if guide_timeline is not None else None),
+                   "pointing": (pointing or {}).get((rg, win[-1].get("file")))}
             d = diagnose(config, rg, win, subs=subs, ctx=ctx)
             cause = d["cause"] if d else None
             if d:
@@ -776,8 +875,19 @@ def local_night(config, night: str, rig: str | None = None) -> dict:
         hist = pc.history(config)
     except Exception:  # noqa: BLE001
         hist = []
+    try:
+        from photonscript.scheduler import phd2_analysis as pa
+        tl = pa.cached_timeline(config, night)
+    except Exception:  # noqa: BLE001
+        tl = None
+    try:
+        from photonscript.shared import pointing as pt
+        pts = pt.load(config, night)
+    except Exception:  # noqa: BLE001
+        pts = {}
     rep = replay_night(config, night, subs, rig=rig, plan=plan, cal_history=hist,
-                       events=store.read_jsonl(events_path(config, night)))
+                       events=store.read_jsonl(events_path(config, night)),
+                       guide_timeline=tl, pointing=pts)
     try:   # target core clipped with too few HDR shorts (core_check)
         from photonscript.scheduler import core_check
         from photonscript.scheduler.calibration_plan import load_projects
