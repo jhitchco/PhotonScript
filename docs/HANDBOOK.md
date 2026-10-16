@@ -1510,6 +1510,48 @@ Night test needed: an armed act-mode night for each watch action (one at a
 time), a mid-night roof closure with the new companion (NINA #2 darks start
 and hand back on safe), and the hook once ps-unguided-guard lands.
 
+### Safety dropout grace: an unreadable monitor is not a closed roof (2026-10-16)
+
+The armer reads NINA #1's safety monitor every 30 s tick. Three answers:
+SAFE, UNSAFE (Connected, IsSafe false) and UNREADABLE (ninaAPI error or
+timeout, `Success: false`, or the monitor reported not Connected). Before
+this change an unreadable read never paused anything (only the ~3 min
+"UNREADABLE" push); a sustained one was left to NINA's own
+SafetyMonitorCondition.
+
+- A reported UNSAFE acts on the first tick, as before (PAUSED_UNSAFE, push,
+  PS-77 stop / park after `unsafe_stop_grace_s`). Never graced, also when a
+  dropout is in progress.
+- An UNREADABLE read starts a dropout (log line "safety dropout START", run
+  event kind `safety_dropout` value `start`). Inside
+  `safety_dropout_grace_s` (60) and before 2 unreadable reads in a row it
+  changes nothing: no pause, no park, no push.
+- Past the grace: one priority push ("UNREADABLE for N s, past the 60 s
+  dropout grace"), event `over_grace`, and with `safety_dropout_action`
+  `unsafe` (default) the read counts as UNSAFE: RUNNING pauses (the pause
+  push says it is a dropout), PS-77 stops / parks if SAFE_LOOP is still
+  running `unsafe_stop_grace_s` later, an operator pause parks, a watched
+  night pauses (alert only). `alert` = the push only, the read stays
+  unknown (the old behaviour). The watchdog's own ~3 min push is not
+  repeated; its "readable again" push closes the episode.
+- The first readable read ends the dropout (event `end`, with its length,
+  reads and whether it outlasted the grace). Unreadable reads more than
+  5 min apart are separate dropouts (no carry-over from an earlier night).
+- Not changed: the dawn flat hold and the pre-dusk hot-pixel map use the raw
+  read; the hot-pixel map in a pause only runs on a reported unsafe; the
+  safety history records the raw read (grading rejects only reported
+  unsafe); the PS-1 cross-check runs only on a reported unsafe.
+- Not covered (NINA side): NINA's own SafetyMonitorCondition treats a
+  disconnected monitor as unsafe at once, so a NINA-side blip still makes
+  the night loop leave SAFE_LOOP and park. PhotonScript cannot grace that.
+
+Night test needed: an armed night with a deliberate short safety dropout
+(disconnect the safety monitor in NINA #1 for under 60 s: no pause, "START" /
+"END" lines in the scheduler log and the events file) and a long one (over
+60 s with the roof safe: one push, PAUSED_UNSAFE, PS-77 check, resume once it
+reads safe again). A real roof closure the same week to confirm the
+immediate pause is unchanged.
+
 ### Stuck-loop detector: should be imaging, no lights (2026-10-15)
 
 Why: 2026-10-14 22:21 to 22:41 MDT NINA #1 ran AF, center, park, unpark

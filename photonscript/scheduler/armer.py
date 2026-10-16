@@ -164,6 +164,16 @@ GUIDING_WORKING_WARN_TICKS = 4      # ~2 min stuck calibrating/looping -> warn
 GUIDING_RECOVER_AFTER_TICKS = 6     # ~3 min unlocked -> one auto guider restart
 GUIDING_ESCALATE_AFTER_TICKS = 10   # ~5 min unlocked -> priority escalation
 SAFETY_NONE_ALERT_TICKS = 6         # ~3 min of an unreadable safety monitor -> alert
+# Safety dropout grace (2026-10-16): an UNREADABLE safety read (ninaAPI error
+# or timeout, monitor reported not Connected) is a dropout. Inside
+# safety_dropout_grace_s it changes nothing (as before: unreadable never
+# paused); past it, with at least SAFETY_DROPOUT_MIN_READS unreadable reads
+# in a row, safety_dropout_action "unsafe" treats it as UNSAFE (the normal
+# unsafe path) and one push says so. A real reported unsafe (Connected and
+# IsSafe false) never waits for this. Unreadable reads further apart than
+# SAFETY_DROPOUT_GAP_S start a new episode (no carry-over between nights).
+SAFETY_DROPOUT_MIN_READS = 2
+SAFETY_DROPOUT_GAP_S = 300
 
 # PS-144 dusk focus-offset calibration (focus_calibration_tonight): rich,
 # uncrowded fields in order of preference; the first one FOCUS_CAL_ALT_LO to
@@ -199,6 +209,12 @@ class Armer:
         self._guider_hold_logged = False  # PS-154 "restart held: mount parked" audit
         self._safety_none_ticks = 0    # consecutive ticks safety monitor unreadable
         self._safety_alerted = False   # safety-monitor-blind alert latch (episode)
+        # safety dropout grace: first / last unreadable read of this episode,
+        # how many in a row, and whether it outlasted the grace (pushed)
+        self._dropout_since: datetime | None = None
+        self._dropout_last: datetime | None = None
+        self._dropout_reads = 0
+        self._dropout_over = False
         self.shutdown: dict | None = None  # last dawn_shutdown record (UX chip)
         # PS-77 unsafe-stop episode: when the monitor first read unsafe, when
         # it first read safe again (confirm window), whether the armer had to
@@ -1714,6 +1730,109 @@ class Armer:
             return None
         return bool(payload.get("IsSafe", False))
 
+    def _dropout_grace_s(self) -> int:
+        try:
+            return max(0, int(getattr(self.config, "safety_dropout_grace_s", 60)))
+        except (TypeError, ValueError):
+            return 60
+
+    def _dropout_acts(self) -> bool:
+        """True when a dropout past the grace counts as unsafe
+        (safety_dropout_action "unsafe", the default); "alert" = push only,
+        the reading stays unknown (the armer before the grace existed)."""
+        act = str(getattr(self.config, "safety_dropout_action", "unsafe")
+                  or "unsafe").strip().lower()
+        return act != "alert"
+
+    def _dropout_event(self, value: str, detail: str, now: datetime,
+                       **extra) -> None:
+        try:
+            from photonscript.shared.night_events import events_path
+            from photonscript.shared.phd2_store import append_jsonl, iso_z, night_of
+            append_jsonl(events_path(self.config, night_of(self.config, now)),
+                         {"t": iso_z(now), "rig": "rc16", "src": "safety",
+                          "kind": "safety_dropout", "value": value,
+                          "detail": detail, **extra})
+        except Exception as e:  # noqa: BLE001 - logging must never break a tick
+            logger.debug("safety dropout event: %s", e)
+
+    async def _effective_safe(self, raw: bool | None, now: datetime) -> bool | None:
+        """Safety dropout grace. raw = _is_safe(): True / False from a
+        connected monitor, None when unreadable. Returns what the unsafe
+        reactions act on:
+
+          raw True / False   returned as is, at once (a real reported unsafe
+                             is never delayed); ends a dropout episode
+          raw None           a dropout. Inside the grace (or before
+                             SAFETY_DROPOUT_MIN_READS reads in a row): None,
+                             which no reaction treats as unsafe. Past it:
+                             False when safety_dropout_action is "unsafe",
+                             else None; one priority push either way.
+
+        Logs the start and the end of every dropout (logger + run event kind
+        safety_dropout). Never raises."""
+        grace = self._dropout_grace_s()
+        if raw is not None:
+            if self._dropout_since is not None:
+                secs = int((now - self._dropout_since).total_seconds())
+                msg = (f"safety dropout END at {now:%H:%M:%S}Z after {secs} s "
+                       f"({self._dropout_reads} unreadable read(s)); monitor "
+                       f"reads {'SAFE' if raw else 'UNSAFE'}"
+                       + ("; it had outlasted the grace" if self._dropout_over
+                          else "; inside the grace, nothing was done"))
+                logger.warning(msg)
+                self._dropout_event("end", msg, now, seconds=secs,
+                                    reads=self._dropout_reads,
+                                    over_grace=self._dropout_over, safe=raw)
+            self._dropout_since = self._dropout_last = None
+            self._dropout_reads = 0
+            self._dropout_over = False
+            return raw
+        if (self._dropout_last is not None
+                and (now - self._dropout_last).total_seconds() > SAFETY_DROPOUT_GAP_S):
+            # reads this far apart are not one dropout (armer idle between)
+            self._dropout_since = None
+            self._dropout_reads = 0
+            self._dropout_over = False
+        self._dropout_last = now
+        self._dropout_reads += 1
+        if self._dropout_since is None:
+            self._dropout_since = now
+            msg = (f"safety dropout START at {now:%H:%M:%S}Z: the safety monitor "
+                   f"is unreadable ({self.detail or 'no reading'}); grace "
+                   f"{grace} s before it counts as "
+                   f"{'UNSAFE' if self._dropout_acts() else 'an alert'}")
+            logger.warning(msg)
+            self._dropout_event("start", msg, now, grace_s=grace)
+        held = (now - self._dropout_since).total_seconds()
+        over = held >= grace and (grace == 0
+                                  or self._dropout_reads >= SAFETY_DROPOUT_MIN_READS)
+        if not over:
+            return None
+        if not self._dropout_over:
+            self._dropout_over = True
+            acts = self._dropout_acts()
+            msg = (f"Safety monitor UNREADABLE for {int(held)} s "
+                   f"({self._dropout_reads} reads), past the {grace} s dropout "
+                   "grace: "
+                   + ("treated as UNSAFE (the normal unsafe pause / park path). "
+                      if acts else "alert only (safety_dropout_action alert). ")
+                   + "NINA's own SafetyMonitorCondition still gates imaging; "
+                   "reconnect the safety monitor in NINA.")
+            logger.warning("safety dropout OVER GRACE: %s", msg)
+            self._dropout_event("over_grace", msg, now, seconds=int(held),
+                                reads=self._dropout_reads, acts=acts)
+            if getattr(self.config, "safety_monitor_watchdog", True):
+                # the watchdog's own ~3 min "UNREADABLE" push would repeat this;
+                # its "readable again" push still closes the episode
+                self._safety_alerted = True
+            try:
+                await notify(self.config, msg, title="PhotonScript safety",
+                             priority=1)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("safety dropout push failed: %s", e)
+        return False if self._dropout_acts() else None
+
     def _dawn(self) -> datetime:
         return datetime.fromisoformat(self.plan["dawn_utc"].rstrip("Z"))
 
@@ -3076,14 +3195,16 @@ class Armer:
             running = []   # unreadable: never ends the watch, never alarms
         safe = await self._is_safe()
         self._record_safety(safe, now)
+        eff = await self._effective_safe(safe, now)   # dropout grace
         await self._watch_safety_monitor(now, safe)
-        if safe is False:
+        if eff is False:
             if not w.get("paused"):
                 w["paused"] = True
                 w["pauses"] = int(w.get("pauses") or 0) + 1
                 self._unsafe_since = now
                 self._unsafe_check_done = False
-                await self._crosscheck_unsafe(now)   # PS-1, observe only
+                if safe is False:
+                    await self._crosscheck_unsafe(now)   # PS-1, observe only
                 msg = (f"Watching: unsafe at {now:%H:%M}Z. The sideloaded "
                        "sequence should stop imaging, park and wait for safe "
                        "by itself; PhotonScript will not stop or restart it.")
@@ -3526,9 +3647,10 @@ class Armer:
             return
         safe = await self._is_safe()
         self._record_safety(safe, now)
+        eff = await self._effective_safe(safe, now)   # dropout grace
         await self._watch_safety_monitor(now, safe)
         p = self.pause_info if isinstance(self.pause_info, dict) else {}
-        if safe is False:
+        if eff is False:
             if self._unsafe_since is None:
                 self._unsafe_since = now
             grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
@@ -4288,23 +4410,32 @@ class Armer:
                 return
             safe = await self._is_safe()
             self._record_safety(safe, now)
+            eff = await self._effective_safe(safe, now)   # dropout grace
             await self._watch_safety_monitor(now, safe)
-            if safe is False:
+            if eff is False:
                 # The sequence's own night loop should leave SAFE_LOOP, park
                 # and hold via WaitUntilSafe. PS-77: the armer no longer takes
                 # that on faith; after unsafe_stop_grace_s it checks NINA's
                 # tree and stops the sequence itself if imaging carried on.
+                # A real unsafe read (safe is False) lands here on the first
+                # tick; an unreadable monitor only past the dropout grace.
                 self._unsafe_since = now
                 self._safe_since = None
                 self._unsafe_check_done = False
                 self._unsafe_tree_misses = 0
-                await self._crosscheck_unsafe(now)   # PS-1, observe only
+                if safe is False:
+                    await self._crosscheck_unsafe(now)   # PS-1, observe only
                 grace = int(getattr(self.config, "unsafe_stop_grace_s", 120))
+                why = ("Unsafe" if safe is False else
+                       "Safety monitor unreadable past the dropout grace")
                 self._set_state("PAUSED_UNSAFE",
-                                f"Unsafe at {now:%H:%M}Z — NINA night loop "
+                                f"{why} at {now:%H:%M}Z: NINA night loop "
                                 "should park and wait for safe")
                 await notify(self.config,
-                             "PAUSED: unsafe. NINA's night loop should stop "
+                             ("PAUSED: unsafe. " if safe is False else
+                              "PAUSED: safety monitor unreadable past the "
+                              "dropout grace, treated as unsafe. ")
+                             + "NINA's night loop should stop "
                              "imaging, park and wait; the armer checks in "
                              f"{grace} s and stops the sequence itself if it "
                              "is still imaging. Auto-resumes when safe.",
@@ -4335,6 +4466,7 @@ class Armer:
                 return
             safe = await self._is_safe()
             self._record_safety(safe, now)
+            eff = await self._effective_safe(safe, now)   # dropout grace
             if safe is True:
                 if self._unsafe_stopped:
                     await self._resume_after_safety_stop(now)
@@ -4348,12 +4480,14 @@ class Armer:
                              title="PhotonScript resumed")
             else:
                 self._safe_since = None  # the confirm window restarts
-                if safe is False:
+                if eff is False:   # unsafe, or unreadable past the grace
                     if self._unsafe_since is None:  # e.g. restored mid-pause
                         self._unsafe_since = now
                     await self._maybe_stop_stuck_imaging(now)
                     # PS-91: opportunistic map refresh while the roof is shut
-                    await self._maybe_hotpix_map(now, "paused unsafe")
+                    # (a reported unsafe only: a dropout says nothing of it)
+                    if safe is False:
+                        await self._maybe_hotpix_map(now, "paused unsafe")
 
 
 # -- PS-136 helpers -------------------------------------------------------------
