@@ -575,7 +575,7 @@ def test_happy_path_piggyback(tmp_path):
     # cooled and confirmed BEFORE the dispatch
     assert io.calls.index(("cool", 0.0)) < io.calls.index("dispatch")
     blocks = _blocks(io.seq)
-    assert blocks == [("DARK", 300.0, 3), ("DARK", 400.0, 3), ("BIAS", 0.001, 2)]
+    assert blocks == [("BIAS", 0.001, 2), ("DARK", 300.0, 3), ("DARK", 400.0, 3)]
     text = json.dumps(io.seq)
     for bad in ("Mount", "Slew", "Park", "Unpark", "Guiding", "Dome", "SwitchFilter",
                 "Center"):

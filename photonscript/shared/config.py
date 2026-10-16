@@ -339,6 +339,12 @@ class PhotonScriptConfig(BaseSettings):
                                  # gate, any roof state; 1 ms is light-safe)
                                  # when the rig has no usable bias (epoch:
                                  # gain, offset, SET-TEMP, verified readout)
+    calibration_bias_drift_adu: float = 8.0  # a new QA-clean bias set this many
+                                 # ADU from the session before it is bias
+                                 # drift: pushed by the capture job, and darks
+                                 # that fail the level check against their
+                                 # older bias but fit the newer one are
+                                 # "bias drift" (a warning), not light
     calibration_qa_dark_scale_by_readout: bool = True  # calibration QA: the
                                  # dark-minus-bias allowance's dark current term
                                  # scales with the readout mode's ADU per e-

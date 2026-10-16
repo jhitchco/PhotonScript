@@ -2808,6 +2808,33 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   shoots BIAS_AT_SETPOINT (RC16 start area, Piggy-600 companion first
   target item): the cooler gate, then 50 x 1 ms at the rig's gain / offset,
   any roof (`calibration_bias_when_missing`).
+- BIAS ONLY + BIAS DRIFT (2026-10-16): on 10-15 (roof closed all night)
+  the Piggy-600 450 s darks read 294 to 298 ADU and failed "level" against
+  the 2026-09-12 bias (256: 36 to 42 over, 19 allowed); both jobs aborted
+  after 2 frames. A job posted with `"exposures": [], "bias": 30` still
+  shot the owed darks (empty exposures = owed) and shot them before the
+  bias, so light (no shutter) vs a drifted bias was never decided. Now:
+  (a) bias only: `POST /api/calibration/capture-job {"rig": "piggyback",
+  "bias": 30, "darks": false}` (or `"bias_only": true`; `photonscript
+  calibration-capture --rig piggyback --bias-only 30`, local CLI only, not
+  on the remote allowlist) shoots only the bias, by day and whatever the
+  roof reads (0 s), still refused while the armer is ARMED / RUNNING or
+  NINA is busy. `"exposures": []` without `"darks": false` still means the
+  owed darks. (b) Every job shoots the bias FIRST. (c) Dark QA judges each
+  dark against the QA-clean bias session in force at its date (SET-TEMP
+  matched; was: the newest bias, which would have failed every September
+  dark "below bias" once a drifted bias landed), and the reason names it:
+  "over bias 256 (bias 2026-09-12, median 256 of 30 frames)". (d) Drift:
+  the job compares its new bias with the previous session (job
+  `bias_drift`, `GET /api/calibration/bias-drift?rig=`) and pushes when it
+  moved more than `calibration_bias_drift_adu` (8). A dark that fails the
+  level check against its older bias but sits inside the allowance over a
+  newer drifted bias gets a `bias_drift` warning ("bias drift, not light",
+  `level_verdict`), passes and does not count toward the light abort;
+  otherwise the verdict is "light". With the 10-15 numbers: a new bias at
+  290 makes those darks bias drift, one at 257 leaves them light (then cap
+  the lens or check the box for a leak). `calibration-file --rejudge` files
+  darks the new verdict passes.
 - CALIBRATION OWED (PS-122): `GET /api/calibration/owed?rig=`, the Calibration
   page "Calibration owed" cards and `photonscript calibration-owed` list, per
   rig, the frames still needed for the lights of active goals over the last

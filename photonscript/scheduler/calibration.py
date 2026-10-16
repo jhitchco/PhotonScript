@@ -248,7 +248,9 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
                         bias_count: int = 50, *, safety_gated: bool = False,
                         warm_minutes: float = 3.0,
                         cover_closed: bool = False) -> tuple[str, float]:
-    """NINA sequence: cool -> DARK exposures -> BIAS -> warm.
+    """NINA sequence: cool -> BIAS -> DARK exposures -> warm (bias first: a
+    bias set that lands before the darks lets the dark QA judge them against
+    tonight's bias level, not a drifted older one).
 
     Mount untouched; run only with the roof closed at night (no shutter).
     Returns (json_text, estimated_minutes).
@@ -298,18 +300,21 @@ def generate_darks_json(config, darks: list[tuple[float, int]],
         "PhotonScript_Calibration",
         [
             _seq_container("Start", [_seq_container("Calibration startup", [
-                _pushover("Calibration", f"darks starting: {plan_txt} + "
-                          f"{bias_count} bias: "
-                          + ("cover closed. " if cover_closed
-                             else "roof must be CLOSED. ")
-                          + f"~{total_min:.0f} min"),
+                _pushover("Calibration",
+                          (f"bias only starting: {bias_count} bias, any roof "
+                           f"state: ~{total_min:.0f} min") if not darks else
+                          (f"darks starting: {bias_count} bias first, then "
+                           f"{plan_txt}: "
+                           + ("cover closed. " if cover_closed
+                              else "roof must be CLOSED. ")
+                           + f"~{total_min:.0f} min")),
                 _connect("Camera"),
                 *_cover_start,
                 _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
             ])], container_type="NINA.Sequencer.Container.StartAreaContainer,"
                 " NINA.Sequencer"),
             _seq_container("Targets",
-                           dark_items + bias_items,
+                           bias_items + dark_items,
                            container_type="NINA.Sequencer.Container."
                            "TargetAreaContainer, NINA.Sequencer"),
             _seq_container("End", [_seq_container("Calibration shutdown", [

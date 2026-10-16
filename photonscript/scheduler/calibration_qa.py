@@ -9,7 +9,13 @@ master. Checks (reason codes in brackets):
   dark, bias   [temp]    CCD-TEMP present and within SET-TEMP +/- tol
                          (calibration_temp_tol_c, 1 C); flats: warning only
   dark         [level]   median minus the bias level of its epoch inside
-                         [-BIAS_LOW_ADU, base + rate x exposure x 2^(T/6)]
+                         [-BIAS_LOW_ADU, base + rate x exposure x 2^(T/6)];
+                         the bias is the QA-clean session in force at the
+                         dark's date (SET-TEMP matched), named in the reason
+                         (date, median, frames). When a newer bias drifted
+                         more than calibration_bias_drift_adu (8) from it and
+                         explains the dark, it is [bias_drift] (a warning,
+                         level_verdict "bias drift"), not light
   dark, bias   [leak]    center vs corner medians differ by > LEAK_ADU
   dark, bias   [stars]   more than MAX_STARS real stars (the graders' sep
                          recipe: 3x3 median, 5 sigma, minarea 6, a >= 0.6)
@@ -406,11 +412,17 @@ def dark_excess_scales(config, rig: str) -> dict:
 def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
                 bias_ref: tuple | None = None,
                 setpoint: float | None = None,
-                excess_scale: float = 1.0) -> tuple[list, list]:
+                excess_scale: float = 1.0,
+                bias_alt: tuple | None = None) -> tuple[list, list]:
     """Per-frame checks. Returns (fails, warnings): lists of
     {"code", "detail"}. bias_ref = (level, source) for darks;
     excess_scale (PS-182) scales the dark-current allowance for the
-    frame's readout mode (dark_excess_scales)."""
+    frame's readout mode (dark_excess_scales). bias_alt = (level, source,
+    drift): a newer bias session that drifted from bias_ref; a dark that
+    fails the level check against bias_ref but sits inside the allowance
+    over bias_alt is "bias drift" (a bias_drift warning, not light).
+    Darks record "level_verdict": None (level fine), "light" or
+    "bias drift"."""
     fails: list[dict] = []
     warns: list[dict] = []
     typ = rec.get("type")
@@ -463,18 +475,35 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
 
     med = rec.get("median")
     if typ in ("DARK", "BIAS") and med is not None:
+        if typ == "DARK":
+            rec["level_verdict"] = None
         if typ == "DARK" and bias_ref is not None and bias_ref[0] is not None:
             excess = med - bias_ref[0]
             lim = dark_excess_limit(exp or 0, ref, excess_scale)
+            msg = None
             if excess < -BIAS_LOW_ADU:
-                bad("level", f"median {med:g} is {-excess:.1f} ADU below bias "
-                    f"{bias_ref[0]:g} ({bias_ref[1]})")
+                msg = (f"median {med:g} is {-excess:.1f} ADU below bias "
+                       f"{bias_ref[0]:g} ({bias_ref[1]})")
             elif excess > lim:
-                bad("level", f"median {med:g} is {excess:.1f} ADU over bias "
-                    f"{bias_ref[0]:g} ({bias_ref[1]}); allowed {lim:.1f} for "
-                    f"{exp or 0:g} s"
-                    + (f" (x{excess_scale:g} for {rec.get('readout')})"
-                       if excess_scale and excess_scale != 1.0 else ""))
+                msg = (f"median {med:g} is {excess:.1f} ADU over bias "
+                       f"{bias_ref[0]:g} ({bias_ref[1]}); allowed {lim:.1f} for "
+                       f"{exp or 0:g} s"
+                       + (f" (x{excess_scale:g} for {rec.get('readout')})"
+                          if excess_scale and excess_scale != 1.0 else ""))
+            if msg:
+                alt_ex = (None if not bias_alt or bias_alt[0] is None
+                          else med - bias_alt[0])
+                if alt_ex is not None and -BIAS_LOW_ADU <= alt_ex <= lim:
+                    rec["level_verdict"] = "bias drift"
+                    bad("bias_drift", f"{msg}, but {alt_ex:.1f} ADU over the newer "
+                        f"bias {bias_alt[0]:g} ({bias_alt[1]}; drift "
+                        f"{bias_alt[2]:+.1f} ADU): bias drift, not light", warn=True)
+                else:
+                    rec["level_verdict"] = "light" if excess > 0 else "below bias"
+                    if alt_ex is not None:
+                        msg += (f"; the newer bias {bias_alt[0]:g} ({bias_alt[1]}) "
+                                f"does not explain it either ({alt_ex:.1f} ADU over)")
+                    bad("level", msg)
         c, corners = rec.get("center"), rec.get("corners") or []
         if c is not None and corners:
             spread = max(abs(x - c) for x in corners)
@@ -512,63 +541,178 @@ def _median(xs):
     return xs[n // 2] if n % 2 else 0.5 * (xs[n // 2 - 1] + xs[n // 2])
 
 
-def bias_levels(recs: dict) -> dict:
-    """Bias level per epoch: median of frame-clean bias medians, preferring
-    the newest session."""
-    by_epoch: dict[tuple, dict[str, list]] = {}
+BIAS_DRIFT_ADU = 8.0   # a bias session this far from the one before = drift
+
+
+def bias_drift_adu(config) -> float:
+    """calibration_bias_drift_adu (0 / unset / bad = BIAS_DRIFT_ADU)."""
+    try:
+        v = float(getattr(config, "calibration_bias_drift_adu", BIAS_DRIFT_ADU) or 0)
+    except (TypeError, ValueError):
+        v = 0.0
+    return v if v > 0 else BIAS_DRIFT_ADU
+
+
+def _bias_clean(r: dict) -> bool:
+    return not any(f["code"] in ("temp", "header", "leak", "stars")
+                   for f in r.get("frame_fails") or [])
+
+
+def bias_sessions(recs: dict) -> dict:
+    """{epoch: [session, ...] oldest first} of the QA-clean bias (no temp /
+    header / leak / stars fail); a session is one date folder at one
+    SET-TEMP: {"date", "median" (of the frames' medians), "n", "settemp"}."""
+    groups: dict[tuple, dict[tuple, list]] = {}
     for r in recs.values():
-        if r.get("type") != "BIAS" or r.get("median") is None:
+        if r.get("type") != "BIAS" or r.get("median") is None or not _bias_clean(r):
             continue
-        if any(f["code"] in ("temp", "header", "leak", "stars")
-               for f in r.get("frame_fails") or []):
-            continue
-        by_epoch.setdefault(_epoch(r), {}).setdefault(r.get("date") or "", []).append(
-            r["median"])
-    out = {}
-    for ep, dates in by_epoch.items():
-        newest = max(dates)
-        out[ep] = (_median(dates[newest]), f"bias {newest}")
+        st = _num(r.get("settemp"))
+        groups.setdefault(_epoch(r), {}).setdefault(
+            (r.get("date") or "", None if st is None else round(st)), []).append(r)
+    out: dict[tuple, list] = {}
+    for ep, by in groups.items():
+        rows = [{"date": date, "median": _median([x["median"] for x in rs]),
+                 "n": len(rs), "settemp": _median([_num(x.get("settemp")) for x in rs])}
+                for (date, _t), rs in by.items()]
+        out[ep] = sorted(rows, key=lambda x: (x["date"], x["n"]))
     return out
 
 
-def _bias_ref(rec: dict, levels: dict):
-    lv = levels.get(_epoch(rec))
-    if lv is not None:
-        return lv
+def bias_label(s: dict) -> str:
+    """How a dark's light check names the bias it compared against."""
+    return f"bias {s['date']}, median {s['median']:g} of {s['n']} frames"
+
+
+def _same_temp(rows: list, settemp) -> list:
+    st = _num(settemp)
+    if st is None:
+        return rows
+    same = [x for x in rows if x.get("settemp") is not None
+            and abs(x["settemp"] - st) < SETTEMP_TOL_C]
+    return same or rows
+
+
+def _epoch_rows(rec: dict, sessions: dict) -> list:
+    ep = _epoch(rec)
+    if ep in sessions:
+        return sessions[ep]
     # same gain/offset on a camera whose INSTRUME string differs (or, PS-128,
     # whose readout mode differs: HCG and LCG bias both sit at the OFFSET
     # pedestal, 254 to 256 ADU on the AP26MC): still close. Same readout first.
-    for ep, v in levels.items():
-        if ep[:3] == _epoch(rec)[:3] and ep[4] == rec.get("readout"):
-            return v
-    for ep, v in levels.items():
-        if ep[:3] == _epoch(rec)[:3]:
-            return v
+    for e, rows in sessions.items():
+        if e[:3] == ep[:3] and e[4] == rec.get("readout"):
+            return rows
+    for e, rows in sessions.items():
+        if e[:3] == ep[:3]:
+            return rows
+    return []
+
+
+def _bias_pick(rec: dict, sessions: dict, drift_adu: float = BIAS_DRIFT_ADU):
+    """(in force, newer) bias sessions for a dark. In force: the newest
+    QA-clean session of its epoch (SET-TEMP matched when one is) shot on
+    or before the dark's date, else the oldest after it, so a September
+    dark keeps its September bias when the level later drifts. Newer: the
+    newest session after that one when it sits more than drift_adu away
+    (the bias level drifted since), else None."""
+    rows = _same_temp(_epoch_rows(rec, sessions), rec.get("settemp"))
+    if not rows:
+        return None, None
+    d = str(rec.get("date") or "")
+    before = [x for x in rows if x["date"] <= d]
+    cur = before[-1] if before else rows[0]
+    new = rows[-1]
+    if new is cur or new["date"] <= cur["date"] or new["median"] is None \
+            or cur["median"] is None or abs(new["median"] - cur["median"]) <= drift_adu:
+        new = None
+    return cur, new
+
+
+def _bias_ref(rec: dict, sessions: dict, drift_adu: float = BIAS_DRIFT_ADU):
+    """(bias_ref, bias_alt) for judge_frame."""
+    cur, new = _bias_pick(rec, sessions, drift_adu)
+    if cur is not None:
+        alt = None if new is None else (new["median"], bias_label(new),
+                                        new["median"] - cur["median"])
+        return (cur["median"], bias_label(cur)), alt
     if rec.get("offset") is not None:
-        return (float(rec["offset"]), "OFFSET keyword (no bias QA'd yet)")
-    return None
+        return (float(rec["offset"]), "OFFSET keyword (no bias QA'd yet)"), None
+    return None, None
+
+
+def bias_drift(recs: dict) -> list:
+    """Per epoch and SET-TEMP: the newest QA-clean bias session against the
+    one before it. [{"gain", "offset", "xbin", "instrume", "readout",
+    "settemp", "date", "median", "n", "prev_date", "prev_median",
+    "prev_n", "drift"}]; "drift" is None without an earlier session."""
+    out = []
+    for ep, rows in bias_sessions(recs).items():
+        by_t: dict = {}
+        for x in rows:
+            by_t.setdefault(None if x["settemp"] is None else round(x["settemp"]),
+                            []).append(x)
+        for t, rs in by_t.items():
+            new, prev = rs[-1], (rs[-2] if len(rs) > 1 else None)
+            drift = (None if prev is None or prev["median"] is None
+                     or new["median"] is None
+                     else round(new["median"] - prev["median"], 1))
+            out.append({"gain": ep[0], "offset": ep[1], "xbin": ep[2],
+                        "instrume": ep[3], "readout": ep[4], "settemp": t,
+                        "date": new["date"], "median": new["median"], "n": new["n"],
+                        "prev_date": prev["date"] if prev else None,
+                        "prev_median": prev["median"] if prev else None,
+                        "prev_n": prev["n"] if prev else None, "drift": drift})
+    return out
+
+
+def drift_for(config, rig: str, *, gain, offset, readout=None, setpoint=None,
+              store: dict | None = None) -> dict | None:
+    """The bias_drift row of one epoch (the newest when several match);
+    None when the rig has no QA-clean bias of it."""
+    store = store or load_store(config, rig)
+    rows = store.get("bias_drift")
+    if rows is None:
+        rows = bias_drift(store["frames"])
+    best = None
+    for x in rows:
+        if _num(x.get("gain")) != _num(gain) or _num(x.get("offset")) != _num(offset):
+            continue
+        if readout and x.get("readout") and x["readout"] != readout:
+            continue
+        if setpoint is not None and x.get("settemp") is not None \
+                and abs(float(x["settemp"]) - float(setpoint)) >= SETTEMP_TOL_C:
+            continue
+        if best is None or x["date"] > best["date"]:
+            best = x
+    return best
 
 
 def judge_all(store: dict, *, rig: str, tol: float,
               setpoint: float | None = None, scales: dict | None = None,
-              default_readout: str | None = None) -> None:
+              default_readout: str | None = None,
+              drift_adu: float = BIAS_DRIFT_ADU) -> None:
     """Recompute every verdict in the store (cheap: no file reads).
     PS-182: `scales` = dark_excess_scales (readout -> dark-current scale);
-    a dark with no readout recorded takes `default_readout`'s."""
+    a dark with no readout recorded takes `default_readout`'s. Darks are
+    judged against the bias in force at their date (_bias_pick) and, when
+    the bias drifted more than `drift_adu` since, also against the newer
+    one (bias drift vs light); store["bias_drift"] = bias_drift."""
     recs = store["frames"]
     scales = scales or {}
     for r in recs.values():
         if r.get("type") == "BIAS" and r.get("median") is not None:
             f, w = judge_frame(r, rig=rig, tol=tol, setpoint=setpoint)
             r["frame_fails"], r["frame_warns"] = f, w
-    levels = bias_levels(recs)
+    sessions = bias_sessions(recs)
+    store["bias_drift"] = bias_drift(recs)
     for r in recs.values():
         if r.get("median") is None:
             continue
         if r.get("type") != "BIAS":
-            sc = scales.get(r.get("readout") or default_readout, 1.0) \
-                if r.get("type") == "DARK" else 1.0
-            f, w = judge_frame(r, rig=rig, tol=tol, bias_ref=_bias_ref(r, levels),
+            dark = r.get("type") == "DARK"
+            sc = scales.get(r.get("readout") or default_readout, 1.0) if dark else 1.0
+            ref, alt = _bias_ref(r, sessions, drift_adu) if dark else (None, None)
+            f, w = judge_frame(r, rig=rig, tol=tol, bias_ref=ref, bias_alt=alt,
                                setpoint=setpoint, excess_scale=sc)
             r["frame_fails"], r["frame_warns"] = f, w
         r["set_fails"] = []
@@ -791,7 +935,8 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
         judge_all(store, rig=rig, tol=temp_tol(config),
                   setpoint=_setpoint(config, rig),
                   scales=dark_excess_scales(config, rig),          # PS-182
-                  default_readout=rig_readout(config, rig))
+                  default_readout=rig_readout(config, rig),
+                  drift_adu=bias_drift_adu(config))
         if persist:
             save_store(config, rig, store)
     day = store.get("daytime", {}).get("status")
@@ -1068,7 +1213,8 @@ def _judge_store(config, rig: str, store: dict) -> None:
     from photonscript.shared.rigs import rig_readout
     judge_all(store, rig=rig, tol=temp_tol(config), setpoint=_setpoint(config, rig),
               scales=dark_excess_scales(config, rig),
-              default_readout=rig_readout(config, rig))
+              default_readout=rig_readout(config, rig),
+              drift_adu=bias_drift_adu(config))
 
 
 def _quarantine_reason(qpath: Path) -> str:

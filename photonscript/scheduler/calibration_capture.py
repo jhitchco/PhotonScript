@@ -49,6 +49,16 @@ is "untested": the plan starts with PROBE_COUNT darks at the longest exposure
 that already has night darks, so the first daytime frames are compared with
 night ones before the long sets run.
 
+Bias first: every job shoots its bias set before the darks. When the bias
+set has landed the job compares its median with the epoch's previous bias
+session (calibration_qa.drift_for), records it (job "bias_drift") and pushes
+a note when it moved more than calibration_bias_drift_adu (8 ADU).
+
+Bias only ("bias_only": true or "darks": false; --bias-only N): no darks at
+all, owed or not. 0 s exposures are light-safe, so the roof / cover and the
+daytime-disabled switch neither refuse nor stop it and the sequence has no
+LoopWhileUnsafe; the armer, NINA, camera, readout and cooler guards hold.
+
 calibration_autofill (default False) starts a gap-driven job per rig in the
 daytime only (sun up, finishing 2 h before sunset), once a day per rig.
 """
@@ -76,6 +86,7 @@ ROOF_MISS_LIMIT = 3
 TEMP_DRIFT_LIMIT = 2
 LIGHT_STREAK_LIMIT = 2
 NINA_MISS_LIMIT = 5
+BIAS_ONLY_DEFAULT = 50   # bias frames of a bias-only job that names no count
 GUIDER_BUSY_STATES = ("guiding", "calibrating", "looping", "settling", "settledone")
 
 _jobs: dict[str, "Job"] = {}
@@ -270,8 +281,10 @@ async def light_tight(config, rig: str, io, connect: bool = True
 class Job:
     def __init__(self, rig: str, darks: list, bias: int, *, source: str,
                  budget_min: float, setpoint: float, tol: float, daytime: bool,
-                 probe: list | None, expect: dict):
+                 probe: list | None, expect: dict, bias_only: bool = False):
         self.id = uuid.uuid4().hex[:8]
+        self.bias_only = bool(bias_only)   # no darks: any roof, day or night
+        self.bias_drift: dict | None = None   # calibration_qa.drift_for once checked
         self.rig = rig
         self.darks = [[float(e), int(n)] for e, n in darks]
         self.bias = int(bias)
@@ -330,9 +343,15 @@ class Job:
                 "elapsed_min": round((time.monotonic() - self.started_mono) / 60, 1),
                 "landed": len(self.frames), "expected": self.expected,
                 "verdicts": verdicts, "sequence": self.sequence,
-                "light_via": self.light_via,
-                "bad": [{"file": r.get("name"), "reasons": r.get("reasons")}
+                "light_via": self.light_via, "bias_only": self.bias_only,
+                "bias_drift": self.bias_drift,
+                "bad": [{"file": r.get("name"), "reasons": r.get("reasons"),
+                         "level_verdict": r.get("level_verdict")}
                         for r in self.frames.values() if r.get("verdict") == "fail"][:20],
+                "bias_drift_frames": [
+                    {"file": r.get("name"), "warnings": r.get("warnings")}
+                    for r in self.frames.values()
+                    if r.get("level_verdict") == "bias drift"][:20],
                 "events": self.events[-15:]}
 
 
@@ -378,11 +397,15 @@ def is_daytime(config, now: datetime | None = None) -> bool:
 
 async def preflight(config, rig: str, armer_state: str, io: RigIO | None = None,
                     daytime: bool | None = None, connect: bool = True,
-                    reserved: bool = False) -> tuple[list[str], dict]:
+                    reserved: bool = False,
+                    bias_only: bool = False) -> tuple[list[str], dict]:
     """Every reason a capture on `rig` is refused right now (empty = go),
     plus what was read. Reads only; with `connect` the one write is
     connecting the rig's own camera / safety monitor (connect=False: the
-    page's read-only check)."""
+    page's read-only check). bias_only (0 s exposures, light-safe): the
+    roof / cover and the daytime-disabled switch do not refuse (read for
+    the record only, the cover is not moved); the armer, NINA, camera,
+    readout and cooler checks still do."""
     from photonscript.scheduler import calibration_qa as cq
     from photonscript.shared.rigs import rig_ids, rig_label
     refusals: list[str] = []
@@ -403,7 +426,8 @@ async def preflight(config, rig: str, armer_state: str, io: RigIO | None = None,
                         "could not be found and QA'd")
     day = is_daytime(config) if daytime is None else daytime
     seen["daytime"] = day
-    if day and not cq.daytime_capture_allowed(config, rig):
+    seen["bias_only"] = bool(bias_only)
+    if day and not bias_only and not cq.daytime_capture_allowed(config, rig):
         st = cq.daytime_state(config, rig)
         refusals.append(f"daytime capture is DISABLED for {label} (light leak seen "
                         f"{st.get('at', '?')}): shoot at night with the roof closed, "
@@ -426,12 +450,15 @@ async def preflight(config, rig: str, armer_state: str, io: RigIO | None = None,
         refusals.append(f"cannot read {label}'s NINA sequence state (is NINA up?)")
     elif running:
         refusals.append(f"{label}'s NINA is running a sequence; stop it first")
-    closed, src, via = await light_tight(config, rig, io, connect=connect)
+    closed, src, via = await light_tight(config, rig, io,
+                                         connect=connect and not bias_only)
     seen["roof"] = {"closed": closed, "source": src}
-    seen["light_via"] = via   # PS-189: "cover" = the closed cover is the shutter
+    seen["light_via"] = "none" if bias_only else via   # PS-189: "cover" = the closed cover is the shutter
     cover_hint = (" (or the Piggy-600 cover closed)"
                   if via == "roof" and _cover_on(config, rig) else "")
-    if closed is None:
+    if bias_only:
+        pass   # bias: 0 s exposures, the roof state does not matter
+    elif closed is None:
         refusals.append(f"roof state unknown ({src}): darks need the roof reading "
                         f"CLOSED{cover_hint}")
     elif not closed:
@@ -564,14 +591,19 @@ def _probe_block(config, rig: str, darks: list) -> list | None:
 
 
 def build_plan(config, rig: str, *, darks=None, bias=None, exposures=None,
-               count=None, budget: float | None = None) -> dict:
+               count=None, budget: float | None = None,
+               bias_only: bool = False) -> dict:
     """The job's darks + bias: explicit `darks` [[exp, n]], else `exposures`
     x `count` (default the dark quota), else the gap report's capture plan.
+    bias_only: no darks at all, `bias` frames (default BIAS_ONLY_DEFAULT).
     Trimmed to the budget (less the cooling allowance)."""
     from photonscript.scheduler import calibration_plan as cp
     budget = budget_min(config) if budget is None else float(budget)
     room = max(0.0, budget - cp.COOL_ESTIMATE_MIN)
-    if darks:
+    if bias_only:
+        d = []
+        b = BIAS_ONLY_DEFAULT if bias is None else int(bias)
+    elif darks:
         d = [[float(e), int(n)] for e, n in darks]
         b = int(bias or 0)
     elif exposures:
@@ -602,12 +634,14 @@ async def start_job(config, rig: str, *, armer_state_fn: Callable[[], str],
                     budget: float | None = None, source: str = "manual",
                     io: RigIO | None = None, poll_s: float = POLL_S,
                     daytime: bool | None = None,
-                    armer_status_fn: Callable[[], dict] | None = None
-                    ) -> tuple[bool, dict]:
+                    armer_status_fn: Callable[[], dict] | None = None,
+                    bias_only: bool = False) -> tuple[bool, dict]:
     """Check the guards, build the plan and start the job task. Returns
     (ok, body): body has "refusals" when refused, else the job dict.
     armer_status_fn (Armer.status) lets a job that the armer interrupts stop
-    its own sequence while tonight's dispatch is still far off."""
+    its own sequence while tonight's dispatch is still far off. bias_only:
+    only `bias` frames (no darks, owed or not), allowed by day and whatever
+    the roof reads; still refused while the armer is armed / running."""
     from photonscript.shared.rigs import rig_label
     if busy(rig):
         return False, {"rig": rig, "refusals": [
@@ -616,10 +650,15 @@ async def start_job(config, rig: str, *, armer_state_fn: Callable[[], str],
     try:
         io = io or RigIO(config, rig)
         day = (await asyncio.to_thread(is_daytime, config)) if daytime is None else daytime
+        if bias_only and bias is not None and int(bias) <= 0:
+            return False, {"rig": rig, "refusals": [
+                "a bias-only job needs bias > 0"], "read": {}}
         refusals, seen = await preflight(config, rig, armer_state_fn(), io, daytime=day,
-                                         reserved=True)
+                                         reserved=True, bias_only=bias_only)
         if refusals:
             if seen.get("reach_refusal") and not str(source).startswith("deferred"):
+                if bias_only:
+                    darks, bias = [], BIAS_ONLY_DEFAULT if bias is None else bias
                 _defer_plan(config, rig, darks=darks, bias=bias, exposures=exposures,
                             count=count, budget=budget, reason=seen["reach_refusal"],
                             window=seen.get("dawn_window"))
@@ -627,26 +666,27 @@ async def start_job(config, rig: str, *, armer_state_fn: Callable[[], str],
         return await _start(config, rig, armer_state_fn, io, poll_s, day, seen,
                             darks=darks, bias=bias, exposures=exposures, count=count,
                             budget=budget, source=source,
-                            armer_status_fn=armer_status_fn)
+                            armer_status_fn=armer_status_fn, bias_only=bias_only)
     finally:
         _starting.discard(rig)
 
 
 async def _start(config, rig, armer_state_fn, io, poll_s, day, seen, *, darks, bias,
                  exposures, count, budget, source,
-                 armer_status_fn=None) -> tuple[bool, dict]:
+                 armer_status_fn=None, bias_only=False) -> tuple[bool, dict]:
     from photonscript.scheduler import calibration_qa as cq
     from photonscript.shared.rigs import rig_setpoint
     budget = budget_min(config) if budget is None else float(budget)
     plan = await asyncio.to_thread(build_plan, config, rig, darks=darks, bias=bias,
-                                   exposures=exposures, count=count, budget=budget)
+                                   exposures=exposures, count=count, budget=budget,
+                                   bias_only=bias_only)
     blocks = plan["darks"]
     if not blocks and not plan["bias"]:
         return False, {"rig": rig, "refusals": [
             "nothing to capture: every dark set and the bias are at quota "
             "(or the budget is too small)"], "read": seen}
     probe = None
-    if day and cq.daytime_state(config, rig).get("status") == "untested":
+    if blocks and day and cq.daytime_state(config, rig).get("status") == "untested":
         probe = _probe_block(config, rig, blocks)
         if probe:
             rest = []
@@ -663,14 +703,18 @@ async def _start(config, rig, armer_state_fn, io, poll_s, day, seen, *, darks, b
               daytime=day, probe=probe,
               expect={"gain": ep["gain"], "offset": ep["offset"], "xbin": 1,
                       "readout": ep.get("readout"),
-                      "exposures": sorted({e for e, _n in blocks})})
+                      "exposures": sorted({e for e, _n in blocks})},
+              bias_only=bias_only or not blocks)
     if plan["trimmed"]:
         job.log(f"plan trimmed to the {budget:g} min budget")
     if probe:
         job.log(f"daytime probe first: {probe[1]} x {probe[0]:g} s darks vs night ones")
     job.armer_status_fn = armer_status_fn
     job.light_via = seen.get("light_via") or "roof"   # PS-189
-    if job.light_via == "cover":
+    if job.bias_only:
+        job.light_via = "none"
+        job.log(f"bias only: {job.bias} x 0 s (roof state not needed)")
+    elif job.light_via == "cover":
         job.log("light-tight by the closed cover (roof state not needed)")
     _jobs[rig] = job
     job.task = asyncio.create_task(_run(config, job, io, armer_state_fn, poll_s))
@@ -815,9 +859,10 @@ async def _wait_cooled(config, job: Job, io: RigIO, armer_state_fn, poll_s) -> s
         if time.monotonic() > deadline:
             return (f"camera did not reach {job.setpoint:g} +/- {job.tol:g} C in "
                     f"{cool_timeout_min(config):g} min (last {t} C)")
-        closed, src, _via = await _tight(config, job, io)
-        if closed is False:
-            return f"roof opened ({src})"
+        if not job.bias_only:
+            closed, src, _via = await _tight(config, job, io)
+            if closed is False:
+                return f"roof opened ({src})"
         await asyncio.sleep(poll_s)
 
 
@@ -846,7 +891,8 @@ async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> No
         job.log("cooling to setpoint")
         stop_reason = await _wait_cooled(config, job, io, armer_state_fn, poll_s)
         if stop_reason is None:
-            closed, src, _via = await _tight(config, job, io)
+            closed, src, _via = ((True, "bias only", "none") if job.bias_only
+                                 else await _tight(config, job, io))
             running = await io.sequence_running()
             if closed is not True:
                 stop_reason = f"roof not reading closed before dispatch ({src})"
@@ -858,7 +904,8 @@ async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> No
             on_cover = job.light_via == "cover"
             seq_text, _m = generate_darks_json(
                 view, [(e, n) for e, n in job.darks], job.bias,
-                safety_gated=not on_cover, cover_closed=on_cover,
+                safety_gated=not on_cover and not job.bias_only,
+                cover_closed=on_cover,
                 warm_minutes=float(getattr(config, "gradual_warm_minutes", 0.0)))
             try:
                 seq_dir = Path.cwd() / "sequences"
@@ -883,7 +930,8 @@ async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> No
                          + ", ".join(f"{e:g}s x{n}" for e, n in job.darks)
                          + (f" + {job.bias} bias" if job.bias else "")
                          + f", about {job.minutes():.0f} min. "
-                         + ("Cover stays closed." if job.light_via == "cover"
+                         + ("Bias only: any roof state." if job.bias_only
+                            else "Cover stays closed." if job.light_via == "cover"
                             else "Roof must stay closed."),
                          title="PhotonScript calibration")
             stop_reason = await _monitor(config, job, io, armer_state_fn, poll_s, nights)
@@ -914,12 +962,15 @@ async def _monitor(config, job: Job, io: RigIO, armer_state_fn, poll_s: float,
         st = armer_state_fn()
         if st not in IDLE_STATES:
             return f"armer went {st}"
-        closed, src, _via = await _tight(config, job, io)
-        if closed is False:
-            return f"roof opened ({src})"
-        roof_miss = roof_miss + 1 if closed is None else 0
-        if roof_miss >= ROOF_MISS_LIMIT:
-            return f"roof state unreadable {roof_miss} polls running"
+        if job.bias_only:
+            src = "bias only, roof not needed"
+        else:
+            closed, src, _via = await _tight(config, job, io)
+            if closed is False:
+                return f"roof opened ({src})"
+            roof_miss = roof_miss + 1 if closed is None else 0
+            if roof_miss >= ROOF_MISS_LIMIT:
+                return f"roof state unreadable {roof_miss} polls running"
         cam = await io.camera()
         t = (cam or {}).get("Temperature")
         from photonscript.scheduler.cooler_history import record as _hist
@@ -951,12 +1002,19 @@ async def _monitor(config, job: Job, io: RigIO, armer_state_fn, poll_s: float,
                     continue
                 job.frames[cq.frame_key(typ, d, f.name)] = r
                 lit = [c for c in r.get("codes") or [] if c in cq.LIGHT_CODES]
-                light = light + 1 if lit else 0
+                if not job.bias_only:
+                    light = light + 1 if lit else 0
                 if r.get("verdict") == "fail":
                     job.log(f"{f.name}: FAIL {'; '.join(r.get('reasons') or [])}")
+                elif r.get("level_verdict") == "bias drift":
+                    job.log(f"{f.name}: bias drift, not light: "
+                            + "; ".join(w for w in r.get("warnings") or []
+                                        if w.startswith("bias_drift")))
+            await _check_bias_drift(config, job)
             if light >= LIGHT_STREAK_LIMIT:
                 return f"light in the frames ({light} in a row fail a light check)"
-            if job.daytime and not cq.daytime_capture_allowed(config, job.rig):
+            if job.daytime and not job.bias_only \
+                    and not cq.daytime_capture_allowed(config, job.rig):
                 return "daytime light leak: day darks brighter than night darks"
         job.detail = (f"{len(job.frames)} of {job.expected} frames, sensor {t} C, "
                       f"light-tight ({src})")
@@ -979,6 +1037,53 @@ async def _monitor(config, job: Job, io: RigIO, armer_state_fn, poll_s: float,
             else:
                 idle = 0
         await asyncio.sleep(poll_s)
+
+
+async def _check_bias_drift(config, job: "Job", final: bool = False) -> None:
+    """Once the job's bias set has landed (all of it, or with `final`
+    whatever landed): compare its median with the session before it
+    (calibration_qa.drift_for), record it on the job and, when it moved
+    more than calibration_bias_drift_adu, push a note. The dark QA then
+    judges new darks against the new bias (in force from its date) and
+    calls older darks that it explains "bias drift", not light."""
+    if job.bias_drift is not None or not job.bias:
+        return
+    landed = [r for r in job.frames.values() if r.get("type") == "BIAS"]
+    if not landed or (len(landed) < job.bias and not final):
+        return
+    from photonscript.scheduler import calibration_qa as cq
+    from photonscript.shared.pushover import notify
+    from photonscript.shared.rigs import rig_label
+    ex = job.expect or {}
+    row = await asyncio.to_thread(cq.drift_for, config, job.rig, gain=ex.get("gain"),
+                                  offset=ex.get("offset"), readout=ex.get("readout"),
+                                  setpoint=job.setpoint)
+    dates = {r.get("date") for r in landed}
+    if row is None or row.get("date") not in dates:
+        job.bias_drift = {"drift": None, "detail": "no QA-clean bias from this job "
+                          "(its bias frames failed QA?)"}
+        job.log("bias drift: " + job.bias_drift["detail"])
+        return
+    thr = cq.bias_drift_adu(config)
+    d = row.get("drift")
+    row = dict(row, threshold=thr, exceeded=d is not None and abs(d) > thr)
+    job.bias_drift = row
+    if d is None:
+        job.log(f"bias {row['date']}: median {row['median']:g} of {row['n']} frames "
+                "(first bias of this epoch, nothing to compare)")
+        return
+    txt = (f"bias {row['date']} median {row['median']:g} ({row['n']} frames) vs "
+           f"{row['prev_date']} median {row['prev_median']:g}: drift {d:+.1f} ADU")
+    job.log(txt + (f" (over {thr:g}: darks are judged against the new bias)"
+                   if row["exceeded"] else f" (within {thr:g})"))
+    if row["exceeded"]:
+        try:
+            await notify(config, f"{rig_label(config, job.rig)} bias drift: {txt} "
+                         f"(over {thr:g} ADU). Darks from now on are judged against "
+                         "the new bias; older darks it explains count as bias "
+                         "drift, not light.", title="PhotonScript calibration")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 ARMER_STOP_MARGIN_MIN = 10.0
@@ -1024,6 +1129,10 @@ async def _finish(config, job: Job, io: RigIO, stop_reason, dispatched: bool,
             await io.warm()
         except Exception as e:  # noqa: BLE001
             job.log(f"warm failed: {e}")
+    try:
+        await _check_bias_drift(config, job, final=True)
+    except Exception as e:  # noqa: BLE001
+        job.log(f"bias drift check failed: {e}")
     if nights:
         await asyncio.to_thread(_file_frames, config, job.rig, nights)
     # PS-188: then the rig's whole recent calibration (folders the dawn
