@@ -387,6 +387,7 @@ def lint_companion(seq: dict, filter_wheel: bool | None = None,
     # PS-154: the Piggy-600 setpoint, bounded cool (a WARN when hand built)
     sl.check_cooling(seq, r, rig=PIGGYBACK, strict=not hand_built)
     sl._check_focus_moves(seq, r)
+    sl._check_af_hfr(seq, r, hand_built)   # HFR-rise AF trigger floors
     sl._check_parent_links(seq, r)
     sl._check_light_loop_guards(seq, r)
     sl._check_loop_spin(seq, r)   # PS-149

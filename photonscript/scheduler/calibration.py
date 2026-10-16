@@ -952,12 +952,14 @@ def _osc_af_triggers(config) -> list:
     the last AF (2026-09-26: after a 7-min gap in OSC subs, likely an AF, that
     overlapped the RC16's 04:00Z target change, the OSC sat near 6 px HFR for
     five hours)."""
+    from photonscript.scheduler.af_policy import hfr_trigger
     from photonscript.scheduler.nina_sequence_json import (
         _autofocus_hfr_trigger, _autofocus_temp_trigger, _autofocus_time_trigger)
     temp_c = float(getattr(config, "piggyback_af_temp_change_c", 1.5))
-    hfr_pct = float(getattr(config, "piggyback_af_hfr_increase_pct", 10.0))
+    hfr = hfr_trigger(config, "piggyback")   # 15% over 10 subs by default
     every_min = int(getattr(config, "piggyback_af_interval_min", 60))
-    trig = [_autofocus_temp_trigger(temp_c), _autofocus_hfr_trigger(hfr_pct, 4)]
+    trig = [_autofocus_temp_trigger(temp_c),
+            _autofocus_hfr_trigger(hfr["pct"], hfr["samples"])]
     if every_min > 0:
         trig.append(_autofocus_time_trigger(every_min))
     return trig

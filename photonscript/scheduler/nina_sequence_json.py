@@ -816,9 +816,15 @@ def _autofocus_filter_trigger() -> dict:
         TriggerRunner=_trigger_runner([_autofocus()]))
 
 
-def _autofocus_hfr_trigger(amount_pct: float = 10.0,
-                           sample_size: int = 4,
+def _autofocus_hfr_trigger(amount_pct: float = 15.0,
+                           sample_size: int = 10,
                            runner: list | None = None) -> dict:
+    """NINA's "Autofocus after HFR increase": AF when the HFR of the lights
+    since NINA's last AF has risen Amount % over SampleSize subs. $type as
+    in the known-good AARO sequence (a1f2886) and a NINA 3 saved sequence
+    (FullSession_2026-02-28.json: Amount, SampleSize). Values per rig:
+    af_policy.hfr_trigger (rc16 / piggyback _af_hfr_increase_pct 15,
+    _af_hfr_sample_size 10)."""
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger, "
         "NINA.Sequencer",
@@ -1228,7 +1234,8 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             followed: bool = False,
                             smart: dict | None = None,
                             fill: bool = False,
-                            reentry: dict | None = None) -> dict:
+                            reentry: dict | None = None,
+                            hfr: dict | None = None) -> dict:
     """AARO acquisition order: tracking -> slew -> first filter -> AF ->
     plate solve center -> tracking (defensive) -> [self-test] -> [guiding]
     -> [HDR shorts once] -> exposures.
@@ -1493,6 +1500,13 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     # PS-176: smart AF policy (focus_drive, when active, owns the blocks)
     use_smart = (smart is not None and focus_drive is None
                  and af_filter is not None)
+    # HFR-rise AF trigger on every light block, every policy
+    # (af_policy.hfr_trigger: {"pct", "samples"}; None = the defaults)
+    if hfr is None:
+        from photonscript.scheduler.af_policy import (
+            HFR_DEFAULT_PCT, HFR_DEFAULT_SAMPLES)
+        hfr = {"pct": HFR_DEFAULT_PCT, "samples": HFR_DEFAULT_SAMPLES}
+    hfr_pct, hfr_n = float(hfr["pct"]), int(hfr["samples"])
     if use_smart:
         from photonscript.scheduler.af_policy import describe
         items.append(_annotation(describe(smart)))
@@ -1578,20 +1592,20 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                             float(focus_drive.get("temp_c") or 1.0),
                             [_focus_model_move(focus_drive["script"], f,
                                                trigger=True)]),
-                        _autofocus_hfr_trigger(10.0, 4, runner()),
+                        _autofocus_hfr_trigger(hfr_pct, hfr_n, runner()),
                         _autofocus_time_trigger(focus_drive["verify_min"],
                                                 runner())]
             if smart_move:
                 # PS-176: the only AFs inside a target besides the start AF
                 # and blocks of unmeasured filters: temperature, HFR, timed
                 t = [_autofocus_temp_trigger(smart["temp_c"], runner()),
-                     _autofocus_hfr_trigger(smart["hfr_pct"], 4, runner())]
+                     _autofocus_hfr_trigger(hfr_pct, hfr_n, runner())]
                 if smart["interval_min"] > 0:
                     t.append(_autofocus_time_trigger(smart["interval_min"],
                                                      runner()))
                 return t
             return [_autofocus_temp_trigger(2.0, runner()),
-                    _autofocus_hfr_trigger(10.0, 4, runner())]
+                    _autofocus_hfr_trigger(hfr_pct, hfr_n, runner())]
 
         # HDR (PS-47): the SHORT companion set, same filter/gain/offset/
         # binning, its own (shorter) length + count, only what is still owed.
@@ -2822,6 +2836,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
     focus_drive = _focus_drive_spec(_cfg)   # PS-76 part 2, None by default
     smart = _smart_af_spec(_cfg, af_ft)     # PS-176, None = every_block
     reentry = _reentry_spec(_cfg)           # 2026-10-15, None = no gates
+    from photonscript.scheduler.af_policy import hfr_trigger
+    hfr = hfr_trigger(_cfg, "rc16")         # HFR-rise AF trigger (15% / 10)
     start_items += _reentry_notice(_cfg, reentry)
     target_containers = []
     first_guided = True
@@ -2841,7 +2857,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     cooler_gate=gate,
                                     focus_drive=focus_drive,
                                     followed=len(sequence.targets) > 1,
-                                    smart=smart, reentry=reentry)
+                                    smart=smart, reentry=reentry, hfr=hfr)
         if c is None:
             # Nothing to shoot tonight (e.g. broadband-only under a bright
             # moon): skip it rather than emit an empty container that loops
@@ -2872,7 +2888,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
                                     cooler_gate=gate,
                                     focus_drive=focus_drive,
                                     followed=False, fill=True,
-                                    smart=smart, reentry=reentry)
+                                    smart=smart, reentry=reentry, hfr=hfr)
         if c is not None:
             target_containers.append(c)
 

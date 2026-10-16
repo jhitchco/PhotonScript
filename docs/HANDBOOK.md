@@ -1623,6 +1623,29 @@ the step runs as before.
 Night test: `reentry_optimize=advise` first (decisions only), Pause +
 Resume mid-target and read `GET /api/reentry`; then af; then on.
 
+### AF on HFR rise: per-rig trigger settings (2026-10-16)
+
+Every RC16 light SmartExposure (every_block, smart and focus-drive alike)
+and the Piggy-600 `OSC_LIGHT_LOOP` carry NINA's "Autofocus after HFR
+increase" trigger (`NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger,
+NINA.Sequencer`, fields `Amount` % and `SampleSize` subs; type string from
+the known-good AARO sequence, a1f2886, and a NINA 3 saved sequence). The
+values come from `af_policy.hfr_trigger`: `rc16_af_hfr_increase_pct` /
+`piggyback_af_hfr_increase_pct` (15 %, min 5, max 100) and
+`rc16_af_hfr_sample_size` / `piggyback_af_hfr_sample_size` (10 subs, min
+3, max 50). Before, every_block and focus-drive hard-coded 10 % / 4 and
+only smart read the percent.
+
+With the re-entry gates: NINA measures the rise over the lights since its
+own last AF, so a fresh AF leaves it no history (no trigger until
+SampleSize subs exist), and a gate SKIP is not an AF, so the trigger keeps
+measuring from the AF the gate judged recent and good. The trigger sits
+only on the SmartExposure (never in a gate container, never on the target
+container, where it could fire before the start AF). Lint rule `af-hfr`
+(ERROR, WARN when hand built; RC16 lint and the companion lint, so the
+dispatch gate refuses it): every HFR trigger has Amount >= 5 and
+SampleSize >= 3.
+
 ### Daily app lifecycle: NINA x2 + PHD2 closed after dawn, relaunched before noon (PS-170)
 
 Why: PHD2 ran 2026-10-05 to 10-08 on one mount connection; after TheSky was

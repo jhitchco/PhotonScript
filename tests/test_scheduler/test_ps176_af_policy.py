@@ -297,7 +297,8 @@ def test_smart_m31_moves_by_offset_with_no_block_af(monkeypatch, no_moon,
                              "AutofocusAfterHFRIncreaseTrigger",
                              "AutofocusAfterTimeTrigger"}
         assert trig["AutofocusAfterTemperatureChangeTrigger"]["Amount"] == 2.0
-        assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 10.0
+        assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 15.0
+        assert trig["AutofocusAfterHFRIncreaseTrigger"]["SampleSize"] == 10
         assert trig["AutofocusAfterTimeTrigger"]["Amount"] == 60.0
     # the only AF left in the loop is OIII's (it paces the loop, PS-149)
     loop = _imaging(seq)
@@ -311,13 +312,14 @@ def test_smart_m31_moves_by_offset_with_no_block_af(monkeypatch, no_moon,
 def test_smart_trigger_thresholds_come_from_config(monkeypatch, no_moon,
                                                    live_model):
     seq = _gen([_m31(shorts=False)], monkeypatch, "smart",
-               PS_RC16_AF_TEMP_CHANGE_C=1.5, PS_RC16_AF_HFR_INCREASE_PCT=15,
-               PS_RC16_AF_INTERVAL_MIN=0)
+               PS_RC16_AF_TEMP_CHANGE_C=1.5, PS_RC16_AF_HFR_INCREASE_PCT=20,
+               PS_RC16_AF_HFR_SAMPLE_SIZE=6, PS_RC16_AF_INTERVAL_MIN=0)
     for s in _smart_exposures(_imaging(seq)):
         trig = {_short(t["$type"]): t for t in _vals(s, "Triggers")}
         assert "AutofocusAfterTimeTrigger" not in trig      # 0 = off
         assert trig["AutofocusAfterTemperatureChangeTrigger"]["Amount"] == 1.5
-        assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 15.0
+        assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 20.0
+        assert trig["AutofocusAfterHFRIncreaseTrigger"]["SampleSize"] == 6
 
 
 def test_smart_af_count_vs_every_block(monkeypatch, no_moon, live_model):
