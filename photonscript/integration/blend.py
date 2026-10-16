@@ -85,6 +85,15 @@ NB_DEFAULTS = {"ha_weight": 0.8, "oiii_weight": 0.6, "ha_boost": 0.15, "oiii_boo
 BLEND_DIR = "Blend"
 STAGES = ("linear", "final")
 LUM_ORDER = ("L", "R", "G", "B")
+# RC16 footprint mask and seam (2026-10-16 M31 seam): eroded by the inset,
+# feathered over ~18% of the footprint's short side (~135 OSC px, ~750 RC16
+# px), corners rounded by a blur of 20% of the feather; the RC16 is matched to
+# the OSC by a smooth cell-median residual map (cells of 6% of the short side).
+INSET_FRAC = 0.04
+FEATHER_FRAC = 0.18
+MASK_ROUND = 0.2
+BG_CELL_FRAC = 0.06
+CORE_HDR = {"lo": 0.55, "span": 0.35, "layers": 0}   # layers 0 = auto (near-white area)
 OSC_SCALE = 1.29      # piggyback_pixel_scale_arcsec (600 mm + IMX571 3.76 um)
 RC16_SCALE = 0.236    # pixel_scale_arcsec (RC16 3248 mm + AP26MC, plate solves)
 PIXEL_UM = 3.76
@@ -136,9 +145,13 @@ class Options:
     rc16: list[Path] | None = None
     stage: str = "linear"
     weight: float = 0.7
-    inset_frac: float = 0.02
-    feather_frac: float = 0.08
+    inset_frac: float = INSET_FRAC
+    feather_frac: float = FEATHER_FRAC
     lum_mask: bool = False
+    mask_round: float = MASK_ROUND    # mask corner rounding blur, fraction of the feather (0 = off)
+    bg_match: bool = True             # smooth background match of the RC16 to the OSC in the footprint
+    bg_cell_frac: float = BG_CELL_FRAC
+    core_hdr: bool = True             # HDRMultiscaleTransform on the stretched nucleus (linear stage)
     core: bool = True
     core_margin_frac: float = 0.05
     osc_scale: float = OSC_SCALE
@@ -559,6 +572,9 @@ def blend_config(o: Options, inp: Inputs, run_dir: Path) -> dict:
         "out": pjsr.fwd(Path(run_dir) / "out"), "name": safe_name(o.target), "stage": inp.stage, "mode": "l",
         "weight": float(o.weight), "inset_frac": float(o.inset_frac),
         "feather_frac": float(o.feather_frac), "lum_mask": bool(o.lum_mask),
+        "mask_round": float(o.mask_round), "bg_match": bool(o.bg_match),
+        "bg_cell_frac": float(o.bg_cell_frac),
+        "core_hdr": dict(CORE_HDR, mode="auto" if (o.core_hdr and inp.stage == "linear") else "off"),
         "core": bool(o.core), "core_margin_frac": float(o.core_margin_frac),
         "osc": {"path": pjsr.fwd(inp.osc), "scale": float(o.osc_scale), "pixel_um": PIXEL_UM,
                 "step_deg": 0.6, "rings": 2},
@@ -827,7 +843,8 @@ def build_manifest(o: Options, inp: Inputs, run_dir: Path, cfg: dict, pi: dict |
             "outputs": outputs(Path(run_dir) / "out")}
 
 
-OPTION_KEYS = ("stage", "mode", "weight", "inset_frac", "feather_frac", "lum_mask", "core",
+OPTION_KEYS = ("stage", "mode", "weight", "inset_frac", "feather_frac", "mask_round", "bg_match",
+               "bg_cell_frac", "core_hdr", "lum_mask", "core",
                "core_margin_frac", "rc16_bxt", "ha_weight", "oiii_weight", "ha_boost", "oiii_boost",
                "lum", "palette")
 
