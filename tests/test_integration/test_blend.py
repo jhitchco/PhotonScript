@@ -98,13 +98,67 @@ def test_render_non_ascii_path_is_escaped(staging):
 # ----------------------------------------------------------------- discovery
 
 def test_discover_linear_prefers_finished_runs(staging):
-    inp = bl.discover(bl.Options(target="M31", staging_root=staging))
+    inp = bl.discover(bl.Options(target="M31", staging_root=staging, rc16_input="finish"))
     # v2 is newer but has only the raw master: the finished v1 linear wins
     assert inp.osc_run.version == 1 and inp.osc.name == "M31_OSC_linear.xisf"
     assert not any("raw master" in n for n in inp.notes)
     assert inp.rc16_run.run_dir.name == "M31_rc16_1"           # M42 run (v3) is another target
     assert inp.rc16["L"].name == "M31_L_linear.xisf" and set(inp.rc16) == {"L", "R", "G", "B"}
     assert inp.lum_filters() == ["L"]
+    assert inp.rc16_input == "finish"
+    assert "RC16 input: finish linears (--rc16-input finish)" in inp.notes
+
+
+# 2026-10-16 M31 seam: the RC16 finish's GradientCorrection ate part of the
+# frame-filling galaxy halo, so a galaxy blend takes the raw integration masters
+
+def test_discover_galaxy_takes_the_raw_rc16_masters(staging):
+    inp = bl.discover(bl.Options(target="M31", staging_root=staging))
+    rc = staging / "M31_rc16_1" / "out" / "master"
+    assert inp.rc16 == {f: rc / f"master_{f}.xisf" for f in ("L", "R", "G", "B")}
+    assert inp.rc16_input == "raw" and "galaxy" in inp.rc16_input_why
+    assert any(n.startswith("RC16 input: raw integration masters (M31 is a galaxy") for n in inp.notes)
+    assert any("raw integration master_*.xisf" in n for n in inp.notes)
+    # the OSC side keeps its finish linear (gradient removed on the wide frame)
+    assert inp.osc.name == "M31_OSC_linear.xisf"
+
+
+def test_discover_galaxy_takes_the_hdr_l_master(tmp_path):
+    root = tmp_path / "S"
+    _run(root, "p", "piggyback", 1, ["OSC"], linear=["OSC"])
+    r = _run(root, "r", "rc16", 1, ["L", "L_hdr", "L_30s", "R", "G", "B"],
+             linear=["L", "R", "G", "B"])
+    inp = bl.discover(bl.Options(target="Andromeda Galaxy", staging_root=root))
+    assert inp.rc16["L"] == r / "out" / "master" / "master_L_hdr.xisf"
+    assert inp.rc16["R"] == r / "out" / "master" / "master_R.xisf"
+    assert any("(L from the HDR master)" in n for n in inp.notes)
+
+
+def test_discover_non_galaxy_keeps_the_finish_linears(tmp_path):
+    root = tmp_path / "S"
+    _run(root, "p", "piggyback", 1, ["OSC"], linear=["OSC"], campaign="Orion Nebula")
+    _run(root, "r", "rc16", 1, ["L"], linear=["L"], campaign="Orion Nebula")
+    inp = bl.discover(bl.Options(target="M42", staging_root=root))
+    assert inp.rc16["L"].name == "M31_L_linear.xisf" and inp.rc16_input == "finish"
+    assert any(n.startswith("RC16 input: finish linears (M42 is catalogued as") for n in inp.notes)
+    # an explicit raw, or an object type override, takes the master
+    inp = bl.discover(bl.Options(target="M42", staging_root=root, rc16_input="raw"))
+    assert inp.rc16["L"].name == "master_L.xisf"
+    inp = bl.discover(bl.Options(target="M42", staging_root=root, object_type="Galaxy"))
+    assert inp.rc16["L"].name == "master_L.xisf"
+    with pytest.raises(bl.BlendError, match="rc16-input"):
+        bl.discover(bl.Options(target="M42", staging_root=root, rc16_input="nope"))
+
+
+def test_discover_unknown_type_and_final_stage_unchanged(tmp_path, staging):
+    root = tmp_path / "S"
+    _run(root, "p", "piggyback", 1, ["OSC"], linear=["OSC"], campaign="Zz Nowhere 1")
+    _run(root, "r", "rc16", 1, ["L"], linear=["L"], campaign="Zz Nowhere 1")
+    inp = bl.discover(bl.Options(target="Zz Nowhere 1", staging_root=root))
+    assert inp.rc16["L"].name == "M31_L_linear.xisf"
+    assert any("has no catalog type" in n for n in inp.notes)
+    inp = bl.discover(bl.Options(target="M31", staging_root=staging, stage="final"))
+    assert inp.rc16["L"].name == "M31_L_final.xisf" and inp.rc16_input == "finish"
 
 
 def test_discover_final_stage_skips_runs_without_finals(staging):
@@ -231,6 +285,13 @@ def test_cli_dry_run(staging):
     res = json.loads(r.output[r.output.index("{"):])
     assert res["config"]["weight"] == 0.6 and res["config"]["core"] is False
     assert res["script_problems"] == [] and not (staging / "Blend").exists()
+    # (the CLI also reads integration_extra_roots from the real config)
+    assert res["rc16_input"] == "raw" and "/out/master/master_L" in res["config"]["rc16"][0]["path"]
+    r = CliRunner().invoke(cli.app, ["blend", "--target", "M31", "--staging-root", str(staging),
+                                     "--dry-run", "--json", "--rc16-input", "finish"])
+    assert r.exit_code == 0, r.output
+    res = json.loads(r.output[r.output.index("{"):])
+    assert res["rc16_input"] == "finish" and res["config"]["rc16"][0]["path"].endswith("_L_linear.xisf")
     r = CliRunner().invoke(cli.app, ["blend", "--target", "M42", "--staging-root", str(staging), "--dry-run"])
     assert r.exit_code == 1
 

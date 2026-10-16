@@ -371,8 +371,11 @@ def test_discovery_reads_every_root_and_the_stub_never_hides_v2(tmp_path):
     assert inp.rc16_run.run_dir == x.v1                        # 10-14: v1 only without C:
     inp = bl.discover(_bopts(x))
     assert inp.rc16_run.run_dir == x.v2 and inp.rc16_run.version == 2
-    assert inp.rc16["L"] == x.v2 / "out" / "final" / "M31_L_linear.xisf"
+    # 2026-10-16: M31 is a galaxy, so the raw HDR integration master goes in
+    assert inp.rc16["L"] == x.v2 / "out" / "master" / "master_L_hdr.xisf"
     assert any("L from the HDR master" in n for n in inp.notes)
+    fin = bl.discover(bl.Options(**{**_bopts(x).__dict__, "rc16_input": "finish"}))
+    assert fin.rc16["L"] == x.v2 / "out" / "final" / "M31_L_linear.xisf"
     # the newest OSC finish linear, here the Finish/<name>_vivid_v7 re-finish
     assert inp.osc_run.run_dir == x.v6
     assert inp.osc == x.fin7 / "out" / "final" / "Andromeda_Galaxy_OSC_linear.xisf"
