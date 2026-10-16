@@ -50,10 +50,12 @@ def test_default_refocus_triggers():
 
 def test_refocus_triggers_follow_config():
     trig = _light_loop_triggers(piggyback_af_temp_change_c=1.0,
-                                piggyback_af_hfr_increase_pct=15.0,
+                                piggyback_af_hfr_increase_pct=20.0,
+                                piggyback_af_hfr_sample_size=6,
                                 piggyback_af_interval_min=45)
     assert trig["AutofocusAfterTemperatureChangeTrigger"]["Amount"] == 1.0
-    assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 15.0
+    assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 20.0
+    assert trig["AutofocusAfterHFRIncreaseTrigger"]["SampleSize"] == 6
     assert trig["AutofocusAfterTimeTrigger"]["Amount"] == 45.0
 
 

@@ -151,6 +151,39 @@ def _check_af_runner_filter(seq: dict, r: LintResult) -> None:
                 + "; ".join(bad[:3]) + more)
 
 
+def _check_af_hfr(seq: dict, r: LintResult, hand_built: bool = False) -> None:
+    """Rule af-hfr: every AutofocusAfterHFRIncreaseTrigger has an Amount of
+    at least af_policy.HFR_MIN_PCT (%) and a SampleSize of at least
+    HFR_MIN_SAMPLES. NINA measures the rise over the lights since its last
+    AF, so a tiny sample or threshold refocuses on seeing noise a couple of
+    subs after every AF (a fresh one or the one a re-entry gate SKIP relied
+    on) and undoes the gate's saved AFs. ERROR for PhotonScript's own
+    sequences (the generator clamps to these floors), WARN when hand built.
+    A trigger with neither field (a ninaAPI tree) is not checked."""
+    from photonscript.scheduler.af_policy import HFR_MIN_PCT, HFR_MIN_SAMPLES
+    bad: list[str] = []
+    for d in _walk_dicts(seq):
+        if "AutofocusAfterHFRIncreaseTrigger" not in str(d.get("$type") or ""):
+            continue
+        amt, n = d.get("Amount"), d.get("SampleSize")
+        if amt is None and n is None:
+            continue
+        try:
+            amt_ok = amt is not None and float(amt) >= HFR_MIN_PCT
+            n_ok = n is not None and int(n) >= HFR_MIN_SAMPLES
+        except (TypeError, ValueError):
+            amt_ok = n_ok = False
+        if not (amt_ok and n_ok):
+            bad.append(f"Amount {amt!r} / SampleSize {n!r}")
+    if bad:
+        more = f" (+{len(bad) - 3} more)" if len(bad) > 3 else ""
+        msg = (f"{len(bad)} AF after HFR increase trigger(s) below the floor "
+               f"(Amount >= {HFR_MIN_PCT:g} %, SampleSize >= "
+               f"{HFR_MIN_SAMPLES}): it would refocus on noise a few subs "
+               "after every AF: " + "; ".join(sorted(set(bad))[:3]) + more)
+        (r.warn if hand_built else r.error)("af-hfr", msg)
+
+
 _REENTRY_GUARDS = {"af": "Autofocus.RunAutofocus",
                    "slew": "Telescope.SlewScopeToRaDec",
                    "center": "Platesolving.Center"}
@@ -1306,6 +1339,7 @@ def lint(seq: dict, guided: bool | None = None,
     _check_focus_moves(seq, r)
     _check_offset_blocks(seq, r)    # PS-176
     _check_af_runner_filter(seq, r)  # PS-176
+    _check_af_hfr(seq, r, hand_built)   # HFR-rise AF trigger floors
     _check_reentry_gates(seq, r)     # 2026-10-15
     _check_parent_links(seq, r)
     _check_light_loop_guards(seq, r)

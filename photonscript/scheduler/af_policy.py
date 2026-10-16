@@ -42,6 +42,42 @@ MIN_OFFSET_AFS = 3
 FILTERS = ("L", "R", "G", "B", "Ha", "OIII", "SII")
 NARROWBAND = ("Ha", "OIII", "SII")
 
+# NINA's "Autofocus after HFR increase" trigger
+# (AutofocusAfterHFRIncreaseTrigger: Amount %, SampleSize subs), on every
+# RC16 light block (any policy) and the Piggy-600 OSC light loop. NINA measures the rise over the lights
+# taken since its own last AF, so right after a fresh AF it has no history
+# and cannot fire until SampleSize subs exist; a re-entry gate SKIP is not
+# an AF, so the trigger keeps baselining on the last real AF (the one the
+# gate judged recent and good). The floors keep a config typo from turning
+# it into an AF after every couple of subs, which would undo the gate's
+# skipped AFs (lint rule af-hfr checks the same floors).
+HFR_DEFAULT_PCT = 10.0
+HFR_DEFAULT_SAMPLES = 4
+HFR_MIN_PCT = 5.0
+HFR_MAX_PCT = 100.0
+HFR_MIN_SAMPLES = 3
+HFR_MAX_SAMPLES = 50
+_HFR_PREFIX = {"rc16": "rc16", "piggyback": "piggyback"}
+
+
+def hfr_trigger(cfg, rig: str = "rc16") -> dict:
+    """{"pct", "samples"} for a rig's HFR-rise AF trigger, from
+    <rig>_af_hfr_increase_pct (default 10) and <rig>_af_hfr_sample_size
+    (default 4), clamped to [HFR_MIN_PCT, HFR_MAX_PCT] and
+    [HFR_MIN_SAMPLES, HFR_MAX_SAMPLES]. rig: "rc16" | "piggyback"."""
+    pre = _HFR_PREFIX.get(str(rig), "rc16")
+
+    def _num(key, default):
+        try:
+            v = float(getattr(cfg, key, default))
+        except (TypeError, ValueError):
+            return float(default)
+        return float(default) if v != v else v   # NaN -> default
+    pct = _num(f"{pre}_af_hfr_increase_pct", HFR_DEFAULT_PCT)
+    n = int(round(_num(f"{pre}_af_hfr_sample_size", HFR_DEFAULT_SAMPLES)))
+    return {"pct": max(HFR_MIN_PCT, min(HFR_MAX_PCT, pct)),
+            "samples": max(HFR_MIN_SAMPLES, min(HFR_MAX_SAMPLES, n))}
+
 
 def policy(cfg) -> str:
     """The configured policy; anything unknown is every_block (safe)."""
@@ -101,7 +137,7 @@ def smart_spec(cfg, af_filter, model: dict | None = None,
     relative to the AF filter's best focus, so it needs one). force: build
     it whatever the policy (the efficiency preview's smart column).
     {ref, offsets {filter: steps}, measured {filters}, table, temp_c,
-    hfr_pct, interval_min}."""
+    hfr_pct, hfr_n, interval_min}."""
     if policy(cfg) != SMART and not force:
         return None
     if af_filter is None:
@@ -127,7 +163,8 @@ def smart_spec(cfg, af_filter, model: dict | None = None,
             "af_blocks": {f for f in NARROWBAND if f not in measured},
             "table": table,
             "temp_c": max(0.1, _f("rc16_af_temp_change_c", 2.0)),
-            "hfr_pct": max(1.0, _f("rc16_af_hfr_increase_pct", 10.0)),
+            "hfr_pct": hfr_trigger(cfg, "rc16")["pct"],
+            "hfr_n": hfr_trigger(cfg, "rc16")["samples"],
             "interval_min": max(0.0, _f("rc16_af_interval_min", 60.0))}
 
 
@@ -151,5 +188,6 @@ def describe(spec: dict | None) -> str:
              if spec["interval_min"] > 0 else "")
     return (f"AF policy smart (PS-176): AF on {spec['ref']} at target start, "
             f"after {spec['temp_c']:g} C, an HFR rise of "
-            f"{spec['hfr_pct']:g}%{timed}; filter offsets from "
+            f"{spec['hfr_pct']:g}% over {spec.get('hfr_n', HFR_DEFAULT_SAMPLES)}"
+            f" subs{timed}; filter offsets from "
             f"{spec['ref']}: " + "; ".join(rows))

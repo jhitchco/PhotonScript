@@ -1052,8 +1052,12 @@ class PhotonScriptConfig(BaseSettings):
     rc16_af_policy: str = "every_block"
     rc16_af_temp_change_c: float = 2.0   # smart: AF after this focuser
                                  # temperature change since the last AF (C)
-    rc16_af_hfr_increase_pct: float = 10.0  # smart: AF after the HFR rises
-                                 # this much over the last AF's (%)
+    rc16_af_hfr_increase_pct: float = 10.0  # every policy: NINA's AF after
+                                 # HFR increase trigger on each light block
+                                 # fires on this rise since its last AF (%,
+                                 # min 5; af_policy.hfr_trigger)
+    rc16_af_hfr_sample_size: int = 4  # ... measured over this many subs
+                                 # (min 3: never within a few subs of an AF)
     rc16_af_interval_min: float = 60.0  # smart: AF at least this often
                                  # (min; 0 = no timed AF)
     # Re-entry gates (2026-10-15, scheduler/reentry.py): ExternalScript
@@ -1522,6 +1526,8 @@ class PhotonScriptConfig(BaseSettings):
                                              # temperature change (C)
     piggyback_af_hfr_increase_pct: float = 10.0  # PS-68: OSC refocus when HFR rises
                                                  # this % over the post-AF baseline
+    piggyback_af_hfr_sample_size: int = 4  # ... measured over this many OSC subs
+                                            # (min 3)
     piggyback_af_interval_min: int = 60  # PS-68: OSC periodic refocus (min). NINA #2
                                          # can't see the RC16's meridian flip or a bad
                                          # AF (HFR trigger baselines on it), so this is
