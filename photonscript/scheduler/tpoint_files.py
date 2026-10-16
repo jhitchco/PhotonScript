@@ -522,6 +522,10 @@ def _polar_terms(active: dict | None, base: dict | None):
     return out, ", ".join(src), me_model
 
 
+def _r2(v):
+    return f"{round(v, 2):g}" if isinstance(v, (int, float)) else "?"
+
+
 def stats(config, listing: dict | None = None) -> dict:
     """The TPoint numbers (PS-184): the base model (newest full run) with
     the data file of the same run (else the newest data file of a non-recal
@@ -637,7 +641,8 @@ def stats(config, listing: dict | None = None) -> dict:
                     own = {"points": d["points"], "file": f["rel"]}
                     break
                 if header_only(text):
-                    own = {"points": 0, "file": f["rel"]}
+                    own = {"points": 0, "file": f["rel"], "path": f["path"],
+                           "mtime": f["mtime"]}
                     break
             out["active_run_points"] = (own or {}).get("points")
             out["active_run_data_file"] = (own or {}).get("file")
@@ -645,11 +650,56 @@ def stats(config, listing: dict | None = None) -> dict:
             out["active_fitted_terms"] = active.get("fitted_terms")
             out["active_nonzero_terms"] = active.get("nonzero_terms")
             out["active_sky_rms_arcsec"] = active.get("sky_rms_arcsec")
+        # 2026-10-16: an empty active model (its run's in.dat header only, or
+        # a "T 0" model with no data file of its own) is reported as it is:
+        # 0 points, no RMS, no polar. The newest non-empty data / model of
+        # another run is kept apart as last_saved_run, never as current.
+        empty = bool(active) and (
+            (own is not None and own["points"] == 0)
+            or (own is None and active.get("t_obs") == 0))
+        out["empty_model"] = empty
+        if empty:
+            saved = (data if data and (own is None or data["file"] != own["file"])
+                     else None)
+            full = next((m for m in models if m.get("t_obs")), None)
+            last = None
+            if saved or full:
+                last = {"data_file": (saved or {}).get("file"),
+                        "points": (saved or {}).get("points"),
+                        "data_date": ((saved or {}).get("date")
+                                      or _date((saved or {}).get("mtime"))),
+                        "model_file": (full or {}).get("file"),
+                        "model_date": _date((full or {}).get("mtime")),
+                        "model_points": (full or {}).get("observations"),
+                        "sky_rms_arcsec": (full or {}).get("sky_rms_arcsec")}
+            out["last_saved_run"] = last
+            out.update(points=0, data_file=(own or {}).get("file"),
+                       data_path=(own or {}).get("path"),
+                       data_date=_date((own or {}).get("mtime") or active["mtime"]),
+                       sky_rms_arcsec=None, popn_sd_arcsec=None,
+                       popn_sd_source=None, model_points=0)
+            note = ("the active TPoint model is empty: "
+                    + (f"{own['file']} is header only (0 samples)" if own
+                       else f"{active['file']} has T 0 and no data file")
+                    + f", model {active['file']}")
+            if last:
+                note += ("; last saved run (not the current model): "
+                         + ", ".join(x for x in (
+                             last["data_file"] and
+                             f"{last['data_file']} ({last['points']} points, "
+                             f"{last['data_date'] or '?'})",
+                             last["model_file"] and
+                             f"{last['model_file']} ({last['model_points']} in the "
+                             f"fit, sky RMS {_r2(last['sky_rms_arcsec'])}\", "
+                             f"{last['model_date'] or '?'})") if x))
+            out["note"] = note
         out["active_model_file"] = active["file"] if active else None
         # PS-120: when the active model was written (UTC ISO), the cutoff for
         # the audit's first slews (slews before it say nothing about it)
         out["active_model_mtime"] = active["mtime"] if active else None
-        if main:
+        if main and empty:
+            out["polar"] = None    # zero ME / MA of a cleared model say nothing
+        elif main:
             pt, psrc, me_model = _polar_terms(active, base)
             lat = float(getattr(config, "observatory_lat", 31.9))
             refr = model_refraction(lat, (me_model or active or {}).get("refraction"))
@@ -768,14 +818,15 @@ def format_stats(st: dict) -> str:
         fx = "= " if (t.get(n) or {}).get("fixed") else " "
         return f"{fx}{v:+.1f}\"" if v is not None else " -"
     def num(k):
-        v = st.get(k)
-        return f"{round(v, 2):g}" if isinstance(v, (int, float)) else "?"
+        return _r2(st.get(k))
     mp = st.get("model_points")
     psd = (f", popn SD {num('popn_sd_arcsec')}\""
            + (" (derived)" if st.get("popn_sd_source") == "derived" else "")
            if st.get("popn_sd_arcsec") is not None else "")
     kind = ("recal run (no base model file found)"
             if st.get("model_kind") == "recal" else "base model (newest full run)")
+    if st.get("empty_model"):
+        kind = "model EMPTY (cleared, 0 samples)"
     lines = [f"TPoint {kind}, from TPoint's files (read only): "
              f"{st.get('points') if st.get('points') is not None else '?'} points"
              + (f" ({mp} in the fit)" if mp is not None and mp != st.get("points") else "")
@@ -811,8 +862,22 @@ def format_stats(st: dict) -> str:
         lines.append(f"  active model (ProTrack uses it): "
                      f"{'the recal run' if st['active_model'] == 'recal' else 'the base model'}"
                      f" ({st.get('active_model_file')}; newest fitted model file)")
+    last = st.get("last_saved_run")
+    if st.get("empty_model"):
+        lines.append(f"  the active model is EMPTY and is the current model: data "
+                     f"{st.get('data_file') or '-'} has 0 samples")
+        if last:
+            lines.append(
+                "  last saved run (NOT the current model): "
+                + (f"data {last['data_file']} ({last['points']} points, "
+                   f"{last.get('data_date') or '?'})" if last.get("data_file") else "data -")
+                + (f", model {last['model_file']} ({last.get('model_points')} in the fit, "
+                   f"sky RMS {_r2(last.get('sky_rms_arcsec'))}\", "
+                   f"{last.get('model_date') or '?'})" if last.get("model_file") else ""))
     pol = st.get("polar")
-    if pol:
+    if st.get("empty_model"):
+        lines.append("  polar alignment: none (the active model is empty)")
+    elif pol:
         lines.append(f"  polar alignment: {pol['total_arcmin']}' from the "
                      f"{pol.get('target', 'pole')} "
                      f"({'OK' if pol['ok'] else 'over'} the {pol['max_arcmin']:g}' limit; "
