@@ -1335,13 +1335,13 @@ class PhotonScriptConfig(BaseSettings):
     # Safety dropout grace (2026-10-16): an UNREADABLE safety read on the
     # armer (ninaAPI error / timeout, monitor not Connected) is a dropout,
     # never acted on inside this grace (and before 2 unreadable reads in a
-    # row). Past it: safety_dropout_action "unsafe" = the normal unsafe path
-    # (pause, PS-77 stop / park, operator-pause park), "alert" = one push
-    # only. One push either way; start / end logged (run event kind
+    # row). Past it: safety_dropout_action "alert" (default) = one push
+    # only, nothing stops or parks; "unsafe" (opt-in) = the normal unsafe
+    # path (pause, PS-77 stop / park, operator-pause park). One push either way; start / end logged (run event kind
     # safety_dropout). A REPORTED unsafe (Connected, IsSafe false) is acted
     # on at once, never graced.
     safety_dropout_grace_s: int = 60
-    safety_dropout_action: str = "unsafe"   # unsafe | alert
+    safety_dropout_action: str = "alert"   # alert | unsafe (opt-in)
     # PS-1 cross-check, observe only: when NINA #1 first reads unsafe in an
     # episode, read NINA #2's safety monitor once (same AARO device, its own
     # driver). NINA #2 safe while NINA #1 is unsafe = suspect (driver or

@@ -2,8 +2,9 @@
 
 An UNREADABLE safety read (ninaAPI error / timeout, monitor not Connected) is
 a dropout: inside safety_dropout_grace_s (and before 2 unreadable reads in a
-row) nothing reacts; past it the normal unsafe path runs (pause, PS-77 stop /
-park, operator-pause park) with one push. A REPORTED unsafe (Connected,
+row) nothing reacts; past it one push, and only with the opt-in
+safety_dropout_action "unsafe" the normal unsafe path runs (pause, PS-77
+stop / park, operator-pause park). The default "alert" never stops or parks. A REPORTED unsafe (Connected,
 IsSafe false) still acts on the first tick, grace or not.
 """
 from datetime import datetime, timedelta
@@ -119,7 +120,7 @@ async def test_real_unsafe_still_stops_imaging_after_unsafe_stop_grace(tmp_path,
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["error", "disconnected"])
 async def test_dropout_within_grace_does_not_pause_or_park(tmp_path, monkeypatch, kind):
-    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch)
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, safety_dropout_action="unsafe")
     env["safety"] = kind
     await _ticks(a, clock, [0, 30])                # 30 s < 60 s grace
     assert a.state == "RUNNING"
@@ -147,7 +148,7 @@ async def test_one_slow_read_alone_never_counts(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_dropout_within_grace_does_not_park_an_operator_pause(tmp_path,
                                                                     monkeypatch):
-    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, state=PAUSE_STATE,
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, safety_dropout_action="unsafe", state=PAUSE_STATE,
                                          unsafe_stop_grace_s=0)
     a.pause_info = {"phase": "paused", "parked": False}
     env["safety"] = "error"
@@ -155,11 +156,11 @@ async def test_dropout_within_grace_does_not_park_an_operator_pause(tmp_path,
     assert "mount_park" not in calls and not a.pause_info.get("parked")
 
 
-# --- past the grace it is the unsafe path ----------------------------------------
+# --- past the grace: the unsafe path when opted in ----------------------------------------
 
 @pytest.mark.asyncio
 async def test_dropout_beyond_grace_pauses_then_parks(tmp_path, monkeypatch):
-    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch)
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, safety_dropout_action="unsafe")
     env["safety"] = "error"
     await _ticks(a, clock, [0, 30])
     assert a.state == "RUNNING"
@@ -183,12 +184,38 @@ async def test_dropout_beyond_grace_pauses_then_parks(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_dropout_beyond_grace_parks_an_operator_pause(tmp_path, monkeypatch):
-    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, state=PAUSE_STATE,
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, safety_dropout_action="unsafe", state=PAUSE_STATE,
                                          unsafe_stop_grace_s=0)
     a.pause_info = {"phase": "paused", "parked": False}
     env["safety"] = "error"
     await _ticks(a, clock, [0, 30, 60])
     assert "mount_park" in calls and a.pause_info["parked"] is True
+
+
+def test_default_dropout_action_is_alert():
+    assert PhotonScriptConfig().safety_dropout_action == "alert"
+
+
+@pytest.mark.asyncio
+async def test_default_dropout_beyond_grace_never_stops_or_parks(tmp_path, monkeypatch):
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch)
+    env["safety"] = "error"
+    await _ticks(a, clock, [0, 30, 60, 90, 150, 185, 300])
+    assert a.state == "RUNNING"
+    assert not {"sequence_stop", "guider_stop", "mount_park"} & set(calls)
+    over = [n for n in notes if n[0] == "PhotonScript safety"]
+    assert len(over) == 1 and over[0][2] == 1 and "alert only" in over[0][1]
+
+
+@pytest.mark.asyncio
+async def test_default_dropout_beyond_grace_does_not_park_an_operator_pause(
+        tmp_path, monkeypatch):
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, state=PAUSE_STATE,
+                                         unsafe_stop_grace_s=0)
+    a.pause_info = {"phase": "paused", "parked": False}
+    env["safety"] = "error"
+    await _ticks(a, clock, [0, 30, 60, 90])
+    assert "mount_park" not in calls and not a.pause_info.get("parked")
 
 
 @pytest.mark.asyncio
@@ -204,7 +231,7 @@ async def test_dropout_action_alert_pushes_but_does_not_pause(tmp_path, monkeypa
 
 @pytest.mark.asyncio
 async def test_zero_grace_counts_the_first_unreadable_read(tmp_path, monkeypatch):
-    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch,
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, safety_dropout_action="unsafe",
                                          safety_dropout_grace_s=0)
     env["safety"] = "error"
     await _ticks(a, clock, [0])
@@ -224,7 +251,7 @@ async def test_unreadable_reads_far_apart_are_separate_dropouts(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_watch_mode_dropout_within_grace_does_not_alert(tmp_path, monkeypatch):
-    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, state="WATCHING")
+    a, calls, notes, env, clock = _armer(tmp_path, monkeypatch, state="WATCHING", safety_dropout_action="unsafe")
     a.watch = {}
 
     async def read_state():

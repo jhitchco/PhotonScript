@@ -168,8 +168,8 @@ SAFETY_NONE_ALERT_TICKS = 6         # ~3 min of an unreadable safety monitor -> 
 # or timeout, monitor reported not Connected) is a dropout. Inside
 # safety_dropout_grace_s it changes nothing (as before: unreadable never
 # paused); past it, with at least SAFETY_DROPOUT_MIN_READS unreadable reads
-# in a row, safety_dropout_action "unsafe" treats it as UNSAFE (the normal
-# unsafe path) and one push says so. A real reported unsafe (Connected and
+# in a row, one push says so, and only with safety_dropout_action "unsafe"
+# (opt-in; default "alert") is it treated as UNSAFE (the normal unsafe path). A real reported unsafe (Connected and
 # IsSafe false) never waits for this. Unreadable reads further apart than
 # SAFETY_DROPOUT_GAP_S start a new episode (no carry-over between nights).
 SAFETY_DROPOUT_MIN_READS = 2
@@ -1738,11 +1738,13 @@ class Armer:
 
     def _dropout_acts(self) -> bool:
         """True when a dropout past the grace counts as unsafe
-        (safety_dropout_action "unsafe", the default); "alert" = push only,
-        the reading stays unknown (the armer before the grace existed)."""
-        act = str(getattr(self.config, "safety_dropout_action", "unsafe")
-                  or "unsafe").strip().lower()
-        return act != "alert"
+        (safety_dropout_action "unsafe", an opt-in). "alert" (the default,
+        and any other value) = push only, the reading stays unknown (the
+        armer before the grace existed: never stops / parks on a blind
+        monitor)."""
+        act = str(getattr(self.config, "safety_dropout_action", "alert")
+                  or "alert").strip().lower()
+        return act == "unsafe"
 
     def _dropout_event(self, value: str, detail: str, now: datetime,
                        **extra) -> None:

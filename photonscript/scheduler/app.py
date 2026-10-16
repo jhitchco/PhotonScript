@@ -1123,7 +1123,7 @@ _CONFIG_FIELDS = [
     ("unsafe_stop_enabled", "PS_UNSAFE_STOP_ENABLED", "Armer stops NINA if it is still imaging while unsafe (PS-77)", "Nanny / Alerts", "bool", False, False),
     ("unsafe_stop_grace_s", "PS_UNSAFE_STOP_GRACE_S", "Unsafe this long with SAFE_LOOP still running before the armer stops NINA (s)", "Nanny / Alerts", "int", False, False),
     ("safety_dropout_grace_s", "PS_SAFETY_DROPOUT_GRACE_S", "Safety dropout grace: an UNREADABLE safety monitor (API error / timeout, not connected) is ignored this long (and for at least 2 reads in a row) before it counts; a reported unsafe is never delayed (s)", "Nanny / Alerts", "int", False, False),
-    ("safety_dropout_action", "PS_SAFETY_DROPOUT_ACTION", "Safety dropout past the grace: unsafe (the normal unsafe pause / park path, one push) | alert (one push only)", "Nanny / Alerts", "str", False, False),
+    ("safety_dropout_action", "PS_SAFETY_DROPOUT_ACTION", "Safety dropout past the grace: alert (default: one push only, nothing stops or parks) | unsafe (opt-in: the normal unsafe pause / park path, one push)", "Nanny / Alerts", "str", False, False),
     ("safety_crosscheck", "PS_SAFETY_CROSSCHECK", "Safety cross-check (PS-1): on NINA #1 reading unsafe, read NINA #2 once; off | log (events file only) | alert (also one push a night when only NINA #1 reads unsafe). Never changes park / resume", "Nanny / Alerts", "str", False, False),
     ("arm_preconfig_lead_min", "PS_ARM_PRECONFIG_LEAD_MIN", "Pre-config lead before dusk (min)", "Nanny / Alerts", "int", False, False),
     ("cooler_stuck_minutes", "PS_COOLER_STUCK_MINUTES", "Cooler nanny: alert if still warm this many min into the window", "Imaging", "int", False, False),

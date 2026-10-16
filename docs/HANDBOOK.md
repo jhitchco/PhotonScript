@@ -1527,12 +1527,13 @@ SafetyMonitorCondition.
   `safety_dropout_grace_s` (60) and before 2 unreadable reads in a row it
   changes nothing: no pause, no park, no push.
 - Past the grace: one priority push ("UNREADABLE for N s, past the 60 s
-  dropout grace"), event `over_grace`, and with `safety_dropout_action`
-  `unsafe` (default) the read counts as UNSAFE: RUNNING pauses (the pause
-  push says it is a dropout), PS-77 stops / parks if SAFE_LOOP is still
-  running `unsafe_stop_grace_s` later, an operator pause parks, a watched
-  night pauses (alert only). `alert` = the push only, the read stays
-  unknown (the old behaviour). The watchdog's own ~3 min push is not
+  dropout grace"), event `over_grace`. With `safety_dropout_action`
+  `alert` (the default) that push is all: the read stays unknown and
+  nothing pauses, stops or parks (the old behaviour). `unsafe` is an
+  opt-in: the read then counts as UNSAFE: RUNNING pauses (the pause push
+  says it is a dropout), PS-77 stops / parks if SAFE_LOOP is still running
+  `unsafe_stop_grace_s` later (and re-dispatches once safe), an operator
+  pause parks, a watched night pauses (alert only). The watchdog's own ~3 min push is not
   repeated; its "readable again" push closes the episode.
 - The first readable read ends the dropout (event `end`, with its length,
   reads and whether it outlasted the grace). Unreadable reads more than
@@ -1548,8 +1549,9 @@ SafetyMonitorCondition.
 Night test needed: an armed night with a deliberate short safety dropout
 (disconnect the safety monitor in NINA #1 for under 60 s: no pause, "START" /
 "END" lines in the scheduler log and the events file) and a long one (over
-60 s with the roof safe: one push, PAUSED_UNSAFE, PS-77 check, resume once it
-reads safe again). A real roof closure the same week to confirm the
+60 s with the roof safe: one push, the armer stays RUNNING with the default
+`alert`; only if `unsafe` is opted in: PAUSED_UNSAFE, PS-77 check, resume
+once it reads safe again). A real roof closure the same week to confirm the
 immediate pause is unchanged.
 
 ### Frozen sensor watch: a reading that stopped moving (2026-10-16)
