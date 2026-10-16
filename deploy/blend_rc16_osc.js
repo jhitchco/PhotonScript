@@ -17,7 +17,13 @@
 //         feathered (distance transform + smoothstep) so the seam is soft;
 //         optional luminance mask (bright structure only)
 //      -> linear fit of the RC16 luminance to the OSC CIE Y inside the
-//         footprint (background and scale match)
+//         footprint (scale match), then a smooth background match: the
+//         cell-median residual map over the footprint is added back, so the
+//         RC16 equals the OSC at large scales and the footprint edge has no
+//         step (CONFIG.bg_match, bg_cell_frac)
+//      -> the mask: valid registered pixels only (above a floor), eroded
+//         by the inset, feathered (feather_frac) and blurred so the
+//         corners are round (mask_round)
 //      -> CIE Lab: L = L_osc * (1 - k) + L_rc16 * k, k = WEIGHT * mask,
 //         a and b from the OSC (ChannelExtraction / ChannelCombination)
 //      -> <Name>_blend_linear.xisf, stretched <Name>_blend.{xisf,tif,jpg},
@@ -32,8 +38,10 @@
 //
 // STAGE "linear" (default): inputs are linear masters, the fit runs against
 // CIE Y and the RC16 goes through the CIE L* curve before the blend; outputs
-// get a linked stretch. STAGE "final": inputs are already stretched, the fit
-// runs against CIE L directly and nothing is stretched again.
+// get a linked stretch, then the core HDR (HDRMultiscaleTransform blended in
+// above a lightness, CONFIG.core_hdr) so the nucleus is not flat white.
+// STAGE "final": inputs are already stretched, the fit runs against CIE L
+// directly and nothing is stretched again.
 //
 // Every optional step is guarded: a missing process or a failure is logged
 // and skipped (or falls back), never fatal unless no registration worked.
@@ -467,21 +475,64 @@ function linearFit(x, y, use, n) {
    return { a: a, b: b, rms: rms, n: keep.length };
 }
 
+// Separable box blur (3 passes ~ Gaussian of sigma px) of a w x h array, in place.
+function boxBlur3(a, w, h, sigma) {
+   var r = Math.round((Math.sqrt(4 * sigma * sigma + 1) - 1) / 2);
+   if (r < 1) return;
+   var tmp = new Float32Array(Math.max(w, h)), pass, x, y, s, n, lo, hi, k;
+   for (pass = 0; pass < 3; ++pass) {
+      for (y = 0; y < h; ++y) {
+         var row = y * w;
+         for (x = 0; x < w; ++x) tmp[x] = a[row + x];
+         s = 0; n = 0;
+         for (k = 0; k <= Math.min(r, w - 1); ++k) { s += tmp[k]; ++n; }
+         for (x = 0; x < w; ++x) {
+            a[row + x] = s / n;
+            hi = x + r + 1; lo = x - r;
+            if (hi < w) { s += tmp[hi]; ++n; }
+            if (lo >= 0) { s -= tmp[lo]; --n; }
+         }
+      }
+      for (x = 0; x < w; ++x) {
+         for (y = 0; y < h; ++y) tmp[y] = a[y * w + x];
+         s = 0; n = 0;
+         for (k = 0; k <= Math.min(r, h - 1); ++k) { s += tmp[k]; ++n; }
+         for (y = 0; y < h; ++y) {
+            a[y * w + x] = s / n;
+            hi = y + r + 1; lo = y - r;
+            if (hi < h) { s += tmp[hi]; ++n; }
+            if (lo >= 0) { s -= tmp[lo]; --n; }
+         }
+      }
+   }
+}
+
 // Feathered footprint mask from a registered image (0 outside the RC16
-// field). Inside the bounding box: chamfer distance to the nearest outside
-// pixel, mask = smoothstep((d - inset) / feather). Returns { m, box }.
+// field). Valid pixels: registered values above a floor (10% of the 5th
+// percentile, so zero / black registration borders and interpolated edge
+// pixels count as outside). Inside the bounding box: chamfer distance d to
+// the nearest outside pixel, mask = smoothstep((d - inset - 2 sigma) /
+// feather), then a Gaussian-like blur (sigma = mask_round * feather) that
+// rounds the corners of the rectangle, and 0 again wherever d <= inset
+// (eroded). Returns { m, box, inset, feather }.
 function footprintMask(reg, W, H) {
    var x0 = W, y0 = H, x1 = -1, y1 = -1, x, y, i;
    for (y = 0; y < H; ++y)
       for (x = 0; x < W; ++x)
          if (reg[y * W + x] > 0) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
    if (x1 < 0) throw new Error("registered RC16 image is empty");
+   var samp = [], sstep = Math.max(1, Math.floor((x1 - x0 + 1) * (y1 - y0 + 1) / 200000));
+   for (i = 0, y = y0; y <= y1; ++y)
+      for (x = x0; x <= x1; ++x, ++i)
+         if (i % sstep === 0 && reg[y * W + x] > 0) samp.push(reg[y * W + x]);
+   samp.sort(function (p, q) { return p - q; });
+   var floor = samp.length ? 0.1 * samp[Math.floor(0.05 * samp.length)] : 0;
    var bw = x1 - x0 + 3, bh = y1 - y0 + 3;   // one outside pixel on each side
    var d = new Float32Array(bw * bh), BIG = 1e9;
    for (y = 0; y < bh; ++y)
       for (x = 0; x < bw; ++x) {
          var gx = x0 - 1 + x, gy = y0 - 1 + y;
-         var inside = gx >= 0 && gy >= 0 && gx < W && gy < H && reg[gy * W + gx] > 0;
+         var inside = gx >= 0 && gy >= 0 && gx < W && gy < H && reg[gy * W + gx] > floor;
          d[y * bw + x] = inside ? BIG : 0;
       }
    for (y = 0; y < bh; ++y)
@@ -506,21 +557,118 @@ function footprintMask(reg, W, H) {
       }
    var shortSide = Math.min(x1 - x0 + 1, y1 - y0 + 1);
    var inset = Math.max(1, CONFIG.inset_frac * shortSide), feather = Math.max(1, CONFIG.feather_frac * shortSide);
+   var roundFrac = (CONFIG.mask_round === undefined || CONFIG.mask_round === null) ? 0.2 : +CONFIG.mask_round;
+   var sigma = Math.max(0, roundFrac * feather);
+   var mb = new Float32Array(bw * bh);
+   for (i = 0; i < bw * bh; ++i) {
+      var t = (d[i] - inset - 2 * sigma) / feather;
+      if (t <= 0) continue;
+      if (t > 1) t = 1;
+      mb[i] = t * t * (3 - 2 * t);
+   }
+   if (sigma >= 1) {
+      try { boxBlur3(mb, bw, bh, sigma); }
+      catch (eb) { log("mask corner rounding skipped (" + eb + ")"); sigma = 0; }
+   }
    var m = new Float32Array(W * H);
    for (y = 0; y < bh; ++y)
       for (x = 0; x < bw; ++x) {
          var gx2 = x0 - 1 + x, gy2 = y0 - 1 + y;
          if (gx2 < 0 || gy2 < 0 || gx2 >= W || gy2 >= H) continue;
-         var t = (d[y * bw + x] - inset) / feather;
-         if (t <= 0) continue;
-         if (t > 1) t = 1;
-         m[gy2 * W + gx2] = t * t * (3 - 2 * t);
+         var j = y * bw + x;
+         if (d[j] <= inset || mb[j] <= 1e-6) continue;
+         m[gy2 * W + gx2] = mb[j] > 1 ? 1 : mb[j];
       }
-   log("footprint: " + (x1 - x0 + 1) + "x" + (y1 - y0 + 1) + " px at (" + x0 + "," + y0 + "), inset " +
-       inset.toFixed(1) + " px, feather " + feather.toFixed(1) + " px");
-   step("mask", "footprint (chamfer distance + smoothstep)", "ran",
-        { box: [x0, y0, x1, y1], inset_px: +inset.toFixed(1), feather_px: +feather.toFixed(1) });
-   return { m: m, box: [x0, y0, x1 + 1, y1 + 1] };
+   log("footprint: " + (x1 - x0 + 1) + "x" + (y1 - y0 + 1) + " px at (" + x0 + "," + y0 + "), floor " +
+       floor.toExponential(2) + ", inset " + inset.toFixed(1) + " px, feather " + feather.toFixed(1) +
+       " px, corner rounding sigma " + sigma.toFixed(1) + " px");
+   step("mask", "footprint (valid floor + chamfer distance + smoothstep + blur)", "ran",
+        { box: [x0, y0, x1, y1], floor: floor, inset_px: +inset.toFixed(1), feather_px: +feather.toFixed(1),
+          round_sigma_px: +sigma.toFixed(1) });
+   return { m: m, box: [x0, y0, x1 + 1, y1 + 1], inset: inset, feather: feather };
+}
+
+// Background / brightness match (seam fix, 2026-10-16): after the global
+// linear fit, the residual target - fitted still holds whatever smooth
+// difference the two rigs disagree on (an RC16 GradientCorrection that ate
+// part of a frame-filling galaxy halo, a pedestal, vignetting). Cell medians
+// of that residual over the footprint (only pixels with mask > 0, below 0.9,
+// stars rejected by the median) on a coarse grid; empty cells filled from
+// their neighbours, the grid smoothed, then bilinearly interpolated back.
+// fitted(i) + offset(i) then matches the OSC at every large scale, so the
+// footprint edge shows no step. Returns { off (W*H Float32Array, 0 outside
+// the box), cells, cell_px, before, after } or throws.
+function bgMatch(fitted, target, m, W, H, box, cellPx) {
+   var bx0 = box[0], by0 = box[1], bx1 = box[2], by1 = box[3];
+   var cs = Math.max(8, Math.round(cellPx));
+   var nx = Math.max(1, Math.ceil((bx1 - bx0) / cs)), ny = Math.max(1, Math.ceil((by1 - by0) / cs));
+   var g = new Float64Array(nx * ny), have = new Uint8Array(nx * ny), cx, cy, x, y, i, k;
+   var minN = Math.max(12, Math.floor(cs * cs * 0.15)), filled = 0;
+   for (cy = 0; cy < ny; ++cy)
+      for (cx = 0; cx < nx; ++cx) {
+         var r = [];
+         var ya = by0 + cy * cs, yb = Math.min(by1, ya + cs), xa = bx0 + cx * cs, xb = Math.min(bx1, xa + cs);
+         for (y = ya; y < yb; ++y)
+            for (x = xa; x < xb; ++x) {
+               i = y * W + x;
+               if (m[i] <= 0 || !(target[i] > 0) || target[i] > 0.9 || fitted[i] > 0.9) continue;
+               r.push(target[i] - fitted[i]);
+            }
+         if (r.length < minN) continue;
+         r.sort(function (p, q) { return p - q; });
+         g[cy * nx + cx] = r[Math.floor(r.length / 2)];
+         have[cy * nx + cx] = 1; ++filled;
+      }
+   if (!filled) throw new Error("no footprint cell had enough clean pixels");
+   var s0 = 0, s1 = 0;
+   for (k = 0; k < nx * ny; ++k) if (have[k]) { s0 += g[k]; s1 += g[k] * g[k]; }
+   var before = Math.sqrt(Math.max(0, s1 / filled - (s0 / filled) * (s0 / filled)));
+   var g0 = new Float64Array(g), have0 = new Uint8Array(have), n0 = filled;
+   for (var it = 0; it < nx + ny && filled < nx * ny; ++it) {
+      var add = [];
+      for (cy = 0; cy < ny; ++cy)
+         for (cx = 0; cx < nx; ++cx) {
+            if (have[cy * nx + cx]) continue;
+            var sum = 0, n = 0;
+            for (var dy = -1; dy <= 1; ++dy)
+               for (var dx = -1; dx <= 1; ++dx) {
+                  var ex = cx + dx, ey = cy + dy;
+                  if (ex < 0 || ey < 0 || ex >= nx || ey >= ny || !have[ey * nx + ex]) continue;
+                  sum += g[ey * nx + ex]; ++n;
+               }
+            if (n) add.push([cy * nx + cx, sum / n]);
+         }
+      for (k = 0; k < add.length; ++k) { g[add[k][0]] = add[k][1]; have[add[k][0]] = 1; ++filled; }
+      if (!add.length) break;
+   }
+   for (var pass = 0; pass < 2; ++pass) {
+      var h = new Float64Array(nx * ny);
+      for (cy = 0; cy < ny; ++cy)
+         for (cx = 0; cx < nx; ++cx) {
+            var s = 0, c = 0;
+            for (var qy = Math.max(0, cy - 1); qy <= Math.min(ny - 1, cy + 1); ++qy)
+               for (var qx = Math.max(0, cx - 1); qx <= Math.min(nx - 1, cx + 1); ++qx) { s += g[qy * nx + qx]; ++c; }
+            h[cy * nx + cx] = s / c;
+         }
+      g = h;
+   }
+   var rs = 0;
+   for (k = 0; k < nx * ny; ++k) if (have0[k]) rs += (g0[k] - g[k]) * (g0[k] - g[k]);
+   var off = new Float32Array(W * H);
+   for (y = by0; y < by1; ++y) {
+      var fy = (y - by0 + 0.5) / cs - 0.5, iy = Math.floor(fy);
+      var ty = fy - iy, y0c = Math.max(0, Math.min(ny - 1, iy)), y1c = Math.max(0, Math.min(ny - 1, iy + 1));
+      for (x = bx0; x < bx1; ++x) {
+         i = y * W + x;
+         if (m[i] <= 0) continue;
+         var fx = (x - bx0 + 0.5) / cs - 0.5, ix = Math.floor(fx);
+         var tx = fx - ix, x0c = Math.max(0, Math.min(nx - 1, ix)), x1c = Math.max(0, Math.min(nx - 1, ix + 1));
+         var v = (g[y0c * nx + x0c] * (1 - tx) + g[y0c * nx + x1c] * tx) * (1 - ty) +
+                 (g[y1c * nx + x0c] * (1 - tx) + g[y1c * nx + x1c] * tx) * ty;
+         off[i] = v;
+      }
+   }
+   return { off: off, cells: nx * ny, cell_px: cs, before: before, after: Math.sqrt(rs / n0) };
 }
 
 function quantile(arr, use, n, q) {
@@ -614,10 +762,88 @@ function applyHT(view, p) {
    if (!HT.executeOn(view, false)) throw new Error("HistogramTransformation returned false");
 }
 
-// Save <base>.xisf (+ .tif 16-bit + .jpg) of a view, stretched when LIN.
+// Core HDR (blown-nucleus fix, 2026-10-16): the linked stretch that lifts the
+// faint arms maps a galaxy nucleus (linear 0.01 .. 0.1) to flat white. On the
+// stretched image: HDRMultiscaleTransform on a copy, blended back only where
+// the lightness is above CONFIG.core_hdr.lo (smoothstep over .span), so the
+// sky and the arms keep the stretch. Layers: CONFIG.core_hdr.layers, or 0 =
+// auto from the size of the near-white area (log2 of its radius, 5..10).
+// Guarded: no HDRMultiscaleTransform, nothing near white, or any failure
+// leaves the view as it was.
+function coreHdr(view, label) {
+   var cfg = CONFIG.core_hdr || { mode: "off" };
+   var name = "core_hdr_" + label.split(" ")[0];
+   if (cfg.mode === "off") { step(name, "HDRMultiscaleTransform", "skipped", { reason: "off" }); return; }
+   if (typeof HDRMultiscaleTransform === "undefined") {
+      log(label + ": core HDR skipped (no HDRMultiscaleTransform)");
+      step(name, "HDRMultiscaleTransform", "skipped", { reason: "not available" }); return;
+   }
+   var img = view.image;
+   if (!img.isColor) { step(name, "HDRMultiscaleTransform", "skipped", { reason: "mono" }); return; }
+   var lo = (cfg.lo === undefined) ? 0.55 : +cfg.lo, span = Math.max(0.01, (cfg.span === undefined) ? 0.35 : +cfg.span);
+   var dup = null;
+   try {
+      var W = img.width, Hh = img.height, N = W * Hh, rect = new Rect(W, Hh), c = [], ch, i;
+      for (ch = 0; ch < 3; ++ch) { c.push(new Float32Array(N)); img.getSamples(c[ch], rect, ch); }
+      var white = 0;
+      for (i = 0; i < N; ++i) if (0.2126 * c[0][i] + 0.7152 * c[1][i] + 0.0722 * c[2][i] > 0.9) ++white;
+      if (white < 500) {
+         log(label + ": core HDR skipped (only " + white + " px near white)");
+         step(name, "HDRMultiscaleTransform", "skipped", { reason: "nothing near white", white_px: white });
+         return;
+      }
+      var layers = cfg.layers > 0 ? Math.round(cfg.layers)
+                 : Math.max(5, Math.min(10, Math.round(Math.log(Math.sqrt(white / Math.PI)) / Math.LN2)));
+      dup = dupWindow(view, "PS_HDR");
+      var HM = new HDRMultiscaleTransform;
+      var set = {};
+      trySet(HM, "numberOfLayers", layers, set);
+      trySet(HM, "numberOfIterations", 1, set);
+      trySet(HM, "invertedIterations", true, set);
+      trySet(HM, "overdrive", 0, set);
+      trySet(HM, "medianTransform", false, set);
+      trySet(HM, "toLightness", true, set);
+      trySet(HM, "preserveHue", false, set);
+      trySet(HM, "luminanceMask", true, set);
+      trySet(HM, "deringing", false, set);
+      if (!HM.executeOn(dup.mainView, false)) throw new Error("HDRMultiscaleTransform returned false");
+      var h = [], chromaBefore = 0, chromaAfter = 0, nb = 0, changed = 0;
+      for (ch = 0; ch < 3; ++ch) { h.push(new Float32Array(N)); dup.mainView.image.getSamples(h[ch], rect, ch); }
+      for (i = 0; i < N; i += 97) { chromaBefore += Math.abs(c[0][i] - c[1][i]) + Math.abs(c[2][i] - c[1][i]); ++nb; }
+      for (i = 0; i < N; ++i) {
+         var L = 0.2126 * c[0][i] + 0.7152 * c[1][i] + 0.0722 * c[2][i];
+         var k = (L - lo) / span;
+         if (k <= 0) continue;
+         if (k > 1) k = 1;
+         k = k * k * (3 - 2 * k);
+         c[0][i] = c[0][i] * (1 - k) + h[0][i] * k;
+         c[1][i] = c[1][i] * (1 - k) + h[1][i] * k;
+         c[2][i] = c[2][i] * (1 - k) + h[2][i] * k;
+         ++changed;
+      }
+      for (i = 0; i < N; i += 97) chromaAfter += Math.abs(c[0][i] - c[1][i]) + Math.abs(c[2][i] - c[1][i]);
+      if (chromaAfter < 0.5 * chromaBefore) throw new Error("blend lost color (chroma " + (chromaAfter / nb).toFixed(5) + " vs " + (chromaBefore / nb).toFixed(5) + ")");
+      var white2 = 0;
+      for (i = 0; i < N; ++i) if (0.2126 * c[0][i] + 0.7152 * c[1][i] + 0.0722 * c[2][i] > 0.9) ++white2;
+      view.beginProcess(UndoFlag_NoSwapFile);
+      for (ch = 0; ch < 3; ++ch) img.setSamples(c[ch], rect, ch);
+      view.endProcess();
+      log(label + ": core HDR (HDRMultiscaleTransform " + layers + " layers, blended above L " + lo +
+          "): near-white px " + white + " -> " + white2);
+      step(name, "HDRMultiscaleTransform", "ran", { layers: layers, from_l: lo, span: span, white_px_before: white,
+                                                   white_px_after: white2, blended_px: changed, settings: set });
+   } catch (e) {
+      log(label + ": core HDR skipped (" + e + ")");
+      step(name, "HDRMultiscaleTransform", "failed", { error: "" + e });
+   }
+   closeQuiet(dup);
+}
+
+// Save <base>.xisf (+ .tif 16-bit + .jpg) of a view, stretched when LIN
+// (then the core HDR on the stretched image).
 function saveLook(w, base, label, p) {
    try {
-      if (LIN) applyHT(w.mainView, p || stretchParams(w.mainView));
+      if (LIN) { applyHT(w.mainView, p || stretchParams(w.mainView)); coreHdr(w.mainView, label); }
       trySave(w, base + ".xisf", label + " xisf");
       try {
          var SF = new SampleFormatConversion;
@@ -717,7 +943,7 @@ function productFull(osc, rc) {
    var lab = labOf(osc.mainView, "OSC");
    var Losc = channels(lab.L.mainView.image)[0];
    var target = LIN ? channels(lab.Y.mainView.image)[0] : Losc;
-   var fit = linearFit(reg, target, function (i) { return m[i] > 0.5; }, N);
+   var fit = linearFit(reg, target, function (i) { return m[i] > 0.05; }, N);
    log("fit RC16 -> OSC " + (LIN ? "CIE Y" : "CIE L") + ": " + fit.a.toExponential(3) + " + " + fit.b.toFixed(4) +
        " * rc16 (rms " + fit.rms.toExponential(3) + ", " + fit.n + " px)");
    step("linear_fit", "least squares in the footprint (LinearFit model)", "ran",
@@ -734,11 +960,31 @@ function productFull(osc, rc) {
       log("luminance mask: L " + lo.toFixed(4) + " .. " + hi.toFixed(4));
       step("lum_mask", "smoothstep on OSC CIE L", "ran", { lo: +lo.toFixed(5), hi: +hi.toFixed(5) });
    } else step("lum_mask", "none", "skipped", { reason: "off" });
+   var off = null;
+   if (CONFIG.bg_match === false) step("bg_match", "none", "skipped", { reason: "off" });
+   else {
+      try {
+         var fitted = new Float32Array(N);
+         for (var q = 0; q < N; ++q) if (m[q] > 0) fitted[q] = fit.a + fit.b * reg[q];
+         var cellPx = (CONFIG.bg_cell_frac || 0.06) * Math.min(fp.box[2] - fp.box[0], fp.box[3] - fp.box[1]);
+         var bm = bgMatch(fitted, target, m, W, H, fp.box, cellPx);
+         fitted = null;
+         off = bm.off;
+         log("background match: " + bm.cells + " cells of " + bm.cell_px + " px, cell residual sd " +
+             bm.before.toExponential(3) + " -> " + bm.after.toExponential(3) + " (" + (LIN ? "CIE Y" : "CIE L") + ")");
+         step("bg_match", "cell-median residual map (smooth offset, bilinear)", "ran",
+              { cells: bm.cells, cell_px: bm.cell_px, residual_sd_before: bm.before, residual_sd_after: bm.after });
+      } catch (eg) {
+         off = null;
+         log("background match skipped (" + eg + "); global fit only");
+         step("bg_match", "cell-median residual map", "failed", { error: "" + eg });
+      }
+   }
    var newL = new Float32Array(N), dsum = 0, dn = 0;
    for (var i = 0; i < N; ++i) {
       var k = WEIGHT * m[i];
       if (k <= 0) { newL[i] = Losc[i]; continue; }
-      var v = fit.a + fit.b * reg[i];
+      var v = fit.a + fit.b * reg[i] + (off ? off[i] : 0);
       var lr = LIN ? lstar(v) : Math.max(0, Math.min(1, v));
       newL[i] = Losc[i] * (1 - k) + lr * k;
       if (m[i] > 0.99) { dsum += Math.abs(lr - Losc[i]); ++dn; }
