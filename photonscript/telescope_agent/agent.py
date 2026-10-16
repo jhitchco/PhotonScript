@@ -23,6 +23,7 @@ from photonscript.shared.models import (
     ImageStatus, SessionState, TelescopeState,
 )
 from photonscript.shared.messagebus import get_message_bus
+from photonscript.shared.json_safe import finite_or_none as _finite
 from photonscript.shared.pushover import notify
 from photonscript.shared.star_measure import MEASURE_VERSION
 from photonscript.telescope_agent.nina_client import NinaClient
@@ -75,6 +76,8 @@ class TelescopeAgent:
             config.phd2_host, config.phd2_port, config=config)
         self.phd2 = (self._phd2_client if rig == "rc16"
                      else ReadOnlyPHD2(self._phd2_client))
+        if self._phd2_owned:
+            self._phd2_client.quiet_reason_fn = self._phd2_quiet_reason
         self._rms_logged_at: float | None = None  # PS-70 RMS log rate limit
         self.bus = get_message_bus()
         self.state = TelescopeState(rig=rig)
@@ -467,6 +470,18 @@ class TelescopeAgent:
         except Exception:  # noqa: BLE001
             return None
 
+    def _phd2_quiet_reason(self) -> str | None:
+        """2026-10-16: why a PHD2 connect failure is not worth a WARNING
+        now (armer DISARMED / COMPLETE, or the armed night is unguided), or
+        None (a guided night, or no readable armer state: keep warning)."""
+        st = self._armer_state()
+        if st is None:
+            return None
+        if st not in self._ARMER_ACTIVE_STATES:
+            return f"armer {st}"
+        from photonscript.scheduler.armer import armer_guided_now
+        return None if armer_guided_now(self.config) else "unguided night"
+
     def _cooling_hold(self, camera: dict | None = None) -> str | None:
         """PS-79: why the cooler / dew watchdogs must leave the camera alone,
         or None.
@@ -853,7 +868,7 @@ class TelescopeAgent:
             try:
                 # Get camera info
                 camera = await self.nina.get_camera_info()
-                self.state.camera_temp_c = camera.get("Temperature")
+                self.state.camera_temp_c = _finite(camera.get("Temperature"))
                 self.state.camera_cooling_on = camera.get("CoolerOn", False)
 
                 # Cooling watch: cooler on but sensor off-setpoint (the 0°C
@@ -892,17 +907,25 @@ class TelescopeAgent:
                 from photonscript.shared.rigs import rig_devices
                 if "mount" in rig_devices(getattr(self, "rig", "rc16")):
                     mount = await self.nina.get_mount_info()
-                    self.state.mount_ra = mount.get("RightAscension")
-                    self.state.mount_dec = mount.get("Declination")
+                    # 2026-10-16: a disconnected mount reports 0.0 RA / Dec
+                    # and NaN alt / az: RA / Dec unknown (None), never 0.0
+                    from photonscript.shared.json_safe import finite_or_none
+                    conn = mount.get("Connected")
+                    known = conn is None or bool(conn)
+                    self.state.mount_ra = (finite_or_none(mount.get("RightAscension"))
+                                           if known else None)
+                    self.state.mount_dec = (finite_or_none(mount.get("Declination"))
+                                            if known else None)
                     self.state.mount_tracking = mount.get("Tracking", False)
                     # PS-91 / PS-92: park, slew and pier side for the guard
                     self.state.mount_at_park = mount.get("AtPark")
                     self.state.mount_slewing = mount.get("Slewing")
                     self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
                     # PS-121: alt / az and Connected for /api/status
-                    self.state.mount_alt = mount.get("Altitude")
-                    self.state.mount_az = mount.get("Azimuth")
-                    conn = mount.get("Connected")
+                    # alt / az: NaN when unknown (None); a finite value is
+                    # kept (PS-121 shows it with the Connected flag)
+                    self.state.mount_alt = finite_or_none(mount.get("Altitude"))
+                    self.state.mount_az = finite_or_none(mount.get("Azimuth"))
                     self.state.mount_connected = None if conn is None else bool(conn)
                     self._log_mount(mount)
                     await self._split_guard(mount)   # PS-27

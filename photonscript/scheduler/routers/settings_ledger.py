@@ -26,7 +26,7 @@ import asyncio
 from datetime import datetime
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

@@ -13,7 +13,7 @@ Armer.start_watch / Armer.maybe_adopt hold the logic. Kept out of app.py (PS-8).
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

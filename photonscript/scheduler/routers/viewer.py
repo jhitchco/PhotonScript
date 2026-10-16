@@ -14,7 +14,8 @@ are already running (the loupe retries on the next pause).
 from __future__ import annotations
 
 from fastapi import APIRouter
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, Response
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

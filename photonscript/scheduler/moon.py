@@ -149,10 +149,16 @@ def moon_window_tonight(config, now: datetime | None = None) -> dict:
 
 
 def broadband_deferred(mw: dict) -> bool:
-    """Single moon rule shared by the planner and the sequence generator.
+    """Single moon rule shared by the planner, the campaign and the
+    sequence generator.
 
-    True when tonight's broadband (L/RGB/OSC) should be deferred: the moon is
-    up at dusk and at least 20% lit. Unknown geometry (mw unavailable) defers,
+    True when tonight's broadband (L/RGB/OSC) is deferred for the WHOLE
+    night: the moon is up at dusk, at least 20% lit, and stays up until
+    dawn. A moon up at dusk that sets before dawn does not defer the night:
+    broadband gets the time after moonset (broadband_from, the planner's
+    window start and the generator's wait-until-moonset; 2026-10-16: a 37%
+    moon setting 22:54 local, about 3 h after dusk, deferred all three goals
+    and the plan was 0 targets). Unknown geometry (mw unavailable) defers,
     matching the generator's historical fallback. Keeping ONE rule stops the
     planner from keeping a broadband-only target that the generator then
     empties (the 2026-09-20/21 empty-Andromeda re-acquire loop, PS-27)."""
@@ -160,13 +166,39 @@ def broadband_deferred(mw: dict) -> bool:
         return True
     if mw.get("down_at_dusk"):
         return False
-    if sets_soon_after_dusk(mw):
-        return False
-    if moon_already_set(mw):
-        return False
+    if mw.get("set_utc"):
+        return False   # sets before dawn: broadband from moonset
     illum = mw.get("illum_pct")
     # 0% is a real value (new moon up at dusk), not "unknown" (PS-106).
     return True if illum is None else illum >= BROADBAND_DEFER_ILLUM_PCT
+
+
+def broadband_from(mw: dict):
+    """When tonight's broadband may start (UTC datetime), or None when it
+    may run from dusk (moon down at dusk, faint, setting within the grace,
+    already set) or is deferred all night (broadband_deferred). Set when
+    the moon is up at dusk, at least 20% lit, and sets before dawn: the
+    planner opens broadband-only windows here and the generator waits for
+    this moonset before broadband blocks."""
+    if not mw or not mw.get("available") or mw.get("down_at_dusk"):
+        return None
+    set_utc = mw.get("set_utc")
+    if not set_utc:
+        return None
+    illum = mw.get("illum_pct")
+    if illum is not None and illum < BROADBAND_DEFER_ILLUM_PCT:
+        return None
+    if sets_soon_after_dusk(mw) or moon_already_set(mw):
+        return None
+    return set_utc
+
+
+def broadband_from_local(mw: dict):
+    """(hh, mm) local clock time of broadband_from, or None."""
+    if broadband_from(mw) is None or not mw.get("set_local"):
+        return None
+    hh, mm = str(mw["set_local"]).split(":")[:2]
+    return int(hh), int(mm)
 
 
 def moon_already_set(mw: dict) -> bool:
@@ -215,6 +247,9 @@ def describe_moon(mw: dict) -> str:
                    f"{BROADBAND_DEFER_ILLUM_PCT}% lit")
     elif moon_already_set(mw):
         verdict = "broadband OK: the moon has set"
+    elif broadband_from(mw) is not None:
+        verdict = (f"broadband after moonset ({mw.get('set_local')} local), "
+                   "narrowband before")
     elif sets_soon_after_dusk(mw):
         verdict = (f"broadband OK: the moon sets within "
                    f"{BROADBAND_MOONSET_GRACE_H:g} h of dusk")

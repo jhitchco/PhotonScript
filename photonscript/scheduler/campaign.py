@@ -327,8 +327,13 @@ def build_campaign(config, store, forecast: dict | None = None,
         malt = m_alt[sl]
         illum = float(np.median(m_ill[sl])) if len(malt) else 0.0
         moon_free = float(np.mean(malt < 0)) * dark_h if len(malt) else 0.0
-        mw = {"available": True, "down_at_dusk": bool(m_alt[len(mids) + ni] < 0),
-              "illum_pct": round(illum)}
+        down = bool(m_alt[len(mids) + ni] < 0)
+        mw = {"available": True, "down_at_dusk": down,
+              "illum_pct": round(illum),
+              # 2026-10-16: a moon up at dusk that sets before dawn does not
+              # defer the night: broadband gets the slots after moonset
+              "set_utc": (not down and bool(len(malt))
+                          and bool(np.any(malt < 0))) or None}
         if illum < 20:
             bb_ok = np.ones(len(malt), dtype=bool)
         elif broadband_deferred(mw):

@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Query
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

@@ -209,6 +209,12 @@ class PHD2Client:
         self._pending: dict[int, asyncio.Future] = {}
         self._loop_active = False     # run_event_loop() is reading the socket
         self._connect_warned_at: float | None = None
+        # 2026-10-16: () -> a reason PHD2 is not needed now (armer DISARMED /
+        # COMPLETE, or an unguided night), or None on a guided night (or
+        # unknown). With a reason the connect failure logs at DEBUG, once
+        # per reason, instead of WARNING. Set by the agent.
+        self.quiet_reason_fn = None
+        self._quiet_logged: str | None = None
         self.host = host
         self.port = port
         self._reader: Optional[asyncio.StreamReader] = None
@@ -298,7 +304,16 @@ class PHD2Client:
             # PS-70: PHD2 not running is the normal daytime state; one WARNING
             # per outage (then every 30 min), not one per 14 s retry.
             now = time.monotonic()
-            if (self._connect_warned_at is None
+            quiet = self._quiet_reason()
+            if quiet is not None:
+                # not needed now: DEBUG, once per reason
+                if quiet != self._quiet_logged:
+                    self._quiet_logged = quiet
+                    logger.debug("Cannot connect to PHD2 at %s:%d: %s (%s; "
+                                 "retrying quietly)", self.host, self.port, e,
+                                 quiet)
+                self._connect_warned_at = None
+            elif (self._connect_warned_at is None
                     or now - self._connect_warned_at >= _CONNECT_WARN_EVERY_S):
                 self._connect_warned_at = now
                 logger.warning("Cannot connect to PHD2 at %s:%d: %s (retrying "
@@ -308,6 +323,15 @@ class PHD2Client:
                              self.host, self.port, e)
             self._connected = False
             return False
+
+    def _quiet_reason(self) -> str | None:
+        fn = self.quiet_reason_fn
+        if fn is None:
+            return None
+        try:
+            return fn()
+        except Exception:  # noqa: BLE001 - unknown: keep the WARNING
+            return None
 
     async def call(self, method: str, params: list | None = None,
                    timeout: float = 5.0):

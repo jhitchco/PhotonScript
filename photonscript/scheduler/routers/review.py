@@ -37,7 +37,7 @@ import logging
 import re
 
 from fastapi import APIRouter, Body
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

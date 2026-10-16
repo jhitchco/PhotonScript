@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

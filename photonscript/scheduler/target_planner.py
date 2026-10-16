@@ -387,6 +387,12 @@ def _apply_windows(sequence_targets, vis_by_name: dict, need_by_name: dict,
     is shot inside the window; the loop repeats the pass until the
     handoff). Returns the targets that keep a window."""
     start = max(dark_start, now)
+    from photonscript.scheduler.moon import broadband_from
+    if broadband_from(moon or {}) is not None:
+        # 2026-10-16: broadband-only targets open at moonset, so the
+        # targets with narrowband go first and use the moonlit start
+        sequence_targets = sorted(sequence_targets, key=lambda t: all(
+            e.filter_type.value not in _NB_FILTERS for e in t.exposures))
     entries = _window_entries(sequence_targets, vis_by_name, need_by_name,
                               prio_by_name, dark_end, moon)
     alloc = allocate_windows(entries, start, dark_end, _min_window_s(config))
@@ -404,6 +410,10 @@ def _window_entries(sequence_targets, vis_by_name: dict, need_by_name: dict,
     moonrise cap for a broadband-only target, priority, need)."""
     moon = moon or {}
     rise = moon.get("rise_utc") if moon.get("down_at_dusk") else None
+    # 2026-10-16: a bright moon up at dusk that sets before dawn opens
+    # broadband at moonset (the generator waits for it too)
+    from photonscript.scheduler.moon import broadband_from
+    bb_from = broadband_from(moon)
     entries = []
     for t in sequence_targets:
         vis = vis_by_name.get(t.name) or {}
@@ -415,7 +425,11 @@ def _window_entries(sequence_targets, vis_by_name: dict, need_by_name: dict,
         if bb_only and rise is not None:
             # broadband before moonrise (the generator ends it there too)
             up_until = min(up_until or dark_end, rise)
-        entries.append({"name": t.name, "up_from": vis.get("rise_time"),
+        up_from = vis.get("rise_time")
+        if bb_only and bb_from is not None:
+            # broadband after moonset (the generator waits for it)
+            up_from = max(up_from or bb_from, bb_from)
+        entries.append({"name": t.name, "up_from": up_from,
                         "up_until": up_until,
                         "priority": prio_by_name.get(t.name, 50),
                         "need_s": need_by_name.get(t.name, 0.0)})
@@ -734,9 +748,11 @@ def plan_night_sequence(
             bb_ok = not broadband_deferred(_gen_moon)
         rise = (_gen_moon.get("rise_utc") if _gen_moon.get("down_at_dusk")
                 else None)
+        from photonscript.scheduler.moon import broadband_from
         pick, scores = deep_night.choose(
             visible_projects, max(dark_start, date_utc), dark_end, dark_start,
-            dark_end, target=deep_target, bb_ok=bb_ok, moonrise=rise)
+            dark_end, target=deep_target, bb_ok=bb_ok, moonrise=rise,
+            moonset=broadband_from(_gen_moon))
         info["deep_scores"] = [deep_night.json_pick(s) for s in scores]
         if pick is None:
             info["deep_note"] = (

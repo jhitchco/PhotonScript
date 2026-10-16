@@ -208,23 +208,27 @@ def _transit_offset_h(transit, mid: datetime) -> float | None:
 
 
 def moon_fit(owed: dict, lo: datetime, hi: datetime, bb_ok: bool,
-             rise: datetime | None) -> float:
-    """Share of the owed seconds tonight's moon allows (see module doc)."""
+             rise: datetime | None, moonset: datetime | None = None) -> float:
+    """Share of the owed seconds tonight's moon allows (see module doc).
+    moonset (moon.broadband_from): broadband only after it."""
     total = sum(owed.values())
     if total <= 0:
         return 0.0
     bb_frac = 0.0
     if bb_ok:
         bb_frac = 1.0
-        if rise is not None and hi > lo:
-            bb_frac = max(0.0, min(1.0, (rise - lo).total_seconds()
+        if hi > lo and (rise is not None or moonset is not None):
+            b_lo = max(lo, moonset) if moonset is not None else lo
+            b_hi = min(hi, rise) if rise is not None else hi
+            bb_frac = max(0.0, min(1.0, (b_hi - b_lo).total_seconds()
                                    / (hi - lo).total_seconds()))
     return (owed["NB"] + (owed["BB"] + owed["OSC"]) * bb_frac) / total
 
 
 def score_goal(proj, vis: dict, start: datetime, end: datetime,
                dark_start: datetime, dark_end: datetime, *, bb_ok: bool = True,
-               moonrise: datetime | None = None) -> dict:
+               moonrise: datetime | None = None,
+               moonset: datetime | None = None) -> dict:
     """One goal's deep-night score with its breakdown (see module doc)."""
     owed = owed_by_kind(proj)
     rc16_h = (owed["NB"] + owed["BB"]) / 3600
@@ -233,7 +237,7 @@ def score_goal(proj, vis: dict, start: datetime, end: datetime,
     dark_h = max(1e-6, (end - start).total_seconds() / 3600)
     mid = dark_start + (dark_end - dark_start) / 2
     toff = _transit_offset_h(vis.get("transit_time"), mid)
-    mf = moon_fit(owed, lo, hi, bb_ok, moonrise)
+    mf = moon_fit(owed, lo, hi, bb_ok, moonrise, moonset)
     norm = {
         "hours_up": min(1.0, up_h / dark_h),
         "fill": min(1.0, max(rc16_h, osc_h) / up_h) if up_h > 0 else 0.0,
@@ -266,7 +270,8 @@ def score_goal(proj, vis: dict, start: datetime, end: datetime,
 
 def choose(visible_projects: list, start: datetime, end: datetime,
            dark_start: datetime, dark_end: datetime, *, target: str | None = None,
-           bb_ok: bool = True, moonrise: datetime | None = None) -> tuple:
+           bb_ok: bool = True, moonrise: datetime | None = None,
+           moonset: datetime | None = None) -> tuple:
     """(pick or None, all scores best first). visible_projects: the
     planner's [{"project", "visibility"}]. target: a project id (or target
     name) that wins whatever its score."""
@@ -275,7 +280,7 @@ def choose(visible_projects: list, start: datetime, end: datetime,
     for vp in visible_projects:
         p = vp["project"]
         s = score_goal(p, vp["visibility"], start, end, dark_start, dark_end,
-                       bb_ok=bb_ok, moonrise=moonrise)
+                       bb_ok=bb_ok, moonrise=moonrise, moonset=moonset)
         if getattr(p, "mosaic", None) and not _matches(p, target):
             s["eligible"], s["why"] = False, "mosaic panel (not auto-picked)"
         scores.append(s)

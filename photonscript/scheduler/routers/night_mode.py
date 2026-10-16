@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, Body
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

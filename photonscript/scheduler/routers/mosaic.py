@@ -31,7 +31,8 @@ import asyncio
 import math
 
 from fastapi import APIRouter, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 from photonscript.scheduler import mosaic as mz
 

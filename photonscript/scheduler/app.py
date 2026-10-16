@@ -16,8 +16,8 @@ from typing import Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, Body
-from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
-                               PlainTextResponse)
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -47,7 +47,9 @@ VERSION = repo_version()
 STATIC_DIR = Path(__file__).parent / "static"
 TEMPLATE_DIR = Path(__file__).parent / "templates"
 
-app = FastAPI(title="PhotonScript Scheduler", version="0.1.0")
+# 2026-10-16: NaN / Infinity in any response become null, never a 500
+app = FastAPI(title="PhotonScript Scheduler", version="0.1.0",
+              default_response_class=JSONResponse)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 

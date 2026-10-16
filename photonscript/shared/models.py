@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +398,15 @@ class TelescopeState(BaseModel):
     last_image: Optional[CapturedImage] = None
     weather_safe: bool = True
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("mount_ra", "mount_dec", "mount_alt", "mount_az",
+                     "camera_temp_c", mode="before")
+    @classmethod
+    def _finite(cls, v):
+        """2026-10-16: NaN / "NaN" (ninaAPI's disconnected mount) and
+        +-Infinity are unknown: None, never a NaN in the API's JSON."""
+        from photonscript.shared.json_safe import finite_or_none
+        return finite_or_none(v)
 
 
 # ---------------------------------------------------------------------------
