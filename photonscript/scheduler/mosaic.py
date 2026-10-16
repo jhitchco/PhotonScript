@@ -378,6 +378,16 @@ def _norm_mix(mix: dict | None) -> dict | None:
     return clean or None
 
 
+def _as_bool(v, default: bool) -> bool:
+    """A JSON-ish flag: None means the default; "false"/"0"/"no"/"off"
+    strings are False (a form post may send them as text)."""
+    if v is None:
+        return default
+    if isinstance(v, str):
+        return v.strip().lower() not in ("false", "0", "no", "off", "")
+    return bool(v)
+
+
 def build_panels(config, spec: dict, existing_names=()) -> dict:
     """Validate a create request and return {id, layout, rotation, panels:
     [ImagingProject...], errors, warnings} without saving anything.
@@ -385,7 +395,8 @@ def build_panels(config, spec: dict, existing_names=()) -> dict:
     spec: name, ra_hours, dec_degrees, rows, cols, overlap_pct, rotation
     ("camera" | deg), major_axis_pa, hours_per_panel, filter_mix ({filter:
     %}), exposure_s (one sub length for every filter), object_type,
-    priority, companion_id (project id whose Piggy-600 plan the passenger
+    priority (0..100, default 50), active (default True; false creates
+    paused panels), companion_id (project id whose Piggy-600 plan the passenger
     subs credit, resolved by the caller with find_companion), rig."""
     from photonscript.scheduler.project_store import (allocate_exposures,
                                                       target_kind)
@@ -434,6 +445,13 @@ def build_panels(config, spec: dict, existing_names=()) -> dict:
     exp_s = spec.get("exposure_s")
     obj_type = str(spec.get("object_type") or "galaxy")
     mid = str(spec.get("id") or uuid.uuid4().hex[:12])
+    prio_in = spec.get("priority")
+    try:
+        priority = max(0, min(100, int(50 if prio_in is None else prio_in)))
+    except (TypeError, ValueError):
+        errors.append("priority must be a number 0..100")
+        priority = 50
+    active = _as_bool(spec.get("active"), default=True)
     definition = {k: lay[k] for k in (
         "ra_hours", "dec_degrees", "rows", "cols", "overlap_pct", "pa_deg",
         "fov_w_deg", "fov_h_deg", "span_w_arcmin", "span_h_arcmin")}
@@ -463,7 +481,7 @@ def build_panels(config, spec: dict, existing_names=()) -> dict:
                                    overrides=overrides)
         projects.append(ImagingProject(
             id=str(uuid.uuid4()), target=target,
-            priority=max(0, min(100, int(spec.get("priority", 50)))),
+            priority=priority, active=active,
             budget_hours=round(hours, 1), filter_mix=stored_mix,
             exposure_overrides=overrides, exposure_plans=plans,
             total_integration_hours=round(hours, 1),
