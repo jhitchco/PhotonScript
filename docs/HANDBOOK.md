@@ -1552,6 +1552,36 @@ Night test needed: an armed night with a deliberate short safety dropout
 reads safe again). A real roof closure the same week to confirm the
 immediate pause is unchanged.
 
+### Frozen sensor watch: a reading that stopped moving (2026-10-16)
+
+`scheduler/frozen_sensor.py`, in the PS-150 loop (60 s), dusk to dawn
+(`nina_watch_sun_alt_deg`), per rig, GETs only. A reading identical within
+1e-6 for `frozen_sensor_minutes` (30) is frozen:
+
+- camera: Temperature and CoolerPower together, only while Connected with
+  the cooler on (a regulated sensor holds its setpoint, but its TEC power
+  moves; a warm sensor is not judged);
+- focuser: the EAF Temperature (the focus model's ambient proxy, known to
+  freeze at 21.29 C);
+- weather: every finite field of NINA's weather device together
+  (temperature, humidity, dew point, pressure, sky temperature / quality /
+  brightness, cloud cover, wind). One field may stay put; the station may
+  not.
+
+The safety monitor is a boolean that legitimately reads the same all night,
+so it is not judged here (its liveness is the dropout grace above and the
+agent's reconnect watchdog). An unreadable reading resets that sensor's
+clock. Output: `GET /api/nina/watch` key `frozen` (per rig and sensor the
+value and minutes unchanged, plus the frozen list), amber lines in the NINA
+watch chip on the dashboard, run events kind `frozen_sensor` (`frozen` /
+`clear`) and one push per rig and sensor per night (priority 0).
+`frozen_sensor_mode`: alert | panel (no push) | off. Warning only: nothing
+acts on it.
+
+Night test needed: one armed night with the dashboard chip open; confirm no
+false flag on a regulated camera and the AARO station, and that a frozen EAF
+thermometer (21.29 C) is flagged once.
+
 ### Stuck-loop detector: should be imaging, no lights (2026-10-15)
 
 Why: 2026-10-14 22:21 to 22:41 MDT NINA #1 ran AF, center, park, unpark

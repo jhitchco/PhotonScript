@@ -137,6 +137,14 @@ class PhotonScriptConfig(BaseSettings):
     # a morning report line. alert | panel (no push) | off. Observe only.
     piggy_guard_mode: str = "alert"
     piggy_guard_grace_min: float = 10.0
+    # Frozen sensor watch (2026-10-16, scheduler/frozen_sensor.py): the
+    # camera (temperature + cooler power, cooler on), focuser temperature or
+    # weather station readings identical for frozen_sensor_minutes, dusk to
+    # dawn: a warning in GET /api/nina/watch and the chip, a run event, one
+    # push per rig and sensor per night. alert | panel (no push) | off.
+    # Warning only, never acted on.
+    frozen_sensor_mode: str = "alert"
+    frozen_sensor_minutes: float = 30.0
     # Night pilot (2026-10-13, scheduler/night_pilot.py): turns the sub
     # doctor's diagnoses into bounded adjustments while the armer is RUNNING
     # (stop a stray PHD2, unguided remainder on a FAIL calibration, shorter

@@ -743,6 +743,11 @@ async def run_watchdog(get_config, get_armer, tick_seconds: int = TICK_S) -> Non
                 await protrack_recheck.tick(cfg, armer)
             except Exception as e:  # noqa: BLE001
                 logger.warning("ProTrack recheck tick failed: %s", e)
+            try:   # a weather / camera / focuser reading that stopped moving
+                from photonscript.scheduler import frozen_sensor
+                await frozen_sensor.tick(cfg)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("frozen sensor tick failed: %s", e)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001

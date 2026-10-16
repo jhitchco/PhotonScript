@@ -1157,12 +1157,21 @@
                     '</span>' : '') +
                 (r.alerted ? ' &middot; pushed' : '') + '</div>');
         }
-        el.hidden = rows.length === 0;
-        el.innerHTML = bad ? rows.join('') : (rows.length
+        // 2026-10-16: frozen sensor warnings (amber, never acted on)
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const frozen = ((d.frozen || {}).frozen || []).map(f =>
+            '<div style="padding:.35rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+            'border:1px solid rgba(251,191,36,.7);background:rgba(148,163,184,.06);">' +
+            '&#9888; <b>' + esc((d.names || {})[f.rig] || f.rig) + ': ' + esc(f.label) +
+            ' FROZEN</b> (unchanged ' + Math.round(f.unchanged_min || 0) + ' min: ' +
+            esc(f.value) + ')' + (f.pushed ? ' &middot; pushed' : '') + '</div>');
+        el.hidden = rows.length === 0 && frozen.length === 0;
+        el.innerHTML = frozen.join('') + (bad ? rows.join('') : (rows.length
             ? '<div style="opacity:.6;">NINA watch: ' + Object.entries(d.rigs || {})
                 .filter(([k, r]) => r.state === 'ok')
                 .map(([k, r]) => ((d.names || {})[k] || k) + ' OK').join(', ') + '</div>'
-            : '');
+            : ''));
     }
     // Sub doctor chip: one line per rig with a current diagnosis
     async function refreshSubDoctor() {
