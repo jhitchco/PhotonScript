@@ -76,6 +76,8 @@ class TelescopeAgent:
             config.phd2_host, config.phd2_port, config=config)
         self.phd2 = (self._phd2_client if rig == "rc16"
                      else ReadOnlyPHD2(self._phd2_client))
+        if self._phd2_owned:
+            self._phd2_client.quiet_reason_fn = self._phd2_quiet_reason
         self._rms_logged_at: float | None = None  # PS-70 RMS log rate limit
         self.bus = get_message_bus()
         self.state = TelescopeState(rig=rig)
@@ -467,6 +469,18 @@ class TelescopeAgent:
             return json.loads(p.read_text(encoding="utf-8")).get("state")
         except Exception:  # noqa: BLE001
             return None
+
+    def _phd2_quiet_reason(self) -> str | None:
+        """2026-10-16: why a PHD2 connect failure is not worth a WARNING
+        now (armer DISARMED / COMPLETE, or the armed night is unguided), or
+        None (a guided night, or no readable armer state: keep warning)."""
+        st = self._armer_state()
+        if st is None:
+            return None
+        if st not in self._ARMER_ACTIVE_STATES:
+            return f"armer {st}"
+        from photonscript.scheduler.armer import armer_guided_now
+        return None if armer_guided_now(self.config) else "unguided night"
 
     def _cooling_hold(self, camera: dict | None = None) -> str | None:
         """PS-79: why the cooler / dew watchdogs must leave the camera alone,
