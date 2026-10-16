@@ -32,6 +32,7 @@ class MessageBus:
         self._listeners: dict[str, list[Listener]] = defaultdict(list)
         self._global_listeners: list[Listener] = []
         self._history: deque[AgentMessage] = deque(maxlen=max(1, history_max))
+        self._state_keys: dict[str, tuple] = {}   # rig -> last logged state
 
     def subscribe(self, msg_type: str, listener: Listener) -> None:
         self._listeners[msg_type].append(listener)
@@ -43,7 +44,8 @@ class MessageBus:
         if message.id is None:
             message.id = str(uuid4())
         self._history.append(message)
-        logger.info(
+        logger.log(
+            self._log_level(message),
             "MSG [%s] %s -> %s: %s",
             message.msg_type, message.sender.value, message.recipient.value,
             str(message.payload)[:200],
@@ -56,6 +58,22 @@ class MessageBus:
             tasks.append(asyncio.create_task(self._safe_call(listener, message)))
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+
+    # 2026-10-16: two rigs x one state update every 10 s filled the log at
+    # INFO. Routine state updates log at DEBUG; INFO only when a rig's
+    # session state or current target changes.
+    ROUTINE_TYPES = ("telescope_state_update",)
+
+    def _log_level(self, message: AgentMessage) -> int:
+        if message.msg_type not in self.ROUTINE_TYPES:
+            return logging.INFO
+        p = message.payload if isinstance(message.payload, dict) else {}
+        rig = str(p.get("rig") or message.sender.value)
+        key = (p.get("session_state"), p.get("current_target"))
+        if self._state_keys.get(rig) == key:
+            return logging.DEBUG
+        self._state_keys[rig] = key
+        return logging.INFO
 
     async def _safe_call(self, listener: Listener, message: AgentMessage) -> None:
         try:
