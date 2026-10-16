@@ -49,8 +49,12 @@ def test_guided_night_keeps_the_warning(caplog):
     assert len(_lines(caplog, logging.WARNING)) == 1
 
 
-def test_agent_reason_follows_the_armer(tmp_path):
+def test_agent_reason_follows_the_armer(tmp_path, monkeypatch):
+    import sys
     from photonscript.telescope_agent.agent import TelescopeAgent
+    app_mod = sys.modules.get("photonscript.scheduler.app")
+    if app_mod is not None:   # read the state file, not an in-process armer
+        monkeypatch.setattr(app_mod, "_armer", None, raising=False)
     cfg = PhotonScriptConfig(_env_file=None, data_dir=tmp_path,
                              image_watch_dir=str(tmp_path),
                              nina_logs_dir=str(tmp_path))
