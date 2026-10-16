@@ -217,7 +217,35 @@ def test_agent_poll_fills_alt_az_connected(tmp_path, monkeypatch, connected):
     asyncio.run(ag._nina_poll_loop())
     s = ag.state
     assert (s.mount_alt, s.mount_az, s.mount_connected) == (55.0, 180.0, connected)
-    assert s.mount_ra == 12.05            # hours, unchanged (PS-67)
+    # hours, unchanged (PS-67); 2026-10-16: a disconnected mount's RA / Dec
+    # are unknown (None), not its stale / 0.0 report
+    assert s.mount_ra == (12.05 if connected else None)
+
+
+def test_agent_poll_nan_mount_is_none(tmp_path, monkeypatch):
+    """2026-10-16: ninaAPI's disconnected mount ('NaN' alt / az, 0.0 RA /
+    Dec) leaves the state None, never NaN or 0.0."""
+    from photonscript.telescope_agent import agent as agent_mod
+
+    class _NanNina(_Nina):
+        async def get_mount_info(self):
+            return {**_mount(), "Connected": False, "Altitude": "NaN",
+                    "Azimuth": float("nan"), "RightAscension": 0.0,
+                    "Declination": 0.0}
+    ag = agent_mod.TelescopeAgent(_cfg(tmp_path, observatory_tz="UTC"), rig="rc16")
+    ag.nina = _NanNina(False)
+    for name in ("_cooling_watchdog", "_dew_heater_watchdog"):
+        async def _noop(*a, **k):
+            return None
+        monkeypatch.setattr(ag, name, _noop)
+
+    async def _stop(_s):
+        ag._running = False
+    monkeypatch.setattr(agent_mod.asyncio, "sleep", _stop)
+    ag._running = True
+    asyncio.run(ag._nina_poll_loop())
+    s = ag.state
+    assert (s.mount_alt, s.mount_az, s.mount_ra, s.mount_dec) == (None,) * 4
 
 
 # ------------------------------------------------------------- template

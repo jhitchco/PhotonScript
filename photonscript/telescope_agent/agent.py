@@ -908,7 +908,7 @@ class TelescopeAgent:
                 if "mount" in rig_devices(getattr(self, "rig", "rc16")):
                     mount = await self.nina.get_mount_info()
                     # 2026-10-16: a disconnected mount reports 0.0 RA / Dec
-                    # and NaN alt / az: unknown (None), never 0.0 or NaN
+                    # and NaN alt / az: RA / Dec unknown (None), never 0.0
                     from photonscript.shared.json_safe import finite_or_none
                     conn = mount.get("Connected")
                     known = conn is None or bool(conn)
@@ -922,10 +922,10 @@ class TelescopeAgent:
                     self.state.mount_slewing = mount.get("Slewing")
                     self.state.mount_side_of_pier = _pier_side(mount.get("SideOfPier"))
                     # PS-121: alt / az and Connected for /api/status
-                    self.state.mount_alt = (finite_or_none(mount.get("Altitude"))
-                                            if known else None)
-                    self.state.mount_az = (finite_or_none(mount.get("Azimuth"))
-                                           if known else None)
+                    # alt / az: NaN when unknown (None); a finite value is
+                    # kept (PS-121 shows it with the Connected flag)
+                    self.state.mount_alt = finite_or_none(mount.get("Altitude"))
+                    self.state.mount_az = finite_or_none(mount.get("Azimuth"))
                     self.state.mount_connected = None if conn is None else bool(conn)
                     self._log_mount(mount)
                     await self._split_guard(mount)   # PS-27
