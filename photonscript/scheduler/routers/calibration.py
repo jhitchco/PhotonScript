@@ -30,7 +30,12 @@ GET  /api/calibration/qa/backfill            backfill progress / last report
 GET  /api/calibration/capture-job?check=     job status; check=1 also lists
                                              today's refusals (read only)
 POST /api/calibration/capture-job            {"rig", "exposures", "count",
-                                             "bias", "budget_min"}: start
+                                             "bias", "budget_min", "darks",
+                                             "bias_only"}: start; "darks": false
+                                             or "bias_only": true = bias only
+                                             (no owed darks, any roof, by day)
+GET  /api/calibration/bias-drift?rig=        newest bias session vs the one
+                                             before it, per epoch
 POST /api/calibration/capture-job/cancel     {"rig"}
 POST /api/calibration/daytime/reset          {"rig"}: re-allow daytime capture
 
@@ -309,14 +314,38 @@ async def api_capture_job_start(payload: dict = Body(default={})):
     exposures = payload.get("exposures") or None
     if isinstance(exposures, str):
         exposures = [float(x) for x in exposures.split(",") if x.strip()]
+    # bias only: "bias_only": true, or "darks": false (with no exposures or
+    # an explicit empty list). An empty / missing exposures list without
+    # either still means "the owed darks" (the gap plan).
+    bias_only = bool(payload.get("bias_only")) or payload.get("darks") is False
+    if bias_only and exposures:
+        return JSONResponse(status_code=400, content={
+            "rig": rig, "refusals": ["bias only: leave exposures out (or [])"],
+            "read": {}})
     ok, body = await cc.start_job(
         _cfg(), rig, armer_state_fn=_armer_state,
         armer_status_fn=lambda: _armer().status(),
         exposures=exposures, count=payload.get("count"), bias=payload.get("bias"),
-        budget=payload.get("budget_min"), source=str(payload.get("source") or "manual"))
+        budget=payload.get("budget_min"), source=str(payload.get("source") or "manual"),
+        bias_only=bias_only)
     if not ok:
         return JSONResponse(status_code=409, content=body)
     return body
+
+
+@router.get("/api/calibration/bias-drift")
+def api_bias_drift(rig: str = ""):
+    """Per rig and epoch: the newest QA-clean bias session against the one
+    before it (calibration_qa.bias_drift) and the drift threshold."""
+    from photonscript.scheduler import calibration_qa as cq
+    from photonscript.shared.rigs import rig_ids
+    cfg = _cfg()
+    out = {"threshold_adu": cq.bias_drift_adu(cfg), "rigs": {}}
+    for rg in ([rig] if rig else rig_ids(cfg)):
+        st = cq.load_store(cfg, rg)
+        rows = st.get("bias_drift")
+        out["rigs"][rg] = rows if rows is not None else cq.bias_drift(st["frames"])
+    return out
 
 
 @router.post("/api/calibration/capture-job/cancel")

@@ -1483,6 +1483,9 @@ def calibration_capture_cmd(
                                             "else the gap)"),
     budget: Optional[float] = typer.Option(None, "--budget-min",
                                            help="Time budget (min, cooling included)"),
+    bias_only: Optional[int] = typer.Option(None, "--bias-only",
+                                            help="Shoot only N bias (no darks, owed "
+                                                 "or not): any roof state, by day too"),
     cancel: bool = typer.Option(False, "--cancel", help="Cancel the rig's running job"),
     follow: bool = typer.Option(True, "--follow/--no-follow",
                                 help="Print progress until the job ends"),
@@ -1497,6 +1500,11 @@ def calibration_capture_cmd(
     following, not the job (use --cancel).
 
     photonscript calibration-capture --rig piggyback --exposures 300,400 --count 30
+
+    --bias-only N: only N bias (0 s), bias set first in every job; the
+    roof / daytime switch do not refuse, the armer still does. The QA then
+    compares it with the previous bias (drift push over
+    calibration_bias_drift_adu).
     """
     import httpx
     base = url.rstrip("/")
@@ -1505,7 +1513,16 @@ def calibration_capture_cmd(
                        json={"rig": rig}, timeout=30)
         console.print(r.json(), markup=False)
         raise typer.Exit(0 if r.status_code == 200 else 1)
+    if bias_only is not None and (exposures or count is not None or bias is not None):
+        console.print("--bias-only N takes no --exposures / --count / --bias",
+                      markup=False)
+        raise typer.Exit(2)
+    if bias_only is not None and bias_only <= 0:
+        console.print("--bias-only needs N > 0", markup=False)
+        raise typer.Exit(2)
     body = {"rig": rig, "source": "cli"}
+    if bias_only is not None:
+        body.update({"bias": bias_only, "darks": False, "bias_only": True})
     if exposures:
         body["exposures"] = [float(x) for x in exposures.split(",") if x.strip()]
     if count is not None:
@@ -1525,9 +1542,9 @@ def calibration_capture_cmd(
         for x in d.get("refusals") or [d.get("detail")]:
             console.print(f"  - {x}", markup=False)
         raise typer.Exit(1)
-    plan = " + ".join(f"{e:g} s x {n}" for e, n in d["darks"])
-    if d.get("bias"):
-        plan += f" + {d['bias']} bias"
+    parts = ([f"{d['bias']} bias"] if d.get("bias") else []) \
+        + [f"{e:g} s x {n}" for e, n in d["darks"]]
+    plan = " then ".join(parts) + (" (bias only)" if d.get("bias_only") else "")
     console.print(f"started job {d['id']} on {rig}: {plan}, about "
                   f"{d['estimated_minutes']:.0f} min + cooling (budget "
                   f"{d['budget_min']:g} min)", markup=False)

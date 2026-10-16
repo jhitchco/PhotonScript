@@ -700,6 +700,7 @@ _CONFIG_FIELDS = [
     ("calibration_dawn_capture", "PS_CALIBRATION_DAWN_CAPTURE", "Run a re-planned darks + bias job by itself at dawn after shutdown (armer idle, roof closed)", "Imaging", "bool", False, False),
     ("calibration_dawn_window_min", "PS_CALIBRATION_DAWN_WINDOW_MIN", "Dawn darks window: astro dawn + 30 min to astro dawn + N min", "Imaging", "int", False, False),
     ("calibration_bias_when_missing", "PS_CALIBRATION_BIAS_WHEN_MISSING", "Night sequences shoot a 50-bias set at the setpoint (any roof state) when no usable bias exists (PS-182)", "Imaging", "bool", False, False),
+    ("calibration_bias_drift_adu", "PS_CALIBRATION_BIAS_DRIFT_ADU", "Calibration QA: a new bias set this many ADU from the previous session is bias drift (pushed; darks it explains are not light)", "Imaging", "float", False, False),
     ("calibration_qa_dark_scale_by_readout", "PS_CALIBRATION_QA_DARK_SCALE_BY_READOUT", "Calibration QA (PS-182): dark-over-bias allowance scales with the readout mode's ADU per e- (RC16 HCG 3.16 x LCG)", "Imaging", "bool", False, False),
     ("calibration_readout_fill_at_dawn", "PS_CALIBRATION_READOUT_FILL_AT_DAWN", "Dawn sweep: header-read READOUTM for up to N QA records without one (0 = off)", "Imaging", "int", False, False),
     ("calibration_file_auto", "PS_CALIBRATION_FILE_AUTO", "File calibration at arm time, at a night's end and after a capture job, not only at dawn (PS-188)", "Imaging", "bool", False, False),
@@ -2932,7 +2933,10 @@ async def api_calibration_capture(payload: dict = Body(default={})):
     from photonscript.shared.rigs import rig_config, RC16
     rig = payload.get("rig", RC16)
     config = get_config()
-    if payload.get("darks"):
+    bias_only = bool(payload.get("bias_only")) or payload.get("darks") is False
+    if bias_only:
+        darks = []   # bias only: any roof state, by day too
+    elif payload.get("darks"):
         darks = [[float(e), int(c)] for e, c in payload["darks"]]
     else:
         count = int(getattr(config, "dark_target_count", 30))
@@ -2947,7 +2951,7 @@ async def api_calibration_capture(payload: dict = Body(default={})):
     ok, body = await cc.start_job(config, rig, darks=darks, bias=bias,
                                   armer_state_fn=lambda: get_armer().state,
                                   armer_status_fn=lambda: get_armer().status(),
-                                  source="system page")
+                                  source="system page", bias_only=bias_only)
     if not ok:
         return JSONResponse(status_code=409, content={
             "detail": "refused: " + "; ".join(body.get("refusals") or []),
