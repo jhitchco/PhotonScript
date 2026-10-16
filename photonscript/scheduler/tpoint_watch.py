@@ -32,6 +32,16 @@ Watcher (run_watch, every tpoint_watch_poll_s while a run is in progress,
              polar error before / after). A run that grows again after
              finishing goes back to running; it is never pushed twice.
 
+  cleared    (2026-10-16) a new run cleared the data: the raw-input file
+             is header only (0 points) and was written within
+             tpoint_watch_quiet_min when seen (or shrank to the header).
+             No sample tpoint_watch_quiet_min (15) after the clear while it
+             is dark (sun under DARK_SUN_ALT): once per run a run event
+             "no_samples" and one push (alert mode) "TPoint run started
+             but no samples in 15 min (roof closed? camera? Image Link?)".
+             2026-10-16: a "Full" run cleared the 99-sample model and
+             nothing said so.
+
 History (<data_dir>/tpoint/models.jsonl): one line per fitted model
 (date, local night, points, points in the fit, sky RMS, popn SD, fitted /
 total terms, IH ID MA ME CH NP of the base model, the active recal, the
@@ -72,6 +82,8 @@ PAUSE_S = 600.0           # a gap longer than this is a pause, not the pace
 SIDEREAL = 1.00273790935  # sidereal seconds per solar second
 MAIN_TERMS = ("IH", "ID", "MA", "ME", "CH", "NP")
 _IN_RE = re.compile(r"(?:^|\s)in(?:dat)?$", re.IGNORECASE)
+DARK_SUN_ALT = -12.0      # the no-sample alert only while the sun is this low
+CLEARED_MAX_H = 12.0      # a clear older than this is not a run starting now
 
 
 # ------------------------------------------------------------------ config
@@ -212,6 +224,23 @@ def _local_hm(cfg, when: datetime | None) -> str:
         return to_local(cfg, when).strftime("%H:%M")
     except Exception:  # noqa: BLE001
         return when.strftime("%H:%MZ")
+
+
+def is_dark(cfg, now: datetime) -> bool:
+    """The sun under DARK_SUN_ALT at the site (unknown = not dark)."""
+    try:
+        from datetime import timezone
+        from photonscript.shared.pushover import sun_altitude_deg
+        alt = sun_altitude_deg(float(cfg.observatory_lat), float(cfg.observatory_lon),
+                               now.replace(tzinfo=timezone.utc))
+        return alt < DARK_SUN_ALT
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def no_sample_text(cfg) -> str:
+    return (f"TPoint run started but no samples in {quiet_min(cfg):.0f} min "
+            "(roof closed? camera? Image Link?)")
 
 
 def observations(text: str) -> tuple[list[float], str | None]:
@@ -472,6 +501,12 @@ def status_text(cfg, state: dict, now: datetime | None = None) -> str:
     now = now or datetime.utcnow()
     run = state.get("run") or {}
     st = state.get("status") or "idle"
+    if run.get("cleared_utc") and not int(run.get("points") or 0) and st == "idle":
+        cl = _parse(run.get("cleared_utc"))
+        return (f"TPoint run started {_local_hm(cfg, cl)} local ({run.get('name') or 'run'}: "
+                "data cleared, header only), no samples yet"
+                + (f"; none in {quiet_min(cfg):.0f} min: roof closed? camera? Image Link?"
+                   if run.get("empty_alerted") else ""))
     if st in ("running", "stopped") and run:
         bits = [f"{run.get('points')} points"
                 + (f" of {run['target_points']}" if run.get("target_points") else "")]
@@ -603,10 +638,14 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
             mt = _parse(f.get("mtime"))
             fresh = bool(mt and now - mt <= quiet)
             if rid != run.get("id") or pts < int(run.get("points") or 0):
+                shrank = pts < int(run.get("points") or 0)
                 run = {"id": rid, "name": rk[1], "data_file": f["rel"], "date": d.get("date"),
                        "points": pts, "first_seen_utc": _iso(now),
                        "last_point_utc": f.get("mtime"), "seen_running": fresh,
                        "notified": False}
+                # 2026-10-16: a run that cleared the data (header only)
+                if pts == 0 and (fresh or shrank) and tf.header_only(text):
+                    run["cleared_utc"] = f.get("mtime")
                 status = "running" if fresh and pts else "idle"
                 if status == "running":
                     state["baseline"] = previous_from_files(cfg, listing, rk)
@@ -626,6 +665,16 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
             run["eta_utc"] = _iso(base_t + timedelta(seconds=left * run["pace_s"]))
         else:
             run["eta_utc"] = None
+    alert = None
+    cl = _parse(run.get("cleared_utc")) if run else None
+    if (cl and not int(run.get("points") or 0) and not run.get("empty_alerted")
+            and timedelta(0) <= now - cl <= timedelta(hours=CLEARED_MAX_H)
+            and now - cl >= quiet and is_dark(cfg, now)):
+        run["empty_alerted"] = True
+        alert = (no_sample_text(cfg) + f": {run.get('data_file')} cleared "
+                 f"{_local_hm(cfg, cl)} local, still header only")
+        _event(cfg, _night(cfg, cl), "no_samples", alert, now,
+               data_file=run.get("data_file"), cleared_utc=run.get("cleared_utc"))
     if status in ("running", "stopped") and run:
         last = _parse(run.get("last_point_utc")) or now
         fit = _fitted_after(listing, _ts_of(last), _CACHE)
@@ -691,7 +740,7 @@ def step(cfg, now: datetime | None = None, listing: dict | None = None,
     state["run"] = run or None
     state["text"] = status_text(cfg, state, now)
     _write_json(state_path(cfg), state)
-    return {"state": state, "push": push}
+    return {"state": state, "push": push, "alert": alert}
 
 
 def _coverage_of_text(cfg, text: str, rel: str, pace: float | None) -> dict | None:
@@ -724,14 +773,18 @@ async def tick(cfg, now: datetime | None = None, listing: dict | None = None,
     if mode(cfg) == "off":
         return {"state": {"status": "off"}, "push": None}
     res = await asyncio.to_thread(step, cfg, now, listing)
-    if res.get("push") and mode(cfg) == "alert":
+    if (res.get("push") or res.get("alert")) and mode(cfg) == "alert":
         if notify is None:
             from photonscript.shared.pushover import notify as _notify
             notify = _notify
-        try:
-            await notify(cfg, res["push"], title="PhotonScript TPoint run finished")
-        except Exception as e:  # noqa: BLE001
-            logger.warning("TPoint finish push not sent: %s", e)
+        for key, title in (("push", "PhotonScript TPoint run finished"),
+                           ("alert", "PhotonScript TPoint run")):
+            if not res.get(key):
+                continue
+            try:
+                await notify(cfg, res[key], title=title)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("TPoint %s push not sent: %s", key, e)
     return res
 
 
@@ -742,7 +795,12 @@ async def run_watch(get_config) -> None:
         cfg = get_config()
         status = "idle"
         try:
-            status = ((await tick(cfg)).get("state") or {}).get("status") or "idle"
+            st = (await tick(cfg)).get("state") or {}
+            status = st.get("status") or "idle"
+            run = st.get("run") or {}
+            if run.get("cleared_utc") and not run.get("empty_alerted") \
+                    and not int(run.get("points") or 0):
+                status = "running"     # poll fast until the first sample
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001
@@ -779,7 +837,7 @@ def morning_line(cfg, date: str | None) -> str | None:
     if not evs:
         return None
     parts = [str(e.get("detail") or "") for e in evs
-             if e.get("value") in ("finished", "epoch") and e.get("detail")]
+             if e.get("value") in ("finished", "epoch", "no_samples") and e.get("detail")]
     # the finish detail already carries its epoch line
     out = []
     for p in parts:

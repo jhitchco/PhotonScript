@@ -80,3 +80,12 @@ def _pixinsight_settings_isolated(monkeypatch, tmp_path_factory):
     finish keeps its plate solve. tests/test_integration/test_pi_watchdog.py
     points it at fabricated settings."""
     monkeypatch.setenv("PS_PIXINSIGHT_SETTINGS_DIR", str(tmp_path_factory.mktemp("pleiades-none")))
+
+
+@pytest.fixture(autouse=True)
+def _tpoint_preflight_off(monkeypatch):
+    """2026-10-16: the arm / dispatch TPoint preflight reads TheSky's TPoint
+    files from the user's Documents, so a dispatch would differ between the
+    desktop and the scope PC. Pin it off for the suite;
+    tests/test_scheduler/test_tpoint_preflight.py turns it on."""
+    monkeypatch.setenv("PS_TPOINT_PREFLIGHT", "off")

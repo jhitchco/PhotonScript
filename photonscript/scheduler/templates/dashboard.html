@@ -457,6 +457,19 @@
                     ';"><b>Dispatch lint</b>: ' + String(dg.line).replace(/</g, '&lt;') +
                     ' <span style="opacity:.6">(' + String(dg.at || '').slice(11, 16) + ' UTC)</span></div>');
             }
+            // 2026-10-16: TPoint / ProTrack preflight at arm (one line)
+            const tp = d.tpoint_preflight;
+            if (tp && tp.line) {
+                const blk = tp.level === 'block', warn = tp.level === 'warn';
+                const esc = s => String(s || '').replace(/</g, '&lt;');
+                chips.push('<div style="font-size:.8rem;padding:.2rem .6rem;border-radius:6px;margin-bottom:.4rem;' +
+                    'border:1px solid ' + (blk ? 'rgba(239,68,68,.7)' : warn ? 'rgba(251,191,36,.6)' : 'rgba(74,222,128,.3)') +
+                    ';"><b>TPoint preflight</b>: ' + esc(tp.line) +
+                    (tp.fix ? ' &middot; <b>Fix</b>: ' + esc(tp.fix) : '') +
+                    (tp.enforced ? ' <button data-tpoint-override="' + (d.guiding || 'unguided') +
+                        '" style="margin-left:.4rem;font-size:.75rem;">Arm anyway (TPoint loaded)</button>' : '') +
+                    '</div>');
+            }
             // PS-139: NINA #2 holds slew / center / park instructions tonight
             const nm = d.nina2_mount;
             if (nm && (nm.items || []).length) {
@@ -1074,6 +1087,20 @@
         }
         refreshArm();
     }
+    // 2026-10-16: the TPoint preflight blocked an empty model; the model was
+    // loaded by hand in TPoint (the files were not rewritten): arm again
+    // with the block not enforced for this night
+    document.addEventListener('click', ev => {
+        const b = ev.target.closest && ev.target.closest('[data-tpoint-override]');
+        if (!b) return;
+        if (!confirm('The TPoint model is loaded in TheSky and ProTrack is on?\n\n' +
+                     'Arm again with the TPoint preflight block off for tonight.')) return;
+        fetch('/api/arm', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                           body: JSON.stringify({armed: true, guiding: b.dataset.tpointOverride,
+                                                 tpoint_override: true})})
+            .then(r => r.ok ? null : r.json().then(e => alert('Refused: ' + (e.detail || r.status))))
+            .finally(refreshArm);
+    });
     (function () {   // PS-181: the points box only for TPoint mapping
         const sel = document.getElementById('armRecipe');
         if (!sel) return;

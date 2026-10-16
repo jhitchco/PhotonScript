@@ -33,6 +33,9 @@ Built only from data other passes already keep (nothing is measured here):
     23:58 local (model fitted): sky RMS ... (was ...), polar ... MA / ME
     (was ...)" and, when the polar axis moved, "Unguided limits: evidence
     restarts <night>"
+  * TPoint preflight (tpoint_preflight.morning_line, 2026-10-16): the
+    arm's verdict when not ok, e.g. "TPoint preflight: BLOCK (unguided): no
+    TPoint model ... Fix: TPoint has no model: open ..."
   * TPoint coverage (tpoint_coverage.morning_line): while the model has
     empty / thin cells, "TPoint coverage: east-only (99 points ...): west 7
     empty of 7 cells. Top-up: 43 points in 8 cells, about 34 min"
@@ -210,7 +213,13 @@ def report_card(config, date: str | None = None, *, projects=None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
            "sub_doctor": None, "core": None, "blend": None,
            "night_pilot": [], "deep_night": None, "tpoint": None,
-           "tpoint_coverage": None, "paused_tonight": []}
+           "tpoint_coverage": None, "paused_tonight": [], "tpoint_preflight": None}
+    try:   # 2026-10-16: the arm's TPoint / ProTrack preflight (a blocked
+        # night has no subs log, so this comes before the early return)
+        from photonscript.scheduler.tpoint_preflight import morning_line as pf_line
+        out["tpoint_preflight"] = pf_line(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no TPoint preflight line: %s", e)
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -384,8 +393,11 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     """The card as text lines (one per rig that shot or stalled, then
     library and calibration)."""
     if not card.get("date"):
-        return ["Morning report: no subs log yet"]
+        return ["Morning report: no subs log yet"] + (
+            [card["tpoint_preflight"]] if card.get("tpoint_preflight") else [])
     lines = [card["deep_night"]] if card.get("deep_night") else []
+    if card.get("tpoint_preflight"):
+        lines.append(card["tpoint_preflight"])
     lines += [_rig_line(r) for r in card.get("rigs") or []
               if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall")]
     if card.get("piggy_guard"):

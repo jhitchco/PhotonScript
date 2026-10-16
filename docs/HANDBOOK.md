@@ -654,6 +654,15 @@ the newest raw-input data file (read only when its size or mtime changes):
   event and a "TPoint: ..." morning report line (a TPoint night has no
   subs log, so the line also shows on the next morning card whose night is
   earlier). A run seen only after it ended is never pushed.
+- cleared (2026-10-16): a new run cleared the data (`<run> in.dat` header
+  only: 0 points, written within `tpoint_watch_quiet_min` when seen, or
+  shrank to the header). No sample `tpoint_watch_quiet_min` (15) min after
+  the clear while the sun is under -12 deg: once per run a run event
+  `tpoint_watch` value `no_samples`, a morning "TPoint: ..." line and one
+  Pushover ("PhotonScript TPoint run", alert mode) "TPoint run started but
+  no samples in 15 min (roof closed? camera? Image Link?)". The status line
+  says "TPoint run started HH:MM local (data cleared, header only), no
+  samples yet".
 Model history: `<data_dir>/tpoint/models.jsonl`, one line per fitted model
 (date, local night, points, points in the fit, sky RMS, popn SD, terms
 fitted, IH ID MA ME CH NP of the base model, an active recal, the polar
@@ -707,7 +716,10 @@ missing = frames only), `tpoint_sample_add` (off | auto),
 default Documents path), `tpoint_watch_mode` (alert | observe | off),
 `tpoint_run_target_points` (0), `tpoint_watch_poll_s` (60; 5x idle),
 `tpoint_watch_quiet_min` (15), `tpoint_watch_fit_wait_min` (45),
-`tpoint_epoch_polar_shift_arcsec` (30; 0 = never). Coverage (next
+`tpoint_epoch_polar_shift_arcsec` (30; 0 = never). Preflight:
+`tpoint_preflight` (block | warn | off), `tpoint_preflight_rms_max_arcsec`
+(40), `tpoint_polar_changed_on` (""), `tpoint_saved_models_dir`
+(`C:\astro`). Coverage (next
 section): `tpoint_coverage_thin` (4), `tpoint_coverage_target` (6),
 `tpoint_coverage_min_alt` (30), `tpoint_coverage_pace_s` (35),
 `tpoint_coverage_arm_warn` (alert | observe | off),
@@ -799,6 +811,52 @@ Where it shows:
   unguided-limits`, `GET /api/tracking/unguided-limits` row `tpoint`)
   marks a region "[TPoint empty]" (no sample in any overlapping cell) or
   "[TPoint partial]" (the meridian band straddles both sides).
+
+### TPoint / ProTrack preflight at arm (2026-10-16)
+
+2026-10-16: a TheSky "Full" calibration run was started and cleared the
+pointing data: `TPoint base run in.dat` 137 bytes (header only),
+`outmod.dat` 98 bytes ("T 0", IH / ID +0.0000), the active TPoint settings
+an empty "TPoint Settings-2026oct-number6"; the good model (99 east-only
+samples, super model, sky RMS about 12") only in
+`C:\astro\TPoint Settings-2026oct-12RMS.tptx`. An unguided night on that
+tracks with ProTrack on no model and trails. `tpoint_files.stats` still
+reported 91 points then (the data file falls back to another run's), so
+the stats now also carry the ACTIVE model's own run: `active_run_points`
+(0 = header only), `active_t_obs`, `active_nonzero_terms`.
+
+`scheduler/tpoint_preflight.py` (TPoint's files only, read only) runs at
+every arm and every NINA #1 dispatch:
+- block: the active model has no samples or no fitted model (its run data
+  header only, or "T 0" / no non-zero term, or no model file);
+- warn: coverage east-only / west-only, sky RMS over
+  `tpoint_preflight_rms_max_arcsec` (40"), model older than
+  `tpoint_polar_changed_on` or the manual TPoint record's
+  `equipment_changed_on`, ProTrack off (the `ProTrackOn=` flag in
+  ImagingSystem.ini), files not readable;
+- ok otherwise.
+`tpoint_preflight` = block (default) | warn | off. Only the no-model case
+on an UNGUIDED night is enforced: it never is a judgement call (every
+unguided sub trails), the warn cases are (an east-only model still tracks
+before the flip). Enforced: the arm goes ahead and pushes the fix at once
+(priority 1, "PhotonScript TPoint preflight"); every dispatch re-reads the
+files and, while the model is still empty, refuses to load NINA #1 ("TPoint
+preflight blocked the night", the usual "Dispatch FAILED" page; re-arm when
+fixed). Not enforced (push and line only): a guided arm (info, no push),
+the TPoint mapping recipe, `tpoint_preflight=warn`, and an arm with
+`{"tpoint_override": true}`: the Arm card's **Arm anyway (TPoint loaded)**
+button, for a model loaded by hand that TheSky has not written back to the
+files. The fix names the newest .tptx saved BEFORE the clear in
+`tpoint_saved_models_dir` (`C:\astro`, listing only) or the TPoint
+folders, else "your latest saved model": "TPoint has no model: open
+C:\astro\TPoint Settings-2026oct-12RMS.tptx (TPoint Module Settings > Open)
+and turn ProTrack on, or run a calibration".
+Where it shows: the Arm card line "TPoint preflight: ...", `GET /api/arm`
+`tpoint_preflight` (level, action, enforced, line, fix, checks, ProTrack,
+points, terms, RMS, model date, coverage, saved models), run events kind
+`tpoint_preflight` (at arm, on a changed level, on every enforced block),
+`<data_dir>/tpoint/preflight_latest.json` and the morning report
+"TPoint preflight: ..." line (also on a night with no subs log).
 
 Fix: a top-up calibration run that covers the west side (TheSky's
 Automated Pointing Calibration, or the mapping recipe's west strips), then

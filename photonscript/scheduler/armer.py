@@ -281,6 +281,8 @@ class Armer:
                 # action count, alert latches) survives a restart
                 "unguided_guard": getattr(self, "_ug_state", None),
                 "dispatch_gate": getattr(self, "last_gate", None),   # PS-197
+                "tpoint_preflight": getattr(self, "tpoint_pf", None),
+                "tpoint_override": bool(getattr(self, "tpoint_override", False)),
             }, indent=1), encoding="utf-8")
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
@@ -335,6 +337,10 @@ class Armer:
         ug = saved.get("unguided_guard")
         if isinstance(ug, dict) and ug.get("night") == self.plan.get("night_of"):
             self._ug_state = ug
+        pf = saved.get("tpoint_preflight")   # 2026-10-16
+        same = isinstance(pf, dict) and pf.get("night") == self.plan.get("night_of")
+        self.tpoint_pf = pf if same else None
+        self.tpoint_override = bool(saved.get("tpoint_override")) and same
         lg = saved.get("dispatch_gate")   # PS-197: the Arm card line
         self.last_gate = (lg if isinstance(lg, dict)
                           and lg.get("night") == self.plan.get("night_of")
@@ -472,7 +478,8 @@ class Armer:
                 "restart": self._restart_status(),                  # PS-143
                 "recipe": self._recipe_tonight(),                   # PS-181
                 "noon_arm": self._noon_arm_status(),
-                "dispatch_gate": self._gate_status()}               # PS-197
+                "dispatch_gate": self._gate_status(),               # PS-197
+                "tpoint_preflight": self._tpoint_pf_status()}       # 2026-10-16
 
     def _gate_status(self) -> dict | None:
         """PS-197: the last dispatch gate verdict for the Arm card (this
@@ -543,14 +550,18 @@ class Armer:
         return bool(self.config.guided_default)
 
     async def arm(self, guiding: str | None = None,
-                  recipe: dict | None = None) -> dict:
+                  recipe: dict | None = None,
+                  tpoint_override: bool = False) -> dict:
         """guiding: 'guided' (PHD2) or 'unguided' (Paramount MX on TPoint +
         ProTrack; 'encoders' is the old name and still accepted). None or an
         unknown value => use config.guided_default. A guided arm also
         runs the PS-89 PHD2 settings audit in the background (never blocks
         the arm; one push only on a FAIL). recipe (PS-181): a validated
         sideload.arm_recipe() dict run at pre-config for this night only;
-        None = the normal night (an arm without one clears the last)."""
+        None = the normal night (an arm without one clears the last).
+        tpoint_override (2026-10-16): the TPoint preflight's empty-model
+        block is not enforced this night (the model was loaded by hand and
+        TheSky has not rewritten TPoint's files)."""
         from photonscript.scheduler.night_plan import build_night_plan
         if self.state == WATCH_STATE:
             # PS-136: arming would stop the watched sideload at pre-config
@@ -569,6 +580,8 @@ class Armer:
             self.block_decisions = {}   # PS-85: decisions belong to one night
         self.recipe = None   # PS-181: a recipe belongs to the arm that set it
         self._recipe_pending = self._recipe_alert = None
+        self.tpoint_override = bool(tpoint_override)   # 2026-10-16, this arm only
+        self.tpoint_pf = None
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
@@ -586,6 +599,10 @@ class Armer:
                         f"{self.plan['dark_hours']}h dark — {mode}")
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
+        # 2026-10-16: TPoint / ProTrack preflight (TPoint's files only). An
+        # empty model on an unguided arm: the fix is pushed now and every
+        # dispatch refuses to load NINA #1 until it is back.
+        await self._tpoint_preflight_at_arm()
         # Connect everything now (esp. the safety monitor) so a dead/slow
         # device shows up at arm time — hours before dark — not silently at
         # runtime. Connect-only; the night loop still gates imaging on safety.
@@ -1785,6 +1802,14 @@ class Armer:
         """
         now = datetime.utcnow()
         self._gate_alert = None
+        # 2026-10-16: an unguided night on an empty TPoint model trails
+        pf = self._tpoint_preflight("dispatch", now)
+        if pf and pf.get("enforced"):
+            self.detail = (f"TPoint preflight blocked the night: {pf.get('fix')}; "
+                           "NINA #1 not loaded (re-arm when fixed, or Arm anyway "
+                           "(TPoint loaded) when it is loaded by hand)")
+            self._persist()
+            return False
         built = self._build_night(now)
         if built is None:
             return False
@@ -2013,6 +2038,59 @@ class Armer:
                          priority=1)
         except Exception as e:  # noqa: BLE001
             logger.warning("dispatch gate push failed: %s", e)
+
+    def _tpoint_preflight(self, phase: str, now: datetime | None = None) -> dict | None:
+        """2026-10-16 TPoint / ProTrack preflight (scheduler/tpoint_preflight.py):
+        read TPoint's files, keep the verdict for the Arm card and
+        /api/arm, save it, and log a run event at arm, on a changed level
+        and on every enforced block. Never raises."""
+        try:
+            from photonscript.scheduler import tpoint_preflight as tpp
+            if tpp.mode(self.config) == "off":
+                self.tpoint_pf = None
+                return None
+            prev = getattr(self, "tpoint_pf", None)
+            rec = tpp.evaluate(self.config, guided=self._use_guiding(),
+                               recipe=getattr(self, "recipe", None),
+                               override=bool(getattr(self, "tpoint_override", False)),
+                               now=now)
+            rec["night"] = self.plan.get("night_of")
+            self.tpoint_pf = {**tpp.compact(rec), "phase": phase}
+            tpp.save(self.config, self.tpoint_pf)
+            if (phase == "arm" or rec.get("enforced")
+                    or (prev or {}).get("level") != rec.get("level")):
+                tpp.event(self.config, rec, phase, now)
+            (logger.warning if rec["level"] != "ok" else logger.info)(
+                "TPoint preflight (%s): %s", phase, rec.get("line"))
+            return rec
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TPoint preflight (%s) failed: %s", phase, e)
+            return None
+
+    async def _tpoint_preflight_at_arm(self) -> None:
+        """The arm-time preflight and its push (unguided only: an empty
+        model is a priority-1 page with the fix). Never raises."""
+        rec = self._tpoint_preflight("arm")
+        if not rec:
+            return
+        try:
+            from photonscript.scheduler import tpoint_preflight as tpp
+            if rec.get("level") != "ok" and rec.get("action") != "info":
+                self.detail = f"{self.detail} | TPoint preflight {rec['line']}"
+            self._persist()
+            msg = tpp.push_text(rec)
+            if msg:
+                await notify(self.config, msg, title=tpp.PUSH_TITLE,
+                             priority=1 if rec.get("level") == "block" else 0)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("TPoint preflight push failed: %s", e)
+
+    def _tpoint_pf_status(self) -> dict | None:
+        """The preflight record for the Arm card (this night only)."""
+        pf = getattr(self, "tpoint_pf", None)
+        if not pf or pf.get("night") != self.plan.get("night_of"):
+            return None
+        return pf
 
     def _tpoint_coverage_check(self, targets, now: datetime) -> None:
         """TPoint coverage check (scheduler/tpoint_coverage.py): the minutes

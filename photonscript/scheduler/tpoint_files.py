@@ -313,7 +313,35 @@ def parse_model(text: str) -> dict | None:
         popn, src = round(sky * math.sqrt(nobs / (nobs - fitted)), 2), "derived"
     return {"terms": terms, "sky_rms_arcsec": sky, "popn_sd_arcsec": popn,
             "popn_sd_source": src, "observations": nobs or None,
-            "fitted_terms": fitted, "refraction": refr, "caption": caption}
+            "fitted_terms": fitted, "refraction": refr, "caption": caption,
+            # 2026-10-16: the raw T line count (0 = a cleared model, kept
+            # apart from "unknown") and whether any term is non-zero
+            "t_obs": nobs,
+            "nonzero_terms": sum(1 for v in terms.values()
+                                 if not v["fixed"] and abs(v["value"] or 0.0) > 1e-9)}
+
+
+def header_only(text: str) -> bool:
+    """2026-10-16: a TPOINT input data file with its header (caption,
+    options, site line) and no observation, as TheSky leaves "<run> in.dat"
+    when a new calibration run starts and clears the pointing data
+    (137 bytes on the scope PC). parse_data returns None for it."""
+    site = False
+    for ln in (text or "").splitlines():
+        s = ln.strip()
+        if not s or s.startswith((":", "!", "#")):
+            continue
+        if s.upper() == "END":
+            break
+        n = _nums(s.replace("+", " +").replace("-", " -")) if s[0] in "+-0123456789" else None
+        if n is None:
+            continue
+        if not site:
+            site = len(n) >= 6
+            continue
+        if len(n) >= 10:
+            return False
+    return site
 
 
 def parse_protrack(text: str) -> bool | None:
@@ -593,6 +621,30 @@ def stats(config, listing: dict | None = None) -> dict:
         active = recal if (rc and rc["has_data"] and after) else main
         out["active_model"] = ("recal" if active is recal and recal is not None
                                else "base" if main else None)
+        if active:
+            # 2026-10-16: the active model's own run data (0 = header only:
+            # a calibration run cleared it) and its T line / non-zero terms,
+            # for the arm-time preflight (scheduler/tpoint_preflight.py).
+            # The top-level points may come from another run's data file.
+            own = None
+            for f in sorted((f for f in lst["files"] if run_key(f) == active["_run"]),
+                            key=_data_rank):
+                text = text_of(f)
+                if text is None:
+                    continue
+                d = parse_data(text)
+                if d:
+                    own = {"points": d["points"], "file": f["rel"]}
+                    break
+                if header_only(text):
+                    own = {"points": 0, "file": f["rel"]}
+                    break
+            out["active_run_points"] = (own or {}).get("points")
+            out["active_run_data_file"] = (own or {}).get("file")
+            out["active_t_obs"] = active.get("t_obs")
+            out["active_fitted_terms"] = active.get("fitted_terms")
+            out["active_nonzero_terms"] = active.get("nonzero_terms")
+            out["active_sky_rms_arcsec"] = active.get("sky_rms_arcsec")
         out["active_model_file"] = active["file"] if active else None
         # PS-120: when the active model was written (UTC ISO), the cutoff for
         # the audit's first slews (slews before it say nothing about it)

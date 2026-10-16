@@ -901,6 +901,10 @@ _CONFIG_FIELDS = [
     ("tpoint_coverage_min_alt", "PS_TPOINT_COVERAGE_MIN_ALT", "TPoint coverage: a cell mostly under this altitude (deg) is not usable", "PHD2", "float", False, False),
     ("tpoint_coverage_pace_s", "PS_TPOINT_COVERAGE_PACE_S", "TPoint coverage: seconds per point for the top-up time when no run pace is known", "PHD2", "float", False, False),
     ("tpoint_coverage_arm_warn", "PS_TPOINT_COVERAGE_ARM_WARN", "TPoint coverage at arm: tonight's target windows in empty / thin TPoint cells: alert = one push a night | observe = log, run event, plan only | off", "PHD2", "str", False, False),
+    ("tpoint_preflight", "PS_TPOINT_PREFLIGHT", "TPoint / ProTrack preflight at arm: block = an unguided night whose active TPoint model has no samples / no fitted model is not loaded into NINA #1 (fix pushed at arm; Arm anyway (TPoint loaded) overrides) | warn = push only | off. Coverage, RMS, model age and ProTrack off always only warn; guided arms: info", "PHD2", "str", False, False),
+    ("tpoint_preflight_rms_max_arcsec", "PS_TPOINT_PREFLIGHT_RMS_MAX_ARCSEC", "TPoint preflight: sky RMS over N arcsec = warn", "PHD2", "float", False, False),
+    ("tpoint_polar_changed_on", "PS_TPOINT_POLAR_CHANGED_ON", "TPoint preflight: date (YYYY-MM-DD) of the last polar alignment change; a TPoint model older than it warns at arm", "PHD2", "str", False, False),
+    ("tpoint_saved_models_dir", "PS_TPOINT_SAVED_MODELS_DIR", "TPoint preflight: folder with saved TPoint settings (.tptx), named in the empty-model fix (listing only)", "PHD2", "str", False, False),
     ("pointing_first_slew_warn_arcmin", "PS_POINTING_FIRST_SLEW_WARN_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = warn", "PHD2", "float", False, False),
     ("pointing_first_slew_fail_arcmin", "PS_POINTING_FIRST_SLEW_FAIL_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = fail / rebuild", "PHD2", "float", False, False),
     ("thesky_manual_max_age_days", "PS_THESKY_MANUAL_MAX_AGE_DAYS", "Manual TPoint record older than N days reads unknown", "PHD2", "float", False, False),
@@ -1543,8 +1547,12 @@ async def api_arm(request: Request):
         recipe, err = arm_recipe(body.get("recipe"), body.get("recipe_opts"))
         if err:
             return JSONResponse(status_code=400, content={"detail": err})
-        out = await armer.arm(guiding=norm_guiding_mode(guiding),
-                              **({"recipe": recipe} if recipe else {}))
+        # 2026-10-16: {"tpoint_override": true} = the TPoint model was
+        # loaded by hand; the preflight's empty-model block is not enforced
+        extra = {"recipe": recipe} if recipe else {}
+        if body.get("tpoint_override"):
+            extra["tpoint_override"] = True
+        out = await armer.arm(guiding=norm_guiding_mode(guiding), **extra)
         if out.get("refused"):   # PS-136: WATCHING a sideloaded night
             return JSONResponse(status_code=409, content={
                 **out, "detail": out["refused"]})

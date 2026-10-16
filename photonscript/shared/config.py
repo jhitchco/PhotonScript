@@ -1743,6 +1743,18 @@ class PhotonScriptConfig(BaseSettings):
     tpoint_coverage_arm_warn: str = "alert"  # alert (one push a night) | observe
                                  # (log, run event, plan) | off: tonight's
                                  # windows in empty / thin TPoint cells
+    # TPoint / ProTrack preflight at arm (scheduler/tpoint_preflight.py,
+    # 2026-10-16): block = an UNGUIDED night whose active TPoint model has
+    # no samples / no fitted model is not loaded into NINA #1 (the fix is
+    # pushed at arm) | warn = push only | off. Everything else (east- /
+    # west-only coverage, RMS, an older model than the polar change,
+    # ProTrack off) only warns; a guided arm gets it as info.
+    tpoint_preflight: str = "block"
+    tpoint_preflight_rms_max_arcsec: float = 40.0  # sky RMS over = warn
+    tpoint_polar_changed_on: str = ""    # YYYY-MM-DD of the last polar
+                                 # alignment change; an older model warns
+    tpoint_saved_models_dir: str = r"C:\astro"  # saved .tptx models, named in
+                                 # the empty-model fix ("" = TPoint folders only)
     # PS-171 TPoint mapping run (sideload recipe tpoint_mapping_then_tonight,
     # scheduler/tpoint_mapping.py). Only used when that recipe is loaded.
     tpoint_mapping_points: int = 60      # first run; at most 300
