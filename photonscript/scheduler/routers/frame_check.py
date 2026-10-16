@@ -12,7 +12,7 @@ Pure logic lives in scheduler/frame_check.py. Kept out of app.py (PS-8).
 from __future__ import annotations
 
 from fastapi import APIRouter, Query
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 

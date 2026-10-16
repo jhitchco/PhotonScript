@@ -37,7 +37,8 @@ import math
 from pathlib import Path
 
 from fastapi import APIRouter, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 from photonscript.scheduler import sub_index
 

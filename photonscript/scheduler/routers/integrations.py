@@ -46,7 +46,7 @@ plain defs (threadpool) and import app helpers lazily (PS-8 router split).
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, Body
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 from pydantic import ValidationError
 
 from photonscript.scheduler import integrations as integ

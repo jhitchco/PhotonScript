@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Header, Request
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 from photonscript.scheduler import remote_cli as rc
 

@@ -12,7 +12,7 @@ Handlers lazily import get_config to avoid an import cycle with app.py.
 from __future__ import annotations
 
 from fastapi import APIRouter, Body
-from fastapi.responses import JSONResponse
+from photonscript.shared.json_safe import SafeJSONResponse as JSONResponse
 
 router = APIRouter()
 
