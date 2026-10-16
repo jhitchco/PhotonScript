@@ -137,6 +137,14 @@ class PhotonScriptConfig(BaseSettings):
     # a morning report line. alert | panel (no push) | off. Observe only.
     piggy_guard_mode: str = "alert"
     piggy_guard_grace_min: float = 10.0
+    # Frozen sensor watch (2026-10-16, scheduler/frozen_sensor.py): the
+    # camera (temperature + cooler power, cooler on), focuser temperature or
+    # weather station readings identical for frozen_sensor_minutes, dusk to
+    # dawn: a warning in GET /api/nina/watch and the chip, a run event, one
+    # push per rig and sensor per night. alert | panel (no push) | off.
+    # Warning only, never acted on.
+    frozen_sensor_mode: str = "alert"
+    frozen_sensor_minutes: float = 30.0
     # Night pilot (2026-10-13, scheduler/night_pilot.py): turns the sub
     # doctor's diagnoses into bounded adjustments while the armer is RUNNING
     # (stop a stray PHD2, unguided remainder on a FAIL calibration, shorter
@@ -1324,6 +1332,16 @@ class PhotonScriptConfig(BaseSettings):
     # NINA's own interrupt (5 s watchdog) plus the UNSAFE branch's park.
     unsafe_stop_enabled: bool = True
     unsafe_stop_grace_s: int = 120
+    # Safety dropout grace (2026-10-16): an UNREADABLE safety read on the
+    # armer (ninaAPI error / timeout, monitor not Connected) is a dropout,
+    # never acted on inside this grace (and before 2 unreadable reads in a
+    # row). Past it: safety_dropout_action "alert" (default) = one push
+    # only, nothing stops or parks; "unsafe" (opt-in) = the normal unsafe
+    # path (pause, PS-77 stop / park, operator-pause park). One push either way; start / end logged (run event kind
+    # safety_dropout). A REPORTED unsafe (Connected, IsSafe false) is acted
+    # on at once, never graced.
+    safety_dropout_grace_s: int = 60
+    safety_dropout_action: str = "alert"   # alert | unsafe (opt-in)
     # PS-1 cross-check, observe only: when NINA #1 first reads unsafe in an
     # episode, read NINA #2's safety monitor once (same AARO device, its own
     # driver). NINA #2 safe while NINA #1 is unsafe = suspect (driver or

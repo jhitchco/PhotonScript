@@ -1510,6 +1510,80 @@ Night test needed: an armed act-mode night for each watch action (one at a
 time), a mid-night roof closure with the new companion (NINA #2 darks start
 and hand back on safe), and the hook once ps-unguided-guard lands.
 
+### Safety dropout grace: an unreadable monitor is not a closed roof (2026-10-16)
+
+The armer reads NINA #1's safety monitor every 30 s tick. Three answers:
+SAFE, UNSAFE (Connected, IsSafe false) and UNREADABLE (ninaAPI error or
+timeout, `Success: false`, or the monitor reported not Connected). Before
+this change an unreadable read never paused anything (only the ~3 min
+"UNREADABLE" push); a sustained one was left to NINA's own
+SafetyMonitorCondition.
+
+- A reported UNSAFE acts on the first tick, as before (PAUSED_UNSAFE, push,
+  PS-77 stop / park after `unsafe_stop_grace_s`). Never graced, also when a
+  dropout is in progress.
+- An UNREADABLE read starts a dropout (log line "safety dropout START", run
+  event kind `safety_dropout` value `start`). Inside
+  `safety_dropout_grace_s` (60) and before 2 unreadable reads in a row it
+  changes nothing: no pause, no park, no push.
+- Past the grace: one priority push ("UNREADABLE for N s, past the 60 s
+  dropout grace"), event `over_grace`. With `safety_dropout_action`
+  `alert` (the default) that push is all: the read stays unknown and
+  nothing pauses, stops or parks (the old behaviour). `unsafe` is an
+  opt-in: the read then counts as UNSAFE: RUNNING pauses (the pause push
+  says it is a dropout), PS-77 stops / parks if SAFE_LOOP is still running
+  `unsafe_stop_grace_s` later (and re-dispatches once safe), an operator
+  pause parks, a watched night pauses (alert only). The watchdog's own ~3 min push is not
+  repeated; its "readable again" push closes the episode.
+- The first readable read ends the dropout (event `end`, with its length,
+  reads and whether it outlasted the grace). Unreadable reads more than
+  5 min apart are separate dropouts (no carry-over from an earlier night).
+- Not changed: the dawn flat hold and the pre-dusk hot-pixel map use the raw
+  read; the hot-pixel map in a pause only runs on a reported unsafe; the
+  safety history records the raw read (grading rejects only reported
+  unsafe); the PS-1 cross-check runs only on a reported unsafe.
+- Not covered (NINA side): NINA's own SafetyMonitorCondition treats a
+  disconnected monitor as unsafe at once, so a NINA-side blip still makes
+  the night loop leave SAFE_LOOP and park. PhotonScript cannot grace that.
+
+Night test needed: an armed night with a deliberate short safety dropout
+(disconnect the safety monitor in NINA #1 for under 60 s: no pause, "START" /
+"END" lines in the scheduler log and the events file) and a long one (over
+60 s with the roof safe: one push, the armer stays RUNNING with the default
+`alert`; only if `unsafe` is opted in: PAUSED_UNSAFE, PS-77 check, resume
+once it reads safe again). A real roof closure the same week to confirm the
+immediate pause is unchanged.
+
+### Frozen sensor watch: a reading that stopped moving (2026-10-16)
+
+`scheduler/frozen_sensor.py`, in the PS-150 loop (60 s), dusk to dawn
+(`nina_watch_sun_alt_deg`), per rig, GETs only. A reading identical within
+1e-6 for `frozen_sensor_minutes` (30) is frozen:
+
+- camera: Temperature and CoolerPower together, only while Connected with
+  the cooler on (a regulated sensor holds its setpoint, but its TEC power
+  moves; a warm sensor is not judged);
+- focuser: the EAF Temperature (the focus model's ambient proxy, known to
+  freeze at 21.29 C);
+- weather: every finite field of NINA's weather device together
+  (temperature, humidity, dew point, pressure, sky temperature / quality /
+  brightness, cloud cover, wind). One field may stay put; the station may
+  not.
+
+The safety monitor is a boolean that legitimately reads the same all night,
+so it is not judged here (its liveness is the dropout grace above and the
+agent's reconnect watchdog). An unreadable reading resets that sensor's
+clock. Output: `GET /api/nina/watch` key `frozen` (per rig and sensor the
+value and minutes unchanged, plus the frozen list), amber lines in the NINA
+watch chip on the dashboard, run events kind `frozen_sensor` (`frozen` /
+`clear`) and one push per rig and sensor per night (priority 0).
+`frozen_sensor_mode`: alert | panel (no push) | off. Warning only: nothing
+acts on it.
+
+Night test needed: one armed night with the dashboard chip open; confirm no
+false flag on a regulated camera and the AARO station, and that a frozen EAF
+thermometer (21.29 C) is flagged once.
+
 ### Stuck-loop detector: should be imaging, no lights (2026-10-15)
 
 Why: 2026-10-14 22:21 to 22:41 MDT NINA #1 ran AF, center, park, unpark
