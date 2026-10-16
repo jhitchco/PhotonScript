@@ -139,7 +139,7 @@ def moon_window_tonight(config, now: datetime | None = None) -> dict:
     return {"available": True, "down_at_dusk": down_at_dusk,
             "illum_pct": info.get("illum_pct"),
             "alt_at_dusk_deg": round(float(alt[0]), 1),
-            "dusk_utc": dusk, "dawn_utc": dawn,
+            "dusk_utc": dusk, "dawn_utc": dawn, "now_utc": now,
             "rise_local_hh": rise_local.hour if rise_local else None,
             "rise_local_mm": rise_local.minute if rise_local else None,
             # PS-180: the planner caps a broadband-only target's window here
@@ -162,9 +162,21 @@ def broadband_deferred(mw: dict) -> bool:
         return False
     if sets_soon_after_dusk(mw):
         return False
+    if moon_already_set(mw):
+        return False
     illum = mw.get("illum_pct")
     # 0% is a real value (new moon up at dusk), not "unknown" (PS-106).
     return True if illum is None else illum >= BROADBAND_DEFER_ILLUM_PCT
+
+
+def moon_already_set(mw: dict) -> bool:
+    """The moon was up at dusk but has set by now (the plan or restart time):
+    the rest of the night is moonless, so broadband is not deferred
+    (2026-10-15: 28% moon setting 2 h after dusk deferred the whole night)."""
+    if not mw or mw.get("down_at_dusk"):
+        return False
+    set_utc, now = mw.get("set_utc"), mw.get("now_utc")
+    return bool(set_utc and now and now >= set_utc)
 
 
 def sets_soon_after_dusk(mw: dict, grace_h: float = BROADBAND_MOONSET_GRACE_H) -> bool:
@@ -201,6 +213,8 @@ def describe_moon(mw: dict) -> str:
     if broadband_deferred(mw):
         verdict = ("broadband deferred: the moon is up at dusk and at least "
                    f"{BROADBAND_DEFER_ILLUM_PCT}% lit")
+    elif moon_already_set(mw):
+        verdict = "broadband OK: the moon has set"
     elif sets_soon_after_dusk(mw):
         verdict = (f"broadband OK: the moon sets within "
                    f"{BROADBAND_MOONSET_GRACE_H:g} h of dusk")

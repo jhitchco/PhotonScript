@@ -205,3 +205,16 @@ def test_moon_setting_soon_after_dusk_does_not_defer_broadband():
     late = {**mw, "set_utc": dusk + timedelta(hours=4)}
     assert broadband_deferred(late) is True
     assert broadband_deferred({**mw, "set_utc": None}) is True
+
+
+def test_moon_already_set_allows_broadband():
+    # 2026-10-15: 28% moon up at dusk, sets 2 h after dusk; after moonset
+    # (a restart / arm later in the night) broadband is allowed
+    from datetime import datetime, timedelta
+    dusk = datetime(2026, 10, 16, 2, 1)
+    mw = {"available": True, "down_at_dusk": False, "illum_pct": 28,
+          "alt_at_dusk_deg": 17.2, "dusk_utc": dusk,
+          "set_utc": dusk + timedelta(hours=2), "set_local": "22:03"}
+    assert broadband_deferred({**mw, "now_utc": dusk}) is True
+    assert broadband_deferred({**mw, "now_utc": dusk + timedelta(hours=3)}) is False
+    assert "has set" in describe_moon({**mw, "now_utc": dusk + timedelta(hours=3)})
