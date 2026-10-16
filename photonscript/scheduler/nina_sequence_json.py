@@ -82,6 +82,7 @@ TPOINT_MAPPING_NOTE = ("No center, no sync, no meridian flip trigger: every "
                        "point is a blind Slew to Alt/Az, one short frame and "
                        "the tpoint-sample script.")
 FILTER_UNTIL_MOONRISE_SUFFIX = " until moonrise"  # "<filter> until moonrise"
+FILTER_AFTER_MOONSET_SUFFIX = " after moonset"    # "<filter> after moonset"
 # PS-61: with the cooler gate on, each light block is its own container
 # "<target> filter block (cooler-gated)" whose first item is the gate, so a
 # gate SKIP interrupts just that block.
@@ -1113,6 +1114,19 @@ def _time_condition_at(hh: int, mm: int) -> dict:
             "NINA.Sequencer"))
 
 
+def _wait_for_time_at(hh: int, mm: int) -> dict:
+    """WaitForTime until a fixed local clock time (e.g. moonset). Same
+    noon rollover as _time_condition_at: once the time has passed tonight
+    it returns at once."""
+    return _make_typed(
+        "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
+        Hours=hh, Minutes=mm, MinutesOffset=0, Seconds=0,
+        SelectedProvider=_make_typed(
+            "NINA.Sequencer.Utility.DateTimeProvider.TimeProvider, "
+            "NINA.Sequencer"),
+        ErrorBehavior=0, Attempts=1)
+
+
 def _handoff_condition(target) -> dict | None:
     """PS-180: TimeCondition at the target's handoff (planner window end) in
     local clock time, or None when the target keeps the mount to the loop
@@ -1313,8 +1327,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
     ordered = active
     bb_condition = None
     bb_deferred_note = None
+    bb_wait = None   # (hh, mm) local moonset: broadband waits for it
     if bb:
-        from photonscript.scheduler.moon import broadband_deferred
+        from photonscript.scheduler.moon import (broadband_deferred,
+                                                 broadband_from_local)
         mw = _moon_window()
         if mw.get("available") and mw.get("down_at_dusk"):
             # dark evening: broadband first, capped at moonrise
@@ -1323,7 +1339,10 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
                 bb_condition = _time_condition_at(mw["rise_local_hh"],
                                                   mw["rise_local_mm"])
         elif not broadband_deferred(mw):
-            ordered = bb + nb  # faint moon: broadband fine any time
+            # 2026-10-16: a bright moon up at dusk that sets before dawn:
+            # narrowband first, broadband after a wait until moonset
+            bb_wait = broadband_from_local(mw)
+            ordered = (nb + bb) if bb_wait else (bb + nb)  # faint: any time
         else:
             # moon up at dusk and bright: defer broadband tonight
             bb_deferred_note = mw.get("illum_pct", "?")
@@ -1438,6 +1457,17 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             items.append(_pushover("Imaging",
                                    f"{target.name}: focused, centered, unguided "
                                    "(TPoint + ProTrack), capturing"))
+    if bb_wait is not None and not nb:
+        # broadband-only: nothing to shoot before moonset, so the target
+        # waits there before it slews (the night starts at moonset)
+        hh, mm = bb_wait
+        items[:0] = [
+            _annotation(f"Moon up at dusk, sets {hh:02d}:{mm:02d} local: "
+                        f"{target.name} is broadband-only, so it waits for "
+                        "moonset before it slews"),
+            _pushover("Imaging", f"{target.name}: waiting for moonset "
+                      f"({hh:02d}:{mm:02d} local), broadband after"),
+            _wait_for_time_at(hh, mm)]
     if bb_deferred_note is not None:
         items.append(_pushover(
             "Imaging",
@@ -1634,6 +1664,12 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
             return [_seq_container(
                 f"{exp.filter_type.value}{FILTER_UNTIL_MOONRISE_SUFFIX}", blk,
                 conditions=[copy.deepcopy(bb_condition)])]
+        if exp.filter_type.value not in NB_SET and bb_wait is not None and nb:
+            # mixed target: its narrowband runs first, each broadband block
+            # waits for moonset (a no-op once the moon has set)
+            return [_seq_container(
+                f"{exp.filter_type.value}{FILTER_AFTER_MOONSET_SUFFIX}",
+                [_wait_for_time_at(*bb_wait)] + blk)]
         return blk
 
     shorts = [e for e in ordered if e.short_remaining() > 0]

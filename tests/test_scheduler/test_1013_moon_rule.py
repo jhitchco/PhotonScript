@@ -202,8 +202,12 @@ def test_moon_setting_soon_after_dusk_does_not_defer_broadband():
     assert sets_soon_after_dusk(mw)
     assert broadband_deferred(mw) is False
     assert "sets within" in describe_moon(mw)
+    # 2026-10-16: a later moonset no longer defers the night; broadband
+    # opens at moonset (moon.broadband_from)
+    from photonscript.scheduler.moon import broadband_from
     late = {**mw, "set_utc": dusk + timedelta(hours=4)}
-    assert broadband_deferred(late) is True
+    assert broadband_deferred(late) is False
+    assert broadband_from(late) == dusk + timedelta(hours=4)
     assert broadband_deferred({**mw, "set_utc": None}) is True
 
 
@@ -215,6 +219,10 @@ def test_moon_already_set_allows_broadband():
     mw = {"available": True, "down_at_dusk": False, "illum_pct": 28,
           "alt_at_dusk_deg": 17.2, "dusk_utc": dusk,
           "set_utc": dusk + timedelta(hours=2), "set_local": "22:03"}
-    assert broadband_deferred({**mw, "now_utc": dusk}) is True
+    from photonscript.scheduler.moon import broadband_from
+    # before moonset: not deferred, broadband from moonset (2026-10-16)
+    assert broadband_deferred({**mw, "now_utc": dusk}) is False
+    assert broadband_from({**mw, "now_utc": dusk}) == mw["set_utc"]
     assert broadband_deferred({**mw, "now_utc": dusk + timedelta(hours=3)}) is False
+    assert broadband_from({**mw, "now_utc": dusk + timedelta(hours=3)}) is None
     assert "has set" in describe_moon({**mw, "now_utc": dusk + timedelta(hours=3)})

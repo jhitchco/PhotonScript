@@ -184,16 +184,17 @@ def test_moon_rule_bright_moon_makes_broadband_goals_ineligible(tmp_path, monkey
 
 
 def test_moon_rule_a_moon_setting_soon_after_dusk_allows_broadband(tmp_path, monkeypatch):
-    """The same 20% moon that does NOT set soon defers broadband: then no
-    goal tonight is eligible and the night plans split (and empty, as the
-    split planner skips broadband-only goals too)."""
+    """The same 20% moon setting 3 h after dusk no longer defers the night
+    (2026-10-16): broadband opens at moonset, so the goals stay eligible
+    with only the post-moonset share of their broadband counted."""
     cfg = _cfg(tmp_path)
     mw = moon.moon_window_tonight(cfg, now=NOW)
-    late = dict(mw, set_utc=mw["dusk_utc"] + 3 * H)
+    late = dict(mw, set_utc=mw["dusk_utc"] + 3 * H, now_utc=NOW)
     monkeypatch.setattr(moon, "moon_window_tonight", lambda c, now=None: late)
     ts, info = _plan(cfg, night_mode="deep")
-    assert info["deep_pick"] is None and "split" in info["deep_note"]
-    assert not any(s["eligible"] for s in info["deep_scores"])
+    assert info["deep_pick"] is not None
+    rows = [s for s in info["deep_scores"] if s["eligible"]]
+    assert rows and all(s["components"]["moon"]["norm"] < 1 for s in rows)
     monkeypatch.setattr(moon, "moon_window_tonight", lambda c, now=None: mw)
     _ts, info = _plan(cfg, night_mode="deep")
     assert all(s["eligible"] for s in info["deep_scores"])

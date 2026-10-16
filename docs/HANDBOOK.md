@@ -2231,6 +2231,20 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   and the skip line says why (illumination, altitude at dusk, rise / set).
   The rule itself is unchanged: broadband defers only with the moon up at
   dusk and at least 20 % lit.
+- 2026-10-16 (moon windows): "Skipping Andromeda Galaxy tonight: ... moon
+  37% lit, up at dusk (alt 24 deg), sets 22:54 local" for all three goals,
+  then "Night plan: 0 targets". The plan is made at pre-config, before
+  moonset, so the 1.5 h grace and the already-set rule never helped.
+  Now a moon up at dusk that sets before dawn never defers the night
+  (`moon.broadband_deferred`); `moon.broadband_from` is the moonset: the
+  planner opens broadband-only windows there (the symmetric `up_from` of
+  the PS-180 moonrise cap) and runs targets with narrowband first; the
+  generator puts a WaitForTime at the local moonset before a broadband-only
+  target slews, and wraps each broadband block of a mixed target in
+  "<filter> after moonset" (WaitForTime first). The campaign and deep-night
+  scores count only the post-moonset broadband share. Only a moon up all
+  night (and at least 20 % lit) still defers broadband. No darks run
+  during the wait (darks only run while unsafe).
 - 2026-10-06 (cool stall, PS-154): a clear new-moon night lost >1 h. The
   Start-area Cool Camera item asked for -10 C (the NinaSequenceTarget
   camera_temp_c model default, carried in by the PS-144 dusk focus
