@@ -41,6 +41,12 @@ def setup_logging(level: str = "INFO", data_dir: Optional[Path] = None):
         format=_LOG_FORMAT,
         datefmt=_LOG_DATEFMT,
     )
+    # 2026-10-16: color the console by level on a TTY (files stay plain)
+    try:
+        from photonscript.shared.log_color import colorize_console
+        colorize_console()
+    except Exception:  # noqa: BLE001 - never let logging setup crash startup
+        pass
     # Quiet down noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

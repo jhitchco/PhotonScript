@@ -102,7 +102,8 @@ def to_markup(ln: LogLine) -> str:
     if not ln.level:
         return f"[dim]{_escape(ln.raw)}[/dim]"
     lvl_style = LEVEL_STYLE.get(ln.level, "")
-    msg_style = lvl_style if ln.level in ("ERROR", "CRITICAL", "WARNING") else ""
+    msg_style = (lvl_style if ln.level in ("ERROR", "CRITICAL", "WARNING",
+                                           "DEBUG") else "")
     if not msg_style:
         for rx, style in HIGHLIGHTS:
             if rx.search(ln.msg):
@@ -204,9 +205,19 @@ def service_log_path(config) -> Path:
 
 
 def render(lines: Iterable[str], flt: LineFilter, color: bool = True) -> list[str]:
+    """Kept lines, as rich markup colored by level (2026-10-16: a
+    traceback under an ERROR / CRITICAL line is red, not dim)."""
     out = []
+    last = None
     for raw in lines:
         ln = parse_line(raw)
+        if ln.level:
+            last = ln.level
         if flt.keep(ln):
-            out.append(to_markup(ln) if color else ln.raw)
+            if not color:
+                out.append(ln.raw)
+            elif not ln.level and last in ("ERROR", "CRITICAL"):
+                out.append(f"[red]{_escape(ln.raw)}[/red]")
+            else:
+                out.append(to_markup(ln))
     return out

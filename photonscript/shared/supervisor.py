@@ -205,6 +205,11 @@ def setup_supervisor_logging(data_dir: Path) -> Path:
         sh = logging.StreamHandler(sys.stdout)
         sh.setFormatter(fmt)
         logger.addHandler(sh)
+        try:   # 2026-10-16: colored by level on a TTY
+            from photonscript.shared.log_color import colorize_console
+            colorize_console(logger)
+        except Exception:  # noqa: BLE001
+            pass
     return path
 
 
