@@ -21,6 +21,16 @@ Inputs per stage:
                     RC16 out/final/*_<F>_linear.xisf, else master_<F>.xisf
   final:            out/final/*_final.xisf of both runs (already stretched)
 RC16 luminance = the L master, else the mean of the R/G/B (or any) masters.
+RC16 input for a galaxy (2026-10-16, --rc16-input auto): the raw
+integration masters (out/master/master_L_hdr / master_L and the matching
+R / G / B) win over the finish *_linear.xisf, because the finish runs
+GradientCorrection, which on a frame-filling galaxy (the M31 core) takes
+part of the halo as gradient and leaves a seam at the footprint edge; the
+blend's own background match against the wide OSC frame handles the
+gradient instead. Other targets (and an unknown catalog type) keep the
+finish linears first. The finish linears are the fallback either way;
+--rc16-input finish | raw forces one. A narrowband blend keeps the finish
+linears first.
 PS-186: at the linear stage the RC16 luminance first gets a BlurXTerminator
 pass (correct-only, then sharpen) when the process is installed and rc16_bxt
 is not off (config blend_rc16_bxt + finish_use_rcastro). The finish saves
@@ -58,6 +68,7 @@ core crops with the OSC stars, in <staging_root>/Blend/<target>_blend_nb_<time>:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -85,6 +96,8 @@ NB_DEFAULTS = {"ha_weight": 0.8, "oiii_weight": 0.6, "ha_boost": 0.15, "oiii_boo
 BLEND_DIR = "Blend"
 STAGES = ("linear", "final")
 LUM_ORDER = ("L", "R", "G", "B")
+RC16_INPUTS = ("auto", "finish", "raw")   # --rc16-input
+RAW_KINDS = ("galaxy",)                   # auto: raw masters first for these catalog types
 # RC16 footprint mask and seam (2026-10-16 M31 seam): eroded by the inset,
 # feathered over ~18% of the footprint's short side (~135 OSC px, ~750 RC16
 # px), corners rounded by a blur of 20% of the feather; the RC16 is matched to
@@ -100,6 +113,9 @@ PIXEL_UM = 3.76
 _SKIP_MASTER = re.compile(r"^master(Bias|Dark|Flat|OSC)", re.I)
 _HDR = "_hdr"                                     # integration/hdr.py SUFFIX
 _EXP_VARIANT = re.compile(r"^(.+)_\d+(?:\.\d+)?s$")   # PS-177 L_30s -> L
+
+
+logger = logging.getLogger(__name__)
 
 
 class BlendError(PipelineError):
@@ -126,6 +142,8 @@ class Inputs:
     notes: list[str] = field(default_factory=list)
     mode: str = "l"                       # l | nb (select_mode)
     mode_why: str = ""
+    rc16_input: str = ""                  # raw | finish | given (which RC16 files were taken)
+    rc16_input_why: str = ""
 
     def nb(self) -> dict[str, Path]:
         return nb_masters(self.rc16)
@@ -162,6 +180,8 @@ class Options:
     bg_target: float = pjsr.FINISH_DEFAULTS["bg_target"]
     shadow_sigma: float = pjsr.FINISH_DEFAULTS["shadow_sigma"]
     rc16_bxt: str = "auto"            # PS-186: auto | on | off (rc16_bxt_mode(cfg))
+    rc16_input: str = "auto"          # auto (raw masters first for a galaxy) | finish | raw
+    object_type: str = ""             # catalog type override for rc16_input auto ("" = the catalog)
     mode: str = "auto"                # l | nb | auto (nb when the RC16 run has an Ha master)
     ha_weight: float = NB_DEFAULTS["ha_weight"]
     oiii_weight: float = NB_DEFAULTS["oiii_weight"]
@@ -473,12 +493,47 @@ def find_runs(staging_root: Path, target: str, rig: str,
                                                 r.run_dir.name), reverse=True)
 
 
+def parse_rc16_input(v) -> str:
+    m = str(v or "auto").strip().lower()
+    if m not in RC16_INPUTS:
+        raise BlendError(f"--rc16-input must be one of {', '.join(RC16_INPUTS)} (got {v!r})")
+    return m
+
+
+def rc16_raw_first(o: Options) -> tuple[bool, str]:
+    """(take the RC16 raw integration masters before the finish linears?,
+    why) for a linear L blend: rc16_input raw = yes, finish = no, auto =
+    yes when the target's object type (o.object_type, else the catalog)
+    is a galaxy."""
+    m = parse_rc16_input(o.rc16_input)
+    if m == "raw":
+        return True, "--rc16-input raw"
+    if m == "finish":
+        return False, "--rc16-input finish"
+    kind = str(o.object_type or "").strip().lower() or pjsr.target_kind(o.target)
+    if kind and any(k in kind for k in RAW_KINDS):
+        return True, (f"{o.target} is a {kind}: the finish's GradientCorrection can take "
+                      "part of a frame-filling galaxy's halo as gradient (the 2026-10-16 M31 "
+                      "seam), so the raw integration master goes in and the blend's "
+                      "background match handles the gradient")
+    return False, ((f"{o.target} is catalogued as {kind}, not a galaxy" if kind
+                    else f"{o.target} has no catalog type")
+                   + ": the finish linears (gradient removed) first")
+
+
 def _pick(runs: list[RunInfo], stage: str, want,
-          roots: list[Path] | tuple = ()) -> tuple[RunInfo | None, dict[str, Path], str]:
+          roots: list[Path] | tuple = (), raw_first: bool = False
+          ) -> tuple[RunInfo | None, dict[str, Path], str]:
     """Newest run with what `want` needs. Linear: a run whose finish made
     the *_linear files (gradient removed, color calibrated; its own or a
     re-finish, final_dirs) beats a newer run that only has raw masters;
-    raw masters are the fallback."""
+    raw masters are the fallback. raw_first (a galaxy, rc16_raw_first):
+    the newest run with raw integration masters first, then as above."""
+    if stage == "linear" and raw_first:
+        for r in runs:
+            got = masters(r.run_dir)
+            if want(got):
+                return r, got, "raw integration master_*.xisf"
     passes = [True, False] if stage == "linear" else [False]
     for finished_only in passes:
         for r in runs:
@@ -527,10 +582,17 @@ def discover(o: Options) -> Inputs:
         rc16 = {}
         for p in o.rc16:
             rc16.setdefault(filter_of(p), Path(p))
+        rc16_input, rc16_input_why = "given", "--rc16 paths"
     else:
         runs = find_runs(o.staging_root, o.target, "rc16", o.scratch_root, o.extra_roots)
         want = (lambda g: "Ha" in nb_masters(g)) if mode == "nb" else bool
-        rc_run, rc16, what = _pick(runs, o.stage, want, roots)
+        raw_first, raw_why = (rc16_raw_first(o) if o.stage == "linear" and mode != "nb"
+                              else (False, ""))
+        rc_run, rc16, what = _pick(runs, o.stage, want, roots, raw_first)
+        if rc_run and raw_first and select_mode(rc16, mode, o.stage)[0] == "nb":
+            # auto picked a narrowband blend: it keeps the finish linears first
+            raw_first, raw_why = False, "narrowband blend (auto: RC16 Ha master)"
+            rc_run, rc16, what = _pick(runs, o.stage, want, roots)
         if not rc_run:
             raise BlendError(f"no RC16 {o.stage} master for {o.target!r} under {o.staging_root} "
                              f"({len(runs)} rc16 run(s) found); run `photonscript integrate "
@@ -538,11 +600,28 @@ def discover(o: Options) -> Inputs:
         notes.append(f"RC16 from {rc_run.run_dir.name} (v{rc_run.version}): {what}, "
                      f"filters {', '.join(sorted(rc16, key=_filter_rank))}"
                      + (" (L from the HDR master)" if "L" in rc16 and _has_hdr_l(rc_run.run_dir) else ""))
+        if o.stage == "linear":
+            took = ("raw" if all(Path(p).parent.name.lower() == "master" for p in rc16.values())
+                    else "finish")
+            if raw_first and took == "raw":
+                rc16_note = f"RC16 input: raw integration masters ({raw_why})"
+            elif raw_first:
+                rc16_note = ("RC16 input: finish linears (raw masters wanted but none found: "
+                             f"{raw_why})")
+            else:
+                rc16_note = ("RC16 input: " + ("finish linears" if took == "finish"
+                                               else "raw masters (no finish linears yet)")
+                             + (f" ({raw_why})" if raw_why else ""))
+            notes.append(rc16_note)
+            logger.info("blend %s: %s", o.target, rc16_note)
+            rc16_input, rc16_input_why = took, raw_why
+        else:
+            rc16_input, rc16_input_why = "finish", "stage final"
     missing = [str(p) for p in [osc, *rc16.values()] if not Path(p).is_file()]
     if missing:
         raise BlendError("missing input file(s): " + ", ".join(missing))
     sel, why = select_mode(rc16, mode, o.stage)
-    inp = Inputs(o.stage, osc, rc16, osc_run, rc_run, notes, sel, why)
+    inp = Inputs(o.stage, osc, rc16, osc_run, rc_run, notes, sel, why, rc16_input, rc16_input_why)
     notes.append(f"mode {sel}: {why}")
     if sel == "nb":
         nb = inp.nb()
@@ -932,7 +1011,8 @@ def _run(o: Options, echo=print) -> dict:
     result: dict = {"run_dir": str(run_dir), "dry_run": o.dry_run, "stage": inp.stage, "mode": inp.mode,
                     "channels": channel_plan(inp, core_items(o, inp)[0] if inp.mode == "nb" else None),
                     "osc": str(inp.osc), "rc16": {k: str(v) for k, v in inp.rc16.items()},
-                    "luminance_from": inp.lum_filters(), "notes": inp.notes}
+                    "luminance_from": inp.lum_filters(), "notes": inp.notes,
+                    "rc16_input": inp.rc16_input, "rc16_input_why": inp.rc16_input_why}
     if o.dry_run:
         cfg = config_for(o, inp, run_dir)
         problems = pjsr.check(render(cfg))

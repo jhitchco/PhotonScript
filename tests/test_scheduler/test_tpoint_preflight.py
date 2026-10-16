@@ -99,14 +99,51 @@ def test_1016_files_parse_as_an_empty_model():
     assert g["sky_rms_arcsec"] == pytest.approx(12.7641)
 
 
-def test_stats_marks_the_active_run_empty_although_points_fall_back(tmp_path):
+def test_stats_reports_the_empty_active_model_not_another_runs_file(tmp_path):
     cfg = _cfg(tmp_path, _tree(tmp_path, empty=True))
     st = tf.stats(cfg)
-    # the old behaviour hid it: points come from another run's data file
     assert st["active_model_file"].endswith("TPoint base run outmod.dat")
-    assert st["points"] == 99 and st["data_file"].endswith("Super Model Indat.dat")
+    # before 2026-10-16 the top level fell back to Super Model Indat.dat (99)
+    assert st["empty_model"] is True and st["ok"] is True
+    assert st["points"] == 0 and st["model_points"] == 0
+    assert st["data_file"].endswith("TPoint base run in.dat")
+    assert st["sky_rms_arcsec"] is None and st["popn_sd_arcsec"] is None
+    assert st["polar"] is None and st["model_date"] == st["data_date"]
     assert st["active_run_points"] == 0 and st["active_t_obs"] == 0
     assert st["active_nonzero_terms"] == 0 and st["protrack"] is True
+    last = st["last_saved_run"]
+    assert last["data_file"].endswith("Super Model Indat.dat") and last["points"] == 99
+    assert last["model_file"].endswith("Super Model Outmod.dat")
+    assert last["model_points"] == 91
+    assert last["sky_rms_arcsec"] == pytest.approx(12.7641)
+    assert "last saved run (not the current model)" in st["note"]
+    assert "header only (0 samples)" in st["note"]
+    text = tf.format_stats(st)
+    assert text.startswith("TPoint model EMPTY (cleared, 0 samples)")
+    assert ": 0 points" in text and "99 points" not in text.splitlines()[0]
+    assert "last saved run (NOT the current model): data " in text
+    assert "polar alignment: none (the active model is empty)" in text
+    # the history and the audit see the empty model, not the 99-point run
+    tf.save(cfg, st)
+    assert tf.history(cfg)[-1]["points"] == 0
+    assert tf.audit_observed(cfg)[0]["tpoint_points"] == 0
+
+
+def test_stats_good_model_is_not_flagged_empty(tmp_path):
+    st = tf.stats(_cfg(tmp_path, _tree(tmp_path, empty=False)))
+    assert st["empty_model"] is False and "last_saved_run" not in st
+    assert st["points"] == 99 and st["sky_rms_arcsec"] == pytest.approx(12.7641)
+    assert st["polar"] and "EMPTY" not in tf.format_stats(st)
+
+
+def test_api_tpoint_reports_the_empty_model(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from photonscript.scheduler import app
+    monkeypatch.setattr(app, "_config", _cfg(tmp_path, _tree(tmp_path, empty=True)))
+    d = TestClient(app.app).get("/api/thesky/tpoint").json()
+    assert d["empty_model"] is True and d["points"] == 0
+    assert d["last_saved_run"]["points"] == 99
+    assert "model EMPTY" in d["text"]
 
 
 # ------------------------------------------------------------- verdicts

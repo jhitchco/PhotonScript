@@ -460,6 +460,35 @@ def test_api_suggest_dry_run_create_patch_delete(client):
         == ["Andromeda Galaxy"]
 
 
+def test_api_create_honors_active_and_priority(client):
+    sug = client.get("/api/mosaics/suggest?name=M31").json()
+    r = client.post("/api/mosaics", json={**sug, "active": False,
+                                          "priority": 80})
+    assert r.status_code == 200, r.json()
+    made = [app._projects[pid] for pid in r.json()["created"]]
+    assert len(made) == 4
+    assert all(p.active is False and p.priority == 80 for p in made)
+    (m,) = client.get("/api/mosaics").json()["mosaics"]
+    assert m["active"] is False and m["priority"] == 80
+    # defaults: active, priority 50; a null priority is the default too
+    r = client.post("/api/mosaics", json={**sug, "name": "M31 B",
+                                          "priority": None})
+    made = [app._projects[pid] for pid in r.json()["created"]]
+    assert all(p.active is True and p.priority == 50 for p in made)
+
+
+def test_build_panels_active_flag_forms(tmp_path):
+    cfg = _cfg(tmp_path)
+    for raw, want in ((None, True), (True, True), (False, False),
+                      ("false", False), ("0", False), ("true", True)):
+        spec = {**mz.M31_SUGGESTION, "active": raw}
+        built = mz.build_panels(cfg, spec)
+        assert not built["errors"]
+        assert all(p.active is want for p in built["panels"]), raw
+    built = mz.build_panels(cfg, {**mz.M31_SUGGESTION, "priority": "high"})
+    assert any("priority" in e for e in built["errors"])
+
+
 def test_api_preview_and_pages(client):
     d = client.get("/api/mosaics/preview?name=X&ra_hours=0.7123&"
                    "dec_degrees=41.27&rows=2&cols=2&rotation=125&"

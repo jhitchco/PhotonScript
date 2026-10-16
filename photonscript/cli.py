@@ -4370,6 +4370,9 @@ def blend_cmd(
     rc16_bxt: str = typer.Option("", "--rc16-bxt",
                                  help="BlurXTerminator pass on the RC16 L linear master first: auto | on | off "
                                       "(default blend_rc16_bxt + finish_use_rcastro; PS-186)"),
+    rc16_input: str = typer.Option("auto", "--rc16-input",
+                                   help="RC16 linear input: auto (a galaxy takes the raw integration masters, "
+                                        "else the finish *_linear.xisf) | finish | raw"),
     mode: str = typer.Option("auto", "--mode",
                              help="l (RC16 L core) | nb (RC16 Ha / OIII / SII: HaRGB + OIII, gold, SHO / HOO "
                                   "core) | auto (nb when the RC16 run has an Ha master)"),
@@ -4444,6 +4447,7 @@ def blend_cmd(
         rc16_scale=float(getattr(cfg, "pixel_scale_arcsec", bl.RC16_SCALE) or bl.RC16_SCALE),
         mode=mode, ha_weight=ha_weight, oiii_weight=oiii_weight, ha_boost=ha_boost, oiii_boost=oiii_boost,
         nb_lum_weight=nb_lum_weight, palette=palette, extra_roots=bl.extra_roots(cfg),
+        rc16_input=rc16_input,
         **bxt, **viv,
     )
     say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
