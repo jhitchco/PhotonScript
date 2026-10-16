@@ -297,8 +297,8 @@ def test_smart_m31_moves_by_offset_with_no_block_af(monkeypatch, no_moon,
                              "AutofocusAfterHFRIncreaseTrigger",
                              "AutofocusAfterTimeTrigger"}
         assert trig["AutofocusAfterTemperatureChangeTrigger"]["Amount"] == 2.0
-        assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 15.0
-        assert trig["AutofocusAfterHFRIncreaseTrigger"]["SampleSize"] == 10
+        assert trig["AutofocusAfterHFRIncreaseTrigger"]["Amount"] == 10.0
+        assert trig["AutofocusAfterHFRIncreaseTrigger"]["SampleSize"] == 4
         assert trig["AutofocusAfterTimeTrigger"]["Amount"] == 60.0
     # the only AF left in the loop is OIII's (it paces the loop, PS-149)
     loop = _imaging(seq)

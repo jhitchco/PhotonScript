@@ -51,8 +51,8 @@ NARROWBAND = ("Ha", "OIII", "SII")
 # gate judged recent and good). The floors keep a config typo from turning
 # it into an AF after every couple of subs, which would undo the gate's
 # skipped AFs (lint rule af-hfr checks the same floors).
-HFR_DEFAULT_PCT = 15.0
-HFR_DEFAULT_SAMPLES = 10
+HFR_DEFAULT_PCT = 10.0
+HFR_DEFAULT_SAMPLES = 4
 HFR_MIN_PCT = 5.0
 HFR_MAX_PCT = 100.0
 HFR_MIN_SAMPLES = 3
@@ -62,8 +62,8 @@ _HFR_PREFIX = {"rc16": "rc16", "piggyback": "piggyback"}
 
 def hfr_trigger(cfg, rig: str = "rc16") -> dict:
     """{"pct", "samples"} for a rig's HFR-rise AF trigger, from
-    <rig>_af_hfr_increase_pct (default 15) and <rig>_af_hfr_sample_size
-    (default 10), clamped to [HFR_MIN_PCT, HFR_MAX_PCT] and
+    <rig>_af_hfr_increase_pct (default 10) and <rig>_af_hfr_sample_size
+    (default 4), clamped to [HFR_MIN_PCT, HFR_MAX_PCT] and
     [HFR_MIN_SAMPLES, HFR_MAX_SAMPLES]. rig: "rc16" | "piggyback"."""
     pre = _HFR_PREFIX.get(str(rig), "rc16")
 

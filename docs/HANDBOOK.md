@@ -1631,10 +1631,11 @@ increase" trigger (`NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTr
 NINA.Sequencer`, fields `Amount` % and `SampleSize` subs; type string from
 the known-good AARO sequence, a1f2886, and a NINA 3 saved sequence). The
 values come from `af_policy.hfr_trigger`: `rc16_af_hfr_increase_pct` /
-`piggyback_af_hfr_increase_pct` (15 %, min 5, max 100) and
-`rc16_af_hfr_sample_size` / `piggyback_af_hfr_sample_size` (10 subs, min
-3, max 50). Before, every_block and focus-drive hard-coded 10 % / 4 and
-only smart read the percent.
+`piggyback_af_hfr_increase_pct` (10 %, min 5, max 100) and
+`rc16_af_hfr_sample_size` / `piggyback_af_hfr_sample_size` (4 subs, min
+3, max 50). The defaults are the values the sequences always used, so a
+deploy changes nothing until a key is set. Before, every_block and
+focus-drive hard-coded 10 % / 4 and only smart read the percent.
 
 With the re-entry gates: NINA measures the rise over the lights since its
 own last AF, so a fresh AF leaves it no history (no trigger until

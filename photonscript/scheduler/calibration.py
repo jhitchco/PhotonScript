@@ -956,7 +956,7 @@ def _osc_af_triggers(config) -> list:
     from photonscript.scheduler.nina_sequence_json import (
         _autofocus_hfr_trigger, _autofocus_temp_trigger, _autofocus_time_trigger)
     temp_c = float(getattr(config, "piggyback_af_temp_change_c", 1.5))
-    hfr = hfr_trigger(config, "piggyback")   # 15% over 10 subs by default
+    hfr = hfr_trigger(config, "piggyback")   # 10% over 4 subs by default
     every_min = int(getattr(config, "piggyback_af_interval_min", 60))
     trig = [_autofocus_temp_trigger(temp_c),
             _autofocus_hfr_trigger(hfr["pct"], hfr["samples"])]

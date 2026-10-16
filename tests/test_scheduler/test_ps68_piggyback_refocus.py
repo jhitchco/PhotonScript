@@ -40,7 +40,7 @@ def test_default_refocus_triggers():
                          "AutofocusAfterTimeTrigger"}
     assert trig["AutofocusAfterTemperatureChangeTrigger"]["Amount"] == 1.5
     hfr = trig["AutofocusAfterHFRIncreaseTrigger"]
-    assert (hfr["Amount"], hfr["SampleSize"]) == (15.0, 10)
+    assert (hfr["Amount"], hfr["SampleSize"]) == (10.0, 4)
     assert trig["AutofocusAfterTimeTrigger"]["Amount"] == 60.0
     for t in trig.values():
         assert t["$type"].startswith(_AF)

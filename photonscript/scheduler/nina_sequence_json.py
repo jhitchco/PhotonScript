@@ -816,15 +816,15 @@ def _autofocus_filter_trigger() -> dict:
         TriggerRunner=_trigger_runner([_autofocus()]))
 
 
-def _autofocus_hfr_trigger(amount_pct: float = 15.0,
-                           sample_size: int = 10,
+def _autofocus_hfr_trigger(amount_pct: float = 10.0,
+                           sample_size: int = 4,
                            runner: list | None = None) -> dict:
     """NINA's "Autofocus after HFR increase": AF when the HFR of the lights
     since NINA's last AF has risen Amount % over SampleSize subs. $type as
     in the known-good AARO sequence (a1f2886) and a NINA 3 saved sequence
     (FullSession_2026-02-28.json: Amount, SampleSize). Values per rig:
-    af_policy.hfr_trigger (rc16 / piggyback _af_hfr_increase_pct 15,
-    _af_hfr_sample_size 10)."""
+    af_policy.hfr_trigger (rc16 / piggyback _af_hfr_increase_pct 10,
+    _af_hfr_sample_size 4)."""
     return _make_typed(
         "NINA.Sequencer.Trigger.Autofocus.AutofocusAfterHFRIncreaseTrigger, "
         "NINA.Sequencer",
@@ -2837,7 +2837,7 @@ def generate_nina_json(sequence: NinaSequenceFile,
     smart = _smart_af_spec(_cfg, af_ft)     # PS-176, None = every_block
     reentry = _reentry_spec(_cfg)           # 2026-10-15, None = no gates
     from photonscript.scheduler.af_policy import hfr_trigger
-    hfr = hfr_trigger(_cfg, "rc16")         # HFR-rise AF trigger (15% / 10)
+    hfr = hfr_trigger(_cfg, "rc16")         # HFR-rise AF trigger (10% / 4)
     start_items += _reentry_notice(_cfg, reentry)
     target_containers = []
     first_guided = True

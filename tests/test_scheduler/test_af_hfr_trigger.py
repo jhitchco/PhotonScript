@@ -1,8 +1,8 @@
 """AF on HFR rise: NINA's "Autofocus after HFR increase" trigger
 (AutofocusAfterHFRIncreaseTrigger, Amount % over SampleSize subs) on every
 RC16 light block, any AF policy, and on the Piggy-600 OSC light loop, from
-per-rig config (rc16_ / piggyback_af_hfr_increase_pct 15,
-rc16_ / piggyback_af_hfr_sample_size 10, floors 5 % and 3 subs).
+per-rig config (rc16_ / piggyback_af_hfr_increase_pct 10,
+rc16_ / piggyback_af_hfr_sample_size 4, floors 5 % and 3 subs).
 
 It must not fight the re-entry gates (2026-10-15): the trigger lives only
 on the light SmartExposures (never in a gate container, never on the
@@ -70,12 +70,12 @@ def _short(t):
 
 def test_config_defaults_per_rig():
     c = PhotonScriptConfig()
-    assert c.rc16_af_hfr_increase_pct == 15.0
-    assert c.rc16_af_hfr_sample_size == 10
-    assert c.piggyback_af_hfr_increase_pct == 15.0
-    assert c.piggyback_af_hfr_sample_size == 10
+    assert c.rc16_af_hfr_increase_pct == 10.0
+    assert c.rc16_af_hfr_sample_size == 4
+    assert c.piggyback_af_hfr_increase_pct == 10.0
+    assert c.piggyback_af_hfr_sample_size == 4
     for rig in ("rc16", "piggyback"):
-        assert af_policy.hfr_trigger(c, rig) == {"pct": 15.0, "samples": 10}
+        assert af_policy.hfr_trigger(c, rig) == {"pct": 10.0, "samples": 4}
 
 
 def test_hfr_trigger_reads_each_rig_and_clamps():
@@ -97,7 +97,7 @@ def test_hfr_trigger_reads_each_rig_and_clamps():
     class Junk:
         rc16_af_hfr_increase_pct = "x"
         rc16_af_hfr_sample_size = None
-    assert af_policy.hfr_trigger(Junk(), "rc16") == {"pct": 15.0, "samples": 10}
+    assert af_policy.hfr_trigger(Junk(), "rc16") == {"pct": 10.0, "samples": 4}
 
 
 # --- RC16 generator -----------------------------------------------------------
@@ -114,7 +114,7 @@ def test_every_rc16_light_block_carries_the_trigger(monkeypatch, no_moon,
         assert len(trig) == 1, [_short(t["$type"])
                                 for t in s["Triggers"]["$values"]]
         t = trig[0]
-        assert (t["Amount"], t["SampleSize"]) == (15.0, 10)
+        assert (t["Amount"], t["SampleSize"]) == (10.0, 4)
         runner = [_short(i["$type"])
                   for i in t["TriggerRunner"]["Items"]["$values"]]
         assert "RunAutofocus" in runner
@@ -148,8 +148,8 @@ def test_rc16_config_below_the_floor_is_clamped(monkeypatch, no_moon):
 def test_smart_annotation_names_the_sample_size(monkeypatch):
     spec = af_policy.smart_spec(PhotonScriptConfig(rc16_af_policy="smart"),
                                 FilterType.LUMINANCE, model={})
-    assert (spec["hfr_pct"], spec["hfr_n"]) == (15.0, 10)
-    assert "HFR rise of 15% over 10 subs" in af_policy.describe(spec)
+    assert (spec["hfr_pct"], spec["hfr_n"]) == (10.0, 4)
+    assert "HFR rise of 10% over 4 subs" in af_policy.describe(spec)
 
 
 # --- the re-entry gates -------------------------------------------------------
@@ -164,7 +164,7 @@ def test_trigger_stays_out_of_the_reentry_gates(monkeypatch, no_moon, script,
         assert not _hfr_triggers(c)
         assert not c.get("Triggers", {}).get("$values")
     # the gate decides the start AF; the trigger only watches the lights
-    # after it, on the SmartExposure, with a sample of 10 subs
+    # after it, on the SmartExposure, with a sample of 4 subs
     smarts = _smart_exposures(seq)
     assert len(_hfr_triggers(seq)) == len(smarts) >= 1
     assert all(t["SampleSize"] >= af_policy.HFR_MIN_SAMPLES
@@ -188,7 +188,7 @@ def test_piggy_light_loop_trigger_defaults_and_config():
     loop = next(n for n in _walk(_companion())
                 if n.get("Name") == "OSC_LIGHT_LOOP")
     t = [x for x in loop["Triggers"]["$values"] if x["$type"] == HFR_TYPE]
-    assert len(t) == 1 and (t[0]["Amount"], t[0]["SampleSize"]) == (15.0, 10)
+    assert len(t) == 1 and (t[0]["Amount"], t[0]["SampleSize"]) == (10.0, 4)
     trig = _hfr_triggers(_companion(piggyback_af_hfr_increase_pct=25,
                                     piggyback_af_hfr_sample_size=1))
     assert [(x["Amount"], x["SampleSize"]) for x in trig] == [(25.0, 3)]

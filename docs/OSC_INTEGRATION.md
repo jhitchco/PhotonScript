@@ -731,8 +731,8 @@ No new code needed; the machinery matches the light epoch via `rig_config(PIGGYB
   pre-dawn roof close can no longer wedge the companion. The armer's dawn shutdown holds
   until nautical dawn + 5 + `dawn_flats_window_min` (40, capped at sunrise) and then also
   stops NINA #2's sequence. Refocus in the light loop (PS-68): temperature
-  (`piggyback_af_temp_change_c` 1.5 C), HFR rise (`piggyback_af_hfr_increase_pct` 15% over
-  `piggyback_af_hfr_sample_size` 10 subs)
+  (`piggyback_af_temp_change_c` 1.5 C), HFR rise (`piggyback_af_hfr_increase_pct` 10% over
+  `piggyback_af_hfr_sample_size` 4 subs)
   and every `piggyback_af_interval_min` (60; covers the RC16 meridian flip NINA #2 can't
   see, and a bad AF the HFR trigger won't catch).
   OSC lights (PS-175) run only in astronomical dark: the first light waits for astro
