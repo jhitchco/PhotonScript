@@ -180,6 +180,7 @@ async def run_gate(cfg, rig: str, setpoint: float | None = None,
     temp = None
     unreadable = 0
     ever_read = False
+    extended = False
     while True:
         if disconnected is not None:
             try:
@@ -235,6 +236,18 @@ async def run_gate(cfg, rig: str, setpoint: float | None = None,
                          "setpoint_c": setpoint, "tol_c": tol, "label": label,
                          "since": since or t0, "updated": now,
                          "waited_s": round(waited, 1)}
+        if waited >= timeout_s and not extended:
+            # 2026-10-17: the cooler-stall recovery reconnected this rig's
+            # camera during the wait: give the revived cooler one more
+            # cooler_stall_gate_extend_min before skipping the block
+            extended = True
+            ext = _recovery_extension(cfg, rig, t0, now)
+            if ext > 0:
+                timeout_s += ext
+                logger.info("cooler gate %s (%s): camera reconnected during the "
+                            "wait, holding %.0f more min", rig, label, ext / 60)
+                await sleep(min(poll_s, max(0.5, timeout_s - waited)))
+                continue
         if waited >= timeout_s:
             verdict = "SKIP" if mode == "skip" else "WARN"
             ep = _EPISODE.setdefault(rig, {"alerted_at": None, "skips": 0})
@@ -261,6 +274,19 @@ async def run_gate(cfg, rig: str, setpoint: float | None = None,
                            res["reason"])
             return res
         await sleep(min(poll_s, max(0.5, timeout_s - waited)))
+
+
+def _recovery_extension(cfg, rig: str, t0: float, now: float) -> float:
+    """Seconds to add to a gate whose rig had a cooler-stall reconnect
+    since the gate started (0 when none, or anything unreadable)."""
+    try:
+        from photonscript.shared import cooler_recovery as cr
+        s = cr.settings(cfg)
+        if s["enabled"] and cr.recovered_since(cfg, rig, t0, now):
+            return float(s["gate_extend_s"])
+    except Exception as e:  # noqa: BLE001
+        logger.debug("cooler gate recovery check: %s", e)
+    return 0.0
 
 
 def camera_row_note(cfg, rig: str, temp, cooler_on, armer_state: str,

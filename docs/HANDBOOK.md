@@ -120,6 +120,27 @@ Check a pending update on the scope without switching: `photonscript self-update
    X C -> Y C" / "not imaging: ..."; `GET /api/cooler/gate` has the live
    state and recent results (`<data_dir>/cooler_gate.jsonl`). Lint rule
    `cooler-gate`: every light loop must have the gate before it.
+   **Cooler-stall recovery (2026-10-17, `shared/cooler_recovery.py`).**
+   Jeremy's rule "when it's not cooling after a bit, disconnect and
+   reconnect the camera", automated. While the armer expects cooling
+   (ARMED / RUNNING / PAUSED_* / WATCHING inside dusk minus
+   `cool_lead_minutes` to dawn) the telescope agent of each rig, and a
+   calibration capture job while it is "cooling", watch for a stall over
+   `cooler_stall_window_min` (8) with the sensor above setpoint + tolerance:
+   cooler OFF, TEC under `cooler_stall_power_pct` (3 %), or a drop under
+   `cooler_stall_drop_c` (2 C) unless the TEC is flat out
+   (`cooler_stall_flat_out_pct`, 90 %). Then, never while the camera is
+   exposing (IsExposing / CameraState, read fresh, unknown = wait), it
+   disconnects THAT camera only, waits `cooler_stall_reconnect_wait_s` (5),
+   connects it and cools to the rig setpoint. At most
+   `cooler_stall_max_attempts` (2) per rig per night,
+   `cooler_stall_spacing_min` (15) apart, shared by the agent and capture
+   jobs through `<data_dir>/cooler_recovery.json`. Each step is a night
+   event (src `cooler`, kind `cooler_recovery`); each attempt ends in one
+   Pushover (recovered / still stalled / errored). A reconnect during a
+   cooler gate wait extends that gate once by
+   `cooler_stall_gate_extend_min` (15). `cooler_stall_recovery=false` turns
+   it off. It replaced the old agent watchdog (CoolerOn at 0 %, 3 tries).
    **Settle gate (PS-27, Piggy-600 only).** In the companion's OSC light
    loop NINA #2 runs `deploy\settle-gate.cmd` (ExternalScript, ErrorBehavior
    0) once before the loop and after every OSC light, so each light starts
