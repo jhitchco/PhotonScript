@@ -35,6 +35,18 @@ OSC_RESUME_HOLD_NAME = "OSC_RESUME_HOLD"
 # of a light inside, so not a structural light loop)
 OSC_CLOSED_ROOF_DARKS_NAME = "OSC_CLOSED_ROOF_DARKS"
 OSC_WAIT_SAFE_CONFIRM_NAME = "WAIT_SAFE_CONFIRM_OR_ASTRO_DAWN"
+# 2026-10-16 (a closed-roof night with zero darks): the waits before the
+# first lights take the owed darks while the roof is closed. The night-start
+# OSC_DARKS_IF_UNSAFE runs inside WAIT_SAFE_WITH_OSC_DARKS (a retry loop: a
+# cooler-gate skip ends one try, the next pass gates again), and
+# WAIT_SAFE_FOR_FIRST_OSC_LIGHTS (after astro dusk) carries
+# OSC_DARKS_BEFORE_FIRST_LIGHTS the same way. Each darks container ends with
+# DARKS_DONE_WAIT_SAFE, so a finished set holds there until safe instead of
+# letting the retry loop shoot the set again.
+OSC_DARKS_WAIT_NAME = "WAIT_SAFE_WITH_OSC_DARKS"
+OSC_WAIT_FIRST_LIGHTS_NAME = "WAIT_SAFE_FOR_FIRST_OSC_LIGHTS"
+OSC_FIRST_LIGHTS_DARKS_NAME = "OSC_DARKS_BEFORE_FIRST_LIGHTS"
+DARKS_DONE_HOLD_NAME = "DARKS_DONE_WAIT_SAFE"
 OSC_ROOF_OPEN_NOTICE_NAME = "OSC_ROOF_OPEN_NOTICE"
 # PS-175: OSC lights only in astronomical dark. The first light waits for
 # astro dusk (the RC16's own night loop starts there, or at nautical dusk +10
@@ -828,7 +840,9 @@ def _osc_dark_blocks(config, dawn_provider="DawnProvider", dawn_offset=0,
     return blocks
 
 
-def _osc_closed_roof_darks(config, light_lengths=None) -> dict | None:
+def _osc_closed_roof_darks(config, light_lengths=None,
+                           name: str = OSC_CLOSED_ROOF_DARKS_NAME,
+                           hold: bool = False) -> dict | None:
     """2026-10-14 (Jeremy: "we did have some closed roof tonight, it would
     have been nice to have gotten some of those 450 second subs in"): the
     companion's OSC darks while the roof is closed MID-NIGHT. Until now the
@@ -851,7 +865,12 @@ def _osc_closed_roof_darks(config, light_lengths=None) -> dict | None:
     darks (the roof closed at night, PS-188 window unsafe-night; a Wanderer
     Cover, when enabled, is closed by the pass's close_if_unsafe first).
     None (nothing in the sequence) when closed_roof_darks is off, the PS-188
-    window is manual without a cover, or nothing is owed at dispatch."""
+    window is manual without a cover, or nothing is owed at dispatch.
+
+    name / hold (2026-10-16): the same container as
+    OSC_DARKS_BEFORE_FIRST_LIGHTS inside WAIT_SAFE_FOR_FIRST_OSC_LIGHTS,
+    with hold=True: DARKS_DONE_WAIT_SAFE after the blocks (see
+    darks_done_hold)."""
     from photonscript.scheduler import flat_cover
     from photonscript.scheduler.calibration_filing import dark_capture_window
     from photonscript.scheduler.nina_sequence_json import (
@@ -873,13 +892,25 @@ def _osc_closed_roof_darks(config, light_lengths=None) -> dict | None:
     except (TypeError, ValueError):
         left = 30
     setpoint = float(getattr(config, "camera_setpoint_c", 0.0))
+    items = dark_gate_items(config, "piggyback", setpoint) + blocks
+    if hold:
+        items.append(darks_done_hold(*OSC_LIGHTS_DAWN))
     return _seq_container(
-        OSC_CLOSED_ROOF_DARKS_NAME,
-        dark_gate_items(config, "piggyback", setpoint) + blocks,
+        name, items,
         conditions=[_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
                                 "NINA.Sequencer"),
                     _time_condition(OSC_LIGHTS_DAWN[0], OSC_LIGHTS_DAWN[1] - max(0, left)),
                     _loop_once()])
+
+
+def darks_done_hold(provider: str, minutes_offset: int = 0) -> dict:
+    """2026-10-16: the last item of a darks container inside a retry loop
+    (_wait_safe_until lead): once the owed set is done, wait here (bounded
+    by the provider time) until safe, so the loop does not reset the blocks
+    and shoot the set again while the roof stays closed. A cooler-gate skip
+    never reaches it (the skip ends the container first), so the loop
+    gates again on its next pass."""
+    return _wait_safe_until(provider, minutes_offset, name=DARKS_DONE_HOLD_NAME)
 
 
 def bias_at_setpoint_block(config, rig: str, setpoint: float) -> dict:
@@ -924,7 +955,8 @@ def dark_gate_items(config, rig: str, setpoint: float, label: str = "darks") -> 
 
 
 def _wait_safe_until(provider: str, minutes_offset: int = 0,
-                     name: str = "WAIT_SAFE_OR_TIME", step_s: int = 30) -> dict:
+                     name: str = "WAIT_SAFE_OR_TIME", step_s: int = 30,
+                     lead: list | None = None) -> dict:
     """Bounded WaitUntilSafe: loop a short WaitForTimeSpan while the roof is
     UNSAFE and the provider time has not passed, so it exits on safe OR time.
 
@@ -933,11 +965,18 @@ def _wait_safe_until(provider: str, minutes_offset: int = 0,
     11:39Z and the companion sat in the light loop's WaitUntilSafe until NINA #2
     was restarted at 13:04Z, never reaching its dawn flats (PS-36). Same
     LoopWhileUnsafe + TimeCondition pattern the RC16 uses for its unsafe darks.
-    Skipped outright (no wait) when the roof is already safe."""
+    Skipped outright (no wait) when the roof is already safe.
+
+    lead (2026-10-16): items run first on every pass, before the step wait:
+    a darks container (darks_done_hold) makes this a "take the owed darks
+    while unsafe, else wait" loop. A cooler-gate skip ends the darks
+    container for that pass only, so the next pass (one step later) gates
+    again; a finished set holds in its DARKS_DONE_WAIT_SAFE until safe, so
+    the loop never shoots the set twice in one closed-roof spell."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _time_condition, _wait_for_timespan)
     return _seq_container(
-        name, [_wait_for_timespan(step_s)],
+        name, [*(lead or []), _wait_for_timespan(step_s)],
         conditions=[_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
                                 "NINA.Sequencer"),
                     _time_condition(provider, minutes_offset)])
@@ -1187,12 +1226,21 @@ def _osc_resume_hold(config, provider: str, minutes_offset: int = 0,
                     _time_condition(provider, minutes_offset)])
 
 
-def _osc_roof_open_notice(config, label: str | None = None) -> list:
+def _osc_roof_open_notice(config, label: str | None = None,
+                          light_lengths=None) -> list:
     """The "roof open, OSC lights" Pushover, once per night (PS-25). It sits
     before OSC_LIGHTS_UNTIL_DAWN, not inside it, because that container loops
     and resets its children on every safe re-entry. A bounded wait for safe
     (exits at nautical dawn), then a run-once notice that is skipped if the
-    roof is still closed at dawn."""
+    roof is still closed at dawn.
+
+    2026-10-16: the wait takes the owed darks while the roof is closed
+    (OSC_DARKS_BEFORE_FIRST_LIGHTS, the closed-roof darks with a
+    DARKS_DONE_WAIT_SAFE hold), so a night that never opens is no longer a
+    night with no darks: NINA #2 sat in this wait from 21:08 to dawn with
+    22 x 450 s owed. It exits to the notice and the light loop as soon as
+    the roof reads safe (the LoopWhileUnsafe watchdogs interrupt the dark
+    in progress, as in OSC_CLOSED_ROOF_DARKS)."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _safety_condition, _time_condition, _loop_once,
         _pushover)
@@ -1200,8 +1248,13 @@ def _osc_roof_open_notice(config, label: str | None = None) -> list:
     label = label or f"{exp_s:g}s"
     hold = _osc_resume_hold_seconds(config)
     dawn = OSC_LIGHTS_DAWN
+    if not light_lengths:
+        light_lengths = [exp_s]
+    darks = _osc_closed_roof_darks(config, light_lengths,
+                                   name=OSC_FIRST_LIGHTS_DARKS_NAME, hold=True)
     return [
-        _wait_safe_until(*dawn, name="WAIT_SAFE_FOR_FIRST_OSC_LIGHTS"),
+        _wait_safe_until(*dawn, name=OSC_WAIT_FIRST_LIGHTS_NAME,
+                         lead=[darks] if darks is not None else None),
         _seq_container(
             OSC_ROOF_OPEN_NOTICE_NAME,
             [_pushover("Piggyback", f"roof open: OSC lights {label} until "
@@ -1336,6 +1389,15 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         target_items.append(_annotation(
             "OSC darks OFF tonight: piggyback_dark_capture_window is manual "
             "(cap the lens and start a capture job for the owed lengths)"))
+    # 2026-10-16: on a lights night with the roof gate, the night-start darks
+    # run inside a retry loop (WAIT_SAFE_WITH_OSC_DARKS). NINA #2 armed at
+    # 20:45 after a stop: the bounded cool had failed (sensor 35 C), the
+    # cooler gate skipped OSC_DARKS_IF_UNSAFE at 21:08 after its 20 min, and
+    # nothing gated again, so the closed-roof night shot no darks. Now a skip
+    # ends one try and the loop gates again 30 s later; a finished set (and
+    # the bias, moved inside so it still runs after the darks) holds in
+    # DARKS_DONE_WAIT_SAFE until safe, so the set is not shot twice.
+    retry_darks = None
     if dark_blocks:
         _dark_conds = ([_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")]
@@ -1343,10 +1405,12 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         _dark_conds.append(_make_typed(
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=1))
-        target_items.append(_seq_container(
-            "OSC_DARKS" + dark_tag,
-            dark_gate_items(config, "piggyback", setpoint) + dark_blocks,
-            conditions=_dark_conds))
+        _dark_items = dark_gate_items(config, "piggyback", setpoint) + dark_blocks
+        if gated and with_lights:
+            retry_darks = (_dark_items, _dark_conds)
+        else:
+            target_items.append(_seq_container(
+                "OSC_DARKS" + dark_tag, _dark_items, conditions=_dark_conds))
     # bias top-up only when due (bias barely ages)
     _bias_refresh_days = int(getattr(config, "bias_refresh_days", 60))
     try:
@@ -1366,7 +1430,7 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         _bias_conds.append(_make_typed(
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=1))
-        target_items.append(_seq_container(
+        (retry_darks[0] if retry_darks else target_items).append(_seq_container(
             "OSC_BIAS" + dark_tag,
             [_seq_container("50 bias", [_make_typed(
                 "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, "
@@ -1383,6 +1447,13 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
                     "NINA.Sequencer",
                     CompletedIterations=0, Iterations=50)])],
             conditions=_bias_conds))
+    if retry_darks:
+        _items, _conds = retry_darks
+        target_items.append(_wait_safe_until(
+            dark_cap, 0, name=OSC_DARKS_WAIT_NAME,
+            lead=[_seq_container("OSC_DARKS" + dark_tag,
+                                 _items + [darks_done_hold(dark_cap, 0)],
+                                 conditions=_conds)]))
     if has_safety and with_lights:
         # Shoot OSC lights while the roof is open, astro dusk to astro dawn
         # (PS-175). The loop waits for safe itself (bounded), so a roof that
@@ -1391,8 +1462,10 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         # (PS-36, 2026-09-26).
         target_items.append(_osc_wait_astro_dusk())
         segs = osc_segments if osc_segments and len(osc_segments) > 1 else None
-        target_items += _osc_roof_open_notice(config, "/".join(
-            f"{float(x['exp_s']):g}" for x in segs) + "s" if segs else None)
+        target_items += _osc_roof_open_notice(
+            config, "/".join(f"{float(x['exp_s']):g}" for x in segs) + "s"
+            if segs else None,
+            light_lengths=[float(x["exp_s"]) for x in segs] if segs else None)
         target_items.append(_osc_light_loop(config, segs))
         from photonscript.scheduler.nina_sequence_json import (
             _cooler_gate_spec, _cooler_gate_missing_notice)

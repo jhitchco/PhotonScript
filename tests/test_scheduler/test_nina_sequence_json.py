@@ -494,7 +494,7 @@ class TestDawnSkyFlats:
         txt, _, _ = self._night_json()
         assert "NINA.Sequencer.Conditions.LoopWhileUnsafe" in txt
         i = txt.index("DARKS_600s")
-        blk = txt[i:i + 3000]
+        blk = txt[i:i + 6000]   # 2026-10-16: nested one loop deeper
         assert '"ImageType": "DARK"' in blk
         assert "DARKS_180s" in txt  # second exposure epoch also queued
         # dark blocks come before the WaitUntilSafe hold
