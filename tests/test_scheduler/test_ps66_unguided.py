@@ -89,7 +89,7 @@ def test_api_arm_normalizes_and_rejects_junk(monkeypatch):
             seen.append(guiding)
             return {"state": "ARMED", "guiding": guiding}
 
-        async def disarm(self):
+        async def disarm(self, manual=False):
             return {"state": "DISARMED"}
 
     monkeypatch.setattr(app, "_armer", _FakeArmer())

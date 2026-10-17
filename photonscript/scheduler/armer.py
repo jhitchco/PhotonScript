@@ -195,6 +195,10 @@ class Armer:
         self.plan: dict = {}
         self.sequence_path: Path | None = None
         self.guiding_override: str | None = None  # "guided" | "unguided" | None
+        # 2026-10-16: who armed this night ("manual" | "auto-evening" |
+        # "auto-noon") and when (UTC ISO). Persisted; kept after a disarm.
+        self.armed_by: str | None = None
+        self.armed_at: str | None = None
         self._guiding_alerted = False  # once-per-episode "guided but not guiding"
         self._not_locked_ticks = 0     # consecutive watchdog ticks PHD2 not locked
         self._guiding_recovered = False  # auto guider-restart tried this episode
@@ -280,6 +284,8 @@ class Armer:
                 "state": self.state, "detail": self.detail, "plan": self.plan,
                 "last_raw": getattr(self, "last_raw", None),
                 "guiding_override": getattr(self, "guiding_override", None),
+                "armed_by": getattr(self, "armed_by", None),
+                "armed_at": getattr(self, "armed_at", None),
                 "shutdown": getattr(self, "shutdown", None),
                 "sequence_path": str(self.sequence_path) if self.sequence_path else None,
                 "unsafe_stopped": bool(getattr(self, "_unsafe_stopped", False)),
@@ -315,6 +321,8 @@ class Armer:
         # state, so the dashboard chip survives a morning dashboard restart.
         self.shutdown = saved.get("shutdown")
         self._watch_declined = saved.get("watch_declined")
+        self.armed_by = saved.get("armed_by")
+        self.armed_at = saved.get("armed_at")
         if saved.get("state") not in LIVE_STATES:
             return False
         dawn = saved.get("plan", {}).get("dawn_utc")
@@ -478,6 +486,9 @@ class Armer:
                 cooler_on_utc = None
         return {"state": self.state, "detail": self.detail,
                 "guiding": "guided" if self._use_guiding() else "unguided",
+                "armed_by": getattr(self, "armed_by", None),
+                "armed_at": getattr(self, "armed_at", None),
+                "manual_disarm": self._manual_disarm_status(),
                 "night_of": self.plan.get("night_of"),
                 "preconfig_utc": self.plan.get("preconfig_utc"),
                 "dusk_utc": self.plan.get("dusk_utc"),
@@ -496,6 +507,14 @@ class Armer:
                 "noon_arm": self._noon_arm_status(),
                 "dispatch_gate": self._gate_status(),               # PS-197
                 "tpoint_preflight": self._tpoint_pf_status()}       # 2026-10-16
+
+    def _manual_disarm_status(self) -> dict | None:
+        """Tonight's persisted manual disarm (blocks every auto-arm), or None."""
+        try:
+            from photonscript.scheduler import arm_memory
+            return arm_memory.manual_disarm_tonight(self.config)
+        except Exception:  # noqa: BLE001 (status is never fatal)
+            return None
 
     def _gate_status(self) -> dict | None:
         """PS-197: the last dispatch gate verdict for the Arm card (this
@@ -567,7 +586,8 @@ class Armer:
 
     async def arm(self, guiding: str | None = None,
                   recipe: dict | None = None,
-                  tpoint_override: bool = False) -> dict:
+                  tpoint_override: bool = False,
+                  armed_by: str = "manual") -> dict:
         """guiding: 'guided' (PHD2) or 'unguided' (Paramount MX on TPoint +
         ProTrack; 'encoders' is the old name and still accepted). None or an
         unknown value => use config.guided_default. A guided arm also
@@ -577,7 +597,11 @@ class Armer:
         None = the normal night (an arm without one clears the last).
         tpoint_override (2026-10-16): the TPoint preflight's empty-model
         block is not enforced this night (the model was loaded by hand and
-        TheSky has not rewritten TPoint's files)."""
+        TheSky has not rewritten TPoint's files).
+        armed_by (2026-10-16): "manual" (the API / dashboard, the default) |
+        "auto-evening" | "auto-noon". A manual arm clears tonight's persisted
+        manual disarm and records its guiding mode for later auto-arms."""
+        from photonscript.scheduler import arm_memory
         from photonscript.scheduler.night_plan import build_night_plan
         if self.state == WATCH_STATE:
             # PS-136: arming would stop the watched sideload at pre-config
@@ -586,6 +610,12 @@ class Armer:
                 "armer is WATCHING a sideloaded night: stop watching first "
                 "(arming would replace the sequence NINA is running)")}
         self.guiding_override = norm_guiding_mode(guiding)
+        self.armed_by = armed_by or "manual"
+        self.armed_at = _iso(datetime.utcnow())
+        if self.armed_by == "manual":
+            arm_memory.clear_manual_disarm(self.config)
+            arm_memory.record_manual_arm(
+                self.config, "guided" if self._use_guiding() else "unguided")
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
         self._guiding_gate = GuidingAlertGate(self.config)  # fresh flap history
         self.shutdown = None  # a fresh arm starts a new night — clear the chip
@@ -803,8 +833,15 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.warning("ProTrack check at arm failed: %s", e)
 
-    async def disarm(self) -> dict:
+    async def disarm(self, manual: bool = False) -> dict:
+        """manual (2026-10-16): an operator disarm (POST /api/arm
+        armed=false). Persisted for tonight's night key, so no auto-arm
+        (evening window or noon re-arm) re-arms this night, even after a
+        restart. A manual Arm clears it."""
         prev = self.state
+        if manual:
+            from photonscript.scheduler import arm_memory
+            arm_memory.record_manual_disarm(self.config)
         if prev == WATCH_STATE:
             # PS-136: stop watching only. The sideloaded sequence is NINA's
             # and keeps running; no make-safe. Never auto-adopt it again.

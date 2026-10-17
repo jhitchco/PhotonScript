@@ -30,7 +30,12 @@ Safety model: by default it ARMS AND NOTIFIES even when preflight fails
 of NINA, so the worst case from a bad preflight is wasted frames that QA
 rejects — not a soaked rig. Flip PS_AUTO_ARM_REQUIRE_PREFLIGHT=true to have it
 skip-and-notify instead. Manual disarm always wins: the loop never touches an
-armer that is ARMED / RUNNING / PAUSED_UNSAFE.
+armer that is ARMED / RUNNING / PAUSED_UNSAFE, and (2026-10-16) a manual
+disarm is persisted for tonight's night key in data_dir/arm_memory.json, so
+the evening window and the noon re-arm skip ("manual disarm tonight", logged
+once) even after a restart. A manual Arm clears it; it lapses at local noon.
+Automatic arms inherit the guiding mode of the most recent manual Arm (config
+default when there is none) and stamp armed_by "auto-evening" / "auto-noon".
 
 PS-125 guard: before any automatic arm (evening window or noon re-arm) the
 loop reads NINA's /sequence/state and tonight's events. A sideload loaded
@@ -117,6 +122,7 @@ SKIP_SIDELOAD = "sideload"
 SKIP_NINA_RUNNING = "nina_running"
 SKIP_NINA_UNREADABLE = "nina_unreadable"
 SKIP_PREFLIGHT = "preflight"
+SKIP_MANUAL_DISARM = "manual_disarm"   # 2026-10-16
 EVENT_KIND = "auto_arm"
 
 SKIP_TITLES = {
@@ -124,6 +130,7 @@ SKIP_TITLES = {
     SKIP_NINA_RUNNING: "NINA is running",
     SKIP_NINA_UNREADABLE: "NINA state unreadable",
     SKIP_PREFLIGHT: "preflight failed",
+    SKIP_MANUAL_DISARM: "manual disarm tonight",
 }
 
 
@@ -544,6 +551,22 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                     if arm_now and fu and datetime.utcnow() < fu:
                         arm_now = False
                         reason = "holding for auto dusk flats to finish"
+                    if arm_now:
+                        # 2026-10-16: a manual disarm tonight wins, across
+                        # restarts (arm_memory.json). One logged decision.
+                        from photonscript.scheduler import arm_memory
+                        md = arm_memory.manual_disarm_tonight(config, now)
+                        if md:
+                            arm_now = False
+                            line = log_decision(
+                                config, "skipped", SKIP_MANUAL_DISARM,
+                                f"manual disarm at {md.get('t')} for night "
+                                f"{md.get('night')}; a manual Arm clears it",
+                                reason, now)
+                            if line is not None:
+                                logger.info("auto-arm skipped: manual disarm "
+                                            "tonight (%s)", md.get("t"))
+                            reason = "manual disarm tonight"
                     logger.debug("auto-arm tick: %s (%s)", arm_now, reason)
                     skip = None
                     if arm_now:
@@ -574,17 +597,23 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                     title="PhotonScript auto-arm skipped", priority=1)
                                 last_skip_night = night
                         else:
-                            guiding = None
-                            if reason.startswith("noon"):
-                                # single checkbox: guided when set, else unguided
-                                guiding = ("guided"
-                                           if getattr(config, "noon_arm_guided",
-                                                      True) else "unguided")
-                            await armer.arm(guiding=guiding)  # sends its own ARMED Pushover
+                            # 2026-10-16: the last manual Arm's guiding
+                            # mode, else the config default (noon:
+                            # noon_arm_guided; evening: guided_default)
+                            from photonscript.scheduler import arm_memory
+                            trigger = ("auto-noon" if reason.startswith("noon")
+                                       else "auto-evening")
+                            guiding, gwhy = arm_memory.auto_guiding(config, trigger)
+                            logger.info("auto-arm %s: guiding %s (%s)", trigger,
+                                        guiding or "config default", gwhy)
+                            await armer.arm(guiding=guiding,  # sends its own ARMED Pushover
+                                            armed_by=trigger)
                             last_armed_night = night
                             log_decision(config, "armed", None,
                                          f"armer {armer.state}, preflight "
-                                         f"go={bool(pf.get('go', False))}", reason)
+                                         f"go={bool(pf.get('go', False))}, "
+                                         f"guiding {guiding or 'config default'}"
+                                         f" ({gwhy})", reason)
                             if not pf.get("go", False):
                                 await notify(
                                     config,

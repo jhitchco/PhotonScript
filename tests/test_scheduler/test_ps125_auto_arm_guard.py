@@ -174,8 +174,9 @@ class _Armer:
         self.state = "DISARMED"
         self.armed = []
 
-    async def arm(self, guiding=None):
+    async def arm(self, guiding=None, armed_by=None):
         self.armed.append(guiding)
+        self.armed_by = armed_by
         self.state = "ARMED"
         return {"state": self.state}
 

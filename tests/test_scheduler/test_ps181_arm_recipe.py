@@ -170,7 +170,7 @@ class TestApi:
                 seen.update(guiding=guiding, recipe=recipe)
                 return {"state": "ARMED", "recipe": recipe}
 
-            async def disarm(self):
+            async def disarm(self, manual=False):
                 seen["disarm"] = True
                 return {"state": "DISARMED"}
         monkeypatch.setattr(app, "get_armer", lambda: _A())
