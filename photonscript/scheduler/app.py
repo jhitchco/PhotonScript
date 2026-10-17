@@ -1566,7 +1566,9 @@ async def api_arm(request: Request):
             return JSONResponse(status_code=409, content={
                 **out, "detail": out["refused"]})
         return out
-    return await armer.disarm()
+    # 2026-10-16: an operator disarm holds for the rest of tonight, across a
+    # restart: the auto-arm loop skips while it is on record.
+    return await armer.disarm(manual=True)
 
 
 # ---------------------------------------------------------------------------
