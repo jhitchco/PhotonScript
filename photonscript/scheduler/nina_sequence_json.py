@@ -119,6 +119,8 @@ RESET_EQUIPMENT_NAME = "RESET_EQUIPMENT_ONCE_SAFE"
 TARGETS_LOOP_NAME = "TARGETS_CONTAINER"
 NIGHT_LOOP_NAME = "LOOP_ALL_NIGHT"
 UNSAFE_BRANCH_NAME = "UNSAFE"
+# 2026-10-16: the Start area's wait for safe that takes the owed darks
+STARTUP_DARKS_WAIT_NAME = "STARTUP_WAIT_SAFE_WITH_DARKS"
 SAFE_LOOP_PACE_S = 60   # PS-149: the wait that ends every SAFE_LOOP pass
 TARGET_IMAGING_PACE_S = 60   # PS-149: imaging loops with no AF / exposure
 SMART_EXPOSURE_NAME = "Smart Exposure"
@@ -2682,16 +2684,17 @@ def generate_nina_json(sequence: NinaSequenceFile,
         _wait_for_provider("DuskProvider", -cool_lead),
     ]
     startup_dark_blocks = _dark_quota_blocks(dawn_provider, dawn_offset)
-    start_unsafe_darks = _seq_container(
-        "STARTUP_DARKS_IF_UNSAFE",
-        [_wait_for_provider("DuskProvider", 0)] + startup_dark_blocks
-        if startup_dark_blocks else [],
-        conditions=[_make_typed(
+    startup_dark_conds = [_make_typed(
             "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer"),
             _make_typed(
             "NINA.Sequencer.Conditions.LoopCondition, NINA.Sequencer",
             CompletedIterations=0, Iterations=1),
-            _time_condition(dawn_provider, dawn_offset)])
+            _time_condition(dawn_provider, dawn_offset)]
+    start_unsafe_darks = _seq_container(
+        "STARTUP_DARKS_IF_UNSAFE",
+        [_wait_for_provider("DuskProvider", 0)] + startup_dark_blocks
+        if startup_dark_blocks else [],
+        conditions=startup_dark_conds)
     # Bias only needs an occasional top-up (it barely ages). Gate the
     # roof-closed 50-bias block on library age so a run of cloudy nights
     # doesn't bank 50 bias every single night. bias_refresh_days<=0 keeps the
@@ -2765,9 +2768,37 @@ def generate_nina_json(sequence: NinaSequenceFile,
     ]
     if bias_at_setpoint is not None:
         start_items.append(bias_at_setpoint)
+    if startup_dark_blocks:
+        # 2026-10-16: the RC16's wait for safe takes the owed darks like the
+        # Piggy-600's: STARTUP_WAIT_SAFE_WITH_DARKS loops while unsafe over
+        # STARTUP_DARKS_IF_UNSAFE (now behind the PS-160 cooler gate, like
+        # the UNSAFE branch darks), so a gate skip (cooler late or off) ends
+        # one try and the next 30 s pass gates again instead of waiting the
+        # night out with darks owed. The bias moves inside after the blocks
+        # (still "if still unsafe" after the darks), then
+        # DARKS_DONE_WAIT_SAFE holds until safe so a finished set is not
+        # shot again. No TimeCondition on the loop: like the core
+        # WaitUntilSafe it replaces, it never lets the unpark run while
+        # unsafe (after dawn it is a 30 s poll); the WaitUntilSafe after it
+        # stays as the last guard.
+        from photonscript.scheduler.calibration import (
+            dark_gate_items, darks_done_hold)
+        inner = [_wait_for_provider("DuskProvider", 0),
+                 *dark_gate_items(_cfg, "rc16", temp), *startup_dark_blocks]
+        if "Container" in str(bias_if_still_unsafe.get("$type", "")):
+            inner.append(bias_if_still_unsafe)
+            bias_if_still_unsafe = None
+        inner.append(darks_done_hold(dawn_provider, dawn_offset))
+        start_unsafe_darks = _seq_container(
+            STARTUP_DARKS_WAIT_NAME,
+            [_seq_container("STARTUP_DARKS_IF_UNSAFE", inner,
+                            conditions=startup_dark_conds),
+             _wait_for_timespan(30)],
+            conditions=[_make_typed(
+                "NINA.Sequencer.Conditions.LoopWhileUnsafe, NINA.Sequencer")])
     start_items += [
         start_unsafe_darks,
-        bias_if_still_unsafe,
+        *([bias_if_still_unsafe] if bias_if_still_unsafe is not None else []),
         _wait_until_safe(),
         _pushover("Startup", "safety monitor SAFE — unparking"),
         _unpark(),
