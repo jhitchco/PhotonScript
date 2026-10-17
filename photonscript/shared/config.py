@@ -353,6 +353,17 @@ class PhotonScriptConfig(BaseSettings):
                                  # that fail the level check against their
                                  # older bias but fit the newer one are
                                  # "bias drift" (a warning), not light
+    calibration_dark_model: bool = True  # calibration QA: judge a dark's
+                                 # level against the per-camera dark model
+                                 # (accepted darks of other lengths and earlier
+                                 # nights of the same length) instead of the
+                                 # generic 10 ADU + 0.02 ADU/s formula; light
+                                 # is caught inside the set (trend, gradient,
+                                 # outlier). off = the formula only
+    calibration_dark_model_allow_adu: float = 5.0  # dark model: allowed over
+                                 # the expected excess, ADU ...
+    calibration_dark_model_allow_frac: float = 0.25  # ... plus this share of
+                                 # the expected excess
     calibration_qa_dark_scale_by_readout: bool = True  # calibration QA: the
                                  # dark-minus-bias allowance's dark current term
                                  # scales with the readout mode's ADU per e-

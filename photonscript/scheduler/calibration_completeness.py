@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 STAGES = ("not_captured", "qa_failed", "short", "stale", "not_in_library",
           "syncing", "complete")
 PASS_VERDICTS = ("pass", "warn")
-LIGHT_CODES = ("leak", "stars", "level", "daytime_leak")
+LIGHT_CODES = ("leak", "stars", "level", "daytime_leak", "trend", "gradient")
 EXP_TOL_S = 0.5
 
 

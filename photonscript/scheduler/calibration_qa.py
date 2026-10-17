@@ -9,7 +9,12 @@ master. Checks (reason codes in brackets):
   dark, bias   [temp]    CCD-TEMP present and within SET-TEMP +/- tol
                          (calibration_temp_tol_c, 1 C); flats: warning only
   dark         [level]   median minus the bias level of its epoch inside
-                         [-BIAS_LOW_ADU, base + rate x exposure x 2^(T/6)];
+                         [-BIAS_LOW_ADU, limit]; the limit is the per-camera
+                         dark model's (expected excess for the length from
+                         accepted darks of other lengths and earlier nights
+                         of the same length, plus an allowance; see
+                         dark_expectation), else base + rate x exposure x
+                         2^(T/6) while the model has no anchors;
                          the bias is the QA-clean session in force at the
                          dark's date (SET-TEMP matched), named in the reason
                          (date, median, frames). When a newer bias drifted
@@ -20,6 +25,11 @@ master. Checks (reason codes in brackets):
   dark, bias   [stars]   more than MAX_STARS real stars (the graders' sep
                          recipe: 3x3 median, 5 sigma, minarea 6, a >= 0.6)
   dark, bias   [outlier] level off the set's own median (sets of 5 or more)
+  dark         [trend]   level changes > TREND_ADU through the set (light
+                         that follows the sky); whole set
+  dark         [gradient] zone pattern off the set's own pattern; a [leak]
+                         pattern every frame of the set shares is the
+                         sensor's fixed pattern (zone_pattern warning)
                [noise]   MAD over NOISE_RATIO x the set's median MAD
   flat         [flat_level] median outside FLAT_MIN_FRAC..FLAT_MAX_FRAC of
                          65535; [saturated] over FLAT_SAT_PCT % of pixels at
@@ -90,7 +100,8 @@ NIGHT_SUN_ALT = -12.0         # ... and a night reference below nautical dusk
 DAY_MIN_FRAMES = 3            # day darks needed before the check decides
 DAYTIME_LEAK_ADU = 3.0        # day darks this much above night darks = light
 DAYTIME_LIGHT_FRAC = 0.3      # or this share of day darks failing light checks
-LIGHT_CODES = ("leak", "stars", "level", "daytime_leak")
+LIGHT_CODES = ("leak", "stars", "level", "daytime_leak", "trend",
+               "gradient")
 MODES = ("off", "report", "quarantine")
 QUARANTINE_DIR = "_quarantine"
 
@@ -413,7 +424,8 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
                 bias_ref: tuple | None = None,
                 setpoint: float | None = None,
                 excess_scale: float = 1.0,
-                bias_alt: tuple | None = None) -> tuple[list, list]:
+                bias_alt: tuple | None = None,
+                expect: tuple | None = None) -> tuple[list, list]:
     """Per-frame checks. Returns (fails, warnings): lists of
     {"code", "detail"}. bias_ref = (level, source) for darks;
     excess_scale (PS-182) scales the dark-current allowance for the
@@ -422,7 +434,9 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
     fails the level check against bias_ref but sits inside the allowance
     over bias_alt is "bias drift" (a bias_drift warning, not light).
     Darks record "level_verdict": None (level fine), "light" or
-    "bias drift"."""
+    "bias drift". expect = (expected excess, limit, source) from the
+    per-camera dark model (dark_expectation): the upper level limit is then
+    the model's instead of the generic dark_excess_limit formula."""
     fails: list[dict] = []
     warns: list[dict] = []
     typ = rec.get("type")
@@ -479,22 +493,30 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
             rec["level_verdict"] = None
         if typ == "DARK" and bias_ref is not None and bias_ref[0] is not None:
             excess = med - bias_ref[0]
-            lim = dark_excess_limit(exp or 0, ref, excess_scale)
+            rec["dark_excess"] = round(excess, 2)
+            if expect is not None:
+                lim = expect[1]
+                allowed = (f"allowed {lim:.1f} for {exp or 0:g} s (expected "
+                           f"{expect[0]:+.1f} from {expect[2]})")
+            else:
+                lim = dark_excess_limit(exp or 0, ref, excess_scale)
+                allowed = (f"allowed {lim:.1f} for {exp or 0:g} s"
+                           + (f" (x{excess_scale:g} for {rec.get('readout')})"
+                              if excess_scale and excess_scale != 1.0 else ""))
+            rec["dark_limit"] = round(lim, 2)
             msg = None
             if excess < -BIAS_LOW_ADU:
                 msg = (f"median {med:g} is {-excess:.1f} ADU below bias "
                        f"{bias_ref[0]:g} ({bias_ref[1]})")
             elif excess > lim:
                 msg = (f"median {med:g} is {excess:.1f} ADU over bias "
-                       f"{bias_ref[0]:g} ({bias_ref[1]}); allowed {lim:.1f} for "
-                       f"{exp or 0:g} s"
-                       + (f" (x{excess_scale:g} for {rec.get('readout')})"
-                          if excess_scale and excess_scale != 1.0 else ""))
+                       f"{bias_ref[0]:g} ({bias_ref[1]}); {allowed}")
             if msg:
                 alt_ex = (None if not bias_alt or bias_alt[0] is None
                           else med - bias_alt[0])
                 if alt_ex is not None and -BIAS_LOW_ADU <= alt_ex <= lim:
                     rec["level_verdict"] = "bias drift"
+                    rec["dark_excess"] = round(alt_ex, 2)
                     bad("bias_drift", f"{msg}, but {alt_ex:.1f} ADU over the newer "
                         f"bias {bias_alt[0]:g} ({bias_alt[1]}; drift "
                         f"{bias_alt[2]:+.1f} ADU): bias drift, not light", warn=True)
@@ -687,18 +709,222 @@ def drift_for(config, rig: str, *, gain, offset, readout=None, setpoint=None,
     return best
 
 
+# --- the per-camera dark level model ------------------------------------------------
+#
+# The generic limit (dark_excess_limit: 10 ADU + 0.02 ADU/s at 0 C) is a
+# ceiling for thermal dark current only. Long darks on the AP26CC carry more
+# than that (uniform, tens of ADU at 450 s), so one formula either lets light
+# through on short darks or quarantines good long ones. The model judges a
+# dark against what the same camera did before:
+#
+#   anchors   dark sets (one date, one exposure, one epoch, one SET-TEMP)
+#             with at least ANCHOR_MIN frames that pass every check; the set
+#             median of (dark - its bias) is the anchor's excess
+#   expected  the newest DARK_MODEL_NIGHTS earlier nights of the same
+#             exposure when there are any (so the longest length is held to
+#             its own history); else piecewise-linear in exposure through the
+#             anchors of other lengths and the bias at 0 s (interpolated
+#             between known lengths, extrapolated past the longest along the
+#             top segment, never with a negative slope)
+#   limit     expected + calibration_dark_model_allow_adu
+#             + calibration_dark_model_allow_frac x expected
+#
+# Sets are judged in date order, so a set the model accepts anchors later
+# nights. With no anchor at all the generic formula still applies.
+#
+# Light is judged inside the set, not from the pedestal:
+#   [trend]    the level changes by more than TREND_ADU through the set
+#              (Theil-Sen slope x the set's span): light that follows the
+#              sky; the whole set fails
+#   [gradient] a frame's zone pattern (each corner minus the center) differs
+#              from the set's median pattern by more than LEAK_ADU
+#   [leak]     stays a per-frame fail, except that a pattern shared by the
+#              set (within PATTERN_TOL_ADU) and no larger than
+#              LEAK_ADU + PATTERN_FRAC x the expected excess is the sensor's
+#              fixed pattern (a zone_pattern warning)
+#   [outlier]  level off the set's own median (unchanged)
+
+DARK_MODEL_ALLOW_ADU = 5.0
+DARK_MODEL_ALLOW_FRAC = 0.25
+DARK_MODEL_NIGHTS = 3
+ANCHOR_MIN = 3
+TREND_ADU = 3.0
+TREND_MIN = 3
+PATTERN_MIN = 3
+PATTERN_TOL_ADU = 1.5
+PATTERN_FRAC = 0.25
+
+
+def dark_model_settings(config) -> dict:
+    """{"enabled", "allow_adu", "allow_frac"} from the config
+    (calibration_dark_model, calibration_dark_model_allow_adu / _frac)."""
+    def f(name, default):
+        try:
+            v = getattr(config, name, default)
+            return default if v is None else float(v)
+        except (TypeError, ValueError):
+            return default
+    return {"enabled": bool(getattr(config, "calibration_dark_model", True)),
+            "allow_adu": max(0.0, f("calibration_dark_model_allow_adu",
+                                    DARK_MODEL_ALLOW_ADU)),
+            "allow_frac": max(0.0, f("calibration_dark_model_allow_frac",
+                                     DARK_MODEL_ALLOW_FRAC))}
+
+
+def _model_key(rec: dict) -> tuple:
+    st = _num(rec.get("settemp"))
+    return (*_epoch(rec), None if st is None else round(st))
+
+
+def dark_expectation(anchors: list, exp_s: float, date: str, *,
+                     allow_adu: float = DARK_MODEL_ALLOW_ADU,
+                     allow_frac: float = DARK_MODEL_ALLOW_FRAC):
+    """(expected excess, limit, source) of a dark of `exp_s` seconds shot on
+    `date` from the model's anchors ([{"exptime", "date", "excess", "n"}] of
+    one camera epoch and SET-TEMP), or None when there are none."""
+    exp_s = float(exp_s or 0)
+    same = sorted((a for a in anchors if abs(a["exptime"] - exp_s) < 0.5
+                   and a["date"] < date), key=lambda a: a["date"])
+    if same:
+        use = same[-DARK_MODEL_NIGHTS:]
+        e = _median([a["excess"] for a in use])
+        src = (f"{exp_s:g} s on " + ", ".join(
+            f"{a['date']} ({a['excess']:+.1f})" for a in use))
+    else:
+        by_len: dict = {}
+        for a in anchors:
+            by_len.setdefault(round(a["exptime"], 1), []).append(a["excess"])
+        if not by_len:
+            return None
+        pts = sorted([(0.0, 0.0)] + [(t, _median(v)) for t, v in by_len.items()
+                                     if t > 0])
+        lo = max((p for p in pts if p[0] <= exp_s), key=lambda p: p[0])
+        hi = [p for p in pts if p[0] > exp_s]
+        if hi:
+            h = hi[0]
+            e = lo[1] + (h[1] - lo[1]) * (exp_s - lo[0]) / (h[0] - lo[0])
+            how = (f"interpolated between {lo[0]:g} s ({lo[1]:+.1f}) and "
+                   f"{h[0]:g} s ({h[1]:+.1f})")
+        else:
+            a, b = pts[-2], pts[-1]
+            slope = max(0.0, (b[1] - a[1]) / (b[0] - a[0])) if b[0] > a[0] else 0.0
+            e = b[1] + slope * (exp_s - b[0])
+            how = (f"extrapolated from {a[0]:g} s ({a[1]:+.1f}) and "
+                   f"{b[0]:g} s ({b[1]:+.1f})")
+        src = f"the dark model, {how}"
+    lim = e + allow_adu + allow_frac * max(e, 0.0)
+    return round(e, 2), round(lim, 2), src
+
+
+def _theil_sen(xs: list, ys: list) -> float | None:
+    sl = [(ys[j] - ys[i]) / (xs[j] - xs[i]) for i in range(len(xs))
+          for j in range(i + 1, len(xs)) if xs[j] != xs[i]]
+    return _median(sl) if sl else None
+
+
+def _obs_seconds(rec: dict) -> float | None:
+    try:
+        return datetime.fromisoformat(str(rec.get("date_obs")).rstrip("Z")[:26]
+                                      ).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _dark_set_checks(members: list, expected: float | None) -> dict | None:
+    """Light checks of one dark set: the level trend, each frame's zone
+    pattern vs the set's ([gradient]) and the fixed-pattern pardon for
+    [leak]. Returns the trend {"change", "minutes", "sun"} or None."""
+    rows = [r for r in members if not any(f["code"] in ("temp", "header")
+                                          for f in r["frame_fails"])]
+    rows.sort(key=lambda r: (str(r.get("date_obs") or ""), str(r.get("name"))))
+    trend = None
+    timed = [(t, r) for t, r in ((_obs_seconds(r), r) for r in rows) if t is not None]
+    if len(timed) >= TREND_MIN:   # DATE-OBS needed: no times, no trend
+        ts = [t for t, _r in timed]
+        rows_t = [r for _t, r in timed]
+        slope = _theil_sen(ts, [r["median"] for r in rows_t])
+        if slope is not None:
+            change = slope * (ts[-1] - ts[0])
+            sun = [r.get("sun_alt") for r in rows_t]
+            trend = {"change": round(change, 1),
+                     "minutes": round((ts[-1] - ts[0]) / 60.0),
+                     "sun": [sun[0], sun[-1]]}
+            if abs(change) > TREND_ADU:
+                sun_txt = ("" if sun[0] is None or sun[-1] is None
+                           else f", sun {sun[0]:g} to {sun[-1]:g} deg")
+                why = (f"level {rows_t[0]['median']:g} to {rows_t[-1]['median']:g}, "
+                       f"{change:+.1f} ADU through the set over "
+                       f"{trend['minutes']:g} min (> {TREND_ADU:g}){sun_txt}: "
+                       "light that changes with the sky")
+                for r in members:
+                    r["set_fails"].append({"code": "trend", "detail": why})
+    zoned = [r for r in rows if r.get("center") is not None
+             and len(r.get("corners") or []) == 4]
+    if len(zoned) < PATTERN_MIN:
+        return trend
+    pats = [[c - r["center"] for c in r["corners"]] for r in zoned]
+    ref = [_median([p[i] for p in pats]) for i in range(4)]
+    cap = LEAK_ADU + PATTERN_FRAC * max(expected or 0.0, 0.0)
+    ref_spread = max(abs(x) for x in ref)
+    for r, p in zip(zoned, pats):
+        dev = max(abs(p[i] - ref[i]) for i in range(4))
+        if dev > LEAK_ADU:
+            r["set_fails"].append({"code": "gradient", "detail":
+                                   f"zone pattern differs from its set by "
+                                   f"{dev:.1f} ADU (> {LEAK_ADU:g}): corners minus "
+                                   f"center {', '.join(f'{x:+.2f}' for x in p)} vs set "
+                                   f"{', '.join(f'{x:+.2f}' for x in ref)}"})
+            continue
+        leak = [f for f in r["frame_fails"] if f["code"] == "leak"]
+        if leak and dev <= PATTERN_TOL_ADU and ref_spread <= cap:
+            r["frame_fails"] = [f for f in r["frame_fails"] if f["code"] != "leak"]
+            r["frame_warns"].append({"code": "zone_pattern", "detail":
+                                     f"{leak[0]['detail']}; the same pattern in all "
+                                     f"{len(zoned)} frames of the set (within "
+                                     f"{dev:.1f} ADU, cap {cap:.1f}): the sensor's "
+                                     "fixed pattern, not light"})
+    return trend
+
+
+def _set_outliers(members: list) -> None:
+    clean = [r for r in members if not r["frame_fails"]]
+    if len(clean) < SET_MIN:
+        return
+    med = _median([r["median"] for r in clean])
+    dev = _median([abs(r["median"] - med) for r in clean]) or 0.0
+    thr = max(OUTLIER_LEVEL_ADU, OUTLIER_MAD_K * 1.4826 * dev)
+    nmed = _median([r.get("mad") for r in clean])
+    for r in members:
+        if abs(r["median"] - med) > thr:
+            r["set_fails"].append({"code": "outlier", "detail":
+                                   f"median {r['median']:g} vs set median {med:g} "
+                                   f"(> {thr:.1f} ADU)"})
+        if nmed and r.get("mad") is not None and r["mad"] > NOISE_RATIO * nmed \
+                and r["mad"] - nmed >= 2:
+            r["set_fails"].append({"code": "noise", "detail":
+                                   f"MAD {r['mad']:g} vs set {nmed:g} "
+                                   f"(> {NOISE_RATIO:g}x)"})
+
+
 def judge_all(store: dict, *, rig: str, tol: float,
               setpoint: float | None = None, scales: dict | None = None,
               default_readout: str | None = None,
-              drift_adu: float = BIAS_DRIFT_ADU) -> None:
+              drift_adu: float = BIAS_DRIFT_ADU,
+              dark_model: dict | None = None) -> None:
     """Recompute every verdict in the store (cheap: no file reads).
     PS-182: `scales` = dark_excess_scales (readout -> dark-current scale);
     a dark with no readout recorded takes `default_readout`'s. Darks are
     judged against the bias in force at their date (_bias_pick) and, when
     the bias drifted more than `drift_adu` since, also against the newer
-    one (bias drift vs light); store["bias_drift"] = bias_drift."""
+    one (bias drift vs light); store["bias_drift"] = bias_drift.
+    `dark_model` = dark_model_settings (None: on, default allowances): the
+    dark level limit comes from the per-camera model (dark_expectation);
+    dark sets are judged in date order and the ones that pass anchor it;
+    store["dark_model"] has one row per dark set."""
     recs = store["frames"]
     scales = scales or {}
+    dm = dark_model or {"enabled": True, "allow_adu": DARK_MODEL_ALLOW_ADU,
+                        "allow_frac": DARK_MODEL_ALLOW_FRAC}
     for r in recs.values():
         if r.get("type") == "BIAS" and r.get("median") is not None:
             f, w = judge_frame(r, rig=rig, tol=tol, setpoint=setpoint)
@@ -708,38 +934,62 @@ def judge_all(store: dict, *, rig: str, tol: float,
     for r in recs.values():
         if r.get("median") is None:
             continue
-        if r.get("type") != "BIAS":
-            dark = r.get("type") == "DARK"
-            sc = scales.get(r.get("readout") or default_readout, 1.0) if dark else 1.0
-            ref, alt = _bias_ref(r, sessions, drift_adu) if dark else (None, None)
-            f, w = judge_frame(r, rig=rig, tol=tol, bias_ref=ref, bias_alt=alt,
-                               setpoint=setpoint, excess_scale=sc)
-            r["frame_fails"], r["frame_warns"] = f, w
         r["set_fails"] = []
         r["day_fails"] = []
-    # set outliers (darks and bias)
+        for k in ("dark_expected", "dark_excess", "dark_limit"):
+            r.pop(k, None)
+        if r.get("type") not in ("BIAS", "DARK"):
+            f, w = judge_frame(r, rig=rig, tol=tol, setpoint=setpoint)
+            r["frame_fails"], r["frame_warns"] = f, w
     sets: dict[tuple, list] = {}
     for r in recs.values():
         if r.get("type") in ("DARK", "BIAS") and r.get("median") is not None:
             sets.setdefault(_set_key(r), []).append(r)
-    for members in sets.values():
-        clean = [r for r in members if not r["frame_fails"]]
-        if len(clean) < SET_MIN:
-            continue
-        med = _median([r["median"] for r in clean])
-        dev = _median([abs(r["median"] - med) for r in clean]) or 0.0
-        thr = max(OUTLIER_LEVEL_ADU, OUTLIER_MAD_K * 1.4826 * dev)
-        nmed = _median([r.get("mad") for r in clean])
+    for members in sets.values():   # bias sets: outliers only
+        if members[0].get("type") == "BIAS":
+            _set_outliers(members)
+    # dark sets, oldest first: model limit, light checks, then anchor
+    anchors: dict[tuple, list] = {}
+    model_rows = []
+    darks = sorted((m for m in sets.values() if m[0].get("type") == "DARK"),
+                   key=lambda m: (str(m[0].get("date") or ""),
+                                  float(m[0].get("exptime") or 0)))
+    for members in darks:
+        r0 = members[0]
+        mk = _model_key(r0)
+        expect = (dark_expectation(anchors.get(mk, []), r0.get("exptime") or 0,
+                                   str(r0.get("date") or ""),
+                                   allow_adu=dm["allow_adu"],
+                                   allow_frac=dm["allow_frac"])
+                  if dm.get("enabled") else None)
         for r in members:
-            if abs(r["median"] - med) > thr:
-                r["set_fails"].append({"code": "outlier", "detail":
-                                       f"median {r['median']:g} vs set median {med:g} "
-                                       f"(> {thr:.1f} ADU)"})
-            if nmed and r.get("mad") is not None and r["mad"] > NOISE_RATIO * nmed \
-                    and r["mad"] - nmed >= 2:
-                r["set_fails"].append({"code": "noise", "detail":
-                                       f"MAD {r['mad']:g} vs set {nmed:g} "
-                                       f"(> {NOISE_RATIO:g}x)"})
+            sc = scales.get(r.get("readout") or default_readout, 1.0)
+            ref, alt = _bias_ref(r, sessions, drift_adu)
+            f, w = judge_frame(r, rig=rig, tol=tol, bias_ref=ref, bias_alt=alt,
+                               setpoint=setpoint, excess_scale=sc, expect=expect)
+            r["frame_fails"], r["frame_warns"] = f, w
+            if expect is not None:
+                r["dark_expected"] = expect[0]
+        trend = _dark_set_checks(members, expect[0] if expect else None)
+        _set_outliers(members)
+        good = [r for r in members if not r["frame_fails"] and not r["set_fails"]
+                and r.get("dark_excess") is not None]
+        row = {"date": r0.get("date"), "exptime": float(r0.get("exptime") or 0),
+               "gain": r0.get("gain"), "offset": r0.get("offset"),
+               "readout": r0.get("readout"), "settemp": mk[-1],
+               "n": len(members), "n_pass": len(good),
+               "excess": _median([r.get("dark_excess") for r in members]),
+               "expected": expect[0] if expect else None,
+               "limit": expect[1] if expect else None,
+               "source": expect[2] if expect else "generic formula (no anchors)",
+               "trend": trend, "anchor": False}
+        if dm.get("enabled") and len(good) >= ANCHOR_MIN:
+            anchors.setdefault(mk, []).append(
+                {"exptime": row["exptime"], "date": str(row["date"] or ""),
+                 "excess": _median([r["dark_excess"] for r in good]), "n": len(good)})
+            row["anchor"] = True
+        model_rows.append(row)
+    store["dark_model"] = model_rows
     check_daytime(store)
     for r in recs.values():
         _finish(r)
@@ -936,7 +1186,8 @@ def qa_frames(config, rig: str, frames, *, recheck: bool = False,
                   setpoint=_setpoint(config, rig),
                   scales=dark_excess_scales(config, rig),          # PS-182
                   default_readout=rig_readout(config, rig),
-                  drift_adu=bias_drift_adu(config))
+                  drift_adu=bias_drift_adu(config),
+                  dark_model=dark_model_settings(config))
         if persist:
             save_store(config, rig, store)
     day = store.get("daytime", {}).get("status")
@@ -1214,7 +1465,8 @@ def _judge_store(config, rig: str, store: dict) -> None:
     judge_all(store, rig=rig, tol=temp_tol(config), setpoint=_setpoint(config, rig),
               scales=dark_excess_scales(config, rig),
               default_readout=rig_readout(config, rig),
-              drift_adu=bias_drift_adu(config))
+              drift_adu=bias_drift_adu(config),
+              dark_model=dark_model_settings(config))
 
 
 def _quarantine_reason(qpath: Path) -> str:
@@ -1523,4 +1775,166 @@ def format_report(rep: dict, config=None) -> str:
             lines.append(f"  would quarantine {len(r['would_quarantine'])} Library frames")
         if r.get("quarantined"):
             lines.append(f"  quarantined {len(r['quarantined'])} Library frames")
+    return "\n".join(lines)
+
+
+# --- release check (read-only dry run) ----------------------------------------------
+
+def _exp_token(name: str) -> str:
+    import re
+    m = re.search(r"_(\d+(?:\.\d+)?)s_", name)
+    return m.group(1) if m else "?"
+
+
+def _sample(files: list, n: int) -> list:
+    """Up to n files spread evenly through a set (first and last kept)."""
+    if n <= 0 or len(files) <= n:
+        return list(files)
+    if n == 1:
+        return [files[0]]
+    step = (len(files) - 1) / (n - 1)
+    return [files[round(i * step)] for i in range(n)]
+
+
+def release_check(config, rig: str, lib: Path, qdir: Path, *,
+                  per_set: int = 6, progress=None, measure_fn=None) -> dict:
+    """Which quarantined frames in `qdir` (<lib>/Calibration/_quarantine/
+    <TYPE>/<date>) would pass the current rule. READ-ONLY: it measures the
+    frames of qdir and, for context (the bias in force, the dark model's
+    anchors, the set checks), up to `per_set` frames of every other
+    Library and quarantine DARK / BIAS set of the rig. Nothing is saved,
+    moved or written; releasing from the quarantine is the operator's step
+    on the scope (calibration-file --rejudge, which judges the scope's own
+    store). measure_fn (tests) replaces measure(path, config)."""
+    import copy
+    measure_fn = measure_fn or measure
+    lib, qdir = Path(lib), Path(qdir)
+    cal = lib / "Calibration"
+    qroot = cal / QUARANTINE_DIR
+    try:
+        qrel = qdir.resolve().relative_to(qroot.resolve()).parts
+    except ValueError:
+        raise ValueError(f"{qdir} is not under {qroot}")
+    if len(qrel) != 2:
+        raise ValueError(f"{qdir}: expected {qroot}\\<TYPE>\\<date>")
+    q_typ, q_date = qrel
+    todo: list = []   # (key, typ, date, path, location, target)
+    for loc, root in (("library", cal), ("quarantine", qroot)):
+        for typ in ("DARK", "BIAS"):
+            for d in sorted((root / typ).glob("*")) if (root / typ).is_dir() else []:
+                if not d.is_dir():
+                    continue
+                target = loc == "quarantine" and typ == q_typ and d.name == q_date
+                files = sorted(d.glob("*.fits")) + sorted(d.glob("*.fit"))
+                groups: dict = {}
+                for f in files:
+                    groups.setdefault(_exp_token(f.name), []).append(f)
+                for _e, fs in sorted(groups.items()):
+                    for f in (fs if target else _sample(fs, per_set)):
+                        todo.append((f"{loc}:{frame_key(typ, d.name, f.name)}",
+                                     typ, d.name, f, loc, target))
+    frames: dict = {}
+    for i, (key, typ, date, f, loc, target) in enumerate(todo):
+        if progress:
+            progress(i + 1, len(todo), key)
+        rec = {"type": typ, "date": date, "name": f.name, "path": str(f),
+               "location": loc, "target": target}
+        try:
+            rec.update(measure_fn(f, config))
+        except Exception as e:  # noqa: BLE001 - one unreadable frame
+            rec["error"] = f"{type(e).__name__}: {e}"
+            rec["median"] = None
+        frames[key] = rec
+    timed = [k for k, r in frames.items() if r.get("date_obs") and r.get("sun_alt") is None]
+    if timed and config is not None:
+        try:
+            for k, a in zip(timed, sun_altitudes(config, [frames[k]["date_obs"]
+                                                          for k in timed])):
+                frames[k]["sun_alt"] = a
+        except Exception as e:  # noqa: BLE001
+            logger.warning("release check: sun altitude failed: %s", e)
+    try:
+        from photonscript.shared.rigs import rig_readout
+        default_ro = rig_readout(config, rig) if config is not None else None
+    except Exception:  # noqa: BLE001
+        default_ro = None
+    kw = dict(rig=rig, tol=temp_tol(config) if config is not None else 1.0,
+              setpoint=_setpoint(config, rig) if config is not None else None,
+              scales=dark_excess_scales(config, rig) if config is not None else {},
+              default_readout=default_ro,
+              drift_adu=bias_drift_adu(config) if config is not None else BIAS_DRIFT_ADU)
+    dm = dark_model_settings(config)
+    legacy = {"frames": copy.deepcopy(frames)}
+    judge_all(legacy, dark_model={**dm, "enabled": False}, **kw)
+    store = {"frames": frames}
+    judge_all(store, dark_model=dm, **kw)
+    try:
+        reasons = json.loads((qdir / "reasons.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        reasons = {}
+    rows = []
+    for k, r in frames.items():
+        if not r.get("target"):
+            continue
+        rows.append({"name": r["name"], "date_obs": r.get("date_obs"),
+                     "sun_alt": r.get("sun_alt"), "median": r.get("median"),
+                     "center": r.get("center"), "corners": r.get("corners"),
+                     "excess": r.get("dark_excess"), "expected": r.get("dark_expected"),
+                     "limit": r.get("dark_limit"),
+                     "quarantined_for": (reasons.get(r["name"]) or {}).get("reasons", []),
+                     "old_rule": legacy["frames"][k].get("verdict"),
+                     "verdict": r.get("verdict"), "would_pass": passed(r),
+                     "reasons": r.get("reasons") or [], "warnings": r.get("warnings") or []})
+    rows.sort(key=lambda x: x["name"])
+    return {"rig": rig, "dry_run": True, "quarantine_dir": str(qdir),
+            "measured": len(frames), "per_set": per_set,
+            "dark_model": dm, "sets": store.get("dark_model") or [],
+            "bias_drift": store.get("bias_drift") or [],
+            "frames": rows,
+            "would_pass": [x["name"] for x in rows if x["would_pass"]],
+            "still_fail": [x["name"] for x in rows if not x["would_pass"]]}
+
+
+def format_release_check(rep: dict) -> str:
+    """Plain text of release_check (CLI)."""
+    dm = rep.get("dark_model") or {}
+    lines = [f"Quarantine release check (DRY RUN, read-only: nothing moved), rig "
+             f"{rep['rig']}",
+             f"  {rep['quarantine_dir']}",
+             f"  measured {rep['measured']} frames (all of the folder, up to "
+             f"{rep['per_set']} per other set for context); dark model "
+             f"{'on' if dm.get('enabled') else 'off'}, allowance "
+             f"{dm.get('allow_adu', 0):g} ADU + {dm.get('allow_frac', 0) * 100:g} %",
+             "", "  bias sessions (newest vs previous):"]
+    for b in rep.get("bias_drift") or []:
+        lines.append(f"    gain {b['gain']} offset {b['offset']} {b.get('readout') or '?'} "
+                     f"SET-TEMP {b['settemp']}: {b['date']} median {b['median']:g} "
+                     f"({b['n']}), previous {b.get('prev_date') or '-'} "
+                     f"{'-' if b.get('prev_median') is None else format(b['prev_median'], 'g')}"
+                     f", drift {'-' if b.get('drift') is None else format(b['drift'], '+g')}")
+    lines += ["", "  dark sets in date order (excess = set median minus its bias, ADU):",
+              f"    {'date':<10} {'exp':>5} {'set':>4} {'n':>3} {'ok':>3} {'excess':>7} "
+              f"{'expect':>7} {'limit':>6} {'trend':>6} anchor  source"]
+    for s in rep.get("sets") or []:
+        def n(v, f="{:+.1f}"):
+            return "-" if v is None else f.format(v)
+        tr = (s.get("trend") or {}).get("change")
+        lines.append(f"    {s['date']:<10} {s['exptime']:>5g} "
+                     f"{'-' if s['settemp'] is None else s['settemp']:>4} {s['n']:>3} "
+                     f"{s['n_pass']:>3} {n(s['excess']):>7} {n(s['expected']):>7} "
+                     f"{n(s['limit'], '{:.1f}'):>6} {n(tr):>6} "
+                     f"{'yes' if s['anchor'] else 'no':<7} {s['source']}")
+    lines += ["", "  quarantined frames:"]
+    for x in rep.get("frames") or []:
+        lines.append(f"    {x['name']}  median {x['median']}, sun "
+                     f"{'-' if x['sun_alt'] is None else x['sun_alt']} deg: old rule "
+                     f"{x['old_rule']}, now {x['verdict'].upper()}"
+                     f"{' (would pass)' if x['would_pass'] else ''}")
+        for t in x["reasons"]:
+            lines.append(f"      fail: {t}")
+        for t in x["warnings"]:
+            lines.append(f"      warn: {t}")
+    lines += ["", f"  would pass now: {len(rep['would_pass'])} of {len(rep['frames'])}"
+              + (": " + ", ".join(rep["would_pass"]) if rep["would_pass"] else ""),
+              "  (releasing is a separate operator step on the scope)"]
     return "\n".join(lines)
