@@ -144,6 +144,20 @@ class RigIO:
         from photonscript.shared.rigs import nina_cool
         return await nina_cool(self.base, setpoint, minutes=5.0)
 
+    async def disconnect_camera(self) -> dict:
+        """Cooler-stall recovery only: disconnect THIS rig's camera."""
+        import httpx
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                r = await client.get(self.base + "/equipment/camera/disconnect")
+                r.raise_for_status()
+                data = r.json()
+            if isinstance(data, dict) and data.get("Success") is False:
+                return {"ok": False, "detail": data.get("Error")}
+            return {"ok": True, "detail": "camera disconnected"}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+
     async def warm(self) -> dict:
         from photonscript.shared.rigs import nina_warm
         return await nina_warm(self.base, minutes=float(
@@ -817,12 +831,66 @@ def stalled(trace: list, setpoint: float, tol: float, now_mono: float,
     return (old[-1] - t_now) < STALL_DROP_C
 
 
+class _IOCameraPort:
+    """The cooler recovery's camera port over a job's RigIO (camera only)."""
+
+    def __init__(self, io):
+        self.io = io
+
+    async def camera(self) -> dict | None:
+        return await self.io.camera()
+
+    async def disconnect(self) -> None:
+        res = await self.io.disconnect_camera()
+        if not (res or {}).get("ok", False):
+            raise RuntimeError(str((res or {}).get("detail") or "disconnect failed"))
+
+    async def connect(self) -> None:
+        ok, err = await self.io.connect_camera()
+        if not ok:
+            raise RuntimeError(err or "connect failed")
+
+    async def cool(self, setpoint: float, minutes: float) -> None:
+        res = await self.io.cool(setpoint)
+        if isinstance(res, dict) and res.get("ok") is False:
+            raise RuntimeError(str(res.get("detail") or "cool failed"))
+
+
+def _stall_watch(config, job: "Job", io):
+    """The shared cooler-stall recovery for a cooling job, or None when
+    cooler_stall_recovery is off."""
+    from photonscript.shared import cooler_recovery as cr
+    if not cr.settings(config)["enabled"]:
+        return None
+    return cr.CoolerStallWatch(config, job.rig, _IOCameraPort(io),
+                               setpoint=job.setpoint, cool_minutes=5.0,
+                               source=f"capture job {job.id}")
+
+
 async def _wait_cooled(config, job: Job, io: RigIO, armer_state_fn, poll_s) -> str | None:
     """Cool and wait for two in-tolerance reads. Returns an abort reason or
     None when the sensor is at the setpoint. PS-182: a stall (the sensor
     stopped falling above the setpoint) aborts after
     calibration_cool_stall_min when calibration_cool_reach is refuse (warn
-    and off wait for the timeout as before)."""
+    and off wait for the timeout as before). 2026-10-17: before that abort
+    (and whatever the reach mode, after cooler_stall_window_min of no
+    cooling) the shared cooler-stall recovery disconnects, reconnects and
+    re-cools the camera when tonight's budget allows; the job then waits a
+    fresh cooling timeout."""
+    watch = _stall_watch(config, job, io)
+    try:
+        return await _wait_cooled_inner(config, job, io, armer_state_fn, poll_s,
+                                        watch)
+    finally:
+        if watch is not None and watch.pending is not None:
+            try:
+                await watch.conclude()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cooler recovery verdict failed: %s", e)
+
+
+async def _wait_cooled_inner(config, job: Job, io: RigIO, armer_state_fn, poll_s,
+                             watch) -> str | None:
     from photonscript.scheduler import cooler_history as ch
     await io.cool(job.setpoint)
     ok_reads = 0
@@ -831,6 +899,16 @@ async def _wait_cooled(config, job: Job, io: RigIO, armer_state_fn, poll_s) -> s
     stall_min = (float(getattr(config, "calibration_cool_stall_min", 6.0) or 0.0)
                  if reach_mode(config) == "refuse" else 0.0)
     trace: list = []
+
+    def _restart(r: dict) -> None:
+        nonlocal ok_reads, t0, deadline
+        job.log(f"cooler stalled ({r.get('reason')}): camera reconnected and "
+                f"cooling again (attempt {r.get('attempt')})")
+        trace.clear()
+        ok_reads = 0
+        t0 = time.monotonic()
+        deadline = t0 + cool_timeout_min(config) * 60
+
     while True:
         if job.cancel_event.is_set():
             return "cancelled"
@@ -847,15 +925,28 @@ async def _wait_cooled(config, job: Job, io: RigIO, armer_state_fn, poll_s) -> s
             except (TypeError, ValueError):
                 ok_reads = 0
         job.detail = f"cooling: sensor {t} C, setpoint {job.setpoint:g} C"
+        if watch is not None:
+            r = await watch.tick(cam, True)
+            if r and r.get("action") == "reconnected":
+                _restart(r)
+                await asyncio.sleep(poll_s)
+                continue
         if ok_reads >= 2:
             job.log(f"sensor at {t} C (setpoint {job.setpoint:g} +/- {job.tol:g})")
             return None
         if stalled(trace, job.setpoint, job.tol, time.monotonic(), stall_min, t0):
             pw = cam.get("CoolerPower")
+            why = (f"cooler stalled at {t} C"
+                   + (f" (TEC {pw:.0f} %)" if isinstance(pw, (int, float)) else ""))
+            if watch is not None:
+                r = await watch.recover(why, cam)
+                if r.get("action") == "reconnected":
+                    _restart(r)
+                    await asyncio.sleep(poll_s)
+                    continue
+                job.log(f"{why}: no camera reconnect ({r.get('why') or r.get('action')})")
             job.reach_stalled = True
-            return (f"cooler stalled at {t} C"
-                    + (f" (TEC {pw:.0f} %)" if isinstance(pw, (int, float)) else "")
-                    + f": cannot reach {job.setpoint:g} +/- {job.tol:g} C now")
+            return why + f": cannot reach {job.setpoint:g} +/- {job.tol:g} C now"
         if time.monotonic() > deadline:
             return (f"camera did not reach {job.setpoint:g} +/- {job.tol:g} C in "
                     f"{cool_timeout_min(config):g} min (last {t} C)")

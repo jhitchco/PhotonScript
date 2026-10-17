@@ -1649,6 +1649,25 @@ class PhotonScriptConfig(BaseSettings):
     cooler_gate_timeout_min: float = 20.0
     cooler_gate_poll_s: float = 15.0
     cooler_gate_script: str = "C:\\astro\\PhotonScript\\deploy\\cooler-gate.cmd"
+    # Cooler-stall recovery (2026-10-17, shared.cooler_recovery): "when it's
+    # not cooling after a bit, disconnect and reconnect the camera". While
+    # the armer expects cooling (or a capture job is cooling) a rig whose
+    # sensor sits above setpoint + cooling_tolerance_c for a whole window
+    # with the cooler off, the TEC under cooler_stall_power_pct, or a drop
+    # under cooler_stall_drop_c (TEC not flat out) gets its camera (only)
+    # disconnected, reconnected and cooled again; never while exposing, at
+    # most cooler_stall_max_attempts a night, cooler_stall_spacing_min
+    # apart, one Pushover per attempt result. A reconnect during a PS-61
+    # gate wait extends that gate by cooler_stall_gate_extend_min.
+    cooler_stall_recovery: bool = True
+    cooler_stall_window_min: float = 8.0
+    cooler_stall_drop_c: float = 2.0
+    cooler_stall_power_pct: float = 3.0
+    cooler_stall_flat_out_pct: float = 90.0
+    cooler_stall_max_attempts: int = 2
+    cooler_stall_spacing_min: float = 15.0
+    cooler_stall_reconnect_wait_s: float = 5.0
+    cooler_stall_gate_extend_min: float = 15.0
     # PS-132: after every ninaAPI /sequence/load (sideload, and nina_dispatch:
     # Piggy companion, Piggy dusk flats, calibration capture) wait
     # nina_load_validation_settle_s, then read NINA's validation: the

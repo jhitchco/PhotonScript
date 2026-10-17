@@ -49,6 +49,35 @@ def _pier_side(v) -> str | None:
     return None
 
 
+class _AgentCameraPort:
+    """The cooler recovery's camera port over this agent's NinaClient (the
+    camera only: never another device)."""
+
+    def __init__(self, nina):
+        self.nina = nina
+
+    async def camera(self) -> dict | None:
+        try:
+            return await self.nina.get_camera_info()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cooler recovery camera read failed: %s", e)
+            return None
+
+    @staticmethod
+    def _check(res) -> None:
+        if isinstance(res, dict) and res.get("Success") is False:
+            raise RuntimeError(str(res.get("Error") or "ninaAPI Success false"))
+
+    async def disconnect(self) -> None:
+        self._check(await self.nina.disconnect_camera())
+
+    async def connect(self) -> None:
+        self._check(await self.nina.connect_camera())
+
+    async def cool(self, setpoint: float, minutes: float) -> None:
+        self._check(await self.nina.cool_camera(setpoint, minutes=minutes))
+
+
 class TelescopeAgent:
     """Main telescope monitoring agent.
 
@@ -89,9 +118,8 @@ class TelescopeAgent:
         # Nanny / escalation state
         self._consecutive_rejects = 0
         self._alerted: set[str] = set()  # de-duped alert keys
-        # Cooling watchdog state
-        self._cool_bad_since: float | None = None
-        self._cool_fix_attempts = 0
+        # Cooling watchdog (cooler-stall recovery, built on first poll)
+        self._cool_watch = None
         # Dew-heater watchdog state
         self._dew_last_set: float = 0.0
         self._dew_api_broken = False
@@ -392,9 +420,7 @@ class TelescopeAgent:
     # Monitoring loops
     # ------------------------------------------------------------------
 
-    COOL_FAIL_GRACE_S = 600   # cooler must show progress within 10 min
     COOL_ALERT_GRACE_S = 1200  # off-setpoint this long before the "cooling" alert
-    COOL_FIX_MAX = 3          # reconnect attempts per night
 
     async def _dew_heater_watchdog(self, camera: dict):
         """Cooler ON => window dew heater ON, always (2026-09-08 request).
@@ -787,78 +813,36 @@ class TelescopeAgent:
                 severe=True)
 
     async def _cooling_watchdog(self, camera: dict):
-        """Active remediation for 'CoolerOn but 0% power, sensor at ambient'.
+        """Cooler-stall recovery (shared.cooler_recovery), one per rig.
 
-        Observed 2026-07-03..05: the OGMA driver reported CoolerOn=true with
-        CoolerPower=0% and the sensor never left ambient — three sessions
-        imaged at +30..40C. When that signature persists past the grace
-        period, disconnect/reconnect the camera and re-issue the cool
-        command (cycles the driver's cooler state). A sub in flight is
-        sacrificed knowingly: at ambient temperature it was garbage anyway.
-        """
-        import time
-        if self._cooling_hold(camera):  # PS-79: a warm is not a dead cooler
-            self._cool_bad_since = None
-            return
-        cooler_on = camera.get("CoolerOn", False)
-        power = camera.get("CoolerPower")
-        temp = camera.get("Temperature")
-        sp = self.config.camera_setpoint_c
-        tol = self.config.cooling_tolerance_c
-        failed = (cooler_on and temp is not None
-                  and temp > sp + max(3 * tol, 3.0)
-                  and (power is None or power <= 1.0))
-        now = time.monotonic()
-        if not failed:
-            self._cool_bad_since = None
-            if temp is not None and temp <= sp + tol:
-                self._cool_fix_attempts = 0  # reached setpoint — reset budget
-            return
-        if self._cool_bad_since is None:
-            self._cool_bad_since = now
-            return
-        if now - self._cool_bad_since < self.COOL_FAIL_GRACE_S:
-            return
-        if self._cool_fix_attempts >= self.COOL_FIX_MAX:
-            await self._escalate(
-                "cooling-dead",
-                f"Cooler STILL not cooling after {self.COOL_FIX_MAX} camera "
-                f"reconnects — sensor {temp:.1f}C, setpoint {sp:.1f}C. "
-                "Manual intervention (12V / PDU outlet?) needed.",
-                severe=True)
-            return
-        self._cool_fix_attempts += 1
-        self._cool_bad_since = now  # restart grace clock for this attempt
-        n = self._cool_fix_attempts
-        logger.warning("Cooling watchdog: reconnect attempt %d/%d "
-                       "(sensor %.1fC, power %s%%)", n, self.COOL_FIX_MAX,
-                       temp, power)
-        # Alert ONLY on the first attempt — the intermediate retries used to fire
-        # a Pushover each ("attempt 2/4, 3/4…"), a burst per stuck-cooler episode.
-        # The final give-up still escalates (above), so nothing important is lost.
-        if n == 1:
-            await notify(
-                self.config,
-                f"Cooler on but {0 if power is None else power:.0f}% power at "
-                f"{temp:.1f}C (setpoint {sp:.1f}C) — reconnecting the camera and "
-                f"re-cooling (up to {self.COOL_FIX_MAX} tries).",
-                title="PhotonScript cooling watchdog", priority=1)
+        Observed 2026-07-03..05 (OGMA reported CoolerOn with 0 % power, the
+        sensor never left ambient) and 2026-10-16 (both cameras at 32 to 35
+        C with the cooler effectively off after the evening Cool Camera
+        failed; the cooler gate skipped every block). While the armer
+        expects cooling (ARMED / RUNNING / PAUSED_* / WATCHING in the cold
+        window) a stall over cooler_stall_window_min (cooler off, TEC power
+        near 0, or the sensor not dropping) disconnects and reconnects THIS
+        rig's camera and cools again: never while it is exposing, at most
+        cooler_stall_max_attempts a night, cooler_stall_spacing_min apart,
+        one Pushover per attempt result."""
+        from photonscript.shared import cooler_recovery as cr
+        watch = getattr(self, "_cool_watch", None)
+        if watch is None:
+            watch = cr.CoolerStallWatch(
+                self.config, getattr(self, "rig", "rc16"),
+                _AgentCameraPort(self.nina),
+                setpoint=float(self.config.camera_setpoint_c),
+                cool_minutes=float(getattr(self.config, "cool_ramp_minutes", 0.0)),
+                source="watchdog",
+                notify_fn=lambda *a, **k: notify(*a, **k),
+                sleep=lambda s: asyncio.sleep(s))
+            self._cool_watch = watch
+        expected, _why = cr.cooling_expected(self.config)
         try:
-            await self.nina.disconnect_camera()
-            await asyncio.sleep(10)
-            await self.nina.connect_camera()
-            await asyncio.sleep(5)
-            # Instant re-cool (no 10-min ramp — a ramp fought arm/precool). Honors
-            # cool_ramp_minutes so it matches the rest of the cooling path.
-            await self.nina.cool_camera(
-                sp, minutes=float(getattr(self.config, "cool_ramp_minutes", 0.0)))
-            logger.info("Cooling watchdog: cool command re-issued (%.1fC)", sp)
-        except Exception as e:  # noqa: BLE001
-            logger.error("Cooling watchdog attempt %d errored: %s", n, e)
-            if n == 1:   # first error only; the give-up escalation covers the rest
-                await notify(self.config,
-                             f"Cooling watchdog reconnect errored: {e}",
-                             title="PhotonScript cooling watchdog", priority=1)
+            await watch.tick(camera, expected)
+        except Exception as e:  # noqa: BLE001 - never stop the poll loop
+            logger.warning("cooler recovery [%s] errored: %s",
+                           getattr(self, "rig", "rc16"), e)
 
     SEQ_POLL_EVERY = 3   # PS-174: /sequence/json on every 3rd 5 s cycle
 
