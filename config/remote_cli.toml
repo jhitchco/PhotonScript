@@ -1,0 +1,149 @@
+# Remote CLI allowlist (POST /api/cli/run, photonscript remote).
+#
+# An ALLOWLIST: a photonscript subcommand runs remotely only when it is listed
+# here, and only with the flags listed for it (each flag is also checked
+# against the command's own typer options; a flag the command does not have
+# is refused as unknown). `<command> --help` is allowed for every command.
+#
+# class        read  = pure report; write = local data maintenance (changes
+#                no hardware). A write job needs {"confirm": "write"} and is
+#                refused mid-night (armer RUNNING / WATCHING / PAUSED_*) or
+#                while a grading job writes, unless night_safe = true.
+# write_flags  flags that turn a read command into a write job
+#              (unguided-limits --refresh, guide-rms-backfill --apply).
+# require      flags the request must carry (settings-snapshot --no-push:
+#              a remote snapshot never sends a Pushover).
+# night_safe   a write job that may run while a night runs.
+#
+# Never listed (see docs/HANDBOOK.md "Remote CLI"): anything that moves the
+# mount, focuser, cover or roof, arms / disarms, starts or stops a sequence,
+# restarts the service, self-updates or deploys, sends a notification,
+# connects or reconnects a device, runs PixInsight, or moves / deletes files.
+# --url / --nina-url (the command already runs on the scope PC) and flags that
+# take a file or folder path are left off every command.
+
+[limits]
+default_timeout_s = 300
+max_timeout_s = 1800
+output_cap_bytes = 262144     # bytes kept per stream (the tail)
+tail_bytes = 65536            # bytes returned by default by GET /api/cli/jobs/{id}
+keep_jobs = 50                # jobs kept in memory for GET /api/cli/jobs/{id}
+
+# ---------------------------------------------------------------- read
+
+[commands.frame-check]
+class = "read"
+flags = ["--rig", "--last", "--index", "--type", "--pa", "--compare", "--json"]
+
+[commands.sub-doctor]
+class = "read"
+flags = ["--night", "--rig", "--timeline", "--json"]
+
+[commands.unguided-limits]
+class = "read"
+flags = ["--rig", "--refresh", "--since", "--json"]
+write_flags = ["--refresh"]   # writes <data_dir>/unguided_limits.json (the night pilot reads it)
+
+[commands.tpoint-stats]
+class = "read"
+flags = ["--json", "--files", "--history"]   # TPoint's own files, read only
+
+[commands.core-check]
+class = "read"
+flags = ["--target", "--rig", "--night", "--json"]
+
+[commands.blend-readiness]
+class = "read"
+flags = ["--target", "--json"]
+
+[commands.exposure-report]
+class = "read"
+flags = ["--target", "--rig", "--filter", "--every", "--limit", "--profile",
+         "--feature-arcmin", "--signal", "--goal-snr", "--camera-cal", "--json"]
+
+[commands.settings]
+class = "read"
+flags = ["--night", "--at", "--diff", "--sub", "--full", "--json"]
+
+[commands.guiding-status]
+class = "read"
+flags = ["--json"]
+
+[commands.guiding-report]
+class = "read"
+flags = ["--date", "--no-subs", "--json"]
+
+[commands.calibration-status]
+class = "read"
+flags = ["--rig", "--nights", "--json"]
+
+[commands.calibration-plan]
+class = "read"
+flags = ["--rig", "--json"]
+
+[commands.calibration-owed]
+class = "read"
+flags = ["--rig", "--json"]
+
+[commands.optics-report]
+class = "read"                # writes only its report cache under data_dir/optics
+flags = ["--date", "--rig", "--json"]
+
+[commands.tracking-test-report]
+class = "read"
+flags = ["--date", "--pa", "--json"]
+
+[commands.optics-test-report]
+class = "read"
+flags = ["--date", "--json"]
+
+[commands.rotation-report]
+class = "read"                # cached measurements only (no --refresh)
+flags = ["--nights", "--end", "--split", "--ma", "--me", "--night-hours", "--json"]
+
+[commands.piggy-offset]
+class = "read"                # stored solves only; --save left off
+flags = ["--nights", "--json"]
+
+[commands.score-report]
+class = "read"
+flags = ["--date", "--json"]
+
+[commands.qa-baselines]
+class = "read"
+flags = ["--rig", "--nights", "--k", "--json"]
+
+[commands.qa-backfill]
+class = "read"                # dry run only: --apply moves Library links (left off)
+flags = ["--date", "--unsafe"]
+
+[commands.qa-rescore]
+class = "read"                # dry run only: --apply moves Library links (left off)
+flags = ["--date", "--dry-run", "--full"]
+
+[commands.report]
+class = "read"
+flags = ["--date"]
+
+# ---------------------------------------------------------------- write
+
+[commands.settings-snapshot]
+class = "write"               # reads NINA #1 / #2, PHD2, TheSky; writes <data_dir>/settings_ledger
+flags = ["--no-push", "--json"]
+require = ["--no-push"]
+night_safe = true             # the armer takes the same snapshot mid-night
+
+[commands.settings-backfill]
+class = "read"                # dry run unless --apply; --force (rewrites ledger files) left off
+flags = ["--night", "--apply", "--json"]
+write_flags = ["--apply"]
+
+[commands.guide-rms-backfill]
+class = "read"                # dry run unless --apply; --apply rewrites the subs log
+flags = ["--date", "--since", "--apply", "--dry-run", "--examples", "--json"]
+write_flags = ["--apply"]
+
+[commands.target-aliases]
+class = "read"                # dry run unless --apply; --apply rewrites the subs logs only (no Library moves)
+flags = ["--date", "--apply", "--json"]
+write_flags = ["--apply"]

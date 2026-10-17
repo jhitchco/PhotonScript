@@ -26,6 +26,50 @@ from photonscript.shared.messagebus import get_message_bus
 
 logger = logging.getLogger(__name__)
 
+# Windows refuses these in a path component (WinError 123), plus control
+# characters; a trailing dot or space is silently dropped by Win32.
+_ILLEGAL = set('<>:"/\\|?*')
+_RESERVED = {"CON", "PRN", "AUX", "NUL",
+             *(f"COM{i}" for i in range(1, 10)),
+             *(f"LPT{i}" for i in range(1, 10))}
+UNKNOWN_DIR = "_unknown"
+
+
+def safe_component(name) -> str:
+    """One Windows-safe path component. Illegal characters become "_",
+    trailing dots / spaces go, reserved device names get a "_" prefix, and
+    a name with nothing left (or the "?" an unattributed sub carries)
+    becomes UNKNOWN_DIR."""
+    raw = str(name or "").strip()
+    if not raw or set(raw) <= {"?"}:
+        return UNKNOWN_DIR
+    out = "".join("_" if (c in _ILLEGAL or ord(c) < 32) else c for c in raw)
+    out = out.rstrip(" .")
+    if not out.strip("_ ."):
+        return UNKNOWN_DIR
+    if out.split(".")[0].upper() in _RESERVED:
+        out = "_" + out
+    return out
+
+
+def local_base_dir(value) -> Path:
+    """config.local_image_dir with "~" and %VARS% / $VARS expanded (the
+    scope's value, "~" plus a backslash, used to stay literal and land in
+    the process's working folder)."""
+    text = str(value or "").strip()
+    if not text:
+        return Path.home() / "Astrophotography"
+    if text == "~" or text[:2] in ("~/", "~\\"):
+        text = str(Path.home()) + text[1:]   # either separator, any OS
+    return Path(os.path.expandvars(os.path.expanduser(text)))
+
+
+def transfer_dest(base: Path, image: CapturedImage) -> Path:
+    """<base>/<target>/<filter>/<file>, every component Windows-safe."""
+    flt = getattr(image.filter_type, "value", image.filter_type)
+    return (base / safe_component(image.target_name) / safe_component(flt)
+            / safe_component(Path(str(image.filename)).name))
+
 
 def _is_transfer_window(window: TransferWindow, timezone: str = "America/Denver") -> bool:
     """Check if current time falls within the transfer window (daytime hours)."""
@@ -58,13 +102,25 @@ class Librarian:
         self._completed_images: dict[str, CapturedImage] = {}
         self._running = False
         self._transfer_window = config.get_transfer_window()
-        self._local_base = Path(config.local_image_dir)
+        self._local_base = local_base_dir(config.local_image_dir)
+        # The legacy per-sub copy to local_image_dir (and the processor's
+        # auto-stack it feeds) predates the Library: dawn filing (PS-157)
+        # and Syncthing now move subs. Off by default (see config).
+        self._legacy_transfer = bool(getattr(config, "librarian_legacy_transfer", False))
 
     async def start(self):
         """Start the librarian agent."""
         self._running = True
-        self._local_base.mkdir(parents=True, exist_ok=True)
-        logger.info("Librarian started — local storage: %s", self._local_base)
+        if self._legacy_transfer:
+            try:
+                await asyncio.to_thread(self._local_base.mkdir, parents=True,
+                                        exist_ok=True)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Librarian: cannot create %s (%s)", self._local_base, e)
+            logger.info("Librarian started, local storage: %s", self._local_base)
+        else:
+            logger.info("Librarian started, legacy transfer off "
+                        "(librarian_legacy_transfer); cataloging only")
         logger.info(
             "Transfer window: %02d:00 - %02d:00 local (%s), limit: %s Mbps",
             self._transfer_window.start_hour_local,
@@ -112,22 +168,28 @@ class Librarian:
                 logger.info("Image %s rejected by QA", image.filename)
 
     async def _queue_transfer(self, image: CapturedImage):
-        """Add an image to the transfer queue."""
-        # Organize by target/filter on local side
-        local_dir = self._local_base / image.target_name / image.filter_type.value
-        local_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = str(local_dir / image.filename)
-
-        job = TransferJob(
-            id=str(uuid4()),
-            image_id=image.id,
-            source_path=image.file_path,
-            dest_path=dest_path,
-            file_size_bytes=image.file_size_bytes,
-        )
+        """Add an image to the transfer queue. Never raises: this runs inside
+        the image_captured / quality-report handlers, and the folder is made
+        off the event loop (a slow or failing mkdir must not stall it)."""
+        if not self._legacy_transfer:
+            return
+        try:
+            dest = transfer_dest(self._local_base, image)
+            await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
+            job = TransferJob(
+                id=str(uuid4()),
+                image_id=image.id or str(uuid4()),
+                source_path=image.file_path,
+                dest_path=str(dest),
+                file_size_bytes=image.file_size_bytes,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Librarian: transfer not queued for %s (%s)",
+                           image.filename, e)
+            return
         await self._transfer_queue.put(job)
         logger.info(
-            "Queued transfer: %s (%.1f MB) — %d in queue",
+            "Queued transfer: %s (%.1f MB), %d in queue",
             image.filename,
             image.file_size_bytes / 1024 / 1024,
             self._transfer_queue.qsize(),
@@ -176,9 +238,9 @@ class Librarian:
             # If we have SSH config, use paramiko for remote transfer
             if self.config.transfer_host:
                 await self._ssh_transfer(job)
-            elif source.exists():
+            elif await asyncio.to_thread(source.exists):
                 # Local transfer (telescope PC and local are same machine, or network share)
-                dest.parent.mkdir(parents=True, exist_ok=True)
+                await asyncio.to_thread(dest.parent.mkdir, parents=True, exist_ok=True)
                 await asyncio.to_thread(self._copy_file_with_limit, source, dest)
                 job.status = "completed"
             else:

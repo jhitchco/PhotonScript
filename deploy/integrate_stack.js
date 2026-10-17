@@ -1,0 +1,767 @@
+// PhotonScript library integration (PJSR), PS-22. Template: `photonscript
+// integrate` replaces the CONFIG line below with the run's settings and
+// writes the result into the run folder as integrate_run.js. Do not run this
+// template directly.
+//
+// Generalized from Staging/M31_OSC4/integrate_osc4_v4b.js (PS-109):
+//   masters: bias (average), one master dark per dark length, one master
+//   flat per filter (bias-calibrated, multiplicative)
+//   per stack (OSC: one stack, every exposure group; mono: one per filter):
+//     ImageCalibration per exposure group (bias + dark, optimizeDarks when
+//     the dark length differs, flat if matched, 1000 DN literal pedestal)
+//     -> CosmeticCorrection (hot only after a dark) -> Debayer (CFA only)
+//     -> StarAlignment with distortion correction to ONE reference shared by
+//     every stack (a strict pass, a relaxed retry of the lost frames, else
+//     the stack's own reference and its master aligned onto the shared
+//     geometry: registerStack) -> LocalNormalization (drops only frames without a map;
+//     falls back to AdditiveWithScaling) -> ImageIntegration with PSF Signal
+//     Weight (falls back to equal weights on star-poor frames; PS-177: a
+//     stack that mixes exposure lengths falls back to exposure-time weights,
+//     never to equal weights; mono stacks hold one length each) and
+//     Winsorized sigma clipping -> master_<stack>.xisf (+ masterOSC.xisf for
+//     an OSC stack) and a review jpg
+// Funnel checks: a stage may drop frames but never add them; every dropped
+// frame is logged as "DROPPED at <stage>: <file>" (the packet reads these).
+// One stack that cannot be made (fewer than MIN_FRAMES registered frames, a
+// failed calibration / registration / integration) is SKIPPED: a
+// "SKIPPED [<stack>]: <why>" line, a SKIPPED row in timing_pi.csv, and the
+// run goes on with the next stack. The run fails only when no stack made a
+// master (2026-10-12 M31 rc16: B_300s had 3 subs, 2 registered, and the
+// throw lost the L 30 s, R and G masters queued after it).
+// Stage timing goes to out/timing_pi.csv; the log ends EXIT OK or ERROR.
+//
+// PJSR rules (HANDBOOK sec 6): pure ASCII; no slash-star sequence inside a
+// line comment; clear own intermediates per run; no SubframeSelector; clear
+// the astrometric solution before any Crop.
+
+#include <pjsr/DataType.jsh>
+
+//__CONFIG__
+
+var STAGING = CONFIG.staging;
+var OUT = CONFIG.out;
+var LOGFILE = OUT + "/pipeline.log";
+var TIMINGFILE = OUT + "/timing_pi.csv";
+// frames a stack needs after registration (photonscript integrate
+// --min-group-frames; ImageIntegration needs at least 3)
+var MIN_FRAMES = Math.max(3, CONFIG.min_group_frames || 3);
+var SKIPPED = [];   // [{stack, reason}], one per stack that made no master
+
+function listFits(dir) {
+   if (!File.directoryExists(dir)) return [];
+   var f = searchDirectory(dir + "/*.fits", false)
+           .concat(searchDirectory(dir + "/*.fit", false))
+           .concat(searchDirectory(dir + "/*.xisf", false));
+   f.sort();
+   return f;
+}
+function ensureDir(d) { if (!File.directoryExists(d)) File.createDirectory(d, true); }
+var LOGLINES = [];
+var T0 = Date.now();
+function writeText(path, lines) {
+   try {
+      var f = new File; f.createForWriting(path);
+      for (var i = 0; i < lines.length; ++i) f.outTextLn(lines[i]);
+      f.close();
+   } catch (e) { console.criticalln("could not write " + path + " (" + e + ")"); }
+}
+function log(s) {
+   console.noteln("<b>[STACK]</b> " + s); console.flush();
+   var mins = ((Date.now() - T0) / 60000).toFixed(1);
+   LOGLINES.push((new Date).toISOString() + "  [+" + mins + "m]  " + s);
+   ensureDir(OUT);
+   writeText(LOGFILE, LOGLINES);
+}
+var TIMING = ["scope,stage,start_utc,end_utc,minutes"];
+var TOPEN = {};
+function TSTART(scope, stage) {
+   TOPEN[scope + "|" + stage] = new Date;
+   log("STAGE START " + scope + " / " + stage);
+}
+function TEND(scope, stage) {
+   var k = scope + "|" + stage, t1 = new Date, t0 = TOPEN[k] || t1;
+   var m = ((t1.getTime() - t0.getTime()) / 60000).toFixed(2);
+   TIMING.push(scope + "," + stage + "," + t0.toISOString() + "," + t1.toISOString() + "," + m);
+   log("STAGE END   " + scope + " / " + stage + " (" + m + " min)");
+   writeText(TIMINGFILE, TIMING);
+}
+
+function assertFunnel(stage, nIn, nOut) {
+   if (nOut > nIn)
+      throw new Error(stage + " produced " + nOut + " frames from " + nIn +
+                      " inputs - stale files in the output folder?");
+}
+
+function clearDir(d) {
+   if (!File.directoryExists(d)) return 0;
+   var n = 0;
+   var globs = ["*.xisf", "*.xdrz", "*.xnml", "*.fits", "*.fit", "*.csv", "*.jpg"];
+   for (var g = 0; g < globs.length; ++g) {
+      var fs = searchDirectory(d + "/" + globs[g], false);
+      for (var i = 0; i < fs.length; ++i) { File.remove(fs[i]); ++n; }
+   }
+   return n;
+}
+
+// Strip pipeline suffixes: <base>[_c][_cc][_d][_r] -> <base>
+function baseOf(path) {
+   var n = File.extractName(path);
+   var sfx = ["_r", "_d", "_cc", "_c"];
+   for (var i = 0; i < sfx.length; ++i)
+      if (n.length > sfx[i].length && n.substr(n.length - sfx[i].length) === sfx[i])
+         n = n.substr(0, n.length - sfx[i].length);
+   return n;
+}
+function findByBase(files, base) {
+   for (var i = 0; i < files.length; ++i) if (baseOf(files[i]) === base) return files[i];
+   return null;
+}
+function logDrops(stage, inputs, outputs) {
+   var outB = {};
+   for (var j = 0; j < outputs.length; ++j) outB[baseOf(outputs[j])] = true;
+   var lost = 0;
+   for (var i = 0; i < inputs.length; ++i)
+      if (!outB[baseOf(inputs[i])]) { log("  DROPPED at " + stage + ": " + File.extractName(inputs[i])); ++lost; }
+   return lost;
+}
+function groupOf(stack, path) {
+   var n = File.extractName(path);
+   for (var g = 0; g < stack.groups.length; ++g)
+      if (n.indexOf(stack.groups[g].tag) >= 0) return stack.groups[g].name;
+   return "?";
+}
+function groupCounts(stack, files) {
+   var c = {};
+   for (var i = 0; i < files.length; ++i) { var g = groupOf(stack, files[i]); c[g] = (c[g] || 0) + 1; }
+   var s = [];
+   for (var k in c) s.push(k + "=" + c[k]);
+   return s.join(" ");
+}
+function median(a) {
+   if (!a.length) return NaN;
+   var b = a.slice(0).sort(function (x, y) { return x - y; });
+   var m = Math.floor(b.length / 2);
+   return b.length % 2 ? b[m] : 0.5 * (b[m - 1] + b[m]);
+}
+function fmtArr(a, d) {
+   try {
+      var s = [];
+      for (var i = 0; i < a.length; ++i) s.push(Number(a[i]).toFixed(d));
+      return s.join(" / ");
+   } catch (e) { return String(a); }
+}
+function statLine(path) {
+   try {
+      var ws = ImageWindow.open(path);
+      if (!ws.length) return "unreadable";
+      var img = ws[0].mainView.image;
+      var s = "median " + (img.median() * 65535).toFixed(2) + " DN, MAD " + (img.MAD() * 65535).toFixed(3) + " DN";
+      ws[0].forceClose();
+      return s;
+   } catch (e) { return "stats failed (" + e + ")"; }
+}
+function mtfv(m, x) { if (x <= 0) return 0; if (x >= 1) return 1;
+   return ((m - 1) * x) / (((2 * m - 1) * x) - m); }
+
+// Clear any astrometric solution first: Crop on a solved image raises a
+// Yes/No dialog that stalls an unattended run.
+function clearWcs(view) {
+   try { view.window.clearAstrometricSolution(); } catch (e) {}
+}
+function cropBorders(view, frac) {
+   clearWcs(view);
+   var img = view.image;
+   var dx = Math.round(img.width * frac), dy = Math.round(img.height * frac);
+   var CR = new Crop;
+   CR.mode = Crop.prototype.AbsolutePixels;
+   CR.leftMargin = -dx; CR.rightMargin = -dx; CR.topMargin = -dy; CR.bottomMargin = -dy;
+   CR.executeOn(view, false);
+}
+function autoStretch(view) {
+   var img = view.image;
+   var rows = [];
+   var nc = img.isColor ? 3 : 1;
+   try {
+      for (var c = 0; c < nc; ++c) {
+         img.selectedChannel = c;
+         var med = img.median(), mad = img.MAD() * 1.4826;
+         var c0 = Math.max(0, Math.min(1, med - 2.8 * mad));
+         rows.push([c0, mtfv(0.15, Math.max(1.0e-6, med - c0)), 1, 0, 1]);
+      }
+      img.resetSelections();
+   } catch (e) {
+      img.resetSelections();
+      rows = [];
+   }
+   var HT = new HistogramTransformation;
+   var id = [0, 0.5, 1, 0, 1];
+   if (nc === 3 && rows.length === 3) HT.H = [rows[0], rows[1], rows[2], id, id];
+   else if (rows.length) HT.H = [id, id, id, rows[0], id];
+   else return;
+   HT.executeOn(view, false);
+}
+
+// ---------------------------------------------------------------- masters
+
+function integrateCal(files, id) {
+   log("integrate " + id + ": " + files.length + " frames");
+   var II = new ImageIntegration;
+   II.images = files.map(function (f) { return [true, f, "", ""]; });
+   II.combination = ImageIntegration.prototype.Average;
+   II.weightMode = ImageIntegration.prototype.DontCare;
+   II.minWeight = 0.0;
+   II.generateIntegratedImage = true;
+   II.generateRejectionMaps = false;
+   II.rejection = files.length >= 15
+      ? ImageIntegration.prototype.WinsorizedSigmaClip
+      : (files.length >= 8 ? ImageIntegration.prototype.SigmaClip
+                           : ImageIntegration.prototype.PercentileClip);
+   II.normalization = ImageIntegration.prototype.NoNormalization;
+   II.rejectionNormalization = ImageIntegration.prototype.NoRejectionNormalization;
+   II.evaluateSNR = false;
+   if (!II.executeGlobal()) throw new Error("ImageIntegration failed for " + id);
+   var w = ImageWindow.windowById("integration");
+   ensureDir(OUT + "/master");
+   var path = OUT + "/master/" + id + ".xisf";
+   w.saveAs(path, false, false, false, false);
+   w.forceClose();
+   log("master saved: " + path + "  (" + statLine(path) + ")");
+   return path;
+}
+
+function integrateFlat(flat, masterBias) {
+   var files = listFits(STAGING + "/" + flat.dir);
+   if (files.length < 3) { log("flats " + flat.filter + ": only " + files.length + " frames; no master flat"); return null; }
+   var calDir = OUT + "/flatcal/" + flat.filter;
+   ensureDir(calDir); clearDir(calDir);
+   var cal = files;
+   if (masterBias) {
+      var IC = new ImageCalibration;
+      IC.targetFrames = files.map(function (f) { return [true, f]; });
+      if (CONFIG.cfa) { try { IC.enableCFA = true; } catch (e0) {} }
+      IC.masterBiasEnabled = true; IC.masterBiasPath = masterBias;
+      IC.masterDarkEnabled = false; IC.masterFlatEnabled = false;
+      IC.outputPedestal = 0;
+      IC.outputDirectory = calDir;
+      IC.outputExtension = ".xisf"; IC.overwriteExistingFiles = true;
+      if (!IC.executeGlobal()) throw new Error("flat calibration failed (" + flat.filter + ")");
+      cal = listFits(calDir);
+      assertFunnel("flat calibration " + flat.filter, files.length, cal.length);
+   } else log("flats " + flat.filter + ": no master bias; integrating raw flats");
+   var II = new ImageIntegration;
+   II.images = cal.map(function (f) { return [true, f, "", ""]; });
+   II.combination = ImageIntegration.prototype.Average;
+   II.weightMode = ImageIntegration.prototype.DontCare;
+   II.minWeight = 0.0; II.evaluateSNR = false;
+   II.rejection = ImageIntegration.prototype.PercentileClip;
+   II.normalization = ImageIntegration.prototype.Multiplicative;
+   II.rejectionNormalization = ImageIntegration.prototype.EqualizeFluxes;
+   II.generateRejectionMaps = false;
+   if (!II.executeGlobal()) throw new Error("flat integration failed (" + flat.filter + ")");
+   var w = ImageWindow.windowById("integration");
+   var path = OUT + "/master/masterFlat_" + flat.filter + ".xisf";
+   w.saveAs(path, false, false, false, false); w.forceClose();
+   log("master flat saved: " + path + " from " + cal.length + " flats  (" + statLine(path) + ")");
+   return path;
+}
+
+// ---------------------------------------------------------------- one stack
+
+function calibrateGroup(stack, g, lights, masters, SOUT, scalingCsv) {
+   var IC = new ImageCalibration;
+   IC.targetFrames = lights.map(function (f) { return [true, f]; });
+   if (CONFIG.cfa) {
+      try { IC.enableCFA = true; } catch (e0) {}
+      try { if (ImageCalibration.prototype[CONFIG.cfa] !== undefined) IC.cfaPattern = ImageCalibration.prototype[CONFIG.cfa]; } catch (e1) {}
+   }
+   var bias = masters.bias, dark = g.dark !== null ? masters.darks[String(g.dark)] : null;
+   var flat = masters.flats[stack.filter] || null;
+   IC.masterBiasEnabled = !!bias;
+   if (bias) IC.masterBiasPath = bias;
+   IC.masterDarkEnabled = !!dark;
+   if (dark) {
+      IC.masterDarkPath = dark;
+      // the master dark is a raw integration (bias inside): subtract the bias
+      // from it first, which dark scaling needs
+      IC.calibrateDark = !!bias;
+      IC.optimizeDarks = !!(g.optimize && bias);
+   }
+   IC.masterFlatEnabled = !!flat;
+   if (flat) {
+      IC.masterFlatPath = flat;
+      IC.calibrateFlat = false;
+      if (CONFIG.cfa) { try { IC.separateCFAFlatScalingFactors = true; } catch (e2) {} }
+   }
+   IC.outputPedestal = CONFIG.pedestal;
+   if (ImageCalibration.prototype.OutputPedestal_Literal !== undefined)
+      IC.outputPedestalMode = ImageCalibration.prototype.OutputPedestal_Literal;
+   IC.outputDirectory = SOUT + "/cal"; ensureDir(IC.outputDirectory);
+   IC.outputExtension = ".xisf"; IC.overwriteExistingFiles = true;
+   log("[" + stack.name + " " + g.name + "] calibrate " + lights.length + " lights: " +
+       (bias ? "bias" : "no bias") + " + " + (dark ? ("dark " + g.dark + " s" + (IC.optimizeDarks ? " (optimizeDarks)" : "")) : "no dark") +
+       " + " + (flat ? "flat" : "no flat") + ", pedestal " + CONFIG.pedestal + " DN");
+   if (!IC.executeGlobal()) throw new Error("calibration failed for " + stack.name + " " + g.name);
+   var made = [];
+   try {
+      var od = IC.outputData, k = [];
+      for (var i = 0; i < od.length; ++i) {
+         var p = String(od[i][0]);
+         if (p.length && File.exists(p)) made.push(p);
+         if (od[i].length >= 4 && dark) {
+            k.push(Number(od[i][1]));
+            scalingCsv.push(stack.name + "," + g.name + "," + File.extractName(p) + "," +
+                            Number(od[i][1]).toFixed(4) + "," + Number(od[i][2]).toFixed(4) + "," +
+                            Number(od[i][3]).toFixed(4));
+         }
+      }
+      if (k.length) log("[" + stack.name + " " + g.name + "] dark scaling k (first channel) median " + median(k).toFixed(4));
+   } catch (e) { log("[" + stack.name + " " + g.name + "] outputData unreadable (" + e + ")"); }
+   return made;
+}
+
+// ---------------------------------------------------------------- registration
+// Registration ladder (2026-10-13 legacy M 27 rc16, 3248 mm, 9..13 px stars
+// at 17..37 deg altitude: StarAlignment at the strict setting matched no B
+// sub and only half the G and R subs to the L reference, though star QA had
+// aligned every one of them; NGC 6535 lost R and L the same way):
+//   pass 1  every frame onto the shared reference, the long-standing strict
+//           detector (unchanged: a stack that registers here is untouched)
+//   pass 2  only the frames pass 1 lost, again onto the shared reference,
+//           with the relaxed detector integrate_sho.js uses for star-poor
+//           narrowband (sensitivity above 0.5 detects fainter stars)
+//   pass 3  still fewer than MIN_FRAMES or than half the stack, and the stack
+//           has its own star QA reference: every frame onto that own
+//           reference (relaxed), the master is integrated in that geometry
+//           and then aligned onto the shared reference (alignMaster), so the
+//           mono masters still line up for the color combine
+// A 180 deg pier-flip rotation needs no special case: StarAlignment's
+// triangle similarity matching is rotation invariant.
+var SA_STRICT = { name: "strict", sensitivity: CONFIG.cfa ? 0.60 : 0.30, peakResponse: 0.50,
+                  structureLayers: 5, noiseReduction: 0, maxStarDistortion: 0 };
+var SA_RELAXED = { name: "relaxed", sensitivity: 0.85, peakResponse: 0.40,
+                   structureLayers: 6, noiseReduction: 2, maxStarDistortion: 0.80 };
+
+// One StarAlignment run of `targets` onto `refPath`, output into outDir.
+// Returns executeGlobal's result; a throw counts as false. The caller lists
+// outDir for what registered (a false run can still have written some).
+function starAlignPass(refPath, targets, outDir, opt) {
+   var SA = new StarAlignment;
+   SA.referenceImage = refPath; SA.referenceIsFile = true;
+   SA.targets = targets.map(function (f) { return [true, true, f]; });
+   SA.outputDirectory = outDir; ensureDir(SA.outputDirectory);
+   SA.outputExtension = ".xisf"; SA.overwriteExistingFiles = true;
+   SA.distortionCorrection = true;
+   SA.structureLayers = opt.structureLayers;
+   SA.sensitivity = opt.sensitivity;
+   SA.peakResponse = opt.peakResponse;
+   SA.useTriangleSimilarity = true;
+   if (opt.noiseReduction) { try { SA.noiseReductionFilterRadius = opt.noiseReduction; } catch (e1) {} }
+   if (opt.maxStarDistortion) { try { SA.maxStarDistortion = opt.maxStarDistortion; } catch (e2) {} }
+   try { return !!SA.executeGlobal(); }
+   catch (e) { log("    StarAlignment (" + opt.name + ") threw: " + e); return false; }
+}
+
+// inputs with no registered output in outDir
+function missingFrom(inputs, outDir) {
+   var outB = {}, got = listFits(outDir);
+   for (var j = 0; j < got.length; ++j) outB[baseOf(got[j])] = true;
+   return inputs.filter(function (f) { return !outB[baseOf(f)]; });
+}
+
+// The ladder above. Returns { files: registered frames, selfRef: the own
+// reference path when pass 3 made them (the master needs alignMaster), else
+// null }.
+function registerStack(S, inputs, sharedRef, ownRef, SOUT) {
+   var regDir = SOUT + "/reg";
+   var ok1 = starAlignPass(sharedRef, inputs, regDir, SA_STRICT);
+   var lost = missingFrom(inputs, regDir);
+   log("[" + S + "] registration pass 1 (strict, shared reference): " + (inputs.length - lost.length) +
+       " of " + inputs.length + (ok1 ? "" : " (StarAlignment returned false)"));
+   if (lost.length) {
+      var ok2 = starAlignPass(sharedRef, lost, regDir, SA_RELAXED);
+      var still = missingFrom(inputs, regDir);
+      log("[" + S + "] registration pass 2 (relaxed detector, shared reference): " +
+          (lost.length - still.length) + " of " + lost.length + " recovered" +
+          (ok2 ? "" : " (StarAlignment returned false)"));
+      lost = still;
+   }
+   var n = inputs.length - lost.length;
+   if ((n < MIN_FRAMES || n < inputs.length / 2) && ownRef && baseOf(ownRef) !== baseOf(sharedRef)) {
+      var selfDir = SOUT + "/reg_self";
+      clearDir(selfDir);
+      var ok3 = starAlignPass(ownRef, inputs, selfDir, SA_RELAXED);
+      var n3 = inputs.length - missingFrom(inputs, selfDir).length;
+      log("[" + S + "] registration pass 3 (relaxed, own reference " + File.extractName(ownRef) + "): " +
+          n3 + " of " + inputs.length + (ok3 ? "" : " (StarAlignment returned false)") +
+          (n3 > n ? "; using it, the master is aligned to the shared reference after integration"
+                  : "; not better, keeping the shared-reference frames"));
+      if (n3 > n) return { files: listFits(selfDir), selfRef: ownRef };
+   }
+   return { files: listFits(regDir), selfRef: null };
+}
+
+// Pass 3 master: align it onto the shared geometry (the reference stack's
+// master when there is one: far more stars than one sub). On success the
+// aligned image replaces master_<S>.xisf and the own-geometry master is kept
+// as master/align_<S>/master_<S>_ownref.xisf; on failure master_<S>.xisf is
+// moved there too (so the color combine never uses a misaligned master) and
+// this throws, which skips the stack.
+function alignMaster(S, masterPath, reg) {
+   var target = (reg.master && File.exists(reg.master)) ? reg.master : reg.file;
+   var dir = OUT + "/master/align_" + S;
+   clearDir(dir);
+   // outside out/master itself: blend.masters() globs master_*.xisf there
+   var ownPath = dir + "/master_" + S + "_ownref.xisf";
+   if (File.exists(ownPath)) File.remove(ownPath);
+   var ok = starAlignPass(target, [masterPath], dir, SA_RELAXED);
+   var aligned = dir + "/" + File.extractName(masterPath) + "_r.xisf";
+   File.move(masterPath, ownPath);
+   if (!File.exists(aligned))
+      throw new Error("own-reference master could not be aligned to the shared reference " +
+                      File.extractName(target) + (ok ? "" : " (StarAlignment returned false)") +
+                      "; kept as " + File.extractName(ownPath) + ".xisf");
+   File.move(aligned, masterPath);
+   log("[" + S + "] master aligned onto the shared reference " + File.extractName(target) +
+       " (own-reference master kept as " + File.extractName(ownPath) + ".xisf)");
+}
+
+// OSC core combine, 2026-10-14 (photonscript/integration/osc_hdr.py): a
+// stack that mixes lengths may carry short_subset {name, groups, output}:
+// its short subs (<= 180 s) are also integrated on their own from the SAME
+// registered frames (no LocalNormalization: the maps scale every frame to
+// the stack reference, which would lift the short cores; AdditiveWithScaling
+// to the first short frame keeps them at their own level) into
+// short_subset.output, outside out/master itself. Optional: any failure is
+// logged and the stack's master stands as it is.
+function integrateShort(stack, regFiles, selfRef) {
+   var sub = stack.short_subset;
+   if (!sub) return null;
+   var S = stack.name, N = sub.name;
+   TSTART(N, "short subset integration");
+   try {
+      if (selfRef) throw new Error("the stack registered onto its own reference (pass 3), not the shared geometry");
+      var want = {};
+      for (var g = 0; g < sub.groups.length; ++g) want[sub.groups[g]] = true;
+      var files = regFiles.filter(function (f) { return want[groupOf(stack, f)] === true; });
+      log("[" + N + "] short subset of " + S + ": " + files.length + " registered frames (" + sub.groups.join(", ") + ")");
+      if (files.length < MIN_FRAMES) throw new Error("too few short frames (" + files.length + ", need " + MIN_FRAMES + ")");
+      var rej = files.length >= 15 ? "WinsorizedSigmaClip" : (files.length >= 6 ? "SigmaClip" : "PercentileClip");
+      var makeII = function (psf) {
+         var II = new ImageIntegration;
+         II.images = files.map(function (f) { return [true, f, "", ""]; });
+         II.combination = ImageIntegration.prototype.Average;
+         II.weightMode = psf ? ImageIntegration.prototype.PSFSignalWeight
+                             : (sub.groups.length > 1 ? ImageIntegration.prototype.ExposureTimeWeight
+                                                      : ImageIntegration.prototype.DontCare);
+         II.minWeight = 0.0;
+         II.generateIntegratedImage = true; II.generateRejectionMaps = false;
+         II.rejection = ImageIntegration.prototype[rej];
+         II.normalization = ImageIntegration.prototype.AdditiveWithScaling;
+         II.rejectionNormalization = ImageIntegration.prototype.Scale;
+         II.evaluateSNR = false;
+         return II;
+      };
+      var II = makeII(true), ok = false;
+      try { ok = II.executeGlobal(); } catch (e1) { log("[" + N + "] PSF Signal Weight integration failed (" + e1 + ")"); }
+      if (!ok) {
+         log("[" + N + "] retrying with " + (sub.groups.length > 1 ? "exposure-time" : "equal") + " weights");
+         II = makeII(false);
+         if (!II.executeGlobal()) throw new Error("integration failed");
+      }
+      var w = ImageWindow.windowById("integration");
+      if (w.isNull) throw new Error("no integration window");
+      var dir = sub.output.substring(0, sub.output.lastIndexOf("/"));
+      ensureDir(dir);
+      if (File.exists(sub.output)) File.remove(sub.output);
+      w.saveAs(sub.output, false, false, false, false);
+      w.forceClose();
+      ["rejection_low", "rejection_high", "slope"].forEach(function (rid) {
+         var rw = ImageWindow.windowById(rid); if (!rw.isNull) rw.forceClose(); });
+      log("[" + N + "] short master saved: " + sub.output + " (" + files.length + " frames)");
+      return sub.output;
+   } catch (e) {
+      log("[" + N + "] short master skipped (" + ("" + e).replace(/^Error: /, "") + "); master_" + S + " stands as it is");
+      ["integration", "rejection_low", "rejection_high", "slope"].forEach(function (id) {
+         try { var x = ImageWindow.windowById(id); if (!x.isNull) x.forceClose(); } catch (e2) {}
+      });
+      return null;
+   } finally { TEND(N, "short subset integration"); }
+}
+
+function runStack(stack, masters, reg) {
+   var S = stack.name;
+   TSTART(S, "stack total");
+   var SOUT = OUT + "/" + S;
+   ensureDir(SOUT);
+   var stale = 0;
+   ["cal", "cc", "debayer", "reg", "reg_self", "ln"].forEach(function (d) { stale += clearDir(SOUT + "/" + d); });
+   stale += clearDir(SOUT);
+   if (stale) log("[" + S + "] cleared " + stale + " stale files");
+
+   var all = [], byGroup = [];
+   for (var g = 0; g < stack.groups.length; ++g) {
+      var L = listFits(STAGING + "/" + stack.groups[g].dir);
+      byGroup.push(L); all = all.concat(L);
+      log("[" + S + "] lights " + stack.groups[g].name + ": " + L.length);
+   }
+   if (!all.length) { log("[" + S + "] no lights"); TEND(S, "stack total"); return null; }
+
+   var scalingCsv = ["stack,group,file,k0,k1,k2"];
+   var nBefore = 0;
+   for (var g = 0; g < stack.groups.length; ++g) {
+      if (!byGroup[g].length) continue;
+      TSTART(S, "calibration " + stack.groups[g].name);
+      var made = calibrateGroup(stack, stack.groups[g], byGroup[g], masters, SOUT, scalingCsv);
+      TEND(S, "calibration " + stack.groups[g].name);
+      var nNow = listFits(SOUT + "/cal").length;
+      assertFunnel("calibration " + stack.groups[g].name, byGroup[g].length, nNow - nBefore);
+      assertFunnel("calibration " + stack.groups[g].name + " (outputData)", byGroup[g].length, made.length);
+      nBefore = nNow;
+   }
+   writeText(SOUT + "/dark_scaling.csv", scalingCsv);
+   var work = listFits(SOUT + "/cal");
+   assertFunnel("calibration", all.length, work.length);
+   logDrops("calibration", all, work);
+   log("[" + S + "] stage calibration: " + all.length + " in -> " + work.length + " out (" + groupCounts(stack, work) + ")");
+
+   TSTART(S, "cosmetic correction");
+   var anyDark = false;
+   for (var g = 0; g < stack.groups.length; ++g) if (stack.groups[g].dark !== null && masters.darks[String(stack.groups[g].dark)]) anyDark = true;
+   var CC = new CosmeticCorrection;
+   CC.targetFrames = work.map(function (f) { return [true, f]; });
+   CC.cfa = !!CONFIG.cfa; CC.useAutoDetect = true;
+   CC.hotAutoCheck = true; CC.hotAutoValue = anyDark ? 5.0 : 3.0;
+   CC.coldAutoCheck = !anyDark; CC.coldAutoValue = 3.0;
+   CC.outputDir = SOUT + "/cc"; ensureDir(CC.outputDir); CC.overwrite = true;
+   if (!CC.executeGlobal()) throw new Error("cosmetic correction failed");
+   var ccFiles = listFits(CC.outputDir);
+   assertFunnel("cosmetic", work.length, ccFiles.length);
+   logDrops("cosmetic", work, ccFiles);
+   log("[" + S + "] stage cosmetic: " + work.length + " in -> " + ccFiles.length + " out");
+   TEND(S, "cosmetic correction");
+
+   var rgbFiles = ccFiles;
+   if (CONFIG.cfa) {
+      TSTART(S, "debayer");
+      var DB = new Debayer;
+      DB.cfaPattern = Debayer.prototype[CONFIG.cfa];
+      DB.debayerMethod = Debayer.prototype.VNG;
+      try { DB.evaluateNoise = true; } catch (e3) {}
+      try { DB.evaluateSignal = true; } catch (e4) {}
+      DB.targetItems = ccFiles.map(function (f) { return [true, f]; });
+      DB.outputDirectory = SOUT + "/debayer"; ensureDir(DB.outputDirectory);
+      DB.outputExtension = ".xisf"; DB.overwriteExistingFiles = true;
+      if (!DB.executeGlobal()) throw new Error("debayer failed");
+      rgbFiles = listFits(DB.outputDirectory);
+      assertFunnel("debayer", ccFiles.length, rgbFiles.length);
+      logDrops("debayer", ccFiles, rgbFiles);
+      log("[" + S + "] stage debayer: " + ccFiles.length + " in -> " + rgbFiles.length + " out");
+      TEND(S, "debayer");
+   }
+
+   // one registration reference for every stack, so mono masters align.
+   // The run's star QA pick; a stack without it (the pick's stack was left
+   // out, or failed and released it) uses its own star QA group reference.
+   if (!reg.file) {
+      var hit = findByBase(rgbFiles, CONFIG.reference);
+      var own = hit ? null : (stack.reference ? findByBase(rgbFiles, stack.reference) : null);
+      reg.file = hit || own || rgbFiles[Math.floor(rgbFiles.length / 2)];
+      reg.owner = S;
+      log("registration reference: " + File.extractName(reg.file) + (hit ? " (star QA pick)"
+          : (own ? " (this stack's star QA reference; run pick not in this stack)" : " (mid-stack; QA pick not in this stack)")));
+   }
+   TSTART(S, "star alignment");
+   var ownRef = stack.reference ? findByBase(rgbFiles, stack.reference) : null;
+   var R = registerStack(S, rgbFiles, reg.file, ownRef, SOUT);
+   var regFiles = R.files;
+   if (!regFiles.length) throw new Error("registration failed");
+   assertFunnel("registration", rgbFiles.length, regFiles.length);
+   logDrops("registration", rgbFiles, regFiles);
+   log("[" + S + "] stage registration: " + rgbFiles.length + " in -> " + regFiles.length + " out (" + groupCounts(stack, regFiles) + ")" +
+       (R.selfRef ? " onto its own reference " + File.extractName(R.selfRef) : ""));
+   TEND(S, "star alignment");
+   if (regFiles.length < MIN_FRAMES)
+      throw new Error("[" + S + "] too few registered frames (" + regFiles.length + ", need " + MIN_FRAMES + ")");
+   var nReg = regFiles.length;
+
+   var lnData = null;
+   TSTART(S, "local normalization");
+   try {
+      var lnRef = findByBase(regFiles, stack.reference || CONFIG.reference) || regFiles[Math.floor(regFiles.length / 2)];
+      var LN = new LocalNormalization;
+      LN.referencePathOrViewId = lnRef;
+      LN.referenceIsView = false;
+      LN.targetItems = regFiles.map(function (f) { return [true, f]; });
+      LN.outputDirectory = SOUT + "/ln"; ensureDir(LN.outputDirectory);
+      LN.overwriteExistingFiles = true;
+      LN.generateNormalizationData = true;
+      if (!LN.executeGlobal()) throw new Error("LocalNormalization returned false");
+      var maps = [], missing = 0;
+      for (var i = 0; i < regFiles.length; ++i) {
+         var x = SOUT + "/ln/" + File.extractName(regFiles[i]) + ".xnml";
+         if (!File.exists(x)) ++missing;
+         maps.push(x);
+      }
+      if (missing) {
+         if (missing > regFiles.length / 4) throw new Error(missing + " LN maps missing");
+         var keepF = [], keepM = [];
+         for (var i = 0; i < regFiles.length; ++i)
+            if (File.exists(maps[i])) { keepF.push(regFiles[i]); keepM.push(maps[i]); }
+            else log("  DROPPED at local normalization (no map): " + File.extractName(regFiles[i]));
+         regFiles = keepF; maps = keepM;
+      }
+      lnData = maps;
+      log("[" + S + "] stage local normalization: " + maps.length + " maps (ref " + File.extractName(lnRef) + ")");
+   } catch (e) {
+      log("[" + S + "] local normalization skipped (" + e + "); using AdditiveWithScaling");
+      lnData = null;
+   }
+   TEND(S, "local normalization");
+   if (regFiles.length < MIN_FRAMES)
+      throw new Error("[" + S + "] too few frames after local normalization (" + regFiles.length + ", need " + MIN_FRAMES + ")");
+
+   TSTART(S, "integration");
+   var rej = regFiles.length >= 15 ? "WinsorizedSigmaClip" : (regFiles.length >= 6 ? "SigmaClip" : "PercentileClip");
+   function makeII(psf) {
+      var II = new ImageIntegration;
+      II.images = regFiles.map(function (f, i) { return [true, f, "", lnData ? lnData[i] : ""]; });
+      II.combination = ImageIntegration.prototype.Average;
+      II.weightMode = psf ? ImageIntegration.prototype.PSFSignalWeight
+                          : (stack.mixed_exposures ? ImageIntegration.prototype.ExposureTimeWeight
+                                                   : ImageIntegration.prototype.DontCare);
+      II.minWeight = 0.0;
+      II.generateIntegratedImage = true; II.generateRejectionMaps = false;
+      II.rejection = ImageIntegration.prototype[rej];
+      if (lnData) {
+         II.normalization = ImageIntegration.prototype.LocalNormalization;
+         II.rejectionNormalization = ImageIntegration.prototype.LocalRejectionNormalization;
+      } else {
+         II.normalization = ImageIntegration.prototype.AdditiveWithScaling;
+         II.rejectionNormalization = ImageIntegration.prototype.Scale;
+      }
+      II.evaluateSNR = true;
+      return II;
+   }
+   log("[" + S + "] integrating " + regFiles.length + " frames (" + groupCounts(stack, regFiles) + "), " +
+       (lnData ? "LocalNormalization" : "AdditiveWithScaling") + ", PSFSignalWeight, " + rej);
+   var II = makeII(true), ok = false;
+   try { ok = II.executeGlobal(); } catch (e) { log("[" + S + "] PSF Signal Weight integration failed (" + e + ")"); }
+   if (!ok) {
+      // HANDBOOK lesson: star-poor narrowband frames fail PSF weighting
+      log("[" + S + "] retrying with " + (stack.mixed_exposures
+          ? "exposure-time weights (weightMode ExposureTimeWeight: this stack mixes exposure lengths)"
+          : "equal weights (weightMode DontCare)"));
+      II = makeII(false);
+      if (!II.executeGlobal()) throw new Error("integration failed");
+   }
+   try { log("  noise estimates: " + fmtArr(II.finalNoiseEstimates, 7)); } catch (e5) {}
+   try { log("  rejected low: " + fmtArr(II.totalRejectedLow, 0) + "  high: " + fmtArr(II.totalRejectedHigh, 0)); } catch (e9) {}
+   try {
+      var wcsv = ["file,group,w0,w1,w2"];
+      var idt = II.imageData;
+      for (var i = 0; i < idt.length && i < regFiles.length; ++i)
+         wcsv.push(File.extractName(regFiles[i]) + "," + groupOf(stack, regFiles[i]) + "," +
+                   Number(idt[i][0]).toFixed(5) + "," + Number(idt[i][1]).toFixed(5) + "," + Number(idt[i][2]).toFixed(5));
+      writeText(SOUT + "/weights.csv", wcsv);
+   } catch (e10) { log("  weights unavailable (" + e10 + ")"); }
+
+   var w = ImageWindow.windowById("integration");
+   ensureDir(OUT + "/master");
+   var masterPath = OUT + "/master/master_" + S + ".xisf";
+   w.saveAs(masterPath, false, false, false, false);
+   if (CONFIG.cfa) w.saveAs(OUT + "/master/masterOSC.xisf", false, false, false, false);
+   ["rejection_low", "rejection_high", "slope"].forEach(function (rid) {
+      var rw = ImageWindow.windowById(rid); if (!rw.isNull) rw.forceClose(); });
+   log("[" + S + "] master saved: " + masterPath + " (" + regFiles.length + " frames)");
+   TEND(S, "integration");
+   if (R.selfRef) {
+      TSTART(S, "master alignment");
+      try { alignMaster(S, masterPath, reg); }
+      finally { TEND(S, "master alignment"); }
+   }
+   if (reg.owner === S) reg.master = masterPath;
+
+   TSTART(S, "review jpg");
+   try {
+      cropBorders(w.mainView, 0.015);
+      autoStretch(w.mainView);
+      w.saveAs(OUT + "/master/master_" + S + "_review.jpg", false, false, false, false);
+   } catch (e12) { log("[" + S + "] review jpg skipped (" + e12 + ")"); }
+   w.forceClose();
+   TEND(S, "review jpg");
+   if (stack.short_subset) integrateShort(stack, regFiles, R.selfRef);
+   log("[" + S + "] funnel " + all.length + " staged -> " + work.length + " cal -> " + ccFiles.length + " cc -> " +
+       rgbFiles.length + (CONFIG.cfa ? " debayer -> " : " -> ") + nReg + " reg -> " + regFiles.length + " integrated");
+   TEND(S, "stack total");
+   return masterPath;
+}
+
+// A stack that made no master: log the SKIPPED line, record it (SKIPPED,
+// timing_pi.csv), close what the failed stage left open. `open` = the
+// stack's "stack total" timer is still running (it threw).
+function skipStack(S, why, open) {
+   SKIPPED.push({ stack: S, reason: why });
+   log("SKIPPED [" + S + "]: " + why + " (no master_" + S + "; continuing with the other stacks)");
+   if (open) { try { TEND(S, "stack total"); } catch (e1) {} }
+   var t = (new Date).toISOString();
+   TIMING.push(S + ",SKIPPED," + t + "," + t + ",0");
+   writeText(TIMINGFILE, TIMING);
+   ["integration", "rejection_low", "rejection_high", "slope"].forEach(function (id) {
+      try { var w = ImageWindow.windowById(id); if (!w.isNull) w.forceClose(); } catch (e2) {}
+   });
+}
+
+function main() {
+   console.show();
+   log("staging: " + STAGING + "  target " + CONFIG.target + "  rig " + CONFIG.rig + "  CFA " + (CONFIG.cfa || "none"));
+   ensureDir(OUT + "/master");
+   var masters = { bias: null, darks: {}, flats: {} };
+   TSTART("masters", "calibration masters");
+   if (CONFIG.bias) {
+      var bf = listFits(STAGING + "/" + CONFIG.bias.dir);
+      if (bf.length >= 3) masters.bias = integrateCal(bf, "masterBias");
+      else log("bias: only " + bf.length + " frames; no master bias");
+   } else log("bias: none staged");
+   for (var d = 0; d < CONFIG.darks.length; ++d) {
+      var df = listFits(STAGING + "/" + CONFIG.darks[d].dir);
+      if (df.length >= 3) masters.darks[String(CONFIG.darks[d].exp)] = integrateCal(df, "masterDark_" + CONFIG.darks[d].label);
+      else log("darks " + CONFIG.darks[d].label + ": only " + df.length + " frames; no master dark");
+   }
+   for (var f = 0; f < CONFIG.flats.length; ++f) {
+      try {
+         var mf = integrateFlat(CONFIG.flats[f], masters.bias);
+         if (mf) masters.flats[CONFIG.flats[f].filter] = mf;
+      } catch (e) { log("master flat " + CONFIG.flats[f].filter + " skipped (" + e + "); that filter runs without a flat"); }
+   }
+   TEND("masters", "calibration masters");
+   // reg: the shared registration reference (file), the stack it came from
+   // (owner) and that stack's master (master, the alignMaster target)
+   var reg = { file: null, owner: null, master: null };
+   var made = 0;
+   for (var s = 0; s < CONFIG.stacks.length; ++s) {
+      var SN = CONFIG.stacks[s].name;
+      try {
+         if (runStack(CONFIG.stacks[s], masters, reg)) ++made;
+         else skipStack(SN, "no lights", false);
+      } catch (e) {
+         skipStack(SN, ("" + e).replace(/^Error: /, ""), true);
+         // 2026-10-13 NGC 6535: the R reference failed and took L down with
+         // it. Nothing registered to a reference whose own stack failed, so
+         // the next stack picks a new one.
+         if (reg.owner === SN && !made) {
+            log("registration reference " + File.extractName(reg.file) + " released (its stack " + SN + " made no master)");
+            reg.file = null; reg.owner = null; reg.master = null;
+         }
+      }
+   }
+   if (SKIPPED.length)
+      log("stacks SKIPPED: " + SKIPPED.length + " of " + CONFIG.stacks.length + " (" +
+          SKIPPED.map(function (k) { return k.stack; }).join(", ") + ")");
+   if (!made) throw new Error("no stack produced a master");
+   TIMING.push("all,integration script total," + new Date(T0).toISOString() + "," + (new Date).toISOString() + "," + ((Date.now() - T0) / 60000).toFixed(2));
+   writeText(TIMINGFILE, TIMING);
+   log("DONE - " + made + " master(s), total " + ((Date.now() - T0) / 60000).toFixed(1) + " min");
+}
+
+try { main(); log("EXIT OK"); }
+catch (e) { log("ERROR: " + e.toString()); console.criticalln("[STACK] FAILED: " + e.toString()); }
