@@ -2947,6 +2947,28 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   290 makes those darks bias drift, one at 257 leaves them light (then cap
   the lens or check the box for a leak). `calibration-file --rejudge` files
   darks the new verdict passes.
+- LONG DARKS, THE DARK MODEL: the generic dark limit (10 ADU + 0.02 ADU/s at
+  0 C, 19 ADU at 450 s) is replaced, once a camera has accepted darks, by a
+  per-camera model (calibration_qa.dark_expectation, per gain / offset /
+  readout / SET-TEMP): the expected excess over bias for a length is the
+  newest 3 earlier nights of that length, else interpolated between known
+  lengths (bias = 0 s), else extrapolated past the longest along the top
+  segment; the limit adds `calibration_dark_model_allow_adu` (5) +
+  `calibration_dark_model_allow_frac` (0.25) x expected. Dark sets are judged
+  in date order; a set with 3+ fully passing frames anchors later nights
+  (store `dark_model` rows). Light is judged inside the set: `trend` (level
+  moves > 3 ADU through the set, DATE-OBS order, sun altitude quoted),
+  `gradient` (a frame's corner-minus-center pattern off its set's by > 3
+  ADU), `outlier`; a `leak` pattern every frame of the set shares (within
+  1.5 ADU, up to 3 + 0.25 x expected) becomes a `zone_pattern` warning. Bias
+  drift vs light is unchanged. `calibration_dark_model=false` restores the
+  formula. Read-only check of one quarantine folder: `photonscript
+  calibration-release-check --rig piggyback --dir <lib>/Calibration/
+  _quarantine/DARK/<date>` (measures that folder plus up to 6 frames per
+  other set, writes nothing; releasing stays an operator step on the scope).
+  2026-10-16 run: the 450 s darks (+47, uniform, no trend, fixed zone
+  pattern) still fail, against the accepted 2026-10-11 450 s set at +19
+  (limit 28.8).
 - CALIBRATION OWED (PS-122): `GET /api/calibration/owed?rig=`, the Calibration
   page "Calibration owed" cards and `photonscript calibration-owed` list, per
   rig, the frames still needed for the lights of active goals over the last

@@ -35,6 +35,7 @@ Usage:
     photonscript calibration-owed [--rig R] [--json]              # PS-122
     photonscript calibration-capture --rig R [--exposures 300,400] [--count N]
     photonscript calibration-qa [--backfill] [--rig R] [--dry-run]
+    photonscript calibration-release-check --rig R --dir QUARANTINE_DATE_DIR [--library P] [--per-set N] [--json]  # read-only
     photonscript calibration-library [--rig R] [--url U] [--desktop-library P] [--json]  # PS-178
     photonscript calibration-status [--rig R] [--url U] [--mirror P] [--nights N] [--json]  # PS-182
     photonscript calibration-file --url U [--rig R] [--dry-run] [--rejudge] [--regrade] [--days N]  # PS-188
@@ -1648,6 +1649,49 @@ def calibration_qa_cmd(
         print(_json.dumps(rep, indent=1, default=str))
         return
     console.print(cq.format_report(rep, cfg), markup=False, highlight=False)
+
+
+@app.command("calibration-release-check")
+def calibration_release_check_cmd(
+    rig: str = typer.Option(..., "--rig", help="rc16 | piggyback"),
+    qdir: str = typer.Option(..., "--dir",
+                             help="One quarantine folder: <library>/Calibration/"
+                                  "_quarantine/<TYPE>/<date>"),
+    library: str = typer.Option("", "--library",
+                                help="The rig's Library root (default: the folder "
+                                     "above Calibration/_quarantine of --dir)"),
+    per_set: int = typer.Option(6, "--per-set",
+                                help="Context frames measured per other set"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+):
+    """Dry run, read-only: which quarantined frames of one folder would pass
+    the current calibration QA rule (the per-camera dark model, set-based
+    light checks). It measures the folder's frames and a sample of the
+    rig's other Library / quarantine sets for context; nothing is saved,
+    moved or written. Releasing is a separate operator step on the scope.
+
+    photonscript calibration-release-check --rig piggyback --dir
+    D:/ninashare/Library/piggyback/Calibration/_quarantine/DARK/2026-10-16
+    """
+    import json as _json
+    from photonscript.scheduler import calibration_qa as cq
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    q = Path(qdir)
+    lib = Path(library) if library else q.parent.parent.parent.parent
+
+    def _prog(i, n, k):
+        if not as_json and (i == 1 or i % 25 == 0 or i == n):
+            console.print(f"  measuring {i}/{n} {k}", markup=False)
+
+    try:
+        rep = cq.release_check(cfg, rig, lib, q, per_set=per_set, progress=_prog)
+    except ValueError as e:
+        console.print(str(e), markup=False)
+        raise typer.Exit(2)
+    if as_json:
+        print(_json.dumps(rep, indent=1, default=str))
+        return
+    print(cq.format_release_check(rep))   # plain: no rich wrapping
 
 
 def _last_night() -> str:
