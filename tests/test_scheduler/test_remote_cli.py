@@ -19,7 +19,7 @@ TOKEN = "t" * 32
 NEVER = ["start", "stop", "restart", "supervise", "self-update", "rollback-done",
          "notify", "preflight", "sequence", "phd2-selftest", "focus-move",
          "focus-ingest", "cooler-gate", "cover-gate", "settle-gate", "tpoint-sample",
-         "tpoint-autocal", "calibration-capture", "guide-recover", "dawn-file",
+         "calibration-capture", "guide-recover", "dawn-file",
          "regrade", "pointing-backfill", "slew-backfill", "rename-targets",
          "archive-library", "prune-nights", "autostart-check", "calibration-file",
          "integrate", "blend", "finish", "restage", "autointegrate", "integrate-watch",
@@ -42,6 +42,15 @@ def _wait(runner, jid, t=60):
 def _py(code):
     """argv_for: run a python snippet instead of the photonscript CLI."""
     return lambda args: [sys.executable, "-c", code, *args]
+
+
+# tpoint-autocal is listed as a write command (--go only): Jeremy approved
+# remote, supervised TPoint autocal runs on 2026-10-18.
+
+
+def test_tpoint_autocal_go_is_write_gated():
+    allow = rc.load_allowlist()
+    assert allow.commands["tpoint-autocal"].write_flags == ("--go",)
 
 
 # ------------------------------------------------------------ allowlist

@@ -157,3 +157,16 @@ flags = ["--status", "--start", "--only", "--timeout", "--no-connect", "--json"]
 write_flags = ["--start"]     # launches ONE missing app (observatory-apps.ps1 -Start -Only);
                               # never closes / restarts one, refuses when it answers
 night_safe = true             # a missing NINA #2 is wanted mid-night; it never touches a running app
+
+[commands.tpoint-autocal]
+class = "read"                # --dry-run: preflight, points and scripts, sends nothing
+flags = ["--points", "--side", "--exposure-s", "--binning", "--from-coverage",
+         "--dry-run", "--go", "--mode", "--verbose", "--slew-timeout",
+         "--status", "--json"]
+write_flags = ["--go"]        # live run (approved for remote use by Jeremy 2026-10-18):
+                              # borrows the RC16 camera from NINA #1 and gives it back,
+                              # slews and samples; refuses unless DISARMED, roof safe and
+                              # dark. Never arms, syncs or parks. No --test (it waits for
+                              # console input). Keep --points small so a run ends well
+                              # inside --remote-timeout (a killed job would not hand the
+                              # camera back).
