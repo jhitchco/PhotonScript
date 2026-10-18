@@ -128,6 +128,20 @@ flags = ["--date", "--dry-run", "--full"]
 class = "read"
 flags = ["--date"]
 
+[commands.tpoint-refit]
+class = "read"                # dry run (no flag): the model now, the backup plan, the
+                              # scripts; sends and copies nothing. --discover: one READ ONLY
+                              # TheSky script (for..in over TheSkyXAction member names and
+                              # typeof execute; calls nothing). --go / --fit / --action /
+                              # --test are never listed (a refit is a console step).
+flags = ["--discover", "--json"]
+
+[commands.screen-snapshot]
+class = "read"                # READ ONLY desktop JPEG (no input, no clicks); writes
+                              # only <data_dir>/screen/screen_<stamp>Z.jpg, fetched with
+                              # GET /api/screen/files/<name>. --out (a path) left off.
+flags = ["--scale", "--monitor", "--quality", "--json"]
+
 # ---------------------------------------------------------------- write
 
 [commands.settings-snapshot]
