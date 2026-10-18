@@ -19,6 +19,9 @@
 # mount, focuser, cover or roof, arms / disarms, starts or stops a sequence,
 # restarts the service, self-updates or deploys, sends a notification,
 # connects or reconnects a device, runs PixInsight, or moves / deletes files.
+# One exception: `apps --start --only <app>` launches ONE observatory app
+# that is not running (deploy\observatory-apps.ps1 -Start -Only); it never
+# closes, kills or restarts an app and refuses when the app already answers.
 # --url / --nina-url (the command already runs on the scope PC) and flags that
 # take a file or folder path are left off every command.
 
@@ -147,3 +150,10 @@ write_flags = ["--apply"]
 class = "read"                # dry run unless --apply; --apply rewrites the subs logs only (no Library moves)
 flags = ["--date", "--apply", "--json"]
 write_flags = ["--apply"]
+
+[commands.apps]
+class = "read"                # --status / no flag: which apps answer
+flags = ["--status", "--start", "--only", "--timeout", "--no-connect", "--json"]
+write_flags = ["--start"]     # launches ONE missing app (observatory-apps.ps1 -Start -Only);
+                              # never closes / restarts one, refuses when it answers
+night_safe = true             # a missing NINA #2 is wanted mid-night; it never touches a running app

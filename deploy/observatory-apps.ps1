@@ -10,7 +10,7 @@
 # deploy\install-app-lifecycle-tasks.ps1. By hand, normal PowerShell:
 #   powershell -ExecutionPolicy Bypass -File C:\astro\PhotonScript\deploy\observatory-apps.ps1 -Status
 #   ... -Stop  [-DryRun] [-Force] [-IncludeTheSky]
-#   ... -Start [-DryRun] [-SkipTheSkyCheck] [-NoPhd2Connect]
+#   ... -Start [-DryRun] [-SkipTheSkyCheck] [-NoPhd2Connect] [-Only nina1|nina2|phd2] [-NoConnect]
 #
 # The PhotonScript service decides, this script acts:
 #   GET  /api/apps/status    enabled flag, stop guards, launch settings
@@ -33,6 +33,12 @@
 #   (profile app_phd2_profile_id selected and equipment connected over its
 #   event server). Each port must answer within -StartTimeoutS. Then
 #   connect + preflight through the service.
+# -Only nina1|nina2|phd2 (with -Start; `photonscript apps --start --only`):
+#   launch just that app, and only when it is not running: refused (exit 2,
+#   nothing launched) when its port already answers, or when a process of it
+#   is open but its port does not answer (a NINA still loading or with its
+#   API off; a launch would make a second instance). Never closes anything.
+# -NoConnect (with -Start): skip the connect + preflight step.
 # -Scheduled (set by the tasks): do nothing while app_lifecycle_enabled is
 #   off, and stop at most once a day. A hand run ignores both.
 #
@@ -50,6 +56,9 @@ param(
     [switch]$IncludeTheSky,
     [switch]$SkipTheSkyCheck,
     [switch]$NoPhd2Connect,
+    [ValidateSet("", "nina1", "nina2", "phd2")]
+    [string]$Only = "",
+    [switch]$NoConnect,
     [string]$Api = "http://127.0.0.1:8100",
     [string]$Repo = "C:\astro\PhotonScript",
     [int]$StartTimeoutS = 180,
@@ -57,7 +66,7 @@ param(
     # Fallbacks when the service does not answer (the service's config wins)
     [string]$NinaExe = "C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe",
     [string]$Nina1Profile = "RC16",
-    [string]$Nina2Profile = "Piggy-600",
+    [string]$Nina2Profile = "piggyback600",
     [string]$Phd2Exe = "C:\Program Files (x86)\PHDGuiding2\phd2.exe",
     [int]$Phd2ProfileId = 2
 )
@@ -69,6 +78,10 @@ if (@($modes).Count -ne 1) {
     exit 2
 }
 $mode = if ($Stop) { "stop" } elseif ($Start) { "start" } else { "status" }
+if ($Only -and -not $Start) {
+    Write-Host "-Only goes with -Start." -ForegroundColor Red
+    exit 2
+}
 
 # ---------------------------------------------------------------- logging
 $dataDir = Join-Path $env:USERPROFILE ".photonscript"
@@ -348,8 +361,31 @@ if ($Stop) {
 # ---------------------------------------------------------------- -Start
 if ($Start) {
     if (-not $st) { Write-Log "service does not answer: launching anyway (connect + preflight skipped)" }
-    if ($st -and -not $st.stop_done_today) {
+    if ($st -and -not $st.stop_done_today -and -not $Only) {
         Add-Step "note: the apps were not closed today (stop blocked or not run), so running apps are not fresh"
+    }
+    # -Only: one app, only when it is not running at all (never a second
+    # instance, never a close or restart)
+    if ($Only) {
+        $onlyPort = switch ($Only) { "nina1" { $nina1Port } "nina2" { $nina2Port } "phd2" { $phd2Port } }
+        $onlyLabel = switch ($Only) { "nina1" { "NINA #1" } "nina2" { "NINA #2" } "phd2" { "PHD2" } }
+        $why = $null
+        if ($Only -eq "nina2" -and -not $nina2On) { $why = "NINA #2 is off (piggyback rig not enabled)" }
+        elseif (Test-Port "localhost" $onlyPort) { $why = ("{0} :{1} already answers" -f $onlyLabel, $onlyPort) }
+        elseif ($Only -eq "phd2") {
+            $n = @(Get-Process -Name phd2 -ErrorAction SilentlyContinue).Count
+            if ($n -gt 0) { $why = ("PHD2 is open ({0} process(es)) but :{1} does not answer" -f $n, $phd2Port) }
+        } else {
+            $n = @(Get-Process -Name NINA -ErrorAction SilentlyContinue).Count
+            $up = @(@($nina1Port, $(if ($nina2On) { $nina2Port })) | Where-Object { $_ -and (Test-Port "localhost" $_) }).Count
+            if ($n -gt $up) { $why = ("{0} NINA process(es) open but only {1} NINA port(s) answer: one is loading or has its API off" -f $n, $up) }
+        }
+        if ($why) {
+            Add-Step ("-Only {0} refused: {1}; nothing launched, nothing closed" -f $Only, $why)
+            Send-Report $false $false ("start -Only {0} refused" -f $Only) $false
+            exit 2
+        }
+        Add-Step ("-Only {0}: {1} :{2} not running, launching it alone" -f $Only, $onlyLabel, $onlyPort)
     }
     # TheSky must be up with its mount connected (NINA and PHD2 drive the
     # Paramount through it). Never started or connected from here.
@@ -364,8 +400,9 @@ if ($Start) {
     }
     $launched = 0
     $failed = $false
-    $nina = @(,@("NINA #1", $nina1Port, $Nina1Profile))
-    if ($nina2On) { $nina += ,@("NINA #2", $nina2Port, $Nina2Profile) }
+    $nina = @()
+    if (-not $Only -or $Only -eq "nina1") { $nina += ,@("NINA #1", $nina1Port, $Nina1Profile) }
+    if ($nina2On -and (-not $Only -or $Only -eq "nina2")) { $nina += ,@("NINA #2", $nina2Port, $Nina2Profile) }
     foreach ($n in $nina) {
         $label = $n[0]; $port = [int]$n[1]
         if (Test-Port "localhost" $port) { Add-Step ("{0} :{1} already answers" -f $label, $port); continue }
@@ -383,7 +420,9 @@ if ($Start) {
         }
     }
     # PHD2: launch, select the profile, connect camera + mount (fresh driver)
-    if (Test-Port "localhost" $phd2Port) {
+    if ($Only -and $Only -ne "phd2") {
+        # -Only another app: PHD2 left as it is
+    } elseif (Test-Port "localhost" $phd2Port) {
         Add-Step ("PHD2 :{0} already answers" -f $phd2Port)
     } elseif ($DryRun) {
         Add-Step ("would launch PHD2: `"{0}`", profile id {1}" -f $Phd2Exe, $Phd2ProfileId)
@@ -421,7 +460,9 @@ if ($Start) {
         if ($failed) { exit 1 } else { exit 0 }
     }
     # Connect every rig's equipment and run preflight through the service
-    if ($st) {
+    if ($NoConnect) {
+        Add-Step "connect + preflight skipped (-NoConnect)"
+    } elseif ($st) {
         if ($launched -gt 0) { Start-Sleep -Seconds 15 }
         $c = Post-Api "/api/equipment/connect" $null 300
         if ($c) {
