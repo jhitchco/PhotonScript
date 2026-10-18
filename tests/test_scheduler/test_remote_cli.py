@@ -23,7 +23,8 @@ NEVER = ["start", "stop", "restart", "supervise", "self-update", "rollback-done"
          "regrade", "pointing-backfill", "slew-backfill", "rename-targets",
          "archive-library", "prune-nights", "autostart-check", "calibration-file",
          "integrate", "blend", "finish", "restage", "autointegrate", "integrate-watch",
-         "ledger-import", "qa-focuser-zero", "monitor", "thesky-audit", "remote"]
+         "ledger-import", "qa-focuser-zero", "monitor", "thesky-audit", "remote",
+         "remote-screen"]
 
 
 def _cfg(tmp_path, token=TOKEN):
@@ -51,6 +52,60 @@ def _py(code):
 def test_tpoint_autocal_go_is_write_gated():
     allow = rc.load_allowlist()
     assert allow.commands["tpoint-autocal"].write_flags == ("--go",)
+
+
+# tpoint-refit is listed READ ONLY: the dry run (no flag) and --discover
+# (one TheSky script that only enumerates TheSkyXAction member names). The
+# live refit flags are not on the list at all, not even as write flags.
+
+def test_tpoint_refit_only_read_flags():
+    allow = rc.load_allowlist()
+    r = allow.commands["tpoint-refit"]
+    assert r.cls == "read"
+    assert set(r.flags) == {"--discover", "--json"}
+    assert r.write_flags == () and r.require == () and not r.night_safe
+    for live in ("--go", "--fit", "--action", "--test"):
+        assert live not in r.flags and live not in r.write_flags
+    assert rc.validate(["tpoint-refit"], allow).cls == "read"
+    assert rc.validate(["tpoint-refit", "--discover"], allow).cls == "read"
+    assert rc.validate(["tpoint-refit", "--discover", "--json"], allow).cls == "read"
+    assert rc.validate(["tpoint-refit", "--json"], allow).cls == "read"
+
+
+@pytest.mark.parametrize("args", [
+    ["tpoint-refit", "--go"],
+    ["tpoint-refit", "--go", "--test"],
+    ["tpoint-refit", "--fit", "action"],
+    ["tpoint-refit", "--fit=console"],
+    ["tpoint-refit", "--action", "TPointModule"],
+    ["tpoint-refit", "--test"],
+    ["tpoint-refit", "--discover", "--go"],
+    ["tpoint-refit", "--url", "http://x"],
+])
+def test_tpoint_refit_live_flags_refused(args):
+    with pytest.raises(rc.Refused) as e:
+        rc.validate(args, rc.load_allowlist())
+    assert e.value.status == 403
+    assert "not allowed remotely" in e.value.detail
+
+
+def test_tpoint_refit_discover_script_calls_nothing():
+    from photonscript.telescope_agent import tpoint_refit as tr
+    js = tr.discover_script()
+    assert "for (var k in TheSkyXAction)" in js
+    assert "typeof TheSkyXAction.execute" in js
+    assert "execute(" not in js
+
+
+def test_screen_snapshot_listed_read_only_without_out():
+    allow = rc.load_allowlist()
+    r = allow.commands["screen-snapshot"]
+    assert r.cls == "read" and r.write_flags == ()
+    assert set(r.flags) == {"--scale", "--monitor", "--quality", "--json"}
+    assert rc.validate(["screen-snapshot", "--scale", "0.5", "--json"], allow).cls == "read"
+    with pytest.raises(rc.Refused) as e:
+        rc.validate(["screen-snapshot", "--out", "C:/x.jpg"], allow)
+    assert e.value.status == 403
 
 
 # ------------------------------------------------------------ allowlist

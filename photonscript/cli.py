@@ -3901,6 +3901,114 @@ def apps_cmd(
     raise typer.Exit(0 if r.ok else 1)
 
 
+@app.command("screen-snapshot")
+def screen_snapshot_cmd(
+    scale: float = typer.Option(0.5, "--scale", help="0.1..1.0 of the full size"),
+    monitor: str = typer.Option("all", "--monitor", help="all | primary"),
+    quality: int = typer.Option(70, "--quality", help="JPEG quality 20..90"),
+    out: str = typer.Option("", "--out", help="Write here instead of "
+                            "<data_dir>/screen (local use only; not remote)"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """READ ONLY: a JPEG of THIS PC's interactive desktop (run on the scope
+    PC, or remotely: photonscript remote -- screen-snapshot --json, then GET
+    /api/screen/files/<name>; or straight from the desktop with
+    photonscript remote-screen). Never sends input to the desktop. One
+    capture per 5 s; refused in session 0. Written under <data_dir>/screen
+    unless --out."""
+    import json as _json
+    from photonscript.scheduler import screen_snapshot as ss
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    try:
+        shot = ss.take(cfg, scale, monitor, quality)
+    except ss.SnapshotRefused as e:
+        if as_json:
+            print(_json.dumps({"ok": False, "status": e.status, "refused": e.detail}))
+        else:
+            console.print(f"REFUSED ({e.status}): {e.detail}", markup=False,
+                          highlight=False)
+        raise typer.Exit(2)
+    if out:
+        p = Path(out)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(shot.jpeg)
+    else:
+        p = ss.save(cfg, shot)
+    m = ss.meta(shot, p)
+    if as_json:
+        print(_json.dumps({"ok": True, **m}))
+    else:
+        console.print(f"{p}  ({m['width']}x{m['height']}, {m['bytes']} B, "
+                      f"session {m['session_id']})", markup=False, highlight=False)
+    raise typer.Exit(0)
+
+
+def remote_screen_fetch(url: str, token: str, out_path: Path, *, scale: float = 0.5,
+                        monitor: str = "all", quality: int = 70, client=None,
+                        err=None) -> int:
+    """GET /api/screen/snapshot and write the JPEG to out_path. Returns 0, or
+    2 when refused / unreachable (the token goes only in the header)."""
+    import httpx
+    err = err or sys.stderr
+    base = url.rstrip("/")
+    own = client is None
+    cl = client or httpx.Client(timeout=60)
+    try:
+        try:
+            r = cl.get(f"{base}/api/screen/snapshot",
+                       params={"scale": scale, "monitor": monitor, "quality": quality},
+                       headers={"X-PhotonScript-Token": token})
+        except Exception as e:  # noqa: BLE001
+            print(f"remote-screen: {base} unreachable ({type(e).__name__})", file=err)
+            return 2
+        if r.status_code != 200 or not r.headers.get("content-type", "").startswith(
+                "image/jpeg"):
+            try:
+                detail = r.json().get("detail")
+            except Exception:  # noqa: BLE001
+                detail = r.text[:300]
+            print(f"remote-screen: refused ({r.status_code}): {detail}", file=err)
+            return 2
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(r.content)
+        h = r.headers
+        print(f"{out_path}  ({h.get('x-screen-width')}x{h.get('x-screen-height')}, "
+              f"{len(r.content)} B, taken {h.get('x-screen-taken')}, session "
+              f"{h.get('x-screen-session')})", file=err)
+        return 0
+    finally:
+        if own:
+            cl.close()
+
+
+@app.command("remote-screen")
+def remote_screen_cmd(
+    out: str = typer.Option("scope_screen.jpg", "--out", help="JPEG to write here"),
+    scale: float = typer.Option(0.5, "--scale", help="0.1..1.0"),
+    monitor: str = typer.Option("all", "--monitor", help="all | primary"),
+    quality: int = typer.Option(70, "--quality", help="JPEG quality 20..90"),
+    url: str = typer.Option(REMOTE_DEFAULT_URL, "--url", envvar="PS_REMOTE_CLI_URL",
+                            help="Scope scheduler (default the tailscale serve URL)"),
+):
+    """From the desktop: a JPEG of the SCOPE PC's desktop (GET
+    /api/screen/snapshot) saved to --out. Read only on the scope PC (no
+    input, no clicks). Needs PS_REMOTE_CLI_TOKEN in this machine's .env.
+
+    photonscript remote-screen --out scope.jpg
+    photonscript remote-screen --out scope.jpg --scale 1 --monitor primary
+    """
+    import os as _os
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    token = (getattr(cfg, "remote_cli_token", "")
+             or _os.environ.get("PS_REMOTE_CLI_TOKEN", "")).strip()
+    if not token:
+        console.print("PS_REMOTE_CLI_TOKEN is not set in this machine's .env "
+                      "(docs/HANDBOOK.md, Remote CLI)", markup=False)
+        raise typer.Exit(2)
+    raise typer.Exit(remote_screen_fetch(url, token, Path(out), scale=scale,
+                                         monitor=monitor, quality=quality))
+
+
 @app.command("remote", context_settings={"allow_extra_args": True,
                                          "ignore_unknown_options": True})
 def remote_cmd(

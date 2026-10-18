@@ -1947,6 +1947,32 @@ Jeremy at the keyboard.
   child script is in that session; under S4U (session 0) the command
   refuses. `apps` / `apps --status` is a read.
   `photonscript remote --confirm-write -- apps --start --only nina2`
+- **TPoint refit, read modes only (2026-10-18):** `tpoint-refit` is listed
+  with `--discover` and `--json` only. No flag = the dry run (the model now,
+  the backup plan, the scripts; sends and copies nothing); `--discover` sends
+  ONE read only script to TheSky (a for..in over TheSkyXAction member names
+  and `typeof execute`; nothing is called). `--go`, `--fit`, `--action` and
+  `--test` are not on the list at all (403): the refit stays a console step
+  (docs/TPOINT_REFIT.md).
+  `photonscript remote -- tpoint-refit --discover`
+- **Screen snapshot, remote eyes (2026-10-18):** a JPEG of the scope PC's
+  interactive desktop, READ ONLY (one PIL ImageGrab copy of the screen; no
+  input, no clicks, no window focus). `GET /api/screen/snapshot?scale=0.5&
+  monitor=all|primary&quality=70` returns image/jpeg (headers
+  X-Screen-Width / Height / Scale / Session / Taken). Same token check as
+  `/api/cli/run` (`X-PhotonScript-Token`; no token = off, 403). One capture
+  per 5 s across the server and the CLI (429 + Retry-After; stamp file
+  `<data_dir>/screen/last_capture.json`), JPEG capped at 4 MB (quality, then
+  scale, stepped down), refused in session 0 (409), 503 when the capture
+  fails (desktop locked or the session disconnected). Every capture and
+  refusal goes to the remote CLI audit log. From the desktop:
+  `photonscript remote-screen --out scope.jpg [--scale 1 --monitor primary]`.
+  Through the remote CLI instead: `photonscript remote -- screen-snapshot
+  --json` writes `<data_dir>/screen/screen_<UTC stamp>Z.jpg` (a new file each
+  time; nothing pruned) and prints its name; `GET /api/screen/files/<name>`
+  (token) fetches it. On the scope PC itself: `photonscript screen-snapshot
+  [--out file.jpg]` (`--out` is not on the remote allowlist).
+  Code: `scheduler/screen_snapshot.py`, `scheduler/routers/screen.py`.
 - **Adding a command:** read its code first; if it changes no hardware, sends
   nothing and deletes nothing, add a `[commands.<name>]` block with `class`,
   `flags` (and `write_flags`, `require`, `night_safe` when needed), run the

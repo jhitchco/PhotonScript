@@ -1,7 +1,9 @@
 # TPoint refit (after tpoint-autocal)
 
-Status (2026-10-18): BUILT, UNTESTED ON HARDWARE. Not in the remote CLI
-allowlist (Jeremy decides that separately). Code:
+Status (2026-10-18): BUILT, UNTESTED ON HARDWARE. On the remote CLI
+allowlist in its READ modes only: the dry run (no flag) and `--discover`
+(plus `--json`); `--go`, `--fit`, `--action` and `--test` are not listed
+(`photonscript remote -- tpoint-refit --discover`). Code:
 `photonscript/telescope_agent/tpoint_refit.py`, CLI `photonscript
 tpoint-refit`, tests `tests/test_scheduler/test_tpoint_refit.py` (fakes
 only).

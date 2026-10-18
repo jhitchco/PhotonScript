@@ -2,7 +2,6 @@
 discover script, the judge, the restore plan, the supervised run with fakes
 (console and action forms) and the dry-run CLI. Nothing here talks to
 TheSky: the fakes record every script."""
-import re
 from datetime import datetime
 from pathlib import Path
 
@@ -354,6 +353,10 @@ def test_cli_dry_run_sends_and_copies_nothing(tmp_path, monkeypatch):
     assert r.exit_code == 2
 
 
-def test_not_in_the_remote_allowlist():
-    txt = (ROOT / "config" / "remote_cli.toml").read_text(encoding="utf-8")
-    assert not re.search(r"^\[commands\.tpoint-refit\]", txt, re.MULTILINE)
+def test_remote_allowlist_has_only_the_read_modes():
+    """Listed 2026-10-18 for the dry run and --discover only: the live refit
+    flags never appear in the TOML block (not even as write flags)."""
+    from photonscript.scheduler import remote_cli as rc
+    r = rc.load_allowlist(ROOT / "config" / "remote_cli.toml").commands["tpoint-refit"]
+    assert r.cls == "read" and set(r.flags) == {"--discover", "--json"}
+    assert r.write_flags == ()
