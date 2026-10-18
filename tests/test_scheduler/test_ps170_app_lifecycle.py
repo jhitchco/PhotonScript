@@ -360,7 +360,7 @@ def test_status_view(tmp_path):
     assert out["missing"] == ["phd2"] and out["needed"] == ["nina1", "nina2", "phd2"]
     assert out["thesky"]["mount_connected"] is True
     assert out["shutdown"]["verify_done"] is True
-    assert out["launch"]["nina2_profile"] == "Piggy-600"
+    assert out["launch"]["nina2_profile"] == "piggyback600"
     assert out["start_utc"] == "2026-10-08T17:45:00Z"
     json.dumps(out)                              # JSON-able for the route
 
@@ -408,7 +408,7 @@ def test_config_defaults_and_fields():
     assert c.app_lifecycle_enabled is False           # nothing acts by default
     assert c.app_lifecycle_stop_after_shutdown_min == 30.0
     assert c.app_lifecycle_start_local == "11:45"
-    assert c.app_nina1_profile == "RC16" and c.app_nina2_profile == "Piggy-600"
+    assert c.app_nina1_profile == "RC16" and c.app_nina2_profile == "piggyback600"
     assert c.app_phd2_profile_id == 2
     by_env = {f[1]: f for f in _CONFIG_FIELDS}
     for env, typ in (("PS_APP_LIFECYCLE_ENABLED", "bool"),

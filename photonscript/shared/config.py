@@ -1745,7 +1745,10 @@ class PhotonScriptConfig(BaseSettings):
                                  # 12:00 noon re-arm, which needs NINA #1
     app_nina_exe: str = r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe"
     app_nina1_profile: str = "RC16"       # NINA #1 profile: name or GUID
-    app_nina2_profile: str = "Piggy-600"  # NINA #2 profile: name or GUID
+    app_nina2_profile: str = "piggyback600"  # NINA #2 profile: name or GUID
+                                 # (the profile is named piggyback600 in NINA,
+                                 # id bca6fe74-...; "Piggy-600" matches no profile:
+                                 # the 2026-10-17 Start task skipped NINA #2)
     app_phd2_exe: str = r"C:\Program Files (x86)\PHDGuiding2\phd2.exe"
     app_phd2_profile_id: int = 2  # "Primary RC Profile (Guider)", selected
                                   # over the event server after a launch

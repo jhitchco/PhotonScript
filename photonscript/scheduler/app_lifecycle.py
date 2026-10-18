@@ -95,7 +95,7 @@ def launch_settings(cfg) -> dict:
         "nina1_profile": str(getattr(cfg, "app_nina1_profile", "RC16")),
         "nina1_port": ep["nina1"][1],
         "nina2_enabled": PIGGYBACK in rig_ids(cfg),
-        "nina2_profile": str(getattr(cfg, "app_nina2_profile", "Piggy-600")),
+        "nina2_profile": str(getattr(cfg, "app_nina2_profile", "piggyback600")),
         "nina2_port": ep.get("nina2", ("", 1889))[1],
         "phd2_exe": str(getattr(cfg, "app_phd2_exe", "")),
         "phd2_port": ep["phd2"][1],

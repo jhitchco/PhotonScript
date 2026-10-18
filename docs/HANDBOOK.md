@@ -1772,7 +1772,7 @@ night fresh driver instances.
   run with its mount connected (read-only `IsConnected` over :3040), else
   nothing is launched and one page goes out. NINA #1 / #2: `NINA.exe
   --profileid <GUID>`, the GUID resolved from the profile name
-  (`app_nina1_profile` RC16, `app_nina2_profile` Piggy-600) in
+  (`app_nina1_profile` RC16, `app_nina2_profile` piggyback600, the NINA profile name of the Piggy-600) in
   `%LOCALAPPDATA%\NINA\Profiles\*.profile`; an unresolvable profile is
   never launched (it could open the wrong camera). PHD2: launched, profile
   `app_phd2_profile_id` (2) selected with `set_profile`, camera + mount
@@ -1923,6 +1923,23 @@ Jeremy at the keyboard.
   `--no-wait` (print the job id), `--remote-timeout S`. It polls, prints the
   output and exits with the remote exit code (2 refused / unreachable, 124 on
   the remote hard timeout). Put the remote command after `--`.
+- **One exception, observatory apps (2026-10-17):** `apps --start --only
+  nina1|nina2|phd2` (class write via `write_flags`, `night_safe`, so it needs
+  `--confirm-write`) runs `deploy\observatory-apps.ps1 -Start -Only <app>`:
+  it launches that app ONLY when it is not running and never closes, kills or
+  restarts anything. Refused (exit 2, nothing launched) when the app's port
+  already answers, when a process of it is open but its port does not (a
+  second instance), from session 0, for TheSky (never launched from here) or
+  NINA #2 with the piggyback off. After the launch the script runs the same
+  connect-only step as the arm (only disconnected devices; `--no-connect`
+  skips it) and preflight. It waits up to `--timeout` (240 s) for the port
+  (NINA `/v2/api/version`), returning before the remote hard timeout
+  because a timed-out job's whole process tree is killed. The GUI shows on
+  jeremy's desktop because the service runs as the Interactive
+  "PhotonScript" task in his session (launcher task-Interactive), so the
+  child script is in that session; under S4U (session 0) the command
+  refuses. `apps` / `apps --status` is a read.
+  `photonscript remote --confirm-write -- apps --start --only nina2`
 - **Adding a command:** read its code first; if it changes no hardware, sends
   nothing and deletes nothing, add a `[commands.<name>]` block with `class`,
   `flags` (and `write_flags`, `require`, `night_safe` when needed), run the

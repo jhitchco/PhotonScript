@@ -3754,6 +3754,61 @@ def remote_run(url: str, token: str, args: list, *, confirm_write: bool = False,
             cl.close()
 
 
+@app.command("apps")
+def apps_cmd(
+    status: bool = typer.Option(False, "--status", help="Which apps answer (the default)"),
+    start: bool = typer.Option(False, "--start", help="Start ONE missing app "
+                               "(with --only) through deploy/observatory-apps.ps1 -Start"),
+    only: str = typer.Option("", "--only", help="nina1 | nina2 | phd2 (thesky is "
+                             "never launched from here)"),
+    timeout_s: float = typer.Option(240, "--timeout", help="Seconds to wait for the "
+                                    "app's port (keep under the remote CLI timeout)"),
+    no_connect: bool = typer.Option(False, "--no-connect", help="Skip the "
+                                    "connect + preflight step after the launch"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """Observatory apps on the scope PC (PS-170). --status reads; --start
+    --only <app> launches that app ONLY when it is not running (never closes,
+    kills or restarts anything; refuses when its port already answers, when
+    a process of it is open without its port, or from session 0), waits for
+    its port (NINA: /v2/api/version) and prints the result. Run it on the
+    scope PC or through the remote CLI:
+
+    photonscript remote -- apps --status
+    photonscript remote --confirm-write --remote-timeout 300 -- apps --start --only nina2
+    """
+    from photonscript import app_start as ast
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if not start:
+        snap = ast.snapshot(cfg)
+        if as_json:
+            ast.print_json(snap)
+        else:
+            console.print(ast.format_status(snap), markup=False, highlight=False)
+        raise typer.Exit(0)
+    key = only.strip().lower()
+    if not key:
+        console.print("--start needs --only nina1 | nina2 | phd2 (one app at a time)",
+                      markup=False)
+        raise typer.Exit(2)
+    try:
+        r = ast.start_app(cfg, key, timeout_s=timeout_s, no_connect=no_connect)
+    except ast.StartRefused as e:
+        if as_json:
+            ast.print_json({"app": key, "ok": False, "refused": str(e)})
+        else:
+            console.print(f"REFUSED: {e}", markup=False, highlight=False)
+        raise typer.Exit(2)
+    if as_json:
+        ast.print_json(ast.result_dict(r))
+    else:
+        if r.output:
+            console.print(r.output.rstrip(), markup=False, highlight=False)
+        console.print(("OK: " if r.ok else "FAILED: ") + r.message,
+                      markup=False, highlight=False)
+    raise typer.Exit(0 if r.ok else 1)
+
+
 @app.command("remote", context_settings={"allow_extra_args": True,
                                          "ignore_unknown_options": True})
 def remote_cmd(
