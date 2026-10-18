@@ -713,6 +713,13 @@ OpticalTubeAssembly so one would show up, but nothing is executed to find
 out. The file route above is the supported one; anything the Command Line
 tab shows (FIT, polar report) can also be saved from TPoint as a text file
 into its folder, where `tpoint-stats` picks it up.
+Refit after a calibration run (2026-10-18, `photonscript tpoint-refit`,
+docs/TPOINT_REFIT.md): backs up TPoint's files, Jeremy runs Super Model at
+the console (or a CANDIDATE TheSkyXAction member found with the read-only
+`--discover`, supervised `--test` only), reads the new samples / sky RMS /
+terms back from the files and restores the backup when the fit is worse
+than the limits. Apply pointing corrections / ProTrack stay manual (no
+write API on build 14139). Not in the remote CLI allowlist.
 
 Hand import (no add method, or `off`): the CSV has, per point, the solved
 J2000 center (`solved_ra_j2000_h`, `solved_dec_j2000_d`), the mount's RA /

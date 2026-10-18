@@ -86,7 +86,8 @@ at TPoint's pointing data.
     the file (or by eye), time, the in.dat count before / after, whether
     the camera is back, and the next step: refit the Super Model in TPoint
     by hand, save, Apply corrections / ProTrack, `photonscript
-    tpoint-stats`.
+    tpoint-stats`. `photonscript tpoint-refit --go` wraps the refit (backup,
+    read back, judge, restore a bad fit): docs/TPOINT_REFIT.md.
 
 Never arms, never dispatches, never loads or starts a NINA sequence, never
 syncs (no ClosedLoopSlew), never parks, never changes tracking.

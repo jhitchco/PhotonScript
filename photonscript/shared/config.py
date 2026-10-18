@@ -1835,6 +1835,15 @@ class PhotonScriptConfig(BaseSettings):
     tpoint_sample_add_method: str = ""  # PS-171: pin one ADD_CANDIDATES id
                                  # (e.g. action_execute_id_AddPointingSample)
                                  # after the probe; "" = the probe's first
+    # TPoint refit (photonscript tpoint-refit, docs/TPOINT_REFIT.md): the
+    # Super Model fit after tpoint-autocal, judged from TPoint's files.
+    # Samples minimum = tpoint_min_points, RMS limit = tpoint_rms_max_arcsec.
+    tpoint_refit_action: str = ""        # a TheSkyXAction member CONFIRMED by a
+                                 # supervised --test to run the fit; "" = none
+                                 # (--fit action then needs --test)
+    tpoint_refit_max_worse_pct: float = 20.0  # new sky RMS over the old by more = reject
+    tpoint_refit_min_samples_per_term: float = 3.0  # fewer per fitted term = over-fitted
+    tpoint_refit_wait_s: float = 180.0   # for TPoint to write the new model file
     pointing_first_slew_warn_arcmin: float = 2.0  # NINA first-solve median
     pointing_first_slew_fail_arcmin: float = 5.0  # (14 nights, per side)
     thesky_user_dir: str = ""   # PS-171: TheSky's user folder (TPoint
