@@ -3521,5 +3521,7 @@ from photonscript.scheduler.routers import settings_ledger as _settings_ledger_r
 app.include_router(_settings_ledger_router.router)   # settings ledger
 from photonscript.scheduler.routers import remote_cli as _remote_cli_router  # noqa: E402
 app.include_router(_remote_cli_router.router)   # remote CLI (2026-10-14)
+from photonscript.scheduler.routers import screen as _screen_router  # noqa: E402
+app.include_router(_screen_router.router)   # screen snapshot (2026-10-18)
 from photonscript.scheduler.routers import reentry as _reentry_router  # noqa: E402
 app.include_router(_reentry_router.router)   # re-entry gates (2026-10-15)
