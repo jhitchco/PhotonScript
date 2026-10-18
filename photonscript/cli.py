@@ -1159,6 +1159,98 @@ def tpoint_autocal_cmd(
     raise typer.Exit(0)
 
 
+@app.command("tpoint-refit")
+def tpoint_refit_cmd(
+    go: bool = typer.Option(False, "--go", help="The live refit (operator at "
+                            "the console). Default: a dry run that sends and "
+                            "copies nothing"),
+    fit: str = typer.Option("console", "--fit", help="console (Jeremy runs "
+                            "Super Model in TPoint, PhotonScript backs up and "
+                            "judges) | action (a TheSkyXAction member, "
+                            "CANDIDATE: --test until tpoint_refit_action pins it)"),
+    action: str = typer.Option("", "--action", help="TheSkyXAction member name "
+                               "for --fit action (default tpoint_refit_action)"),
+    test: bool = typer.Option(False, "--test", help="Supervised first test: "
+                              "asks before sending, prints every TheSky call"),
+    discover: bool = typer.Option(False, "--discover", help="READ ONLY: list "
+                                  "TheSkyXAction members that mention TPoint / "
+                                  "model / fit / ProTrack; executes nothing"),
+    min_samples: Optional[int] = typer.Option(None, "--min-samples",
+                                              help="default tpoint_min_points"),
+    max_rms: Optional[float] = typer.Option(None, "--max-rms", help="arcsec, "
+                                            "default tpoint_rms_max_arcsec"),
+    max_worse_pct: Optional[float] = typer.Option(None, "--max-worse-pct"),
+    wait_s: Optional[float] = typer.Option(None, "--wait-s", help="seconds to "
+                                           "wait for the new model file"),
+    url: str = typer.Option("http://localhost:8100", "--url",
+                            help="Scheduler (GET /api/arm)"),
+    verbose: bool = typer.Option(False, "--verbose"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """TPoint refit after tpoint-autocal (docs/TPOINT_REFIT.md): back up
+    TPoint's files, run the Super Model fit, read the new sky RMS / samples /
+    terms from TPoint's files, keep it only when good enough, else restore
+    the backup. Never turns pointing corrections or ProTrack on (no script
+    can on build 14139). Dry run unless --go.
+
+    photonscript tpoint-refit
+    photonscript tpoint-refit --discover
+    photonscript tpoint-refit --go --test
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from photonscript.telescope_agent import tpoint_refit as tr
+    if fit not in tr.FITS:
+        console.print(f"--fit must be one of {', '.join(tr.FITS)}", markup=False)
+        raise typer.Exit(2)
+    if discover and go:
+        console.print("pick one of --discover and --go", markup=False)
+        raise typer.Exit(2)
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    say = lambda m: console.print(m, markup=False, highlight=False)  # noqa: E731
+    if discover:
+        from photonscript.telescope_agent import tpoint_autocal_live as tal
+        from photonscript.telescope_agent.thesky_client import client_from_config
+        try:
+            d = tr.parse_discover(tal.TheSkyLink(client_from_config(cfg)).run(
+                tr.discover_script()))
+        except Exception as e:  # noqa: BLE001
+            say(f"TheSky did not answer ({type(e).__name__}: {e})")
+            raise typer.Exit(1)
+        print(_json.dumps(d, indent=2) if as_json else tr.format_discover(d))
+        raise typer.Exit(0)
+    pinned = str(getattr(cfg, "tpoint_refit_action", "") or "")
+    name = action or pinned
+    opts = tr.Opts(fit=fit, action=name if fit == "action" else "",
+                   action_pinned=bool(pinned) and name == pinned,
+                   test=test, verbose=verbose or test,
+                   wait_s=float(wait_s if wait_s is not None else
+                                getattr(cfg, "tpoint_refit_wait_s", tr.DEFAULT_WAIT_S)),
+                   th=tr.thresholds(cfg, min_samples, max_rms, max_worse_pct))
+    if go:
+        say("TPoint refit LIVE (" + fit + (", SUPERVISED TEST" if test else "")
+            + "). It backs up TPoint's files first; it never arms, moves the "
+            "mount or touches pointing corrections / ProTrack.")
+        res = tr.run_refit(tr.live_deps(cfg, url, need_sky=(fit == "action"),
+                                        say=say), opts)
+        if as_json:
+            print(_json.dumps(res, indent=2, default=str))
+        raise typer.Exit(0 if res["status"] == "kept" else 1)
+    from photonscript.scheduler import tpoint_files as tf
+    lst = before = None
+    try:
+        lst = tf.list_files(cfg)
+        before = tf.stats(cfg, lst)
+    except Exception as e:  # noqa: BLE001
+        say(f"TPoint file listing failed ({e})")
+    plan = tr.build_plan(cfg, opts, lst, before, _dt.utcnow())
+    if as_json:
+        print(_json.dumps({"dry_run": True, **plan}, indent=2, default=str))
+    else:
+        say(tr.format_plan(plan))
+    raise typer.Exit(0)
+
+
 @app.command()
 def report(
     date: str = typer.Option("", help="Night ending on date (YYYY-MM-DD), default yesterday"),
