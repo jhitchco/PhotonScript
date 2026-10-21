@@ -285,7 +285,7 @@ def _heart():
 
 
 def _rc16(tmp_path, monkeypatch, owed=True):
-    cfg = _cfg(tmp_path, dark_exposures="180")
+    cfg = _cfg(tmp_path, dark_exposures="180", rc16_always_dark_exposures="")
     monkeypatch.setattr(nsj, "_gen_cfg", lambda: cfg)
     if not owed:
         monkeypatch.setattr(nsj, "_dark_quota_blocks", lambda *a, **k: [])

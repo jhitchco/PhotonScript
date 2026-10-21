@@ -249,6 +249,10 @@ class PhotonScriptConfig(BaseSettings):
     astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     dark_target_count: int = 30  # dark-library quota per exposure length (current epoch)
     dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
+    rc16_always_dark_exposures: str = "750,900"  # 2026-10-21: RC16 dark lengths (s)
+                                                 # always wanted at quota, used by
+                                                 # lights or not: closed-roof nights
+                                                 # and capture jobs fill them
     library_archive_before: str = ""  # YYYY-MM-DD: nights before this stay out of the
                                       # Library (archived); the archive tool records it too
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive

@@ -686,6 +686,7 @@ _CONFIG_FIELDS = [
     ("syncthing_device_id", "PS_SYNCTHING_DEVICE_ID", "Desktop device id in Syncthing", "Sync", "str", False, False),
     ("syncthing_calibration_folder_ids", "PS_SYNCTHING_CALIBRATION_FOLDER_IDS", "Syncthing folder ids that carry Library/Calibration once split off (PS-182, comma list; blank = inside the Library share)", "Sync", "str", False, False),
     ("dark_exposures", "PS_DARK_EXPOSURES", "Dark library exposures, seconds (comma-sep)", "Imaging", "str", False, False),
+    ("rc16_always_dark_exposures", "PS_RC16_ALWAYS_DARK_EXPOSURES", "RC16 dark lengths always kept at quota, used by lights or not (seconds, comma-sep; closed-roof nights and capture jobs fill them)", "Imaging", "str", False, False),
     ("dark_target_count", "PS_DARK_TARGET_COUNT", "Dark library quota per exposure", "Imaging", "int", False, False),
     ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
     ("calibration_qa_mode", "PS_CALIBRATION_QA_MODE", "Calibration frame QA (PS-113): quarantine (bad frames to Calibration/_quarantine) | report (verdicts only) | off", "Imaging", "str", False, False),

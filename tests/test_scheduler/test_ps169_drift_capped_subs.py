@@ -78,7 +78,7 @@ def test_budget_from_config():
 
 
 def test_dark_lengths_come_from_the_night_quota(tmp_path):
-    cfg = _cfg(tmp_path, dark_exposures="600,180,35")
+    cfg = _cfg(tmp_path, dark_exposures="600,180,35", rc16_always_dark_exposures="")
     assert td.dark_lengths(cfg, "rc16") == [35.0, 180.0, 300.0, 600.0]
     r = td.recommend(cfg, "rc16", 0.5)
     assert r["exposure_s"] == 35 and r["dark_match"] is True   # 42.5 s max: 35 s dark

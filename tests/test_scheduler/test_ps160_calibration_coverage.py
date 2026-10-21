@@ -65,7 +65,7 @@ def test_companion_blocks_follow_the_lights(tmp_path, monkeypatch):
 def test_night_dark_exposures_rc16_adds_used_length(tmp_path, monkeypatch):
     from photonscript.shared.models import (CelestialTarget, ExposurePlan,
                                             FilterType, ImagingProject)
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, rc16_always_dark_exposures="")
     heart = ImagingProject(
         id="heart", active=True,
         target=CelestialTarget(name="Heart Nebula", ra_hours=2.56,
@@ -78,7 +78,8 @@ def test_night_dark_exposures_rc16_adds_used_length(tmp_path, monkeypatch):
                              "offset": 256, "set_temp": 0.0, "xbin": 1}] * 2)
     assert calibration.night_dark_exposures(cfg, "rc16") == \
         calibration.quota_exposures(cfg, "rc16") + [900.0]
-    off = _cfg(tmp_path, calibration_darks_follow_lights=False)
+    off = _cfg(tmp_path, calibration_darks_follow_lights=False,
+               rc16_always_dark_exposures="")
     assert calibration.night_dark_exposures(off, "rc16") == \
         calibration.quota_exposures(off, "rc16")
 

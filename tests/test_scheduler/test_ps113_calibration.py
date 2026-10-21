@@ -361,7 +361,7 @@ def test_gap_report_piggyback(tmp_path):
 
 
 def test_rc16_needs_include_cap_hdr_and_tonight(tmp_path):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, rc16_always_dark_exposures="")
     cat = ImagingProject(
         id="cat", active=True,
         target=CelestialTarget(name="Cat's Eye Nebula", ra_hours=17.98, dec_degrees=66.6),

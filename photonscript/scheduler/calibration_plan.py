@@ -160,10 +160,14 @@ def rig_needs(config, rig: str, projects=None) -> list[dict]:
             darks[e].append(src)
 
     if rig == RC16:
-        from photonscript.scheduler.nina_sequence_json import dark_library_exposures
+        from photonscript.scheduler.nina_sequence_json import (
+            always_dark_exposures, dark_library_exposures)
+        always = always_dark_exposures(config)
         for e in dark_library_exposures(config):
             add(e, "config dark_exposures" if any(
                 abs(e - x) < 0.5 for x in _floats(getattr(config, "dark_exposures", "")))
+                else "config rc16_always_dark_exposures" if any(
+                    abs(e - x) < 0.5 for x in always)
                 else "PS-66 unguided cap")
         for e, src in _tonight_plan_exposures(config):
             add(e, src)
