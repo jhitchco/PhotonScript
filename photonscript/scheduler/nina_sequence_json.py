@@ -3038,6 +3038,20 @@ def generate_nina_json(sequence: NinaSequenceFile,
                     _added += 1
         except Exception:  # noqa: BLE001
             pass
+    # 2026-10-21 flats_when: dusk = no dawn sky flats (the auto dusk flats
+    # shoot them); both = leave out a filter whose set was shot today (the
+    # dusk flats already refreshed it this evening); dawn = as before.
+    try:
+        from photonscript.scheduler.calibration import (flats_shot_today,
+                                                        flats_when)
+        _when = flats_when(_cfg)
+        if _when == "dusk":
+            flat_filters = []
+        elif _when == "both" and flat_filters:
+            _today = flats_shot_today(_cfg)
+            flat_filters = [f for f in flat_filters if f.value not in _today]
+    except Exception:  # noqa: BLE001 - never drop the dawn flats on this
+        pass
     if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:
         # Dawn goes dark->bright: broadband first (fine in the dim sky),
         # narrowband LAST when the sky is bright enough that 3nm exposures

@@ -795,6 +795,14 @@ def _plan(config, rig: str, darks: list, flats: list, planned: list) -> dict:
         extra, later = [], []
         flat_txt = ("dawn flats: one OSC set every safe dawn (companion)"
                     + ("; owed now" if any(f["owed"] for f in flats) else ""))
+    from photonscript.scheduler.calibration import flats_when
+    fw = flats_when(config)   # 2026-10-21
+    if fw == "dusk":
+        tonight, extra = [], []
+        flat_txt = ("dawn flats: none (flats_when=dusk: the auto dusk flats "
+                    "shoot the owed sets, roof open, before nautical dusk)")
+    elif fw == "both" and any(f["owed"] for f in flats):
+        flat_txt += "; dusk flats too (flats_when=both, roof open)"
     dark_txt = ("night darks (roof closed): "
                 + (", ".join(f"{_fmt(x['exp_s'])} s x {x['owed']}"
                              + (" (from lights)" if x["from_lights"] else "")
@@ -849,6 +857,11 @@ def owed_report(config, rig: str | None = None, *, projects=None,
            "lookback_days": days, "qa_mode": cq.mode(config),
            "dark_target_count": int(getattr(config, "dark_target_count", 30)),
            "active_goals": sorted(p.target.name for p in projects), "rigs": []}
+    try:   # 2026-10-21: dawn | dusk | both
+        from photonscript.scheduler.calibration import flats_when
+        out["flats_when"] = flats_when(config)
+    except Exception:  # noqa: BLE001
+        pass
     for rg in ([rig] if rig else rig_ids(config)):
         view = cq.rig_view(config, rg)
         ep = dark_epoch(config, rg)

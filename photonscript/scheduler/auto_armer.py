@@ -46,6 +46,8 @@ the dashboard chip.
 
 PS-131: the same guard covers the automatic dusk sky flats (they stop, load
 and start their own sequence too); their decisions carry action "dusk_flats".
+2026-10-21: the dusk flats (scheduler/dusk_flats.py) run on every tick,
+whether or not auto-arm or the noon re-arm is on.
 And the noon re-arm's cooler-off (cooler belt #2) runs even when the noon arm
 is skipped: once per night, before the pre-cool time, logged as kind
 "noon_cooler_off".
@@ -345,6 +347,11 @@ def decision_chip(last: dict | None, offset_hours: float = 0.0) -> str:
         return f"Auto-armed at {when} local ({last.get('trigger') or 'auto'})"
     reason = SKIP_TITLES.get(last.get("skip"), last.get("skip") or "?")
     if _action(last) == ACTION_FLATS:
+        if last.get("value") == "dispatched":
+            return (f"Auto dusk flats dispatched at {when} local "
+                    f"({last.get('detail', '')})")
+        from photonscript.scheduler.dusk_flats import TITLES
+        reason = TITLES.get(last.get("skip"), reason)
         return (f"Auto dusk flats skipped at {when} local: {reason} "
                 f"({last.get('detail', '')})")
     return f"Auto-arm skipped at {when} local: {reason} ({last.get('detail', '')})"
@@ -454,62 +461,6 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
         forecast_state["night"] = night
         logger.info("evening forecast pushed for %s", night)
 
-    async def _maybe_dispatch_dusk_flats(armer):
-        """The 'checkmark' (2026-09-09): if any filter's flats are stale as
-        sunset approaches and the armer is idle, dispatch the dusk sky-flat
-        run for JUST those filters, then hold arming until it finishes."""
-        import json as _json
-        from datetime import timedelta
-        from photonscript.scheduler import night_plan as _np
-        from photonscript.scheduler.calibration import (
-            generate_dusk_flats_json, stale_flat_filters)
-
-        if not getattr(config, "auto_dusk_flats", True):
-            return
-        if armer.state not in TERMINAL_STATES:
-            return
-        now = datetime.utcnow()
-        night = now.strftime("%Y-%m-%d")
-        if flats_state.get("night") == night:
-            return
-        obs = config.get_observatory()
-        tw = _np.compute_night_times(
-            obs, now.replace(hour=0, minute=0, second=0, microsecond=0))
-        sunset = tw.get("sunset")
-        if not sunset:
-            return
-        if not (sunset - timedelta(minutes=90) <= now
-                <= sunset + timedelta(minutes=5)):
-            return
-        stale = stale_flat_filters(config)
-        if not stale:
-            flats_state["night"] = night  # all fresh - done for today
-            return
-        # PS-131: dispatch_raw stops, loads and starts its own sequence, so
-        # the PS-125 guard applies (sideload tonight, NINA #1 running or
-        # unreadable): skip, one push per night per reason, retry next tick.
-        skip, why = await auto_arm_guard(config)
-        if skip:
-            await skip_and_notify(config, skip, why,
-                                  f"auto dusk flats ({','.join(stale)})",
-                                  notify, action=ACTION_FLATS)
-            logger.info("auto-flats skipped (%s): %s", skip, why)
-            return
-        seq_text, start_local = generate_dusk_flats_json(
-            config, only_filters=stale)
-        ok = await armer.dispatch_raw(
-            _json.loads(seq_text), f"auto dusk flats ({','.join(stale)})")
-        if ok:
-            flats_state["night"] = night
-            flats_state["until"] = sunset + timedelta(
-                minutes=15 + 8 * len(stale) + 10)
-            await notify(
-                config,
-                f"Auto dusk flats dispatched for stale filters: "
-                f"{', '.join(stale)} (starts {start_local} local). "
-                "Auto-arm resumes when they finish.",
-                title="PhotonScript auto flats")
-            logger.info("auto-flats: dispatched for %s", stale)
     logger.info("Auto-arm loop started (enabled=%s)",
                 getattr(config, "auto_arm_enabled", False))
 
@@ -523,6 +474,17 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
             except Exception as e:  # noqa: BLE001
                 logger.error("evening forecast error: %s", e)
 
+            # 2026-10-21: dusk flats run whatever auto-arm is set to (it is
+            # off on TPoint nights); see scheduler/dusk_flats.py
+            try:
+                from photonscript.scheduler import dusk_flats
+                await dusk_flats.maybe_dispatch_dusk_flats(
+                    config, get_armer(), flats_state, notify)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.error("auto-flats error: %s", e)
+
             noon_enabled = bool(getattr(config, "noon_arm_enabled", False))
             if getattr(config, "auto_arm_enabled", False) or noon_enabled:
                 armer = get_armer()
@@ -530,7 +492,6 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                 if "error" in plan:
                     logger.warning("auto-arm: no plan (%s)", plan["error"])
                 else:
-                    await _maybe_dispatch_dusk_flats(armer)
                     from photonscript.shared.localtime import utc_offset_hours
                     now = datetime.utcnow()
                     local_hour = (now + timedelta(
@@ -547,6 +508,8 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                         local_hour=local_hour,
                         window_arm=bool(getattr(config, "auto_arm_enabled", False)),
                     )
+                    # only the automatic arm waits for the dusk flats (it
+                    # would skip on "NINA is running"); a manual Arm never does
                     fu = flats_state.get("until")
                     if arm_now and fu and datetime.utcnow() < fu:
                         arm_now = False

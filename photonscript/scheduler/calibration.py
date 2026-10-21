@@ -680,48 +680,158 @@ def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
     return sf
 
 
+FLATS_WHEN = ("dawn", "dusk", "both")
+
+
+def flats_when(config) -> str:
+    """2026-10-21: when sky flats are shot: dawn | dusk | both (default;
+    an unknown value reads as both)."""
+    v = str(getattr(config, "flats_when", "both") or "both").strip().lower()
+    return v if v in FLATS_WHEN else "both"
+
+
+def flats_shot_today(config) -> set[str]:
+    """RC16 filters whose newest flat set was shot today (local date, age 0
+    days): with flats_when=both the dawn flats leave these out, so a set the
+    dusk flats refreshed this evening is not shot again at dawn."""
+    try:
+        bb = (calibration_health(config).get("FLAT") or {}).get("by_bucket") or {}
+    except Exception:  # noqa: BLE001 - never break the dawn flats on this
+        logger.warning("flats shot today: health unavailable", exc_info=True)
+        return set()
+    return {f for f, b in bb.items()
+            if (b or {}).get("age_days") is not None and int(b["age_days"]) <= 0}
+
+
+def piggyback_flat_status(config) -> dict:
+    """2026-10-21: the Piggy-600's OSC flat set from the Calibration owed
+    view: {"owed": bool, "reasons": [...], "shot_today": bool}. Owed = no
+    set, stale, short of piggyback_flat_count, older than an optics change
+    or the focus / rotator moved. Not owed (and not shot today) when the
+    piggyback is off or the view fails."""
+    out = {"owed": False, "reasons": [], "shot_today": False}
+    if not getattr(config, "piggyback_enabled", False):
+        return out
+    try:
+        from photonscript.scheduler.calibration_owed import owed_report
+        rep = owed_report(config, "piggyback")
+        flats = [f for r in rep.get("rigs", []) if r.get("rig") == "piggyback"
+                 for f in r.get("flats", [])]
+    except Exception:  # noqa: BLE001
+        logger.warning("piggyback flat status unavailable", exc_info=True)
+        return out
+    for f in flats:
+        if f.get("owed"):
+            out["owed"] = True
+            out["reasons"] += [f"{f.get('filter')}: {x}" for x in f.get("reasons") or []]
+        if f.get("age_days") is not None and int(f["age_days"]) <= 0:
+            out["shot_today"] = True
+    return out
+
+
+def dusk_flat_times(config, now: datetime | None = None) -> dict | None:
+    """2026-10-21: this evening's dusk-flat timeline (naive UTC datetimes),
+    anchored on the LOCAL evening date (the old UTC-date anchor lost the
+    window at 00:00Z, about 40 min before sunset at AARO):
+      sunset, naut_dusk, preconfig (astro dusk - arm_preconfig_lead_min),
+      open   = sunset - dusk_flats_lead_min (dispatch window opens)
+      start  = sunset + 15 (RC16 flats begin)
+      osc_start = sunset + piggyback_dusk_flat_offset_min
+      stop   = min(nautical dusk, pre-config) - dusk_flats_end_margin_min
+               (no flat set runs past it; then the RC16 parks)
+      last_dispatch = stop - 15 (later than this: too late tonight)
+    None when the sun times cannot be computed."""
+    from datetime import timedelta
+    from photonscript.scheduler import night_plan as _np
+    from photonscript.shared.localtime import night_base_date
+    now = now or datetime.utcnow()
+    base = night_base_date(config, now)
+    tw = _np.compute_night_times(config.get_observatory(), base)
+    sunset = tw.get("sunset")
+    if not sunset:
+        return None
+    naut = tw.get("naut_dusk") or (sunset + timedelta(minutes=55))
+    astro = tw.get("astro_dusk")
+    lead = int(getattr(config, "arm_preconfig_lead_min", 30) or 30)
+    pre = (astro - timedelta(minutes=lead)) if astro else naut
+    margin = int(getattr(config, "dusk_flats_end_margin_min", 8) or 0)
+    stop = min(naut, pre) - timedelta(minutes=max(0, margin))
+    return {
+        "sunset": sunset, "naut_dusk": naut, "preconfig": pre,
+        "open": sunset - timedelta(minutes=int(getattr(
+            config, "dusk_flats_lead_min", 90) or 90)),
+        "start": sunset + timedelta(minutes=15),
+        "osc_start": sunset + timedelta(minutes=int(getattr(
+            config, "piggyback_dusk_flat_offset_min", 20) or 20)),
+        "stop": stop,
+        "last_dispatch": stop - timedelta(minutes=15),
+        "night": base.strftime("%Y-%m-%d"),
+    }
+
+
 def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
-                             osc: bool = False, owns_mount: bool = True) -> tuple:
-    """Standalone dusk sky-flat run for TODAY: wait for sunset+15 local,
-    slew high away from the sun, sky flats, park. Filtered rigs shoot one set
-    per filter (broadband first — dusk DIMS); an OSC rig (osc=True) shoots a
-    single set with no filter wheel.
+                             osc: bool = False, owns_mount: bool = True,
+                             hold_for_osc: bool = False,
+                             safety: bool | None = None,
+                             now: datetime | None = None) -> tuple:
+    """Standalone dusk sky-flat run for this evening: wait for sunset+15
+    local, slew high away from the sun, sky flats, park. Filtered rigs shoot
+    one set per filter (broadband first: dusk DIMS); an OSC rig (osc=True)
+    shoots a single set of piggyback_flat_count with no filter wheel (the
+    same NINA SkyFlat histogram targeting as the companion's dawn OSC set),
+    from sunset + piggyback_dusk_flat_offset_min.
+
+    only_filters: None = all seven, a list (even empty) = just those. An
+    empty list with hold_for_osc is the OSC-only evening: the RC16 slews and
+    holds the pointing for the riding Piggy-600, shooting nothing itself.
+
+    2026-10-21: everything after the start wait is capped at
+    dusk_flat_times()["stop"] (nautical dusk or the night's pre-config,
+    minus dusk_flats_end_margin_min), so the run never blocks the night's
+    dispatch or a TPoint run; the RC16's flats run under a SafetyMonitor
+    condition behind a bounded wait for safe (closed roof = junk flats).
+    hold_for_osc: the RC16 holds its flat pointing until osc_start +
+    piggyback_dusk_flat_hold_min before parking.
 
     owns_mount=False is the piggyback case: NINA #2 owns only its camera, so
-    the sequence never connects/slews/parks the mount or safety monitor — it
-    rides the main rig's mount and must be triggered alongside the main rig's
-    dusk flats (that slew points both scopes at the flat sky).
+    the sequence never connects/slews/parks the mount or safety monitor; it
+    rides the main rig's mount and must be triggered alongside the main
+    rig's dusk flats (that slew points both scopes at the flat sky).
+    safety (piggyback): carry the SafetyMonitor condition (NINA #2 sees the
+    safety monitor); None = only when owns_mount.
     Returns (json_text, start_local_hhmm)."""
     import json as _json
     from datetime import timedelta
-    from photonscript.scheduler import night_plan as _np
     from photonscript.shared.localtime import utc_offset_hours
     from photonscript.shared.models import FilterType
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _pushover, _connect, _cool_camera_bounded,
-        _sky_flat, _slew_alt_az, _wait_until_safe, _unpark, _park,
-        _set_tracking)
+        _sky_flat, _slew_alt_az, _unpark, _park, _set_tracking,
+        _safety_condition, _loop_once, _time_condition_at, _wait_for_timespan)
 
-    obs = config.get_observatory()
-    now = datetime.utcnow()
-    tw = _np.compute_night_times(obs, now.replace(hour=0, minute=0,
-                                                     second=0, microsecond=0))
-    sunset = tw.get("sunset")
-    if not sunset:
+    t = dusk_flat_times(config, now)
+    if not t:
         raise RuntimeError("could not compute sunset")
-    local = (sunset + timedelta(minutes=15)
-             + timedelta(hours=utc_offset_hours(config, sunset)))
-    n = int(getattr(config, "flat_count", 15))
+    tz = utc_offset_hours(config, t["sunset"])
+
+    def loc(dt):
+        return dt + timedelta(hours=tz)
+    local = loc(t["osc_start"] if osc else t["start"])
+    stop_local = loc(t["stop"])
+    n = (int(getattr(config, "piggyback_flat_count",
+                     getattr(config, "flat_count", 15)))
+         if osc else int(getattr(config, "flat_count", 15)))
     # dusk DIMS: narrowband needs the bright end (longest exposures),
-    # L needs the darkest — Jeremy's order: NB -> R,G,B -> L
+    # L needs the darkest - Jeremy's order: NB -> R,G,B -> L
     wanted = ("Ha", "OIII", "SII", "R", "G", "B", "L")
-    if only_filters:
+    if only_filters is not None:
         wanted = tuple(f for f in wanted if f in only_filters)
     filters = [FilterType(v) for v in wanted]
-    def _wait_for(t):
+
+    def _wait_for(tt):
         return _make_typed(
             "NINA.Sequencer.SequenceItem.Utility.WaitForTime, NINA.Sequencer",
-            Hours=t.hour, Minutes=t.minute, MinutesOffset=0, Seconds=0,
+            Hours=tt.hour, Minutes=tt.minute, MinutesOffset=0, Seconds=0,
             SelectedProvider=_make_typed(
                 "NINA.Sequencer.Utility.DateTimeProvider.TimeProvider, "
                 "NINA.Sequencer"))
@@ -729,16 +839,34 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
     # cool only ~30 min before flats begin - dispatching at noon should NOT
     # run the cooler all afternoon (2026-09-08 request)
     wait_cool = _wait_for(local - timedelta(minutes=30))
-    intro = (f"dusk sky flats: waiting for {local.strftime('%H:%M')} local "
-             f"(sunset +15), then {n} " + ("OSC flats (one-shot color, no "
-             "filter wheel)" if osc else "per filter — narrowband first "
-             "(least light through to most: Ha, OIII, SII, R, G, B, L)"))
+    after = int((t["osc_start"] - t["sunset"]).total_seconds() // 60) if osc else 15
+    what = (f"{n} OSC flats (one-shot color, no filter wheel)" if osc else
+            (f"{n} per filter: " + ", ".join(wanted) if wanted else
+             "no RC16 flats, holding the pointing for the Piggy-600"))
+    intro = (f"dusk sky flats: waiting for {local:%H:%M} local (sunset "
+             f"+{after}), then {what}; done by {stop_local:%H:%M} (before "
+             "nautical dusk)")
     _fg, _fo = (_pb_gain_offset(config) if osc
                 else (config.default_gain, config.default_offset))
     flat_blocks = ([_osc_sky_flat(n, _fg, _fo)]
                    if osc else
                    [_sky_flat(f, n, _fg, _fo) for f in filters])
+    cap = [_time_condition_at(stop_local.hour, stop_local.minute), _loop_once()]
+    if safety is None:
+        safety = owns_mount
     if owns_mount:
+        sky = [_unpark(), _set_tracking(0), _slew_alt_az(85, 200)] + flat_blocks
+        if hold_for_osc:
+            hold = int(getattr(config, "piggyback_dusk_flat_hold_min", 10) or 0)
+            sky.append(_wait_for(loc(t["osc_start"] + timedelta(minutes=hold))))
+        # bounded wait for safe: a closed roof at the start time waits at
+        # most until the stop time, then the flats are skipped (the
+        # SafetyMonitor condition) and the mount parks
+        wait_safe = _seq_container(
+            "WAIT_SAFE_FOR_DUSK_FLATS", [_wait_for_timespan(30)],
+            conditions=[_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                    "NINA.Sequencer"),
+                        _time_condition_at(stop_local.hour, stop_local.minute)])
         items = [
             _pushover("Flats", intro),
             _connect("Safety Monitor"),
@@ -748,27 +876,29 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
         ] + ([] if osc else [_connect("Filter Wheel")]) + [
             _connect("Mount"),
             wait_start,
-            _wait_until_safe(),
-            _unpark(),
-            _set_tracking(0),
-            _slew_alt_az(85, 200),
-        ] + flat_blocks + [
-            _pushover("Flats", "dusk sky flats complete — parking (cooler "
+            wait_safe,
+            _seq_container(
+                f"DUSK_SKY_FLATS (until {stop_local:%H:%M}; skipped if unsafe: "
+                "closed roof makes junk flats)", sky,
+                conditions=[_safety_condition()] + cap),
+            _pushover("Flats", "dusk sky flats complete: parking (cooler "
                       "stays on for tonight's run)"),
             _park(),
         ]
     else:
         # Piggyback rides the main rig's mount: NINA #2 owns only its camera,
         # so this run never connects/slews/parks the mount or safety monitor.
-        # Trigger it with the main rig's dusk flats — that slew aims both scopes.
+        # Trigger it with the main rig's dusk flats: that slew aims both scopes.
         items = [
-            _pushover("Flats", intro + " — piggyback rides the main mount; "
+            _pushover("Flats", intro + "; piggyback rides the main mount, "
                       "run this alongside the main rig's flats"),
             _connect("Camera"),
             wait_cool,
             _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
             wait_start,
-        ] + flat_blocks + [
+            _seq_container(
+                f"DUSK_SKY_FLATS_OSC (until {stop_local:%H:%M})", flat_blocks,
+                conditions=([_safety_condition()] if safety else []) + cap),
             _pushover("Flats", "piggyback dusk flats complete"),
         ]
     root = _seq_container(
@@ -1288,7 +1418,8 @@ def osc_flat_dawn_offset(config) -> int:
 
 def generate_piggyback_companion_json(config, has_safety: bool = False,
                                       with_lights: bool = False,
-                                      osc_segments: list | None = None) -> str:
+                                      osc_segments: list | None = None,
+                                      dawn_flats: bool = True) -> str:
     """A full-night companion for the piggyback (NINA #2), meant to
     be dispatched alongside the RC16 armed sequence so ONE arm covers both
     scopes' calibration.
@@ -1314,6 +1445,11 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     tonight (piggy_length.companion_kwargs); two or more = one light loop
     per length until its RC16 handoff. A single length goes in through
     config.piggyback_exposure_s instead.
+
+    dawn_flats (2026-10-21): False leaves out the OSC dawn sky flats (the
+    armer passes False with flats_when=both when this evening's dusk flats
+    already shot a set); flats_when=dusk leaves them out too. The PS-189
+    cover panel flats are not sky flats and stay.
     """
     import json as _json
     from photonscript.scheduler.nina_sequence_json import (
@@ -1492,6 +1628,15 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             _warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
             _pushover("Piggyback", "companion done: cover closed, panel off, "
                       "camera warm")])
+    end_items = [_warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
+                 _pushover("Piggyback", "companion calibration done: camera warm")]
+    if not dawn_flats or flats_when(config) == "dusk":
+        # 2026-10-21: no OSC dawn sky flats tonight (flats_when=dusk, or the
+        # dusk flats already shot today's set)
+        target_items.append(_annotation(
+            "no OSC dawn sky flats tonight (flats_when "
+            f"{flats_when(config)}; dusk flats cover them)"))
+        return _companion_root(start_items, target_items, end_items)
     flat_offset = osc_flat_dawn_offset(config)
     target_items.append(_wait_for_provider("NauticalDawnProvider",
                                            flat_offset))
@@ -1512,9 +1657,6 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
             conditions=[_safety_condition(), _loop_once()]))
     else:
         target_items += flat_items
-
-    end_items = [_warm_camera(float(getattr(config, "gradual_warm_minutes", 0.0))),
-                 _pushover("Piggyback", "companion calibration done — camera warm")]
     return _companion_root(start_items, target_items, end_items)
 
 
