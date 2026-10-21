@@ -176,7 +176,7 @@ night_safe = true             # a missing NINA #2 is wanted mid-night; it never 
 class = "read"                # --dry-run: preflight, points and scripts, sends nothing
 flags = ["--points", "--side", "--exposure-s", "--binning", "--from-coverage",
          "--dry-run", "--go", "--mode", "--verbose", "--slew-timeout",
-         "--status", "--json"]
+         "--status", "--json", "--unattended"]
 write_flags = ["--go"]        # live run (approved for remote use by Jeremy 2026-10-18):
                               # borrows the RC16 camera from NINA #1 and gives it back,
                               # slews and samples; refuses unless DISARMED, roof safe and

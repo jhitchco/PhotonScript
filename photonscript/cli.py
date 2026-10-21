@@ -1044,6 +1044,12 @@ def tpoint_autocal_cmd(
     test: bool = typer.Option(False, "--test", help="Supervised first test: "
                               "--points 3 --side west, verbose, and a pause "
                               "after point 1 to check TPoint by eye"),
+    unattended: bool = typer.Option(False, "--unattended", help="Remote run "
+                                    "with no console: the backup prompt is "
+                                    "answered yes (the backup is automatic); "
+                                    "every other question is answered no, so "
+                                    "the run stops unless TPoint's file count "
+                                    "proves samples are added. Not with --test"),
     verbose: bool = typer.Option(False, "--verbose", help="Print every "
                                  "TheSky script call and reply"),
     slew_timeout: float = typer.Option(180.0, "--slew-timeout",
@@ -1117,7 +1123,12 @@ def tpoint_autocal_cmd(
                         auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
                         auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)),
                         min_alt=float(sel["min_alt"]))
-        res = tal.run_loop(cfg, sel["points"], tal.live_deps(cfg, url, say=say), opts)
+        if unattended and test:
+            say("--unattended and --test do not mix (--test waits for the console)")
+            raise typer.Exit(2)
+        ask = tal.unattended_ask(say) if unattended else input
+        res = tal.run_loop(cfg, sel["points"], tal.live_deps(cfg, url, ask=ask, say=say),
+                           opts)
         if as_json:
             print(_json.dumps({k: v for k, v in res.items() if k != "rows"},
                               indent=2, default=str))

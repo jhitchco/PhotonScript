@@ -830,6 +830,18 @@ def run_loop(config, points: list[dict], deps: Deps, opts: Opts) -> dict:
     return LoopRun(config, points, deps, opts).run()
 
 
+def unattended_ask(say=print) -> Callable[[str], str]:
+    """--unattended: answers the console questions for a remote run. Only the
+    backup prompt gets "yes" (run_loop has just made the backup itself);
+    every other question gets "no", which stops the run safely unless
+    TPoint's input file count proves AutoMap adds samples."""
+    def ask(prompt: str) -> str:
+        a = "yes" if "Backup done" in prompt else "no"
+        say(f"{prompt.strip()} [unattended: {a}]")
+        return a
+    return ask
+
+
 def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
     """The real adapters (TheSky TCP, NINA #1, the scheduler, TPoint's
     files, Pushover)."""
