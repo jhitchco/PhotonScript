@@ -217,7 +217,21 @@ def test_build_plan_loop_and_window(tmp_path):
     phases = [s["phase"] for s in p["steps"]]
     assert phases.index("preflight") < phases.index("backup") < phases.index("handoff") \
         < phases.index("run") < phases.index("finish")
-    assert any("AutoMap" in (s["script"] or "") for s in p["steps"])
+    # default add (2026-10-20): solve + import file, no AutoMap, no AILS write
+    assert p["add"] == "import" and p["solver"] == "imagelink"
+    assert not any("AutoMap" in (s["script"] or "") for s in p["steps"])
+    assert not any("AutomatedImageLinkSettings.imageScale =" in (s["script"] or "")
+                   for s in p["steps"])
+    assert any("ImageLink.execute()" in (s["script"] or "") for s in p["steps"])
+    assert any("ComputeLocalSiderealTime" in (s["script"] or "") for s in p["steps"])
+    assert any("Import Pointing Data" in s["what"] for s in p["steps"])
+    am = ta.build_plan(cfg, points=2, sky_points=_SKY, add="automap")
+    assert any("AutoMap" in (s["script"] or "") for s in am["steps"])
+    assert not any("ImageLink.execute()" in (s["script"] or "") for s in am["steps"])
+    fb = ta.build_plan(cfg, points=2, sky_points=_SKY, solver="fallback")
+    assert any("ASTAP" in s["what"] for s in fb["steps"])
+    with pytest.raises(ValueError):
+        ta.build_plan(cfg, points=2, sky_points=_SKY, solver="pinpoint")
     w = ta.build_plan(cfg, points=900, mode="window")
     assert w["points"] == ta.MAX_POINTS
     assert any("AutoPointingCalibration" in (s["script"] or "") for s in w["steps"])

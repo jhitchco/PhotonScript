@@ -185,8 +185,11 @@ def _run(tmp_path, answers=("yes", "yes", "yes", "yes"), sky_kw=None,
                          "path": r"C:\sky\Super Model Indat.dat", "size": 1}]},
                     ask=ask, say=out.append, sleep=clock.sleep, mono=clock.mono,
                     now=clock.now, copy=lambda s, d: None, notify=notes.append)
+    # these are the AutoMap (--automap) tests; the import mode (the default
+    # since 2026-10-20) is tested in test_tpoint_autocal_import
     opts = tal.Opts(test=test, csv_path=str(tmp_path / "runs" / "x_tpoint_autocal.csv"),
-                    backup_root=str(tmp_path / "bk"), **(opts_kw or {}))
+                    backup_root=str(tmp_path / "bk"),
+                    **{"add": "automap", **(opts_kw or {})})
     res = tal.run_loop(_cfg(tmp_path), _PTS, deps, opts)
     return res, sky, nina, out, asked, notes
 

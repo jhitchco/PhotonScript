@@ -1,6 +1,8 @@
 # TPoint autocal (operator-started, supervised)
 
-Status (2026-10-15): LOOP MODE LIVE RUN IMPLEMENTED, UNTESTED ON HARDWARE.
+Status (2026-10-20): LOOP MODE RAN ON HARDWARE (slews, camera hand-off,
+exposures OK; AutoMap failed). The default add is now the TPoint import
+file (next section), untested on hardware.
 `photonscript tpoint-autocal --go --mode loop` (the default mode) runs the
 loop below with TheSky's own camera. Window mode `--go` is still not
 implemented. `--dry-run` prints the preflight, the chosen points and every
@@ -10,7 +12,83 @@ plan, script builders, dry-run plan) and
 `photonscript/telescope_agent/tpoint_autocal_live.py` (point selection and
 the live loop, every outside call through a small adapter). Tests:
 `tests/test_scheduler/test_tpoint_autocal.py`,
-`tests/test_scheduler/test_tpoint_autocal_loop.py` (fakes only).
+`tests/test_scheduler/test_tpoint_autocal_loop.py`,
+`tests/test_scheduler/test_tpoint_autocal_import.py` (fakes only, plus the
+format checks against the real in.dat fixtures).
+
+## 2026-10-20: AutoMap failed, points now go to a TPoint import file
+
+First hardware run (`photonscript tpoint-autocal --go --unattended --side
+west --points 3`): preflight, the camera hand-off (NINA #1 -> TheSky ASCOM
+Camera -> back), `SlewToAzAlt` and `TakeImage` all worked (frames
+`00000983.tpoint autocal 1.fit`, `00000984.tpoint autocal 2.fit` in
+TheSky's Camera AutoSave). `sky6RASCOMTheSky.AutoMap()` failed both times:
+ImageLinkResults succeeded 0, "Process aborted. Error _ 212.", AutoMap's
+own "requires the TheSky5 Level IV or TheSky6/TheSkyX Professional Edition
+and it must be running. Error _ 224." (TheSky Professional 64, build
+14139); TPoint stayed at 561 samples. (2026-10-09, PS-187:
+`TheSkyXAction` AddPointingSample did not add points either.)
+
+So the default add no longer depends on AutoMap (`--automap` keeps the old
+path, off by default). Per point, after the exposure:
+
+1. **Mount** (read only, right after `TakeImage` starts):
+   `tpoint_autocal.mount_snapshot_script()`: `GetRaDec` (JNow, as TheSky
+   reports it), `GetAzAlt`, `sky6Utils.ComputeLocalSiderealTime`, the JD.
+   Pier side: from the hour angle (LST - mount RA: HA < 0 = east-looking,
+   written through the pole, as in every real file); a `PIERSIDE` FITS card
+   is recorded in the CSV when TheSky writes one.
+2. **Solve** (`--solver`): `imagelink` (default) runs
+   `tpoint_autocal.imagelink_solve_script(path, scale)`, its own script:
+   `ImageLink.pathToFITS` / `scale` / `execute()` (thesky_client's
+   `imagelink_pre`, the only properties a script may assign), then
+   `ImageLinkResults` succeeded, errorCode, errorText, imageCenterRAJ2000 /
+   DecJ2000, imageScale, imagePositionAngle, imageStarCount, solutionRMS.
+   Its error goes to the CSV (`imagelink_err`, `imagelink_code`). `astap`
+   solves with ASTAP on the scope PC (`astap_exe`, through
+   `solve_store.solve`: never rewrites the FITS, `-fov` from the frame
+   height, the mount position as the hint, 10 deg radius). `fallback`
+   tries ImageLink, then ASTAP.
+3. **Append** one line to the TPoint import file
+   `C:\astro\tpoint_import\<UTC stamp>_<side>.dat` (`--import-dir`; refused
+   inside TheSky's folders or ninashare). Stop after 3 points in a row not
+   solved or not recorded.
+
+Then, by hand: TheSky TPoint, Module Settings > Import Pointing Data, pick
+the file, refit (Super Model), check the RMS, save, Apply corrections /
+ProTrack; `photonscript tpoint-refit` can wrap the backup / judge.
+
+**Import file format** (`photonscript/telescope_agent/tpoint_import.py`),
+matched byte for byte to the real TheSky64 file
+`tests/test_scheduler/fixtures/tpoint/2026-10-15/TPoint base run in.dat`
+(a test regenerates that file and the 2026-10-14 one from their parsed
+values; `tpoint_files.parse_data` and `tpoint_coverage.parse` read the
+generated file back with the same count and values):
+
+```
+!TheSky Version 10.5.0 Build 14139 (64 bit)
+Paramount MX
+:NODA
+:EQUAT
++31 54 25 2026 10 20 29.31 870.00 1300.00  0.50 0.5500 0.0065
+20 07 14.7056 +15 04 48.851 20 06 07.2000 +14 58 12.000  22  6.000 
+```
+
+Comment line, caption and options copied from the newest real in.dat; the
+site line is latitude d m s, the local date, then temperature, pressure,
+height, humidity, wavelength, lapse rate copied from that file. One line
+per sample: true RA (h m s.ssss), true Dec (d m s.sss), observed RA,
+observed Dec, two spaces, sidereal time (h m.mmm, minutes right-aligned in
+6), a trailing space. CRLF, no END line. True = the solved J2000 centre as
+the apparent place of the date (erfa); observed = the mount's reading, on
+the east-looking side in TPOINT's through-the-pole form (RA + 12 h, Dec
+180 - Dec).
+
+Caveat (HANDBOOK, "Hand import"): TheSky reports the mount AFTER any
+TPoint pointing corrections. With "Apply pointing corrections" on, the
+lines measure the current model's residuals, not raw pointing errors.
+Check what TPoint shows after the import of the 3-point test before a long
+run.
 
 ## Commands
 
@@ -21,8 +99,10 @@ questions; Ctrl+C stops safely).
 |---|---|
 | See the points, send nothing | `photonscript tpoint-autocal --side west --points 20 --dry-run --no-scripts` |
 | Supervised 3-point first test | `photonscript tpoint-autocal --go --test` |
-| West-side top-up | `photonscript tpoint-autocal --go --side west --points 20` |
+| West-side top-up | `photonscript tpoint-autocal --go --side west --points 20 --solver fallback` |
 | Both sides | `photonscript tpoint-autocal --go --points 40` |
+| Remote 3-point import test | `photonscript remote --confirm-write --remote-timeout 900 -- tpoint-autocal --go --unattended --side west --points 3 --solver fallback --verbose` |
+| The old AutoMap add | add `--automap` |
 
 Options: `--side east|west|both` (default both), `--points N` (1..500),
 `--from-coverage` (points from a TPoint coverage module when the build has
@@ -31,9 +111,12 @@ one; today it falls back to the grid + `--side`, and says so),
 `tpoint_mapping_exposure_s`), `--binning` (default
 `tpoint_mapping_binning` 2), `--slew-timeout` (180 s), `--verbose` (every
 TheSky script call and reply), `--url` (the scheduler, for the GET
-preflight), `--json` (the summary as JSON at the end). `--test` = `--points
-3 --side west --verbose` plus a pause after the first solved point to look
-at TPoint's pointing data.
+preflight), `--json` (the summary as JSON at the end), `--solver
+imagelink|astap|fallback`, `--import-dir` (local only, not remote),
+`--automap`. `--test` = `--points 3 --side west --verbose` (with
+`--automap`: plus a pause after the first solved point to look at TPoint's
+pointing data). Steps 5 to 8 below describe the `--automap` path; the
+default import path is the section above.
 
 ### What `--go --mode loop` does
 
