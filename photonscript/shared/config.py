@@ -249,6 +249,10 @@ class PhotonScriptConfig(BaseSettings):
     astap_exe: str = "C:\\Program Files\\astap\\astap.exe"  # plate-solve fallback for identify
     dark_target_count: int = 30  # dark-library quota per exposure length (current epoch)
     dark_exposures: str = "600,180"  # exposures (s) the dark library should hold, at the setpoint temp
+    rc16_always_dark_exposures: str = "750,900"  # 2026-10-21: RC16 dark lengths (s)
+                                                 # always wanted at quota, used by
+                                                 # lights or not: closed-roof nights
+                                                 # and capture jobs fill them
     library_archive_before: str = ""  # YYYY-MM-DD: nights before this stay out of the
                                       # Library (archived); the archive tool records it too
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
@@ -890,7 +894,29 @@ class PhotonScriptConfig(BaseSettings):
                                         # pixel at a target's faintest feature
                                         # (ImagingProject.goal_snr overrides)
     auto_dusk_flats: bool = True  # auto-dispatch dusk sky flats for STALE
-                                  # filters before auto-arm (the "checkmark")
+                                  # filters (the "checkmark"). 2026-10-21: runs
+                                  # every evening whether or not auto-arm / the
+                                  # noon re-arm is on (TPoint nights turn those
+                                  # off), only with the roof open (safety monitor
+                                  # SAFE), and done before nautical dusk.
+    flats_when: str = "both"      # sky flats at dawn | dusk | both (2026-10-21).
+                                  # dawn: the night sequences' dawn flats only;
+                                  # dusk: the auto dusk flats only (no dawn sky
+                                  # flats on either rig); both: each, but a set
+                                  # already refreshed today is not shot again.
+    dusk_flats_lead_min: int = 90  # the dusk-flat dispatch window opens this long
+                                   # before sunset (the run itself waits for
+                                   # sunset + 15)
+    dusk_flats_end_margin_min: int = 8  # dusk flats stop this long before
+                                        # nautical dusk (or the night's pre-config,
+                                        # if earlier), leaving time to park
+    piggyback_dusk_flats: bool = True  # Piggy-600 OSC dusk sky flats on NINA #2
+                                       # alongside the RC16's (needs piggyback_enabled)
+    piggyback_dusk_flat_offset_min: int = 20  # OSC dusk flats start at sunset +
+                                              # this (after the RC16's slew lands)
+    piggyback_dusk_flat_hold_min: int = 10  # the RC16 holds its flat pointing
+                                            # this long after the OSC start
+                                            # (riding scope) before it parks
     evening_forecast_enabled: bool = True  # push a night-viewing forecast a few
                                   # hours before sunset (tonight's rating, usable
                                   # dark hours, the astro-dark gate window, best

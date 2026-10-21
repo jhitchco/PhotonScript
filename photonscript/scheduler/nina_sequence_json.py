@@ -1051,7 +1051,8 @@ def _time_condition(provider: str, minutes_offset: int = 0) -> dict:
 def dark_library_exposures(cfg) -> list[float]:
     """RC16 dark-library lengths: config dark_exposures, plus PS-66's
     unguided_max_exposure_s when it is set and not already listed, so the
-    capped unguided subs always have a dark set at quota."""
+    capped unguided subs always have a dark set at quota, plus the
+    always-wanted lengths (rc16_always_dark_exposures, 2026-10-21)."""
     wanted: list[float] = []
     for tok in str(getattr(cfg, "dark_exposures", "600,180")).split(","):
         try:
@@ -1064,7 +1065,27 @@ def dark_library_exposures(cfg) -> list[float]:
         cap = 0.0
     if cap > 0 and not any(abs(cap - w) < 0.5 for w in wanted):
         wanted.append(cap)
+    # 2026-10-21: the always-wanted long darks (750 / 900 s by default), last
+    # so the lengths tonight's lights use fill first on a closed-roof night
+    for e in always_dark_exposures(cfg):
+        if not any(abs(e - w) < 0.5 for w in wanted):
+            wanted.append(e)
     return wanted
+
+
+def always_dark_exposures(cfg) -> list[float]:
+    """RC16 dark lengths always wanted at quota whether or not lights use
+    them (config rc16_always_dark_exposures, default 750,900; "" = none)."""
+    out: list[float] = []
+    for tok in str(getattr(cfg, "rc16_always_dark_exposures", "750,900")
+                   or "").split(","):
+        try:
+            v = float(tok.strip())
+        except ValueError:
+            continue
+        if v > 0 and not any(abs(v - o) < 0.5 for o in out):
+            out.append(v)
+    return out
 
 
 def _dark_quota_blocks(dawn_provider, dawn_offset):
@@ -3017,6 +3038,20 @@ def generate_nina_json(sequence: NinaSequenceFile,
                     _added += 1
         except Exception:  # noqa: BLE001
             pass
+    # 2026-10-21 flats_when: dusk = no dawn sky flats (the auto dusk flats
+    # shoot them); both = leave out a filter whose set was shot today (the
+    # dusk flats already refreshed it this evening); dawn = as before.
+    try:
+        from photonscript.scheduler.calibration import (flats_shot_today,
+                                                        flats_when)
+        _when = flats_when(_cfg)
+        if _when == "dusk":
+            flat_filters = []
+        elif _when == "both" and flat_filters:
+            _today = flats_shot_today(_cfg)
+            flat_filters = [f for f in flat_filters if f.value not in _today]
+    except Exception:  # noqa: BLE001 - never drop the dawn flats on this
+        pass
     if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:
         # Dawn goes dark->bright: broadband first (fine in the dim sky),
         # narrowband LAST when the sky is bright enough that 3nm exposures

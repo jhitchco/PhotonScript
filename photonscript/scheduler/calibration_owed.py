@@ -441,10 +441,17 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
             "assumed": False, "readout_assumed": 0,
             "planned": [], "quota_list": False})
 
+    always = []
+    if rig == "rc16":   # 2026-10-21: rc16_always_dark_exposures (750 / 900 s)
+        from photonscript.scheduler.nina_sequence_json import always_dark_exposures
+        always = always_dark_exposures(view)
     for e in qlist:
-        bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
-                "offset": ep["offset"], "settemp": ep["setpoint"],
-                "xbin": 1, "readout": ep["readout"]})["quota_list"] = True
+        b = bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
+                    "offset": ep["offset"], "settemp": ep["setpoint"],
+                    "xbin": 1, "readout": ep["readout"]})
+        b["quota_list"] = True
+        if any(_same_exp(e, a) for a in always):
+            b["always_wanted"] = True
     for e in extra:
         b = bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
                     "offset": ep["offset"], "settemp": ep["setpoint"],
@@ -514,6 +521,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
             "assumed_epoch": b["assumed"], "on_epoch": on,
             "in_quota_list": b["quota_list"] and on, "auto_fill": auto,
             "from_lights": bool(b.get("from_lights")),
+            "always_wanted": bool(b.get("always_wanted")),
             "from_unguided_limits": bool(b.get("from_unguided_limits")),
             "newest": nd["newest"], "age_days": _age(nd["newest"], datetime.now()),
             "ccd_temp_c": nd["ccd_temp_c"],
@@ -705,7 +713,8 @@ def _items_text(rig_out: dict) -> list[str]:
         if not d["owed"] and not d["fix"]:
             continue
         when = (f"lights {', '.join(d['nights'][-3:])}" if d["nights"]
-                else ("planned tonight" if d["planned"] else "quota list"))
+                else ("planned tonight" if d["planned"] else
+                      "always wanted" if d.get("always_wanted") else "quota list"))
         txt = (f"Darks {d['label']}: {d['have']} of {d['need']}"
                + (f", owe {d['owed']}" if d["owed"] else "") + f" ({when})")
         if d["fix"]:
@@ -786,6 +795,14 @@ def _plan(config, rig: str, darks: list, flats: list, planned: list) -> dict:
         extra, later = [], []
         flat_txt = ("dawn flats: one OSC set every safe dawn (companion)"
                     + ("; owed now" if any(f["owed"] for f in flats) else ""))
+    from photonscript.scheduler.calibration import flats_when
+    fw = flats_when(config)   # 2026-10-21
+    if fw == "dusk":
+        tonight, extra = [], []
+        flat_txt = ("dawn flats: none (flats_when=dusk: the auto dusk flats "
+                    "shoot the owed sets, roof open, before nautical dusk)")
+    elif fw == "both" and any(f["owed"] for f in flats):
+        flat_txt += "; dusk flats too (flats_when=both, roof open)"
     dark_txt = ("night darks (roof closed): "
                 + (", ".join(f"{_fmt(x['exp_s'])} s x {x['owed']}"
                              + (" (from lights)" if x["from_lights"] else "")
@@ -840,6 +857,11 @@ def owed_report(config, rig: str | None = None, *, projects=None,
            "lookback_days": days, "qa_mode": cq.mode(config),
            "dark_target_count": int(getattr(config, "dark_target_count", 30)),
            "active_goals": sorted(p.target.name for p in projects), "rigs": []}
+    try:   # 2026-10-21: dawn | dusk | both
+        from photonscript.scheduler.calibration import flats_when
+        out["flats_when"] = flats_when(config)
+    except Exception:  # noqa: BLE001
+        pass
     for rg in ([rig] if rig else rig_ids(config)):
         view = cq.rig_view(config, rg)
         ep = dark_epoch(config, rg)
@@ -867,6 +889,9 @@ def owed_report(config, rig: str | None = None, *, projects=None,
              "darks": darks, "flats": flats, "bias": bias,
              "config_fixes": fixes, "nights": nights,
              "constraints": _constraints(config, rg)}
+        if rg == "rc16":   # 2026-10-21
+            from photonscript.scheduler.nina_sequence_json import always_dark_exposures
+            r["always_dark_exposures"] = always_dark_exposures(view)
         r["summary"] = {
             "dark_sets_owed": sum(1 for d in darks if d["owed"]),
             "dark_frames_owed": sum(d["owed"] for d in darks),

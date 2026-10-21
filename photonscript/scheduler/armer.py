@@ -1882,6 +1882,10 @@ class Armer:
         (dawn_flats_enabled). Piggyback: the NINA #2 companion always carries
         an OSC dawn-flat set when it is dispatched."""
         cfg = self.config
+        # 2026-10-21: flats_when=dusk shoots no dawn sky flats on either rig
+        from photonscript.scheduler.calibration import flats_when
+        if flats_when(cfg) == "dusk":
+            return False
         rc16 = bool(getattr(cfg, "dawn_flats_enabled", True))
         pb = bool(getattr(cfg, "piggyback_enabled", False)
                   and getattr(cfg, "piggyback_calibrate_on_arm", True))
@@ -3016,8 +3020,20 @@ class Armer:
                                and has_safety)
             pcfg = self._piggy_unguided_cfg(pcfg)
             pcfg, seg_kw = self._piggy_length_kwargs(pcfg)
+            # 2026-10-21 flats_when=both: no OSC dawn set when this
+            # evening's dusk flats already shot one (and it is not owed)
+            from photonscript.scheduler.calibration import (
+                flats_when, piggyback_flat_status)
+            osc_dawn = True
+            if flats_when(cfg) == "both":
+                try:
+                    st = piggyback_flat_status(cfg)
+                    osc_dawn = not (st["shot_today"] and not st["owed"])
+                except Exception:  # noqa: BLE001 - keep the dawn set
+                    osc_dawn = True
             seq_text = generate_piggyback_companion_json(
-                pcfg, has_safety=has_safety, with_lights=want_lights, **seg_kw)
+                pcfg, has_safety=has_safety, with_lights=want_lights,
+                **({} if osc_dawn else {"dawn_flats": False}), **seg_kw)
             seq_dir = self.sequence_path.parent
             seq_dir.mkdir(exist_ok=True)
             path = seq_dir / f"piggyback_companion_{datetime.now():%Y%m%d_%H%M}.json"

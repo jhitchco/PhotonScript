@@ -308,10 +308,16 @@ def test_resync_credits_seconds_for_every_night(tmp_path, monkeypatch):
 
 def test_dark_library_adds_the_unguided_cap():
     from photonscript.scheduler.nina_sequence_json import dark_library_exposures
-    assert dark_library_exposures(_cfg(dark_exposures="600,180")) == [600, 180, 300]
-    assert dark_library_exposures(_cfg(dark_exposures="600,300,180")) == [600, 300, 180]
     assert dark_library_exposures(_cfg(dark_exposures="600,180",
+                                       rc16_always_dark_exposures="")) == [600, 180, 300]
+    assert dark_library_exposures(_cfg(dark_exposures="600,300,180",
+                                       rc16_always_dark_exposures="")) == [600, 300, 180]
+    assert dark_library_exposures(_cfg(dark_exposures="600,180",
+                                       rc16_always_dark_exposures="",
                                        unguided_max_exposure_s=0)) == [600, 180]
+    # 2026-10-21: the always-wanted long darks come last, never twice
+    assert dark_library_exposures(_cfg(dark_exposures="600,180")) ==         [600, 180, 300, 750, 900]
+    assert dark_library_exposures(_cfg(dark_exposures="600,900")) ==         [600, 900, 300, 750]
 
 
 # ---- 3. nanny quiet in unguided mode -----------------------------------------

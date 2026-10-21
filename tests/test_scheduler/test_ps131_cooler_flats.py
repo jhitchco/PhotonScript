@@ -268,7 +268,12 @@ def flats_env(tmp_path, monkeypatch):
                         lambda obs, base: {"sunset": now + timedelta(minutes=30)})
     monkeypatch.setattr(calibration, "stale_flat_filters", lambda c: ["Ha", "OIII"])
     monkeypatch.setattr(calibration, "generate_dusk_flats_json",
-                        lambda c, only_filters=None: ('{"x": 1}', "18:45"))
+                        lambda c, only_filters=None, **kw: ('{"x": 1}', "18:45"))
+    from photonscript.scheduler import dusk_flats
+
+    async def safe(c):
+        return True
+    monkeypatch.setattr(dusk_flats, "read_roof_safe", safe)
     pushes = []
 
     async def notify(c, msg, title="", priority=0, sound="none"):
@@ -302,7 +307,8 @@ def test_flats_idle_nina_dispatches(flats_env):
     flats_env["tick"]()
     assert flats_env["armer"].raw == ["auto dusk flats (Ha,OIII)"]
     assert flats_env["armer"].armed == []
-    assert _flat_decisions(flats_env) == []
+    # 2026-10-21: the dispatch is logged too
+    assert [e["value"] for e in _flat_decisions(flats_env)] == ["dispatched"]
 
 
 def test_flats_sideload_skips_with_one_push(flats_env):
