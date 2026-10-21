@@ -1044,6 +1044,9 @@ def tpoint_autocal_cmd(
     test: bool = typer.Option(False, "--test", help="Supervised first test: "
                               "--points 3 --side west, verbose, and a pause "
                               "after point 1 to check TPoint by eye"),
+    track: bool = typer.Option(False, "--track", help="Turn sidereal tracking "
+                               "on in TheSky before each exposure (needed "
+                               "after an unpark; never parks or syncs)"),
     unattended: bool = typer.Option(False, "--unattended", help="Remote run "
                                     "with no console: the backup prompt is "
                                     "answered yes (the backup is automatic); "
@@ -1143,7 +1146,8 @@ def tpoint_autocal_cmd(
                         auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)),
                         min_alt=float(sel["min_alt"]),
                         add=add, solver=solver,
-                        import_path=tal.import_path(cfg, _now, side, import_dir))
+                        import_path=tal.import_path(cfg, _now, side, import_dir),
+                        track=track)
         if add == "import":
             say(f"Add: TPoint import file {opts.import_path} (solver {solver}); "
                 "import it in TPoint afterwards. AutoMap is off.")

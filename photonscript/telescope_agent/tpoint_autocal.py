@@ -398,6 +398,18 @@ def automap_script() -> str:
                    "try { sky6RASCOMTheSky.AutoMap(); } catch (e) { err = String(e.message || e); }")
 
 
+def tracking_on_script() -> str:
+    """WRITE: turn sidereal tracking on (sky6RASCOMTele.SetTracking(1, 1,
+    0, 0)) and read IsTracking back. Used only with --track (2026-10-21:
+    after an unpark tracking was off, every 8 s frame trailed and no frame
+    solved; NINA cannot set tracking on this mount, CanSetTrackingEnabled
+    is false). Never parks, syncs or slews."""
+    return _kv([("tracking", "sky6RASCOMTele.IsTracking")],
+               pre="var err = '';"
+                   "try { sky6RASCOMTele.SetTracking(1, 1, 0, 0); } "
+                   "catch (e) { err = String(e.message || e); }")
+
+
 def mount_snapshot_script() -> str:
     """READ ONLY: the mount's position as TheSky reports it right now (the
     "observed" side of a TPoint sample): RA / Dec (GetRaDec, JNow, after

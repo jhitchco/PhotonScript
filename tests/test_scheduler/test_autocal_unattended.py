@@ -15,3 +15,17 @@ def test_unattended_is_allowed_remotely():
     allow = rc.load_allowlist()
     assert "--unattended" in allow.commands["tpoint-autocal"].flags
     assert allow.commands["tpoint-autocal"].write_flags == ("--go",)
+
+
+def test_tracking_on_script_sets_sidereal_and_reads_back():
+    from photonscript.telescope_agent import tpoint_autocal as ta
+    js = ta.tracking_on_script()
+    assert "SetTracking(1, 1, 0, 0)" in js
+    assert "IsTracking" in js
+    for bad in ("Park", "Sync", "SlewTo", "AutoMap"):
+        assert bad not in js
+
+
+def test_track_flag_allowed_remotely():
+    from photonscript.scheduler import remote_cli as rc
+    assert "--track" in rc.load_allowlist().commands["tpoint-autocal"].flags

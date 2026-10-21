@@ -176,7 +176,7 @@ night_safe = true             # a missing NINA #2 is wanted mid-night; it never 
 class = "read"                # --dry-run: preflight, points and scripts, sends nothing
 flags = ["--points", "--side", "--exposure-s", "--binning", "--from-coverage",
          "--dry-run", "--go", "--mode", "--verbose", "--slew-timeout",
-         "--status", "--json", "--unattended", "--solver", "--automap"]
+         "--status", "--json", "--unattended", "--track", "--solver", "--automap"]
 # --solver imagelink|astap|fallback and --automap pick how a point is solved
 # and added (default: TheSky ImageLink, appended to the TPoint import file
 # C:\astro\tpoint_import\<stamp>_<side>.dat); --import-dir takes a path: local only

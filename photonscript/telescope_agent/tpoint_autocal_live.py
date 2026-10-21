@@ -377,6 +377,7 @@ class Opts:
     solver: str = ta.DEFAULT_SOLVER         # "imagelink" | "astap" | "fallback"
     import_path: str | None = None          # <dir>\<stamp>_<side>.dat
     max_solve_fails: int = MAX_SOLVE_FAILS
+    track: bool = False                     # --track: tracking on before each exposure
     extra: dict = field(default_factory=dict)
 
 
@@ -615,6 +616,11 @@ class LoopRun:
                        f"finish in {self.o.slew_timeout_s:.0f} s")
         row["slew_s"] = round(self.d.mono() - t, 1)
         self.d.sleep(SETTLE_S)
+        if self.o.track:
+            tr = self.sky("tracking_on", ta.tracking_on_script())
+            self.say(f"  tracking on: {tr.get('tracking')}")
+            if str(tr.get("tracking")) not in ("1", "true", "True"):
+                raise StopRun(f"tracking did not turn on ({tr})")
         self.say(f"  slewed in {row['slew_s']:.0f} s; exposing {self.exposure_s:g} s.")
         r = self.sky("expose", ta.expose_script())
         if r.get("err"):
