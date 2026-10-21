@@ -22,7 +22,12 @@ What is here (all pure, nothing is sent anywhere):
   the camera, connect / disconnect TheSky's camera, set exposure / binning
   and the Automated Image Link settings, slew to an alt / az, expose, the
   AutoMap add (Image Link of TheSky's last camera image + a TPoint sample),
-  poll, abort, open the Automated Pointing Calibration window.
+  poll, abort, open the Automated Pointing Calibration window; and for the
+  import add (the default since AutoMap failed on 2026-10-20 with Error
+  212 / 224): mount_snapshot_script() (read only: the mount's RA / Dec,
+  alt / az, LST, JD) and imagelink_solve_script() (the scripted ImageLink
+  on one saved frame, with every ImageLinkResults field and its own error
+  report; never AutoMap).
 * build_plan() / format_plan(): the whole procedure as numbered steps, for
   ``photonscript tpoint-autocal --dry-run``.
 * run_go(): window mode is NOT IMPLEMENTED (raises). Loop mode runs live
@@ -34,8 +39,8 @@ Confirmed vs candidate (see the doc's "What is confirmed" table): the
 ccdsoftCamera / sky6RASCOMTele / ImageLink / AutomatedImageLinkSettings
 members used below are in Bisque's published scripting reference and in
 several public TheSkyX clients; sky6RASCOMTheSky.AutoMap() is a published
-method name whose exact effect on build 14139 is NOT confirmed (believed:
-Image Link the camera's last image, then add a TPoint sample);
+method name that FAILED on build 14139 (2026-10-20: "Error _ 224",
+ImageLinkResults "Process aborted. Error _ 212.", no sample added);
 TheSkyXAction.execute(<action>) runs a toolbar command (opens a window), so
 the Automated Pointing Calibration Run itself has no scripted start / point
 count / progress: CANDIDATE only.
@@ -46,6 +51,8 @@ from __future__ import annotations
 import re
 from datetime import datetime
 from pathlib import PureWindowsPath
+
+from photonscript.telescope_agent import thesky_client as tc
 
 # --------------------------------------------------------------- limits
 
@@ -70,6 +77,19 @@ GO_NOT_IMPLEMENTED = (
     "mode is --go --mode loop (start with --test, docs/TPOINT_AUTOCAL.md).")
 GO_LOOP_NOTE = ("--go --mode loop runs this live (telescope_agent."
                 "tpoint_autocal_live; untested on hardware: start with --test)")
+# how a solved point reaches TPoint: "import" (default since 2026-10-20:
+# solve the frame, record the mount, append a line to the TPoint import
+# file) or "automap" (sky6RASCOMTheSky.AutoMap(), failed on build 14139)
+ADD_MODES = ("import", "automap")
+DEFAULT_ADD = "import"
+# who solves the frame in import mode: TheSky's ImageLink, ASTAP on the
+# scope PC, or ImageLink then ASTAP when ImageLink fails
+SOLVERS = ("imagelink", "astap", "fallback")
+DEFAULT_SOLVER = "imagelink"
+SOLVER_TEXT = {"imagelink": "TheSky ImageLink",
+               "astap": "ASTAP on the scope PC",
+               "fallback": "TheSky ImageLink, then ASTAP when it fails"}
+DEFAULT_IMPORT_DIR = r"C:\astro\tpoint_import"
 
 
 # --------------------------------------------------------------- preflight
@@ -378,6 +398,41 @@ def automap_script() -> str:
                    "try { sky6RASCOMTheSky.AutoMap(); } catch (e) { err = String(e.message || e); }")
 
 
+def mount_snapshot_script() -> str:
+    """READ ONLY: the mount's position as TheSky reports it right now (the
+    "observed" side of a TPoint sample): RA / Dec (GetRaDec, JNow, after
+    any TPoint corrections), alt / az (GetAzAlt), TheSky's local sidereal
+    time and Julian date, tracking. No Connect, no write."""
+    return _kv([("connected", "c"),
+                ("ra_h", "c ? (sky6RASCOMTele.GetRaDec(), sky6RASCOMTele.dRa) : ''"),
+                ("dec_d", "c ? sky6RASCOMTele.dDec : ''"),
+                ("az", "c ? (sky6RASCOMTele.GetAzAlt(), sky6RASCOMTele.dAz) : ''"),
+                ("alt", "c ? sky6RASCOMTele.dAlt : ''"),
+                ("tracking", "c ? sky6RASCOMTele.IsTracking : ''"),
+                ("lst_h", "(sky6Utils.ComputeLocalSiderealTime(), sky6Utils.dOut0)"),
+                ("jd", "(sky6StarChart.DocumentProperty(9), sky6StarChart.DocPropOut)")],
+               pre="var c = false; try { c = sky6RASCOMTele.IsConnected; } catch (e) {}")
+
+
+def imagelink_solve_script(path: str, scale: float) -> str:
+    """Image Link ONE saved frame (the scripted ImageLink object, not
+    AutoMap): set ImageLink.pathToFITS / scale (thesky_client.imagelink_pre,
+    the only properties a script may assign), execute(), then every
+    ImageLinkResults field with its own error code and text. Writes nothing
+    to TPoint. thesky_client.TheSkyError for an unsafe path or scale."""
+    return _kv([("exec_error", "err"),
+                ("succeeded", "ImageLinkResults.succeeded"),
+                ("error_code", "ImageLinkResults.errorCode"),
+                ("error_text", "ImageLinkResults.errorText"),
+                ("ra_j2000_h", "ImageLinkResults.imageCenterRAJ2000"),
+                ("dec_j2000_d", "ImageLinkResults.imageCenterDecJ2000"),
+                ("image_scale", "ImageLinkResults.imageScale"),
+                ("position_angle", "ImageLinkResults.imagePositionAngle"),
+                ("image_stars", "ImageLinkResults.imageStarCount"),
+                ("solution_rms", "ImageLinkResults.solutionRMS")],
+               pre=tc.imagelink_pre(path, scale))
+
+
 def abort_script() -> str:
     """Stop: abort the exposure and the slew (tracking is left as is)."""
     return _kv([("cam_err", "ce"), ("mount_err", "me")],
@@ -408,8 +463,9 @@ SCRIPT_BUILDERS = {
     "automap": automap_script,
     "abort": abort_script,
     "open_autocal_window": open_autocal_window_script,
+    "mount_snapshot": mount_snapshot_script,
 }
-READ_ONLY_SCRIPTS = ("camera_read", "slew_poll", "expose_poll")
+READ_ONLY_SCRIPTS = ("camera_read", "slew_poll", "expose_poll", "mount_snapshot")
 
 
 # --------------------------------------------------------------- the plan
@@ -424,13 +480,20 @@ def est_minutes(points: int, exposure_s: float) -> int:
 
 def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
                exposure_s: float | None = None, binning: int | None = None,
-               now: datetime | None = None, sky_points: list | None = None) -> dict:
+               now: datetime | None = None, sky_points: list | None = None,
+               add: str = DEFAULT_ADD, solver: str = DEFAULT_SOLVER,
+               import_file: str | None = None) -> dict:
     """The whole operator-started procedure as numbered steps. Pure apart
     from the point grid (tpoint_mapping.plan_points; sky_points overrides
-    it, for tests). Nothing is sent. {"mode", "points", "params", "steps",
-    "sky_points", "est_minutes"}."""
+    it, for tests). Nothing is sent. add: "import" (solve, record, append
+    to the TPoint import file) or "automap" (the old AutoMap add).
+    {"mode", "points", "params", "steps", "sky_points", "est_minutes"}."""
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {mode!r}")
+    if add not in ADD_MODES:
+        raise ValueError(f"add must be one of {ADD_MODES}, got {add!r}")
+    if solver not in SOLVERS:
+        raise ValueError(f"solver must be one of {SOLVERS}, got {solver!r}")
     n = clamp_points(points)
     t = float(exposure_s if exposure_s is not None else
               getattr(config, "tpoint_mapping_exposure_s", 5.0) or 5.0)
@@ -469,14 +532,48 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
          script=camera_connect_script())
     step("setup", "photonscript", f"TheSky camera: {t:g} s, bin {b}, light, "
          "autosave, asynchronous", script=camera_setup_script(t, b))
-    step("setup", "photonscript", f"TheSky Automated Image Link: scale "
-         f"{scale:.3f}\"/px, {t:g} s", script=ails_setup_script(scale, t))
-    if mode == "loop":
+    if mode == "window" or add == "automap":
+        step("setup", "photonscript", f"TheSky Automated Image Link: scale "
+             f"{scale:.3f}\"/px, {t:g} s", script=ails_setup_script(scale, t))
+    if mode == "loop" and add == "import":
+        dest = import_file or DEFAULT_IMPORT_DIR + "\\<UTC stamp>_<side>.dat"
         step("run", "photonscript",
              f"Per point (x{len(sky_points)}): slew (async) and poll, expose "
-             "and poll, AutoMap, record a CSV row; stop on 3 unsolved in a "
+             "and poll, read the mount (RA / Dec, alt / az, LST), solve the "
+             f"saved frame ({SOLVER_TEXT[solver]}), append one line to the "
+             f"TPoint import file {dest} and a CSV row; stop on 3 unsolved in "
+             "a row, an operator abort, the roof going unsafe or the armer "
+             "leaving DISARMED")
+        if sky_points:
+            p = sky_points[0]
+            step("run", "photonscript", f"e.g. point 1: slew to alt "
+                 f"{p['alt']} az {p['az']}",
+                 script=slew_altaz_script(p["alt"], p["az"], "tpoint autocal 1",
+                                          min_alt))
+        step("run", "photonscript", "poll slew", script=slew_poll_script())
+        step("run", "photonscript", "expose", script=expose_script())
+        step("run", "photonscript", "read the mount (the observed position)",
+             script=mount_snapshot_script())
+        step("run", "photonscript", "poll exposure", script=expose_poll_script())
+        if solver != "astap":
+            step("run", "photonscript", "Image Link the saved frame (e.g. "
+                 "TheSky's AutoSave file of point 1)",
+                 script=imagelink_solve_script(
+                     "C:/Users/jeremy/Documents/Software Bisque/TheSky Professional "
+                     "Edition 64/Camera AutoSave/Imager/example.fit", scale))
+        if solver != "imagelink":
+            step("run", "photonscript", "ASTAP on the scope PC solves the saved "
+                 "frame" + (" when Image Link fails" if solver == "fallback" else "")
+                 + " (solve_store, -fov from the frame, mount position as hint)")
+        step("run", "photonscript", "Append the sample (true = the solved "
+             "J2000 centre as the apparent place, observed = the mount, LST) "
+             "to the import file (tpoint_import, TheSky64's in.dat format)")
+    elif mode == "loop":
+        step("run", "photonscript",
+             f"Per point (x{len(sky_points)}): slew (async) and poll, expose "
+             "and poll, AutoMap, record a CSV row; stop on 2 unsolved in a "
              "row, an operator abort, the roof going unsafe or the armer "
-             "leaving DISARMED", status="candidate (AutoMap unconfirmed)")
+             "leaving DISARMED", status="candidate (AutoMap failed on 2026-10-20)")
         if sky_points:
             p = sky_points[0]
             label = "tpoint autocal 1"
@@ -499,9 +596,14 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
     step("abort", "operator / photonscript", "Abort any time: TheSky Abort "
          "in the window (window mode) or photonscript abort (loop mode)",
          script=abort_script())
-    step("finish", "operator", "TPoint window: fit (Super Model), check "
-         "the RMS, save the model, Apply pointing corrections / ProTrack as "
-         "usual (no scripting object for any of it)")
+    if mode == "loop" and add == "import":
+        step("finish", "operator", "TPoint: Module Settings > Import Pointing "
+             "Data, pick the import file, then fit (Super Model), check the "
+             "RMS, save, Apply pointing corrections / ProTrack as usual")
+    else:
+        step("finish", "operator", "TPoint window: fit (Super Model), check "
+             "the RMS, save the model, Apply pointing corrections / ProTrack as "
+             "usual (no scripting object for any of it)")
     step("finish", "photonscript", "TheSky: disconnect its camera",
          script=camera_disconnect_script())
     step("finish", "photonscript", "Give the camera back to NINA #1",
@@ -509,7 +611,7 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
     step("finish", "photonscript", "tpoint-stats (the AFTER numbers), a "
          "before / after line in runs/<night>_events.jsonl; never arms")
     return {"mode": mode, "points": n if mode == "window" else len(sky_points),
-            "requested_points": n,
+            "requested_points": n, "add": add, "solver": solver,
             "params": {"exposure_s": t, "binning": b, "image_scale": round(scale, 4),
                        "min_alt": min_alt},
             "sky_points": sky_points, "steps": steps,
@@ -520,7 +622,10 @@ def format_plan(plan: dict, pre: dict | None = None,
                 show_scripts: bool = True) -> str:
     """The dry-run text: the preflight, then every step (and its script /
     requests)."""
-    out = [f"TPoint autocal DRY RUN (nothing sent): mode {plan['mode']}, "
+    add = plan.get("add", DEFAULT_ADD)
+    how = ("add: AutoMap" if add == "automap" else
+           f"add: import file, solver {plan.get('solver', DEFAULT_SOLVER)}")
+    out = [f"TPoint autocal DRY RUN (nothing sent): mode {plan['mode']}, {how}, "
            f"{plan['points']} points (asked {plan['requested_points']}), "
            f"{plan['params']['exposure_s']:g} s bin {plan['params']['binning']} "
            f"at {plan['params']['image_scale']}\"/px, ~{plan['est_minutes']} min"]

@@ -1062,6 +1062,18 @@ def tpoint_autocal_cmd(
                             help="Scheduler for --status"),
     scripts: bool = typer.Option(True, "--scripts/--no-scripts",
                                  help="Print each step's TheSky script"),
+    automap: bool = typer.Option(False, "--automap", help="Add each point "
+                                 "with sky6RASCOMTheSky.AutoMap() (failed on "
+                                 "2026-10-20: Error 212 / 224) instead of "
+                                 "the TPoint import file"),
+    solver: str = typer.Option("imagelink", "--solver", help="Import mode: "
+                               "imagelink (TheSky ImageLink) | astap (ASTAP "
+                               "on the scope PC) | fallback (ImageLink, then "
+                               "ASTAP when it fails)"),
+    import_dir: str = typer.Option(r"C:\astro\tpoint_import", "--import-dir",
+                                   help="Folder for the TPoint import file "
+                                   "<UTC stamp>_<side>.dat (never TheSky's "
+                                   "own folders)"),
     as_json: bool = typer.Option(False, "--json", help="Print JSON"),
 ):
     """TPoint autocal: grow the TPoint model with TheSky's own camera,
@@ -1069,10 +1081,13 @@ def tpoint_autocal_cmd(
     prints the preflight, the points, the NINA camera hand-off and every
     TheSky script, and sends nothing. --go --mode loop runs it live (never
     arms, never syncs, never parks; Ctrl+C stops and gives the camera back).
+    Each solved point goes to a TPoint import file (C:\\astro\\tpoint_import)
+    for TPoint Module Settings > Import Pointing Data; --automap uses
+    AutoMap instead.
 
     photonscript tpoint-autocal --side west --points 20 --dry-run
     photonscript tpoint-autocal --go --test
-    photonscript tpoint-autocal --go --side west --points 20
+    photonscript tpoint-autocal --go --side west --points 20 --solver fallback
     """
     import json as _json
     from datetime import datetime as _dt
@@ -1093,6 +1108,10 @@ def tpoint_autocal_cmd(
     if side not in tal.SIDES:
         console.print(f"--side must be one of {', '.join(tal.SIDES)}", markup=False)
         raise typer.Exit(2)
+    if solver not in ta.SOLVERS:
+        console.print(f"--solver must be one of {', '.join(ta.SOLVERS)}", markup=False)
+        raise typer.Exit(2)
+    add = "automap" if automap else "import"
     if test:
         points, side = tal.TEST_POINTS, tal.TEST_SIDE
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
@@ -1122,7 +1141,12 @@ def tpoint_autocal_cmd(
                         csv_path=tal.csv_path(cfg, _now),
                         auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
                         auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)),
-                        min_alt=float(sel["min_alt"]))
+                        min_alt=float(sel["min_alt"]),
+                        add=add, solver=solver,
+                        import_path=tal.import_path(cfg, _now, side, import_dir))
+        if add == "import":
+            say(f"Add: TPoint import file {opts.import_path} (solver {solver}); "
+                "import it in TPoint afterwards. AutoMap is off.")
         if unattended and test:
             say("--unattended and --test do not mix (--test waits for the console)")
             raise typer.Exit(2)
@@ -1156,7 +1180,10 @@ def tpoint_autocal_cmd(
                        auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)))
     plan = ta.build_plan(cfg, points=points, mode=mode, exposure_s=exposure_s,
                          binning=binning,
-                         sky_points=sel["points"] if mode == "loop" else None)
+                         sky_points=sel["points"] if mode == "loop" else None,
+                         add=add, solver=solver,
+                         import_file=(tal.import_path(cfg, _now, side, import_dir)
+                                      if mode == "loop" else None))
     if as_json:
         print(_json.dumps({"dry_run": True, "preflight": pre, "backup": backup,
                            "plan": plan, "selection": sel if mode == "loop" else None},

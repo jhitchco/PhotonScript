@@ -1,12 +1,25 @@
 """TPoint autocal, loop mode, LIVE (docs/TPOINT_AUTOCAL.md).
 
 ``photonscript tpoint-autocal --go --mode loop``: Jeremy starts it at the
-console and stays there. Per point: open-loop slew to an alt / az
-(SlewToAzAlt, async, polled), one exposure with TheSky's own camera
-(TakeImage, async, polled), sky6RASCOMTheSky.AutoMap() (Image Link of that
-frame + a TPoint sample), then the TPoint input-data row count is read back
-from TPoint's files (tpoint_files) to confirm a sample was added, and a CSV
-row is written.
+console (or remotely with --unattended). Per point: open-loop slew to an
+alt / az (SlewToAzAlt, async, polled), one exposure with TheSky's own
+camera (TakeImage, async, polled), the mount's position read right after
+the exposure starts (the "observed" side of the sample), then the add:
+
+* import (the default since 2026-10-20, when AutoMap failed on hardware
+  with Error 212 / 224 and TPoint stayed at 561 samples): solve the saved
+  frame with TheSky's ImageLink object (its own script and error report;
+  ``--solver astap`` or ``fallback`` uses ASTAP on the scope PC), and
+  append one line to the TPoint import file (tpoint_import, TheSky64's
+  in.dat format) in C:\\astro\\tpoint_import, never in TheSky's folders.
+  Jeremy imports it (TPoint Module Settings > Import Pointing Data) and
+  refits. Stops after 3 unsolved points in a row.
+* automap (``--automap``, off by default): sky6RASCOMTheSky.AutoMap()
+  (Image Link of that frame + a TPoint sample), then the TPoint input-data
+  row count is read back from TPoint's files (tpoint_files) to confirm a
+  sample was added.
+
+Either way a CSV row is written per point.
 
 Hard rules (the doc's): operator-started only; never arms, never
 dispatches, never starts / loads a NINA sequence, never syncs, never parks,
@@ -20,9 +33,9 @@ Every outside call goes through four small adapters (TheSky TCP 3040, NINA
 tests drive the whole loop with fakes. The TheSky scripts are the reviewed
 builders in tpoint_autocal (this module writes no JavaScript of its own).
 
-Status: implemented, UNTESTED ON HARDWARE. AutoMap's effect on build 14139
-is the open question; the first run is the supervised 3-point test
-(``--test``).
+Status: slews, the camera hand-off and TakeImage worked on hardware
+(2026-10-20); AutoMap did not add samples there. The import path is
+untested on hardware.
 """
 
 from __future__ import annotations
@@ -38,6 +51,7 @@ from typing import Callable
 
 from photonscript.scheduler import tpoint_mapping as tm
 from photonscript.telescope_agent import tpoint_autocal as ta
+from photonscript.telescope_agent import tpoint_import as ti
 
 SIDES = ("east", "west", "both")
 LOOP_MAX_POINTS = ta.MAX_POINTS
@@ -49,6 +63,7 @@ POLL_S = 1.0
 SETTLE_S = 2.0
 FLIP_S = 90.0                # a pier flip between the east and west halves
 MAX_AUTOMAP_FAILS = 2        # in a row
+MAX_SOLVE_FAILS = 3          # import mode: unsolved (or unrecorded) in a row
 # --side east / west: at least this far from the meridian, so the mount's
 # pier-side choice cannot put a "west" sample on the east side (TPoint's
 # meridian band in tpoint_mapping is 0.25 h)
@@ -56,9 +71,14 @@ SIDE_MARGIN_H = 0.5
 NINA_WAIT_S = 20.0           # camera Connected to change after (dis)connect
 
 CSV_FIELDS = ["utc", "point", "of", "side", "alt", "az", "ha_h", "dec_deg",
-              "slew_s", "image", "automap_err", "solved", "error_text",
-              "solution_rms", "image_scale", "samples_before",
-              "samples_after", "added", "note"]
+              "slew_s", "image", "add", "solver", "solved_by", "automap_err",
+              "solved", "error_text", "imagelink_err", "imagelink_code",
+              "astap_err", "solution_rms", "image_scale", "image_stars",
+              "solved_ra_j2000_h", "solved_dec_j2000_d", "mount_utc",
+              "mount_ra_h", "mount_dec_d", "mount_alt", "mount_az",
+              "mount_lst_h", "mount_jd", "mount_ha_h", "through_pole",
+              "header_pierside", "true_ra_app_h", "true_dec_app_d",
+              "import_line", "samples_before", "samples_after", "added", "note"]
 
 
 # ------------------------------------------------------------- helpers
@@ -329,6 +349,15 @@ class Deps:
     now: Callable[[], datetime] = datetime.utcnow
     copy: Callable[[str, str], None] | None = None
     notify: Callable[[str], None] | None = None
+    # import mode: ASTAP on the scope PC (path, scale "/px, hint (ra deg,
+    # dec deg) or None) -> {"ra", "dec" (J2000 deg), ...} or {"error"}
+    astap: Callable[[str, float, tuple | None], dict | None] | None = None
+    # import mode: a few FITS header cards of the saved frame (PIERSIDE ...)
+    fits_header: Callable[[str], dict] | None = None
+    # import mode: the text of the newest real TPoint input file (header
+    # source), and the folders the import file must never be written in
+    import_ref: Callable[[], str | None] | None = None
+    forbidden_roots: list = field(default_factory=list)
 
 
 @dataclass
@@ -344,6 +373,10 @@ class Opts:
     auto_arm_enabled: bool = False
     auto_dusk_flats: bool = False
     min_alt: float = 30.0
+    add: str = ta.DEFAULT_ADD               # "import" | "automap"
+    solver: str = ta.DEFAULT_SOLVER         # "imagelink" | "astap" | "fallback"
+    import_path: str | None = None          # <dir>\<stamp>_<side>.dat
+    max_solve_fails: int = MAX_SOLVE_FAILS
     extra: dict = field(default_factory=dict)
 
 
@@ -375,6 +408,8 @@ class LoopRun:
         self.last_total = None
         self.confirmed = False
         self.busy = False             # a slew or exposure may be in flight
+        self.importer: ti.ImportFile | None = None
+        self.csv_file: str | None = opts.csv_path
 
     # -- small helpers
     def say(self, msg: str):
@@ -518,7 +553,8 @@ class LoopRun:
                  f"Image Link had {ails.get('exposure_s')} s, "
                  f"{ails.get('image_scale')}\"/px).")
         self.sky("camera_setup", ta.camera_setup_script(t, self.o.binning))
-        self.sky("ails_setup", ta.ails_setup_script(scale, t))
+        if self.automap:
+            self.sky("ails_setup", ta.ails_setup_script(scale, t))
 
     # -- safety re-check before each point
     def recheck(self) -> None:
@@ -584,12 +620,17 @@ class LoopRun:
         if r.get("err"):
             self._fail(row, "expose error",
                        f"TheSky could not start the exposure: {r['err']}")
+        snap = self._snapshot(row) if not self.automap else None
         r = self._poll("expose_poll", ta.expose_poll_script(), "complete",
                        self.exposure_s + EXPOSE_EXTRA_S)
         if r is None:
             self._fail(row, "exposure timeout",
                        f"the exposure at point {i} did not finish")
         row["image"] = r.get("last_image")
+        row["add"] = self.o.add
+        if not self.automap:
+            self.busy = False
+            return self._solve_and_record(row, snap)
         self.say("  frame saved; AutoMap (Image Link + TPoint sample).")
         prev = self.last_total
         a = self.sky("automap", ta.automap_script())
@@ -616,8 +657,162 @@ class LoopRun:
                  + f"; TPoint samples in the files {prev} -> {now_n}.")
         return row
 
+    # -- import mode: the mount, the solve, the import line
+    @property
+    def automap(self) -> bool:
+        return self.o.add == "automap"
+
+    def _snapshot(self, row: dict) -> dict:
+        """The mount as TheSky reports it, right after the exposure started
+        (read only). Never raises: a failed read leaves the point unrecorded."""
+        utc = self.d.now()
+        try:
+            m = self.sky("mount_snapshot", ta.mount_snapshot_script())
+        except Exception as e:  # noqa: BLE001
+            self.say(f"  mount read failed ({e})")
+            m = {}
+        snap = {"utc": utc, "ra_h": _f(m.get("ra_h")), "dec_d": _f(m.get("dec_d")),
+                "alt": _f(m.get("alt")), "az": _f(m.get("az")),
+                "lst_h": _f(m.get("lst_h")), "jd": _f(m.get("jd"))}
+        row.update(mount_utc=utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                   mount_ra_h=snap["ra_h"], mount_dec_d=snap["dec_d"],
+                   mount_alt=snap["alt"], mount_az=snap["az"],
+                   mount_lst_h=snap["lst_h"], mount_jd=snap["jd"])
+        return snap
+
+    def _imagelink(self, path: str, scale: float, row: dict) -> tuple | None:
+        """TheSky ImageLink on the saved frame, its own error report.
+        (ra_h, dec_d) J2000 or None."""
+        try:
+            r = self.sky("imagelink", ta.imagelink_solve_script(path, scale))
+        except Exception as e:  # noqa: BLE001
+            row["imagelink_err"] = f"{type(e).__name__}: {e}"
+            return None
+        ra, dec = _f(r.get("ra_j2000_h")), _f(r.get("dec_j2000_d"))
+        row.update(imagelink_code=r.get("error_code") or "",
+                   solution_rms=r.get("solution_rms"),
+                   image_scale=r.get("image_scale"),
+                   image_stars=r.get("image_stars"))
+        ok = (not r.get("exec_error") and truthy(r.get("succeeded"))
+              and ra is not None and dec is not None)
+        if not ok:
+            row["imagelink_err"] = (r.get("exec_error") or r.get("error_text")
+                                    or ("succeeded=" + str(r.get("succeeded"))))
+            return None
+        return ra, dec
+
+    def _astap(self, path: str, scale: float, snap: dict, row: dict) -> tuple | None:
+        """ASTAP on the scope PC (deps.astap). (ra_h, dec_d) J2000 or None."""
+        if self.d.astap is None:
+            row["astap_err"] = "no ASTAP solver in this run"
+            return None
+        hint = None
+        if snap.get("ra_h") is not None and snap.get("dec_d") is not None:
+            hint = (snap["ra_h"] * 15.0, snap["dec_d"])
+        try:
+            a = self.d.astap(path, scale, hint) or {}
+        except Exception as e:  # noqa: BLE001
+            a = {"error": f"{type(e).__name__}: {e}"}
+        ra, dec = _f(a.get("ra")), _f(a.get("dec"))
+        if ra is None or dec is None:
+            row["astap_err"] = a.get("error") or "ASTAP did not solve"
+            return None
+        if a.get("scale") is not None:
+            row["image_scale"] = a.get("scale")
+        return (ra % 360.0) / 15.0, dec
+
+    def _solve_and_record(self, row: dict, snap: dict | None) -> dict:
+        snap = snap or {}
+        path = str(row.get("image") or "")
+        scale = self.o.image_scale_per_bin1 * self.o.binning
+        solver = self.o.solver
+        row.update(solver=solver, solved=False, added=False, solved_by="")
+        sol = None
+        if not path:
+            row["error_text"] = "TheSky reported no saved frame"
+        else:
+            if self.d.fits_header is not None:
+                try:
+                    h = self.d.fits_header(path) or {}
+                    row["header_pierside"] = h.get("PIERSIDE") or ""
+                    if snap.get("lst_h") is None:
+                        snap["lst_h"] = _f(h.get("LST_H"))
+                        row["mount_lst_h"] = snap["lst_h"]
+                except Exception as e:  # noqa: BLE001
+                    self.v(f"FITS header read failed ({e})")
+            if solver in ("imagelink", "fallback"):
+                self.say("  frame saved; Image Link (TheSky) on it.")
+                sol = self._imagelink(path, scale, row)
+                if sol:
+                    row["solved_by"] = "imagelink"
+                elif solver == "fallback":
+                    self.say(f"  Image Link failed ({row.get('imagelink_err')}); "
+                             "trying ASTAP.")
+            if sol is None and solver in ("astap", "fallback"):
+                if solver == "astap":
+                    self.say("  frame saved; ASTAP on it.")
+                sol = self._astap(path, scale, snap, row)
+                if sol:
+                    row["solved_by"] = "astap"
+        if sol is None:
+            why = [x for x in (
+                row.get("error_text"),
+                row.get("imagelink_err") and f"ImageLink: {row['imagelink_err']}",
+                row.get("astap_err") and f"ASTAP: {row['astap_err']}") if x]
+            row["error_text"] = "; ".join(why)
+            self.say(f"  NOT solved ({row['error_text'] or 'no reason given'}).")
+            return row
+        row.update(solved=True, solved_ra_j2000_h=round(sol[0], 7),
+                   solved_dec_j2000_d=round(sol[1], 6))
+        if snap.get("ra_h") is None or snap.get("dec_d") is None \
+                or snap.get("lst_h") is None:
+            row["note"] = "solved, but the mount position was not read: not recorded"
+            self.say("  solved, but the mount position was not read: not recorded.")
+            return row
+        v = ti.sample_values(sol[0], sol[1], snap["ra_h"], snap["dec_d"],
+                             snap["lst_h"], snap["utc"])
+        row.update(mount_ha_h=v["ha_h"], through_pole=v["through_pole"],
+                   true_ra_app_h=round(v["true_ra_h"], 7),
+                   true_dec_app_d=round(v["true_dec_d"], 6), import_line=v["line"])
+        try:
+            self.importer.append(v["line"])
+        except Exception as e:  # noqa: BLE001
+            row["note"] = f"import file write failed ({e})"
+            self.rows.append(row)
+            self._write_csv()
+            raise StopRun(f"could not write the TPoint import file "
+                          f"{self.o.import_path}: {e}") from None
+        row["added"] = True
+        self.say(f"  solved by {row['solved_by']} (RA {sol[0]:.4f} h, Dec "
+                 f"{sol[1]:+.3f}); sample {self.importer.lines} written to "
+                 f"{self.o.import_path}.")
+        return row
+
+    def _open_import(self) -> None:
+        """The import file object (written with the first sample). Checks
+        the path first (never in TheSky's folders or ninashare):
+        ValueError."""
+        if self.automap:
+            return
+        if not self.o.import_path:
+            raise ValueError("no import file path")
+        ref = None
+        if self.d.import_ref is not None:
+            try:
+                ref = ti.reference_header(self.d.import_ref())
+            except Exception as e:  # noqa: BLE001
+                self.v(f"TPoint reference header not read ({e})")
+        local = _local_date(self.cfg, self.d.now())
+        lat = None if (ref and ref.get("lat")) else float(
+            getattr(self.cfg, "observatory_lat", 31.9069))
+        hdr = ti.header_lines(local, lat_deg=lat, ref=ref)
+        self.importer = ti.ImportFile(self.o.import_path, hdr,
+                                      self.d.forbidden_roots)
+
     # -- the loop
     def loop(self) -> None:
+        if not self.automap:
+            return self._loop_import()
         fails = 0
         n = len(self.points)
         for i, q in enumerate(self.points, 1):
@@ -643,6 +838,25 @@ class LoopRun:
             if fails >= MAX_AUTOMAP_FAILS:
                 raise StopRun(f"{MAX_AUTOMAP_FAILS} AutoMap failures in a row "
                               "(clouds, focus, or AutoMap not adding)")
+            left = (n - i) * pace_s(self.exposure_s)
+            if i < n:
+                fin = self.d.now() + timedelta(seconds=left)
+                self.say(f"  done {i}/{n}; about {_fmt_min(left)} left "
+                         f"(finish ~{_local(self.cfg, fin)} local).")
+
+    def _loop_import(self) -> None:
+        fails = 0
+        n = len(self.points)
+        for i, q in enumerate(self.points, 1):
+            self.recheck()
+            row = self.point(i, q)
+            self.rows.append(row)
+            self._write_csv()
+            fails = 0 if row.get("added") else fails + 1
+            if fails >= self.o.max_solve_fails:
+                raise StopRun(f"{self.o.max_solve_fails} points in a row not "
+                              "solved or not recorded (clouds, focus, or the "
+                              "solver)")
             left = (n - i) * pace_s(self.exposure_s)
             if i < n:
                 fin = self.d.now() + timedelta(seconds=left)
@@ -729,11 +943,22 @@ class LoopRun:
         return ok
 
     def _write_csv(self) -> None:
-        if not self.o.csv_path:
+        if not self.csv_file:
             return
-        p = Path(self.o.csv_path)
+        p = Path(self.csv_file)
         try:
             p.parent.mkdir(parents=True, exist_ok=True)
+            if p.exists() and _csv_header(p) != CSV_FIELDS:
+                # an earlier run tonight wrote the old columns: keep it, start
+                # a sibling file with the new ones
+                k = 2
+                while True:
+                    q = p.with_name(f"{p.stem}_{k}{p.suffix}")
+                    if not q.exists() or _csv_header(q) == CSV_FIELDS:
+                        break
+                    k += 1
+                p = q
+                self.csv_file = str(q)
             new = not p.exists()
             with open(p, "a", newline="", encoding="utf-8") as fh:
                 w = csv.DictWriter(fh, fieldnames=CSV_FIELDS, extrasaction="ignore")
@@ -752,6 +977,11 @@ class LoopRun:
             return self.summary("refused", "preflight: " + "; ".join(pre["blockers"]))
         if not self.backup(pre["backup"]):
             return self.summary("refused", "operator did not confirm the backup")
+        try:
+            self._open_import()
+        except ValueError as e:
+            self.say(f"NO GO: TPoint import file: {e}")
+            return self.summary("refused", f"import file: {e}")
         status = "stopped"
         try:
             self.lend()
@@ -798,27 +1028,68 @@ class LoopRun:
              "failed": tried - solved, "seconds": round(self.d.mono() - self.t0),
              "samples_before": self.before.get("total"),
              "samples_after": (self.after or {}).get("total"),
-             "camera_returned": self.returned, "csv": self.o.csv_path,
+             "camera_returned": self.returned, "csv": self.csv_file,
+             "add": self.o.add, "solver": None if self.automap else self.o.solver,
+             "import_file": None if self.automap else self.o.import_path,
+             "import_lines": self.importer.lines if self.importer else 0,
              "rows": self.rows}
         self.say("")
         self.say("Summary")
         self.say(f"  result: {status} ({reason})")
-        self.say(f"  points attempted {tried}, solved {solved}, failed "
-                 f"{tried - solved}; samples confirmed in the files {added}"
-                 + (f", seen by eye {eye}" if eye else ""))
+        if self.automap:
+            self.say(f"  points attempted {tried}, solved {solved}, failed "
+                     f"{tried - solved}; samples confirmed in the files {added}"
+                     + (f", seen by eye {eye}" if eye else ""))
+        else:
+            self.say(f"  points attempted {tried}, solved {solved}, failed "
+                     f"{tried - solved}; samples in the import file "
+                     f"{s['import_lines']}")
         self.say(f"  time {_fmt_min(s['seconds'])}; TPoint input data "
                  f"{s['samples_before']} -> {s['samples_after']} sample(s)")
         if self.returned is not None:
             self.say("  camera back on NINA #1: " + ("yes" if self.returned else
                                                      "NO, fix by hand"))
-        if self.o.csv_path and self.rows:
-            self.say(f"  log: {self.o.csv_path}")
-        if solved:
+        if self.csv_file and self.rows:
+            self.say(f"  log: {self.csv_file}")
+        if not self.automap and s["import_lines"]:
+            self.say(f"  import file: {self.o.import_path}")
+            self.say("  Next: TheSky TPoint, Module Settings > Import Pointing "
+                     "Data, pick that file, then refit the Super Model, check "
+                     "the RMS, save, Apply pointing corrections / ProTrack as "
+                     "usual; then photonscript tpoint-stats. Nothing was armed.")
+            self.say("  Caveat: the observed positions are TheSky's mount "
+                     "readings, which include any TPoint corrections in force "
+                     "(HANDBOOK, Hand import).")
+        elif self.automap and solved:
             self.say("  Next: in TPoint, refit the Super Model by hand, check "
                      "the RMS, save, and Apply pointing corrections / ProTrack "
                      "as usual; then photonscript tpoint-stats. Nothing was "
                      "armed: arming tonight is a separate click.")
         return s
+
+
+def _f(v):
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x == x else None
+
+
+def _csv_header(p: Path) -> list[str]:
+    try:
+        with open(p, newline="", encoding="utf-8") as fh:
+            return next(csv.reader(fh), [])
+    except OSError:
+        return []
+
+
+def _local_date(config, utc: datetime) -> datetime:
+    try:
+        from photonscript.shared.localtime import to_local
+        return to_local(config, utc).replace(tzinfo=None)
+    except Exception:  # noqa: BLE001
+        return utc
 
 
 def _copy_file(src: str, dst: str) -> None:
@@ -834,7 +1105,8 @@ def unattended_ask(say=print) -> Callable[[str], str]:
     """--unattended: answers the console questions for a remote run. Only the
     backup prompt gets "yes" (run_loop has just made the backup itself);
     every other question gets "no", which stops the run safely unless
-    TPoint's input file count proves AutoMap adds samples."""
+    TPoint's input file count proves AutoMap adds samples (--automap). The
+    import mode asks nothing after the backup."""
     def ask(prompt: str) -> str:
         a = "yes" if "Backup done" in prompt else "no"
         say(f"{prompt.strip()} [unattended: {a}]")
@@ -844,11 +1116,12 @@ def unattended_ask(say=print) -> Callable[[str], str]:
 
 def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
     """The real adapters (TheSky TCP, NINA #1, the scheduler, TPoint's
-    files, Pushover)."""
+    files, Pushover, ASTAP on this PC, the saved frame's FITS header)."""
     from photonscript.scheduler import tpoint_files as tf
     from photonscript.telescope_agent.thesky_client import client_from_config
     sky = client_from_config(config)
-    sky.timeout = max(float(sky.timeout), 60.0)   # AutoMap waits on Image Link
+    # AutoMap / ImageLink block the TCP call for the whole solve
+    sky.timeout = max(float(sky.timeout), 120.0)
     nina = NinaLink(str(getattr(config, "nina_base_url", "")
                         or "http://localhost:1888/v2/api"))
 
@@ -856,10 +1129,94 @@ def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
         from photonscript.shared.supervisor import pushover_notifier
         pushover_notifier(config)("TPoint autocal", msg, 1)
 
+    def ref_text() -> str | None:
+        return newest_input_text(config)
+
+    try:
+        roots = [str(r) for r in tf.roots(config)]
+    except Exception:  # noqa: BLE001
+        roots = []
     return Deps(sky=TheSkyLink(sky), nina=nina, sched=SchedulerLink(scheduler_url),
                 count=lambda: sample_count(config),
                 list_files=lambda: tf.list_files(config), ask=ask, say=say,
-                notify=notify)
+                notify=notify, astap=lambda p, sc, h: astap_solve(config, p, sc, h),
+                fits_header=fits_header, import_ref=ref_text,
+                forbidden_roots=roots)
+
+
+def newest_input_text(config, listing: dict | None = None) -> str | None:
+    """The newest real TPoint input file's text ("<run> in.dat" / "Super
+    Model Indat.dat"), the header source of the import file. Read only."""
+    from photonscript.scheduler import tpoint_files as tf
+    lst = listing if listing is not None else tf.list_files(config)
+    for f in lst.get("files") or []:          # newest first
+        if tf._data_rank(f) != 0:
+            continue
+        text = tf._read(f["path"])
+        if text and tf.parse_data(text):
+            return text
+    return None
+
+
+def astap_solve(config, path: str, scale: float, hint: tuple | None,
+                runner=None) -> dict:
+    """ASTAP on this PC (the scope PC) through solve_store (never rewrites
+    the FITS, keeps ASTAP's .ini / .wcs out of the AutoSave folder): -fov
+    from the frame height x the binned scale, the mount position as the
+    search hint (10 deg radius). {"ra", "dec" (J2000 deg), "scale", ...} or
+    {"error"}."""
+    from photonscript.scheduler import solve_store as ss
+    exe = str(getattr(config, "astap_exe", "") or r"C:\Program Files\astap\astap.exe")
+    if runner is None and not Path(exe).exists():
+        return {"error": f"ASTAP not found at {exe} (astap_exe)"}
+    if not Path(path).exists():
+        return {"error": f"frame not found: {path}"}
+    fov = None
+    try:
+        h = int(fits_header(path).get("NAXIS2") or 0)
+        fov = h * float(scale) / 3600.0 if h > 0 else None
+    except Exception:  # noqa: BLE001
+        fov = None
+    if runner is None:
+        def runner(p, _fov, hh, r, t):  # noqa: E306
+            return ss._astap_runner(exe, p, fov, hh, r, t)
+    else:
+        given = runner
+
+        def runner(p, _fov, hh, r, t):  # noqa: E306
+            return given(p, fov, hh, r, t)
+    rec = ss.solve(config, path, hint=hint, runner=runner, radius_deg=10.0,
+                   timeout_s=90.0)
+    return rec if rec else {"error": "ASTAP did not solve"}
+
+
+def fits_header(path: str) -> dict:
+    """A few cards of the saved frame: NAXIS2, PIERSIDE (when TheSky
+    writes one), LST_H (an LST / SIDEREAL card in hours, when present)."""
+    from astropy.io import fits as _fits
+    h = _fits.getheader(str(path))
+    out = {"NAXIS2": h.get("NAXIS2"), "PIERSIDE": h.get("PIERSIDE")}
+    for k in ("LST", "SIDEREAL", "SIDTIME"):
+        v = h.get(k)
+        if v is None:
+            continue
+        try:
+            out["LST_H"] = float(v)
+        except (TypeError, ValueError):
+            parts = str(v).replace(":", " ").split()
+            try:
+                out["LST_H"] = (float(parts[0]) + float(parts[1]) / 60.0
+                                + float(parts[2]) / 3600.0)
+            except (IndexError, ValueError):
+                continue
+        break
+    return out
+
+
+def import_path(config, now: datetime, side: str,
+                dir_: str = ti.DEFAULT_IMPORT_DIR) -> str:
+    """<dir>\\<UTC stamp>_<side>.dat (C:\\astro\\tpoint_import by default)."""
+    return ti.import_path(dir_, now.strftime("%Y%m%dT%H%M%SZ"), side)
 
 
 def csv_path(config, now: datetime | None = None) -> str:

@@ -721,6 +721,13 @@ terms back from the files and restores the backup when the fit is worse
 than the limits. Apply pointing corrections / ProTrack stay manual (no
 write API on build 14139). Not in the remote CLI allowlist.
 
+TPoint import file (2026-10-20, `photonscript tpoint-autocal`, the default
+add since AutoMap failed with Error 212 / 224): each solved point (TheSky
+ImageLink or ASTAP, `--solver`) plus the mount reading goes to
+`C:\astro\tpoint_import\<UTC stamp>_<side>.dat` in TheSky64's in.dat
+format (docs/TPOINT_AUTOCAL.md); import it with TPoint Module Settings >
+Import Pointing Data, then refit. The caveat below applies to it too.
+
 Hand import (no add method, or `off`): the CSV has, per point, the solved
 J2000 center (`solved_ra_j2000_h`, `solved_dec_j2000_d`), the mount's RA /
 Dec as TheSky reported it (`mount_ra_h`, `mount_dec_d`, JNow), its alt /
