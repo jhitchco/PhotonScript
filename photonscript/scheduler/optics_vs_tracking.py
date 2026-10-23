@@ -253,7 +253,7 @@ def control(rate_arcsec_min, partners: list[dict], scale_arcsec: float, *,
     elif n_round * 2 >= len(ps) and n_round:
         out.update(verdict="round", why=(
             f"the other rig is round (ecc {out['observed_ecc']}) where a "
-            f"{rate:g}\"/min drift would give ecc {out['predicted_ecc']}"))
+            f"{rate:.1f}\"/min drift would give ecc {out['predicted_ecc']}"))
     else:
         out.update(verdict="too_small", why="the drift would not show on the other rig")
     return out
