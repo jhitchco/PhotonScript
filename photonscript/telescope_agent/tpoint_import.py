@@ -22,7 +22,9 @@ parsed values):
     :EQUAT
     +31 54 25 2026 10 15 30.81 870.00 1300.00  0.50 0.5500 0.0065
         latitude d m s, date y m d, then temperature, pressure, height,
-        humidity, wavelength, lapse rate (copied from the newest real file)
+        humidity, wavelength, lapse rate (copied from the newest real file;
+        temperature, pressure and humidity from the observatory weather at
+        collection time when there is one, see site_from_weather)
     21 42 47.7967 +30 47 28.879 09 38 53.4448 +149 58 37.056  21 10.118
         one line per sample: true RA h m s.ssss, true Dec d m s.sss,
         observed RA, observed Dec, two spaces, sidereal time h m.mmm
@@ -61,6 +63,12 @@ DEFAULT_OPTIONS = ("NODA", "EQUAT")
 # temperature, pressure, height, humidity, wavelength, lapse rate as the
 # 2026-10-16 file has them (used only when no real file is found)
 DEFAULT_SITE_REST = "30.81 870.00 1300.00  0.50 0.5500 0.0065"
+# AARO (~1250 m): the station pressure TPoint is given when the weather
+# station reports none
+DEFAULT_PRESSURE_MB = 870.0
+# a reading this far from the pressure the site height implies is taken as
+# sea level corrected (or broken) and not used
+PRESSURE_TOL_MB = 60.0
 EOL = "\r\n"
 _FORBIDDEN_PARTS = ("ninashare",)
 
@@ -193,14 +201,89 @@ def reference_header(text: str | None) -> dict:
     return out
 
 
+def _finite(v) -> float | None:
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if math.isfinite(x) else None
+
+
+def site_from_weather(info: dict | None, height_m: float = 1300.0) -> dict | None:
+    """NINA #1's weather device info (GET /equipment/weather/info, the AARO
+    station; ASCOM ObservingConditions: Temperature is the outside air,
+    never SkyTemperature) -> {"temp_c", "pressure_mb", "humidity",
+    "note"}: NaN / missing values are None, humidity as TPoint's 0..1
+    fraction (NINA reports percent), a pressure far from the one the site
+    height implies is dropped (a sea level reading). None when the device
+    is not connected or there is no usable temperature."""
+    if not isinstance(info, dict):
+        return None
+    if isinstance(info.get("Response"), dict):
+        info = info["Response"]
+    if info.get("Connected") is False:
+        return None
+    t = _finite(info.get("Temperature"))
+    if t is None or not -60.0 < t < 60.0:
+        return None
+    notes = []
+    p = _finite(info.get("Pressure"))
+    if p is not None:
+        want = 1013.25 * math.exp(-float(height_m) / 8400.0)
+        if abs(p - want) > PRESSURE_TOL_MB:
+            notes.append(f"station pressure {p:.1f} mB ignored (expected ~{want:.0f} "
+                         f"at {height_m:.0f} m)")
+            p = None
+    h = _finite(info.get("Humidity"))
+    if h is not None:
+        h = h / 100.0 if h > 1.0 else h
+        if not 0.0 <= h <= 1.0:
+            h = None
+    return {"temp_c": t, "pressure_mb": p, "humidity": h, "note": "; ".join(notes)}
+
+
+def site_rest(ref: dict | None = None, weather: dict | None = None) -> tuple[str, str]:
+    """(the site line after the date, which source). Without weather the
+    reference file's values are copied unchanged ("copied ..."); with it
+    the temperature, pressure (else DEFAULT_PRESSURE_MB) and humidity (else
+    the copied one) are the station's at collection time, height,
+    wavelength and lapse rate stay copied."""
+    ref = ref or {}
+    rest = ref.get("site_rest") or DEFAULT_SITE_REST
+    src = ("copied from the newest TPoint input file" if ref.get("site_rest")
+           else "copied defaults (no TPoint input file)")
+    if not weather or weather.get("temp_c") is None:
+        return rest, src
+    tok = rest.split()
+    if len(tok) != 6:
+        tok = DEFAULT_SITE_REST.split()
+    t = float(weather["temp_c"])
+    p = weather.get("pressure_mb")
+    h = weather.get("humidity")
+    hum = float(h) if h is not None else (_finite(tok[3]) or 0.5)
+    out = (f"{t:.2f} {(p if p is not None else DEFAULT_PRESSURE_MB):.2f} {tok[2]} "
+           f"{hum:5.2f} {tok[4]} {tok[5]}")
+    parts = [f"temperature {t:.2f} C",
+             (f"pressure {p:.2f} mB" if p is not None else
+              f"pressure {DEFAULT_PRESSURE_MB:.2f} mB (default)"),
+             (f"humidity {hum:.2f}" if h is not None else
+              f"humidity {hum:.2f} (copied)")]
+    src = "NINA #1 weather at collection: " + ", ".join(parts)
+    if weather.get("note"):
+        src += f" ({weather['note']})"
+    return out, src
+
+
 def header_lines(date: datetime, lat_deg: float | None = None,
-                 ref: dict | None = None, caption: str | None = None) -> list[str]:
+                 ref: dict | None = None, caption: str | None = None,
+                 weather: dict | None = None) -> list[str]:
     """The five header lines: comment, caption, :NODA / :EQUAT (or the
-    reference's options), the site line for `date`."""
+    reference's options), the site line for `date` (site_rest: the
+    observatory weather when given, else the reference's values)."""
     ref = ref or {}
     lat = fmt_lat(lat_deg) if lat_deg is not None else (ref.get("lat") or fmt_lat(31.9069))
     lat = " ".join(lat.split())
-    rest = ref.get("site_rest") or DEFAULT_SITE_REST
+    rest, _src = site_rest(ref, weather)
     opts = ref.get("options") or list(DEFAULT_OPTIONS)
     return ([ref.get("version_line") or DEFAULT_VERSION_LINE,
              caption or ref.get("caption") or DEFAULT_CAPTION]

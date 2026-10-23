@@ -1232,3 +1232,85 @@ def test_pilot_direct_af_advise_and_switch(tmp_path):
           other_rig_sharp=True)
     _tick(cfg2, armer, io2, "04:21")
     assert "nina1_autofocus" not in io2.calls and "night_pilot_af is off" in io2.pushes[-1][1]
+
+
+# ------------------------------------------------------------- optics cause
+
+def _optics_diag(cfg, hm, confidence="high", rig="rc16"):
+    row = _diag(cfg, hm, "optics", "check_optics", confidence=confidence, rig=rig,
+                ecc=0.62, exp_s=300, optics_check={
+                    "verdict": "optics", "confidence": confidence,
+                    "reasons": ["trail does not scale with exposure"]})
+    return row
+
+
+def test_decide_optics_never_shortens(tmp_path):
+    cfg = _cfg(tmp_path)
+    ctx = {"guided": False, "phd2": "Stopped", "exp_s": 300}
+    d = npil.norm_diag({"t": "2026-10-13T04:00:00Z", "kind": "sub_doctor",
+                        "rig": "rc16", "cause": "optics", "confidence": "high",
+                        "evidence": {"shared_mount": True,
+                                     "trail": {"rate_arcsec_min": 0.4}},
+                        "suggested_action": {"id": "check_optics"}})
+    assert d["family"] == "optics"
+    dec = npil.decide(cfg, d, ctx)
+    assert dec["kind"] == "optics" and dec["action"] is None
+    assert dec["what"] == ("RC16 star elongation looks optical (focus / tilt / "
+                           "collimation); shorter subs will not help")
+    low = npil.decide(cfg, {**d, "confidence": "low"}, ctx)
+    assert low["kind"] == "annotate" and low["action"] is None
+
+
+def test_optics_one_push_per_rig_per_night_and_advice(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(guided=False), FakeIO(cfg, phd2="Stopped")
+    proj = _heart(io)
+    _tonight_bad_subs(cfg)
+    for hm in ("04:23", "04:40", "05:10"):
+        _optics_diag(cfg, hm)
+        _tick(cfg, armer, io, hm)
+    assert armer.calls == [] and "phd2_stop" not in io.calls
+    assert io.store().projects[proj.id].exposure_overrides is None
+    assert len(io.pushes) == 1
+    pri, msg = io.pushes[0]
+    assert pri == 0
+    assert msg.startswith("Night pilot: RC16 star elongation looks optical (focus "
+                          "/ tilt / collimation); shorter subs will not help. ")
+    assert "rc16 optics: ecc 0.62" in msg
+    ev = _pilot_events(cfg, "optics")
+    assert len(ev) == 1 and ev[0]["cause"] == "optics"
+    s = npil.status(cfg, NIGHT)
+    assert s["actions"] == [] and len(s["optics"]) == 1
+    assert s["advice"][0].endswith("shorter subs will not help (rc16 optics: ecc 0.62)")
+    ml = npil.morning_lines(cfg, NIGHT)
+    assert any(x.startswith("Night pilot advice: ") and "optical" in x for x in ml)
+    # the other rig gets its own push
+    _optics_diag(cfg, "05:20", rig="piggy")
+    _tick(cfg, armer, io, "05:20")
+    assert len(io.pushes) == 2 and "star elongation looks optical" in io.pushes[1][1]
+
+
+def test_optics_holds_a_sub_watch_shorten(tmp_path):
+    cfg = _cfg(tmp_path)
+    st = {"night": NIGHT, "last_cause": {"rc16": "optics"}}
+    armer = FakeArmer(guided=False)
+    d = {"rig": "rc16", "family": "tracking", "cause": "trailing"}
+    ctx = {"guided": False, "exp_s": 300, "subs": [], "running": None}
+    for action in ("shorten_subs", "limit_subs"):
+        why = npil.guard(cfg, armer, st, d, {"action": action, "params": {}},
+                         ctx, T("04:30"))
+        assert why and "optical" in why
+    st["last_cause"]["rc16"] = "tracking"
+    why = npil.guard(cfg, armer, st, d, {"action": "shorten_subs", "params": {}},
+                     ctx, T("04:30"))
+    assert not why or "optical" not in why
+
+
+def test_low_confidence_optics_annotates_only(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = FakeArmer(), FakeIO(cfg, phd2="Stopped")
+    _optics_diag(cfg, "04:23", confidence="low")
+    _tick(cfg, armer, io, "04:24")
+    assert io.pushes == [] and armer.calls == []
+    assert len(_pilot_events(cfg, "annotate")) == 1
+    assert npil.load_state(cfg, NIGHT)["last_cause"]["rc16"] == "optics_low"

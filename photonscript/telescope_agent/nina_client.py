@@ -191,6 +191,12 @@ class NinaClient:
         alerts all night."""
         return _unwrap(await self._get("/equipment/safetymonitor/info"))
 
+    async def get_weather_info(self) -> dict:
+        """The weather device (the AARO station): Connected, Temperature,
+        Pressure, Humidity, ... (NaN when the station has no reading).
+        ninaAPI v2 /equipment/weather/info, {"Response": {...}}."""
+        return _unwrap(await self._get("/equipment/weather/info"))
+
     async def list_safety_devices(self) -> list[dict]:
         """Every safety monitor NINA's chooser offers (Id, DisplayName, ...)."""
         r = _unwrap(await self._get("/equipment/safetymonitor/list-devices"))
