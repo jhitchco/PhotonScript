@@ -5230,3 +5230,25 @@ def ledger_import_cmd(
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("tpoint-import-merge")
+def tpoint_import_merge(
+    go: bool = typer.Option(False, "--go", help="Write the merged file "
+                            "(default: list what would be merged)"),
+):
+    """Merge every TPoint import file in C:\astro\tpoint_import into one
+    <stamp>_merged.dat: TPoint's Import Pointing Data replaces the data on
+    each import, so all samples must come in one file."""
+    from pathlib import Path as _P
+    from photonscript.telescope_agent import tpoint_import as ti
+    d = _P(ti.DEFAULT_IMPORT_DIR)
+    files = sorted(f for f in d.glob("*.dat") if not f.name.endswith("_merged.dat"))
+    for f in files:
+        n = sum(1 for ln in f.read_text(encoding="utf-8", errors="replace").splitlines()[ti.HEADER_LINES:] if ln.strip())
+        console.print(f"  {f.name}: {n} sample(s)", markup=False)
+    if not go:
+        console.print(f"dry run: {len(files)} file(s); --go writes the merged file", markup=False)
+        return
+    r = ti.merge_dir()
+    console.print(f"merged {len(r['files'])} file(s), {r['samples']} sample(s) -> {r['out']}", markup=False)

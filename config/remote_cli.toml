@@ -187,3 +187,8 @@ write_flags = ["--go"]        # live run (approved for remote use by Jeremy 2026
                               # console input). Keep --points small so a run ends well
                               # inside --remote-timeout (a killed job would not hand the
                               # camera back).
+
+[commands.tpoint-import-merge]
+class = "read"                # no flag: lists the import files and their sample counts
+flags = ["--go"]
+write_flags = ["--go"]        # writes <stamp>_merged.dat in the TPoint import folder only

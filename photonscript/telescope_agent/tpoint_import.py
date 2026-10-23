@@ -254,3 +254,39 @@ class ImportFile:
 def render(header: list[str], lines: list[str]) -> str:
     """The whole file as text (tests, dry runs)."""
     return "".join(x + EOL for x in [*header, *lines])
+
+
+HEADER_LINES = 5   # "!" version, caption, ":NODA", ":EQUAT", site line
+
+
+def merge_files(paths: list[str]) -> tuple[str, int]:
+    """One import file from several (TPoint's Import Pointing Data REPLACES
+    the data on each import, seen 2026-10-23, so the samples must arrive in
+    one file). Header from the first file, then every sample line of every
+    file in order. Returns (text, sample count)."""
+    if not paths:
+        raise ValueError("no files to merge")
+    header: list[str] = []
+    samples: list[str] = []
+    for i, p in enumerate(paths):
+        lines = Path(p).read_text(encoding="utf-8", errors="replace").splitlines()
+        if len(lines) < HEADER_LINES:
+            raise ValueError(f"{p}: shorter than the {HEADER_LINES}-line header")
+        if i == 0:
+            header = lines[:HEADER_LINES]
+        samples += [ln for ln in lines[HEADER_LINES:] if ln.strip()]
+    return render(header, samples), len(samples)
+
+
+def merge_dir(dir_: str = DEFAULT_IMPORT_DIR, stamp: str | None = None) -> dict:
+    """Merge every *_west.dat / *_east.dat in dir_ (oldest first, never an
+    earlier *_merged.dat) into <stamp>_merged.dat in the same folder."""
+    d = Path(dir_)
+    files = sorted(str(f) for f in d.glob("*.dat")
+                   if not f.name.endswith("_merged.dat"))
+    stamp = stamp or datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    out = d / f"{stamp}_merged.dat"
+    check_import_path(str(out))
+    text, n = merge_files(files)
+    out.write_text(text, encoding="utf-8", newline="")
+    return {"out": str(out), "files": files, "samples": n}
