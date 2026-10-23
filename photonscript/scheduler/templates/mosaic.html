@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" type="image/x-icon" href="/static/favicon.ico">
+    <title>PhotonScript - Mosaic Planner</title>
+    <link rel="stylesheet" href="/static/css/style.css?v={{ version }}">
+    <script src="/static/js/theme.js"></script>
+    <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
+    <style>
+        .mo-form { display: flex; flex-wrap: wrap; gap: 1rem; align-items: flex-end; margin-bottom: .8rem; }
+        .mo-field { display: flex; flex-direction: column; gap: .25rem; }
+        .mo-field label { font-size: .75rem; opacity: .7; }
+        .mo-field input, .mo-field select {
+            background: #0b1220; color: #e2e8f0; border: 1px solid #334155;
+            border-radius: 5px; padding: .4rem .6rem; font-family: inherit; width: 110px; }
+        .mo-field select { width: 170px; }
+        .mo-field input.wide { width: 190px; }
+        .mo-field input.narrow { width: 52px; }
+        .preset-row { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1rem; align-items:center; }
+        .grid-chip { cursor:pointer; padding:.3rem .75rem; border-radius:6px; font-size:.82rem;
+                     background:rgba(255,255,255,.06); border:1px solid #334155; color:#e2e8f0; }
+        .grid-chip.active { background:#1d4ed8; border-color:#1d4ed8; }
+        #moStage { position: relative; display: inline-block; margin-top: .5rem;
+                   background:#000; border-radius:8px; min-width: 320px; min-height: 120px; }
+        #moStage img { display: block; border-radius: 8px; max-width: 100%; }
+        #moStage svg { position: absolute; left: 0; top: 0; pointer-events: none; }
+        .mo-meta { font-size: .85rem; opacity: .8; margin-top: .5rem; }
+        .mo-warn { color: #fbbf24; font-size: .82rem; margin-top: .3rem; }
+        .mo-err { color: #f87171; font-size: .82rem; margin-top: .3rem; }
+        #moStatus { margin-left: .6rem; font-size: .9rem; }
+        .mo-list { display:grid; grid-template-columns:repeat(auto-fill,minmax(520px,1fr)); gap:1rem; }
+        .mo-item { background:rgba(255,255,255,.03); border-radius:8px; padding:.8rem; }
+        table.mo-panels { font-size:.8rem; border-collapse:collapse; margin-top:.4rem; }
+        table.mo-panels td, table.mo-panels th { padding:.15rem .5rem; text-align:left; }
+    </style>
+</head>
+<body>
+    {% set page_subtitle = "Mosaic Planner" %}
+    {% set active_page = "mosaic" %}
+    {% include "_header.html" %}
+
+    <main>
+        <section class="panel">
+            <h2>Plan a mosaic goal</h2>
+            <p class="mo-meta">A mosaic is one goal made of RC16 panel goals. Each panel has its own
+               coordinates, filter plan and progress; the planner finishes the panels <b>in order</b>
+               (P1 first) and hands the mount to the next panel when tonight's share of the current one
+               is shot. Neither rig has a rotator, so the panels are laid out at the camera's own fixed
+               angle ("camera" = measured from the RC16 plate solves). A galaxy-aligned grid needs the
+               camera turned by hand first. The Piggy-600 rides along on its own goal (the companion):
+               its subs during a panel credit that goal.</p>
+
+            <div class="mo-form">
+                <div class="mo-field"><label>Catalog target</label>
+                    <input id="moCat" class="wide" value="M31" placeholder="M31, NGC 7000 ..."></div>
+                <button class="btn btn-secondary" id="moSuggest">Suggest</button>
+                <div class="mo-field"><label>Name</label><input id="moName" class="wide" value="M31 Core"></div>
+                <div class="mo-field"><label>RA (hours)</label><input id="moRa" type="number" step="0.0001" value="0.712306"></div>
+                <div class="mo-field"><label>Dec (degrees)</label><input id="moDec" type="number" step="0.0001" value="41.269167"></div>
+                <div class="mo-field"><label>Overlap %</label><input id="moOv" class="narrow" type="number" min="0" max="50" value="15"></div>
+                <div class="mo-field"><label>Grid angle</label>
+                    <select id="moRotMode">
+                        <option value="camera">camera (measured)</option>
+                        <option value="custom">custom angle</option>
+                    </select></div>
+                <div class="mo-field"><label>Custom PA (deg)</label><input id="moRot" class="narrow" type="number" min="0" max="360" step="0.1" value="0" disabled></div>
+                <div class="mo-field"><label>Major axis PA (info)</label><input id="moMajor" class="narrow" type="number" step="1" value="35"></div>
+            </div>
+            <div class="mo-form">
+                <div class="mo-field"><label>Hours / panel</label><input id="moHours" class="narrow" type="number" min="0.5" max="60" step="0.5" value="4"></div>
+                <div class="mo-field"><label>Mix % (L R G B Ha OIII SII)</label>
+                    <div style="display:flex;gap:.25rem;">
+                        <input class="narrow mo-mix" data-f="L" value="50">
+                        <input class="narrow mo-mix" data-f="R" value="17">
+                        <input class="narrow mo-mix" data-f="G" value="17">
+                        <input class="narrow mo-mix" data-f="B" value="17">
+                        <input class="narrow mo-mix" data-f="Ha" value="0">
+                        <input class="narrow mo-mix" data-f="OIII" value="0">
+                        <input class="narrow mo-mix" data-f="SII" value="0">
+                    </div></div>
+                <div class="mo-field"><label>Sub length (s, blank = defaults)</label><input id="moExp" class="narrow" type="number" min="10" value="300"></div>
+                <div class="mo-field"><label>Type</label><input id="moType" value="galaxy"></div>
+                <div class="mo-field"><label>Piggy-600 companion goal</label><input id="moComp" class="wide" value="M 31"></div>
+                <div class="mo-field"><label>Priority</label><input id="moPrio" class="narrow" type="number" min="0" max="100" value="50"></div>
+            </div>
+
+            <div class="preset-row">
+                <span style="opacity:.7;font-size:.8rem;">Grid (rows &times; cols):</span>
+                <span class="grid-chip" data-r="1" data-c="2">1&times;2</span>
+                <span class="grid-chip" data-r="2" data-c="1">2&times;1</span>
+                <span class="grid-chip active" data-r="2" data-c="2">2&times;2</span>
+                <span class="grid-chip" data-r="2" data-c="3">2&times;3</span>
+                <span class="grid-chip" data-r="3" data-c="2">3&times;2</span>
+                <span class="grid-chip" data-r="3" data-c="3">3&times;3</span>
+                <input id="moRows" type="hidden" value="2"><input id="moCols" type="hidden" value="2">
+                <button class="btn btn-primary" id="moPreview" style="margin-left:1rem;">Preview</button>
+                <button class="btn btn-secondary" id="moDry">Dry run</button>
+                <button class="btn btn-secondary" id="moCreate">Create mosaic goal</button>
+                <span id="moStatus"></span>
+            </div>
+            <div id="moMsgs"></div>
+            <div id="moStage"></div>
+            <div class="mo-meta" id="moSpan"></div>
+            <div id="moDryOut" class="mo-meta"></div>
+        </section>
+
+        <section class="panel">
+            <h2>Mosaic goals</h2>
+            <div id="moList" class="mo-list"><p class="empty-state">Loading&hellip;</p></div>
+        </section>
+    </main>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+let planTimer = null, curImg = null;
+
+function spec() {
+    const mix = {};
+    document.querySelectorAll('.mo-mix').forEach(i => {
+        const v = parseFloat(i.value);
+        if (v > 0) mix[i.dataset.f] = v;
+    });
+    const custom = $('moRotMode').value === 'custom';
+    const s = {
+        name: $('moName').value.trim(), ra_hours: parseFloat($('moRa').value),
+        dec_degrees: parseFloat($('moDec').value), rows: parseInt($('moRows').value),
+        cols: parseInt($('moCols').value), overlap_pct: parseFloat($('moOv').value),
+        rotation: custom ? parseFloat($('moRot').value) : 'camera',
+        hours_per_panel: parseFloat($('moHours').value),
+        filter_mix: Object.keys(mix).length ? mix : null,
+        exposure_s: $('moExp').value ? parseFloat($('moExp').value) : null,
+        object_type: $('moType').value, companion: $('moComp').value.trim() || null,
+        priority: parseInt($('moPrio').value || '50'),
+    };
+    const major = $('moMajor').value;
+    if (major !== '') s.major_axis_pa = parseFloat(major);
+    return s;
+}
+
+function planSoon() { clearTimeout(planTimer); planTimer = setTimeout(preview, 200); }
+
+function msgs(warnings, errors, rot) {
+    let h = '';
+    if (rot) {
+        h += '<div class="mo-meta">Grid angle ' + rot.pa_deg + '&deg; (' + esc(rot.source) + ')' +
+            (rot.major_axis ? ' &middot; major axis PA ' + rot.major_axis.major_axis_pa +
+             '&deg; needs the camera at ' + rot.major_axis.camera_pa_needed + '&deg;' : '') + '</div>';
+        if (rot.major_axis && rot.major_axis.note)
+            h += '<div class="mo-warn">' + esc(rot.major_axis.note) + '</div>';
+    }
+    (warnings || []).forEach(w => { h += '<div class="mo-warn">' + esc(w) + '</div>'; });
+    (errors || []).forEach(e => { h += '<div class="mo-err">' + esc(e) + '</div>'; });
+    $('moMsgs').innerHTML = h;
+}
+
+function draw(d, img) {
+    const stage = $('moStage');
+    stage.querySelectorAll('svg').forEach(el => el.remove());
+    const W = img.clientWidth, H = img.clientHeight, fov = d.preview.fov_w_deg;
+    const s = W / fov, cx = W / 2, cy = H / 2;
+    let svg = '<svg width="' + W + '" height="' + H + '">';
+    svg += '<polygon points="' + MosaicPreview.points(d.piggy.corners, cx, cy, s) +
+        '" fill="none" stroke="#f472b6" stroke-dasharray="6 4" stroke-width="1.5"/>';
+    d.layout.panels.forEach(p => {
+        svg += '<polygon points="' + MosaicPreview.points(p.corners, cx, cy, s) +
+            '" fill="rgba(34,211,238,.07)" stroke="#22d3ee" stroke-width="2"/>' +
+            '<text x="' + (cx - p.east_deg * s).toFixed(1) + '" y="' + (cy - p.north_deg * s + 4).toFixed(1) +
+            '" fill="#22d3ee" font-size="13" font-weight="700" text-anchor="middle">P' + p.panel + '</text>';
+    });
+    svg += '</svg>';
+    stage.insertAdjacentHTML('beforeend', svg);
+    const L = d.layout;
+    $('moSpan').innerHTML = '<b>' + L.panels.length + ' panels</b> &middot; each ' +
+        d.rc16_fov_arcmin[0] + '&prime; &times; ' + d.rc16_fov_arcmin[1] + '&prime; (RC16) &middot; mosaic ' +
+        L.span_w_arcmin + '&prime; &times; ' + L.span_h_arcmin + '&prime; &middot; overlap ' + L.overlap_pct +
+        '% &middot; capture order P1 &rarr; P' + L.panels.length + ' &middot; dashed pink = Piggy-600 frame (' +
+        d.piggy.w_arcmin + '&prime; &times; ' + d.piggy.h_arcmin + '&prime;) on the mosaic center; it shifts with ' +
+        'each panel &middot; ' + esc(d.preview.credit);
+}
+
+async function preview() {
+    const s = spec();
+    const q = new URLSearchParams({name: s.name || 'Mosaic', ra_hours: s.ra_hours,
+        dec_degrees: s.dec_degrees, rows: s.rows, cols: s.cols, overlap_pct: s.overlap_pct,
+        rotation: s.rotation});
+    if (s.major_axis_pa != null) q.set('major_axis_pa', s.major_axis_pa);
+    $('moStatus').textContent = 'planning...';
+    let d;
+    try { d = await (await fetch('/api/mosaics/preview?' + q)).json(); }
+    catch (e) { $('moStatus').textContent = 'error'; return; }
+    $('moStatus').textContent = '';
+    msgs(d.rotation.warnings, [], d.rotation);
+    const stage = $('moStage');
+    let img = stage.querySelector('img');
+    if (!img) { img = document.createElement('img'); img.alt = 'DSS2 sky preview'; stage.appendChild(img); }
+    if (d.preview.url !== curImg) {
+        curImg = d.preview.url;
+        img.onload = () => draw(d, img);
+        img.src = d.preview.url;
+    } else {
+        draw(d, img);
+    }
+}
+
+async function create(dry) {
+    const body = Object.assign(spec(), {dry_run: !!dry});
+    if (!dry && !confirm('Create the mosaic goal "' + body.name + '" (' + body.rows * body.cols +
+                         ' panel goals)?')) return;
+    $('moStatus').textContent = dry ? 'dry run...' : 'creating...';
+    const r = await fetch('/api/mosaics', {method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+    const d = await r.json();
+    msgs(d.warnings, d.errors, d.rotation);
+    $('moStatus').textContent = r.ok ? (dry ? 'dry run ok (nothing saved)'
+        : 'created ' + (d.created || []).length + ' panel goals') : 'refused';
+    $('moDryOut').innerHTML = (d.panels || []).map(p => esc(p.name) + ': RA ' +
+        p.ra_hours.toFixed(4) + 'h Dec ' + p.dec_degrees.toFixed(4) + '&deg; &middot; ' +
+        p.plans.map(e => e.filter + ' ' + e.count + '&times;' + e.exposure_s + 's').join(', '))
+        .join('<br>') + (d.companion ? '<br>Piggy-600 companion: ' + esc(d.companion.name) : '');
+    if (r.ok && !dry) loadList();
+}
+
+async function suggest() {
+    const r = await fetch('/api/mosaics/suggest?name=' + encodeURIComponent($('moCat').value));
+    const d = await r.json();
+    if (!r.ok) { msgs([], [d.detail]); return; }
+    $('moName').value = d.name; $('moRa').value = d.ra_hours; $('moDec').value = d.dec_degrees;
+    $('moOv').value = d.overlap_pct; $('moHours').value = d.hours_per_panel;
+    $('moRows').value = d.rows; $('moCols').value = d.cols;
+    document.querySelectorAll('.grid-chip').forEach(c => c.classList.toggle('active',
+        +c.dataset.r === d.rows && +c.dataset.c === d.cols));
+    document.querySelectorAll('.mo-mix').forEach(i => {
+        i.value = d.filter_mix ? (d.filter_mix[i.dataset.f] || 0) : 0; });
+    $('moExp').value = d.exposure_s || '';
+    $('moType').value = d.object_type || '';
+    $('moComp').value = d.companion || '';
+    $('moMajor').value = d.major_axis_pa != null ? d.major_axis_pa : '';
+    $('moPrio').value = d.priority || 50;
+    $('moRotMode').value = 'camera'; $('moRot').disabled = true;
+    $('moDryOut').textContent = d.why || '';
+    preview();
+}
+
+async function loadList() {
+    let ms = [];
+    try { ms = (await (await fetch('/api/mosaics')).json()).mosaics || []; } catch (e) { /* offline */ }
+    $('moList').innerHTML = ms.length ? ms.map(m =>
+        '<div class="mo-item"><b>' + esc(m.name) + '</b> <span class="bd">' + m.rows + '&times;' + m.cols +
+        ' &middot; ' + m.span_w_arcmin + '&prime; &times; ' + m.span_h_arcmin + '&prime; &middot; PA ' +
+        m.pa_deg + '&deg; &middot; ' + m.done_h + ' / ' + m.goal_h + ' h (' + m.pct + '%)' +
+        (m.next_panel ? ' &middot; next ' + esc(m.next_panel) : '') + '</span>' +
+        '<div style="display:flex;gap:.5rem;margin-top:.4rem;flex-wrap:wrap;">' +
+        MosaicPreview.svg(m, {w: 240, h: 140}) + MosaicPreview.svg(m, {w: 240, h: 140, wide: true}) +
+        '</div><table class="mo-panels"><tr><th>Panel</th><th>RA</th><th>Dec</th><th>Done</th></tr>' +
+        m.panels.map(p => '<tr><td><a href="/target?name=' + encodeURIComponent(p.name) +
+            '" style="color:#7dd3fc;">' + esc(p.name) + '</a></td><td>' + p.ra_hours.toFixed(4) +
+            'h</td><td>' + p.dec_degrees.toFixed(4) + '&deg;</td><td>' + p.done_h.toFixed(1) + ' / ' +
+            p.goal_h.toFixed(1) + ' h</td></tr>').join('') + '</table>' +
+        '<div class="bd" style="margin-top:.3rem;">grid angle source: ' + esc(m.pa_source || '?') +
+        (m.companion ? ' &middot; Piggy-600 companion ' + esc(m.companion.name) : '') + '</div></div>'
+    ).join('') : '<p class="empty-state">No mosaic goals yet.</p>';
+}
+
+document.querySelectorAll('.grid-chip').forEach(chip => {
+    chip.onclick = () => {
+        document.querySelectorAll('.grid-chip').forEach(c => c.classList.remove('active'));
+        chip.classList.add('active');
+        $('moRows').value = chip.dataset.r;
+        $('moCols').value = chip.dataset.c;
+        preview();
+    };
+});
+$('moRotMode').onchange = () => { $('moRot').disabled = $('moRotMode').value !== 'custom'; planSoon(); };
+['moOv', 'moRa', 'moDec', 'moRot', 'moMajor'].forEach(id => $(id).oninput = planSoon);
+$('moPreview').onclick = preview;
+$('moDry').onclick = () => create(true);
+$('moCreate').onclick = () => create(false);
+$('moSuggest').onclick = suggest;
+preview();
+loadList();
+</script>
+    {% include "_footer.html" %}
+</body>
+</html>

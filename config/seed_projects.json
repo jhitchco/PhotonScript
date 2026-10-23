@@ -1,0 +1,21 @@
+{
+  "seed-ngc6543-catseye": {
+    "id": "seed-ngc6543-catseye",
+    "target": {
+      "name": "Cat's Eye Nebula",
+      "catalog_id": "NGC 6543",
+      "ra_hours": 17.975944,
+      "dec_degrees": 66.633056,
+      "constellation": "Draco",
+      "object_type": "planetary nebula",
+      "tier": "best",
+      "notes": "High-surface-brightness planetary nebula with a bright core and faint outer halo — HDR short subs protect the core while long subs pull the halo.",
+      "recommended_total_hours": 10.0
+    },
+    "priority": 70,
+    "budget_hours": 15.0,
+    "filter_mix": {"Ha": 50, "OIII": 50, "SII": 0},
+    "hdr": {"Ha": 60, "OIII": 60},
+    "active": true
+  }
+}

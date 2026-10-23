@@ -62,7 +62,10 @@
         setText('imagesTonight', state.images_captured_tonight || 0);
 
         if (state.guiding) {
-            setText('guidingRms', (state.guiding.rms_total_arcsec || 0).toFixed(2) + '"');
+            const g = state.guiding;  // PS-70: label pixels when the scale is unknown
+            setText('guidingRms', (g.units === 'px' || g.rms_total_arcsec == null)
+                ? (g.rms_total_px || 0).toFixed(2) + ' px'
+                : g.rms_total_arcsec.toFixed(2) + '"');
         }
 
         if (state.camera_temp_c !== null && state.camera_temp_c !== undefined) {
