@@ -127,6 +127,88 @@ def test_header_comes_from_the_reference_file_and_defaults():
     assert ti.DEFAULT_SITE_REST in _real(FIX / "2026-10-16" / "TPoint base run in.dat")
 
 
+NAN = float("nan")
+WX = {"Connected": True, "Temperature": 12.345, "Pressure": 868.4,
+      "Humidity": 41.0, "DewPoint": -0.5, "SkyTemperature": -20.0}
+
+
+def test_site_from_weather_units_nan_and_sea_level():
+    w = ti.site_from_weather({"Response": WX})
+    assert w == {"temp_c": 12.345, "pressure_mb": 868.4, "humidity": 0.41, "note": ""}
+    # NaN pressure / humidity: dropped; NaN or missing temperature: no weather
+    w = ti.site_from_weather({**WX, "Pressure": NAN, "Humidity": "NaN"})
+    assert (w["pressure_mb"], w["humidity"]) == (None, None)
+    assert ti.site_from_weather({**WX, "Temperature": NAN}) is None
+    assert ti.site_from_weather({**WX, "Temperature": None}) is None
+    assert ti.site_from_weather({**WX, "Connected": False}) is None
+    assert ti.site_from_weather(None) is None and ti.site_from_weather({}) is None
+    # a sea level reading is not the station pressure at ~1250 m
+    w = ti.site_from_weather({**WX, "Pressure": 1013.2})
+    assert w["pressure_mb"] is None and "1013.2 mB ignored" in w["note"]
+
+
+def test_site_line_uses_weather_else_copied_values():
+    ref = ti.reference_header(_real())
+    day = datetime(2026, 10, 23)
+    rest, src = ti.site_rest(ref, None)
+    assert rest == "29.31 870.00 1300.00  0.50 0.5500 0.0065"
+    assert src.startswith("copied from the newest TPoint input file")
+    wx = ti.site_from_weather(WX)
+    h = ti.header_lines(day, ref=ref, weather=wx)
+    assert h[-1] == "+31 54 25 2026 10 23 12.35 868.40 1300.00  0.41 0.5500 0.0065"
+    assert h[:4] == ti.header_lines(day, ref=ref)[:4]
+    rest, src = ti.site_rest(ref, wx)
+    assert src.startswith("NINA #1 weather at collection: temperature 12.35 C, "
+                          "pressure 868.40 mB, humidity 0.41")
+    # no station pressure: 870 mB; no humidity: the copied one
+    wx = ti.site_from_weather({**WX, "Pressure": NAN, "Humidity": NAN,
+                               "Temperature": -3.2})
+    h = ti.header_lines(day, ref=ref, weather=wx)
+    assert h[-1] == "+31 54 25 2026 10 23 -3.20 870.00 1300.00  0.50 0.5500 0.0065"
+    assert "870.00 mB (default)" in ti.site_rest(ref, wx)[1]
+    # an older file's 1000 mB is not kept once the weather is used
+    old = {**ref, "site_rest": "32.56 1000.00 1300.00  0.50 0.5500 0.0065"}
+    assert ti.header_lines(day, ref=old, weather=wx)[-1].split()[7] == "870.00"
+    assert ti.header_lines(day, ref=old)[-1].split()[7] == "1000.00"
+
+
+def _lines(raw: str) -> list[str]:
+    return raw.split("\r\n")
+
+
+def test_import_run_writes_the_weather_site_line_and_logs_the_source(tmp_path):
+    res, sky, nina, out, *_, imp = _run(tmp_path, weather=lambda: {"Response": WX})
+    assert res["status"] == "done", res["reason"]
+    raw = Path(imp).read_bytes().decode("ascii")
+    site = _lines(raw)[4]
+    assert site == "+31 54 25 2026 10 15 12.35 868.40 1300.00  0.41 0.5500 0.0065"
+    assert res["site_source"].startswith("NINA #1 weather at collection")
+    assert any("TPoint import site line: " + site in x for x in out)
+    import csv as _csv
+    with open(tmp_path / "runs" / "x_tpoint_autocal.csv", newline="") as fh:
+        rows = list(_csv.DictReader(fh))
+    assert len(rows) == 3
+    assert all(r["site_source"] == res["site_source"] for r in rows)
+    # the sample lines are the same as without weather
+    res2, *_, imp2 = _run(tmp_path / "b")
+    raw2 = Path(imp2).read_bytes().decode("ascii")
+    assert _lines(raw)[5:] == _lines(raw2)[5:]
+    assert res2["site_source"].startswith("copied from the newest TPoint input file")
+    assert _lines(raw2)[4].endswith(" 29.31 870.00 1300.00  0.50 0.5500 0.0065")
+
+
+def test_import_run_weather_read_failure_falls_back(tmp_path):
+    def boom():
+        raise OSError("NINA #1 down")
+    res, *_, imp = _run(tmp_path, weather=boom)
+    assert res["status"] == "done", res["reason"]
+    assert res["site_source"].startswith("copied from")
+    raw = Path(imp).read_bytes().decode("ascii")
+    assert _lines(raw)[4].endswith(" 29.31 870.00 1300.00  0.50 0.5500 0.0065")
+    res, *_, imp = _run(tmp_path / "nan", weather=lambda: {**WX, "Temperature": NAN})
+    assert res["site_source"].startswith("copied from")
+
+
 def test_import_path_refuses_thesky_and_ninashare(tmp_path):
     ok = ti.import_path(ti.DEFAULT_IMPORT_DIR, "20261021T030000Z", "west")
     assert ok == r"C:\astro\tpoint_import\20261021T030000Z_west.dat"
@@ -211,7 +293,7 @@ class ImportSky(FakeSky):
 
 def _run(tmp_path, solver="imagelink", il=lambda n: True, astap=None,
          mount_ok=True, import_path=None, ask_answers=None, ref=True,
-         csv_name="x_tpoint_autocal.csv", roots=()):
+         csv_name="x_tpoint_autocal.csv", roots=(), weather=None):
     clock = Clock()
     files = Files(561)
     sky = ImportSky(files, il=il, mount_ok=mount_ok)
@@ -236,7 +318,7 @@ def _run(tmp_path, solver="imagelink", il=lambda n: True, astap=None,
                     ask=ask, say=out.append, sleep=clock.sleep, mono=clock.mono,
                     now=clock.now, copy=lambda s, d: None,
                     astap=fake_astap, import_ref=(lambda: _real()) if ref else None,
-                    forbidden_roots=list(roots))
+                    forbidden_roots=list(roots), weather=weather)
     opts = tal.Opts(csv_path=str(tmp_path / "runs" / csv_name),
                     backup_root=str(tmp_path / "bk"), solver=solver, import_path=imp)
     res = tal.run_loop(_cfg(tmp_path), _PTS, deps, opts)

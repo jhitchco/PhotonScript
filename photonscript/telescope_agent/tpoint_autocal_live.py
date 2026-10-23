@@ -78,7 +78,8 @@ CSV_FIELDS = ["utc", "point", "of", "side", "alt", "az", "ha_h", "dec_deg",
               "mount_ra_h", "mount_dec_d", "mount_alt", "mount_az",
               "mount_lst_h", "mount_jd", "mount_ha_h", "through_pole",
               "header_pierside", "true_ra_app_h", "true_dec_app_d",
-              "import_line", "samples_before", "samples_after", "added", "note"]
+              "import_line", "samples_before", "samples_after", "added", "note",
+              "site_source"]
 
 
 # ------------------------------------------------------------- helpers
@@ -291,6 +292,9 @@ class NinaLink:
     def safety(self) -> dict:
         return self._call("get_safety_info")
 
+    def weather(self) -> dict:
+        return self._call("get_weather_info")
+
 
 class SchedulerLink:
     """The scheduler's read-only GET endpoints."""
@@ -358,6 +362,9 @@ class Deps:
     # source), and the folders the import file must never be written in
     import_ref: Callable[[], str | None] | None = None
     forbidden_roots: list = field(default_factory=list)
+    # import mode: the observatory weather (NINA #1's weather device info)
+    # for the header's site line; None or a failed read = copied values
+    weather: Callable[[], dict | None] | None = None
 
 
 @dataclass
@@ -410,6 +417,7 @@ class LoopRun:
         self.confirmed = False
         self.busy = False             # a slew or exposure may be in flight
         self.importer: ti.ImportFile | None = None
+        self.site_source: str | None = None   # the header site line's source
         self.csv_file: str | None = opts.csv_path
 
     # -- small helpers
@@ -811,7 +819,15 @@ class LoopRun:
         local = _local_date(self.cfg, self.d.now())
         lat = None if (ref and ref.get("lat")) else float(
             getattr(self.cfg, "observatory_lat", 31.9069))
-        hdr = ti.header_lines(local, lat_deg=lat, ref=ref)
+        wx = None
+        if self.d.weather is not None:
+            try:
+                wx = ti.site_from_weather(self.d.weather())
+            except Exception as e:  # noqa: BLE001
+                self.v(f"NINA #1 weather not read ({e})")
+        _rest, self.site_source = ti.site_rest(ref, wx)
+        hdr = ti.header_lines(local, lat_deg=lat, ref=ref, weather=wx)
+        self.say(f"  TPoint import site line: {hdr[-1]} ({self.site_source})")
         self.importer = ti.ImportFile(self.o.import_path, hdr,
                                       self.d.forbidden_roots)
 
@@ -970,7 +986,7 @@ class LoopRun:
                 w = csv.DictWriter(fh, fieldnames=CSV_FIELDS, extrasaction="ignore")
                 if new:
                     w.writeheader()
-                w.writerow(self.rows[-1])
+                w.writerow({"site_source": self.site_source, **self.rows[-1]})
         except OSError as e:
             self.v(f"CSV write failed ({e})")
 
@@ -1038,6 +1054,7 @@ class LoopRun:
              "add": self.o.add, "solver": None if self.automap else self.o.solver,
              "import_file": None if self.automap else self.o.import_path,
              "import_lines": self.importer.lines if self.importer else 0,
+             "site_source": self.site_source,
              "rows": self.rows}
         self.say("")
         self.say("Summary")
@@ -1147,7 +1164,7 @@ def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
                 list_files=lambda: tf.list_files(config), ask=ask, say=say,
                 notify=notify, astap=lambda p, sc, h: astap_solve(config, p, sc, h),
                 fits_header=fits_header, import_ref=ref_text,
-                forbidden_roots=roots)
+                forbidden_roots=roots, weather=nina.weather)
 
 
 def newest_input_text(config, listing: dict | None = None) -> str | None:

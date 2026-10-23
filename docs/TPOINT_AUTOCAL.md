@@ -76,7 +76,13 @@ Paramount MX
 
 Comment line, caption and options copied from the newest real in.dat; the
 site line is latitude d m s, the local date, then temperature, pressure,
-height, humidity, wavelength, lapse rate copied from that file. One line
+height, humidity, wavelength, lapse rate copied from that file, except
+that temperature, pressure and humidity are the observatory weather (NINA
+#1's weather device, outside air temperature; NaN readings ignored) at
+collection time when it reads: no station pressure (or a sea level one) =
+870 mB (AARO ~1250 m). The source is in the run's output, the CSV column
+site_source and the summary (2026-10-23: the copied 29.31 C was not the
+night's air, TheSky's own dialog showed a 38.31 C dome sensor). One line
 per sample: true RA (h m s.ssss), true Dec (d m s.sss), observed RA,
 observed Dec, two spaces, sidereal time (h m.mmm, minutes right-aligned in
 6), a trailing space. CRLF, no END line. True = the solved J2000 centre as
