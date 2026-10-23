@@ -2045,6 +2045,11 @@ def frame_check_cmd(
     nina_url: str = typer.Option("", "--nina-url",
                                  help="Read this NINA's image history (default "
                                       "the rig's nina_base_url)"),
+    control: str = typer.Option("", "--control",
+                                help="With --compare: also measure this rig's "
+                                     "frames over the same time (rc16 | "
+                                     "piggyback) as a control for optics vs "
+                                     "tracking"),
     as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
 ):
     """Grade NINA's last frames, snapshots included, with the sub star QA:
@@ -2068,6 +2073,8 @@ def frame_check_cmd(
         import urllib.parse
         import urllib.request
         q = [("rig", rig), ("last", last), ("compare", str(compare).lower())]
+        if control:
+            q.append(("control", control))
         q += [("index", i) for i in (index or [])]
         if image_type:
             q.append(("type", image_type))
@@ -2079,13 +2086,14 @@ def frame_check_cmd(
                 rep = _json.loads(r.read().decode("utf-8"))
         except Exception as e:  # noqa: BLE001
             console.print(f"Could not read {u}: {e}\nOn the scope PC run:\n  "
-                          + fc.scope_command(rig, last, index, compare, image_type, pa),
+                          + fc.scope_command(rig, last, index, compare, image_type, pa,
+                                             control),
                           markup=False, highlight=False)
             raise typer.Exit(2)
     else:
         rep = fc.check(cfg, rig=rig, last=last, index=index or None,
                        image_type=image_type, pa=pa, compare=compare,
-                       base_url=nina_url)
+                       base_url=nina_url, control_rig=control)
     if as_json:
         print(_json.dumps(rep, indent=1, default=str))
     else:
