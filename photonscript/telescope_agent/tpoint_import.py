@@ -292,7 +292,7 @@ def merge_dir(dir_: str = DEFAULT_IMPORT_DIR, stamp: str | None = None) -> dict:
     return {"out": str(out), "files": files, "samples": n}
 
 
-DEFAULT_BACKUP_ROOT = r"C:stro	point_backup"
+DEFAULT_BACKUP_ROOT = r"C:\astro\tpoint_backup"
 OLD_DATA_NAMES = ("Super Model Indat.dat", "Super Model Outdat.dat")
 
 
