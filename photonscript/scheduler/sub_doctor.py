@@ -31,6 +31,14 @@ other rig exposed at the same time (sub_pairs) and the guiding context:
                      plate solve (RA drift / Dec drift / field rotation), a
                      trail rate from HFR + ecc, and the PS-169 drift-capped
                      sub length
+    optics           stars stretched but not by tracking
+                     (optics_vs_tracking, 2026-10-23): the trail does not
+                     grow with the exposure (this night and the last
+                     sub_doctor_scaling_nights nights, x1.8 apart in
+                     exposure, trail ratio under 1.3), or there is no
+                     common axis, or the other rig is round where the
+                     implied drift would show. Fix: focus, camera tilt,
+                     collimation; never shorter subs
     clouds           star counts down (gate, no stars, or under half the
                      night median) on both rigs (one rig only: dew or clouds)
     seeing           soft but round on both rigs at the same time
@@ -43,7 +51,7 @@ evidence {...numbers...}, fix (one sentence), action {id, text, auto,
 enabled}, secondary [other causes that also matched], t, file, n_window,
 n_bad}. Action ids: stop_phd2, recalibrate_phd2, reselect_guide_star,
 start_guiding, run_af, check_focuser, shorten_subs:<s>, check_tracking,
-check_pointing, wait_clouds, none. auto: an action the night pilot can
+check_optics, check_pointing, wait_clouds, none. auto: an action the night pilot can
 take; enabled: always False (kept for the event schema).
 
 record() keeps <data_dir>/sub_doctor/<night>.json (current diagnosis per rig,
@@ -75,8 +83,8 @@ from photonscript.shared.sub_time import parse_utc, sub_window
 logger = logging.getLogger(__name__)
 
 MODES = ("off", "observe", "alert")
-CAUSES = ("focuser", "guider_conflict", "pointing", "tracking", "clouds",
-          "seeing", "focus", "other")
+CAUSES = ("focuser", "guider_conflict", "pointing", "tracking", "optics",
+          "clouds", "seeing", "focus", "other")
 HIGH, MEDIUM, LOW = "high", "medium", "low"
 ACTIVE_GUIDE = ("guiding", "settling", "lost_star", "calibrating")
 # 2026-10-14: only these mean PHD2 is moving the mount. lost_star is
@@ -306,6 +314,76 @@ def _axial_spread(angles) -> float | None:
 # --------------------------------------------------------------------------
 # the diagnosis
 # --------------------------------------------------------------------------
+
+def scaling_rows(config, rig: str, subs: list[dict] | None,
+                 until: datetime | None = None) -> list[dict]:
+    """The rig's measured subs (tonight's up to `until`, plus any earlier
+    nights' in the same list) as optics_vs_tracking rows: {exp_s, filter,
+    trail_arcsec, ecc, t_min}. Test and excluded subs are left out."""
+    from photonscript.scheduler import optics_vs_tracking as ovt
+    scale = _scale(config, rig)
+    out = []
+    for r in subs or []:
+        if (r.get("rig") or "rc16") != rig or sp.is_test(r):
+            continue
+        w = sub_window(r)
+        if until is not None and w is not None and w[1] > until:
+            continue
+        st = sp.sub_state(r)
+        if st["excluded"] or st["no_stars"]:
+            continue
+        t = ovt.trail_arcsec(st["hfr"], st["ecc"], scale)
+        if t is None or not st["exp_s"]:
+            continue
+        out.append({"exp_s": st["exp_s"], "filter": st["filter"], "ecc": st["ecc"],
+                    "trail_arcsec": t,
+                    "t_min": (w[1] - datetime(2000, 1, 1)).total_seconds() / 60.0
+                    if w else None})
+    return out
+
+
+def from_ovt_fix(scaling: dict, oc: dict) -> str:
+    """The optics fix sentence, with the scaling numbers when known."""
+    from photonscript.scheduler import optics_vs_tracking as ovt
+    lead = ""
+    if scaling.get("verdict") == "flat":
+        lead = (f"Trail x{scaling['trail_ratio']:g} for x{scaling['exp_ratio']:g} "
+                f"exposure ({scaling['short']['exp_s']:g} s vs "
+                f"{scaling['long']['exp_s']:g} s). ")
+    ctrl = oc.get("control") or {}
+    if ctrl.get("verdict") == "round":
+        lead += f"The {ctrl.get('rig') or 'other rig'} on the same mount is round. "
+    return lead + ovt.OPTICS_FIX
+
+
+def optics_check(config, rig: str, bad: list[tuple[dict, dict]], rows: list[dict],
+                 *, axes, rs, rotation: bool, rate) -> dict:
+    """optics_vs_tracking over the window's bad subs: exposure scaling (the
+    window's filter first, else every filter), steadiness, the common axis
+    and the other rig as a control. {scaling, steady, axis, control,
+    verdict, confidence, reasons, against}."""
+    from photonscript.scheduler import optics_vs_tracking as ovt
+    filt = Counter(s.get("filter") for s, _ in bad).most_common(1)[0][0] if bad else None
+    same = [r for r in rows if r.get("filter") == filt]
+    scaling = ovt.exposure_scaling(same)
+    if scaling["verdict"] == "unknown":
+        scaling = ovt.exposure_scaling(rows)
+        scaling["filter"] = "all"
+    else:
+        scaling["filter"] = filt
+    steady = ovt.steadiness(same or rows)
+    axis = ovt.axis_consistency(axes, rs)
+    partners, other = [], None
+    for _s, p in bad:
+        for q in p.get("partners") or []:
+            partners.append(q)
+            other = q.get("rig") or other
+    ctrl = ovt.control(rate, partners, _scale(config, other) if other else 0.0)
+    if other:
+        ctrl["rig"] = other
+    c = ovt.classify(scaling, axis, ctrl, steady, rotation=rotation)
+    return {"scaling": scaling, "steady": steady, "axis": axis, "control": ctrl, **c}
+
 
 def _phd2_view(states: list[dict], live: dict | None) -> dict:
     """PHD2 as seen over the window: the live read wins for the state, the
@@ -627,9 +705,25 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
         phd2_txt = ""
         if armed != "guided" and phd2["state"] and not guiding:
             phd2_txt = f"; PHD2 {phd2['state']} but not guiding, so not the guider"
+        rows = scaling_rows(config, rig, list(ctx.get("history_subs") or []) + list(subs),
+                            w_last[1] if w_last else None)
+        oc = optics_check(config, rig, bad, rows, axes=axes, rs=rs,
+                          rotation=kind == "field rotation", rate=rate)
         head = (f"{label} subs trail{dirn}: ecc {ev['ecc']}, ~{trail.get('length_arcsec', '?')}\" "
                 f"in {cur:g} s (~{rate if rate is not None else '?'}\"/min); {where}")
-        if armed == "unguided" and new_s and new_s < cur - 0.5:
+        if oc["verdict"] == "optics":
+            sc = oc["scaling"]
+            why = "; ".join(oc["reasons"][:2])
+            add("optics", oc["confidence"],
+                f"{label} stars elongated (ecc {ev['ecc']}, ~{trail.get('length_arcsec', '?')}\" "
+                f"in {cur:g} s) but not by tracking: {why}",
+                from_ovt_fix(sc, oc),
+                _action("check_optics", "check focus, camera tilt and collimation"),
+                {"trail": trail, "axis_deg": axes[-1] if axes else None,
+                 "axis_spread_deg": spread, "axis_r": _med(rs),
+                 "shared_mount": bool(mount), "this_rig_only": bool(only),
+                 "optics_check": oc})
+        elif armed == "unguided" and new_s and new_s < cur - 0.5:
             fix = (f"Shorten {label} subs to {new_s:g} s (drift budget), or check "
                    "TheSky tracking rate / ProTrack and the TPoint model"
                    + ("; Dec drift = polar alignment" if kind == "Dec drift" else "")
@@ -647,15 +741,19 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
                    + ("; if only one rig trails, check that rig's flexure / camera" if only else "")
                    + side + phd2_txt)
             act = _action("check_tracking", "check the mount tracking")
-        add("tracking", conf, head, fix, act,
-            {"trail": trail, "kind": kind, "axis_deg": axes[-1] if axes else None,
-             "axis_spread_deg": spread, "axis_r": _med(rs), "sky": sky or None,
-             "shared_mount": bool(mount), "this_rig_only": bool(only),
-             "pier": pier, "ha_h": ha, "phd2_state": phd2["state"],
-             "phd2_guiding": guiding, "phd2_guiding_why": guiding_why,
-             "drift_cap": {k: (rec or {}).get(k) for k in
-                           ("exposure_s", "drift_max_s", "why", "budget_arcsec")}
-             if rec else None})
+        if oc["verdict"] != "optics":
+            if oc["confidence"] == LOW and conf != LOW:
+                conf = LOW if conf == MEDIUM else MEDIUM
+            add("tracking", conf, head, fix, act,
+                {"trail": trail, "kind": kind, "optics_check": oc,
+                 "axis_deg": axes[-1] if axes else None,
+                 "axis_spread_deg": spread, "axis_r": _med(rs), "sky": sky or None,
+                 "shared_mount": bool(mount), "this_rig_only": bool(only),
+                 "pier": pier, "ha_h": ha, "phd2_state": phd2["state"],
+                 "phd2_guiding": guiding, "phd2_guiding_why": guiding_why,
+                 "drift_cap": {k: (rec or {}).get(k) for k in
+                               ("exposure_s", "drift_max_s", "why", "budget_arcsec")}
+                 if rec else None})
 
     # 5. clouds / transparency
     if stars_low:
@@ -791,7 +889,8 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
                  events: list[dict] | None = None,
                  nina_events: dict | None = None,
                  solves: dict | None = None, guide_timeline=None,
-                 pointing: dict | None = None) -> dict:
+                 pointing: dict | None = None,
+                 history_subs: list[dict] | None = None) -> dict:
     """Run the doctor over a stored night as if live: after each graded
     sub of each rig, the last sub_doctor_window subs. Read only, no push.
     Returns {night, armed, rigs: {rig: {timeline, fired, counts, subs}}}.
@@ -799,7 +898,8 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
     #1's GUIDER-START attribution for both rigs); events: the night's run
     events (af_stall / guard non-star / unguided_guard detect);
     guide_timeline: the night's PHD2 guide log (phd2_analysis.GuideTimeline,
-    None = unknown); pointing: the PS-67 records {(rig, file): rec}."""
+    None = unknown); pointing: the PS-67 records {(rig, file): rec};
+    history_subs: the earlier nights' subs (the exposure-scaling test)."""
     armed = armed or plan_mode(plan)
     n = window_n(config)
     subs = [sp_norm(r) for r in subs or []]
@@ -836,7 +936,8 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
                        (nina_events or {}).get("rc16"), events, t_end),
                    "guide_log": (guide_log(config, night, win, guide_timeline)
                                  if guide_timeline is not None else None),
-                   "pointing": (pointing or {}).get((rg, win[-1].get("file")))}
+                   "pointing": (pointing or {}).get((rg, win[-1].get("file"))),
+                   "history_subs": history_subs}
             d = diagnose(config, rg, win, subs=subs, ctx=ctx)
             cause = d["cause"] if d else None
             if d:
@@ -851,6 +952,36 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
         out["rigs"][rg] = {"subs": len(rs), "timeline": timeline, "fired": fired,
                            "counts": dict(Counter(d["cause"] for d in timeline
                                                   if d.get("cause")))}
+    return out
+
+
+_HIST: dict = {}
+
+
+def history_subs(config, night: str) -> list[dict]:
+    """The subs of the sub_doctor_scaling_nights (3) nights before `night`
+    (the exposure-scaling test compares tonight's subs with recent nights'
+    at other exposures). Cached per (data_dir, night): past nights do not
+    change."""
+    n = max(0, _i(config, "sub_doctor_scaling_nights", 3))
+    key = (str(getattr(config, "data_dir", "")), night, n)
+    if key in _HIST:
+        return _HIST[key]
+    out: list[dict] = []
+    try:
+        from photonscript.scheduler.runs import _load_subs
+        d0 = datetime.strptime(night, "%Y-%m-%d")
+        for k in range(1, n + 1):
+            d = (d0 - timedelta(days=k)).strftime("%Y-%m-%d")
+            try:
+                out += [sp_norm(r) for r in _load_subs(config, d) or []]
+            except Exception:  # noqa: BLE001
+                continue
+    except Exception as e:  # noqa: BLE001
+        logger.debug("sub doctor history skipped: %s", e)
+    if len(_HIST) > 8:
+        _HIST.clear()
+    _HIST[key] = out
     return out
 
 
@@ -887,7 +1018,8 @@ def local_night(config, night: str, rig: str | None = None) -> dict:
         pts = {}
     rep = replay_night(config, night, subs, rig=rig, plan=plan, cal_history=hist,
                        events=store.read_jsonl(events_path(config, night)),
-                       guide_timeline=tl, pointing=pts)
+                       guide_timeline=tl, pointing=pts,
+                       history_subs=history_subs(config, night))
     try:   # target core clipped with too few HDR shorts (core_check)
         from photonscript.scheduler import core_check
         from photonscript.scheduler.calibration_plan import load_projects
@@ -1044,6 +1176,14 @@ def format_report(config, rep: dict) -> str:
             out.append(f"  {_hm(d.get('t'))} {d['cause']} ({d['confidence']}): "
                        f"{d['headline']}")
             out.append(f"      fix: {d['fix']}  [action {d['action']['id']}]")
+            oc = (d.get("evidence") or {}).get("optics_check") or {}
+            if oc:
+                out.append("      optics vs tracking: " + "; ".join(
+                    x for x in (f"exposure scaling {oc['scaling'].get('verdict')} "
+                                f"({oc['scaling'].get('why')})",
+                                f"axis {oc['axis'].get('why')}",
+                                f"control {oc['control'].get('verdict')} "
+                                f"({oc['control'].get('why')})") if x))
             for s in d.get("secondary") or []:
                 out.append(f"      also: {s['cause']} ({s['confidence']})")
     for line in rep.get("core") or []:

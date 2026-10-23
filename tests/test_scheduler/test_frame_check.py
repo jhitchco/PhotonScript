@@ -241,3 +241,132 @@ def test_cli_url_reads_the_scope_endpoint(tmp_path, monkeypatch):
     assert out.exit_code == 0, out.output
     assert got["u"] == ("http://scope:8100/api/frame-check?rig=rc16&last=1&compare=true")
     assert "Verdict: both round" in out.output and "SNAPSHOT" in out.output
+
+
+# ------------------------------------------------------------- optics vs tracking
+# 2026-10-20 / 2026-10-22: RC16 trails of ~3.3 to 3.8" whether 60 s or 120 s,
+# "in no common direction", the Piggy-600 round at 60 s. Not tracking.
+
+def _light_entries(tmp_path, specs, rig_tag="rc"):
+    """History entries (and empty files: the fake measure never reads them)
+    for (time HH:MM:SS, exp_s) specs on the night of 2026-10-22."""
+    out = []
+    root = tmp_path / "nina" / "2026-10-22" / "LIGHT"
+    root.mkdir(parents=True, exist_ok=True)
+    for i, (t, exp) in enumerate(specs):
+        name = f"2026-10-22_{t.replace(':', '-')}_{rig_tag}_{exp}s_{i:04d}.fits"
+        (root / name).write_bytes(b"")
+        out.append({"index": i, "ImageType": "LIGHT", "ExposureTime": exp,
+                    "Date": f"2026-10-22T{t}.0-06:00", "Filter": "Ha",
+                    "Filename": name})
+    return out
+
+
+def _fake_measure(table):
+    """measure_fn returning the row for the file's tag + index."""
+    def m(config, path, rig, pa=None, exp_s=None):
+        row = dict(table[path.name])
+        tr = row.get("trail_arcsec")
+        row.setdefault("exp_s", exp_s)
+        if tr is not None and exp_s:
+            row["trail_rate"] = round(tr / (exp_s / 60.0), 2)
+        return {"file": path.name, "rig": rig, "stars": 200, **row}
+    return m
+
+
+def test_corner_analysis_sees_a_tilted_field():
+    import random
+    rnd = random.Random(1)
+    w = h = 3000
+    st = {"x": [], "y": [], "hfr": [], "ecc": [], "theta": []}
+    for _ in range(600):
+        x, y = rnd.uniform(0, w), rnd.uniform(0, h)
+        st["x"].append(x)
+        st["y"].append(y)
+        st["hfr"].append(3.0 + 3.0 * x / w)          # soft on the right
+        st["ecc"].append(0.3)
+        st["theta"].append(rnd.uniform(-1.5, 1.5))
+    c = fc.corner_analysis(st, w, h, SCALE)
+    assert c["ok"] and c["verdict"] == "tilt"
+    assert c["soft_corner"] in ("TR", "BR") and c["sharp_corner"] in ("TL", "BL")
+    assert c["corner_ratio"] > 1.4 and set(c["corner_ecc"]) == {"TL", "TR", "BL", "BR"}
+    assert fc.corner_analysis({}, w, h, SCALE) is None
+
+
+def test_measure_reports_corners(tmp_path, frames):
+    cfg = _cfg(tmp_path)
+    root = tmp_path / "nina" / "2026-10-13" / "SNAPSHOT"
+    ra = fc.measure(cfg, root / frames[1]["Filename"], "rc16")
+    c = ra["corners"]
+    assert c["ok"] and c["verdict"] == "fine"          # a round, flat field
+    assert set(c["corner_fwhm"]) == {"TL", "TR", "BL", "BR"}
+    assert "corners: center" in fc.format_report(
+        {"ok": True, "frames": [dict(ra, label="A", measured=True)]})
+
+
+def test_compare_optics_when_trail_does_not_scale(tmp_path):
+    """60 s and 120 s frames trail about the same (3.5" vs 3.7") with no
+    common direction: optics, never shorter subs."""
+    cfg = _cfg(tmp_path)
+    ents = _light_entries(tmp_path, [("22:00:00", 60), ("22:01:05", 60),
+                                     ("22:03:10", 120), ("22:05:15", 120)])
+    tab = {}
+    for e, tr in zip(ents, (3.4, 3.6, 3.7, 3.6)):
+        tab[e["Filename"]] = {"ecc": 0.72, "hfr": 8.0, "trail_arcsec": tr,
+                              "axis_deg": None, "axis_R": 0.3, "axis": None,
+                              "corners": {"ok": True, "verdict": "tilt",
+                                          "why": "upper-left corner 30% softer",
+                                          "center_fwhm": 3.0,
+                                          "corner_fwhm": {"TL": 3.9}}}
+    rep = fc.check(cfg, "rc16", last=4, compare=True, entries=ents, profile_path="",
+                   measure_fn=_fake_measure(tab))
+    dg = rep["diagnosis"]
+    assert dg["verdict"] == "optics" and dg["action"] == "check_optics"
+    assert dg["scaling"]["verdict"] == "flat" and dg["scaling"]["exp_ratio"] == 2.0
+    assert dg["axis"]["common"] is False
+    assert dg["confidence"] == "high"
+    assert "focus" in dg["text"] and "tilt" in dg["text"] and "collimation" in dg["text"]
+    assert "Corners: tilt" in dg["text"]
+    txt = fc.format_report(rep)
+    assert "Diagnosis (high): optics" in txt and "shorten" not in txt.lower()
+
+
+def test_compare_tracking_when_trail_scales_with_one_axis(tmp_path):
+    cfg = _cfg(tmp_path)
+    ents = _light_entries(tmp_path, [("22:00:00", 60), ("22:01:05", 60),
+                                     ("22:03:10", 120), ("22:05:15", 120)])
+    tab = {}
+    for e, tr, ax in zip(ents, (2.0, 2.1, 4.1, 4.0), (30.0, 33.0, 31.0, 29.0)):
+        tab[e["Filename"]] = {"ecc": 0.72, "hfr": 6.0, "trail_arcsec": tr,
+                              "axis_deg": ax, "axis_R": 0.8, "axis": "RA"}
+    rep = fc.check(cfg, "rc16", last=4, compare=True, entries=ents, profile_path="",
+                   measure_fn=_fake_measure(tab))
+    dg = rep["diagnosis"]
+    assert dg["verdict"] == "tracking" and dg["action"] == "check_tracking"
+    assert dg["scaling"]["verdict"] == "scales" and dg["axis"]["common"] is True
+
+
+def test_compare_control_rig_round_points_away_from_tracking(tmp_path):
+    """RC16 at one exposure (no scaling test), one axis, but the Piggy-600
+    frames over the same minutes are round where the drift would show."""
+    cfg = _cfg(tmp_path)
+    rc = _light_entries(tmp_path, [("22:01:00", 60), ("22:02:05", 60)])
+    pg = _light_entries(tmp_path, [("22:00:58", 60), ("22:02:03", 60),
+                                   ("23:30:00", 60)], rig_tag="pg")
+    tab = {}
+    for e in rc:
+        tab[e["Filename"]] = {"ecc": 0.72, "hfr": 8.0, "trail_arcsec": 4.6,
+                              "axis_deg": 35.0, "axis_R": 0.7, "axis": "RA"}
+    for e in pg:
+        tab[e["Filename"]] = {"ecc": 0.32, "hfr": 2.8, "trail_arcsec": 0.6,
+                              "axis_deg": None, "axis_R": 0.2, "axis": None}
+    rep = fc.check(cfg, "rc16", last=2, compare=True, entries=rc, profile_path="",
+                   measure_fn=_fake_measure(tab), control_rig="piggyback",
+                   control_history=pg)
+    assert len(rep["control_frames"]) == 2            # 23:30 does not overlap
+    dg = rep["diagnosis"]
+    assert dg["control"]["verdict"] == "round" and dg["control"]["rig"] == "piggyback"
+    assert dg["verdict"] == "optics" and dg["confidence"] == "medium"
+    assert "control piggyback A" in fc.format_report(rep)
+    assert "--control piggyback" in fc.scope_command("rc16", 2, None, True, "", None,
+                                                     "piggyback")

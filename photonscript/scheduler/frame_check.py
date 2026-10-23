@@ -28,6 +28,14 @@ preview, not fit for star shapes), so away from the scope PC the reduced,
 fast form is this module's own answer: GET /api/frame-check on the scope's
 scheduler (routers/frame_check.py), a few hundred bytes of JSON. Read only:
 nothing is written, nothing is sent to NINA.
+
+Optics or tracking (2026-10-23, optics_vs_tracking): each frame also gets a
+corner analysis (optics_report.sub_field_map: center and corner FWHM, the
+soft corner, a tilt / curvature / collimation / tracking verdict), and
+--compare judges the frames together: a trail that does not grow with the
+exposure (x1.8 apart, ratio under 1.3), trails in no common direction, or
+the other rig (--control) round over the same time where the drift would
+show say optics (focus / tilt / collimation), never shorter subs.
 """
 from __future__ import annotations
 
@@ -167,6 +175,38 @@ def trail_px(a, b, flux=None) -> float | None:
     return _median(ls)
 
 
+def corner_analysis(st: dict, w: int, h: int, scale: float) -> dict | None:
+    """Center vs corner star size and shape of one frame (the PS-95 field
+    map, optics_report.sub_field_map, over this frame's star list): center
+    and corner FWHM-eq ("), corner ecc, the soft and sharp corners, the
+    corner ratio and the optics verdict (tilt / curvature / collimation /
+    tracking / fine / unclear). None when there is no star list."""
+    try:
+        from photonscript.scheduler import optics_report as orp
+        from photonscript.shared.star_shape import ECC_DEF
+        xs = list(st.get("x", []))
+        if not xs:
+            return None
+        tbl = {"x": xs, "y": list(st.get("y", [])), "hfr": list(st.get("hfr", [])),
+               "ecc": list(st.get("ecc", [])), "theta": list(st.get("theta", [])),
+               "w": w or None, "h": h or None, "ecc_def": ECC_DEF}
+        m = orp.sub_field_map(tbl, scale, min_zone=5)
+        if not m.get("ok"):
+            return {"ok": False, "why": m.get("why")}
+        c = orp.classify(m)
+        zones = m.get("zones") or {}
+        return {"ok": True, "center_fwhm": m.get("center_fwhm"),
+                "corner_fwhm": m.get("corner_fwhm"),
+                "corner_ecc": {k: (zones.get(k) or {}).get("ecc") for k in orp.CORNERS},
+                "center_ecc": m.get("center_ecc"),
+                "corner_ratio": m.get("corner_ratio"),
+                "soft_corner": m.get("soft_corner"), "sharp_corner": m.get("sharp_corner"),
+                "verdict": c.get("verdict"), "why": c.get("why")}
+    except Exception as e:  # noqa: BLE001
+        logger.debug("frame check corners skipped: %s", e)
+        return None
+
+
 def camera_pa(config, rig: str, header: dict, pa: float | None = None) -> tuple:
     """(camera PA deg, source): --pa, the FITS header (WCS / rotator), else
     the rig's newest plate solve (solve_store, last 7 nights)."""
@@ -227,6 +267,7 @@ def measure(config, path: Path, rig: str = "rc16", pa: float | None = None,
                      floor=ELONG_FLOOR) if len(st.get("x", [])) else {}
     cam_pa, pa_src = camera_pa(config, rig, dict(hdr), pa)
     axis = ax.get("axis_deg") if ax and (ax.get("R") or 0) >= DIRECTION_R_MIN else None
+    corners = corner_analysis(st, w, h, scale)
     tl = trail_px(st.get("a"), st.get("b"), st.get("flux"))
     tl_as = tl * scale if tl is not None else None
     out = {"file": path.name, "path": str(path), "rig": rig,
@@ -243,7 +284,8 @@ def measure(config, path: Path, rig: str = "rc16", pa: float | None = None,
            "trail_px": None if tl is None else round(tl, 2),
            "trail_arcsec": None if tl_as is None else round(tl_as, 2),
            "trail_rate": round(tl_as / (exp / 60.0), 2)
-           if tl_as is not None and exp else None}
+           if tl_as is not None and exp else None,
+           "corners": corners}
     if len(_CACHE) > 32:
         _CACHE.clear()
     _CACHE[key] = dict(out)
@@ -307,14 +349,97 @@ def verdict(config, rows: list[dict]) -> str:
     return line
 
 
+def diagnose_frames(config, rows: list[dict], control_rows: list[dict] | None = None,
+                    control_rig: str = "") -> dict | None:
+    """Optics or tracking over the measured frames (optics_vs_tracking):
+    exposure scaling of the measured trail, the common axis, the other rig
+    as a control. None when every frame is round."""
+    from photonscript.scheduler import optics_vs_tracking as ovt
+    got = [r for r in rows if r.get("measured")]
+    bad = [r for r in got if shape_of(config, r) != "round"]
+    if not bad:
+        return None
+    scaling = ovt.exposure_scaling(got)
+    axes = [r.get("axis_deg") for r in bad if r.get("axis_deg") is not None]
+    nd = sum(1 for r in bad if r.get("axis_deg") is None)
+    axis = ovt.axis_consistency(axes, [r.get("axis_R") for r in bad], no_direction=nd)
+    rate = _median([_num(r.get("trail_rate")) for r in bad])
+    ctrl = {"verdict": "none", "why": "no control rig"}
+    if control_rows is not None:
+        parts = [{"exp_s": r.get("exp_s"), "hfr": r.get("hfr"), "ecc": r.get("ecc"),
+                  "trailing": shape_of(config, r) == "trailed"}
+                 for r in control_rows if r.get("measured")]
+        ctrl = ovt.control(rate, parts, _rig_scale(config, control_rig))
+        ctrl["rig"] = control_rig
+    c = ovt.classify(scaling, axis, ctrl)
+    tilt = [r["corners"] for r in bad
+            if (r.get("corners") or {}).get("verdict") in ("tilt", "curvature",
+                                                            "collimation")]
+    out = {"verdict": c["verdict"], "confidence": c["confidence"],
+           "reasons": c["reasons"], "against": c["against"], "scaling": scaling,
+           "axis": axis, "control": ctrl, "rate_arcsec_min": rate,
+           "corners": [{"label": r["label"], **(r.get("corners") or {})} for r in bad
+                       if r.get("corners")]}
+    if c["verdict"] == "optics":
+        hint = ""
+        if tilt:
+            t = tilt[-1]
+            hint = (f" Corners: {t['verdict']} ({t.get('why')}, center "
+                    f"{t.get('center_fwhm')}\", corners {t.get('corner_fwhm')}).")
+        out["text"] = ("optics (focus / tilt / collimation), not tracking: "
+                       + "; ".join(c["reasons"][:2]) + ". " + ovt.OPTICS_FIX + hint)
+        out["action"] = "check_optics"
+    else:
+        out["text"] = ("tracking: " + ("; ".join(c["against"][:2]) or
+                                       "nothing says otherwise"))
+        out["action"] = "check_tracking"
+    return out
+
+
+def _rig_scale(config, rig: str) -> float:
+    try:
+        from photonscript.shared.rigs import rig_config
+        return float(getattr(rig_config(config, rig), "pixel_scale_arcsec", 0) or 0)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def control_entries(entries: list[dict], frames: list[dict]) -> list[dict]:
+    """The other rig's history entries whose exposure overlaps a checked
+    frame by half the shorter one (NINA's Date is the save time: the
+    exposure ends there)."""
+    def span(d, x):
+        t = _local(d)
+        x = _num(x) or 0.0
+        return None if t is None else (t - timedelta(seconds=x), t)
+    wins = [w for w in (span(f.get("date"), f.get("exp_s")) for f in frames) if w]
+    out = []
+    for e in entries:
+        v = span(e.get("Date"), e.get("ExposureTime"))
+        if v is None:
+            continue
+        for w in wins:
+            ov = (min(w[1], v[1]) - max(w[0], v[0])).total_seconds()
+            short = min((w[1] - w[0]).total_seconds(), (v[1] - v[0]).total_seconds())
+            if ov > 0 and ov >= 0.5 * short:
+                out.append(e)
+                break
+    return out
+
+
 def check(config, rig: str = "rc16", last: int = 2, index: list[int] | None = None,
           image_type: str = "", pa: float | None = None, compare: bool = False,
           entries: list[dict] | None = None, base_url: str = "",
-          profile_path: str | None = None, measure_fn=None, deep: bool = True) -> dict:
+          profile_path: str | None = None, measure_fn=None, deep: bool = True,
+          control_rig: str = "", control_history: list[dict] | None = None) -> dict:
     """Pick NINA's frames, find and measure them. `entries` (tests) skips
-    the NINA read. Never raises for one bad frame."""
+    the NINA read. Never raises for one bad frame. control_rig (with
+    compare): also measure the other rig's frames that overlap these in
+    time, a control for the optics / tracking call (`control_history`,
+    tests, skips that rig's NINA read)."""
     out = {"rig": rig, "ok": True, "error": None, "frames": [], "verdict": None,
-           "command": scope_command(rig, last, index, compare, image_type, pa)}
+           "command": scope_command(rig, last, index, compare, image_type, pa,
+                                    control_rig)}
     if entries is None:
         try:
             entries = history(config, rig, base_url)
@@ -326,7 +451,32 @@ def check(config, rig: str = "rc16", last: int = 2, index: list[int] | None = No
         profile_path = nina_save_path(config, rig, base_url)
     roots = save_roots(config, rig, profile_path)
     measure_fn = measure_fn or measure
-    for i, e in enumerate(pick(entries, last, index, image_type)):
+    out["frames"] = _measure_entries(config, rig, pick(entries, last, index, image_type),
+                                     roots, measure_fn, pa, deep)
+    if compare:
+        out["verdict"] = verdict(config, out["frames"])
+        ctrl_rows = None
+        if control_rig and control_rig != rig:
+            try:
+                ents = (control_history if control_history is not None
+                        else history(config, control_rig))
+                c_roots = save_roots(config, control_rig,
+                                     "" if control_history is not None
+                                     else nina_save_path(config, control_rig))
+                ctrl_rows = _measure_entries(
+                    config, control_rig, control_entries(ents, out["frames"]),
+                    c_roots, measure_fn, None, deep)
+                out["control_frames"] = ctrl_rows
+            except Exception as e:  # noqa: BLE001
+                out["control_error"] = f"{control_rig}: {e}"
+        out["diagnosis"] = diagnose_frames(config, out["frames"], ctrl_rows,
+                                           control_rig)
+    return out
+
+
+def _measure_entries(config, rig, entries, roots, measure_fn, pa, deep) -> list[dict]:
+    rows = []
+    for i, e in enumerate(entries):
         row = {"label": LABELS[i % len(LABELS)], "index": e.get("index"),
                "date": e.get("Date"), "image_type": e.get("ImageType"),
                "exp_s": _num(e.get("ExposureTime")), "filter": e.get("Filter"),
@@ -343,10 +493,8 @@ def check(config, rig: str = "rc16", last: int = 2, index: list[int] | None = No
             except Exception as ex:  # noqa: BLE001
                 logger.warning("frame check %s: %s", p, ex)
                 row["error"] = f"measure failed: {ex}"
-        out["frames"].append(row)
-    if compare:
-        out["verdict"] = verdict(config, out["frames"])
-    return out
+        rows.append(row)
+    return rows
 
 
 def nina_save_path(config, rig: str, base_url: str = "") -> str:
@@ -361,7 +509,7 @@ def nina_save_path(config, rig: str, base_url: str = "") -> str:
 
 
 def scope_command(rig: str = "rc16", last: int = 2, index=None, compare=False,
-                  image_type: str = "", pa=None) -> str:
+                  image_type: str = "", pa=None, control: str = "") -> str:
     """The exact command to run on the scope PC."""
     s = f"{SCOPE_EXE} frame-check --rig {rig}"
     if index:
@@ -372,6 +520,8 @@ def scope_command(rig: str = "rc16", last: int = 2, index=None, compare=False,
         s += f" --type {image_type}"
     if pa is not None:
         s += f" --pa {pa:g}"
+    if control:
+        s += f" --control {control}"
     return s + (" --compare" if compare else "")
 
 
@@ -405,8 +555,25 @@ def format_report(rep: dict) -> str:
         lines.append(f"camera PA: {pa} deg ({src})" if pa is not None else
                      "camera PA unknown (no WCS, rotator or recent solve; --pa "
                      "names the axis RA / Dec)")
+    for r in rep.get("frames") or []:
+        c = r.get("corners") or {}
+        if c.get("ok"):
+            cf = c.get("corner_fwhm") or {}
+            ce = c.get("corner_ecc") or {}
+            lines.append(f"{r['label']} corners: center {c.get('center_fwhm')}\" "
+                         f"(ecc {c.get('center_ecc')}); "
+                         + ", ".join(f"{k} {cf.get(k)}\" (ecc {ce.get(k)})"
+                                     for k in ("TL", "TR", "BL", "BR"))
+                         + f"; {c.get('verdict')}: {c.get('why')}")
+    for r in rep.get("control_frames") or []:
+        if r.get("measured"):
+            lines.append(f"control {r.get('rig')} {r['label']}: {_f(r.get('exp_s'), 0, 4)} s "
+                         f"ecc {r.get('ecc')} HFR {r.get('hfr')} {r.get('shape')}")
     if rep.get("verdict"):
         lines.append(f"Verdict: {rep['verdict']}")
+    dg = rep.get("diagnosis")
+    if dg:
+        lines.append(f"Diagnosis ({dg.get('confidence')}): {dg.get('text')}")
     if any(not r.get("measured") for r in rep.get("frames") or []):
         lines.append(f"On the scope PC run:\n  {rep.get('command')}")
     return "\n".join(lines)

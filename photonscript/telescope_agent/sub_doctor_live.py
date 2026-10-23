@@ -123,6 +123,8 @@ async def after_sub(agent, night: str | None) -> dict | None:
         # log over the window); the pier side / HA name a tracking trail
         ctx["guide_log"] = sd.guide_log(config, night, window)
         ctx["pointing"] = _pointing(agent, config, night, rig, window[-1])
+        # 2026-10-23: optics vs tracking compares exposures across nights
+        ctx["history_subs"] = sd.history_subs(config, night)
         diag = sd.diagnose(config, rig, window, subs=subs, ctx=ctx)
         out = sd.record(config, night, rig, diag)
     except Exception as e:  # noqa: BLE001
