@@ -588,3 +588,155 @@ def test_after_sub_1014_reads_the_guide_log_and_pier(tmp_path, monkeypatch):
     d = asyncio.run(live.after_sub(ag, night))
     assert seen["n"] == 3
     assert d["cause"] == "tracking" and d["evidence"]["pier"] == "West"
+
+
+# ------------------------------------------------------------- optics vs tracking
+# 2026-10-20 / 2026-10-22: RC16 elongated (ecc 0.65 to 0.77) about the same
+# at 60 s and 120 s, the Piggy-600 round at 60 s; the doctor said tracking
+# and asked for 30 s subs. Elongation that does not grow with the exposure,
+# or that has no common axis, or that the other rig would show and does not,
+# is optics.
+
+from photonscript.scheduler import optics_vs_tracking as ovt  # noqa: E402
+
+
+def _series(rig, day, start, n, exp_s, ecc, hfr, axis=35.0, r=0.6, fails=("ecc",),
+            gap_s=5, axes=None):
+    """n consecutive subs of exp_s from day T start (UTC), sub-record shaped."""
+    from datetime import timedelta
+    t = datetime.strptime(f"{day} {start}", "%Y-%m-%d %H:%M:%S")
+    out = []
+    for i in range(n):
+        e = t + timedelta(seconds=exp_s)
+        rows = [["ecc", ecc, 0.6, "fail" if "ecc" in fails else "pass"],
+                ["hfr", hfr, 20, "pass"], ["stars", 300, [5, 5000], "pass"]]
+        out.append({"rig": rig, "file": f"{rig}_{day}_{t:%H%M%S}.fits", "filter": "Ha",
+                    "exp_s": exp_s, "start_utc": f"{day}T{t:%H:%M:%S}Z",
+                    "end_utc": f"{day}T{e:%H:%M:%S}Z", "ecc": ecc, "hfr": hfr,
+                    "stars": 300, "passed_qa": not fails, "guide_state": "stopped",
+                    "elong_axis_deg": axes[i % len(axes)] if axes else axis,
+                    "elong_r": r, "scorecard": {"rows": rows}})
+        t = e + timedelta(seconds=gap_s)
+    return out
+
+
+def test_ovt_exposure_scaling_flat_scales_unknown():
+    def rows(exp, tr, n=4):
+        return [{"exp_s": exp, "trail_arcsec": tr} for _ in range(n)]
+    flat = ovt.exposure_scaling(rows(60, 4.6) + rows(120, 5.7))
+    assert flat["verdict"] == "flat" and flat["trail_ratio"] == pytest.approx(1.24, abs=0.01)
+    assert flat["exp_ratio"] == 2.0 and "x1.24 for x2.00" in flat["why"]
+    scales = ovt.exposure_scaling(rows(60, 2.0) + rows(120, 3.9))
+    assert scales["verdict"] == "scales"
+    # x1.5 apart is not enough to tell; one exposure or too few subs: unknown
+    assert ovt.exposure_scaling(rows(80, 4.0) + rows(120, 4.1))["verdict"] == "unknown"
+    assert ovt.exposure_scaling(rows(60, 4.0))["verdict"] == "unknown"
+    assert ovt.exposure_scaling(rows(60, 4.0) + rows(120, 4.0, n=1))["verdict"] == "unknown"
+
+
+def test_ovt_axis_control_steady_and_classify():
+    assert ovt.axis_consistency([30, 35, 40], [0.6, 0.7])["common"] is True
+    assert ovt.axis_consistency([10, 80, 140], [0.6])["common"] is False
+    assert ovt.axis_consistency([30, 32], [0.2, 0.3])["common"] is False
+    assert ovt.axis_consistency([None, None, 30], [], no_direction=2)["common"] is False
+    assert ovt.axis_consistency([], [])["common"] is None
+    # a 4.6"/min drift on the Piggy-600 (1.29"/px, HFR 2.8 px, 60 s) would
+    # lift its ecc from 0.32 to about 0.49: it is round, so not the mount
+    piggy = [{"exp_s": 60, "hfr": 2.8, "ecc": 0.32, "trailing": False}] * 3
+    c = ovt.control(4.6, piggy, 1.29)
+    assert c["verdict"] == "round" and c["predicted_ecc"] >= 0.44
+    assert ovt.control(4.6, [dict(piggy[0], trailing=True)], 1.29)["verdict"] == "trails"
+    assert ovt.control(0.3, piggy, 1.29)["verdict"] == "too_small"
+    assert ovt.control(4.6, [], 1.29)["verdict"] == "none"
+    st = ovt.steadiness([{"exp_s": 60, "trail_arcsec": 4.6 + 0.1 * (i % 3), "t_min": 2.0 * i}
+                         for i in range(40)])
+    assert st["steady"] is True and st["span_min"] == 78
+    flat = {"verdict": "flat", "why": "x"}
+    scales = {"verdict": "scales", "why": "x"}
+    one = {"common": True, "why": "one axis"}
+    none_ = {"common": False, "why": "spread"}
+    rnd = {"verdict": "round", "why": "round"}
+    assert ovt.classify(flat, one, None)["verdict"] == "optics"
+    assert ovt.classify(flat, one, rnd)["confidence"] == "high"
+    assert ovt.classify(scales, one, None)["verdict"] == "tracking"
+    assert ovt.classify(scales, one, None)["confidence"] == "high"
+    assert ovt.classify(None, one, rnd)["verdict"] == "optics"
+    assert ovt.classify(None, none_, None)["verdict"] == "optics"
+    assert ovt.classify(None, none_, None, rotation=True)["verdict"] == "tracking"
+    assert ovt.classify(None, one, {"verdict": "trails", "why": ""})["verdict"] == "tracking"
+    assert ovt.classify(None, None, None)["verdict"] == "tracking"
+
+
+def test_optics_when_trail_does_not_scale_across_nights(tmp_path):
+    """The 2026-10-20 (120 s) and 2026-10-22 (60 s) RC16 shape: ~5.7" vs
+    ~4.6", x1.24 for x2 exposure. Optics, never shorter subs."""
+    cfg = _cfg(tmp_path)
+    hist = _series("rc16", "2026-10-21", "02:18:00", 20, 120, 0.65, 11.0, axis=50.0)
+    tonight = _series("rc16", "2026-10-23", "04:52:00", 8, 60, 0.70, 8.0)
+    d = sd.diagnose(cfg, "rc16", tonight[-3:], subs=tonight, ctx={
+        "armed": "unguided", "history_subs": hist})
+    assert d["cause"] == "optics", d["headline"]
+    assert d["confidence"] == "medium"
+    assert d["action"]["id"] == "check_optics"
+    assert "shorten" not in d["action"]["id"] and "shorten" not in d["fix"].lower()
+    assert "focus" in d["fix"] and "tilt" in d["fix"] and "collimation" in d["fix"]
+    oc = d["evidence"]["optics_check"]
+    assert oc["scaling"]["verdict"] == "flat"
+    assert oc["scaling"]["short"]["exp_s"] == 60 and oc["scaling"]["long"]["exp_s"] == 120
+    assert oc["scaling"]["trail_ratio"] < 1.3
+    assert "does not scale" in d["headline"]
+    assert not any(s["cause"] == "tracking" for s in d["secondary"])
+    # without the earlier night there is nothing to compare: still tracking
+    t = sd.diagnose(cfg, "rc16", tonight[-3:], subs=tonight, ctx={"armed": "unguided"})
+    assert t["cause"] == "tracking"
+    assert t["evidence"]["optics_check"]["scaling"]["verdict"] == "unknown"
+    # the whole night replayed with the history (the CLI path)
+    rep = sd.replay_night(cfg, "2026-10-22", tonight, armed="unguided", solves={},
+                          history_subs=hist)
+    fired = rep["rigs"]["rc16"]["fired"]
+    assert [f["cause"] for f in fired] == ["optics"]
+    txt = sd.format_report(cfg, rep)
+    assert "optics vs tracking: exposure scaling flat" in txt
+    assert "shorten_subs" not in txt
+
+
+def test_optics_when_the_other_rig_is_round(tmp_path):
+    """One exposure only, but the Piggy-600 exposing at the same time is
+    round where the RC16's implied drift would show on it."""
+    cfg = _cfg(tmp_path)
+    rc = _series("rc16", "2026-10-23", "05:34:00", 4, 60, 0.72, 8.0)
+    pg = _series("piggyback", "2026-10-23", "05:33:58", 4, 60, 0.32, 2.8, fails=())
+    d = sd.diagnose(cfg, "rc16", rc[-3:], subs=rc + pg, ctx={"armed": "unguided"})
+    assert d["cause"] == "optics" and d["confidence"] == "medium"
+    ctrl = d["evidence"]["optics_check"]["control"]
+    assert ctrl["verdict"] == "round" and ctrl["rig"] == "piggyback"
+    assert "piggyback" in d["fix"] and "round" in d["fix"]
+    assert d["action"]["id"] == "check_optics"
+    # the Piggy-600 trailing too: the shared mount, tracking stays
+    pg2 = _series("piggyback", "2026-10-23", "05:33:58", 4, 60, 0.8, 3.0)
+    t = sd.diagnose(cfg, "rc16", rc[-3:], subs=rc + pg2, ctx={"armed": "unguided"})
+    assert t["cause"] == "tracking" and t["evidence"]["shared_mount"]
+
+
+def test_optics_when_no_common_axis(tmp_path):
+    cfg = _cfg(tmp_path)
+    rc = _series("rc16", "2026-10-23", "05:00:00", 3, 60, 0.72, 8.0, r=0.2,
+                 axes=[10.0, 80.0, 140.0])
+    d = sd.diagnose(cfg, "rc16", rc, subs=rc, ctx={"armed": "unguided"})
+    assert d["cause"] == "optics" and d["confidence"] == "low"
+    assert d["evidence"]["optics_check"]["axis"]["common"] is False
+    assert "shorten" not in d["action"]["id"]
+
+
+def test_tracking_kept_when_trail_scales_with_a_common_axis(tmp_path):
+    """60 s subs ~1.9" earlier, 120 s subs ~3.9" tonight, one axis: drift."""
+    cfg = _cfg(tmp_path)
+    hist = _series("rc16", "2026-10-21", "03:00:00", 10, 60, 0.5, 5.0, fails=())
+    tonight = _series("rc16", "2026-10-23", "04:00:00", 6, 120, 0.75, 6.0)
+    d = sd.diagnose(cfg, "rc16", tonight[-3:], subs=tonight, ctx={
+        "armed": "unguided", "history_subs": hist})
+    assert d["cause"] == "tracking"
+    oc = d["evidence"]["optics_check"]
+    assert oc["scaling"]["verdict"] == "scales" and oc["scaling"]["trail_ratio"] >= 1.3
+    assert oc["axis"]["common"] is True and oc["verdict"] == "tracking"
+    assert d["action"]["id"].startswith("shorten_subs:")
