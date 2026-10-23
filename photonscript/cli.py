@@ -5236,6 +5236,9 @@ if __name__ == "__main__":
 def tpoint_import_merge(
     go: bool = typer.Option(False, "--go", help="Write the merged file "
                             "(default: list what would be merged)"),
+    since: str = typer.Option("", "--since", help="Only import files whose "
+                              "UTC stamp is at or after this (YYYYMMDD or "
+                              "YYYYMMDDTHHMM), e.g. tonight's run"),
     with_old: bool = typer.Option(False, "--with-old", help="Put the "
                                   "pre-autocal pointing data (from the oldest "
                                   "autocal backup) first in the merged file"),
@@ -5247,6 +5250,8 @@ def tpoint_import_merge(
     from photonscript.telescope_agent import tpoint_import as ti
     d = _P(ti.DEFAULT_IMPORT_DIR)
     files = sorted(f for f in d.glob("*.dat") if not f.name.endswith("_merged.dat"))
+    if since:
+        files = [f for f in files if f.name[:len(since)] >= since]
     if with_old:
         od = ti.old_data_file()
         if not od:

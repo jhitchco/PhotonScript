@@ -37,3 +37,7 @@ def test_old_data_file_prefers_super_model_indat_in_oldest_backup(tmp_path):
     _f(b / "Super Model Indat.dat", ["n 1 "])
     assert ti.old_data_file(str(tmp_path)).startswith(str(tmp_path / "20261021T010000Z"))
     assert ti.count_samples(a / "Super Model Indat.dat") == 2
+
+
+def test_since_flag_is_allowed_remotely():
+    assert "--since" in rc.load_allowlist().commands["tpoint-import-merge"].flags

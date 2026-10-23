@@ -190,5 +190,5 @@ write_flags = ["--go"]        # live run (approved for remote use by Jeremy 2026
 
 [commands.tpoint-import-merge]
 class = "read"                # no flag: lists the import files and their sample counts
-flags = ["--go", "--with-old"]
+flags = ["--go", "--with-old", "--since"]
 write_flags = ["--go"]        # writes <stamp>_merged.dat in the TPoint import folder only
