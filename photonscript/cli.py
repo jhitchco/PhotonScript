@@ -5237,7 +5237,7 @@ def tpoint_import_merge(
     go: bool = typer.Option(False, "--go", help="Write the merged file "
                             "(default: list what would be merged)"),
 ):
-    """Merge every TPoint import file in C:\astro\tpoint_import into one
+    """Merge every TPoint import file in the TPoint import folder into one
     <stamp>_merged.dat: TPoint's Import Pointing Data replaces the data on
     each import, so all samples must come in one file."""
     from pathlib import Path as _P
