@@ -27,3 +27,13 @@ def test_merge_keeps_one_header_and_all_samples(tmp_path, monkeypatch):
 def test_merge_is_write_gated_remotely():
     c = rc.load_allowlist().commands["tpoint-import-merge"]
     assert c.write_flags == ("--go",)
+
+
+def test_old_data_file_prefers_super_model_indat_in_oldest_backup(tmp_path):
+    a = tmp_path / "20261021T010000Z" / "TPoint"
+    b = tmp_path / "20261023T010000Z" / "TPoint"
+    a.mkdir(parents=True); b.mkdir(parents=True)
+    _f(a / "Super Model Indat.dat", ["o 1 ", "o 2 "])
+    _f(b / "Super Model Indat.dat", ["n 1 "])
+    assert ti.old_data_file(str(tmp_path)).startswith(str(tmp_path / "20261021T010000Z"))
+    assert ti.count_samples(a / "Super Model Indat.dat") == 2

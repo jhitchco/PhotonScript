@@ -290,3 +290,29 @@ def merge_dir(dir_: str = DEFAULT_IMPORT_DIR, stamp: str | None = None) -> dict:
     text, n = merge_files(files)
     out.write_text(text, encoding="utf-8", newline="")
     return {"out": str(out), "files": files, "samples": n}
+
+
+DEFAULT_BACKUP_ROOT = r"C:stro	point_backup"
+OLD_DATA_NAMES = ("Super Model Indat.dat", "Super Model Outdat.dat")
+
+
+def count_samples(path) -> int:
+    lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+    return sum(1 for ln in lines[HEADER_LINES:] if ln.strip())
+
+
+def old_data_file(backup_root: str = DEFAULT_BACKUP_ROOT) -> str | None:
+    """The pre-autocal pointing data (TheSky's own calibration runs, raw
+    positions) from the OLDEST tpoint-autocal backup: its Super Model
+    input data, else the *in.dat / *Indat.dat with the most samples."""
+    root = Path(backup_root)
+    dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.is_dir() else []
+    for d in dirs:
+        named = [f for n in OLD_DATA_NAMES for f in d.rglob(n)]
+        if named:
+            return str(named[0])
+        cands = [f for f in d.rglob("*.dat")
+                 if f.name.lower().endswith(("in.dat", "indat.dat"))]
+        if cands:
+            return str(max(cands, key=count_samples))
+    return None

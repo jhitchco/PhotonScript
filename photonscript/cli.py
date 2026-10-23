@@ -5236,6 +5236,9 @@ if __name__ == "__main__":
 def tpoint_import_merge(
     go: bool = typer.Option(False, "--go", help="Write the merged file "
                             "(default: list what would be merged)"),
+    with_old: bool = typer.Option(False, "--with-old", help="Put the "
+                                  "pre-autocal pointing data (from the oldest "
+                                  "autocal backup) first in the merged file"),
 ):
     """Merge every TPoint import file in the TPoint import folder into one
     <stamp>_merged.dat: TPoint's Import Pointing Data replaces the data on
@@ -5244,11 +5247,22 @@ def tpoint_import_merge(
     from photonscript.telescope_agent import tpoint_import as ti
     d = _P(ti.DEFAULT_IMPORT_DIR)
     files = sorted(f for f in d.glob("*.dat") if not f.name.endswith("_merged.dat"))
+    if with_old:
+        od = ti.old_data_file()
+        if not od:
+            console.print("no pre-autocal data file found in the TPoint backups", markup=False)
+            raise typer.Exit(1)
+        files = [_P(od)] + files
     for f in files:
         n = sum(1 for ln in f.read_text(encoding="utf-8", errors="replace").splitlines()[ti.HEADER_LINES:] if ln.strip())
         console.print(f"  {f.name}: {n} sample(s)", markup=False)
     if not go:
         console.print(f"dry run: {len(files)} file(s); --go writes the merged file", markup=False)
         return
-    r = ti.merge_dir()
-    console.print(f"merged {len(r['files'])} file(s), {r['samples']} sample(s) -> {r['out']}", markup=False)
+    from datetime import datetime as _dt
+    stamp = _dt.utcnow().strftime("%Y%m%dT%H%M%SZ") + ("_all" if with_old else "")
+    out = d / f"{stamp}_merged.dat"
+    ti.check_import_path(str(out))
+    text, n = ti.merge_files([str(f) for f in files])
+    out.write_text(text, encoding="utf-8", newline="")
+    console.print(f"merged {len(files)} file(s), {n} sample(s) -> {out}", markup=False)
