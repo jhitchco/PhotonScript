@@ -58,6 +58,17 @@ night_pilot_verify_subs (2) subs of that rig:
                    night: the goal set inactive for tonight and Restart
                    tonight from now (the planner moves on).
   clouds, seeing   nothing (roof safety owns clouds): a run event only.
+  optics           star elongation that is not tracking (the sub doctor's
+                   optics_vs_tracking verdict, action check_optics): never
+                   a sub length or exposure change. One Pushover per rig
+                   per night ("<rig> star elongation looks optical (focus /
+                   tilt / collimation); shorter subs will not help" plus the
+                   evidence line), a run event (kind night_pilot "optics"),
+                   the advice list of GET /api/night/pilot and a morning
+                   report line. While a rig's newest diagnosis is optics
+                   (medium / high), shortening its subs (shorten_subs, the
+                   sub watch's limit_subs) is held. Low confidence: a run
+                   event only.
   focuser          hardware: one push for a human, nothing sent.
 
 Guardrails (guard()): acts only while the armer is RUNNING (never ARMED,
@@ -73,7 +84,7 @@ an old log still holds the same action). It never arms, disarms, parks, unparks,
 roof or safety, or changes a PHD2 calibration.
 
 Every decision is a run event (kind "night_pilot": act / advise / held /
-human / annotate / verify / retry / failed / learned / revert), every
+human / annotate / optics / verify / retry / failed / learned / revert), every
 action and its result one Pushover ("Night pilot: <what> because
 <evidence>; next check <when>"), and the morning report has a section.
 night_pilot_mode: act (default, Jeremy 2026-10-13) | advise (the same
@@ -160,7 +171,10 @@ CAUSE_FAMILY = {"guider_conflict": "guider_conflict", "guider": "guider_conflict
                 "focuser": "focuser", "clouds": "clouds", "cloud": "clouds",
                 "transparency": "clouds", "seeing": "seeing",
                 "pointing": "pointing", "target_unusable": "pointing",
-                "plate_solve": "pointing", "other": "other", "none": "none"}
+                "plate_solve": "pointing", "optics": "optics",
+                "optical": "optics", "other": "other", "none": "none"}
+OPTICS_TEXT = ("{rig} star elongation looks optical (focus / tilt / "
+               "collimation); shorter subs will not help")
 
 
 # --------------------------------------------------------------------------
@@ -412,6 +426,15 @@ def decide(cfg, d: dict, ctx: dict) -> dict:
                                    "owns clouds; seeing is the sky)")
     if fam in ("none", "other"):
         return out("annotate", why="no cause the pilot can act on")
+    if fam == "optics":
+        # never a sub length or exposure change: the elongation does not
+        # come from tracking, so shorter subs do not fix it
+        if low:
+            return out("annotate", why=f"{d.get('confidence')} confidence "
+                       "optics: watching only (no sub length change)")
+        return out("optics", what=OPTICS_TEXT.format(rig=_label(cfg, rig)),
+                   why="optics, not tracking: the pilot sends nothing and "
+                       "does not change the sub length")
     if low:
         return out("annotate", why=f"{d.get('confidence')} confidence: "
                                    "watching only")
@@ -1118,6 +1141,9 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
     if why:
         return why
     action, rig = dec["action"], d["rig"]
+    if group(action) == "shorten" and             (st.get("last_cause") or {}).get(rig) == "optics":
+        return ("the sub doctor reads the elongation as optical (focus / tilt "
+                "/ collimation): shorter subs will not help")
     if action in ("stop_phd2", "guider_stop") and not virtual:
         try:
             from photonscript.telescope_agent import phd2_ops
@@ -1614,6 +1640,14 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
     dec = decide(cfg, d, ctx)
     rig, fam = d["rig"], d["family"]
     night = st["night"]
+    if d.get("source") != "watch":
+        # the rig's newest sub doctor reading (guard: no shortening while
+        # it reads the elongation as optical)
+        st.setdefault("last_cause", {})[rig] = (
+            "optics" if dec["kind"] == "optics" else
+            "optics_low" if fam == "optics" else fam)
+    if dec["kind"] == "optics":
+        return await _optics(cfg, io, st, d, dec, now)
     if dec["kind"] == "annotate":
         if _note_once(st, f"annotate|{rig}|{fam}|{d['cause']}"):
             _event(cfg, night, "annotate", f"{_label(cfg, rig)} {d['cause']}: "
@@ -1682,6 +1716,34 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
     else:
         await _fail(cfg, io, st, a, now, a.get("detail") or "failed")
     return {"rig": rig, "kind": "act", "action": action, "status": a["status"]}
+
+
+def _evidence_line(d: dict) -> str:
+    """The sub doctor's evidence for an optics reading: its headline, else
+    the optics_vs_tracking reasons."""
+    h = str(d.get("headline") or "").strip()
+    if h and h != d.get("cause"):
+        return _because(d)
+    oc = (d.get("evidence") or {}).get("optics_check") or {}
+    rs = [str(r) for r in oc.get("reasons") or [] if r]
+    return "; ".join(rs[:2])[:220] if rs else _because(d)
+
+
+async def _optics(cfg, io, st, d, dec, now) -> dict:
+    """An optics diagnosis: one push per rig per night, a run event and the
+    advice list. Nothing is sent to NINA and no sub length changes."""
+    rig = d["rig"]
+    ev_line = _evidence_line(d)
+    if _note_once(st, f"optics|{rig}"):
+        rec = {"t": _iso(now), "rig": rig, "cause": d["cause"],
+               "confidence": d.get("confidence"), "text": dec["what"],
+               "evidence": ev_line}
+        st.setdefault("optics", []).append(rec)
+        msg = f"Night pilot: {dec['what']}. {ev_line}"
+        _event(cfg, st["night"], "optics", msg, now, rig=rig, cause=d["cause"],
+               confidence=d.get("confidence"))
+        await io.notify(cfg, msg, priority=0)
+    return {"rig": rig, "kind": "optics", "cause": d["cause"]}
 
 
 async def _guider_alert(cfg, io, st, d, now, advise: bool) -> None:
@@ -2198,9 +2260,18 @@ def status(cfg, night: str | None = None, now: datetime | None = None) -> dict:
             "given_up": st.get("given_up") or {}, "tick": MONITOR.last,
             "closed_roof": st.get("closed_roof") or [],
             "alerts": st.get("alerts") or [],
+            "optics": st.get("optics") or [],
+            "advice": advice_lines(cfg, st),
             "watch": {"on": _watch_on(cfg), "seen": st.get("watch_seen") or {},
                       "modes": {k: action_mode(cfg, k) for k in
                                 ("refocus", "limit_subs", "guider_stop")}}}
+
+
+def advice_lines(cfg, st: dict) -> list[str]:
+    """What the pilot advises a human tonight without acting (optics)."""
+    return [f"{_hm(cfg, _parse_t(x.get('t')))} {x.get('text')}"
+            + (f" ({x['evidence']})" if x.get("evidence") else "")
+            for x in st.get("optics") or []]
 
 
 def _watch_on(cfg) -> bool:
@@ -2226,6 +2297,8 @@ def morning_lines(cfg, date: str) -> list[str]:
                    + "; ".join(_would_line(cfg, a) for a in adv[:10])
                    + (f"; +{len(adv) - 10} more" if len(adv) > 10 else "")
                    + " (advise: nothing was sent)")
+    for x in advice_lines(cfg, st):
+        out.append("Night pilot advice: " + x)
     for x in st.get("closed_roof") or []:
         out.append("Night pilot closed roof: " + str(x.get("text") or ""))
     rev = [f"{e.get('target')}" for e in (st.get("ledger") or {}).values()
