@@ -518,6 +518,82 @@ def test_closed_roof_spell_is_recorded_once(tmp_path):
     assert not npil.load_state(cfg3, NIGHT).get("closed_roof")
 
 
+
+# PS-228: the closed-roof line once per closure, local clock, no daytime spam
+
+class MovingRoofIO(FakeIO):
+    """The pre-fix shape: a window clipped to now - 14 h, so `since` moves
+    forward every tick (10-18: 05:52 local read as "closed at 15:52")."""
+    def roof_closed_since(self, cfg, now):
+        return now - timedelta(hours=14)
+
+
+def _night_armer(dusk="01:30", dawn="12:00"):
+    a = FakeArmer(dawn=T(dawn))
+    a.plan.update(dusk_utc=T(dusk).isoformat() + "Z", dawn_utc=T(dawn).isoformat() + "Z")
+    return a
+
+
+def test_ps228_closed_all_day_is_one_record_no_push(tmp_path):
+    """10-18 / 10-21 shape: the roof closed since the previous afternoon,
+    one tick a minute until dawn: one record, no push, no clipped clock."""
+    cfg = _cfg(tmp_path)
+    armer, io = _night_armer(dawn="12:00"), MovingRoofIO(cfg, owed=OWED)
+    for hm in ("11:44", "11:45", "11:46", "11:47", "11:52", "11:58"):
+        _tick(cfg, armer, io, hm)
+    st = npil.load_state(cfg, NIGHT)
+    assert len(st["closed_roof"]) == 1
+    txt = st["closed_roof"][0]["text"]
+    assert txt.startswith("roof closed since dusk (19:30)") and "15:" not in txt
+    assert io.pushes == []
+    assert len(_ev(cfg, "closed_roof")) == 1
+    # after dawn (and the next day before dusk) nothing at all
+    for hm in ("12:00", "12:01", "18:00"):
+        _tick(cfg, armer, io, hm)
+    assert len(npil.load_state(cfg, NIGHT)["closed_roof"]) == 1 and io.pushes == []
+
+
+def test_ps228_mid_night_closure_one_record_one_push(tmp_path):
+    """10-14 shape: closed mid-night with time left: one record, one push,
+    the closure time in local time; reopening and closing again is a new
+    spell."""
+    cfg = _cfg(tmp_path)
+    armer, io = _night_armer(), FakeIO(cfg, roof=T("06:03"), owed=OWED)
+    for hm in ("06:04", "06:05", "06:06"):
+        _tick(cfg, armer, io, hm)
+    st = npil.load_state(cfg, NIGHT)
+    assert len(st["closed_roof"]) == 1 and len(io.pushes) == 1
+    assert "roof closed at 00:03 with 356 min to dawn" in io.pushes[0][1]
+    io.roof = None
+    _tick(cfg, armer, io, "07:00")
+    io.roof = T("08:00")
+    _tick(cfg, armer, io, "08:01")
+    _tick(cfg, armer, io, "08:02")
+    assert len(npil.load_state(cfg, NIGHT)["closed_roof"]) == 2 and len(io.pushes) == 2
+
+
+def test_ps228_under_min_left_is_recorded_not_pushed(tmp_path):
+    cfg = _cfg(tmp_path)
+    armer, io = _night_armer(), FakeIO(cfg, roof=T("11:40"), owed=OWED)
+    _tick(cfg, armer, io, "11:41")
+    _tick(cfg, armer, io, "11:42")
+    st = npil.load_state(cfg, NIGHT)
+    assert len(st["closed_roof"]) == 1 and "no closed-roof darks" in st["closed_roof"][0]["text"]
+    assert io.pushes == []
+
+
+def test_ps228_roof_closed_since_is_not_clipped_at_14h(tmp_path):
+    """The real PilotIO: a roof closed 20 h ago reads its true start."""
+    cfg = _cfg(tmp_path)
+    now = T("11:52")
+    start = now - timedelta(hours=20)
+    (tmp_path / "safety_history.jsonl").write_text(
+        json.dumps({"ts": (start - timedelta(hours=3)).isoformat() + "Z", "state": "safe"}) + "\n"
+        + json.dumps({"ts": start.isoformat() + "Z", "state": "unsafe"}) + "\n",
+        encoding="utf-8")
+    assert npil.PilotIO().roof_closed_since(cfg, now) == start
+    assert npil.PilotIO().roof_closed_since(cfg, now + timedelta(minutes=1)) == start
+
 def _walk(node):
     if isinstance(node, dict):
         yield node

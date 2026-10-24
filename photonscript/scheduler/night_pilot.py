@@ -994,10 +994,15 @@ class PilotIO:
 
     def roof_closed_since(self, cfg, now: datetime) -> datetime | None:
         """When the current unsafe (roof closed) spell began, None when the
-        safety monitor reads safe (shared.safety_history)."""
+        safety monitor reads safe (shared.safety_history). PS-228: the
+        lookback is ROOF_LOOKBACK_H (longer than a day), not 14 h: a window
+        is clipped to the lookback start, so a roof closed since the
+        previous afternoon used to read as a new spell every minute
+        (05:52 local minus 14 h = "closed at 15:52")."""
         try:
             from photonscript.shared.safety_history import unsafe_windows
-            wins, _src = unsafe_windows(cfg, now - timedelta(hours=14), now)
+            wins, _src = unsafe_windows(
+                cfg, now - timedelta(hours=ROOF_LOOKBACK_H), now)
         except Exception:  # noqa: BLE001
             return None
         if wins and wins[-1][1] >= now - timedelta(seconds=1):
@@ -1590,6 +1595,16 @@ def closed_roof_min_left(cfg) -> float:
     return max(0.0, _f(cfg, "closed_roof_darks_min_left_min", 30.0))
 
 
+ROOF_LOOKBACK_H = 26.0
+
+
+def _plan_t(armer, key: str) -> datetime | None:
+    try:
+        return _parse_t((getattr(armer, "plan", None) or {}).get(key))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def closed_roof(cfg, armer, io, st: dict, now: datetime) -> dict | None:
     """The roof closed mid-night (the safety monitor unsafe, the mount parked
     by the sequence's UNSAFE branch) with more than closed_roof_darks_min_left_min
@@ -1599,7 +1614,16 @@ async def closed_roof(cfg, armer, io, st: dict, now: datetime) -> dict | None:
     sent from here. The pilot records the spell and what fits in it (run event
     kind night_pilot "closed_roof", one push), and the morning report says
     what the closed roof was used for. Never opens, moves or commands
-    anything. Returns the spell record or None."""
+    anything. Returns the spell record or None.
+
+    PS-228: one record per closure. The spell is latched
+    (st["closed_roof_open"]) until the roof reads safe again, so a moving
+    `since` can never make a new spell; nothing is checked outside the dark
+    window (before dusk, from dawn on: a daytime closure is not a mid-night
+    one); a spell that began before dusk is recorded once as "closed since
+    dusk" without a push, and so is the "under N min, no darks" case (the
+    morning report line is enough). Only a mid-night closure with time for
+    darks pushes."""
     if not closed_roof_on(cfg):
         return None
     from photonscript.scheduler.armer import LIVE_STATES
@@ -1607,32 +1631,53 @@ async def closed_roof(cfg, armer, io, st: dict, now: datetime) -> dict | None:
         return None
     since = io.roof_closed_since(cfg, now)
     if since is None:
+        st.pop("closed_roof_open", None)
+        return None
+    if st.get("closed_roof_open"):
+        return None
+    dusk, dawn = _plan_t(armer, "dusk_utc"), _plan_t(armer, "dawn_utc")
+    if dawn is None:
+        try:
+            dawn = armer._dawn()
+        except Exception:  # noqa: BLE001
+            dawn = None
+    if (dusk is not None and now < dusk) or (dawn is not None and now >= dawn):
         return None
     key = _iso(since)
     spells = st.setdefault("closed_roof", [])
     if any(x.get("since") == key for x in spells):
+        st["closed_roof_open"] = key
         return None
+    st["closed_roof_open"] = key
     left = _dark_left_min(armer, now)
     from photonscript.scheduler import sub_watch
     rec = {"since": key, "t": _iso(now), "dark_left_min": None if left is None
            else round(left)}
+    before_dusk = dusk is not None and since < dusk
+    when = (f"closed since dusk ({_hm(cfg, dusk)})" if before_dusk
+            else f"closed at {_hm(cfg, since)}")
+    push = not before_dusk
     if left is None or left < closed_roof_min_left(cfg):
-        rec.update(plan=[], text=f"roof closed at {_hm(cfg, since)} with "
+        push = False
+        rec.update(plan=[], text=f"roof {when} with "
                    f"{'?' if left is None else int(left)} min to dawn: under "
                    f"{closed_roof_min_left(cfg):g} min, no closed-roof darks")
     else:
         plan = sub_watch.closed_roof_plan(io.darks_owed(cfg), left,
                                           light_lengths=io.light_lengths(cfg, armer),
                                           min_left_min=closed_roof_min_left(cfg))
+        push = push and bool(plan)
         rec.update(plan=plan, text=(
-            f"roof closed at {_hm(cfg, since)} with {int(left)} min to dawn: "
+            f"roof {when} with {int(left)} min to dawn: "
             + (f"the sequences shoot owed darks until safe or dawn: "
                f"{sub_watch.plan_text(cfg, plan)}" if plan else
                "no darks owed on either rig")))
     spells.append(rec)
     _event(cfg, st["night"], "closed_roof", "Night pilot: " + rec["text"], now,
            rig="rc16", plan=rec.get("plan"))
-    await io.notify(cfg, "Night pilot: " + rec["text"] + ".", priority=0)
+    rec["pushed"] = push
+    if push:
+        await io.notify(cfg, "Night pilot: " + rec["text"] + ".", priority=0)
     return rec
 
 
