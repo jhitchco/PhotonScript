@@ -2075,7 +2075,37 @@ unique per goal; urls must be http(s). Nothing else reads them.
   "Progression sheet":
   `photonscript target-links --target M31 --add "Progression sheet"
   https://claude.ai/artifact/P5vqZKUQW2eQxyRhhaNRcq --url
-  http://100.94.189.77:8100`.
+  http://100.94.189.77:8100`. M33 / NGC 604:
+  `https://claude.ai/artifact/3YtZccfhp2spWjz7HrQ2rc`.
+
+### Progression sheets update themselves (2026-10-24)
+
+`integration/progression.py` keeps one store per target under
+`<integration_staging_root parent>/progression/<slug>/` (desktop:
+`I:\Astrophotography\progression\m31`, `heart`, `m33`): `meta.json` (title,
+sub, facts, filters, notes, aliases, `artifact_url`, published hash),
+`versions.json` (one entry per frame), the 1000 px thumbnails and the built
+`<slug>_progression.html` (thumbnails embedded; the darkroom contact-sheet
+design of the hand-built sheets).
+
+- Hook: `pipeline.run` (integrate, integrate-watch, autointegrate),
+  `blend.run`, `finish.run` and `finish.run_mono_color` call
+  `progression.after_run` after a successful run: it adds the run's frame
+  (ledger.json numbers; *_vivid.jpg, else the mono color image, *_blend.jpg,
+  *_final.jpg) and rebuilds the sheet. Guarded: a sheet never fails a run.
+  `PS_PROGRESSION_SHEETS=off` turns it off (the test suite does).
+- The "changed" note is derived from the previous frame of the same lineage
+  (Piggy wide / RC16 core / Blend): more data (x factor), new nights, flats
+  added, matched darks, new processing settings, blend vs single rig. A note
+  or title set by hand is kept on a re-add.
+- `progression/pending_publish.json` lists the sheets whose HTML changed
+  since the last publish. Code cannot publish artifacts: Claude runs
+  `photonscript progression-sheet --pending`, republishes each html to its
+  artifact URL (same URL), then `progression-sheet --target <slug>
+  --published`.
+- CLI: `photonscript progression-sheet [--target T] [--build] [--add-run DIR
+  [--changed TEXT] [--title TEXT]] [--edit ID --changed TEXT] [--import-seed
+  DIR] [--pending] [--published] [--root DIR] [--json]`.
 
 ### Mosaic goals (PS-111)
 

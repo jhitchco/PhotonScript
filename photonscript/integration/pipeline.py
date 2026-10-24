@@ -447,7 +447,11 @@ def run(o: Options, echo=print) -> dict:
     # second job never stages into the gap between this run's launches
     with pilock.job(f"integrate {o.target} [{o.rig}]", enabled=o.run_pixinsight and not o.dry_run,
                     wait_min=o.lock_wait_min, echo=echo):
-        return _run_ws(o, echo)
+        res = _run_ws(o, echo)
+    # progression sheet (progression.py): guarded, never fails the run
+    from photonscript.integration import progression
+    progression.after_run(res, o.staging_root, echo)
+    return res
 
 
 def _run_ws(o: Options, echo) -> dict:
