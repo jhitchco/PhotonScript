@@ -44,6 +44,7 @@ import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -136,8 +137,20 @@ def _write_json(p: Path, obj) -> Path:
     p = Path(p)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, indent=1, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, p)
+    text = json.dumps(obj, indent=1, ensure_ascii=False)
+    tmp.write_text(text, encoding="utf-8")
+    for i in range(20):
+        try:
+            os.replace(tmp, p)
+            return p
+        except PermissionError:
+            # Windows: a virus scanner or the indexer holds the file just written
+            time.sleep(0.05 * (i + 1))
+    p.write_text(text, encoding="utf-8")
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
     return p
 
 
