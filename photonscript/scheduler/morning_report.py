@@ -18,6 +18,10 @@ Built only from data other passes already keep (nothing is measured here):
   * dusk flats (2026-10-24, dusk_flats_check.morning_line): after a
     dispatched dusk run, "Dusk flats <night>: RC16 N shot, M filed (...);
     Piggy-600 ..." with NINA's reason for each set that saved nothing
+  * dawn flats (2026-10-24, dusk_flats_check.dawn_morning_line): the night
+    sequences' own dawn sets, "Dawn flats <night>: RC16 N shot, M filed
+    (roof closed at the flat window, closed 04:25 | L, R: no exposure, sky
+    too dim | NINA stopped 06:35 before the 06:38 window); Piggy-600 ..."
   * guiding health (RC16, the guided mount): the live guard summary
     (episodes, PS-155 no-corrections episodes and the subs graded inside
     them, PS-165), the PS-156 unguided fallback, the median guide RMS
@@ -215,6 +219,7 @@ def report_card(config, date: str | None = None, *, projects=None,
            "rigs": [], "calibration": None, "library": None, "tracking": None,
            "nina_logs": None, "completeness": None, "piggy_guard": None,
            "sub_doctor": None, "core": None, "blend": None, "dusk_flats": None,
+           "dawn_flats": None,
            "night_pilot": [], "deep_night": None, "tpoint": None,
            "tpoint_coverage": None, "paused_tonight": [], "tpoint_preflight": None}
     try:   # 2026-10-16: the arm's TPoint / ProTrack preflight (a blocked
@@ -286,6 +291,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["dusk_flats"] = dk_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no dusk flats line: %s", e)
+    try:   # 2026-10-24: the dawn sets too, with why none was saved
+        from photonscript.scheduler.dusk_flats_check import dawn_morning_line
+        out["dawn_flats"] = dawn_morning_line(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no dawn flats line: %s", e)
     try:
         from photonscript.scheduler.tracking_drift import morning_line as drift_line
         out["tracking"] = drift_line(config, date)
@@ -430,6 +440,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
         lines.append(card["library"])
     if card.get("dusk_flats"):
         lines.append(card["dusk_flats"])
+    if card.get("dawn_flats"):
+        lines.append(card["dawn_flats"])
     if (card.get("nina_logs") or {}).get("line"):
         lines.append(card["nina_logs"]["line"])
     if card.get("completeness"):   # PS-182
@@ -485,11 +497,11 @@ _RIG_LINE = re.compile(r"^[^:\n]{1,40}: \d+ kept / \d+ rejected")
 def card_line_priority(line: str) -> int:
     """PRI_RIG for a per-rig card line (_rig_line: "<rig>: N kept / M
     rejected..."), the Piggy guard line, the sub doctor line, the night
-    pilot's action line, the deep night line or the dusk flats line, else
+    pilot's action line, the deep night line or the dusk / dawn flats line, else
     PRI_DETAIL."""
     if _RIG_LINE.match(line or "") or str(line or "").startswith(
             ("Piggy guard:", "Night pilot:", "What went wrong",
-             "Deep night on ", "Dusk flats ")):
+             "Deep night on ", "Dusk flats ", "Dawn flats ")):
         return PRI_RIG
     return PRI_DETAIL
 

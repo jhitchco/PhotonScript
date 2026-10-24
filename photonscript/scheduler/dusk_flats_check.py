@@ -27,6 +27,22 @@ night_report(config, date) looks at what that evening actually left:
 morning_line: "Dusk flats 2026-10-23: RC16 0 shot, 0 filed (Ha, OIII: no
 exposure, sky too dim; R, G, B, L: not shot by the 19:19 stop); Piggy-600 0
 shot, 0 filed (OSC: no exposure, sky too bright)". Nothing here writes.
+
+Dawn flats (2026-10-24): the same count for the night sequences' own dawn
+sets, so a morning that saved none says why. dawn_report(config, date):
+
+  window      astro dawn - DAWN_LEAD_MIN to sunrise + DAWN_TAIL_MIN (the
+              night's twilight times); a rig whose NINA log shows no sequence
+              activity in it is left out, no rig = no report
+  shot/filed  as for dusk, FLAT frames written inside the window
+  why         from NINA's log: the safety state when the flat window opened
+              (RC16 nautical dawn + 5, Piggy-600 + osc_flat_dawn_offset) and
+              when the roof closed, the sets NINA failed and why, and a stop
+              (the armer's dawn shutdown cancels the run) before the window
+
+dawn_morning_line: "Dawn flats 2026-10-23: RC16 0 shot, 0 filed (roof closed
+at the flat window, closed 04:25); Piggy-600 0 shot, 0 filed (roof closed at
+the flat window, closed 04:25; NINA stopped 06:35 before the 06:52 window)".
 """
 
 from __future__ import annotations
@@ -236,3 +252,223 @@ def morning_line(config, date: str | None) -> str | None:
         return None
     return (f"Dusk flats {date}: "
             + "; ".join(_rig_text(r, rep["stop_local"]) for r in rep["rigs"]))
+
+
+# ---- dawn flats (2026-10-24) -------------------------------------------------
+
+DAWN_LEAD_MIN = 30      # the dawn window opens this long before astro dawn
+DAWN_TAIL_MIN = 90      # and closes this long after sunrise
+_STATE = re.compile(r"state changed to (Safe|Unsafe)|Status=(Safe|Unsafe)")
+_SKYFLAT_START = "Determining Sky Flat Exposure Time"
+_RUN_MARKS = ("|SequenceItem.cs|Run|", "|Sequencer.cs|")
+_DISCONNECT_MARKS = ("DisconnectAllEquipment", "SafetyMonitorVM.cs|Disconnect")
+DISCONNECT_GRACE_S = 10
+
+
+def _just_after(t0: str | None, t1: str) -> bool:
+    """t1 within DISCONNECT_GRACE_S after t0 (NINA local ISO stamps)."""
+    if not t0:
+        return False
+    try:
+        dt = (datetime.fromisoformat(t1) - datetime.fromisoformat(t0)).total_seconds()
+    except ValueError:
+        return False
+    return 0 <= dt <= DISCONNECT_GRACE_S
+
+
+def dawn_times(config, date: str) -> dict:
+    """{astro_dawn, naut_dawn, sunrise} (naive UTC) of the morning after the
+    evening of `date`; {} when they cannot be computed."""
+    try:
+        from photonscript.scheduler.night_plan import compute_night_times
+        tw = compute_night_times(config.get_observatory(),
+                                 datetime.strptime(date, "%Y-%m-%d"))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("dawn flats check: no twilight times for %s: %s", date, e)
+        return {}
+    return {k: tw.get(k) for k in ("astro_dawn", "naut_dawn", "sunrise")
+            if tw.get(k) is not None}
+
+
+def nina_dawn_scan(config, rig: str, date: str, lo_local: datetime,
+                   hi_local: datetime, window_local: datetime) -> dict:
+    """One forward pass over the rig's night logs (NINA logs local time):
+    ran (any sequence line inside lo..hi), state (the safety monitor's last
+    reading at window_local: "Safe" / "Unsafe" / None), closed (local time of
+    the last Safe -> Unsafe change at or before the window, or the first one
+    after it), tries (SkyFlat exposure searches), failed {filter: reason},
+    stopped (the first "Sequence run was cancelled" inside lo..hi)."""
+    out = {"ran": False, "state": None, "closed": None, "tries": 0,
+           "failed": {}, "stopped": None}
+    try:
+        from photonscript.scheduler.routers.triage import _rig_night_logs
+        paths, _note = _rig_night_logs(config, rig, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("dawn flats check: no NINA logs for %s: %s", rig, e)
+        return out
+    lo, hi = lo_local.isoformat(timespec="seconds"), hi_local.isoformat(timespec="seconds")
+    win = window_local.isoformat(timespec="seconds")
+    state = live = None          # the reading at the window / the latest one
+    closed_before = closed_after = disc = None
+    for p in paths:
+        reason, ts = "", ""
+        try:
+            with open(p, "rb") as fh:
+                read = 0
+                for raw in fh:
+                    read += len(raw)
+                    if read > NINA_SCAN_BYTES:
+                        break
+                    line = raw.decode("utf-8", "replace")
+                    m = _TS.match(line)
+                    if m:
+                        ts = m.group(1)
+                        if ts > hi:
+                            break
+                    if not ts:
+                        continue
+                    if any(mk in line for mk in _DISCONNECT_MARKS):
+                        disc = ts
+                    st = _STATE.search(line)
+                    if st:
+                        new = st.group(1) or st.group(2)
+                        if new == "Unsafe" and _just_after(disc, ts):
+                            # NINA reads a disconnected monitor as Unsafe
+                            # (the End area's DisconnectAllEquipment): not a
+                            # roof close
+                            live = None
+                            continue
+                        if new == "Unsafe" and live == "Safe":
+                            if ts <= win:
+                                closed_before = ts
+                            elif closed_after is None:
+                                closed_after = ts
+                        live = new
+                        if ts <= win:
+                            state = new
+                    if ts < lo:
+                        continue
+                    if any(mk in line for mk in _RUN_MARKS):
+                        out["ran"] = True
+                    if _SKYFLAT_START in line:
+                        out["tries"] += 1
+                    if "Sequence run was cancelled" in line and out["stopped"] is None:
+                        out["stopped"] = ts
+                    if "Failed to determine exposure time for sky flats" in line:
+                        reason = ("no exposure, sky too dim" if "too dim" in line else
+                                  "no exposure, sky too bright" if "too bright" in line
+                                  else "no exposure found")
+                        continue
+                    f = _FAILED.search(line)
+                    if f:
+                        out["failed"][f.group(1)] = reason or "failed"
+                        reason = ""
+        except OSError as e:
+            logger.debug("dawn flats check: %s unreadable: %s", p, e)
+    out["state"] = state
+    out["closed"] = closed_before if state == "Unsafe" else closed_after
+    return out
+
+
+def _hhmm(iso_local: str | None) -> str | None:
+    return iso_local[11:16] if iso_local else None
+
+
+def _dawn_rig(config, rig: str, date: str, t0: datetime, t1: datetime,
+              window: datetime, off: float) -> dict | None:
+    """One rig's dawn: frames shot / filed in t0..t1 (naive UTC), NINA's
+    reading of the flat window (naive UTC `window`), None when the rig ran
+    no sequence at dawn and wrote no flat."""
+    from photonscript.scheduler.calibration_qa import QUARANTINE_DIR
+    from photonscript.scheduler.runs import library_root
+    from photonscript.shared.rigs import rig_config, rig_label
+    rcfg = rig_config(config, rig)
+    frames = dusk_frames(Path(rcfg.image_watch_dir), date, t0, t1)
+    hop = timedelta(hours=off)
+    scan = nina_dawn_scan(config, rig, date, t0 + hop, t1 + hop, window + hop)
+    if not frames and not scan["ran"]:
+        return None
+    lib = library_root(rcfg) / "Calibration"
+    by_filter: dict[str, int] = {}
+    filed = quarantined = 0
+    for d, f in frames:
+        flt = _filter_of(config, rig, f)
+        by_filter[flt] = by_filter.get(flt, 0) + 1
+        if (lib / "FLAT" / d / f.name).exists():
+            filed += 1
+        elif (lib / QUARANTINE_DIR / "FLAT" / d / f.name).exists():
+            quarantined += 1
+    win_local = (window + hop).isoformat(timespec="seconds")
+    stopped = scan["stopped"]
+    return {"rig": rig, "name": rig_label(config, rig), "shot": len(frames),
+            "by_filter": by_filter, "filed": filed, "quarantined": quarantined,
+            "waiting": len(frames) - filed - quarantined,
+            "window_local": win_local[11:16], "roof": scan["state"],
+            "closed_local": _hhmm(scan["closed"]), "tries": scan["tries"],
+            "failed": {k: v for k, v in scan["failed"].items()
+                       if not by_filter.get(k)},
+            "stopped_local": _hhmm(stopped),
+            "stopped_before_window": bool(stopped and stopped < win_local)}
+
+
+def dawn_report(config, date: str, times: dict | None = None) -> dict | None:
+    """The night sequences' dawn flats on the morning after the evening of
+    `date`, per rig that ran a sequence at dawn; None when neither did (or
+    the twilight times are unknown). times: {astro_dawn, naut_dawn,
+    sunrise} naive UTC (default: computed for the observatory)."""
+    from photonscript.scheduler.calibration import osc_flat_dawn_offset
+    from photonscript.shared.localtime import utc_offset_hours
+    tw = times if times is not None else dawn_times(config, date)
+    naut = tw.get("naut_dawn")
+    if naut is None:
+        return None
+    t0 = (tw.get("astro_dawn") or naut - timedelta(minutes=30)) - timedelta(
+        minutes=DAWN_LEAD_MIN)
+    t1 = (tw.get("sunrise") or naut + timedelta(minutes=50)) + timedelta(
+        minutes=DAWN_TAIL_MIN)
+    off = utc_offset_hours(config, naut)
+    windows = {"rc16": naut + timedelta(minutes=5)}
+    if getattr(config, "piggyback_enabled", False):
+        windows["piggyback"] = naut + timedelta(minutes=osc_flat_dawn_offset(config),
+                                                seconds=90)
+    rigs = [r for r in (_dawn_rig(config, rig, date, t0, t1, w, off)
+                        for rig, w in windows.items()) if r]
+    if not rigs:
+        return None
+    return {"night": date, "naut_dawn": naut.isoformat() + "Z", "rigs": rigs}
+
+
+def _dawn_text(r: dict) -> str:
+    s = f"{r['name']} {r['shot']} shot, {r['filed']} filed"
+    bits = []
+    if r["quarantined"]:
+        bits.append(f"{r['quarantined']} quarantined by QA")
+    if r["waiting"]:
+        bits.append(f"{r['waiting']} waiting for the dawn sweep")
+    if r["roof"] == "Unsafe":
+        bits.append("roof closed at the flat window"
+                    + (f", closed {r['closed_local']}" if r["closed_local"] else ""))
+    elif r["closed_local"] and not r["shot"]:
+        bits.append(f"roof closed {r['closed_local']}")
+    groups: dict[str, list[str]] = {}
+    for f, why in r["failed"].items():
+        groups.setdefault(why, []).append(f)
+    bits += [f"{', '.join(fs)}: {why}" for why, fs in groups.items()]
+    if r["stopped_before_window"] and not r["shot"]:
+        bits.append(f"NINA stopped {r['stopped_local']} before the "
+                    f"{r['window_local']} window")
+    if not r["shot"] and not bits:
+        bits.append("no sky flat in NINA's log" if not r["tries"]
+                    else "no flat saved")
+    return s + (f" ({'; '.join(bits)})" if bits else "")
+
+
+def dawn_morning_line(config, date: str | None, times: dict | None = None) -> str | None:
+    """"Dawn flats <date>: RC16 N shot, M filed (...); Piggy-600 ..." or None
+    when no rig ran a sequence at that dawn."""
+    if not date:
+        return None
+    rep = dawn_report(config, date, times)
+    if not rep:
+        return None
+    return f"Dawn flats {date}: " + "; ".join(_dawn_text(r) for r in rep["rigs"])

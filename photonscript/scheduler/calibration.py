@@ -649,7 +649,7 @@ def stale_flat_filters(config) -> list[str]:
     return out
 
 
-def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
+def _osc_sky_flat(count: int, gain: int, offset: int, attempts: int = 1) -> dict:
     """A SkyFlat block for a one-shot-color rig (no filter wheel): NINA's
     auto-exposure flat loop, mirroring _sky_flat with a filterless
     SwitchFilter. PS-132: NINA's SkyFlat looks its SwitchFilter child up with
@@ -674,6 +674,7 @@ def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
         container_type="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, "
                        "NINA.Sequencer")
     sf["IsExpanded"] = False
+    sf["Attempts"] = max(1, int(attempts))   # dawn: dawn_flat_attempts
     sf.update(MinExposure=0.1, MaxExposure=30.0, HistogramTargetPercentage=0.5,
               HistogramTolerancePercentage=SKY_FLAT_TOLERANCE, ShouldDither=False,
               DitherPixels=3.0, DitherSettleTime=5.0)
@@ -1436,6 +1437,39 @@ def osc_flat_dawn_offset(config) -> int:
     return max(5, min(want, max(5, cap)))
 
 
+DAWN_FLAT_END_MARGIN_MIN = 3   # the dawn flats end this long before the backstop
+
+
+def dawn_flat_attempts(config) -> int:
+    """2026-10-24: tries per dawn SkyFlat set (dawn_flat_attempts, at least
+    1). NINA's SkyFlat gives up "sky is too dim" once its search hits the
+    30 s cap short of the band; at dawn the sky doubles in ~3-4 min, so a
+    retry finds the exposure a single try missed (10-08 / 10-13 / 10-15:
+    every RC16 and OSC set failed once and saved nothing)."""
+    try:
+        return max(1, int(getattr(config, "dawn_flat_attempts", 4) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def dawn_flat_deadline_offset(config) -> int:
+    """2026-10-24: minutes after nautical dawn at which both rigs' dawn sky
+    flats end by themselves (a TimeCondition on the flats block):
+    DAWN_FLAT_END_MARGIN_MIN before the armer's dawn backstop (ND + 5 +
+    dawn_flats_window_min, PS-36), so retries never run into the shutdown and
+    the RC16 End area still parks and warms on its own. 5 (no flat time)
+    when the window is off."""
+    win = int(getattr(config, "dawn_flats_window_min", 40) or 0)
+    return max(5, 5 + win - DAWN_FLAT_END_MARGIN_MIN) if win > 0 else 5
+
+
+def dawn_flat_time_condition(config) -> dict:
+    """The dawn flats' own end: TimeCondition at nautical dawn +
+    dawn_flat_deadline_offset."""
+    from photonscript.scheduler.nina_sequence_json import _time_condition
+    return _time_condition("NauticalDawnProvider", dawn_flat_deadline_offset(config))
+
+
 def generate_piggyback_companion_json(config, has_safety: bool = False,
                                       with_lights: bool = False,
                                       osc_segments: list | None = None,
@@ -1664,9 +1698,12 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     flat_items = [
         _pushover("Piggyback", f"dawn flat window — shooting {n} OSC sky flats "
                   "(riding the RC16 slew)"),
-        _osc_sky_flat(n, *_pb_gain_offset(config)),
+        _osc_sky_flat(n, *_pb_gain_offset(config),
+                      attempts=dawn_flat_attempts(config)),
         _pushover("Piggyback", "OSC dawn flats complete — warming"),
     ]
+    # 2026-10-24: a "too dim" set is retried (dawn_flat_attempts) and the
+    # block ends by itself before the armer's dawn backstop
     if has_safety:
         target_items.append(_wait_safe_until(
             "NauticalDawnProvider", max(flat_wait, flat_offset),
@@ -1674,9 +1711,12 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         target_items.append(_seq_container(
             "DAWN_SKY_FLATS_OSC (skipped if unsafe: closed roof makes junk "
             "flats)", flat_items,
-            conditions=[_safety_condition(), _loop_once()]))
+            conditions=[_safety_condition(), _loop_once(),
+                        dawn_flat_time_condition(config)]))
     else:
-        target_items += flat_items
+        target_items.append(_seq_container(
+            "DAWN_SKY_FLATS_OSC (time-gated: no safety monitor)", flat_items,
+            conditions=[_loop_once(), dawn_flat_time_condition(config)]))
     return _companion_root(start_items, target_items, end_items)
 
 
