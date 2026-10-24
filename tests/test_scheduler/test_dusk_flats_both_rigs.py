@@ -23,6 +23,7 @@ from photonscript.shared import rigs
 from photonscript.shared.config import PhotonScriptConfig
 from photonscript.shared.night_events import events_path
 from photonscript.shared.phd2_store import read_jsonl
+from tests.test_scheduler import fake_sky
 
 IDLE = ([{"Name": "Start", "Status": "FINISHED"},
          {"Name": "Targets", "Status": "CREATED"}], None)
@@ -87,6 +88,7 @@ def env(tmp_path, monkeypatch):
     tw = {"sunset": sunset, "naut_dusk": sunset + timedelta(minutes=54),
           "astro_dusk": sunset + timedelta(minutes=83)}
     monkeypatch.setattr(night_plan, "compute_night_times", lambda obs, base: tw)
+    fake_sky.install(monkeypatch, sunset)   # 2026-10-24: windows by sun altitude
     st = {"stale": ["B", "G"], "pb": {"owed": False, "reasons": [],
                                       "shot_today": False},
           "safe": True, "tree": IDLE, "gen": [], "nina2": []}
@@ -162,7 +164,7 @@ def test_dispatches_whatever_the_armer_idles_in(env, tmp_path, state):
     cfg = _cfg(tmp_path, auto_arm_enabled=False, noon_arm_enabled=False)
     armer, fs = _Armer(state), {}
     assert _tick(cfg, armer, fs, env) == "dispatched"
-    assert [r[0] for r in armer.raw] == ["auto dusk flats (B,G)"]
+    assert [r[0] for r in armer.raw] == ["auto dusk flats (G,B)"]
     assert fs["done"] and fs["until"] == cal.dusk_flat_times(cfg, env["now"])["stop"] \
         + timedelta(minutes=5)
     rows = _rows(cfg, env["now"])
@@ -186,8 +188,21 @@ def test_busy_armer_skips_and_retries(env, tmp_path):
     assert _tick(cfg, armer, fs, env, env["now"] + timedelta(minutes=10)) == "dispatched"
 
 
-def test_closed_roof_skips_then_dispatches_when_it_opens(env, tmp_path, caplog):
+def test_closed_roof_dispatches_and_nina_waits(env, tmp_path):
+    """2026-10-24: the routine goes out with the roof closed (cooled and
+    ready, NINA polls the roof every 10 s and starts when it reads safe)."""
     cfg = _cfg(tmp_path)
+    env["st"]["safe"] = False
+    armer, fs = _Armer(), {}
+    assert _tick(cfg, armer, fs, env) == "dispatched"
+    row = _rows(cfg, env["now"])[0]
+    assert "roof closed at dispatch" in row["detail"]
+    wait = _named(armer.raw[0][1], "WAIT_SAFE_FOR_DUSK_FLATS")[0]
+    assert wait["Items"]["$values"][0]["Time"] == cal.WAIT_SAFE_STEP_S == 10
+
+
+def test_closed_roof_skips_then_dispatches_when_it_opens(env, tmp_path, caplog):
+    cfg = _cfg(tmp_path, flats_dispatch_roof_closed=False)
     armer, fs = _Armer(), {}
     env["st"]["safe"] = False
     with caplog.at_level("INFO", logger="photonscript.scheduler.dusk_flats"):
@@ -200,7 +215,7 @@ def test_closed_roof_skips_then_dispatches_when_it_opens(env, tmp_path, caplog):
 
 
 def test_closed_roof_all_window_ends_with_a_line(env, tmp_path, caplog):
-    cfg = _cfg(tmp_path)
+    cfg = _cfg(tmp_path, flats_dispatch_roof_closed=False)
     armer, fs = _Armer(), {}
     env["st"]["safe"] = False
     _tick(cfg, armer, fs, env)
@@ -245,6 +260,16 @@ def test_nothing_stale_is_decided_once(env, tmp_path):
     assert armer.raw == []
 
 
+def test_not_dispatched_before_the_cool_lead(env, tmp_path):
+    """The dispatch goes out flats_dusk_cool_lead_min + 5 before the first
+    window (or sunset): earlier ticks do nothing."""
+    cfg = _cfg(tmp_path)
+    early = env["tw"]["sunset"] - timedelta(minutes=80)
+    armer = _Armer()
+    assert _tick(cfg, armer, {}, env, early) is None
+    assert armer.raw == [] and _rows(cfg, env["now"]) == []
+
+
 def test_outside_the_window_does_nothing(env, tmp_path):
     cfg = _cfg(tmp_path)
     early = env["tw"]["sunset"] - timedelta(minutes=95)
@@ -272,7 +297,7 @@ def test_piggyback_osc_set_goes_to_nina2_in_parallel(env, tmp_path):
     armer, fs = _Armer("ARMED"), {}
     assert _tick(cfg, armer, fs, env) == "dispatched"
     label, rc = armer.raw[0]
-    assert label == "auto dusk flats (B,G, Piggy-600)"
+    assert label == "auto dusk flats (G,B, Piggy-600)"
     # the RC16 holds its pointing for the riding OSC
     hold = _named(rc, "DUSK_SKY_FLATS")[0]["Items"]["$values"][-1]
     assert _short(hold["$type"]) == "WaitForTime"
@@ -450,7 +475,7 @@ def test_loop_runs_dusk_flats_with_auto_arm_and_noon_arm_off(env, tmp_path, monk
     cfg = _cfg(tmp_path, auto_arm_enabled=False, noon_arm_enabled=False)
     armer = _Armer()
     _loop_tick(cfg, armer, monkeypatch)
-    assert [r[0] for r in armer.raw] == ["auto dusk flats (B,G)"]
+    assert [r[0] for r in armer.raw] == ["auto dusk flats (G,B)"]
 
 
 def test_loop_holds_the_automatic_arm_only(env, tmp_path, monkeypatch):

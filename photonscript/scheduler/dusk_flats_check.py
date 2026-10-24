@@ -36,7 +36,7 @@ sets, so a morning that saved none says why. dawn_report(config, date):
               activity in it is left out, no rig = no report
   shot/filed  as for dusk, FLAT frames written inside the window
   why         from NINA's log: the safety state when the flat window opened
-              (RC16 nautical dawn + 5, Piggy-600 + osc_flat_dawn_offset) and
+              (each rig's first planned set, else nautical dawn + 5) and
               when the roof closed, the sets NINA failed and why, and a stop
               (the armer's dawn shutdown cancels the run) before the window
 
@@ -416,7 +416,7 @@ def dawn_report(config, date: str, times: dict | None = None) -> dict | None:
     `date`, per rig that ran a sequence at dawn; None when neither did (or
     the twilight times are unknown). times: {astro_dawn, naut_dawn,
     sunrise} naive UTC (default: computed for the observatory)."""
-    from photonscript.scheduler.calibration import osc_flat_dawn_offset
+    from photonscript.scheduler import flat_plan as fp
     from photonscript.shared.localtime import utc_offset_hours
     tw = times if times is not None else dawn_times(config, date)
     naut = tw.get("naut_dawn")
@@ -427,10 +427,18 @@ def dawn_report(config, date: str, times: dict | None = None) -> dict | None:
     t1 = (tw.get("sunrise") or naut + timedelta(minutes=50)) + timedelta(
         minutes=DAWN_TAIL_MIN)
     off = utc_offset_hours(config, naut)
+    # 2026-10-24: the flat window of each rig is its first planned set
+    # (flat_plan, stored at dispatch). A night without a stored plan ran the
+    # fixed windows of before (RC16 nautical dawn + 5, the Piggy-600 +
+    # piggyback_flat_dawn_offset_min + 90 s).
     windows = {"rc16": naut + timedelta(minutes=5)}
     if getattr(config, "piggyback_enabled", False):
-        windows["piggyback"] = naut + timedelta(minutes=osc_flat_dawn_offset(config),
-                                                seconds=90)
+        windows["piggyback"] = naut + timedelta(minutes=int(getattr(
+            config, "piggyback_flat_dawn_offset_min", 20) or 0), seconds=90)
+    plan = fp.load_plan(config, date, "dawn")
+    for rig, r in ((plan or {}).get("rigs") or {}).items():
+        if r.get("slots") and rig in windows:
+            windows[rig] = min(s["start"] for s in r["slots"])
     rigs = [r for r in (_dawn_rig(config, rig, date, t0, t1, w, off)
                         for rig, w in windows.items()) if r]
     if not rigs:
@@ -472,3 +480,132 @@ def dawn_morning_line(config, date: str | None, times: dict | None = None) -> st
     if not rep:
         return None
     return f"Dawn flats {date}: " + "; ".join(_dawn_text(r) for r in rep["rigs"])
+
+
+# ---- plan windows: what each window actually saved (2026-10-24) ---------------
+
+WINDOW_LEAD_MIN = 10    # frames this long before the plan's first set count
+WINDOW_TAIL_MIN = 12    # and this long after its end
+
+
+def _plan_span(p: dict) -> tuple[datetime, datetime] | None:
+    t0 = p.get("dispatched_at") or p.get("first_start") or p.get("ready")
+    t1 = p.get("end") or p.get("hard_end")
+    if not isinstance(t0, datetime) or not isinstance(t1, datetime):
+        return None
+    first = p.get("first_start") if isinstance(p.get("first_start"), datetime) else t0
+    return (min(t0, first) - timedelta(minutes=WINDOW_LEAD_MIN),
+            t1 + timedelta(minutes=WINDOW_TAIL_MIN))
+
+
+def _plan_rigs(p: dict) -> list[str]:
+    disp = p.get("dispatched")
+    rigs = []
+    for rig, r in (p.get("rigs") or {}).items():
+        if isinstance(disp, dict) and not disp.get(rig, False):
+            continue
+        if r.get("slots") or r.get("skipped"):
+            rigs.append(rig)
+    return rigs
+
+
+def window_counts(config, night: str, phase: str) -> dict | None:
+    """{rig: {filter: frames}} of the FLAT frames written inside the stored
+    flat plan's window (flat_plan.load_plan), or None with no plan."""
+    from photonscript.scheduler import flat_plan as fp
+    from photonscript.shared.rigs import rig_config
+    p = fp.load_plan(config, night, phase)
+    if not p:
+        return None
+    span = _plan_span(p)
+    if not span:
+        return None
+    out: dict = {}
+    for rig in _plan_rigs(p):
+        try:
+            rcfg = rig_config(config, rig)
+            frames = dusk_frames(Path(rcfg.image_watch_dir), night, *span)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("window counts %s: %s", rig, e)
+            continue
+        c: dict = {}
+        for _d, f in frames:
+            flt = _filter_of(config, rig, f)
+            c[flt] = c.get(flt, 0) + 1
+        out[rig] = c
+    return out
+
+
+def window_report(config, night: str, phase: str, learn: dict | None = None) -> dict:
+    """The truthful result of one flat window: per rig the frames saved per
+    filter, and for each planned or owed filter without a set why (the
+    plan's skip reason, NINA's failure, the roof). line: the push text
+    "Dusk flats 2026-10-24: RC16 B 15, L 12; Piggy-600 OSC 25. Not saved:
+    RC16 R (window passed ...). Sky model: ..." or "... none saved (...)"."""
+    from photonscript.scheduler import flat_plan as fp
+    from photonscript.shared.localtime import utc_offset_hours
+    from photonscript.shared.rigs import rig_label
+    p = fp.load_plan(config, night, phase) or {}
+    counts = window_counts(config, night, phase) or {}
+    span = _plan_span(p) if p else None
+    need = int(getattr(config, "flats_min_saved", 10) or 1)
+    title = f"{'Dusk' if phase == 'dusk' else 'Dawn'} flats {night}"
+    saved_bits, miss_bits = [], []
+    rigs = {}
+    for rig in _plan_rigs(p):
+        r = p["rigs"][rig]
+        name = rig_label(config, rig)
+        c = counts.get(rig) or {}
+        planned = [s["filter"] for s in r.get("slots") or []]
+        missing = [f for f in planned if c.get(f, 0) < need]
+        why: dict = {}
+        if missing and span:
+            off = utc_offset_hours(config, span[0])
+            hop = timedelta(hours=off)
+            first = min((s["start"] for s in r["slots"]), default=span[0])
+            scan = nina_dawn_scan(config, rig, night, span[0] + hop, span[1] + hop,
+                                  first + hop)
+            for f in missing:
+                if f in scan["failed"]:
+                    why[f] = scan["failed"][f]
+                elif "OSC" in scan["failed"] and rig != "rc16":
+                    why[f] = scan["failed"]["OSC"]
+                elif scan["state"] == "Unsafe" and not c:
+                    why[f] = "roof closed at the flat window" + (
+                        f" (closed {_hhmm(scan['closed'])})" if scan["closed"] else "")
+                elif c.get(f):
+                    why[f] = f"only {c[f]} frames"
+                elif not scan["ran"]:
+                    why[f] = "NINA ran no sequence in the window"
+                else:
+                    why[f] = "no frame saved"
+        for f, w in (r.get("skipped") or {}).items():
+            why.setdefault(f, "not planned: " + w)
+        got = {f: k for f, k in c.items() if k}
+        rigs[rig] = {"name": name, "saved": got, "missing": why, "planned": planned}
+        if got:
+            saved_bits.append(f"{name} " + ", ".join(
+                f"{f} {k}" for f, k in sorted(got.items(), key=lambda kv: _ord(kv[0]))))
+        for f, w in why.items():
+            miss_bits.append((name, f, w))
+    groups: dict = {}
+    for name, f, w in miss_bits:
+        groups.setdefault((name, w), []).append(f)
+    miss_txt = "; ".join(f"{name} {', '.join(fs)}: {w}" for (name, w), fs in groups.items())
+    if saved_bits:
+        line = f"{title}: " + "; ".join(saved_bits) + "."
+        if miss_txt:
+            line += f" Not saved: {miss_txt}."
+    else:
+        line = f"{title}: none saved" + (f" ({miss_txt})" if miss_txt else
+                                        " (nothing was planned)") + "."
+    ch = (learn or {}).get("changes") or []
+    if ch:
+        line += " Sky model: " + "; ".join(ch[:4]) + ("" if len(ch) <= 4 else " ...")
+    return {"night": night, "phase": phase, "rigs": rigs, "line": line,
+            "model_changes": ch}
+
+
+def _ord(f: str) -> int:
+    order = ("L", "R", "G", "B", "Ha", "OIII", "SII", "OSC")
+    return order.index(f) if f in order else 99

@@ -76,19 +76,21 @@ class PhotonScriptConfig(BaseSettings):
     # the UI (browsers cannot open File Explorer directly)
     dawn_flats_enabled: bool = True  # sky flats after imaging, before shutdown
     dawn_flats_window_min: int = 40  # PS-36: the armer's dawn shutdown waits
-    # until nautical dawn + 5 + this many minutes (capped at sunrise) whenever dawn
-    # flats are expected, so it no longer parks/warms both rigs before the flat
-    # window opens. Astro->nautical dawn is 28-37 min at AARO, so the old astro
-    # dawn + 30 shutdown ALWAYS fired before nautical dawn + 5. Unsafe at that
-    # point = shut down at once (no flats possible).
+    # for the dawn flats whenever they are expected (0 = never waits). Astro->
+    # nautical dawn is 28-37 min at AARO, so the old astro dawn + 30 shutdown
+    # ALWAYS fired before the flats. Unsafe at that point = shut down at once.
+    # 2026-10-24 (flats v2): the wait follows the stored dawn flat plan's end +
+    # 3 min, never past sunrise + flats_dawn_end_after_sunrise_min + 3 (it was
+    # nautical dawn + 5 + this, capped at sunrise); this value only sets the
+    # rule for a morning without a sunrise.
     dawn_flat_attempts: int = 4  # 2026-10-24: tries per dawn SkyFlat set (both
     # rigs). Every clear dawn since 09-07 (10-08, 10-13, 10-15) each set ran once
     # from ND+5 (OSC ND+20), found the sky "too dim" at the 30 s cap and gave up
     # after 1-11 min (RC16 L 2076-2782 ADU, OSC 9581-11978 at 30 s against a
     # 40 % floor of ~26000): no flat saved. A retry searches again in the
-    # brighter sky. The dawn flats block also ends by itself at ND + 5 +
-    # dawn_flats_window_min - 3 (before the armer's backstop), so retries never
-    # push the RC16 park past today's dawn shutdown.
+    # brighter sky. Each set is cut at its planned stop (flat_plan.py) and the
+    # block at the dawn hard end, so retries never push the park past the
+    # dawn shutdown.
     # PS-136: the armer WATCHES a sideloaded night (PS-123) it did not dispatch:
     # dawn checks + summary, guiding watchdog where guided, unsafe pause /
     # resume alerts, update refusal. It never loads, starts or re-dispatches.
@@ -918,21 +920,58 @@ class PhotonScriptConfig(BaseSettings):
     dusk_flats_end_margin_min: int = 8  # dusk flats stop this long before
                                         # nautical dusk (or the night's pre-config,
                                         # if earlier), leaving time to park
-    dusk_flats_narrowband: bool = False  # RC16 Ha / OIII / SII in the dusk set.
-                                  # Off (2026-10-24): on 10-23 the dusk run
-                                  # started at sunset + 18 (roof open 18:52)
-                                  # and NINA's SkyFlat read Ha 1100 ADU at
-                                  # 26 s, OIII 600 at 30 s (target about
-                                  # 32000): both failed "sky is too dim" after
-                                  # 11 min each and the time cap cut R, G, B,
-                                  # L. Narrowband stays owed for the dawn set.
+    dusk_flats_narrowband: bool = True  # RC16 Ha / OIII / SII may be planned
+                                  # at dusk. 2026-10-24 (flats v2): the sky
+                                  # model plans them only when their window
+                                  # (sun about +1.8 .. 0 deg, before sunset)
+                                  # is still ahead; on 10-23 the roof opened
+                                  # at sunset + 15 and they were 30x too dim,
+                                  # so a late roof leaves them owed for dawn.
+                                  # Off: never at dusk.
+    # --- Sky flats v2 (2026-10-24): windows by sun altitude ---------------
+    # scheduler/sky_flat_model.py learns, per rig and filter, the sun
+    # altitude at which a given exposure fills the histogram (NINA's SkyFlat
+    # lines + the saved flats, refit after every window); flat_plan.py
+    # schedules each owed filter in its window (dusk: narrowband, R/G/B, L;
+    # dawn: L, B/G/R, narrowband) and points at the flat spot opposite the sun.
+    flats_target_exposure_min_s: float = 2.0  # a window opens / closes where
+    flats_target_exposure_max_s: float = 10.0  # the filter needs this
+                                  # exposure (dawn; dusk uses the max below)
+    flats_dusk_exposure_max_s: float = 25.0  # dusk window ends where a set
+                                  # needs this (the roof opens ~sunset + 15,
+                                  # when 10 s windows have passed)
+    flats_nina_max_exposure_s: float = 30.0  # SkyFlat MaxExposure cap (the
+                                  # plan sets 3x the range max, at most this)
+    flats_frame_overhead_s: float = 2.0  # per flat frame (download + save),
+                                  # for the planned set length
+    flats_point_alt_deg: float = 75.0  # flat spot: this altitude, azimuth
+                                  # opposite the sun at the window's middle
+    flats_dawn_end_after_sunrise_min: int = 20  # dawn flats end by sunrise +
+                                  # this (the roof stays open to ~sunrise + 30
+                                  # on clear mornings); the armer's dawn
+                                  # backstop follows the plan's end + 3 min
+    flats_dusk_attempts: int = 2  # tries per dusk SkyFlat set (cut at its stop)
+    flats_dusk_cool_lead_min: int = 30  # dusk: cool this long before the first
+                                  # window (and before sunset); the dispatch
+                                  # goes out 5 min before that
+    flats_dispatch_roof_closed: bool = True  # dispatch the dusk run with the
+                                  # roof still closed: NINA waits for it and
+                                  # starts within 10 s of SAFE (AARO's roof
+                                  # is the site's; 10-23 it opened sunset + 15)
+    flats_slew_before_safe: bool = False  # unpark and point before the roof
+                                  # opens (off: a slew under a closed roof
+                                  # could foul it)
+    flats_min_saved: int = 10     # a set counts as shot (not owed by the
+                                  # other window) with at least this many frames
+    flats_report_push: bool = True  # after each window, count the saved
+                                  # flats per rig / filter and push the result
     piggyback_dusk_flats: bool = True  # Piggy-600 OSC dusk sky flats on NINA #2
                                        # alongside the RC16's (needs piggyback_enabled)
-    piggyback_dusk_flat_offset_min: int = 20  # OSC dusk flats start at sunset +
-                                              # this (after the RC16's slew lands)
-    piggyback_dusk_flat_hold_min: int = 10  # the RC16 holds its flat pointing
-                                            # this long after the OSC start
-                                            # (riding scope) before it parks
+    piggyback_dusk_flat_offset_min: int = 20  # retired 2026-10-24 (flats v2:
+                                              # the OSC set has its own
+                                              # sun-altitude window)
+    piggyback_dusk_flat_hold_min: int = 10  # retired 2026-10-24 (the RC16 holds
+                                            # its pointing to the OSC set's stop)
     evening_forecast_enabled: bool = True  # push a night-viewing forecast a few
                                   # hours before sunset (tonight's rating, usable
                                   # dark hours, the astro-dark gate window, best
@@ -1549,14 +1588,12 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_mount_check: str = "alert"
     piggyback_flat_count: int = 25  # PS-36: OSC dawn sky flats per night (20-30
                                     # target), at the OSC gain/offset
-    piggyback_flat_wait_min: int = 25  # PS-36: after nautical dawn + 5, wait at most
-                                       # until nautical dawn + this for the roof to be
-                                       # safe; later = skip the OSC flats (not wedge)
-    piggyback_flat_dawn_offset_min: int = 20  # PS-163: OSC dawn flats start at
-    # nautical dawn + this (min; +90 s for the RC16 slew). Was a fixed 5: on
-    # 2026-10-07 the OSC SkyFlat at ND+5 found the sky "too dim" at its 30 s
-    # max for 14 min and gave up (8188 ADU at 30 s by ND+20). Capped so the
-    # set fits the armer's dawn hold (ND + 5 + dawn_flats_window_min - 10).
+    piggyback_flat_wait_min: int = 25  # retired 2026-10-24 (flats v2: the OSC
+                                       # set waits for safe until its own stop)
+    piggyback_flat_dawn_offset_min: int = 20  # PS-163, retired 2026-10-24 (flats
+    # v2: the OSC dawn set starts where the Piggy-600's sky model fills a 10 s
+    # exposure, about ND + 35). Still read by the dawn report for nights shot
+    # before the change (the fixed ND + this + 90 s window of then).
     # PS-189: Wanderer Cover V4-EC on the Piggy-600 (motorized dust cover with
     # an EL flat panel; ASCOM CoverCalibrator, NINA "Flat Panel"). Off until
     # it is installed: with it off nothing below changes a sequence or a job.

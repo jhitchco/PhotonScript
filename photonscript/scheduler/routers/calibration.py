@@ -21,6 +21,10 @@ GET  /api/calibration/dusk-flats?night=      2026-10-24: read only. The
                                              per rig: shot, filed, quarantined,
                                              and NINA's reason per set that
                                              saved nothing
+GET  /api/calibration/sky-flats?night=       2026-10-24 flats v2: the sky
+                                             flat model, the stored dusk / dawn
+                                             plans and their window reports,
+                                             a preview of tonight's plan
 GET  /api/calibration/windows?rig=&minutes=  PS-182: darks windows + cooler
                                              reachability, the deferred plan
 POST /api/calibration/file                   PS-188 {"rig", "dry_run",
@@ -153,6 +157,37 @@ def api_calibration_dusk_flats(night: str = ""):
     return {"night": night, "report": night_report(cfg, night),
             "line": morning_line(cfg, night), "dawn": dawn,
             "dawn_line": dawn_morning_line(cfg, night) if dawn else None}
+
+
+@router.get("/api/calibration/sky-flats")
+def api_calibration_sky_flats(night: str = ""):
+    """2026-10-24 (flats v2), read only: the sky flat model (per rig and
+    filter the sun altitude at which the min / reference / max target
+    exposure fills the histogram, points, slope, recent changes), the
+    stored dusk / dawn plans of `night` (default: tonight) with each one's
+    window report once it ran, and tonight's plan as it would be made now
+    (owed filters, sun-altitude windows, pointing)."""
+    import re as _re
+    from photonscript.scheduler import flat_plan as fp
+    from photonscript.scheduler import sky_flat_model as sfm
+    from photonscript.shared.localtime import night_base_date
+    cfg = _cfg()
+    night = night or night_base_date(cfg).strftime("%Y-%m-%d")
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", night):
+        return JSONResponse(status_code=400,
+                            content={"detail": "night must be YYYY-MM-DD"})
+    stored = {ph: fp._jsonable(fp.load_plan(cfg, night, ph)) for ph in ("dusk", "dawn")}
+    preview = {}
+    try:
+        from photonscript.scheduler.calibration import stale_flat_filters
+        owed = stale_flat_filters(cfg)
+        for ph in ("dusk", "dawn"):
+            p = fp.plan(cfg, ph, night, owed, osc=bool(getattr(cfg, "piggyback_enabled", False)))
+            preview[ph] = {"text": fp.describe(cfg, p), "plan": fp._jsonable(p)}
+    except Exception as e:  # noqa: BLE001
+        preview = {"error": str(e)}
+    return {"night": night, "model": sfm.summary(cfg), "stored": stored,
+            "preview": preview}
 
 
 def calibration_folder_need(cfg, folders: list[str], get=None) -> set | None:

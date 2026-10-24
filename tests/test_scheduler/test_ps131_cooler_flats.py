@@ -266,6 +266,8 @@ def flats_env(tmp_path, monkeypatch):
         "preconfig_utc": (now + timedelta(hours=5)).isoformat() + "Z"})
     monkeypatch.setattr(night_plan, "compute_night_times",
                         lambda obs, base: {"sunset": now + timedelta(minutes=30)})
+    from tests.test_scheduler import fake_sky
+    fake_sky.install(monkeypatch, now + timedelta(minutes=30))   # flats v2
     monkeypatch.setattr(calibration, "stale_flat_filters", lambda c: ["Ha", "OIII"])
     monkeypatch.setattr(calibration, "generate_dusk_flats_json",
                         lambda c, only_filters=None, **kw: ('{"x": 1}', "18:45"))
@@ -305,7 +307,7 @@ def _flat_decisions(env):
 
 def test_flats_idle_nina_dispatches(flats_env):
     flats_env["tick"]()
-    assert flats_env["armer"].raw == ["auto dusk flats (Ha,OIII)"]
+    assert flats_env["armer"].raw == ["auto dusk flats (OIII,Ha)"]
     assert flats_env["armer"].armed == []
     # 2026-10-21: the dispatch is logged too
     assert [e["value"] for e in _flat_decisions(flats_env)] == ["dispatched"]
@@ -321,7 +323,7 @@ def test_flats_sideload_skips_with_one_push(flats_env):
     assert "flats skipped" in title and "sideloaded sequence is loaded" in msg
     ev = _flat_decisions(flats_env)
     assert [(e["value"], e["skip"]) for e in ev] == [("skipped", "sideload")]
-    assert ev[0]["trigger"] == "auto dusk flats (Ha,OIII)"
+    assert ev[0]["trigger"] == "auto dusk flats (OIII,Ha)"
     assert aa.decision_chip(ev[0]).startswith("Auto dusk flats skipped at")
 
 
@@ -335,7 +337,7 @@ def test_flats_nina_running_or_unreadable_skips(flats_env, tree, skip):
     assert len(flats_env["pushes"]) == 1
     flats_env["state"]["tree"] = IDLE        # NINA finished: flats go next tick
     flats_env["tick"]()
-    assert flats_env["armer"].raw == ["auto dusk flats (Ha,OIII)"]
+    assert flats_env["armer"].raw == ["auto dusk flats (OIII,Ha)"]
 
 
 def test_flats_and_arm_skips_push_separately(tmp_path):

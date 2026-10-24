@@ -27,8 +27,10 @@ a decision row (kind auto_arm, action dusk_flats) in tonight's events:
            set; 2026-10-24: RC16 narrowband only with dusk_flats_narrowband,
            else it stays owed for the dawn: "dawn_only" when nothing else
            is); armer not RUNNING / PAUSED / WATCHING; no capture job on
-           the RC16; roof open (safety monitor SAFE: a closed roof makes junk
-           flats, retried each tick until the window ends); the PS-125 guard.
+           the RC16; the safety monitor readable (2026-10-24: a closed roof
+           no longer holds the dispatch, NINA waits for it; with
+           flats_dispatch_roof_closed off it is retried each tick until the
+           window ends); the PS-125 guard.
   dispatch RC16 on NINA #1 (armer.dispatch_raw, the stale filters; holds its
            flat pointing for the Piggy-600 when the OSC set is owed) and,
            when owed, the Piggy-600 OSC set on NINA #2 (cooled to its
@@ -38,6 +40,18 @@ a decision row (kind auto_arm, action dusk_flats) in tonight's events:
 The auto-arm loop holds its own automatic arm until the flats stop (it
 would otherwise skip with "NINA is running"); a manual or remote Arm is
 never held (it only touches NINA at pre-config, after the flats stop).
+
+2026-10-24 (flats v2, flat_plan.py / sky_flat_model.py): the owed filters
+(minus what this morning's dawn window saved, counted frames) are planned
+by sun altitude; nothing fits = SKIP_NO_WINDOW (owed for the dawn). The
+dispatch goes out flats_dusk_cool_lead_min + 5 min before the first window
+(or sunset), with the roof closed too (flats_dispatch_roof_closed): NINA
+cools, waits for the roof (polled every 10 s) and shoots each filter in its
+window; a window that passed while the roof was closed is skipped there and
+stays owed. The plan is stored (flat_plan.save_plan) and
+maybe_report_windows counts the frames each window really saved, both
+twilights, and pushes that (never "complete" on NINA's word), after
+learning from the window (sky_flat_model.refresh).
 """
 
 from __future__ import annotations
@@ -60,6 +74,7 @@ SKIP_SAFETY_UNREADABLE = "safety_unreadable"
 SKIP_DISPATCH_FAILED = "dispatch_failed"
 SKIP_WINDOW_CLOSED = "window_closed"
 SKIP_DAWN_ONLY = "dawn_only"
+SKIP_NO_WINDOW = "no_window"
 
 TITLES = {
     SKIP_DISABLED: "auto_dusk_flats is off",
@@ -72,6 +87,7 @@ TITLES = {
     SKIP_DISPATCH_FAILED: "dispatch failed",
     SKIP_WINDOW_CLOSED: "dusk flat window closed",
     SKIP_DAWN_ONLY: "only dawn-only flats owed",
+    SKIP_NO_WINDOW: "no owed set fits a dusk window",
 }
 
 
@@ -146,6 +162,20 @@ def _stale(config, state: dict) -> tuple[list[str], dict]:
             except Exception:  # noqa: BLE001
                 logger.warning("auto-flats: Piggy-600 status unavailable",
                                exc_info=True)
+        # 2026-10-24: what this morning's dawn window saved (counted frames,
+        # not yet filed by the dawn sweep in every case) is not owed again
+        try:
+            from photonscript.scheduler.dusk_flats_check import window_counts
+            prev = (datetime.strptime(state["night"], "%Y-%m-%d")
+                    - timedelta(days=1)).strftime("%Y-%m-%d")
+            need = int(getattr(config, "flats_min_saved", 10) or 1)
+            counts = window_counts(config, prev, "dawn") or {}
+            done = {f for f, k in (counts.get("rc16") or {}).items() if k >= need}
+            state["stale"] = [f for f in state["stale"] if f not in done]
+            if (counts.get("piggyback") or {}).get("OSC", 0) >= need:
+                pb = {**pb, "owed": False}
+        except Exception:  # noqa: BLE001
+            logger.warning("auto-flats: dawn count unavailable", exc_info=True)
         state["pb"] = pb
     return state["stale"], state["pb"]
 
@@ -198,7 +228,30 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
         _note(config, state, SKIP_NOTHING_STALE, "RC16 and Piggy-600 flats are "
               "current (a dawn set today counts)", now, final=True)
         return SKIP_NOTHING_STALE
-    want = (", ".join(stale) if stale else "no RC16 filters") + (
+    # 2026-10-24: plan by sun altitude (flat_plan.py); the routine is
+    # dispatched early enough to be cooled before the first window and
+    # waits in NINA for the roof, starting within seconds of it reading safe
+    from photonscript.scheduler import flat_plan as fp
+    plan = fp.plan(config, "dusk", t["night"], stale, osc=pb_owed,
+                   ready=max(now + timedelta(minutes=3), t["open"]))
+    rc_slots = plan["rigs"]["rc16"]["slots"]
+    pb_slots = (plan["rigs"].get("piggyback") or {}).get("slots") or []
+    skipped = dict(plan["rigs"]["rc16"]["skipped"])
+    if not rc_slots and not pb_slots:
+        why = "; ".join(f"{f}: {w}" for f, w in list(skipped.items()) + list(
+            ((plan["rigs"].get("piggyback") or {}).get("skipped") or {}).items()))
+        _note(config, state, SKIP_NO_WINDOW, f"{why or 'nothing fits'}; owed for "
+              "the dawn" + (f" (and {', '.join(dawn_only)})" if dawn_only else ""),
+              now, final=True)
+        return SKIP_NO_WINDOW
+    lead = int(getattr(config, "flats_dusk_cool_lead_min", 30) or 30)
+    first = plan["first_start"]
+    dispatch_at = min(first, t["sunset"]) - timedelta(minutes=lead + 5)
+    if now < dispatch_at:
+        return None     # not yet: dispatched cool_lead + 5 min before
+    rc_names = [s["filter"] for s in rc_slots]
+    pb_owed = bool(pb_slots)
+    want = (", ".join(rc_names) if rc_names else "no RC16 filters") + (
         "; Piggy-600 OSC (" + "; ".join(pb.get("reasons") or ["owed"]) + ")"
         if pb_owed else "")
     if armer.state in BUSY_STATES:
@@ -213,7 +266,7 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
     except Exception:  # noqa: BLE001
         pass
     safe = await read_roof_safe(config)
-    if safe is False:
+    if safe is False and not getattr(config, "flats_dispatch_roof_closed", True):
         _note(config, state, SKIP_ROOF_CLOSED, "closed roof makes junk flats; "
               f"retrying until {t['last_dispatch']:%H:%M}Z; wanted: {want}", now)
         return SKIP_ROOF_CLOSED
@@ -221,8 +274,8 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
         _note(config, state, SKIP_SAFETY_UNREADABLE, "NINA #1 safety monitor "
               f"not readable (is NINA running?); wanted: {want}", now)
         return SKIP_SAFETY_UNREADABLE
-    label = ("auto dusk flats (" + (",".join(stale) if stale else "OSC hold")
-             + (", Piggy-600" if pb_owed and stale else "") + ")")
+    label = ("auto dusk flats (" + (",".join(rc_names) if rc_names else "OSC hold")
+             + (", Piggy-600" if pb_owed and rc_names else "") + ")")
     skip, why = await (guard or aa.auto_arm_guard)(config)
     if skip:   # PS-131: a sideload tonight, NINA #1 running or unreadable
         await aa.skip_and_notify(config, skip, why, label, notify,
@@ -232,24 +285,32 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
         state["last"] = ("skipped", skip, why)
         return skip
     seq_text, start_local = cal.generate_dusk_flats_json(
-        config, only_filters=stale, hold_for_osc=pb_owed, now=now)
+        config, only_filters=rc_names, hold_for_osc=pb_owed, now=now, plan=plan)
     ok = await armer.dispatch_raw(json.loads(seq_text), label)
     if not ok:
         _note(config, state, SKIP_DISPATCH_FAILED,
               f"NINA #1: {getattr(armer, 'detail', '') or 'refused'}", now)
         return SKIP_DISPATCH_FAILED
-    piggy = await _dispatch_piggyback(config, now) if pb_owed else None
+    piggy = await _dispatch_piggyback(config, now, plan) if pb_owed else None
+    fp.save_plan(config, plan, dispatched_at=now,
+                 dispatched={"rc16": True,
+                             "piggyback": bool(piggy and piggy.startswith("dispatched"))},
+                 roof_at_dispatch=("open" if safe else "closed"))
     state["until"] = t["stop"] + timedelta(minutes=5)
     stop_local = _local(config, t["stop"])
-    detail = (f"RC16: {', '.join(stale) or 'pointing hold only'}, starts "
+    owed_dawn = list(skipped) + dawn_only
+    detail = (f"RC16: {', '.join(rc_names) or 'pointing hold only'}, starts "
               f"{start_local} local, done by {stop_local:%H:%M}"
-              + (f" (left for dawn: {', '.join(dawn_only)})" if dawn_only else "")
-              + (f"; Piggy-600 OSC: {piggy}" if piggy else ""))
+              + (f" (left for dawn: {', '.join(owed_dawn)})" if owed_dawn else "")
+              + (f"; Piggy-600 OSC: {piggy}" if piggy else "")
+              + ("; roof closed at dispatch: NINA waits for it" if safe is False else ""))
     _note(config, state, None, detail, now, final=True, value="dispatched",
           trigger=label)
     try:
-        await notify(config, f"Auto dusk flats dispatched: {detail}. The night "
-                     "arm is untouched (flats stop before nautical dusk).",
+        await notify(config, f"Auto dusk flats dispatched: {detail}. Plan: "
+                     + fp.describe(config, plan) + ". The night arm is untouched "
+                     "(flats stop before nautical dusk); the saved frames are "
+                     "counted after the window.",
                      title="PhotonScript auto flats")
     except Exception:  # noqa: BLE001
         logger.warning("auto-flats push failed", exc_info=True)
@@ -261,7 +322,7 @@ def _local(config, dt: datetime) -> datetime:
     return dt + timedelta(hours=utc_offset_hours(config, dt))
 
 
-async def _dispatch_piggyback(config, now: datetime) -> str:
+async def _dispatch_piggyback(config, now: datetime, plan: dict | None = None) -> str:
     """The Piggy-600 OSC dusk set on NINA #2 (rides the RC16 slew). Returns
     a short outcome for the log line; never raises."""
     from photonscript.scheduler import calibration as cal
@@ -280,7 +341,7 @@ async def _dispatch_piggyback(config, now: datetime) -> str:
             return f"skipped (NINA #2 running {', '.join(running[:2])})"
         has_safety = await _piggy_safety(pcfg)
         seq_text, start_local = cal.generate_dusk_flats_json(
-            pcfg, osc=True, owns_mount=False, safety=has_safety, now=now)
+            pcfg, osc=True, owns_mount=False, safety=has_safety, now=now, plan=plan)
         seq = json.loads(seq_text)
         from photonscript.scheduler.sequence_lint import format_result
         from photonscript.scheduler.sideload import lint_companion
@@ -297,3 +358,53 @@ async def _dispatch_piggyback(config, now: datetime) -> str:
     except Exception as e:  # noqa: BLE001
         logger.warning("auto-flats: Piggy-600 dispatch error", exc_info=True)
         return f"error ({e})"
+
+
+# ---- the window report (2026-10-24) -------------------------------------------
+
+REPORT_TAIL_MIN = 12     # report this long after a window's planned end
+
+
+async def maybe_report_windows(config, notify, *, now: datetime | None = None) -> list[str]:
+    """One tick: for this evening's dusk plan and this morning's dawn plan
+    (flat_plan.save_plan), once each, REPORT_TAIL_MIN after the plan's end:
+    learn from the window (sky_flat_model.refresh), count the FLAT frames
+    each rig actually wrote, and push "Dusk flats <night>: RC16 L 15, B 15;
+    Piggy-600 OSC 25 ..." or "... none saved (reason)". Returns the lines
+    pushed. Never raises."""
+    import asyncio
+    from photonscript.scheduler import flat_plan as fp
+    from photonscript.scheduler.dusk_flats_check import window_report
+    from photonscript.shared.localtime import night_base_date
+    now = now or datetime.utcnow()
+    out = []
+    if not getattr(config, "flats_report_push", True):
+        return out
+    base = night_base_date(config, now)
+    cands = [(base.strftime("%Y-%m-%d"), "dusk"),
+             ((base - timedelta(days=1)).strftime("%Y-%m-%d"), "dawn"),
+             (base.strftime("%Y-%m-%d"), "dawn")]
+    for night, phase in cands:
+        try:
+            p = fp.load_plan(config, night, phase)
+            if not p or p.get("reported") or not p.get("end"):
+                continue
+            if now < p["end"] + timedelta(minutes=REPORT_TAIL_MIN):
+                continue
+            if now > p["end"] + timedelta(hours=10):
+                fp.mark(config, night, phase, reported="stale")
+                continue
+            from photonscript.scheduler import sky_flat_model as sfm
+            learn = await asyncio.to_thread(sfm.refresh, config, night)
+            rep = await asyncio.to_thread(window_report, config, night, phase,
+                                          learn)
+            fp.mark(config, night, phase, reported=now, result=rep)
+            line = rep.get("line")
+            if line:
+                out.append(line)
+                logger.info("flats report: %s", line)
+                await notify(config, line, title="PhotonScript flats")
+        except Exception as e:  # noqa: BLE001 - reporting never breaks the loop
+            logger.warning("flats report %s %s failed: %s", night, phase, e,
+                           exc_info=True)
+    return out
