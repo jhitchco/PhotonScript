@@ -24,7 +24,13 @@ Either way a CSV row is written per point.
 Hard rules (the doc's): operator-started only; never arms, never
 dispatches, never starts / loads a NINA sequence, never syncs, never parks,
 never changes tracking; refuses unless every preflight check passes
-(unknown = no go); the camera is lent, never taken: NINA #1 disconnects it,
+(unknown = no go). Unparking is opt-in (--unpark, 2026-10-24, after the
+mount was left parked on 2026-10-21 and 2026-10-23): only after the full
+preflight, only when the mount reads parked and the safety monitor reads
+safe again, through NINA #1 (GET /equipment/mount/unpark: NINA owns the
+mount's ASCOM link), then it waits for AtPark false (120 s). Without
+--unpark a parked mount stops the run at point 1 with "re-run with
+--unpark". The camera is lent, never taken: NINA #1 disconnects it,
 TheSky connects it, and at the end (always, also after Ctrl+C or an error)
 TheSky disconnects it and NINA #1 must read Connected again.
 
@@ -79,7 +85,8 @@ CSV_FIELDS = ["utc", "point", "of", "side", "alt", "az", "ha_h", "dec_deg",
               "mount_lst_h", "mount_jd", "mount_ha_h", "through_pole",
               "header_pierside", "true_ra_app_h", "true_dec_app_d",
               "import_line", "samples_before", "samples_after", "added", "note",
-              "site_source"]
+              "site_source", "unpark"]
+UNPARK_POLL_S = 2.0
 
 
 # ------------------------------------------------------------- helpers
@@ -295,6 +302,12 @@ class NinaLink:
     def weather(self) -> dict:
         return self._call("get_weather_info")
 
+    def mount_info(self) -> dict:
+        return self._call("get_mount_info")
+
+    def unpark_mount(self):
+        return self._call("unpark_mount")
+
 
 class SchedulerLink:
     """The scheduler's read-only GET endpoints."""
@@ -385,6 +398,8 @@ class Opts:
     import_path: str | None = None          # <dir>\<stamp>_<side>.dat
     max_solve_fails: int = MAX_SOLVE_FAILS
     track: bool = False                     # --track: tracking on before each exposure
+    unpark: bool = False                    # --unpark: NINA #1 unparks a parked mount
+    unpark_timeout_s: float = ta.UNPARK_TIMEOUT_S
     extra: dict = field(default_factory=dict)
 
 
@@ -419,6 +434,10 @@ class LoopRun:
         self.importer: ti.ImportFile | None = None
         self.site_source: str | None = None   # the header site line's source
         self.csv_file: str | None = opts.csv_path
+        self.parked_before: bool | None = None   # --unpark: the park read
+        self.needs_unpark = False
+        self.unparked = False
+        self.unpark_log = ""                  # CSV (point 1) and summary
 
     # -- small helpers
     def say(self, msg: str):
@@ -586,6 +605,126 @@ class LoopRun:
         if str(st.get("State") or "").upper() != "IDLE":
             raise StopRun("NINA #1 shows a RUNNING sequence item")
 
+    # -- --unpark: the park state, and NINA #1 unparks
+    def _roof_safe(self) -> bool | None:
+        """NINA #1's safety monitor: True / False, None when unreadable."""
+        try:
+            s = self.d.nina.safety() or {}
+        except Exception as e:  # noqa: BLE001
+            self.say(f"  could not read NINA #1's safety monitor ({e})")
+            return None
+        if s.get("Connected") is False or s.get("IsSafe") is None:
+            return None
+        return s.get("IsSafe") is True
+
+    def _nina_at_park(self) -> bool | None:
+        """NINA #1's mount info AtPark, None when unreadable or disconnected."""
+        try:
+            m = self.d.nina.mount_info() or {}
+        except Exception as e:  # noqa: BLE001
+            self.v(f"NINA #1 mount info failed ({e})")
+            return None
+        if m.get("Connected") is False or "AtPark" not in m:
+            return None
+        return bool(m.get("AtPark"))
+
+    def _thesky_parked(self) -> bool | None:
+        """TheSky's park flag when TheSky has the mount connected (read
+        only), else None."""
+        try:
+            m = self.sky("mount_park_state (read)", ta.mount_park_state_script())
+        except Exception as e:  # noqa: BLE001
+            self.v(f"TheSky park read failed ({e})")
+            return None
+        if not truthy(m.get("connected")) or m.get("parked") is None:
+            return None
+        return truthy(m.get("parked"))
+
+    def park_state(self) -> tuple[bool | None, str]:
+        """(parked, source): TheSky's park flag (TheSky is what refuses the
+        slew), else NINA #1's AtPark; (None, "") when neither can say."""
+        p = self._thesky_parked()
+        if p is not None:
+            return p, "TheSky"
+        p = self._nina_at_park()
+        if p is not None:
+            return p, "NINA #1"
+        return None, ""
+
+    def check_park(self) -> str | None:
+        """--unpark, after the full preflight and before anything is sent:
+        read the park state; parked = re-read the safety monitor, which must
+        read safe. A refusal reason, or None (go on)."""
+        self.say("Step 2b: --unpark: reading the mount's park state.")
+        parked, src = self.park_state()
+        self.parked_before = parked
+        if parked is None:
+            self.say("  park state unreadable (TheSky and NINA #1): not unparking; "
+                     "a parked mount still stops the run at point 1.")
+            self.unpark_log = "park state unreadable: not unparked"
+            return None
+        if not parked:
+            self.say(f"  the mount is not parked ({src}): nothing to unpark.")
+            self.unpark_log = f"not parked ({src}): no unpark"
+            return None
+        self.say(f"  the mount is parked ({src}); re-reading the safety monitor.")
+        if self._roof_safe() is not True:
+            self.unpark_log = "parked, safety monitor not safe: refused"
+            return ("the mount is parked and the safety monitor does not read "
+                    "safe: not unparking")
+        self.say("  safety monitor reads safe: NINA #1 will unpark after the "
+                 "camera hand-off.")
+        self.needs_unpark = True
+        return None
+
+    def _unparked(self) -> bool:
+        """Done: NINA #1 reads AtPark false (or cannot say while TheSky
+        reads not parked), and TheSky does not read parked."""
+        nina = self._nina_at_park()
+        sky = self._thesky_parked()
+        if sky is True or nina is True:
+            return False
+        return nina is False or sky is False
+
+    def unpark(self) -> None:
+        """NINA #1 GET /equipment/mount/unpark, then wait for AtPark false
+        (unpark_timeout_s). The roof must read safe before the request and
+        on every poll; anything else is a StopRun (the camera goes back)."""
+        to = float(self.o.unpark_timeout_s)
+        self.say("Step 4b: --unpark: NINA #1 unparks the mount.")
+        if self._roof_safe() is not True:
+            self.unpark_log = "safety monitor not safe before the unpark: not sent"
+            raise StopRun("the roof reads UNSAFE (or unknown): not unparking")
+        t = self.d.mono()
+        try:
+            self.d.nina.unpark_mount()
+        except Exception as e:  # noqa: BLE001
+            if "timeout" not in type(e).__name__.lower():
+                self.unpark_log = f"unpark request failed ({e})"
+                raise StopRun(f"NINA #1's unpark request failed ({e})") from None
+            # ninaAPI may answer only when the unpark is done: the request
+            # went out, so the AtPark poll below decides
+            self.say(f"  NINA #1's unpark reply timed out ({type(e).__name__}); "
+                     "polling AtPark.")
+        self.say(f"  unpark sent at {self.d.now():%H:%M:%S} UTC; waiting up to "
+                 f"{to:.0f} s for AtPark false.")
+        end = t + to
+        while True:
+            if self._roof_safe() is not True:
+                self.unpark_log = "roof unsafe during the unpark"
+                raise StopRun("the roof reads UNSAFE (or unknown) during the unpark")
+            if self._unparked():
+                break
+            if self.d.mono() >= end:
+                self.unpark_log = f"unpark timeout ({to:.0f} s)"
+                raise StopRun(f"the mount still reads parked {to:.0f} s after "
+                              "NINA #1's unpark (check it in NINA #1 / TheSky)")
+            self.d.sleep(UNPARK_POLL_S)
+        self.unparked = True
+        self.unpark_log = f"unparked by NINA #1 in {self.d.mono() - t:.0f} s"
+        self.say(f"  {self.unpark_log}." + ("" if self.o.track else
+                 " Tracking may be off after an unpark: --track turns it on."))
+
     # -- one point
     def _poll(self, name: str, js: str, key: str, timeout: float) -> dict | None:
         end = self.d.mono() + timeout
@@ -616,8 +755,14 @@ class LoopRun:
         r = self.sky("slew", ta.slew_altaz_script(q["alt"], q["az"],
                                                   f"tpoint autocal {i}",
                                                   self.o.min_alt))
+        if i == 1 and self.unpark_log:
+            row["unpark"] = self.unpark_log
         if r.get("err"):
-            raise StopRun(f"TheSky refused the slew to point {i}: {r['err']}")
+            why = f"TheSky refused the slew to point {i}: {r['err']}"
+            if ta.is_parked_error(r["err"]):
+                why += ("; the mount still reads parked although --unpark ran"
+                        if self.o.unpark else "; " + ta.UNPARK_HINT)
+            raise StopRun(why)
         if self._poll("slew_poll", ta.slew_poll_script(), "slew_complete",
                       self.o.slew_timeout_s) is None:
             self._fail(row, "slew timeout", f"slew to point {i} did not "
@@ -1004,10 +1149,17 @@ class LoopRun:
         except ValueError as e:
             self.say(f"NO GO: TPoint import file: {e}")
             return self.summary("refused", f"import file: {e}")
+        if self.o.unpark:
+            why = self.check_park()
+            if why:
+                self.say("NO GO: " + why)
+                return self.summary("refused", why)
         status = "stopped"
         try:
             self.lend()
             self.setup()
+            if self.needs_unpark:
+                self.unpark()
             self.say(f"Step 5: {len(self.points)} point(s), about "
                      f"{_fmt_min(len(self.points) * pace_s(self.exposure_s))}. "
                      "Ctrl+C stops safely (camera and mount abort, camera "
@@ -1024,6 +1176,8 @@ class LoopRun:
             self.abort()
         except Exception as e:  # noqa: BLE001
             self.reason = f"error {type(e).__name__}: {e}"
+            if ta.is_parked_error(e) and not self.o.unpark:
+                self.reason += "; " + ta.UNPARK_HINT
             self.say(f"STOP on an error: {self.reason}")
             self.abort()
         finally:
@@ -1055,6 +1209,7 @@ class LoopRun:
              "import_file": None if self.automap else self.o.import_path,
              "import_lines": self.importer.lines if self.importer else 0,
              "site_source": self.site_source,
+             "unparked": self.unparked, "unpark": self.unpark_log or None,
              "rows": self.rows}
         self.say("")
         self.say("Summary")
@@ -1067,6 +1222,9 @@ class LoopRun:
             self.say(f"  points attempted {tried}, solved {solved}, failed "
                      f"{tried - solved}; samples in the import file "
                      f"{s['import_lines']}")
+        if self.unpark_log:
+            self.say(f"  --unpark: {self.unpark_log} (it never parks: the mount "
+                     "stays unparked)")
         self.say(f"  time {_fmt_min(s['seconds'])}; TPoint input data "
                  f"{s['samples_before']} -> {s['samples_after']} sample(s)")
         if self.returned is not None:

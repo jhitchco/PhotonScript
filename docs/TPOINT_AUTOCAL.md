@@ -181,6 +181,22 @@ default import path is the section above.
 Never arms, never dispatches, never loads or starts a NINA sequence, never
 syncs (no ClosedLoopSlew), never parks, never changes tracking.
 
+**--unpark (opt-in, 2026-10-24).** On 2026-10-21 and 2026-10-23 the night
+loop or the dusk flats left the mount parked and TheSky refused the slew to
+point 1 ("the device is parked ... Error _ 216"). Without --unpark that is
+still a stop, and the message now says "re-run with --unpark". With
+--unpark, only after the whole preflight passed (armer DISARMED, roof safe,
+dark, NINA idle): the park state is read (TheSky's `IsParked()` through the
+reviewed `mount_flags` read script, else NINA #1's mount info `AtPark`);
+when parked, the safety monitor is read again and must read safe (else the
+run is refused and nothing is sent); after the camera hand-off NINA #1
+unparks it (`GET /equipment/mount/unpark`: NINA owns the ASCOM link, the
+path that worked by hand twice) and the run waits for `AtPark` false (120
+s; the roof is re-read on every poll). A timeout or an unsafe roof is a
+stop, and the camera goes back to NINA #1 as always. The unpark is logged
+in the run output, the summary and the CSV's `unpark` column (point 1). It
+never parks at the end. Tracking may be off after an unpark: add --track.
+
 ### Known unknowns (the 3-point test answers them)
 
 - Does `sky6RASCOMTheSky.AutoMap()` add a TPoint sample on build 14139
@@ -216,6 +232,8 @@ less hand work, without ever touching an armed or imaging night.
   button) and stays at the console. No timer, no auto-arm hook, no
   overnight hand-off.
 - Never arms, never dispatches, never starts a NINA sequence.
+- Never parks. Unparks only with --unpark, after the full preflight and a
+  fresh safe reading of the safety monitor, through NINA #1.
 - Refuses unless the armer is DISARMED, both NINAs are idle, no calibration
   capture job runs, the roof reads open, it is dark, TheSky answers with the
   mount connected and a TPoint backup is planned. Unknown = no go.

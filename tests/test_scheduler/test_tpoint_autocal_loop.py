@@ -411,9 +411,12 @@ def test_live_module_fences():
     src = (ROOT / "photonscript" / "telescope_agent" /
            "tpoint_autocal_live.py").read_text(encoding="utf-8")
     assert src.isascii() and "\u2014" not in src
+    # --unpark reads NINA's AtPark and asks NINA #1 to unpark; it never parks
+    no_atpark = src.replace("AtPark", "")
     for bad in ("Sync", "Park", "ClosedLoopSlew", "start_sequence",
                 "load_sequence", "httpx.post", ".post(", "SetTracking"):
-        assert bad not in src, bad
+        assert bad not in no_atpark, bad
+    assert not re.search(r"(?<!un)park_mount|mount/park", src)
     # no JavaScript of its own: every TheSky script comes from the builders
     assert "sky6RASCOMTele." not in src and "ccdsoftCamera." not in src
 
