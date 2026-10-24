@@ -293,3 +293,36 @@ def is_test_target(name: Any) -> bool:
         return False
     prefixes, inner = _test_keys()
     return k.startswith(prefixes) or any(x in k for x in inner)
+
+
+# 2026-10-24: calibration RUNS (pointing-model mapping) are not imaging
+# targets at all: the PS-171 TPoint mapping run saved its frames as LIGHT
+# named "TPoint point 01/45 alt 38.1 az 72.6 (east)", one Targets card per
+# point. Their subs stay in the night's log (the runs page shows them) but
+# never make a Targets card, a Library folder or a goal. A tracking test or
+# a focus calibration is a test of a real field and keeps its card.
+CALIBRATION_RUN_NAME = "TPoint mapping"   # the run name a ride-along sub gets
+AUTOCAL_PREFIX = "TPoint autocal"          # telescope_agent.tpoint_autocal
+
+
+@lru_cache(maxsize=1)
+def _calibration_run_keys() -> tuple:
+    from photonscript.scheduler import nina_sequence_json as gen
+    return tuple(target_key(p) for p in (
+        gen.TPOINT_MAPPING_PREFIX,    # "TPoint mapping <n> points"
+        gen.TPOINT_POINT_PREFIX,      # "TPoint point 07/60 alt ... (east)"
+        CALIBRATION_RUN_NAME,
+        AUTOCAL_PREFIX))
+
+
+def is_calibration_run_target(name: Any) -> bool:
+    """True for a TPoint mapping / TPoint point / TPoint autocal name (or its
+    container name): a pointing-model calibration run, never a target."""
+    k = target_key(strip_container_name(name) or name)
+    return bool(k) and k.startswith(_calibration_run_keys())
+
+
+def calibration_run_name(name: Any) -> str | None:
+    """The run a calibration-run name belongs to ("TPoint point 07/45 ..." ->
+    "TPoint mapping"), None for any other name."""
+    return CALIBRATION_RUN_NAME if is_calibration_run_target(name) else None

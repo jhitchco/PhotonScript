@@ -1944,6 +1944,8 @@ class TelescopeAgent:
                 # PS-152: a test / calibration sub, kept out of medians
                 **({"test": True} if qa_rules.is_test_record(
                     {"target": target_name}) else {}),
+                # 2026-10-24: a TPoint mapping / autocal frame is never a target
+                **qa_rules.calibration_run_fields(target_name),
                 "exp_s": exposure_seconds,
                 "ccd_temp": self.state.camera_temp_c,
                 "hfr": quality.hfr_pixels, "fwhm_arcsec": quality.fwhm_arcsec,

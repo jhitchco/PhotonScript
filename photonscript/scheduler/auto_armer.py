@@ -487,13 +487,18 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.error("auto-flats error: %s", e)
-            try:   # PS-212: the dusk flats result, once the run is over
-                from photonscript.scheduler import night_story
-                await night_story.maybe_flats_story(config)
+            # 2026-10-24: after each flat window, count what was saved and
+            # push it (never "complete" on NINA's word); learn the sky model.
+            # PS-212: this is the story flats push, one per window
+            try:
+                from photonscript.scheduler import dusk_flats
+                await dusk_flats.maybe_report_windows(config, notify)
+                from photonscript.scheduler import night_story   # PS-212
+                await night_story.flush_stale_end(config)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                logger.error("flats story error: %s", e)
+                logger.error("flats report error: %s", e)
 
             noon_enabled = bool(getattr(config, "noon_arm_enabled", False))
             if getattr(config, "auto_arm_enabled", False) or noon_enabled:

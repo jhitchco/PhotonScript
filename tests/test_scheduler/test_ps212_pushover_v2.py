@@ -601,3 +601,76 @@ def test_replay_last_week_through_the_policy(tmp_path):
         loc = rp._ts(o) - timedelta(hours=6)
         if o["sent"] and o["kind"] == "act" and loc.hour < 8:
             assert o["safety"], o
+
+
+def test_flats_window_report_is_the_one_flats_push(tmp_path, sent, monkeypatch):
+    """flats v2's window count is the story flats push (one per window);
+    the dusk count rides in "imaging now" while that push is still to come."""
+    from photonscript.scheduler import dusk_flats as df
+    from photonscript.scheduler import dusk_flats_check as dfc
+    from photonscript.scheduler import flat_plan as fp
+    from photonscript.scheduler import sky_flat_model as sfm
+    cfg = _cfg(tmp_path)
+    now = datetime.utcnow()
+    plan = _plan(cfg, now)                       # armed, astro dark in 2 h
+    ns.open_plan_window(cfg, plan)
+    marks = []
+    monkeypatch.setattr(fp, "load_plan", lambda c, n, ph: (
+        {"end": now - timedelta(hours=1)} if ph == "dusk" and n == plan["night_of"] else None))
+    monkeypatch.setattr(fp, "mark", lambda c, n, ph, **k: marks.append((n, ph)))
+    monkeypatch.setattr(sfm, "refresh", lambda c, n: {})
+    monkeypatch.setattr(dfc, "window_report", lambda c, n, ph, learn=None: {
+        "line": f"Dusk flats {n}: RC16 L 15, B 15; Piggy-600 OSC 25"})
+    out = run(df.maybe_report_windows(cfg, po.notify, now=now))
+    assert out and sent == []                    # held for "imaging now"
+    armer = _Armer(cfg, dict(plan, dusk_utc=(now - timedelta(minutes=1)).isoformat() + "Z"))
+    assert run(ns.maybe_imaging_now(armer, now, safe=True)) is True
+    assert [s["title"] for s in sent] == [ns.TITLE_IMAGING]
+    assert sent[0]["message"].endswith("Dusk flats " + plan["night_of"]
+                                       + ": RC16 L 15, B 15; Piggy-600 OSC 25")
+    # imaging already started (or no arm): the window count is its own story
+    monkeypatch.setattr(dfc, "window_report", lambda c, n, ph, learn=None: {
+        "line": f"Dawn flats {n}: RC16 none saved (roof closed)"})
+    run(df.maybe_report_windows(cfg, po.notify, now=now))
+    assert [s["title"] for s in sent] == [ns.TITLE_IMAGING, ns.TITLE_FLATS]
+
+
+def test_end_of_night_waits_for_the_dawn_flats_count(tmp_path, sent, monkeypatch):
+    """The dawn shutdown runs 3 min after the flats v2 dawn window, its count
+    12 min after: the report is held and carries the count (one push), with
+    a fallback after END_WAIT_MAX_MIN."""
+    from photonscript.scheduler import dusk_flats as df
+    from photonscript.scheduler import dusk_flats_check as dfc
+    from photonscript.scheduler import flat_plan as fp
+    from photonscript.scheduler import sky_flat_model as sfm
+    cfg = _cfg(tmp_path)
+    now = datetime.utcnow()
+    night = po.night_of(cfg, now)
+    dawn_plan = {"end": now - timedelta(minutes=13)}
+    monkeypatch.setattr(fp, "load_plan", lambda c, n, ph: (
+        dawn_plan if ph == "dawn" and n == night else None))
+    monkeypatch.setattr(fp, "mark", lambda c, n, ph, **k: dawn_plan.update(k))
+    monkeypatch.setattr(sfm, "refresh", lambda c, n: {})
+    monkeypatch.setattr(dfc, "window_report", lambda c, n, ph, learn=None: {
+        "line": f"Dawn flats {n}: RC16 R 12, G 12; Piggy-600 OSC 20"})
+    monkeypatch.setattr(dfc, "morning_line", lambda c, d: None)
+    monkeypatch.setattr(dfc, "dawn_morning_line", lambda c, d, times=None: "OLD dawn line")
+    monkeypatch.setattr(ns, "_owed_line", lambda c: None)
+    assert ns.dawn_count_pending(cfg, night)
+    ns.defer_end(cfg, night, reason="dawn", extra=[(1, "Piggy split 12 %")], now=now)
+    assert sent == []
+    from photonscript.shared import localtime
+    base = datetime.strptime(night, "%Y-%m-%d")
+    monkeypatch.setattr(localtime, "night_base_date", lambda c, n=None: base)
+    run(df.maybe_report_windows(cfg, po.notify, now=now))
+    assert [s["title"] for s in sent] == [ns.TITLE_END]
+    text = sent[0]["message"]
+    assert "Dawn flats" in text and "R 12, G 12" in text and "OLD dawn line" not in text
+    assert "Piggy split 12 %" in text and text.startswith(f"Night {night} over (dawn")
+    flats = [e for e in _story(cfg) if e["title"] == ns.TITLE_FLATS]
+    assert flats and flats[0]["kind"] == "info"          # carried by the report
+    # the fallback: a held report goes out after END_WAIT_MAX_MIN
+    other = night + "b"
+    ns.defer_end(cfg, other, reason="dawn", now=now - timedelta(minutes=31))
+    assert run(ns.flush_stale_end(cfg, now)) is True
+    assert sent[-1]["title"] == ns.TITLE_END

@@ -17,7 +17,13 @@ piggyback_enabled and the sun is at or below nina_watch_sun_alt_deg:
           stopped). Bad: parked, idle, offline, unknown.
   piggy   only while the mount is bad: NINA #2's running instruction
           (GET /sequence/state, read only) is a light exposure (an
-          exposure / light leaf, not a flat, dark or bias).
+          exposure / light leaf, not a flat, dark or bias). PS-229: the
+          leaf's NINA ImageType decides when the state carries it (only
+          LIGHT pages); else a leaf inside a container named for darks,
+          flats or bias (OSC_CLOSED_ROOF_DARKS, OSC_DARKS_IF_UNSAFE,
+          WAIT_SAFE_WITH_OSC_DARKS, OSC_DARKS_BEFORE_FIRST_LIGHTS,
+          "OSC DARKS_450s ...") is calibration, not a light: the
+          closed-roof darks are a plain "Take Exposure" leaf.
 
 Both for piggy_guard_grace_min (default 10): one Pushover per night saying
 what NINA #2 is shooting (target, instruction, exposure) and what the
@@ -34,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import re
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -44,6 +51,10 @@ TITLE = "PhotonScript Piggy guard"
 BAD_MOUNT = ("parked", "idle", "offline", "unknown")
 LIGHT_WORDS = ("exposure", "light")
 NOT_LIGHT = ("flat", "dark", "bias")
+# words of a calibration container name (whole words; a target container
+# such as "Dark Shark Nebula" (a DeepSkyObjectContainer) is skipped)
+CALIB_WORDS = {"dark", "darks", "flat", "flats", "bias", "biases",
+               "darkflat", "darkflats"}
 MOUNT_WORDS = {"parked": "PARKED", "idle": "unparked but NOT TRACKING",
                "offline": "OFFLINE in NINA #1 (no position)",
                "unknown": "UNKNOWN (no fresh mount log line)"}
@@ -62,10 +73,48 @@ def grace_min(cfg) -> float:
     return max(0.0, v) if math.isfinite(v) else 10.0
 
 
-def is_light(leaf) -> bool:
+def _calib_name(name) -> bool:
+    return any(w in CALIB_WORDS for w in re.split(r"[^a-z]+", str(name or "").lower()))
+
+
+def is_light(leaf, path=None, image_type=None, calib=None) -> bool:
+    """A light exposure: NINA's ImageType when known (LIGHT only), else an
+    exposure / light leaf that is not a flat, dark or bias and does not run
+    inside a darks / flats / bias container (PS-229). `calib` (from
+    piggy_now, target containers skipped) overrides the path check."""
+    it = str(image_type or "").strip().upper()
+    if it:
+        return it == "LIGHT"
     low = str(leaf or "").lower()
-    return (any(w in low for w in LIGHT_WORDS)
-            and not any(w in low for w in NOT_LIGHT))
+    if not (any(w in low for w in LIGHT_WORDS)
+            and not any(w in low for w in NOT_LIGHT)):
+        return False
+    if calib is not None:
+        return not calib
+    return not any(_calib_name(n) for n in (path or [])[:-1])
+
+
+def _leaf_facts(tree) -> tuple[str | None, bool | None]:
+    """(the running leaf's ImageType, None when the state does not carry
+    it; whether a container above the leaf, target containers skipped, is
+    named for darks / flats / bias)."""
+    try:
+        from photonscript.scheduler.where_panel import _name, _type, running_chain
+        chain = running_chain(tree)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if not chain:
+        return None, None
+    leaf = chain[-1]
+    it = None
+    for src in [leaf, *[c for c in (leaf.get("Items") or []) if isinstance(c, dict)]]:
+        v = src.get("ImageType")
+        if isinstance(v, str) and v.strip():
+            it = v.strip().upper()
+            break
+    calib = any(_calib_name(_name(n)) for n in chain[:-1]
+                if "DeepSkyObjectContainer" not in _type(n))
+    return it, calib
 
 
 def mount_now(cfg, now: datetime) -> tuple[str, dict | None]:
@@ -81,7 +130,8 @@ def mount_now(cfg, now: datetime) -> tuple[str, dict | None]:
 
 
 async def piggy_now(cfg) -> dict | None:
-    """{"leaf", "target", "exposure_s", "path"} of NINA #2's running sequence,
+    """{"leaf", "target", "exposure_s", "path", "image_type", "calib"} of
+    NINA #2's running sequence,
     None when NINA #2 does not answer or runs nothing (never raises)."""
     from photonscript.scheduler.nina_watchdog import rig_base
     try:
@@ -96,7 +146,9 @@ async def piggy_now(cfg) -> dict | None:
     pos = sequence_position(tree)
     if not pos.get("running"):
         return None
-    return {k: pos.get(k) for k in ("leaf", "target", "exposure_s", "path")}
+    out = {k: pos.get(k) for k in ("leaf", "target", "exposure_s", "path")}
+    out["image_type"], out["calib"] = _leaf_facts(tree)
+    return out
 
 
 class PiggyGuard:
@@ -189,7 +241,8 @@ async def tick(cfg, now: datetime | None = None, window: bool | None = None,
     pig = None
     if mstate in BAD_MOUNT:
         pig = await piggy(cfg)
-    shooting = bool(pig and is_light(pig.get("leaf")))
+    shooting = bool(pig and is_light(pig.get("leaf"), pig.get("path"),
+                                     pig.get("image_type"), pig.get("calib")))
     monitor.last = {"t": iso_z(now), "mount": mstate, "piggy": pig}
     if not (mstate in BAD_MOUNT and shooting):
         await _clear(cfg, monitor, now,

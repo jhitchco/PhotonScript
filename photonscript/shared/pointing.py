@@ -37,6 +37,18 @@ is a "flag" (header only, unconfirmed) that jumps the dawn solve queue.
 The off-target limits come from shared.qa_rules.thresholds (per rig), so the
 "On target" scorecard check and this record always agree. Nothing here
 writes a FITS file.
+
+Centered mount offset (2026-10-24). Night 2026-10-23 flagged all 672 subs
+of both rigs "off target (header, unconfirmed)" 64'-68' from NGC 604,
+while the frames sat exactly where the 2026-10-22 frames (0' offset) did.
+NINA's Center log that night: first slew 64'-68' off, re-slewed, converged.
+NINA centers by offset slews (no sync), so after a center the mount REPORTS
+target minus its own model error while the frame is on the target. A header
+/ mount-log "flag" whose offset matches the first-slew error of the latest
+converged Center run on that target (CENTER_MATCH_ABS_ARCMIN or
+CENTER_MATCH_REL of it) is the mount model's offset, not a miss: the flag
+clears and the record says why (centered_by, center_first_arcmin). A plate
+solve, or a gross miss above the header reject limit, is never cleared.
 """
 
 from __future__ import annotations
@@ -51,6 +63,10 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 COMPASS = ("N", "NE", "E", "SE", "S", "SW", "W", "NW")
+CENTER_MATCH_ABS_ARCMIN = 10.0   # header offset vs NINA's first-slew error
+CENTER_MATCH_REL = 0.2
+CENTER_SAME_TARGET_ARCMIN = 30.0
+CENTER_CACHE_S = 300.0
 
 
 # ------------------------------------------------------------------ geometry
@@ -308,6 +324,118 @@ def assess(config, rig: str, rec: dict, target) -> dict:
     return out
 
 
+# ------------------------------------------------- centered mount offset
+
+_CENTER: dict = {}
+
+
+def center_runs(config, night: str | None, parse: bool = True) -> list[dict]:
+    """NINA's Center runs of a night (scheduler.nina_center_log): the stored
+    file, else (parse) one parse of the night's NINA logs, re-parsed when
+    a recent night's logs grew. Cached CENTER_CACHE_S per night. parse=False
+    (the live grader) reads the stored file only. Never raises."""
+    if not night:
+        return []
+    key = (str(getattr(config, "data_dir", "")), night, parse)
+    now = time.monotonic()
+    hit = _CENTER.get(key)
+    if hit is not None and now - hit[0] < CENTER_CACHE_S:
+        return hit[1]
+    runs: list[dict] = []
+    try:
+        from photonscript.scheduler import nina_center_log as ncl
+        runs = ncl.load_night(config, night)
+        logs_s = str(getattr(config, "nina_logs_dir", "") or "")
+        logs = Path(logs_s)
+        can_parse = parse and bool(logs_s) and logs.is_dir()
+        stale = False
+        if runs is not None and can_parse and _recent_night(config, night):
+            # tonight's file goes stale as NINA logs more Center runs
+            try:
+                f = ncl.night_file(config, night).stat().st_mtime
+                stale = any(p.stat().st_mtime > f for p in logs.glob("*.log"))
+            except OSError:
+                stale = False
+        if (runs is None or stale) and can_parse:
+            runs = ncl.night_pass(config, night).get("runs")
+    except Exception as e:  # noqa: BLE001
+        logger.debug("center runs for %s skipped: %s", night, e)
+    runs = runs or []
+    _CENTER[key] = (now, runs)
+    return runs
+
+
+def _recent_night(config, night: str) -> bool:
+    """The current night or the one before (their Center files can still
+    grow); older nights read their stored file only."""
+    try:
+        from photonscript.shared.phd2_store import night_of
+        cur = datetime.fromisoformat(night_of(config, datetime.utcnow()))
+        return datetime.fromisoformat(night) >= cur - timedelta(days=1)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _night_of_t(config, t) -> str | None:
+    when = _parse_mid(t)
+    if when is None:
+        return None
+    try:
+        from photonscript.shared.phd2_store import night_of
+        return night_of(config, when)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def centered_offset(rec: dict, runs: list[dict]) -> dict | None:
+    """The converged Center run that explains a header / mount-log offset as
+    the mount model's own (module doc), or None. rec: an assessed pointing
+    record (t, target_ra, target_dec, off_target_arcmin)."""
+    off = _num(rec.get("off_target_arcmin"))
+    tra, tdec = _num(rec.get("target_ra")), _num(rec.get("target_dec"))
+    when = _parse_mid(rec.get("t"))
+    if off is None or tra is None or tdec is None or when is None:
+        return None
+    best, best_t = None, None
+    for r in runs or []:
+        if not r.get("converged"):
+            continue
+        rt = _parse_mid(r.get("t_utc"))
+        if rt is None or rt > when + timedelta(minutes=2):
+            continue
+        if sep_arcmin(tra, tdec, r.get("target_ra"), r.get("target_dec"))                 > CENTER_SAME_TARGET_ARCMIN:
+            continue
+        if best_t is None or rt > best_t:
+            best, best_t = r, rt
+    first = _num((best or {}).get("first_sep_arcmin"))
+    if first is None:
+        return None
+    if abs(off - first) > max(CENTER_MATCH_ABS_ARCMIN, CENTER_MATCH_REL * first):
+        return None
+    return best
+
+
+def clear_centered(config, rec: dict, runs: list[dict] | None = None,
+                   parse: bool = True) -> dict:
+    """IN PLACE: an unconfirmed "flag" the night's Center log explains loses
+    the flag (module doc). Returns rec."""
+    if rec.get("flag") != "flag" or judged_src(rec) in (None, "solve"):
+        return rec
+    if runs is None:
+        runs = center_runs(config, _night_of_t(config, rec.get("t")), parse)
+    run = centered_offset(rec, runs)
+    if run is None:
+        return rec
+    rec["flag"] = ""
+    rec["centered_by"] = run.get("t_utc")
+    rec["center_first_arcmin"] = run.get("first_sep_arcmin")
+    note = (f"mount model offset: NINA centered on the target at "
+            f"{str(run.get('t_utc') or '')[11:16]}Z (first slew "
+            f"{float(run.get('first_sep_arcmin')):.0f}' off)")
+    rec["note"] = f"{rec['note']}; {note}" if rec.get("note") else note
+    return rec
+
+
 def model_error(rec: dict) -> dict:
     """Mount vs solve for an RC16 record (the pointing-model error):
     {model_err_arcmin, model_err_pa}. Piggy-600: none (its center sits a
@@ -332,7 +460,7 @@ _KEEP = ("rig", "file", "t", "src", "mount_src", "mount_ra", "mount_dec",
          "alt", "az", "airmass", "pier", "ha_h", "solved_ra", "solved_dec", "rotation",
          "scale", "model_err_arcmin", "model_err_pa", "target", "target_ra",
          "target_dec", "off_target_arcmin", "off_target_pa", "off_target_dir",
-         "flag", "drift_arcmin", "note")
+         "flag", "drift_arcmin", "note", "centered_by", "center_first_arcmin")
 
 
 def _finite(obj):
@@ -386,6 +514,13 @@ def load(config, night: str) -> dict[tuple[str, str], dict]:
             continue
         r = norm_record(_finite(r))
         out[(r.get("rig") or "rc16", r["file"])] = r
+    # 2026-10-24: a stored header-only flag NINA's Center log explains
+    flagged = [r for r in out.values() if r.get("flag") == "flag"]
+    if flagged:
+        runs = center_runs(config, night)
+        if runs:
+            for r in flagged:
+                clear_centered(config, r, runs)
     return out
 
 
@@ -468,7 +603,8 @@ def compact(rec: dict | None) -> dict | None:
     return {k: rec.get(k) for k in (
         "src", "mount_ra", "mount_dec", "alt", "az", "pier", "solved_ra",
         "solved_dec", "off_target_arcmin", "off_target_dir", "flag",
-        "model_err_arcmin", "drift_arcmin", "target")}
+        "model_err_arcmin", "drift_arcmin", "target", "centered_by",
+        "center_first_arcmin")}
 
 
 def iso_mid(start: datetime | None, exp_s) -> str | None:
@@ -546,6 +682,9 @@ def sub_pointing(config, rig: str, hdr, start: datetime | None, exp_s,
     rec.update(model_error(rec))
     a = assess(config, rig, rec, target)
     rec.update(a)
+    # 2026-10-24: NINA centered, model offset (stored Center file only: the
+    # live grader never parses NINA logs; the page's load() does)
+    clear_centered(config, rec, parse=False)
     pos, ppos = judged_position(rec), judged_position(prev or {})
     if pos and ppos and (prev or {}).get("target") == rec.get("target"):
         d = sep_arcmin(ppos[0], ppos[1], pos[0], pos[1])

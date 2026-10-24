@@ -14,10 +14,10 @@ What the NINA logs show:
     frame saved. The roof stayed open until ~07:45-07:51 (sunrise + 30).
 
 The fix pinned here: each dawn set is retried (dawn_flat_attempts) while the
-sky brightens, both dawn flat blocks end by themselves at ND + 5 +
-dawn_flats_window_min - 3 (before the armer's unchanged backstop, so the
-park is never later), the closed-roof skip stays, and the morning report
-says "Dawn flats <night>: RC16 N shot, M filed (why)".
+sky brightens, the closed-roof skip stays, and the morning report says
+"Dawn flats <night>: RC16 N shot, M filed (why)". Flats v2 (same day): each
+set runs in its planned sun-altitude window (flat_plan.py), the block points
+opposite the sun and ends at the plan's hard end; no "complete" push.
 """
 import calendar
 import json
@@ -26,6 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
+import pytest
 from astropy.io import fits
 
 from photonscript.scheduler import calibration as cal
@@ -38,8 +39,9 @@ from photonscript.shared import rigs
 from photonscript.shared.config import PhotonScriptConfig
 from photonscript.shared.models import FilterType
 from photonscript.shared.rigs import rig_label
+from tests.test_scheduler import fake_sky
 from tests.test_scheduler.test_ps77_safety_stop import (
-    TIMES, NinaSim, _gen, _short, _vals, _walk)
+    DUSK_LOCAL, TIMES, NinaSim, _gen, _short, _vals, _walk)
 
 _SKYFLAT = "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat"
 
@@ -52,22 +54,60 @@ def _kinds(node):
     return [_short(c["$type"]) for c in _vals(node, "Conditions")]
 
 
-# ---- the sequences ----------------------------------------------------------------
+# ---- the sequences (2026-10-24 flats v2: the plan by sun altitude) ---------------
+# The sim's clock (test_ps77_safety_stop): astro dusk 20:18 local, nautical
+# dawn 05:48 local. FAKE_SUNSET puts the synthetic sun's nautical dawn on
+# 2026-10-24 near 11:48Z = 05:48 MDT, so the plan's fixed clock times line up.
 
-def test_rc16_dawn_sets_retry_and_the_block_ends_before_the_backstop():
+FAKE_SUNSET = datetime(2026, 10, 24, 1, 1)
+
+
+@pytest.fixture
+def sky(tmp_path, monkeypatch):
+    cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path),
+                             observatory_tz="America/Denver")
+    monkeypatch.setattr(nsj, "_gen_cfg", lambda: cfg)
+    monkeypatch.setattr(cal, "stale_flat_filters", lambda c: [])
+    info = fake_sky.install(monkeypatch, FAKE_SUNSET)
+    real = cal.dawn_flat_plan
+    monkeypatch.setattr(cal, "dawn_flat_plan", lambda c, f, o, now=None, night=None:
+                        real(c, f, o, night="2026-10-23"))
+    return {"cfg": cfg, **info}
+
+
+def _sim_s(hh, mm):
+    """A local clock time as sim seconds after astro dusk."""
+    s = 3600 * hh + 60 * mm
+    return (s + 24 * 3600 if s < 12 * 3600 else s) - DUSK_LOCAL
+
+
+def test_rc16_dawn_block_follows_the_plan(sky):
     seq = _gen(oiii=200, ha=200)
     block = _named(seq, "DAWN_SKY_FLATS")
-    # closed roof still skips the block; it still runs once; and now ends itself
+    # closed roof still skips the block, it runs once, and ends by itself at
+    # the plan's hard end (sunrise + flats_dawn_end_after_sunrise_min)
     assert _kinds(block) == ["SafetyMonitorCondition", "LoopCondition", "TimeCondition"]
     end = _vals(block, "Conditions")[2]
-    assert "NauticalDawnProvider" in end["SelectedProvider"]["$type"]
-    cfg = PhotonScriptConfig()
-    assert end["MinutesOffset"] == 5 + cfg.dawn_flats_window_min - cal.DAWN_FLAT_END_MARGIN_MIN
+    assert "TimeProvider" in end["SelectedProvider"]["$type"]
+    plan = cal.dawn_flat_plan(sky["cfg"], ["OIII", "Ha"], False)
+    from photonscript.scheduler.flat_plan import to_local
+    he = to_local(sky["cfg"], plan["hard_end"])
+    assert (end["Hours"], end["Minutes"]) == (he.hour, he.minute)
+    items = _vals(block, "Items")
+    kinds = [_short(d["$type"]) for d in items]
+    # pointed at the flat spot opposite the (morning, east) sun at once,
+    # tracking off, then each set at its own start
+    # PS-212: NINA's push item is an Annotation unless nina_pushover_items
+    assert kinds[:3] == ["Annotation", "SlewScopeToAltAz", "SetTracking"]
+    slew = items[1]["Coordinates"]
+    assert slew["AltDegrees"] == 75 and slew["AzDegrees"] == 285
     sets = [d for d in _walk(block) if d.get("$type", "").startswith(_SKYFLAT)]
-    assert sets and all(s["Attempts"] == cfg.dawn_flat_attempts == 4 for s in sets)
-    # the flat window itself did not move: ND + 5
-    wait = next(d for d in _vals(block, "Items") if _short(d["$type"]) == "WaitForTime")
-    assert wait["MinutesOffset"] == 5
+    # the brightening sky: Ha (needs less light than OIII here) first
+    assert [s["Name"] for s in sets] == ["Sky flats Ha", "Sky flats OIII"]
+    assert all(s["Attempts"] == 4 and s["MinExposure"] == 1.0
+               and s["MaxExposure"] == 30.0 for s in sets)
+    # nothing in the block says "complete"
+    assert "complete" not in json.dumps(block)
 
 
 def test_dusk_and_calibration_sets_keep_one_try():
@@ -76,43 +116,51 @@ def test_dusk_and_calibration_sets_keep_one_try():
     assert nsj._sky_flat(FilterType.LUMINANCE, 15, 200, 256, attempts=3)["Attempts"] == 3
 
 
-def test_attempts_and_deadline_follow_config():
+def test_attempts_follow_config():
     assert cal.dawn_flat_attempts(PhotonScriptConfig(dawn_flat_attempts=1)) == 1
     assert cal.dawn_flat_attempts(PhotonScriptConfig(dawn_flat_attempts=0)) == 1
-    assert cal.dawn_flat_deadline_offset(PhotonScriptConfig(dawn_flats_window_min=30)) == 32
-    # window off: the armer shuts down at astro dawn + 30, no flat time
-    assert cal.dawn_flat_deadline_offset(PhotonScriptConfig(dawn_flats_window_min=0)) == 5
-    # the deadline always sits DAWN_FLAT_END_MARGIN_MIN before the backstop
-    for win in (10, 40, 60):
-        off = cal.dawn_flat_deadline_offset(PhotonScriptConfig(dawn_flats_window_min=win))
-        assert off + cal.DAWN_FLAT_END_MARGIN_MIN == 5 + win
 
 
-def test_osc_dawn_set_retries_inside_the_same_deadline():
+def test_osc_dawn_set_at_its_planned_window(sky):
     cfg = rigs.rig_config(PhotonScriptConfig(
+        _env_file=None, data_dir=sky["cfg"].data_dir,
+        observatory_tz="America/Denver",
         piggyback_enabled=True, piggyback_default_gain=100,
         piggyback_default_offset=256, piggyback_dark_exposures="120",
         piggyback_setpoint_c=0.0, piggyback_image_lights=True,
         piggyback_focus_seed=0), "piggyback")
+    plan = cal.dawn_flat_plan(cfg, [], True)
+    slot = plan["rigs"]["piggyback"]["slots"][0]
+    from photonscript.scheduler.flat_plan import to_local
+    st, sp = to_local(cfg, slot["start"]), to_local(cfg, slot["stop"])
+    from photonscript.scheduler.sideload import lint_companion
     for safety in (True, False):
         root = json.loads(cal.generate_piggyback_companion_json(
             cfg, has_safety=safety, with_lights=True))
         block = _named(root, "DAWN_SKY_FLATS_OSC")
+        items = _vals(block, "Items")
+        wait = items[0]
+        assert _short(wait["$type"]) == "WaitForTime"
+        assert (wait["Hours"], wait["Minutes"]) == (st.hour, st.minute)
+        box = items[-1]
         want = (["SafetyMonitorCondition"] if safety else []) + [
             "LoopCondition", "TimeCondition"]
-        assert _kinds(block) == want
-        assert _vals(block, "Conditions")[-1]["MinutesOffset"] == 42
+        assert _kinds(box) == want
+        stop = _vals(box, "Conditions")[-1]
+        assert (stop["Hours"], stop["Minutes"]) == (sp.hour, sp.minute)
+        if safety:
+            assert items[1]["Name"] == "WAIT_SAFE_FOR_OSC_FLATS"
         sf = next(d for d in _walk(block) if d.get("$type", "").startswith(_SKYFLAT))
         assert sf["Attempts"] == 4
-    # the OSC start (ND + 20) stays inside the window
-    assert cal.osc_flat_dawn_offset(cfg) < cal.dawn_flat_deadline_offset(cfg)
+        assert lint_companion(root).ok
+        assert "complete" not in json.dumps(block)
 
 
 # ---- behavior (the PS-77 NINA interpreter) -------------------------------------
 
 class _SlowFlats(NinaSim):
-    """Sky flats that take 60 s each (a long dawn): without its own end the
-    block would run all 15 per set past the armer's backstop."""
+    """Sky flats that take 60 s each (a long dawn): each set must still end
+    at its own stop and the block by the hard end."""
 
     def __init__(self, *a, **kw):
         super().__init__(*a, **kw)
@@ -131,20 +179,22 @@ class _SlowFlats(NinaSim):
         return super().run_instruction(n)
 
 
-def test_sim_long_flats_end_at_the_deadline_then_park():
+def test_sim_long_flats_end_at_their_stops_then_park(sky):
     sim = _SlowFlats(_gen(oiii=200, ha=200)).run()
+    plan = cal.dawn_flat_plan(sky["cfg"], ["OIII", "Ha"], False)
+    from photonscript.scheduler.flat_plan import to_local
+    slots = plan["rigs"]["rc16"]["slots"]
+    st = to_local(sky["cfg"], slots[0]["start"])
+    sp = to_local(sky["cfg"], slots[-1]["stop"])
+    he = to_local(sky["cfg"], plan["hard_end"])
+    assert sim.flats and min(sim.flats) >= _sim_s(st.hour, st.minute)
+    assert max(sim.flats) < _sim_s(sp.hour, sp.minute) + 60
     nd = TIMES["NauticalDawnProvider"]
-    cfg = PhotonScriptConfig()
-    deadline = nd + 60 * cal.dawn_flat_deadline_offset(cfg)
-    backstop = nd + 60 * (5 + cfg.dawn_flats_window_min)
-    assert sim.flats and min(sim.flats) >= nd + 5 * 60
-    assert max(sim.flats) < deadline
-    # the End area parks right after the block ends, before the backstop
     end_parks = [t for t in sim.parks if t >= nd]
-    assert end_parks and deadline <= min(end_parks) < backstop
+    assert end_parks and min(end_parks) <= _sim_s(he.hour, he.minute) + 60
 
 
-def test_sim_closed_roof_at_dawn_still_shoots_no_flat():
+def test_sim_closed_roof_at_dawn_still_shoots_no_flat(sky):
     nd = TIMES["NauticalDawnProvider"]
     # 10-24: closed 04:25 local, still closed through dawn
     sim = _SlowFlats(_gen(oiii=200, ha=200), unsafe=[(nd - 7200, nd + 4 * 3600)]).run()

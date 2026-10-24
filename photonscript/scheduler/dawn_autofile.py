@@ -47,6 +47,13 @@ A Piggy "?" sub's exposure [start, start + exp] then gets:
             "?" (never enters a goal; PS-158 stops these at capture)
   target    a segment covers at least TIMELINE_MAJORITY of it: its name,
             test names included (PS-152: a test name never credits a goal)
+  run       2026-10-24: no single segment holds the majority but the span
+            of one calibration run (TPoint mapping: one short segment per
+            point, the slews between them are the run too, first point to
+            last) does: the run's name
+            ("TPoint mapping"), marked test + calibration_run, so it never
+            becomes a target, a goal or the '?' card (night 2026-10-09: 26
+            Piggy subs rode along the PS-171 run and stayed '?')
   slewing   it overlaps a slew and no target holds the majority: stays "?"
   ambiguous none of the above: "?", the dawn pass tries the PS-137 solve
 
@@ -245,10 +252,27 @@ def judge_sub(rec: dict, config, segs: list[dict],
         ov = _overlap(st, en, g["start"], g["end"])
         if ov > best_ov:
             best, best_ov = g, ov
+    from photonscript.shared.target_names import calibration_run_name
     if best is not None and best_ov / dur >= TIMELINE_MAJORITY:
-        return {"state": "target", "name": best["target"],
+        run = calibration_run_name(best["target"])
+        return {"state": "target", "name": run or best["target"],
                 "frac": round(best_ov / dur, 2), "src": best["src"],
-                "test": bool(best["test"])}
+                "test": bool(best["test"] or run),
+                **({"calibration_run": True} if run else {})}
+    # 2026-10-24: a calibration run's span, first point to last
+    spans: dict[str, list] = {}
+    for g in segs:
+        run = calibration_run_name(g["target"])
+        if run:
+            sp = spans.setdefault(run, [g["start"], g["end"], g["src"]])
+            sp[0], sp[1] = min(sp[0], g["start"]), max(sp[1], g["end"])
+    if spans:
+        run, ov, src = max(((r, _overlap(st, en, a, b), s)
+                            for r, (a, b, s) in spans.items()),
+                           key=lambda x: x[1])
+        if ov / dur >= TIMELINE_MAJORITY:
+            return {"state": "target", "name": run, "frac": round(ov / dur, 2),
+                    "src": src, "test": True, "calibration_run": True}
     if slewing > 0:
         return {"state": "slewing", "name": None,
                 "frac": round(slewing / dur, 2), "src": "mount-log"}
@@ -300,6 +324,8 @@ def attribute_timeline_records(config, date: str, subs: list[dict],
                 s["target_src"] = SRC
                 if j.get("test"):
                     s["test"] = True   # PS-152: out of medians and goals
+                if j.get("calibration_run"):
+                    s["calibration_run"] = True   # never a target (2026-10-24)
         else:
             out["held"][j["state"]] += 1
         if apply and s.get("timeline") != j:

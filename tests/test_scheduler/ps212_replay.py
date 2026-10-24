@@ -192,7 +192,7 @@ def story_pushes(info: dict) -> int:
     """The v2 story pushes a dispatched night makes besides the replayed
     records (whose "PhotonScript complete" is the end-of-night report):
     plan heads-up, imaging now, first light per rig, a switch per further
-    target, the dusk flats counts, each long roof closure's reopen."""
+    target, each long roof closure's reopen. The flats v2 window counts
+    ride in "imaging now" (dusk) and the end-of-night report (dawn)."""
     rigs = 2 if info["piggy"] else 1
-    return (1 + 1 + rigs + max(0, info["targets"] - 1)
-            + (1 if info["flats"] else 0) + info["reopens"])
+    return 1 + 1 + rigs + max(0, info["targets"] - 1) + info["reopens"]

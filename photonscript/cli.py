@@ -47,6 +47,7 @@ Usage:
     photonscript finish --master P --name N [--target T] [--out DIR] [--dry-run]  # re-finish one master
     photonscript pixinsight-gaia-check [--fix]                   # Gaia DR3 / DR3SP paths per PixInsight slot
     photonscript ledger-import <path> [--variant v4b] [--dry-run] [--apply]  # PS-142
+    photonscript progression-sheet [--target T] [--build] [--add-run DIR] [--import-seed DIR] [--pending] [--published]
     photonscript focus-ingest [--local] [--dir D] [--json]       # PS-76
     photonscript focus-move <filter> [--dry-run]                  # PS-76
     photonscript reentry-gate af|slew|center --label T [--filter L] [--ra H --dec D]  # 2026-10-15
@@ -5186,6 +5187,94 @@ def autointegrate_summary_cmd(
         datetime.combine(now.date() - timedelta(days=1), datetime.min.time()) + timedelta(hours=12)
     roots = bl.discovery_roots(root, sc.configured_root(cfg), bl.extra_roots(cfg))
     print(ns.render(ns.collect(roots, since.astimezone(timezone.utc)), now.date().isoformat()))
+
+
+@app.command("progression-sheet")
+def progression_sheet_cmd(
+    target: str = typer.Option("", "--target", help="Target or store slug (m31, heart, m33; NGC 604 -> m33)"),
+    build: bool = typer.Option(False, "--build", help="Rebuild the HTML (all stores without --target)"),
+    add_run: str = typer.Option("", "--add-run", help="Add (or refresh) a run folder's frame, then rebuild"),
+    import_seed: str = typer.Option("", "--import-seed",
+                                    help="A hand-built sheet folder (versions.json + thumbnails, or "
+                                         "published.html), or a folder of them (m31/ heart/ m33/)"),
+    pending: bool = typer.Option(False, "--pending", help="List the sheets to republish (pending_publish.json)"),
+    published: bool = typer.Option(False, "--published",
+                                   help="Mark --target as republished to its artifact URL"),
+    edit: str = typer.Option("", "--edit", help="Frame id to edit (with --changed / --title)"),
+    changed: Optional[str] = typer.Option(None, "--changed", help="The frame's 'changed' note (hand-edited)"),
+    title: Optional[str] = typer.Option(None, "--title", help="The frame's title (hand-edited)"),
+    root: str = typer.Option("", "--root", help="Store (default <integration_staging_root parent>/progression)"),
+    staging_root: str = typer.Option("", "--staging-root", help="Default integration_staging_root"),
+    as_json: bool = typer.Option(False, "--json", help="Print the result as JSON"),
+):
+    """Progression contact sheets (integration/progression.py): one HTML per
+    target with every rendition in order, rebuilt after every integrate /
+    finish / blend run. Claude republishes the changed ones (--pending) to
+    their artifact URLs and marks them with --published.
+
+    photonscript progression-sheet --pending
+    photonscript progression-sheet --target m33 --add-run I:/Astrophotography/Staging/NGC_604_piggyback_20261024-1341
+    """
+    import json as _json
+    from photonscript.integration import pipeline as pl
+    from photonscript.integration import progression as pg
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    sroot = Path(staging_root) if staging_root else pl.default_staging_root(cfg)
+    store_root = Path(root) if root else pg.store_root(sroot)
+    say = lambda s: console.print(s, markup=False, highlight=False)  # noqa: E731
+    out: dict = {"root": str(store_root)}
+    try:
+        slug = pg.resolve_slug(store_root, target) if target else ""
+        if import_seed:
+            seed = Path(import_seed)
+            dirs = [seed] if ((seed / "versions.json").is_file() or (seed / "published.html").is_file()) \
+                else sorted(d for d in seed.iterdir() if d.is_dir())
+            out["imported"] = []
+            for d in dirs:
+                s = pg.import_seed(store_root, d, slug if len(dirs) == 1 and slug else "")
+                say(f"imported {d} -> {s.dir} ({len(s.versions)} frames, {s.html_path.name})")
+                out["imported"].append({"slug": s.slug, "frames": len(s.versions), "html": str(s.html_path)})
+        if add_run:
+            s, e = pg.add_run(store_root, Path(add_run), target=target, changed=changed or "",
+                              title=title or "")
+            path, ch = pg.build(s)
+            say(f"{s.slug}: frame {e['id']} {e['title']}: {e['data'].get('subs')} subs, "
+                f"{e['data'].get('hours')} h; changed: {e['changed']}")
+            say(f"  built {path}" + (" (to republish)" if ch else ""))
+            out["added"] = {"slug": s.slug, "entry": e, "html": str(path), "pending": ch}
+        elif edit:
+            if not slug:
+                raise pg.ProgressionError("--edit needs --target")
+            s = pg.Store.open(store_root, slug)
+            e = pg.edit_entry(s, edit, changed=changed, title=title)
+            path, ch = pg.build(s)
+            say(f"{slug}: frame {e['id']} edited; built {path}" + (" (to republish)" if ch else ""))
+            out["edited"] = e
+        if build:
+            slugs = [slug] if slug else [d.name for d in pg.target_dirs(store_root)]
+            out["built"] = []
+            for sl in slugs:
+                path, ch = pg.build(pg.Store.open(store_root, sl))
+                say(f"built {path}" + (" (to republish)" if ch else " (same as published)"))
+                out["built"].append({"slug": sl, "html": str(path), "pending": ch})
+        if published:
+            if not slug:
+                raise pg.ProgressionError("--published needs --target")
+            pg.mark_published(store_root, slug)
+            say(f"{slug}: marked published")
+        if pending or not (import_seed or add_run or edit or build or published):
+            out["pending"] = pg.pending_list(store_root)
+            if not out["pending"]:
+                say(f"nothing to republish ({store_root / pg.PENDING})")
+            for p in out["pending"]:
+                say(f"{p['slug']}: {p['title']} ({p['frames']} frames)\n  html: {p['html']}\n"
+                    f"  republish to: {p['artifact_url'] or '(no artifact yet: publish a new one, '
+                    'then set artifact_url in meta.json)'}")
+    except (pg.ProgressionError, OSError, ValueError, KeyError) as e:
+        console.print(f"[red]progression-sheet:[/red] {e}", markup=True)
+        raise typer.Exit(1)
+    if as_json:
+        print(_json.dumps(out, indent=1, default=str))
 
 
 @app.command("ledger-import")

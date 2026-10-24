@@ -807,10 +807,12 @@ SKY_FLAT_TOLERANCE = 0.2
 
 
 def _sky_flat(filter_type: FilterType, count: int,
-              gain: int, offset: int, attempts: int = 1) -> dict:
+              gain: int, offset: int, attempts: int = 1,
+              min_exp: float = 0.1, max_exp: float = 30.0) -> dict:
     """Native NINA sky-flat instruction (verified from a sequencer export):
     auto-adjusts exposure between Min/MaxExposure to hit the histogram
-    target while the twilight sky brightens. No flat panel involved."""
+    target while the twilight sky brightens. No flat panel involved.
+    2026-10-24: min_exp / max_exp from the flat plan (flat_plan.py)."""
     loop = _seq_container(
         f"{count} flats",
         [_make_typed(
@@ -835,7 +837,7 @@ def _sky_flat(filter_type: FilterType, count: int,
     # exposure search found nothing) up to Attempts times; dawn sets pass
     # dawn_flat_attempts, dusk sets keep 1
     sf["Attempts"] = max(1, int(attempts))
-    sf.update(MinExposure=0.1, MaxExposure=30.0,
+    sf.update(MinExposure=float(min_exp), MaxExposure=float(max_exp),
               HistogramTargetPercentage=0.5,
               HistogramTolerancePercentage=SKY_FLAT_TOLERANCE,
               ShouldDither=False, DitherPixels=3.0, DitherSettleTime=5.0)
@@ -2662,6 +2664,98 @@ def generate_phd2_calibration_json(field: dict, hold_s: int = 240,
     return json.dumps(link_parents(root), indent=2)
 
 
+def dawn_flat_filters(sequence, cfg) -> list:
+    """The RC16 filters (FilterType) the night's dawn flats owe: tonight's
+    filters plus up to calibration_dawn_flat_extra_max stale ones
+    (auto_stale_flats), minus (flats_when both) the filters this evening's
+    dusk flats or today's sets already covered (calibration.flats_covered,
+    counted frames); none with flats_when dusk or dawn_flats_enabled off."""
+    if not getattr(cfg, "dawn_flats_enabled", True):
+        return []
+    flat_filters = []
+    for t in sequence.targets:
+        for e in t.exposures:
+            if e.filter_type not in flat_filters:
+                flat_filters.append(e.filter_type)
+    # Also refresh any STALE flat filters at dawn, even if tonight didn't image
+    # them: otherwise broadband flats age out across a run of narrowband-only
+    # nights and never get retaken.
+    if getattr(cfg, "auto_stale_flats", True):
+        try:
+            from photonscript.scheduler.calibration import stale_flat_filters
+            _by_val = {ft.value: ft for ft in FilterType}
+            # PS-160: owed filters (as used, most owed first), at most
+            # calibration_dawn_flat_extra_max on top of tonight's per morning
+            _extra_max = max(0, int(getattr(
+                cfg, "calibration_dawn_flat_extra_max", 3) or 0))
+            _added = 0
+            for _name in stale_flat_filters(cfg):
+                _ft = _by_val.get(_name)
+                if _ft is not None and _ft not in flat_filters:
+                    if _added >= _extra_max:
+                        break
+                    flat_filters.append(_ft)
+                    _added += 1
+        except Exception:  # noqa: BLE001
+            pass
+    # 2026-10-21 flats_when: dusk = no dawn sky flats; both = leave out what
+    # this evening's dusk flats (or a set today) already shot (2026-10-24:
+    # counted frames, flats_covered); dawn = as before.
+    try:
+        from photonscript.scheduler.calibration import flats_covered, flats_when
+        _when = flats_when(cfg)
+        if _when == "dusk":
+            return []
+        if _when == "both" and flat_filters:
+            _done = flats_covered(cfg, "rc16")
+            flat_filters = [f for f in flat_filters if f.value not in _done]
+    except Exception:  # noqa: BLE001 - never drop the dawn flats on this
+        pass
+    return flat_filters
+
+
+def dawn_flats_block(cfg, flat_filters, now=None):
+    """The RC16 End area's dawn sky flats (2026-10-24, flat_plan.py): the
+    plan of this morning (calibration.dawn_flat_plan) for the owed filters
+    and, when the companion shoots its OSC dawn set, the Piggy-600. Points
+    at the flat spot opposite the sun (sun az + 180, alt
+    flats_point_alt_deg) as soon as imaging ends, stops tracking, then each
+    filter in its window, darkest-sky filters first (L, B, G, R, then
+    narrowband: the dawn sky brightens), and holds the pointing for the
+    Piggy-600's set. Bounded by the plan's hard end (sunrise +
+    flats_dawn_end_after_sunrise_min) and the SafetyMonitor (a closed roof
+    makes junk flats). No closing push: the window report counts the
+    frames. None when nothing is planned for either rig."""
+    from photonscript.scheduler.calibration import (
+        dawn_flat_plan, flat_slot_items, osc_dawn_wanted)
+    from photonscript.scheduler import flat_plan as fp
+    osc = osc_dawn_wanted(cfg)
+    plan = dawn_flat_plan(cfg, [f.value for f in flat_filters], osc, now=now)
+    rc = plan["rigs"]["rc16"]["slots"]
+    pb = (plan["rigs"].get("piggyback") or {}).get("slots") or []
+    if not rc and not pb:
+        return None
+    n = int(getattr(cfg, "flat_count", 15))
+    items = [_pushover("Flats", "imaging done: dawn sky flats by sun altitude: "
+                       + fp.describe(cfg, plan))]
+    pt = plan["pointing"]
+    items += [_slew_alt_az_exact(pt["alt"], pt["az"]), _set_tracking(5)]
+    for sl in rc:
+        items += flat_slot_items(cfg, sl, n, osc=False, gain=cfg.default_gain,
+                                 offset=cfg.default_offset, safety=False)
+    if pb and plan.get("hold_until"):
+        hl = fp.to_local(cfg, plan["hold_until"])
+        items.append(_wait_for_time_at(hl.hour, hl.minute))
+    he = fp.to_local(cfg, plan["hard_end"])
+    # LoopCondition(1): a container under a SafetyMonitorCondition REPEATS
+    # while safe (PS-77)
+    return _seq_container(
+        f"DAWN_SKY_FLATS (until {he:%H:%M}; skipped if unsafe: closed roof "
+        "makes junk flats)", items,
+        conditions=[_safety_condition(), _loop_once(),
+                    _time_condition_at(he.hour, he.minute)])
+
+
 def generate_nina_json(sequence: NinaSequenceFile,
                        cal_field: dict | None = None,
                        unguided_dither: bool = False) -> str:
@@ -3041,84 +3135,9 @@ def generate_nina_json(sequence: NinaSequenceFile,
 
     # ---- End area -----------------------------------------------------------
     end_items = []
-    flat_filters = []
-    for t in sequence.targets:
-        for e in t.exposures:
-            if e.filter_type not in flat_filters:
-                flat_filters.append(e.filter_type)
-    # Also refresh any STALE flat filters at dawn, even if tonight didn't image
-    # them — otherwise broadband flats age out across a run of narrowband-only
-    # nights and never get retaken. Staleness-gated, so it's a no-op when all
-    # flats are fresh. (The OSC piggyback already reshoots its one flat set every
-    # arm via the companion, so this covers the RC16 half of "both scopes".)
-    if getattr(_cfg, "auto_stale_flats", True):
-        try:
-            from photonscript.scheduler.calibration import stale_flat_filters
-            _by_val = {ft.value: ft for ft in FilterType}
-            # PS-160: owed filters (as used, most owed first), at most
-            # calibration_dawn_flat_extra_max on top of tonight's per morning
-            _extra_max = max(0, int(getattr(
-                _cfg, "calibration_dawn_flat_extra_max", 3) or 0))
-            _added = 0
-            for _name in stale_flat_filters(_cfg):
-                _ft = _by_val.get(_name)
-                if _ft is not None and _ft not in flat_filters:
-                    if _added >= _extra_max:
-                        break
-                    flat_filters.append(_ft)
-                    _added += 1
-        except Exception:  # noqa: BLE001
-            pass
-    # 2026-10-21 flats_when: dusk = no dawn sky flats (the auto dusk flats
-    # shoot them); both = leave out a filter whose set was shot today (the
-    # dusk flats already refreshed it this evening); dawn = as before.
-    try:
-        from photonscript.scheduler.calibration import (flats_shot_today,
-                                                        flats_when)
-        _when = flats_when(_cfg)
-        if _when == "dusk":
-            flat_filters = []
-        elif _when == "both" and flat_filters:
-            _today = flats_shot_today(_cfg)
-            flat_filters = [f for f in flat_filters if f.value not in _today]
-    except Exception:  # noqa: BLE001 - never drop the dawn flats on this
-        pass
-    if getattr(_cfg, "dawn_flats_enabled", True) and flat_filters:
-        # Dawn goes dark->bright: broadband first (fine in the dim sky),
-        # narrowband LAST when the sky is bright enough that 3nm exposures
-        # fit under MaxExposure (Jeremy's correction — NB-first put the
-        # narrowband filters in sky too dark for the 30s cap).
-        NBF = {"Ha", "OIII", "SII"}
-        flat_filters.sort(key=lambda f: f.value in NBF)
-        n = int(getattr(_cfg, "flat_count", 15))
-        # 2026-10-24: every clear dawn since 09-07 each set was tried once
-        # from ND+5, "too dim" at the 30 s cap, nothing saved. Retry a set
-        # (dawn_flat_attempts) as the sky brightens, and end the block by
-        # itself before the armer's backstop so the park is never later.
-        from photonscript.scheduler.calibration import (
-            dawn_flat_attempts, dawn_flat_time_condition)
-        _tries = dawn_flat_attempts(_cfg)
-        flat_block = _seq_container(
-            "DAWN_SKY_FLATS (skipped if unsafe — closed roof makes junk "
-            "flats)",
-            [
-                _pushover("Flats", "imaging done — waiting for sky-flat "
-                          f"window (nautical dawn +5), then {n} sky flats "
-                          "per filter: "
-                          + ", ".join(f.value for f in flat_filters)),
-                _wait_for_provider("NauticalDawnProvider", 5),
-                _slew_alt_az(85, 200),
-            ] + [_sky_flat(f, n, _cfg.default_gain, _cfg.default_offset,
-                           attempts=_tries)
-                 for f in flat_filters]
-            + [_pushover("Flats", "sky flats complete")],
-            # LoopCondition(1): a container under a SafetyMonitorCondition
-            # REPEATS while safe, so without it the flat set would reshoot
-            # until the armer's dawn shutdown stopped NINA (latent: the
-            # shutdown always fired before the flat window until PS-36;
-            # caught by the PS-77 sequence simulator).
-            conditions=[_safety_condition(), _loop_once(),
-                        dawn_flat_time_condition(_cfg)])
+    flat_filters = dawn_flat_filters(sequence, _cfg)
+    flat_block = dawn_flats_block(_cfg, flat_filters)
+    if flat_block is not None:
         end_items.append(flat_block)
     end_items.append(_pushover("Shutdown", "starting shutdown: stop guiding, "
                                "park, dew heater off, warm camera, disconnect"))

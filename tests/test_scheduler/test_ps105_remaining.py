@@ -109,7 +109,8 @@ def test_partly_done_project_schedules_its_full_remainder(tmp_path, acquired, ow
     data = _sequence(targets)
     assert _light_blocks(data) == [(60.0, owed)]
     # plan_desc in the slewing notification shows the owed count too
-    texts = [d.get("Message", "") for d in _walk(data) if isinstance(d, dict)]
+    texts = [str(d.get("Message") or d.get("Text") or "") for d in _walk(data)
+             if isinstance(d, dict)]   # PS-212: Annotation Text unless nina_pushover_items
     assert any(f"Ha{X}{owed}@60s" in m for m in texts)
 
 

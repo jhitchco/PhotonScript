@@ -34,19 +34,28 @@ from tests.test_scheduler.test_dusk_flats_both_rigs import (  # noqa: F401 - fix
 
 
 # ---- which filters the dusk run shoots ----------------------------------------
+# 2026-10-24 (flats v2): the sky model decides. Narrowband is planned at dusk
+# only while its window (before sunset) is still ahead; a late roof / tick
+# leaves it owed for the dawn. dusk_flats_narrowband off: never at dusk.
 
-def test_dusk_filters_leave_narrowband_for_dawn_by_default(tmp_path):
+def _late(env, minutes=5):
+    return env["tw"]["sunset"] + timedelta(minutes=minutes)
+
+
+def test_dusk_filters_narrowband_flag(tmp_path):
     owed = ["Ha", "OIII", "SII", "R", "G", "B", "L"]
-    assert cal.dusk_flat_filters(_cfg(tmp_path), owed) == ["R", "G", "B", "L"]
-    on = _cfg(tmp_path, dusk_flats_narrowband=True)
-    assert cal.dusk_flat_filters(on, owed) == owed
+    assert cal.dusk_flat_filters(_cfg(tmp_path), owed) == owed
+    off = _cfg(tmp_path, dusk_flats_narrowband=False)
+    assert cal.dusk_flat_filters(off, owed) == ["R", "G", "B", "L"]
 
 
-def test_dispatch_shoots_broadband_and_names_the_dawn_leftovers(env, tmp_path):
+def test_late_dispatch_shoots_broadband_and_names_the_dawn_leftovers(env, tmp_path):
+    """Dispatched at sunset + 5 (10-23: the roof opened at sunset + 15): the
+    narrowband windows (sun +2 .. -1.2 deg) have passed, R and G still fit."""
     cfg = _cfg(tmp_path)
     env["st"]["stale"] = ["Ha", "OIII", "R", "G"]
     armer, fs = _Armer(), {}
-    assert _tick(cfg, armer, fs, env) == "dispatched"
+    assert _tick(cfg, armer, fs, env, _late(env)) == "dispatched"
     assert [r[0] for r in armer.raw] == ["auto dusk flats (R,G)"]
     assert env["st"]["gen"][0]["only_filters"] == ["R", "G"]
     seq = armer.raw[0][1]
@@ -57,14 +66,16 @@ def test_dispatch_shoots_broadband_and_names_the_dawn_leftovers(env, tmp_path):
     assert dk.wanted_filters(row["detail"]) == ["R", "G"]
 
 
-def test_only_narrowband_owed_is_a_dawn_only_skip(env, tmp_path):
+def test_only_narrowband_owed_late_is_a_no_window_skip(env, tmp_path):
     cfg = _cfg(tmp_path)
     env["st"]["stale"] = ["Ha", "OIII"]
     armer, fs = _Armer(), {}
-    assert _tick(cfg, armer, fs, env) == df.SKIP_DAWN_ONLY
+    assert _tick(cfg, armer, fs, env, _late(env)) == df.SKIP_NO_WINDOW
     assert armer.raw == [] and fs["done"]
     row = _rows(cfg, env["now"])[-1]
-    assert row["skip"] == df.SKIP_DAWN_ONLY and "Ha, OIII" in row["detail"]
+    assert row["skip"] == df.SKIP_NO_WINDOW
+    assert "Ha" in row["detail"] and "OIII" in row["detail"]
+    assert "owed for the dawn" in row["detail"]
 
 
 def test_only_narrowband_owed_still_holds_for_the_piggy(env, tmp_path):
@@ -72,17 +83,23 @@ def test_only_narrowband_owed_still_holds_for_the_piggy(env, tmp_path):
     env["st"]["stale"] = ["Ha"]
     env["st"]["pb"] = {"owed": True, "reasons": ["OSC: stale"], "shot_today": False}
     armer, fs = _Armer(), {}
-    assert _tick(cfg, armer, fs, env) == "dispatched"
+    assert _tick(cfg, armer, fs, env, _late(env)) == "dispatched"
     assert env["st"]["gen"][0]["only_filters"] == []
     assert env["st"]["gen"][0]["hold_for_osc"] is True
 
 
-def test_narrowband_flag_keeps_the_old_order(env, tmp_path):
-    cfg = _cfg(tmp_path, dusk_flats_narrowband=True)
+def test_early_roof_plans_narrowband_first(env, tmp_path):
+    """Roof open 30 min before sunset: the darkening sky serves the
+    narrowband first (brightest need), then broadband."""
+    cfg = _cfg(tmp_path)
     env["st"]["stale"] = ["Ha", "OIII", "R"]
     armer, fs = _Armer(), {}
     assert _tick(cfg, armer, fs, env) == "dispatched"
-    assert env["st"]["gen"][0]["only_filters"] == ["Ha", "OIII", "R"]
+    assert env["st"]["gen"][0]["only_filters"] == ["OIII", "Ha", "R"]
+    off = _cfg(tmp_path / "off", dusk_flats_narrowband=False)
+    armer2 = _Armer()
+    assert _tick(off, armer2, {}, env) == "dispatched"
+    assert env["st"]["gen"][1]["only_filters"] == ["R"]
 
 
 # ---- the SkyFlat band and the closing pushes ---------------------------------
@@ -98,6 +115,8 @@ def test_sky_flat_band_takes_the_1023_piggy_probe():
 
 
 def test_dusk_pushes_do_not_claim_complete(env, tmp_path):
+    """2026-10-24: no closing push at all from the flat sequences; the
+    window report counts the frames (dusk_flats.maybe_report_windows)."""
     cfg = _cfg(tmp_path)
     rc = json.loads(cal.generate_dusk_flats_json(cfg, only_filters=["L"],
                                                  now=env["now"])[0])
@@ -105,12 +124,14 @@ def test_dusk_pushes_do_not_claim_complete(env, tmp_path):
         _cfg(tmp_path, piggyback_enabled=True), "piggyback"), osc=True,
         owns_mount=False, now=env["now"])[0])
     for seq in (rc, pb):
-        # PS-212: the narration is an Annotation unless nina_pushover_items
-        text = " ".join(json.dumps(n) for n in _walk(seq)
-                        if "Pushover" in n.get("$type", "")
-                        or "Annotation" in n.get("$type", ""))
-        assert "flats complete" not in text
-        assert "morning report counts dusk flats shot and filed" in text
+        # PS-212: NINA's push items are Annotations unless nina_pushover_items
+        pushes = [n for n in _walk(seq) if "Pushover" in n.get("$type", "")
+                  or ("Annotation" in n.get("$type", "")
+                      and str(n.get("Text", "")).startswith("["))]
+        assert len(pushes) == 1                       # the intro only
+        text = json.dumps(pushes)
+        assert "complete" not in text and "run ended" not in text
+        assert "by sun altitude" in text
 
 
 # ---- the morning check: shot vs filed ------------------------------------------

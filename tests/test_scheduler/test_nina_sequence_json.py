@@ -491,10 +491,13 @@ class TestDawnSkyFlats:
         end = txt[txt.index('"Name": "End"'):]
         assert end.index("FlatDevice.SkyFlat") < end.index("Park")
 
-    def test_flats_wait_for_nautical_dawn_window(self):
+    def test_flats_wait_for_their_sun_altitude_windows(self):
+        """2026-10-24 (flats v2): each dawn set waits for its planned clock
+        time (flat_plan.py), not a fixed nautical dawn offset."""
         txt, _, _ = self._night_json()
         end = txt[txt.index('"Name": "End"'):]
-        assert "NauticalDawnProvider" in end
+        assert "DAWN_SKY_FLATS" in end and '"Name": "FLATS ' in end
+        assert "DateTimeProvider.TimeProvider" in end
 
     def test_generated_sequence_still_lints(self):
         import json as _json

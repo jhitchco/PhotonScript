@@ -30,7 +30,7 @@ def test_grid_table_toggle_and_columns(tmp_path, monkeypatch):
     assert re.search(r"try \{ const v = localStorage\.getItem\('runsSubView'\)", js)
     assert re.search(r"try \{ localStorage\.setItem\('runsSubView', v\); \}", js)
     assert "let subSort = {key: 'score', dir: 1};" in js        # score first
-    assert "SubTiles.lazy(tbl, 2)" in js and "data-src=" in js
+    assert "SubTiles.lazy(tbl, 4)" in js and "data-src=" in js   # 2026-10-24: 4 in flight
     keys = re.findall(r"\['(\w+)', '[^']*', '[^']*', ", js[js.index("const SUB_COLS"):])
     for k in ("thumb", "time", "target", "filter", "exp", "score", "verdict", "hfr",
               "fwhm", "ecc", "ecc_bin", "stars", "bkg", "sat", "expo", "rms", "alt",

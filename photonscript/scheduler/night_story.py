@@ -18,8 +18,9 @@ builds the story pushes and reads the storyline back:
   roof            roof_tick(): debounced. A closure is logged (info); when
                   the roof reopens after pushover_roof_debounce_min (10) or
                   more, one story push with the closure's length.
-  dusk flats      maybe_flats_story(): the truthful counts from
-                  dusk_flats_check once the dusk run is over.
+  flats           dusk_flats.maybe_report_windows (flats v2): one push per
+                  window with the frames actually saved; the dusk count rides
+                  in "imaging now" when that push is still to come.
   end of night    end_of_night(): as soon as imaging is over (the dawn
                   shutdown, or the roof closed for good before dawn), one
                   push: per rig and target subs shot / kept / rejected with
@@ -481,7 +482,30 @@ async def maybe_plan_headsup(armer, now: datetime | None = None) -> bool:
 # imaging now
 # --------------------------------------------------------------------------
 
-def imaging_now_text(config, plan: dict, *, guided: bool, now: datetime) -> str:
+def imaging_pending(config, now: datetime | None = None) -> bool:
+    """Armed tonight and "imaging now" still to come (before astro dark):
+    the dusk flats count then rides in that push instead of its own."""
+    now = po._utc_naive(now)
+    st = load_state(config, _night(config, now))
+    dusk = _parse((st.get("plan_window") or {}).get("dusk"))
+    return bool(dusk and not st.get("imaging_t") and now < dusk)
+
+
+def _flats_line(config, night: str, prefix: str) -> str | None:
+    """Tonight's flats v2 window count line ("Dusk flats ..." / "Dawn
+    flats ...") from the storyline."""
+    for e in reversed(entries(config, night)):
+        if e.get("title") == TITLE_FLATS and str(e.get("text") or "").startswith(prefix):
+            return e.get("text")
+    return None
+
+
+def _dusk_flats_line(config, night: str) -> str | None:
+    return _flats_line(config, night, "Dusk flats")
+
+
+def imaging_now_text(config, plan: dict, *, guided: bool, now: datetime,
+                     flats: str | None = None) -> str:
     sched = [r for r in plan.get("schedule") or [] if not r.get("fill")]
     first = sched[0] if sched else {}
     mode = "guided" if guided else "unguided"
@@ -497,7 +521,8 @@ def imaging_now_text(config, plan: dict, *, guided: bool, now: datetime) -> str:
     if st.get("est_integration_h") is not None:
         tail += f", ~{st['est_integration_h']} h planned"
     bits.append(tail)
-    return ". ".join(bits) + "."
+    out = ". ".join(bits) + "."
+    return out + ("\n" + flats if flats else "")
 
 
 async def maybe_imaging_now(armer, now: datetime | None = None,
@@ -513,7 +538,8 @@ async def maybe_imaging_now(armer, now: datetime | None = None,
     if load_state(cfg, night).get("imaging_t"):
         return False
     _update(cfg, night, lambda st: st.update(imaging_t=now.isoformat() + "Z"))
-    text = imaging_now_text(cfg, plan, guided=bool(armer._use_guiding()), now=now)
+    text = imaging_now_text(cfg, plan, guided=bool(armer._use_guiding()), now=now,
+                            flats=_dusk_flats_line(cfg, night))
     return await _push(cfg, text, title=TITLE_IMAGING, fact=f"imaging:{night}")
 
 
@@ -705,37 +731,6 @@ def roof_closed_for_good(plan: dict | None, now: datetime, safe_eff: bool | None
 
 
 # --------------------------------------------------------------------------
-# dusk flats, from dusk_flats_check
-# --------------------------------------------------------------------------
-
-async def maybe_flats_story(config, now: datetime | None = None) -> bool:
-    """Once per night, when tonight's auto dusk flats run is over (its stop
-    plus dusk_flats_check.DUSK_TAIL_MIN): the shot / filed counts."""
-    now = now or datetime.utcnow()
-    night = _night(config, now)
-    if load_state(config, night).get("flats_t"):
-        return False
-    try:
-        from photonscript.scheduler import dusk_flats_check as dfc
-        from photonscript.scheduler.calibration import dusk_flat_times
-        row = dfc.dispatch_row(config, night)
-        if not row:
-            return False
-        t0 = _parse(row.get("t"))
-        stop = (dusk_flat_times(config, t0) or {}).get("stop") if t0 else None
-        if stop is None or now < stop + timedelta(minutes=dfc.DUSK_TAIL_MIN):
-            return False
-        _update(config, night, lambda s: s.update(flats_t=now.isoformat() + "Z"))
-        line = await asyncio.to_thread(dfc.morning_line, config, night)
-    except Exception as e:  # noqa: BLE001
-        logger.debug("flats story skipped: %s", e)
-        return False
-    if not line:
-        return False
-    return await _push(config, line, title=TITLE_FLATS, fact=f"dusk-flats:{night}")
-
-
-# --------------------------------------------------------------------------
 # the end-of-night report
 # --------------------------------------------------------------------------
 
@@ -802,7 +797,8 @@ def _held_acts(config, night: str) -> list[str]:
 def end_of_night_report(config, night: str, *, reason: str,
                         subs: list[dict] | None = None, projects=None,
                         plan: dict | None = None, shutdown_failed=None,
-                        extra=None, now: datetime | None = None) -> dict:
+                        extra=None, dawn_line: str | None = None,
+                        now: datetime | None = None) -> dict:
     """{"text", "kept", "shot", "thumb_file", "lines"}: the end-of-night
     push (pure apart from the reads it names). subs / projects for tests."""
     from photonscript.shared.qa_rules import is_test_record
@@ -880,8 +876,12 @@ def end_of_night_report(config, night: str, *, reason: str,
                                    _parse(plan.get("dawn_utc")), now)))
     try:
         from photonscript.scheduler import dusk_flats_check as dfc
-        for fn in (dfc.morning_line, dfc.dawn_morning_line):
-            ln = fn(config, night)
+        # flats v2's window counts first (the pushes' own lines), else
+        # the older morning lines
+        dusk_ln = _dusk_flats_line(config, night) or dfc.morning_line(config, night)
+        dawn_ln = (dawn_line or _flats_line(config, night, "Dawn flats")
+                   or dfc.dawn_morning_line(config, night))
+        for ln in (dusk_ln, dawn_ln):
             if ln:
                 lines.append((2, ln))
     except Exception as e:  # noqa: BLE001
@@ -920,7 +920,8 @@ def end_of_night_report(config, night: str, *, reason: str,
 
 async def end_of_night(config, night: str | None, *, reason: str,
                        plan: dict | None = None, shutdown_failed=None,
-                       extra=None, now: datetime | None = None) -> bool:
+                       extra=None, dawn_line: str | None = None,
+                       now: datetime | None = None) -> bool:
     """The end-of-night story push, once per night."""
     now = now or datetime.utcnow()
     night = night or _night(config, now)
@@ -929,7 +930,8 @@ async def end_of_night(config, night: str | None, *, reason: str,
     try:
         rep = await asyncio.wait_for(asyncio.to_thread(
             end_of_night_report, config, night, reason=reason, plan=plan,
-            shutdown_failed=shutdown_failed, extra=extra, now=now), timeout=120)
+            shutdown_failed=shutdown_failed, extra=extra, dawn_line=dawn_line,
+            now=now), timeout=120)
     except Exception as e:  # noqa: BLE001
         logger.warning("end of night report failed: %s", e)
         rep = {"text": f"Night {night} over ({reason}). Report unavailable: {e}",
@@ -949,6 +951,56 @@ async def end_of_night(config, night: str | None, *, reason: str,
             "the rig may sit unparked or cooled all day"),
             title="PhotonScript shutdown warning", kind="act", safety=True)
     return sent
+
+
+END_WAIT_MAX_MIN = 30   # the report waits at most this long for the dawn count
+
+
+def dawn_count_pending(config, night: str | None) -> bool:
+    """A flats v2 dawn window planned tonight and not counted yet."""
+    try:
+        from photonscript.scheduler import flat_plan as fp
+        p = fp.load_plan(config, night, "dawn") if night else None
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(p and p.get("end") and not p.get("reported"))
+
+
+def defer_end(config, night: str, *, reason: str, extra=None, shutdown_failed=None,
+              now: datetime | None = None) -> None:
+    """The dawn shutdown is done but the dawn flats count comes about 10 min
+    later (flats v2 reports 12 min after the window's end, the shutdown 3):
+    hold the report so it carries the count; maybe_report_windows (or the
+    END_WAIT_MAX_MIN fallback, flush_stale_end) sends it."""
+    now = now or datetime.utcnow()
+    _update(config, night, lambda s: s.update(end_pending={
+        "t": now.isoformat() + "Z", "reason": reason,
+        "extra": [list(x) for x in extra or []],
+        "shutdown_failed": list(shutdown_failed or [])}))
+
+
+async def flush_end(config, night: str, dawn_line: str | None = None,
+                    now: datetime | None = None) -> bool:
+    """Send a held end-of-night report (once). False when none is held."""
+    pend = load_state(config, night).get("end_pending")
+    if not pend:
+        return False
+    _update(config, night, lambda s: s.update(end_pending=None))
+    return await end_of_night(config, night, reason=pend.get("reason") or "dawn",
+                              extra=[tuple(x) for x in pend.get("extra") or []],
+                              shutdown_failed=pend.get("shutdown_failed") or None,
+                              dawn_line=dawn_line, now=now)
+
+
+async def flush_stale_end(config, now: datetime | None = None) -> bool:
+    """The fallback: a held report older than END_WAIT_MAX_MIN goes out."""
+    now = now or datetime.utcnow()
+    for night in sorted(_load_all(config))[-2:]:
+        pend = load_state(config, night).get("end_pending") or {}
+        t = _parse(pend.get("t"))
+        if t and now - t >= timedelta(minutes=END_WAIT_MAX_MIN):
+            return await flush_end(config, night, now=now)
+    return False
 
 
 def filing_kind(config, night: str, kept_now: int | None) -> str:

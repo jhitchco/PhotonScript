@@ -221,3 +221,77 @@ def test_observe_only():
     assert src.isascii()
     for bad in (".post(", "sequence_stop", "start_sequence", "park(", "nina_warm"):
         assert bad not in src, bad
+
+
+# ------------------------------------------------------------- PS-229
+
+class _PathSim(_Sim):
+    """NINA #2's running item with a container path and ImageType."""
+    def __init__(self, path, mount="idle", image_type=None, calib=None, target=None):
+        super().__init__(mount=mount, leaf=path[-1], target=target)
+        self.path, self.image_type, self.calib = path, image_type, calib
+
+    async def piggy_fn(self, cfg):
+        self.piggy_reads += 1
+        return {"leaf": self.leaf, "target": self.target, "exposure_s": 450.0,
+                "path": self.path, "image_type": self.image_type, "calib": self.calib}
+
+
+def test_ps229_closed_roof_darks_never_page(tmp_path):
+    """10-17 / 10-22 shapes: a plain 'Take Exposure' 450 s inside the
+    companion's darks containers with the RC16 mount unparked, not
+    tracking: no page, no event."""
+    cfg = _cfg(tmp_path)
+    for path in (["Piggy companion", "OSC_DARKS_IF_UNSAFE", "OSC DARKS_450s (need 22 of 30)",
+                  "Take Exposure"],
+                 ["Piggy companion", "WAIT_SAFE_WITH_OSC_DARKS", "OSC_DARKS_IF_UNSAFE",
+                  "Take Exposure"],
+                 ["Piggy companion", "OSC_LIGHTS_UNTIL_DAWN", "OSC_CLOSED_ROOF_DARKS",
+                  "Take Exposure"],
+                 ["Companion", "OSC_DARKS_BEFORE_FIRST_LIGHTS", "Take Exposure"]):
+        sim = _PathSim(path, target=path[1])
+        out, _ = _run(cfg, sim, 30)
+        assert sim.pushes == [] and {o["state"] for o in out} == {"ok"}, path
+    # ImageType from the state decides, whatever the names say
+    sim = _PathSim(["Companion", "Imaging", "Take Exposure"], image_type="DARK")
+    _run(cfg, sim, 30)
+    assert sim.pushes == []
+    assert _events(cfg) == []
+
+
+def test_ps229_real_lights_on_a_parked_mount_still_page(tmp_path):
+    cfg = _cfg(tmp_path)
+    sim = _PathSim(["Piggy companion", "OSC_LIGHTS_UNTIL_DAWN", "Heart Nebula",
+                    "Take Exposure"], mount="parked", target="Heart Nebula")
+    _run(cfg, sim, 15)
+    assert len(sim.pushes) == 1 and "LIGHTS" in sim.pushes[0][1]
+    # ImageType LIGHT pages even under a calibration-like name
+    cfg2 = _cfg(tmp_path / "b")
+    sim = _PathSim(["Companion", "OSC_DARKS_IF_UNSAFE", "Take Exposure"],
+                   image_type="LIGHT")
+    _run(cfg2, sim, 15)
+    assert len(sim.pushes) == 1
+    # piggy_now's calib flag skips a target container named "Dark ..."
+    cfg3 = _cfg(tmp_path / "c")
+    sim = _PathSim(["Companion", "Dark Shark Nebula", "Take Exposure"], mount="parked",
+                   calib=False, target="Dark Shark Nebula")
+    _run(cfg3, sim, 15)
+    assert len(sim.pushes) == 1
+
+
+def test_ps229_leaf_facts_from_a_nina_tree():
+    def node(name, typ, *items, status="RUNNING", **kw):
+        return {"Name": name, "$type": typ, "Status": status, "Items": list(items), **kw}
+    take = "NINA.Sequencer.SequenceItem.Imaging.TakeExposure, NINA.Sequencer"
+    cont = "NINA.Sequencer.Container.SequentialContainer, NINA.Sequencer"
+    dso = "NINA.Sequencer.Container.DeepSkyObjectContainer, NINA.Sequencer"
+    darks = node("Root", cont, node("OSC_CLOSED_ROOF_DARKS_Container", cont,
+                 node("OSC DARKS_450s (need 22 of 30)", cont,
+                      node("Take Exposure", take, ExposureTime=450.0, ImageType="DARK"))))
+    assert pg._leaf_facts(darks) == ("DARK", True)
+    lights = node("Root", cont, node("Dark Shark Nebula", dso,
+                  node("Take Exposure", take, ExposureTime=300.0)))
+    assert pg._leaf_facts(lights) == (None, False)
+    assert pg.is_light("Take Exposure", ["Root", "Dark Shark Nebula", "Take Exposure"],
+                       None, False)
+    assert not pg.is_light("Take Exposure", ["Root", "OSC_CLOSED_ROOF_DARKS", "Take Exposure"])

@@ -59,8 +59,8 @@ noise with numbers.
 | First light (`PhotonScript first light`) | the first kept (passed QA, not a test) light per rig | target, filter, length, HFR, ecc, stars; the sub's thumbnail attached (720 px), its URL in the storyline |
 | Target switch (`PhotonScript target`) | the RC16 (the mount; the Piggy rides it) starts a new target | new target and sub, the previous target's kept / rejected / hours |
 | Roof (`PhotonScript roof`) | debounced: a closure is info; the reopen after `pushover_roof_debounce_min` (10) or more is one story with its length and the dark left | "Roof reopened 23:22 after 1 h 12 min closed (since 22:10); imaging resumes, 5.1 h of dark left." |
-| Dusk flats (`PhotonScript flats`) | once, after the dispatched dusk run's stop + 20 min | dusk_flats_check.morning_line: shot / filed per rig and NINA's reason for each set that saved nothing |
-| End of night (`PhotonScript night report`) | as soon as imaging is over: the dawn shutdown (after the dawn flat window), or the roof closed with less dark left than a resume needs (40 min); once per night | per rig and target subs shot / kept / rejected with the top reject reason, hours added and goal progress; median HFR / ecc and the sub doctor's verdict per rig; the roof timeline; dusk and dawn flats; darks saved; held acts; calibration owed; the split note; the best kept sub (or first light) attached |
+| Flats (`PhotonScript flats`) | flats v2 (dusk_flats.maybe_report_windows): once per dusk and per dawn window, 12 min after the window's end (fact `flats:<night>:<phase>`). Exactly one push carries each count: the dusk count rides in "imaging now" when that push is still to come, the dawn count in the end-of-night report while it is held; otherwise it is its own story | the frames each rig actually saved per filter, or "none saved (reason)" |
+| End of night (`PhotonScript night report`) | as soon as imaging is over: the dawn shutdown (after the dawn flat window; when a flats v2 dawn window is still to be counted the report waits for that count, about 10 min, at most 30), or the roof closed with less dark left than a resume needs (40 min); once per night | per rig and target subs shot / kept / rejected with the top reject reason, hours added and goal progress; median HFR / ecc and the sub doctor's verdict per rig; the roof timeline; dusk and dawn flats; darks saved; held acts; calibration owed; the split note; the best kept sub (or first light) attached |
 | Dawn filing follow-up (`PhotonScript library`) | only when the kept count moved by 5+ subs and 10%+ against the end-of-night report (or no report went out); a failed filing step is a safety act | the filing line |
 | Others | skipped night / skipped flats (once per reason), unguided fallback ran, goal complete (campaign), TPoint run finished, desktop integration done | as before |
 
@@ -140,7 +140,8 @@ safety act. Conditions are the code's own.
 | scheduler/routers/apps.py | observatory apps start incomplete | act |
 | scheduler/routers/integrations.py | "<goal> integrated" (desktop) | story |
 | integration/autointegrate.py | integration summary with the review JPG | story |
-| integration/runner.py | PixInsight hang | act |
+| integration/runner.py | PixInsight hang; startup crash on both attempts (PS-31) | act |
+| integration/runner.py | startup crash retried with software rendering | info (run log only) |
 | scheduler/campaign.py | goal complete / only lacks calibration | story |
 | scheduler/calibration_capture.py | capture started, bias drift, capture complete / cancelled | info |
 | scheduler/calibration_capture.py | capture aborted | act |
@@ -151,12 +152,14 @@ safety act. Conditions are the code's own.
 | scheduler/dawn_autofile.py | library filed | story only when kept moved materially, else info; act/safety when a step failed |
 | scheduler/dawn_mount_check.py | mount not parked after dawn | act/safety |
 | scheduler/dusk_flats.py | auto dusk flats dispatched | info (the flats story gives the counts) |
+| scheduler/dusk_flats.py | flats v2 window report "Dusk flats <night>: ..." / "Dawn flats <night>: ..." | story, once per window |
 | scheduler/focus_model.py | focus offsets | info |
 | scheduler/focus_reports.py | autofocus reports bad | act |
 | scheduler/frozen_sensor.py | frozen sensor | info |
 | scheduler/guide_blocks.py | guiding per block | info |
 | scheduler/night_pilot.py | needs a human, ALERT (PHD2 on an unguided night), FAILED to act, restart that did not happen, no subs after an action, "did NOT help" with a human step | act |
-| scheduler/night_pilot.py | closed-roof darks, advise, acted, optics reading, "worked", "did NOT help" without a human step | info |
+| scheduler/night_pilot.py | PS-228 roof closed mid-night with darks owed (once per closure) | act |
+| scheduler/night_pilot.py | advise, acted, optics reading, "worked", "did NOT help" without a human step | info |
 | scheduler/nina_offline.py | NINA down past the grace | act (act/safety for the RC16) |
 | scheduler/nina_offline.py | NINA back | info |
 | scheduler/nina_watchdog.py | not running / API down / silent / stuck / parked while armed | act (act/safety for the RC16 not running / API down); a known reason keeps silent / stuck / parked quiet |
@@ -206,7 +209,7 @@ Plan heads-up, 17:28 (pre-config 18:58):
     Calibration owed: RC16 flats Ha, OIII (dawn); Piggy-600 darks 450 s x20
     Tonight: GREEN - 10.2/10.2h usable
 
-Dusk flats, 19:05: `Dusk flats 2026-10-24: RC16 6 shot, 6 filed; Piggy-600 5 shot, 0 filed (5 waiting for the dawn sweep)`
+Dusk flats, 19:05 (flats v2 window report): `Dusk flats 2026-10-24: RC16 L 15, B 15, ...; Piggy-600 OSC 25`
 
 Imaging now, 19:28: `Imaging now (19:28): RC16 unguided on NGC 604 (Ha/OIII 20x300s). Piggy-600: OSC 450s riding the RC16. 2 target(s) until 05:28, ~8.2 h planned.`
 

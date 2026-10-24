@@ -85,3 +85,90 @@ def test_launch_kwargs_minimized_below_normal():
     assert kw["startupinfo"].wShowWindow == 7
     assert kw["creationflags"] == subprocess.BELOW_NORMAL_PRIORITY_CLASS
     assert runner.launch_kwargs("normal", "normal") == {}
+
+
+# PS-31: PixInsight crashing at startup (Qt6WebEngineCore.dll, 0x80000003)
+# while the desktop display is off: no log line, FAILED in 0.25 min "()".
+
+class CrashProc:
+    """Exits at once with the Windows crash code, writes no log."""
+    def __init__(self, rc=0x80000003):
+        self.rc = rc
+
+    def poll(self):
+        return self.rc
+
+
+def test_every_launch_disables_the_webengine_gpu(tmp_path):
+    log = tmp_path / "pipeline.log"
+    envs = []
+
+    def popen(a, env=None):
+        envs.append(env)
+        return FakeProc(log, ["EXIT OK"])
+    r = runner.run_script(tmp_path / "s.js", log, exe=str(_exe(tmp_path)), running=lambda: [],
+                          popen=popen, sleep=lambda s: None, echo=lambda s: None, poll_s=0)
+    assert r["ok"] and r["attempts"] == 1 and not r["startup_crash"]
+    flags = envs[0]["QTWEBENGINE_CHROMIUM_FLAGS"].split()
+    assert "--disable-gpu" in flags and "--disable-gpu-compositing" in flags
+    assert envs[0].get("QT_OPENGL") == runner.os.environ.get("QT_OPENGL")   # untouched
+
+
+def test_pixinsight_env_keeps_flags_and_adds_software():
+    env = runner.pixinsight_env({"QTWEBENGINE_CHROMIUM_FLAGS": "--foo --disable-gpu", "X": "1"})
+    assert env["QTWEBENGINE_CHROMIUM_FLAGS"] == "--foo --disable-gpu --disable-gpu-compositing"
+    assert env["X"] == "1" and "QT_OPENGL" not in env
+    sw = runner.pixinsight_env({}, software=True)
+    assert sw["QT_OPENGL"] == "software" and sw["QT_QUICK_BACKEND"] == "software"
+    assert runner.exit_code_text(0x80000003) == "0x80000003"
+    assert runner.exit_code_text(-2147483645) == "0x80000003"
+    assert runner.exit_code_text(1) == "1"
+
+
+def test_startup_crash_is_named_and_retried_once_with_software_rendering(tmp_path):
+    log = tmp_path / "pipeline.log"
+    envs, seen = [], []
+
+    def popen(a, env=None):
+        envs.append(env)
+        return CrashProc() if len(envs) == 1 else FakeProc(log, ["STAGE START a", "EXIT OK"])
+    pushed = []
+    r = runner.run_script(tmp_path / "s.js", log, exe=str(_exe(tmp_path)), running=lambda: [],
+                          popen=popen, sleep=lambda s: None, echo=seen.append, poll_s=0,
+                          notify=pushed.append)
+    assert r["ok"] and r["attempts"] == 2 and r["software_retry"]
+    assert pushed == []                      # PS-212: a retry that worked is info
+    assert envs[1]["QT_OPENGL"] == "software"
+    assert any("code 0x80000003 before the script wrote its log" in s and "retrying" in s
+               for s in seen)
+
+
+def test_startup_crash_twice_fails_with_a_reason(tmp_path):
+    log = tmp_path / "pipeline.log"
+    n, pushed = [], []
+    r = runner.run_script(tmp_path / "s.js", log, exe=str(_exe(tmp_path)), running=lambda: [],
+                          popen=lambda a: n.append(1) or CrashProc(),
+                          sleep=lambda s: None, echo=lambda s: None, poll_s=0,
+                          notify=pushed.append)
+    assert not r["ok"] and r["startup_crash"] and len(n) == 2
+    # PS-212: both attempts crashed: one act push (the retry itself is info)
+    assert len(pushed) == 1 and "crashed at startup twice" in pushed[0]
+    assert r["exit_code"] == 0x80000003
+    assert r["last_line"].startswith("PixInsight exited with code 0x80000003 before the script")
+
+
+def test_script_error_is_not_a_startup_crash(tmp_path):
+    """A script that logged and failed is not retried."""
+    log = tmp_path / "pipeline.log"
+    n = []
+    r = runner.run_script(tmp_path / "s.js", log, exe=str(_exe(tmp_path)), running=lambda: [],
+                          popen=lambda a: n.append(1) or FakeProc(log, ["ERROR: boom"], rc=1),
+                          sleep=lambda s: None, echo=lambda s: None, poll_s=0)
+    assert not r["ok"] and not r["startup_crash"] and len(n) == 1
+    assert r["last_line"] == "ERROR: boom"
+    # a clean exit 0 with no log is not a crash either (nothing to retry)
+    n.clear()
+    r = runner.run_script(tmp_path / "s2.js", tmp_path / "none.log", exe=str(_exe(tmp_path)),
+                          running=lambda: [], popen=lambda a: n.append(1) or CrashProc(rc=0),
+                          sleep=lambda s: None, echo=lambda s: None, poll_s=0)
+    assert not r["ok"] and not r["startup_crash"] and len(n) == 1

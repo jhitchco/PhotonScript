@@ -177,7 +177,12 @@ def test_runs_page_tags_the_sub():
     html = (Path(runs.__file__).parent / "templates" / "runs.html").read_text(
         encoding="utf-8")
     assert "function nocorrTag(s)" in html
-    assert html.count("roofTag(s) + nocorrTag(s)") == 2
+    # the table cell keeps the tags; the grid card shows one short badge
+    # (2026-10-24, static/js/runs_grid.js RunsGrid.badge)
+    assert html.count("roofTag(s) + nocorrTag(s)") == 1
+    grid_js = (Path(runs.__file__).parent / "static" / "js" / "runs_grid.js").read_text(
+        encoding="utf-8")
+    assert "unguided-in-name" in grid_js and "s.guide_nocorr" in grid_js
     assert "gd.nocorr_subs" in html
 
 

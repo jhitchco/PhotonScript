@@ -105,6 +105,14 @@ def _generator_config_fresh(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _progression_sheets_off(monkeypatch):
+    """Progression sheets: integrate / finish / blend add their run to
+    <staging_root parent>/progression after every run; no other test should
+    write a sheet. tests/test_integration/test_progression.py turns it on."""
+    monkeypatch.setenv("PS_PROGRESSION_SHEETS", "off")
+
+
+@pytest.fixture(autouse=True)
 def _pushover_v2_isolated(monkeypatch, tmp_path_factory):
     """PS-212: the act cutoff follows the observatory's wall clock, so pin
     it off for the suite (cutoff == resume: never held); the cutoff tests

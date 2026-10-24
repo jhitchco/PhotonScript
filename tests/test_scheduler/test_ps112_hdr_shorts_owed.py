@@ -111,7 +111,8 @@ def test_long_done_shorts_owed_schedules_only_the_shorts(tmp_path):
         t.start_guiding = True
     data = _sequence(targets)
     assert _light_blocks(data) == [(60.0, 7)]           # 7 shorts, no long subs
-    texts = [d.get("Message", "") for d in _walk(data) if isinstance(d, dict)]
+    texts = [str(d.get("Message") or d.get("Text") or "") for d in _walk(data)
+             if isinstance(d, dict)]   # PS-212: Annotation Text unless nina_pushover_items
     slew = next(m for m in texts if "Andromeda Galaxy: slewing" in m)
     assert f"Ha{X}7@60s" in slew and "@600s" not in slew
 
