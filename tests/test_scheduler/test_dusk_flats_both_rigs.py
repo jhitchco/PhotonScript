@@ -118,7 +118,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(rigs, "nina_dispatch", nina_dispatch)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0, sound="none"):
+    async def notify(c, msg, title="", priority=0, sound="none", **_kw):
         pushes.append((title, msg))
     return {"now": now, "tw": tw, "st": st, "pushes": pushes, "notify": notify,
             "tmp": tmp_path}
@@ -435,7 +435,7 @@ def _loop_tick(cfg, armer, monkeypatch):
     import photonscript.scheduler.auto_armer as mod
     from photonscript.shared import pushover
 
-    async def notify(c, msg, title="", priority=0, sound="none"):
+    async def notify(c, msg, title="", priority=0, sound="none", **_kw):
         return True
     monkeypatch.setattr(pushover, "notify", notify)
 

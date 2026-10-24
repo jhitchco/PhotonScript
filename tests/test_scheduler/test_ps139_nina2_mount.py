@@ -323,7 +323,7 @@ def _reader(tree, err=None):
 def _pusher():
     sent = []
 
-    async def push(config, msg, title="", priority=0):
+    async def push(config, msg, title="", priority=0, **_kw):
         sent.append((msg, title, priority))
     push.sent = sent
     return push

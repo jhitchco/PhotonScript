@@ -361,7 +361,7 @@ async def _on_fail(config, night: str, rec: dict) -> None:
            f"{rec.get('pier_side') or '?'}): " + "; ".join(rec.get("reasons", []))
            + ". Likely causes, in order: " + " | ".join(causes) + ".")
     if store.alert_once(config, f"selftest-{night}"):
-        await notify(config, msg, title="PhotonScript pulse self-test", priority=1)
+        await notify(config, msg, title="PhotonScript pulse self-test", priority=1, kind="act")
     else:
         record(config, msg, title="PhotonScript pulse self-test", priority=1,
                reason="selftest-once-per-night")
@@ -380,7 +380,7 @@ async def passive_reversed_alert(config, detail: str, night: str,
                      f"wrong way ({detail}). Fix: PHD2 'Reverse Dec output after "
                      "meridian flip' (Advanced > Mount) must match the mount, or "
                      "recalibrate on this pier side (PS-93).",
-                     title="PhotonScript pulse self-test", priority=1)
+                     title="PhotonScript pulse self-test", priority=1, kind="act")
 
 
 async def record_passive_fail(config, detail: str, *, source: str,

@@ -276,7 +276,10 @@ async def skip_and_notify(config, skip: str, detail: str, trigger: str,
             msg = (f"Auto-arm skipped: {SKIP_TITLES.get(skip, skip)}. "
                    f"{detail}. A manual Arm still works.")
             title = "PhotonScript auto-arm skipped"
-        await notifier(config, msg, title=title, priority=1)
+        # PS-212: a skipped night (or skipped flats) is part of the story:
+        # one push per night and reason
+        await notifier(config, msg, title=title, priority=1, kind="story",
+                       fact=f"skip:{action}:{skip}")
     return line
 
 
@@ -457,7 +460,7 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
             tonight, to_local(astro_dusk), to_local(astro_dawn),
             cross_check=forecast.get("cross_check"),
             stale=bool(forecast.get("stale")))
-        await notify(config, msg, title=title)
+        await notify(config, msg, title=title, kind="info")
         forecast_state["night"] = night
         logger.info("evening forecast pushed for %s", night)
 
@@ -484,6 +487,13 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                 raise
             except Exception as e:  # noqa: BLE001
                 logger.error("auto-flats error: %s", e)
+            try:   # PS-212: the dusk flats result, once the run is over
+                from photonscript.scheduler import night_story
+                await night_story.maybe_flats_story(config)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.error("flats story error: %s", e)
 
             noon_enabled = bool(getattr(config, "noon_arm_enabled", False))
             if getattr(config, "auto_arm_enabled", False) or noon_enabled:
@@ -557,7 +567,7 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                     config,
                                     f"Auto-arm SKIPPED {night}: preflight go=false "
                                     f"({_fail_summary(pf)}). Fix it and it arms next tick.",
-                                    title="PhotonScript auto-arm skipped", priority=1)
+                                    title="PhotonScript auto-arm skipped", priority=1, kind="act")
                                 last_skip_night = night
                         else:
                             # 2026-10-16: the last manual Arm's guiding
@@ -583,7 +593,7 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                     f"Auto-armed {night} but preflight FAILED "
                                     f"({_fail_summary(pf)}) — imaging anyway per config. "
                                     f"Roof controller still closes on weather.",
-                                    title="PhotonScript auto-arm warning", priority=1)
+                                    title="PhotonScript auto-arm warning", priority=1, kind="act")
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001

@@ -466,7 +466,8 @@ async def _guiding(config, io, st, phase, now, pol, g, phd2,
         else:
             msg = (f"{lead} Policy unguided_guider_policy={pol}: nothing "
                    f"sent. {MANUAL_STEP}")
-        await io.notify(msg, 1)
+        # PS-212: stopped by the guard = handled (info); else act
+        await io.notify(msg, 1, kind="info" if done and done["stopped"] else "act")
         await io.event("alert", msg, by=by)
     return {"status": "guiding", "by": by, "action": done}
 
@@ -491,7 +492,7 @@ async def _connected(config, io, st, phase, now, pol, g) -> dict:
                 st["connected_alerted"] = True
                 await io.notify(f"{what} Disconnected it ({phase}); PHD2 stays "
                                 "open. Policy unguided_guider_policy=disconnect.",
-                                0)
+                                0, kind="info")
             return {"status": "connected", "action": "disconnected"}
         if not st.get("connected_failed_alerted"):
             st["connected_failed_alerted"] = True
@@ -560,11 +561,12 @@ class GuardIO:
         except Exception as e:  # noqa: BLE001
             return False, str(e)
 
-    async def notify(self, message: str, priority: int = 1) -> None:
+    async def notify(self, message: str, priority: int = 1,
+                     kind: str = "act") -> None:
         try:
             from photonscript.shared.pushover import notify
             await notify(self.config, message, title=ALERT_TITLE,
-                         priority=priority)
+                         priority=priority, kind=kind)
         except Exception as e:  # noqa: BLE001
             logger.warning("unguided guard push failed: %s", e)
 

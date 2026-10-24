@@ -213,14 +213,18 @@ def setup_supervisor_logging(data_dir: Path) -> Path:
     return path
 
 
-def pushover_notifier(config) -> Callable[[str, str, int], None]:
-    """Best-effort Pushover sender for the supervisor (never raises)."""
+def pushover_notifier(config, kind: str = "act",
+                      safety: bool = True) -> Callable[[str, str, int], None]:
+    """Best-effort Pushover sender for the supervisor (never raises).
+    PS-212: its pushes (PhotonScript down / crashed, an update refused or
+    rolled back) are safety acts by default: sent at any hour."""
     def _notify(title: str, message: str, priority: int = 0) -> None:
         try:
             import asyncio
             from photonscript.shared import pushover
             asyncio.run(pushover.notify(config, message, title=title,
-                                        priority=priority))
+                                        priority=priority, kind=kind,
+                                        safety=safety))
         except Exception as e:  # noqa: BLE001 - an alert must never kill the loop
             logger.warning("Pushover send failed: %s", e)
     return _notify

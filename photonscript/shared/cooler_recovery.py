@@ -355,12 +355,14 @@ class CoolerStallWatch:
             logger.info("cooler recovery [%s]: %s", self.rig, msg)
         self._logged = msg
 
-    async def _notify(self, msg: str, priority: int = 0) -> None:
+    async def _notify(self, msg: str, priority: int = 0, kind: str = "info",
+                      safety: bool = False) -> None:
         fn = self.notify_fn
         if fn is None:
             from photonscript.shared.pushover import notify as fn
         try:
-            await fn(self.config, msg, title=TITLE, priority=priority)
+            await fn(self.config, msg, title=TITLE, priority=priority,
+                     kind=kind, safety=safety)
         except Exception as e:  # noqa: BLE001
             logger.warning("cooler recovery notify failed: %s", e)
 
@@ -437,7 +439,8 @@ class CoolerStallWatch:
             _set_result(self.config, self.rig, now, "error")
             await self._notify(
                 f"{self._label()}: cooler stalled ({reason}); camera reconnect "
-                f"{n}/{mx} errored: {msg}. Check the camera in NINA.", priority=1)
+                f"{n}/{mx} errored: {msg}. Check the camera in NINA.", priority=1,
+                kind="act", safety=n >= mx)
             return {"action": "error", "attempt": n, "detail": msg}
         self.pending = {"epoch": now, "attempt": n, "temp0": temp0,
                         "reason": reason}
@@ -503,5 +506,22 @@ class CoolerStallWatch:
         _set_result(self.config, self.rig, p["epoch"], result)
         _event(self.config, self.rig, now, result,
                f"{n}/{mx} sensor {t0_txt} -> {t_txt} C, TEC {p_txt} %")
-        await self._notify(msg, priority=prio)
+        if not ok and n >= mx:
+            # PS-212: dead after the last reconnect: one safety act with
+            # what a power cycle saves and what happens without it
+            from photonscript.shared.pushover import act_text, dark_left_h
+            left = dark_left_h(self.config)
+            hrs = f"~{left:.0f} h of {self._label()} data" if left else                 f"the rest of the {self._label()} night"
+            other = ("the RC16 still images and the Piggy sits out"
+                     if self.rig != "rc16" else
+                     "RC16 subs run warm and fail the dark match; the Piggy keeps imaging")
+            msg = act_text(
+                f"{self._label()} cooler STILL stalled after camera reconnect "
+                f"{n}/{mx} (sensor {t_txt} C, setpoint {sp:g} C, TEC {p_txt} %); "
+                "no more reconnects tonight",
+                f"a camera power cycle saves {hrs}",
+                other)
+            await self._notify(msg, priority=1, kind="act", safety=True)
+        else:
+            await self._notify(msg, priority=prio, kind="info")
         return {"action": result, "attempt": n}

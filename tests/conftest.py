@@ -102,3 +102,33 @@ def _generator_config_fresh(monkeypatch):
     module value afterwards."""
     from photonscript.scheduler import nina_sequence_json as nsj
     monkeypatch.setattr(nsj, "_gen_cfg_cache", None)
+
+
+@pytest.fixture(autouse=True)
+def _pushover_v2_isolated(monkeypatch, tmp_path_factory):
+    """PS-212: the act cutoff follows the observatory's wall clock, so pin
+    it off for the suite (cutoff == resume: never held); the cutoff tests
+    pass their own times. A config left on the default data_dir (the real
+    ~/.photonscript) keeps its fact state, storyline and story state in a
+    per-test folder, so no run sees another run's "once per night"."""
+    from pathlib import Path
+
+    from photonscript.scheduler import night_story
+    from photonscript.shared import pushover
+    monkeypatch.setenv("PS_PUSHOVER_ACT_RESUME_LOCAL", "00:00")
+    monkeypatch.setitem(pushover._DEFAULTS, "pushover_act_resume_local", "00:00")
+    home = Path.home() / ".photonscript"
+    d = tmp_path_factory.mktemp("po-home")
+
+    def _default(c) -> bool:
+        try:
+            return Path(getattr(c, "data_dir", home)) == home
+        except TypeError:
+            return True
+    st, sp, ns = pushover._state_path, pushover.story_path, night_story._state_file
+    monkeypatch.setattr(pushover, "_state_path",
+                        lambda c: d / "pushover_state.json" if _default(c) else st(c))
+    monkeypatch.setattr(pushover, "story_path",
+                        lambda c, n: d / "night_story" / f"{n}.jsonl" if _default(c) else sp(c, n))
+    monkeypatch.setattr(night_story, "_state_file",
+                        lambda c: d / "night_story" / "state.json" if _default(c) else ns(c))

@@ -466,10 +466,11 @@ class LoopIO:
         from photonscript.scheduler.night_pilot import PilotIO
         return await PilotIO().nina1_running(cfg)
 
-    async def notify(self, cfg, msg: str, priority: int = 1) -> None:
+    async def notify(self, cfg, msg: str, priority: int = 1,
+                     kind: str = "act") -> None:
         try:
             from photonscript.shared.pushover import notify
-            await notify(cfg, msg, title=TITLE, priority=priority)
+            await notify(cfg, msg, title=TITLE, priority=priority, kind=kind)
         except Exception as e:  # noqa: BLE001
             logger.warning("stuck loop push failed: %s", e)
 
@@ -635,7 +636,9 @@ async def _handle(cfg, armer, io, st, rig, v, events, win, now, night) -> dict:
     _event(cfg, night, "alert", msg, now, rig=rig, signals=v["signals"],
            target=win.get("name"), gap_min=v["gap_min"],
            af=[_iso(t) for t in v["af"]])
-    await io.notify(cfg, msg, priority=1)
+    # PS-212: the pilot restarted it = handled (info); advise / alert = act
+    await io.notify(cfg, msg, priority=1,
+                    kind="info" if ep["action"] == "act" else "act")
     return {**_short(v), "episode": "new", "action": ep["action"], "text": msg}
 
 
@@ -744,7 +747,7 @@ class _ReplayIO:
     async def nina1_running(self, cfg):
         return [], None
 
-    async def notify(self, cfg, msg, priority=1):
+    async def notify(self, cfg, msg, priority=1, **_kw):
         self.pushes.append(msg)
 
     async def restart(self, armer, now):

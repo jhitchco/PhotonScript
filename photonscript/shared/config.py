@@ -1367,6 +1367,17 @@ class PhotonScriptConfig(BaseSettings):
     pushover_emergency_retry_s: int = 300      # priority-2 pushes repeat this often until
                                               # acknowledged (Pushover requires retry+expire)
     pushover_emergency_expire_s: int = 1800    # ...and stop repeating after this (max 10800)
+    # --- Pushover v2: the night storyline (PS-212, 2026-10-24) ---
+    pushover_kinds: str = "act,story"          # kinds pushed (info is never pushed)
+    pushover_plan_lead_min: int = 90           # evening plan heads-up this long
+                                              # before pre-config
+    pushover_act_cutoff_local: str = "00:00"   # from here (local) only safety acts
+    pushover_act_resume_local: str = "08:00"   # ...until here; then acts push again
+    pushover_roof_debounce_min: float = 10.0   # a roof closure shorter than this
+                                              # is not a story push when it reopens
+    nina_pushover_items: bool = False          # generated sequences carry NINA's own
+                                              # Send to Pushover items (False: an
+                                              # Annotation with the same text)
     # --- Guiding alert collapse (PS-66) ---
     guiding_alert_repeat_min: float = 30.0     # after a "guiding lost" push, hold further
                                               # lost/auto-recovery pushes this long

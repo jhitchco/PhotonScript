@@ -532,7 +532,7 @@ def _fire(config, msgs: list[str]) -> None:
 
     async def _send():
         for m in msgs:
-            await notify(config, m, title="PhotonScript campaign")
+            await notify(config, m, title="PhotonScript campaign", kind="story")
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

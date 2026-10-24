@@ -1308,7 +1308,7 @@ def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
 
     def notify(msg: str) -> None:
         from photonscript.shared.supervisor import pushover_notifier
-        pushover_notifier(config)("TPoint autocal", msg, 1)
+        pushover_notifier(config, kind="story", safety=False)("TPoint autocal", msg, 1)
 
     def ref_text() -> str | None:
         return newest_input_text(config)

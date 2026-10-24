@@ -299,7 +299,7 @@ class _IO:
     async def nina_sequence(self):
         return self.tree
 
-    async def notify(self, msg, priority=1):
+    async def notify(self, msg, priority=1, **_kw):
         self.pushes.append((msg, priority))
 
     async def event(self, value, detail, **kw):

@@ -39,7 +39,7 @@ async def test_notify_and_record_send_and_store_ascii(tmp_path, monkeypatch):
     cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path))
     msg = (f"Night complete: dawn shutdown ran (dawn; stop ok {DOT} guider stop ok "
            f"{DOT} park ok)")
-    await pushover.notify(cfg, msg, title="PhotonScript complete")
+    await pushover.notify(cfg, msg, title="PhotonScript complete", kind="story")
     pushover.record(cfg, f"held {DOT} x", title="PhotonScript NINA watch")
     assert sent == [("PhotonScript complete",
                      "Night complete: dawn shutdown ran (dawn; stop ok | guider stop "

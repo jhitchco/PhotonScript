@@ -316,6 +316,10 @@ def notify(
     title: str = typer.Option("PhotonScript", "--title", "-t"),
     priority: int = typer.Option(0, "--priority", "-p",
                                  help="-1 quiet, 0 normal, 1 high"),
+    kind: str = typer.Option("act", "--kind", "-k",
+                             help="PS-212: act | story | info (info is logged only)"),
+    safety: bool = typer.Option(True, "--safety/--no-safety",
+                                help="an act sent at any hour (default on for a manual send)"),
 ):
     """Send a Pushover alert with the configured keys (used by the wrapper)."""
     import asyncio
@@ -323,7 +327,7 @@ def notify(
     from photonscript.shared import pushover
 
     sent = asyncio.run(pushover.notify(PhotonScriptConfig(), message,
-                                       title=title, priority=priority))
+                                       title=title, priority=priority, kind=kind, safety=safety))
     console.print("[green]sent[/green]" if sent else "[yellow]not sent[/yellow] "
                   "(keys unset, rate-limited or quiet daytime)")
 

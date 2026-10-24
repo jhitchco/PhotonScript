@@ -386,7 +386,9 @@ def test_ordinary_target_keeps_the_repeat_loop():
     inner = next(x for x in c["Items"]["$values"]
                  if (x.get("Name") or "").endswith(nsj.TARGET_IMAGING_SUFFIX))
     assert "LoopCondition" not in json.dumps(inner["Conditions"])
+    # PS-212: narration Annotations ("[Imaging] ...") are not panel notes
     assert not any("Annotation" in x.get("$type", "")
+                   and not str(x.get("Text", "")).startswith("[")
                    for x in c["Items"]["$values"])
 
 

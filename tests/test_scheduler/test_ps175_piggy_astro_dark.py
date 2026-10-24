@@ -81,7 +81,8 @@ def test_every_light_time_bound_is_astro_dawn_and_flats_stay_nautical():
     assert _provider(flat_wait) == "NauticalDawnProvider"
     assert flat_wait["MinutesOffset"] == cal.osc_flat_dawn_offset(
         rig_config(PhotonScriptConfig(_env_file=None), PIGGYBACK))
-    push = [n["Message"] for n in _walk(notice) if "Message" in n]
+    push = [n.get("Message") or n.get("Text") for n in _walk(notice)
+            if "Message" in n or str(n.get("Text", "")).startswith("[")]
     assert push and "astro dawn" in push[0]
 
 

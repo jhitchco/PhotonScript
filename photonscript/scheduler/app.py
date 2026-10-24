@@ -1123,6 +1123,12 @@ _CONFIG_FIELDS = [
     ("pushover_monthly_cap", "PS_PUSHOVER_MONTHLY_CAP", "Pushover monthly hard cap", "Nanny / Alerts", "int", False, False),
     ("pushover_emergency_retry_s", "PS_PUSHOVER_EMERGENCY_RETRY_S", "Emergency (priority 2) pushes: repeat every N s until acknowledged", "Nanny / Alerts", "int", False, False),
     ("pushover_emergency_expire_s", "PS_PUSHOVER_EMERGENCY_EXPIRE_S", "Emergency pushes: stop repeating after N s (max 10800)", "Nanny / Alerts", "int", False, False),
+    ("pushover_kinds", "PS_PUSHOVER_KINDS", "Pushover v2: kinds pushed, comma list of act, story (info is logged to the Tonight timeline only)", "Nanny / Alerts", "str", False, False),
+    ("pushover_plan_lead_min", "PS_PUSHOVER_PLAN_LEAD_MIN", "Pushover v2: evening plan heads-up this many minutes before pre-config", "Nanny / Alerts", "int", False, False),
+    ("pushover_act_cutoff_local", "PS_PUSHOVER_ACT_CUTOFF_LOCAL", "Pushover v2: from this local time (HH:MM) only safety / equipment act pushes", "Nanny / Alerts", "str", False, False),
+    ("pushover_act_resume_local", "PS_PUSHOVER_ACT_RESUME_LOCAL", "Pushover v2: every act push again from this local time (HH:MM)", "Nanny / Alerts", "str", False, False),
+    ("pushover_roof_debounce_min", "PS_PUSHOVER_ROOF_DEBOUNCE_MIN", "Pushover v2: roof closures shorter than this (min) get no reopen push", "Nanny / Alerts", "float", False, False),
+    ("nina_pushover_items", "PS_NINA_PUSHOVER_ITEMS", "Generated NINA sequences carry their own Send to Pushover items (off: Annotations; PhotonScript tells the story)", "Nanny / Alerts", "bool", False, False),
     ("guiding_force_first_calibration", "PS_GUIDING_FORCE_FIRST_CALIBRATION", "Force a fresh PHD2 calibration at the night's first guided target (off = keep your saved calibration)", "Nanny / Alerts", "bool", False, False),
     ("nina_autofocus_reports_dir", "PS_NINA_AUTOFOCUS_REPORTS_DIR", "NINA AutoFocus reports folder (feeds the RC16 focus model and AF-quality alert)", "Imaging", "str", False, False),
     ("guiding_alert_repeat_min", "PS_GUIDING_ALERT_REPEAT_MIN", "Guiding lost: hold repeat pushes for N min (all events still logged)", "Nanny / Alerts", "float", False, False),
@@ -1253,7 +1259,7 @@ async def api_makesafe():
     report = await get_armer().make_safe()
     from photonscript.shared.pushover import notify as _notify
     await _notify(get_config(), f"Manual make-safe: {report}",
-                  title="PhotonScript make-safe", priority=1)
+                  title="PhotonScript make-safe", priority=1, kind="info")
     return {"report": report}
 
 
@@ -1513,7 +1519,7 @@ async def api_pushover_test():
     ok = await notify(config,
                       "Test notification from the PhotonScript web UI. "
                       "If you can read this, nanny alerts will reach you.",
-                      title="PhotonScript test")
+                      title="PhotonScript test", kind="act", safety=True)
     return {"ok": ok,
             "detail": "Sent — check your phone." if ok
             else "Pushover API rejected the request — check both keys."}
@@ -2586,7 +2592,7 @@ async def api_sync():
                     f"Transfer STALLED — {batch.get('pending_items')} files still "
                     f"pending and not draining for ~{batch.get('stalled_min')} min. "
                     "Check Syncthing / the librarian transfer loop on the scope PC.",
-                    title="PhotonScript transfer", priority=1)
+                    title="PhotonScript transfer", priority=1, kind="act", safety=True)
             except Exception:  # noqa: BLE001
                 pass
         return {"configured": True,
@@ -3507,6 +3513,8 @@ from photonscript.scheduler.routers import autofile as _autofile_router  # noqa:
 app.include_router(_autofile_router.router)   # PS-157
 from photonscript.scheduler.routers import morning as _morning_router  # noqa: E402
 app.include_router(_morning_router.router)   # PS-166
+from photonscript.scheduler.routers import night_story as _night_story_router  # noqa: E402
+app.include_router(_night_story_router.router)   # PS-212
 from photonscript.scheduler.routers import apps as _apps_router  # noqa: E402
 app.include_router(_apps_router.router)   # PS-170
 from photonscript.scheduler.routers import tracking as _tracking_router  # noqa: E402

@@ -124,7 +124,7 @@ class FakeIO(npil.PilotIO):
     def store(self):
         return self._store
 
-    async def notify(self, cfg, msg, priority=0):
+    async def notify(self, cfg, msg, priority=0, **_kw):
         self.pushes.append((priority, msg))
 
 

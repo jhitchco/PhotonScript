@@ -50,7 +50,7 @@ class _Sim:
     async def leaf(self, base):
         return self.piggy_leaf, 300.0
 
-    async def notify(self, cfg, msg, title="", priority=0):
+    async def notify(self, cfg, msg, title="", priority=0, **_kw):
         self.pushes.append((title, msg, priority))
         return True
 
@@ -212,7 +212,7 @@ def _down_read(cfg, rig):
 def _ps150(cfg, n, owned, start=0, mon=None, read=None):
     pushes = []
 
-    async def notify(c, msg, title="", priority=0):
+    async def notify(c, msg, title="", priority=0, **_kw):
         pushes.append((title, msg, priority))
     mon = mon or nw.NinaWatch()
     for i in range(start, start + n):

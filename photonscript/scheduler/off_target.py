@@ -461,7 +461,7 @@ async def handle(cfg, a: dict, monitor: OffTargetMonitor | None = None,
             if notify is None:
                 from photonscript.shared.pushover import notify as _n
                 notify = _n
-            await notify(cfg, msg, title="PhotonScript off target", priority=1)
+            await notify(cfg, msg, title="PhotonScript off target", priority=1, kind="act")
     elif res["clear"]:
         _event(cfg, "clear", f"{a.get('target')}: back within "
                f"{limits(cfg)['arcmin']:g}' ({a.get('sep_arcmin')}')", now,

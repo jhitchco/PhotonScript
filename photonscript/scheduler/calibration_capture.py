@@ -1024,7 +1024,7 @@ async def _run(config, job: Job, io: RigIO, armer_state_fn, poll_s: float) -> No
                          + ("Bias only: any roof state." if job.bias_only
                             else "Cover stays closed." if job.light_via == "cover"
                             else "Roof must stay closed."),
-                         title="PhotonScript calibration")
+                         title="PhotonScript calibration", kind="info")
             stop_reason = await _monitor(config, job, io, armer_state_fn, poll_s, nights)
     except asyncio.CancelledError:
         stop_reason = "service stopping"
@@ -1172,7 +1172,7 @@ async def _check_bias_drift(config, job: "Job", final: bool = False) -> None:
             await notify(config, f"{rig_label(config, job.rig)} bias drift: {txt} "
                          f"(over {thr:g} ADU). Darks from now on are judged against "
                          "the new bias; older darks it explains count as bias "
-                         "drift, not light.", title="PhotonScript calibration")
+                         "drift, not light.", title="PhotonScript calibration", kind="info")
         except Exception:  # noqa: BLE001
             pass
 
@@ -1255,7 +1255,7 @@ async def _finish(config, job: Job, io: RigIO, stop_reason, dispatched: bool,
                      f"{v.get('fail', 0)} quarantined"
                      + (f" ({stop_reason})" if stop_reason else "")
                      + ". Camera warmed.", title="PhotonScript calibration",
-                     priority=1 if job.state == "aborted" else 0)
+                     priority=1 if job.state == "aborted" else 0, kind="act" if job.state == "aborted" else "info")
     except Exception:  # noqa: BLE001
         pass
 

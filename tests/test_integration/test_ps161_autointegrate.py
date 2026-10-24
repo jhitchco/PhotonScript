@@ -295,8 +295,8 @@ async def test_notify_passes_the_attachment_through(tmp_path, monkeypatch):
         return True
     monkeypatch.setattr(po, "_send_raw", fake)
     cfg = SimpleNamespace(pushover_ratelimit_enabled=False, data_dir=tmp_path)
-    await po.notify(cfg, "m", "t", attachment="x.jpg")
-    await po.notify(cfg, "m2", "t")
+    await po.notify(cfg, "m", "t", attachment="x.jpg", kind="story")
+    await po.notify(cfg, "m2", "t", kind="story")
     assert seen == ["x.jpg", None]
 
 

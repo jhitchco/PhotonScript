@@ -213,7 +213,7 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
             notify = _notify
         try:
             await notify(cfg, msg, title="PhotonScript mount after dawn",
-                         priority=1)
+                         priority=1, kind="act", safety=True)
         except Exception as e:  # noqa: BLE001
             logger.warning("dawn mount page not sent: %s", e)
         logger.warning(msg)

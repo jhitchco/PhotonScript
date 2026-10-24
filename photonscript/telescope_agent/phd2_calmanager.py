@@ -353,7 +353,7 @@ class CalManager:
             msg += f" Set PHD2 Calibration Step to about {step} ms."
         if store.alert_once(self.config, f"calibration-{night}"):
             await notify(self.config, msg, title="PhotonScript PHD2 calibration",
-                         priority=1)
+                         priority=1, kind="act")
         else:
             record(self.config, msg, title="PhotonScript PHD2 calibration",
                    priority=1, reason="calibration-once-per-night")

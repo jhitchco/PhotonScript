@@ -950,10 +950,11 @@ class PilotIO:
         except Exception:  # noqa: BLE001
             return []
 
-    async def notify(self, cfg, msg: str, priority: int = 0) -> None:
+    async def notify(self, cfg, msg: str, priority: int = 0,
+                     kind: str = "info") -> None:
         try:
             from photonscript.shared.pushover import notify
-            await notify(cfg, msg, title=TITLE, priority=priority)
+            await notify(cfg, msg, title=TITLE, priority=priority, kind=kind)
         except Exception as e:  # noqa: BLE001
             logger.warning("night pilot push failed: %s", e)
 
@@ -1632,7 +1633,7 @@ async def closed_roof(cfg, armer, io, st: dict, now: datetime) -> dict | None:
     spells.append(rec)
     _event(cfg, st["night"], "closed_roof", "Night pilot: " + rec["text"], now,
            rig="rc16", plan=rec.get("plan"))
-    await io.notify(cfg, "Night pilot: " + rec["text"] + ".", priority=0)
+    await io.notify(cfg, "Night pilot: " + rec["text"] + ".", priority=0, kind="info")
     return rec
 
 
@@ -1658,7 +1659,7 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
             msg = (f"Night pilot: needs a human: {dec['what']} because "
                    f"{_because(d)} ({dec['why']}). Nothing was sent.")
             _event(cfg, night, "human", msg, now, rig=rig, cause=d["cause"])
-            await io.notify(cfg, msg, priority=0)
+            await io.notify(cfg, msg, priority=0, kind="act")
         return {"rig": rig, "kind": "human", "cause": d["cause"]}
     action = dec["action"]
     advise = m == "advise" or not action_on(cfg, action)
@@ -1698,7 +1699,7 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
                    + f" ({why}; nothing was sent).")
             _event(cfg, night, "advise", msg, now, rig=rig, action=action,
                    cause=d["cause"], aid=a["id"])
-            await io.notify(cfg, msg, priority=0)
+            await io.notify(cfg, msg, priority=0, kind="info")
         return {"rig": rig, "kind": "advise", "action": action}
     st.setdefault("actions", []).append(a)
     await _execute(cfg, armer, io, st, a, ctx, now)
@@ -1712,7 +1713,7 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
         _event(cfg, night, "act", msg, now, rig=rig, action=action,
                cause=d["cause"], aid=a["id"], params=a["params"],
                baseline=a["baseline"], status=a["status"])
-        await io.notify(cfg, msg, priority=0)
+        await io.notify(cfg, msg, priority=0, kind="info")
     else:
         await _fail(cfg, io, st, a, now, a.get("detail") or "failed")
     return {"rig": rig, "kind": "act", "action": action, "status": a["status"]}
@@ -1742,7 +1743,7 @@ async def _optics(cfg, io, st, d, dec, now) -> dict:
         msg = f"Night pilot: {dec['what']}. {ev_line}"
         _event(cfg, st["night"], "optics", msg, now, rig=rig, cause=d["cause"],
                confidence=d.get("confidence"))
-        await io.notify(cfg, msg, priority=0)
+        await io.notify(cfg, msg, priority=0, kind="info")
     return {"rig": rig, "kind": "optics", "cause": d["cause"]}
 
 
@@ -1761,7 +1762,7 @@ async def _guider_alert(cfg, io, st, d, now, advise: bool) -> None:
     msg = f"Night pilot ALERT: {_because(d)}: {what}."
     _event(cfg, st["night"], "alert", msg, now, rig=d["rig"], cause=d["cause"])
     st.setdefault("alerts", []).append({"t": _iso(now), "rig": d["rig"], "text": msg})
-    await io.notify(cfg, msg, priority=1)
+    await io.notify(cfg, msg, priority=1, kind="act")
 
 
 async def _execute(cfg, armer, io, st, a, ctx, now) -> None:
@@ -1906,7 +1907,7 @@ async def _fail(cfg, io, st, a, now, detail: str) -> None:
            f"{a['family']} on the {_label(cfg, a['rig'])} tonight.")
     _event(cfg, st["night"], "failed", msg, now, rig=a["rig"], aid=a["id"],
            action=a["action"])
-    await io.notify(cfg, msg, priority=1)
+    await io.notify(cfg, msg, priority=1, kind="act")
 
 
 async def _follow_up(cfg, armer, io, st, ctx, now) -> None:
@@ -2034,7 +2035,7 @@ async def _follow_undo_restart(cfg, armer, io, st, a, r: dict, now) -> None:
                "dispatch. Check NINA #1.")
         _event(cfg, st["night"], "failed", msg, now, rig=a["rig"], aid=a["id"],
                action="undo_restart")
-        await io.notify(cfg, msg, priority=1)
+        await io.notify(cfg, msg, priority=1, kind="act")
 
 
 async def _verify(cfg, armer, io, st, ctx, now) -> None:
@@ -2058,7 +2059,7 @@ async def _verify(cfg, armer, io, st, ctx, now) -> None:
                 st.setdefault("given_up", {})[f"{rig}|{a['family']}"] = _iso(now)
                 _event(cfg, night, "verify", msg, now, rig=rig, aid=a["id"],
                        result="no_subs")
-                await io.notify(cfg, msg, priority=1)
+                await io.notify(cfg, msg, priority=1, kind="act")
             continue
         after = pool[:n]
         metric = a["baseline"]["metric"]
@@ -2079,7 +2080,7 @@ async def _verify(cfg, armer, io, st, ctx, now) -> None:
             _event(cfg, night, "verify", msg, now, rig=rig, aid=a["id"],
                    result="improved", before=before, after=med)
             _learn(cfg, st, a, before, med, now)
-            await io.notify(cfg, msg, priority=0)
+            await io.notify(cfg, msg, priority=0, kind="info")
             continue
         undo = None
         if group(a["action"]) == "shorten":
@@ -2090,7 +2091,8 @@ async def _verify(cfg, armer, io, st, ctx, now) -> None:
                result="not_improved", before=before, after=med, human=human)
         if group(a["action"]) == "shorten":
             _learn(cfg, st, a, before, med, now)
-        await io.notify(cfg, msg, priority=1 if human else 0)
+        await io.notify(cfg, msg, priority=1 if human else 0,
+                        kind="act" if human else "info")
 
 
 async def _undo_shorten(cfg, armer, io, st, a, now) -> str:

@@ -43,7 +43,7 @@ def test_is_daytime_uses_site_and_threshold():
 def test_notify_suppresses_daytime_heartbeat(tmp_path, monkeypatch):
     sent = []
 
-    async def fake_send(config, message, title, priority, sound):
+    async def fake_send(config, message, title, priority, sound, **_kw):
         sent.append((title, message))
         return True
 
@@ -51,13 +51,18 @@ def test_notify_suppresses_daytime_heartbeat(tmp_path, monkeypatch):
     monkeypatch.setattr(po, "_is_daytime", lambda config, when=None: True)
     cfg = SimpleNamespace(data_dir=str(tmp_path), observatory_lat=LAT,
                           observatory_lon=LON)
+    # PS-212: the limiter only sees pushed kinds (a story keeps priority -1;
+    # a safety act skips the once-per-fact rule)
     asyncio.run(po.notify(cfg, "Nanny alive.", title="PhotonScript heartbeat",
-                          priority=-1))
+                          priority=-1, kind="story"))
     asyncio.run(po.notify(cfg, "Safety monitor DISCONNECTED for 32 min",
-                          title="PhotonScript NANNY", priority=1))
+                          title="PhotonScript NANNY", priority=1, kind="act",
+                          safety=True))
     asyncio.run(po.notify(cfg, "Safety monitor DISCONNECTED for 62 min",
-                          title="PhotonScript NANNY", priority=1))
-    assert sent == [("PhotonScript NANNY", "Safety monitor DISCONNECTED for 32 min")]
+                          title="PhotonScript NANNY", priority=1, kind="act",
+                          safety=True))
+    assert [t for t, _m in sent] == ["PhotonScript NANNY"]
+    assert sent[0][1].startswith("Safety monitor DISCONNECTED for 32 min")
     # audit trail keeps the suppressed ones
     text = po._audit_path(cfg).read_text()
     assert text.count("quiet-daytime") == 2
@@ -66,7 +71,7 @@ def test_notify_suppresses_daytime_heartbeat(tmp_path, monkeypatch):
 def test_notify_night_unchanged(tmp_path, monkeypatch):
     sent = []
 
-    async def fake_send(config, message, title, priority, sound):
+    async def fake_send(config, message, title, priority, sound, **_kw):
         sent.append(title)
         return True
 
@@ -74,5 +79,5 @@ def test_notify_night_unchanged(tmp_path, monkeypatch):
     monkeypatch.setattr(po, "_is_daytime", lambda config, when=None: False)
     cfg = SimpleNamespace(data_dir=str(tmp_path))
     asyncio.run(po.notify(cfg, "Nanny alive.", title="PhotonScript heartbeat",
-                          priority=-1))
+                          priority=-1, kind="story"))
     assert sent == ["PhotonScript heartbeat"]

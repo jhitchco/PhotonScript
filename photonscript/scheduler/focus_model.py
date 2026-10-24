@@ -1590,7 +1590,7 @@ async def offset_alert(config, chk: dict | None = None, notify=None) -> bool:
         if notify is None:
             from photonscript.shared.pushover import notify
         msg = offset_alert_text(chk)
-        await notify(config, msg, title="PhotonScript focus offsets")
+        await notify(config, msg, title="PhotonScript focus offsets", kind="info")
         _write_json(path, {"night": chk.get("night"), "alerts": chk["alerts"],
                            "at": datetime.utcnow().isoformat() + "Z",
                            "message": msg})

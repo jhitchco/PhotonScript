@@ -221,7 +221,7 @@ async def run_gate(cfg, rig: str, setpoint: float | None = None,
                         await notify_fn(
                             cfg, f"{name}: sensor back at {temp:.1f} C "
                             f"(setpoint {setpoint:g} C), imaging {label} "
-                            "resumed", title="PhotonScript cooler gate")
+                            "resumed", title="PhotonScript cooler gate", kind="info")
                     except Exception as e:  # noqa: BLE001
                         logger.warning("cooler gate notify failed: %s", e)
                 res = {**base, "verdict": "PASS", "temp_c": temp,
@@ -257,7 +257,7 @@ async def run_gate(cfg, rig: str, setpoint: float | None = None,
                 try:
                     await notify_fn(cfg, skip_message(name, label, temp, setpoint,
                                                       waited / 60, mode),
-                                    title="PhotonScript cooler gate", priority=1)
+                                    title="PhotonScript cooler gate", priority=1, kind="act")
                 except Exception as e:  # noqa: BLE001
                     logger.warning("cooler gate notify failed: %s", e)
             LIVE[rig] = {"state": "skipped" if verdict == "SKIP" else "warned",

@@ -10,7 +10,7 @@ from photonscript.shared.config import PhotonScriptConfig
 
 @pytest.mark.asyncio
 async def test_notify_writes_sent_and_suppressed_records(tmp_path, monkeypatch):
-    async def _fake_send(config, message, title, priority, sound):
+    async def _fake_send(config, message, title, priority, sound, **_kw):
         return True   # pretend the POST succeeded — no network
     monkeypatch.setattr(pushover, "_send_raw", _fake_send)
     # night-time path: this test is about the audit + dedup, not PS-50's
@@ -18,9 +18,13 @@ async def test_notify_writes_sent_and_suppressed_records(tmp_path, monkeypatch):
     monkeypatch.setattr(pushover, "_is_daytime", lambda config, when=None: False)
     cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path))
 
-    await pushover.notify(cfg, "hello", title="PhotonScript guiding", priority=1)
+    # PS-212: a safety act skips the once-per-fact rule, so the limiter's
+    # own dedup is what this test sees
+    await pushover.notify(cfg, "hello", title="PhotonScript guiding", priority=1,
+                          kind="act", safety=True)
     # identical within the dedup window -> suppressed, but still audited
-    await pushover.notify(cfg, "hello", title="PhotonScript guiding", priority=1)
+    await pushover.notify(cfg, "hello", title="PhotonScript guiding", priority=1,
+                          kind="act", safety=True)
 
     recs = [json.loads(x) for x in
             (tmp_path / "notifications.jsonl").read_text().splitlines()]
@@ -28,6 +32,7 @@ async def test_notify_writes_sent_and_suppressed_records(tmp_path, monkeypatch):
     assert recs[0]["sent"] is True and recs[0]["reason"] == "sent"
     assert recs[0]["title"] == "PhotonScript guiding" and recs[0]["priority"] == 1
     assert recs[1]["sent"] is False and recs[1]["reason"] == "dedup"
+    assert recs[0]["kind"] == recs[1]["kind"] == "act"
 
 
 def test_api_notifications_tallies_by_title(tmp_path, monkeypatch):

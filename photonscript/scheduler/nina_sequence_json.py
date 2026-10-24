@@ -311,8 +311,28 @@ def _gen_cfg():
     return _gen_cfg_cache
 
 
+def nina_pushover_on() -> bool:
+    """PS-212: NINA's own Send to Pushover items only when
+    nina_pushover_items is on (default off). Every one of them narrates a
+    step PhotonScript already sees (NINA's running item in the run events,
+    the safety monitor, the subs log, dusk_flats_check), and none covers a
+    case where PhotonScript cannot speak: when PhotonScript itself is down
+    the supervisor pushes "PhotonScript is down / crashed", and when the
+    scope PC is off the network NINA's push cannot leave either. So the
+    storyline (shared/pushover kinds) tells the night, through the limiter,
+    instead of a second unthrottled source."""
+    try:
+        return bool(getattr(_gen_cfg(), "nina_pushover_items", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _pushover(title: str, message: str, sound: int = SOUND_NONE) -> dict:
-    """GroundStation Pushover — remote narration, always silent."""
+    """GroundStation Pushover: remote narration, always silent. PS-212:
+    with nina_pushover_items off (the default) the same text is an
+    Annotation (shows in NINA's sequence view, sends nothing)."""
+    if not nina_pushover_on():
+        return _annotation(f"[{title}] {message}")
     return _make_typed(
         "DaleGhent.NINA.GroundStation.SendToPushover.SendToPushover, "
         "DaleGhent.NINA.GroundStation",

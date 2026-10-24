@@ -139,7 +139,7 @@ async def after_sub(agent, night: str | None) -> dict | None:
             await notify(config, out["push"],
                          title=f"{sd.ALERT_TITLE}: {sd._label(config, rig)}",
                          priority=1 if diag["cause"] in ("guider_conflict", "focuser")
-                         else 0)
+                         else 0, kind="act" if diag["cause"] in ("guider_conflict", "focuser") else "info")
         except Exception as e:  # noqa: BLE001
             logger.warning("sub doctor push failed: %s", e)
     return diag

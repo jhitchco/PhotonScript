@@ -568,7 +568,7 @@ class GuideStarTuner:
             f"Guide star faint on {rec.get('target')} {rec.get('filter')}: SNR "
             f"{rec.get('snr')} at {rec.get('exposure_ms')} ms (the longest allowed). "
             "More gain or bin 3 pre-dusk (System page > Guide star), or PS-85 unguided.",
-            title="PhotonScript guide tuner")
+            title="PhotonScript guide tuner", kind="info")
 
 
 def calibration_slot_active(config, mount_ra=None, mount_dec=None) -> str | None:

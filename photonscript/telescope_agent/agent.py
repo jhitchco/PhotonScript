@@ -214,11 +214,12 @@ class TelescopeAgent:
         self._alerted.add(key)
         logger.warning("NANNY ALERT [%s] %s", key, message)
         await notify(self.config, message, title="PhotonScript NANNY",
-                     priority=1 if severe else 0)
+                     priority=1 if severe else 0,
+                     kind="act" if severe else "info")   # PS-212
         if severe and self.config.auto_abort_on_severe:
             logger.warning("auto_abort_on_severe enabled — stopping sequence")
             await self.nina.stop_sequence()
-            await notify(self.config, "Sequence stopped by nanny.", priority=1)
+            await notify(self.config, "Sequence stopped by nanny.", priority=1, kind="act", safety=True)
 
     async def _next_milestone(self) -> str:
         """Hours until the armer does its next thing (best-effort)."""
@@ -266,7 +267,7 @@ class TelescopeAgent:
                 f"state={self.state.session_state.value}.{milestone}",
                 title="PhotonScript heartbeat",
                 priority=-1,
-            )
+             kind="info")
 
     # ------------------------------------------------------------------
     # Focuser reporting position 0 (2026-10-08: the RC16 EAF fell off USB,
@@ -331,7 +332,7 @@ class TelescopeAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("focuser-zero run event not written: %s", e)
         if store.alert_once(self.config, f"focuser-zero-{rig}-{night}"):
-            await notify(self.config, msg, title=ALERT_TITLE, priority=1)
+            await notify(self.config, msg, title=ALERT_TITLE, priority=1, kind="act")
         else:
             record(self.config, msg, title=ALERT_TITLE, priority=1,
                    reason="focuser-zero-once-per-night")
@@ -411,7 +412,7 @@ class TelescopeAgent:
         except Exception as e:  # noqa: BLE001
             logger.warning("autofocus stall run event not written: %s", e)
         if store.alert_once(self.config, f"af-stall-{rig}-{night}"):
-            await notify(self.config, msg, title=af_stall.ALERT_TITLE, priority=1)
+            await notify(self.config, msg, title=af_stall.ALERT_TITLE, priority=1, kind="act")
         else:
             record(self.config, msg, title=af_stall.ALERT_TITLE, priority=1,
                    reason="af-stall-once-per-night")
@@ -1424,7 +1425,7 @@ class TelescopeAgent:
         try:
             if store.alert_once(self.config, f"nocorr-{night}"):
                 await notify(self.config, msg, title="PhotonScript PHD2 not correcting",
-                             priority=1)
+                             priority=1, kind="act")
             else:
                 record(self.config, msg, title="PhotonScript PHD2 not correcting",
                        priority=1, reason="nocorr-once-per-night")
@@ -1482,7 +1483,7 @@ class TelescopeAgent:
         title = "PhotonScript PHD2 mount refuses pulses"
         try:
             if store.alert_once(self.config, f"pulserefused-{night}"):
-                await notify(self.config, msg, title=title, priority=1)
+                await notify(self.config, msg, title=title, priority=1, kind="act")
             else:
                 record(self.config, msg, title=title, priority=1,
                        reason="pulserefused-once-per-night")
@@ -1563,7 +1564,7 @@ class TelescopeAgent:
         from photonscript.shared.pushover import record
         if store.alert_once(self.config, f"guard-{night}"):
             await notify(self.config, msg, title="PhotonScript guide guard",
-                         priority=1)
+                         priority=1, kind="act")
         else:
             record(self.config, msg, title="PhotonScript guide guard",
                    priority=1, reason="guard-once-per-night")
@@ -2020,6 +2021,12 @@ class TelescopeAgent:
                           fill_prewarm=True)
             except Exception as te:  # noqa: BLE001
                 logger.debug("thumb pre-warm skipped: %s", te)
+            try:  # PS-212: first light per rig, RC16 target switches (story)
+                from photonscript.scheduler import night_story
+                await night_story.after_sub(self.config, night, rec,
+                                            rig=getattr(self, "rig", "rc16"))
+            except Exception as ne:  # noqa: BLE001
+                logger.debug("night story after sub skipped: %s", ne)
         except Exception as e:  # noqa: BLE001
             # A failed sub-record write means this exposure silently never
             # reaches the runs page, library, or transfer funnel — a real

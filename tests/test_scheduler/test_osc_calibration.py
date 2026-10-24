@@ -280,8 +280,10 @@ def test_osc_resume_hold_is_confirm_plus_grace_and_ends_at_dawn():
 
 def test_osc_roof_open_push_fires_once_before_the_light_loop():
     root = _osc_lights_root(piggyback_focus_seed=0)
-    roof = [n for n in _walk(root) if n.get("$type", "").startswith(_PUSHOVER)
-            and "roof open" in n.get("Message", "")]
+    # PS-212: NINA's push item is an Annotation unless nina_pushover_items
+    roof = [n for n in _walk(root) if (n.get("$type", "").startswith(_PUSHOVER)
+                                       or "Annotation" in n.get("$type", ""))
+            and "roof open" in n.get("Message", "") + n.get("Text", "")]
     assert len(roof) == 1
     # not inside the looping container (it resets on every safe re-entry)
     lights = _named(root, "OSC_LIGHTS_UNTIL_DAWN")

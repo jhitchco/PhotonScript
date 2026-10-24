@@ -170,7 +170,7 @@ def _fire(config, msg: str) -> None:
     """Send a Pushover from sync or async context (backfill runs in a thread)."""
     import asyncio
     from photonscript.shared.pushover import notify
-    coro = notify(config, msg, title="PhotonScript autofocus", priority=1)
+    coro = notify(config, msg, title="PhotonScript autofocus", priority=1, kind="act")
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

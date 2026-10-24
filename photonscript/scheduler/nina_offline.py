@@ -220,7 +220,7 @@ async def tick(cfg, armer_state: str, recipe: dict | None = None,
             if s["down_since"] is not None and s["alerted"]:
                 msg = recovery_text(cfg, rig, s, now)
                 _event(cfg, rig, "up", msg, now)
-                await _push(cfg, msg, 0, notify)
+                await _push(cfg, msg, 0, notify, kind="info")
                 s["just_recovered"] = True
                 out[rig] = "recovered"
             else:
@@ -255,7 +255,8 @@ async def tick(cfg, armer_state: str, recipe: dict | None = None,
             _event(cfg, rig, "down", msg, now, error=err,
                    since=s["down_since"].replace(microsecond=0).isoformat() + "Z",
                    piggy_imaging=bool(piggy and piggy.get("imaging")))
-            await _push(cfg, msg, 1, notify)
+            # PS-212: NINA #1 gone mid-night loses the night: a safety act
+            await _push(cfg, msg, 1, notify, kind="act", safety=rig == "rc16")
             s["alerted"] = True
             out[rig] = "alert"
     return out
@@ -277,11 +278,15 @@ async def _piggy(cfg, api, leaf, up: dict) -> dict:
     return {"imaging": _imaging(name), "leaf": name}
 
 
-async def _push(cfg, msg: str, priority: int, notify=None) -> None:
+async def _push(cfg, msg: str, priority: int, notify=None, kind: str = "act",
+                safety: bool = False) -> None:
+    """PS-212: kind / safety go to notify() (an alert is an act; a
+    recovery is info)."""
     if notify is None:
         from photonscript.shared.pushover import notify as _n
         notify = _n
     try:
-        await notify(cfg, msg, title=TITLE, priority=priority)
+        await notify(cfg, msg, title=TITLE, priority=priority, kind=kind,
+                     safety=safety)
     except Exception as e:  # noqa: BLE001
         logger.warning("nina offline push failed: %s", e)

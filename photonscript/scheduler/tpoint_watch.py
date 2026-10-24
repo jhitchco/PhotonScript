@@ -777,12 +777,24 @@ async def tick(cfg, now: datetime | None = None, listing: dict | None = None,
         if notify is None:
             from photonscript.shared.pushover import notify as _notify
             notify = _notify
-        for key, title in (("push", "PhotonScript TPoint run finished"),
-                           ("alert", "PhotonScript TPoint run")):
+        for key, title, kind in (("push", "PhotonScript TPoint run finished", "story"),
+                                 ("alert", "PhotonScript TPoint run", "act")):
             if not res.get(key):
                 continue
+            if key == "alert":
+                # PS-212 (2026-10-23 false alarm: Jeremy opened a fresh empty
+                # TPoint file while tpoint-autocal writes import files, not
+                # in.dat): a known reason keeps "no samples" quiet
+                from photonscript.scheduler.night_story import quiet_reason
+                why = quiet_reason(cfg, now)
+                if why:
+                    from photonscript.shared.pushover import record
+                    record(cfg, f"{res[key]} (quiet: {why})", title=title,
+                           reason="quiet-known-reason")
+                    res["quiet"] = why
+                    continue
             try:
-                await notify(cfg, res[key], title=title)
+                await notify(cfg, res[key], title=title, kind=kind)
             except Exception as e:  # noqa: BLE001
                 logger.warning("TPoint %s push not sent: %s", key, e)
     return res

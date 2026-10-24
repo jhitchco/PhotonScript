@@ -220,12 +220,16 @@ async def _clear(cfg, monitor: PiggyGuard, now: datetime, why: str) -> None:
     monitor.since = None
 
 
-async def _push(cfg, msg: str, priority: int, notify=None) -> None:
+async def _push(cfg, msg: str, priority: int, notify=None, kind: str = "act",
+                safety: bool = False) -> None:
+    """PS-212: kind / safety go to notify() (an alert is an act; a
+    recovery is info)."""
     if notify is None:
         from photonscript.shared.pushover import notify as _n
         notify = _n
     try:
-        await notify(cfg, msg, title=TITLE, priority=priority)
+        await notify(cfg, msg, title=TITLE, priority=priority, kind=kind,
+                     safety=safety)
     except Exception as e:  # noqa: BLE001
         logger.warning("piggy guard push failed: %s", e)
 

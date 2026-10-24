@@ -260,7 +260,7 @@ async def _push(cfg, msg: str, notify=None) -> None:
         from photonscript.shared.pushover import notify as _n
         notify = _n
     try:
-        await notify(cfg, msg, title=TITLE, priority=0)
+        await notify(cfg, msg, title=TITLE, priority=0, kind="info")
     except Exception as e:  # noqa: BLE001
         logger.warning("frozen sensor push failed: %s", e)
 

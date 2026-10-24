@@ -99,7 +99,7 @@ class FakeIO:
     async def nina1_running(self, cfg):
         return self.running, "NGC 604"
 
-    async def notify(self, cfg, msg, priority=1):
+    async def notify(self, cfg, msg, priority=1, **_kw):
         self.pushes.append((msg, priority))
 
     async def restart(self, armer, now):

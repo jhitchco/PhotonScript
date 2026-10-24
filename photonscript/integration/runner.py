@@ -261,7 +261,7 @@ def hang_notifier(title: str = "PhotonScript PixInsight"):
 
             from photonscript.shared.config import PhotonScriptConfig
             from photonscript.shared.pushover import notify as po
-            return bool(asyncio.run(po(PhotonScriptConfig(), message, title=title, priority=1)))
+            return bool(asyncio.run(po(PhotonScriptConfig(), message, title=title, priority=1, kind="act")))
         except Exception:  # noqa: BLE001 - an alert must never break the run
             return False
     return notify

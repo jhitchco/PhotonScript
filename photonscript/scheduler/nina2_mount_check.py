@@ -150,7 +150,7 @@ async def check(config, reason: str, now: datetime | None = None,
             if push is None:
                 from photonscript.shared.pushover import notify as push
             await push(config, message(rec), title=TITLE,
-                       priority=1 if rec["in_loop"] and not replaced else 0)
+                       priority=1 if rec["in_loop"] and not replaced else 0, kind="act" if rec["in_loop"] and not replaced else "info")
             rec["pushed"] = True
         _save(config, rec)
         logger.info("NINA #2 mount check (%s): %s", reason, rec["detail"])

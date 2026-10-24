@@ -286,7 +286,7 @@ def check_and_alert(config, nights: int = 14) -> dict:
                 for f in new:
                     await notify(config, "TREND: " + f["detail"],
                                  title="PhotonScript trend alert",
-                                 priority=1 if f["severity"] == "high" else 0)
+                                 priority=1 if f["severity"] == "high" else 0, kind="info")
             asyncio.run(_send())
         except Exception as e:  # noqa: BLE001
             logger.warning("trend alert notify failed: %s", e)

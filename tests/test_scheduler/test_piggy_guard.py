@@ -72,7 +72,7 @@ class _Sim:
         return {"leaf": self.leaf, "target": self.target, "exposure_s": 300.0,
                 "path": ["Targets", self.target, self.leaf]}
 
-    async def notify(self, cfg, msg, title="", priority=0):
+    async def notify(self, cfg, msg, title="", priority=0, **_kw):
         self.pushes.append((title, msg, priority))
         return True
 

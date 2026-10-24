@@ -421,7 +421,7 @@ def test_tick_replays_2026_10_06_one_push_with_the_item(tmp_path):
                              pushover_ratelimit_enabled=False)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0):
+    async def notify(c, msg, title="", priority=0, **_kw):
         pushes.append((msg, priority))
         return True
 
@@ -449,7 +449,7 @@ def test_tick_parked_after_dusk_and_not_after_a_tracked_night(tmp_path):
                              pushover_ratelimit_enabled=False)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0):
+    async def notify(c, msg, title="", priority=0, **_kw):
         pushes.append((msg, priority))
         return True
 

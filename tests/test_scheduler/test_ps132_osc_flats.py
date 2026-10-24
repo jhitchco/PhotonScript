@@ -254,7 +254,7 @@ def pushes(monkeypatch):
     sent = []
 
     async def fake_notify(config, message, title="PhotonScript", priority=0,
-                          sound="none"):
+                          sound="none", **_kw):
         sent.append({"msg": message, "title": title, "priority": priority})
         return True
     from photonscript.shared import pushover
@@ -437,7 +437,7 @@ def armer_env(tmp_path, monkeypatch):
     notes, dispatched = [], []
 
     async def fake_notify(config, message, title="PhotonScript", priority=0,
-                          sound="none"):
+                          sound="none", **_kw):
         notes.append(message)
         return True
 

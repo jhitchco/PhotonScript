@@ -205,7 +205,7 @@ def _blind_night_read(closed=True):
 def _run_ticks(cfg, n, armer_state="ARMED", read=None, window=True, mon=None):
     pushes = []
 
-    async def notify(c, msg, title="", priority=0):
+    async def notify(c, msg, title="", priority=0, **_kw):
         pushes.append((title, msg, priority))
         return True
 
@@ -390,7 +390,7 @@ def _flip_read(down_minutes):
 def _ticks(cfg, n, read, owned=None, mon=None, armer_state="DISARMED"):
     pushes = []
 
-    async def notify(c, msg, title="", priority=0):
+    async def notify(c, msg, title="", priority=0, **_kw):
         pushes.append((title, msg, priority))
     mon = mon or nw.NinaWatch()
     for i in range(n):

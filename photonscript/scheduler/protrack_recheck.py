@@ -226,7 +226,7 @@ async def tick(cfg, armer, monitor=None, *, now: datetime | None = None, run=Non
             from photonscript.shared.pushover import notify
         try:
             await notify(cfg, f"{PUSH_TEXT} (TheSky: {row.get('current') or 'OFF'}). "
-                              f"{ta.PROTRACK_FIX}", title=PUSH_TITLE)
+                              f"{ta.PROTRACK_FIX}", title=PUSH_TITLE, kind="act")
         except Exception as e:  # noqa: BLE001
             logger.warning("ProTrack recheck push failed: %s", e)
     return res

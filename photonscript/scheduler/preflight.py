@@ -279,7 +279,7 @@ async def run_preflight(config, test_push: bool = True) -> dict:
         try:
             from photonscript.shared.pushover import notify
             ok = await notify(config, "Preflight test notification — all good if "
-                              "you can read this.", title="PhotonScript preflight")
+                              "you can read this.", title="PhotonScript preflight", kind="act", safety=True)
             checks.append(_check("Pushover", "pass" if ok else "fail",
                                  "Test notification sent — check your phone"
                                  if ok else "Send failed — check keys"))

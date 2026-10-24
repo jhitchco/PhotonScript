@@ -404,7 +404,7 @@ class Armer:
                 + " while paused by the operator: still PAUSED, nothing was "
                 "connected, parked, warmed or loaded. Resume when ready (it "
                 "re-plans from now on the running code).",
-                title="PhotonScript restored"))
+                title="PhotonScript restored", kind="info"))
             return True
         # Reconnect everything (esp. safety) after a restart so equipment that
         # dropped while we were down comes back without waiting for the next
@@ -416,7 +416,7 @@ class Armer:
             asyncio.create_task(self._unguided_guard("restore"))
         asyncio.create_task(notify(
             self.config, f"PhotonScript restarted mid-night — reattached in "
-            f"state {self.state}.", title="PhotonScript restored"))
+            f"state {self.state}.", title="PhotonScript restored", kind="info"))
         return True
 
     def _note_update_restored(self) -> dict | None:
@@ -693,7 +693,7 @@ class Armer:
                      f"ARMED for {self.plan['night_of']} [{mode}]: "
                      f"{', '.join(self.plan['targets'][:4])} — "
                      f"{self.plan['dark_hours']}h dark window.{conn}",
-                     title="PhotonScript armed")
+                     title="PhotonScript armed", kind="info")
         return self.status()
 
     async def _apps_alert(self, phase: str) -> None:
@@ -718,7 +718,7 @@ class Armer:
         if msg:
             logger.warning("PS-170 %s", msg)
             await notify(self.config, msg, title="PhotonScript apps not running",
-                         priority=1)
+                         priority=1, kind="act")
 
     def _unguided_dither(self) -> bool:
         """PS-66: dither the unguided targets tonight? Only on an unguided
@@ -753,13 +753,13 @@ class Armer:
                              "Armed GUIDED but NINA's guider is Direct Guider: "
                              "StartGuiding (PHD2) will fail tonight. Switch "
                              "NINA's guider back to PHD2, or re-arm unguided.",
-                             title="PhotonScript guider", priority=1)
+                             title="PhotonScript guider", priority=1, kind="act")
         elif getattr(self.config, "unguided_dither", False) and not direct:
             await notify(self.config,
                          f"Unguided dithers are OFF tonight: NINA's guider is "
                          f"{self.guider_name or 'unknown'}, not Direct Guider "
                          f"(unguided_dither needs it).",
-                         title="PhotonScript guider")
+                         title="PhotonScript guider", kind="info")
 
     def _guider_unwanted(self) -> bool:
         """2026-10-13: tonight is an armed UNGUIDED night (not watching a
@@ -821,6 +821,7 @@ class Armer:
         try:
             from photonscript.scheduler.thesky_audit import protrack_status
             p = protrack_status(audit)
+            self.protrack_state = p["state"]   # PS-212: the plan heads-up
             if p["state"] == "on":
                 return
             head = ("ProTrack is OFF" if p["state"] == "off"
@@ -829,7 +830,7 @@ class Armer:
                          f"Armed UNGUIDED but {head} in TheSky "
                          f"({p.get('current') or 'not readable'}): unguided subs "
                          f"trail without it. {p['fix']}",
-                         title="PhotonScript ProTrack")
+                         title="PhotonScript ProTrack", kind="act")
         except Exception as e:  # noqa: BLE001
             logger.warning("ProTrack check at arm failed: %s", e)
 
@@ -859,11 +860,11 @@ class Armer:
             await notify(self.config, "Stopped watching the sideloaded night. "
                          "NINA keeps running it; no dawn check, guiding "
                          "watchdog or update refusal from the armer now.",
-                         title="PhotonScript watching")
+                         title="PhotonScript watching", kind="info")
         if prev in ("RUNNING", "PAUSED_UNSAFE", PAUSE_STATE):
             report = await self.make_safe()
             await notify(self.config, f"Disarmed — {report}",
-                         title="PhotonScript disarmed", priority=1)
+                         title="PhotonScript disarmed", priority=1, kind="info")
         return self.status()
 
     async def make_safe(self) -> str:
@@ -1205,7 +1206,7 @@ class Armer:
         logger.warning("dawn shutdown (%s): %s", reason, report)
         return report
 
-    async def _notify_complete(self, msg: str) -> None:
+    async def _notify_complete(self, msg: str, reason: str | None = None) -> None:
         """The dawn "Night complete" push. PS-27: adds the Piggy-600 split
         rate when the Piggy took lights; over piggyback_split_alert_pct the
         push goes out at priority 1 with a short hint.
@@ -1244,8 +1245,13 @@ class Armer:
         failed =(self.shutdown or {}).get("failed") or []
         if failed:   # PS-159: a real shutdown failure pages
             parts.append((mr.PRI_KEEP, f"Shutdown step FAILED: {'; '.join(failed)}"))
+        # PS-212: the shutdown summary goes to the storyline (info); the
+        # push is the end-of-night report (one story, with the split note
+        # and integration lines), and a failed shutdown step is a safety act
         await notify(self.config, mr.fit_push(parts), title="PhotonScript complete",
-                     priority=1 if (alert or failed) else 0)
+                     priority=1 if (alert or failed) else 0, kind="info")
+        extra = [(1, line)] if line else []
+        await self._end_of_night(reason or "dawn", extra=extra)
 
     def _shutdown_verify_delay_s(self) -> int:
         """When to check that every cooler really went off after a warm.
@@ -1296,7 +1302,7 @@ class Armer:
                          "Dawn-shutdown check: cooler STILL ON on "
                          f"{', '.join(still_on)} — retried warm + dew-off once. "
                          "If it persists use Stop & Make Safe and check NINA.",
-                         title="PhotonScript shutdown warning", priority=1)
+                         title="PhotonScript shutdown warning", priority=1, kind="act", safety=True)
 
     # -- ninaAPI helpers ---------------------------------------------------------
 
@@ -1393,7 +1399,7 @@ class Armer:
                 msg = ("Guiding recovered: PHD2 is locked and guiding again "
                        f"(lost for {lost_min:.0f} min).")
                 if push:
-                    await notify(self.config, msg, title="PhotonScript guiding")
+                    await notify(self.config, msg, title="PhotonScript guiding", kind="info")
                 else:
                     record(self.config, msg, title="PhotonScript guiding",
                            priority=-1, reason="guiding-short-loss")
@@ -1429,14 +1435,14 @@ class Armer:
             action = self._guiding_gate.on_lost(now, self._not_locked_since)
             if action == "push":
                 await notify(self.config, msg, title="PhotonScript guiding",
-                             priority=1)
+                             priority=1, kind="act", fact="guiding-lost")
             else:
                 record(self.config, msg, title="PhotonScript guiding",
                        priority=1, reason="guiding-repeat-held")
                 if action == "flap":
                     await notify(self.config,
                                  self._guiding_gate.flap_message(now),
-                                 title="PhotonScript guiding", priority=1)
+                                 title="PhotonScript guiding", priority=1, kind="info")
 
         # 2) One automatic guider restart to break a stuck loop.
         if (self._guiding_alerted and ticks >= GUIDING_RECOVER_AFTER_TICKS
@@ -1462,7 +1468,7 @@ class Armer:
                        "by hand.")
                 if self._guiding_gate.on_auto_recover(now, ok):
                     await notify(self.config, msg, title="PhotonScript guiding",
-                                 priority=1)
+                                 priority=1, kind="info")
                 else:
                     record(self.config, msg, title="PhotonScript guiding",
                            priority=1, reason="guiding-repeat-held")
@@ -1477,7 +1483,7 @@ class Armer:
                    "recalibrate at the meridian, or re-arm.")
             if self._guiding_gate.on_escalate(now):
                 await notify(self.config, msg, title="PhotonScript guiding",
-                             priority=2)
+                             priority=2, kind="act", fact="guiding-still")
             else:
                 record(self.config, msg, title="PhotonScript guiding",
                        priority=2, reason="guiding-repeat-held")
@@ -1575,7 +1581,7 @@ class Armer:
                             "re-asserting while that item runs; it waits until "
                             "the sensor is within 1 C of its target and may "
                             "never finish. Fix the sequence or skip the item.",
-                            title="PhotonScript cooler", priority=1)
+                            title="PhotonScript cooler", priority=1, kind="act")
                     continue
                 self._cooler_fight_alerted[rig] = False
                 # Re-assert the correct setpoint (idempotent; corrects a wrong one).
@@ -1591,7 +1597,7 @@ class Armer:
                             f"({(res or {}).get('detail', 'no response')}). Sensor "
                             f"{float(temp):.1f}°C, setpoint {setp:.0f}°C. Subs "
                             "are being shot warm.",
-                            title="PhotonScript cooler", priority=1)
+                            title="PhotonScript cooler", priority=1, kind="act")
                 else:
                     self._cooler_cmd_alerted[rig] = False
                 # Still warm this long into the window, cooler on or not: the
@@ -1607,7 +1613,7 @@ class Armer:
                         f"{stuck_min} min (setpoint {setp:.0f}°C, cooler "
                         f"{'ON' if on else 'OFF'}). Re-asserting isn't working; "
                         "subs above the limit are rejected at grading.",
-                        title="PhotonScript cooler", priority=1)
+                        title="PhotonScript cooler", priority=1, kind="act")
                 if not on and not self._cooler_alerted.get(rig):
                     self._cooler_alerted[rig] = True
                     await notify(
@@ -1615,7 +1621,7 @@ class Armer:
                         f"Cooler nanny: {rig} cooler was OFF in the imaging "
                         f"window — turning it on to {setp:.0f}°C now (instant). "
                         "Subs shot warm won't match the dark library.",
-                        title="PhotonScript cooler", priority=1)
+                        title="PhotonScript cooler", priority=1, kind="info")
             elif not too_warm:
                 self._cooler_alerted[rig] = False  # at setpoint — re-arm the latches
                 self._cooler_stuck_alerted[rig] = False
@@ -1682,13 +1688,13 @@ class Armer:
                     "blind (driver likely disconnected, e.g. the Alpaca monitor "
                     "'came off'). NINA's own SafetyMonitorCondition still gates "
                     "imaging; reconnect the safety monitor.",
-                    title="PhotonScript safety", priority=1)
+                    title="PhotonScript safety", priority=1, kind="act", safety=True)
             return
         # Readable again (True or False) — recover the episode.
         if self._safety_alerted:
             await notify(self.config,
                          "Safety monitor readable again — roof gating restored.",
-                         title="PhotonScript safety")
+                         title="PhotonScript safety", kind="info")
         self._safety_none_ticks = 0
         self._safety_alerted = False
 
@@ -1755,7 +1761,7 @@ class Armer:
                         "monitor. Likely NINA #1's driver or connection, not "
                         "weather. Observe only: nothing was changed. Check "
                         "/api/safety/night.",
-                        title="PhotonScript safety")
+                        title="PhotonScript safety", kind="act")
         return verdict
 
     async def _is_safe(self) -> bool | None:
@@ -1867,7 +1873,7 @@ class Armer:
                 self._safety_alerted = True
             try:
                 await notify(self.config, msg, title="PhotonScript safety",
-                             priority=1)
+                             priority=1, kind="act", safety=True)
             except Exception as e:  # noqa: BLE001
                 logger.warning("safety dropout push failed: %s", e)
         return False if self._dropout_acts() else None
@@ -2197,7 +2203,7 @@ class Armer:
             return
         try:
             await notify(self.config, msg, title="PhotonScript dispatch gate",
-                         priority=1)
+                         priority=1, kind="act")
         except Exception as e:  # noqa: BLE001
             logger.warning("dispatch gate push failed: %s", e)
 
@@ -2243,7 +2249,7 @@ class Armer:
             msg = tpp.push_text(rec)
             if msg:
                 await notify(self.config, msg, title=tpp.PUSH_TITLE,
-                             priority=1 if rec.get("level") == "block" else 0)
+                             priority=1 if rec.get("level") == "block" else 0, kind="act" if rec.get("level") == "block" else "info")
         except Exception as e:  # noqa: BLE001
             logger.warning("TPoint preflight push failed: %s", e)
 
@@ -2298,7 +2304,7 @@ class Armer:
         if not msg:
             return
         try:
-            await notify(self.config, msg, title="PhotonScript TPoint coverage")
+            await notify(self.config, msg, title="PhotonScript TPoint coverage", kind="info")
         except Exception as e:  # noqa: BLE001
             logger.warning("TPoint coverage push failed: %s", e)
 
@@ -2444,7 +2450,7 @@ class Armer:
             logger.warning("focus calibration event not logged: %s", e)
         logger.info(msg)
         try:
-            await notify(self.config, msg, title="PhotonScript focus calibration")
+            await notify(self.config, msg, title="PhotonScript focus calibration", kind="info")
         except Exception as e:  # noqa: BLE001
             logger.warning("focus calibration note not sent: %s", e)
 
@@ -2576,7 +2582,7 @@ class Armer:
         if msg:
             try:
                 await notify(self.config, msg, title="PhotonScript arm recipe",
-                             priority=1)
+                             priority=1, kind="act")
             except Exception as e:  # noqa: BLE001
                 logger.warning("arm recipe page not sent: %s", e)
 
@@ -2603,7 +2609,7 @@ class Armer:
                            container=built.get("container"))
         logger.info(msg)
         try:
-            await notify(self.config, msg, title="PhotonScript arm recipe")
+            await notify(self.config, msg, title="PhotonScript arm recipe", kind="info")
         except Exception as e:  # noqa: BLE001
             logger.warning("arm recipe note not sent: %s", e)
 
@@ -2769,7 +2775,7 @@ class Armer:
         await notify(self.config,
                      f"PHD2 calibration invalid ({reason}): the remainder is "
                      f"re-dispatched with a calibration slot first ({report}).",
-                     title="PhotonScript PHD2 calibration", priority=1)
+                     title="PhotonScript PHD2 calibration", priority=1, kind="info")
         return ok
 
     async def dispatch_raw(self, seq: dict, label: str) -> bool:
@@ -2842,7 +2848,7 @@ class Armer:
             if fail_state:
                 self._set_state(fail_state)
             await notify(self.config, f"Dispatch FAILED: {self.detail}",
-                         title="PhotonScript ERROR", priority=1)
+                         title="PhotonScript ERROR", priority=1, kind="act", safety=True)
             return False
         await self._send_recipe_alert()   # PS-181: fallback page, once
         await self._send_gate_alert()     # PS-197: split fallback page
@@ -2888,7 +2894,7 @@ class Armer:
                 self._set_state(fail_state, f"ninaAPI load/start failed "
                                 f"({self.detail})")
             await notify(self.config, f"Dispatch failed: {self.detail}",
-                         title="PhotonScript ERROR", priority=1)
+                         title="PhotonScript ERROR", priority=1, kind="act", safety=True)
             return False
         # One arm covers both scopes: fire a calibration companion at NINA #2.
         # Best-effort — a piggyback problem never fails the RC16 night.
@@ -3054,7 +3060,7 @@ class Armer:
                 await notify(cfg, "Piggyback companion NOT started: its lint "
                              f"failed ({errs[:400]}). RC16 night is "
                              "unaffected.", title="PhotonScript piggyback",
-                             priority=1)
+                             priority=1, kind="act")
                 return
             res = await nina_dispatch(pcfg.nina_base_url, json.loads(seq_text),
                                       config=cfg, rig=PIGGYBACK)
@@ -3066,7 +3072,7 @@ class Armer:
                     await notify(cfg, "Piggyback companion started on NINA #2 — "
                                  "sees the roof: dawn flats + roof-closed darks/bias"
                                  + (" + OSC lights" if want_lights else ""),
-                                 title="PhotonScript piggyback")
+                                 title="PhotonScript piggyback", kind="info")
                 else:
                     # Darks/bias now run UNCONDITIONALLY (time-capped at dusk)
                     # when NINA #2 can't see the safety monitor — the OSC would
@@ -3078,14 +3084,14 @@ class Armer:
                                  "roof-gated (a few frames may be junked if the "
                                  "roof opens early). Add the safety monitor to the "
                                  "NINA #2 profile to roof-gate them.",
-                                 title="PhotonScript piggyback", priority=1)
+                                 title="PhotonScript piggyback", priority=1, kind="info")
             else:
                 logger.warning("Piggyback companion dispatch failed: %s",
                                res.get("detail"))
                 await notify(cfg, "Piggyback calibration companion did NOT start "
                              f"(NINA #2: {res.get('detail')}). RC16 night is "
                              "unaffected.", title="PhotonScript piggyback",
-                             priority=1)
+                             priority=1, kind="act")
         except Exception as e:  # noqa: BLE001
             logger.warning("Piggyback companion dispatch error: %s", e)
 
@@ -3182,7 +3188,7 @@ class Armer:
                      f"PhotonScript sends no sequence; it alerts on unsafe "
                      f"pauses and guiding ({guide_txt}), refuses updates, and "
                      f"checks park + coolers at {due:%H:%M}Z.",
-                     title="PhotonScript watching")
+                     title="PhotonScript watching", kind="info")
         return {**self.status(), "ok": True, "detail": detail}
 
     async def maybe_adopt(self, now: datetime | None = None,
@@ -3252,6 +3258,7 @@ class Armer:
         self._record_safety(safe, now)
         eff = await self._effective_safe(safe, now)   # dropout grace
         await self._watch_safety_monitor(now, safe)
+        await self._story("roof", now, safe)   # PS-212
         if eff is False:
             if not w.get("paused"):
                 w["paused"] = True
@@ -3269,7 +3276,7 @@ class Armer:
                              "sideloaded sequence's own safety branch should "
                              "park and wait; the armer alerts if it keeps "
                              "imaging.", title="PhotonScript watching",
-                             priority=1)
+                             priority=1, kind="info")
             else:
                 await self._watch_stuck_imaging(now, tree)
             return
@@ -3285,7 +3292,7 @@ class Armer:
             await notify(self.config, f"RESUMED (watching): safe again, "
                          f"{max(0.0, left):.1f} h of dark left. The sideloaded "
                          "sequence re-enters its targets by itself.",
-                         title="PhotonScript watching")
+                         title="PhotonScript watching", kind="info")
         # PS-64: an operator pause of a watched night mutes the guiding
         # watchdog only (alert-only: no NINA command is ever sent)
         if (running and self._watch_guiding_active(running)
@@ -3310,7 +3317,7 @@ class Armer:
                "imaging (SAFE_LOOP running). Watch mode does not stop it: "
                "check NINA, or use Stop & Make Safe.")
         self._watch_event("stuck_imaging", msg, now)
-        await notify(self.config, msg, title="PhotonScript watching", priority=1)
+        await notify(self.config, msg, title="PhotonScript watching", priority=1, kind="act", safety=True)
 
     async def _watch_end(self, reason: str, now: datetime) -> None:
         """End of the watched night: the sequence ended, or the dawn
@@ -3339,7 +3346,8 @@ class Armer:
             self._watch_event("end", report, now, reason=reason, action=action)
             await self._notify_complete(
                 f"Watched night complete ({reason}; {stats}). Dawn shutdown "
-                f"ran: {report}. Cooler check follows.")
+                f"ran: {report}. Cooler check follows.",
+                reason=f"watched night, {reason}")
             return
         steps = ["watch only: no commands sent"]
         if still:
@@ -3364,11 +3372,12 @@ class Armer:
                          "but NINA #1 is STILL running "
                          f"({', '.join(still[:3])}). Watch mode sends no "
                          "commands: check NINA, or use Stop & Make Safe.",
-                         title="PhotonScript watching", priority=1)
+                         title="PhotonScript watching", priority=1, kind="act", safety=True)
         else:
             await self._notify_complete(
                 f"Watched night complete ({reason}; {stats}). Park "
-                f"and cooler check in {delay // 60} min.")
+                f"and cooler check in {delay // 60} min.",
+                reason=f"watched night, {reason}")
 
     async def _verify_watched(self, delay_s: int = 300) -> dict:
         """Read-only end-of-night check for a watched night: every rig's
@@ -3416,7 +3425,7 @@ class Armer:
                          "Watched night check: " + " and ".join(bad) + ". "
                          "Watch mode sends no commands: use Stop & Make Safe "
                          "or check NINA.",
-                         title="PhotonScript shutdown warning", priority=1)
+                         title="PhotonScript shutdown warning", priority=1, kind="act", safety=True)
         return res
 
     # -- PS-64: operator Pause / Resume -----------------------------------------
@@ -3491,7 +3500,7 @@ class Armer:
             await notify(self.config, "PAUSED (watching): guiding alerts muted "
                          "by the operator. The sideloaded sequence is NINA's: "
                          "PhotonScript sent no command.",
-                         title="PhotonScript paused")
+                         title="PhotonScript paused", kind="info")
             return {**self.status(), "ok": True, "detail": msg}
         if self.state != "RUNNING":
             return {**self.status(), "ok": False,
@@ -3560,7 +3569,7 @@ class Armer:
                 self._restart_event("failed", msg, now, step="stop")
                 self.last_restart = {"at": _iso(now), "ok": False, "detail": msg}
             await notify(self.config, msg + ". Use Stop & Make Safe or NINA.",
-                         title=f"PhotonScript {what.lower()} FAILED", priority=1)
+                         title=f"PhotonScript {what.lower()} FAILED", priority=1, kind="act")
             return
         p["phase"] = "paused"
         p["stopped_at"] = now.replace(microsecond=0).isoformat() + "Z"
@@ -3586,7 +3595,7 @@ class Armer:
                      f"stay on, nothing parked. {max(0.0, left):.1f} h of dark "
                      "left; Resume on the dashboard re-dispatches the remainder.",
                      title="PhotonScript paused",
-                     priority=(1 if pb is not None and not pb.get("ok") else 0))
+                     priority=(1 if pb is not None and not pb.get("ok") else 0), kind="info")
 
     async def resume(self, now: datetime | None = None) -> dict:
         """Undo pause(). Before the stop happened: cancel the wait, RUNNING
@@ -3607,7 +3616,7 @@ class Armer:
             self._set_state(WATCH_STATE, msg)
             self._pause_event("resume", msg, now, mode="watch")
             await notify(self.config, "RESUMED (watching): guiding alerts back "
-                         "on.", title="PhotonScript resumed")
+                         "on.", title="PhotonScript resumed", kind="info")
             return {**self.status(), "ok": True, "detail": msg}
         if self.state != PAUSE_STATE:
             return {**self.status(), "ok": False,
@@ -3621,7 +3630,7 @@ class Armer:
             self._pause_event("resume", msg, now, redispatched=False)
             await notify(self.config, "RESUMED: the pause was cancelled before "
                          "NINA was stopped; nothing changed.",
-                         title="PhotonScript resumed")
+                         title="PhotonScript resumed", kind="info")
             return {**self.status(), "ok": True, "detail": msg,
                     "redispatched": False}
         if p.get("phase") == "resuming":
@@ -3681,7 +3690,7 @@ class Armer:
         self._pause_event("resume", msg, now, redispatched=True, piggy=pb_txt)
         await notify(self.config, f"RESUMED by the operator: the remainder is "
                      f"re-dispatched ({max(0.0, left_min) / 60:.1f} h of dark left); "
-                     f"{pb_txt}.", title="PhotonScript resumed")
+                     f"{pb_txt}.", title="PhotonScript resumed", kind="info")
 
     async def _paused_tick(self, now: datetime) -> None:
         """PAUSED_OPERATOR tick. Dawn: the normal dawn shutdown (as from
@@ -3698,7 +3707,7 @@ class Armer:
             self._set_state("COMPLETE", f"Dawn shutdown: {report}")
             await self._notify_complete(
                 f"Night ended while paused by the operator: dawn shutdown ran: "
-                f"{report}")
+                f"{report}", reason="dawn, paused by the operator")
             return
         safe = await self._is_safe()
         self._record_safety(safe, now)
@@ -3721,7 +3730,7 @@ class Armer:
                 self._set_state(PAUSE_STATE, msg)
                 self._pause_event("park_unsafe", msg, now, ok=ok)
                 await notify(self.config, f"Unsafe while paused: {msg}.",
-                             title="PhotonScript paused", priority=1)
+                             title="PhotonScript paused", priority=1, kind="info" if ok else "act", safety=not ok)
             return
         self._unsafe_since = None
         if safe is True and p.get("phase") == "paused":
@@ -3939,7 +3948,7 @@ class Armer:
             self._set_state(PAUSE_STATE, msg)
             self._restart_event("failed", msg, now, step="dark")
             self.last_restart = {"at": _iso(now), "ok": False, "detail": msg}
-            await notify(self.config, msg + ".", title="PhotonScript restart")
+            await notify(self.config, msg + ".", title="PhotonScript restart", kind="info")
             return {"ok": False, "detail": msg, "redispatched": False}
         self._reset_guiding_watchdog()
         try:
@@ -3982,7 +3991,7 @@ class Armer:
                      f"re-planned from the current goals ({tg or 'plan'}) and "
                      f"re-dispatched, {left_min / 60:.1f} h of dark left. Cooler "
                      f"and tracking kept; nothing parked or warmed; {pb_txt}.",
-                     title="PhotonScript restarted")
+                     title="PhotonScript restarted", kind="info")
         return {"ok": True, "detail": msg, "redispatched": True}
 
 
@@ -4066,7 +4075,7 @@ class Armer:
                      f"guiding and parked: {report}. Cooler kept at setpoint; "
                      "the remainder is re-dispatched once it has been safe "
                      f"for {int(getattr(self.config, 'safety_confirm_seconds', 120))} s.",
-                     title="PhotonScript SAFETY STOP", priority=1)
+                     title="PhotonScript SAFETY STOP", priority=1, kind="info" if "park ok" in report else "act", safety="park ok" not in report)
 
     async def _resume_after_safety_stop(self, now: datetime) -> None:
         """Safe again after an armer safety stop: nothing is running in NINA,
@@ -4097,7 +4106,7 @@ class Armer:
             await notify(self.config,
                          f"RESUMED: safe for {confirm} s, re-dispatched the "
                          f"remainder ({left_min / 60:.1f} h of dark left).",
-                         title="PhotonScript resumed")
+                         title="PhotonScript resumed", kind="info")
         else:
             # Stay PAUSED so the dawn shutdown still runs; retry next tick.
             self._safe_since = None
@@ -4163,7 +4172,7 @@ class Armer:
         await notify(self.config,
                      f"Guiding abandoned for tonight ({reason}): the remainder "
                      f"is re-dispatched UNGUIDED ({report}).",
-                     title="PhotonScript unguided fallback", priority=1)
+                     title="PhotonScript unguided fallback", priority=1, kind="story", fact="unguided-fallback")
         return ok
 
     def _planned_filters(self) -> list[str]:
@@ -4234,7 +4243,7 @@ class Armer:
                          f"would run the rest of the night unguided at {plan}; "
                          f"{why_not}. Set guide_fallback_mode=auto (System page) "
                          "to let it, or re-arm unguided by hand.",
-                         title="PhotonScript unguided fallback", priority=0)
+                         title="PhotonScript unguided fallback", priority=0, kind="act")
         logger.warning("PS-156 guide fallback (%s, %s): %s", mode, source, rec)
         return rec
 
@@ -4400,6 +4409,32 @@ class Armer:
             asyncio.create_task(phd2_audit.run_audit(self.config,
                                                      reason="PS-90 pre-dusk tune"))
 
+    async def _story(self, what: str, now: datetime, safe=None) -> None:
+        """PS-212 storyline hooks (scheduler/night_story.py): the evening
+        plan heads-up, "imaging now", the debounced roof. Never raises."""
+        try:
+            from photonscript.scheduler import night_story as ns
+            if what == "plan":
+                await ns.maybe_plan_headsup(self, now)
+            elif what == "imaging":
+                await ns.maybe_imaging_now(self, now, safe=safe)
+            elif what == "roof":
+                await ns.roof_tick(self.config, safe, now, self.plan)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("night story %s skipped: %s", what, e)
+
+    async def _end_of_night(self, reason: str, extra=None) -> None:
+        """PS-212: the end-of-night report, once per night, as soon as
+        imaging is over. Never raises."""
+        try:
+            from photonscript.scheduler import night_story as ns
+            await ns.end_of_night(
+                self.config, (self.plan or {}).get("night_of"), reason=reason,
+                plan=self.plan, extra=extra,
+                shutdown_failed=(self.shutdown or {}).get("failed") or None)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("end of night report skipped: %s", e)
+
     async def _run(self):
         try:
             while self.state in LIVE_STATES:
@@ -4430,6 +4465,7 @@ class Armer:
                 await self._maybe_predusk_tune()
             if preconfig - timedelta(minutes=60) <= now < preconfig:
                 await self._apps_alert("Pre-config in 60 min")   # PS-170
+            await self._story("plan", now)   # PS-212: evening plan heads-up
             if now >= preconfig:
                 self._ledger("pre-config")
                 if await self._dispatch_and_start():
@@ -4438,7 +4474,7 @@ class Armer:
                     await notify(self.config,
                                  "Sequence dispatched and started. Cooling now; "
                                  "imaging begins at astro dark.",
-                                 title="PhotonScript running")
+                                 title="PhotonScript running", kind="info")
 
         elif self.state == "RUNNING":
             if now >= self._dawn() + timedelta(minutes=30):
@@ -4461,12 +4497,14 @@ class Armer:
                 self._set_state("COMPLETE", f"Dawn shutdown: {report}")
                 await self._notify_complete(
                     f"Night complete: dawn shutdown ran ({reason}; "
-                    f"{report}). Cooler check in 5 min; morning report at 9.")
+                    f"{report}). Cooler check in 5 min; morning report at 9.",
+                    reason=reason)
                 return
             safe = await self._is_safe()
             self._record_safety(safe, now)
             eff = await self._effective_safe(safe, now)   # dropout grace
             await self._watch_safety_monitor(now, safe)
+            await self._story("roof", now, safe)   # PS-212
             if eff is False:
                 # The sequence's own night loop should leave SAFE_LOOP, park
                 # and hold via WaitUntilSafe. PS-77: the armer no longer takes
@@ -4494,10 +4532,11 @@ class Armer:
                              "imaging, park and wait; the armer checks in "
                              f"{grace} s and stops the sequence itself if it "
                              "is still imaging. Auto-resumes when safe.",
-                             title="PhotonScript paused", priority=1)
+                             title="PhotonScript paused", priority=1, kind="info")
             else:
                 # Imaging (or looping to safe) — verify guiding actually runs,
                 # and that the cooler is actually holding setpoint (nanny).
+                await self._story("imaging", now, safe)   # PS-212
                 await self._maybe_warn_not_guiding(now)
                 await self._unguided_guard("watch")   # 2026-10-13
                 await self._reconcile_cooler(now)
@@ -4517,11 +4556,19 @@ class Armer:
                 self._set_state("COMPLETE", f"Dawn shutdown: {report}")
                 await self._notify_complete(
                     "Night ended while paused: dawn shutdown "
-                    f"stopped the night loop and shut down: {report}")
+                    f"stopped the night loop and shut down: {report}",
+                    reason="dawn while paused")
                 return
             safe = await self._is_safe()
             self._record_safety(safe, now)
             eff = await self._effective_safe(safe, now)   # dropout grace
+            await self._story("roof", now, safe)   # PS-212
+            if safe is not True:
+                from photonscript.scheduler.night_story import roof_closed_for_good
+                if roof_closed_for_good(self.plan, now, eff):
+                    # PS-212: closed with no resume possible before dawn:
+                    # imaging is over, report now (not at the dawn shutdown)
+                    await self._end_of_night("roof closed for good")
             if safe is True:
                 if self._unsafe_stopped:
                     await self._resume_after_safety_stop(now)
@@ -4532,7 +4579,7 @@ class Armer:
                 await notify(self.config,
                              f"RESUMED: safe again, {remaining:.1f}h of dark "
                              "left. NINA night loop re-entering targets.",
-                             title="PhotonScript resumed")
+                             title="PhotonScript resumed", kind="info")
             else:
                 self._safe_since = None  # the confirm window restarts
                 if eff is False:   # unsafe, or unreadable past the grace

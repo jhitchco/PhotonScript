@@ -204,7 +204,9 @@ def test_companion_without_script_warns_in_its_start_area(monkeypatch, tmp_path)
     seq = _companion()
     assert not _gates(seq)
     start = [d for d in _walk(seq) if "StartAreaContainer" in d.get("$type", "")][0]
-    assert any("cooler gate OFF tonight" in str(i.get("Message", ""))
+    # PS-212: an Annotation unless nina_pushover_items (the plan heads-up
+    # carries the warning on Pushover)
+    assert any("cooler gate OFF tonight" in str(i.get("Message", "")) + str(i.get("Text", ""))
                for i in _vals(start, "Items"))
 
 
@@ -331,7 +333,7 @@ def _run(cfg, temps, rig="rc16", **kw):
     async def read(_cfg, _rig):
         return seq.pop(0) if len(seq) > 1 else seq[0]
 
-    async def notify(_cfg, msg, title="", priority=0):
+    async def notify(_cfg, msg, title="", priority=0, **_kw):
         notes.append((title, msg, priority))
 
     res = asyncio.run(cg.run_gate(cfg, rig, kw.pop("setpoint", 0.0),

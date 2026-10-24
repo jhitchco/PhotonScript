@@ -199,7 +199,7 @@ def loop_env(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "run_preflight", pf)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0, sound="none"):
+    async def notify(c, msg, title="", priority=0, sound="none", **_kw):
         pushes.append((title, msg))
         return True
     monkeypatch.setattr(pushover, "notify", notify)

@@ -308,7 +308,8 @@ def test_rc16_wait_until_safe_takes_the_owed_darks(tmp_path, monkeypatch, gate_o
     i = names.index(nsj.STARTUP_DARKS_WAIT_NAME)
     after = [x for x in flat[i + 1:] if _short(x["$type"]) != "Annotation"]
     assert _short(after[0]["$type"]) == "WaitUntilSafe"      # the last guard
-    assert _short(after[2]["$type"]) == "UnparkScope"
+    # PS-212: the narration between them is an Annotation now (filtered)
+    assert "UnparkScope" in [_short(x["$type"]) for x in after[1:3]]
     loop = flat[i]
     assert _conds(loop) == ["LoopWhileUnsafe"]               # no time: never unparks unsafe
     kids = _vals(loop, "Items")

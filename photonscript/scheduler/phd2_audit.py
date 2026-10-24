@@ -1370,7 +1370,7 @@ async def at_arm(config, **kw) -> dict:
         if first:
             from photonscript.shared import pushover
             await pushover.notify(config, push_text(audit, "PHD2 settings at arm", bad),
-                                  title="PhotonScript PHD2 audit")
+                                  title="PhotonScript PHD2 audit", kind="act")
     return audit
 
 
@@ -1383,7 +1383,7 @@ async def on_config_change(config, *, push: bool = True, **kw) -> dict:
     if new and push:
         from photonscript.shared import pushover
         await pushover.notify(config, push_text(audit, "PHD2 settings changed", new),
-                              title="PhotonScript PHD2 audit")
+                              title="PhotonScript PHD2 audit", kind="act")
     audit["new_fails"] = [r["id"] for r in new]
     return audit
 

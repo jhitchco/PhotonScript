@@ -361,7 +361,7 @@ async def run_gate(cfg, rig: str = "piggyback", label: str = "", *, read=None,
                 paged["recover"] = False
                 try:
                     await notify_fn(cfg, f"{name}: cover open again, imaging "
-                                    f"{label} resumed", title="PhotonScript cover")
+                                    f"{label} resumed", title="PhotonScript cover", kind="info")
                 except Exception as e:  # noqa: BLE001
                     logger.warning("cover gate notify failed: %s", e)
             res = {**base, "verdict": "PASS", "cover": state,
@@ -403,7 +403,7 @@ async def run_gate(cfg, rig: str = "piggyback", label: str = "", *, read=None,
                         "image pass is skipped and retried on the next pass; "
                         "check the Wanderer Cover and NINA #2's Flat Panel. "
                         "One alert per night.",
-                        title="PhotonScript cover", priority=1)
+                        title="PhotonScript cover", priority=1, kind="act")
                 except Exception as e:  # noqa: BLE001
                     logger.warning("cover gate notify failed: %s", e)
             LIVE[rig] = {"state": "skipped", "cover": what, "label": label,

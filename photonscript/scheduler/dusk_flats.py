@@ -250,7 +250,7 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
     try:
         await notify(config, f"Auto dusk flats dispatched: {detail}. The night "
                      "arm is untouched (flats stop before nautical dusk).",
-                     title="PhotonScript auto flats")
+                     title="PhotonScript auto flats", kind="info")
     except Exception:  # noqa: BLE001
         logger.warning("auto-flats push failed", exc_info=True)
     return "dispatched"

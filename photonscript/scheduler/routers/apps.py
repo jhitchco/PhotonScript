@@ -50,7 +50,7 @@ async def api_apps_report(request: Request):
     paged = False
     if al.should_page(cfg, rec):
         paged = await notify(cfg, al.page_text(rec),
-                             title="PhotonScript observatory apps", priority=1)
+                             title="PhotonScript observatory apps", priority=1, kind="act")
     logger.info("apps %s report: ok=%s acted=%s %s", rec["mode"], rec["ok"],
                 rec["acted"], rec["message"])
     return {"recorded": rec, "paged": bool(paged)}

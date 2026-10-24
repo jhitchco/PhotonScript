@@ -105,8 +105,10 @@ def test_dusk_pushes_do_not_claim_complete(env, tmp_path):
         _cfg(tmp_path, piggyback_enabled=True), "piggyback"), osc=True,
         owns_mount=False, now=env["now"])[0])
     for seq in (rc, pb):
+        # PS-212: the narration is an Annotation unless nina_pushover_items
         text = " ".join(json.dumps(n) for n in _walk(seq)
-                        if "Pushover" in n.get("$type", ""))
+                        if "Pushover" in n.get("$type", "")
+                        or "Annotation" in n.get("$type", ""))
         assert "flats complete" not in text
         assert "morning report counts dusk flats shot and filed" in text
 

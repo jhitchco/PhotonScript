@@ -172,7 +172,7 @@ def noon_env(tmp_path, monkeypatch):
     monkeypatch.setattr(preflight, "run_preflight", run_pf)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0, sound="none"):
+    async def notify(c, msg, title="", priority=0, sound="none", **_kw):
         pushes.append((title, msg))
         return True
     monkeypatch.setattr(pushover, "notify", notify)
@@ -276,7 +276,7 @@ def flats_env(tmp_path, monkeypatch):
     monkeypatch.setattr(dusk_flats, "read_roof_safe", safe)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0, sound="none"):
+    async def notify(c, msg, title="", priority=0, sound="none", **_kw):
         pushes.append((title, msg))
         return True
     monkeypatch.setattr(pushover, "notify", notify)
@@ -344,7 +344,7 @@ def test_flats_and_arm_skips_push_separately(tmp_path):
     cfg = _cfg(tmp_path)
     pushes = []
 
-    async def notify(c, msg, title="", priority=0):
+    async def notify(c, msg, title="", priority=0, **_kw):
         pushes.append(title)
     now = datetime(2026, 10, 5, 23, 0, 0)
     _run(aa.skip_and_notify(cfg, aa.SKIP_SIDELOAD, "d", "auto dusk flats (Ha)",

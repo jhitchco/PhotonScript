@@ -369,7 +369,7 @@ async def alert_once(config, night: str, target: str, text: str) -> bool:
     from photonscript.shared.pushover import notify, record
     if store.alert_once(config, f"block-{night}-{target}"):
         await notify(config, text, title="PhotonScript guiding per block",
-                     priority=0)
+                     priority=0, kind="info")
         return True
     record(config, text, title="PhotonScript guiding per block", priority=0,
            reason="block-once-per-target")

@@ -220,6 +220,6 @@ async def alert(config, rig: str, res: dict, what: str) -> None:
                f"just loaded ({what}): {res.get('detail')}"
                + (". A manual Start in NINA will do nothing." if fatal else ""))
         await notify(config, msg, title="PhotonScript NINA validation",
-                     priority=1 if fatal else 0)
+                     priority=1 if fatal else 0, kind="act" if fatal else "info", safety=bool(fatal))
     except Exception as e:  # noqa: BLE001
         logger.warning("NINA validation alert failed: %s", e)

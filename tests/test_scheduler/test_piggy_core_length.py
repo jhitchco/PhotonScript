@@ -240,8 +240,10 @@ def test_companion_one_loop_per_length_until_the_handoff(tmp_path, gate):
     assert all(lp["Triggers"]["$values"] for lp in loops)    # PS-68 refocus on each
     res = lint_companion(seq, settle_gate=gate)
     assert res.ok, [(f.rule, f.detail) for f in res.findings if f.level == "ERROR"]
-    notice = [d for d in _walk(seq) if "Message" in d and "roof open" in str(d.get("Message"))]
-    assert notice and "120/450s" in notice[0]["Message"]
+    # PS-212: the narration is an Annotation (Text) unless nina_pushover_items
+    notice = [str(d.get("Message") or d.get("Text")) for d in _walk(seq)
+              if "roof open" in str(d.get("Message") or d.get("Text") or "")]
+    assert notice and "120/450s" in notice[0]
 
 
 def test_armer_records_and_passes_the_lengths(tmp_path, monkeypatch):

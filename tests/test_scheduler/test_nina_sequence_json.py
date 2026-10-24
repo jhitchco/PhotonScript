@@ -205,13 +205,25 @@ class TestNinaJsonGeneration:
                  and isinstance(d.get("Filter"), dict)]
         assert lum not in names  # off -> focuses in the imaging (Ha) filter only
 
-    def test_pushover_narration_present(self):
+    def test_pushover_narration_present(self, monkeypatch):
+        # PS-212: NINA's own Send to Pushover items only with
+        # nina_pushover_items on; off (the default) the narration is kept
+        # as Annotations and nothing in the sequence pushes
+        types = _types(_gen())
+        assert sum("SendToPushover" in t for t in types) == 0
+        assert len(self._pushover_msgs(_gen())) >= 5
+        monkeypatch.setenv("PS_NINA_PUSHOVER_ITEMS", "true")
+        from photonscript.scheduler import nina_sequence_json as nsj
+        monkeypatch.setattr(nsj, "_gen_cfg_cache", None)
         types = _types(_gen())
         assert sum("SendToPushover" in t for t in types) >= 5
 
     def _pushover_msgs(self, data):
-        return [d.get("Message", "") for d in _walk(data) if isinstance(d, dict)
-                and "SendToPushover" in d.get("$type", "")]
+        return [d.get("Message", "") if "SendToPushover" in d.get("$type", "")
+                else d.get("Text", "") for d in _walk(data) if isinstance(d, dict)
+                and ("SendToPushover" in d.get("$type", "")
+                     or ("Annotation" in d.get("$type", "")
+                         and str(d.get("Text", "")).startswith("[")))]
 
     def test_verbosity_normal_drops_per_block_narration(self):
         msgs = self._pushover_msgs(_gen(start_guiding=True))

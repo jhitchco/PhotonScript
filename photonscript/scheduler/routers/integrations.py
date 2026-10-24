@@ -72,7 +72,7 @@ async def _ping(config, led) -> None:
     try:
         from photonscript.shared.pushover import notify
         await notify(config, integ.new_version_message(led),
-                     title=f"PhotonScript {led.campaign} integrated")
+                     title=f"PhotonScript {led.campaign} integrated", kind="story")
     except Exception:  # noqa: BLE001 - a push never fails the post
         pass
 

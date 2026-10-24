@@ -223,6 +223,15 @@
             <div id="exposureProgress"><div id="exposureFill"></div></div>
         </div>
 
+        <!-- PS-212: Tonight, the night storyline the pushes tell (plan,
+             milestones, problems), from /api/night/story. Pushed entries
+             in full; logged-only (info, held) ones dimmed. -->
+        <section class="panel" id="tonightPanel">
+            <h2>Tonight <span class="bd" id="tonightMeta"></span></h2>
+            <label class="bd" style="font-size:.8rem;"><input type="checkbox" id="tonightAll"> show logged-only entries</label>
+            <div id="tonightList" class="bd" style="max-height:260px;overflow-y:auto;margin-top:.3rem;">Loading...</div>
+        </section>
+
         <!-- PS-166: Morning report card, last night per rig, from
              /api/morning/report (lights kept / rejected with top reasons,
              hours per goal, guiding health, stalls, library, calibration) -->
@@ -1518,6 +1527,42 @@
     }
     refreshMorning();
     setInterval(refreshMorning, 600000);
+    // PS-212: Tonight timeline (the storyline the pushes tell)
+    async function refreshTonight() {
+        const box = document.getElementById('tonightList');
+        if (!box) return;
+        const esc = t => String(t == null ? '' : t).replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        const all = (document.getElementById('tonightAll') || {}).checked;
+        try {
+            const r = await fetch('/api/night/story' + (all ? '' : '?kinds=act,story'));
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            const d = await r.json();
+            const rows = (d.entries || []).filter(e => all || e.sent ||
+                e.reason === 'act-after-cutoff');
+            document.getElementById('tonightMeta').textContent =
+                '(night of ' + d.night + ', ' + (d.pushed || 0) + ' pushed)';
+            if (!rows.length) { box.textContent = 'Nothing yet tonight.'; return; }
+            const colour = {act: '#f87171', story: '#93c5fd', info: '#9ca3af'};
+            box.innerHTML = rows.slice().reverse().map(e => {
+                const t = (e.t || '').slice(11, 16) + 'Z';
+                const dim = e.sent ? '' : 'opacity:.6;';
+                const tag = e.kind + (e.sent ? '' : ' (' + esc(e.reason) + ')');
+                const img = e.thumb ? '<div><a href="' + esc(e.thumb) +
+                    '" target="_blank"><img src="' + esc(e.thumb) +
+                    '" style="max-width:180px;margin-top:.2rem;border-radius:4px;" loading="lazy"></a></div>' : '';
+                return '<div style="margin:.25rem 0;' + dim + '"><span style="color:' +
+                    (colour[e.kind] || '#9ca3af') + ';font-weight:600;">' + t + ' ' + tag +
+                    '</span> ' + esc(e.title) + ': ' + esc(e.text).replace(/\n/g, '<br>') +
+                    img + '</div>';
+            }).join('');
+        } catch (e) {
+            box.textContent = 'Tonight unavailable (' + e.message + ')';
+        }
+    }
+    refreshTonight();
+    setInterval(refreshTonight, 60000);
+    (document.getElementById('tonightAll') || {}).onchange = refreshTonight;
     // PS-168: tracking drift card (guide-log drift, smear per sub length,
     // trend per TPoint model, PS-169 recommended unguided sub per rig).
     async function refreshDrift() {

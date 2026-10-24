@@ -163,7 +163,7 @@ class FakeIO:
             self.phd2 = "Stopped"
         return self.phd2_stop_ok, f"PHD2 now {self.phd2}"
 
-    async def notify(self, message, priority=1):
+    async def notify(self, message, priority=1, **_kw):
         self.pushes.append((message, priority))
 
     async def event(self, value, detail, **extra):

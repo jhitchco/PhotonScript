@@ -1226,7 +1226,7 @@ async def _push(config, rows: list[dict]) -> None:
            f"exact fixes.")
     try:
         from photonscript.shared import pushover
-        await pushover.notify(config, msg, title="PhotonScript settings")
+        await pushover.notify(config, msg, title="PhotonScript settings", kind="act")
     except Exception as e:  # noqa: BLE001
         logger.warning("settings ledger push failed: %s", e)
 

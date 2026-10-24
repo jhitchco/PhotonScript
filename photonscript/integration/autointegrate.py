@@ -498,7 +498,7 @@ def pushover_sender(cfg):
         import asyncio
         from photonscript.shared.pushover import notify
         return bool(asyncio.run(notify(cfg, message, title="PhotonScript integrate",
-                                       attachment=str(image) if image else None)))
+                                       attachment=str(image) if image else None, kind="story")))
     return send
 
 

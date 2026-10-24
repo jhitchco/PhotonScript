@@ -673,7 +673,23 @@ def _push(config, rec: dict) -> None:
     msg = f"{rec['date']}: {rec['line']}"
     if rec["errors"]:
         msg += "\nSteps failed: " + "; ".join(rec["errors"])[:300]
-    asyncio.run(notify(config, msg, title="PhotonScript library"))
+    # PS-212: the end-of-night report already gave the kept counts; the
+    # filing is a follow-up story only when they changed materially. A
+    # failed step (disk / sync) is a safety act.
+    kind, safety = "info", False
+    if rec["errors"]:
+        kind, safety = "act", True
+    else:
+        try:
+            from photonscript.scheduler.night_story import filing_kind
+            kept = (rec.get("approved") or {}).get("approved")
+            if kept is None:
+                kept = sum((rec.get("filed") or {}).values())
+            kind = filing_kind(config, rec["date"], kept)
+        except Exception:  # noqa: BLE001
+            kind = "story"
+    asyncio.run(notify(config, msg, title="PhotonScript library", kind=kind,
+                       safety=safety, fact=f"filing:{rec['date']}"))
 
 
 def _wait_backfill(config, date: str, sleep=time.sleep,

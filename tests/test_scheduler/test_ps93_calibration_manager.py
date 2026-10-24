@@ -217,9 +217,10 @@ def test_slot_contents_and_placement_after_the_twilight_af(monkeypatch):
     seq = _gen(FIELD)
     slot = _slot(seq)
     kinds = [_short(it) for it in _exec_items(slot)]
-    assert kinds == ["SendToPushover", "SetTracking", "SwitchFilter",
+    # PS-212: NINA's own push items are Annotations (nina_pushover_items off)
+    assert kinds == ["Annotation", "SetTracking", "SwitchFilter",
                      "SlewScopeToRaDec", "Center", "StartGuiding", "StopGuiding",
-                     "SendToPushover", "WaitForTimeSpan"]
+                     "Annotation", "WaitForTimeSpan"]
     items = list(_exec_items(slot))
     sw = items[kinds.index("SwitchFilter")]
     assert sw["Filter"]["_name"] == "L"

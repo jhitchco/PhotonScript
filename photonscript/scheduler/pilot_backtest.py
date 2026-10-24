@@ -150,7 +150,7 @@ class ReplayIO(npil.PilotIO):
     def events(self, cfg, night):
         return []
 
-    async def notify(self, cfg, msg, priority=0):
+    async def notify(self, cfg, msg, priority=0, **_kw):
         self.pushes.append((priority, msg))
 
     def dark_status(self, cfg):

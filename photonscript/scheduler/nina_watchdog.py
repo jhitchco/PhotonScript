@@ -84,6 +84,8 @@ CONFIRM_TICKS = 3
 CONFIRM = {"stuck": 1, "parked": 1}   # PS-154: no extra debounce
 NIGHT_RUNNING = ("RUNNING", "WATCHING")   # PS-154: a night that should image
 LIVE = ("ARMED", "RUNNING", "PAUSED_UNSAFE", "PAUSED_OPERATOR", "WATCHING")
+# PS-212: "nothing happened in N min" states a known reason keeps quiet
+QUIET_STATES = ("silent", "stuck", "parked")
 # a running leaf with any of these (lower case) may legitimately log nothing
 QUIET_OK = ("wait", "loop", "safe", "time", "altitude", "dusk", "dawn")
 # PS-154: a running leaf with any of these (lower case) may legitimately run
@@ -663,14 +665,30 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
             if m == "alert" and rig in (owned or ()) and not reads.get("api_ok"):
                 _held(cfg, msg, 1 if armer_state in LIVE else 0)
             elif m == "alert":
-                await _push(cfg, msg, 1 if armer_state in LIVE else 0, notify)
+                # PS-212: a known reason (operator run, roof closed, disarmed
+                # by hand) keeps a "nothing happened" alarm quiet; NINA #1
+                # not running / its API down mid-night is a safety act
+                quiet = None
+                if res["state"] in QUIET_STATES:
+                    from photonscript.scheduler.night_story import quiet_reason
+                    quiet = quiet_reason(cfg, now)
+                if quiet:
+                    from photonscript.shared.pushover import record
+                    record(cfg, f"{msg} (quiet: {quiet})",
+                           title="PhotonScript NINA watch", reason="quiet-known-reason")
+                else:
+                    live = armer_state in LIVE
+                    await _push(cfg, msg, 1 if live else 0, notify,
+                                kind="act" if live else "info",
+                                safety=live and rig == "rc16"
+                                and res["state"] in ("not_running", "api_down"))
         elif res["recovered"]:
             msg = recovery_text(cfg, rig, res["prev"])
             _event(cfg, rig, "ok", msg, now)
             if m == "alert" and rig in (owned or ()):
                 _held(cfg, msg, 0)
             elif m == "alert":
-                await _push(cfg, msg, 0, notify)
+                await _push(cfg, msg, 0, notify, kind="info")
         elif res["changed"]:
             _event(cfg, rig, res["state"], why, now)
         if res.get("rearmed"):
@@ -705,12 +723,16 @@ def _held(cfg, msg: str, priority: int) -> None:
         logger.debug("nina watch held push not recorded: %s", e)
 
 
-async def _push(cfg, msg: str, priority: int, notify=None) -> None:
+async def _push(cfg, msg: str, priority: int, notify=None, kind: str = "act",
+                safety: bool = False) -> None:
+    """PS-212: kind / safety go to notify() (an alert is an act; a
+    recovery is info)."""
     if notify is None:
         from photonscript.shared.pushover import notify as _n
         notify = _n
     try:
-        await notify(cfg, msg, title="PhotonScript NINA watch", priority=priority)
+        await notify(cfg, msg, title="PhotonScript NINA watch", priority=priority, kind=kind,
+                     safety=safety)
     except Exception as e:  # noqa: BLE001
         logger.warning("nina watch push failed: %s", e)
 
