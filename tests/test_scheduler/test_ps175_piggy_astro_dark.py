@@ -66,7 +66,7 @@ def test_first_light_waits_for_astro_dusk_in_order():
     assert not wait["Conditions"]["$values"]
 
 
-def test_every_light_time_bound_is_astro_dawn_and_flats_stay_nautical():
+def test_every_light_time_bound_is_astro_dawn_and_flats_wait_for_their_plan():
     items = _targets(_companion())
     names = [i.get("Name") for i in items]
     lights = items[names.index(cal.OSC_LIGHTS_UNTIL_DAWN_NAME)]
@@ -75,12 +75,14 @@ def test_every_light_time_bound_is_astro_dawn_and_flats_stay_nautical():
     provs = {_provider(c) for blk in (lights, notice, first) for c in _walk(blk)
              if _short(c.get("$type", "")) == "TimeCondition"}
     assert provs == {"DawnProvider"}
-    # PS-163: the flat wait still keys on nautical dawn + the flat offset
-    flat_wait = [i for i in items[names.index(cal.OSC_LIGHTS_UNTIL_DAWN_NAME):]
-                 if _short(i["$type"]) == "WaitForTime"][0]
-    assert _provider(flat_wait) == "NauticalDawnProvider"
-    assert flat_wait["MinutesOffset"] == cal.osc_flat_dawn_offset(
-        rig_config(PhotonScriptConfig(_env_file=None), PIGGYBACK))
+    # flats v2: the OSC flats wait for their planned clock time (the sky
+    # model), after the light loop
+    flats = [i for i in items[names.index(cal.OSC_LIGHTS_UNTIL_DAWN_NAME):]
+             if str(i.get("Name", "")).startswith("DAWN_SKY_FLATS_OSC")]
+    assert flats
+    flat_wait = flats[0]["Items"]["$values"][0]
+    assert _short(flat_wait["$type"]) == "WaitForTime"
+    assert _provider(flat_wait) == "TimeProvider"
     push = [n["Message"] for n in _walk(notice) if "Message" in n]
     assert push and "astro dawn" in push[0]
 

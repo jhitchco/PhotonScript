@@ -1941,10 +1941,31 @@ class Armer:
         naut, rise = self._morning_twilight(plan)
         if naut is None:
             return base
-        end = naut + timedelta(minutes=5 + win)
-        if rise is not None and rise > naut:
-            end = min(end, rise)
-        return max(base, end)
+        # 2026-10-24: the dawn flats follow the sun-altitude plan
+        # (flat_plan.py), which may run to sunrise +
+        # flats_dawn_end_after_sunrise_min (the roof stays open to about
+        # sunrise + 30 on clear mornings). The backstop waits for the stored
+        # plan's end + DAWN_FLAT_END_MARGIN_MIN (both rigs' flat blocks end
+        # by themselves at their stops), never past that hard end + margin;
+        # with no stored plan, the hard end + margin. Without a sunrise the
+        # old rule (nautical dawn + 5 + dawn_flats_window_min).
+        from photonscript.scheduler.calibration import DAWN_FLAT_END_MARGIN_MIN
+        margin = timedelta(minutes=DAWN_FLAT_END_MARGIN_MIN)
+        if rise is None or rise <= naut:
+            return max(base, naut + timedelta(minutes=5 + win))
+        hard = rise + timedelta(minutes=int(getattr(
+            self.config, "flats_dawn_end_after_sunrise_min", 20) or 0))
+        end = hard
+        try:
+            from photonscript.scheduler import flat_plan as fp
+            fpl = fp.load_plan(self.config, plan.get("night_of") or "", "dawn")
+            if fpl and fpl.get("end"):
+                end = min(hard, fpl["end"])
+            elif fpl:
+                end = naut   # nothing planned at dawn: no flat wait
+        except Exception as e:  # noqa: BLE001
+            logger.debug("dawn flat plan unavailable: %s", e)
+        return max(base, end + margin)
 
     # -- dispatch -----------------------------------------------------------------
 
@@ -2027,6 +2048,7 @@ class Armer:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(built["content"])
         self.sequence_path = out
+        self._save_dawn_flat_plan(built.get("seq"))
         # deep night: the mode and pick this dispatch planned (plan snapshot
         # and the morning report's "Deep night on ..." line)
         if plan_info.get("mode"):
@@ -2149,10 +2171,32 @@ class Armer:
         else:
             self._recipe_pending = None
         return {"content": content, "targets": targets, "plan_info": plan_info,
+                "seq": seq,
                 "names": names, "use_guiding": use_guiding,
                 "armed_guided": armed_guided, "u_dither": u_dither,
                 "lint_errors": lint_errors,
                 "guided_targets": [t.name for t in targets if t.start_guiding]}
+
+    def _save_dawn_flat_plan(self, seq) -> None:
+        """2026-10-24: store this night's dawn flat plan (the same plan the
+        sequence's End area and the companion follow) for the backstop
+        (_shutdown_due_at) and the dawn window report. Best effort."""
+        if seq is None:
+            return
+        try:
+            from photonscript.scheduler import flat_plan as fp
+            from photonscript.scheduler.calibration import (
+                dawn_flat_plan, osc_dawn_wanted)
+            from photonscript.scheduler.nina_sequence_json import dawn_flat_filters
+            night = self.plan.get("night_of")
+            filters = [f.value for f in dawn_flat_filters(seq, self.config)]
+            osc = osc_dawn_wanted(self.config)
+            p = dawn_flat_plan(self.config, filters, osc, night=night)
+            old = fp.load_plan(self.config, night, "dawn") or {}
+            fp.save_plan(self.config, p, dispatched={"rc16": True, "piggyback": osc},
+                         **({"reported": old["reported"]} if old.get("reported") else {}))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("dawn flat plan not saved: %s", e)
 
     def _gate_verdict(self, built: dict) -> dict:
         """PS-197: the dispatch gate (scheduler/dispatch_gate.py) on a built
@@ -3021,16 +3065,13 @@ class Armer:
             pcfg = self._piggy_unguided_cfg(pcfg)
             pcfg, seg_kw = self._piggy_length_kwargs(pcfg)
             # 2026-10-21 flats_when=both: no OSC dawn set when this
-            # evening's dusk flats already shot one (and it is not owed)
-            from photonscript.scheduler.calibration import (
-                flats_when, piggyback_flat_status)
-            osc_dawn = True
-            if flats_when(cfg) == "both":
-                try:
-                    st = piggyback_flat_status(cfg)
-                    osc_dawn = not (st["shot_today"] and not st["owed"])
-                except Exception:  # noqa: BLE001 - keep the dawn set
-                    osc_dawn = True
+            # evening's dusk flats already shot one (2026-10-24: counted
+            # frames, calibration.osc_dawn_wanted)
+            from photonscript.scheduler.calibration import osc_dawn_wanted
+            try:
+                osc_dawn = osc_dawn_wanted(cfg)
+            except Exception:  # noqa: BLE001 - keep the dawn set
+                osc_dawn = True
             seq_text = generate_piggyback_companion_json(
                 pcfg, has_safety=has_safety, with_lights=want_lights,
                 **({} if osc_dawn else {"dawn_flats": False}), **seg_kw)

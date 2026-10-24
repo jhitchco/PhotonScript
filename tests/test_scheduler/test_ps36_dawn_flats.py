@@ -115,31 +115,29 @@ def test_light_loop_waits_are_bounded_and_passes_gated():
 
 
 def test_dawn_flat_step_order_and_gating():
-    root = _companion(piggyback_flat_wait_min=20)
+    """2026-10-24 (flats v2): after the light loop, the OSC set waits for its
+    planned start (a fixed clock time from the sun-altitude plan), waits
+    (bounded by the set's stop) for safe, and shoots under a SafetyMonitor
+    condition, run once, cut at the stop."""
+    root = _companion()
     names = [(_short(i["$type"]), i.get("Name")) for i in _items(_targets(root))]
-    kinds = [k for k, _ in names]
     lights_i = [n for _, n in names].index("OSC_LIGHTS_UNTIL_DAWN")
-    wait_i = kinds.index("WaitForTime", lights_i)
-    items = _items(_targets(root))
-    assert "NauticalDawnProvider" in items[wait_i]["SelectedProvider"]["$type"]
-    # PS-163: the OSC set starts at ND + piggyback_flat_dawn_offset_min (20)
-    assert items[wait_i]["MinutesOffset"] == 20
-    # let the RC16's dawn slew land before the first flat
-    assert kinds[wait_i + 1] == "WaitForTimeSpan"
-    assert items[wait_i + 1]["Time"] == 90
-    wait_safe = items[wait_i + 2]
-    assert wait_safe["Name"] == "WAIT_SAFE_FOR_OSC_FLATS"
-    tc = _conds(wait_safe)[1]
-    assert _short(tc["$type"]) == "TimeCondition" and tc["MinutesOffset"] == 20
-    flats = items[wait_i + 3]
-    assert flats["Name"].startswith("DAWN_SKY_FLATS_OSC")
-    # 2026-10-24: plus its own end before the armer's backstop (ND + 5 + 40 - 3)
-    assert [_short(c["$type"]) for c in _conds(flats)] == [
+    flats = next(i for i in _items(_targets(root))[lights_i:]
+                 if str(i.get("Name", "")).startswith("DAWN_SKY_FLATS_OSC"))
+    inner = _items(flats)
+    kinds = [_short(i["$type"]) for i in inner]
+    assert kinds[0] == "WaitForTime"
+    assert "TimeProvider" in inner[0]["SelectedProvider"]["$type"]
+    assert inner[1]["Name"] == "WAIT_SAFE_FOR_OSC_FLATS"
+    assert [_short(c["$type"]) for c in _conds(inner[1])] == [
+        "LoopWhileUnsafe", "TimeCondition"]
+    box = inner[2]
+    assert [_short(c["$type"]) for c in _conds(box)] == [
         "SafetyMonitorCondition", "LoopCondition", "TimeCondition"]
-    end = _conds(flats)[2]
-    assert "NauticalDawnProvider" in end["SelectedProvider"]["$type"]
-    assert end["MinutesOffset"] == 42
-    assert any(i["$type"].startswith(_SKYFLAT) for i in _items(flats))
+    # the wait for safe ends at the set's own stop
+    assert (_conds(inner[1])[1]["Hours"], _conds(inner[1])[1]["Minutes"]) == (
+        _conds(box)[2]["Hours"], _conds(box)[2]["Minutes"])
+    assert any(i["$type"].startswith(_SKYFLAT) for i in _items(box))
 
 
 def test_no_safety_monitor_flats_stay_time_gated_only():
@@ -163,17 +161,42 @@ _PLAN_0926 = {"night_of": "2026-09-26",
               "sunrise_utc": "2026-09-27T13:09:00Z"}
 
 
-def test_shutdown_waits_for_flat_window(tmp_path):
+def _store_dawn_plan(tmp_path, end):
+    from photonscript.scheduler import flat_plan as fp
+    cfg = PhotonScriptConfig(data_dir=tmp_path)
+    fp.save_plan(cfg, {"phase": "dawn", "night": "2026-09-26", "end": end,
+                       "rigs": {}})
+
+
+def test_shutdown_waits_for_the_dawn_flat_plan(tmp_path):
+    """2026-10-24: the backstop follows the stored dawn flat plan's end + 3
+    (the flats end by themselves at their stops), not nautical dawn + 45."""
     a = _armer(tmp_path)
     a.plan = dict(_PLAN_0926)
-    # nautical dawn + 5 + 40, not astro dawn + 30 (12:18Z, before any flat)
-    assert a._shutdown_due_at() == datetime(2026, 9, 27, 13, 0, 0)
+    _store_dawn_plan(tmp_path, datetime(2026, 9, 27, 13, 1))
+    assert a._shutdown_due_at() == datetime(2026, 9, 27, 13, 4, 0)
 
 
-def test_shutdown_capped_at_sunrise(tmp_path):
-    a = _armer(tmp_path, dawn_flats_window_min=120)
+def test_shutdown_without_a_plan_waits_to_the_hard_end(tmp_path):
+    a = _armer(tmp_path)
     a.plan = dict(_PLAN_0926)
-    assert a._shutdown_due_at() == datetime(2026, 9, 27, 13, 9, 0)
+    # sunrise 13:09 + flats_dawn_end_after_sunrise_min (20) + 3
+    assert a._shutdown_due_at() == datetime(2026, 9, 27, 13, 32, 0)
+
+
+def test_shutdown_capped_at_the_hard_end(tmp_path):
+    a = _armer(tmp_path, flats_dawn_end_after_sunrise_min=10)
+    a.plan = dict(_PLAN_0926)
+    _store_dawn_plan(tmp_path, datetime(2026, 9, 27, 14, 0))
+    assert a._shutdown_due_at() == datetime(2026, 9, 27, 13, 22, 0)
+
+
+def test_shutdown_with_nothing_planned_at_dawn(tmp_path):
+    a = _armer(tmp_path)
+    a.plan = dict(_PLAN_0926)
+    _store_dawn_plan(tmp_path, None)
+    # nautical dawn + 3, but never before astro dawn + 30
+    assert a._shutdown_due_at() == datetime(2026, 9, 27, 12, 18, 14)
 
 
 def test_shutdown_unchanged_when_no_flats_expected(tmp_path):
@@ -192,8 +215,8 @@ def test_shutdown_computes_nautical_dawn_for_old_plans(tmp_path):
     a = _armer(tmp_path)
     a.plan = {"dawn_utc": "2026-09-27T11:48:14Z"}
     due = a._shutdown_due_at()
-    # nautical dawn 12:15Z at AARO (+/- sampling) + 45 min
-    assert datetime(2026, 9, 27, 12, 55) <= due <= datetime(2026, 9, 27, 13, 6)
+    # sunrise ~13:09Z at AARO (+/- sampling) + 20 + 3 (no stored flat plan)
+    assert datetime(2026, 9, 27, 13, 25) <= due <= datetime(2026, 9, 27, 13, 40)
 
 
 def _live_plan(dawn_ago_min, naut_ago_min, sunrise_in_min=60):
@@ -251,7 +274,7 @@ async def test_tick_shuts_down_at_once_when_roof_closed(tmp_path, monkeypatch):
 async def test_tick_shuts_down_when_window_over(tmp_path, monkeypatch):
     a = _armer(tmp_path)
     a.state = "RUNNING"
-    a.plan = _live_plan(dawn_ago_min=100, naut_ago_min=70)
+    a.plan = _live_plan(dawn_ago_min=110, naut_ago_min=80, sunrise_in_min=-30)
     calls = _wire_tick(monkeypatch, a, safe=True)
     await a._tick()
     assert calls[0] == "dawn"
@@ -262,7 +285,7 @@ def test_status_surfaces_shutdown_due(tmp_path):
     a = _armer(tmp_path)
     a.plan = dict(_PLAN_0926)
     a.state = "RUNNING"
-    assert a.status()["shutdown_due_utc"] == "2026-09-27T13:00:00Z"
+    assert a.status()["shutdown_due_utc"] == "2026-09-27T13:32:00Z"
     a.state = "COMPLETE"
     assert a.status()["shutdown_due_utc"] is None
 
@@ -284,7 +307,7 @@ async def test_restore_reattaches_inside_flat_window(tmp_path, monkeypatch):
     b = _armer(tmp_path, connect_all_on_arm=False)
     (tmp_path / "armer_state.json").write_text(json.dumps({
         "state": "RUNNING", "detail": "",
-        "plan": _live_plan(dawn_ago_min=100, naut_ago_min=70)}))
+        "plan": _live_plan(dawn_ago_min=110, naut_ago_min=80, sunrise_in_min=-30)}))
     assert b.restore() is False
 
 

@@ -96,8 +96,8 @@ Check a pending update on the scope without switching: `photonscript self-update
 1. **Arm** (dashboard button or `POST /api/arm {"armed": true}` - the body
    must be exactly that; `{}` disarms). Generates tonight's sequence from the
    campaign plan and dispatches to NINA.
-2. Sequence: wait for dusk -> dusk sky flats if requested (least->most
-   transmission: Ha,OIII,SII,R,G,B,L as sky darkens) -> per-target
+2. Sequence: wait for dusk -> dusk sky flats if requested (by sun altitude,
+   "Sky flats v2" below: narrowband, R/G/B, L as the sky darkens) -> per-target
    slew/center/AF -> (StartGuiding) -> SmartExposure loops (moon-timed BB
    windows) -> mid-night darks if roof closes (quota-driven, dawn-bounded,
    lowest priority) -> bias one-shot if still unsafe -> dawn sky flats
@@ -2177,6 +2177,52 @@ frame); the Targets page groups the panels under the mosaic. Code:
   "M 31" (the Piggy-600 shoots the whole galaxy). Create it with the
   suggestion (`/api/mosaics/suggest?name=M31`, then POST it with
   `dry_run: true` first).
+
+### Sky flats v2: windows by sun altitude, dusk and dawn (2026-10-24)
+
+No sky flat saved on any clear window from 09-09 to 10-23: fixed offsets
+(dusk sunset + 15, dawn nautical dawn + 5, OSC + 20) put every set where
+the sky could not fill it at the 30 s cap. Now:
+
+- **Sky model** (`scheduler/sky_flat_model.py`, `<data_dir>/sky_flat_model.json`):
+  per rig, ln(ADU/s above bias) = c[filter] + b * sun altitude, fit to
+  NINA's own SkyFlat lines ("Exposure too dim at 15.05s. ADU measured at
+  ...", "Found exposure time ...", "Adding ADU=...") and the saved FLAT
+  frames. Defaults from 412 lines of 09-08..10-23 (RC16 b 0.893/deg, the
+  Piggy-600 1.001/deg). After each window it refits from that night's logs
+  and the change goes into the window push ("RC16 L: 4.47 s at sun -3.2 deg
+  (was -3.4), +38 probes").
+- **Plan** (`scheduler/flat_plan.py`): a filter's window is where it needs
+  `flats_target_exposure_min_s` .. `_max_s` (2 .. 10 s; dusk up to
+  `flats_dusk_exposure_max_s` 25 s). Dusk (darkening): narrowband, R/G/B,
+  L; dawn (brightening): L, B/G/R, narrowband. Sets run one after the other
+  in their windows; a passed window is skipped and stays owed for the other
+  twilight (`flats_when` both; a window's counted frames, at least
+  `flats_min_saved`, cover a filter). Typical AARO October: dusk NB
+  sunset - 14 .. sunset, R/G/B/L sunset .. + 20 (with the roof at sunset +
+  15 only B/L and the OSC fit); dawn L ND + 37, B/G/R to ND + 45, Ha/OIII
+  ND + 57..60 (sun near 0), OSC ND + 35. Point: alt `flats_point_alt_deg`
+  (75), azimuth opposite the sun at the window's middle (dusk east, dawn
+  west), tracking off, the Piggy-600 riding the same pointing.
+- **Sequences**: each set is `WaitForTime(start)` + a run-once container with
+  a TimeCondition at its stop (and the SafetyMonitor); NINA's SkyFlat gets
+  Min/Max 1 .. 30 s and `dawn_flat_attempts` (4) / `flats_dusk_attempts` (2).
+  Dusk: dispatched `flats_dusk_cool_lead_min` + 5 before the first window,
+  roof closed or not; NINA cools, polls the roof every 10 s and starts at
+  once when safe (`flats_slew_before_safe` to point before the roof opens).
+  Dawn: the End area points as soon as imaging ends and holds the pointing
+  to the OSC set's stop; the block ends by sunrise +
+  `flats_dawn_end_after_sunrise_min` (20).
+- **Backstop**: the armer's dawn shutdown waits for the stored dawn plan's
+  end + 3 min (`flat_plans/<night>_dawn.json`, saved at dispatch), at most
+  sunrise + 20 + 3; no stored plan = that cap.
+- **Truthful report**: no flat sequence pushes "complete" any more. About
+  12 min after each window's planned end the auto-arm loop counts the FLAT
+  frames per rig / filter written in the window and pushes "Dusk flats
+  <night>: RC16 B 15, L 15; Piggy-600 OSC 25. Not saved: RC16 R: window
+  passed ..." or "... none saved (RC16 L: roof closed at the flat window)".
+- **Check it**: `GET /api/calibration/sky-flats?night=` (model, stored plans
+  and their reports, a preview of tonight's plan).
 
 ## 5. File transfer: Syncthing
 
