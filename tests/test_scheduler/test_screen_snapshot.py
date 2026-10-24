@@ -108,6 +108,70 @@ def test_save_and_saved_file_names(tmp_path):
         assert ss.saved_file(cfg, bad) is None
 
 
+def _aged(d, name, age_days, now, body=b"x"):
+    import os
+    p = d / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(body)
+    t = now - age_days * 86400
+    os.utime(p, (t, t))
+    return p
+
+
+def test_prune_keeps_newest_n_and_anything_under_7_days(tmp_path):
+    import time
+    cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path / "data"),
+                             screen_keep_count=3)
+    d = ss.screen_dir(cfg)
+    now = time.time()
+    # 6 old shots (10..15 days), 2 young ones (1 and 6.9 days)
+    old = [_aged(d, f"screen_202609{10 + i:02d}T120000Z.jpg", 10 + i, now) for i in range(6)]
+    young = [_aged(d, "screen_20261016T120000Z.jpg", 6.9, now),
+             _aged(d, "screen_20261022T120000Z.jpg", 1, now)]
+    # never touched: the stamp, foreign files, a subfolder, a sibling folder
+    stamp = _aged(d, "last_capture.json", 30, now, b'{"t": 0}')
+    other = _aged(d, "notes.jpg", 30, now)
+    nested = _aged(d / "keep", "screen_20250101T000000Z.jpg", 300, now)
+    sibling = _aged(tmp_path / "data" / "runs", "screen_20250101T000000Z.jpg", 300, now)
+    removed = ss.prune(cfg, now=now)
+    left = sorted(p.name for p in d.glob("screen_*.jpg"))
+    # newest 3 by mtime = the 2 young + the 10-day one; the rest are older than 7 d
+    assert left == sorted([old[0].name] + [p.name for p in young])
+    assert sorted(p.name for p in removed) == sorted(p.name for p in old[1:])
+    for p in (stamp, other, nested, sibling):
+        assert p.exists()
+
+
+def test_prune_never_drops_young_shots_even_past_the_count(tmp_path):
+    import time
+    cfg = PhotonScriptConfig(_env_file=None, data_dir=str(tmp_path / "data"),
+                             screen_keep_count=1)
+    d = ss.screen_dir(cfg)
+    now = time.time()
+    for i in range(5):
+        _aged(d, f"screen_2026102{i}T120000Z.jpg", i, now)
+    assert ss.prune(cfg, now=now) == []
+    assert len(list(d.glob("screen_*.jpg"))) == 5
+
+
+def test_save_prunes_with_the_default_of_200(tmp_path):
+    import time
+    cfg = _cfg(tmp_path)
+    assert cfg.screen_keep_count == 200
+    d = ss.screen_dir(cfg)
+    now = time.time()
+    for i in range(205):
+        _aged(d, f"screen_2026{(i // 28) + 1:02d}{(i % 28) + 1:02d}T000000Z.jpg",
+              30 + i / 100, now)
+    shot = ss.take(cfg, sid_fn=lambda: 1, grab_fn=_fake_grab(),
+                   limit=ss.RateLimit(5, Clock()))
+    p = ss.save(cfg, shot)
+    names = {f.name for f in d.glob("screen_*.jpg")}
+    assert len(names) == 200 and p.name in names
+    assert "screen_20260101T000000Z.jpg" in names      # newest old one kept
+    assert ss.saved_file(cfg, p.name) == p
+
+
 # ------------------------------------------------------------ endpoints
 
 @pytest.fixture
