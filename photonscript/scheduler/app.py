@@ -790,6 +790,7 @@ _CONFIG_FIELDS = [
     ("plan_nb_blend_ha_first", "PS_PLAN_NB_BLEND_HA_FIRST", "Ha first: a two-rig narrowband goal gives the night to RC16 Ha until it holds blend_nb_min_ha_h, then OIII / SII by the mix (a goal's ha_first_h overrides)", "Imaging", "bool", False, False),
     ("dawn_flats_enabled", "PS_DAWN_FLATS_ENABLED", "Dawn sky flats (auto, after imaging)", "Imaging", "bool", False, False),
     ("dawn_flats_window_min", "PS_DAWN_FLATS_WINDOW_MIN", "Dawn shutdown waits until nautical dawn +5 + this (min) for flats", "Imaging", "int", False, False),
+    ("dawn_flat_attempts", "PS_DAWN_FLAT_ATTEMPTS", "Dawn sky flats: tries per set when NINA finds no exposure (the sky brightens between tries; the flats still end before the dawn shutdown)", "Imaging", "int", False, False),
     ("watch_sideload_auto", "PS_WATCH_SIDELOAD_AUTO", "Watch a sideloaded night (PS-136): enter WATCHING when tonight's RC16 sideload runs in NINA #1 (never dispatches)", "Imaging", "bool", False, False),
     ("watch_dawn_action", "PS_WATCH_DAWN_ACTION", "Watched night at dawn (PS-136): verify (read-only check + alert) | shutdown (stop, warm, park, then verify)", "Imaging", "str", False, False),
     ("off_target_mode", "PS_OFF_TARGET_MODE", "Off-target alert (PS-143): alert (panel chip + one Pushover per target per night) | panel (chip only) | off; never commands NINA", "Nanny / Alerts", "str", False, False),

@@ -787,7 +787,7 @@ SKY_FLAT_TOLERANCE = 0.2
 
 
 def _sky_flat(filter_type: FilterType, count: int,
-              gain: int, offset: int) -> dict:
+              gain: int, offset: int, attempts: int = 1) -> dict:
     """Native NINA sky-flat instruction (verified from a sequencer export):
     auto-adjusts exposure between Min/MaxExposure to hit the histogram
     target while the twilight sky brightens. No flat panel involved."""
@@ -811,6 +811,10 @@ def _sky_flat(filter_type: FilterType, count: int,
         container_type="NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat, "
                        "NINA.Sequencer")
     sf["IsExpanded"] = False
+    # 2026-10-24: NINA's SequenceItem.Run retries a failed SkyFlat (its
+    # exposure search found nothing) up to Attempts times; dawn sets pass
+    # dawn_flat_attempts, dusk sets keep 1
+    sf["Attempts"] = max(1, int(attempts))
     sf.update(MinExposure=0.1, MaxExposure=30.0,
               HistogramTargetPercentage=0.5,
               HistogramTolerancePercentage=SKY_FLAT_TOLERANCE,
@@ -3067,6 +3071,13 @@ def generate_nina_json(sequence: NinaSequenceFile,
         NBF = {"Ha", "OIII", "SII"}
         flat_filters.sort(key=lambda f: f.value in NBF)
         n = int(getattr(_cfg, "flat_count", 15))
+        # 2026-10-24: every clear dawn since 09-07 each set was tried once
+        # from ND+5, "too dim" at the 30 s cap, nothing saved. Retry a set
+        # (dawn_flat_attempts) as the sky brightens, and end the block by
+        # itself before the armer's backstop so the park is never later.
+        from photonscript.scheduler.calibration import (
+            dawn_flat_attempts, dawn_flat_time_condition)
+        _tries = dawn_flat_attempts(_cfg)
         flat_block = _seq_container(
             "DAWN_SKY_FLATS (skipped if unsafe — closed roof makes junk "
             "flats)",
@@ -3077,7 +3088,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
                           + ", ".join(f.value for f in flat_filters)),
                 _wait_for_provider("NauticalDawnProvider", 5),
                 _slew_alt_az(85, 200),
-            ] + [_sky_flat(f, n, _cfg.default_gain, _cfg.default_offset)
+            ] + [_sky_flat(f, n, _cfg.default_gain, _cfg.default_offset,
+                           attempts=_tries)
                  for f in flat_filters]
             + [_pushover("Flats", "sky flats complete")],
             # LoopCondition(1): a container under a SafetyMonitorCondition
@@ -3085,7 +3097,8 @@ def generate_nina_json(sequence: NinaSequenceFile,
             # until the armer's dawn shutdown stopped NINA (latent: the
             # shutdown always fired before the flat window until PS-36;
             # caught by the PS-77 sequence simulator).
-            conditions=[_safety_condition(), _loop_once()])
+            conditions=[_safety_condition(), _loop_once(),
+                        dawn_flat_time_condition(_cfg)])
         end_items.append(flat_block)
     end_items.append(_pushover("Shutdown", "starting shutdown: stop guiding, "
                                "park, dew heater off, warm camera, disconnect"))

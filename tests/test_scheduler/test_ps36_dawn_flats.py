@@ -133,15 +133,18 @@ def test_dawn_flat_step_order_and_gating():
     assert _short(tc["$type"]) == "TimeCondition" and tc["MinutesOffset"] == 20
     flats = items[wait_i + 3]
     assert flats["Name"].startswith("DAWN_SKY_FLATS_OSC")
+    # 2026-10-24: plus its own end before the armer's backstop (ND + 5 + 40 - 3)
     assert [_short(c["$type"]) for c in _conds(flats)] == [
-        "SafetyMonitorCondition", "LoopCondition"]
+        "SafetyMonitorCondition", "LoopCondition", "TimeCondition"]
+    end = _conds(flats)[2]
+    assert "NauticalDawnProvider" in end["SelectedProvider"]["$type"]
+    assert end["MinutesOffset"] == 42
     assert any(i["$type"].startswith(_SKYFLAT) for i in _items(flats))
 
 
 def test_no_safety_monitor_flats_stay_time_gated_only():
     root = _companion(has_safety=False, with_lights=False)
-    items = _items(_targets(root))
-    assert any(i["$type"].startswith(_SKYFLAT) for i in items)
+    assert any(n.get("$type", "").startswith(_SKYFLAT) for n in _walk(_targets(root)))
     types = {n.get("$type", "") for n in _walk(root)}
     assert not any("LoopWhileUnsafe" in t or "WaitUntilSafe" in t
                    or "SafetyMonitorCondition" in t for t in types)

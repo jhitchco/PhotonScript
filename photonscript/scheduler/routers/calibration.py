@@ -138,17 +138,21 @@ def api_calibration_library_report(rig: str = "rc16", frames: int = 0):
 def api_calibration_dusk_flats(night: str = ""):
     """2026-10-24: read only. dusk_flats_check.night_report for `night`
     (default: the newest night with a subs log); {"night", "report": null}
-    when no dusk flats were dispatched that evening."""
+    when no dusk flats were dispatched that evening. dawn / dawn_line: the
+    night sequences' dawn sets of the next morning (dawn_report)."""
     import re as _re
-    from photonscript.scheduler.dusk_flats_check import morning_line, night_report
+    from photonscript.scheduler.dusk_flats_check import (
+        dawn_morning_line, dawn_report, morning_line, night_report)
     from photonscript.scheduler.morning_report import latest_night
     cfg = _cfg()
     night = night or latest_night(cfg) or ""
     if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", night):
         return JSONResponse(status_code=400,
                             content={"detail": "night must be YYYY-MM-DD"})
+    dawn = dawn_report(cfg, night)
     return {"night": night, "report": night_report(cfg, night),
-            "line": morning_line(cfg, night)}
+            "line": morning_line(cfg, night), "dawn": dawn,
+            "dawn_line": dawn_morning_line(cfg, night) if dawn else None}
 
 
 def calibration_folder_need(cfg, folders: list[str], get=None) -> set | None:

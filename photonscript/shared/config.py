@@ -81,6 +81,14 @@ class PhotonScriptConfig(BaseSettings):
     # window opens. Astro->nautical dawn is 28-37 min at AARO, so the old astro
     # dawn + 30 shutdown ALWAYS fired before nautical dawn + 5. Unsafe at that
     # point = shut down at once (no flats possible).
+    dawn_flat_attempts: int = 4  # 2026-10-24: tries per dawn SkyFlat set (both
+    # rigs). Every clear dawn since 09-07 (10-08, 10-13, 10-15) each set ran once
+    # from ND+5 (OSC ND+20), found the sky "too dim" at the 30 s cap and gave up
+    # after 1-11 min (RC16 L 2076-2782 ADU, OSC 9581-11978 at 30 s against a
+    # 40 % floor of ~26000): no flat saved. A retry searches again in the
+    # brighter sky. The dawn flats block also ends by itself at ND + 5 +
+    # dawn_flats_window_min - 3 (before the armer's backstop), so retries never
+    # push the RC16 park past today's dawn shutdown.
     # PS-136: the armer WATCHES a sideloaded night (PS-123) it did not dispatch:
     # dawn checks + summary, guiding watchdog where guided, unsafe pause /
     # resume alerts, update refusal. It never loads, starts or re-dispatches.
