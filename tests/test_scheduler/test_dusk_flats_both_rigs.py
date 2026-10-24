@@ -466,7 +466,7 @@ def test_loop_holds_the_automatic_arm_only(env, tmp_path, monkeypatch):
         "night_of": night_of(cfg, now),
         "preconfig_utc": (now + timedelta(hours=2)).isoformat() + "Z"})
 
-    async def pf(c):
+    async def pf(c, **_kw):
         return {"go": True, "checks": []}
     monkeypatch.setattr(preflight, "run_preflight", pf)
     armer = _Armer()

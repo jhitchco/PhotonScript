@@ -167,7 +167,7 @@ def noon_env(tmp_path, monkeypatch):
         "preconfig_utc": "2026-10-06T00:30:00Z"})
     pf = {"go": True, "checks": []}
 
-    async def run_pf(c):
+    async def run_pf(c, **_kw):
         return pf
     monkeypatch.setattr(preflight, "run_preflight", run_pf)
     pushes = []

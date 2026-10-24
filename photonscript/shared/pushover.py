@@ -472,13 +472,43 @@ def act_held_now(config, now_utc: datetime | None = None) -> bool:
 
 
 def fact_key(kind: str, title: str, message: str, fact: str | None = None) -> str:
-    """The fact a push states: fact= when given, else the title and the
-    message with every digit masked ("RC16: 3 kept" == "RC16: 4 kept")."""
+    """The fact a push states: fact= when given; else for an act its title
+    (one buzz per problem area per night: the next "Settings wrong" or
+    "NANNY" of the night goes to the storyline), for a story the title and
+    the message with every digit masked ("RC16: 3 kept" == "RC16: 4 kept")."""
     import re
     if fact:
         return f"{kind}|{fact}"
+    if norm_kind(kind) == ACT:
+        return f"act|{str(title or '').lower()}"
     body = re.sub(r"\d+", "#", f"{title}|{message}".lower())
     return f"{kind}|{body[:300]}"
+
+
+def mark_facts(config, keys, now_utc: datetime | None = None) -> None:
+    """Mark facts told tonight (the plan heads-up folds held acts into one
+    push and marks them, so they do not buzz again). Never raises."""
+    try:
+        path = _state_path(config)
+        state = _load_state(path)
+        night = night_of(config, now_utc)
+        for k in keys or []:
+            if k:
+                _fact_mark(state, night, k, time.time())
+        _save_state(path, state)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("mark facts failed: %s", e)
+
+
+def plan_window_open(config, now_utc: datetime | None = None) -> bool:
+    """True while tonight is armed and its plan heads-up has not gone out
+    yet (before astro dark): a non-safety act then waits for the heads-up,
+    which lists it under "Needs you before pre-config"."""
+    try:
+        from photonscript.scheduler.night_story import plan_window_open as _open
+        return bool(_open(config, now_utc))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def decide(config, kind: str, safety: bool = False,
@@ -745,6 +775,12 @@ async def notify(config, message: str, title: str = "PhotonScript",
         logger.info("[pushover %s:%s] %s: %s", kind, why, title, message)
         _audit(config, title, message, priority, False, why, kind)
         _story(False, why, priority)
+        return False
+    if kind == ACT and not safety and plan_window_open(config):
+        # PS-212: armed, plan heads-up still to come: fold it in there
+        logger.info("[pushover act:for-plan] %s: %s", title, message)
+        _audit(config, title, message, priority, False, "for-plan", kind)
+        _story(False, "for-plan", priority)
         return False
     if kind == ACT:
         priority = max(int(priority), 1)

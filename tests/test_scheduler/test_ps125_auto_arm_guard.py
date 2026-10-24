@@ -194,7 +194,7 @@ def loop_env(tmp_path, monkeypatch):
         "night_of": night_of(cfg, now),
         "preconfig_utc": (now + timedelta(hours=1)).isoformat() + "Z"})
 
-    async def pf(c):
+    async def pf(c, **_kw):
         return {"go": True, "checks": []}
     monkeypatch.setattr(preflight, "run_preflight", pf)
     pushes = []

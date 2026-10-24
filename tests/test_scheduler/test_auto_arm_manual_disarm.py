@@ -85,7 +85,7 @@ def env(tmp_path, monkeypatch):
                 "preconfig_utc": (now + timedelta(hours=1)).isoformat() + "Z"}
     monkeypatch.setattr(night_plan, "build_night_plan", plan)
 
-    async def pf(c):
+    async def pf(c, **_kw):
         return {"go": True, "checks": []}
     monkeypatch.setattr(preflight, "run_preflight", pf)
     pushes = []

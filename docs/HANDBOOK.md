@@ -315,6 +315,22 @@ Check a pending update on the scope without switching: `photonscript self-update
 5. Daily 8:04 AM scheduled Claude task fetches `/api/runs`, `/api/sync`,
    `/api/calibration/health` via Chrome and writes a debrief.
 
+### Pushover v2: the night storyline (PS-212, 2026-10-24)
+
+Every notify() has a kind: act (needs Jeremy; with "If you act / If not";
+from 00:00 to 08:00 local only safety acts), story (milestones, once per
+fact per night) or info (logged only). The phone gets the evening plan
+heads-up (90 min before pre-config, with the arm's problems folded in),
+dusk flats counts, "imaging now", first light per rig with a thumbnail,
+RC16 target switches, a roof reopen after a long closure, and the
+end-of-night report as soon as imaging is over. Everything, pushed or not,
+is in the storyline: GET /api/night/story, the dashboard's Tonight panel;
+GET /api/pushover/weekly counts the pushes. NINA's own Send to Pushover
+items are Annotations unless nina_pushover_items. Watchers that alarm on
+"nothing happened" check night_story.quiet_reason first (autocal run, roof
+closed, disarmed by hand). Details, settings and the call-site table:
+docs/PUSHOVER_V2.md.
+
 ### Sideload a custom night (PS-123)
 
 For a night the armer cannot plan (e.g. a tracking test first, then

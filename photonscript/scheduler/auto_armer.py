@@ -553,7 +553,7 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                                 await noon_cooler_off(config, armer, plan, skip)
                     if arm_now and not skip:
                         night = plan["night_of"]
-                        pf = await run_preflight(config)
+                        pf = await run_preflight(config, test_push=False)   # PS-212: no test buzz per auto-arm
                         require = bool(getattr(config, "auto_arm_require_preflight", False))
                         if require and not pf.get("go", False):
                             log_decision(config, "skipped", SKIP_PREFLIGHT,

@@ -631,6 +631,9 @@ class Armer:
         if "error" in self.plan:
             self._set_state("ERROR", self.plan["error"])
             return self.status()
+        # PS-212: the arm's own checks below wait for the plan heads-up
+        from photonscript.scheduler.night_story import open_plan_window
+        open_plan_window(self.config, self.plan)
         mode = ("guided (PHD2)" if self._use_guiding()
                 else "unguided (TPoint + ProTrack)")
         if recipe:
@@ -1688,7 +1691,7 @@ class Armer:
                     "blind (driver likely disconnected, e.g. the Alpaca monitor "
                     "'came off'). NINA's own SafetyMonitorCondition still gates "
                     "imaging; reconnect the safety monitor.",
-                    title="PhotonScript safety", priority=1, kind="act", safety=True)
+                    title="PhotonScript safety", priority=1, kind="act", safety=self._still_dark(datetime.utcnow()))
             return
         # Readable again (True or False) — recover the episode.
         if self._safety_alerted:
@@ -1872,11 +1875,22 @@ class Armer:
                 # its "readable again" push still closes the episode
                 self._safety_alerted = True
             try:
+                # PS-212: a safety act while it is dark; past astro dawn (the
+                # dawn shutdown disconnects NINA, 2026-10-21/22/23 06:0x) the
+                # roof gates nothing more: an act, held after the cutoff
                 await notify(self.config, msg, title="PhotonScript safety",
-                             priority=1, kind="act", safety=True)
+                             priority=1, kind="act", safety=self._still_dark(now))
             except Exception as e:  # noqa: BLE001
                 logger.warning("safety dropout push failed: %s", e)
         return False if self._dropout_acts() else None
+
+    def _still_dark(self, now: datetime) -> bool:
+        """PS-212: before tonight's astro dawn (unknown: True). A safety
+        monitor push is a safety act only while the roof gates imaging."""
+        try:
+            return now < self._dawn()
+        except Exception:  # noqa: BLE001
+            return True
 
     def _dawn(self) -> datetime:
         return datetime.fromisoformat(self.plan["dawn_utc"].rstrip("Z"))

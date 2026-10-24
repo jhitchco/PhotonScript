@@ -213,9 +213,19 @@ class TelescopeAgent:
             return
         self._alerted.add(key)
         logger.warning("NANNY ALERT [%s] %s", key, message)
+        # PS-212: a severe alarm is an act, except a run of rejected subs
+        # while the night pilot acts on the sub doctor (its "needs a human"
+        # push says the same thing with the cause and the fix)
+        kind = "act" if severe else "info"
+        if severe and key.startswith("rejects-"):
+            try:
+                from photonscript.scheduler.night_pilot import mode as pilot_mode
+                if pilot_mode(self.config) != "off":
+                    kind = "info"
+            except Exception:  # noqa: BLE001
+                pass
         await notify(self.config, message, title="PhotonScript NANNY",
-                     priority=1 if severe else 0,
-                     kind="act" if severe else "info")   # PS-212
+                     priority=1 if severe else 0, kind=kind)
         if severe and self.config.auto_abort_on_severe:
             logger.warning("auto_abort_on_severe enabled — stopping sequence")
             await self.nina.stop_sequence()

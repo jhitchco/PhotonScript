@@ -255,7 +255,7 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
                       tpoint: str | None = None, protrack: str | None = None,
                       owed: str | None = None, forecast: str | None = None,
                       recipe: str | None = None, piggy: str | None = None,
-                      warnings=None) -> str:
+                      warnings=None, needs: str | None = None) -> str:
     """The evening plan heads-up (pure: everything comes in)."""
     night = plan.get("night_of") or "?"
     pc = _hm(config, plan.get("preconfig_utc"))
@@ -264,6 +264,8 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
     head = (f"Tonight {night}: imaging {dusk}-{dawn} ({plan.get('dark_hours')} h dark), "
             f"pre-config {pc}. Change the plan before {pc}.")
     lines: list[tuple[int, str]] = [(0, head)]
+    if needs:
+        lines.append((0, needs))
     mode = "guided (PHD2)" if guided else "unguided (TPoint + ProTrack)"
     rows = []
     for r in plan.get("schedule") or []:
@@ -356,9 +358,20 @@ def _piggy_line(config, plan: dict) -> str | None:
     if not getattr(config, "piggyback_enabled", False):
         return None
     name = _label(config, "piggyback")
-    pl = plan.get("piggy_length") or {}
-    lens = sorted({int(float(v)) for v in (pl.get("lengths") or {}).values()
-                   if isinstance(v, (int, float))}) if isinstance(pl, dict) else []
+    pl = plan.get("piggy_length") or {}   # piggy_length.plan(): targets[].exp_s
+    lens = []
+    if isinstance(pl, dict):
+        for r in pl.get("targets") or []:
+            try:
+                lens.append(int(float(r.get("exp_s"))))
+            except (TypeError, ValueError, AttributeError):
+                continue
+        if not lens and pl.get("base_s"):
+            try:
+                lens = [int(float(pl["base_s"]))]
+            except (TypeError, ValueError):
+                lens = []
+        lens = sorted(set(lens))
     if not lens:
         try:
             lens = [int(float(getattr(config, "piggyback_exposure_s", 120)))]
@@ -366,6 +379,49 @@ def _piggy_line(config, plan: dict) -> str | None:
             lens = []
     return (f"{name}: OSC {'/'.join(str(x) for x in lens)}s riding the RC16"
             if lens else f"{name}: OSC riding the RC16")
+
+
+def open_plan_window(config, plan: dict) -> None:
+    """At arm: until tonight's plan heads-up goes out (or astro dark), a
+    non-safety act waits for it (pushover.plan_window_open) and the heads-up
+    lists it, so the checks an arm runs (settings, ProTrack, TPoint, PHD2,
+    apps) make one push, not five. Never raises."""
+    try:
+        night = (plan or {}).get("night_of")
+        if not night or not plan.get("dusk_utc"):
+            return
+        _update(config, night, lambda st: st.update(
+            plan_window={"dusk": plan["dusk_utc"],
+                         "preconfig": plan.get("preconfig_utc")}))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("plan window not opened: %s", e)
+
+
+def plan_window_open(config, now: datetime | None = None) -> bool:
+    now = po._utc_naive(now)
+    st = load_state(config, _night(config, now))
+    w = st.get("plan_window") or {}
+    dusk = _parse(w.get("dusk"))
+    return bool(dusk and not st.get("plan_t") and now < dusk)
+
+
+def held_for_plan(config, night: str) -> list[dict]:
+    """Tonight's acts that waited for the plan heads-up (newest per title)."""
+    by_title: dict = {}
+    for e in entries(config, night):
+        if e.get("kind") == "act" and e.get("reason") == "for-plan":
+            by_title[e.get("title")] = e
+    return list(by_title.values())
+
+
+def _needs_line(config, held: list[dict], pc: str) -> str | None:
+    if not held:
+        return None
+    bits = []
+    for e in held:
+        t = str(e.get("title") or "").replace("PhotonScript ", "")
+        bits.append(f"{t}: {str(e.get('text') or '')[:170]}")
+    return f"Needs you before pre-config {pc}: " + " | ".join(bits)
 
 
 async def maybe_plan_headsup(armer, now: datetime | None = None) -> bool:
@@ -405,13 +461,20 @@ async def maybe_plan_headsup(armer, now: datetime | None = None) -> bool:
         "ProTrack: OFF, tick Activate ProTrack in TheSky" if pt == "off" else
         "ProTrack: not confirmed yet" if pt else None)
     rec = getattr(armer, "recipe", None) or {}
+    held = held_for_plan(cfg, night)
     text = plan_headsup_text(
         cfg, plan, guided=guided, moon=_moon_text(mw), tpoint=_tpoint_line(cfg, armer),
         protrack=protrack, owed=owed,
         forecast=_story_title_tonight(cfg, night, "Tonight:"),
         recipe=rec.get("label"), piggy=_piggy_line(cfg, plan),
-        warnings=[_gate_note(cfg)])
-    return await _push(cfg, text, title=TITLE_PLAN, fact=f"plan:{night}:{sig}")
+        warnings=[_gate_note(cfg)],
+        needs=_needs_line(cfg, held, _hm(cfg, plan.get("preconfig_utc"))))
+    sent = await _push(cfg, text, title=TITLE_PLAN, fact=f"plan:{night}:{sig}",
+                       priority=1 if held else 0)
+    if sent and held:   # told: the same problems do not buzz again tonight
+        po.mark_facts(cfg, [po.fact_key("act", e.get("title"), e.get("text"))
+                            for e in held], now)
+    return sent
 
 
 # --------------------------------------------------------------------------
@@ -605,7 +668,9 @@ async def roof_tick(config, safe: bool | None, now: datetime, plan: dict | None)
         msg = (f"Roof reopened {_hm(config, now)} after {_dur(mins)} closed "
                f"(since {_hm(config, t0)}); imaging resumes"
                + (f", {left:.1f} h of dark left." if left is not None else "."))
-        long = mins >= _debounce_min(config)
+        # before "imaging now" went out the reopen is info: that push says
+        # the night started
+        long = mins >= _debounce_min(config) and bool(st.get("imaging_t"))
         await _push(config, msg, title=TITLE_ROOF, kind="story" if long else "info",
                     fact=f"roof-reopen:{night}:{closed}")
         return {"closed": closed, "opened": spell[1], "minutes": spell[2]}
