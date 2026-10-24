@@ -76,3 +76,12 @@ def test_no_bare_tmp_replace_left_in_the_scheduler():
             if pat.search(line):
                 bad.append(f"{f.name}:{n}")
     assert not bad, bad
+
+
+def test_arm_memory_survives_a_held_replace(tmp_path, held):
+    from photonscript.scheduler import arm_memory
+    cfg = _cfg(tmp_path)
+    arm_memory.record_manual_arm(cfg, "guided")
+    assert len(held) == 3
+    assert arm_memory.last_manual_arm(cfg)["guiding"] == "guided"
+    assert not list(tmp_path.glob("*.tmp"))
