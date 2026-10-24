@@ -300,8 +300,9 @@ def test_runs_page_verdicts_are_optimistic_and_never_reload(tmp_path, monkeypatc
     assert "subState(list[j]) === 'review'" in adv
     # every sub the chips select is reachable (no 1-in-N sample)
     rs = _func(js, "renderSubs")
-    assert "i % step" not in rs and "const shown = subs;" in rs
-    assert "SubTiles.lazy(strip, 3)" in rs
+    # 2026-10-24: grouped by rig / target / filter, still every sub
+    assert "i % step" not in rs and "const shown = RunsGrid.flat(sections);" in rs
+    assert "SubTiles.lazy(strip, 6" in rs
     # batch: shift / ctrl click, one qa-batch call through Review.setMany
     assert "ev.shiftKey" in _func(js, "selClick")
     assert "Review.setMany(" in _func(js, "selApply")

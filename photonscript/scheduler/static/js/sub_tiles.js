@@ -62,37 +62,74 @@
                '</span>' : '') +
             '</figcaption></figure>';
     }
-    function lazy(container, maxInFlight) {
+    // 2026-10-24: only tiles in (or near) view load, in page order, so a
+    // fast scroll through a 670-sub night no longer queues every tile it
+    // passed ahead of the ones on screen; a loaded / failed tile gets the
+    // class "ok" / "err" (on the img and its .tbox wrapper, the page draws
+    // the placeholder and "no preview"); opts.onProgress({loaded, failed,
+    // total, inFlight}) after every change. Returns {stop()}.
+    function lazy(container, maxInFlight, opts) {
+        opts = opts || {};
         const limit = maxInFlight || 2;
-        let inFlight = 0;
-        const queue = [];
+        let inFlight = 0, loaded = 0, failed = 0, stopped = false;
+        const imgs = Array.from(container.querySelectorAll('img[data-src]'));
+        const order = new Map(imgs.map((im, i) => [im, i]));
+        const visible = new Set();
+        const total = imgs.length;
+        function report() {
+            if (opts.onProgress) opts.onProgress({loaded: loaded, failed: failed,
+                                                  total: total, inFlight: inFlight});
+        }
+        function mark(img, cls) {
+            img.classList.add(cls);
+            const box = img.closest && img.closest('.tbox');
+            if (box) box.classList.add(cls);
+        }
+        function next() {
+            let best = null;
+            visible.forEach(im => {
+                if (best === null || order.get(im) < order.get(best)) best = im;
+            });
+            if (best !== null) visible.delete(best);
+            return best;
+        }
         function pump() {
-            while (inFlight < limit && queue.length) {
-                const img = queue.shift();
-                if (!img.isConnected || img.src) continue;
+            while (!stopped && inFlight < limit) {
+                const img = next();
+                if (img === null) break;
+                if (!img.isConnected || img.getAttribute('src')) continue;
                 inFlight++;
-                const done = () => { inFlight--; pump(); };
-                img.onload = done;
-                img.onerror = () => { img.style.opacity = '.25'; done(); };
+                if (io) io.unobserve(img);
+                const done = (ok) => {
+                    inFlight--;
+                    if (ok) { loaded++; mark(img, 'ok'); }
+                    else { failed++; mark(img, 'err'); }
+                    report();
+                    pump();
+                };
+                img.onload = () => done(true);
+                img.onerror = () => done(false);
                 img.src = img.dataset.src;
+                report();
             }
         }
-        const imgs = Array.from(container.querySelectorAll('img[data-src]'));
+        let io = null;
         if (!('IntersectionObserver' in window)) {
-            imgs.forEach(i => queue.push(i));
+            imgs.forEach(i => visible.add(i));
             pump();
-            return;
+            report();
+            return {stop: () => { stopped = true; }};
         }
-        const io = new IntersectionObserver(entries => {
+        io = new IntersectionObserver(entries => {
             entries.forEach(e => {
-                if (e.isIntersecting) {
-                    io.unobserve(e.target);
-                    queue.push(e.target);
-                }
+                if (e.isIntersecting) visible.add(e.target);
+                else visible.delete(e.target);
             });
             pump();
-        }, {rootMargin: '200px'});
+        }, {rootMargin: '300px'});
         imgs.forEach(i => io.observe(i));
+        report();
+        return {stop: () => { stopped = true; io.disconnect(); }};
     }
     window.SubTiles = {html: html, lazy: lazy, esc: esc, FILTER_COLORS: FILTER_COLORS,
                        VERDICT_STYLE: VERDICT_STYLE};

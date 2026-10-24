@@ -10,6 +10,7 @@
     <script src="/static/js/sub_tiles.js?v={{ version }}"></script>
     <script src="/static/js/sky_geom.js?v={{ version }}"></script>
     <script src="/static/js/review.js?v={{ version }}"></script>
+    <script src="/static/js/runs_grid.js?v={{ version }}"></script>
     <style>
         .nav a { color: #7dd3fc; text-decoration: none; margin-right: 1.5rem; }
         main { max-width: 1560px; margin: 0 auto; display: grid;
@@ -123,6 +124,63 @@
             #lbMain img { max-width:96vw !important; }
             #lbPanel { width:92vw; max-height:30vh; }
         }
+        /* 2026-10-24: night loading state, grouped sub grid, fixed cards */
+        #nightLoading { display:flex; align-items:center; gap:.6rem; margin:.2rem 0 .6rem;
+                        padding:.45rem .7rem; border-radius:8px; font-size:.85rem;
+                        background:rgba(29,78,216,.18); border:1px solid #1d4ed8; }
+        #nightLoading[hidden] { display:none; }
+        #nightLoading.err { background:rgba(248,113,113,.12); border-color:#f87171; color:#fecaca; }
+        #nightLoading.err .spin { display:none; }
+        .spin { width:14px; height:14px; border-radius:50%; flex:none; display:inline-block;
+                border:2px solid rgba(255,255,255,.2); border-top-color:#7dd3fc;
+                animation:spin 0.8s linear infinite; vertical-align:middle; }
+        @keyframes spin { to { transform:rotate(360deg); } }
+        /* the previous night's numbers fade while the next one loads / failed */
+        #detailPanel.loading > :not(#nightLoading) { opacity:.35; pointer-events:none; }
+        .grid-wait { padding:1rem .2rem; font-size:.85rem; opacity:.8; }
+        .grid-wait.err { color:#f87171; opacity:1; }
+        .rig-sec { margin:.5rem 0 1rem; }
+        .rig-h { font-size:.95rem; font-weight:700; margin:.2rem 0 .3rem;
+                 padding:.25rem .5rem; border-radius:6px; background:rgba(255,255,255,.05);
+                 display:flex; gap:.8rem; align-items:baseline; flex-wrap:wrap; }
+        .rig-h .bd { font-weight:normal; }
+        .grp-h { font-size:.78rem; margin:.45rem 0 .15rem .2rem; opacity:.9; }
+        .grp-h b { color:#e2e8f0; }
+        .thumbs.cards { display:grid; grid-template-columns:repeat(auto-fill, 150px);
+                        gap:.5rem; padding:.2rem 0; }
+        .thumbs.cards figure { width:150px; display:flex; flex-direction:column; }
+        .tbox { position:relative; width:150px; height:100px; border-radius:6px;
+                overflow:hidden; background:#0b1220; cursor:zoom-in; }
+        .tbox::before { content:'loading'; position:absolute; inset:0; display:flex;
+                        align-items:center; justify-content:center; font-size:.6rem;
+                        opacity:.35; letter-spacing:.06em; }
+        .tbox.ok::before { content:none; }
+        .tbox.err::before { content:'no preview'; opacity:.6; }
+        .thumbs.cards .tbox img { position:relative; z-index:0; width:100%; height:100%;
+                                  object-fit:cover; display:block; border-radius:0; }
+        .tbox.v-rejected, .tbox.v-offtarget { opacity:.6; }
+        .tbox.v-rejected { box-shadow:inset 0 0 0 2px #f87171; }
+        .tbox.v-offtarget { box-shadow:inset 0 0 0 2px #c084fc; }
+        .tbox.v-accepted, .tbox.v-syncing { box-shadow:inset 0 0 0 2px #4ade80; }
+        .tbox.v-review { box-shadow:inset 0 0 0 1px #334155; }
+        .tbox::after { content:''; position:absolute; inset:0; border-radius:6px;
+                       pointer-events:none; box-shadow:inherit; z-index:1; }
+        .tbadge { position:absolute; left:3px; bottom:3px; z-index:2; max-width:calc(100% - 6px);
+                  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                  border-radius:4px; padding:0 .3rem; font-size:.58rem; line-height:1.35; }
+        .tbadge.flag { background:#713f12; color:#fde68a; }
+        .tbadge.off { background:#581c87; color:#e9d5ff; }
+        .tbadge.roof { background:#7c2d12; color:#fed7aa; }
+        .thumbs.cards figcaption { font-size:.6rem; opacity:.75; margin-top:.15rem;
+                                   line-height:1.3; display:grid;
+                                   grid-template-columns:2.7rem 1fr 1rem;
+                                   column-gap:.25rem; text-align:left; white-space:nowrap; }
+        .thumbs.cards figcaption > span { overflow:hidden; text-overflow:ellipsis; }
+        .thumbs.cards figcaption .m { grid-column:1 / span 3; display:grid;
+                                      grid-template-columns:1fr .9fr 1.2fr; column-gap:.25rem; }
+        .thumbs.cards figcaption .m > span { overflow:hidden; text-overflow:ellipsis; }
+        .thumbs.cards figure.sel .tbox { outline:3px solid #38bdf8; outline-offset:1px; }
+        #subTable tr.rigrow td { background:#111827; font-weight:700; text-align:left; }
         #backfillBox { margin-top:.8rem; }
         .pbar { height:10px; border-radius:5px; background:rgba(255,255,255,.08);
                 overflow:hidden; margin:.3rem 0; }
@@ -149,6 +207,11 @@
                 <a href="/targets" style="color:inherit;">Integration readiness is on Targets</a></div>
         </aside>
         <section class="panel" id="detailPanel" hidden>
+            <div id="nightLoading" role="status" aria-live="polite" hidden>
+                <span class="spin"></span><span id="nightLoadingText"></span>
+                <button type="button" class="btn btn-secondary" id="nightLoadingRetry"
+                        style="padding:.1rem .6rem;font-size:.78rem;" hidden>Retry</button>
+            </div>
             <div class="night-title" id="nightTitle"></div>
             <div style="display:flex;gap:2.5rem;align-items:center;flex-wrap:wrap;">
                 <div style="text-align:center;">
@@ -226,7 +289,7 @@
                 </span>
             </div>
             <div class="bd warn" id="scoreHint" hidden></div>
-            <div id="gridView"><div class="thumbs" id="thumbStrip"></div></div>
+            <div id="gridView"><div id="thumbStrip"></div></div>
             <div id="tableView" hidden><table class="runs" id="subTable"></table></div>
         </section>
     </main>
@@ -431,9 +494,15 @@
                       ' rejects excluded' + syncMsg);
             } finally { btn.disabled = false; btn.textContent = 'Rebuild library'; }
         };
-        const r = await fetch('/api/runs/' + date);
-        const d = await r.json();
+        // 2026-10-24: a visible loading state (bytes, seconds) and an error
+        // state with Retry, instead of a bare "..." for the whole download
+        const d = await fetchNight(date);
+        if (!d || currentDate !== date) return;   // failed (shown) or superseded
         currentDetail = d;
+        setNightLoading('draw', {subs: (d.subs || []).length});
+        // the drawing below is synchronous: clear the loading state after it,
+        // even when one panel throws (the page must never stay faded)
+        setTimeout(() => { if (currentDetail === d) setNightLoading(null); }, 0);
         if (d.backfill && (d.backfill.running || d.backfill.pending > 0)) {
             showBackfill(d.backfill);
             pollBackfill(date);
@@ -633,6 +702,82 @@
         loadSafety(date);
         loadScoreReport(date);
         maybeWarmThumbs(date);
+        setNightLoading(null);
+    }
+    // ---- 2026-10-24: the night's loading line (RunsGrid.loadingText)
+    let nightLoadSeq = 0, nightLoadT0 = 0, nightLoadTick = null, nightLoadAbort = null;
+    function setNightLoading(phase, info) {
+        const box = document.getElementById('nightLoading');
+        const txt = document.getElementById('nightLoadingText');
+        const retry = document.getElementById('nightLoadingRetry');
+        clearInterval(nightLoadTick);
+        document.getElementById('detailPanel').classList.toggle('loading', !!phase);
+        if (!phase) { box.hidden = true; return; }
+        const live = info || {};   // fetchNight bumps live.bytes as it reads
+        box.hidden = false;
+        box.classList.toggle('err', phase === 'error');
+        retry.hidden = phase !== 'error';
+        const paint = () => {
+            txt.textContent = RunsGrid.loadingText(phase, Object.assign({date: currentDate},
+                live, phase === 'error' ? {} : {ms: performance.now() - nightLoadT0}));
+        };
+        paint();
+        if (phase !== 'error') nightLoadTick = setInterval(paint, 250);
+    }
+    async function fetchNight(date) {
+        const seq = ++nightLoadSeq;
+        nightLoadT0 = performance.now();
+        // a night clicked while another loads: drop the old download
+        if (nightLoadAbort) { try { nightLoadAbort.abort(); } catch (e) { /* done */ } }
+        const ctl = window.AbortController ? new AbortController() : null;
+        nightLoadAbort = ctl;
+        const strip = document.getElementById('thumbStrip');
+        // the previous night's thumbnails must not hold the browser's few
+        // connections while this night's JSON streams in: stop and abort them
+        if (window._tileLoader) { window._tileLoader.stop(); window._tileLoader = null; }
+        document.querySelectorAll('#thumbStrip img[src], #subTable img[src]').forEach(im => {
+            if (!im.complete) im.removeAttribute('src');
+        });
+        strip.innerHTML = '<div class="grid-wait"><span class="spin"></span> Loading subs&hellip;</div>';
+        const tblEl = document.getElementById('subTable');
+        tblEl.innerHTML = '';   // (the table itself is drawn in renderSubTable only)
+        document.getElementById('thumbCount').textContent = '';
+        document.getElementById('nightTitle').textContent = date;
+        setNightLoading('fetch');
+        const info = {bytes: 0};
+        try {
+            const r = await fetch('/api/runs/' + date, ctl ? {signal: ctl.signal} : {});
+            if (seq !== nightLoadSeq) return null;
+            if (!r.ok) {
+                let why = '';
+                try { why = (await r.json()).detail || ''; } catch (e) { /* not JSON */ }
+                throw new Error('HTTP ' + r.status + (why ? ': ' + why : ''));
+            }
+            let text;
+            if (r.body && r.body.getReader) {
+                const reader = r.body.getReader(), parts = [];
+                setNightLoading('body', info);   // the paint tick reads info.bytes
+                for (;;) {
+                    const chunk = await reader.read();
+                    if (chunk.done) break;
+                    parts.push(chunk.value);
+                    info.bytes += chunk.value.length;
+                    if (seq !== nightLoadSeq) return null;
+                }
+                text = await new Blob(parts).text();
+            } else {
+                text = await r.text();
+            }
+            const d = JSON.parse(text);
+            return seq === nightLoadSeq ? d : null;
+        } catch (e) {
+            if (seq !== nightLoadSeq) return null;
+            const msg = (e && e.message) || String(e);
+            setNightLoading('error', {error: msg});
+            document.getElementById('nightLoadingRetry').onclick = () => loadDetail(date, true);
+            strip.innerHTML = '<div class="grid-wait err">Subs not loaded: ' + escH(msg) + '</div>';
+            return null;
+        }
     }
     // Sub doctor: each cause the first time it fired, with the evidence and fix
     async function loadSubDoctor(date) {
@@ -917,33 +1062,66 @@
         document.getElementById('scoreHint').hidden = true;
         document.getElementById('subTable').innerHTML = '';
         // PS-24: every sub the chips select is drawn (no 1-in-N sample), so
-        // next / prev and auto-advance reach all of them; tiles load as they
-        // scroll into view, at most 3 thumbnail requests in flight.
-        const shown = subs;
-        document.getElementById('thumbCount').textContent = shown.length + ' subs';
+        // next / prev and auto-advance reach all of them. 2026-10-24: grouped
+        // by rig (each with its own counts), then target / filter, time order
+        // within (RunsGrid); the lightbox and shift-click walk that order.
+        // Tiles load only while on screen, 6 requests in flight, with a
+        // "thumbnails N / M" count; a fixed-size card, one badge inside it.
+        const sections = RunsGrid.group(subs, {rigOf: rigOf, stateOf: subState});
+        const shown = RunsGrid.flat(sections);
         window._shownSubs = shown;
         renderReviewBar(d);  // keep the scoped approve button in step with the chips
         const strip = document.getElementById('thumbStrip');
-        strip.innerHTML = shown
-            .map((s, i) => '<figure data-file="' + escH(s.file) + '"' +
-                (selected.has(s.file) ? ' class="sel"' : '') + '>' +
-                '<div class="qa-btns">' +
-                '<span class="y" title="approve (accept + queue transfer)" ' +
-                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'accepted\')">✓</span>' +
-                '<span class="n" title="reject (kept on disk, excluded from library)" ' +
-                'onclick="qaSet(event, \'' + encodeURIComponent(s.file) + '\', \'rejected\')">✗</span>' +
-                '</div>' +
-                '<img alt="" style="cursor:zoom-in;min-height:60px;' + tileStyle(s) + '" ' +
-                'onclick="if (!selClick(event, ' + i + ')) openLb(' + i + ')" data-src="/api/runs/' + currentDate +
-                '/thumb?file=' + encodeURIComponent(s.file) + '&w=264' +
-                (document.getElementById('annotateToggle').checked ? '&annotate=true' : '') + '">' +
-                '<figcaption>' + (s.time || '').slice(11, 16) + ' · ' + s.filter + ' ' +
-                Math.round(s.exp_s) + 's<span class="vb">' + badge(s) + '</span>' + roofTag(s) + nocorrTag(s) + pointTag(s) +
-                '<br>HFR ' + (s.hfr ?? '–') + ' · ★' + (s.stars ?? '–') +
-                ' · bkg ' + (s.background ?? '–') + '</figcaption></figure>')
-            .join('');
-        SubTiles.lazy(strip, 3);
+        const ann = document.getElementById('annotateToggle').checked ? '&annotate=true' : '';
+        let i = 0;
+        strip.innerHTML = sections.map(sec =>
+            '<section class="rig-sec" data-rig="' + escH(sec.rig) + '">' +
+            '<div class="rig-h">' + escH(sec.label) + '<span class="bd">' +
+            escH(RunsGrid.countsLine(sec.counts)) + '</span></div>' +
+            sec.groups.map(g =>
+                '<div class="grp-h"><b>' + escH(g.target) + '</b> &middot; ' + escH(g.filter) +
+                ' <span class="bd">' + escH(RunsGrid.countsLine(g.counts)) + '</span></div>' +
+                '<div class="thumbs cards">' + g.subs.map(s => subCard(s, i++, ann)).join('') +
+                '</div>').join('') +
+            '</section>').join('') || '<div class="grid-wait">No subs match the chips.</div>';
+        if (window._tileLoader) window._tileLoader.stop();
+        const count = document.getElementById('thumbCount');
+        count.textContent = shown.length + ' subs';
+        window._tileLoader = SubTiles.lazy(strip, 6, {onProgress: p => {
+            count.textContent = shown.length + ' subs \u00b7 thumbnails ' + p.loaded +
+                ' / ' + p.total + (p.failed ? ' (' + p.failed + ' without a preview)' : '') +
+                (p.inFlight ? ' \u00b7 loading' : '');
+        }});
         paintSelBar();
+    }
+    // 2026-10-24: one card per sub: fixed 150 x 100 image box (placeholder
+    // until the thumbnail lands, "no preview" on an error), the verdict as the
+    // box outline, at most one short badge INSIDE the box (pointing / roof /
+    // unguided), and a fixed two-line footer: time | filter exp | verdict,
+    // then HFR | stars | bkg, each in its own column (no wrapping).
+    function subCard(s, i, ann) {
+        const b = RunsGrid.badge(s);
+        const fe = encodeURIComponent(s.file);
+        return '<figure data-file="' + escH(s.file) + '"' + (selected.has(s.file) ? ' class="sel"' : '') + '>' +
+            '<div class="qa-btns">' +
+            '<span class="y" title="approve (accept + queue transfer)" ' +
+            'onclick="qaSet(event, \'' + fe + '\', \'accepted\')">\u2713</span>' +
+            '<span class="n" title="reject (kept on disk, excluded from library)" ' +
+            'onclick="qaSet(event, \'' + fe + '\', \'rejected\')">\u2717</span>' +
+            '</div>' +
+            '<div class="tbox v-' + subState(s) + '" onclick="if (!selClick(event, ' + i + ')) openLb(' + i + ')">' +
+            '<img alt="" data-src="/api/runs/' + currentDate + '/thumb?file=' + fe + '&w=264' + ann + '">' +
+            (b ? '<span class="tbadge ' + b.cls + '" title="' + escH(b.title) + '">' + escH(b.text) + '</span>' : '') +
+            '</div>' +
+            '<figcaption title="' + escH((s.time || '').slice(11, 19) + ' UTC \u00b7 ' + (s.target || '?') +
+                ' \u00b7 ' + s.filter + ' ' + Math.round(s.exp_s) + 's' + (s.reason ? ' \u00b7 ' + s.reason : '')) + '">' +
+            '<span>' + escH((s.time || '').slice(11, 16)) + '</span>' +
+            '<span>' + escH(s.filter) + ' ' + Math.round(s.exp_s) + 's</span>' +
+            '<span class="vb">' + badge(s) + '</span>' +
+            '<span class="m"><span>HFR ' + (s.hfr != null ? Number(s.hfr).toFixed(s.hfr >= 10 ? 1 : 2) : '\u2013') +
+            '</span><span>\u2605' + (s.stars != null ? Math.round(s.stars) : '\u2013') +
+            '</span><span>bkg ' + (s.background != null ? Math.round(s.background) : '\u2013') + '</span></span>' +
+            '</figcaption></figure>';
     }
     // PS-24: a sub's outline in the grid and the table (verdict colors)
     function tileStyle(s) {
@@ -961,8 +1139,8 @@
         list.forEach(s => {
             const sel = '[data-file="' + (window.CSS && CSS.escape ? CSS.escape(s.file) : s.file) + '"]';
             document.querySelectorAll('#thumbStrip figure' + sel).forEach(fig => {
-                const img = fig.querySelector('img');
-                if (img) img.style.cssText = 'cursor:zoom-in;min-height:60px;' + tileStyle(s);
+                const box = fig.querySelector('.tbox');
+                if (box) box.className = box.className.replace(/\bv-\w+/, 'v-' + subState(s));
                 const vb = fig.querySelector('.vb');
                 if (vb) vb.innerHTML = badge(s);
             });
@@ -1111,7 +1289,16 @@
             escH(s.target) + mark + hint + '</td>';
     }
     function renderSubTable(subs) {
-        const rows = sortSubs(subs);
+        // 2026-10-24: grouped by rig (RC16 first), the chosen sort inside each
+        const rigOf = s => s.rig || 'rc16';
+        const sections = RunsGrid.group(subs, {rigOf: rigOf, stateOf: subState});
+        const rigHead = {};
+        const rows = [];
+        sections.forEach(sec => {
+            const mine = sortSubs(subs.filter(s => rigOf(s) === sec.rig));
+            if (mine.length) rigHead[mine[0].file + '|' + sec.rig] = sec;
+            mine.forEach(s => rows.push(s));
+        });
         window._shownSubs = rows;   // the lightbox walks the table order
         const noScore = rows.filter(s => subScore(s) == null).length;
         const hint = document.getElementById('scoreHint');
@@ -1126,7 +1313,11 @@
                 (c[3] ? '' : ' class="nosort"') + (c[2] ? ' title="' + escH(c[2]) + '"' : '') + '>' +
                 c[1] + (subSort.key === c[0] ? (subSort.dir > 0 ? ' \u25b2' : ' \u25bc') : '') +
                 '</th>').join('') + '</tr>' +
-            rows.map((s, i) => '<tr class="srow' + (selected.has(s.file) ? ' sel' : '') +
+            rows.map((s, i) => (rigHead[s.file + '|' + rigOf(s)]
+                ? '<tr class="rigrow"><td colspan="' + SUB_COLS.length + '">' +
+                  escH(rigHead[s.file + '|' + rigOf(s)].label) + ' <span class="bd">' +
+                  escH(RunsGrid.countsLine(rigHead[s.file + '|' + rigOf(s)].counts)) + '</span></td></tr>'
+                : '') + '<tr class="srow' + (selected.has(s.file) ? ' sel' : '') +
                 '" data-file="' + escH(s.file) + '" onclick="if (!selClick(event, ' + i + ')) openLb(' + i + ')">' +
                 '<td class="tthumb"><img alt="" style="' +
                 (subState(s) === 'offtarget' ? 'outline:2px solid #c084fc;'
@@ -1156,7 +1347,8 @@
                 renderSubs();
             };
         });
-        SubTiles.lazy(tbl, 2);
+        if (window._tileLoader) window._tileLoader.stop();
+        window._tileLoader = SubTiles.lazy(tbl, 4);
         paintSelBar();
     }
     function fmtEta(s) {
