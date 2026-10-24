@@ -73,7 +73,8 @@ TOOL_SHORT = {"GradientCorrection": "GradientCorrection", "AutomaticBackgroundEx
               "SPCC": "SPCC", "ColorCalibration": "ColorCalibration", "BlurXTerminator": "BlurX",
               "NoiseXTerminator": "NoiseX", "StarXTerminator": "StarX",
               "HDRMultiscaleTransform": "core HDR"}
-STEP_SHORT = {"stretch": "stretch", "vivid": "vivid", "palette": "palette", "hoo": "HOO"}
+# (the palette / HOO images are side products, not the frame shown)
+STEP_SHORT = {"stretch": "stretch", "vivid": "vivid"}
 
 
 class ProgressionError(Exception):
