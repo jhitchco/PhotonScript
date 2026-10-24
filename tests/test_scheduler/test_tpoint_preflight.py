@@ -40,13 +40,16 @@ def _on(monkeypatch):
     monkeypatch.delenv("PS_TPOINT_PREFLIGHT", raising=False)   # suite pins it off
 
 
-def _put(path: Path, src, age_s: float) -> None:
+def _put(path: Path, src, age_s: float, at: datetime | None = None) -> None:
+    """Copy src to path, aged age_s seconds before `at` (UTC, naive), or
+    before the wall clock when no `at` is given."""
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(src, Path):
         shutil.copyfile(src, path)
     else:
         path.write_bytes(src)
-    t = time.time() - age_s
+    ref = time.time() if at is None else (at - datetime(1970, 1, 1)).total_seconds()
+    t = ref - age_s
     os.utime(path, (t, t))
 
 
@@ -336,12 +339,16 @@ DARK = datetime(2026, 10, 16, 4, 0)       # 22:00 MDT
 DAY = datetime(2026, 10, 16, 19, 0)       # 13:00 MDT
 
 
-def _watch_tree(tmp_path, n_good=True):
+def _watch_tree(tmp_path, n_good=True, at: datetime = DARK):
+    # Aged against the test's own clock (DARK), not the wall clock: aged
+    # against time.time() the 2-day-old super model was dated after DARK
+    # once the real date passed 2026-10-18, so the watcher took it for a
+    # fit of the new run and called the run finished.
     root = tmp_path / "TheSky Professional Edition 64"
     tp = root / "TPoint"
-    _put(tp / "Super Model Outmod.dat", GOOD_OUT, 2 * 86400)
-    _put(tp / "TPoint base run in.dat", GOOD_IN, 86400)
-    _put(tp / "TPoint base run outmod.dat", GOOD_OUT, 86400)
+    _put(tp / "Super Model Outmod.dat", GOOD_OUT, 2 * 86400, at)
+    _put(tp / "TPoint base run in.dat", GOOD_IN, 86400, at)
+    _put(tp / "TPoint base run outmod.dat", GOOD_OUT, 86400, at)
     return root
 
 

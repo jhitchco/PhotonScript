@@ -89,3 +89,16 @@ def _tpoint_preflight_off(monkeypatch):
     desktop and the scope PC. Pin it off for the suite;
     tests/test_scheduler/test_tpoint_preflight.py turns it on."""
     monkeypatch.setenv("PS_TPOINT_PREFLIGHT", "off")
+
+
+@pytest.fixture(autouse=True)
+def _generator_config_fresh(monkeypatch):
+    """The sequence generator caches its config (nina_sequence_json
+    ._gen_cfg_cache) the first time it builds one, from the environment of
+    whatever test ran first. A test that set PS_COOLER_GATE_MODE=skip
+    (test_ps61_cooler_gate.py) left a gate-on config behind, and later
+    tests saw ExternalScript cooler gates with the suite's gate pinned off.
+    Every test starts with no cached config; monkeypatch restores the
+    module value afterwards."""
+    from photonscript.scheduler import nina_sequence_json as nsj
+    monkeypatch.setattr(nsj, "_gen_cfg_cache", None)

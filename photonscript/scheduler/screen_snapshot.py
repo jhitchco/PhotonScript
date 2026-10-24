@@ -18,6 +18,11 @@ a rate limit shared by every caller (one capture per MIN_INTERVAL_S, a
 stamp file under <data_dir>/screen so the CLI child and the server agree),
 a size cap (quality, then scale, stepped down until the JPEG fits), and a
 refusal in session 0 (a service session has no desktop to capture).
+
+Retention (2026-10-23): each save prunes the saved snapshots in
+<data_dir>/screen (only files named like screen_<stamp>Z.jpg, nothing in
+other folders, never the rate-limit stamp): it keeps the newest
+screen_keep_count (default 200) and every one younger than KEEP_DAYS (7).
 """
 from __future__ import annotations
 
@@ -37,6 +42,8 @@ SCALE_MIN, SCALE_MAX, SCALE_DEFAULT = 0.1, 1.0, 0.5
 QUALITY_MIN, QUALITY_MAX, QUALITY_DEFAULT = 20, 90, 70
 MONITORS = ("all", "primary")
 NAME_RE = re.compile(r"^screen_\d{8}T\d{6}(_\d+)?Z\.jpg$")
+KEEP_COUNT_DEFAULT = 200
+KEEP_DAYS = 7.0
 
 
 class SnapshotRefused(Exception):
@@ -189,7 +196,7 @@ def take(config, scale=None, monitor=None, quality=None, *,
 
 def save(config, shot: Shot) -> Path:
     """Write the JPEG under <data_dir>/screen (a new name each time; nothing
-    is overwritten or deleted)."""
+    is overwritten), then prune old snapshots (see prune)."""
     d = screen_dir(config)
     d.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -199,7 +206,44 @@ def save(config, shot: Shot) -> Path:
         p = d / f"screen_{stamp}_{n}Z.jpg"
         n += 1
     p.write_bytes(shot.jpeg)
+    prune(config, keep_path=p)
     return p
+
+
+def prune(config, *, now: Optional[float] = None,
+          keep_path: Optional[Path] = None) -> list[Path]:
+    """Delete saved snapshots in <data_dir>/screen beyond the newest
+    screen_keep_count that are also older than KEEP_DAYS. Only top-level
+    files matching NAME_RE are considered; keep_path is never removed.
+    Never raises; returns the paths removed."""
+    d = screen_dir(config)
+    try:
+        keep_n = max(0, int(getattr(config, "screen_keep_count", KEEP_COUNT_DEFAULT)))
+    except (TypeError, ValueError):
+        keep_n = KEEP_COUNT_DEFAULT
+    now = time.time() if now is None else float(now)
+    cutoff = now - KEEP_DAYS * 86400.0
+    shots = []
+    try:
+        for f in d.iterdir():
+            if NAME_RE.match(f.name) and f.is_file():
+                try:
+                    shots.append((f.stat().st_mtime, f.name, f))
+                except OSError:
+                    pass
+    except OSError:
+        return []
+    shots.sort(reverse=True)   # newest first
+    removed = []
+    for mtime, _name, f in shots[keep_n:]:
+        if mtime >= cutoff or (keep_path is not None and f == keep_path):
+            continue
+        try:
+            f.unlink()
+            removed.append(f)
+        except OSError:
+            pass
+    return removed
 
 
 def saved_file(config, name: str) -> Optional[Path]:

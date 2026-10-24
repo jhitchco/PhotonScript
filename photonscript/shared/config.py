@@ -1329,6 +1329,11 @@ class PhotonScriptConfig(BaseSettings):
                                   # (and the desktop's, for the client) by
                                   # hand; never via the dashboard config editor
 
+    # --- Screen snapshots (<data_dir>/screen, scheduler/screen_snapshot.py) ---
+    screen_keep_count: int = 200  # each save prunes older snapshots, keeping
+                                  # the newest this many plus any under 7 days
+                                  # old (0 = only the 7-day rule)
+
     # --- Supervisor escalation ---
     pushover_user_key: str = ""
     pushover_api_token: str = ""
