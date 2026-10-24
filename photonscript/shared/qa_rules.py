@@ -1248,7 +1248,27 @@ def is_test_record(rec: dict) -> bool:
     if rec.get("test"):
         return True
     from photonscript.shared.target_names import is_test_target
-    return is_test_target(rec.get("target"))
+    return is_test_target(rec.get("target")) or is_calibration_run_record(rec)
+
+
+def is_calibration_run_record(rec: dict) -> bool:
+    """2026-10-24: a sub of a pointing-model calibration run (TPoint mapping
+    / autocal): the record's "calibration_run" mark (ingest), or its target
+    name for records written before. Never a Targets card, Library folder or
+    goal (target_names.is_calibration_run_target)."""
+    if rec.get("calibration_run"):
+        return True
+    from photonscript.shared.target_names import is_calibration_run_target
+    return is_calibration_run_target(rec.get("target"))
+
+
+def calibration_run_fields(target) -> dict:
+    """Ingest marks for a calibration-run sub ({} for any other): "test" (out
+    of medians, score and goals, PS-152) plus "calibration_run" (never a
+    target, 2026-10-24)."""
+    if not is_calibration_run_record({"target": target}):
+        return {}
+    return {"test": True, "calibration_run": True}
 
 
 def night_context(records: list[dict]) -> dict[tuple, dict]:

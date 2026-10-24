@@ -13,7 +13,14 @@ Row (treat as read-only, rows are shared between callers)::
     project_id, filter, exp_s, hdr_short, verdict (pending|approved|
     rejected), verdict_by (auto|manual), reasons[], reason_codes[], qa_flag,
     metrics{hfr, fwhm_arcsec, ecc, ecc_bin, stars, background, ccd_temp,
-    corner_ecc, doubled_frac}, thumb, pointing (None until PS-67)
+    corner_ecc, doubled_frac}, thumb, pointing (None until PS-67),
+    calibration_run (2026-10-24: a TPoint mapping / autocal sub; never a
+    Targets card)
+
+2026-10-24: a record filed under a calibration folder (BIAS / DARK / FLAT,
+written by a grader before the live watcher skipped them) is no sub at all:
+all_rows leaves it out, so 110 bias / darks of 2026-04-06 stop filling the
+'?' card.
 
 Verdict: rejected = not passed_qa; approved = passed and reviewed (by a
 person, approve_night, or the PS-21 auto-approve of an all-green sub);
@@ -191,6 +198,7 @@ def _build_row(date: str, rec: dict, known, by_key: dict) -> dict:
     verdict, by = verdict_of(rec)
     codes = reason_codes(rec, verdict)
     reason = str(rec.get("reason") or "")
+    from photonscript.shared.qa_rules import is_calibration_run_record
     return {
         "key": f"{date}|{rig}|{file}",
         "date": date, "rig": rig, "file": file,
@@ -235,7 +243,16 @@ def _build_row(date: str, rec: dict, known, by_key: dict) -> dict:
         "thumb": f"/api/runs/{date}/thumb?file={quote(file, safe='')}"
                  f"&w={THUMB_W}",
         "pointing": None,  # PS-67
+        "calibration_run": is_calibration_run_record(rec),
     }
+
+
+def is_calibration_frame(rec: dict) -> bool:
+    """A record whose file sits in a calibration folder (runs._CAL_DIRS):
+    a bias / dark / flat graded as a light by an old grader."""
+    from photonscript.scheduler.runs import _is_calibration
+    f = str(rec.get("file") or "").replace("\\", "/")
+    return _is_calibration(f.split("/")[:-1])
 
 
 def all_rows(config, projects: Iterable = ()) -> list[dict]:
@@ -254,6 +271,8 @@ def all_rows(config, projects: Iterable = ()) -> list[dict]:
     for name, _m, _s in sig[0][:-1]:
         date = name[:10]
         for rec in _load_subs(config, date):
+            if is_calibration_frame(rec):
+                continue
             out.append(_build_row(date, rec, known, by_key))
     with _cache_lock:
         _cache[ck] = (sig, out)
@@ -475,11 +494,15 @@ def _project_meta(p) -> dict:
 
 def targets(config, projects: Iterable = ()) -> list[dict]:
     """One card per target: active projects (priority order), then other
-    targets with subs (latest night first), then the unattributed bucket."""
+    targets with subs (latest night first), then the unattributed bucket.
+    2026-10-24: calibration-run subs (TPoint mapping / autocal) make no card,
+    not even in the unattributed bucket."""
     projects = list(projects or ())
     all_ = all_rows(config, projects)
     groups: dict[str, list[dict]] = {}
     for r in all_:
+        if r.get("calibration_run"):
+            continue
         groups.setdefault(r["target_key"], []).append(r)
     by_key = {target_key(p.target.name): p for p in projects}
     cards = []

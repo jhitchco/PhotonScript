@@ -646,6 +646,8 @@ def _fast_grade(path: Path, config, plan_names: list[str] | None = None,
         # PS-152: a test / calibration sub, kept out of medians and score
         **({"test": True} if qa_rules.is_test_record({"target": target})
            else {}),
+        # 2026-10-24: a TPoint mapping / autocal frame is never a target
+        **qa_rules.calibration_run_fields(target),
         "exp_s": float(hdr.get("EXPTIME", 0)),
         "ccd_temp": hdr.get("CCD-TEMP"),
         "set_temp": hdr.get("SET-TEMP"),
@@ -2052,8 +2054,11 @@ def _link_accepted(config, date: str, rec: dict, plan_names=None) -> None:
     import shutil
 
     from photonscript.scheduler.library_archive import archived_kinds
+    from photonscript.shared.qa_rules import is_calibration_run_record
     if "lights" in archived_kinds(config, date):
         return
+    if is_calibration_run_record(rec):
+        return   # 2026-10-24: a TPoint mapping frame gets no target folder
     src = Path(rec.get("abs_path") or "")
     if not rec.get("abs_path") or not src.is_file():
         return
@@ -3025,6 +3030,7 @@ def build_library(config, date: str | None = None) -> dict:
                 else [])
     dropped = 0
     from photonscript.scheduler.library_archive import archived_kinds
+    from photonscript.shared.qa_rules import is_calibration_run_record
     for d in dates:
         # PS-51: name every '?' sub before linking, so lights land under their
         # campaign instead of Library/_/ (header match + piggyback correlation;
@@ -3044,6 +3050,8 @@ def build_library(config, date: str | None = None) -> dict:
             if not s_.get("passed_qa"):
                 rejected += 1
                 continue
+            if is_calibration_run_record(s_):
+                continue   # 2026-10-24: a TPoint mapping frame is no target
             if review_gate and not s_.get("reviewed"):
                 pending_review += 1
                 continue
