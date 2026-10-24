@@ -657,7 +657,7 @@ def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
     seconds and Start did nothing (2026-10-05); Filter null validates clean
     without a wheel (nina_sequence_json._switch_filter_none)."""
     from photonscript.scheduler.nina_sequence_json import (
-        _seq_container, _make_typed, _switch_filter_none)
+        SKY_FLAT_TOLERANCE, _seq_container, _make_typed, _switch_filter_none)
     loop = _seq_container(
         f"{count} flats",
         [_make_typed(
@@ -675,7 +675,7 @@ def _osc_sky_flat(count: int, gain: int, offset: int) -> dict:
                        "NINA.Sequencer")
     sf["IsExpanded"] = False
     sf.update(MinExposure=0.1, MaxExposure=30.0, HistogramTargetPercentage=0.5,
-              HistogramTolerancePercentage=0.1, ShouldDither=False,
+              HistogramTolerancePercentage=SKY_FLAT_TOLERANCE, ShouldDither=False,
               DitherPixels=3.0, DitherSettleTime=5.0)
     return sf
 
@@ -688,6 +688,23 @@ def flats_when(config) -> str:
     an unknown value reads as both)."""
     v = str(getattr(config, "flats_when", "both") or "both").strip().lower()
     return v if v in FLATS_WHEN else "both"
+
+
+NARROWBAND_FILTERS = ("Ha", "OIII", "SII")
+# the dusk runs' closing pushes: NINA cannot say whether a SkyFlat saved
+# anything (a failed one is skipped, ContinueOnError)
+_DUSK_COUNT_NOTE = ("a set NINA found no exposure for saves no frames; the "
+                    "morning report counts dusk flats shot and filed")
+
+
+def dusk_flat_filters(config, filters) -> list[str]:
+    """The RC16 filters of `filters` the dusk run shoots: narrowband only
+    with dusk_flats_narrowband (2026-10-24: at sunset + 15 the RC16's Ha and
+    OIII are about 30x short of the histogram target at NINA's 30 s cap, so
+    each set failed "sky is too dim" after 11 min and starved the
+    broadband). The rest stay owed for the dawn set."""
+    keep_nb = bool(getattr(config, "dusk_flats_narrowband", False))
+    return [f for f in filters if keep_nb or f not in NARROWBAND_FILTERS]
 
 
 def flats_shot_today(config) -> set[str]:
@@ -881,8 +898,10 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
                 f"DUSK_SKY_FLATS (until {stop_local:%H:%M}; skipped if unsafe: "
                 "closed roof makes junk flats)", sky,
                 conditions=[_safety_condition()] + cap),
-            _pushover("Flats", "dusk sky flats complete: parking (cooler "
-                      "stays on for tonight's run)"),
+            # 2026-10-24: "complete" read as success on 10-23, when every
+            # SkyFlat had failed (no exposure found) and saved no frame
+            _pushover("Flats", "dusk sky flats run ended: parking (cooler "
+                      "stays on; " + _DUSK_COUNT_NOTE + ")"),
             _park(),
         ]
     else:
@@ -899,7 +918,8 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
             _seq_container(
                 f"DUSK_SKY_FLATS_OSC (until {stop_local:%H:%M})", flat_blocks,
                 conditions=([_safety_condition()] if safety else []) + cap),
-            _pushover("Flats", "piggyback dusk flats complete"),
+            _pushover("Flats", "piggyback dusk flats run ended ("
+                      + _DUSK_COUNT_NOTE + ")"),
         ]
     root = _seq_container(
         "PhotonScript_DuskFlats",

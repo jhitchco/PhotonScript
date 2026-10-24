@@ -779,6 +779,13 @@ def _smart_exposure(exp: ExposurePlan, guided: bool,
     return smart
 
 
+# NINA SkyFlat histogram tolerance, a fraction OF THE TARGET (0.5 +/- 0.2 x
+# 0.5 = 40-60 % of full scale). 2026-10-24: at 0.1 (45-55 %) the Piggy-600's
+# first dusk probe (15 s, 28606 ADU = 43.7 %) missed the band, the dimming
+# sky outran NINA's search to the 30 s cap and the set saved no frame.
+SKY_FLAT_TOLERANCE = 0.2
+
+
 def _sky_flat(filter_type: FilterType, count: int,
               gain: int, offset: int) -> dict:
     """Native NINA sky-flat instruction (verified from a sequencer export):
@@ -806,7 +813,7 @@ def _sky_flat(filter_type: FilterType, count: int,
     sf["IsExpanded"] = False
     sf.update(MinExposure=0.1, MaxExposure=30.0,
               HistogramTargetPercentage=0.5,
-              HistogramTolerancePercentage=0.1,
+              HistogramTolerancePercentage=SKY_FLAT_TOLERANCE,
               ShouldDither=False, DitherPixels=3.0, DitherSettleTime=5.0)
     return sf
 

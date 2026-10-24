@@ -24,7 +24,9 @@ a decision row (kind auto_arm, action dusk_flats) in tonight's events:
            TPoint run.
   gates    auto_dusk_flats; flats_when (dawn = never at dusk); something
            stale (RC16 filters: stale_flat_filters; Piggy-600: the owed OSC
-           set); armer not RUNNING / PAUSED / WATCHING; no capture job on
+           set; 2026-10-24: RC16 narrowband only with dusk_flats_narrowband,
+           else it stays owed for the dawn: "dawn_only" when nothing else
+           is); armer not RUNNING / PAUSED / WATCHING; no capture job on
            the RC16; roof open (safety monitor SAFE: a closed roof makes junk
            flats, retried each tick until the window ends); the PS-125 guard.
   dispatch RC16 on NINA #1 (armer.dispatch_raw, the stale filters; holds its
@@ -57,6 +59,7 @@ SKIP_ROOF_CLOSED = "roof_closed"
 SKIP_SAFETY_UNREADABLE = "safety_unreadable"
 SKIP_DISPATCH_FAILED = "dispatch_failed"
 SKIP_WINDOW_CLOSED = "window_closed"
+SKIP_DAWN_ONLY = "dawn_only"
 
 TITLES = {
     SKIP_DISABLED: "auto_dusk_flats is off",
@@ -68,6 +71,7 @@ TITLES = {
     SKIP_SAFETY_UNREADABLE: "safety monitor unreadable",
     SKIP_DISPATCH_FAILED: "dispatch failed",
     SKIP_WINDOW_CLOSED: "dusk flat window closed",
+    SKIP_DAWN_ONLY: "only dawn-only flats owed",
 }
 
 
@@ -180,9 +184,17 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
         _note(config, state, SKIP_FLATS_WHEN, "the night sequences shoot "
               "flats at dawn only", now, final=True)
         return SKIP_FLATS_WHEN
-    stale, pb = _stale(config, state)
+    owed, pb = _stale(config, state)
     pb_owed = bool(pb.get("owed"))
+    # 2026-10-24: RC16 narrowband is too dim at dusk (dusk_flat_filters)
+    stale = cal.dusk_flat_filters(config, owed)
+    dawn_only = [f for f in owed if f not in stale]
     if not stale and not pb_owed:
+        if dawn_only:
+            _note(config, state, SKIP_DAWN_ONLY, f"owed: {', '.join(dawn_only)}; "
+                  "RC16 narrowband is too dim at dusk, the dawn set shoots it "
+                  "(dusk_flats_narrowband on to try anyway)", now, final=True)
+            return SKIP_DAWN_ONLY
         _note(config, state, SKIP_NOTHING_STALE, "RC16 and Piggy-600 flats are "
               "current (a dawn set today counts)", now, final=True)
         return SKIP_NOTHING_STALE
@@ -231,6 +243,7 @@ async def maybe_dispatch_dusk_flats(config, armer, state: dict, notify, *,
     stop_local = _local(config, t["stop"])
     detail = (f"RC16: {', '.join(stale) or 'pointing hold only'}, starts "
               f"{start_local} local, done by {stop_local:%H:%M}"
+              + (f" (left for dawn: {', '.join(dawn_only)})" if dawn_only else "")
               + (f"; Piggy-600 OSC: {piggy}" if piggy else ""))
     _note(config, state, None, detail, now, final=True, value="dispatched",
           trigger=label)
