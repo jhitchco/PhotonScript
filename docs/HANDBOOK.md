@@ -217,6 +217,16 @@ Check a pending update on the scope without switching: `photonscript self-update
    click or "Select all shown" + Accept / Reject applies one verdict to many
    subs (`POST /api/runs/{date}/qa-batch`). The grid draws every sub (lazy
    tiles), the lightbox preview is a JPEG and the next two are prefetched.
+   2026-10-24: Grid and Table group the subs by rig (RC16 first, each with
+   its own counts), then target / filter, time order within
+   (static/js/runs_grid.js); a fixed 150 x 100 card with one short badge
+   inside it; only on-screen tiles load (6 in flight, "thumbnails N / M").
+   The night shows a loading line (bytes, seconds) and an error line with
+   Retry. JSON / HTML responses are gzipped (scheduler/compression.py: the
+   673-sub 2026-10-23 night went from 2.2 MB to 136 KB). A header-only
+   "off target" flag NINA's Center log explains (same offset as a converged
+   Center run's first slew) is the mount model's offset and clears
+   (shared/pointing.clear_centered).
    The Targets page tiles carry the same accept / reject buttons. Server:
    one lock per night shared with the live appender, atomic subs-log
    rewrites, only that sub's Library links change, goal progress follows

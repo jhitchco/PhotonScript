@@ -50,6 +50,11 @@ TEMPLATE_DIR = Path(__file__).parent / "templates"
 # 2026-10-16: NaN / Infinity in any response become null, never a 500
 app = FastAPI(title="PhotonScript Scheduler", version="0.1.0",
               default_response_class=JSONResponse)
+# 2026-10-24: gzip JSON / HTML / JS (a 673-sub night: 2.2 MB -> 136 KB);
+# thumbnails and other binaries pass through (scheduler/compression.py)
+from photonscript.scheduler.compression import JsonGzipMiddleware  # noqa: E402
+
+app.add_middleware(JsonGzipMiddleware)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 templates = Jinja2Templates(directory=str(TEMPLATE_DIR))
 
