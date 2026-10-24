@@ -26,10 +26,24 @@ terminated and the step fails with reason "hung: no log progress N min in
 solve. pixinsight_hang_action alert only alerts and keeps waiting (up to
 the overall timeout, which never kills). A PixInsight this runner did not
 start is never touched.
+
+Startup crash (PS-31, 2026-10-14 / 10-17 / 10-22): every automatic
+integration the night task started at 01:00-02:00 ended "FAILED in 0.25 to
+0.5 min ()" with no pipeline.log at all. The Windows Application log shows
+PixInsight 1.9.5 crashing at startup each time, in Qt6WebEngineCore.dll
+(exception 0x80000003, a Chromium fatal check), while the desktop's display
+was off; daytime runs (display on, 10-11 07:27 and the CLI runs) were fine.
+So every launch gets QTWEBENGINE_CHROMIUM_FLAGS --disable-gpu
+--disable-gpu-compositing (the embedded browser only shows docs and the
+start page; PJSR processing does not use it), and a launch that exits
+nonzero before the script wrote one log line is a startup crash: the
+reason says so with the exit code, and it is retried once with Qt software
+rendering (QT_OPENGL / QT_QUICK_BACKEND software).
 """
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import subprocess
@@ -47,8 +61,55 @@ _STAGE_START = re.compile(r"STAGE START\s+(.*?)\s*$")
 _STAGE_END = re.compile(r"STAGE END\s+(.*?)(?:\s+\([^()]*\))?\s*$")
 
 
+WEBENGINE_FLAGS = ("--disable-gpu", "--disable-gpu-compositing")
+SOFTWARE_ENV = {"QT_OPENGL": "software", "QT_QUICK_BACKEND": "software"}
+
+
 class PixInsightBusy(RuntimeError):
     pass
+
+
+def pixinsight_env(base: dict | None = None, software: bool = False) -> dict:
+    """The environment for an automation PixInsight: the caller's, plus
+    WEBENGINE_FLAGS in QTWEBENGINE_CHROMIUM_FLAGS (kept flags stay), plus
+    SOFTWARE_ENV for the startup-crash retry (PS-31)."""
+    env = dict(os.environ if base is None else base)
+    flags = str(env.get("QTWEBENGINE_CHROMIUM_FLAGS") or "").split()
+    flags += [f for f in WEBENGINE_FLAGS if f not in flags]
+    env["QTWEBENGINE_CHROMIUM_FLAGS"] = " ".join(flags)
+    if software:
+        env.update(SOFTWARE_ENV)
+    return env
+
+
+def exit_code_text(rc) -> str:
+    """0x80000003 for a Windows crash code (as a signed or unsigned int)."""
+    try:
+        v = int(rc)
+    except (TypeError, ValueError):
+        return str(rc)
+    if v < 0 or v > 0xFFFF:
+        return f"0x{v & 0xFFFFFFFF:08X}"
+    return str(v)
+
+
+def startup_crash(rc, log_text: str) -> bool:
+    """PixInsight exited nonzero before the script wrote a log line."""
+    return rc not in (None, 0) and not str(log_text or "").strip()
+
+
+def _start(popen, args: list[str], env: dict):
+    """The real Popen gets the environment and the minimized / below-normal
+    options; a test fake gets env only when it takes it."""
+    if popen is subprocess.Popen:
+        return popen(args, env=env, **launch_kwargs())
+    try:
+        params = inspect.signature(popen).parameters
+    except (TypeError, ValueError):
+        params = {}
+    if "env" in params or any(x.kind == x.VAR_KEYWORD for x in params.values()):
+        return popen(args, env=env)
+    return popen(args)
 
 
 def pixinsight_running() -> list[int]:
@@ -301,11 +362,31 @@ def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeou
                              "close it and run again")
     if not Path(exe).exists():
         raise FileNotFoundError(f"PixInsight not found at {exe}")
+    t_start = time.time()
+    r = {}
+    for attempt in (1, 2):
+        software = attempt == 2
+        r = _attempt(script, log_path, exe=exe, poll_s=poll_s, timeout_s=timeout_s, echo=echo,
+                     popen=popen, sleep=sleep, ok_marker=ok_marker, watchdog=watchdog,
+                     notify=notify, kill=kill, cpu=cpu, clock=clock,
+                     env=pixinsight_env(software=software))
+        r["attempts"], r["software_retry"] = attempt, software
+        if not r["startup_crash"] or attempt == 2:
+            break
+        echo(f"  {r['last_line']}; retrying once with Qt software rendering")
+        if running():
+            echo("  another PixInsight is running now: no retry")
+            break
+    r["minutes"] = round((time.time() - t_start) / 60.0, 2)
+    return r
+
+
+def _attempt(script: Path, log_path: Path, *, exe: str, poll_s: float, timeout_s: float, echo,
+             popen, sleep, ok_marker: str, watchdog: dict | None, notify, kill, cpu, clock,
+             env: dict) -> dict:
     t0 = time.time()
     args = launch_args(exe, Path(script))
-    # the real Popen gets the minimized / below-normal options; test fakes
-    # take the argument list only
-    proc = popen(args, **launch_kwargs()) if popen is subprocess.Popen else popen(args)
+    proc = _start(popen, args, env)
     # the only process the watchdog may ever close: the one started here
     own_pid = getattr(proc, "pid", None)
     w = watchdog or {"stall_min": 0.0, "solve_stall_min": 0.0, "hang_action": "alert", "cpu_pct": 0.0}
@@ -369,7 +450,12 @@ def _run_script(script: Path, log_path: Path, *, exe: str, poll_s: float, timeou
                 break
         sleep(poll_s)
     full, _ = read_new(Path(log_path), 0)
-    return {"ok": (ok_marker in full) and not timed_out and not hung, "exit_code": proc.poll(),
+    rc = proc.poll()
+    crashed = not timed_out and not hung and startup_crash(rc, full)
+    if crashed:
+        last = (f"PixInsight exited with code {exit_code_text(rc)} before the script "
+                "wrote its log (crash at startup; see the Windows Application log)")
+    return {"ok": (ok_marker in full) and not timed_out and not hung, "exit_code": rc,
             "minutes": round((time.time() - t0) / 60.0, 2), "last_line": last,
             "timed_out": timed_out, "hung": hung, "hang_stage": hang_stage if hung else "",
-            "killed": killed}
+            "killed": killed, "startup_crash": crashed}
