@@ -1047,6 +1047,11 @@ def tpoint_autocal_cmd(
     track: bool = typer.Option(False, "--track", help="Turn sidereal tracking "
                                "on in TheSky before each exposure (needed "
                                "after an unpark; never parks or syncs)"),
+    unpark: bool = typer.Option(False, "--unpark", help="--go only: after "
+                                "the full preflight, when the mount reads "
+                                "parked and the safety monitor reads safe "
+                                "again, NINA #1 unparks it and the run waits "
+                                "for AtPark false (120 s). Never parks"),
     unattended: bool = typer.Option(False, "--unattended", help="Remote run "
                                     "with no console: the backup prompt is "
                                     "answered yes (the backup is automatic); "
@@ -1147,7 +1152,11 @@ def tpoint_autocal_cmd(
                         min_alt=float(sel["min_alt"]),
                         add=add, solver=solver,
                         import_path=tal.import_path(cfg, _now, side, import_dir),
-                        track=track)
+                        track=track, unpark=unpark)
+        if unpark:
+            say("--unpark: a parked mount is unparked by NINA #1 after the "
+                "preflight (safety monitor re-read first); it is never parked "
+                "at the end.")
         if add == "import":
             say(f"Add: TPoint import file {opts.import_path} (solver {solver}); "
                 "import it in TPoint afterwards. AutoMap is off.")

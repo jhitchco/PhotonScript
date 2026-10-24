@@ -480,6 +480,33 @@ SCRIPT_BUILDERS = {
 READ_ONLY_SCRIPTS = ("camera_read", "slew_poll", "expose_poll", "mount_snapshot")
 
 
+def mount_park_state_script() -> str:
+    """READ ONLY (--unpark only): TheSky's mount flags, the reviewed script
+    the audit and PS-185 already send (thesky_client READ_PAIRS
+    "mount_flags": IsConnected, and only when connected IsParked(),
+    IsTracking, the position, LastSlewError). No Connect, no write. Kept
+    out of SCRIPT_BUILDERS (the scripts every run sends)."""
+    return tc.READ_ONLY_JS["mount_flags"]
+
+
+# 2026-10-21 / 2026-10-23: TheSky refused the slew to point 1 with "Error,
+# the device is parked and must be unparked using the Unpark command before
+# proceeding. Error _ 216." (the night loop or the dusk flats had left the
+# mount parked). The fix is opt-in: --unpark (tpoint_autocal_live).
+PARKED_ERROR_CODE = "216"
+UNPARK_HINT = ("the mount is parked: re-run with --unpark (NINA #1 unparks it "
+               "after the preflight and a fresh safety read), or unpark it "
+               "by hand first")
+UNPARK_TIMEOUT_S = 120.0
+
+
+def is_parked_error(err) -> bool:
+    """True when a TheSky error text says the mount is parked (Error 216)."""
+    s = str(err or "").lower()
+    return ("parked" in s
+            or re.search(r"error\D{0,4}" + PARKED_ERROR_CODE + r"\b", s) is not None)
+
+
 # --------------------------------------------------------------- the plan
 
 def clamp_points(n) -> int:

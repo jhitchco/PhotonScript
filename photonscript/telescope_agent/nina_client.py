@@ -131,6 +131,11 @@ class NinaClient:
             info["Tracking"] = info.get("TrackingEnabled", False)  # v2 name
         return info
 
+    async def unpark_mount(self) -> dict:
+        """ninaAPI GET /equipment/mount/unpark (NINA #1 owns the mount's
+        ASCOM link). Used only by tpoint-autocal --unpark."""
+        return await self._get("/equipment/mount/unpark")
+
     async def get_focuser_info(self) -> dict:
         return _unwrap(await self._get("/equipment/focuser/info"))
 
