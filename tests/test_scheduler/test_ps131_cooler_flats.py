@@ -259,7 +259,7 @@ def flats_env(tmp_path, monkeypatch):
     import photonscript.scheduler.auto_armer as mod
     cfg = _cfg(tmp_path, auto_arm_enabled=True, noon_arm_enabled=False,
                auto_arm_lead_hours=1.0, evening_forecast_enabled=False,
-               auto_dusk_flats=True)
+               auto_dusk_flats=True, dusk_flats_narrowband=True)
     now = datetime.utcnow()
     monkeypatch.setattr(night_plan, "build_night_plan", lambda c: {
         "night_of": night_of(cfg, now),

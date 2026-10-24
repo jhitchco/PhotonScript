@@ -910,6 +910,14 @@ class PhotonScriptConfig(BaseSettings):
     dusk_flats_end_margin_min: int = 8  # dusk flats stop this long before
                                         # nautical dusk (or the night's pre-config,
                                         # if earlier), leaving time to park
+    dusk_flats_narrowband: bool = False  # RC16 Ha / OIII / SII in the dusk set.
+                                  # Off (2026-10-24): on 10-23 the dusk run
+                                  # started at sunset + 18 (roof open 18:52)
+                                  # and NINA's SkyFlat read Ha 1100 ADU at
+                                  # 26 s, OIII 600 at 30 s (target about
+                                  # 32000): both failed "sky is too dim" after
+                                  # 11 min each and the time cap cut R, G, B,
+                                  # L. Narrowband stays owed for the dawn set.
     piggyback_dusk_flats: bool = True  # Piggy-600 OSC dusk sky flats on NINA #2
                                        # alongside the RC16's (needs piggyback_enabled)
     piggyback_dusk_flat_offset_min: int = 20  # OSC dusk flats start at sunset +

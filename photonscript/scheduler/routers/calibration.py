@@ -16,6 +16,11 @@ GET  /api/calibration/completeness?rig=&names=&nights=
                                              captured, QA-passed, Library and
                                              (Syncthing cache) desktop, the reason
                                              when short, darks windows, bias plan
+GET  /api/calibration/dusk-flats?night=      2026-10-24: read only. The
+                                             evening's dispatched dusk flats
+                                             per rig: shot, filed, quarantined,
+                                             and NINA's reason per set that
+                                             saved nothing
 GET  /api/calibration/windows?rig=&minutes=  PS-182: darks windows + cooler
                                              reachability, the deferred plan
 POST /api/calibration/file                   PS-188 {"rig", "dry_run",
@@ -127,6 +132,23 @@ def api_calibration_library_report(rig: str = "rc16", frames: int = 0):
     if rig not in rig_ids(cfg):
         return JSONResponse(status_code=404, content={"detail": f"unknown rig {rig}"})
     return library_report(cfg, rig, frames_limit=max(0, int(frames)))
+
+
+@router.get("/api/calibration/dusk-flats")
+def api_calibration_dusk_flats(night: str = ""):
+    """2026-10-24: read only. dusk_flats_check.night_report for `night`
+    (default: the newest night with a subs log); {"night", "report": null}
+    when no dusk flats were dispatched that evening."""
+    import re as _re
+    from photonscript.scheduler.dusk_flats_check import morning_line, night_report
+    from photonscript.scheduler.morning_report import latest_night
+    cfg = _cfg()
+    night = night or latest_night(cfg) or ""
+    if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", night):
+        return JSONResponse(status_code=400,
+                            content={"detail": "night must be YYYY-MM-DD"})
+    return {"night": night, "report": night_report(cfg, night),
+            "line": morning_line(cfg, night)}
 
 
 def calibration_folder_need(cfg, folders: list[str], get=None) -> set | None:
