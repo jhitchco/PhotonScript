@@ -987,7 +987,11 @@ def run(o: Options, echo=print) -> dict:
     runs PixInsight."""
     with pilock.job(f"blend {o.target}", enabled=o.run_pixinsight and not o.dry_run,
                     wait_min=o.lock_wait_min, echo=echo):
-        return _run(o, echo)
+        res = _run(o, echo)
+    # progression sheet (progression.py): guarded, never fails the run
+    from photonscript.integration import progression
+    progression.after_run(res, o.staging_root, echo)
+    return res
 
 
 def _run(o: Options, echo=print) -> dict:

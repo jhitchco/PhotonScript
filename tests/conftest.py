@@ -102,3 +102,11 @@ def _generator_config_fresh(monkeypatch):
     module value afterwards."""
     from photonscript.scheduler import nina_sequence_json as nsj
     monkeypatch.setattr(nsj, "_gen_cfg_cache", None)
+
+
+@pytest.fixture(autouse=True)
+def _progression_sheets_off(monkeypatch):
+    """Progression sheets: integrate / finish / blend add their run to
+    <staging_root parent>/progression after every run; no other test should
+    write a sheet. tests/test_integration/test_progression.py turns it on."""
+    monkeypatch.setenv("PS_PROGRESSION_SHEETS", "off")
