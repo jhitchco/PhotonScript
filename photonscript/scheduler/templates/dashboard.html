@@ -991,6 +991,11 @@
                 'border-radius:6px;border:1px solid rgba(192,132,252,.35);background:rgba(192,132,252,.06);">' +
                 deepPickText(d.deep_pick, d.deep_note) + '</div>';
         }
+        if (d.moon_fill_note) {   // 2026-10-25 moon fill: a Piggy-driven night
+            html += '<div style="font-size:.85rem;margin-bottom:.6rem;padding:.35rem .6rem;' +
+                'border-radius:6px;border:1px solid rgba(250,204,21,.35);background:rgba(250,204,21,.06);">' +
+                String(d.moon_fill_note).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</div>';
+        }
         const st = d.stats || {};
         html += '<div style="display:flex;gap:.7rem;margin-bottom:1rem;">' +
             statCard(st.dark_hours + 'h', 'Dark Hours', '#7dd3fc') +

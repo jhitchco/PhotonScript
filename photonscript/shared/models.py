@@ -527,6 +527,13 @@ class NinaSequenceTarget(BaseModel):
     handoff_utc: Optional[datetime] = None
     fill_from_utc: Optional[datetime] = None
     fill_end_utc: Optional[datetime] = None
+    # 2026-10-25 moon fill (target_planner.moon_fill): a pointing carrier,
+    # planned on a bright-moon night that had nothing else for the RC16 so
+    # the Piggy-600 (same mount) gets a target. The RC16 subs are a carrier
+    # (Ha, unguided: expected to be rejected), not the goal's plan.
+    # carrier_note is shown as an annotation at the top of the target.
+    carrier: bool = False
+    carrier_note: str = ""
 
 
 class NinaSequenceFile(BaseModel):

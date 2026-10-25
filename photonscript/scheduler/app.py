@@ -416,6 +416,10 @@ async def api_tonight_plan():
         # 2026-10-25: RC16 narrowband left out of an unguided night
         "rc16_nb_unguided": info.get("rc16_nb_unguided") or [],
         "rc16_nb_note": info.get("rc16_nb_note"),
+        # 2026-10-25 moon fill: a bright-moon night with nothing else for
+        # the RC16 is a Piggy-driven night of pointing carriers
+        "moon_fill": info.get("moon_fill"),
+        "moon_fill_note": info.get("moon_fill_note"),
         "twilight": {
             k: v.isoformat() if v else None
             for k, v in twilight.items()
@@ -430,6 +434,8 @@ async def api_tonight_plan():
                                      if st.window_start_utc else None),
                 "window_end_utc": (st.window_end_utc.isoformat() + "Z"
                                    if st.window_end_utc else None),
+                "carrier": bool(getattr(st, "carrier", False)),
+                "carrier_note": getattr(st, "carrier_note", "") or None,
             }
             for st in sequence_targets
         ],
@@ -803,6 +809,10 @@ _CONFIG_FIELDS = [
     ("plan_target_windows", "PS_PLAN_TARGET_WINDOWS", "Target windows (PS-180): each target's loop hands the mount to the next at its planned window end; leftover time goes to the highest-priority target still up", "Imaging", "bool", False, False),
     ("plan_window_min_minutes", "PS_PLAN_WINDOW_MIN_MINUTES", "Target windows: shortest window (min) a target is planned for tonight", "Imaging", "int", False, False),
     ("plan_night_mode", "PS_PLAN_NIGHT_MODE", "Night mode (deep night): split (each night shared among the goals by priority) | deep (one goal gets the whole dark window, both rigs; split after it sets or is done). The dashboard can set tonight only", "Imaging", "str", False, False),
+    ("plan_moon_piggy_fill", "PS_PLAN_MOON_PIGGY_FILL", "Moon fill: on a bright-moon night with the Piggy-600 on, an empty (or mostly unused) plan becomes a Piggy-driven night: the RC16 points at the best goal (Piggy OSC owed first, away from the moon) shooting Ha as a pointing carrier", "Imaging", "bool", False, False),
+    ("plan_moon_fill_min_used_pct", "PS_PLAN_MOON_FILL_MIN_USED_PCT", "Moon fill: fill the gaps when the planned windows use less than this % of the dark time left", "Imaging", "float", False, False),
+    ("plan_moon_fill_min_sep_deg", "PS_PLAN_MOON_FILL_MIN_SEP_DEG", "Moon fill: avoid carrier targets closer than this to the moon (deg) when another goal is up", "Imaging", "float", False, False),
+    ("plan_moon_fill_carrier_s", "PS_PLAN_MOON_FILL_CARRIER_S", "Moon fill: RC16 Ha carrier sub length (s); the unguided cap still applies", "Imaging", "float", False, False),
     ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
     ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),

@@ -2093,6 +2093,11 @@ class Armer:
         self.plan["rc16_nb_unguided"] = list(plan_info.get("rc16_nb_unguided") or [])
         if plan_info.get("rc16_nb_note"):
             logger.info("Plan: %s", plan_info["rc16_nb_note"])
+        # 2026-10-25 moon fill: the Piggy-driven night this dispatch planned
+        self.plan["moon_fill"] = plan_info.get("moon_fill")
+        self.plan["moon_fill_note"] = plan_info.get("moon_fill_note")
+        if plan_info.get("moon_fill_note"):
+            logger.info("Plan: %s", plan_info["moon_fill_note"])
         self._persist()
         try:
             from photonscript.scheduler.runs import save_plan_snapshot

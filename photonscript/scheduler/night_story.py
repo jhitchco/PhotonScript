@@ -277,12 +277,17 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
             else r.get("window_end")
         if r.get("fill"):
             rows.append(f"{r.get('name')} fill {w0}-{w1}")
+        elif r.get("carrier"):
+            # 2026-10-25 moon fill: the RC16 only carries the Piggy pointing
+            rows.append(f"{r.get('name')} {w0}-{w1} (Piggy carrier, RC16 Ha)")
         else:
             st = _sets_text(r.get("filters"))
             rows.append(f"{r.get('name')} {w0}-{w1}" + (f" ({st})" if st else ""))
     if not rows and plan.get("targets"):
         rows = list(plan["targets"])
     lines.append((0, f"RC16 {mode}: " + ("; ".join(rows) if rows else "no targets planned")))
+    if plan.get("moon_fill_note"):
+        lines.append((1, str(plan["moon_fill_note"])))
     if recipe:
         lines.append((1, f"First: {recipe}."))
     if piggy:
