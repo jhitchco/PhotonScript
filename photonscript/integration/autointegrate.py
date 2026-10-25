@@ -10,9 +10,15 @@ desktop needs around that decision, one cycle per Scheduled Task tick
      (one line per goal: stacked / finished / blended in the last night,
      the final JPGs; <staging>/Summaries/<date>.txt + Pushover), and
      nothing at all while PixInsight is open (Jeremy working);
-  2. the desktop-load guard: no PixInsight start while the desktop had
-     keyboard / mouse input in the last autointegrate_idle_min minutes or
-     its CPU is above autointegrate_max_cpu_pct (next cycle);
+  2. the run window (run_window.py, autointegrate_window_local, default
+     08:00-23:00) and the locked-session check (autointegrate_lock_check):
+     outside it, or with the Windows session locked, the cycle logs
+     "deferred: ..." and starts nothing (PixInsight crashed in
+     Qt6WebEngineCore on every overnight run); the next tick inside the
+     window picks the work up; then the desktop-load guard: no PixInsight
+     start while the desktop had keyboard / mouse input in the last
+     autointegrate_idle_min minutes or its CPU is above
+     autointegrate_max_cpu_pct (next cycle);
   3. the candidates from the scheduler and integrate-watch's decide()
      (both rigs watched by default; the RC16 with its own first-run and
      new-data hours, watch.rig_threshold); no re-integration unless new
@@ -58,6 +64,7 @@ from pathlib import Path
 
 from photonscript.integration import finish_retry as fr
 from photonscript.integration import report, runner
+from photonscript.integration import run_window as rw
 from photonscript.integration import watch as w
 
 STATE_NAME = ".autointegrate-state.json"
@@ -568,13 +575,15 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
           get=report.http_get_json, post=report.http_post_json,
           pi_running=runner.pixinsight_running, echo=print,
           now: datetime | None = None, alive=w._pid_alive, run_retry=None,
-          load_guard=None, local_now: datetime | None = None) -> dict:
+          load_guard=None, local_now: datetime | None = None,
+          locked=rw.session_locked) -> dict:
     """One auto-integrate pass (module doc). run_integrate(target, rig,
     trigger) -> pipeline result; run_blend(target) -> blend result;
     discover_blend(target) -> blend inputs (raises when a rig is missing);
     run_retry(need) -> finish_retry.run result (None = no retries);
     load_guard() -> why PixInsight must wait, or None (default
-    desktop_guard); send(message, image) -> bool."""
+    desktop_guard); send(message, image) -> bool; locked() -> why the
+    Windows session is locked, or None (run_window.gate)."""
     wo = o.watch
     now = now or datetime.now(timezone.utc)
     out: dict = {"ran": None, "blend": None, "retry": None, "decisions": [], "sweep": None}
@@ -597,6 +606,17 @@ def cycle(o: AutoOptions, *, run_integrate, run_blend, discover_blend, send=None
             echo(f"PixInsight is running (pid {', '.join(map(str, busy))}): nothing now")
             out["skipped"] = "pixinsight running"
             return out
+        # the run window + locked-session check (run_window.py): PixInsight
+        # crashed in Qt6WebEngineCore on every overnight run; defer, the next
+        # tick inside the window picks the work up
+        deferred = rw.gate(wo.run_window, wo.lock_check, local_now, locked=locked)
+        if deferred:
+            if not wo.dry_run:
+                echo(f"{deferred}: no PixInsight now (next tick)")
+                out["skipped"] = "deferred"
+                out["deferred"] = deferred
+                return out
+            echo(f"  ({deferred}: a real cycle would wait)")
         guard = (load_guard or (lambda: desktop_guard(o)))()
         if guard:
             if not wo.dry_run:
