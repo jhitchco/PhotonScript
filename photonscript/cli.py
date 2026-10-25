@@ -4970,6 +4970,22 @@ def pixinsight_gaia_check_cmd(
     raise typer.Exit(0 if (st.dr3_ok or st.unknown) else 1)
 
 
+def _run_window_opts(cfg, anytime: bool, say) -> dict:
+    """WatchOptions run_window / lock_check from the desktop .env
+    (autointegrate_window_local, autointegrate_lock_check); --anytime = a run
+    by hand, neither applies. A malformed window is reported and ignored."""
+    from photonscript.integration import run_window as rw
+    if anytime:
+        return {"run_window": "", "lock_check": False}
+    win = str(getattr(cfg, "autointegrate_window_local", rw.DEFAULT_WINDOW) or "")
+    try:
+        rw.parse_window(win)
+    except ValueError as e:
+        say(f"WARNING: {e}; no run window")
+        win = ""
+    return {"run_window": win, "lock_check": bool(getattr(cfg, "autointegrate_lock_check", True))}
+
+
 @app.command("integrate-watch")
 def integrate_watch_cmd(
     once: bool = typer.Option(False, "--once", help="One cycle, then exit (for a Scheduled Task)"),
@@ -4985,6 +5001,9 @@ def integrate_watch_cmd(
         help="Override: wait while calibration is missing"),
     qa: str = typer.Option("report", "--qa", help="Star QA mode for the runs (report | apply | off)"),
     interval_min: float = typer.Option(30.0, "--interval-min", help="Minutes between cycles without --once"),
+    anytime: bool = typer.Option(False, "--anytime",
+                                 help="Skip the run window (autointegrate_window_local) and the "
+                                      "locked-session check: a run by hand"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
 ):
     """PS-31: goal to finished image. Polls the scheduler's integration
@@ -5012,7 +5031,7 @@ def integrate_watch_cmd(
         first_h=first_h if first_h >= 0 else None,
         min_interval_h=min_interval_h if min_interval_h >= 0 else None,
         require_calibration=require_calibration, qa=qa, dry_run=dry_run,
-        interval_min=interval_min)
+        interval_min=interval_min, **_run_window_opts(cfg, anytime, say))
     if not o.base_url:
         console.print("[red]integrate-watch:[/red] no scheduler URL (--url or integration_report_url)")
         raise typer.Exit(2)
@@ -5049,6 +5068,9 @@ def autointegrate_cmd(
                                     "--no-guard starts PixInsight even while the desktop is in use"),
     qa: str = typer.Option("report", "--qa", help="Star QA mode for the runs (report | apply | off)"),
     interval_min: float = typer.Option(30.0, "--interval-min", help="Minutes between cycles without --once"),
+    anytime: bool = typer.Option(False, "--anytime",
+                                 help="Skip the run window (autointegrate_window_local) and the "
+                                      "locked-session check: a run by hand"),
     pixinsight_exe: str = typer.Option(r"C:\Program Files\PixInsight\bin\PixInsight.exe", "--pixinsight-exe"),
 ):
     """PS-161: desktop auto-integrate. integrate-watch's decision (goal met,
@@ -5061,7 +5083,9 @@ def autointegrate_cmd(
     A run whose finish failed gets a finish-only retry (at most
     autointegrate_finish_retries); the first cycle after
     autointegrate_summary_hour writes the morning summary. Nothing while
-    PixInsight is open or the desktop is in use (--no-guard); one
+    PixInsight is open or the desktop is in use (--no-guard), outside
+    autointegrate_window_local or on a locked Windows session ("deferred",
+    the next tick picks it up; --anytime for a run by hand); one
     PixInsight at a time; never re-integrates without new subs. Install it
     yourself with deploy\\install-autointegrate-task.ps1 (this command
     installs nothing).
@@ -5081,7 +5105,7 @@ def autointegrate_cmd(
         base_url=url or getattr(cfg, "integration_report_url", ""), staging_root=root,
         scratch_root=sc.configured_root(cfg),
         rigs=[r.strip() for r in rigs.split(",") if r.strip()] or None,
-        qa=qa, dry_run=dry_run, interval_min=interval_min)
+        qa=qa, dry_run=dry_run, interval_min=interval_min, **_run_window_opts(cfg, anytime, say))
     if not wo.base_url:
         console.print("[red]autointegrate:[/red] no scheduler URL (--url or integration_report_url)")
         raise typer.Exit(2)

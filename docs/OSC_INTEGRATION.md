@@ -298,6 +298,19 @@ re-integrates without new approved data, nothing while PixInsight is open):
   `autointegrate_idle_min` (10) minutes or its CPU is at or above
   `autointegrate_max_cpu_pct` (80); the cycle says why and the next one
   tries again. `--no-guard` turns it off for one run.
+- **Run window + locked session** (`integration/run_window.py`, 2026-10-25).
+  PixInsight 1.9.5 crashed at startup (exit 0x80000003 in Qt6WebEngineCore)
+  on every overnight automatic run, even with `--disable-gpu` and the
+  software-rendering retry; daytime runs worked. Automatic autointegrate /
+  integrate-watch cycles now start PixInsight only inside
+  `autointegrate_window_local` ("08:00-23:00", desktop .env; may wrap
+  midnight; blank = any time) and, with `autointegrate_lock_check` (on),
+  not while the Windows session is locked (OpenInputDesktop / SwitchDesktop
+  fail, or LogonUI.exe runs in the session). The cycle logs
+  `deferred: outside the run window (...)` or `deferred: Windows session
+  locked (...)` and the next tick inside the window picks the work up.
+  `photonscript integrate` / `finish` / `blend` by hand are not gated;
+  `autointegrate --anytime` / `integrate-watch --anytime` skip the gate.
 - **Finish-only retry** (`integration/finish_retry.py`). A newest run (at
   most 72 h old) whose integration made masters but whose finish failed (or,
   started by the watcher, has no finish) and that nothing finished since (no

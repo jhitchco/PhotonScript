@@ -215,13 +215,39 @@ def remaining_copy(plan: ExposurePlan) -> ExposurePlan:
     })
 
 
-def piggy_hold_exposure(proj: ImagingProject) -> Optional[ExposurePlan]:
+NB_UNGUIDED_REASON = ("RC16 narrowband needs guiding: unguided night "
+                      "(rc16_narrowband_requires_guided)")
+
+
+def nb_needs_guiding(config, guided: Optional[bool]) -> bool:
+    """2026-10-25: True when tonight is planned unguided and the RC16
+    narrowband must not be scheduled (config rc16_narrowband_requires_guided,
+    default on). 2026-10-24 the RC16 shot 3 nm Ha at 120 s unguided all
+    night: 126 rejects in a row, too few stars for AF. guided None (a
+    caller that does not say) never drops anything."""
+    return guided is False and bool(getattr(config, "rc16_narrowband_requires_guided", True))
+
+
+def broadband_hold(plan: ExposurePlan) -> ExposurePlan:
+    """A narrowband hold set as L (same length, no HDR shorts): the RC16
+    keeps a pointing for the Piggy-600 on an unguided night without shooting
+    narrowband. A broadband plan is returned as is."""
+    if plan.filter_type.value not in _NB_FILTERS:
+        return plan
+    return plan.model_copy(update={"filter_type": FilterType.LUMINANCE,
+                                   "hdr_short_seconds": None, "hdr_short_count": 0,
+                                   "hdr_short_acquired": 0})
+
+
+def piggy_hold_exposure(proj: ImagingProject, nb_ok: bool = True) -> Optional[ExposurePlan]:
     """PS-134: a goal the Piggy-600 drives is planned while EITHER rig owes
     time. The Piggy companion shoots OSC on whatever the mount points at, so
     once the RC16 plan is done the RC16 keeps the pointing with extra subs of
     its largest plan (bonus core data), sized to the OSC seconds still owed.
     None when the RC16 drives, the OSC owes nothing, or the goal has no RC16
-    plan (a Piggy-only goal stays off the RC16 sequence, as before)."""
+    plan (a Piggy-only goal stays off the RC16 sequence, as before).
+    nb_ok False (unguided night, nb_needs_guiding): the largest broadband
+    RC16 plan, else the largest plan as an L hold (broadband_hold)."""
     import math
     if (getattr(proj, "driving_rig", "rc16") or "rc16") == "rc16":
         return None
@@ -232,7 +258,12 @@ def piggy_hold_exposure(proj: ImagingProject) -> Optional[ExposurePlan]:
                  if (getattr(e, "rig", "rc16") or "rc16") != "rc16")
     if not rc16 or owed_s <= 0:
         return None
-    base = max(rc16, key=lambda e: e.count * e.exposure_seconds)
+    pool = rc16
+    if not nb_ok:
+        pool = [e for e in rc16 if e.filter_type.value not in _NB_FILTERS] or rc16
+    base = max(pool, key=lambda e: e.count * e.exposure_seconds)
+    if not nb_ok:
+        base = broadband_hold(base)
     if not base.exposure_seconds or base.exposure_seconds <= 0:
         return None
     return base.model_copy(update={
@@ -650,6 +681,15 @@ def plan_night_sequence(
     no planner mode can hand the generator a guiding flag the arm did not
     choose. None leaves start_guiding at the model default (the caller
     sets it).
+
+    guided False with rc16_narrowband_requires_guided (2026-10-25,
+    nb_needs_guiding): no RC16 Ha / OIII / SII set is scheduled, in split
+    and in the deep pick alike; info["rc16_nb_unguided"] lists each goal's
+    dropped filters with the reason. What is left (broadband) follows the
+    moon rule as usual, so on a moon-up night the RC16 idles (or shoots
+    owed calibration) when the moon defers broadband. Piggy-600 plans are
+    not touched; a Piggy-driven goal keeps its pointing with a broadband /
+    L hold.
     """
     from photonscript.scheduler import deep_night
     if date_utc is None:
@@ -738,6 +778,8 @@ def plan_night_sequence(
                                                      deep_target)
     info.update(mode=mode, mode_source=mode_src, night=night, deep_pick=None,
                 deep_scores=[], deep_note=None)
+    nb_off = nb_needs_guiding(config, guided)
+    info["rc16_nb_unguided"] = []
     pick = pick_proj = None
     _gen_moon = None  # generator's moon window, fetched only if needed
     if mode == "deep":
@@ -752,7 +794,7 @@ def plan_night_sequence(
         pick, scores = deep_night.choose(
             visible_projects, max(dark_start, date_utc), dark_end, dark_start,
             dark_end, target=deep_target, bb_ok=bb_ok, moonrise=rise,
-            moonset=broadband_from(_gen_moon))
+            moonset=broadband_from(_gen_moon), nb_ok=not nb_off)
         info["deep_scores"] = [deep_night.json_pick(s) for s in scores]
         if pick is None:
             info["deep_note"] = (
@@ -789,13 +831,27 @@ def plan_night_sequence(
             # long set is done still has its short subs to shoot
             if plan.count - plan.acquired > 0 or plan.short_remaining() > 0:
                 remaining_exposures.append(remaining_copy(plan))
+        if nb_off:
+            # 2026-10-25: an unguided night shoots no RC16 narrowband
+            nb = [e for e in remaining_exposures if e.filter_type.value in _NB_FILTERS]
+            if nb:
+                remaining_exposures = [e for e in remaining_exposures
+                                       if e.filter_type.value not in _NB_FILTERS]
+                info["rc16_nb_unguided"].append({
+                    "target": proj.target.name,
+                    "filters": [e.filter_type.value for e in nb],
+                    "owed_h": round(sum(owed_seconds(e) for e in nb) / 3600, 2),
+                    "reason": NB_UNGUIDED_REASON})
+                logger.info("Not scheduling %s RC16 %s tonight: %s", proj.target.name,
+                            "/".join(e.filter_type.value for e in nb), NB_UNGUIDED_REASON)
         if not remaining_exposures:
             # PS-134: the Piggy-600 drives and still owes time
-            hold = piggy_hold_exposure(proj)
+            hold = piggy_hold_exposure(proj, nb_ok=not nb_off)
             if hold is None and proj is pick_proj:
                 # deep night on a goal without an RC16 plan (Piggy-driven):
                 # the mount points at it all night, the RC16 shoots bonus subs
-                hold = deep_night.rc16_hold(proj, vis_hours * 3600 * 0.85)
+                hold = deep_night.rc16_hold(proj, vis_hours * 3600 * 0.85,
+                                            nb_ok=not nb_off)
             if hold is not None:
                 remaining_exposures.append(hold)
 
@@ -805,12 +861,12 @@ def plan_night_sequence(
         need_s = sum(owed_seconds(e) for e in remaining_exposures) * 1.15
         if proj is pick_proj:
             # deep: the goal keeps the mount while EITHER rig owes time
-            owed = deep_night.owed_by_kind(proj)
+            owed = deep_night.owed_by_kind(proj, nb_ok=not nb_off)
             need_s = max(owed["NB"] + owed["BB"], owed["OSC"]) * 1.15
 
         # Fit into tonight's time, weighting broadband/narrowband by the moon.
         available_seconds = vis_hours * 3600 * 0.85  # 15% overhead for slewing/dithering
-        ha_min_s = ha_first_seconds(proj, config)
+        ha_min_s = 0.0 if nb_off else ha_first_seconds(proj, config)
         if ha_min_s > 0:
             # Ha first (two-rig NB blend): RC16 Ha until the goal holds
             # ha_min_s accepted, then OIII / SII by the mix
@@ -959,6 +1015,10 @@ def plan_night_sequence(
     if guided is not None:
         apply_guiding(sequence_targets, guided)
         info["guided"] = bool(guided)
+    if info["rc16_nb_unguided"]:
+        info["rc16_nb_note"] = "; ".join(
+            f"{d['target']} {'/'.join(d['filters'])} not scheduled" for d in info["rc16_nb_unguided"]
+        ) + f" ({NB_UNGUIDED_REASON})"
     return sequence_targets
 
 

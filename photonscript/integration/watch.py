@@ -41,6 +41,7 @@ from pathlib import Path
 
 from photonscript.integration import ledger as writer
 from photonscript.integration import pilock, report, runner
+from photonscript.integration import run_window as rw
 
 LOCK_NAME = ".integrate-watch.lock"
 FAILURES_NAME = ".integrate-watch-failures.json"   # "target|rig" -> ISO of a failed run
@@ -59,6 +60,12 @@ class WatchOptions:
     dry_run: bool = False
     interval_min: float = 30.0
     scratch_root: Path | None = None         # fast scratch: runs are found there too
+    # run window (run_window.py): an automatic cycle outside it, or on a
+    # locked Windows session, starts no PixInsight (the CLI fills these from
+    # autointegrate_window_local / autointegrate_lock_check; the bare
+    # defaults keep a test cycle free of the real clock and session)
+    run_window: str = ""
+    lock_check: bool = False
 
 
 @dataclass
@@ -264,9 +271,12 @@ def post_processing(o: WatchOptions, dec: Decision, state: str, *, post=report.h
 
 def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
           post=report.http_post_json, pi_running=runner.pixinsight_running,
-          echo=print, now: datetime | None = None, alive=_pid_alive) -> dict:
+          echo=print, now: datetime | None = None, alive=_pid_alive,
+          local_now: datetime | None = None, locked=rw.session_locked) -> dict:
     """One watcher pass (see module doc). run_integrate(target, rig,
-    trigger) -> pipeline result dict (with "ledger"). Returns a summary."""
+    trigger) -> pipeline result dict (with "ledger"). Returns a summary.
+    Outside the run window or on a locked session nothing starts
+    (run_window.gate; local_now / locked are for tests)."""
     out: dict = {"ran": None, "decisions": [], "sweep": None}
     lock = None if o.dry_run else acquire_lock(o.staging_root, alive=alive)
     if not o.dry_run and lock is None:
@@ -283,6 +293,14 @@ def cycle(o: WatchOptions, *, run_integrate, get=report.http_get_json,
             echo(f"PixInsight is running (pid {', '.join(map(str, busy))}): no integration now")
             out["skipped"] = "pixinsight running"
             return out
+        deferred = rw.gate(o.run_window, o.lock_check, local_now, locked=locked)
+        if deferred:
+            if not o.dry_run:
+                echo(f"{deferred}: no integration now (next tick)")
+                out["skipped"] = "deferred"
+                out["deferred"] = deferred
+                return out
+            echo(f"  ({deferred}: a real cycle would wait)")
         qlock, why = queue_lock("integrate-watch", o.dry_run, echo)
         if why:
             echo(f"{why}: no integration now")

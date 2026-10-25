@@ -495,6 +495,17 @@ class PhotonScriptConfig(BaseSettings):
                                  # input for this many minutes (0 = off)
     autointegrate_max_cpu_pct: float = 80.0  # desktop-load guard: and the CPU
                                  # is below this (percent; 0 = off)
+    autointegrate_window_local: str = "08:00-23:00"  # 2026-10-25: automatic
+                                 # autointegrate / integrate-watch cycles start
+                                 # PixInsight only inside this local window
+                                 # (HH:MM-HH:MM, may wrap midnight; blank = any
+                                 # time). PixInsight 1.9.5 crashed in
+                                 # Qt6WebEngineCore on every overnight run;
+                                 # outside it the cycle logs "deferred" and the
+                                 # next tick inside picks the work up
+    autointegrate_lock_check: bool = True  # and defer while the Windows
+                                 # session is locked (OpenInputDesktop /
+                                 # SwitchDesktop fail, or LogonUI.exe runs)
     autointegrate_summary_hour: float = 8.0  # local hour after which the first
                                  # cycle writes + Pushovers the morning summary
                                  # (one line per goal; -1 = off)
@@ -1008,6 +1019,15 @@ class PhotonScriptConfig(BaseSettings):
                                  # are credited in seconds (ExposurePlan.
                                  # acquired_s). Set from the PS-84 tracking-test
                                  # verdict. 0 = no cap.
+    rc16_narrowband_requires_guided: bool = True  # 2026-10-25: a night armed /
+                                 # planned unguided schedules no RC16 Ha / OIII
+                                 # / SII (2026-10-24: 3 nm Ha at 120 s unguided
+                                 # all night, 126 rejects in a row, too few
+                                 # stars for AF). The plan names each dropped
+                                 # set; moon-up time goes to broadband only if
+                                 # the moon rule allows, else the RC16 idles.
+                                 # Piggy-600 plans unaffected. False = old
+                                 # behavior
     guiding_force_first_calibration: bool = False  # PS-72 (2026-09-27): default off;
                                  # a forced cal at a high-Dec first target wrecked
                                  # 2026-09-26. When True, the night's FIRST guided

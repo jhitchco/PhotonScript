@@ -402,7 +402,7 @@ async def api_tonight_plan():
 
     from photonscript.scheduler.target_planner import plan_with_info
     sequence_targets, info = plan_with_info(plan_night_sequence, projects,
-                                            config, now)
+                                            config, now, guided=armed_guided())
 
     return {
         "date": base.strftime("%Y-%m-%d"),
@@ -413,6 +413,9 @@ async def api_tonight_plan():
         "deep_pick": info.get("deep_pick"),
         "deep_note": info.get("deep_note"),
         "deep_scores": info.get("deep_scores") or [],
+        # 2026-10-25: RC16 narrowband left out of an unguided night
+        "rc16_nb_unguided": info.get("rc16_nb_unguided") or [],
+        "rc16_nb_note": info.get("rc16_nb_note"),
         "twilight": {
             k: v.isoformat() if v else None
             for k, v in twilight.items()
@@ -475,10 +478,11 @@ def _tonight_sequence(now_mode: bool = False):
         ranked = rank_targets_for_night(seasonal, obs, now)
         projects = [create_project_from_target(r["target"]) for r in ranked[:5]]
 
-    targets = plan_night_sequence(projects, config, now)
     # Honor the ARMED guiding mode (guided/unguided) so the preview matches
-    # what will actually be dispatched, not just the config default.
+    # what will actually be dispatched, not just the config default (and the
+    # planner leaves RC16 narrowband out of an unguided night, 2026-10-25).
     preview_guided = get_armer()._use_guiding()
+    targets = plan_night_sequence(projects, config, now, guided=preview_guided)
     for t in targets:
         t.start_guiding = preview_guided
     from photonscript.scheduler.target_planner import cap_unguided
@@ -750,6 +754,8 @@ _CONFIG_FIELDS = [
     ("autointegrate_finish_retries", "PS_AUTOINTEGRATE_FINISH_RETRIES", "Auto-integrate: finish-only retries of a run that has a master but no finished images (2nd without the plate solve; 0 = off)", "Integration", "int", False, False),
     ("autointegrate_idle_min", "PS_AUTOINTEGRATE_IDLE_MIN", "Auto-integrate desktop-load guard: start PixInsight only after N min without keyboard / mouse input (0 = off)", "Integration", "float", False, False),
     ("autointegrate_max_cpu_pct", "PS_AUTOINTEGRATE_MAX_CPU_PCT", "Auto-integrate desktop-load guard: and only while the desktop CPU is below this percent (0 = off)", "Integration", "float", False, False),
+    ("autointegrate_window_local", "PS_AUTOINTEGRATE_WINDOW_LOCAL", "Desktop .env: automatic autointegrate / integrate-watch start PixInsight only inside this local window (HH:MM-HH:MM, may wrap midnight; blank = any time); outside it the cycle is deferred to the next tick", "Integration", "str", False, False),
+    ("autointegrate_lock_check", "PS_AUTOINTEGRATE_LOCK_CHECK", "Desktop .env: automatic autointegrate / integrate-watch also defer while the Windows session is locked", "Integration", "bool", False, False),
     ("autointegrate_summary_hour", "PS_AUTOINTEGRATE_SUMMARY_HOUR", "Auto-integrate: local hour after which the morning summary (one line per goal, final JPGs) is written and sent (-1 = off)", "Integration", "float", False, False),
     ("integration_extra_roots", "PS_INTEGRATION_EXTRA_ROOTS", "Desktop .env: more folders with integrate runs that blend discovery reads (comma list; the pre-scratch C:/Astro/Staging)", "Integration", "str", False, False),
     ("blend_vivid", "PS_BLEND_VIVID", "Blend: also <name>_vivid from the stretched blend (the finish vivid look; L blends of blend_vivid_kinds targets)", "Integration", "bool", False, False),
@@ -974,6 +980,7 @@ _CONFIG_FIELDS = [
     ("camera_readout_mode", "PS_CAMERA_READOUT_MODE", "RC16 readout mode of the lights (HCG / LCG): darks and bias must match it (blank = not matched)", "Imaging", "str", False, False),
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
     ("unguided_dither", "PS_UNGUIDED_DITHER", "Dither on unguided nights through NINA's Direct Guider (switch NINA's guider first; checked at arm)", "Imaging", "bool", False, False),
+    ("rc16_narrowband_requires_guided", "PS_RC16_NARROWBAND_REQUIRES_GUIDED", "Unguided nights schedule no RC16 narrowband (Ha / OIII / SII): too few stars for AF and the unguided subs are rejected; broadband only if the moon allows, Piggy-600 unaffected", "Imaging", "bool", False, False),
     ("unguided_max_exposure_s", "PS_UNGUIDED_MAX_EXPOSURE_S", "Unguided (TPoint + ProTrack) RC16 max sub length (s); longer subs are split, same integration (0 = no cap)", "Imaging", "float", False, False),
     ("auto_dusk_flats", "PS_AUTO_DUSK_FLATS", "Auto dusk flats when any filter's flats are stale (every evening, auto-arm on or off; roof open only; done before nautical dusk)", "Imaging", "bool", False, False),
     ("flats_when", "PS_FLATS_WHEN", "Sky flats: dawn | dusk | both (both: a set already shot today is not repeated)", "Imaging", "str", False, False),
@@ -1544,6 +1551,19 @@ async def api_pushover_test():
 # ---------------------------------------------------------------------------
 
 _armer = None
+
+
+def armed_guided() -> bool | None:
+    """Tonight's armed guiding mode (the armer's _use_guiding), or None when
+    no armer runs in this process (none is created here) or it cannot be
+    read. The planner endpoints pass it on so their plans match what
+    dispatch builds (rc16_narrowband_requires_guided)."""
+    if _armer is None:
+        return None
+    try:
+        return bool(_armer._use_guiding())
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def get_armer():
