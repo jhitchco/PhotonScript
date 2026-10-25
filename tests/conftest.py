@@ -140,3 +140,11 @@ def _pushover_v2_isolated(monkeypatch, tmp_path_factory):
                         lambda c, n: d / "night_story" / f"{n}.jsonl" if _default(c) else sp(c, n))
     monkeypatch.setattr(night_story, "_state_file",
                         lambda c: d / "night_story" / "state.json" if _default(c) else ns(c))
+
+
+@pytest.fixture(autouse=True)
+def _focuser_guard_off(monkeypatch):
+    """Focuser position-loss guard: the armer's pre-config check reads each
+    rig's focuser over ninaAPI; no test should touch the network for it.
+    tests/test_scheduler/test_focuser_guard.py turns it on."""
+    monkeypatch.setenv("PS_FOCUSER_GUARD_MODE", "off")

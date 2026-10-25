@@ -375,6 +375,10 @@ def split_device(device: str, info: dict) -> tuple[dict, dict]:
     drop = set(NINA_DROP.get(device, ()))
     settings = {k: v for k, v in info.items() if k not in drop and k not in live_keys}
     live = {k: info.get(k) for k in live_keys if k in info}
+    if device == "focuser" and "Connected" in info:
+        # 2026-10-25: the counter-reset rule needs it (a disconnected EAF
+        # reads Position 0); stays in the settings too, so hashes are as before
+        live["Connected"] = info.get("Connected")
     if device == "camera":
         modes, i = info.get("ReadoutModes") or [], info.get("ReadoutMode")
         try:
@@ -808,14 +812,34 @@ def _c_double_focus_offsets(r, snap, config, ctx):
         "NINA offsets off, or PhotonScript offsets empty", None
 
 
+def _focuser_reading(live_app: dict | None) -> float | None:
+    """A live NINA section's focuser Position when it is a real reading
+    (focuser_guard.connected_position: Connected not False; without a
+    Connected field, Position 0 with Temperature NaN is a disconnected
+    focuser, the 2026-10-24 dawn false alarm)."""
+    from photonscript.scheduler.focuser_guard import connected_position
+    return connected_position((live_app or {}).get("focuser"))
+
+
 def _c_focuser_counter_reset(r, snap, config, ctx):
     app = r.get("app") or "nina1"
-    now = _num((_fresh_live(snap, app).get("focuser") or {}).get("Position"))
-    prev = _num(((ctx.get("prev_live") or {}).get(app) or {}).get("focuser", {})
-                .get("Position")) if ctx.get("prev_live") else None
-    want = "no drop to about 0 between readings"
+    want = "no drop to about 0 between connected readings"
+    raw = (_fresh_live(snap, app).get("focuser") or {})
+    now = _focuser_reading(_fresh_live(snap, app))
     if now is None:
+        if _num(raw.get("Position")) is not None:
+            return (UNKNOWN, f"{_num(raw.get('Position')):g} (focuser disconnected)",
+                    want, "focuser not connected: no reading to judge")
         return UNKNOWN, None, want, "focuser position not read now"
+    # the last CONNECTED reading before this one (a reset shows after a
+    # reconnect, against the reading before the disconnect)
+    prev = None
+    for lv in reversed(ctx.get("prev_lives") or []):
+        prev = _focuser_reading((lv or {}).get(app))
+        if prev is not None:
+            break
+    if prev is None and ctx.get("prev_live"):
+        prev = _focuser_reading((ctx.get("prev_live") or {}).get(app))
     cur = f"{now:g}" + (f" (was {prev:g})" if prev is not None else "")
     below, drop = float(r.get("reset_below", 1000)), float(r.get("drop_steps", 3000))
     if prev is not None and now < below and prev - now >= drop:
@@ -1158,8 +1182,10 @@ async def take(config, reason: str = "manual", *, armer_state: str | None = None
     prev_lines = index(config, night) or (index(config, (prev or {}).get("night") or "")
                                           if prev else [])
     prev_live = (prev_lines[-1].get("live") if prev_lines else None) or None
+    prev_lives = [ln.get("live") for ln in prev_lines[-48:] if ln.get("live")]
     eval_snap = dict(snap, apps=apps, armer_state=armer_state)
-    res = evaluate(load_rules(config), eval_snap, config, {"prev_live": prev_live})
+    res = evaluate(load_rules(config), eval_snap, config,
+                   {"prev_live": prev_live, "prev_lives": prev_lives})
     line = {"t_utc": now_z, "reason": reason, "armer_state": armer_state,
             "id": sid, "changed": changed, "hash": h,
             "unread": sorted(a for a, s in apps.items() if s.get("carried")),

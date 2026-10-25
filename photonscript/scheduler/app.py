@@ -620,6 +620,14 @@ async def _start_night_pilot():
 
 
 @app.on_event("startup")
+async def _start_focuser_guard():
+    """Focuser position-loss guard (2026-10-25): both rigs' focuser counter
+    while a night runs. Always started; idle when focuser_guard_mode=off."""
+    from photonscript.scheduler.focuser_guard import run_guard
+    _spawn(run_guard(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_dawn_mount_check():
     """PS-185: mount left unparked and tracking after astro dawn on a night
     the armer does not own. Always started; alert only, never parks."""
@@ -856,6 +864,15 @@ _CONFIG_FIELDS = [
     ("night_pilot_ladder_min_stars", "PS_NIGHT_PILOT_LADDER_MIN_STARS", "Night pilot sub ladder: no step up with fewer stars (window median) than this", "Night pilot", "int", False, False),
     ("night_pilot_ladder_nb_min_stars", "PS_NIGHT_PILOT_LADDER_NB_MIN_STARS", "Night pilot sub ladder: narrowband (Ha / OIII / SII) frames need at least this many stars for a step up", "Night pilot", "int", False, False),
     ("night_pilot_ladder_sky_frac", "PS_NIGHT_PILOT_LADDER_SKY_FRAC", "Night pilot sub ladder: no step up when the sky background (now, or scaled to the next rung) is over this fraction of the rig's saturation ADU (moon / sky limited)", "Night pilot", "float", False, False),
+    ("focuser_guard_mode", "PS_FOCUSER_GUARD_MODE", "Focuser position-loss guard (2026-10-25): a focuser counter that drops to about 0 or jumps between two connected readings with no AF or commanded move to explain it -> one act push per rig per night, a run event and the morning report line; act also restores after the first sub (sharp: AF in place, only the counter moved; soft: move back to the last good AF position for the filter, then AF), never while the camera exposes or an AF runs: off | advise (default) | act; night_pilot_mode advise / off caps it at advise", "Night pilot", "str", False, False),
+    ("focuser_guard_poll_s", "PS_FOCUSER_GUARD_POLL_S", "Focuser guard: read each rig's focuser this often (s) while a night runs", "Night pilot", "float", False, False),
+    ("focuser_guard_reset_below", "PS_FOCUSER_GUARD_RESET_BELOW", "Focuser guard: a reading at or under this many steps after a drop of focuser_guard_drop_steps is a counter reset", "Night pilot", "float", False, False),
+    ("focuser_guard_drop_steps", "PS_FOCUSER_GUARD_DROP_STEPS", "Focuser guard: the drop (steps) that makes a reading under focuser_guard_reset_below a reset; also the jump size when the travel is unknown", "Night pilot", "float", False, False),
+    ("focuser_guard_jump_frac", "PS_FOCUSER_GUARD_JUMP_FRAC", "Focuser guard: a jump larger than this fraction of the rig's travel (focuser_guard_travel_<rig>) is a reset too", "Night pilot", "float", False, False),
+    ("focuser_guard_travel_rc16", "PS_FOCUSER_GUARD_TRAVEL_RC16", "Focuser guard: the RC16 EAF travel (max step); 0 = unknown, the jump rule then uses focuser_guard_drop_steps", "Night pilot", "float", False, False),
+    ("focuser_guard_travel_piggyback", "PS_FOCUSER_GUARD_TRAVEL_PIGGYBACK", "Focuser guard: the Piggy-600 EAF travel (max step); 0 = unknown", "Night pilot", "float", False, False),
+    ("focuser_guard_sub_wait_min", "PS_FOCUSER_GUARD_SUB_WAIT_MIN", "Focuser guard: wait this long for the first sub after a reset (sharp = only the counter moved) before restoring as if the focuser moved", "Night pilot", "float", False, False),
+    ("focuser_guard_af_after_move", "PS_FOCUSER_GUARD_AF_AFTER_MOVE", "Focuser guard (act): a fresh autofocus after moving the focuser back", "Night pilot", "bool", False, False),
     ("stuck_loop_mode", "PS_STUCK_LOOP_MODE", "Stuck-loop detector (2026-10-15): while RUNNING, safe and in a planned target window, a rig that saves no light (AF / center / park loops, or no light for max(3 subs + 10 min, 20 min)) -> one priority push per episode naming the repeating steps: alert (default) | off", "Night pilot", "str", False, False),
     ("stuck_loop_poll_s", "PS_STUCK_LOOP_POLL_S", "Stuck-loop detector: read both NINAs' event history at most this often (s)", "Night pilot", "float", False, False),
     ("stuck_loop_gap_subs", "PS_STUCK_LOOP_GAP_SUBS", "Stuck-loop detector: no light for this many planned subs (+ the margin) = stuck", "Night pilot", "float", False, False),

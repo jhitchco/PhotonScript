@@ -313,6 +313,12 @@ ACT_CONSEQUENCES = {
     "PhotonScript autofocus not finishing": (
         "check the focuser and the AF star field",
         "every AF restarts and subs go soft"),
+    "PhotonScript focuser reset": (
+        "check the focuser in NINA and compare the next AF with the last good position",
+        "autofocus starts from the wrong place and that rig's subs are soft"),
+    "PhotonScript focuser restore": (
+        "check the focuser in NINA, move it back if it moved, then run AF",
+        "that rig's subs stay soft for the rest of the night"),
     "PhotonScript focuser at 0": (
         "check the focuser in NINA",
         "AF and the focus model start from a wrong position"),

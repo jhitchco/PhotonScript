@@ -1410,6 +1410,83 @@ loop every 60 s (`run_pilot`, app startup).
   other way (disarm, error, service restart). A goal edited by hand since
   the pilot changed it is left alone and said so.
 
+### Focuser guard: a focuser that lost its position (2026-10-25)
+
+Why: a focuser whose counter reset makes autofocus start from the wrong
+place and every "last good focus" position meaningless (2026-10-12: the
+RC16 EAF dropped off USB and its counter reset, `focus_counter_epoch`).
+2026-10-24 the settings ledger reported "RC16 EAF position counter 0 (was
+5674)" only at dawn; that one was a false alarm: the dawn shutdown had
+disconnected the devices and NINA reports Position 0 (Temperature NaN) for
+a disconnected focuser. `scheduler/focuser_guard.py` watches both rigs'
+focusers during the night and judges only connected readings.
+
+- **Reading:** ninaAPI `GET /equipment/focuser/info` on NINA #1 (RC16) and
+  NINA #2 (Piggy-600, when `piggyback_enabled`) every
+  `focuser_guard_poll_s` (60) while the armer is RUNNING, PAUSED_* or
+  WATCHING (own background loop), and once at pre-config (the armer, before
+  dispatch). A reading counts only with Connected not false; without a
+  Connected field, Position 0 with Temperature NaN is a disconnected
+  focuser. A reset is judged against the last CONNECTED reading (this
+  night, else `<data_dir>/focuser_guard/last.json` from an earlier night),
+  which is where a real reset shows up after a reconnect.
+- **Reset:** now <= `focuser_guard_reset_below` (1000) after a drop of at
+  least `focuser_guard_drop_steps` (3000), or a jump of at least
+  `focuser_guard_jump_frac` (0.25) x `focuser_guard_travel_<rig>` (the
+  EAF's max step; 0 = unknown, then the jump size is
+  `focuser_guard_drop_steps`).
+- **Not a reset:** the focuser moving (IsMoving), an autofocus in progress
+  (NINA event history AUTOFOCUS-STARTING with no end) or a focus item
+  running (reading skipped, baseline kept); an AUTOFOCUS-FINISHED between
+  the readings (explains a jump, never a drop to about 0); a commanded move
+  to about the new reading (`focuser_guard/moves.jsonl`: the focus model
+  move, the re-entry gate's move and the guard's own move log there).
+- **On a reset:** a run event (kind `focuser_reset`, value "5674 -> 0"),
+  one act push per rig per night (title "PhotonScript focuser reset":
+  what happened, what the guard will do, "If you act: check the focuser in
+  NINA, compare the next AF with <position>; if only the counter moved set
+  focus_counter_epoch ... If not: ..."), the night storyline (pushed or
+  held). Not a safety act: it costs one rig's data, never hardware, the
+  pilot recovers by itself in act mode, and the existing "focuser at 0" /
+  "autofocus not finishing" acts are non-safety too; so from 00:00 to 08:00
+  it is held in the storyline and the end-of-night report lists it under
+  "Held overnight". A Position of exactly 0 also takes the telescope
+  agent's "focuser at 0" latch for that night (one push, not two), and the
+  night pilot's own "needs a human: check the focuser" push becomes info
+  when the guard already pushed for that rig.
+- **Decision** (night, RUNNING only): the first sub of that rig that
+  started after the reset, at most `focuser_guard_sub_wait_min` (15):
+  sharp (passed QA, or HFR within 1.25x of the night's pre-reset median) =
+  only the counter moved (the 2026-10-12 failure; moving to the old number
+  would defocus it): an autofocus in place, unless one already finished
+  after the reset. Soft, or no sub in time = the focuser moved: move it
+  back to the last good AF position for the current filter before the
+  reset (`focus_model` points; else any filter; else the last connected
+  reading) with `GET /equipment/focuser/move?position=N`, read it back,
+  then (`focuser_guard_af_after_move`, on) a fresh autofocus (RC16: the
+  pilot's direct ninaAPI AF; Piggy-600: direct AF on NINA #2, else the
+  pilot's stop + companion re-dispatch).
+- **Guards:** never moves while the camera exposes or downloads (waits for
+  the sub to end, at most 10 min), while an autofocus runs, while NINA runs
+  a focus / flat / dark / bias / TPoint / tracking test / calibration item,
+  during a calibration capture job or an arm recipe, or unless the armer is
+  RUNNING. Pre-config: detection and the push only, the night decides on
+  the first sub. A restore that does not finish: one act push "PhotonScript
+  focuser restore".
+- **Modes:** `focuser_guard_mode` off | advise (default: the same decision,
+  reported as info, nothing moved) | act; `night_pilot_mode` advise or off
+  caps it at advise (detection keeps running).
+- **Where:** `GET /api/night/focuser-guard`; state
+  `<data_dir>/focuser_guard/<night>.json`; the morning report line
+  "Focuser reset: RC16 5674 -> 0 at 23:41 local (night); <first sub>;
+  <outcome>"; the sub doctor's focuser verdict names the reset ("focuser
+  position counter reset at 06:41Z (5674 -> 0) and no autofocus finished
+  since", evidence `focuser_reset_t`) while the subs are soft, the reset
+  is under 6 h old and no AF finished since.
+- **Settings ledger:** the `nina1_focuser_reset` / `nina2_focuser_reset`
+  rules use the same connected-reading test and compare with the last
+  connected reading; the live focuser reading now carries `Connected`.
+
 ### Unguided guard: nothing guides on an unguided night (2026-10-13)
 
 Why: 2026-10-12 and 10-13 were armed UNGUIDED but NINA #1 had PHD2
@@ -1865,8 +1942,10 @@ mismatch, the RC16 EAF counter reset), each found by hand afterwards.
 - **When:** at arm, at pre-config, after dispatch, on every armer state change
   and every `settings_ledger_interval_min` (60) while RUNNING / WATCHING. A
   snapshot is hashed and stored only when a setting changed; temperatures,
-  focuser position, mount state and PHD2 state are kept as compact "live"
-  readings in every index line. An app that does not answer keeps its last
+  focuser position (with Connected, 2026-10-25), mount state and PHD2 state
+  are kept as compact "live" readings in every index line. The focuser
+  counter rules judge connected readings only (a disconnected EAF reads
+  Position 0: the 2026-10-24 dawn false alarm; see "Focuser guard"). An app that does not answer keeps its last
   reading (marked "not read now"); PHD2 / TheSky never read yet fall back to
   the newest stored audit.
 - **Where:** `<data_dir>/settings_ledger/<night>/` (index.jsonl, one

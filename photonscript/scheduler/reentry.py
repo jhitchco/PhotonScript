@@ -482,6 +482,8 @@ class LiveIO:
         return await nina_get(self.base, path, timeout=15.0)
 
     async def move(self, position: int):
+        from photonscript.scheduler.focuser_guard import note_move
+        note_move(self.cfg, "rc16", int(position), "reentry")   # not a reset
         return await self.get(f"/equipment/focuser/move?position={int(position)}")
 
     async def reports(self) -> list[dict]:

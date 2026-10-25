@@ -460,6 +460,16 @@ class Armer:
         except Exception as e:  # noqa: BLE001
             logger.debug("settings ledger hourly check failed: %s", e)
 
+    async def _focuser_guard_preconfig(self, now: datetime) -> None:
+        """Focuser position-loss guard at pre-config (detection and the
+        push only, nothing is moved). Never raises, at most ~60 s."""
+        try:
+            from photonscript.scheduler import focuser_guard
+            await asyncio.wait_for(
+                focuser_guard.check(self.config, self, now=now, phase="preconfig"), 60)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("focuser guard pre-config check failed: %s", e)
+
     def _ledger(self, reason: str) -> None:
         """Settings ledger snapshot in the background (read only; never
         blocks, never raises). Off unless settings_ledger_enabled."""
@@ -4535,6 +4545,7 @@ class Armer:
             await self._story("plan", now)   # PS-212: evening plan heads-up
             if now >= preconfig:
                 self._ledger("pre-config")
+                await self._focuser_guard_preconfig(now)
                 if await self._dispatch_and_start():
                     self._set_state("RUNNING",
                                     "Sequence started — cooling, imaging at dark")

@@ -419,6 +419,58 @@ def test_focus_offsets_and_focuser_reset(tmp_path, pushes):
     assert not z["changed"]          # a position is a live reading, not a setting
 
 
+def test_focuser_reset_dawn_disconnect_is_no_alarm(tmp_path, pushes):
+    """2026-10-24 replay: nina1 focuser 5674 at the RUNNING -> PAUSED_UNSAFE
+    snapshot, then 0 at the PAUSED_UNSAFE -> COMPLETE one at 12:39Z, where
+    the dawn shutdown had disconnected the devices (focuser Temperature NaN,
+    camera Temperature 0 / CameraState NoState, weather NaN). Not a reset."""
+    cfg = _cfg(tmp_path)
+
+    def at_5674(fx):
+        fx["devices"]["focuser"]["Response"]["Position"] = 5674
+    a = _take(cfg, T0, state="PAUSED_UNSAFE", nina1=_nina_collector("nina1", at_5674))
+    assert _row(a, "nina1_focuser_reset")["status"] == "pass"
+
+    def dawn(fx):
+        # the live readings of that snapshot carried no Connected field
+        f = fx["devices"]["focuser"]["Response"]
+        f.pop("Connected", None)
+        f.update(Position=0, Temperature=float("nan"))
+        fx["devices"]["camera"]["Response"].update(Temperature=0, CameraState="NoState")
+        for k in ("Temperature", "Humidity", "DewPoint"):
+            fx["devices"]["weather"]["Response"][k] = float("nan")
+    b = _take(cfg, T0 + timedelta(hours=9, minutes=39), state="COMPLETE",
+              nina1=_nina_collector("nina1", dawn))
+    row = _row(b, "nina1_focuser_reset")
+    assert row["status"] != "fail", row
+    assert not [m for m in pushes if "position counter" in m.lower()]
+
+    def unplugged(fx):
+        fx["devices"]["focuser"]["Response"].update(Connected=False, Position=0)
+    c = _take(cfg, T0 + timedelta(hours=9, minutes=45), state="COMPLETE",
+              nina1=_nina_collector("nina1", unplugged))
+    assert _row(c, "nina1_focuser_reset")["status"] != "fail"
+
+
+def test_focuser_reset_after_reconnect_is_judged_against_last_connected(tmp_path, pushes):
+    """A real reset shows after a reconnect: connected 5868, disconnected
+    (Position 0, not judged), connected again at 3 -> FAIL against 5868."""
+    cfg = _cfg(tmp_path)
+    _take(cfg, T0)
+
+    def unplugged(fx):
+        fx["devices"]["focuser"]["Response"].update(Connected=False, Position=0)
+    off = _take(cfg, T0 + timedelta(hours=1), nina1=_nina_collector("nina1", unplugged))
+    assert _row(off, "nina1_focuser_reset")["status"] != "fail"
+    assert off["snapshot"]["apps"]["nina1"]["live"]["focuser"]["Connected"] is False
+
+    def back_at_3(fx):
+        fx["devices"]["focuser"]["Response"]["Position"] = 3
+    z = _take(cfg, T0 + timedelta(hours=2), nina1=_nina_collector("nina1", back_at_3))
+    row = _row(z, "nina1_focuser_reset")
+    assert row["status"] == "fail" and row["current"] == "3 (was 5868)"
+
+
 def test_piggyback_off_skips_nina2(tmp_path, pushes):
     cfg = _cfg(tmp_path, piggyback_enabled=False)
     r = _take(cfg)

@@ -154,6 +154,8 @@ safety act. Conditions are the code's own.
 | scheduler/dusk_flats.py | auto dusk flats dispatched | info (the flats story gives the counts) |
 | scheduler/dusk_flats.py | flats v2 window report "Dusk flats <night>: ..." / "Dawn flats <night>: ..." | story, once per window |
 | scheduler/focus_model.py | focus offsets | info |
+| scheduler/focuser_guard.py | focuser reset (counter dropped to about 0 / jumped, both rigs), restore did not finish | act (not safety: data, not hardware; held 00:00-08:00) |
+| scheduler/focuser_guard.py | restore done, counter-only verdict, advise outcome | info |
 | scheduler/focus_reports.py | autofocus reports bad | act |
 | scheduler/frozen_sensor.py | frozen sensor | info |
 | scheduler/guide_blocks.py | guiding per block | info |
