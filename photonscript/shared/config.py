@@ -192,6 +192,25 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_refocus_mode: str = "advise"
     night_pilot_limit_subs_mode: str = "advise"
     night_pilot_guider_stop_mode: str = "advise"
+    # Sub-length ladder (2026-10-25, scheduler/sub_ladder.py): each rig finds
+    # its longest good sub length per night. N round accepted subs at a
+    # length -> the next rung; M of the last W failing at a rung the ladder
+    # stepped to -> back one rung, held for the night. Never on an optics
+    # reading, too few stars (narrowband: a higher bar), a sky-limited
+    # background or a rung without darks. Steps are tonight-only goal
+    # overrides (reverted at dawn). off | advise (default) | act;
+    # night_pilot_mode=advise caps it.
+    night_pilot_ladder_mode: str = "advise"
+    night_pilot_ladder_rc16: str = "120,180,240,300"
+    night_pilot_ladder_piggyback: str = "120,180,240,300,450"
+    night_pilot_ladder_up_subs: int = 6
+    night_pilot_ladder_down_fails: int = 3
+    night_pilot_ladder_down_window: int = 5
+    night_pilot_ladder_ecc_rc16: float = 0.5
+    night_pilot_ladder_ecc_piggyback: float = 0.45
+    night_pilot_ladder_min_stars: int = 30
+    night_pilot_ladder_nb_min_stars: int = 100
+    night_pilot_ladder_sky_frac: float = 0.25
     # Stuck-loop detector (2026-10-15, scheduler/stuck_loop.py): a rig that
     # should be imaging saves no light (the 10-14 AF / center / park loop).
     # stuck_loop_mode alert | off; the pilot's action off | advise | act
