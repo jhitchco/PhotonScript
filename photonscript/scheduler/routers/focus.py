@@ -183,6 +183,8 @@ async def api_focus_model_move(filter: str = "L", dry_run: bool = False,
         elif dry_run:
             out["verdict"] = "WOULD_MOVE"
         else:
+            from photonscript.scheduler.focuser_guard import note_move
+            note_move(cfg, "rc16", tgt["position"], "focus_model")   # not a reset
             out["nina"] = await _nina_move(base, tgt["position"])
             out["verdict"] = "MOVED"
     except Exception as e:  # noqa: BLE001

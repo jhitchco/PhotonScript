@@ -281,8 +281,20 @@ computed = "focuser_counter_reset"
 reset_below = 1000
 drop_steps = 3000
 severity = "fail"
-why = "The RC16 EAF focuses near 5700 steps; a drop to about 0 between two readings means its counter was reset (2026-10-12), so every seed, offset and focus model position is now wrong by the old position."
+why = "The RC16 EAF focuses near 5700 steps; a drop to about 0 between two connected readings means its counter was reset (2026-10-12), so every seed, offset and focus model position is now wrong by the old position. A disconnected focuser (Position 0, Temperature NaN: the 2026-10-24 dawn false alarm) is not a reading and never fails this rule."
 fix = "Do not refocus by hand from the new zero: compare the newest AF position with the focus seeds (System page > Focus), then re-seed (photonscript focus-ingest) or move the EAF back by the lost steps."
+
+[[rule]]
+id = "nina2_focuser_reset"
+app = "nina2"
+rig = "piggyback"
+label = "Piggy-600 EAF position counter"
+computed = "focuser_counter_reset"
+reset_below = 1000
+drop_steps = 3000
+severity = "fail"
+why = "The Piggy-600 EAF focuses near 11000 steps; a drop to about 0 between two connected readings means its counter was reset, so its focus seeds and AF start are wrong. A disconnected focuser (Position 0, Temperature NaN, e.g. after the dawn shutdown) is not a reading and never fails this rule."
+fix = "Check the EAF in NINA #2 (Equipment > Focuser); compare the next AF with the Piggy focus seeds and re-seed, or move the EAF back by the lost steps if it really moved."
 
 [[rule]]
 id = "nina1_dither_vs_search"

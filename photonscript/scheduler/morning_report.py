@@ -59,6 +59,9 @@ Built only from data other passes already keep (nothing is measured here):
   * Night pilot (night_pilot.morning_lines): "Night pilot: 04:31 stopped
     PHD2 guiding -> worked (ecc 0.76 -> 0.52); ...", the tonight-only goal
     changes restored at dawn, and "Night pilot learned: ..." suggestions
+  * focuser guard (focuser_guard.morning_lines): "Focuser reset: RC16
+    5674 -> 0 at 23:41 local (night); first sub after the reset HFR 8.30;
+    moved focuser at 5690; autofocus: AUTOFOCUS-FINISHED ..."
   * tonight-only pauses (tonight_pause.morning_lines): "Paused for tonight
     only, back at dawn: Heart Nebula, M31"
 
@@ -352,6 +355,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["night_pilot"] = list(out.get("night_pilot") or []) + sl_lines(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no stuck-loop lines: %s", e)
+    try:   # focuser counter resets (2026-10-25, scheduler/focuser_guard.py)
+        from photonscript.scheduler.focuser_guard import morning_lines as fg_lines
+        out["night_pilot"] = list(out.get("night_pilot") or []) + fg_lines(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no focuser guard lines: %s", e)
     try:   # goals paused for tonight only, back at dawn (tonight_pause)
         from photonscript.scheduler.tonight_pause import morning_lines as tp_lines
         out["paused_tonight"] = tp_lines(config, date)

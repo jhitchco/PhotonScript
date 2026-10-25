@@ -15,7 +15,10 @@ other rig exposed at the same time (sub_pairs) and the guiding context:
 
     focuser          FOCPOS 0 / a live focuser read of 0, or autofocus that
                      keeps restarting without finishing (af_stall) while
-                     the subs are soft
+                     the subs are soft, or a focuser counter reset (the
+                     focuser guard's run event focuser_reset, under 6 h
+                     old, no AF finished since) while the subs are soft;
+                     every focuser verdict cites the reset time
     guider_conflict  PHD2 guiding on an UNGUIDED night; PHD2 not guiding on
                      a GUIDED night; PHD2 guiding on a FAIL calibration;
                      PHD2 RMS tiny while the subs trail (non-star lock,
@@ -473,7 +476,8 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
     ctx (all optional): armed ('guided' | 'unguided' | None), phd2 (live
     {state, rms_arcsec, snr, hfd_px}), calibration (the active PHD2
     calibration record), nonstar (a PS-91 non-star episode overlaps the
-    window), focus {last_af_utc, last_af_temp_c, temp_c, af_stall},
+    window), focus {last_af_utc, last_af_temp_c, temp_c, af_stall,
+    focuser_reset (the focuser guard's run event)},
     solve (latest_solve), plate_solve_errors (count tonight), now."""
     ctx = ctx or {}
     subs = subs if subs is not None else list(window)
@@ -543,23 +547,49 @@ def diagnose(config, rig: str, window: list[dict], *, subs: list[dict] | None = 
     soft = most("soft")
     stars_low = most("stars_low")
 
-    # 1. focuser dead / frozen
+    # 1. focuser dead / frozen / its counter reset (the focuser guard's
+    # run event focuser_reset: every focuser verdict cites the reset time)
     fz = sum(1 for s in bs if s["focuser_zero"])
-    stall = (ctx.get("focus") or {}).get("af_stall")
+    focus_ctx = ctx.get("focus") or {}
+    stall = focus_ctx.get("af_stall")
+    reset = focus_ctx.get("focuser_reset") or None
+    rt = parse_utc(reset.get("t")) if reset else None
+    if rt is not None and w_last and not (rt <= w_last[1]):
+        rt = None                      # a reset after this window
+    reset_ev = ({"focuser_reset_t": reset.get("t"),
+                 "focuser_reset": reset.get("value")} if rt is not None else {})
+    reset_txt = (f"; focuser counter reset at {rt:%H:%MZ} ({reset.get('value')})"
+                 if rt is not None else "")
+    last_af = parse_utc(focus_ctx.get("last_af_utc"))
+    reset_live = (rt is not None and w_last is not None
+                  and w_last[1] - rt <= timedelta(hours=6)
+                  and (last_af is None or last_af <= rt))
     if fz * 2 >= n_b and fz:
         add("focuser", HIGH,
-            f"{label} focuser reads position 0 on {fz} of {n_b} bad subs: focus unknown",
+            f"{label} focuser reads position 0 on {fz} of {n_b} bad subs: "
+            f"focus unknown{reset_txt}",
             "Check the focuser USB / power, reconnect it in NINA, then run AF.",
             _action("check_focuser", "reconnect the focuser, then run AF"),
-            {"focpos_zero_subs": fz})
+            {"focpos_zero_subs": fz, **reset_ev})
     elif stall and soft:
         add("focuser", HIGH,
             f"{label} autofocus keeps restarting without finishing "
-            f"({stall.get('runs') or stall.get('value')} runs) while subs are soft",
+            f"({stall.get('runs') or stall.get('value')} runs) while subs are "
+            f"soft{reset_txt}",
             "The focuser is not moving or not reporting: check it in NINA "
             "(position, temperature changing), reconnect, then run AF.",
             _action("check_focuser", "reconnect the focuser, then run AF"),
-            {"af_stall": stall})
+            {"af_stall": stall, **reset_ev})
+    elif reset_live and soft:
+        add("focuser", HIGH,
+            f"{label} focuser position counter reset at {rt:%H:%MZ} "
+            f"({reset.get('value')}) and no autofocus finished since: AF starts "
+            "from the wrong place and the last good focus positions are wrong",
+            "Check the focuser in NINA; compare the next AF with the last good "
+            "position (GET /api/night/focuser-guard), move it back if it really "
+            "moved, then run AF.",
+            _action("check_focuser", "check the focuser position, then run AF"),
+            reset_ev)
 
     # 2. guider conflict: trailing subs, or soft subs under a PHD2 that is
     # visibly moving the mount around (RMS over sub_doctor_wild_rms_arcsec)
@@ -906,10 +936,12 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
     bases = sp.baselines(subs)
     rigs = [rig] if rig else sorted({r.get("rig") or "rc16" for r in subs},
                                     key=lambda x: (x != "rc16", x))   # RC16 first
-    stalls = {}
+    stalls, resets = {}, {}
     for e in events or []:
         if e.get("kind") == "af_stall":
             stalls.setdefault(e.get("rig") or "rc16", []).append(e)
+        elif e.get("kind") == "focuser_reset":   # scheduler/focuser_guard.py
+            resets.setdefault(e.get("rig") or "rc16", []).append(e)
     out = {"night": night, "armed": armed, "window": n, "rigs": {}}
     pair_cache: dict = {}
     for rg in rigs:
@@ -926,11 +958,14 @@ def replay_night(config, night: str, subs: list[dict], *, rig: str | None = None
             last_af = max([a for a in afs if t_end is None or a <= t_end], default=None)
             st = [e for e in stalls.get(rg, [])
                   if t_end is None or (parse_utc(e.get("t")) or t_end) <= t_end]
+            rz = [e for e in resets.get(rg, [])
+                  if t_end is None or (parse_utc(e.get("t")) or t_end) <= t_end]
             ctx = {"armed": armed, "bases": bases, "pair_cache": pair_cache,
                    "calibration": _cal_at(cal_history or [], t_end),
                    "focus": {"last_af_utc": last_af.isoformat() + "Z" if last_af else None,
                              "af_known": rg in (nina_events or {}),
-                             "af_stall": st[-1] if st else None},
+                             "af_stall": st[-1] if st else None,
+                             "focuser_reset": rz[-1] if rz else None},
                    "solve": solve, "now": t_end.isoformat() + "Z" if t_end else None,
                    "guider_start": guider_start_at(
                        (nina_events or {}).get("rc16"), events, t_end),

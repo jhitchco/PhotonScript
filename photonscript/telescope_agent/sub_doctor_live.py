@@ -43,13 +43,17 @@ def _focus(agent, config, night: str, rig: str) -> dict:
     reps = [r for r in reps if parse_utc(r.get("Timestamp"))]
     last = max(reps, key=lambda r: parse_utc(r.get("Timestamp")), default=None)
     foc = getattr(agent, "_focuser_info", None) or {}
-    stall = [e for e in store.read_jsonl(events_path(config, night))
+    evs = store.read_jsonl(events_path(config, night))
+    stall = [e for e in evs
              if e.get("kind") == "af_stall" and (e.get("rig") or "rc16") == rig]
+    resets = [e for e in evs   # the focuser guard (scheduler/focuser_guard.py)
+              if e.get("kind") == "focuser_reset" and (e.get("rig") or "rc16") == rig]
     return {"last_af_utc": (parse_utc(last.get("Timestamp")).isoformat() + "Z"
                             if last else None),
             "last_af_temp_c": (last or {}).get("Temperature"),
             "temp_c": foc.get("Temperature"), "af_known": bool(reps),
-            "af_stall": stall[-1] if stall else None}
+            "af_stall": stall[-1] if stall else None,
+            "focuser_reset": resets[-1] if resets else None}
 
 
 def _pointing(agent, config, night: str, rig: str, last: dict) -> dict | None:

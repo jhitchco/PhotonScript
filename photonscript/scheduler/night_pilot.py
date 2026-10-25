@@ -1743,7 +1743,15 @@ async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
             msg = (f"Night pilot: needs a human: {dec['what']} because "
                    f"{_because(d)} ({dec['why']}). Nothing was sent.")
             _event(cfg, night, "human", msg, now, rig=rig, cause=d["cause"])
-            await io.notify(cfg, msg, priority=0, kind="act")
+            kind = "act"
+            if fam == "focuser":
+                try:   # the focuser guard already sent the act for this rig
+                    from photonscript.scheduler.focuser_guard import pushed_tonight
+                    if pushed_tonight(cfg, night, rig):
+                        kind = "info"
+                except Exception:  # noqa: BLE001
+                    pass
+            await io.notify(cfg, msg, priority=0, kind=kind)
         return {"rig": rig, "kind": "human", "cause": d["cause"]}
     action = dec["action"]
     advise = m == "advise" or not action_on(cfg, action)

@@ -211,6 +211,22 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_ladder_min_stars: int = 30
     night_pilot_ladder_nb_min_stars: int = 100
     night_pilot_ladder_sky_frac: float = 0.25
+    # Focuser position-loss guard (2026-10-25, scheduler/focuser_guard.py):
+    # a focuser counter that drops to about 0 (or jumps) between two
+    # CONNECTED readings with no autofocus or commanded move to explain it.
+    # One act push per rig per night (not a safety act), a run event and,
+    # in act mode, the restore after the first sub (sharp: AF in place;
+    # soft: move back to the last good AF position, then AF). off | advise
+    # (default) | act; night_pilot_mode advise / off caps it at advise.
+    focuser_guard_mode: str = "advise"
+    focuser_guard_poll_s: float = 60.0
+    focuser_guard_reset_below: float = 1000.0
+    focuser_guard_drop_steps: float = 3000.0
+    focuser_guard_jump_frac: float = 0.25
+    focuser_guard_travel_rc16: float = 0.0       # EAF max step; 0 = unknown
+    focuser_guard_travel_piggyback: float = 0.0
+    focuser_guard_sub_wait_min: float = 15.0
+    focuser_guard_af_after_move: bool = True
     # Stuck-loop detector (2026-10-15, scheduler/stuck_loop.py): a rig that
     # should be imaging saves no light (the 10-14 AF / center / park loop).
     # stuck_loop_mode alert | off; the pilot's action off | advise | act
