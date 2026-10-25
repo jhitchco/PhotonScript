@@ -1798,6 +1798,9 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
         imaging.append(_wait_for_timespan(TARGET_IMAGING_PACE_S))
     if getattr(target, "mosaic_note", ""):
         items.insert(0, _annotation(target.mosaic_note))
+    if getattr(target, "carrier_note", ""):
+        # 2026-10-25 moon fill: a pointing carrier for the Piggy-600
+        items.insert(0, _annotation(target.carrier_note))
     dso_name = target.name + (TARGET_FILL_SUFFIX if fill else "")
     if fill:
         if not imaging:

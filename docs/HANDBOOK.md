@@ -1297,6 +1297,50 @@ goal on both rigs and falls back to split for what is left.
   Heart 84.5 (32.9, RC16 8.0 / Piggy 3.1 h: 21.6, 12.0, 10.0, 8.0), M31
   69.1 (33.5, RC16 1.4 / Piggy 0 h: 3.7, 13.0, 10.0, 8.9).
 
+### Moon fill: a Piggy-driven night under a bright moon (2026-10-25)
+
+2026-10-25 (100% moon, armed unguided) `GET /api/nightplan` had zero
+targets: the NB moon tag deferred all broadband, the unguided night removed
+RC16 narrowband (`rc16_narrowband_requires_guided`), every active goal was
+LRGB only, and the Piggy-600 OSC goals of M31 and NGC 604 were met. No RC16
+target meant no pointing for the Piggy-600 (same mount): a GREEN night with
+both rigs idle (worked around live by patching the Heart to Ha:100).
+
+- **Rule** (`scheduler/moon_fill.py`, called at the end of
+  `plan_night_sequence`): with `plan_moon_piggy_fill` on (default),
+  `piggyback_enabled` and moon-aware planning, on a bright-moon night (tag
+  NB, or `moon.broadband_deferred`), when the plan is empty or its windows
+  use less than `plan_moon_fill_min_used_pct` (50) of the dark time left,
+  every gap of at least `plan_window_min_minutes` goes to a pointing
+  carrier: the best active goal up in the gap, ranked moon at least
+  `plan_moon_fill_min_sep_deg` (30) away first (a goal nearer the moon only
+  when nothing else is up), then Piggy OSC still owed, then hours up in the
+  gap, moon separation, priority. A goal whose OSC goal is met still
+  carries when nothing better is up. The carrier keeps the mount for its
+  whole time up in the gap (not budget x filter share); the time before it
+  rises or after it sets goes to the next carrier. Mosaic panels and goals
+  already planned are not carriers.
+- **RC16 on a carrier**: Ha x `plan_moon_fill_carrier_s` (300 s; the
+  unguided cap still applies), sized to the window, gain / offset from the
+  goal's RC16 plan. Narrowband is never moon-deferred, so the generator
+  keeps it. Unguided the subs are expected to be rejected (the 2026-10-24
+  Ha night); guided they are bonus Ha. An annotation at the top of the
+  target says so ("Moon fill: <goal> is a pointing carrier for the
+  Piggy-600 ...").
+- **Shown**: `/api/tonight` and `/api/nightplan` carry `moon_fill`
+  (reason, skipped goals with why, carriers with windows, moon separation,
+  Piggy owed, used / filled %) and `moon_fill_note`; tonight's targets and
+  the night plan's schedule rows have `carrier`; the dashboard timeline
+  shows the note; the evening plan heads-up lists the note and marks the
+  row "(Piggy carrier, RC16 Ha)"; the armer keeps both in its plan.
+- **10-25 at 01:00Z** (fixture `tests/test_scheduler/fixtures/moon_fill`,
+  from /api/projects2 with the Heart back to LRGB): Heart Nebula carries
+  02:03Z-12:09Z (OSC owes 3.1 h, 45 deg from the moon), 98% of the dark
+  window. Preflight's "Sequence generate + lint" (check 5) failed the same
+  night for the same moon: its fixed L-only M51 test target was emptied by
+  the moon rule. It now uses a target at the LST of tonight's mid-dark,
+  Dec +40, shooting L and Ha (`preflight.sequence_check`).
+
 ### Off-target alert and "Restart tonight from now" (PS-143)
 
 - **On target** cell of the Where is it panel (`off_target` in `GET

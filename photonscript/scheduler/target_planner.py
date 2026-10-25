@@ -814,6 +814,7 @@ def plan_night_sequence(
     # PS-180: per target, for the window allocation
     vis_by_name, need_by_name, prio_by_name = {}, {}, {}
     ha_first_by_name = {}   # name -> (Ha seconds done, Ha first seconds)
+    skipped: dict = {}      # moon fill: goal -> why it has nothing tonight
 
     for vp in visible_projects:
         if remaining_hours <= 0.3:
@@ -856,6 +857,10 @@ def plan_night_sequence(
                 remaining_exposures.append(hold)
 
         if not remaining_exposures:
+            skipped[proj.target.name] = ("RC16 narrowband needs guiding"
+                                         if any(d["target"] == proj.target.name
+                                                for d in info["rc16_nb_unguided"])
+                                         else "nothing owed on the RC16")
             continue
         # PS-180: what the goal still needs (before tonight's scale-down)
         need_s = sum(owed_seconds(e) for e in remaining_exposures) * 1.15
@@ -883,6 +888,7 @@ def plan_night_sequence(
                 remaining_exposures, available_seconds, moon_tag)
         if not remaining_exposures:
             # e.g. a broadband-only target on a bright-moon night -> skip tonight
+            skipped[proj.target.name] = "broadband deferred by the moon"
             continue
         # Same moon rule as the sequence generator (moon.broadband_deferred):
         # a broadband-only target the generator would empty is dropped here, so
@@ -904,6 +910,7 @@ def plan_night_sequence(
                     logger.info("Skipping %s tonight: broadband-only and the "
                                 "moon defers broadband (%s)", proj.target.name,
                                 describe_moon(_gen_moon))
+                    skipped[proj.target.name] = "broadband deferred by the moon"
                     continue
 
         alloc_time = sum(owed_seconds(e) for e in remaining_exposures) / 3600
@@ -1006,6 +1013,26 @@ def plan_night_sequence(
             sequence_targets = _apply_windows(
                 sequence_targets, vis_by_name, need_by_name, prio_by_name, config,
                 dark_start, dark_end, date_utc, moon, ha_first_by_name)
+
+    # 2026-10-25 moon fill: a bright-moon night that left the RC16 (and so
+    # the Piggy-600 on the same mount) with nothing gets a Piggy-driven
+    # night of pointing carriers (scheduler/moon_fill.py)
+    info["moon_fill"] = info["moon_fill_note"] = None
+    from photonscript.scheduler import moon_fill
+    if moon_fill.enabled(config):
+        if _gen_moon is None:
+            try:
+                from photonscript.scheduler.moon import moon_window_tonight
+                _gen_moon = moon_window_tonight(config, now=date_utc) or {}
+            except Exception as e:  # noqa: BLE001
+                logger.warning("moon window unavailable: %s", e)
+                _gen_moon = {}
+        sequence_targets = moon_fill.apply(
+            sequence_targets, projects=projects,
+            visible_projects=visible_projects, config=config,
+            date_utc=date_utc, twilight=twilight, dark_start=dark_start,
+            dark_end=dark_end, moon_tag=moon_tag, moon_window=_gen_moon,
+            guided=guided, skipped=skipped, info=info)
 
     logger.info(
         "Night plan: %d targets, %.1f hours allocated",

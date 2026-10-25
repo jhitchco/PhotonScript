@@ -241,6 +241,9 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         transit_alt = round(90 - abs(obs.latitude - t.dec_degrees))
         kind = "narrowband sho" if any(
             e.filter_type.value in ("Ha", "OIII", "SII") for e in active)             else "broadband lrgb"
+        carrier = bool(getattr(t, "carrier", False))
+        if carrier:
+            kind = "pointing carrier for the Piggy-600 (RC16 Ha, moon fill)"
         rah = int(t.ra_hours)
         ram = int((t.ra_hours - rah) * 60)
         dec_sign = "+" if t.dec_degrees >= 0 else "-"
@@ -259,6 +262,7 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
                             if getattr(t, "handoff_utc", None) and not is_fill
                             else None),
             "fill": is_fill,
+            "carrier": carrier,
             "transit_local": _fmt(transit)["local"] if transit else None,
             "transit_alt": transit_alt,
             "coords": f"{rah:02d}h{ram:02d}m / {dec_sign}{decd:02d}d{decm:02d}m",
@@ -296,6 +300,10 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         # 2026-10-25: RC16 narrowband left out of an unguided night
         "rc16_nb_unguided": plan_info.get("rc16_nb_unguided") or [],
         "rc16_nb_note": plan_info.get("rc16_nb_note"),
+        # 2026-10-25 moon fill (scheduler/moon_fill.py): why the night is
+        # Piggy-driven and which goals carry the pointing
+        "moon_fill": plan_info.get("moon_fill"),
+        "moon_fill_note": plan_info.get("moon_fill_note"),
         "targets": target_names,
         "events": events,
         "twilight": twilight,

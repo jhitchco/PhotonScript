@@ -265,6 +265,20 @@ class PhotonScriptConfig(BaseSettings):
     # the whole dark window on both rigs, split after it sets or is done.
     # POST /api/tonight/mode overrides it for one night.
     plan_night_mode: str = "split"
+    # Moon fill (2026-10-25, target_planner.moon_fill): on a bright-moon
+    # night (broadband deferred) with the Piggy-600 on, a plan that comes out
+    # empty, or that leaves the dark window less than
+    # plan_moon_fill_min_used_pct used, gets a Piggy-driven night: the
+    # gaps go to the best active goal up then (Piggy OSC owed first, the
+    # moon at least plan_moon_fill_min_sep_deg away when another goal
+    # allows it), the RC16 shooting Ha at plan_moon_fill_carrier_s as a
+    # pointing carrier for the Piggy-600 (unguided: subs expected to be
+    # rejected; not counted toward the goal). 2026-10-25: 100% moon,
+    # unguided, LRGB-only goals, OSC met on two of three: 0 targets.
+    plan_moon_piggy_fill: bool = True
+    plan_moon_fill_min_used_pct: float = 50.0
+    plan_moon_fill_min_sep_deg: float = 30.0
+    plan_moon_fill_carrier_s: float = 300.0
     campaign_min_alt_deg: float = 30.0  # PS-30: campaign planner altitude floor
     # (deg) for a target's usable 10-min slots; a project's min_alt_deg overrides.
     # Flat 30 deg at AARO Pier 3 (Jeremy, 2026-09-26: no roof/terrain profile).

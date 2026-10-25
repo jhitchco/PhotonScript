@@ -24,6 +24,72 @@ def _check(name: str, status: str, detail: str) -> dict:
     return {"name": name, "status": status, "detail": detail}
 
 
+PREFLIGHT_DEC_DEG = 40.0   # high enough to clear the 30 deg floor at transit
+
+
+def preflight_target_radec(config, now: datetime | None = None) -> tuple:
+    """(ra_hours, dec_degrees) of the preflight's synthetic target: RA =
+    the local sidereal time at the middle of tonight's dark window, Dec
+    +40, so it transits mid-night and is up whatever the season (2026-10-25:
+    a fixed M51 position, RA 13.5 h, was not up at night in late October).
+    Falls back to the sidereal time now when the twilight is unavailable."""
+    from astropy import units as u
+    from astropy.time import Time
+    from photonscript.shared.astronomy import get_twilight_times
+    from photonscript.shared.localtime import night_base_date
+    now = now or datetime.utcnow()
+    obs = config.get_observatory()
+    when = now
+    try:
+        base = night_base_date(config, now)
+        tw = get_twilight_times(obs, base)
+        if tw.get("astro_dark_end") and tw["astro_dark_end"] < now:
+            from datetime import timedelta
+            tw = get_twilight_times(obs, base + timedelta(days=1))
+        d0, d1 = tw.get("astro_dark_start"), tw.get("astro_dark_end")
+        if d0 and d1 and d1 > d0:
+            when = d0 + (d1 - d0) / 2
+    except Exception:  # noqa: BLE001
+        when = now
+    lst = Time(when).sidereal_time("apparent", longitude=obs.longitude * u.deg)
+    return round(float(lst.hour) % 24.0, 3), PREFLIGHT_DEC_DEG
+
+
+def sequence_check(config, now: datetime | None = None) -> dict:
+    """Check 5: generate a sequence for a synthetic target and lint it.
+    The target is up tonight (preflight_target_radec) and shoots L and Ha:
+    a bright moon defers broadband all night (moon.broadband_deferred) and
+    the generator then drops an L-only target, so the lint saw no target
+    ("No DeepSkyObjectContainer targets found", "No MeridianFlipTrigger
+    found") and the auto-arm pushed a false "preflight FAILED" (2026-10-25,
+    100% moon). Narrowband is never moon-deferred."""
+    try:
+        from photonscript.shared.models import (ExposurePlan, FilterType,
+                                                NinaSequenceTarget)
+        from photonscript.scheduler.nina_sequence import build_sequence_for_night
+        from photonscript.scheduler.nina_sequence_json import generate_nina_json
+        from photonscript.scheduler.sequence_lint import lint
+
+        ra, dec = preflight_target_radec(config, now)
+        target = NinaSequenceTarget(
+            name="PreflightTest", ra_hours=ra, dec_degrees=dec,
+            exposures=[ExposurePlan(filter_type=f, exposure_seconds=180, count=5,
+                                    gain=config.default_gain,
+                                    offset=config.default_offset)
+                       for f in (FilterType.LUMINANCE, FilterType.HA)],
+        )
+        seq = build_sequence_for_night("PreflightTest", [target])
+        result = lint(json.loads(generate_nina_json(seq)))
+        if result.ok:
+            return _check("Sequence generate + lint", "pass",
+                          "Round-trip clean: generator output passes all AARO "
+                          f"rules (test target RA {ra:.2f} h, Dec +{dec:.0f})")
+        errs = "; ".join(f.detail for f in result.findings if f.level == "ERROR")
+        return _check("Sequence generate + lint", "fail", errs)
+    except Exception as e:  # noqa: BLE001
+        return _check("Sequence generate + lint", "fail", repr(e))
+
+
 def _audit_check(config) -> dict:
     """PS-89: the last PHD2 settings audit (at arm, a PHD2 change or a
     refresh), read from disk; a WARN, never a no-go (PHD2 is optional)."""
@@ -232,31 +298,7 @@ async def run_preflight(config, test_push: bool = True) -> dict:
     checks.append(await asyncio.to_thread(_apps_check, config))   # PS-170
 
     # 5. Sequence generation + lint round-trip ------------------------------
-    try:
-        from photonscript.shared.models import (ExposurePlan, FilterType,
-                                                NinaSequenceTarget)
-        from photonscript.scheduler.nina_sequence import build_sequence_for_night
-        from photonscript.scheduler.nina_sequence_json import generate_nina_json
-        from photonscript.scheduler.sequence_lint import lint
-
-        target = NinaSequenceTarget(
-            name="PreflightTest", ra_hours=13.5, dec_degrees=47.2,
-            exposures=[ExposurePlan(filter_type=FilterType.LUMINANCE,
-                                    exposure_seconds=180, count=5,
-                                    gain=config.default_gain,
-                                    offset=config.default_offset)],
-        )
-        seq = build_sequence_for_night("PreflightTest", [target])
-        result = lint(json.loads(generate_nina_json(seq)))
-        if result.ok:
-            checks.append(_check("Sequence generate + lint", "pass",
-                                 "Round-trip clean — generator output passes "
-                                 "all AARO rules"))
-        else:
-            errs = "; ".join(f.detail for f in result.findings if f.level == "ERROR")
-            checks.append(_check("Sequence generate + lint", "fail", errs))
-    except Exception as e:  # noqa: BLE001
-        checks.append(_check("Sequence generate + lint", "fail", repr(e)))
+    checks.append(sequence_check(config))
 
     # 6. Star extraction library --------------------------------------------
     try:
