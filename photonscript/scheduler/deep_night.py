@@ -27,6 +27,11 @@ tonight's visible goals (score_goal):
                 later); 0 = not eligible tonight
   transit   10  1 at the dark-window midpoint, 0 at 6 h or more from it
 
+On a night planned unguided (rc16_narrowband_requires_guided, 2026-10-25)
+the RC16 narrowband owes nothing tonight (owed_by_kind nb_ok False): a
+narrowband-only goal is not eligible unless the Piggy-600 owes time, and the
+RC16 hold of a goal without an RC16 plan is broadband (L).
+
 Mosaic panels are not auto-picked (their panels are gated in order); an
 explicit pick may name one.
 """
@@ -173,8 +178,10 @@ def _rig(e) -> str:
     return getattr(e, "rig", "rc16") or "rc16"
 
 
-def owed_by_kind(proj) -> dict:
-    """Owed seconds per kind: NB / BB (RC16) and OSC (Piggy-600)."""
+def owed_by_kind(proj, nb_ok: bool = True) -> dict:
+    """Owed seconds per kind: NB / BB (RC16) and OSC (Piggy-600). nb_ok
+    False (an unguided night with rc16_narrowband_requires_guided): the RC16
+    narrowband is not shot tonight, so it owes nothing tonight."""
     out = {"NB": 0.0, "BB": 0.0, "OSC": 0.0}
     for e in proj.exposure_plans:
         if _rig(e) != "rc16" or e.filter_type.value == "OSC":
@@ -184,6 +191,8 @@ def owed_by_kind(proj) -> dict:
         owed = (e.exposure_seconds * max(0, e.count - e.acquired)
                 + (e.hdr_short_seconds or 0) * e.short_remaining())
         out["NB" if e.filter_type.value in NB_FILTERS else "BB"] += owed
+    if not nb_ok:
+        out["NB"] = 0.0
     return out
 
 
@@ -228,9 +237,11 @@ def moon_fit(owed: dict, lo: datetime, hi: datetime, bb_ok: bool,
 def score_goal(proj, vis: dict, start: datetime, end: datetime,
                dark_start: datetime, dark_end: datetime, *, bb_ok: bool = True,
                moonrise: datetime | None = None,
-               moonset: datetime | None = None) -> dict:
-    """One goal's deep-night score with its breakdown (see module doc)."""
-    owed = owed_by_kind(proj)
+               moonset: datetime | None = None, nb_ok: bool = True) -> dict:
+    """One goal's deep-night score with its breakdown (see module doc).
+    nb_ok False: the RC16 narrowband is off tonight (unguided night,
+    rc16_narrowband_requires_guided); the goal is scored on what is left."""
+    owed = owed_by_kind(proj, nb_ok)
     rc16_h = (owed["NB"] + owed["BB"]) / 3600
     osc_h = owed["OSC"] / 3600
     lo, hi, up_h = usable_span(vis, start, end)
@@ -257,7 +268,9 @@ def score_goal(proj, vis: dict, start: datetime, end: datetime,
     if up_h <= 0:
         why = "not above its altitude floor tonight"
     elif rc16_h + osc_h <= 0:
-        why = "nothing owed on either rig"
+        why = ("RC16 narrowband needs guiding (unguided night) and nothing else is owed"
+               if not nb_ok and owed_by_kind(proj)["NB"] > 0
+               else "nothing owed on either rig")
     elif mf <= 0:
         why = "the moon defers everything it owes tonight (broadband / OSC)"
     return {"project_id": proj.id, "target": proj.target.name,
@@ -271,7 +284,7 @@ def score_goal(proj, vis: dict, start: datetime, end: datetime,
 def choose(visible_projects: list, start: datetime, end: datetime,
            dark_start: datetime, dark_end: datetime, *, target: str | None = None,
            bb_ok: bool = True, moonrise: datetime | None = None,
-           moonset: datetime | None = None) -> tuple:
+           moonset: datetime | None = None, nb_ok: bool = True) -> tuple:
     """(pick or None, all scores best first). visible_projects: the
     planner's [{"project", "visibility"}]. target: a project id (or target
     name) that wins whatever its score."""
@@ -280,7 +293,7 @@ def choose(visible_projects: list, start: datetime, end: datetime,
     for vp in visible_projects:
         p = vp["project"]
         s = score_goal(p, vp["visibility"], start, end, dark_start, dark_end,
-                       bb_ok=bb_ok, moonrise=moonrise, moonset=moonset)
+                       bb_ok=bb_ok, moonrise=moonrise, moonset=moonset, nb_ok=nb_ok)
         if getattr(p, "mosaic", None) and not _matches(p, target):
             s["eligible"], s["why"] = False, "mosaic panel (not auto-picked)"
         scores.append(s)
@@ -320,14 +333,17 @@ def json_pick(s: dict | None) -> dict | None:
 # the RC16 hold for a goal without an RC16 plan (Piggy-driven)
 # --------------------------------------------------------------------------
 
-def rc16_hold(proj, seconds: float):
+def rc16_hold(proj, seconds: float, nb_ok: bool = True):
     """A goal with no RC16 plan picked for a deep night: the mount still
     has to point at it for the Piggy-600, so the RC16 shoots bonus subs of
     the default plan for the target type (suggest_exposure_plan's first
     set), sized to `seconds`. Not counted toward the goal (it has no RC16
     plan to credit)."""
-    from photonscript.scheduler.target_planner import suggest_exposure_plan
+    from photonscript.scheduler.target_planner import (broadband_hold,
+                                                       suggest_exposure_plan)
     base = suggest_exposure_plan(proj.target)[0]
+    if not nb_ok:
+        base = broadband_hold(base)
     exp = float(base.exposure_seconds or 300)
     return base.model_copy(update={
         "count": max(1, math.ceil(max(seconds, exp) / exp - 1e-9)),

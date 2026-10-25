@@ -1019,6 +1019,15 @@ class PhotonScriptConfig(BaseSettings):
                                  # are credited in seconds (ExposurePlan.
                                  # acquired_s). Set from the PS-84 tracking-test
                                  # verdict. 0 = no cap.
+    rc16_narrowband_requires_guided: bool = True  # 2026-10-25: a night armed /
+                                 # planned unguided schedules no RC16 Ha / OIII
+                                 # / SII (2026-10-24: 3 nm Ha at 120 s unguided
+                                 # all night, 126 rejects in a row, too few
+                                 # stars for AF). The plan names each dropped
+                                 # set; moon-up time goes to broadband only if
+                                 # the moon rule allows, else the RC16 idles.
+                                 # Piggy-600 plans unaffected. False = old
+                                 # behavior
     guiding_force_first_calibration: bool = False  # PS-72 (2026-09-27): default off;
                                  # a forced cal at a high-Dec first target wrecked
                                  # 2026-09-26. When True, the night's FIRST guided

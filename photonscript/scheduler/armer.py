@@ -2078,6 +2078,11 @@ class Armer:
                                        "note": plan_info.get("deep_note")}
             from photonscript.scheduler.deep_night import record_dispatch
             record_dispatch(self.config, self.plan["night_of"], plan_info, now)
+        # 2026-10-25: RC16 narrowband not scheduled on an unguided night
+        # (rc16_narrowband_requires_guided), with the reason, in the plan
+        self.plan["rc16_nb_unguided"] = list(plan_info.get("rc16_nb_unguided") or [])
+        if plan_info.get("rc16_nb_note"):
+            logger.info("Plan: %s", plan_info["rc16_nb_note"])
         self._persist()
         try:
             from photonscript.scheduler.runs import save_plan_snapshot

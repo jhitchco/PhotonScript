@@ -142,8 +142,13 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         seasonal = get_seasonal_targets(dusk.month)
         projects = [create_project_from_target(t) for t in seasonal]
     from photonscript.scheduler.target_planner import plan_with_info
+    try:
+        from photonscript.scheduler.app import armed_guided
+        guided = armed_guided()
+    except Exception:  # noqa: BLE001
+        guided = None
     targets, plan_info = plan_with_info(plan_night_sequence, projects, config,
-                                        now)
+                                        now, guided=guided)
 
     from photonscript.shared.localtime import utc_offset_hours as _tz_off
     utc_off = _tz_off(config, dusk)  # DST-aware (MDT -6 / MST -7)
@@ -288,6 +293,9 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
         "night_mode_source": plan_info.get("mode_source"),
         "deep_pick": plan_info.get("deep_pick"),
         "deep_note": plan_info.get("deep_note"),
+        # 2026-10-25: RC16 narrowband left out of an unguided night
+        "rc16_nb_unguided": plan_info.get("rc16_nb_unguided") or [],
+        "rc16_nb_note": plan_info.get("rc16_nb_note"),
         "targets": target_names,
         "events": events,
         "twilight": twilight,
