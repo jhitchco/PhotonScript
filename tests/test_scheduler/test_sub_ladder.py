@@ -502,4 +502,4 @@ def test_config_fields(tmp_path):
         assert by_env["PS_" + attr.upper()][3] == "Night pilot"
     for f in ("photonscript/scheduler/sub_ladder.py", "photonscript/scheduler/night_pilot.py"):
         src = (Path(__file__).resolve().parents[2] / f).read_text(encoding="utf-8")
-        assert src.isascii() and "—" not in src
+        assert src.isascii() and chr(0x2014) not in src
