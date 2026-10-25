@@ -183,6 +183,47 @@ def companion_kwargs(rec: dict | None) -> dict:
     return {}
 
 
+def with_target_length(rec: dict | None, target: str | None, exp_s: float,
+                       base_s: float) -> tuple[dict, float]:
+    """Tonight's plan record with one target's Piggy length set to exp_s
+    (the night pilot's sub ladder, 2026-10-25): that target's row (every
+    row when the target is not in the plan), never above the record's
+    applied unguided cap; the segments and single length rebuilt as plan()
+    does. (new record, the length that applies)."""
+    from photonscript.shared.target_names import target_key
+    rec = dict(rec or {})
+    cap = rec.get("cap_s")
+    s = float(exp_s)
+    if cap and s > float(cap) + 0.5:
+        s = float(cap)
+    rows = [dict(r) for r in rec.get("targets") or [] if isinstance(r, dict)]
+    if not rows:
+        rows = [{"target": target or "?", "exp_s": s, "source": "ladder",
+                 "until_utc": None}]
+    k = target_key(target) if target else ""
+    hit = [r for r in rows if k and target_key(r.get("target")) == k]
+    for r in hit or rows:
+        r["exp_s"] = s
+        r["source"] = "ladder"
+    segs: list[dict] = []
+    for r in rows:
+        if segs and abs(segs[-1]["exp_s"] - float(r["exp_s"])) < 0.5:
+            segs[-1]["until_utc"] = r.get("until_utc")
+            segs[-1]["targets"].append(r["target"])
+        else:
+            segs.append({"exp_s": float(r["exp_s"]), "until_utc": r.get("until_utc"),
+                         "targets": [r["target"]]})
+    if segs:
+        segs[-1]["until_utc"] = None
+    lengths = {round(x["exp_s"], 1) for x in segs}
+    base = float(rec.get("base_s") or base_s or 120.0)
+    rec.update(base_s=base, targets=rows,
+               segments=segs if len(lengths) > 1 else [],
+               single_s=segs[0]["exp_s"] if len(lengths) == 1 and segs else None,
+               changed=True)
+    return rec, s
+
+
 def summary(rec: dict | None) -> str:
     """One line for the log / plan: 'Piggy lengths: M31 120 s (override)
     until 06:10Z, then 450 s'."""

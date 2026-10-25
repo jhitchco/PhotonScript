@@ -71,6 +71,20 @@ night_pilot_verify_subs (2) subs of that rig:
                    event only.
   focuser          hardware: one push for a human, nothing sent.
 
+Sub-length ladder (2026-10-25, scheduler/sub_ladder.py; ladder()): not a
+diagnosis but the subs themselves. Per rig: N round accepted subs at a
+length -> the next rung (night_pilot_ladder_<rig>); M of the last W failing
+at a rung it stepped to -> back one rung, held for the night. Never on an
+optics reading, too few stars (narrowband: a higher bar), a sky-limited
+background or a rung without darks. Applied like a sub cap: a tonight-only
+ledgered goal override (RC16 filters / the Piggy "OSC" key), then the RC16
+restart after the current sub or the Piggy-600 companion re-dispatch
+(plan["piggy_length"] updated). One story push per step;
+night_pilot_ladder_mode off | advise (default) | act. Runs before the
+diagnoses each tick; a shorten waits out a ladder step on the same rig.
+The night's best rung per rig / target is a suggestion in the next plan
+heads-up (<data_dir>/night_pilot/ladder_learned.json).
+
 Guardrails (guard()): acts only while the armer is RUNNING (never ARMED,
 PAUSED_*, WATCHING a sideloaded night, COMPLETE); never while a calibration
 capture job runs, an arm recipe (TPoint mapping, tracking test, optics) is
@@ -951,10 +965,11 @@ class PilotIO:
             return []
 
     async def notify(self, cfg, msg: str, priority: int = 0,
-                     kind: str = "info") -> None:
+                     kind: str = "info", fact: str | None = None) -> None:
         try:
             from photonscript.shared.pushover import notify
-            await notify(cfg, msg, title=TITLE, priority=priority, kind=kind)
+            await notify(cfg, msg, title=TITLE, priority=priority, kind=kind,
+                         fact=fact)
         except Exception as e:  # noqa: BLE001
             logger.warning("night pilot push failed: %s", e)
 
@@ -963,6 +978,16 @@ class PilotIO:
     def dark_status(self, cfg):
         """seconds -> dark_match dict for the RC16 (None: dark_match)."""
         return None
+
+    def ladder_dark_status(self, cfg, rig: str):
+        """seconds -> dark_match dict for the sub ladder (None: dark_match)."""
+        return None
+
+    async def piggy_redispatch(self, cfg, armer) -> tuple[bool, str]:
+        """The sub ladder's Piggy-600 length change: the same stop after the
+        sub + companion re-dispatch as the Piggy AF (the companion reads the
+        new length from plan["piggy_length"])."""
+        return await self.piggy_af(cfg, armer)
 
     def limits_tables(self, cfg) -> dict:
         """{rig: the learned unguided limits table} from the store (never
@@ -1150,6 +1175,12 @@ def guard(cfg, armer, st: dict, d: dict, dec: dict, ctx: dict,
     if group(action) == "shorten" and             (st.get("last_cause") or {}).get(rig) == "optics":
         return ("the sub doctor reads the elongation as optical (focus / tilt "
                 "/ collimation): shorter subs will not help")
+    if group(action) == "shorten":
+        ls = _ladder_recent(st, rig, now, max(limits(cfg)["rig_cooldown_min"], 15.0))
+        if ls is not None:
+            return (f"the sub ladder changed the {_label(cfg, rig)} sub length "
+                    f"({ls['from_s']:g} -> {ls['to_s']:g} s) at "
+                    f"{_hm(cfg, _parse_t(ls.get('t')))}")
     if action in ("stop_phd2", "guider_stop") and not virtual:
         try:
             from photonscript.telescope_agent import phd2_ops
@@ -1559,6 +1590,12 @@ async def tick(cfg, armer, io: PilotIO | None = None, now: datetime | None = Non
         revert(cfg, st, io.store(), now, why=f"armer {armer.state}")
     newest = max((d["dt"] for d in diags.values()), default=None)
     done = []
+    # the sub-length ladder first: its step back down preempts a shorten
+    # (which then waits out the ladder's step)
+    try:
+        done += await ladder(cfg, armer, io, st, ctx, now)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("night pilot sub ladder failed: %s", e)
     for d in sorted([*diags.values(), *watch], key=lambda x: x["dt"]):
         done.append(await _handle(cfg, armer, io, st, d, ctx, now, m))
     if newest is not None:
@@ -2253,6 +2290,393 @@ def _learn(cfg, st, a, before, after, now) -> None:
 
 
 # --------------------------------------------------------------------------
+# the sub-length ladder (scheduler/sub_ladder.py, 2026-10-25)
+# --------------------------------------------------------------------------
+
+def apply_ladder_length(st: dict, store, target: str | None, rig: str,
+                        from_s: float, to_s: float,
+                        filters=None) -> tuple[bool, str, dict | None]:
+    """One ladder step as a tonight-only, ledgered goal override (reverted
+    at dawn like a sub cap). RC16: the RC16 filters shot at from_s (the
+    window's filters; else the plans at from_s) go to to_s. Piggy-600: the
+    goal's "OSC" key. (ok, detail, the overrides before)."""
+    from photonscript.scheduler.integrations import resolve_project
+    proj = resolve_project(target, store.projects.values()) if target else None
+    if proj is None:
+        return False, f"no goal for target {target!r}", None
+    prev = dict(proj.exposure_overrides or {})
+    new = dict(prev)
+    if rig == "piggyback":
+        new = {k: v for k, v in new.items() if str(k).strip().upper() != "OSC"}
+        new["OSC"] = float(to_s)
+        changed = [f"OSC {from_s:g} -> {to_s:g} s"]
+    else:
+        fs = {str(f) for f in filters or [] if f}
+        changed = []
+        for p in _rc16_plans(proj):
+            fv = p.filter_type.value
+            cur = float(new.get(fv) or p.exposure_seconds)
+            if (fv in fs) if fs else abs(cur - float(from_s)) < 0.5:
+                if abs(cur - float(to_s)) >= 0.5 or fv not in new:
+                    new[fv] = float(to_s)
+                    changed.append(f"{fv} {from_s:g} -> {to_s:g} s")
+        if not changed:
+            return False, (f"{proj.target.name}: no RC16 filter shot at "
+                           f"{from_s:g} s"), None
+    e = _ledger_entry(st, proj)
+    store.update(proj.id, exposure_overrides=new)
+    e["applied_overrides"] = dict(new)
+    e["changes"].append({"what": "sub ladder", "rig": rig, "from_s": from_s,
+                         "to_s": to_s, "filters": changed})
+    e["reverted"] = False
+    return True, f"{proj.target.name}: " + ", ".join(changed), prev
+
+
+def _undo_ladder_length(st: dict, store, target: str | None, prev: dict | None) -> None:
+    """Put a step's goal override back (the step could not be applied)."""
+    from photonscript.scheduler.integrations import resolve_project
+    try:
+        proj = resolve_project(target, store.projects.values()) if target else None
+        if proj is None or prev is None:
+            return
+        store.update(proj.id, exposure_overrides=dict(prev))
+        e = (st.get("ledger") or {}).get(proj.id)
+        if e is not None:
+            e["applied_overrides"] = dict(prev)
+            e["changes"].append({"what": "sub ladder step not applied"})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("night pilot: ladder override not put back: %s", e)
+
+
+def _ladder_st(st: dict, rig: str) -> dict:
+    return st.setdefault("ladder", {}).setdefault(rig, {"steps": [], "held": None})
+
+
+def _ladder_recent(st: dict, rig: str, now: datetime, minutes: float) -> dict | None:
+    """The rig's last applied (or applying) ladder step within `minutes`."""
+    for s in reversed(_ladder_st(st, rig).get("steps") or []):
+        if s.get("kind") != "act" or s.get("status") == "failed":
+            continue
+        t = _parse_t(s.get("t"))
+        if t is not None and (now - t).total_seconds() / 60.0 < minutes:
+            return s
+        return None
+    return None
+
+
+def _ladder_optics(st: dict, rig: str) -> bool:
+    if (st.get("last_cause") or {}).get(rig) in ("optics", "optics_low"):
+        return True
+    if any(x.get("rig") == rig for x in st.get("optics") or []):
+        return True
+    return f"ladder_optics|{rig}" in (st.get("notes") or [])
+
+
+async def ladder(cfg, armer, io, st: dict, ctx: dict, now: datetime) -> list[dict]:
+    """The sub-length ladder for each rig (scheduler/sub_ladder.py). Never
+    raises."""
+    from photonscript.scheduler import sub_ladder as sl
+    m = sl.mode(cfg)
+    if m == "off":
+        return []
+    out = []
+    rigs = ["rc16"] + (["piggyback"] if ctx.get("piggy") else [])
+    for rig in rigs:
+        try:
+            r = await _ladder_rig(cfg, armer, io, st, ctx, now, m, rig)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("night pilot sub ladder (%s) failed: %s", rig, e)
+            r = None
+        if r:
+            out.append(r)
+    return out
+
+
+def _ladder_event(cfg, st, now, rig, step, text, **extra) -> None:
+    _event(cfg, st["night"], "ladder", text, now, rig=rig, step=step, **extra)
+
+
+async def _ladder_rig(cfg, armer, io, st, ctx, now, m, rig) -> dict | None:
+    from photonscript.scheduler import sub_ladder as sl
+    L = _ladder_st(st, rig)
+    steps = L.setdefault("steps", [])
+    lab = _label(cfg, rig)
+    pend = [s for s in steps if s.get("kind") == "act"
+            and s.get("status") in ("pending", "running")]
+    if pend:
+        await _ladder_follow(cfg, armer, io, st, pend[-1], now)
+        if pend[-1].get("status") in ("pending", "running"):
+            return {"rig": rig, "kind": "ladder", "step": "applying"}
+    # a sub doctor optics reading, once seen tonight, holds the ladder
+    if (st.get("last_cause") or {}).get(rig) in ("optics", "optics_low"):
+        _note_once(st, f"ladder_optics|{rig}")
+    done = [s for s in steps if s.get("kind") == "act" and s.get("status") == "done"]
+    last = done[-1] if done else None
+    since = _parse_t(last.get("effective_t")) if last else None
+    last_up = last if last and last.get("dir") == "up" else None
+    shortened = any(a.get("rig") == rig and a.get("kind") == "act"
+                    and group(a.get("action")) == "shorten"
+                    for a in st.get("actions") or [])
+    subs = ctx.get("subs") or []
+    # a step that is not taking effect (subs still at the old length on
+    # the same target): hold, never step the same rung again
+    if last and not L.get("held"):
+        rows = [r for r in sl.rig_lights(subs, rig)
+                if since is None or _sub_start(r) >= since]
+        rows = [r for r in rows if sl._tkey(r.get("target")) == sl._tkey(last.get("target"))]
+        stale = [r for r in rows if sl._same(sl._exp(r), last.get("from_s"))]
+        if len(stale) >= sl.limits(cfg)["up_subs"]:
+            L["held"] = {"t": _iso(now), "at_s": float(last["from_s"]),
+                         "why": f"subs still at {last['from_s']:g} s after the step to "
+                                f"{last['to_s']:g} s"}
+            _ladder_event(cfg, st, now, rig, "held", f"Night pilot: {lab} sub ladder "
+                          f"holds: {L['held']['why']}")
+    dec = sl.evaluate(cfg, rig, subs, since=since, last_up=last_up,
+                      held=L.get("held"), optics=_ladder_optics(st, rig),
+                      shortened=shortened,
+                      dark_status=io.ladder_dark_status(cfg, rig))
+    night = st["night"]
+    tk = sl._tkey(dec.get("target"))
+    if dec.get("proven_s"):
+        failed = dec["from_s"] if dec["kind"] == "down" else None
+        if dec["kind"] != "down" or m == "act":
+            if sl.record_best(cfg, night, rig, dec["target"], dec["proven_s"],
+                              ecc=dec.get("ecc"), n=dec.get("n") or 0,
+                              failed_s=failed, now=now):
+                L.setdefault("best", {})[tk] = {"target": dec["target"],
+                                                "rung_s": dec["proven_s"],
+                                                "failed_s": failed}
+    kind = dec["kind"]
+    if kind == "blocked":
+        key = re.sub(r"\d+(\.\d+)?", "#", dec["why"])
+        if _note_once(st, f"ladder_blocked|{rig}|{tk}|{dec['from_s']}|{key}"):
+            _ladder_event(cfg, st, now, rig, "blocked",
+                          f"Night pilot: {lab} sub ladder stays at {dec['from_s']:g} s"
+                          f"{' on ' + str(dec['target']) if dec.get('target') else ''}"
+                          f" (next {dec['to_s']:g} s): {dec['why']}"
+                          if dec.get("to_s") else
+                          f"Night pilot: {lab} sub ladder stays at "
+                          f"{dec['from_s']:g} s: {dec['why']}",
+                          target=dec.get("target"), from_s=dec["from_s"],
+                          to_s=dec.get("to_s"))
+        return {"rig": rig, "kind": "ladder", "step": "blocked", "why": dec["why"]}
+    if kind not in ("up", "down"):
+        return None
+    would_key = f"ladder_would|{rig}|{tk}|{dec['from_s']}|{dec['to_s']}"
+    if m == "advise" and would_key in (st.get("notes") or []):
+        return {"rig": rig, "kind": "ladder", "step": "advised"}
+    # the live guards (armer RUNNING, calibration, arm recipe, NINA #1
+    # busy items, PHD2 calibrating): advise and act alike
+    live = ctx.get("running") is not None
+    running, target = (ctx.get("running"), ctx.get("target")) if live else \
+        await io.nina1_running(cfg)
+    why = live_guard(cfg, armer, {"running": running, "target": target or ctx.get("target"),
+                                  "phd2": ctx.get("phd2")})
+    if why is None and m == "act":
+        left = _dark_left_min(armer, now)
+        if left is not None and left < RESTART_DARK_MIN:
+            why = f"only {max(0, int(left))} min of dark left"
+        pend_a = [a for a in st.get("actions") or [] if a.get("kind") == "act"
+                  and a.get("rig") == rig and a.get("result") is None
+                  and a.get("status") in ("pending", "running", "done")]
+        if why is None and pend_a:
+            why = f"waiting for the {pend_a[-1]['action']} check on the {lab}"
+    if why:
+        if _note_once(st, f"ladder_held|{rig}|{kind}|" + re.sub(r"\d+", "#", why)):
+            _ladder_event(cfg, st, now, rig, "blocked", f"Night pilot: {lab} sub "
+                          f"ladder step to {dec['to_s']:g} s held: {why}")
+        return {"rig": rig, "kind": "ladder", "step": "held", "why": why}
+    st["seq"] = int(st.get("seq") or 0) + 1
+    s = {"id": f"l{st['seq']}", "t": _iso(now), "rig": rig, "dir": kind,
+         "target": dec.get("target"), "from_s": dec["from_s"], "to_s": dec["to_s"],
+         "n": dec.get("n"), "ecc": dec.get("ecc"), "why": dec["why"],
+         "filters": dec.get("filters") or [], "kind": m, "status": None,
+         "effective_t": None, "detail": ""}
+    if m == "advise":
+        _note_once(st, would_key)
+        s["status"] = "advised"
+        steps.append(s)
+        msg = (f"Night pilot (advise): {sl.would_text(cfg, dec)} "
+               "(night_pilot_ladder_mode=advise; nothing was sent)")
+        _ladder_event(cfg, st, now, rig, "would", msg, target=dec.get("target"),
+                      from_s=dec["from_s"], to_s=dec["to_s"], aid=s["id"])
+        await io.notify(cfg, msg, priority=0, kind="info")
+        return {"rig": rig, "kind": "ladder", "step": "advised", "to_s": dec["to_s"]}
+    steps.append(s)
+    await _ladder_execute(cfg, armer, io, st, s, ctx, now)
+    if s["status"] == "done":
+        await _ladder_done(cfg, io, st, s, now)
+    elif s["status"] == "failed":
+        await _ladder_failed(cfg, io, st, s, now)
+    else:
+        _ladder_event(cfg, st, now, rig, "applying", f"Night pilot: {lab} sub ladder "
+                      f"{s['from_s']:g} -> {s['to_s']:g} s on {s.get('target')}: "
+                      f"{s.get('detail')}", aid=s["id"])
+    return {"rig": rig, "kind": "ladder", "step": kind, "status": s["status"],
+            "to_s": s["to_s"]}
+
+
+async def _ladder_execute(cfg, armer, io, st, s, ctx, now) -> None:
+    """Apply one step: the goal override, then the RC16 restart after the
+    current sub, or the Piggy-600 companion stopped after its sub and
+    re-dispatched with the new length."""
+    store = io.store()
+    target = _goal_target(store, s.get("target"), ctx.get("target"),
+                          ctx.get("last_target"))
+    ok, detail, prev = apply_ladder_length(st, store, target, s["rig"], s["from_s"],
+                                           s["to_s"], s.get("filters"))
+    if not ok:
+        s.update(status="failed", detail=detail)
+        return
+    s.update(goal=target, prev_overrides=prev, detail=detail + " for tonight")
+    if s["rig"] == "piggyback":
+        from photonscript.scheduler import piggy_length as pl
+        plan = getattr(armer, "plan", None)
+        if not isinstance(plan, dict):
+            plan = {}
+            armer.plan = plan
+        old = plan.get("piggy_length")
+        rec, applied = pl.with_target_length(
+            old, s.get("target") or target, s["to_s"],
+            float(getattr(cfg, "piggyback_exposure_s", 120.0) or 120.0))
+        if applied < float(s["to_s"]) - 0.5:
+            _undo_ladder_length(st, store, target, prev)
+            s.update(status="failed", detail=f"the applied unguided Piggy limit "
+                     f"caps tonight at {applied:g} s", capped=True)
+            return
+        s["prev_piggy_length"] = old
+        plan["piggy_length"] = rec
+        _job(s, io.piggy_redispatch(cfg, armer))
+        s["asked"] = True
+        s.update(status="running", detail=s["detail"] + "; NINA #2 stops after "
+                 "its sub, then the companion is re-dispatched")
+        return
+    await _restart(cfg, armer, s, now)
+    if s["status"] == "failed":
+        _undo_ladder_length(st, store, target, prev)
+        return
+    s["asked"] = True
+    if s["status"] == "done":
+        s["effective_t"] = _iso(now)
+
+
+async def _ladder_follow(cfg, armer, io, st, s, now) -> None:
+    """A step being applied: the RC16 restart dispatched (one retry on the
+    race), or the Piggy-600 re-dispatch job finished."""
+    if s.get("status") == "running":
+        task = MONITOR.jobs.get(s["id"])
+        t0 = _parse_t(s.get("t")) or now
+        age = (now - t0).total_seconds() / 60
+        if task is None or (not task.done() and age > JOB_TIMEOUT_MIN):
+            if task is None and age < 1:
+                return
+            s.update(status="failed", detail=s.get("detail", "") + "; the "
+                     "re-dispatch job was lost (service restart?) or timed out")
+            await _ladder_failed(cfg, io, st, s, now)
+            return
+        if not task.done():
+            return
+        MONITOR.jobs.pop(s["id"], None)
+        res = task.result()
+        ok, detail = (res if isinstance(res, tuple) else (bool(res), ""))
+        if ok:
+            s.update(status="done", effective_t=_iso(now),
+                     detail=s.get("detail", "") + (f"; {detail}" if detail else ""))
+            await _ladder_done(cfg, io, st, s, now)
+        else:
+            s.update(status="failed", detail=s.get("detail", "") + f"; {detail}")
+            await _ladder_failed(cfg, io, st, s, now)
+        return
+    if s.get("status") != "pending":
+        return
+
+    async def _again():
+        await _restart(cfg, armer, s, now, retry=True)
+        return s["detail"] if s["status"] == "failed" else None
+    out, at = await _pending_restart(cfg, armer, io, st, s.setdefault("restart", {}),
+                                     now, what=f"sub ladder {s['from_s']:g} -> "
+                                     f"{s['to_s']:g} s", rig=s["rig"], aid=s["id"],
+                                     retry=_again)
+    if out == "ok":
+        s.update(status="done", effective_t=_iso(at))
+        await _ladder_done(cfg, io, st, s, now)
+    elif out not in (None, "retried"):
+        s.update(status="failed", detail=out)
+        await _ladder_failed(cfg, io, st, s, now)
+
+
+async def _ladder_done(cfg, io, st, s, now) -> None:
+    """A step applied: the run event and one story push for the step; a
+    step down holds the rig for the rest of the night."""
+    from photonscript.scheduler import sub_ladder as sl
+    rig = s["rig"]
+    L = _ladder_st(st, rig)
+    if s["dir"] == "down":
+        L["held"] = {"t": _iso(now), "at_s": float(s["to_s"]), "why": s["why"]}
+    dec = {"rig": rig, "kind": s["dir"], "from_s": s["from_s"], "to_s": s["to_s"],
+           "n": s.get("n"), "ecc": s.get("ecc"), "why": s.get("why")}
+    msg = f"Night pilot: {sl.step_text(cfg, dec)}"
+    if s.get("target"):
+        msg += f" on {s['target']}"
+    _ladder_event(cfg, st, now, rig, s["dir"], msg + f" ({s.get('detail')})",
+                  aid=s["id"], target=s.get("target"), from_s=s["from_s"],
+                  to_s=s["to_s"])
+    if not s.get("pushed"):
+        s["pushed"] = True
+        await io.notify(cfg, msg + ".", priority=0, kind="story",
+                        fact=f"ladder:{st['night']}:{rig}:{s['id']}")
+
+
+async def _ladder_failed(cfg, io, st, s, now) -> None:
+    """A step that could not be applied: a run event; one act push when a
+    sequence change was asked for and did not happen (a capped or goal-less
+    step is a run event only). The rig holds tonight."""
+    rig = s["rig"]
+    L = _ladder_st(st, rig)
+    L["held"] = L.get("held") or {"t": _iso(now), "at_s": float(s["from_s"]),
+                                  "why": f"the step to {s['to_s']:g} s failed"}
+    msg = (f"Night pilot: the {_label(cfg, rig)} sub ladder step "
+           f"{s['from_s']:g} -> {s['to_s']:g} s on {s.get('target')} was not "
+           f"applied: {s.get('detail')}. The {_label(cfg, rig)} stays at "
+           f"{s['from_s']:g} s tonight.")
+    _ladder_event(cfg, st, now, rig, "failed", msg, aid=s["id"])
+    if s.get("asked") and not s.get("pushed"):
+        s["pushed"] = True
+        await io.notify(cfg, msg + " Check NINA.", priority=1, kind="act",
+                        fact=f"ladder-failed:{st['night']}:{rig}:{s['id']}")
+
+
+def ladder_lines(cfg, st: dict) -> list[str]:
+    """The sub ladder in the morning report / status: one line per rig."""
+    from photonscript.scheduler import sub_ladder as sl
+    out = []
+    for rig, L in (st.get("ladder") or {}).items():
+        steps = L.get("steps") or []
+        lab = sl._label(cfg, rig)
+        acts = [s for s in steps if s.get("kind") == "act"]
+        adv = [s for s in steps if s.get("kind") == "advise"]
+        bits = []
+        for s in acts:
+            t = _hm(cfg, _parse_t(s.get("t")))
+            r = {"done": "", "failed": f" NOT applied ({s.get('detail')})"}.get(
+                s.get("status"), f" ({s.get('status')})")
+            bits.append(f"{t} {s['from_s']:g} -> {s['to_s']:g} s"
+                        + (f" on {s['target']}" if s.get("target") else "") + r)
+        if adv:
+            bits += [f"{_hm(cfg, _parse_t(s.get('t')))} would step {s['from_s']:g} "
+                     f"-> {s['to_s']:g} s" + (f" on {s['target']}" if s.get("target") else "")
+                     for s in adv]
+        held = L.get("held")
+        if held:
+            bits.append(f"held at {held.get('at_s'):g} s ({held.get('why')})")
+        for b in (L.get("best") or {}).values():
+            bits.append(f"best {b.get('target')} {b.get('rung_s'):g} s")
+        if bits:
+            out.append(f"Night pilot sub ladder {lab}: " + "; ".join(bits))
+    return out
+
+
+# --------------------------------------------------------------------------
 # dashboard + morning report
 # --------------------------------------------------------------------------
 
@@ -2311,6 +2735,8 @@ def status(cfg, night: str | None = None, now: datetime | None = None) -> dict:
             "alerts": st.get("alerts") or [],
             "optics": st.get("optics") or [],
             "advice": advice_lines(cfg, st),
+            "ladder": {"mode": _ladder_mode(cfg), "rigs": st.get("ladder") or {},
+                       "lines": ladder_lines(cfg, st)},
             "watch": {"on": _watch_on(cfg), "seen": st.get("watch_seen") or {},
                       "modes": {k: action_mode(cfg, k) for k in
                                 ("refocus", "limit_subs", "guider_stop")}}}
@@ -2321,6 +2747,11 @@ def advice_lines(cfg, st: dict) -> list[str]:
     return [f"{_hm(cfg, _parse_t(x.get('t')))} {x.get('text')}"
             + (f" ({x['evidence']})" if x.get("evidence") else "")
             for x in st.get("optics") or []]
+
+
+def _ladder_mode(cfg) -> str:
+    from photonscript.scheduler.sub_ladder import mode as _m
+    return _m(cfg)
 
 
 def _watch_on(cfg) -> bool:
@@ -2350,6 +2781,7 @@ def morning_lines(cfg, date: str) -> list[str]:
         out.append("Night pilot advice: " + x)
     for x in st.get("closed_roof") or []:
         out.append("Night pilot closed roof: " + str(x.get("text") or ""))
+    out += ladder_lines(cfg, st)
     rev = [f"{e.get('target')}" for e in (st.get("ledger") or {}).values()
            if e.get("reverted")]
     left = [f"{e.get('target')}" for e in (st.get("ledger") or {}).values()

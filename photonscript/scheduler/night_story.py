@@ -256,7 +256,8 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
                       tpoint: str | None = None, protrack: str | None = None,
                       owed: str | None = None, forecast: str | None = None,
                       recipe: str | None = None, piggy: str | None = None,
-                      warnings=None, needs: str | None = None) -> str:
+                      warnings=None, needs: str | None = None,
+                      ladder: str | None = None) -> str:
     """The evening plan heads-up (pure: everything comes in)."""
     night = plan.get("night_of") or "?"
     pc = _hm(config, plan.get("preconfig_utc"))
@@ -297,6 +298,9 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
         lines.append((1, protrack))
     if owed:
         lines.append((2, owed))
+    if ladder:
+        # the night pilot's sub ladder: last nights' best rung per target
+        lines.append((2, ladder))
     if forecast:
         lines.append((2, forecast))
     return _fit(lines)
@@ -352,6 +356,17 @@ def _owed_line(config) -> str | None:
         return morning_note(config)
     except Exception as e:  # noqa: BLE001
         logger.debug("owed note unavailable: %s", e)
+        return None
+
+
+def _ladder_line(config, plan: dict) -> str | None:
+    """The night pilot's learned sub-ladder rungs for tonight's targets
+    (scheduler/sub_ladder.py): a suggestion, never applied."""
+    try:
+        from photonscript.scheduler.sub_ladder import headsup_line
+        return headsup_line(config, plan)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("ladder line unavailable: %s", e)
         return None
 
 
@@ -469,7 +484,8 @@ async def maybe_plan_headsup(armer, now: datetime | None = None) -> bool:
         forecast=_story_title_tonight(cfg, night, "Tonight:"),
         recipe=rec.get("label"), piggy=_piggy_line(cfg, plan),
         warnings=[_gate_note(cfg)],
-        needs=_needs_line(cfg, held, _hm(cfg, plan.get("preconfig_utc"))))
+        needs=_needs_line(cfg, held, _hm(cfg, plan.get("preconfig_utc"))),
+        ladder=_ladder_line(cfg, plan))
     sent = await _push(cfg, text, title=TITLE_PLAN, fact=f"plan:{night}:{sig}",
                        priority=1 if held else 0)
     if sent and held:   # told: the same problems do not buzz again tonight
