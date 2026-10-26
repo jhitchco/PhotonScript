@@ -24,6 +24,10 @@ from photonscript.shared.config import PhotonScriptConfig
 _SKYFLAT = "NINA.Sequencer.SequenceItem.FlatDevice.SkyFlat"
 _SWITCH = "NINA.Sequencer.SequenceItem.FilterWheel.SwitchFilter, NINA.Sequencer"
 
+# a fixed afternoon (2026-10-21 13:00 local): the dusk flat plan is for
+# "this evening", so a wall-clock now after the window plans no SkyFlat
+DUSK_NOW = datetime(2026, 10, 21, 20, 0)
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -89,7 +93,7 @@ def test_companion_osc_skyflat_has_filterless_switch(tmp_path, has_safety,
 
 def test_dusk_osc_flats_have_filterless_switch(tmp_path):
     pc = rigs.rig_config(_cfg(tmp_path), rigs.PIGGYBACK)
-    txt, _ = generate_dusk_flats_json(pc, osc=True, owns_mount=False)
+    txt, _ = generate_dusk_flats_json(pc, osc=True, owns_mount=False, now=DUSK_NOW)
     root = json.loads(txt)
     sw = [n for n in _walk(root) if "SwitchFilter" in n.get("$type", "")]
     assert len(sw) == 1 and sw[0]["Filter"] is None
@@ -99,7 +103,7 @@ def test_dusk_osc_flats_have_filterless_switch(tmp_path):
 
 def test_rc16_sky_flats_keep_their_filters(tmp_path):
     txt, _ = generate_dusk_flats_json(PhotonScriptConfig(_env_file=None),
-                                      osc=False, owns_mount=True)
+                                      osc=False, owns_mount=True, now=DUSK_NOW)
     root = json.loads(txt)
     sfs = _skyflats(root)
     assert len(sfs) == 7
@@ -128,7 +132,7 @@ def test_lint_catches_the_2026_10_05_companion(tmp_path):
 
 def test_lint_flat_filter_applies_to_any_rig(tmp_path):
     txt, _ = generate_dusk_flats_json(PhotonScriptConfig(_env_file=None),
-                                      osc=False, owns_mount=True)
+                                      osc=False, owns_mount=True, now=DUSK_NOW)
     root = _strip_switch(json.loads(txt))
     r = LintResult()
     _check_flat_filters(root, r, filter_wheel=True)
