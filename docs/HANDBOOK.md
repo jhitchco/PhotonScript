@@ -1598,6 +1598,93 @@ setting for it, so the guard keeps the guider disconnected instead
 - Not covered: a WATCHING sideloaded night (NINA's own), guided nights
   (PS-85 per-block unguided blocks keep the guider).
 
+### Guided night readiness and the guiding test (2026-10-26)
+
+Jeremy: "We need a guider to do Ha, and longer exposures." The RC16 images
+unguided (TPoint + ProTrack, 300 s cap, 3 nm narrowband rejected unguided).
+Three pieces get it to guided 300 to 900 s narrowband as fast as possible,
+on the GP678C now and on the ASI174MM Mini after PS-190.
+
+**Readiness gate** (`scheduler/guided_readiness.py`, `GET
+/api/guiding/readiness[?refresh=1]`, Guiding tab first panel "Guided night
+readiness", one line on the dashboard's Tonight's Run card, one line in the
+evening plan heads-up). From the stored records only (PHD2 audit, PS-93
+calibration, PS-92 self-test, the PHD2 dark library file, the commissioning
+record); `refresh=1` re-runs the PHD2 audit (reads PHD2, changes nothing).
+Status READY / READY (auto: ...) / BLOCKED, then the list in the order the
+fixes must happen (a binning or exposure change invalidates the dark library
+and the calibration, so it comes first):
+
+| order | item | level |
+|---|---|---|
+| 10 | guide camera FAIL / not detected; no audit | blocker |
+| 12 | `guide_camera_expected` set and another camera connected (PS-190 swap pending) | info |
+| 20 | frame geometry rows (binning, pixel size, scale, focal length, bit depth, Max ADU): FAIL blocker, WARN advice | |
+| 30 | guide exposure vs the dark library: when the library's only problem is "no dark at the current exposure" and the audit's exposure fix (3 s) is a length the library holds, Apply on the exposure row clears both (the fast path) | blocker |
+| 40 | dark library FAIL (or built before the guide camera changed): rebuild, GUI only | blocker |
+| 45 | darks / defect map not loaded | advice |
+| 50 | pulse self-test FAIL (none in 30 nights: advice) | blocker |
+| 60 | calibration step | advice |
+| 70 | calibration none / FAIL / older than `phd2_cal_max_age_days` / taken farther than `phd2_cal_max_abs_dec` (30) from Dec 0 / older than the camera change: PS-93 calibrates at the next guided dispatch (`phd2_cal_mode` auto) | auto (blocker when the mode is never) |
+| 80 | any other audit FAIL; the other warns in one advice line | blocker / advice |
+| 95, 99 | commissioning test still to run; tonight unguided (how to get a guided night) | info |
+
+The live 2026-10-25 audit reads BLOCKED (1): guide exposure 7 s vs a dark
+library of 1 to 6 s. Fix: Apply on "Guide exposure" (3 s, in the library);
+the FAIL calibration (Dec 61.6, axes 78 deg off) is auto.
+
+PS-93 change: `needs_calibration` (auto) also asks for the slot when the
+record was taken farther than `phd2_cal_max_abs_dec` from Dec 0 (0 = off) or
+before the guide camera changed (`<data_dir>/guided/camera.json`, written
+when the readiness gate first sees a new camera in the audit).
+
+**Fix-ups** (`guided_prep_mode` off | advise (default) | act; the loop every
+30 min). act: while the armer is idle (DISARMED / COMPLETE, or ARMED more than
+15 min before pre-config), no capture job and no PHD2 owner, the exposure
+fast path above runs once per night through the PS-89 audit apply (PHD2
+Stopped / Looping only, `phd2_ops.hold("audit")`), then the audit re-runs; one
+info push. The calibration needs nothing: PS-93 auto already acts at the
+next guided dispatch. PHD2's dark library and defect map have no RPC (PHD2
+2.6 event server): always a human step, the readiness item says how.
+
+**Guiding test** (`scheduler/guided_commission.py`,
+`guided_commission_mode` off | advise (default) | act; `GET
+/api/guiding/commission`). On a guided night with a guide camera that has no
+pass on record (`<data_dir>/guided/commission_record.json`, per camera):
+- act: the dispatch cuts every guided RC16 set over
+  `guided_commission_test_exposure_s` (300) to it, same integration. The
+  loop (every 60 s, RUNNING guided only) judges tonight's RC16 lights:
+  after `guided_commission_test_min` (15) min of guided exposure in at least
+  `guided_commission_min_subs` (2) subs, PASS when the median per-sub PHD2
+  RMS (`guide_rms`, frames inside each exposure) is at most
+  `guided_commission_rms_max_arcsec` (1.2") and PHD2 guided at least
+  `guided_commission_min_guided_frac` (0.5) of the subs; FAIL otherwise, or
+  with nothing judged `guided_commission_timeout_min` (45) after the first
+  RC16 light. Pass: story push, restart after the current sub at the planned
+  lengths (night pilot guards, 45 min of dark), the guided narrowband
+  ladder opens. Fail: priority push with why, `Armer.fallback_unguided`
+  (the rest of tonight unguided: PS-156 caps, `rc16_narrowband_requires_guided`,
+  moon-fill carriers, Piggy-first under a bright moon).
+- advise: no cap, no switch; one push with the verdict.
+- `guided_trial_night` = YYYY-MM-DD: that night arms guided when nothing
+  explicit chose (config default, auto-arm; never remembered as the manual
+  mode) and tests in act whatever the readiness list says. One switch for
+  the first guided Ha night. `guided_auto_arm_when_ready` (off): an
+  automatic arm goes guided when the gate is not blocked.
+
+**Guided narrowband ladder.** On a guided night whose test passed (or
+passed before with this camera, or commissioning not in act), an RC16
+window of Ha / OIII / SII subs climbs `night_pilot_ladder_rc16_guided_nb`
+(300,450,600,900) instead of `night_pilot_ladder_rc16`; a rung without
+matched darks is skipped ("skipping 450 s (no darks)"). Steps still follow
+`night_pilot_ladder_mode` (advise on the scope). Darks: 300 and 600 s are in
+`dark_exposures`, 900 s in `rc16_always_dark_exposures`; 450 s is not:
+`rc16_guided_nb_ladder_darks` (off) adds the rungs to the RC16 quota, or the
+ladder skips 450.
+
+Night test needed: one trial night (guided_trial_night) with act; the
+restart after a pass and the fallback after a fail on the scope.
+
 ### Dispatch gate: lint every night against the arm (PS-197, 2026-10-15)
 
 Why: 2026-10-14 armed UNGUIDED, deep night on NGC 604. The NGC 604

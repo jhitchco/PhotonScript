@@ -583,15 +583,27 @@ class Armer:
             pass
         return out
 
-    def _use_guiding(self) -> bool:
+    def _use_guiding(self, trial: bool = True) -> bool:
         """Resolve this night's guiding mode. An explicit arm-time choice
-        ('guided' / 'unguided', alias 'encoders') wins; otherwise fall back to
-        config default."""
+        ('guided' / 'unguided', alias 'encoders') wins; otherwise a guided
+        trial night (guided_trial_night, trial=True), else the config
+        default."""
         override = norm_guiding_mode(getattr(self, "guiding_override", None))
         if override == "guided":
             return True
         if override == "unguided":
             return False
+        # 2026-10-26: a guided trial night (guided_trial_night) is guided
+        # when nothing explicit chose
+        if trial:
+            try:
+                from photonscript.scheduler.guided_commission import trial_tonight
+                plan = getattr(self, "plan", None)
+                if trial_tonight(self.config, plan.get("night_of")
+                                 if isinstance(plan, dict) else None):
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
         return bool(self.config.guided_default)
 
     async def arm(self, guiding: str | None = None,
@@ -624,8 +636,10 @@ class Armer:
         self.armed_at = _iso(datetime.utcnow())
         if self.armed_by == "manual":
             arm_memory.clear_manual_disarm(self.config)
+            # a guided trial night is one night: never remembered as the
+            # manual mode later auto-arms inherit
             arm_memory.record_manual_arm(
-                self.config, "guided" if self._use_guiding() else "unguided")
+                self.config, "guided" if self._use_guiding(trial=False) else "unguided")
         self._guiding_alerted = False  # fresh night — re-arm the guiding watchdog
         self._guiding_gate = GuidingAlertGate(self.config)  # fresh flap history
         self.shutdown = None  # a fresh arm starts a new night — clear the chip
@@ -2162,6 +2176,17 @@ class Armer:
             # PS-156: the fallback's remainder, per filter at the proven length
             from photonscript.scheduler.guide_fallback import cap_targets
             cap_targets(self.config, targets)
+        # 2026-10-26: the first guided night with this guide camera shoots
+        # its RC16 subs short until the guiding test passes
+        # (scheduler/guided_commission.py; act mode only)
+        try:
+            from photonscript.scheduler.guided_commission import cap_for_test
+            gc_notes = cap_for_test(self.config, targets, self.plan.get("night_of"),
+                                    use_guiding)
+            if gc_notes:
+                plan_info["guided_commission_cap"] = gc_notes
+        except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+            logger.warning("guided commissioning cap skipped: %s", e)
         # learned unguided limits per sky region: advise records them in the
         # plan; apply cuts the unguided sets (a hand-set override wins)
         self._unguided_limits(targets, projects, now)

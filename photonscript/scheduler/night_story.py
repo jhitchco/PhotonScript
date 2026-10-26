@@ -257,8 +257,10 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
                       owed: str | None = None, forecast: str | None = None,
                       recipe: str | None = None, piggy: str | None = None,
                       warnings=None, needs: str | None = None,
-                      ladder: str | None = None) -> str:
-    """The evening plan heads-up (pure: everything comes in)."""
+                      ladder: str | None = None, guiding: str | None = None) -> str:
+    """The evening plan heads-up (pure: everything comes in). guiding
+    (2026-10-26): the guided-night readiness line
+    (guided_readiness.headsup_line)."""
     night = plan.get("night_of") or "?"
     pc = _hm(config, plan.get("preconfig_utc"))
     dusk = _hm(config, plan.get("dusk_utc"))
@@ -286,6 +288,10 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
     if not rows and plan.get("targets"):
         rows = list(plan["targets"])
     lines.append((0, f"RC16 {mode}: " + ("; ".join(rows) if rows else "no targets planned")))
+    if guiding:
+        # a guided night that is blocked matters tonight; on an unguided
+        # night it is what stands between the RC16 and guided Ha
+        lines.append((1 if guided else 2, guiding))
     if plan.get("moon_fill_note"):
         lines.append((1, str(plan["moon_fill_note"])))
     if recipe:
@@ -372,6 +378,16 @@ def _ladder_line(config, plan: dict) -> str | None:
         return headsup_line(config, plan)
     except Exception as e:  # noqa: BLE001
         logger.debug("ladder line unavailable: %s", e)
+        return None
+
+
+def _guiding_line(config, plan: dict, guided: bool) -> str | None:
+    """The guided-night readiness line (scheduler/guided_readiness.py)."""
+    try:
+        from photonscript.scheduler.guided_readiness import headsup_line
+        return headsup_line(config, guided, night=(plan or {}).get("night_of"))
+    except Exception as e:  # noqa: BLE001
+        logger.debug("guiding line unavailable: %s", e)
         return None
 
 
@@ -490,7 +506,8 @@ async def maybe_plan_headsup(armer, now: datetime | None = None) -> bool:
         recipe=rec.get("label"), piggy=_piggy_line(cfg, plan),
         warnings=[_gate_note(cfg)],
         needs=_needs_line(cfg, held, _hm(cfg, plan.get("preconfig_utc"))),
-        ladder=_ladder_line(cfg, plan))
+        ladder=_ladder_line(cfg, plan),
+        guiding=await asyncio.to_thread(_guiding_line, cfg, plan, guided))
     sent = await _push(cfg, text, title=TITLE_PLAN, fact=f"plan:{night}:{sig}",
                        priority=1 if held else 0)
     if sent and held:   # told: the same problems do not buzz again tonight

@@ -140,6 +140,10 @@
             <div style="margin-bottom:.8rem;">
                 <span id="armDetail" style="opacity:.7;font-size:.85rem;"></span>
             </div>
+            <!-- 2026-10-26: guided-night readiness (GET /api/guiding/readiness);
+                 details on the Guiding tab -->
+            <div style="margin:-.4rem 0 .8rem;font-size:.85rem;" id="guidedReadyLine"
+                 title="Can tonight be a guided night (guided Ha at 300 to 900 s)? Click for the ordered list with the fix for each."></div>
             <!-- Deep night (scheduler/deep_night.py): tonight's night mode.
                  split = the night shared among the goals; deep = one goal
                  all night on both rigs. Tonight only (POST /api/tonight/mode,
@@ -322,6 +326,8 @@
     <script src="/static/js/mosaic_preview.js?v={{ version }}"></script>
     <script src="/static/js/sync_hygiene_panel.js?v={{ version }}"></script>
     <script src="/static/js/integrations.js?v={{ version }}"></script>
+    <script src="/static/js/guided_readiness_panel.js?v={{ version }}"></script>
+    <script>GUIDEDREADY.line('guidedReadyLine'); setInterval(function () { if (!document.hidden) GUIDEDREADY.line('guidedReadyLine'); }, 300000);</script>
 
     <script>
     const RATING_COLORS = {green:'#22c55e', yellow:'#eab308', red:'#ef4444'};

@@ -114,7 +114,25 @@ def auto_guiding(config, trigger: str) -> tuple[str | None, str]:
     """(guiding, why) for an automatic arm. trigger "auto-noon" or
     "auto-evening". The most recent manual Arm's mode wins; otherwise the
     config default: noon_arm_guided for the noon re-arm, None (the armer's
-    guided_default) for the evening window."""
+    guided_default) for the evening window.
+
+    2026-10-26 guided Ha: a guided trial night (guided_trial_night = tonight)
+    arms guided before anything else; guided_auto_arm_when_ready arms guided
+    when the guided readiness gate is not blocked."""
+    try:
+        from photonscript.scheduler.guided_commission import trial_tonight
+        from photonscript.shared.phd2_store import night_of
+        night = night_of(config)
+        if trial_tonight(config, night):
+            return "guided", f"guided trial night {night} (guided_trial_night)"
+        if bool(getattr(config, "guided_auto_arm_when_ready", False)):
+            from photonscript.scheduler.guided_readiness import safe_build
+            r = safe_build(config)
+            if r.get("ready"):
+                return "guided", (f"guided readiness {r.get('status')} "
+                                  "(guided_auto_arm_when_ready)")
+    except Exception:  # noqa: BLE001 - the usual rule below
+        pass
     rec = last_manual_arm(config)
     if rec:
         return rec["guiding"], (f"inherited from the last manual arm "

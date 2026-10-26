@@ -571,6 +571,7 @@
         loadCalibration: loadCalibration, loadGuard: loadGuard, loadTuning: loadTuning,
         loadBlocks: loadBlocks,
         loadGuideLog: loadGuideLog, loadAttention: loadAttention,
+        applyAudit: applyAudit,
         passing: {rowClass: rowClass, isOk: isOk, html: passingHTML, wire: wirePassing, staleTag: staleTag}
     };
 })();

@@ -105,8 +105,25 @@ def mode(cfg) -> str:
     return m
 
 
-def rungs(cfg, rig: str) -> list[float]:
-    """night_pilot_ladder_<rig> as seconds, shortest first."""
+GUIDED_NB_RUNGS = "300,450,600,900"
+
+
+def rungs(cfg, rig: str, guided_nb: bool = False) -> list[float]:
+    """night_pilot_ladder_<rig> as seconds, shortest first. guided_nb
+    (2026-10-26): the RC16's narrowband rungs on a guided night,
+    night_pilot_ladder_rc16_guided_nb."""
+    if guided_nb and rig == "rc16":
+        raw = str(getattr(cfg, "night_pilot_ladder_rc16_guided_nb", GUIDED_NB_RUNGS)
+                  or GUIDED_NB_RUNGS)
+        out = set()
+        for x in raw.replace(";", ",").split(","):
+            try:
+                v = float(x.strip())
+            except ValueError:
+                continue
+            if math.isfinite(v) and v > 0:
+                out.add(v)
+        return sorted(out or {float(x) for x in GUIDED_NB_RUNGS.split(",")})
     raw = str(getattr(cfg, f"night_pilot_ladder_{rig}", DEFAULT_RUNGS.get(rig, ""))
               or "")
     out = set()
@@ -150,11 +167,11 @@ def saturation_adu(cfg, rig: str) -> float:
     return v if v > 0 else 65000.0
 
 
-def next_rung(cfg, rig: str, cur: float | None) -> float | None:
+def next_rung(cfg, rig: str, cur: float | None, guided_nb: bool = False) -> float | None:
     """The next longer rung above cur, None at (or over) the top."""
     if cur is None:
         return None
-    up = [r for r in rungs(cfg, rig) if r > cur + 0.5]
+    up = [r for r in rungs(cfg, rig, guided_nb) if r > cur + 0.5]
     return up[0] if up else None
 
 
@@ -239,8 +256,13 @@ def is_narrowband(filt) -> bool:
 def evaluate(cfg, rig: str, subs: list[dict], *, since: datetime | None = None,
              last_up: dict | None = None, held: dict | None = None,
              optics: bool = False, shortened: bool = False,
-             dark_status=None) -> dict:
+             dark_status=None, guided: bool = False) -> dict:
     """One rig's ladder decision over tonight's subs.
+
+    guided (2026-10-26): a guided night whose guided narrowband ladder is
+    open (guided_commission.allows_long_nb): an RC16 window of narrowband
+    subs climbs night_pilot_ladder_rc16_guided_nb (300,450,600,900), and a
+    rung without matched darks is skipped for the next one that has them.
 
     since: subs before this (the last applied step) do not count.
     last_up: the ladder's last applied step up on this rig ({target,
@@ -299,7 +321,11 @@ def evaluate(cfg, rig: str, subs: list[dict], *, since: datetime | None = None,
                    f"{ecc_max(cfg, rig):g})")
         return out
     out["proven_s"] = cur
-    nxt = next_rung(cfg, rig, cur)
+    gnb = bool(guided and rig == "rc16" and win
+               and all(is_narrowband(r.get("filter")) for r in win))
+    nxt = next_rung(cfg, rig, cur, gnb)
+    if gnb:
+        out["ladder"] = "guided_nb"
 
     def blocked(why: str) -> dict:
         out.update(kind="blocked", to_s=nxt, why=why)
@@ -315,7 +341,7 @@ def evaluate(cfg, rig: str, subs: list[dict], *, since: datetime | None = None,
         return blocked("the pilot shortened this rig's subs tonight (trailing)")
     if nxt is None:
         out.update(kind="none", why=f"{cur:g} s is the top rung "
-                   f"({','.join(f'{r:g}' for r in rungs(cfg, rig))})")
+                   f"({','.join(f'{r:g}' for r in rungs(cfg, rig, gnb))})")
         return out
     stars = _med([_num(r.get("stars")) for r in win], 0)
     stars = int(stars) if stars is not None else None
@@ -338,11 +364,27 @@ def evaluate(cfg, rig: str, subs: list[dict], *, since: datetime | None = None,
                            f"{cur:g} s would be ~{bg * nxt / cur:.0f} ADU, over "
                            f"{lim['sky_frac']:g} of saturation ({cap:g} ADU)")
     dk = dark_info(cfg, rig, nxt, dark_status)
+    skipped: list[float] = []
+    if gnb and dk.get("match") != "matched":
+        # the guided narrowband ladder skips a rung without darks (450 s
+        # when only 300 / 600 / 900 are at quota)
+        tried = [nxt]
+        for r in [x for x in rungs(cfg, rig, True) if x > nxt + 0.5]:
+            if bg is not None and lim["sky_frac"] > 0 and                     bg * r / cur > lim["sky_frac"] * sat:
+                break
+            d2 = dark_info(cfg, rig, r, dark_status)
+            if d2.get("match") == "matched":
+                skipped, nxt, dk = tried, r, d2
+                out["to_s"] = nxt
+                break
+            tried.append(r)
     if dk.get("match") != "matched":
         return blocked(f"no {nxt:g} s darks in the library or the night dark "
                        f"quota ({dk.get('text') or dk.get('match')})")
-    out.update(kind="up", to_s=nxt, darks_text=dk.get("text"),
-               why=f"{len(win)} round subs at {cur:g} s, ecc {ecc}")
+    skip_txt = (f", skipping {'/'.join(f'{x:g}' for x in skipped)} s (no darks)"
+                if skipped else "")
+    out.update(kind="up", to_s=nxt, darks_text=dk.get("text"), skipped=skipped,
+               why=f"{len(win)} round subs at {cur:g} s, ecc {ecc}{skip_txt}")
     return out
 
 

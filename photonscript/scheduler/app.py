@@ -626,6 +626,15 @@ async def _start_night_pilot():
 
 
 @app.on_event("startup")
+async def _start_guided_loop():
+    """2026-10-26 guided Ha: the first guided night's guiding test while
+    RUNNING guided (guided_commission_mode), and the readiness fix-ups
+    while idle (guided_prep_mode). Always started; idle when both are off."""
+    from photonscript.scheduler.guided_commission import run
+    _spawn(run(get_config, get_armer))
+
+
+@app.on_event("startup")
 async def _start_focuser_guard():
     """Focuser position-loss guard (2026-10-25): both rigs' focuser counter
     while a night runs. Always started; idle when focuser_guard_mode=off."""
@@ -710,6 +719,7 @@ _CONFIG_FIELDS = [
     ("syncthing_calibration_folder_ids", "PS_SYNCTHING_CALIBRATION_FOLDER_IDS", "Syncthing folder ids that carry Library/Calibration once split off (PS-182, comma list; blank = inside the Library share)", "Sync", "str", False, False),
     ("dark_exposures", "PS_DARK_EXPOSURES", "Dark library exposures, seconds (comma-sep)", "Imaging", "str", False, False),
     ("rc16_always_dark_exposures", "PS_RC16_ALWAYS_DARK_EXPOSURES", "RC16 dark lengths always kept at quota, used by lights or not (seconds, comma-sep; closed-roof nights and capture jobs fill them)", "Imaging", "str", False, False),
+    ("rc16_guided_nb_ladder_darks", "PS_RC16_GUIDED_NB_LADDER_DARKS", "Also keep the guided narrowband ladder rungs (night_pilot_ladder_rc16_guided_nb) at the RC16 dark quota (adds 450 s with the defaults)", "Imaging", "bool", False, False),
     ("dark_target_count", "PS_DARK_TARGET_COUNT", "Dark library quota per exposure", "Imaging", "int", False, False),
     ("library_cal_days", "PS_LIBRARY_CAL_DAYS", "Calibration age limit for library/transfer (days)", "Imaging", "int", False, False),
     ("calibration_qa_mode", "PS_CALIBRATION_QA_MODE", "Calibration frame QA (PS-113): quarantine (bad frames to Calibration/_quarantine) | report (verdicts only) | off", "Imaging", "str", False, False),
@@ -867,6 +877,7 @@ _CONFIG_FIELDS = [
     ("night_pilot_ladder_mode", "PS_NIGHT_PILOT_LADDER_MODE", "Night pilot sub-length ladder (2026-10-25): each rig steps its subs up a rung after N round accepted subs, back down one rung (held for the night) when M of the last W fail on ecc; never on an optics reading, too few stars, a sky-limited background or a rung without darks; tonight-only goal overrides, RC16 restart after the sub / Piggy-600 companion re-dispatch: off | advise (default: records 'would step to N s') | act; night_pilot_mode=advise caps it", "Night pilot", "str", False, False),
     ("night_pilot_ladder_rc16", "PS_NIGHT_PILOT_LADDER_RC16", "Night pilot sub ladder: RC16 rungs, seconds (e.g. 120,180,240,300)", "Night pilot", "str", False, False),
     ("night_pilot_ladder_piggyback", "PS_NIGHT_PILOT_LADDER_PIGGYBACK", "Night pilot sub ladder: Piggy-600 rungs, seconds (e.g. 120,180,240,300,450)", "Night pilot", "str", False, False),
+    ("night_pilot_ladder_rc16_guided_nb", "PS_NIGHT_PILOT_LADDER_RC16_GUIDED_NB", "Night pilot sub ladder: RC16 narrowband rungs on a GUIDED night once the guided commissioning test passed (seconds, e.g. 300,450,600,900; a rung without matched darks is skipped)", "Night pilot", "str", False, False),
     ("night_pilot_ladder_up_subs", "PS_NIGHT_PILOT_LADDER_UP_SUBS", "Night pilot sub ladder: round accepted subs in a row at a length before the next rung", "Night pilot", "int", False, False),
     ("night_pilot_ladder_down_fails", "PS_NIGHT_PILOT_LADDER_DOWN_FAILS", "Night pilot sub ladder: subs failing on ecc / trail (of the last night_pilot_ladder_down_window) at a stepped-to rung that step back down and hold", "Night pilot", "int", False, False),
     ("night_pilot_ladder_down_window", "PS_NIGHT_PILOT_LADDER_DOWN_WINDOW", "Night pilot sub ladder: the last subs at a rung judged for a step back down", "Night pilot", "int", False, False),
@@ -920,6 +931,7 @@ _CONFIG_FIELDS = [
     ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
     ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
     ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
+    ("phd2_cal_max_abs_dec", "PS_PHD2_CAL_MAX_ABS_DEC", "PS-93 auto also recalibrates when the calibration on record was taken farther than this from Dec 0 (deg; 0 = off)", "PHD2", "float", False, False),
     ("phd2_cal_hold_s", "PS_PHD2_CAL_HOLD_S", "Hold after the calibration slot (s): the grade and one retry happen inside it", "PHD2", "int", False, False),
     ("phd2_cal_fail_action", "PS_PHD2_CAL_FAIL_ACTION", "Calibration failed twice: keep (guide on it, alert once; PHD2 left uncalibrated falls back unguided) | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
     ("phd2_flip_action", "PS_PHD2_FLIP_ACTION", "Dec runs away after a meridian flip: alert | off", "PHD2", "str", False, True),
@@ -1018,6 +1030,17 @@ _CONFIG_FIELDS = [
     ("camera_setpoint_c", "PS_CAMERA_SETPOINT_C", "Cooling setpoint (°C)", "Imaging", "float", False, False),
     ("camera_readout_mode", "PS_CAMERA_READOUT_MODE", "RC16 readout mode of the lights (HCG / LCG): darks and bias must match it (blank = not matched)", "Imaging", "str", False, False),
     ("guided_default", "PS_GUIDED_DEFAULT", "Guided by default", "Imaging", "bool", False, False),
+    ("guide_camera_expected", "PS_GUIDE_CAMERA_EXPECTED", "Guided readiness: the guide camera that should be on the OAG (desired-file camera id, e.g. asi174mm_mini once installed; blank = any known camera). Another camera detected = swap pending", "Guiding readiness", "str", False, False),
+    ("guided_prep_mode", "PS_GUIDED_PREP_MODE", "Guided readiness fix-ups: off | advise (default: the readiness list names each fix) | act (while the armer is idle and PHD2 Stopped / Looping: set the PHD2 guide exposure to a length the dark library has, once per night)", "Guiding readiness", "str", False, False),
+    ("guided_commission_mode", "PS_GUIDED_COMMISSION_MODE", "First guided night with this guide camera: off | advise (default: verdict pushed, nothing capped or switched) | act (RC16 subs capped for the test; pass = restart at the planned lengths, fail = rest of tonight unguided). A guided trial night (guided_trial_night) always tests in act unless off", "Guiding readiness", "str", False, False),
+    ("guided_commission_test_min", "PS_GUIDED_COMMISSION_TEST_MIN", "Guided commissioning: minutes of guided RC16 exposure judged", "Guiding readiness", "float", False, False),
+    ("guided_commission_test_exposure_s", "PS_GUIDED_COMMISSION_TEST_EXPOSURE_S", "Guided commissioning: RC16 sub cap while the test runs (s)", "Guiding readiness", "float", False, False),
+    ("guided_commission_min_subs", "PS_GUIDED_COMMISSION_MIN_SUBS", "Guided commissioning: at least this many guided RC16 subs", "Guiding readiness", "int", False, False),
+    ("guided_commission_rms_max_arcsec", "PS_GUIDED_COMMISSION_RMS_MAX_ARCSEC", "Guided commissioning: median PHD2 total RMS over the test subs at or under this passes (arcsec)", "Guiding readiness", "float", False, False),
+    ("guided_commission_min_guided_frac", "PS_GUIDED_COMMISSION_MIN_GUIDED_FRAC", "Guided commissioning: share of the test window RC16 subs PHD2 must have guided", "Guiding readiness", "float", False, False),
+    ("guided_commission_timeout_min", "PS_GUIDED_COMMISSION_TIMEOUT_MIN", "Guided commissioning: no verdict this long after the first RC16 light = fail (PHD2 not guiding)", "Guiding readiness", "float", False, False),
+    ("guided_trial_night", "PS_GUIDED_TRIAL_NIGHT", "Guided trial night YYYY-MM-DD: that night arms guided when no explicit choice is made and runs the commissioning test, whatever the readiness list says (one night only)", "Guiding readiness", "str", False, False),
+    ("guided_auto_arm_when_ready", "PS_GUIDED_AUTO_ARM_WHEN_READY", "An automatic arm goes guided when the guided readiness gate is not blocked", "Guiding readiness", "bool", False, False),
     ("unguided_dither", "PS_UNGUIDED_DITHER", "Dither on unguided nights through NINA's Direct Guider (switch NINA's guider first; checked at arm)", "Imaging", "bool", False, False),
     ("rc16_narrowband_requires_guided", "PS_RC16_NARROWBAND_REQUIRES_GUIDED", "Unguided nights schedule no RC16 narrowband (Ha / OIII / SII): too few stars for AF and the unguided subs are rejected; broadband only if the moon allows, Piggy-600 unaffected", "Imaging", "bool", False, False),
     ("unguided_max_exposure_s", "PS_UNGUIDED_MAX_EXPOSURE_S", "Unguided (TPoint + ProTrack) RC16 max sub length (s); longer subs are split, same integration (0 = no cap)", "Imaging", "float", False, False),
