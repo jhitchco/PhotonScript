@@ -848,8 +848,11 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
     default: a slew under a closed roof could foul it).
 
     OSC rig (osc=True, owns_mount=False): the Piggy-600 rides the RC16's
-    mount; it cools, waits for its planned set and shoots one OSC set
-    (SafetyMonitor condition with safety). No mount items.
+    mount; it cools, waits for its planned set and shoots one OSC set. With
+    safety: after the set's start a bounded wait for the roof (until the
+    set's stop), then the set under its own SafetyMonitor condition; the
+    outer container has none (entered under a closed roof it would skip
+    every set, 2026-10-25). No mount items.
 
     only_filters: None = all seven, a list (even empty) = just those. An
     empty list with hold_for_osc is the OSC-only evening (the RC16 points
@@ -898,9 +901,23 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
              + f"; done by {stop_local:%H:%M}")
     slot_items = []
     for s in slots:
-        slot_items += flat_slot_items(config, s, n, osc=osc, gain=_fg, offset=_fo,
-                                      safety=bool(safety and not owns_mount),
-                                      settle_s=45 if osc else 0)
+        si = flat_slot_items(config, s, n, osc=osc, gain=_fg, offset=_fo,
+                             safety=bool(safety and not owns_mount),
+                             settle_s=45 if osc else 0)
+        if safety and not owns_mount:
+            # 2026-10-25: the riding OSC set waits for the roof after its
+            # start time, bounded by its stop (like the dawn set's
+            # WAIT_SAFE_FOR_OSC_FLATS). Without it a SafetyMonitor condition
+            # met under a closed roof skipped the whole set: 10-25 NINA #2
+            # finished the cool at 18:05:03, read Unsafe, skipped the 18:44
+            # OSC set and ended the run; the roof read safe 32 s later.
+            sp = loc(s["stop"])
+            si.insert(1, _seq_container(
+                "WAIT_SAFE_FOR_OSC_FLATS", [_wait_for_timespan(WAIT_SAFE_STEP_S)],
+                conditions=[_make_typed("NINA.Sequencer.Conditions.LoopWhileUnsafe, "
+                                        "NINA.Sequencer"),
+                            _time_condition_at(sp.hour, sp.minute)]))
+        slot_items += si
     if not slot_items:
         slot_items = [_annotation(
             "no " + ("OSC" if osc else "RC16") + " set fits a dusk window "
@@ -942,9 +959,12 @@ def generate_dusk_flats_json(config, only_filters: list[str] | None = None,
             _connect("Camera"),
             _wait_for_time_at(cool_at.hour, cool_at.minute),
             _cool_camera_bounded(config.camera_setpoint_c, 2.0, config),
+            # no SafetyMonitor condition here: entered under a closed roof it
+            # skipped every set (2026-10-25); each set waits for the roof and
+            # carries its own condition (flat_slot_items)
             _seq_container(
                 f"DUSK_SKY_FLATS_OSC (until {stop_local:%H:%M})", slot_items,
-                conditions=([_safety_condition()] if safety else []) + cap),
+                conditions=cap),
         ]
     root = _seq_container(
         "PhotonScript_DuskFlats",
