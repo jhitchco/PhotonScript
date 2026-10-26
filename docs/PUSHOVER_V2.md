@@ -194,6 +194,7 @@ safety act. Conditions are the code's own.
 | telescope_agent/pulse_selftest.py | self-test failed, Dec reversed after the flip | act |
 | telescope_agent/sub_doctor_live.py | sub doctor guider_conflict / focuser | act |
 | telescope_agent/sub_doctor_live.py | other causes | info (the night pilot acts; the end-of-night report has the verdict) |
+| (quiet carriers) | RC16 on an unguided moon-fill carrier: sub doctor (not guider_conflict), night pilot RC16 actions and "needs a human", reject streak | none (run events and records only); RC16 AF stall / AF report / sub doctor focuser info unless the Piggy-600 fails too (scheduler/carrier_quiet.py) |
 | telescope_agent/tpoint_autocal_live.py | autocal run notes | story |
 | cli.py | `photonscript notify` | `--kind` (act), `--safety/--no-safety` (on) |
 | `record()` callers (held pushes) | | info |
