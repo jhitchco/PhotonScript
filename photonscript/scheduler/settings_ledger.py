@@ -380,11 +380,13 @@ def split_device(device: str, info: dict) -> tuple[dict, dict]:
         # reads Position 0); stays in the settings too, so hashes are as before
         live["Connected"] = info.get("Connected")
     if device == "camera":
-        modes, i = info.get("ReadoutModes") or [], info.get("ReadoutMode")
-        try:
-            settings["ReadoutModeName"] = modes[int(i)]
-        except (TypeError, ValueError, IndexError):
-            pass
+        # 2026-10-25: name the mode NINA shoots sequence frames at
+        # (ReadoutModeForNormalImages), not the idle ReadoutMode, which read
+        # High Conversion Gain on the Piggy while its lights were LCG
+        from photonscript.shared.rigs import camera_info_readout
+        raw = camera_info_readout(info)[1]
+        if raw is not None:
+            settings["ReadoutModeName"] = raw
     return settings, live
 
 

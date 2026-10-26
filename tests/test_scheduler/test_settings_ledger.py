@@ -736,3 +736,14 @@ def test_backfill_from_a_real_guide_log(tmp_path, pushes):
     log = snap["apps"]["phd2"]["settings"]["log"]
     assert api["exposure_ms"] == log["exposure_ms"] and api.get("binning")
     assert log.get("ra_algorithm") and snap["night"] == "2026-10-07"
+
+
+def test_readout_name_is_the_sequence_mode_not_the_idle_mode():
+    # 2026-10-25: the Piggy read ReadoutMode 1 (HCG) while NINA shot its
+    # lights at ReadoutModeForNormalImages 0 (LCG); the ledger flagged HCG
+    info = {"ReadoutModes": ["Low Conversion Gain", "High Conversion Gain"],
+            "ReadoutMode": 1, "ReadoutModeForNormalImages": 0}
+    settings, _ = sl.split_device("camera", info)
+    assert settings["ReadoutModeName"] == "Low Conversion Gain"
+    settings, _ = sl.split_device("camera", {"ReadoutModes": ["A", "B"], "ReadoutMode": 1})
+    assert settings["ReadoutModeName"] == "B"
