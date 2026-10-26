@@ -52,7 +52,7 @@ def restarted(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "get_seasonal_targets", no_seasonal)
     seen = []
 
-    def plan(projects, config, now):
+    def plan(projects, config, now, **kw):   # guided=, as the real planner
         seen.append(sorted(p.target.name for p in projects))
         return []
     monkeypatch.setattr(app, "plan_night_sequence", plan)
