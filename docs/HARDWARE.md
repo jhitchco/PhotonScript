@@ -78,6 +78,12 @@ corner over a 600 s sub, about 39 px over 6 h (registration crops it).
 
 #### ASI174MM Mini swap checklist (PS-190)
 Do these in order on the first session after AARO installs the camera.
+Set `guide_camera_expected = asi174mm_mini` (System page) when AARO installs
+it: the Guiding tab "Guided night readiness" panel (`GET
+/api/guiding/readiness`, HANDBOOK "Guided night readiness and the guiding
+test") then tracks this list: a dark library or calibration older than the
+camera change is a blocker / auto item, and the first guided night with the
+new camera runs the guiding test again (`guided_commission_*`).
 1. Hardware: OAG focus. Loop in PHD2 (2 s, gain 40) on a bright star with
    the RC16 at imaging focus, and move the OAG camera's helical / spacer
    until the guide stars are sharp (HFD a few px at 0.372"/px). The IMX174
@@ -243,6 +249,7 @@ Plan: separate PHD2 profiles per guide path with correct focal lengths
 (hot pixels = fake guide stars - the idle "21 arcsec RMS" artifact); twilight
 OAG test, piggyback fallback; record first calibration + typical RMS here:
 - First guided-night calibration result / typical RMS: TODO
+  (the guiding test records both per camera: `GET /api/guiding/commission`)
 
 ### 2. Safety monitor  [ANSWERED 2026-07-08 from NINA log]
 - ASCOM Alpaca: "AARO Safety Obs 2" (ASCOM.AlpacaDynamic1.SafetyMonitor v1.0)
