@@ -2491,10 +2491,19 @@ async def _ladder_rig(cfg, armer, io, st, ctx, now, m, rig) -> dict | None:
                                 f"{last['to_s']:g} s"}
             _ladder_event(cfg, st, now, rig, "held", f"Night pilot: {lab} sub ladder "
                           f"holds: {L['held']['why']}")
+    # 2026-10-26: a guided night whose guiding test passed (or was passed
+    # before with this guide camera) climbs the guided narrowband rungs
+    gnb = False
+    if rig == "rc16" and ctx.get("guided"):
+        try:
+            from photonscript.scheduler.guided_commission import allows_long_nb
+            gnb = allows_long_nb(cfg, st.get("night"))
+        except Exception:  # noqa: BLE001
+            gnb = False
     dec = sl.evaluate(cfg, rig, subs, since=since, last_up=last_up,
                       held=L.get("held"), optics=_ladder_optics(st, rig),
                       shortened=shortened,
-                      dark_status=io.ladder_dark_status(cfg, rig))
+                      dark_status=io.ladder_dark_status(cfg, rig), guided=gnb)
     night = st["night"]
     tk = sl._tkey(dec.get("target"))
     if dec.get("proven_s"):

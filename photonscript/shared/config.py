@@ -203,6 +203,11 @@ class PhotonScriptConfig(BaseSettings):
     night_pilot_ladder_mode: str = "advise"
     night_pilot_ladder_rc16: str = "120,180,240,300"
     night_pilot_ladder_piggyback: str = "120,180,240,300,450"
+    # 2026-10-26 guided Ha: on a GUIDED night (and once the guided
+    # commissioning test passed, or with guided_commission_mode off) the
+    # RC16's narrowband sets climb these rungs instead; a rung without
+    # matched darks is skipped (300 -> 600 when 450 s has none)
+    night_pilot_ladder_rc16_guided_nb: str = "300,450,600,900"
     night_pilot_ladder_up_subs: int = 6
     night_pilot_ladder_down_fails: int = 3
     night_pilot_ladder_down_window: int = 5
@@ -318,6 +323,11 @@ class PhotonScriptConfig(BaseSettings):
                                                  # always wanted at quota, used by
                                                  # lights or not: closed-roof nights
                                                  # and capture jobs fill them
+    rc16_guided_nb_ladder_darks: bool = False  # 2026-10-26: also keep the
+                                 # guided narrowband ladder rungs
+                                 # (night_pilot_ladder_rc16_guided_nb) at quota
+                                 # (adds 450 s with the defaults; 300 / 600 /
+                                 # 900 are already listed)
     library_archive_before: str = ""  # YYYY-MM-DD: nights before this stay out of the
                                       # Library (archived); the archive tool records it too
     library_archive_dir: str = ""     # archive root outside the share; "" = <share parent>/NINAArchive
@@ -1045,6 +1055,48 @@ class PhotonScriptConfig(BaseSettings):
                                   # loop independent of whether auto-arm is on.
     evening_forecast_lead_hours: float = 3.0  # how long before sunset to send it
     # --- Guiding, autofocus & sequence narration ---
+    # 2026-10-26 guided Ha (scheduler/guided_readiness.py,
+    # scheduler/guided_commission.py): can tonight be a guided night, the
+    # unattended fix-ups, and the first guided night's guiding test.
+    guide_camera_expected: str = ""  # the guide camera that should be on the
+                                 # OAG (a desired-file camera id, e.g.
+                                 # asi174mm_mini after PS-190); another camera
+                                 # detected = "swap pending" in the readiness
+                                 # list. "" = any known camera
+    guided_prep_mode: str = "advise"  # off | advise (default: the readiness
+                                 # list names each fix) | act: while the armer
+                                 # is idle and PHD2 Stopped / Looping, set the
+                                 # PHD2 guide exposure (audit row exposure_ms)
+                                 # when the dark library has that length,
+                                 # once per night
+    guided_commission_mode: str = "advise"  # off | advise (default: one
+                                 # push with the verdict, no cap, no switch) |
+                                 # act: the first guided night with this guide
+                                 # camera shoots RC16 subs at guided_commission_
+                                 # test_exposure_s until guided_commission_test_
+                                 # min of guided subs are judged on PHD2 RMS.
+                                 # Pass: restart at the planned lengths and the
+                                 # guided NB ladder. Fail: the rest of tonight
+                                 # unguided (Armer.fallback_unguided). A guided
+                                 # trial night always tests in act (unless off)
+    guided_commission_test_min: float = 15.0  # guided RC16 exposure to judge
+    guided_commission_test_exposure_s: float = 300.0  # RC16 sub cap during the test
+    guided_commission_min_subs: int = 2  # at least this many guided subs
+    guided_commission_rms_max_arcsec: float = 1.2  # median PHD2 total RMS over
+                                 # the guided test subs at or under this = pass
+    guided_commission_min_guided_frac: float = 0.5  # share of the test
+                                 # window's RC16 subs PHD2 must have guided
+    guided_commission_timeout_min: float = 45.0  # after the first RC16 light,
+                                 # no judged test by then = fail (PHD2 is not
+                                 # guiding)
+    guided_trial_night: str = ""  # YYYY-MM-DD: that night arms guided when no
+                                 # explicit choice is made (auto-arm, config
+                                 # default) and runs the commissioning test,
+                                 # whatever the readiness list says. One night
+                                 # only: the date stops matching afterwards
+    guided_auto_arm_when_ready: bool = False  # an automatic arm goes guided
+                                 # when the readiness gate is not blocked (an
+                                 # explicit manual choice still wins)
     guided_default: bool = True  # PHD2 guiding on by default (2026-07-07): unguided
                                  # 300s at 3248mm lost 30-60% of frames to trailing.
                                  # Guiding enables 600s subs. Set PS_GUIDED_DEFAULT=false
@@ -1295,6 +1347,10 @@ class PhotonScriptConfig(BaseSettings):
                                  # always: every guided night (~4 min of
                                  # twilight); never: no slot (the PS-72 behavior)
     phd2_cal_max_age_days: float = 30.0  # recalibrate after this many days
+    phd2_cal_max_abs_dec: float = 30.0  # 2026-10-26: auto also recalibrates
+                                 # when the calibration on record was taken
+                                 # farther than this from Dec 0 (the RA rate
+                                 # is poorly measured up there); 0 = off
     phd2_cal_hold_s: int = 240   # hold after the slot: the agent grades and
                                  # retries once inside it (needs 150 s left)
     phd2_cal_fail_action: str = "keep"  # second failed grade: "keep" guiding

@@ -13,6 +13,9 @@ POST /api/phd2/audit/apply {ids, dry_run}  apply audit rows (API / gated profile
 GET  /api/phd2/tuning?date=       guide-star auto-tune: per filter, changes, advice (PS-90)
 GET  /api/phd2/live?probe=         live PHD2 state for the Guiding tab (PS-103)
 GET  /api/guiding/attention        the "What to change" list from cached records (PS-119)
+GET  /api/guiding/readiness?refresh=&darks=   can tonight be a guided night: the
+                                   ordered blockers with the fix for each (2026-10-26)
+GET  /api/guiding/commission?date= the first guided night's guiding test (2026-10-26)
 GET  /guiding                      the Guiding tab page (PS-103)
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
@@ -477,6 +480,49 @@ def api_guiding_attention():
     group; unknown rows grouped by why. Never runs an audit, never raises."""
     from photonscript.scheduler import guiding_attention
     return guiding_attention.safe_build(_cfg())
+
+
+@router.get("/api/guiding/readiness")
+async def api_guiding_readiness(refresh: bool = False, darks: bool = True):
+    """2026-10-26 guided Ha: can tonight be a guided night, and if not the
+    ordered blockers with the fix for each (scheduler/guided_readiness.py).
+    From the stored records; refresh=1 re-runs the PHD2 settings audit
+    first (reads PHD2, changes nothing). darks=1 adds the guided narrowband
+    ladder's dark status. Never raises."""
+    from photonscript.scheduler import guided_readiness as gr
+    cfg = _cfg()
+    if refresh:
+        from photonscript.scheduler import phd2_audit as pa
+        try:
+            await pa.run_audit(cfg, reason="readiness refresh")
+        except Exception:  # noqa: BLE001 - the stored audit is read below
+            pass
+    guided = None
+    try:
+        from photonscript.scheduler.app import get_armer
+        a = get_armer()
+        if str(a.state or "") not in ("", "DISARMED", "COMPLETE"):
+            guided = bool(a._use_guiding())
+    except Exception:  # noqa: BLE001
+        guided = None
+    out = await asyncio.to_thread(gr.safe_build, cfg, None, guided=guided, darks=darks)
+    try:
+        out["prep"] = {"mode": gr.prep_mode(cfg), "state": gr._prep_state(cfg)}
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+@router.get("/api/guiding/commission")
+def api_guiding_commission(date: str = ""):
+    """2026-10-26: the guided commissioning test (scheduler/guided_commission
+    .py): tonight's state and verdict, the record per guide camera."""
+    from photonscript.scheduler import guided_commission as gc
+    from photonscript.shared import phd2_store as store
+    cfg = _cfg()
+    date = date or store.night_of(cfg, datetime.utcnow())
+    return {"date": date, "status": gc.status(cfg, date),
+            "night": gc.load_night(cfg, date), "record": gc.load_record(cfg)}
 
 
 @router.get("/guiding", response_class=HTMLResponse)

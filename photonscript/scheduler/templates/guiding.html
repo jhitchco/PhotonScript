@@ -52,6 +52,7 @@
 
     <main>
         <nav class="g-jump">
+            <a href="#guidedReady">Guided night</a>
             <a href="#attention">What to change</a>
             <a href="#liveSec">Live</a>
             <a href="#auditSec">Settings audit<span class="g-navc" data-navc="auditSec"></span></a>
@@ -64,6 +65,18 @@
             <a href="#glogSec">Tonight's guide log</a>
             <a href="#tpointSec">TheSky / TPoint<span class="g-navc" data-navc="tpointSec"></span></a>
         </nav>
+
+        <section class="panel" id="guidedReady">
+            <h2>Guided night readiness (2026-10-26)</h2>
+            <p class="g-intro">Can tonight be a guided night (guided Ha at 300 to 900 s)? BLOCKER items stop a guided night (a trial night, guided_trial_night, goes guided anyway and lets the guiding test decide), in the order to fix them: a binning or exposure change invalidates the dark library and the calibration, so those come first. AUTO items PhotonScript fixes itself on the guided night (the PS-93 calibration slot). ADVICE should be fixed but does not stop a guided night. From the stored PHD2 audit, calibration record and self-test; Refresh re-runs the audit (reads PHD2 only). GET /api/guiding/readiness.</p>
+            <div class="bd" id="grLine">loading...</div>
+            <div id="grItems"></div>
+            <div class="bd" id="grCommission" style="margin-top:.4rem;"></div>
+            <div class="g-bar">
+                <button class="btn btn-secondary" id="grRefresh">Refresh (run audit now)</button>
+                <span class="bd" id="grStatus"></span>
+            </div>
+        </section>
 
         <section class="panel" id="attention">
             <h2>What to change (PS-119)</h2>
@@ -232,7 +245,8 @@
     <script src="/static/js/thesky_panels.js?v={{ version }}"></script>
     <script src="/static/js/piggy_offset_panel.js?v={{ version }}"></script>
     <script src="/static/js/unguided_limits_panel.js?v={{ version }}"></script>
-    <script>PHD2.initGuidingPage(); THESKY.init(); PIGGYOFFSET.init(); UNGUIDEDLIMITS.init();</script>
+    <script src="/static/js/guided_readiness_panel.js?v={{ version }}"></script>
+    <script>PHD2.initGuidingPage(); THESKY.init(); PIGGYOFFSET.init(); UNGUIDEDLIMITS.init(); GUIDEDREADY.init();</script>
     {% include "_footer.html" %}
 </body>
 </html>

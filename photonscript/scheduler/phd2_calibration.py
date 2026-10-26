@@ -384,8 +384,10 @@ def needs_calibration(record: dict | None, live: dict | None, config,
     """{"needed": bool, "reason": str}: does tonight need a calibration slot?
     phd2_cal_mode never = no (today's PS-72 behavior), always = yes; auto =
     a pending manual request, no record, a FAIL, older than
-    phd2_cal_max_age_days, PHD2 reporting no calibration, or the PHD2
-    profile / binning / focal length / guide scale changed since."""
+    phd2_cal_max_age_days, PHD2 reporting no calibration, the PHD2
+    profile / binning / focal length / guide scale changed since, taken
+    farther than phd2_cal_max_abs_dec from Dec 0, or the guide camera
+    changed after it (guided_readiness.camera_changed_since, 2026-10-26)."""
     mode = cfg_mode(config)
     if mode == "never":
         return {"needed": False, "reason": "phd2_cal_mode is never"}
@@ -416,8 +418,35 @@ def needs_calibration(record: dict | None, live: dict | None, config,
     a, b = _f(record.get("scale_arcsec_px")), _f(live.get("scale_arcsec_px"))
     if a and b and abs(a - b) / a > SCALE_TOL:
         return {"needed": True, "reason": f"guide scale changed ({a:g} -> {b:g} \"/px)"}
+    # 2026-10-26 guided Ha: a calibration far from Dec 0 measures the RA rate
+    # poorly; a new guide camera (PS-190 swap) after it is another sensor
+    far = far_dec_reason(config, record)
+    if far:
+        return {"needed": True, "reason": far}
+    try:
+        from photonscript.scheduler.guided_readiness import camera_changed_since
+        cc = camera_changed_since(config)
+    except Exception:  # noqa: BLE001
+        cc = None
+    if cc is not None and t is not None and t < cc:
+        return {"needed": True, "reason": f"guide camera changed ({cc:%Y-%m-%d}) "
+                                          "after this calibration"}
     return {"needed": False, "reason": f"calibration of {record.get('t_utc')} is "
                                        f"{record.get('grade') or 'ungraded'}"}
+
+
+def far_dec_reason(config, record: dict | None) -> str | None:
+    """2026-10-26: "taken at Dec 61.6 (max |Dec| 30 for a calibration)" when
+    the record is farther from Dec 0 than phd2_cal_max_abs_dec (0 = off),
+    else None."""
+    try:
+        lim = float(getattr(config, "phd2_cal_max_abs_dec", 30.0) or 0.0)
+    except (TypeError, ValueError):
+        lim = 30.0
+    dec = _f((record or {}).get("dec_deg"))
+    if lim <= 0 or dec is None or abs(dec) <= lim:
+        return None
+    return f"taken at Dec {dec:g} (phd2_cal_max_abs_dec {lim:g})"
 
 
 # --------------------------------------------------------------------------

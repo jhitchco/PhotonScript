@@ -1098,12 +1098,29 @@ def dark_library_exposures(cfg) -> list[float]:
         cap = 0.0
     if cap > 0 and not any(abs(cap - w) < 0.5 for w in wanted):
         wanted.append(cap)
+    # 2026-10-26: the guided narrowband ladder's rungs
+    # (rc16_guided_nb_ladder_darks, off by default; adds 450 s)
+    for e in guided_nb_dark_exposures(cfg):
+        if not any(abs(e - w) < 0.5 for w in wanted):
+            wanted.append(e)
     # 2026-10-21: the always-wanted long darks (750 / 900 s by default), last
     # so the lengths tonight's lights use fill first on a closed-roof night
     for e in always_dark_exposures(cfg):
         if not any(abs(e - w) < 0.5 for w in wanted):
             wanted.append(e)
     return wanted
+
+
+def guided_nb_dark_exposures(cfg) -> list[float]:
+    """The guided narrowband ladder rungs (night_pilot_ladder_rc16_guided_nb)
+    when rc16_guided_nb_ladder_darks is on, else []."""
+    if not bool(getattr(cfg, "rc16_guided_nb_ladder_darks", False)):
+        return []
+    try:
+        from photonscript.scheduler.sub_ladder import rungs
+        return [float(x) for x in rungs(cfg, "rc16", True)]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def always_dark_exposures(cfg) -> list[float]:

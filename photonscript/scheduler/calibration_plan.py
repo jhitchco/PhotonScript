@@ -161,11 +161,13 @@ def rig_needs(config, rig: str, projects=None) -> list[dict]:
 
     if rig == RC16:
         from photonscript.scheduler.nina_sequence_json import (
-            always_dark_exposures, dark_library_exposures)
+            always_dark_exposures, dark_library_exposures, guided_nb_dark_exposures)
         always = always_dark_exposures(config)
+        gnb = guided_nb_dark_exposures(config)
         for e in dark_library_exposures(config):
             add(e, "config dark_exposures" if any(
                 abs(e - x) < 0.5 for x in _floats(getattr(config, "dark_exposures", "")))
+                else "guided narrowband ladder" if any(abs(e - x) < 0.5 for x in gnb)
                 else "config rc16_always_dark_exposures" if any(
                     abs(e - x) < 0.5 for x in always)
                 else "PS-66 unguided cap")
