@@ -318,10 +318,13 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
 
 
 def plan_signature(plan: dict, guided: bool) -> str:
-    """Same targets, windows and mode = the same plan (no second heads-up
-    for an identical re-arm)."""
+    """Same targets, windows, sets and mode = the same plan (no second
+    heads-up for an identical re-arm). The sets count since 2026-10-26: a
+    goal patched after the heads-up (filter mix, sub length) re-plans the
+    evening and the heads-up goes out again."""
     sig = json.dumps([plan.get("night_of"), guided,
-                      [(r.get("name"), r.get("window_start_utc"), r.get("window_end_utc"))
+                      [(r.get("name"), r.get("window_start_utc"), r.get("window_end_utc"),
+                        _sets_text(r.get("filters")))
                        for r in plan.get("schedule") or []]], default=str)
     return hashlib.sha1(sig.encode()).hexdigest()[:10]
 

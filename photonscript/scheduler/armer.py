@@ -186,6 +186,27 @@ FOCUS_CAL_FILTERS = ("L", "Ha", "L", "OIII", "L", "SII", "L")
 FOCUS_CAL_ALT_LO, FOCUS_CAL_ALT_HI = 40.0, 70.0
 
 
+def _active_projects() -> list:
+    from photonscript.scheduler.app import get_store
+    return [p for p in get_store().projects.values() if p.active]
+
+
+def goals_fingerprint() -> str | None:
+    """A hash of the active stored goals (2026-10-26): the plan records the
+    one it was built from, and a goal patched later re-plans the evening.
+    None when the store is unavailable. completion_pct is left out: the
+    planner writes it on every run."""
+    import hashlib
+    try:
+        rows = sorted((json.dumps(p.model_dump(mode="json",
+                                               exclude={"completion_pct"}),
+                                  sort_keys=True, default=str)
+                       for p in _active_projects()))
+    except Exception:  # noqa: BLE001
+        return None
+    return hashlib.sha1("|".join(rows).encode()).hexdigest()[:12]
+
+
 class Armer:
     def __init__(self, config):
         self.config = config
@@ -646,6 +667,8 @@ class Armer:
         self._cancel_pause_wait()   # PS-64
         self.pause_info = None
         self.plan = build_night_plan(self.config)
+        if "error" not in self.plan:
+            self.plan["goals_fp"] = goals_fingerprint()   # 2026-10-26
         if (getattr(self, "block_decisions", None) or {}).get("night") != self.plan.get("night_of"):
             self.block_decisions = {}   # PS-85: decisions belong to one night
         self.recipe = None   # PS-181: a recipe belongs to the arm that set it
@@ -2112,6 +2135,10 @@ class Armer:
         self.plan["moon_fill_note"] = plan_info.get("moon_fill_note")
         if plan_info.get("moon_fill_note"):
             logger.info("Plan: %s", plan_info["moon_fill_note"])
+        # 2026-10-26: "imaging now" and the dashboard read the targets this
+        # dispatch loaded, not the arm's list (2026-10-25: "0 target(s)
+        # ... on ?" while the RC16 imaged Heart Nebula)
+        self._plan_view(targets, now, source="dispatch")
         self._persist()
         try:
             from photonscript.scheduler.runs import save_plan_snapshot
@@ -2119,6 +2146,62 @@ class Armer:
                                self.plan, targets)
         except Exception as e:  # noqa: BLE001
             logger.warning("Plan snapshot failed: %s", e)
+        return True
+
+    def _plan_view(self, targets, now: datetime, source: str) -> bool:
+        """Merge the target view (targets, schedule, stats) of planner
+        targets into self.plan (night_plan.dispatched_view). source:
+        "dispatch" | "replan". Never raises; False when it failed."""
+        try:
+            from photonscript.scheduler.night_plan import dispatched_view
+            view = dispatched_view(self.config, self.plan, targets, now)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("plan view (%s) not refreshed: %s", source, e)
+            return False
+        self.plan.update(view)
+        self.plan["view_source"] = {"source": source, "at": _iso(now)}
+        return True
+
+    def _replan_view(self, now: datetime, fp: str | None) -> None:
+        """Re-plan tonight's targets from the stored goals (the arm's
+        planner path, no file written) into self.plan, with the Piggy
+        lengths. Blocking: run in a thread."""
+        from photonscript.scheduler.target_planner import (
+            create_project_from_target, plan_night_sequence, plan_with_info)
+        from photonscript.shared.astronomy import get_seasonal_targets
+        projects = _active_projects()
+        if not projects:
+            projects = [create_project_from_target(t)
+                        for t in get_seasonal_targets(now.month)]
+        targets, info = plan_with_info(plan_night_sequence, projects, self.config,
+                                       now, guided=self._use_guiding())
+        if self._plan_view(targets, now, source="replan"):
+            self.plan["rc16_nb_unguided"] = list(info.get("rc16_nb_unguided") or [])
+            for k in ("rc16_nb_note", "moon_fill", "moon_fill_note"):
+                self.plan[k] = info.get(k)
+            self._piggy_lengths(targets, projects)
+        self.plan["goals_fp"] = fp
+
+    async def _refresh_plan_if_goals_changed(self, now: datetime) -> bool:
+        """2026-10-26: while ARMED before pre-config, a goal changed since
+        the plan was built (2026-10-25: Heart Nebula patched to Ha at 22:50Z,
+        armed 22:24Z) re-plans tonight's targets, so the evening heads-up
+        says what pre-config will load (and goes out again when it was
+        already sent: night_story.plan_signature). True when re-planned."""
+        if not self.plan.get("night_of") or "error" in self.plan:
+            return False
+        fp = await asyncio.to_thread(goals_fingerprint)
+        if fp is None or fp == self.plan.get("goals_fp"):
+            return False
+        try:
+            await asyncio.to_thread(self._replan_view, now, fp)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("re-plan after a goal change failed: %s", e)
+            self.plan["goals_fp"] = fp   # one try per change
+            return False
+        logger.info("Goals changed since the arm: tonight re-planned (%s)",
+                    ", ".join(self.plan.get("targets") or []) or "no targets")
+        self._persist()
         return True
 
     def _build_night(self, now: datetime, night_mode: str | None = None,
@@ -4572,6 +4655,8 @@ class Armer:
                 await self._maybe_predusk_tune()
             if preconfig - timedelta(minutes=60) <= now < preconfig:
                 await self._apps_alert("Pre-config in 60 min")   # PS-170
+            if now < preconfig:
+                await self._refresh_plan_if_goals_changed(now)
             await self._story("plan", now)   # PS-212: evening plan heads-up
             if now >= preconfig:
                 self._ledger("pre-config")
