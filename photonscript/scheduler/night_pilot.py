@@ -1721,10 +1721,53 @@ async def closed_roof(cfg, armer, io, st: dict, now: datetime) -> dict | None:
     return rec
 
 
+# 2026-10-25 quiet carriers: on an unguided moon-fill carrier these still
+# run for the RC16 (PHD2 moves the shared mount: the Piggy-600 trails too)
+CARRIER_KEEP = ("stop_phd2", "guider_stop", "unguided")
+
+
+def carrier_row(cfg, armer, ctx: dict, rig: str, when: datetime | None = None) -> dict | None:
+    """The unguided moon-fill carrier the RC16 is on (carrier_quiet), else
+    None. Never raises."""
+    if rig != "rc16":
+        return None
+    try:
+        from photonscript.scheduler.carrier_quiet import carrier_for
+        tgt = ctx.get("target")
+        return carrier_for(cfg, rig=rig, target=tgt, when=None if tgt else when,
+                           armer=armer)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _carrier_quiet(cfg, armer, st, d, dec, ctx, now) -> dict | None:
+    """An RC16 decision on an unguided carrier: a run event (once per target
+    and cause), no push, nothing sent. None when it is not one."""
+    rig, fam = d["rig"], d["family"]
+    if dec["kind"] == "annotate" or fam == "guider_conflict" or             dec.get("action") in CARRIER_KEEP:
+        return None
+    row = carrier_row(cfg, armer, ctx, rig, d.get("dt"))
+    if row is None:
+        return None
+    what = dec.get("what") or dec.get("action") or fam
+    if _note_once(st, f"carrier|{rig}|{row.get('target')}|{fam}"):
+        _event(cfg, st["night"], "carrier",
+               f"{_label(cfg, rig)} {d['cause']} on {row.get('target')}: not acted "
+               f"on (would have: {what}); the RC16 is an unguided pointing carrier "
+               "for the Piggy-600, its subs are expected to be rejected", now,
+               rig=rig, cause=d["cause"], action=dec.get("action"),
+               target=row.get("target"))
+    return {"rig": rig, "kind": "carrier", "cause": d["cause"],
+            "action": dec.get("action"), "target": row.get("target")}
+
+
 async def _handle(cfg, armer, io, st, d, ctx, now, m) -> dict:
     dec = decide(cfg, d, ctx)
     rig, fam = d["rig"], d["family"]
     night = st["night"]
+    quiet = _carrier_quiet(cfg, armer, st, d, dec, ctx, now)
+    if quiet is not None:
+        return quiet
     if d.get("source") != "watch":
         # the rig's newest sub doctor reading (guard: no shortening while
         # it reads the elongation as optical)
@@ -2390,6 +2433,15 @@ async def ladder(cfg, armer, io, st: dict, ctx: dict, now: datetime) -> list[dic
     out = []
     rigs = ["rc16"] + (["piggyback"] if ctx.get("piggy") else [])
     for rig in rigs:
+        row = carrier_row(cfg, armer, ctx, rig, now)
+        if row is not None:
+            # an unguided carrier: its subs are not judged, no ladder step
+            if _note_once(st, f"carrier|{rig}|{row.get('target')}|ladder"):
+                _ladder_event(cfg, st, now, rig, "carrier",
+                              f"Night pilot: {_label(cfg, rig)} sub ladder off on "
+                              f"{row.get('target')} (unguided pointing carrier for "
+                              "the Piggy-600, subs not judged)")
+            continue
         try:
             r = await _ladder_rig(cfg, armer, io, st, ctx, now, m, rig)
         except Exception as e:  # noqa: BLE001

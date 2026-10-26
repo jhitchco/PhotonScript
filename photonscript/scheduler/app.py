@@ -813,6 +813,7 @@ _CONFIG_FIELDS = [
     ("plan_moon_fill_min_used_pct", "PS_PLAN_MOON_FILL_MIN_USED_PCT", "Moon fill: fill the gaps when the planned windows use less than this % of the dark time left", "Imaging", "float", False, False),
     ("plan_moon_fill_min_sep_deg", "PS_PLAN_MOON_FILL_MIN_SEP_DEG", "Moon fill: avoid carrier targets closer than this to the moon (deg) when another goal is up", "Imaging", "float", False, False),
     ("plan_moon_fill_carrier_s", "PS_PLAN_MOON_FILL_CARRIER_S", "Moon fill: RC16 Ha carrier sub length (s); the unguided cap still applies", "Imaging", "float", False, False),
+    ("plan_moon_fill_carrier_quiet", "PS_PLAN_MOON_FILL_CARRIER_QUIET", "Moon fill: on an unguided carrier the RC16 subs are expected to be rejected; the night pilot, sub doctor, reject streak, RC16 AF failures (unless the Piggy-600 fails too) and reports stay quiet about them (subs still graded and recorded)", "Imaging", "bool", False, False),
     ("campaign_min_alt_deg", "PS_CAMPAIGN_MIN_ALT_DEG", "Campaign planner: minimum altitude (deg) for a target's usable time (a project's min_alt_deg overrides)", "Imaging", "float", False, False),
     ("campaign_notify", "PS_CAMPAIGN_NOTIFY", "Campaign planner: Pushover when a goal completes or only lacks calibration", "Imaging", "bool", False, False),
     ("moon_aware_planning", "PS_MOON_AWARE_PLANNING", "Moon-aware nightly mix (protect broadband on dark nights)", "Imaging", "bool", False, False),

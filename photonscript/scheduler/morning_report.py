@@ -115,11 +115,27 @@ def _goal_index(projects) -> dict:
     return out
 
 
-def _lights(config, subs: list[dict], rig: str, goals: dict) -> dict:
+def _lights(config, subs: list[dict], rig: str, goals: dict,
+            quiet: dict | None = None) -> dict:
     from photonscript.shared.qa_rules import is_test_record
     from photonscript.shared.target_names import canonical_target, target_key
     mine = [s for s in subs if (s.get("rig") or "rc16") == rig
             and not is_test_record(s)]
+    # 2026-10-25 quiet carriers: an unguided moon-fill carrier's RC16 subs
+    # are not judged (their own line, not in kept / rejected)
+    carrier = None
+    if quiet and rig == "rc16":
+        from photonscript.scheduler.carrier_quiet import is_carrier_sub
+        car = [s for s in mine if is_carrier_sub(s, quiet)]
+        if car:
+            names = []
+            for s in car:
+                n = canonical_target(s.get("target")) or "?"
+                if n not in names:
+                    names.append(n)
+            carrier = {"subs": len(car), "targets": names,
+                       "kept": sum(1 for s in car if s.get("passed_qa"))}
+            mine = [s for s in mine if not is_carrier_sub(s, quiet)]
     kept = [s for s in mine if s.get("passed_qa")]
     rejected = [s for s in mine if not s.get("passed_qa")]
     drivers = Counter(d for s in rejected for d in (s.get("drivers") or [])
@@ -145,7 +161,8 @@ def _lights(config, subs: list[dict], rig: str, goals: dict) -> dict:
             "top_reasons": [{"driver": d, "n": n}
                             for d, n in drivers.most_common(TOP_REASONS)],
             "hours": hours,
-            "hours_total": round(sum(secs.values()) / 3600.0, 2)}
+            "hours_total": round(sum(secs.values()) / 3600.0, 2),
+            "carrier": carrier}
 
 
 def _guiding(config, date: str, subs: list[dict]) -> dict:
@@ -257,10 +274,20 @@ def report_card(config, date: str | None = None, *, projects=None,
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no af stall events: %s", e)
         af = {}
+    try:   # 2026-10-25: unguided moon-fill carriers (carrier_quiet)
+        from photonscript.scheduler import carrier_quiet as cq
+        quiet = cq.quiet_targets(config, night=date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no carrier lookup: %s", e)
+        cq, quiet = None, {}
     for rig in rig_ids(config):
         r = {"rig": rig, "name": rig_label(config, rig),
-             "lights": _lights(config, subs, rig, goals),
+             "lights": _lights(config, subs, rig, goals, quiet),
              "stalls": stalls.get(rig, []), "af_stall": af.get(rig)}
+        if rig == "rc16" and quiet and r["af_stall"] and                 not cq.piggy_af_failing(config, date) and cq.carrier_for(
+                    config, when=r["af_stall"].get("t"), night=date) is not None:
+            r["af_stall_carrier"] = r.pop("af_stall")   # info only that night
+            r["af_stall"] = None
         if rig == "rc16":
             r["guiding"] = _guiding(config, date, subs)
         out["rigs"].append(r)
@@ -424,8 +451,14 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     lines = [card["deep_night"]] if card.get("deep_night") else []
     if card.get("tpoint_preflight"):
         lines.append(card["tpoint_preflight"])
-    lines += [_rig_line(r) for r in card.get("rigs") or []
-              if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall")]
+    for r in card.get("rigs") or []:
+        car = r["lights"].get("carrier")
+        if car:
+            from photonscript.scheduler.carrier_quiet import summary_text
+            lines.append(summary_text(car["subs"], car.get("targets"),
+                                      kept=car.get("kept") or 0))
+        if r["lights"]["subs"] or r.get("stalls") or r.get("af_stall"):
+            lines.append(_rig_line(r))
     if card.get("piggy_guard"):
         lines.append(card["piggy_guard"])
     if card.get("sub_doctor"):
@@ -509,6 +542,7 @@ def card_line_priority(line: str) -> int:
     PRI_DETAIL."""
     if _RIG_LINE.match(line or "") or str(line or "").startswith(
             ("Piggy guard:", "Night pilot:", "What went wrong",
+             "RC16 carrier for the Piggy-600",
              "Deep night on ", "Dusk flats ", "Dawn flats ")):
         return PRI_RIG
     return PRI_DETAIL

@@ -153,7 +153,10 @@ def check_and_alert(config, date: str) -> dict:
             worst = ", ".join(
                 f"{names.get(g.get('rig'), '?')} {g['filter']} ({g['reason']})"
                 for g in bad[:5])
-            _fire(config,
+            kind = _carrier_kind(config, date, bad)
+            fire = _fire if kind == "act" else (
+                lambda c, m: _fire(c, m, kind=kind))
+            fire(config,
                   f"Autofocus quality: {len(bad)}/{len(graded)} AF run(s) on "
                   f"{date} looked bad — {worst}. Likely focusing through "
                   "narrowband; set the AF filter to L (config.autofocus_filter "
@@ -166,11 +169,36 @@ def check_and_alert(config, date: str) -> dict:
         return {"checked": 0, "bad": [], "enabled": True, "error": str(e)}
 
 
-def _fire(config, msg: str) -> None:
+def _carrier_kind(config, date: str, bad: list[dict]) -> str:
+    """2026-10-25 quiet carriers: "info" when every bad run is the RC16's
+    during an unguided moon-fill carrier (scheduler/carrier_quiet.py) and no
+    Piggy-600 run is bad, else "act". A run whose timestamp has no UTC
+    offset counts as carrier time on a night with unguided carriers."""
+    try:
+        from photonscript.scheduler import carrier_quiet as cq
+        if not bad or not cq.quiet_targets(config, night=date):
+            return "act"
+        for g in bad:
+            if g.get("rig") != "rc16":
+                return "act"
+            t = cq._parse(g.get("timestamp"))
+            raw = str(g.get("timestamp") or "")
+            aware = bool(raw) and (raw.endswith("Z") or "+" in raw[10:]
+                                   or "-" in raw[10:])
+            if t is not None and aware and cq.carrier_for(
+                    config, when=t, night=date) is None:
+                return "act"
+        return "info"
+    except Exception:  # noqa: BLE001
+        return "act"
+
+
+def _fire(config, msg: str, kind: str = "act") -> None:
     """Send a Pushover from sync or async context (backfill runs in a thread)."""
     import asyncio
     from photonscript.shared.pushover import notify
-    coro = notify(config, msg, title="PhotonScript autofocus", priority=1, kind="act")
+    coro = notify(config, msg, title="PhotonScript autofocus",
+                  priority=1 if kind == "act" else 0, kind=kind)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

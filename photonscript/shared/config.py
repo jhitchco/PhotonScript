@@ -279,6 +279,12 @@ class PhotonScriptConfig(BaseSettings):
     plan_moon_fill_min_used_pct: float = 50.0
     plan_moon_fill_min_sep_deg: float = 30.0
     plan_moon_fill_carrier_s: float = 300.0
+    # Quiet carriers (scheduler/carrier_quiet.py): on an UNGUIDED carrier the
+    # RC16 subs are expected to be rejected, so the night pilot, the sub
+    # doctor, the reject streak, RC16 AF failures (unless the Piggy-600
+    # fails too), the focuser guard's sub verdict and the reports do not
+    # alarm or act on them. The subs are still graded and recorded.
+    plan_moon_fill_carrier_quiet: bool = True
     campaign_min_alt_deg: float = 30.0  # PS-30: campaign planner altitude floor
     # (deg) for a target's usable 10-min slots; a project's min_alt_deg overrides.
     # Flat 30 deg at AARO Pier 3 (Jeremy, 2026-09-26: no roof/terrain profile).

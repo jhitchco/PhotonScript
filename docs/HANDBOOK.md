@@ -1340,6 +1340,31 @@ both rigs idle (worked around live by patching the Heart to Ha:100).
   night for the same moon: its fixed L-only M51 test target was emptied by
   the moon rule. It now uses a target at the LST of tonight's mid-dark,
   Dec +40, shooting L and Ha (`preflight.sequence_check`).
+- **Quiet carriers** (`scheduler/carrier_quiet.py`,
+  `plan_moon_fill_carrier_quiet`, default on): on an UNGUIDED carrier (the
+  live armer's guiding mode while armed, else the carrier's planned
+  `expect_rejected`) the RC16's expected rejects alarm and act on nothing.
+  The night pilot takes no RC16 action (shorten / limit, AF / refocus, skip,
+  sub ladder) and sends no "needs a human" or optics push for it: a run
+  event kind `night_pilot` value `carrier` once per target and cause; PHD2
+  on an unguided night is still stopped and alerted (it moves the shared
+  mount, the Piggy-600 trails too). The sub doctor still diagnoses and
+  records, but does not push for the RC16 (guider_conflict still does;
+  focuser is info unless the Piggy-600's autofocus is failing too), and its
+  morning line skips RC16 diagnoses inside a carrier window. The telescope
+  agent's reject streak neither counts nor resets on carrier subs (no NANNY
+  severe, no auto abort). RC16 autofocus failures (af_stall alarm, the AF
+  report grader) are info only unless the Piggy-600 also fails. The focuser
+  guard does not judge a carrier sub soft: its decision waits until the
+  RC16 is off the carrier and uses judged subs. The end-of-night report,
+  the target-switch story and the morning report say "RC16 carrier for the
+  Piggy-600, N subs, not judged (<target>)" instead of a kept / rejected
+  tally (the end-of-night headline leaves the carrier rejects out). The RC16
+  subs are still graded, culled and recorded; the Piggy-600 and every
+  safety alert are unchanged; a guided carrier is bonus Ha and behaves as
+  any target. The plan snapshot (`runs/<night>_plan.json`) now keeps
+  `moon_fill` and a per-target `carrier`, so the reports know the carriers
+  after the armer moved on.
 
 ### Off-target alert and "Restart tonight from now" (PS-143)
 

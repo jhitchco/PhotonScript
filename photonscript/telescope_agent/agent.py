@@ -421,7 +421,20 @@ class TelescopeAgent:
                 "detail": msg, **af_stall.summary(streak)})
         except Exception as e:  # noqa: BLE001
             logger.warning("autofocus stall run event not written: %s", e)
-        if store.alert_once(self.config, f"af-stall-{rig}-{night}"):
+        # 2026-10-25: the RC16 on an unguided moon-fill carrier: info only
+        # unless the Piggy-600's autofocus fails too (carrier_quiet)
+        kind = "act"
+        if rig == "rc16":
+            try:
+                from photonscript.scheduler.carrier_quiet import af_kind
+                kind = af_kind(self.config, night, "act",
+                               when=datetime.utcnow())
+            except Exception:  # noqa: BLE001
+                kind = "act"
+        if kind != "act":
+            record(self.config, msg, title=af_stall.ALERT_TITLE, priority=0,
+                   reason="carrier-not-judged")
+        elif store.alert_once(self.config, f"af-stall-{rig}-{night}"):
             await notify(self.config, msg, title=af_stall.ALERT_TITLE, priority=1, kind="act")
         else:
             record(self.config, msg, title=af_stall.ALERT_TITLE, priority=1,
@@ -2063,8 +2076,14 @@ class TelescopeAgent:
         # PS-148: through-focus optics-test subs are defocused on purpose;
         # PS-152: unguided tracking-test rungs are expected to fail too. Test
         # and calibration subs neither count toward nor reset the streak.
+        # 2026-10-25: an unguided moon-fill carrier's RC16 subs are expected
+        # to be rejected (carrier_quiet): neither counted nor reset, so no
+        # NANNY severe and no auto abort that would cost the Piggy-600 its
+        # pointing.
         from photonscript.shared.target_names import is_test_target
         if is_test_target(target_name):
+            pass
+        elif self._carrier_sub(target_name, night):
             pass
         elif quality.passed_qa:
             self._consecutive_rejects = 0
@@ -2117,6 +2136,18 @@ class TelescopeAgent:
                 "quality": quality.model_dump(mode="json"),
             },
         ))
+
+    def _carrier_sub(self, target_name, night) -> bool:
+        """This rig is the RC16 and the sub is on an unguided moon-fill
+        carrier (scheduler/carrier_quiet.py). Never raises."""
+        if getattr(self, "rig", "rc16") != "rc16":
+            return False
+        try:
+            from photonscript.scheduler.carrier_quiet import carrier_for
+            return carrier_for(self.config, target=target_name,
+                               night=night or None) is not None
+        except Exception:  # noqa: BLE001
+            return False
 
     def _slew_straddle(self, start, exp_s, night) -> dict:
         """PS-13: did this sub expose through an RC16 move? Only for a rig

@@ -138,12 +138,39 @@ async def after_sub(agent, night: str | None) -> dict | None:
         logger.info("sub doctor %s: %s (%s) %s", rig, diag["cause"],
                     diag["confidence"], diag["headline"])
     if out.get("push"):
+        kind = "act" if diag["cause"] in ("guider_conflict", "focuser") else "info"
+        kind = carrier_kind(config, night, rig, diag["cause"], window[-1], kind)
+        if kind is None:
+            logger.info("sub doctor %s: %s not pushed (unguided moon-fill "
+                        "carrier, subs not judged)", rig, diag["cause"])
+            return diag
         try:
             from photonscript.shared.pushover import notify
             await notify(config, out["push"],
                          title=f"{sd.ALERT_TITLE}: {sd._label(config, rig)}",
                          priority=1 if diag["cause"] in ("guider_conflict", "focuser")
-                         else 0, kind="act" if diag["cause"] in ("guider_conflict", "focuser") else "info")
+                         else 0, kind=kind)
         except Exception as e:  # noqa: BLE001
             logger.warning("sub doctor push failed: %s", e)
     return diag
+
+
+def carrier_kind(config, night: str | None, rig: str, cause: str, last: dict,
+                 kind: str) -> str | None:
+    """2026-10-25 quiet carriers (scheduler/carrier_quiet.py): the push kind
+    for a diagnosis of the RC16 on an unguided moon-fill carrier. None = no
+    push (the diagnosis and its run event stay); guider_conflict keeps its
+    kind (PHD2 moves the shared mount, the Piggy-600 trails too); focuser is
+    info unless the Piggy-600's autofocus is failing too. Elsewhere `kind`."""
+    if rig != "rc16" or cause == "guider_conflict":
+        return kind
+    try:
+        from photonscript.scheduler import carrier_quiet as cq
+        if cq.carrier_for(config, rig=rig, target=(last or {}).get("target"),
+                          night=night) is None:
+            return kind
+        if cause == "focuser":
+            return kind if cq.piggy_af_failing(config, night) else "info"
+    except Exception:  # noqa: BLE001
+        return kind
+    return None

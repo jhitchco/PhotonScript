@@ -54,8 +54,12 @@ def save_plan_snapshot(config, night_of: str, plan: dict, targets) -> None:
         "unguided_limits": plan.get("unguided_limits"),
         # Piggy core 2026-10-14: per-target Piggy-600 lengths (piggy_length.py)
         "piggy_length": plan.get("piggy_length"),
+        # 2026-10-25 moon fill: the carriers (the morning report and the
+        # night story read them after the armer moved on, carrier_quiet)
+        "moon_fill": plan.get("moon_fill"),
         "targets": [{
             "name": t.name,
+            "carrier": bool(getattr(t, "carrier", False)),
             # dawn filing (2026-10-11): the planned window, the Piggy-600's
             # last-resort name (dawn_autofile.plan_fallback_records)
             "window_start_utc": _iso_or_none(getattr(t, "window_start_utc", None)),
