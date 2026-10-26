@@ -717,9 +717,32 @@ async def _decide(cfg, armer, io, st, rs, rig, now, m) -> None:
     p = rs["pending"]
     r = rs["resets"][-1] if rs.get("resets") else {}
     reset_t = _parse(p.get("reset_t")) or now
+    subs = io.subs(cfg, st["night"])
+    if rig == "rc16":
+        # 2026-10-25 quiet carriers: an unguided moon-fill carrier's subs
+        # are expected to be rejected (trailed), so they say nothing about
+        # focus: no verdict from them, and no decision while the RC16 is on
+        # one (the wait starts again once it is off the carrier)
+        try:
+            from photonscript.scheduler import carrier_quiet as cq
+            row = cq.carrier_for(cfg, when=now, armer=armer)
+            quiet = cq.quiet_targets(cfg, armer=armer)
+        except Exception:  # noqa: BLE001
+            row, quiet = None, {}
+        if row is not None:
+            p["wait_from"] = None
+            if not p.get("carrier_noted"):
+                p["carrier_noted"] = _iso(now)
+                _step(cfg, st, rs, now, rig, "carrier",
+                      f"{_label(cfg, rig)} focuser reset: decision waits, the RC16 "
+                      f"is an unguided pointing carrier on {row.get('target')} "
+                      "(subs not judged)")
+            return
+        if quiet:
+            subs = [r for r in subs or [] if not cq.is_carrier_sub(r, quiet)]
     if not p.get("wait_from"):
         p["wait_from"] = _iso(now)
-    verdict, why = sub_verdict(io.subs(cfg, st["night"]), rig, reset_t)
+    verdict, why = sub_verdict(subs, rig, reset_t)
     waited = (now - (_parse(p["wait_from"]) or now)).total_seconds() / 60.0
     if verdict is None and waited < _f(cfg, "focuser_guard_sub_wait_min", 15.0):
         return

@@ -626,6 +626,15 @@ def _target_tally(config, night: str, rig: str, target: str) -> tuple[int, int, 
     return k, r, sec / 3600.0
 
 
+def _carrier(config, night: str | None, target) -> bool:
+    """The RC16 target is an unguided moon-fill carrier (carrier_quiet)."""
+    try:
+        from photonscript.scheduler.carrier_quiet import carrier_for
+        return carrier_for(config, target=target, night=night) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def after_sub(config, night: str | None, rec: dict, rig: str = "rc16") -> dict:
     """First light per rig (a kept light, with a thumbnail) and RC16 target
     switches. Returns what was pushed ({"first_light": bool, "switch": bool})."""
@@ -662,9 +671,14 @@ async def after_sub(config, night: str | None, rec: dict, rig: str = "rc16") -> 
             exp = f" {float(exp):g}s"
         except (TypeError, ValueError):
             exp = ""
+        if _carrier(config, night, prev):
+            # 2026-10-25: an unguided moon-fill carrier is not judged
+            from photonscript.scheduler.carrier_quiet import summary_text
+            tally = summary_text(k + r, kept=k)
+        else:
+            tally = f"{k} kept / {r} rejected, {h:.1f} h"
         msg = (f"RC16 now on {target} ({rec.get('filter') or '?'}{exp}, "
-               f"{_hm(config, when)}) after {prev}: {k} kept / {r} rejected, "
-               f"{h:.1f} h.")
+               f"{_hm(config, when)}) after {prev}: {tally}.")
         out["switch"] = await _push(config, msg, title=TITLE_TARGET,
                                     fact=f"target:{night}:{prev}->{target}")
     return out
@@ -848,7 +862,20 @@ def end_of_night_report(config, night: str, *, reason: str,
     except Exception:  # noqa: BLE001
         def target_key(x):
             return str(x).lower()
+    # 2026-10-25 quiet carriers: the RC16 subs of an unguided moon-fill
+    # carrier are not judged (one line instead of a kept / rejected tally;
+    # their rejects are not in the headline's count)
+    try:
+        from photonscript.scheduler import carrier_quiet as cq
+        quiet = cq.quiet_targets(config, night=night,
+                                 plan=plan if plan.get("moon_fill") is not None else None)
+    except Exception:  # noqa: BLE001
+        cq, quiet = None, {}
     lights = [s for s in subs if not is_test_record(s)]
+    carrier_subs = [s for s in lights if quiet and cq.is_carrier_sub(s, quiet)]
+    if carrier_subs:
+        lights = [s for s in lights if not cq.is_carrier_sub(s, quiet)
+                  or s.get("passed_qa")]
     kept_all = [s for s in lights if s.get("passed_qa")]
     hours_all = sum(float(s.get("exp_s") or 0) for s in kept_all) / 3600.0
     lines: list[tuple[int, str]] = [(0, (
@@ -856,6 +883,16 @@ def end_of_night_report(config, night: str, *, reason: str,
         f"of {len(lights)} subs, {hours_all:.1f} h added."))]
     for rig in rig_ids(config):
         mine = [s for s in lights if (s.get("rig") or "rc16") == rig]
+        if rig == "rc16" and carrier_subs:
+            names = []
+            for s in carrier_subs:
+                n = _canon(s.get("target")) or "?"
+                if n not in names:
+                    names.append(n)
+            lines.append((1, cq.summary_text(
+                len(carrier_subs), names,
+                kept=sum(1 for s in carrier_subs if s.get("passed_qa")))))
+            mine = [s for s in mine if not cq.is_carrier_sub(s, quiet)]
         if not mine:
             continue
         by_t: dict[str, list[dict]] = {}

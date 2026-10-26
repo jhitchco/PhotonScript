@@ -1185,6 +1185,18 @@ def night_lines(config, rep: dict) -> list[str]:
     return lines
 
 
+def _carrier_fired(config, date: str, rig: str, d: dict) -> bool:
+    """2026-10-25 quiet carriers: an RC16 diagnosis (not guider_conflict)
+    inside an unguided moon-fill carrier window is not a failure."""
+    if rig != "rc16" or d.get("cause") == "guider_conflict":
+        return False
+    try:
+        from photonscript.scheduler.carrier_quiet import carrier_for
+        return carrier_for(config, when=d.get("t"), night=date) is not None
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def morning_line(config, date: str) -> str | None:
     """The morning report line (None for a healthy night)."""
     try:
@@ -1194,7 +1206,7 @@ def morning_line(config, date: str) -> str | None:
         return None
     parts = []
     for rg, r in (rep.get("rigs") or {}).items():
-        f = r.get("fired") or []
+        f = [d for d in r.get("fired") or [] if not _carrier_fired(config, date, rg, d)]
         if f:
             parts.append(f"{_label(config, rg)}: " + "; ".join(
                 f"{d['cause']} from {_hm(d.get('t'))} (fix: {d['fix']})" for d in f[:3]))
