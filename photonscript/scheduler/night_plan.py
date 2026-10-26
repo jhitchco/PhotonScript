@@ -98,6 +98,111 @@ def _window(t, dawn, fill: bool = False):
     return (w0, w1) if w0 and w1 else None
 
 
+def _schedule_rows(config, obs, targets, dusk, dawn, now, _fmt) -> dict:
+    """The plan's per-target schedule cards (window, sets owed, transit)
+    for planner targets; also the windows for the shutter estimate and the
+    planned subs / integration. Shared by build_night_plan and
+    dispatched_view (the targets a dispatch actually loaded)."""
+    from photonscript.shared.astronomy import compute_visibility_window
+    from photonscript.scheduler.target_planner import owed_seconds
+    schedule = []
+    windows = []   # PS-176: (target, seconds) for the shutter estimate
+    cursor2 = dusk
+    planned_subs = 0
+    integ_s = 0.0
+    rows = [(t, False) for t in targets] + [
+        (t, True) for t in targets
+        if getattr(t, "fill_from_utc", None) is not None]   # PS-180
+    for t, is_fill in rows:
+        active = [e for e in t.exposures
+                  if e.count - e.acquired > 0 or e.short_remaining() > 0]
+        sets = _owed_sets(t)
+        total_s = sum(owed_seconds(e) for e in active) * 1.15
+        win = _window(t, dawn, fill=is_fill)
+        if total_s <= 0 or (win is None and cursor2 >= dawn):
+            continue
+        if win is None:
+            end = min(cursor2 + timedelta(seconds=total_s), dawn)
+        else:
+            cursor2, end = win   # PS-180: the planner's window
+        # transit info
+        from photonscript.shared.models import CelestialTarget
+        ct = CelestialTarget(name=t.name, ra_hours=t.ra_hours,
+                             dec_degrees=t.dec_degrees)
+        vis = compute_visibility_window(ct, obs, now)
+        transit = vis.get("transit_time")
+        # Meridian transit altitude is analytic: 90 - |lat - dec|
+        transit_alt = round(90 - abs(obs.latitude - t.dec_degrees))
+        kind = "narrowband sho" if any(
+            e.filter_type.value in ("Ha", "OIII", "SII") for e in active)             else "broadband lrgb"
+        carrier = bool(getattr(t, "carrier", False))
+        if carrier:
+            kind = "pointing carrier for the Piggy-600 (RC16 Ha, moon fill)"
+        rah = int(t.ra_hours)
+        ram = int((t.ra_hours - rah) * 60)
+        dec_sign = "+" if t.dec_degrees >= 0 else "-"
+        decd = int(abs(t.dec_degrees))
+        decm = int((abs(t.dec_degrees) - decd) * 60)
+        schedule.append({
+            "name": t.name,
+            "kind": kind + (", fill (rest of the night)" if is_fill else ""),
+            "window_start": _fmt(cursor2)["local"],
+            "window_end": _fmt(end)["local"],
+            # PS-180: the window in UTC; handoff = the loop ends there and the
+            # next target runs (None: it keeps the mount to the loop end)
+            "window_start_utc": _fmt(cursor2)["utc"],
+            "window_end_utc": _fmt(end)["utc"],
+            "handoff_utc": (_fmt(t.handoff_utc)["utc"]
+                            if getattr(t, "handoff_utc", None) and not is_fill
+                            else None),
+            "fill": is_fill,
+            "carrier": carrier,
+            "transit_local": _fmt(transit)["local"] if transit else None,
+            "transit_alt": transit_alt,
+            "coords": f"{rah:02d}h{ram:02d}m / {dec_sign}{decd:02d}d{decm:02d}m",
+            "ra_hours": t.ra_hours,
+            "dec_degrees": t.dec_degrees,
+            "filters": sets,
+        })
+        if not is_fill:
+            planned_subs += sum(x["n"] for x in sets)
+            integ_s += sum(owed_seconds(e) for e in active)
+        windows.append([t, (end - cursor2).total_seconds()])
+        cursor2 = end
+
+    return {"schedule": schedule, "windows": windows, "cursor": cursor2,
+            "planned_subs": planned_subs, "integ_s": integ_s}
+
+
+def dispatched_view(config, plan: dict, targets, now: datetime | None = None) -> dict:
+    """2026-10-26: the plan's target view (targets, schedule, stats) rebuilt
+    from planner targets: the ones a dispatch loaded, or a re-plan after a
+    goal changed. The arm's plan is computed once at arm; a goal patched
+    after it (or the dispatch's own planning) left the evening heads-up and
+    "imaging now" on the arm's list (2026-10-25: "0 target(s) ... on ?"
+    while the RC16 imaged Heart Nebula). Keys merged into plan by the
+    caller; the other stats (dark hours, shutter %) are kept."""
+    from photonscript.shared.localtime import utc_offset_hours as _tz_off
+    now = now or datetime.utcnow()
+    dusk = datetime.fromisoformat(str(plan["dusk_utc"]).rstrip("Z"))
+    dawn = datetime.fromisoformat(str(plan["dawn_utc"]).rstrip("Z"))
+    utc_off = _tz_off(config, dusk)
+
+    def _fmt(dt):
+        return {"utc": dt.isoformat() + "Z",
+                "local": (dt + timedelta(hours=utc_off)).strftime("%I:%M %p")}
+
+    sv = _schedule_rows(config, config.get_observatory(), list(targets or []),
+                        dusk, dawn, now, _fmt)
+    sched = sv["schedule"]
+    stats = dict(plan.get("stats") or {})
+    stats.update({"targets": sum(1 for r in sched if not r["fill"]),
+                  "planned_subs": sv["planned_subs"],
+                  "est_integration_h": round(sv["integ_s"] / 3600, 1)})
+    return {"targets": [r["name"] for r in sched if not r["fill"]],
+            "schedule": sched, "stats": stats}
+
+
 def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
     """Compute tonight's timeline. All times UTC ISO + local strings."""
     from photonscript.shared.astronomy import (get_seasonal_targets,
@@ -203,78 +308,16 @@ def build_night_plan(config, preconfig_lead_min: int | None = None) -> dict:
                    "detail": "Warm camera, slew to park, stop tracking"})
 
     # --- Rich view: twilight timeline, stats, per-target schedule cards ----
-    from photonscript.shared.astronomy import compute_visibility_window
-    from photonscript.scheduler.project_store import target_kind
+    from photonscript.scheduler.project_store import target_kind  # noqa: F401
 
     night_date = (dusk - timedelta(hours=12)).replace(hour=0, minute=0,
                                                       second=0, microsecond=0)
     tw_all = compute_night_times(obs, night_date)
     twilight = {k: _fmt(v)["local"] if v else None for k, v in tw_all.items()}
 
-    schedule = []
-    windows = []   # PS-176: (target, seconds) for the shutter estimate
-    cursor2 = dusk
-    planned_subs = 0
-    integ_s = 0.0
-    rows = [(t, False) for t in targets] + [
-        (t, True) for t in targets
-        if getattr(t, "fill_from_utc", None) is not None]   # PS-180
-    for t, is_fill in rows:
-        active = [e for e in t.exposures
-                  if e.count - e.acquired > 0 or e.short_remaining() > 0]
-        sets = _owed_sets(t)
-        total_s = sum(owed_seconds(e) for e in active) * 1.15
-        win = _window(t, dawn, fill=is_fill)
-        if total_s <= 0 or (win is None and cursor2 >= dawn):
-            continue
-        if win is None:
-            end = min(cursor2 + timedelta(seconds=total_s), dawn)
-        else:
-            cursor2, end = win   # PS-180: the planner's window
-        # transit info
-        from photonscript.shared.models import CelestialTarget
-        ct = CelestialTarget(name=t.name, ra_hours=t.ra_hours,
-                             dec_degrees=t.dec_degrees)
-        vis = compute_visibility_window(ct, obs, now)
-        transit = vis.get("transit_time")
-        # Meridian transit altitude is analytic: 90 - |lat - dec|
-        transit_alt = round(90 - abs(obs.latitude - t.dec_degrees))
-        kind = "narrowband sho" if any(
-            e.filter_type.value in ("Ha", "OIII", "SII") for e in active)             else "broadband lrgb"
-        carrier = bool(getattr(t, "carrier", False))
-        if carrier:
-            kind = "pointing carrier for the Piggy-600 (RC16 Ha, moon fill)"
-        rah = int(t.ra_hours)
-        ram = int((t.ra_hours - rah) * 60)
-        dec_sign = "+" if t.dec_degrees >= 0 else "-"
-        decd = int(abs(t.dec_degrees))
-        decm = int((abs(t.dec_degrees) - decd) * 60)
-        schedule.append({
-            "name": t.name,
-            "kind": kind + (", fill (rest of the night)" if is_fill else ""),
-            "window_start": _fmt(cursor2)["local"],
-            "window_end": _fmt(end)["local"],
-            # PS-180: the window in UTC; handoff = the loop ends there and the
-            # next target runs (None: it keeps the mount to the loop end)
-            "window_start_utc": _fmt(cursor2)["utc"],
-            "window_end_utc": _fmt(end)["utc"],
-            "handoff_utc": (_fmt(t.handoff_utc)["utc"]
-                            if getattr(t, "handoff_utc", None) and not is_fill
-                            else None),
-            "fill": is_fill,
-            "carrier": carrier,
-            "transit_local": _fmt(transit)["local"] if transit else None,
-            "transit_alt": transit_alt,
-            "coords": f"{rah:02d}h{ram:02d}m / {dec_sign}{decd:02d}d{decm:02d}m",
-            "ra_hours": t.ra_hours,
-            "dec_degrees": t.dec_degrees,
-            "filters": sets,
-        })
-        if not is_fill:
-            planned_subs += sum(x["n"] for x in sets)
-            integ_s += sum(owed_seconds(e) for e in active)
-        windows.append([t, (end - cursor2).total_seconds()])
-        cursor2 = end
+    sv = _schedule_rows(config, obs, targets, dusk, dawn, now, _fmt)
+    schedule, windows, cursor2 = sv["schedule"], sv["windows"], sv["cursor"]
+    planned_subs, integ_s = sv["planned_subs"], sv["integ_s"]
 
     efficiency = _shutter_estimate(config, windows, dusk, dawn, cursor2)
 

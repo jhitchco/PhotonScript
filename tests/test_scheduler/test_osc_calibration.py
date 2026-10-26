@@ -7,12 +7,17 @@ mount — it rides the RC16's slew.
 """
 
 import json
+from datetime import datetime
 
 from photonscript.shared.config import PhotonScriptConfig
 from photonscript.shared import rigs
 from photonscript.scheduler.calibration import (
     generate_darks_json, generate_dusk_flats_json,
     generate_piggyback_companion_json)
+
+# a fixed afternoon (2026-10-21 13:00 local): the dusk flat plan is for
+# "this evening", so a wall-clock now after the window plans no SkyFlat
+DUSK_NOW = datetime(2026, 10, 21, 20, 0)
 
 
 def _walk(node):
@@ -70,7 +75,7 @@ def test_osc_darks_use_piggyback_gain_offset_and_setpoint():
 def test_osc_flats_single_set_and_never_touches_the_mount():
     cfg = PhotonScriptConfig(piggyback_enabled=True)
     pc = rigs.rig_config(cfg, "piggyback")
-    txt, start_local = generate_dusk_flats_json(pc, osc=True, owns_mount=False)
+    txt, start_local = generate_dusk_flats_json(pc, osc=True, owns_mount=False, now=DUSK_NOW)
     root = json.loads(txt)
     types = _types(root)
     # the OSC sky-flat block is present, with no filter-wheel switching: its
@@ -93,7 +98,7 @@ def test_osc_flats_single_set_and_never_touches_the_mount():
 def test_filtered_flats_still_slew_the_mount():
     # the RC16 (owns the mount) still gets the full slew/park flat routine.
     cfg = PhotonScriptConfig()
-    txt, _ = generate_dusk_flats_json(cfg, osc=False, owns_mount=True)
+    txt, _ = generate_dusk_flats_json(cfg, osc=False, owns_mount=True, now=DUSK_NOW)
     types = _types(json.loads(txt))
     assert any("Telescope.SlewScopeToAltAz" in t for t in types)
     assert any("Telescope.ParkScope" in t for t in types)
@@ -304,7 +309,7 @@ def test_dusk_flats_only_filters_refreshes_just_broadband():
     # without re-doing fresh narrowband: exactly 4 SkyFlat blocks, still slews.
     cfg = PhotonScriptConfig()
     txt, _ = generate_dusk_flats_json(
-        cfg, only_filters=["L", "R", "G", "B"], osc=False, owns_mount=True)
+        cfg, only_filters=["L", "R", "G", "B"], osc=False, owns_mount=True, now=DUSK_NOW)
     root = json.loads(txt)
     flats = [n for n in _walk(root)
              if n.get("$type", "").startswith(
