@@ -1556,6 +1556,39 @@ focusers during the night and judges only connected readings.
   rules use the same connected-reading test and compare with the last
   connected reading; the live focuser reading now carries `Connected`.
 
+### Stuck focuser: reconnect it, then autofocus (2026-10-26)
+
+Jeremy: "If you get stuck with a focuser, then you can always reset it."
+The focuser twin of the cooler-stall recovery (disconnect / reconnect the
+camera). `scheduler/focuser_reconnect.py`, a service loop every 90 s while
+the armer is RUNNING (act) or WATCHING (advise only).
+
+- **Stuck means** (per rig, ninaAPI GETs): `af_stall_runs` (3) AF runs in a
+  row that did not finish, with points, and the focuser never moved (every
+  point at one position, or the reading unchanged since before the runs);
+  IsMoving for `focuser_reconnect_moving_min` (5) with the position
+  unchanged; a commanded move (focuser guard `moves.jsonl`) 90 s old that
+  left the focuser where it was; or the focuser temperature frozen for
+  `frozen_sensor_minutes` together with failed AF runs that measured stars
+  and a position reading that did not change through them. A frozen
+  temperature alone never triggers (the Piggy EAF reads 21.29 C all night),
+  and clouds do not (the AF moves the focuser; all-HFR-0 runs are clouds).
+- **Act** (`focuser_reconnect_mode` act, the default like
+  `cooler_stall_recovery`; `night_pilot_mode` advise / off caps it at
+  advise): once per rig per night, never while the camera exposes (an
+  unreadable camera is busy), an AF runs, the sequence runs a focus /
+  flat / dark / calibration item, a capture job or the arm recipe runs.
+  `equipment/focuser/disconnect`, wait `focuser_reconnect_wait_s` (5),
+  `equipment/focuser/connect`, read the position back against the focuser
+  guard's last connected reading. No reading: act push. A counter change
+  the guard calls a reset: the guard runs at once (in act it restores and
+  autofocuses; in advise this module autofocuses in place). Else an AF
+  (RC16 direct AF between subs, Piggy stop + companion re-dispatch).
+- **Reports:** run events kind `focuser_reconnect`, a story line, an info
+  push when it worked, an act push only when the reconnect or the AF
+  failed; morning report "Focuser reconnect <rig>: ...". State
+  `<data_dir>/focuser_reconnect/<night>.json`.
+
 ### Unguided guard: nothing guides on an unguided night (2026-10-13)
 
 Why: 2026-10-12 and 10-13 were armed UNGUIDED but NINA #1 had PHD2
@@ -2067,6 +2100,27 @@ night fresh driver instances.
   #1, NINA #2 (piggyback on) or PHD2 (guided night) does not answer.
   Preflight row "Observatory apps running": FAIL only with the lifecycle on,
   on an armed day, 15 min past the launch time; WARN otherwise.
+- **When the morning close does not happen (2026-10-26):** the 10-25 night
+  ended 12:39Z; a deploy restarted the service at 12:55Z, before the cooler
+  verify (due 17 min after the shutdown) ran. The verify task died with the
+  process, the restored shutdown record kept `verify: None`, and every stop
+  until 11:00 was blocked; the 11:45 start found the apps running and left
+  them stale. Now: (1) the armer re-arms a lost verify on restore (within 3 h
+  of the shutdown); (2) a verify still missing 10 min after it was due is
+  derived from a read-only camera read (every cooler off, or the camera
+  unreachable = done; a cooler still ON keeps blocking); (3) a blocked
+  scheduled stop posts its blockers (once per distinct reason a day); (4) when
+  nothing closed the apps today, the scheduled 11:45 start restarts them
+  (close as -Stop, then launch) when `restart_blockers` is empty: the stop
+  guards, except that ARMED is fine while pre-config is at least
+  `app_lifecycle_restart_min_before_preconfig` (60) min away (arm() loads no
+  sequence; the unguided guard runs again at dispatch), and an idle armer
+  with the noon re-arm on blocks from 11:55. It posts restart "begin" first;
+  the automatic arm holds ("holding for the daily app restart", at most 20
+  min) until the start reports. Apps still stale after the start = one page
+  (not when `app_lifecycle_restart_at_start` is off). By hand: `-Start
+  -Restart`. (5) "Apps restarted fresh / NOT restarted <day>" goes to the
+  story (info), the evening plan heads-up and the morning report card.
 - **Interplay:** a `calibration_autofill` job (off today) that starts at
   sunrise holds the stop until it ends; one that would start while the apps
   are closed is refused for that day (one attempt a day). The PS-150 NINA

@@ -232,6 +232,19 @@ class PhotonScriptConfig(BaseSettings):
     focuser_guard_travel_piggyback: float = 0.0
     focuser_guard_sub_wait_min: float = 15.0
     focuser_guard_af_after_move: bool = True
+    # Stuck-focuser recovery (2026-10-26, scheduler/focuser_reconnect.py):
+    # "if you get stuck with a focuser, you can always reset it". A focuser
+    # that does not move (AF runs with points but no fit and one position,
+    # IsMoving stuck focuser_reconnect_moving_min, a commanded move that did
+    # not move it, or a frozen temperature together with failed AF runs; a
+    # frozen temperature alone never) is disconnected and reconnected once
+    # per rig per night (never while the camera exposes or an AF runs), its
+    # position read back against the focuser guard's baseline, then an AF.
+    # off | advise | act (default, like cooler_stall_recovery);
+    # night_pilot_mode advise / off caps it at advise.
+    focuser_reconnect_mode: str = "act"
+    focuser_reconnect_moving_min: float = 5.0
+    focuser_reconnect_wait_s: float = 5.0
     # Stuck-loop detector (2026-10-15, scheduler/stuck_loop.py): a rig that
     # should be imaging saves no light (the 10-14 AF / center / park loop).
     # stuck_loop_mode alert | off; the pilot's action off | advise | act
@@ -1969,6 +1982,14 @@ class PhotonScriptConfig(BaseSettings):
     app_lifecycle_start_local: str = "11:45"  # launch time, scope local
                                  # HH:MM (the Start task's time): before the
                                  # 12:00 noon re-arm, which needs NINA #1
+    # 2026-10-26: when the morning stop never closed the apps (10-26: a
+    # deploy lost the dawn cooler verify, every stop was blocked), the
+    # scheduled start closes and relaunches them itself, behind the stop
+    # guards (no sequence, sun up, armer idle or ARMED with pre-config at
+    # least app_lifecycle_restart_min_before_preconfig min away), and pages
+    # when they stay stale.
+    app_lifecycle_restart_at_start: bool = True
+    app_lifecycle_restart_min_before_preconfig: float = 60.0
     app_nina_exe: str = r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe"
     app_nina1_profile: str = "RC16"       # NINA #1 profile: name or GUID
     app_nina2_profile: str = "piggyback600"  # NINA #2 profile: name or GUID

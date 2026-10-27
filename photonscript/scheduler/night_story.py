@@ -257,10 +257,13 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
                       owed: str | None = None, forecast: str | None = None,
                       recipe: str | None = None, piggy: str | None = None,
                       warnings=None, needs: str | None = None,
-                      ladder: str | None = None, guiding: str | None = None) -> str:
+                      ladder: str | None = None, guiding: str | None = None,
+                      apps: str | None = None) -> str:
     """The evening plan heads-up (pure: everything comes in). guiding
     (2026-10-26): the guided-night readiness line
-    (guided_readiness.headsup_line)."""
+    (guided_readiness.headsup_line). apps (2026-10-26): whether NINA / PHD2
+    were restarted fresh today (app_lifecycle.fresh_line); a stale day is
+    kept with the warnings, a fresh one is a detail."""
     night = plan.get("night_of") or "?"
     pc = _hm(config, plan.get("preconfig_utc"))
     dusk = _hm(config, plan.get("dusk_utc"))
@@ -301,6 +304,8 @@ def plan_headsup_text(config, plan: dict, *, guided: bool, moon: dict | None = N
     for w in warnings or []:
         if w:
             lines.append((1, w))
+    if apps:
+        lines.append((1 if "NOT" in apps else 3, apps))
     if moon:
         lines.append((2, moon))
     if tpoint:
@@ -391,6 +396,16 @@ def _guiding_line(config, plan: dict, guided: bool) -> str | None:
         return headsup_line(config, guided, night=(plan or {}).get("night_of"))
     except Exception as e:  # noqa: BLE001
         logger.debug("guiding line unavailable: %s", e)
+        return None
+
+
+def _apps_line(config, night: str) -> str | None:
+    """2026-10-26: were the apps restarted fresh this morning (the local day
+    of the night)? None when the app lifecycle has not run."""
+    try:
+        from photonscript.scheduler.app_lifecycle import fresh_line
+        return fresh_line(config, night)
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -510,7 +525,8 @@ async def maybe_plan_headsup(armer, now: datetime | None = None) -> bool:
         warnings=[_gate_note(cfg)],
         needs=_needs_line(cfg, held, _hm(cfg, plan.get("preconfig_utc"))),
         ladder=_ladder_line(cfg, plan),
-        guiding=await asyncio.to_thread(_guiding_line, cfg, plan, guided))
+        guiding=await asyncio.to_thread(_guiding_line, cfg, plan, guided),
+        apps=_apps_line(cfg, night))
     sent = await _push(cfg, text, title=TITLE_PLAN, fact=f"plan:{night}:{sig}",
                        priority=1 if held else 0)
     if sent and held:   # told: the same problems do not buzz again tonight

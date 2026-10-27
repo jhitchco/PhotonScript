@@ -51,6 +51,15 @@ async def api_apps_report(request: Request):
     if al.should_page(cfg, rec):
         paged = await notify(cfg, al.page_text(rec),
                              title="PhotonScript observatory apps", priority=1, kind="act")
+    elif (rec["mode"] == "start" and "fresh" in rec and not rec["dry_run"]
+          and rec.get("restart") != "begin"):
+        # 2026-10-26: the day's verdict in the storyline (info, not pushed):
+        # restarted fresh, or NOT (a stale day that asks for a page gets the
+        # act above instead)
+        line = al.fresh_line(cfg, rec["day"])
+        if line:
+            await notify(cfg, line, title="PhotonScript observatory apps",
+                         priority=0, kind="info")
     logger.info("apps %s report: ok=%s acted=%s %s", rec["mode"], rec["ok"],
                 rec["acted"], rec["message"])
     return {"recorded": rec, "paged": bool(paged)}

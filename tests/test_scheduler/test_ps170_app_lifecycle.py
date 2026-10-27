@@ -473,7 +473,8 @@ def test_script_guard_rails():
     assert close.index("CloseMainWindow") < close.index("WaitForExit") < close.index("Stop-Process")
     # TheSky only with -IncludeTheSky; its check is read-only
     assert s.count("Close-Gracefully $p \"TheSky\"") == 1
-    sky = s[s.index("if ($IncludeTheSky) {\n        foreach"):]
+    sky = s[s.index("if ($withTheSky) {\n        foreach"):]
+    assert "Close-Apps ([bool]$IncludeTheSky)" in s and "Close-Apps $false" in s
     assert sky.index("Close-Gracefully") < 200
     tsk = s[s.index("function Get-TheSkyMount"):s.index("# ---", s.index("function Get-TheSkyMount"))]
     assert "IsConnected" in tsk
