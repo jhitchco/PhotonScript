@@ -232,6 +232,19 @@ class PhotonScriptConfig(BaseSettings):
     focuser_guard_travel_piggyback: float = 0.0
     focuser_guard_sub_wait_min: float = 15.0
     focuser_guard_af_after_move: bool = True
+    # Stuck-focuser recovery (2026-10-26, scheduler/focuser_reconnect.py):
+    # "if you get stuck with a focuser, you can always reset it". A focuser
+    # that does not move (AF runs with points but no fit and one position,
+    # IsMoving stuck focuser_reconnect_moving_min, a commanded move that did
+    # not move it, or a frozen temperature together with failed AF runs; a
+    # frozen temperature alone never) is disconnected and reconnected once
+    # per rig per night (never while the camera exposes or an AF runs), its
+    # position read back against the focuser guard's baseline, then an AF.
+    # off | advise | act (default, like cooler_stall_recovery);
+    # night_pilot_mode advise / off caps it at advise.
+    focuser_reconnect_mode: str = "act"
+    focuser_reconnect_moving_min: float = 5.0
+    focuser_reconnect_wait_s: float = 5.0
     # Stuck-loop detector (2026-10-15, scheduler/stuck_loop.py): a rig that
     # should be imaging saves no light (the 10-14 AF / center / park loop).
     # stuck_loop_mode alert | off; the pilot's action off | advise | act

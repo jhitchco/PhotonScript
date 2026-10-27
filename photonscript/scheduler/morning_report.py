@@ -393,6 +393,11 @@ def report_card(config, date: str | None = None, *, projects=None,
         out["night_pilot"] = list(out.get("night_pilot") or []) + fg_lines(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no focuser guard lines: %s", e)
+    try:   # stuck-focuser reconnects (2026-10-26, scheduler/focuser_reconnect.py)
+        from photonscript.scheduler.focuser_reconnect import morning_lines as fr_lines
+        out["night_pilot"] = list(out.get("night_pilot") or []) + fr_lines(config, date)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no focuser reconnect lines: %s", e)
     try:   # goals paused for tonight only, back at dawn (tonight_pause)
         from photonscript.scheduler.tonight_pause import morning_lines as tp_lines
         out["paused_tonight"] = tp_lines(config, date)
