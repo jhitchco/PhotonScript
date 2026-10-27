@@ -330,6 +330,39 @@ class Armer:
         except OSError as e:
             logger.error("Could not persist armer state: %s", e)
 
+    # a lost dawn-shutdown verify is re-armed on restore only this soon after
+    # the shutdown: later, a dusk-flats or capture-job cooler could be on on
+    # purpose and the verify's warm retry would fight it (the app lifecycle
+    # derives a lost verify read-only instead)
+    RESUME_VERIFY_MAX_H = 3.0
+
+    def _resume_shutdown_verify(self, now: datetime | None = None):
+        """2026-10-26: a deploy at 12:55Z restarted the service 16 min after
+        the 12:39Z dawn shutdown, before its cooler verify (due 17 min after
+        it) ran; the verify task died with the process, "verify" stayed None
+        and the PS-170 app stop was blocked all morning. On restore, a
+        recent shutdown with no verify gets its verify scheduled again
+        (whatever is left of the delay, at least 30 s). Returns the task or
+        None. Never raises."""
+        try:
+            sh = self.shutdown
+            if not isinstance(sh, dict) or sh.get("verify") is not None:
+                return None
+            at = datetime.fromisoformat(str(sh.get("at") or "").rstrip("Z"))
+            now = now or datetime.utcnow()
+            age = (now - at).total_seconds()
+            if age < 0 or age > self.RESUME_VERIFY_MAX_H * 3600:
+                return None
+            loop = asyncio.get_running_loop()
+        except Exception:  # noqa: BLE001 - no record / no loop: nothing to do
+            return None
+        delay = max(30, int(self._shutdown_verify_delay_s() - age))
+        coro = (self._verify_watched(delay_s=delay) if sh.get("watched")
+                else self._verify_shutdown(delay_s=delay))
+        logger.info("Dawn-shutdown cooler verify was lost in a restart: "
+                    "running it in %d s", delay)
+        return loop.create_task(coro)
+
     def restore(self) -> bool:
         """Reattach to a night in progress after a restart. Returns True if resumed."""
         if not self._state_path.exists():
@@ -341,6 +374,7 @@ class Armer:
         # Keep the last dawn-shutdown record across restarts regardless of
         # state, so the dashboard chip survives a morning dashboard restart.
         self.shutdown = saved.get("shutdown")
+        self._resume_shutdown_verify()
         self._watch_declined = saved.get("watch_declined")
         self.armed_by = saved.get("armed_by")
         self.armed_at = saved.get("armed_at")

@@ -241,13 +241,19 @@ def report_card(config, date: str | None = None, *, projects=None,
            "sub_doctor": None, "core": None, "blend": None, "dusk_flats": None,
            "dawn_flats": None,
            "night_pilot": [], "deep_night": None, "tpoint": None,
-           "tpoint_coverage": None, "paused_tonight": [], "tpoint_preflight": None}
+           "tpoint_coverage": None, "paused_tonight": [], "tpoint_preflight": None,
+           "apps": None}
     try:   # 2026-10-16: the arm's TPoint / ProTrack preflight (a blocked
         # night has no subs log, so this comes before the early return)
         from photonscript.scheduler.tpoint_preflight import morning_line as pf_line
         out["tpoint_preflight"] = pf_line(config, date)
     except Exception as e:  # noqa: BLE001
         logger.debug("morning report: no TPoint preflight line: %s", e)
+    try:   # 2026-10-26: were NINA / PHD2 restarted fresh before this night
+        from photonscript.scheduler.app_lifecycle import fresh_line
+        out["apps"] = fresh_line(config, date) if date else None
+    except Exception as e:  # noqa: BLE001
+        logger.debug("morning report: no apps line: %s", e)
     if not date:
         out["note"] = "no subs log yet"
         return out
@@ -451,6 +457,8 @@ def card_lines(card: dict, calibration: bool = True) -> list[str]:
     lines = [card["deep_night"]] if card.get("deep_night") else []
     if card.get("tpoint_preflight"):
         lines.append(card["tpoint_preflight"])
+    if card.get("apps"):
+        lines.append(card["apps"])
     for r in card.get("rigs") or []:
         car = r["lights"].get("carrier")
         if car:
@@ -543,7 +551,8 @@ def card_line_priority(line: str) -> int:
     if _RIG_LINE.match(line or "") or str(line or "").startswith(
             ("Piggy guard:", "Night pilot:", "What went wrong",
              "RC16 carrier for the Piggy-600",
-             "Deep night on ", "Dusk flats ", "Dawn flats ")):
+             "Deep night on ", "Dusk flats ", "Dawn flats ",
+             "Apps NOT restarted")):
         return PRI_RIG
     return PRI_DETAIL
 

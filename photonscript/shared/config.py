@@ -1969,6 +1969,14 @@ class PhotonScriptConfig(BaseSettings):
     app_lifecycle_start_local: str = "11:45"  # launch time, scope local
                                  # HH:MM (the Start task's time): before the
                                  # 12:00 noon re-arm, which needs NINA #1
+    # 2026-10-26: when the morning stop never closed the apps (10-26: a
+    # deploy lost the dawn cooler verify, every stop was blocked), the
+    # scheduled start closes and relaunches them itself, behind the stop
+    # guards (no sequence, sun up, armer idle or ARMED with pre-config at
+    # least app_lifecycle_restart_min_before_preconfig min away), and pages
+    # when they stay stale.
+    app_lifecycle_restart_at_start: bool = True
+    app_lifecycle_restart_min_before_preconfig: float = 60.0
     app_nina_exe: str = r"C:\Program Files\N.I.N.A. - Nighttime Imaging 'N' Astronomy\NINA.exe"
     app_nina1_profile: str = "RC16"       # NINA #1 profile: name or GUID
     app_nina2_profile: str = "piggyback600"  # NINA #2 profile: name or GUID

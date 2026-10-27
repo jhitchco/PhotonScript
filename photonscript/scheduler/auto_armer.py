@@ -106,6 +106,16 @@ def auto_arm_decision(*, enabled: bool, state: str, now: datetime,
     return False, "nightly window arming disabled"
 
 
+def _apps_restarting(config, now: datetime | None = None) -> bool:
+    """The PS-170 start-time restart is running (app_lifecycle
+    restart_in_progress); never raises."""
+    try:
+        from photonscript.scheduler.app_lifecycle import restart_in_progress
+        return restart_in_progress(config, now)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _fail_summary(preflight: dict) -> str:
     fails = [c["name"] for c in preflight.get("checks", [])
              if c.get("status") == "fail"]
@@ -529,6 +539,11 @@ async def run_auto_arm_loop(config, get_armer, *, tick_seconds: int = TICK_SECON
                     if arm_now and fu and datetime.utcnow() < fu:
                         arm_now = False
                         reason = "holding for auto dusk flats to finish"
+                    if arm_now and _apps_restarting(config, now):
+                        # 2026-10-26: the 11:45 start is closing and
+                        # relaunching the apps; arm once NINA #1 is back
+                        arm_now = False
+                        reason = "holding for the daily app restart"
                     if arm_now:
                         # 2026-10-16: a manual disarm tonight wins, across
                         # restarts (arm_memory.json). One logged decision.

@@ -1256,6 +1256,8 @@ _CONFIG_FIELDS = [
     ("app_lifecycle_alert", "PS_APP_LIFECYCLE_ALERT", "App lifecycle: page once at arm and at pre-config - 60 min when a needed app is not running", "App lifecycle", "bool", False, False),
     ("app_lifecycle_stop_after_shutdown_min", "PS_APP_LIFECYCLE_STOP_AFTER_SHUTDOWN_MIN", "App lifecycle: close the apps no sooner than this many minutes after the dawn shutdown (and after its cooler verify)", "App lifecycle", "float", False, False),
     ("app_lifecycle_start_local", "PS_APP_LIFECYCLE_START_LOCAL", "App lifecycle: daily launch time, scope local HH:MM (keep equal to the Start task's time; before the 12:00 noon re-arm)", "App lifecycle", "str", False, False),
+    ("app_lifecycle_restart_at_start", "PS_APP_LIFECYCLE_RESTART_AT_START", "App lifecycle: when the morning stop did not close the apps, the scheduled start closes and relaunches them (same guards as the stop; ARMED is fine while pre-config is far enough away) and pages when they stay stale", "App lifecycle", "bool", False, False),
+    ("app_lifecycle_restart_min_before_preconfig", "PS_APP_LIFECYCLE_RESTART_MIN_BEFORE_PRECONFIG", "App lifecycle: an ARMED armer allows the start-time restart only while pre-config is at least this many minutes away (min)", "App lifecycle", "float", False, False),
     ("app_nina_exe", "PS_APP_NINA_EXE", "App lifecycle: NINA.exe path", "App lifecycle", "str", False, False),
     ("app_nina1_profile", "PS_APP_NINA1_PROFILE", "App lifecycle: NINA #1 profile (name or GUID; launched with --profileid)", "App lifecycle", "str", False, False),
     ("app_nina2_profile", "PS_APP_NINA2_PROFILE", "App lifecycle: NINA #2 profile (name or GUID; launched with --profileid)", "App lifecycle", "str", False, False),

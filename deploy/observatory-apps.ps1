@@ -40,7 +40,16 @@
 #   API off; a launch would make a second instance). Never closes anything.
 # -NoConnect (with -Start): skip the connect + preflight step.
 # -Scheduled (set by the tasks): do nothing while app_lifecycle_enabled is
-#   off, and stop at most once a day. A hand run ignores both.
+#   off, and stop at most once a day. A hand run ignores both. A blocked
+#   scheduled stop posts its blockers (once per distinct reason a day).
+# Start-time restart (2026-10-26; -Start -Scheduled, or -Start -Restart by
+#   hand): when no stop closed the apps today, the start closes them first
+#   (the same close as -Stop: PHD2 gracefully, NINA #2, NINA #1) and then
+#   launches them, if the service's restart_blockers is empty (the stop
+#   guards; an ARMED armer only blocks within
+#   app_lifecycle_restart_min_before_preconfig of pre-config). It posts
+#   restart "begin" before closing (the noon re-arm holds meanwhile) and a
+#   stop report after. Still stale after the run = one page.
 #
 # Log: <data_dir>\logs\observatory-apps.log (data_dir as in
 # run-photonscript.ps1). Exit 0 = done or nothing to do, 1 = failed,
@@ -59,6 +68,7 @@ param(
     [ValidateSet("", "nina1", "nina2", "phd2")]
     [string]$Only = "",
     [switch]$NoConnect,
+    [switch]$Restart,
     [string]$Api = "http://127.0.0.1:8100",
     [string]$Repo = "C:\astro\PhotonScript",
     [int]$StartTimeoutS = 180,
@@ -123,10 +133,13 @@ function Post-Api([string]$path, $body = $null, [int]$timeout = 60) {
     } catch { Write-Log ("POST {0} failed: {1}" -f $path, $_.Exception.Message); return $null }
 }
 
-function Send-Report([bool]$ok, [bool]$acted, [string]$message, [bool]$page) {
-    $body = @{ mode = $mode; ok = $ok; acted = $acted; dry_run = [bool]$DryRun
+function Send-Report([bool]$ok, [bool]$acted, [string]$message, [bool]$page,
+                     [string]$asMode = "", $extra = $null) {
+    $m = if ($asMode) { $asMode } else { $mode }
+    $body = @{ mode = $m; ok = $ok; acted = $acted; dry_run = [bool]$DryRun
                scheduled = [bool]$Scheduled; message = $message; page = $page
                steps = @($steps) }
+    if ($extra) { foreach ($k in $extra.Keys) { $body[$k] = $extra[$k] } }
     Write-Log ("result: ok={0} acted={1} {2}" -f $ok, $acted, $message)
     $r = Post-Api "/api/apps/report" $body 30
     if ($null -eq $r) { Write-Log "report not delivered (service down?)" }
@@ -251,6 +264,49 @@ function Close-Gracefully($proc, [string]$label) {
     return ("KILLED after {0} s (did not close)" -f $CloseTimeoutS)
 }
 
+# Close PHD2 (stop looping, release camera + mount: the stale driver, then
+# shutdown), then NINA #2, NINA #1 and any other NINA; TheSky only with
+# -IncludeTheSky. Used by -Stop and by the start-time restart. Returns $true
+# when something stayed open.
+function Close-Apps([bool]$withTheSky) {
+    $phd2 = @(Get-Process -Name phd2 -ErrorAction SilentlyContinue)
+    $ninas = @(Get-Process -Name NINA -ErrorAction SilentlyContinue)
+    $sky = @(Get-Process -Name TheSky64 -ErrorAction SilentlyContinue)
+    if ($phd2.Count -gt 0) {
+        if (Test-Port "localhost" $phd2Port) {
+            foreach ($call in @(@("stop_capture", $null), @("set_connected", @($false)), @("shutdown", $null))) {
+                try { [void](Invoke-Phd2Rpc $call[0] $call[1]); Add-Step ("PHD2 {0} ok" -f $call[0]) }
+                catch { Add-Step ("PHD2 {0} failed: {1}" -f $call[0], $_.Exception.Message) }
+            }
+        }
+        foreach ($p in $phd2) {
+            $r = Close-Gracefully $p "PHD2"
+            Add-Step ("PHD2 pid {0}: {1}" -f $p.Id, $r)
+        }
+    }
+    # NINA: #2 first, then #1, then any other NINA
+    $owner1 = Get-PortOwner $nina1Port
+    $owner2 = Get-PortOwner $nina2Port
+    $ordered = @($ninas | Sort-Object { if ($_.Id -eq $owner2) { 0 } elseif ($_.Id -eq $owner1) { 1 } else { 2 } })
+    foreach ($p in $ordered) {
+        $label = if ($p.Id -eq $owner1) { "NINA #1" } elseif ($p.Id -eq $owner2) { "NINA #2" } else { "NINA" }
+        $r = Close-Gracefully $p $label
+        Add-Step ("{0} pid {1}: {2}" -f $label, $p.Id, $r)
+    }
+    if ($withTheSky) {
+        foreach ($p in $sky) {
+            $r = Close-Gracefully $p "TheSky"
+            Add-Step ("TheSky pid {0}: {1}" -f $p.Id, $r)
+        }
+    }
+    $left = @(Get-Process -Name phd2, NINA -ErrorAction SilentlyContinue)
+    if ($left.Count -gt 0) {
+        Add-Step ("still running: {0}" -f (($left | ForEach-Object { "$($_.Name) $($_.Id)" }) -join ", "))
+        return $true
+    }
+    return $false
+}
+
 # ---------------------------------------------------------------- settings
 $st = Get-Api "/api/apps/status" 60
 $launch = if ($st) { $st.launch } else { $null }
@@ -305,6 +361,17 @@ if ($Stop) {
     if ($blockers.Count -gt 0) {
         Write-Log ("not now: {0}" -f ($blockers -join "; "))
         if (-not $Scheduled) { Add-Step ("refused: " + ($blockers -join "; ")); Send-Report $false $false "stop refused" $false }
+        else {
+            # 2026-10-26: record why the scheduled stop is blocked, once per
+            # distinct reason a day (numbers masked: the sun angle moves), so
+            # the start and the story can say why the apps were not closed
+            $why = "stop blocked: " + ($blockers -join "; ")
+            $prev = $st.last.stop
+            $today = (Get-Date -Format "yyyy-MM-dd")
+            $same = $prev -and $prev.blocked -and ($prev.day -eq $today) -and `
+                (($prev.message -replace '[0-9.:-]+', '#') -eq ($why -replace '[0-9.:-]+', '#'))
+            if (-not $same) { Send-Report $false $false $why $false "" @{ blocked = $true } }
+        }
         exit 2
     }
     $phd2 = @(Get-Process -Name phd2 -ErrorAction SilentlyContinue)
@@ -321,37 +388,7 @@ if ($Stop) {
         Send-Report $true $false "dry run" $false
         exit 0
     }
-    $failed = $false
-    # PHD2: stop looping, release camera + mount (the stale driver), shutdown
-    if ($phd2.Count -gt 0) {
-        if (Test-Port "localhost" $phd2Port) {
-            foreach ($call in @(@("stop_capture", $null), @("set_connected", @($false)), @("shutdown", $null))) {
-                try { [void](Invoke-Phd2Rpc $call[0] $call[1]); Add-Step ("PHD2 {0} ok" -f $call[0]) }
-                catch { Add-Step ("PHD2 {0} failed: {1}" -f $call[0], $_.Exception.Message) }
-            }
-        }
-        foreach ($p in $phd2) {
-            $r = Close-Gracefully $p "PHD2"
-            Add-Step ("PHD2 pid {0}: {1}" -f $p.Id, $r)
-        }
-    }
-    # NINA: #2 first, then #1, then any other NINA
-    $owner1 = Get-PortOwner $nina1Port
-    $owner2 = Get-PortOwner $nina2Port
-    $ordered = @($ninas | Sort-Object { if ($_.Id -eq $owner2) { 0 } elseif ($_.Id -eq $owner1) { 1 } else { 2 } })
-    foreach ($p in $ordered) {
-        $label = if ($p.Id -eq $owner1) { "NINA #1" } elseif ($p.Id -eq $owner2) { "NINA #2" } else { "NINA" }
-        $r = Close-Gracefully $p $label
-        Add-Step ("{0} pid {1}: {2}" -f $label, $p.Id, $r)
-    }
-    if ($IncludeTheSky) {
-        foreach ($p in $sky) {
-            $r = Close-Gracefully $p "TheSky"
-            Add-Step ("TheSky pid {0}: {1}" -f $p.Id, $r)
-        }
-    }
-    $left = @(Get-Process -Name phd2, NINA -ErrorAction SilentlyContinue)
-    if ($left.Count -gt 0) { $failed = $true; Add-Step ("still running: {0}" -f (($left | ForEach-Object { "$($_.Name) $($_.Id)" }) -join ", ")) }
+    $failed = Close-Apps ([bool]$IncludeTheSky)
     $killed = @($steps | Where-Object { $_ -match "KILLED" }).Count
     $msg = if ($failed) { "some apps did not close" } elseif ($killed) { "closed ($killed killed after the timeout)" } else { "closed" }
     Send-Report (-not $failed) $true $msg $failed
@@ -361,7 +398,11 @@ if ($Stop) {
 # ---------------------------------------------------------------- -Start
 if ($Start) {
     if (-not $st) { Write-Log "service does not answer: launching anyway (connect + preflight skipped)" }
-    if ($st -and -not $st.stop_done_today -and -not $Only) {
+    # 2026-10-26: no close today -> the scheduled start restarts the apps
+    # (after the TheSky check below), or reports them stale
+    $needRestart = [bool]($st -and -not $st.stop_done_today -and -not $Only)
+    $restartWanted = [bool]($Scheduled -or $Restart)
+    if ($needRestart) {
         Add-Step "note: the apps were not closed today (stop blocked or not run), so running apps are not fresh"
     }
     # -Only: one app, only when it is not running at all (never a second
@@ -398,14 +439,45 @@ if ($Start) {
             exit 1
         }
     }
+    $restarted = $false
+    $staleWhy = $null
+    if ($needRestart) {
+        $open = @(Get-Process -Name phd2, NINA -ErrorAction SilentlyContinue)
+        if ($open.Count -eq 0) {
+            Add-Step "no NINA / PHD2 open: launching fresh"
+        } elseif (-not $restartWanted) {
+            $staleWhy = "hand -Start without -Restart"
+        } elseif (-not $st.restart_ok) {
+            $staleWhy = (@($st.restart_blockers) | Where-Object { $_ }) -join "; "
+            if (-not $staleWhy) { $staleWhy = "restart not allowed" }
+        } elseif ($DryRun) {
+            Add-Step ("would restart: close PHD2 x{0}, NINA x{1}, then launch" -f `
+                @($open | Where-Object { $_.Name -eq "phd2" }).Count, @($open | Where-Object { $_.Name -eq "NINA" }).Count)
+        } else {
+            Send-Report $true $false "restart begun: closing the apps before the launch" $false "" @{ restart = "begin" }
+            $closeFailed = Close-Apps $false
+            $killed = @($steps | Where-Object { $_ -match "KILLED" }).Count
+            $cmsg = "closed by the start-time restart (the morning stop did not close them)"
+            if ($killed) { $cmsg = "closed by the start-time restart ($killed killed after the timeout)" }
+            if ($closeFailed) { $cmsg = "start-time restart: some apps did not close" }
+            Send-Report (-not $closeFailed) $true $cmsg $false "stop"
+            if ($closeFailed) {
+                Send-Report $false $true "start-time restart failed: apps did not close, nothing launched" $true "" @{ restart = "failed"; fresh = $false }
+                exit 1
+            }
+            $restarted = $true
+        }
+        if ($staleWhy) { Add-Step ("NOT restarted: {0}" -f $staleWhy) }
+    }
     $launched = 0
+    $alreadyUp = 0
     $failed = $false
     $nina = @()
     if (-not $Only -or $Only -eq "nina1") { $nina += ,@("NINA #1", $nina1Port, $Nina1Profile) }
     if ($nina2On -and (-not $Only -or $Only -eq "nina2")) { $nina += ,@("NINA #2", $nina2Port, $Nina2Profile) }
     foreach ($n in $nina) {
         $label = $n[0]; $port = [int]$n[1]
-        if (Test-Port "localhost" $port) { Add-Step ("{0} :{1} already answers" -f $label, $port); continue }
+        if (Test-Port "localhost" $port) { Add-Step ("{0} :{1} already answers" -f $label, $port); $alreadyUp++; continue }
         try { $pid2 = Resolve-NinaProfile $n[2] }
         catch { Add-Step ("{0}: {1}; NOT launched" -f $label, $_.Exception.Message); $failed = $true; continue }
         if ($DryRun) { Add-Step ("would launch {0}: `"{1}`" --profileid {2}" -f $label, $NinaExe, $pid2); continue }
@@ -423,7 +495,7 @@ if ($Start) {
     if ($Only -and $Only -ne "phd2") {
         # -Only another app: PHD2 left as it is
     } elseif (Test-Port "localhost" $phd2Port) {
-        Add-Step ("PHD2 :{0} already answers" -f $phd2Port)
+        Add-Step ("PHD2 :{0} already answers" -f $phd2Port); $alreadyUp++
     } elseif ($DryRun) {
         Add-Step ("would launch PHD2: `"{0}`", profile id {1}" -f $Phd2Exe, $Phd2ProfileId)
     } elseif (-not (Test-Path -LiteralPath $Phd2Exe)) {
@@ -478,7 +550,18 @@ if ($Start) {
                 $pf.summary.warn, $pf.summary.fail, $(if ($bad.Count) { ": " + ($bad -join ", ") } else { "" }))
         } else { Add-Step "preflight call failed"; $failed = $true }
     }
+    # fresh: closed today (a stop or this restart), or nothing was already up
+    $fresh = [bool]((-not $needRestart) -or $restarted -or ($alreadyUp -eq 0))
+    $rs = if ($restarted) { "done" } elseif ($staleWhy) { "blocked" } else { "none" }
     $msg = if ($failed) { "start incomplete" } elseif ($launched) { "launched $launched app(s), connected, preflight go" } else { "all apps already running" }
-    Send-Report (-not $failed) ($launched -gt 0) $msg $failed
+    if ($restarted -and -not $failed) { $msg = "restarted fresh (closed, then " + $msg + ")" }
+    $pageStale = $false
+    if (-not $fresh) {
+        $msg = $msg + "; apps NOT fresh today: " + $staleWhy
+        # page a stale day, unless the restart is switched off on purpose
+        $pageStale = [bool]($Scheduled -and $st.restart_at_start)
+    }
+    $extra = if ($Only) { $null } else { @{ restart = $rs; fresh = $fresh } }
+    Send-Report (-not $failed) ($launched -gt 0) $msg ($failed -or $pageStale) "" $extra
     if ($failed) { exit 1 } else { exit 0 }
 }

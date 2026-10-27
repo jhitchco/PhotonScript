@@ -2067,6 +2067,27 @@ night fresh driver instances.
   #1, NINA #2 (piggyback on) or PHD2 (guided night) does not answer.
   Preflight row "Observatory apps running": FAIL only with the lifecycle on,
   on an armed day, 15 min past the launch time; WARN otherwise.
+- **When the morning close does not happen (2026-10-26):** the 10-25 night
+  ended 12:39Z; a deploy restarted the service at 12:55Z, before the cooler
+  verify (due 17 min after the shutdown) ran. The verify task died with the
+  process, the restored shutdown record kept `verify: None`, and every stop
+  until 11:00 was blocked; the 11:45 start found the apps running and left
+  them stale. Now: (1) the armer re-arms a lost verify on restore (within 3 h
+  of the shutdown); (2) a verify still missing 10 min after it was due is
+  derived from a read-only camera read (every cooler off, or the camera
+  unreachable = done; a cooler still ON keeps blocking); (3) a blocked
+  scheduled stop posts its blockers (once per distinct reason a day); (4) when
+  nothing closed the apps today, the scheduled 11:45 start restarts them
+  (close as -Stop, then launch) when `restart_blockers` is empty: the stop
+  guards, except that ARMED is fine while pre-config is at least
+  `app_lifecycle_restart_min_before_preconfig` (60) min away (arm() loads no
+  sequence; the unguided guard runs again at dispatch), and an idle armer
+  with the noon re-arm on blocks from 11:55. It posts restart "begin" first;
+  the automatic arm holds ("holding for the daily app restart", at most 20
+  min) until the start reports. Apps still stale after the start = one page
+  (not when `app_lifecycle_restart_at_start` is off). By hand: `-Start
+  -Restart`. (5) "Apps restarted fresh / NOT restarted <day>" goes to the
+  story (info), the evening plan heads-up and the morning report card.
 - **Interplay:** a `calibration_autofill` job (off today) that starts at
   sunrise holds the stop until it ends; one that would start while the apps
   are closed is refused for that day (one attempt a day). The PS-150 NINA
