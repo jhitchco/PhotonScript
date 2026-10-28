@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 from photonscript.shared.models import (CelestialTarget, ExposurePlan,
                                         FilterType, ImagingProject,
@@ -182,22 +183,80 @@ RC16_RIG = "rc16"
 PIGGYBACK_RIG = "piggyback"
 
 
+HDR_FRACTION_MAX = 0.5
+
+
+def clean_hdr_fraction(v) -> float | None:
+    """A goal's Piggy HDR fraction: None (blank) or a float in (0, 0.5].
+    Raises ValueError otherwise."""
+    if v is None or v == "":
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f"hdr_fraction: not a number ({v!r})") from None
+    if not 0 < f <= HDR_FRACTION_MAX:
+        raise ValueError(f"hdr_fraction: {f:g} is outside (0, {HDR_FRACTION_MAX:g}]")
+    return f
+
+
+def hdr_fraction_for(project, config) -> float:
+    """The goal's hdr_fraction, else config piggyback_hdr_fraction (0.10)."""
+    f = getattr(project, "hdr_fraction", None) if project is not None else None
+    if f is None:
+        f = getattr(config, "piggyback_hdr_fraction", 0.10)
+    try:
+        f = float(f)
+    except (TypeError, ValueError):
+        f = 0.10
+    return f if 0 < f <= HDR_FRACTION_MAX else 0.10
+
+
 def osc_plan(hours: float, config, acquired: int = 0,
-             exp_s: float | None = None) -> ExposurePlan:
+             exp_s: float | None = None, short_s: float | None = None,
+             fraction: float | None = None) -> ExposurePlan:
     """PS-30: a Piggy-600 one-shot-color goal of `hours`, at the piggyback's
     own sub length and gain/offset (its light epoch, so its darks match).
-    exp_s overrides the sub length (PS-117: M31 at 300 s)."""
+    exp_s overrides the sub length (PS-117: M31 at 300 s).
+
+    Piggy HDR (2026-10-28): short_s > 0 adds an HDR short set holding
+    `fraction` (default config piggyback_hdr_fraction, 0.10) of the hours;
+    the main set gets the rest. 8 h at 120 s with 15 s shorts at 0.10 =
+    216 x 120 s + 192 x 15 s."""
     exp_s = float(exp_s or getattr(config, "piggyback_exposure_s", 120.0)
                   or 120.0)
-    count = max(1, round(hours * 3600 / exp_s))
+    short = float(short_s) if short_s and float(short_s) > 0 else None
+    if short is not None and short >= exp_s:
+        short = None            # not a short set
+    frac = 0.0
+    if short is not None:
+        frac = hdr_fraction_for(SimpleNamespace(hdr_fraction=fraction), config)
+    total_s = hours * 3600
+    count = max(1, round(total_s * (1 - frac) / exp_s))
+    short_count = max(1, round(total_s * frac / short)) if short else 0
     return ExposurePlan(
         filter_type=FilterType.OSC, exposure_seconds=exp_s, count=count,
         gain=int(getattr(config, "piggyback_default_gain", 100)),
         offset=int(getattr(config, "piggyback_default_offset", 256)),
-        acquired=min(acquired, count), rig=PIGGYBACK_RIG)
+        acquired=min(acquired, count), rig=PIGGYBACK_RIG,
+        hdr_short_seconds=short, hdr_short_count=short_count)
+
+
+def osc_plan_hours(plan) -> float:
+    """Goal hours of an OSC plan, its HDR short set included."""
+    s = plan.count * plan.exposure_seconds
+    if plan.hdr_short_seconds and plan.hdr_short_count:
+        s += plan.hdr_short_count * plan.hdr_short_seconds
+    return s / 3600.0
 
 
 OSC_KEY = FilterType.OSC.value
+
+
+def osc_hdr_s(hdr) -> float | None:
+    """The Piggy-600 HDR short length a goal's hdr dict sets ("OSC", any
+    case), else None."""
+    return osc_override_s(hdr)
 
 
 def osc_override_s(overrides) -> float | None:
@@ -397,13 +456,26 @@ class ProjectStore:
                     continue  # user already has this target — never overwrite
                 if pid in self.projects:
                     continue  # id collision with an existing project — leave it
+                entry = dict(entry)
+                # Piggy HDR (2026-10-28): "osc_hours" seeds a Piggy-600 OSC
+                # plan (osc_plan: the "OSC" exposure override as its length,
+                # hdr {"OSC": s} + hdr_fraction as its short set) instead of
+                # the RC16 allocation: a Piggy-only goal
+                osc_h = entry.pop("osc_hours", None)
                 proj = ImagingProject(**entry)
                 proj.id = proj.id or pid
                 # A seed entry may declare only the high-level intent (budget +
                 # filter_mix + hdr) and leave exposure_plans empty; allocate them
                 # here so authoring a new special target needs no hand-computed
                 # counts. If the seed already carries plans, keep them as-is.
-                if not proj.exposure_plans:
+                if not proj.exposure_plans and osc_h:
+                    proj.exposure_plans = [osc_plan(
+                        float(osc_h), self.config,
+                        exp_s=osc_override_s(proj.exposure_overrides),
+                        short_s=osc_hdr_s(proj.hdr), fraction=proj.hdr_fraction)]
+                    proj.budget_hours = round(osc_plan_hours(proj.exposure_plans[0]), 1)
+                    proj.total_integration_hours = proj.budget_hours
+                elif not proj.exposure_plans:
                     proj.exposure_plans = allocate_exposures(
                         target_kind(proj.target), proj.budget_hours, self.config,
                         custom_mix=proj.filter_mix, hdr=proj.hdr,
@@ -451,7 +523,8 @@ class ProjectStore:
                rc16_hours: float | None = None,
                light_budget: dict | None = None,
                ha_first_h=_KEEP,
-               links=_KEEP) -> ImagingProject | None:
+               links=_KEEP,
+               hdr_fraction=_KEEP) -> ImagingProject | None:
         """hdr / exposure_overrides: pass {} to clear, a dict to set, None to
         leave unchanged. Either change re-allocates the plans.
 
@@ -479,12 +552,23 @@ class ProjectStore:
 
         links (target links, clean_links): left out = leave, a list replaces
         them, [] or None clears. Validated before anything changes; never
-        re-allocates the plans."""
+        re-allocates the plans.
+
+        Piggy HDR (2026-10-28): the "OSC" key of hdr ({"OSC": 15}) and
+        hdr_fraction (left out = leave, None or "" = the config
+        piggyback_hdr_fraction, else (0, 0.5]) size the OSC plan's short
+        set (osc_plan); a change of either rebuilds the OSC plan at the same
+        goal hours (accepted seconds carried, accepted shorts kept when the
+        short length is the same) and, when only the OSC key changed,
+        leaves the RC16 plans alone."""
         proj = self.projects.get(project_id)
         if proj is None:
             return None
         if links is not _KEEP:
             new_links = clean_links(links)   # ValueError before any change
+        if hdr_fraction is not _KEEP:
+            new_frac = clean_hdr_fraction(hdr_fraction)   # ValueError first
+        osc_hdr_before = (osc_hdr_s(proj.hdr), proj.hdr_fraction)
         add_rc16 = rc16_hours is not None and rc16_hours > 0
         if rc16_hours is not None and not add_rc16:
             if not any(p.rig != RC16_RIG for p in proj.exposure_plans)                     and not (osc_hours and osc_hours > 0):
@@ -506,8 +590,16 @@ class ProjectStore:
                                else max(0.0, float(ha_first_h)))
         plan_change = False
         if hdr is not None:
+            before_hdr = dict(proj.hdr or {})
             proj.hdr = {k: float(v) for k, v in hdr.items() if v} or None
-            plan_change = True
+            # Piggy HDR: a change of only the "OSC" key leaves the RC16
+            # plans alone (the OSC plan is rebuilt below)
+            only_osc_hdr = (before_hdr != dict(proj.hdr or {}) and
+                            _without_osc(before_hdr) == _without_osc(proj.hdr))
+            plan_change = not only_osc_hdr
+        if hdr_fraction is not _KEEP:
+            proj.hdr_fraction = new_frac
+        osc_hdr_changed = (osc_hdr_s(proj.hdr), proj.hdr_fraction) != osc_hdr_before
         osc_len = None    # an "OSC" override set the Piggy-600 sub length
         if exposure_overrides is not None:
             before = dict(proj.exposure_overrides or {})
@@ -549,7 +641,14 @@ class ProjectStore:
             old = next((p for p in other if p.filter_type == FilterType.OSC),
                        None)
             if old is not None and abs(old.exposure_seconds - osc_len) > 1e-6:
-                osc_hours = old.count * old.exposure_seconds / 3600.0
+                osc_hours = osc_plan_hours(old)
+        if osc_hours is None and osc_hdr_changed:
+            # Piggy HDR: a new short length or fraction on an existing Piggy
+            # plan: same goal hours, the short set sized again
+            old = next((p for p in other if p.filter_type == FilterType.OSC),
+                       None)
+            if old is not None:
+                osc_hours = osc_plan_hours(old)
         if osc_hours is not None:
             old = next((p for p in other if p.filter_type == FilterType.OSC),
                        None)
@@ -561,10 +660,15 @@ class ProjectStore:
                 ov = osc_override_s(proj.exposure_overrides)
                 new = osc_plan(osc_hours, self.config,
                                old.acquired if old else 0,
-                               exp_s=ov or (old.exposure_seconds if old else None))
+                               exp_s=ov or (old.exposure_seconds if old else None),
+                               short_s=osc_hdr_s(proj.hdr),
+                               fraction=proj.hdr_fraction)
                 if old:
                     _carry_seconds(new, old.exposure_seconds,
                                    old.long_seconds_done())
+                    if (new.hdr_short_seconds and old.hdr_short_seconds and
+                            abs(new.hdr_short_seconds - old.hdr_short_seconds) < 0.5):
+                        new.hdr_short_acquired = old.hdr_short_acquired
                 other.append(new)
         if not osc_only and not drop_rc16 and (
                 (budget_hours is not None and budget_hours > 0)
@@ -590,8 +694,7 @@ class ProjectStore:
             proj.total_integration_hours = proj.budget_hours
         proj.exposure_plans = rc16 + other
         if not rc16 and other:  # piggyback-only: the budget is the OSC goal
-            proj.budget_hours = round(sum(p.count * p.exposure_seconds
-                                          for p in other) / 3600, 1)
+            proj.budget_hours = round(sum(osc_plan_hours(p) for p in other), 1)
             proj.total_integration_hours = proj.budget_hours
         proj.compute_completion() if hasattr(proj, "compute_completion") else None
         self.save()

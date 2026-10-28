@@ -807,6 +807,7 @@ _CONFIG_FIELDS = [
     ("integrate_hdr_combine", "PS_INTEGRATE_HDR_COMBINE", "Integrate (mono, desktop .env): HDR combine a filter's exposure-length masters into master_<F>_hdr; the finish and blend prefer it", "Integration", "bool", False, False),
     ("integrate_osc_hdr_core", "PS_INTEGRATE_OSC_HDR_CORE", "Integrate (OSC, desktop .env): with subs of several lengths, stack the short ones apart and, when the core is clipped in the master, replace the nucleus from them (master_OSC_hdr); failures keep the single master", "Integration", "bool", False, False),
     ("integrate_osc_hdr_short_max_s", "PS_INTEGRATE_OSC_HDR_SHORT_MAX_S", "Integrate OSC core combine: subs at or under this length are the short set (s)", "Integration", "float", False, False),
+    ("integrate_osc_hdr_set_max_s", "PS_INTEGRATE_OSC_HDR_SET_MAX_S", "Integrate OSC (Piggy HDR): subs at or under this length beside subs 4x longer are an HDR short set, never mixed into master_OSC, stacked on their own (s)", "Integration", "float", False, False),
     ("integrate_pointing_check", "PS_INTEGRATE_POINTING_CHECK", "Integrate (desktop .env): pointing sanity of the selected lights (header RA / DEC vs the catalog, altitude, mount not tracking): warn | refuse (leave them out) | off", "Integration", "str", False, False),
     ("integrate_pointing_max_deg", "PS_INTEGRATE_POINTING_MAX_DEG", "Integrate pointing check: a light whose header RA / DEC is more than N deg from the target's catalog position is off target", "Integration", "float", False, False),
     ("integrate_min_alt_deg", "PS_INTEGRATE_MIN_ALT_DEG", "Integrate pointing check: lights shot below N deg altitude are flagged (0 = off)", "Integration", "float", False, False),
@@ -1308,6 +1309,8 @@ _CONFIG_FIELDS = [
     ("piggyback_bias_adu", "PS_PIGGYBACK_BIAS_ADU", "Piggyback bias level (ADU16; subtracted for the sky rate, PS-117)", "Piggyback", "float", False, False),
     ("piggyback_dark_e_s", "PS_PIGGYBACK_DARK_E_S", "Piggyback dark current at the setpoint (e-/s per pixel)", "Piggyback", "float", False, False),
     ("piggyback_exposure_s", "PS_PIGGYBACK_EXPOSURE_S", "Piggyback OSC sub length (s)", "Piggyback", "float", False, False),
+    ("piggyback_hdr_fraction", "PS_PIGGYBACK_HDR_FRACTION", "Piggy HDR: share of a goal's OSC time in its short set (goal hdr {\"OSC\": s}; per goal hdr_fraction wins)", "Piggyback", "float", False, False),
+    ("piggyback_hdr_block_min", "PS_PIGGYBACK_HDR_BLOCK_MIN", "Piggy HDR: minutes of main subs between blocks of short subs in NINA #2's light loop", "Piggyback", "float", False, False),
     ("piggyback_hfr_abs_max", "PS_PIGGYBACK_HFR_ABS_MAX", "Piggyback max HFR (px)", "Piggyback", "float", False, False),
     ("piggyback_setpoint_c", "PS_PIGGYBACK_SETPOINT_C", "Piggyback cooling setpoint (°C)", "Piggyback", "float", False, False),
     ("piggyback_readout_since", "PS_PIGGYBACK_READOUT_SINCE", "Piggyback: first night at piggyback_readout_mode (YYYY-MM-DD; blank = assumed)", "Piggyback", "str", False, False),
@@ -1915,7 +1918,11 @@ async def api_project_update(project_id: str, request: Request):
             **({"ha_first_h": body["ha_first_h"]} if "ha_first_h" in body
                else {}),
             # target links: replace the list ([] clears), validated
-            **({"links": body["links"]} if "links" in body else {}))
+            **({"links": body["links"]} if "links" in body else {}),
+            # Piggy HDR: share of the OSC time in the short set (null =
+            # the config piggyback_hdr_fraction)
+            **({"hdr_fraction": body["hdr_fraction"]} if "hdr_fraction" in body
+               else {}))
     except (ValueError, TypeError) as e:
         return JSONResponse(status_code=400, content={"detail": str(e)})
     _projects[project_id] = updated

@@ -124,6 +124,7 @@ class Options:
     osc_hdr_core: bool = True         # integrate_osc_hdr_core: OSC short subs -> their own master, the
                                       # clipped nucleus of master_OSC replaced from it (osc_hdr.py)
     osc_hdr_short_max_s: float = 180.0   # integrate_osc_hdr_short_max_s: the short set of that combine
+    osc_hdr_set_max_s: float = 30.0   # integrate_osc_hdr_set_max_s: Piggy HDR short set, never in master_OSC
 
 
 def default_staging_root(cfg=None) -> Path:
@@ -172,6 +173,7 @@ def config_options(cfg, rig: str) -> dict:
         hdr_combine=bool(getattr(cfg, "integrate_hdr_combine", True)),
         osc_hdr_core=bool(getattr(cfg, "integrate_osc_hdr_core", True)),
         osc_hdr_short_max_s=float(getattr(cfg, "integrate_osc_hdr_short_max_s", 180.0) or 180.0),
+        osc_hdr_set_max_s=float(getattr(cfg, "integrate_osc_hdr_set_max_s", 30.0) or 0.0),
         mono_color=bool(getattr(cfg, "integrate_mono_color", True)),
         core_check=str(getattr(cfg, "qa_core_mode", "note") or "").lower() != "off",
         core_radius_arcmin=float(getattr(cfg, "qa_core_radius_arcmin", 1.0) or 1.0),
@@ -729,9 +731,13 @@ def _run(o: Options, echo, ws: scratch.Workspace | None) -> dict:
             if f.name in names:
                 e = round(f.exp, 2)
                 stack_counts[sname][e] = stack_counts[sname].get(e, 0) + 1
-    if cfa and o.osc_hdr_core:
+    # Piggy HDR (2026-10-28): an HDR short set (<= osc_hdr_set_max_s beside
+    # 4x longer subs) is never stacked into master_OSC, core combine or not
+    if cfa:
         for n in osc_hdr.attach(stacks, stack_counts, out_dir, max_s=float(o.osc_hdr_short_max_s),
-                                min_frames=int(o.min_group_frames)):
+                                min_frames=int(o.min_group_frames),
+                                set_max_s=float(o.osc_hdr_set_max_s or 0.0),
+                                core=bool(o.osc_hdr_core)):
             echo("  " + n)
 
     with timer.stage("generate PixInsight scripts"):

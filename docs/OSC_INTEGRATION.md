@@ -103,6 +103,53 @@ Run on the desktop from the repo venv. What it does (code in
    finish uses, as before. With `--no-pixinsight` the combine is not written
    (it needs the core check after the integration); `restage` copies
    `osc_hdr_run.js` and lists it right after the integration.
+   **Piggy HDR short set (2026-10-28).** For bright-core targets the
+   Piggy-600 keeps 120 s main subs (read-noise penalty < 1% at 60 s, so
+   longer subs add nothing; star clipping 2% of stars at 60 s, 9.8% at
+   180 s) and adds about 10% of the time in 10 to 15 s subs. It is the
+   per-goal HDR mechanism the RC16 already has (hdr {"L": 30}), keyed
+   `"OSC"`:
+   - **Goal**: `PATCH /api/projects2/<id> {"hdr": {"OSC": 15},
+     "hdr_fraction": 0.10}` (hdr replaces the whole dict, so send the RC16
+     keys too; `hdr_fraction` null = config `piggyback_hdr_fraction`,
+     0.10). The OSC plan is rebuilt at the same goal hours
+     (`project_store.osc_plan`: 8 h = 216 x 120 s + 192 x 15 s, accepted
+     seconds carried); RC16 plans are untouched when only the OSC key
+     changed. A seed entry can declare a Piggy-only goal with `osc_hours`
+     (`config/seed_projects.json`, the M42 core goal).
+   - **Capture**: `piggy_length.plan` carries the short set per target
+     while shorts are owed; the companion's `OSC_LIGHT_LOOP` for that
+     target shoots blocks of `n_main` main subs (about
+     `piggyback_hdr_block_min`, 20 min) then `n_short` short subs (120 /
+     15 / 0.10: 10 x 120 s + 9 x 15 s, 10.1%), each with the settle gate,
+     so both sets share conditions. Log line "Piggy lengths: Orion Nebula
+     120 s + HDR 15 s (10%)". The shorts are ordinary LIGHT frames at their
+     own EXPTIME; the Library, star QA (PS-177 groups) and goal crediting
+     (`is_short_exposure`) already tell them apart by length.
+   - **Integration**: an OSC group at or under
+     `integrate_osc_hdr_set_max_s` (30 s) beside a group at least 4x
+     longer is an HDR set (`osc_hdr.plan_hdr_set`): it is NEVER stacked
+     into `master_OSC` (a pure 120 s master; `integrate_stack.js` drops
+     those groups after registration, before LocalNormalization) and is
+     integrated on its own into `out\master\osc_hdr\master_OSC_short.xisf`
+     from the same registration, even with `--no-hdr`. With fewer than 3
+     shorts they are still left out. The OSC core combine above then runs
+     as usual (M42 counts as a bright-core nebula in `core_sat`), replacing
+     the clipped core from the short master into `master_OSC_hdr`.
+   - **Darks**: matched by exposure (`calib.py`): 15 s darks when banked,
+     else the 120 s darks scaled (optimizeDarks, needs a bias), else the
+     shorts are refused like any light length without a dark. The goals'
+     short lengths are owed in `/api/calibration/owed` (`from_goal_hdr`,
+     "goal Orion Nebula OSC HDR short (15 s)") and join the night quota
+     (`night_dark_exposures`), so the companion's closed-roof / cover
+     darks fill them.
+   - **Manual HDR blend** (when the core combine is skipped, fails or a
+     wider blend is wanted): in PixInsight open `master_OSC.xisf` and
+     `osc_hdr\master_OSC_short.xisf` (same registration, both linear),
+     run HDRComposition with both files as inputs (it fits the short to
+     the long and replaces the saturated pixels), check the core, then
+     finish it with `photonscript finish --master <file> --name
+     <target>_OSC_hdr`.
 4. **Stage** by COPY into a NEW run folder
    (`<staging-root>\<target>_<rig>_<yyyymmdd-hhmm>`, default staging root
    `D:\Astrophotography\Staging`), `manifest.json` / `manifest.csv`,

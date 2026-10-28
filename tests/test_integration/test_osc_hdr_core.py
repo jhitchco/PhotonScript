@@ -84,7 +84,7 @@ def test_integrate_template_short_subset_is_optional_and_guarded():
     assert "catch (e)" in body and "stands as it is" in body
     assert "AdditiveWithScaling" in body and "LocalNormalization" not in body.split("var makeII")[1]
     assert "if (selfRef) throw" in body
-    assert "if (stack.short_subset) integrateShort(stack, regFiles, R.selfRef);" in t
+    assert "if (stack.short_subset) integrateShort(stack, regAll, R.selfRef);" in t
 
 
 def _rendered_osc_js(tmp_path):

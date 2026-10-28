@@ -141,8 +141,11 @@ def test_piggy_owed_flags_400_not_in_the_quota_list(tmp_path):
     assert any("safe (open) roof at dawn" in c for c in r["constraints"])
 
 
-def test_owed_view_and_companion_quota_agree(tmp_path):
+def test_owed_view_and_companion_quota_agree(tmp_path, monkeypatch):
     from photonscript.scheduler.calibration import _osc_dark_blocks
+    # no goal HDR short lengths (a store another test loaded may hold the
+    # seeded M42 15 s set; test_piggy_hdr covers them)
+    monkeypatch.setattr(co, "goal_hdr_dark_lengths", lambda *a, **k: [])
     cfg, *_ = _piggy_setup(tmp_path, piggyback_dark_exposures="120,300,400")
     r = co.owed_report(cfg, "piggyback", projects=[_m31()])["rigs"][0]
     assert r["config_fixes"] == []

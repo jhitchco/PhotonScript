@@ -26,6 +26,16 @@ mono HDR idea (integration/hdr.py) for the nucleus only:
    'osc-core'). The finish then runs on it (named <target>_OSC as before),
    blend prefers it (master_<F>_hdr), the core check reads it.
 
+Piggy HDR set (2026-10-28, plan_hdr_set): groups at or under
+integrate_osc_hdr_set_max_s (30 s) beside a group at least SET_RATIO (4x)
+longer are a deliberate HDR short set (M42: 15 s beside 120 s). They are
+NOT stacked into master_<S> (short_subset "exclude": integrate_stack.js
+integrates the main master from the other groups only, so it is a pure
+120 s master) and always make master_<S>_short, even with
+integrate_osc_hdr_core off; the core combine then runs as above when it is
+on. The full-stack rule (<= 180 s also in the main master) stays for
+stacks without such a set (M31 120 s + 300 s).
+
 Every step is guarded: no short master, a failed check, a failed or
 refused combine all leave master_<S>.xisf as the master the finish uses.
 Lines go to the run log and out/pipeline.log ("OSC core combine: ..."),
@@ -46,6 +56,8 @@ SUBDIR = "osc_hdr"
 STEPS = "osc_hdr_steps.json"
 SHORT_SUFFIX = "_short"
 SHORT_MAX_S = 180.0
+SET_MAX_S = 30.0          # integrate_osc_hdr_set_max_s: an HDR short set
+SET_RATIO = 4.0           # ... beside a group at least this many times longer
 THRESHOLD = 0.80          # of each channel's core maximum (the plateau)
 BLEND_WIDTH = 0.15        # smoothstep starts this far below THRESHOLD
 REGION_X = 3.0            # replacement disk radius, in core radii
@@ -59,6 +71,40 @@ def short_name(stack_name: str) -> str:
 
 def short_path(out_dir: Path, stack_name: str) -> Path:
     return Path(out_dir) / "master" / SUBDIR / f"master_{short_name(stack_name)}.xisf"
+
+
+def _n(counts: dict, groups: list[dict]) -> int:
+    return sum(int(counts.get(float(g["exp"]), counts.get(round(float(g["exp"]), 2), 0)) or 0)
+               for g in groups)
+
+
+def plan_hdr_set(stack: dict, counts: dict, *, set_max_s: float = SET_MAX_S,
+                 min_frames: int = 3) -> tuple[dict | None, str]:
+    """Piggy HDR: (subset spec with exclude=True, note) when the stack holds
+    an HDR short set (groups <= set_max_s beside a group SET_RATIO x
+    longer), else (None, ""). Too few short subs: (None, note) and the
+    short groups are still kept out of the main master (exclude_only)."""
+    groups = stack.get("groups") or []
+    if len(groups) < 2 or not set_max_s or set_max_s <= 0:
+        return None, ""
+    longest = max(float(g["exp"]) for g in groups)
+    short = [g for g in groups if float(g["exp"]) <= set_max_s + 1e-6
+             and longest >= SET_RATIO * float(g["exp"]) - 1e-6]
+    if not short:
+        return None, ""
+    n = _n(counts, short)
+    lens = ", ".join(f"{float(g['exp']):g} s" for g in short)
+    spec = {"name": short_name(stack["name"]), "groups": [g["name"] for g in short],
+            "exps": [float(g["exp"]) for g in short], "max_s": float(set_max_s),
+            "frames": n, "output": None, "exclude": True, "hdr_set": True}
+    if n < max(3, int(min_frames)):
+        spec["too_few"] = True
+        return spec, (f"Piggy HDR set: only {n} short sub(s) ({lens}), fewer than "
+                      f"{max(3, int(min_frames))}: kept out of master_{stack['name']}, "
+                      "no short master")
+    return spec, (f"Piggy HDR set: {n} subs of {lens} kept out of master_{stack['name']} "
+                  f"and stacked on their own as master_{short_name(stack['name'])} "
+                  f"({SUBDIR}/)")
 
 
 def plan_subset(stack: dict, counts: dict, *, max_s: float = SHORT_MAX_S,
@@ -86,13 +132,32 @@ def plan_subset(stack: dict, counts: dict, *, max_s: float = SHORT_MAX_S,
 
 
 def attach(stacks: list[dict], counts_by_stack: dict, out_dir: Path, *, max_s: float,
-           min_frames: int) -> list[str]:
+           min_frames: int, set_max_s: float | None = None, core: bool = True) -> list[str]:
     """Plan the short subset of every mixed OSC stack in place
-    (stack["short_subset"]). Returns the notes."""
+    (stack["short_subset"]). Returns the notes. A Piggy HDR set
+    (plan_hdr_set, set_max_s) wins and is planned even with core False;
+    the old <= max_s subset only with core. A stack whose main master
+    loses its short groups gets mixed_exposures from what is left."""
     notes = []
     for s in stacks:
-        sub, note = plan_subset(s, counts_by_stack.get(s["name"], {}), max_s=max_s,
-                                min_frames=min_frames)
+        counts = counts_by_stack.get(s["name"], {})
+        sub, note = (plan_hdr_set(s, counts, set_max_s=set_max_s, min_frames=min_frames)
+                     if set_max_s else (None, ""))
+        if sub is not None:
+            left = [g for g in s["groups"] if g["name"] not in set(sub["groups"])]
+            s["mixed_exposures"] = len(left) > 1
+            if note:
+                notes.append(note)
+            if sub.get("too_few"):
+                # the short subs still stay out of the main master
+                s["exclude_groups"] = list(sub["groups"])
+                continue
+            sub["output"] = pjsr.fwd(short_path(out_dir, s["name"]))
+            s["short_subset"] = sub
+            continue
+        if not core:
+            continue
+        sub, note = plan_subset(s, counts, max_s=max_s, min_frames=min_frames)
         if note:
             notes.append(note)
         if sub:
@@ -109,7 +174,8 @@ def _exp_of(stack: dict, counts: dict, exps) -> float:
 
 def item_for(stack: dict, counts: dict, out_dir: Path, core: dict, r_core_px: float) -> dict:
     sub = stack["short_subset"]
-    long_exps = [float(g["exp"]) for g in stack["groups"] if float(g["exp"]) > sub["max_s"] + 1e-6]
+    long_exps = [float(g["exp"]) for g in stack["groups"] if g["name"] not in set(sub["groups"])
+                 and float(g["exp"]) > sub["max_s"] + 1e-6]
     exp_long = _exp_of(stack, counts, long_exps)
     exp_short = _exp_of(stack, counts, sub["exps"])
     name = f"{stack['filter']}{hdr.SUFFIX}"
