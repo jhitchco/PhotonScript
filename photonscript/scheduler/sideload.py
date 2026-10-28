@@ -15,6 +15,10 @@ pure functions, plus two tiny ninaAPI calls:
                           optics test (recipe optics_through_focus)
   splice_tpoint_mapping() PS-171: the same splice for the TPoint mapping
                           run (recipe tpoint_mapping_then_tonight)
+  splice_guider_commission()  2026-10-28: the same splice for the guider
+                          commissioning night (recipe guider_commission),
+                          plus the guide-star check inside tonight's
+                          PHD2_CALIBRATION slot (scheduler/guider_night.py)
   lint_companion()        the Piggy companion's own lint (the RC16 night lint
                           wants a mount, targets and a meridian flip, which a
                           camera-only companion never has)
@@ -40,6 +44,7 @@ logger = logging.getLogger(__name__)
 RECIPE_TT_THEN_TONIGHT = "tracking_test_then_tonight"
 RECIPE_OPTICS_THROUGH_FOCUS = "optics_through_focus"   # PS-148
 RECIPE_TPOINT_MAPPING = "tpoint_mapping_then_tonight"   # PS-171
+RECIPE_GUIDER_COMMISSION = "guider_commission"         # 2026-10-28
 RECIPES = {
     RECIPE_TT_THEN_TONIGHT: (
         "RC16: tracking test on an auto-picked field, then tonight's targets "
@@ -52,6 +57,13 @@ RECIPES = {
         "RC16: TPoint mapping run (N blind alt/az points, Image Link each "
         "through TheSky, no center, no sync), then tonight's targets (minus "
         "any excluded). Piggy-600: the companion with lights."),
+    RECIPE_GUIDER_COMMISSION: (
+        "RC16, guided: dark library and guide exposure checks before dusk, "
+        "a guide-star check and the PS-93 calibration in the calibration "
+        "slot, the PS-92 pulse self-test, 5 min of guiding for the "
+        "min-move, the narrowband focus test (AF per filter, Ha sweep), then "
+        "tonight's targets with the guiding test in act. Piggy-600: the "
+        "companion with lights."),
 }
 
 # PS-181: an arm may carry one of these recipes (POST /api/arm {"recipe",
@@ -61,6 +73,7 @@ RECIPE_LABELS = {
     RECIPE_TPOINT_MAPPING: "TPoint mapping",
     RECIPE_TT_THEN_TONIGHT: "tracking test",
     RECIPE_OPTICS_THROUGH_FOCUS: "optics test",
+    RECIPE_GUIDER_COMMISSION: "guider commissioning",
 }
 ADD_MODES = ("off", "auto")   # tpoint_sample.ADD_MODES
 
@@ -70,7 +83,9 @@ def arm_recipe(recipe, opts=None) -> tuple[dict | None, str | None]:
     ({"id", "label", "opts"}, None) when valid, (None, error) otherwise.
     Options: TPoint mapping only, "points" (clamped to the mapping's
     MIN_POINTS..MAX_POINTS) and "add" ("off" | "auto", tpoint_sample_add
-    for this run). Anything else is an error, not silently dropped."""
+    for this run); guider commissioning: "skip" (step ids), "rounds",
+    "star_tries" (guider_night.parse_opts). Anything else is an error, not
+    silently dropped."""
     rid = str(recipe or "").strip()
     if not rid or rid.lower() == "none":
         return None, None
@@ -79,6 +94,14 @@ def arm_recipe(recipe, opts=None) -> tuple[dict | None, str | None]:
                       + ", ".join(sorted(RECIPES)))
     if opts is not None and not isinstance(opts, dict):
         return None, "recipe_opts must be an object"
+    if rid == RECIPE_GUIDER_COMMISSION:
+        from photonscript.scheduler.guider_night import parse_opts
+        gopts, err = parse_opts(opts)
+        if err:
+            return None, err
+        label = RECIPE_LABELS[rid] + (f" (skip {', '.join(gopts['skip'])})"
+                                      if gopts.get("skip") else "")
+        return {"id": rid, "label": label, "opts": gopts}, None
     opts = {k: v for k, v in (opts or {}).items() if v not in (None, "")}
     allowed = ("points", "add") if rid == RECIPE_TPOINT_MAPPING else ()
     bad = sorted(set(opts) - set(allowed))
@@ -293,6 +316,42 @@ def splice_tpoint_mapping(night_seq: dict, tpm_seq: dict, exclude=(),
                        what="tpoint-mapping")
 
 
+def splice_guider_commission(night_seq: dict, gc_seq: dict, exclude=(),
+                             name: str | None = None,
+                             star_item: dict | None = None) -> dict:
+    """2026-10-28: splice_tracking_test for the guider commissioning night
+    (the recipe container runs once before the night loop). star_item: the
+    guide-star check (a guider-commission.cmd ExternalScript) placed in
+    tonight's PHD2_CALIBRATION slot right after its Center, so a missing
+    guide star stops the calibration before it starts (the item's
+    SkipInstructionSetOnError). Raises SpliceError when star_item is given
+    and tonight has no slot with a Center."""
+    from photonscript.scheduler.nina_sequence_json import (
+        GUIDER_COMMISSION_NOTE, link_parents)
+    seq = splice_test(night_seq, gc_seq, exclude, name,
+                      note=(GUIDER_COMMISSION_NOTE, GUIDER_COMMISSION_NOTE),
+                      what="guider-commission")
+    if star_item is None:
+        return seq
+    seq = strip_ids(seq)
+    cal = calibration_slot(seq)
+    vals = (cal.get("Items") or {}).get("$values") if cal else None
+    at = next((i for i, v in enumerate(vals or [])
+               if isinstance(v, dict)
+               and "Platesolving.Center" in str(v.get("$type") or "")), None)
+    if at is None:
+        raise SpliceError(f"no Center in a PHD2 calibration slot of "
+                          f"{night_seq.get('Name')!r} for the guide-star check")
+    vals.insert(at + 1, strip_ids(star_item))
+    return link_parents(seq)
+
+
+def calibration_slot(seq: dict) -> dict | None:
+    """Tonight's PS-93 PHD2_CALIBRATION container, or None."""
+    from photonscript.scheduler.phd2_calibration import CONTAINER_NAME
+    return find_container(seq, CONTAINER_NAME, "SequentialContainer")
+
+
 def splice_test(night_seq: dict, test_seq: dict, exclude=(),
                 name: str | None = None, note: tuple | None = None,
                 what: str = "test") -> dict:
@@ -348,7 +407,7 @@ def _spliced_note(test: dict, note: tuple | None = None) -> dict:
 def splice_name(date: str, field: str, kept: list[str], tag: str = "TT") -> str:
     """PhotonScript_<yyyymmdd>_<tag>_<field>_then_<target | tonight>
     (tag TT = tracking test, OT = optics test, PS-148, TPM = TPoint
-    mapping, PS-171)."""
+    mapping, PS-171, GC = guider commissioning)."""
     def safe(s):
         return "_".join("".join(c if c.isalnum() else " " for c in str(s)).split())
     tail = safe(kept[0]) if len(kept) == 1 else ("tonight" if kept else "nothing")

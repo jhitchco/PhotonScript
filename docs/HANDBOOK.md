@@ -1718,6 +1718,41 @@ ladder skips 450.
 Night test needed: one trial night (guided_trial_night) with act; the
 restart after a pass and the fallback after a fail on the scope.
 
+### Guider commissioning night: recipe guider_commission (2026-10-28)
+
+The first night with the ASI174MM Mini on the OAG, scripted so it runs
+without Jeremy (`scheduler/guider_night.py`). Arm with
+`POST /api/arm {"armed": true, "guiding": "guided", "recipe":
+"guider_commission"}` (dashboard: Arm, with recipe "guider commissioning"),
+or set `guided_trial_night` = the night: an arm without a recipe on the trial
+night gets it (`guider_commission_on_trial_night`, on). Options
+(`recipe_opts`): `skip` (any of darks, exposure, star, calibration,
+selftest, ga, ga_apply, nb_focus), `rounds` (1 to 3), `star_tries` (1 to 10).
+The armed recipe puts tonight's guiding test in act (`guided_commission`).
+
+Dry run: `photonscript guider-commission-plan --night 2026-10-28 [--skip ga]
+[--json]` or `GET /api/guiding/commission-night/plan?night=&skip=`. Record
+and the narrowband report: `GET /api/guiding/commission-night?date=`; run
+events kind `guider_commission_night`; every step in the night story.
+
+| step | when / where | what | fails soft as |
+|---|---|---|---|
+| darks | service tick after the arm, until pre-config | dark library vs the camera change and the guide exposure; geometry blockers (Max ADU) first | act push with the PHD2 GUI steps (no PHD2 API for darks or the defect map) |
+| exposure | same | guide exposure to the readiness fast path / audit target through the PS-89 apply (Stopped / Looping) | retried every 10 min until 45 min before dusk, then WARN |
+| star | PHD2_CALIBRATION slot, after Center (own slew when there is no slot) | loop, find_star, SNR / HFD, PS-91 hot-pixel share | no star: STOP (NINA skips the rest of the slot and the guider steps), act push "focus the OAG camera by hand", the guiding test fails at once and the night goes unguided; the narrowband test still runs |
+| calibration | the PS-93 slot (the dispatch files a calibration request) | graded, one retry | PS-93's own fail action |
+| selftest | recipe container | PS-92 (context commission) | logged |
+| ga | recipe container: StartGuiding, 5 min, StopGuiding | RMS; min-move from the frame-to-frame motion with PHD2's GA multipliers (RA 0.65, Dec 1.28 / 1.65); then ga-apply through the PS-89 apply rows (`guider_commission_minmove_apply`) | logged |
+| nb_focus | recipe container | AF + 30 s per filter, rounds L/Ha/OIII then L/OIII/Ha, Ha sweep -220/-110/+110/+220; frames named `Optics test NB <field> <filter> <offset>` (test subs, read by the PS-148 report); `nb-report` decides astigmatism (axis flips: set NB focus offsets) vs filter tilt (constant axis at Ha focus with L round) | WARN when undecided |
+| handover | night loop | guided targets, 300 s cap until 15 min at median RMS <= 1.2", then the guided NB ladder | unguided on a fail |
+
+NINA side: every step is `deploy\guider-commission.cmd <step>` ->
+`photonscript guider-commission-step` -> `POST
+/api/guiding/commission-night/step`; exit 1 only on STOP
+(SkipInstructionSetOnError), 0 otherwise. Missing script on the scope: the
+recipe falls back to the normal plan with one page (PS-181). Unguided arm
+or an unguided re-dispatch: the recipe container is the narrowband test only.
+
 ### Dispatch gate: lint every night against the arm (PS-197, 2026-10-15)
 
 Why: 2026-10-14 armed UNGUIDED, deep night on NGC 604. The NGC 604

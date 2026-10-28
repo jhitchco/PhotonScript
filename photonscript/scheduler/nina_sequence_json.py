@@ -2415,6 +2415,297 @@ def generate_optics_test_json(name: str = "Heart Nebula",
     return generate_nina_json(seq)
 
 
+
+# --- Guider commissioning night (2026-10-28) ---------------------------------
+# The arm / sideload recipe guider_commission (scheduler/guider_night.py).
+# One DeepSkyObjectContainer "Guider commission <field>" before the night
+# loop: the guider steps (gate, the PS-92 self-test, 5 min of guiding for
+# the min-move, each a deploy\guider-commission.cmd ExternalScript that asks
+# the service to do the work) and the RC16 narrowband focus test (per-filter
+# AF in L / Ha / OIII with 30 s frames at each filter's own focus,
+# interleaved, then an Ha sweep through focus). Every narrowband frame is
+# named like an optics-test step ("Optics test NB <field> <filter>
+# <offset>"), so it is a test sub (PS-152) and scheduler/optics_test reads
+# it without a new parser.
+
+GUIDER_COMMISSION_PREFIX = "Guider commission "
+GUIDER_GUIDER_SUFFIX = " guider steps"
+GUIDER_NB_SUFFIX = " narrowband focus test"
+NB_FOCUS_FIELD_TAG = "NB "        # "Optics test NB <field> <filter> <offset>"
+NB_FOCUS_FILTERS = ("L", "Ha", "OIII")
+NB_FOCUS_EXPOSURE_S = 30.0
+NB_FOCUS_ROUNDS = 2
+NB_FOCUS_FRAMES = 1
+NB_FOCUS_SWEEP_FILTER = "Ha"
+NB_FOCUS_SWEEP_STEP = 110
+NB_FOCUS_SWEEP_N = 2              # -2, -1, +1, +2 steps (0 is the AF frame)
+_GC_NB_AF_S = 360.0               # a 3x3-binned 20 to 30 s narrowband AF
+_GC_SELFTEST_S = 240.0
+_GC_GA_SETTLE_S = 90.0
+_GC_STAR_S = 90.0
+# NINA ExternalScript ErrorBehavior: 1 = SkipInstructionSetOnError (the
+# script's own container stops; the cooler gate's skip mode, PS-61)
+GC_STOP_ERROR_BEHAVIOR = 1
+GUIDER_COMMISSION_NOTE = ("Tonight's targets follow, each with its own slew, "
+                          "autofocus and center.")
+
+
+def guider_commission_name(field: str) -> str:
+    """'M 2' -> 'Guider commission M 2' (idempotent)."""
+    f = str(field or "").strip() or "field"
+    if f.lower().startswith(GUIDER_COMMISSION_PREFIX.lower()):
+        return f
+    return f"{GUIDER_COMMISSION_PREFIX}{f}"
+
+
+def nb_focus_test_name(field: str) -> str:
+    """'M 2' -> 'NB M 2' (the optics-test field of the narrowband frames)."""
+    return f"{NB_FOCUS_FIELD_TAG}{str(field or '').strip() or 'field'}"
+
+
+def guider_step_item(script: str, step: str, stop_on_fail: bool = False) -> dict:
+    """One deploy\\guider-commission.cmd step. stop_on_fail: a STOP (the
+    script exits 1) skips the rest of the container this item sits in;
+    otherwise ErrorBehavior 0 and a failed step never stops anything."""
+    item = _external_script(script, step)
+    if stop_on_fail:
+        item["ErrorBehavior"] = GC_STOP_ERROR_BEHAVIOR
+    return item
+
+
+def _start_guiding_plain() -> dict:
+    """StartGuiding on the current calibration, one attempt, continue on
+    error (a failure only leaves the min-move step without frames)."""
+    return _make_typed("NINA.Sequencer.SequenceItem.Guider.StartGuiding, "
+                       "NINA.Sequencer", ForceCalibration=False,
+                       ErrorBehavior=0, Attempts=1)
+
+
+def nb_focus_offsets(step: int = NB_FOCUS_SWEEP_STEP,
+                     n: int = NB_FOCUS_SWEEP_N) -> list[int]:
+    """[-2s, -s, +s, +2s] for n = 2 (ascending, no 0)."""
+    s = max(1, int(step or NB_FOCUS_SWEEP_STEP))
+    k = max(1, int(n or 1))
+    return [-i * s for i in range(k, 0, -1)] + [i * s for i in range(1, k + 1)]
+
+
+def nb_focus_rounds(filters, rounds: int, sweep_filter: str) -> list[list]:
+    """The interleave order: every round in the given order, the last one
+    with the sweep filter moved to the end (the sweep starts from its AF)."""
+    fts = _tracking_test_filters(filters or NB_FOCUS_FILTERS)
+    sweep = next((f for f in fts
+                  if f.value.lower() == str(sweep_filter or "").lower()), None)
+    out = []
+    n = max(1, int(rounds or 1))
+    for r in range(n):
+        order = list(fts)
+        if r == n - 1 and sweep is not None:
+            order = [f for f in order if f is not sweep] + [sweep]
+        out.append(order)
+    return out
+
+
+def nb_focus_duration_s(nb: dict) -> float:
+    """Wall clock of the narrowband focus test (s): slew, center, one AF per
+    block (narrowband AFs are longer), the frames and the sweep."""
+    rounds = nb_focus_rounds(nb.get("filters"), nb.get("rounds", NB_FOCUS_ROUNDS),
+                             nb.get("sweep_filter", NB_FOCUS_SWEEP_FILTER))
+    exp = float(nb.get("exposure_s") or NB_FOCUS_EXPOSURE_S)
+    frames = max(1, int(nb.get("frames") or NB_FOCUS_FRAMES))
+    t = _TT_SLEW_S + _TT_CENTER_S
+    for order in rounds:
+        for f in order:
+            t += _GC_NB_AF_S if f.value in _NB_FILTERS else _TT_AF_S
+            t += frames * (exp + _TT_DOWNLOAD_S)
+    n_sweep = 2 * max(1, int(nb.get("sweep_n") or NB_FOCUS_SWEEP_N))
+    t += n_sweep * (exp + _TT_DOWNLOAD_S + 10.0)
+    return t
+
+
+def guider_steps_duration_s(spec: dict) -> float:
+    """Wall clock of the guider steps (s): the star check when it has its
+    own slew, the self-test, the min-move guiding."""
+    steps = set(spec.get("steps") or ())
+    if not spec.get("guided"):
+        return 0.0
+    t = 0.0
+    if spec.get("star_field") and "star" in steps:
+        t += _TT_SLEW_S + _TT_CENTER_S + _GC_STAR_S
+    if "selftest" in steps:
+        t += _GC_SELFTEST_S
+    if "ga" in steps:
+        t += float(spec.get("ga_s") or 300) + _GC_GA_SETTLE_S
+    return t
+
+
+def guider_commission_duration_s(spec: dict) -> float:
+    """Wall clock of the whole recipe container (s)."""
+    t = guider_steps_duration_s(spec)
+    if "nb_focus" in set(spec.get("steps") or ()):
+        t += nb_focus_duration_s(spec.get("nb") or {})
+    return t
+
+
+def _build_guider_commission_container(spec: dict) -> dict:
+    """The recipe container (see the block comment above). spec: name (the
+    narrowband field's name), guided, script (deploy\\guider-commission.cmd),
+    steps (ids: star, selftest, ga, ga_apply, nb_focus, nb_report),
+    star_field (a field to slew to for the guide-star check when tonight has
+    no PHD2_CALIBRATION slot to carry it; None = the slot carries it),
+    nb_field ({name, ra_hours, dec_degrees}), nb (filters, exposure_s,
+    rounds, frames, sweep_filter, sweep_step, sweep_n), ga_s, min_altitude,
+    loop_end ((provider, offset) of the night loop's end, default astro
+    dawn: every light loop carries its own TimeCondition).
+
+    Guided only: the guider steps container starts with the gate step (a
+    STOP, set by the service when the guide-star check failed, skips the
+    rest of the guider steps; the narrowband test still runs). An unguided
+    night gets no guider item at all (it never connects the guider). The
+    narrowband test has no autofocus trigger (it would refocus the
+    defocused sweep frames) and its sweep moves add up to zero."""
+    from types import SimpleNamespace
+    steps = set(spec.get("steps") or ())
+    guided = bool(spec.get("guided"))
+    script = str(spec.get("script") or "")
+    nbf = spec.get("nb_field") or {}
+    nb_t = SimpleNamespace(name=str(nbf.get("name") or spec.get("name") or "field"),
+                           ra_hours=float(nbf.get("ra_hours") or 0.0),
+                           dec_degrees=float(nbf.get("dec_degrees") or 0.0),
+                           rotation=0.0)
+    name = guider_commission_name(spec.get("name") or nb_t.name)
+    min_alt = float(spec.get("min_altitude") or 30.0)
+    loop_end = tuple(spec.get("loop_end") or ("DawnProvider", 0))
+    cfg = _gen_cfg()
+    gain = int(getattr(cfg, "default_gain", 100))
+    offset_adu = int(getattr(cfg, "default_offset", 50))
+    temp = rig_cool_setpoint(cfg, "rc16", None)
+    est = guider_commission_duration_s(spec) / 60.0
+    parts = []
+    if guided and script and steps & {"star", "selftest", "ga"}:
+        parts.append("guider steps (gate, pulse self-test, 5 min of guiding "
+                     "for the min-move)")
+    if "nb_focus" in steps:
+        parts.append("the RC16 narrowband focus test (AF per filter, 30 s "
+                     "frames at each filter's own focus, an Ha sweep through "
+                     "focus)")
+    items = [
+        _annotation("Guider commissioning night (recipe guider_commission): "
+                    + " then ".join(parts or ["nothing enabled"]) + ". Every "
+                    "step logs to the night story; a failed step never stops "
+                    "the night. " + GUIDER_COMMISSION_NOTE),
+        _pushover("Imaging", f"{name}: starting (~{est:.0f} min)"),
+    ]
+    if guided and script and steps & {"star", "selftest", "ga"}:
+        g = [guider_step_item(script, "gate", stop_on_fail=True)]
+        sf = spec.get("star_field")
+        if sf and "star" in steps:
+            pt = SimpleNamespace(ra_hours=float(sf["ra_hours"]),
+                                 dec_degrees=float(sf["dec_degrees"]))
+            g += [_stop_guiding(), _set_tracking(0),
+                  _switch_filter(FilterType.LUMINANCE), _slew(pt), _center(pt),
+                  guider_step_item(script, "star", stop_on_fail=True)]
+        if "selftest" in steps:
+            g.append(guider_step_item(script, "selftest"))
+        if "ga" in steps:
+            g += [_start_guiding_plain(), guider_step_item(script, "ga"),
+                  _stop_guiding()]
+            if "ga_apply" in steps:
+                g.append(guider_step_item(script, "ga-apply"))
+        items.append(_seq_container(f"{name}{GUIDER_GUIDER_SUFFIX}", g,
+                                    conditions=[_safety_condition(),
+                                                _loop_once()]))
+    if "nb_focus" in steps:
+        nb = spec.get("nb") or {}
+        exp_s = float(nb.get("exposure_s") or NB_FOCUS_EXPOSURE_S)
+        frames = max(1, int(nb.get("frames") or NB_FOCUS_FRAMES))
+        sweep_name = str(nb.get("sweep_filter", NB_FOCUS_SWEEP_FILTER) or "")
+        rounds = nb_focus_rounds(nb.get("filters"),
+                                 nb.get("rounds", NB_FOCUS_ROUNDS), sweep_name)
+        offsets = nb_focus_offsets(nb.get("sweep_step", NB_FOCUS_SWEEP_STEP),
+                                   nb.get("sweep_n", NB_FOCUS_SWEEP_N))
+        field = nb_focus_test_name(nb_t.name)
+
+        def _frames(f: FilterType, off: int, n: int) -> dict:
+            sname = optics_step_name(field, f.value, off)
+            exp = ExposurePlan(filter_type=f, exposure_seconds=exp_s, count=n,
+                               gain=gain, offset=offset_adu)
+            return _seq_container(
+                f"{sname}{OPTICS_STEP_SUFFIX}",
+                [_smart_exposure(exp, False, 0,
+                                 guard_conditions=[_safety_condition(),
+                                                   _time_condition(*loop_end)])],
+                conditions=[_safety_condition(), _time_condition(*loop_end),
+                            _loop_once()],
+                container_type=DSO_CONTAINER_TYPE,
+                Target=_make_typed(
+                    "NINA.Astrometry.InputTarget, NINA.Astrometry",
+                    Expanded=True, TargetName=sname, PositionAngle=0.0,
+                    InputCoordinates=_coords(nb_t)))
+
+        ref = rounds[0][0] if rounds and rounds[0] else FilterType.LUMINANCE
+        nb_items = [_stop_guiding()] if guided else []
+        nb_items += [
+            _cool_camera_bounded(temp, 0.0, cfg),   # PS-154: never blocks
+            _set_tracking(0), _slew(nb_t),
+            _switch_filter(ref), _move_focuser(_seed_position(ref)),
+            _autofocus(), _center(nb_t), _set_tracking(0),
+            _pushover("Imaging", f"{name}: focused on {ref.value} and "
+                      "centered, narrowband focus test"),
+        ]
+        first = True
+        for order in rounds:
+            for f in order:
+                if not first:
+                    nb_items += [_switch_filter(f),
+                                 _move_focuser(_seed_position(f)), _autofocus()]
+                first = False
+                nb_items.append(_frames(f, 0, frames))
+        last = rounds[-1][-1] if rounds and rounds[-1] else None
+        if last is not None and last.value.lower() == sweep_name.lower():
+            cur = 0
+            for o in offsets:
+                nb_items.append(_move_focuser_relative(o - cur))
+                cur = o
+                nb_items.append(_frames(last, o, 1))
+            if cur:
+                nb_items.append(_move_focuser_relative(-cur))
+        if script and "nb_report" in steps:
+            nb_items.append(guider_step_item(script, "nb-report"))
+        nb_items.append(_pushover("Imaging", f"{name}: narrowband focus test "
+                                  "done (report: /api/guiding/commission-night)"))
+        items.append(_seq_container(
+            f"{name}{GUIDER_NB_SUFFIX}", nb_items,
+            conditions=[_safety_condition(), _altitude_condition(nb_t, min_alt),
+                        _loop_once()]))
+    items.append(_pushover("Imaging", f"{name}: done, tonight's targets follow"))
+    return _seq_container(
+        name, items,
+        conditions=[_safety_condition(), _altitude_condition(nb_t, min_alt),
+                    _time_condition(*loop_end), _loop_once()],
+        triggers=[_meridian_flip_trigger(), _reconnect_trigger()],
+        container_type=DSO_CONTAINER_TYPE,
+        Target=_make_typed(
+            "NINA.Astrometry.InputTarget, NINA.Astrometry",
+            Expanded=True, TargetName=name, PositionAngle=0.0,
+            InputCoordinates=_coords(nb_t)))
+
+
+def generate_guider_commission_json(spec: dict) -> str:
+    """A minimal sequence (Start / Targets with TARGETS_CONTAINER holding
+    the one recipe container / End) for the sideload splice
+    (sideload.splice_guider_commission); never dispatched on its own."""
+    tc = _seq_container(TARGETS_LOOP_NAME,
+                        [_build_guider_commission_container(spec)])
+    area = "NINA.Sequencer.Container.{}, NINA.Sequencer"
+    root = _seq_container(
+        guider_commission_name(spec.get("name") or "field"),
+        [_seq_container("Start", [], container_type=area.format("StartAreaContainer")),
+         _seq_container("Targets", [tc],
+                        container_type=area.format("TargetAreaContainer")),
+         _seq_container("End", [], container_type=area.format("EndAreaContainer"))],
+        container_type=area.format("SequenceRootContainer"))
+    return json.dumps(link_parents(root), indent=2)
+
 # --- PS-171 TPoint mapping run ----------------------------------------------
 
 TPOINT_EXPOSURE_S = 5.0

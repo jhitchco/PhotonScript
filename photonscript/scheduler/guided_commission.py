@@ -84,12 +84,21 @@ def own_mode(config) -> str:
 
 def mode(config, night: str | None = None) -> str:
     """The effective mode: guided_commission_mode, except that a guided trial
-    night (guided_trial_night = night) always tests in act unless the mode
-    is off."""
+    night (guided_trial_night = night) or a night armed with the
+    guider_commission recipe (2026-10-28) always tests in act unless the
+    mode is off."""
     m = own_mode(config)
-    if m != "off" and trial_tonight(config, night):
+    if m != "off" and (trial_tonight(config, night) or _recipe_night(config, night)):
         return "act"
     return m
+
+
+def _recipe_night(config, night: str | None) -> bool:
+    try:
+        from photonscript.scheduler.guider_night import recipe_armed
+        return bool(night) and recipe_armed(config, night)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _dir(config) -> Path:
@@ -420,7 +429,11 @@ async def tick(config, armer, now: datetime | None = None, *, subs=None,
                 save_night(config, st)
             out["step"] = "commissioned"
             return out
-        res = judge(config, _subs(config, night) if subs is None else subs, now)
+        stopped = _recipe_stop(config, night)
+        res = ({"verdict": "fail", "why": stopped, "n": 0, "n_guided": 0,
+                "guided_min": 0.0, "rms_arcsec": None, "rms_worst": None,
+                "ecc": None, "first_utc": None} if stopped else
+               judge(config, _subs(config, night) if subs is None else subs, now))
         st["last"] = {k: res.get(k) for k in ("verdict", "why", "n", "n_guided",
                                               "guided_min", "rms_arcsec")}
         if res["verdict"] == "wait":
@@ -489,20 +502,37 @@ async def tick(config, armer, now: datetime | None = None, *, subs=None,
         return out
 
 
+def _recipe_stop(config, night: str | None) -> str | None:
+    """2026-10-28: the guider commissioning recipe stopped its guider steps
+    (no guide star on the OAG): the guiding test fails now, no 45 min wait."""
+    try:
+        from photonscript.scheduler.guider_night import stop_reason
+        why = stop_reason(config, night)
+        return f"guider commissioning stopped: {why}" if why else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 TICK_S = 60
 PREP_EVERY_S = 1800
 
 
 async def run(get_config, get_armer, tick_s: int = TICK_S) -> None:
     """Background loop (app startup): the commissioning tick every minute,
-    the readiness fix-ups (guided_readiness.prep_tick) every 30 min. Never
-    raises."""
+    the guider commissioning recipe's pre-dusk steps (guider_night
+    .pre_tick, 2026-10-28), the readiness fix-ups (guided_readiness
+    .prep_tick) every 30 min. Never raises."""
     import asyncio
     last_prep = 0.0
     while True:
         try:
             cfg, armer = get_config(), get_armer()
             await tick(cfg, armer)
+            try:   # 2026-10-28: the guider commissioning recipe's pre-dusk steps
+                from photonscript.scheduler.guider_night import pre_tick
+                await pre_tick(cfg, armer)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("guider commissioning pre-steps failed: %s", e)
             import time
             if time.monotonic() - last_prep >= PREP_EVERY_S:
                 last_prep = time.monotonic()

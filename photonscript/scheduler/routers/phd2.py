@@ -16,6 +16,10 @@ GET  /api/guiding/attention        the "What to change" list from cached records
 GET  /api/guiding/readiness?refresh=&darks=   can tonight be a guided night: the
                                    ordered blockers with the fix for each (2026-10-26)
 GET  /api/guiding/commission?date= the first guided night's guiding test (2026-10-26)
+GET  /api/guiding/commission-night?date=   guider commissioning night: steps +
+                                   the narrowband focus report (2026-10-28)
+GET  /api/guiding/commission-night/plan?night=&skip=&unguided=   its dry run
+POST /api/guiding/commission-night/step?step=   one NINA-side step
 GET  /guiding                      the Guiding tab page (PS-103)
 
 The PHD2 guide-log endpoints (/api/phd2/log, /logs, /summary, /analysis)
@@ -523,6 +527,49 @@ def api_guiding_commission(date: str = ""):
     date = date or store.night_of(cfg, datetime.utcnow())
     return {"date": date, "status": gc.status(cfg, date),
             "night": gc.load_night(cfg, date), "record": gc.load_record(cfg)}
+
+
+@router.get("/api/guiding/commission-night")
+def api_guider_night(date: str = ""):
+    """2026-10-28: the guider commissioning night (recipe guider_commission,
+    scheduler/guider_night.py): tonight's step record and the narrowband
+    focus report (rebuilt from the night's subs)."""
+    from photonscript.scheduler import guider_night as gn
+    from photonscript.shared import phd2_store as store
+    cfg = _cfg()
+    date = date or store.night_of(cfg, datetime.utcnow())
+    try:
+        nb = gn.nb_report(cfg, date)
+    except Exception as e:  # noqa: BLE001
+        nb = {"error": f"{type(e).__name__}: {e}"}
+    return {"date": date, "recipe": gn.recipe_tonight(cfg, date),
+            "state": gn.load_state(cfg, date), "nb_focus": nb,
+            "text": gn.format_nb_report(nb) if "error" not in nb else None}
+
+
+@router.get("/api/guiding/commission-night/plan")
+def api_guider_night_plan(night: str = "", skip: str = "", unguided: bool = False):
+    """2026-10-28: the dry run: every step of the guider commissioning night
+    with its time. Read only."""
+    from photonscript.scheduler import guider_night as gn
+    from photonscript.shared import phd2_store as store
+    cfg = _cfg()
+    opts, err = gn.parse_opts({"skip": skip} if skip else None)
+    if err:
+        return JSONResponse(status_code=400, content={"detail": err})
+    p = gn.plan(cfg, night or store.night_of(cfg, datetime.utcnow()), opts,
+                guided=not unguided)
+    p["text"] = gn.format_plan(p)
+    return p
+
+
+@router.post("/api/guiding/commission-night/step")
+async def api_guider_night_step(step: str = ""):
+    """2026-10-28: one NINA-side step (deploy\\guider-commission.cmd ->
+    photonscript guider-commission-step): gate | star | selftest | ga |
+    ga-apply | nb-report. {"status", "stop", "detail"}; never 500s."""
+    from photonscript.scheduler import guider_night as gn
+    return await gn.run_step(_cfg(), step)
 
 
 @router.get("/guiding", response_class=HTMLResponse)

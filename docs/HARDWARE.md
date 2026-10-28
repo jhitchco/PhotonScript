@@ -84,6 +84,13 @@ it: the Guiding tab "Guided night readiness" panel (`GET
 test") then tracks this list: a dark library or calibration older than the
 camera change is a blocker / auto item, and the first guided night with the
 new camera runs the guiding test again (`guided_commission_*`).
+2026-10-28: the arm recipe `guider_commission` (HANDBOOK "Guider
+commissioning night") sets the PHD2 guide exposure and runs steps 6
+(calibration), 7 (a GA-style min-move from 5 min of guiding) and the
+guiding test unattended, checks 1 (a guide star on the OAG; stops with a
+push when there is none) and pushes 4 / 5 (darks, defect map: PHD2 GUI
+only) as human steps. Step 2 (profile: Max ADU 65535 and so on) stays by
+hand.
 1. Hardware: OAG focus. Loop in PHD2 (2 s, gain 40) on a bright star with
    the RC16 at imaging focus, and move the OAG camera's helical / spacer
    until the guide stars are sharp (HFD a few px at 0.372"/px). The IMX174
