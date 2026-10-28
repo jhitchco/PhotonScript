@@ -756,6 +756,77 @@ def cooler_gate_cmd(
     raise typer.Exit(EXIT_SKIP if rep.get("verdict") == "SKIP" else 0)
 
 
+@app.command("guider-commission-step")
+def guider_commission_step_cmd(
+    step: str = typer.Argument(..., help="gate | star | selftest | ga | "
+                                         "ga-apply | nb-report"),
+    from_nina: bool = typer.Option(False, "--from-nina",
+                                   help="Called by NINA's ExternalScript item "
+                                        "(deploy\\guider-commission.cmd)"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """2026-10-28: one step of the guider commissioning night (recipe
+    guider_commission) through the service (POST
+    /api/guiding/commission-night/step). Exit 3 ONLY when the service says
+    STOP (gate: the guider steps were stopped tonight; star: no guide star
+    on the OAG); deploy\\guider-commission.cmd turns that into exit 1 and
+    NINA skips the rest of that container. Every other outcome, the service
+    down included, exits 0: a failed step never stops the night."""
+    import json as _json
+    import urllib.parse
+    import urllib.request
+    from photonscript.scheduler.guider_night import EXIT_STOP
+    try:
+        cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+        timeout = float(getattr(cfg, "guider_commission_ga_s", 300.0)) + 600
+    except Exception:  # noqa: BLE001
+        timeout = 900.0
+    try:
+        req = urllib.request.Request(
+            url.rstrip("/") + "/api/guiding/commission-night/step?"
+            + urllib.parse.urlencode({"step": step}), data=b"", method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            rep = _json.loads(r.read().decode("utf-8"))
+        print(f"guider commissioning {step}{' (NINA)' if from_nina else ''}: "
+              f"{str(rep.get('status')).upper()}{' STOP' if rep.get('stop') else ''}"
+              f" - {rep.get('detail', '')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"guider commissioning {step} not run ({e}); the night goes on")
+        rep = {"stop": False}
+    raise typer.Exit(EXIT_STOP if rep.get("stop") else 0)
+
+
+@app.command("guider-commission-plan")
+def guider_commission_plan_cmd(
+    night: str = typer.Option("", "--night", help="YYYY-MM-DD local evening "
+                                                  "(default: tonight)"),
+    skip: str = typer.Option("", "--skip", help="Steps to skip, comma "
+                                                "separated (recipe_opts.skip)"),
+    unguided: bool = typer.Option(False, "--unguided",
+                                  help="Plan an unguided arm (no guider steps)"),
+    as_json: bool = typer.Option(False, "--json", help="Print the raw plan"),
+):
+    """2026-10-28: dry run of the guider commissioning night: every step in
+    order with its time (local), who does it, and the human steps. Computed
+    here from this checkout's config (sun math, the field pickers, the
+    stored readiness records); nothing is sent anywhere."""
+    import json as _json
+    from datetime import datetime as _dt
+    from photonscript.scheduler import guider_night as gn
+    from photonscript.shared.phd2_store import night_of
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    opts, err = gn.parse_opts({"skip": skip} if skip else None)
+    if err:
+        console.print(err)
+        raise typer.Exit(2)
+    p = gn.plan(cfg, night or night_of(cfg, _dt.utcnow()), opts, guided=not unguided)
+    if as_json:
+        print(_json.dumps(p, indent=2, default=str))
+    else:
+        print(gn.format_plan(p))
+
+
 @app.command("reentry-gate")
 def reentry_gate_cmd(
     kind: str = typer.Argument("af", help="af | slew | center"),

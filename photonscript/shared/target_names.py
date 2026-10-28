@@ -280,7 +280,8 @@ def _test_keys() -> tuple:
         gen.OPTICS_TEST_PREFIX,       # PS-148 "Optics test <field> ..."
         gen.FOCUS_CAL_PREFIX,         # PS-144 "Focus calibration <field>"
         gen.TPOINT_MAPPING_PREFIX,    # PS-171 "TPoint mapping <n> points"
-        gen.TPOINT_POINT_PREFIX))     # PS-171 "TPoint point 07/60 ..."
+        gen.TPOINT_POINT_PREFIX,      # PS-171 "TPoint point 07/60 ..."
+        gen.GUIDER_COMMISSION_PREFIX))   # 2026-10-28 "Guider commission <field>"
     inner = (target_key(gen.TARGET_FOCUS_CAL_SUFFIX),)  # PS-76 AF series
     return prefixes, inner
 

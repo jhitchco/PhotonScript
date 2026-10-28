@@ -717,6 +717,15 @@ class Armer:
         open_plan_window(self.config, self.plan)
         mode = ("guided (PHD2)" if self._use_guiding()
                 else "unguided (TPoint + ProTrack)")
+        if not recipe:
+            # 2026-10-28: the guided trial night carries the guider
+            # commissioning recipe (guider_commission_on_trial_night)
+            try:
+                from photonscript.scheduler.guider_night import auto_recipe
+                recipe = auto_recipe(self.config, self.plan.get("night_of"),
+                                     self._use_guiding())
+            except Exception as e:  # noqa: BLE001 - never fail an arm over it
+                logger.warning("guider commissioning recipe not attached: %s", e)
         if recipe:
             self.recipe = {"id": recipe["id"], "label": recipe["label"],
                            "opts": dict(recipe.get("opts") or {}),
@@ -2337,6 +2346,16 @@ class Armer:
         if now < dusk:
             seq.wait_until_local = to_local(self.config, dusk).strftime("%H:%M:%S")
 
+        if use_guiding and recipe:
+            # 2026-10-28: the guider commissioning recipe calibrates in the
+            # PS-93 slot (its guide-star check rides there): ask for one
+            try:
+                from photonscript.scheduler.guider_night import want_calibration
+                if want_calibration(self.config, self._recipe_tonight()):
+                    from photonscript.scheduler import phd2_calibration as _pc
+                    _pc.set_request(self.config, "guider_commission")
+            except Exception as e:  # noqa: BLE001 - never fail a dispatch over it
+                logger.warning("guider commissioning calibration request: %s", e)
         cal_field = self._calibration_slot(targets, now) if use_guiding else None
         u_dither = self._unguided_dither()   # PS-66: Direct Guider dithers
         content = generate_nina_json(seq, cal_field=cal_field,

@@ -1107,6 +1107,22 @@ class PhotonScriptConfig(BaseSettings):
                                  # default) and runs the commissioning test,
                                  # whatever the readiness list says. One night
                                  # only: the date stops matching afterwards
+    # 2026-10-28 guider commissioning night (scheduler/guider_night.py, the
+    # arm recipe guider_commission)
+    guider_commission_on_trial_night: bool = True  # an arm without a recipe
+                                 # on the guided trial night gets the
+                                 # guider_commission recipe
+    guider_commission_script: str = "C:\\astro\\PhotonScript\\deploy\\guider-commission.cmd"
+    guider_commission_star_tries: int = 3  # guide-star check: find_star tries
+    guider_commission_min_snr: float = 10.0  # guide-star check: a star needs this SNR
+    guider_commission_hfd_max_px: float = 8.0  # guide-star check: wider = OAG
+                                 # out of focus (WARN, guiding still goes on)
+    guider_commission_ga_s: float = 300.0  # guiding time for the min-move (s)
+    guider_commission_minmove_apply: bool = True  # apply the derived RA / Dec
+                                 # min-move through the PS-89 apply rows
+    guider_commission_nb_exposure_s: float = 30.0  # narrowband focus test frames (s)
+    guider_commission_nb_rounds: int = 2  # L / Ha / OIII rounds (AF each block)
+    guider_commission_sweep_step: int = 110  # Ha sweep step (EAF steps), -2..+2 x
     guided_auto_arm_when_ready: bool = False  # an automatic arm goes guided
                                  # when the readiness gate is not blocked (an
                                  # explicit manual choice still wins)

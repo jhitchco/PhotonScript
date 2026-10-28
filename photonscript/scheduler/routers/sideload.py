@@ -72,7 +72,7 @@ def build_rc16(recipe: str, exclude=(), at: str = "",
     "excluded"}. opts (PS-181): the arm's recipe options (points, add)."""
     from photonscript.scheduler import sideload as sd
     if recipe not in (sd.RECIPE_TT_THEN_TONIGHT, sd.RECIPE_OPTICS_THROUGH_FOCUS,
-                      sd.RECIPE_TPOINT_MAPPING):
+                      sd.RECIPE_TPOINT_MAPPING, sd.RECIPE_GUIDER_COMMISSION):
         raise ValueError(f"unknown recipe {recipe!r}")
     night_name, night_text, guided, dither = _app()._tonight_sequence(False)
     return build_rc16_from(json.loads(night_text), night_name, guided, dither,
@@ -89,7 +89,7 @@ def build_rc16_from(night: dict, night_name: str, guided, dither,
     from photonscript.scheduler.nina_sequence_json import generate_tracking_test_json
     from photonscript.scheduler.sequence_lint import lint
     if recipe not in (sd.RECIPE_TT_THEN_TONIGHT, sd.RECIPE_OPTICS_THROUGH_FOCUS,
-                      sd.RECIPE_TPOINT_MAPPING):
+                      sd.RECIPE_TPOINT_MAPPING, sd.RECIPE_GUIDER_COMMISSION):
         raise ValueError(f"unknown recipe {recipe!r}")
     app = _app()
     opts = opts or {}
@@ -107,6 +107,16 @@ def build_rc16_from(night: dict, night_name: str, guided, dither,
         field = run["field"]
         test = json.loads(run["test_json"])
         splice, tag = sd.splice_tpoint_mapping, "TPM"
+    elif recipe == sd.RECIPE_GUIDER_COMMISSION:   # 2026-10-28
+        from photonscript.scheduler import guider_night as gn
+        gc = gn.build_test(_cfg(), night, bool(guided), at, opts,
+                           _active_projects())
+        field, test = gc["field"], gc["test"]
+
+        def splice(n, t, ex, name=None):
+            return sd.splice_guider_commission(n, t, ex, name,
+                                               star_item=gc["star_item"])
+        tag = "GC"
     else:
         fl, ex, rep = app._tracking_test_params("L,Ha", "60,120,180,300", 2)
         field = app._tracking_test_field("", None, None, fl, ex, rep, at)
@@ -171,17 +181,19 @@ def _view(rig: str, built: dict) -> dict:
 async def api_sideload_preview(recipe: str = "tracking_test_then_tonight",
                                exclude: list[str] = Query(default=[]),
                                at: str = "", points: int | None = None,
-                               add: str = ""):
+                               add: str = "", skip: str = ""):
     """Read only: generates and lints, sends nothing to NINA. points / add
-    (PS-181): the per-arm TPoint options, validated as POST /api/arm does."""
+    (PS-181): the per-arm TPoint options, validated as POST /api/arm does;
+    skip (2026-10-28): the guider_commission steps to leave out."""
     from photonscript.scheduler import sideload as sd
     from photonscript.shared.rigs import rig_ids, rig_label
     if recipe not in sd.RECIPES:
         return JSONResponse(status_code=400, content={
             "detail": f"unknown recipe {recipe!r}", "recipes": sd.RECIPES})
     opts = {}
-    if points is not None or add:
-        rec, err = sd.arm_recipe(recipe, {"points": points, "add": add})
+    if points is not None or add or skip:
+        rec, err = sd.arm_recipe(recipe, {"points": points, "add": add}
+                                 if not skip else {"skip": skip})
         if err:
             return JSONResponse(status_code=400, content={"detail": err})
         opts = rec["opts"]
