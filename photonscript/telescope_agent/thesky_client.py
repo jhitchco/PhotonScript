@@ -150,10 +150,19 @@ class TheSkyClient:
     def docprops(self, indices=None) -> dict:
         """READ ONLY: {index: value} for sky6StarChart.DocumentProperty at
         `indices` (default: the 0..DOCPROP_SCAN_MAX discovery scan). Reads
-        only, never SetDocumentProperty."""
-        js = (READ_ONLY_JS["docprops"] if indices is None
-              else docprops_script(indices))
-        return parse_docprops(parse_kv(self.run_script(js)))
+        only, never SetDocumentProperty. TheSky 10.5 rejects one script
+        reading all 121 indices ("SyntaxError: Parse error", 2026-10-28),
+        so the reads go DOCPROP_CHUNK indices per script."""
+        idx = (list(range(0, DOCPROP_SCAN_MAX + 1)) if indices is None
+               else sorted({int(i) for i in indices}))
+        out: dict[int, str | None] = {}
+        for a in range(0, len(idx), DOCPROP_CHUNK):
+            raw = self.run_script(docprops_script(idx[a:a + DOCPROP_CHUNK]))
+            got = parse_docprops(parse_kv(raw))
+            if not got and "Error" in str(raw):
+                raise RuntimeError(f"DocumentProperty read failed: {str(raw)[:120]}")
+            out.update(got)
+        return out
 
     def ails(self) -> dict:
         """AutomatedImageLinkSettings (the Automated Pointing Calibration
@@ -352,6 +361,7 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
 # thesky_docprop_temperature / thesky_docprop_refraction (-1 = not pinned:
 # the audit then reads the site line TheSky wrote into TPoint's input file).
 DOCPROP_SCAN_MAX = 120
+DOCPROP_CHUNK = 20
 DOCPROP_KNOWN = {0: "latitude", 1: "longitude", 2: "time zone", 3: "elevation m",
                  4: "DST index", 5: "use computer clock", 9: "Julian date now"}
 
