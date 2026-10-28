@@ -749,6 +749,7 @@ _CONFIG_FIELDS = [
     ("calibration_dark_model", "PS_CALIBRATION_DARK_MODEL", "Calibration QA: judge dark level against the per-camera dark model (accepted darks of other lengths, earlier nights of the same length); light caught by trend / gradient / outlier inside the set", "Imaging", "bool", False, False),
     ("calibration_dark_model_allow_adu", "PS_CALIBRATION_DARK_MODEL_ALLOW_ADU", "Dark model: ADU allowed over the expected dark excess", "Imaging", "float", False, False),
     ("calibration_dark_model_allow_frac", "PS_CALIBRATION_DARK_MODEL_ALLOW_FRAC", "Dark model: plus this share of the expected dark excess", "Imaging", "float", False, False),
+    ("calibration_dark_model_rate_allow", "PS_CALIBRATION_DARK_MODEL_RATE_ALLOW", "Dark model: or, when larger, this many x the measured dark current (ADU/s) x the exposure (long darks), 0 = off", "Imaging", "float", False, False),
     ("calibration_qa_dark_scale_by_readout", "PS_CALIBRATION_QA_DARK_SCALE_BY_READOUT", "Calibration QA (PS-182): dark-over-bias allowance scales with the readout mode's ADU per e- (RC16 HCG 3.16 x LCG)", "Imaging", "bool", False, False),
     ("calibration_readout_fill_at_dawn", "PS_CALIBRATION_READOUT_FILL_AT_DAWN", "Dawn sweep: header-read READOUTM for up to N QA records without one (0 = off)", "Imaging", "int", False, False),
     ("calibration_file_auto", "PS_CALIBRATION_FILE_AUTO", "File calibration at arm time, at a night's end and after a capture job, not only at dawn (PS-188)", "Imaging", "bool", False, False),

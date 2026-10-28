@@ -67,7 +67,11 @@ def test_expectation_interpolates_and_extrapolates():
                {"exptime": 300.0, "date": "2026-10-10", "excess": 13.0, "n": 6}]
     e, lim, src = cq.dark_expectation(anchors, 210.0, "2026-10-16")
     assert e == pytest.approx(8.5) and "interpolated between 120 s" in src
-    assert lim == pytest.approx(8.5 + 5.0 + 0.25 * 8.5, abs=0.01)
+    # 2026-10-28: the allowance is the larger of 0.25 x expected and 1.5 x
+    # the measured dark current (17 ADU / 420 s) x 210 s
+    assert lim == pytest.approx(8.5 + 5.0 + 1.5 * 17.0 / 420.0 * 210.0, abs=0.01)
+    _e, lim0, _src = cq.dark_expectation(anchors, 210.0, "2026-10-16", rate_allow=0)
+    assert lim0 == pytest.approx(8.5 + 5.0 + 0.25 * 8.5, abs=0.01)
     e, _lim, src = cq.dark_expectation(anchors, 60.0, "2026-10-16")
     assert e == pytest.approx(2.0)          # through the bias at 0 s
     e, _lim, src = cq.dark_expectation(anchors, 450.0, "2026-10-16")
@@ -88,7 +92,8 @@ def test_settings_from_config():
                          "calibration_dark_model_allow_adu": 8.0,
                          "calibration_dark_model_allow_frac": "bad"})()
     assert cq.dark_model_settings(cfg) == {"enabled": False, "allow_adu": 8.0,
-                                           "allow_frac": cq.DARK_MODEL_ALLOW_FRAC}
+                                           "allow_frac": cq.DARK_MODEL_ALLOW_FRAC,
+                                           "rate_allow": cq.DARK_MODEL_RATE_ALLOW}
 
 
 # --- the five behaviours ------------------------------------------------------------
@@ -100,7 +105,9 @@ def test_longest_length_judged_by_its_own_prior_nights():
     _history(frames)
     _darks(frames, "2026-10-11", 450.0, [275.0] * 6)   # +19 (expected +19)
     ok = _darks(frames, "2026-10-16", 450.0, [281.0] * 6, t0="01:35:00")   # +25
-    hot = _darks(frames, "2026-10-17", 450.0, [303.0] * 6, t0="01:35:00")  # +47
+    # 2026-10-28: +47 (2.1 x the expected +22) is now inside the dark
+    # current allowance (1.5 x 0.045 ADU/s x 450 s); +79 is not
+    hot = _darks(frames, "2026-10-17", 450.0, [335.0] * 6, t0="01:35:00")  # +79
     store = _judge(frames)
     rows = {(s["date"], s["exptime"]): s for s in store["dark_model"]}
     first = rows[("2026-10-11", 450.0)]
@@ -127,7 +134,9 @@ def test_uniform_pedestal_passes():
     for r in new:
         assert r["verdict"] == "warn", r["reasons"]
         assert r["dark_excess"] == 25.0 and r["dark_expected"] == pytest.approx(19.0)
-        assert r["dark_limit"] == pytest.approx(28.75)
+        # 19 + 5 + 1.5 x (34 ADU / 820 s) x 450 s (was 19 + 5 + 0.25 x 19)
+        assert r["dark_limit"] == pytest.approx(19.0 + 5.0 + 1.5 * 34.0 / 820.0 * 450.0,
+                                                abs=0.01)
         assert [w.split(":")[0] for w in r["warnings"]] == ["zone_pattern"]
     row = [s for s in store["dark_model"] if s["exptime"] == 450.0][0]
     assert row["anchor"] and row["trend"]["change"] == 0.0

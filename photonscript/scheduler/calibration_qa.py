@@ -497,7 +497,9 @@ def judge_frame(rec: dict, *, rig: str, tol: float = 1.0,
             if expect is not None:
                 lim = expect[1]
                 allowed = (f"allowed {lim:.1f} for {exp or 0:g} s (expected "
-                           f"{expect[0]:+.1f} from {expect[2]})")
+                           f"{expect[0]:+.1f} from {expect[2]})"
+                           + (f"; {expect[3]}" if len(expect) > 3 and expect[3]
+                              else ""))
             else:
                 lim = dark_excess_limit(exp or 0, ref, excess_scale)
                 allowed = (f"allowed {lim:.1f} for {exp or 0:g} s"
@@ -727,7 +729,18 @@ def drift_for(config, rig: str, *, gain, offset, readout=None, setpoint=None,
 #             between known lengths, extrapolated past the longest along the
 #             top segment, never with a negative slope)
 #   limit     expected + calibration_dark_model_allow_adu
-#             + calibration_dark_model_allow_frac x expected
+#             + the larger of calibration_dark_model_allow_frac x expected
+#             and calibration_dark_model_rate_allow x the measured dark
+#             current x exposure x 2^(dT/6) (dT: the set's CCD-TEMP minus
+#             SET-TEMP). The measured dark current (ADU/s) is pooled over
+#             the camera's anchors of DARK_RATE_MIN_S or longer (sum of
+#             their excess / sum of their exposure), so a long dark may
+#             carry night-to-night spread that grows with its length
+#             (2026-10-20 RC16 750 s +38..+56 and 10-22 900 s +52..+63 vs
+#             +28 / +33.5 on 10-21: one night's excess + 25 % held them
+#             as "level"), while a leak several times the dark current
+#             still fails here and a non-uniform or changing one fails
+#             [gradient] / [trend] below
 #
 # Sets are judged in date order, so a set the model accepts anchors later
 # nights. With no anchor at all the generic formula still applies.
@@ -746,6 +759,8 @@ def drift_for(config, rig: str, *, gain, offset, readout=None, setpoint=None,
 
 DARK_MODEL_ALLOW_ADU = 5.0
 DARK_MODEL_ALLOW_FRAC = 0.25
+DARK_MODEL_RATE_ALLOW = 1.5   # x the measured dark current x exposure
+DARK_RATE_MIN_S = 60.0        # anchors this long or longer measure the rate
 DARK_MODEL_NIGHTS = 3
 ANCHOR_MIN = 3
 TREND_ADU = 3.0
@@ -756,8 +771,9 @@ PATTERN_FRAC = 0.25
 
 
 def dark_model_settings(config) -> dict:
-    """{"enabled", "allow_adu", "allow_frac"} from the config
-    (calibration_dark_model, calibration_dark_model_allow_adu / _frac)."""
+    """{"enabled", "allow_adu", "allow_frac", "rate_allow"} from the config
+    (calibration_dark_model, calibration_dark_model_allow_adu / _frac /
+    calibration_dark_model_rate_allow)."""
     def f(name, default):
         try:
             v = getattr(config, name, default)
@@ -768,7 +784,9 @@ def dark_model_settings(config) -> dict:
             "allow_adu": max(0.0, f("calibration_dark_model_allow_adu",
                                     DARK_MODEL_ALLOW_ADU)),
             "allow_frac": max(0.0, f("calibration_dark_model_allow_frac",
-                                     DARK_MODEL_ALLOW_FRAC))}
+                                     DARK_MODEL_ALLOW_FRAC)),
+            "rate_allow": max(0.0, f("calibration_dark_model_rate_allow",
+                                     DARK_MODEL_RATE_ALLOW))}
 
 
 def _model_key(rec: dict) -> tuple:
@@ -776,12 +794,33 @@ def _model_key(rec: dict) -> tuple:
     return (*_epoch(rec), None if st is None else round(st))
 
 
+def dark_rate(anchors: list, date: str | None = None) -> float | None:
+    """The camera's measured dark current (ADU/s) from the model's anchors
+    of DARK_RATE_MIN_S or longer, shot on or before `date`: the sum of
+    their excess over the sum of their exposure (long darks weigh most;
+    short ones are mostly bias noise). None without such anchors."""
+    use = [a for a in anchors if float(a.get("exptime") or 0) >= DARK_RATE_MIN_S
+           and (date is None or str(a.get("date") or "") <= date)]
+    t = sum(float(a["exptime"]) for a in use)
+    if t <= 0:
+        return None
+    return max(0.0, sum(max(float(a["excess"]), 0.0) for a in use) / t)
+
+
 def dark_expectation(anchors: list, exp_s: float, date: str, *,
                      allow_adu: float = DARK_MODEL_ALLOW_ADU,
-                     allow_frac: float = DARK_MODEL_ALLOW_FRAC):
+                     allow_frac: float = DARK_MODEL_ALLOW_FRAC,
+                     rate_allow: float = DARK_MODEL_RATE_ALLOW,
+                     temp_delta_c: float | None = None,
+                     detail: bool = False):
     """(expected excess, limit, source) of a dark of `exp_s` seconds shot on
     `date` from the model's anchors ([{"exptime", "date", "excess", "n"}] of
-    one camera epoch and SET-TEMP), or None when there are none."""
+    one camera epoch and SET-TEMP), or None when there are none.
+
+    The limit is expected + allow_adu + the larger of allow_frac x expected
+    and rate_allow x dark_rate x exp_s x 2^(temp_delta_c / DARK_DOUBLING_C)
+    (temp_delta_c: the set's CCD-TEMP minus SET-TEMP, None = 0). detail:
+    a 4th element names the allowance ("" when the share of expected won)."""
     exp_s = float(exp_s or 0)
     same = sorted((a for a in anchors if abs(a["exptime"] - exp_s) < 0.5
                    and a["date"] < date), key=lambda a: a["date"])
@@ -812,7 +851,19 @@ def dark_expectation(anchors: list, exp_s: float, date: str, *,
             how = (f"extrapolated from {a[0]:g} s ({a[1]:+.1f}) and "
                    f"{b[0]:g} s ({b[1]:+.1f})")
         src = f"the dark model, {how}"
-    lim = e + allow_adu + allow_frac * max(e, 0.0)
+    frac_term = allow_frac * max(e, 0.0)
+    rate = dark_rate(anchors, date)
+    tf = 2 ** (float(temp_delta_c or 0.0) / DARK_DOUBLING_C)
+    rate_term = 0.0 if rate is None else float(rate_allow) * rate * exp_s * tf
+    note = ""
+    if rate_term > frac_term:
+        note = (f"allowance {rate_term:.1f} = {float(rate_allow):g} x the measured "
+                f"dark current {rate:.4f} ADU/s x {exp_s:g} s"
+                + (f" x {tf:.2f} for {float(temp_delta_c):+.1f} C"
+                   if temp_delta_c else ""))
+    lim = e + allow_adu + max(frac_term, rate_term)
+    if detail:
+        return round(e, 2), round(lim, 2), src, note
     return round(e, 2), round(lim, 2), src
 
 
@@ -924,7 +975,8 @@ def judge_all(store: dict, *, rig: str, tol: float,
     recs = store["frames"]
     scales = scales or {}
     dm = dark_model or {"enabled": True, "allow_adu": DARK_MODEL_ALLOW_ADU,
-                        "allow_frac": DARK_MODEL_ALLOW_FRAC}
+                        "allow_frac": DARK_MODEL_ALLOW_FRAC,
+                        "rate_allow": DARK_MODEL_RATE_ALLOW}
     for r in recs.values():
         if r.get("type") == "BIAS" and r.get("median") is not None:
             f, w = judge_frame(r, rig=rig, tol=tol, setpoint=setpoint)
@@ -957,11 +1009,19 @@ def judge_all(store: dict, *, rig: str, tol: float,
     for members in darks:
         r0 = members[0]
         mk = _model_key(r0)
+        dts = [_num(r.get("ccdtemp")) - _num(r.get("settemp")) for r in members
+               if _num(r.get("ccdtemp")) is not None
+               and _num(r.get("settemp")) is not None]
         expect = (dark_expectation(anchors.get(mk, []), r0.get("exptime") or 0,
                                    str(r0.get("date") or ""),
                                    allow_adu=dm["allow_adu"],
-                                   allow_frac=dm["allow_frac"])
+                                   allow_frac=dm["allow_frac"],
+                                   rate_allow=dm.get("rate_allow",
+                                                     DARK_MODEL_RATE_ALLOW),
+                                   temp_delta_c=_median(dts), detail=True)
                   if dm.get("enabled") else None)
+        rate = (dark_rate(anchors.get(mk, []), str(r0.get("date") or ""))
+                if expect else None)
         for r in members:
             sc = scales.get(r.get("readout") or default_readout, 1.0)
             ref, alt = _bias_ref(r, sessions, drift_adu)
@@ -982,6 +1042,8 @@ def judge_all(store: dict, *, rig: str, tol: float,
                "expected": expect[0] if expect else None,
                "limit": expect[1] if expect else None,
                "source": expect[2] if expect else "generic formula (no anchors)",
+               "allowance": (expect[3] or None) if expect else None,
+               "rate": None if rate is None else round(rate, 4),
                "trend": trend, "anchor": False}
         if dm.get("enabled") and len(good) >= ANCHOR_MIN:
             anchors.setdefault(mk, []).append(
