@@ -302,7 +302,8 @@ def select_points(config, n: int, side: str = "both",
                   dark_end: datetime | None = None,
                   sky_points: list | None = None,
                   moon_altaz: list | None = None,
-                  from_coverage: bool = False) -> dict:
+                  from_coverage: bool = False, pace: float | None = None,
+                  min_alt: float | None = None) -> dict:
     """The run's points: tpoint_mapping's equal-area grid (meridian band,
     under-pole and moon skipped), filtered to `side`, thinned evenly to n
     and walked serpentine (east then west, hour-angle strips, Dec up /
@@ -321,15 +322,18 @@ def select_points(config, n: int, side: str = "both",
 
     {"points": [{alt, az, ha_h, dec_deg, side, eta_utc}], "dropped": {...},
     "source", "pace_s", "est_s", "note"}. Pure apart from the grid and the
-    optional moon / coverage lookups."""
+    optional moon / coverage lookups. pace (s a point) and min_alt
+    override pace_s(exposure_s) and tpoint_mapping's min alt (drift-survey:
+    a point dwells for its whole tracking window)."""
     if side not in SIDES:
         raise ValueError(f"side must be one of {SIDES}, got {side!r}")
     n = max(1, min(int(n), LOOP_MAX_POINTS))
     now = (now or datetime.utcnow()).replace(tzinfo=None)
     p = tm.params(config)
-    min_alt, max_ha = p["min_alt"], p["max_ha_h"]
+    max_ha = p["max_ha_h"]
+    min_alt = float(min_alt) if min_alt is not None else p["min_alt"]
     lat = float(getattr(config, "observatory_lat", 31.9))
-    pace = pace_s(exposure_s)
+    pace = float(pace) if pace else pace_s(exposure_s)
     dwell_h = pace / 3600.0
     source, note = "grid", ""
     pts = None
@@ -581,6 +585,9 @@ def _local(config, utc: datetime) -> str:
 
 
 class LoopRun:
+    # drift-survey (a subclass) never touches TPoint: no backup, no check
+    NEEDS_BACKUP = True
+
     def __init__(self, config, points: list[dict], deps: Deps, opts: Opts):
         self.cfg = config
         self.points = points
@@ -653,14 +660,16 @@ class LoopRun:
         except Exception as e:  # noqa: BLE001
             self.say(f"  could not read NINA #1's safety monitor ({e})")
         backup = None
-        try:
-            backup = ta.backup_plan(self.d.list_files(), self.d.now(),
-                                    self.o.backup_root)
-        except Exception as e:  # noqa: BLE001
-            self.say(f"  could not list TPoint's files ({e})")
+        if self.NEEDS_BACKUP:
+            try:
+                backup = ta.backup_plan(self.d.list_files(), self.d.now(),
+                                        self.o.backup_root)
+            except Exception as e:  # noqa: BLE001
+                self.say(f"  could not list TPoint's files ({e})")
         pre = ta.preflight(arm, apps, roof, backup,
                            auto_arm_enabled=self.o.auto_arm_enabled,
-                           auto_dusk_flats=self.o.auto_dusk_flats)
+                           auto_dusk_flats=self.o.auto_dusk_flats,
+                           need_backup=self.NEEDS_BACKUP)
         pre["backup"] = backup
         self._stop_nina2(pre)
         self._park_preflight(pre)

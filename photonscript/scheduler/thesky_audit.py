@@ -1085,6 +1085,199 @@ def _c_index_shift(row, val, observed, config, ctx):
     return INFO, want, f"large first slews but not an index shift ({why}): see Rebuild the model?"
 
 
+# --------------------------------------------------------------------------
+# TheSky's refraction air (2026-10-28): ProTrack and the pointing corrections
+# use the temperature / pressure TheSky refracts with. AARO is at ~1300 m:
+# station pressure ~870 hPa; a sea level 1013 over-corrects refraction by
+# ~16%. TheSky's DocumentProperty index for each is a CANDIDATE until
+# `thesky-audit --discover-docprops` pins it (config thesky_docprop_*);
+# until then the rows read the site line TheSky wrote into TPoint's input
+# file (tpoint-files), which is what the model in force was fit with.
+# --------------------------------------------------------------------------
+
+AIR_KEYS = {"temperature": "site_temperature_c", "pressure": "site_pressure_hpa",
+            "refraction": "refraction_on"}
+SEA_LEVEL_HPA = 1013.25
+
+
+def air_pins(config) -> dict:
+    """{"temperature" / "pressure" / "refraction": DocumentProperty index}
+    for the pinned ones (config thesky_docprop_*, -1 = not pinned)."""
+    out = {}
+    for what in AIR_KEYS:
+        try:
+            i = int(getattr(config, f"thesky_docprop_{what}", -1))
+        except (TypeError, ValueError):
+            continue
+        if 0 <= i <= 500:
+            out[what] = i
+    return out
+
+
+def air_observed(air: dict | None, pins: dict) -> dict:
+    """The pinned DocumentProperty reads -> observed keys (a read that
+    failed or is not a number leaves its key out)."""
+    o: dict = {}
+    for what, i in pins.items():
+        v = (air or {}).get(i)
+        if v is None:
+            continue
+        if what == "refraction":
+            b = _bool(v)
+            o[AIR_KEYS[what]] = b if b is not None else v
+        else:
+            x = _num(v)
+            if x is not None:
+                o[AIR_KEYS[what]] = x
+    if o:
+        o["site_air_indices"] = ", ".join(f"{w} {i}" for w, i in pins.items())
+    return o
+
+
+def nina_weather(config, getter=None) -> dict:
+    """NINA #1's weather device (the AARO station, GET
+    /equipment/weather/info, read only): {"connected", "temp_c",
+    "pressure_hpa", "humidity"}; NaN / missing are None. {} when unreadable."""
+    try:
+        if getter is None:
+            import httpx
+            base = str(getattr(config, "nina_base_url", "")
+                       or "http://localhost:1888/v2/api").rstrip("/")
+            info = httpx.get(base + "/equipment/weather/info", timeout=5.0).json()
+        else:
+            info = getter()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TheSky audit: NINA #1 weather not read: %s", e)
+        return {}
+    if isinstance(info, dict) and isinstance(info.get("Response"), dict):
+        info = info["Response"]
+    if not isinstance(info, dict):
+        return {}
+
+    def fin(k):
+        x = _num(info.get(k))
+        return x if x is not None and math.isfinite(x) else None
+    return {"connected": info.get("Connected"), "temp_c": fin("Temperature"),
+            "pressure_hpa": fin("Pressure"), "humidity": fin("Humidity")}
+
+
+def _site_height(observed, config) -> float:
+    h = _num((observed.get("thesky-script") or {}).get("site_elevation"))
+    if h is None:
+        h = _num(getattr(config, "observatory_elev", 1300.0)) or 1300.0
+    return h
+
+
+def station_pressure(observed, config) -> tuple[float | None, str]:
+    """NINA #1's station pressure when it is a station (not sea level)
+    reading for the site height (within 10% of the standard atmosphere
+    there); (None, why) otherwise."""
+    from photonscript.scheduler.tpoint_files import std_pressure_mb
+    wx = observed.get("nina-weather") or {}
+    p = _num(wx.get("pressure_hpa"))
+    if p is None:
+        return None, "no NINA #1 station pressure"
+    std = std_pressure_mb(_site_height(observed, config))
+    if abs(p - std) > 0.10 * std:
+        return None, (f"NINA #1 station reads {p:.0f} hPa (a sea level value? the "
+                      f"site's is ~{std:.0f}): not used")
+    return p, f"NINA #1 station {p:.0f} hPa"
+
+
+def _air_source(row, observed, config, what: str) -> tuple[str | None, str]:
+    """(source, note) for a refraction-air row."""
+    _v, src = _pick(row, observed)
+    if src == "thesky-script":
+        i = air_pins(config).get(what)
+        return src, (f"TheSky DocumentProperty({i}), pinned by "
+                     f"thesky_docprop_{what}")
+    if src == "tpoint-files":
+        f = (observed.get("tpoint-files") or {}).get("site_air_file") or "?"
+        return src, (f"from the site line TheSky wrote into TPoint's {f}; TheSky's "
+                     f"live value is not read until thesky_docprop_{what} is pinned "
+                     "(photonscript thesky-audit --discover-docprops)")
+    return src, (f"thesky_docprop_{what} not pinned and no TPoint input file: run "
+                 "photonscript thesky-audit --discover-docprops")
+
+
+def _refr_at(alt: float, p: float, t: float) -> float:
+    from photonscript.scheduler.tpoint_files import refraction_arcsec
+    return refraction_arcsec(alt, p, t)
+
+
+def _c_site_pressure(row, val, observed, config, ctx):
+    """TheSky's refraction pressure: ~870 hPa at AARO (or NINA #1's station
+    pressure when it reads a station value); near 1013 = a sea level setting
+    that over-corrects refraction (WARN)."""
+    tol = float(row.get("tol", 30.0))
+    sea_tol = float(row.get("sea_level_tol", 25.0))
+    st, st_why = station_pressure(observed, config)
+    target = st if st is not None else float(row.get("near", 870.0))
+    desired = (f"{target:.0f} +/- {tol:g} hPa ("
+               + (st_why if st is not None else "AARO ~1300 m") + ")")
+    src, src_note = _air_source(row, observed, config, "pressure")
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, desired, src_note
+    t = _num((observed.get("thesky-script") or {}).get("site_temperature_c"))
+    t = 10.0 if t is None or not -40 <= t <= 50 else t
+    d30 = _refr_at(30.0, v, t) - _refr_at(30.0, target, t)
+    pct = (v / target - 1.0) * 100.0
+    ctx["current"] = f"{v:.1f} hPa" + (" (TPoint input file)" if src == "tpoint-files"
+                                       else "")
+    notes = [src_note]
+    if st is None and st_why.startswith("NINA"):
+        notes.append(st_why)
+    if abs(v - SEA_LEVEL_HPA) <= sea_tol:
+        return row["severity"], desired, "; ".join(
+            [f"a sea level pressure: refraction over-corrected by {pct:+.0f}% "
+             f"({d30:+.0f}\" at 30 deg alt)"] + notes)
+    if abs(v - target) <= tol:
+        return PASS, desired, "; ".join(notes)
+    return row["severity"], desired, "; ".join(
+        [f"{v - target:+.0f} hPa from {target:.0f}: refraction off by {pct:+.0f}% "
+         f"({d30:+.0f}\" at 30 deg alt)"] + notes)
+
+
+def _c_site_temperature(row, val, observed, config, ctx):
+    """TheSky's refraction temperature against NINA #1's outside air:
+    WARN when more than max_diff_c apart (TheSky's live value only; the
+    TPoint input file's is a past night's, shown as info)."""
+    md = float(row.get("max_diff_c", 15.0))
+    wx = _num((observed.get("nina-weather") or {}).get("temp_c"))
+    desired = (f"within {md:g} C of the outside air (NINA #1 station {wx:.0f} C)"
+               if wx is not None else "the night's outside air (no station reading)")
+    src, src_note = _air_source(row, observed, config, "temperature")
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, desired, src_note
+    ctx["current"] = f"{v:.1f} C" + (" (TPoint input file)" if src == "tpoint-files"
+                                     else "")
+    if wx is None:
+        return INFO, desired, src_note
+    diff = v - wx
+    pct = (273.0 + wx) / (273.0 + v) * 100.0 - 100.0
+    d30 = _refr_at(30.0, 870.0, v) - _refr_at(30.0, 870.0, wx)
+    note = (f"{diff:+.0f} C from the station: refraction {pct:+.1f}% "
+            f"({d30:+.1f}\" at 30 deg alt); " + src_note)
+    if src == "tpoint-files":
+        return INFO, desired, note
+    return (PASS if abs(diff) <= md else row["severity"]), desired, note
+
+
+def _c_refraction(row, val, observed, config, ctx):
+    """Whether TheSky refracts (report only; readable once
+    thesky_docprop_refraction is pinned)."""
+    desired = "reported (TheSky's refraction setting)"
+    _src, src_note = _air_source(row, observed, config, "refraction")
+    if val is None:
+        ctx["current"] = "not read"
+        return INFO, desired, src_note
+    b = _bool(val)
+    ctx["current"] = ("on" if b else "off") if b is not None else str(val)
+    return INFO, desired, src_note
+
+
 COMPUTED = {
     "site_longitude": _c_site_longitude,
     "time_zone": _c_time_zone,
@@ -1111,6 +1304,9 @@ COMPUTED = {
     "protrack": _c_protrack,
     "index_shift": _c_index_shift,
     "one_thesky": _c_one_thesky,
+    "site_pressure": _c_site_pressure,
+    "site_temperature": _c_site_temperature,
+    "refraction": _c_refraction,
 }
 
 
@@ -1258,6 +1454,10 @@ def collect_thesky(config, client=None) -> tuple[dict, dict]:
             o["time_zone_dst"] = f"tz {st.get('time_zone')}, DST index {st.get('dst_index')}"
             o["time_zone"] = _f(st.get("time_zone"))
             o["dst_index"] = _f(st.get("dst_index"))
+    pins = air_pins(config)
+    if pins and hasattr(cl, "docprops"):
+        air = read("site_air", lambda: cl.docprops(sorted(set(pins.values()))))
+        o.update(air_observed(air, pins))
     ai = read("ails", cl.ails)
     o["ails_image_scale"] = _f(ai.get("image_scale"))
     o["ails_position_angle"] = _f(ai.get("position_angle"))
@@ -1476,13 +1676,21 @@ def _last_sub_filter(config, end_night: str) -> tuple[str, str] | None:
     return None
 
 
-def collect(config, *, client=None, armer_state: str | None = None) -> dict:
+def collect(config, *, client=None, armer_state: str | None = None,
+            weather=None) -> dict:
     obs: dict = {s: {} for s in SOURCES}
     src: dict = {}
     try:
         obs["thesky-script"], src["thesky-script"] = collect_thesky(config, client)
     except Exception as e:  # noqa: BLE001
         src["thesky-script"] = {"ok": False, "note": f"{type(e).__name__}: {e}"}
+    # NINA #1's weather station (the site_pressure / site_temperature
+    # comparison), read only and only when TheSky answered (its rows need it)
+    try:
+        if (obs.get("thesky-script") or {}).get("thesky_scripting"):
+            obs["nina-weather"] = nina_weather(config, weather)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TheSky audit: weather: %s", e)
     try:
         obs["astap"], obs["astap_history"], obs["imagelink"], src["astap"] = astap_observed(config)
     except Exception as e:  # noqa: BLE001
@@ -1556,12 +1764,15 @@ def load_night(config, night: str) -> dict | None:
 
 
 def run_audit(config, reason: str = "manual", *, client=None,
-              armer_state: str | None = None, persist: bool = True) -> dict:
+              armer_state: str | None = None, persist: bool = True,
+              weather=None) -> dict:
     """Collect, evaluate and (by default) save one audit. Never raises.
-    Synchronous (socket reads, log parsing): call it from a thread."""
+    Synchronous (socket reads, log parsing): call it from a thread.
+    weather: a getter for NINA #1's weather info (tests), default ninaAPI."""
     now = datetime.utcnow()
     desired = load_desired(config)
-    observed = collect(config, client=client, armer_state=armer_state)
+    observed = collect(config, client=client, armer_state=armer_state,
+                       weather=weather)
     res = evaluate(desired, observed, config)
     res["rows"].sort(key=lambda r: STATUS_RANK.get(r["status"], 9))
     pl = observed.get("pointing-log") or {}
@@ -1577,10 +1788,100 @@ def run_audit(config, reason: str = "manual", *, client=None,
              "imagelink": observed.get("imagelink") or None,
              "manual": observed.get("manual_record") or None,
              "thesky_procs": observed.get("thesky_procs") or None,
+             "nina_weather": observed.get("nina-weather") or None,
              "fail_ids": [r["id"] for r in res["rows"] if r["status"] == FAIL]}
     if persist:
         save(config, audit)
     return audit
+
+
+# --------------------------------------------------------------------------
+# --discover-docprops (READ ONLY): pin the refraction-air indices
+# --------------------------------------------------------------------------
+
+def discover_docprops(config, *, client=None, weather=None, tpoint_site=None) -> dict:
+    """READ ONLY: every sky6StarChart.DocumentProperty(0..120) value, next
+    to NINA #1's weather and the site line TheSky wrote into TPoint's input
+    file, with the indices that look like a pressure (500..1100) or match
+    one of those temperatures / pressures. One run at the scope PC pins
+    thesky_docprop_pressure / _temperature / _refraction. Never raises."""
+    from photonscript.telescope_agent.thesky_client import DOCPROP_KNOWN
+    cl = client or _client(config, timeout=20.0)
+    try:
+        if not cl.ping():
+            return {"ok": False, "note": f"TheSky TCP {cl.host}:{cl.port} not reachable"}
+        props = cl.docprops()
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "note": f"{type(e).__name__}: {e}"}
+    wx = nina_weather(config, weather)
+    if tpoint_site is None:
+        tpoint_site = {}
+        try:
+            if _local_thesky(config):
+                from photonscript.scheduler import tpoint_files
+                st = tpoint_files.stats(config)
+                if st.get("data_site"):
+                    tpoint_site = {**st["data_site"], "file": st.get("data_file"),
+                                   "date": st.get("data_date")}
+        except Exception as e:  # noqa: BLE001
+            tpoint_site = {"note": f"{type(e).__name__}: {e}"}
+    refs_p = [x for x in (_num(wx.get("pressure_hpa")),
+                          _num((tpoint_site or {}).get("pressure_mb"))) if x is not None]
+    refs_t = [x for x in (_num(wx.get("temp_c")),
+                          _num((tpoint_site or {}).get("temp_c"))) if x is not None]
+    rows, p_cand, t_cand = [], [], []
+    prev = None
+    for i in sorted(props):
+        v = props[i]
+        x = _num(v)
+        tags = []
+        if i in DOCPROP_KNOWN:
+            tags.append(DOCPROP_KNOWN[i])
+        elif x is not None:
+            if 500.0 <= x <= 1100.0:
+                tags.append("pressure?")
+                p_cand.append(i)
+            elif any(abs(x - r) <= 0.5 for r in refs_p):
+                tags.append("matches a pressure")
+                p_cand.append(i)
+            if -40.0 <= x <= 60.0 and any(abs(x - r) <= 0.5 for r in refs_t):
+                tags.append("matches a temperature")
+                t_cand.append(i)
+        if v is not None and v == prev:
+            tags.append(f"same as {i - 1} (may be a stale DocPropOut)")
+        rows.append({"index": i, "value": v, "tags": tags})
+        prev = v
+    return {"ok": True, "props": rows, "pressure_candidates": p_cand,
+            "temperature_candidates": t_cand, "weather": wx,
+            "tpoint_site": tpoint_site, "pins": air_pins(config)}
+
+
+def format_discovery(d: dict) -> str:
+    if not d.get("ok"):
+        return f"DocumentProperty discovery: {d.get('note')}"
+    wx = d.get("weather") or {}
+    ts = d.get("tpoint_site") or {}
+    out = ["TheSky sky6StarChart.DocumentProperty (READ ONLY; nothing was written)",
+           f"  NINA #1 weather: {wx.get('temp_c')} C, {wx.get('pressure_hpa')} hPa"
+           if wx else "  NINA #1 weather: not read",
+           (f"  TPoint site line ({ts.get('file')}, {ts.get('date')}): "
+            f"{ts.get('temp_c')} C, {ts.get('pressure_mb')} hPa, {ts.get('height_m')} m")
+           if ts.get("pressure_mb") is not None else "  TPoint site line: not read",
+           f"  pinned now: {d.get('pins') or 'none'}"]
+    for r in d["props"]:
+        if r["value"] is None:
+            continue
+        out.append(f"  {r['index']:3}: {r['value']!s:<28} {', '.join(r['tags'])}")
+    unread = [r for r in d["props"] if r["value"] is None]
+    if unread:
+        out.append(f"  no value (error / not a property): {len(unread)} index(es)")
+    out.append(f"  pressure candidates: {d['pressure_candidates'] or 'none'}; "
+               f"temperature candidates: {d['temperature_candidates'] or 'none'}")
+    out.append("  Compare with TheSky's own dialog (temperature, pressure, refraction), "
+               "then pin: PS_THESKY_DOCPROP_PRESSURE=<i>, PS_THESKY_DOCPROP_TEMPERATURE="
+               "<i>, PS_THESKY_DOCPROP_REFRACTION=<i> (System page, PHD2 group, or "
+               ".env) and re-run photonscript thesky-audit.")
+    return "\n".join(out)
 
 
 def summary_line(audit: dict | None) -> str | None:

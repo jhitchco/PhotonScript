@@ -2034,6 +2034,13 @@ class PhotonScriptConfig(BaseSettings):
     thesky_audit_allsky_read: bool = False  # read the All Sky flags through
                                  # DoCommand 12 / 13 (read form); on only after
                                  # the on-site script check (MAINTENANCE.md)
+    # TheSky's refraction air: the sky6StarChart.DocumentProperty index of its
+    # temperature, pressure and refraction on / off. -1 = not pinned (the
+    # audit then reads the site line TheSky wrote into TPoint's input file);
+    # pin them from `photonscript thesky-audit --discover-docprops`.
+    thesky_docprop_temperature: int = -1
+    thesky_docprop_pressure: int = -1
+    thesky_docprop_refraction: int = -1
     # Settings ledger (scheduler.settings_ledger): NINA #1 / #2 profiles and
     # devices, PHD2 (API + registry profile), TheSky and PhotonScript's own
     # config, snapshotted at arm, pre-config, dispatch, every armer state

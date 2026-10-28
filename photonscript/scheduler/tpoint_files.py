@@ -596,7 +596,10 @@ def stats(config, listing: dict | None = None) -> dict:
         if data:
             out.update(points=data["points"], data_file=data["file"],
                        data_path=data.get("path"),
-                       data_date=data.get("date") or _date(data["mtime"]))
+                       data_date=data.get("date") or _date(data["mtime"]),
+                       # the site line TheSky wrote (temperature, pressure,
+                       # height): the refraction air of that run
+                       data_site=data.get("site"))
         if main:
             out.update(model_file=main["file"], terms=main["terms"],
                        sky_rms_arcsec=main["sky_rms_arcsec"],
@@ -803,6 +806,15 @@ def audit_observed(config) -> tuple[dict, dict]:
          "tpoint_model_date": st.get("model_date"),
          "tpoint_model_mtime": st.get("active_model_mtime"),
          "tpoint_polar_error_arcmin": (st.get("polar") or {}).get("total_arcmin")}
+    # the refraction air TheSky wrote into the model's input file (the
+    # thesky-audit site_pressure / site_temperature fallback while TheSky's
+    # DocumentProperty index is not pinned)
+    site = st.get("data_site") if not st.get("empty_model") else None
+    if site:
+        o["site_pressure_hpa"] = site.get("pressure_mb")
+        o["site_temperature_c"] = site.get("temp_c")
+        o["site_air_file"] = (f"{st.get('data_file')} "
+                              f"({st.get('data_date') or '?'})")
     o = {k: v for k, v in o.items() if v is not None}
     return o, {"ok": True, "note": f"{st.get('data_file') or '-'} / "
                                    f"{st.get('model_file') or '-'}"}

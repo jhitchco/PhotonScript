@@ -147,6 +147,14 @@ class TheSkyClient:
         sky6Utils' local sidereal time (PS-120)."""
         return self._kv("site")
 
+    def docprops(self, indices=None) -> dict:
+        """READ ONLY: {index: value} for sky6StarChart.DocumentProperty at
+        `indices` (default: the 0..DOCPROP_SCAN_MAX discovery scan). Reads
+        only, never SetDocumentProperty."""
+        js = (READ_ONLY_JS["docprops"] if indices is None
+              else docprops_script(indices))
+        return parse_docprops(parse_kv(self.run_script(js)))
+
     def ails(self) -> dict:
         """AutomatedImageLinkSettings (the Automated Pointing Calibration
         Run's Image Link fields; binning is not among them)."""
@@ -334,8 +342,43 @@ READ_PAIRS: dict[str, tuple[list[tuple[str, str]], str]] = {
         _MOUNT_PRE),
 }
 
+# TheSky's refraction air (temperature, pressure) and whether refraction is
+# on: which sky6StarChart.DocumentProperty index holds each is NOT known for
+# build 14139 (0..5 and 9 are confirmed: latitude, longitude, time zone,
+# elevation, DST index, use computer clock, JD). CANDIDATE until pinned:
+# `photonscript thesky-audit --discover-docprops` prints DocumentProperty(0
+# .. DOCPROP_SCAN_MAX) (reads only), and the index that reads the Location
+# dialog's pressure / temperature is set in thesky_docprop_pressure /
+# thesky_docprop_temperature / thesky_docprop_refraction (-1 = not pinned:
+# the audit then reads the site line TheSky wrote into TPoint's input file).
+DOCPROP_SCAN_MAX = 120
+DOCPROP_KNOWN = {0: "latitude", 1: "longitude", 2: "time zone", 3: "elevation m",
+                 4: "DST index", 5: "use computer clock", 9: "Julian date now"}
+
+
+def docprops_script(indices) -> str:
+    """READ ONLY: sky6StarChart.DocumentProperty(i) then DocPropOut for each
+    index, one key p<i> each (a read that throws reads ?ERR). Never
+    SetDocumentProperty."""
+    idx = sorted({int(i) for i in indices})
+    if not idx or idx[0] < 0 or idx[-1] > 500:
+        raise ValueError(f"DocumentProperty indices out of range: {indices!r}")
+    return _js_kv([(f"p{i}", _doc(i)) for i in idx])
+
+
+def parse_docprops(reply: dict) -> dict[int, str | None]:
+    """docprops_script's parsed reply -> {index: value or None}."""
+    out: dict[int, str | None] = {}
+    for k, v in (reply or {}).items():
+        if k.startswith("p") and k[1:].isdigit():
+            out[int(k[1:])] = v
+    return out
+
+
 READ_ONLY_JS: dict[str, str] = {
     "ping": "var Out; Out = 'ok';",
+    # the --discover-docprops scan (reads only)
+    "docprops": docprops_script(range(0, DOCPROP_SCAN_MAX + 1)),
     "mount_status": (
         "var Out; var c = sky6RASCOMTele.IsConnected;"
         "if (c) { sky6RASCOMTele.GetRaDec();"

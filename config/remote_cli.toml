@@ -204,3 +204,20 @@ write_flags = ["--go"]        # live run (approved for remote use by Jeremy 2026
 class = "read"                # no flag: lists the import files and their sample counts
 flags = ["--go", "--with-old", "--since"]
 write_flags = ["--go"]        # writes <stamp>_merged.dat in the TPoint import folder only
+
+[commands.drift-survey]
+class = "read"                # --dry-run (or no flag): the plan, timing and scripts, sends nothing
+flags = ["--points", "--side", "--window-s", "--every-s", "--exposure-s", "--binning",
+         "--filter", "--settle-s", "--max-smear-arcsec", "--fwhm-arcsec", "--dry-run",
+         "--go", "--unattended", "--unpark", "--track", "--stop-nina2", "--solver",
+         "--label", "--verbose", "--slew-timeout", "--status", "--json"]
+# Same classification as tpoint-autocal: --filter, --unpark, --track and
+# --stop-nina2 only act with --go and are not write flags themselves.
+# --max-run-min is left off (local only): with --unattended the plan must fit
+# 28 min, so a remote job (killed at 30 min, before the camera hand-back)
+# cannot be planned past it. --url is left off as everywhere.
+write_flags = ["--go"]        # live run: borrows the RC16 camera from NINA #1 and gives it
+                              # back, slews and plate solves short frames while tracking;
+                              # refuses unless DISARMED, roof safe and dark. Never arms,
+                              # syncs, parks or writes TPoint (--unpark may unpark, never
+                              # park).
