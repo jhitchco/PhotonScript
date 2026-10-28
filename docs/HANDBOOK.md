@@ -3474,6 +3474,19 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   2026-10-16 run: the 450 s darks (+47, uniform, no trend, fixed zone
   pattern) still fail, against the accepted 2026-10-11 450 s set at +19
   (limit 28.8).
+  2026-10-28, long darks: the allowance over expected is now the larger of
+  0.25 x expected and `calibration_dark_model_rate_allow` (1.5) x the
+  camera's measured dark current (ADU/s: the sum of the excess of its
+  anchors of 60 s or longer over the sum of their exposure) x the exposure
+  x 2^(dT/6) (dT: the set's CCD-TEMP minus SET-TEMP); 0 = the old rule.
+  The RC16 750 s darks of 10-20 (+38..+56 on the uniform frames, limit
+  ~65) and 900 s of 10-22 (+52..+63, limit ~84) no longer fail `level`;
+  their first frames (+65..+90, a corner +7 to +10) still fail level /
+  leak / gradient. Both sets still fail `trend` (the level falls 25 to 30
+  ADU through the set while the moon sets: 10-22 moon 48 to 13 deg,
+  10-20 moon set during the set), so they stay quarantined; the 10-23 to
+  10-25 900 s sets sat at only +6 to +7. Dark model rows carry `rate` and
+  `allowance`.
 - CALIBRATION OWED (PS-122): `GET /api/calibration/owed?rig=`, the Calibration
   page "Calibration owed" cards and `photonscript calibration-owed` list, per
   rig, the frames still needed for the lights of active goals over the last

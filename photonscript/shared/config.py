@@ -456,6 +456,12 @@ class PhotonScriptConfig(BaseSettings):
                                  # the expected excess, ADU ...
     calibration_dark_model_allow_frac: float = 0.25  # ... plus this share of
                                  # the expected excess
+    calibration_dark_model_rate_allow: float = 1.5  # ... or, when larger, this
+                                 # many x the camera's measured dark current
+                                 # (ADU/s, pooled over its accepted darks of
+                                 # 60 s+) x the exposure (x 2^(dT/6) for the
+                                 # set's CCD-TEMP over SET-TEMP): long darks
+                                 # may spread with their length; 0 = off
     calibration_qa_dark_scale_by_readout: bool = True  # calibration QA: the
                                  # dark-minus-bias allowance's dark current term
                                  # scales with the readout mode's ADU per e-
