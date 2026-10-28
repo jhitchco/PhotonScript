@@ -22,17 +22,25 @@ the exposure starts (the "observed" side of the sample), then the add:
 Either way a CSV row is written per point.
 
 Hard rules (the doc's): operator-started only; never arms, never
-dispatches, never starts / loads a NINA sequence, never syncs, never parks,
+dispatches, never starts / loads a NINA sequence (stops only NINA #2's, with
+--stop-nina2), never syncs, never parks,
 never changes tracking; refuses unless every preflight check passes
 (unknown = no go). Unparking is opt-in (--unpark, 2026-10-24, after the
 mount was left parked on 2026-10-21 and 2026-10-23): only after the full
 preflight, only when the mount reads parked and the safety monitor reads
 safe again, through NINA #1 (GET /equipment/mount/unpark: NINA owns the
 mount's ASCOM link), then it waits for AtPark false (120 s). Without
---unpark a parked mount stops the run at point 1 with "re-run with
---unpark". The camera is lent, never taken: NINA #1 disconnects it,
+--unpark the step 1 preflight refuses a parked mount with "re-run with
+--unpark" (2026-10-28; before that it failed at point 1 with Error 216).
+--stop-nina2 (2026-10-28) is the one sequence stop it makes: when NINA #2
+running is the only preflight blocker, it stops NINA #2's sequence, waits
+for IDLE and turns --unpark on (NINA #2's end steps park the mount). Before
+the camera is lent NINA #1's filter wheel goes to --filter (default L). The
+camera is lent, never taken: NINA #1 disconnects it,
 TheSky connects it, and at the end (always, also after Ctrl+C or an error)
-TheSky disconnects it and NINA #1 must read Connected again.
+TheSky disconnects it and NINA #1 must read Connected again. Each solved
+point also gets its offset from the commanded alt / az (J2000, arcmin) in
+the CSV and a per-side summary.
 
 Every outside call goes through four small adapters (TheSky TCP 3040, NINA
 #1's ninaAPI, the scheduler's GET endpoints, the TPoint file count) so the
@@ -49,8 +57,9 @@ from __future__ import annotations
 import csv
 import math
 import shutil
+import statistics
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -85,8 +94,22 @@ CSV_FIELDS = ["utc", "point", "of", "side", "alt", "az", "ha_h", "dec_deg",
               "mount_lst_h", "mount_jd", "mount_ha_h", "through_pole",
               "header_pierside", "true_ra_app_h", "true_dec_app_d",
               "import_line", "samples_before", "samples_after", "added", "note",
-              "site_source", "unpark"]
+              "site_source", "unpark", "filter", "binning_used",
+              "cmd_ra_j2000_h", "cmd_dec_j2000_d", "res_dra_arcmin",
+              "res_ddec_arcmin", "res_total_arcmin"]
 UNPARK_POLL_S = 2.0
+FILTER_WAIT_S = 60.0         # the wheel reads the old filter for a few s
+NINA2_STOP_WAIT_S = 180.0    # NINA #2's end steps (they may park the mount)
+NINA2_POLL_S = 2.0
+# "L" also matches these filter names in NINA #1's wheel (case-insensitive)
+L_NAMES = ("l", "lum", "luminance")
+# the commanded alt / az are TheSky's horizon coordinates, taken as
+# refracted (TheSky's default); the residual removes refraction at the
+# site's usual air (the import file's 870 mB) before converting to J2000
+CMD_PRESSURE_HPA = 870.0
+CMD_TEMP_C = 10.0
+CMD_RH = 0.3
+CMD_WL_UM = 0.55
 
 
 # ------------------------------------------------------------- helpers
@@ -111,6 +134,137 @@ def pace_s(exposure_s: float) -> float:
     """Seconds per point: the exposure plus slew / settle / download /
     Image Link (ta.OVERHEAD_S, ~35 s)."""
     return float(exposure_s) + ta.OVERHEAD_S
+
+
+# ------------------------------------------------------------- filter wheel
+
+def _fname(v) -> str:
+    return str(v if v is not None else "").strip().lower()
+
+
+def find_filter(available: list | None, name: str) -> dict | None:
+    """The NINA filter ({"Id", "Name"}) for `name`: an exact name match
+    (case-insensitive) first; "L", "Lum" and "Luminance" match each other.
+    None when the wheel has no such filter."""
+    want = _fname(name)
+    fs = [f for f in (available or []) if isinstance(f, dict)]
+    for f in fs:
+        if _fname(f.get("Name")) == want:
+            return f
+    if want in L_NAMES:
+        for f in fs:
+            if _fname(f.get("Name")) in L_NAMES:
+                return f
+    return None
+
+
+def selected_filter(info: dict | None) -> tuple:
+    """(id, name) of the wheel's SelectedFilter ({"Id", "Name"} in ninaAPI
+    v2, a bare name in some builds); (None, None) when absent."""
+    sel = (info or {}).get("SelectedFilter")
+    if isinstance(sel, dict):
+        return sel.get("Id"), sel.get("Name")
+    return None, sel
+
+
+def filter_in_place(info: dict | None, want: dict) -> bool:
+    """The wheel has stopped (IsMoving false) on `want` (by Id when both
+    sides have one, else by name)."""
+    if (info or {}).get("IsMoving"):
+        return False
+    sid, sname = selected_filter(info)
+    if sid is not None and want.get("Id") is not None:
+        try:
+            return int(sid) == int(want["Id"])
+        except (TypeError, ValueError):
+            pass
+    return sname is not None and _fname(sname) == _fname(want.get("Name"))
+
+
+# ------------------------------------------------------------- binning
+
+def frame_binning(header: dict | None, sensor: tuple | None) -> int | None:
+    """The binning a saved frame was really taken at: the sensor's full
+    width / height over the frame's NAXIS1 / NAXIS2 when both are known and
+    give the same whole number (within 5 %), else the XBINNING card. None
+    when neither says. (2026-10-28: TheSky's camera shot 1x1 when asked for
+    2x2.)"""
+    h = header or {}
+    w, ht = _f(h.get("NAXIS1")), _f(h.get("NAXIS2"))
+    sx, sy = (tuple(sensor) if sensor else (None, None))[:2]
+    sx, sy = _f(sx), _f(sy)
+    if w and ht and sx and sy:
+        bx, by = sx / w, sy / ht
+        b = round(bx)
+        if b >= 1 and abs(bx - b) <= 0.05 * b and abs(by - b) <= 0.05 * b:
+            return int(b)
+    xb = _f(h.get("XBINNING"))
+    if xb is not None and xb >= 1 and xb == int(xb):
+        return int(xb)
+    return None
+
+
+# ------------------------------------------------------------- residuals
+
+def commanded_j2000(alt: float, az: float, utc: datetime, lat: float, lon: float,
+                    height_m: float = 1300.0,
+                    pressure_hpa: float = CMD_PRESSURE_HPA) -> tuple[float, float]:
+    """The commanded target of an open-loop SlewToAzAlt in J2000: the
+    observed (refracted) alt / az at `utc` (the slew's end: the mount
+    tracks from there) to ICRS with erfa.atoc13 (refraction at
+    pressure_hpa, 0 = none; diurnal aberration, precession, nutation;
+    UT1 = UTC). (ra_h, dec_d)."""
+    import erfa
+    u = utc.replace(tzinfo=None)
+    u1, u2 = erfa.dtf2d("UTC", u.year, u.month, u.day, u.hour, u.minute,
+                        u.second + u.microsecond / 1e6)
+    rc, dc = erfa.atoc13("A", math.radians(float(az) % 360.0),
+                         math.radians(90.0 - float(alt)), u1, u2, 0.0,
+                         math.radians(lon), math.radians(lat), height_m,
+                         0.0, 0.0, pressure_hpa, CMD_TEMP_C, CMD_RH, CMD_WL_UM)
+    return math.degrees(erfa.anp(rc)) / 15.0, math.degrees(dc)
+
+
+def residual_arcmin(solved_ra_h: float, solved_dec_d: float, cmd_ra_h: float,
+                    cmd_dec_d: float) -> dict:
+    """Solved minus commanded, both J2000: {"dra" (dRA x cos Dec), "ddec",
+    "total" (the great-circle distance)}, arcmin."""
+    dra_h = ((float(solved_ra_h) - float(cmd_ra_h) + 12.0) % 24.0) - 12.0
+    d1, d2 = math.radians(float(solved_dec_d)), math.radians(float(cmd_dec_d))
+    dra = dra_h * 15.0 * 60.0 * math.cos((d1 + d2) / 2.0)
+    ddec = (float(solved_dec_d) - float(cmd_dec_d)) * 60.0
+    a = math.radians(dra_h * 15.0)
+    hav = (math.sin((d1 - d2) / 2.0) ** 2
+           + math.cos(d1) * math.cos(d2) * math.sin(a / 2.0) ** 2)
+    total = math.degrees(2.0 * math.asin(min(1.0, math.sqrt(hav)))) * 60.0
+    return {"dra": dra, "ddec": ddec, "total": total}
+
+
+def residual_summary(rows: list[dict]) -> dict:
+    """Per side (east / west) over the rows with a residual: {"n",
+    "median_total", "max_total", "median_dra", "median_ddec"} (arcmin)."""
+    out: dict = {}
+    for side in ("east", "west"):
+        rs = [r for r in rows if r.get("side") == side
+              and _f(r.get("res_total_arcmin")) is not None]
+        if not rs:
+            continue
+        tot = [float(r["res_total_arcmin"]) for r in rs]
+        out[side] = {"n": len(rs),
+                     "median_total": round(statistics.median(tot), 2),
+                     "max_total": round(max(tot), 2),
+                     "median_dra": round(statistics.median(
+                         float(r["res_dra_arcmin"]) for r in rs), 2),
+                     "median_ddec": round(statistics.median(
+                         float(r["res_ddec_arcmin"]) for r in rs), 2)}
+    return out
+
+
+def format_residuals(summ: dict) -> list[str]:
+    return [f"  {side}: n {v['n']}, offset median {v['median_total']:.1f}' "
+            f"max {v['max_total']:.1f}'; median dRA*cos(Dec) "
+            f"{v['median_dra']:+.1f}', dDec {v['median_ddec']:+.1f}'"
+            for side, v in summ.items()]
 
 
 # ------------------------------------------------------------- the points
@@ -308,6 +462,15 @@ class NinaLink:
     def unpark_mount(self):
         return self._call("unpark_mount")
 
+    def filter_info(self) -> dict:
+        return self._call("get_filter_wheel_info")
+
+    def change_filter(self, filter_id: int):
+        return self._call("change_filter", filter_id)
+
+    def stop_sequence(self):
+        return self._call("stop_sequence")
+
 
 class SchedulerLink:
     """The scheduler's read-only GET endpoints."""
@@ -378,12 +541,14 @@ class Deps:
     # import mode: the observatory weather (NINA #1's weather device info)
     # for the header's site line; None or a failed read = copied values
     weather: Callable[[], dict | None] | None = None
+    # --stop-nina2: NINA #2's ninaAPI (sequence_state(), stop_sequence())
+    nina2: object | None = None
 
 
 @dataclass
 class Opts:
-    exposure_s: float | None = None
-    binning: int = 2
+    exposure_s: float | None = ta.DEFAULT_EXPOSURE_S   # None = TheSky's AILS
+    binning: int = ta.DEFAULT_BINNING
     image_scale_per_bin1: float = 0.236
     test: bool = False
     verbose: bool = False
@@ -400,6 +565,10 @@ class Opts:
     track: bool = False                     # --track: tracking on before each exposure
     unpark: bool = False                    # --unpark: NINA #1 unparks a parked mount
     unpark_timeout_s: float = ta.UNPARK_TIMEOUT_S
+    filter: str | None = ta.DEFAULT_FILTER  # --filter; None / "none" = leave it
+    filter_timeout_s: float = FILTER_WAIT_S
+    stop_nina2: bool = False                # --stop-nina2 (implies --unpark)
+    nina2_stop_timeout_s: float = NINA2_STOP_WAIT_S
     extra: dict = field(default_factory=dict)
 
 
@@ -416,7 +585,7 @@ class LoopRun:
         self.cfg = config
         self.points = points
         self.d = deps
-        self.o = opts
+        self.o = replace(opts)        # --stop-nina2 may turn unpark on
         self.rows: list[dict] = []
         self.lent = False             # NINA #1 was told to let go
         self.sky_cam = False          # TheSky's camera connect was sent
@@ -438,6 +607,10 @@ class LoopRun:
         self.needs_unpark = False
         self.unparked = False
         self.unpark_log = ""                  # CSV (point 1) and summary
+        self.filter_used: str | None = None   # the filter NINA #1 left in the beam
+        self.nina2_stopped = False
+        self.bin_warned = False
+        self.slew_end: datetime | None = None
 
     # -- small helpers
     def say(self, msg: str):
@@ -489,9 +662,87 @@ class LoopRun:
                            auto_arm_enabled=self.o.auto_arm_enabled,
                            auto_dusk_flats=self.o.auto_dusk_flats)
         pre["backup"] = backup
+        self._stop_nina2(pre)
+        self._park_preflight(pre)
+        bad = [f"{c['name']}: {c['detail']}" for c in pre["checks"]
+               if c["status"] in (ta.FAIL, ta.UNKNOWN)]
+        pre["go"], pre["blockers"] = not bad, bad
         for c in pre["checks"]:
             self.say(f"  [{c['status'].upper():7}] {c['name']}: {c['detail']}")
         return pre
+
+    def _stop_nina2(self, pre: dict) -> None:
+        """--stop-nina2 (2026-10-28: NINA #2 still ran its sequence after a
+        disarm): when NINA #2 running is the ONLY blocker, stop its sequence
+        (ninaAPI GET /sequence/stop on NINA #2) and wait until it reads
+        IDLE. Its end steps may park the mount, so this turns --unpark on.
+        Anything short of IDLE leaves the check failing."""
+        c = next((x for x in pre["checks"]
+                  if x["name"] == f"{ta.NINA2_LABEL} idle"), None)
+        if c is None or c["status"] != ta.FAIL or not self.o.stop_nina2:
+            return
+        others = [x for x in pre["checks"]
+                  if x is not c and x["status"] in (ta.FAIL, ta.UNKNOWN)]
+        if others:
+            c["detail"] += "; --stop-nina2: not stopped while other checks fail"
+            return
+        if self.d.nina2 is None:
+            c["detail"] += "; --stop-nina2: no link to NINA #2's ninaAPI"
+            return
+        to = float(self.o.nina2_stop_timeout_s)
+        self.say("  --stop-nina2: NINA #2 is running and is the only blocker: "
+                 "stopping its sequence (its end steps may park the mount).")
+        t = self.d.mono()
+        try:
+            self.d.nina2.stop_sequence()
+        except Exception as e:  # noqa: BLE001
+            if "timeout" not in type(e).__name__.lower():
+                c["detail"] += f"; --stop-nina2: the stop request failed ({e})"
+                return
+            self.say(f"  NINA #2's stop reply timed out ({type(e).__name__}); "
+                     "polling its sequence state.")
+        end = t + to
+        while True:
+            try:
+                state = str((self.d.nina2.sequence_state() or {}).get("State")
+                            or "").upper()
+            except Exception as e:  # noqa: BLE001
+                state = ""
+                self.v(f"NINA #2 sequence state failed ({e})")
+            if state == "IDLE":
+                break
+            if self.d.mono() >= end:
+                c["detail"] += (f"; --stop-nina2: still not idle {to:.0f} s after "
+                                f"the stop (reads {state or 'unreadable'})")
+                return
+            self.d.sleep(NINA2_POLL_S)
+        self.nina2_stopped = True
+        c.update(status=ta.PASS, detail="was running; stopped by --stop-nina2, "
+                 f"reads IDLE after {self.d.mono() - t:.0f} s")
+        if not self.o.unpark:
+            self.o.unpark = True
+            self.say("  --stop-nina2 implies --unpark: if NINA #2's end steps "
+                     "parked the mount, NINA #1 unparks it after the camera "
+                     "hand-off.")
+
+    def _park_preflight(self, pre: dict) -> None:
+        """Step 1 reads the park state (TheSky, else NINA #1 AtPark): parked
+        without --unpark is a FAIL here, "re-run with --unpark", instead of
+        TheSky's Error 216 at point 1 after the camera was lent
+        (2026-10-28). Unreadable is a warning (the old behaviour)."""
+        parked, src = self.park_state()
+        if parked is None:
+            st, d = ta.WARN, ("park state unreadable (TheSky and NINA #1): a "
+                              "parked mount would stop the run at point 1")
+        elif not parked:
+            st, d = ta.PASS, f"not parked ({src})"
+        elif self.o.unpark:
+            st, d = ta.PASS, (f"parked ({src}): --unpark unparks it after the "
+                              "camera hand-off")
+        else:
+            st, d = ta.FAIL, (f"parked ({src}): re-run with --unpark (NINA #1 "
+                              "unparks it after the preflight)")
+        pre["checks"].append(ta._check("mount not parked", st, d))
 
     # -- 2. backup
     def backup(self, plan: dict) -> bool:
@@ -527,6 +778,7 @@ class LoopRun:
         if str(st.get("State") or "").upper() != "IDLE":
             raise StopRun(f"NINA #1 is not idle ({st.get('State')}): not lending "
                           "the camera")
+        self.set_filter()
         self.cam_before = self.d.nina.camera_info() or {}
         self.v(f"NINA #1 camera before: Connected {self.cam_before.get('Connected')}, "
                f"cooler {self.cam_before.get('CoolerOn')}, setpoint "
@@ -544,6 +796,70 @@ class LoopRun:
         if r.get("err"):
             raise StopRun(f"TheSky could not connect its camera: {r['err']}")
         self.say(f"  TheSky camera connected (status {r.get('status')}).")
+
+    def set_filter(self) -> None:
+        """--filter (default L; 2026-10-28: NINA #1 had left the 3 nm Ha
+        filter in the beam and 8-10 s frames showed too few stars): NINA
+        #1's wheel to that filter by name before the camera is lent, then
+        wait until IsMoving is false and SelectedFilter reads it (it reads
+        the old filter for several seconds after the call returns). Any
+        failure is a StopRun before anything else is sent. --filter none
+        leaves the wheel alone."""
+        name = self.o.filter
+        if not name or _fname(name) == "none":
+            self.filter_used = None
+            self.say("  --filter none: NINA #1's filter wheel is left as it is.")
+            return
+        self.say(f"Step 3a: NINA #1's filter wheel to {name}.")
+        try:
+            info = self.d.nina.filter_info() or {}
+        except Exception as e:  # noqa: BLE001
+            raise StopRun(f"NINA #1's filter wheel unreadable ({e}): not lending "
+                          "the camera (--filter none skips this step)") from None
+        if info.get("Connected") is False:
+            raise StopRun("NINA #1's filter wheel is not connected: connect it "
+                          "in NINA #1, or run with --filter none")
+        avail = info.get("AvailableFilters") or []
+        f = find_filter(avail, name)
+        if f is None or f.get("Id") is None:
+            have = ", ".join(str(x.get("Name")) for x in avail
+                             if isinstance(x, dict)) or "none listed"
+            raise StopRun(f"NINA #1's filter wheel has no filter named {name!r} "
+                          f"(it has: {have})")
+        if filter_in_place(info, f):
+            self.filter_used = str(f.get("Name"))
+            self.say(f"  {self.filter_used} is already in the beam.")
+            return
+        _sid, before = selected_filter(info)
+        self.say(f"  {before or 'unknown'} in the beam; changing to {f['Name']} "
+                 f"(id {f['Id']}).")
+        to = float(self.o.filter_timeout_s)
+        t = self.d.mono()
+        try:
+            self.d.nina.change_filter(int(f["Id"]))
+        except Exception as e:  # noqa: BLE001
+            if "timeout" not in type(e).__name__.lower():
+                raise StopRun(f"NINA #1's filter change failed ({e})") from None
+            self.say(f"  NINA #1's filter change reply timed out "
+                     f"({type(e).__name__}); polling the wheel.")
+        end = t + to
+        while True:
+            try:
+                info = self.d.nina.filter_info() or {}
+            except Exception as e:  # noqa: BLE001
+                info = {}
+                self.v(f"NINA #1 filter wheel info failed ({e})")
+            if filter_in_place(info, f):
+                break
+            if self.d.mono() >= end:
+                _sid, now_sel = selected_filter(info)
+                raise StopRun(f"NINA #1's filter wheel did not reach {f['Name']} "
+                              f"within {to:.0f} s (reads {now_sel}, moving "
+                              f"{info.get('IsMoving')}): not lending the camera")
+            self.d.sleep(POLL_S)
+        self.filter_used = str(f["Name"])
+        self.say(f"  {self.filter_used} in the beam after "
+                 f"{self.d.mono() - t:.0f} s.")
 
     def _wait_nina(self, want: bool) -> bool:
         end = self.d.mono() + NINA_WAIT_S
@@ -750,8 +1066,11 @@ class LoopRun:
                "ha_h": q.get("ha_h"), "dec_deg": q.get("dec_deg")}
         self.say(f"Point {i}/{n} ({q['side']} side, alt {q['alt']:.1f} az "
                  f"{q['az']:.1f}): slewing.")
+        if self.filter_used:
+            row["filter"] = self.filter_used
         t = self.d.mono()
         self.busy = True
+        self.slew_end = None
         r = self.sky("slew", ta.slew_altaz_script(q["alt"], q["az"],
                                                   f"tpoint autocal {i}",
                                                   self.o.min_alt))
@@ -768,6 +1087,7 @@ class LoopRun:
             self._fail(row, "slew timeout", f"slew to point {i} did not "
                        f"finish in {self.o.slew_timeout_s:.0f} s")
         row["slew_s"] = round(self.d.mono() - t, 1)
+        self.slew_end = self.d.now()   # the commanded alt / az, from here tracked
         self.d.sleep(SETTLE_S)
         if self.o.track:
             tr = self.sky("tracking_on", ta.tracking_on_script())
@@ -883,13 +1203,13 @@ class LoopRun:
     def _solve_and_record(self, row: dict, snap: dict | None) -> dict:
         snap = snap or {}
         path = str(row.get("image") or "")
-        scale = self.o.image_scale_per_bin1 * self.o.binning
         solver = self.o.solver
         row.update(solver=solver, solved=False, added=False, solved_by="")
         sol = None
         if not path:
             row["error_text"] = "TheSky reported no saved frame"
         else:
+            h: dict = {}
             if self.d.fits_header is not None:
                 try:
                     h = self.d.fits_header(path) or {}
@@ -898,7 +1218,9 @@ class LoopRun:
                         snap["lst_h"] = _f(h.get("LST_H"))
                         row["mount_lst_h"] = snap["lst_h"]
                 except Exception as e:  # noqa: BLE001
+                    h = {}
                     self.v(f"FITS header read failed ({e})")
+            scale = self._scale(h, row)
             if solver in ("imagelink", "fallback"):
                 self.say("  frame saved; Image Link (TheSky) on it.")
                 sol = self._imagelink(path, scale, row)
@@ -923,6 +1245,7 @@ class LoopRun:
             return row
         row.update(solved=True, solved_ra_j2000_h=round(sol[0], 7),
                    solved_dec_j2000_d=round(sol[1], 6))
+        self._residual(row, sol)
         if snap.get("ra_h") is None or snap.get("dec_d") is None \
                 or snap.get("lst_h") is None:
             row["note"] = "solved, but the mount position was not read: not recorded"
@@ -946,6 +1269,51 @@ class LoopRun:
                  f"{sol[1]:+.3f}); sample {self.importer.lines} written to "
                  f"{self.o.import_path}.")
         return row
+
+    def _scale(self, header: dict, row: dict) -> float:
+        """The Image Link / ASTAP scale for this frame: the requested
+        binning's, unless the frame's size (against NINA #1's sensor size,
+        recorded before the lend) or its XBINNING card shows another binning
+        (2026-10-28: asked bin 2, TheSky shot 1x1): then a warning (once)
+        and the scale of the binning the frame really has."""
+        want = int(self.o.binning)
+        sensor = (self.cam_before.get("XSize"), self.cam_before.get("YSize"))
+        got = frame_binning(header, sensor)
+        b = want
+        if got is not None and got != want:
+            b = got
+            if not self.bin_warned:
+                self.bin_warned = True
+                self.say(f"  WARNING: asked for bin {want}, but the saved frame "
+                         f"is bin {got} ({header.get('NAXIS1')} x "
+                         f"{header.get('NAXIS2')} px); solving at "
+                         f"{self.o.image_scale_per_bin1 * got:.3f}\"/px.")
+        row["binning_used"] = b
+        return self.o.image_scale_per_bin1 * b
+
+    def _residual(self, row: dict, sol: tuple) -> None:
+        """The solved centre minus the commanded target (the slew's alt / az
+        at the end of the slew, as J2000), in arcmin, into the row and the
+        output. Never raises."""
+        if self.slew_end is None or row.get("alt") is None or row.get("az") is None:
+            return
+        try:
+            cra, cdec = commanded_j2000(
+                float(row["alt"]), float(row["az"]), self.slew_end,
+                float(getattr(self.cfg, "observatory_lat", 31.906944)),
+                float(getattr(self.cfg, "observatory_lon", -109.021367)),
+                float(getattr(self.cfg, "observatory_elev", 1300.0) or 1300.0))
+            r = residual_arcmin(sol[0], sol[1], cra, cdec)
+        except Exception as e:  # noqa: BLE001
+            self.v(f"offset from the commanded target not computed ({e})")
+            return
+        row.update(cmd_ra_j2000_h=round(cra, 7), cmd_dec_j2000_d=round(cdec, 6),
+                   res_dra_arcmin=round(r["dra"], 2),
+                   res_ddec_arcmin=round(r["ddec"], 2),
+                   res_total_arcmin=round(r["total"], 2))
+        self.say(f"  offset from the commanded alt / az: dRA*cos(Dec) "
+                 f"{r['dra']:+.1f}', dDec {r['ddec']:+.1f}', total "
+                 f"{r['total']:.1f}'.")
 
     def _open_import(self) -> None:
         """The import file object (written with the first sample). Checks
@@ -1210,6 +1578,8 @@ class LoopRun:
              "import_lines": self.importer.lines if self.importer else 0,
              "site_source": self.site_source,
              "unparked": self.unparked, "unpark": self.unpark_log or None,
+             "filter": self.filter_used, "nina2_stopped": self.nina2_stopped,
+             "residuals": residual_summary(self.rows),
              "rows": self.rows}
         self.say("")
         self.say("Summary")
@@ -1222,9 +1592,17 @@ class LoopRun:
             self.say(f"  points attempted {tried}, solved {solved}, failed "
                      f"{tried - solved}; samples in the import file "
                      f"{s['import_lines']}")
+        if self.nina2_stopped:
+            self.say("  --stop-nina2: NINA #2's sequence was stopped (not "
+                     "restarted)")
         if self.unpark_log:
             self.say(f"  --unpark: {self.unpark_log} (it never parks: the mount "
                      "stays unparked)")
+        if s["residuals"]:
+            self.say("  offset of the solved centre from the commanded alt / az "
+                     "(J2000, arcmin):")
+            for line in format_residuals(s["residuals"]):
+                self.say("  " + line)
         self.say(f"  time {_fmt_min(s['seconds'])}; TPoint input data "
                  f"{s['samples_before']} -> {s['samples_after']} sample(s)")
         if self.returned is not None:
@@ -1305,6 +1683,8 @@ def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
     sky.timeout = max(float(sky.timeout), 120.0)
     nina = NinaLink(str(getattr(config, "nina_base_url", "")
                         or "http://localhost:1888/v2/api"))
+    nina2 = NinaLink(str(getattr(config, "piggyback_nina_base_url", "")
+                         or "http://localhost:1889/v2/api"))
 
     def notify(msg: str) -> None:
         from photonscript.shared.supervisor import pushover_notifier
@@ -1322,7 +1702,7 @@ def live_deps(config, scheduler_url: str, ask=input, say=print) -> Deps:
                 list_files=lambda: tf.list_files(config), ask=ask, say=say,
                 notify=notify, astap=lambda p, sc, h: astap_solve(config, p, sc, h),
                 fits_header=fits_header, import_ref=ref_text,
-                forbidden_roots=roots, weather=nina.weather)
+                forbidden_roots=roots, weather=nina.weather, nina2=nina2)
 
 
 def newest_input_text(config, listing: dict | None = None) -> str | None:
@@ -1372,11 +1752,14 @@ def astap_solve(config, path: str, scale: float, hint: tuple | None,
 
 
 def fits_header(path: str) -> dict:
-    """A few cards of the saved frame: NAXIS2, PIERSIDE (when TheSky
-    writes one), LST_H (an LST / SIDEREAL card in hours, when present)."""
+    """A few cards of the saved frame: NAXIS1 / NAXIS2, XBINNING /
+    YBINNING, PIERSIDE (when TheSky writes one), LST_H (an LST / SIDEREAL
+    card in hours, when present)."""
     from astropy.io import fits as _fits
     h = _fits.getheader(str(path))
-    out = {"NAXIS2": h.get("NAXIS2"), "PIERSIDE": h.get("PIERSIDE")}
+    out = {"NAXIS1": h.get("NAXIS1"), "NAXIS2": h.get("NAXIS2"),
+           "XBINNING": h.get("XBINNING"), "YBINNING": h.get("YBINNING"),
+           "PIERSIDE": h.get("PIERSIDE")}
     for k in ("LST", "SIDEREAL", "SIDTIME"):
         v = h.get(k)
         if v is None:

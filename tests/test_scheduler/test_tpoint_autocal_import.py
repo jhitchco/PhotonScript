@@ -399,7 +399,8 @@ def test_fallback_to_astap(tmp_path):
     assert [r["solved_by"] for r in res["rows"]] == ["imagelink", "astap", "imagelink"]
     assert len(seen) == 1
     path, scale, hint = seen[0]
-    assert path == r"C:\img\x.fit" and scale == pytest.approx(0.472)
+    # bin 1 by default since 2026-10-28
+    assert path == r"C:\img\x.fit" and scale == pytest.approx(0.236)
     assert hint == pytest.approx((_sol(2)["mra"] * 15.0, _sol(2)["mdec"]))
     assert "trying ASTAP" in "\n".join(out)
 

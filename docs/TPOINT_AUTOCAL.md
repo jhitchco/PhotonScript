@@ -14,7 +14,68 @@ the live loop, every outside call through a small adapter). Tests:
 `tests/test_scheduler/test_tpoint_autocal.py`,
 `tests/test_scheduler/test_tpoint_autocal_loop.py`,
 `tests/test_scheduler/test_tpoint_autocal_import.py` (fakes only, plus the
-format checks against the real in.dat fixtures).
+format checks against the real in.dat fixtures),
+`tests/test_scheduler/test_tpoint_autocal_unpark.py`,
+`tests/test_scheduler/test_tpoint_autocal_setup.py` (the 2026-10-28 setup
+fixes below).
+
+## 2026-10-28: L in the beam, bin 1, NINA #2 and a parked mount
+
+Two live runs of `tpoint-autocal --go --unattended --side both --points 12
+--solver fallback --unpark --track` solved 0 points (TheSky Image Link timed
+out at 120 s, ASTAP did not solve, then Error 219). The causes were setup,
+not TheSky: NINA #1 had left the 3 nm Ha filter in the beam (too few stars
+in 8-10 s), and TheSky's camera ignores 2x2 binning and shoots 1x1, so the
+bin 2 default solved at 0.472"/px when the real scale was 0.236. A third
+run with the wheel moved to L by hand and `--binning 1 --exposure-s 10`
+solved 12 of 12. The same night the preflight refused while NINA #2
+(Piggy-600, ninaAPI port 1889) still ran its sequence after a disarm;
+stopping it through ninaAPI ran its end steps, which parked the mount, and
+the next run failed at point 1 with Error 216 because --unpark was not
+given. So, from this build:
+
+- **Filter (`--filter`, default L).** Before the camera is lent (step 3a),
+  NINA #1's filter wheel goes to that filter: `GET
+  /equipment/filterwheel/info` (AvailableFilters `{Id, Name}`,
+  SelectedFilter, IsMoving), the id looked up by name (case-insensitive;
+  L, Lum and Luminance stand for each other), `GET
+  /equipment/filterwheel/change-filter?filterId=N` (skipped when it is
+  already in the beam), then a poll until IsMoving is false AND
+  SelectedFilter reads it (it reads the old filter for several seconds
+  after the call returns; up to 60 s). No such filter, no wheel, or not
+  there in 60 s: stop before anything else is sent (the camera is never
+  lent). `--filter none` leaves the wheel as it is. `--dry-run` prints the
+  step and its two requests. The CSV has a `filter` column.
+- **Bin 1, 10 s by default** (`--binning`, `--exposure-s` still override;
+  these are tpoint-autocal's own defaults, `tpoint_mapping_*` belong to
+  `tpoint-sample`). Each saved frame's size is compared with NINA #1's
+  sensor size (XSize / YSize, recorded before the lend; else the frame's
+  XBINNING card): a frame at another binning than asked gets one warning
+  and is solved at the scale of the binning it really has (CSV
+  `binning_used`).
+- **NINA #2 (`--stop-nina2`).** Without it, a running NINA #2 is a FAIL
+  whose line says "re-run with --stop-nina2". With it, and only when NINA
+  #2 running is the ONLY blocker (armer DISARMED, roof safe, dark ...),
+  the preflight stops NINA #2's sequence (`GET /sequence/stop` on
+  `piggyback_nina_base_url`, :1889), waits until it reads IDLE (180 s;
+  its end steps run first) and passes the check. It never restarts it.
+  Because those end steps may park the mount, a stop turns --unpark on.
+- **Parked mount.** Step 1 now reads the park state (TheSky `IsParked()`,
+  else NINA #1 AtPark): parked without --unpark is a FAIL, "re-run with
+  --unpark", before the backup and before the camera is lent. Unreadable
+  is a warning (a parked mount then still stops at point 1 with the hint).
+- **Residuals.** For each solved point the run prints and the CSV records
+  the solved centre minus the commanded target, in arcmin: `res_dra_arcmin`
+  (dRA x cos Dec), `res_ddec_arcmin`, `res_total_arcmin` (great circle),
+  with the commanded target in `cmd_ra_j2000_h` / `cmd_dec_j2000_d`. Like
+  with like: the solve is J2000, and the commanded target is the slew's
+  alt / az (observed, of date) at the moment the slew finished (the mount
+  tracks from there), converted to J2000 with erfa (`atoc13`: refraction
+  at 870 hPa / 10 C, taking TheSky's alt / az as refracted, diurnal
+  aberration, precession, nutation; UT1 = UTC). The summary gives, per
+  side (east / west): n, median and max total, median dRA, median dDec.
+  2026-10-28 by hand: west points missed by 4-13' (typical 5'); east
+  points all by +76' to +85' in Dec, which this now shows every run.
 
 ## 2026-10-20: AutoMap failed, points now go to a TPoint import file
 
@@ -108,14 +169,17 @@ questions; Ctrl+C stops safely).
 | West-side top-up | `photonscript tpoint-autocal --go --side west --points 20 --solver fallback` |
 | Both sides | `photonscript tpoint-autocal --go --points 40` |
 | Remote 3-point import test | `photonscript remote --confirm-write --remote-timeout 900 -- tpoint-autocal --go --unattended --side west --points 3 --solver fallback --verbose` |
+| Remote run after a disarm, NINA #2 still running | `photonscript remote --confirm-write --remote-timeout 1800 -- tpoint-autocal --go --unattended --side both --points 12 --solver fallback --stop-nina2 --track` |
 | The old AutoMap add | add `--automap` |
 
 Options: `--side east|west|both` (default both), `--points N` (1..500),
 `--from-coverage` (points from a TPoint coverage module when the build has
 one; today it falls back to the grid + `--side`, and says so),
-`--exposure-s` (default: TheSky's Automated Image Link exposure, else
-`tpoint_mapping_exposure_s`), `--binning` (default
-`tpoint_mapping_binning` 2), `--slew-timeout` (180 s), `--verbose` (every
+`--exposure-s` (default 10 s), `--binning` (default 1: TheSky's camera
+shoots 1x1 anyway), `--filter NAME` (default L; `none` leaves NINA #1's
+wheel alone), `--stop-nina2` (with --go: stop a running NINA #2 when it is
+the only blocker; implies --unpark), `--unpark`, `--track`,
+`--slew-timeout` (180 s), `--verbose` (every
 TheSky script call and reply), `--url` (the scheduler, for the GET
 preflight), `--json` (the summary as JSON at the end), `--solver
 imagelink|astap|fallback`, `--import-dir` (local only, not remote),
@@ -141,15 +205,19 @@ default import path is the section above.
    GET `/api/apps/status` (both NINAs no RUNNING item, no calibration
    capture job, TheSky answering with the mount connected, sun <= -12),
    NINA #1 safety monitor IsSafe, `PS_AUTO_ARM_ENABLED` false, TPoint files
-   found to back up.
+   found to back up, the mount not parked (or --unpark given). NINA #2
+   running: "re-run with --stop-nina2" (which stops it when it is the
+   only blocker, see 2026-10-28 above).
 3. **Backup.** Copies every TPoint file to
    `C:\astro\tpoint_backup\<UTC stamp>\`, reads the TPoint input-data
    row count (`in.dat` / `Indat.dat` files), then asks Jeremy to note
    TPoint's point count, save unsaved points, check TheSky's Camera Setup
    and PHD2, and type `yes`. Anything else: nothing is sent.
-4. **Lend the camera.** NINA #1 sequence idle again, camera info recorded
-   (cooler, setpoint), `/equipment/camera/disconnect`, wait for Connected
-   false; TheSky reads its selected camera, `ccdsoftCamera.Connect()`.
+4. **Lend the camera.** NINA #1 sequence idle again, NINA #1's filter
+   wheel to `--filter` (L) and confirmed, camera info recorded (cooler,
+   setpoint, sensor size), `/equipment/camera/disconnect`, wait for
+   Connected false; TheSky reads its selected camera,
+   `ccdsoftCamera.Connect()`.
 5. **Setup.** TheSky camera exposure / bin / light / autosave / async;
    Automated Image Link scale (`pixel_scale_arcsec` x bin) and exposure.
 6. **Per point.** Re-check: armer DISARMED, roof safe, NINA #1 idle (else
@@ -178,13 +246,16 @@ default import path is the section above.
     tpoint-stats`. `photonscript tpoint-refit --go` wraps the refit (backup,
     read back, judge, restore a bad fit): docs/TPOINT_REFIT.md.
 
-Never arms, never dispatches, never loads or starts a NINA sequence, never
-syncs (no ClosedLoopSlew), never parks, never changes tracking.
+Never arms, never dispatches, never loads or starts a NINA sequence (the
+one stop: NINA #2's, with --stop-nina2), never syncs (no ClosedLoopSlew),
+never parks, never changes tracking (except --track).
 
 **--unpark (opt-in, 2026-10-24).** On 2026-10-21 and 2026-10-23 the night
 loop or the dusk flats left the mount parked and TheSky refused the slew to
-point 1 ("the device is parked ... Error _ 216"). Without --unpark that is
-still a stop, and the message now says "re-run with --unpark". With
+point 1 ("the device is parked ... Error _ 216"). Without --unpark the
+step 1 preflight now refuses a parked mount ("re-run with --unpark",
+2026-10-28; before that it was a stop at point 1, which still happens when
+the park state could not be read). --stop-nina2 implies --unpark. With
 --unpark, only after the whole preflight passed (armer DISARMED, roof safe,
 dark, NINA idle): the park state is read (TheSky's `IsParked()` through the
 reviewed `mount_flags` read script, else NINA #1's mount info `AtPark`);
@@ -231,7 +302,9 @@ less hand work, without ever touching an armed or imaging night.
 - Operator-started only: Jeremy runs the command (or a future dashboard
   button) and stays at the console. No timer, no auto-arm hook, no
   overnight hand-off.
-- Never arms, never dispatches, never starts a NINA sequence.
+- Never arms, never dispatches, never starts a NINA sequence. The only
+  sequence it stops is NINA #2's, with --stop-nina2, when that is the only
+  preflight blocker.
 - Never parks. Unparks only with --unpark, after the full preflight and a
   fresh safe reading of the safety monitor, through NINA #1.
 - Refuses unless the armer is DISARMED, both NINAs are idle, no calibration
@@ -297,8 +370,8 @@ for him.
    `/equipment/camera/info` (remember Connected, cooler, setpoint),
    `/equipment/camera/disconnect`, `/info` (Connected false). TheSky: read
    the selected camera, `ccdsoftCamera.Connect()`, read Status.
-5. **Setup.** TheSky camera: exposure (default `tpoint_mapping_exposure_s`
-   5 s), bin (`tpoint_mapping_binning` 2), light frame, no reduction,
+5. **Setup.** TheSky camera: exposure (default 10 s), bin (default 1;
+   TheSky shoots 1x1 when asked 2x2), light frame, no reduction,
    autosave, asynchronous. Automated Image Link: scale =
    `pixel_scale_arcsec` x bin (0.472"/px), exposure.
 6. **Run.**

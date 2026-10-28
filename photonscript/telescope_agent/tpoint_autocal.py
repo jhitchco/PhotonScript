@@ -69,6 +69,16 @@ DEFAULT_BACKUP_ROOT = r"C:\astro\tpoint_backup"
 # per point (loop mode): slew + settle + download + Image Link, plus the
 # exposure; 2026-10-10 by hand: ~414 points over several hours
 OVERHEAD_S = 35.0
+# 2026-10-28: TheSky's camera ignores 2x2 binning and shoots 1x1 (so the
+# bin 2 scale, 0.472"/px, was wrong by 2x), and 8-10 s through the 3 nm Ha
+# filter NINA #1 had left in the beam showed too few stars. With L and
+# bin 1 / 10 s the same run solved 12 of 12. These are tpoint-autocal's own
+# defaults (the tpoint_mapping_* settings belong to tpoint-sample).
+DEFAULT_BINNING = 1
+DEFAULT_EXPOSURE_S = 10.0
+DEFAULT_FILTER = "L"
+STOP_NINA2_HINT = ("re-run with --stop-nina2 (stops NINA #2's sequence; its "
+                   "end steps may park the mount, so it implies --unpark)")
 PASS, WARN, FAIL, UNKNOWN = "pass", "warn", "fail", "unknown"
 
 GO_NOT_IMPLEMENTED = (
@@ -147,7 +157,9 @@ def preflight(arm: dict | None, apps: dict | None, roof_safe: bool | None,
                                  "sequence state unreadable"))
         elif items:
             checks.append(_check(f"{label} idle", FAIL,
-                                 "running: " + ", ".join(map(str, items[:3]))))
+                                 "running: " + ", ".join(map(str, items[:3]))
+                                 + ("; " + STOP_NINA2_HINT if label == NINA2_LABEL
+                                    else "")))
         else:
             checks.append(_check(f"{label} idle", PASS, "no RUNNING item"))
 
@@ -521,7 +533,9 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
                exposure_s: float | None = None, binning: int | None = None,
                now: datetime | None = None, sky_points: list | None = None,
                add: str = DEFAULT_ADD, solver: str = DEFAULT_SOLVER,
-               import_file: str | None = None) -> dict:
+               import_file: str | None = None,
+               filter_name: str | None = DEFAULT_FILTER,
+               stop_nina2: bool = False) -> dict:
     """The whole operator-started procedure as numbered steps. Pure apart
     from the point grid (tpoint_mapping.plan_points; sky_points overrides
     it, for tests). Nothing is sent. add: "import" (solve, record, append
@@ -534,10 +548,8 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
     if solver not in SOLVERS:
         raise ValueError(f"solver must be one of {SOLVERS}, got {solver!r}")
     n = clamp_points(points)
-    t = float(exposure_s if exposure_s is not None else
-              getattr(config, "tpoint_mapping_exposure_s", 5.0) or 5.0)
-    b = int(binning if binning is not None else
-            getattr(config, "tpoint_mapping_binning", 2) or 2)
+    t = float(exposure_s if exposure_s is not None else DEFAULT_EXPOSURE_S)
+    b = int(binning if binning is not None else DEFAULT_BINNING)
     scale = float(getattr(config, "pixel_scale_arcsec", 0.236) or 0.236) * b
     min_alt = float(getattr(config, "tpoint_mapping_min_alt", 30.0) or 30.0)
     lat = float(getattr(config, "observatory_lat", 31.9))
@@ -557,12 +569,33 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
     step("preflight", "photonscript", "Read GET /api/arm and GET /api/apps/status "
          "from the scheduler and NINA #1's safety monitor; refuse unless every "
          "check passes (preflight())")
+    if stop_nina2:
+        nina2 = str(getattr(config, "piggyback_nina_base_url", "")
+                    or "http://localhost:1889/v2/api").rstrip("/")
+        step("preflight", "photonscript", "--stop-nina2: when NINA #2 is the "
+             f"only blocker, stop its sequence (GET {nina2}/sequence/stop), "
+             "wait until it reads idle; its end steps may park the mount, so "
+             "--unpark is implied")
+    step("preflight", "photonscript", "Read the mount's park state (TheSky "
+         "IsParked(), else NINA #1 AtPark): parked without --unpark = refuse, "
+         "\"re-run with --unpark\"")
     step("preflight", "operator", "Confirm at the console: PHD2 not guiding, "
          "roof open by eye (webcam), TheSky camera setup = the AP26MC driver "
          "(Camera Setup, once by hand), TPoint window open")
     step("backup", "photonscript", "Copy every TPoint file to "
          f"{DEFAULT_BACKUP_ROOT}\\<UTC stamp> (backup_plan()), then "
          "tpoint-stats (the BEFORE numbers)")
+    if filter_name and str(filter_name).strip().lower() != "none":
+        step("handoff", "photonscript", f"NINA #1 filter wheel to {filter_name} "
+             "(by name; L also matches Lum / Luminance), wait until IsMoving "
+             "is false and SelectedFilter reads it (60 s), else stop",
+             requests=[{"method": "GET", "url": f"{nina.rstrip('/')}/equipment/"
+                        "filterwheel/info", "why": "AvailableFilters (Id, Name), "
+                        "SelectedFilter, IsMoving"},
+                       {"method": "GET", "url": f"{nina.rstrip('/')}/equipment/"
+                        "filterwheel/change-filter?filterId=<id>",
+                        "why": f"put {filter_name} in the beam (skipped when it "
+                        "already is)"}])
     step("handoff", "photonscript", "Lend NINA #1's camera to TheSky",
          requests=hand["lend"])
     step("handoff", "photonscript", "TheSky: read the selected camera",
@@ -652,7 +685,8 @@ def build_plan(config, points: int = DEFAULT_POINTS, mode: str = DEFAULT_MODE,
     return {"mode": mode, "points": n if mode == "window" else len(sky_points),
             "requested_points": n, "add": add, "solver": solver,
             "params": {"exposure_s": t, "binning": b, "image_scale": round(scale, 4),
-                       "min_alt": min_alt},
+                       "min_alt": min_alt, "filter": filter_name,
+                       "stop_nina2": stop_nina2},
             "sky_points": sky_points, "steps": steps,
             "est_minutes": est_minutes(n, t)}
 

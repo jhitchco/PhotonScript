@@ -1104,8 +1104,24 @@ def tpoint_autocal_cmd(
                              "slews / exposes / AutoMaps each point) | window "
                              "(open TheSky's Automated Pointing Calibration, "
                              "the operator starts it)"),
-    exposure_s: Optional[float] = typer.Option(None, "--exposure-s"),
-    binning: Optional[int] = typer.Option(None, "--binning"),
+    exposure_s: Optional[float] = typer.Option(None, "--exposure-s",
+                                               help="Seconds per frame "
+                                               "(default 10)"),
+    binning: Optional[int] = typer.Option(None, "--binning", help="Default 1 "
+                                          "(TheSky's camera shot 1x1 when "
+                                          "asked for 2x2 on 2026-10-28; a "
+                                          "frame of another binning is "
+                                          "solved at its real scale)"),
+    filter_name: str = typer.Option("L", "--filter", help="--go: NINA #1's "
+                                    "filter wheel goes to this filter (by "
+                                    "name; L also matches Lum / Luminance) "
+                                    "before the camera is lent; none = "
+                                    "leave the wheel as it is"),
+    stop_nina2: bool = typer.Option(False, "--stop-nina2", help="--go only: "
+                                    "when NINA #2 running is the only "
+                                    "preflight blocker, stop its sequence and "
+                                    "wait for idle; its end steps may park "
+                                    "the mount, so this implies --unpark"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan, "
                                  "the preflight and every script; send nothing"),
     go: bool = typer.Option(False, "--go", help="The live run (loop mode "
@@ -1202,7 +1218,7 @@ def tpoint_autocal_cmd(
     if mode == "loop":
         _now = _dt.utcnow()
         _exp = float(exposure_s if exposure_s is not None else
-                     getattr(cfg, "tpoint_mapping_exposure_s", 5.0) or 5.0)
+                     ta.DEFAULT_EXPOSURE_S)
         sel = tal.select_points(cfg, points, side, _now, _exp,
                                 tal.dark_end(cfg, _now),
                                 from_coverage=from_coverage)
@@ -1215,9 +1231,10 @@ def tpoint_autocal_cmd(
         if not sel["points"]:
             say("No usable points: nothing to do.")
             raise typer.Exit(1)
-        b = int(binning if binning is not None else
-                getattr(cfg, "tpoint_mapping_binning", 2) or 2)
-        opts = tal.Opts(exposure_s=exposure_s, binning=b,
+        b = int(binning if binning is not None else ta.DEFAULT_BINNING)
+        flt = None if filter_name.strip().lower() in ("", "none") else filter_name.strip()
+        opts = tal.Opts(exposure_s=_exp, binning=b, filter=flt,
+                        stop_nina2=stop_nina2,
                         image_scale_per_bin1=float(getattr(cfg, "pixel_scale_arcsec", 0.236)
                                                    or 0.236),
                         test=test, verbose=verbose or test,
@@ -1229,6 +1246,12 @@ def tpoint_autocal_cmd(
                         add=add, solver=solver,
                         import_path=tal.import_path(cfg, _now, side, import_dir),
                         track=track, unpark=unpark)
+        say(f"Frames: {_exp:g} s, bin {b}; NINA #1's filter wheel: "
+            + (f"{flt} before the camera is lent." if flt else "left as it is "
+               "(--filter none)."))
+        if stop_nina2:
+            say("--stop-nina2: if NINA #2 running is the only preflight blocker, "
+                "its sequence is stopped (not restarted) and --unpark is implied.")
         if unpark:
             say("--unpark: a parked mount is unparked by NINA #1 after the "
                 "preflight (safety monitor re-read first); it is never parked "
@@ -1272,7 +1295,10 @@ def tpoint_autocal_cmd(
                          sky_points=sel["points"] if mode == "loop" else None,
                          add=add, solver=solver,
                          import_file=(tal.import_path(cfg, _now, side, import_dir)
-                                      if mode == "loop" else None))
+                                      if mode == "loop" else None),
+                         filter_name=(None if filter_name.strip().lower()
+                                      in ("", "none") else filter_name.strip()),
+                         stop_nina2=stop_nina2)
     if as_json:
         print(_json.dumps({"dry_run": True, "preflight": pre, "backup": backup,
                            "plan": plan, "selection": sel if mode == "loop" else None},

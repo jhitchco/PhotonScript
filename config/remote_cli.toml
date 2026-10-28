@@ -177,7 +177,14 @@ class = "read"                # --dry-run: preflight, points and scripts, sends 
 flags = ["--points", "--side", "--exposure-s", "--binning", "--from-coverage",
          "--dry-run", "--go", "--mode", "--verbose", "--slew-timeout",
          "--status", "--json", "--unattended", "--track", "--solver", "--automap",
-         "--unpark"]
+         "--unpark", "--filter", "--stop-nina2"]
+# --filter NAME (default L; none = leave the wheel): with --go, NINA #1's filter
+# wheel goes to that filter before the camera is lent (2026-10-28: the 3 nm Ha
+# filter left in the beam, too few stars). Not a write flag (--go is).
+# --stop-nina2: with --go only (itself not a write flag; --go is): when NINA #2
+# running is the ONLY preflight blocker, its sequence is stopped (the one
+# sequence stop this command makes, never a start) and --unpark is implied
+# (2026-10-28: the stop ran NINA #2's end steps, which parked the mount)
 # --unpark: with --go only (itself not a write flag; --go is): after the full
 # preflight, a parked mount is unparked by NINA #1 when the safety monitor
 # reads safe again (2026-10-21 / 10-23: left parked, Error 216 at point 1)

@@ -159,6 +159,14 @@ class NinaClient:
     async def get_filter_wheel_info(self) -> dict:
         return _unwrap(await self._get("/equipment/filterwheel/info"))
 
+    async def change_filter(self, filter_id: int) -> dict:
+        """ninaAPI GET /equipment/filterwheel/change-filter?filterId=N. The
+        reply can come back before the wheel stops: poll
+        get_filter_wheel_info (IsMoving, SelectedFilter). Used only by
+        tpoint-autocal (--filter)."""
+        return await self._get(
+            f"/equipment/filterwheel/change-filter?filterId={int(filter_id)}")
+
     async def get_rotator_info(self) -> dict:
         return _unwrap(await self._get("/equipment/rotator/info"))
 
