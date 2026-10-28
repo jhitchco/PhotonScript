@@ -115,7 +115,8 @@ Files (`<data_dir>\runs\`), stem `<night>_drift_survey_<UTC HHMM>Z[_<label>]`:
 ## Tonight (2026-10-28): before, TPoint, after
 
 0. TheSky refraction air (read only): `photonscript thesky-audit
-   --discover-docprops` at the scope PC prints TheSky's
+   --discover-docprops` at the scope PC (or from the desktop:
+   `photonscript remote -- thesky-audit --discover-docprops`) prints TheSky's
    `sky6StarChart.DocumentProperty(0..120)` next to NINA #1's weather and the
    site line TheSky wrote into TPoint's input file. Compare with TheSky's own
    dialog, pin the indices (`PS_THESKY_DOCPROP_PRESSURE` /
@@ -134,3 +135,38 @@ Files (`<data_dir>\runs\`), stem `<night>_drift_survey_<UTC HHMM>Z[_<label>]`:
    the grid is in alt / az, so both runs sample the same alt / az
    positions). Compare the two `.json` summaries (median / worst rate,
    recommended sub, the model header).
+
+## TheSky refraction temperature sync (2026-10-28)
+
+TPoint's input files show TheSky refracting with 20 to 38 C (an indoor /
+electronics value) while AARO nights run ~0 to 15 C: 25 C too warm
+under-corrects refraction by ~8% (~7" at 30 deg alt), for ProTrack and the
+pointing corrections. The pressure is right (~873 hPa, `site_pressure` PASS).
+
+- While a night is armed (armer RUNNING or PAUSED_UNSAFE, from pre-config to
+  the dawn shutdown), every `thesky_temp_sync_min` (default 45) minutes the
+  armer reads the focuser probe (NINA #1 `equipment/focuser/info`
+  Temperature, else NINA #2; NaN / disconnected / outside -30..45 C skipped)
+  and writes it into TheSky with `sky6StarChart.SetDocumentProperty(<i>,
+  T)` at `i = thesky_docprop_temperature`, then reads it back.
+- Skipped when TheSky already reads within 2 C, when TheSky (IsSlewComplete)
+  or NINA #1 (mount Slewing) says the mount slews or the state cannot be
+  read, and when no focuser gives a plausible value.
+- Unpinned (-1, the default) = nothing is written; one line per night says
+  "temperature sync skipped: docprop unpinned". The index is never guessed,
+  and a pin that is a known site property (latitude, longitude, time zone,
+  elevation, ...), equals the pressure / refraction pin, or reads something
+  that is not a temperature now is refused.
+- Each write (and a refusal / failure) is a kind `thesky_temp_sync` line in
+  `runs/<night>_events.jsonl` (before, after, sensor) and a log line.
+- Kill switch: `PS_THESKY_TEMP_SYNC=false`. Code:
+  `scheduler/thesky_temp_sync.py` (the write is kept out of
+  `thesky_client.READ_ONLY_JS`, which stays read only).
+- Audit: the `site_temperature` row compares TheSky's value with the same
+  focuser reading (else NINA #1's station) and WARNs past 5 C, showing both.
+  Unpinned, it shows the TPoint input file's value as info.
+
+To turn it on: run the discovery (remote is fine), find the index whose
+value matches TheSky's Location dialog temperature, set
+`PS_THESKY_DOCPROP_TEMPERATURE=<i>` (System page, PHD2 group). The next
+armed night syncs; `photonscript thesky-audit` shows the row.

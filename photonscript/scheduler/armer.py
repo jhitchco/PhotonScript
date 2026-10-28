@@ -4696,6 +4696,12 @@ class Armer:
             await self._watch_tick(now)   # PS-136: observe, never dispatch
             return
 
+        if self.state in ("RUNNING", "PAUSED_UNSAFE"):
+            # 2026-10-28: TheSky's refraction temperature from the focuser
+            # probe (rate limited, background task, never while slewing)
+            from photonscript.scheduler import thesky_temp_sync
+            thesky_temp_sync.armer_tick(self, now)
+
         if self.state == "ARMED":
             preconfig = datetime.fromisoformat(
                 self.plan["preconfig_utc"].rstrip("Z"))

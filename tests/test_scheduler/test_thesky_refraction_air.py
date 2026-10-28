@@ -181,11 +181,11 @@ def test_pressure_from_the_tpoint_file_when_not_pinned():
 
 def test_temperature_against_the_station():
     r = _rows({"site_temperature_c": 38.31}, wx={"temp_c": 8.0})["site_temperature"]
-    assert r["status"] == "warn" and "+30 C from the station" in r["note"]
+    assert r["status"] == "warn" and "TheSky 38.3 C vs NINA #1 station 8.0 C: +30 C" in r["note"]
     r = _rows({"site_temperature_c": 12.0}, wx={"temp_c": 8.0})["site_temperature"]
     assert r["status"] == "pass"
     r = _rows({"site_temperature_c": 12.0})["site_temperature"]
-    assert r["status"] == "info" and "no station reading" in r["desired"]
+    assert r["status"] == "info" and "no live sensor reading" in r["desired"]
     # the TPoint file's value is a past night's: info only
     r = _rows({}, {"site_temperature_c": 30.81, "site_air_file": "x"}, wx={"temp_c": 8.0},
               cfg=_cfg())["site_temperature"]
