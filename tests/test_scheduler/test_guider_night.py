@@ -12,7 +12,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from astropy.utils import iers
 
 from photonscript.scheduler import guided_commission as gc
 from photonscript.scheduler import guider_night as gn
@@ -22,7 +21,6 @@ from photonscript.scheduler import sideload as sd
 from photonscript.shared.config import PhotonScriptConfig
 from photonscript.shared.models import ExposurePlan, FilterType, NinaSequenceTarget
 
-iers.conf.auto_download = False
 
 NIGHT = "2026-10-28"
 GC = sd.RECIPE_GUIDER_COMMISSION
