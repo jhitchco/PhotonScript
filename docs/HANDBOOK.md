@@ -2331,6 +2331,15 @@ Jeremy at the keyboard.
   (token) fetches it. On the scope PC itself: `photonscript screen-snapshot
   [--out file.jpg]` (`--out` is not on the remote allowlist).
   Code: `scheduler/screen_snapshot.py`, `scheduler/routers/screen.py`.
+- **TheSky DocumentProperty discovery, read only (2026-10-28):**
+  `thesky-audit` is listed with `--discover-docprops` (required) and
+  `--json` only: one script of `sky6StarChart.DocumentProperty(0..120)`
+  reads (never SetDocumentProperty), NINA #1's weather and focuser GETs and
+  TPoint's site line; no audit is run or saved. The audit itself and
+  `--imagelink` / `--thesky-imagelink` stay local (403). Pins
+  `PS_THESKY_DOCPROP_*` for the refraction temperature sync
+  (docs/DRIFT_SURVEY.md).
+  `photonscript remote -- thesky-audit --discover-docprops`
 - **Adding a command:** read its code first; if it changes no hardware, sends
   nothing and deletes nothing, add a `[commands.<name>]` block with `class`,
   `flags` (and `write_flags`, `require`, `night_safe` when needed), run the

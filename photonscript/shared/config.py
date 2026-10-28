@@ -2020,7 +2020,8 @@ class PhotonScriptConfig(BaseSettings):
     # (TheSky's connector), which does NOT expose TPoint/ProTrack. TheSky also runs
     # a TCP "TheSky TCP Server" (default :3040) that executes JavaScript; the
     # thesky_client module talks to it with read-only scripts (PS-104).
-    # thesky_enabled stays the gate for anything that would write.
+    # thesky_enabled stays the gate for anything that would write (except
+    # the refraction temperature sync: its own switch thesky_temp_sync).
     thesky_enabled: bool = False
     thesky_tcp_host: str = "localhost"
     thesky_tcp_port: int = 3040
@@ -2041,6 +2042,14 @@ class PhotonScriptConfig(BaseSettings):
     thesky_docprop_temperature: int = -1
     thesky_docprop_pressure: int = -1
     thesky_docprop_refraction: int = -1
+    # TheSky refraction temperature sync (scheduler.thesky_temp_sync): while
+    # a night runs, every thesky_temp_sync_min the focuser probe's
+    # temperature (NINA #1, else NINA #2) is written into TheSky's
+    # DocumentProperty(thesky_docprop_temperature) when it differs by 2 C or
+    # more, never while the mount slews. Nothing is written while the index
+    # is unpinned (-1). The one TheSky setting PhotonScript writes.
+    thesky_temp_sync: bool = True
+    thesky_temp_sync_min: float = 45.0
     # Settings ledger (scheduler.settings_ledger): NINA #1 / #2 profiles and
     # devices, PHD2 (API + registry profile), TheSky and PhotonScript's own
     # config, snapshotted at arm, pre-config, dispatch, every armer state

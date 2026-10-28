@@ -207,11 +207,11 @@ label = "Refraction temperature (C)"
 sources = ["thesky-script", "tpoint-files"]
 key = "site_temperature_c"
 computed = "site_temperature"
-max_diff_c = 15
+max_diff_c = 5
 severity = "warn"
 confidence = "Med"
 why = "Refraction scales with 1 / (273 + T): 20 C too warm under-corrects by ~7% (~6\" at 30 deg alt). TheSky may read a dome / electronics sensor (38.31 C on 2026-10-23) instead of the outside air."
-fix = "Point TheSky's temperature at the outside air (or type the night's air temperature); compare with NINA #1's weather station."
+fix = "Pin thesky_docprop_temperature (photonscript thesky-audit --discover-docprops): the armer then keeps TheSky's temperature at the focuser probe's reading through the night (thesky_temp_sync, every thesky_temp_sync_min). Compared with the focuser probe (NINA #1, else #2), else NINA #1's weather station."
 
 [[check]]
 id = "refraction"

@@ -142,6 +142,18 @@ class = "read"                # READ ONLY desktop JPEG (no input, no clicks); wr
                               # GET /api/screen/files/<name>. --out (a path) left off.
 flags = ["--scale", "--monitor", "--quality", "--json"]
 
+[commands.thesky-audit]
+class = "read"                # ONLY --discover-docprops (required): one READ ONLY TheSky
+                              # script (sky6StarChart.DocumentProperty(0..120) then
+                              # DocPropOut; never SetDocumentProperty), NINA #1's weather
+                              # and the focuser temperature (ninaAPI GETs) and TPoint's
+                              # site line (file read); no audit is run or saved. The full
+                              # audit and --imagelink / --thesky-imagelink (TheSky's Image
+                              # Link run on a copied frame) stay local. Pins
+                              # PS_THESKY_DOCPROP_TEMPERATURE / _PRESSURE remotely.
+flags = ["--discover-docprops", "--json"]
+require = ["--discover-docprops"]
+
 # ---------------------------------------------------------------- write
 
 [commands.settings-snapshot]

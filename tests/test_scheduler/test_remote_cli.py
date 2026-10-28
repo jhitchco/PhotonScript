@@ -23,7 +23,7 @@ NEVER = ["start", "stop", "restart", "supervise", "self-update", "rollback-done"
          "regrade", "pointing-backfill", "slew-backfill", "rename-targets",
          "archive-library", "prune-nights", "autostart-check", "calibration-file",
          "integrate", "blend", "finish", "restage", "autointegrate", "integrate-watch",
-         "ledger-import", "qa-focuser-zero", "monitor", "thesky-audit", "remote",
+         "ledger-import", "qa-focuser-zero", "monitor", "remote",
          "remote-screen"]
 
 
@@ -106,6 +106,28 @@ def test_screen_snapshot_listed_read_only_without_out():
     with pytest.raises(rc.Refused) as e:
         rc.validate(["screen-snapshot", "--out", "C:/x.jpg"], allow)
     assert e.value.status == 403
+
+
+# thesky-audit is listed for --discover-docprops ONLY (2026-10-28): a read
+# only DocumentProperty scan. The audit itself and the Image Link flags stay
+# local.
+
+def test_thesky_audit_only_discovery():
+    allow = rc.load_allowlist()
+    r = allow.commands["thesky-audit"]
+    assert r.cls == "read" and r.write_flags == () and not r.night_safe
+    assert set(r.flags) == {"--discover-docprops", "--json"}
+    assert r.require == ("--discover-docprops",)
+    assert rc.validate(["thesky-audit", "--discover-docprops"], allow).cls == "read"
+    assert rc.validate(["thesky-audit", "--discover-docprops", "--json"], allow).cls == "read"
+    assert rc.validate(["thesky-audit", "--help"], allow).cls == "read"
+    for args in (["thesky-audit"], ["thesky-audit", "--json"],
+                 ["thesky-audit", "--discover-docprops", "--imagelink"],
+                 ["thesky-audit", "--thesky-imagelink"],
+                 ["thesky-audit", "--discover-docprops", "--url", "http://x"]):
+        with pytest.raises(rc.Refused) as e:
+            rc.validate(args, allow)
+        assert e.value.status == 403, args
 
 
 # ------------------------------------------------------------ allowlist

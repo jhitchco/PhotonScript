@@ -1239,27 +1239,42 @@ def _c_site_pressure(row, val, observed, config, ctx):
          f"({d30:+.0f}\" at 30 deg alt)"] + notes)
 
 
-def _c_site_temperature(row, val, observed, config, ctx):
-    """TheSky's refraction temperature against NINA #1's outside air:
-    WARN when more than max_diff_c apart (TheSky's live value only; the
-    TPoint input file's is a past night's, shown as info)."""
-    md = float(row.get("max_diff_c", 15.0))
+def live_reference(observed) -> tuple[float | None, str | None]:
+    """(temperature, label) of the live sensor the row compares with: the
+    focuser probe (NINA #1, else #2; what the temperature sync writes from),
+    else NINA #1's weather station."""
+    lt = observed.get("live-temp") or {}
+    t = _num(lt.get("temp_c"))
+    if t is not None:
+        return t, str(lt.get("source") or "focuser")
     wx = _num((observed.get("nina-weather") or {}).get("temp_c"))
-    desired = (f"within {md:g} C of the outside air (NINA #1 station {wx:.0f} C)"
-               if wx is not None else "the night's outside air (no station reading)")
+    if wx is not None:
+        return wx, "NINA #1 station"
+    return None, None
+
+
+def _c_site_temperature(row, val, observed, config, ctx):
+    """TheSky's refraction temperature against the live sensor (the focuser
+    probe the sync writes from, else NINA #1's outside air): WARN when more
+    than max_diff_c (5) apart, both values shown. TheSky's live value only;
+    the TPoint input file's is a past night's, shown as info."""
+    md = float(row.get("max_diff_c", 5.0))
+    ref, ref_lbl = live_reference(observed)
+    desired = (f"within {md:g} C of the live sensor ({ref_lbl} {ref:.1f} C)"
+               if ref is not None else "the night's air (no live sensor reading)")
     src, src_note = _air_source(row, observed, config, "temperature")
     v = _num(val)
     if v is None:
         return UNKNOWN, desired, src_note
     ctx["current"] = f"{v:.1f} C" + (" (TPoint input file)" if src == "tpoint-files"
                                      else "")
-    if wx is None:
+    if ref is None:
         return INFO, desired, src_note
-    diff = v - wx
-    pct = (273.0 + wx) / (273.0 + v) * 100.0 - 100.0
-    d30 = _refr_at(30.0, 870.0, v) - _refr_at(30.0, 870.0, wx)
-    note = (f"{diff:+.0f} C from the station: refraction {pct:+.1f}% "
-            f"({d30:+.1f}\" at 30 deg alt); " + src_note)
+    diff = v - ref
+    pct = (273.0 + ref) / (273.0 + v) * 100.0 - 100.0
+    d30 = _refr_at(30.0, 870.0, v) - _refr_at(30.0, 870.0, ref)
+    note = (f"TheSky {v:.1f} C vs {ref_lbl} {ref:.1f} C: {diff:+.0f} C, refraction "
+            f"{pct:+.1f}% ({d30:+.1f}\" at 30 deg alt); " + src_note)
     if src == "tpoint-files":
         return INFO, desired, note
     return (PASS if abs(diff) <= md else row["severity"]), desired, note
@@ -1677,7 +1692,7 @@ def _last_sub_filter(config, end_night: str) -> tuple[str, str] | None:
 
 
 def collect(config, *, client=None, armer_state: str | None = None,
-            weather=None) -> dict:
+            weather=None, live_temp=None) -> dict:
     obs: dict = {s: {} for s in SOURCES}
     src: dict = {}
     try:
@@ -1691,6 +1706,14 @@ def collect(config, *, client=None, armer_state: str | None = None,
             obs["nina-weather"] = nina_weather(config, weather)
     except Exception as e:  # noqa: BLE001
         logger.debug("TheSky audit: weather: %s", e)
+    # the live sensor the temperature sync writes from (the focuser probe,
+    # NINA #1 else #2; read only), same condition
+    try:
+        if (obs.get("thesky-script") or {}).get("thesky_scripting"):
+            from photonscript.scheduler.thesky_temp_sync import live_temperature
+            obs["live-temp"] = live_temperature(config, live_temp)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("TheSky audit: live temperature: %s", e)
     try:
         obs["astap"], obs["astap_history"], obs["imagelink"], src["astap"] = astap_observed(config)
     except Exception as e:  # noqa: BLE001
@@ -1765,14 +1788,15 @@ def load_night(config, night: str) -> dict | None:
 
 def run_audit(config, reason: str = "manual", *, client=None,
               armer_state: str | None = None, persist: bool = True,
-              weather=None) -> dict:
+              weather=None, live_temp=None) -> dict:
     """Collect, evaluate and (by default) save one audit. Never raises.
     Synchronous (socket reads, log parsing): call it from a thread.
-    weather: a getter for NINA #1's weather info (tests), default ninaAPI."""
+    weather: a getter for NINA #1's weather info (tests), default ninaAPI.
+    live_temp: getter(url) for the focuser info (tests), default ninaAPI."""
     now = datetime.utcnow()
     desired = load_desired(config)
     observed = collect(config, client=client, armer_state=armer_state,
-                       weather=weather)
+                       weather=weather, live_temp=live_temp)
     res = evaluate(desired, observed, config)
     res["rows"].sort(key=lambda r: STATUS_RANK.get(r["status"], 9))
     pl = observed.get("pointing-log") or {}
@@ -1789,6 +1813,7 @@ def run_audit(config, reason: str = "manual", *, client=None,
              "manual": observed.get("manual_record") or None,
              "thesky_procs": observed.get("thesky_procs") or None,
              "nina_weather": observed.get("nina-weather") or None,
+             "live_temp": observed.get("live-temp") or None,
              "fail_ids": [r["id"] for r in res["rows"] if r["status"] == FAIL]}
     if persist:
         save(config, audit)
@@ -1799,7 +1824,8 @@ def run_audit(config, reason: str = "manual", *, client=None,
 # --discover-docprops (READ ONLY): pin the refraction-air indices
 # --------------------------------------------------------------------------
 
-def discover_docprops(config, *, client=None, weather=None, tpoint_site=None) -> dict:
+def discover_docprops(config, *, client=None, weather=None, tpoint_site=None,
+                      live_temp=None) -> dict:
     """READ ONLY: every sky6StarChart.DocumentProperty(0..120) value, next
     to NINA #1's weather and the site line TheSky wrote into TPoint's input
     file, with the indices that look like a pressure (500..1100) or match
@@ -1814,6 +1840,11 @@ def discover_docprops(config, *, client=None, weather=None, tpoint_site=None) ->
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "note": f"{type(e).__name__}: {e}"}
     wx = nina_weather(config, weather)
+    try:
+        from photonscript.scheduler.thesky_temp_sync import live_temperature
+        lt = live_temperature(config, live_temp)
+    except Exception:  # noqa: BLE001
+        lt = {}
     if tpoint_site is None:
         tpoint_site = {}
         try:
@@ -1827,7 +1858,7 @@ def discover_docprops(config, *, client=None, weather=None, tpoint_site=None) ->
             tpoint_site = {"note": f"{type(e).__name__}: {e}"}
     refs_p = [x for x in (_num(wx.get("pressure_hpa")),
                           _num((tpoint_site or {}).get("pressure_mb"))) if x is not None]
-    refs_t = [x for x in (_num(wx.get("temp_c")),
+    refs_t = [x for x in (_num(wx.get("temp_c")), _num(lt.get("temp_c")),
                           _num((tpoint_site or {}).get("temp_c"))) if x is not None]
     rows, p_cand, t_cand = [], [], []
     prev = None
@@ -1852,7 +1883,7 @@ def discover_docprops(config, *, client=None, weather=None, tpoint_site=None) ->
         rows.append({"index": i, "value": v, "tags": tags})
         prev = v
     return {"ok": True, "props": rows, "pressure_candidates": p_cand,
-            "temperature_candidates": t_cand, "weather": wx,
+            "temperature_candidates": t_cand, "weather": wx, "live_temp": lt,
             "tpoint_site": tpoint_site, "pins": air_pins(config)}
 
 
@@ -1864,6 +1895,10 @@ def format_discovery(d: dict) -> str:
     out = ["TheSky sky6StarChart.DocumentProperty (READ ONLY; nothing was written)",
            f"  NINA #1 weather: {wx.get('temp_c')} C, {wx.get('pressure_hpa')} hPa"
            if wx else "  NINA #1 weather: not read",
+           (f"  live focuser: {(d.get('live_temp') or {}).get('temp_c')} C "
+            f"({(d.get('live_temp') or {}).get('source')})")
+           if (d.get("live_temp") or {}).get("temp_c") is not None
+           else "  live focuser: not read",
            (f"  TPoint site line ({ts.get('file')}, {ts.get('date')}): "
             f"{ts.get('temp_c')} C, {ts.get('pressure_mb')} hPa, {ts.get('height_m')} m")
            if ts.get("pressure_mb") is not None else "  TPoint site line: not read",
