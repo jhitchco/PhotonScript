@@ -143,6 +143,15 @@ class FakeNina:
     def safety(self):
         return {"Connected": True, "IsSafe": self.safe}
 
+    # NINA #1's filter wheel (--filter, default L): L already in the beam,
+    # so the default run sends no change-filter call
+    filters = [{"Id": 0, "Name": "L"}, {"Id": 1, "Name": "R"},
+               {"Id": 4, "Name": "Ha"}]
+
+    def filter_info(self):
+        return {"Connected": True, "AvailableFilters": self.filters,
+                "SelectedFilter": {"Id": 0, "Name": "L"}, "IsMoving": False}
+
 
 class FakeSched:
     def __init__(self, states=("DISARMED",)):

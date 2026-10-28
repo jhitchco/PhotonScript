@@ -112,7 +112,7 @@ def test_parked_and_safe_unparks_then_runs(tmp_path):
     _never_parks(sky)
     assert "never parks" in text and text.isascii() and "\u2014" not in text
     rows = (tmp_path / "runs" / "x_tpoint_autocal.csv").read_text().splitlines()
-    assert rows[0].endswith(",unpark") and "unparked by NINA #1" in rows[1]
+    assert ",unpark," in rows[0] and "unparked by NINA #1" in rows[1]
 
 
 def test_parked_and_unsafe_refuses_and_sends_nothing(tmp_path):
@@ -120,7 +120,8 @@ def test_parked_and_unsafe_refuses_and_sends_nothing(tmp_path):
     # the preflight reads safe, the re-read after the park read does not
     res, sky, nina, text = _run(tmp_path, m, safe_seq=[True, False])
     assert res["status"] == "refused" and "not unparking" in res["reason"]
-    assert nina.calls == [] and sky.calls == ["park_read"]
+    # one park read in the step 1 preflight, one in step 2b
+    assert nina.calls == [] and sky.calls == ["park_read", "park_read"]
     assert res["camera_returned"] is None and m.parked and not m.unpark_sent
 
 
@@ -160,13 +161,51 @@ def test_roof_unsafe_during_the_unpark_stops(tmp_path):
     assert res["camera_returned"] is True and "slew" not in sky.calls
 
 
-def test_without_unpark_a_parked_mount_says_rerun_with_unpark(tmp_path):
+def test_without_unpark_a_parked_mount_is_refused_in_the_preflight(tmp_path):
+    # 2026-10-28: the refusal moved from point 1 (Error 216, after the camera
+    # was lent) to the step 1 preflight
     m = Mount(parked=True)
     res, sky, nina, text = _run(tmp_path, m, unpark=False)
+    assert res["status"] == "refused"
+    assert "mount not parked" in res["reason"] and "re-run with --unpark" in res["reason"]
+    assert "[FAIL   ] mount not parked: parked (TheSky)" in text
+    assert nina.calls == [] and sky.calls == ["park_read"]
+    assert res["camera_returned"] is None and res["unpark"] is None and m.parked
+
+
+def test_parked_at_point_1_still_says_rerun_with_unpark(tmp_path):
+    # park state unreadable in the preflight (a warning, as before), parked
+    # by the time of the slew: the old point 1 stop and its hint still hold
+    m = Mount(parked=False, sky_connected=False)
+
+    class LateSky(ParkSky):
+        def run(self, js):
+            if "SlewToAzAlt" in js:
+                self.mount.parked = True
+            return super().run(js)
+
+    class NoMountNina(ParkNina):
+        def mount_info(self):
+            return {"Connected": False}
+    clock = Clock()
+    files = Files()
+    sky = LateSky(files, m)
+    out: list[str] = []
+    deps = tal.Deps(sky=sky, nina=NoMountNina(clock, m), sched=FakeSched(),
+                    count=files.count,
+                    list_files=lambda: {"files": [
+                        {"rel": r"TPoint\Super Model Indat.dat",
+                         "path": r"C:\sky\Super Model Indat.dat", "size": 1}]},
+                    ask=lambda p: "yes", say=out.append, sleep=clock.sleep,
+                    mono=clock.mono, now=clock.now, copy=lambda s, d: None,
+                    notify=lambda msg: None)
+    res = tal.run_loop(_cfg(tmp_path), _PTS, deps,
+                       tal.Opts(add="automap", csv_path=None,
+                                backup_root=str(tmp_path / "bk")))
+    assert "[WARN   ] mount not parked: park state unreadable" in "\n".join(out)
     assert res["status"] == "stopped"
     assert "Error _ 216" in res["reason"] and "re-run with --unpark" in res["reason"]
-    assert "unpark" not in nina.calls and "park_read" not in sky.calls
-    assert res["camera_returned"] is True and res["unpark"] is None
+    assert res["camera_returned"] is True
 
 
 def test_is_parked_error():

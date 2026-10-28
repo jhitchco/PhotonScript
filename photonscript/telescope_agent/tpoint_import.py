@@ -132,6 +132,20 @@ def j2000_to_apparent(ra_h: float, dec_d: float, utc: datetime) -> tuple[float, 
     return math.degrees(erfa.anp(ri - eo)) / 15.0, math.degrees(di)
 
 
+def apparent_to_j2000(ra_h: float, dec_d: float, utc: datetime) -> tuple[float, float]:
+    """The inverse of j2000_to_apparent: apparent place of the date
+    (equinox based) -> J2000 (ICRS), hours / degrees. erfa only."""
+    import erfa
+    utc = utc.replace(tzinfo=None)
+    d1 = 2440587.5 + (utc - datetime(1970, 1, 1)).total_seconds() / 86400.0
+    tai1, tai2 = erfa.utctai(d1, 0.0)
+    tt1, tt2 = erfa.taitt(tai1, tai2)
+    eo = erfa.eo06a(tt1, tt2)
+    rc, dc = erfa.atic13(erfa.anp(math.radians(float(ra_h) * 15.0) + eo),
+                         math.radians(float(dec_d)), tt1, tt2)[:2]
+    return math.degrees(erfa.anp(rc)) / 15.0, math.degrees(dc)
+
+
 def beyond_pole(ha_h: float) -> bool:
     """TPOINT's through-the-pole notation is used on the east-looking side
     (HA < 0), as in every real TheSky64 file (tpoint_coverage)."""

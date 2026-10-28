@@ -213,7 +213,9 @@ def test_build_plan_loop_and_window(tmp_path):
     cfg = _cfg(tmp_path)
     p = ta.build_plan(cfg, points=2, sky_points=_SKY)
     assert p["requested_points"] == ta.MIN_POINTS and p["points"] == 2
-    assert p["params"]["image_scale"] == pytest.approx(0.472)
+    # 2026-10-28: bin 1 / 10 s / L by default (TheSky shot 1x1 when asked 2x2)
+    assert p["params"]["image_scale"] == pytest.approx(0.236)
+    assert p["params"]["binning"] == 1 and p["params"]["exposure_s"] == 10.0
     phases = [s["phase"] for s in p["steps"]]
     assert phases.index("preflight") < phases.index("backup") < phases.index("handoff") \
         < phases.index("run") < phases.index("finish")
