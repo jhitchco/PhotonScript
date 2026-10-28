@@ -43,7 +43,20 @@ def test_client_docprops_parses_the_reply():
     assert d == {0: "31.9", 12: "870.00", 13: None}
     assert "DocumentProperty(12)" in sent[0] and "DocumentProperty(5)" not in sent[0]
     C("x", 1).docprops()
-    assert sent[1] == tc.READ_ONLY_JS["docprops"]
+    # TheSky 10.5 rejects the 121-index script (Parse error): chunks of 20
+    scan = sent[1:]
+    assert len(scan) == -(-(tc.DOCPROP_SCAN_MAX + 1) // tc.DOCPROP_CHUNK)
+    assert "DocumentProperty(0)" in scan[0] and "DocumentProperty(20)" not in scan[0]
+    assert f"DocumentProperty({tc.DOCPROP_SCAN_MAX})" in scan[-1]
+    assert all("SetDocumentProperty" not in js for js in scan)
+
+
+def test_client_docprops_raises_on_a_script_error():
+    class C(tc.TheSkyClient):
+        def run_script(self, js):
+            return "SyntaxError: Parse error"
+    with pytest.raises(RuntimeError):
+        C("x", 1).docprops()
 
 
 def test_onsite_script_and_client_method_count_unchanged():
@@ -232,7 +245,8 @@ def test_discover_docprops_flags_candidates():
     assert " 12: 870.00" in text and "pressure candidates: [12, 13]" in text
     assert text.isascii()
     js = [j for j in sky.sent if "DocumentProperty(" in j]
-    assert js == [tc.READ_ONLY_JS["docprops"]] and not _violations(js[0])
+    assert len(js) == -(-(tc.DOCPROP_SCAN_MAX + 1) // tc.DOCPROP_CHUNK)
+    assert not any(_violations(j) for j in js)
 
 
 def test_discover_unreachable(tmp_path):
