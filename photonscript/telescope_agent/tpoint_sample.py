@@ -96,6 +96,9 @@ ADD_CANDIDATES: tuple[tuple[str, str, str], ...] = (
      f"{_ACT}.execute('ADD_POINTING_SAMPLE')"),
 )
 
+# TheSky TCP read timeout for the Image Link sample script (s)
+IMAGELINK_TIMEOUT_S = 120.0
+
 # objects whose member names the probe lists: (object, all members?) -
 # False = only names matching _MEMBER_RE
 PROBE_OBJECTS = (("ImageLink", True), ("ImageLinkResults", False),
@@ -709,6 +712,11 @@ def run_sample(config, file: str | None = None, point: int | None = None,
                 row["note"] = (row.get("note") or "") + " dry run: nothing sent"
                 return row
             cl = client or tc.client_from_config(config)
+            # 2026-10-28: Image Link takes longer than the client's 10 s
+            # default; a timed-out solve keeps running in TheSky and the
+            # next point hits Error 219 (10 of 10 lost). Same as autocal.
+            cl.timeout = max(float(getattr(cl, "timeout", 10.0) or 10.0),
+                             IMAGELINK_TIMEOUT_S)
             kv = tc.parse_kv(cl.run_script(js))
             solved = (_bool(kv.get("succeeded")) is True
                       and not kv.get("exec_error"))
