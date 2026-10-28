@@ -182,10 +182,14 @@ value moves (Choice E).
   the outer disk 60' from the core. Advisory only: the goal stays seconds.
 
 ## Piggy-600 Wanderer Cover V4-EC (PS-189)
-- WandererAstro Wanderer Cover V4-EC 150 mm on the Piggy-600 (Askar FRA600):
+- WandererAstro Wanderer Cover V4-EC 125 mm on the Piggy-600 (Askar FRA600):
   motorized dust cover with a built-in EL flat panel. ASCOM CoverCalibrator
   driver; in NINA #2 it is the "Flat Panel" device (ninaAPI
-  /equipment/flatdevice/...). Ordered 2026-10-10, AARO installs.
+  /equipment/flatdevice/...; NINA name "WandererEmpire Cover 1", ASCOM id
+  ASCOM.WandererCover1.CoverCalibrator, driver 2.0, brightness 0 to 255,
+  dew heater actions). Product page:
+  https://agenaastro.com/wandererastro-wanderer-cover-v4-ec-125mm.html.
+  Ordered 2026-10-10, installed by AARO; first panel flats 2026-10-28.
 - Everything sits behind `piggyback_cover_enabled` (default false: no
   sequence or job changes until it is on). On:
   - companion Start: connect the Flat Panel, panel off, cover CLOSED; the
