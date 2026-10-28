@@ -110,7 +110,7 @@ def _check(name: str, status: str, detail: str) -> dict:
 
 def preflight(arm: dict | None, apps: dict | None, roof_safe: bool | None,
               backup: dict | None, auto_arm_enabled: bool = False,
-              auto_dusk_flats: bool = False) -> dict:
+              auto_dusk_flats: bool = False, need_backup: bool = True) -> dict:
     """Go / no-go for a TPoint autocal run. Pure.
 
     arm: GET /api/arm (None = unreadable). apps: GET /api/apps/status
@@ -118,6 +118,8 @@ def preflight(arm: dict | None, apps: dict | None, roof_safe: bool | None,
     roof open), None = unreadable. backup: backup_plan() output, None = not
     planned. Every check is pass / warn / fail / unknown; go only when
     nothing is fail or unknown (warn is shown, not blocking).
+    need_backup=False (drift-survey: it never touches TPoint) leaves the
+    TPoint backup check out.
     {"go", "checks": [{name, status, detail}], "blockers": [str]}."""
     checks: list[dict] = []
 
@@ -208,7 +210,9 @@ def preflight(arm: dict | None, apps: dict | None, roof_safe: bool | None,
                              else "safety monitor UNSAFE (roof closed)"))
 
     # 8. a TPoint backup is planned (copied in --go before anything else)
-    if backup is None:
+    if not need_backup:
+        pass
+    elif backup is None:
         checks.append(_check("TPoint backup", UNKNOWN, "no backup planned"))
     elif not backup.get("copies"):
         checks.append(_check("TPoint backup", FAIL,

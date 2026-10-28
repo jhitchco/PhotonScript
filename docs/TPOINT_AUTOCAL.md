@@ -19,6 +19,10 @@ format checks against the real in.dat fixtures),
 `tests/test_scheduler/test_tpoint_autocal_setup.py` (the 2026-10-28 setup
 fixes below).
 
+Before / after a TPoint run, `photonscript drift-survey` measures the
+unguided drift rate around the sky with the same preflight, camera hand-off
+and solvers (docs/DRIFT_SURVEY.md); it never touches TPoint.
+
 ## 2026-10-28: L in the beam, bin 1, NINA #2 and a parked mount
 
 Two live runs of `tpoint-autocal --go --unattended --side both --points 12

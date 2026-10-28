@@ -1312,6 +1312,181 @@ def tpoint_autocal_cmd(
     raise typer.Exit(0)
 
 
+@app.command("drift-survey")
+def drift_survey_cmd(
+    points: int = typer.Option(10, "--points", help="Sky positions (1..60)"),
+    side: str = typer.Option("both", "--side", help="east | west | both"),
+    window_s: float = typer.Option(180.0, "--window-s", help="Seconds each point "
+                                   "tracks unguided between its first and last "
+                                   "frame (no slew, no sync in between)"),
+    every_s: float = typer.Option(60.0, "--every-s", help="A frame every N s "
+                                  "(180 / 60: frames at +0, +60, +120, +180)"),
+    exposure_s: float = typer.Option(10.0, "--exposure-s", help="Seconds per frame"),
+    binning: int = typer.Option(1, "--binning", help="Default 1 (TheSky's camera "
+                                "shoots 1x1 anyway)"),
+    filter_name: str = typer.Option("L", "--filter", help="NINA #1's filter wheel "
+                                    "goes to this filter before the camera is "
+                                    "lent (L also matches Lum / Luminance); none "
+                                    "= leave the wheel as it is"),
+    settle_s: float = typer.Option(10.0, "--settle-s", help="Seconds after the "
+                                   "slew before the first frame"),
+    max_smear: float = typer.Option(2.0, "--max-smear-arcsec", help="The most "
+                                    "drift (arcsec) one sub may get: the "
+                                    "recommended sub keeps the smear under it. "
+                                    "With --fwhm-arcsec 3.5 a 2.0\" smear "
+                                    "predicts ecc ~0.36 and 2.8\" ~0.48 "
+                                    "(Gaussian star + a line, matched to the "
+                                    "2026-10-28 NGC 2403 subs)"),
+    fwhm: float = typer.Option(3.5, "--fwhm-arcsec", help="Star FWHM (arcsec) "
+                               "used to predict the eccentricity a smear gives "
+                               "(shown per sub length); it does not change the "
+                               "smear limit"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print the plan, the "
+                                 "timing and the scripts; send nothing (the "
+                                 "default without --go)"),
+    go: bool = typer.Option(False, "--go", help="The live run: borrows the scope "
+                            "and NINA #1's camera, gives the camera back"),
+    unattended: bool = typer.Option(False, "--unattended", help="No console "
+                                    "question (remote run); the plan must fit "
+                                    "--max-run-min"),
+    unpark: bool = typer.Option(False, "--unpark", help="--go: a parked mount is "
+                                "unparked by NINA #1 after the preflight; never "
+                                "parks"),
+    track: bool = typer.Option(False, "--track", help="Turn sidereal tracking on in "
+                               "TheSky after each slew (ProTrack stays as "
+                               "configured)"),
+    stop_nina2: bool = typer.Option(False, "--stop-nina2", help="--go: when NINA #2 "
+                                    "running is the only preflight blocker, stop "
+                                    "its sequence (implies --unpark)"),
+    solver: str = typer.Option("fallback", "--solver", help="imagelink | astap | "
+                               "fallback (ImageLink, then ASTAP when it fails)"),
+    label: str = typer.Option("", "--label", help="Free text stored with the run "
+                              "(e.g. before / after), also in the file names"),
+    max_run_min: float = typer.Option(0.0, "--max-run-min", help="Stop starting "
+                                      "points after N min (0 = none; "
+                                      "--unattended: default 28, a remote job is "
+                                      "killed at 30 min before the camera goes "
+                                      "back)"),
+    slew_timeout: float = typer.Option(180.0, "--slew-timeout",
+                                       help="Seconds before a slew counts as stuck"),
+    verbose: bool = typer.Option(False, "--verbose", help="Every TheSky script "
+                                 "call and reply"),
+    status: bool = typer.Option(False, "--status", help="Dry run: also read GET "
+                                "/api/arm and /api/apps/status for the preflight"),
+    url: str = typer.Option("http://localhost:8100", "--url", help="Scheduler"),
+    scripts: bool = typer.Option(True, "--scripts/--no-scripts",
+                                 help="Dry run: print each step's TheSky script"),
+    as_json: bool = typer.Option(False, "--json", help="Print JSON"),
+):
+    """Unguided drift survey (docs/DRIFT_SURVEY.md): at N sky positions,
+    plate solve a short frame every --every-s for --window-s while the mount
+    tracks unguided, and fit the drift ("/min per axis, direction), the
+    smear of 300 / 600 / 900 / 1200 s subs and the longest sub under
+    --max-smear-arcsec. Reuses tpoint-autocal's preflight, filter, camera
+    hand-off and solvers. Never syncs, parks or writes TPoint. Writes
+    runs/<night>_drift_survey_<HHMM>Z[_label].csv, _fits.csv and .json.
+
+    photonscript drift-survey --dry-run
+    photonscript drift-survey --go --label before --track
+    """
+    import json as _json
+    from datetime import datetime as _dt
+    from photonscript.telescope_agent import drift_survey as ds
+    from photonscript.telescope_agent import tpoint_autocal as ta
+    from photonscript.telescope_agent import tpoint_autocal_live as tal
+    if dry_run and go:
+        console.print("pick one of --dry-run and --go", markup=False)
+        raise typer.Exit(2)
+    if side not in tal.SIDES:
+        console.print(f"--side must be one of {', '.join(tal.SIDES)}", markup=False)
+        raise typer.Exit(2)
+    if solver not in ta.SOLVERS:
+        console.print(f"--solver must be one of {', '.join(ta.SOLVERS)}", markup=False)
+        raise typer.Exit(2)
+    bad = ds.validate(window_s, every_s, exposure_s, settle_s, points)
+    if not 1 <= int(binning) <= 4:
+        bad.append("--binning must be 1..4")
+    if max_smear <= 0 or fwhm <= 0:
+        bad.append("--max-smear-arcsec and --fwhm-arcsec must be positive")
+    if bad:
+        console.print("; ".join(bad), markup=False)
+        raise typer.Exit(2)
+    flt = None if filter_name.strip().lower() in ("", "none") else filter_name.strip()
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    now = _dt.utcnow()
+    sel = ds.select(cfg, points, side, now, window_s, every_s, exposure_s, settle_s,
+                    tal.dark_end(cfg, now))
+    scale1 = float(getattr(cfg, "pixel_scale_arcsec", 0.236) or 0.236)
+    plan = ds.build_plan(sel["points"], window_s, every_s, exposure_s, settle_s,
+                         binning, scale1, solver, flt, track, stop_nina2, unpark,
+                         max_smear, fwhm, label)
+    budget = max_run_min if max_run_min > 0 else (
+        ds.UNATTENDED_MAX_MIN if unattended else 0.0)
+    say = lambda m: console.print(m, markup=False, highlight=False)  # noqa: E731
+    if go:
+        say("Drift survey LIVE" + (f" ({label})" if label else "") + ". It borrows "
+            "the scope and NINA #1's camera; it never arms, syncs, parks or writes "
+            "TPoint.")
+        say(tal.format_points(sel))
+        if not sel["points"]:
+            say("No usable points: nothing to do.")
+            raise typer.Exit(1)
+        if budget and plan["est_s"] > budget * 60:
+            say(f"The plan takes about {round(plan['est_s'] / 60)} min, over the "
+                f"{budget:g} min budget"
+                + (" (--unattended: a remote job is killed at 30 min, before the "
+                   "camera goes back)" if unattended else "")
+                + ": use fewer --points or a shorter --window-s / --every-s"
+                + (", or --max-run-min locally" if unattended else ""))
+            raise typer.Exit(2)
+        opts = tal.Opts(exposure_s=exposure_s, binning=int(binning), filter=flt,
+                        stop_nina2=stop_nina2, image_scale_per_bin1=scale1,
+                        verbose=verbose, slew_timeout_s=slew_timeout, csv_path=None,
+                        auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
+                        auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)),
+                        min_alt=float(sel["min_alt"]), solver=solver, track=track,
+                        unpark=unpark)
+        dopts = ds.DriftOpts(window_s=window_s, every_s=every_s, settle_s=settle_s,
+                             max_smear=max_smear, fwhm=fwhm, label=label,
+                             stem=ds.run_stem(cfg, now, label), unattended=unattended,
+                             max_run_s=budget * 60 if budget else None,
+                             model=lambda: ds.model_info(cfg))
+        ask = (lambda p: "yes") if unattended else input
+        res = ds.run_survey(cfg, sel["points"], tal.live_deps(cfg, url, ask=ask, say=say),
+                            opts, dopts)
+        if as_json:
+            print(_json.dumps(res, indent=2, default=str))
+        raise typer.Exit(0 if res["status"] == "done" else 1)
+    arm = apps = None
+    if status:   # read-only GETs on PhotonScript's own scheduler
+        import httpx
+        base = url.rstrip("/")
+        try:
+            arm = httpx.get(base + "/api/arm", timeout=10).json()
+        except Exception as e:  # noqa: BLE001
+            say(f"GET /api/arm failed ({e})")
+        try:
+            apps = httpx.get(base + "/api/apps/status", timeout=30).json()
+        except Exception as e:  # noqa: BLE001
+            say(f"GET /api/apps/status failed ({e})")
+    pre = ta.preflight(arm, apps, None, None,
+                       auto_arm_enabled=bool(getattr(cfg, "auto_arm_enabled", False)),
+                       auto_dusk_flats=bool(getattr(cfg, "auto_dusk_flats", False)),
+                       need_backup=False) if status else None
+    model = ds.model_info(cfg)
+    if as_json:
+        print(_json.dumps({"dry_run": True, "preflight": pre, "model": model,
+                           "plan": plan, "selection": sel}, indent=2, default=str))
+    else:
+        say(ds.format_plan(plan, pre, model, show_scripts=scripts,
+                           min_alt=float(sel["min_alt"])))
+        say("Points for --go:\n" + tal.format_points(sel))
+        if budget and plan["est_s"] > budget * 60:
+            say(f"NOTE: about {round(plan['est_s'] / 60)} min, over the {budget:g} min "
+                "budget: --go would refuse.")
+    raise typer.Exit(0)
+
+
 @app.command("tpoint-refit")
 def tpoint_refit_cmd(
     go: bool = typer.Option(False, "--go", help="The live refit (operator at "
@@ -2613,16 +2788,30 @@ def thesky_audit_cmd(
                                           "idle armer)"),
     url: str = typer.Option("http://localhost:8100", "--url",
                             help="Scheduler to ask for the armer state"),
+    discover_docprops: bool = typer.Option(False, "--discover-docprops", help="READ "
+                                           "ONLY: print TheSky's sky6StarChart."
+                                           "DocumentProperty(0..120) next to NINA #1's "
+                                           "weather and TPoint's site line, to pin "
+                                           "the refraction temperature / pressure "
+                                           "indices (PS_THESKY_DOCPROP_*); no audit"),
 ):
     """PS-104: TheSky / TPoint settings audit, REPORT ONLY (read-only TheSky
     scripts, the stored Image Link check, the NINA Center log, the manual
     TPoint record). Never writes TheSky, moves the mount or takes an image.
 
     photonscript thesky-audit --json
+    photonscript thesky-audit --discover-docprops
     """
     import json as _json
     from photonscript.scheduler import thesky_audit as ta
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    if discover_docprops:
+        d = ta.discover_docprops(cfg)
+        if as_json:
+            print(_json.dumps(d, indent=2, default=str))
+        else:
+            print(ta.format_discovery(d))
+        raise typer.Exit(0 if d.get("ok") else 1)
     state = ""
     if thesky_imagelink:
         if not getattr(cfg, "thesky_audit_imagelink_thesky", False):

@@ -177,6 +177,54 @@ confidence = "Med"
 why = "TheSky shows local times and applies DST change dates with its own time zone and DST rule: -6 with DST not observed matches New Mexico only while it is on MDT and is an hour off after 2026-11-01. Its UT comes from the computer clock (2026-10-11: tz +0 read while its Julian date matched the PC to 0.0 s), so a wrong zone with a matching clock and LST is a WARN, not a pointing FAIL."
 fix = "TheSky: Input > Location: time zone -7.00, daylight saving U.S. and Canada (index 17 on build 14139)."
 
+# 2026-10-28: TheSky's refraction air. ProTrack and the pointing corrections
+# refract with TheSky's temperature and pressure. The DocumentProperty index
+# of each is a CANDIDATE until `photonscript thesky-audit --discover-docprops`
+# pins it (PS_THESKY_DOCPROP_PRESSURE / _TEMPERATURE / _REFRACTION); until then
+# these rows read the site line TheSky wrote into TPoint's input file (what
+# the model in force was fit with: 870.00 hPa and 29-31 C in the 2026-10-14
+# to 10-16 files, 1000.00 hPa in the 2026-10-09 recal run).
+
+[[check]]
+id = "site_pressure"
+group = "Site and time"
+label = "Refraction pressure (hPa)"
+sources = ["thesky-script", "tpoint-files"]
+key = "site_pressure_hpa"
+computed = "site_pressure"
+near = 870
+tol = 30
+sea_level_tol = 25
+severity = "warn"
+confidence = "Med"
+why = "Refraction scales with pressure: AARO at 1250-1300 m has ~870 hPa; a sea level 1013 over-corrects refraction by ~16% (~15\" at 30 deg alt), which ProTrack and the TPoint corrections then apply all night. The target is NINA #1's station pressure when it reads a station (not sea level) value."
+fix = "In TheSky, set the atmospheric pressure used for refraction to ~870 hPa (the station value, not sea level); the same dialog showed a 38.31 C sensor temperature on 2026-10-23. Pin the scripted read with photonscript thesky-audit --discover-docprops."
+
+[[check]]
+id = "site_temperature"
+group = "Site and time"
+label = "Refraction temperature (C)"
+sources = ["thesky-script", "tpoint-files"]
+key = "site_temperature_c"
+computed = "site_temperature"
+max_diff_c = 15
+severity = "warn"
+confidence = "Med"
+why = "Refraction scales with 1 / (273 + T): 20 C too warm under-corrects by ~7% (~6\" at 30 deg alt). TheSky may read a dome / electronics sensor (38.31 C on 2026-10-23) instead of the outside air."
+fix = "Point TheSky's temperature at the outside air (or type the night's air temperature); compare with NINA #1's weather station."
+
+[[check]]
+id = "refraction"
+group = "Site and time"
+label = "TheSky refraction on"
+sources = ["thesky-script"]
+key = "refraction_on"
+computed = "refraction"
+severity = "warn"
+confidence = "Low"
+why = "Whether TheSky applies refraction at all (reported only); readable once its DocumentProperty index is pinned."
+fix = "None (information); pin PS_THESKY_DOCPROP_REFRACTION from thesky-audit --discover-docprops."
+
 # ---------------------------------------------------------------- camera
 
 [[check]]
