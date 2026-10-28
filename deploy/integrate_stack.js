@@ -583,6 +583,24 @@ function runStack(stack, masters, reg) {
    if (regFiles.length < MIN_FRAMES)
       throw new Error("[" + S + "] too few registered frames (" + regFiles.length + ", need " + MIN_FRAMES + ")");
    var nReg = regFiles.length;
+   // Piggy HDR set (2026-10-28, osc_hdr.plan_hdr_set): the short groups
+   // never go into this stack's master (a pure main-length master); they
+   // are integrated on their own below from the full registered list
+   var regAll = regFiles;
+   var outGroups = {};
+   if (stack.short_subset && stack.short_subset.exclude)
+      for (var q = 0; q < stack.short_subset.groups.length; ++q) outGroups[stack.short_subset.groups[q]] = true;
+   if (stack.exclude_groups)
+      for (var q = 0; q < stack.exclude_groups.length; ++q) outGroups[stack.exclude_groups[q]] = true;
+   var nOut = 0;
+   for (var q in outGroups) ++nOut;
+   if (nOut) {
+      regFiles = regAll.filter(function (f) { return outGroups[groupOf(stack, f)] !== true; });
+      log("[" + S + "] HDR short set kept out of the master: " + (regAll.length - regFiles.length) +
+          " frames; main master from " + regFiles.length + " (" + groupCounts(stack, regFiles) + ")");
+      if (regFiles.length < MIN_FRAMES)
+         throw new Error("[" + S + "] too few main frames after the HDR short set (" + regFiles.length + ", need " + MIN_FRAMES + ")");
+   }
 
    var lnData = null;
    TSTART(S, "local normalization");
@@ -689,7 +707,7 @@ function runStack(stack, masters, reg) {
    } catch (e12) { log("[" + S + "] review jpg skipped (" + e12 + ")"); }
    w.forceClose();
    TEND(S, "review jpg");
-   if (stack.short_subset) integrateShort(stack, regFiles, R.selfRef);
+   if (stack.short_subset) integrateShort(stack, regAll, R.selfRef);
    log("[" + S + "] funnel " + all.length + " staged -> " + work.length + " cal -> " + ccFiles.length + " cc -> " +
        rgbFiles.length + (CONFIG.cfa ? " debayer -> " : " -> ") + nReg + " reg -> " + regFiles.length + " integrated");
    TEND(S, "stack total");

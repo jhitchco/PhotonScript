@@ -470,7 +470,16 @@ def night_dark_exposures(config, rig: str = "rc16") -> list[float]:
     except Exception:  # noqa: BLE001
         logger.warning("learned unguided dark lengths failed", exc_info=True)
         learned = []
-    return out + [e for e in learned if not any(abs(e - b) < 0.5 for b in out)]
+    out = out + [e for e in learned if not any(abs(e - b) < 0.5 for b in out)]
+    # Piggy HDR (2026-10-28): the active goals' HDR short lengths (15 s on
+    # M42) get darks before their lights need them
+    try:
+        from photonscript.scheduler.calibration_owed import goal_hdr_dark_lengths
+        goal = [g["exp_s"] for g in goal_hdr_dark_lengths(config, rig)]
+    except Exception:  # noqa: BLE001
+        logger.warning("goal HDR dark lengths failed", exc_info=True)
+        goal = []
+    return out + [e for e in goal if not any(abs(e - b) < 0.5 for b in out)]
 
 
 def darks_have(config, rig: str, exp_s: float, *, gain: int | None = None,
@@ -1250,7 +1259,16 @@ def _osc_light_loop(config, segments: list | None = None) -> dict:
     segments (Piggy core 2026-10-14, scheduler/piggy_length.py): two or
     more [{exp_s, until_utc}] = one OSC_LIGHT_LOOP per Piggy length, in
     order, each until its RC16 handoff (the last until astro dawn). None or
-    one segment: the single loop at piggyback_exposure_s, as before."""
+    one segment: the single loop at piggyback_exposure_s, as before.
+
+    Piggy HDR (2026-10-28): a segment with "hdr" {short_s, fraction} (one
+    such segment is enough to take this path) gets a flat loop body of
+    n_main main lights then n_short short lights (piggy_length.hdr_block,
+    about piggyback_hdr_block_min minutes of main subs per block), each
+    light followed by the settle gate as usual, so the short set shares the
+    main set's conditions all night. The shorts are ordinary LIGHT frames
+    at their own ExposureTime: the Library, star QA and integrate group
+    them by exposure (osc_hdr: a separate master)."""
     from photonscript.scheduler.nina_sequence_json import (
         _seq_container, _make_typed, _autofocus, _move_focuser,
         _safety_condition, _time_condition, _loop_once, _cooler_gate,
@@ -1284,7 +1302,24 @@ def _osc_light_loop(config, segments: list | None = None) -> dict:
     # the gate first, the 0 s gate would pass the dawn check and the loop
     # would spin gate, gate, gate through the last exposure-length of night.
     settle = _osc_settle_gate(config)
-    if segments and len(segments) > 1:
+
+    def body_of(s, sg, hdr):
+        """[light, gate] once, or the HDR block (n_main mains, n_short
+        shorts, each with its gate)."""
+        if not hdr:
+            return [take_of(s), *sg]
+        from photonscript.scheduler.piggy_length import hdr_block
+        n_main, n_short = hdr_block(
+            s, float(hdr["short_s"]), float(hdr["fraction"]),
+            float(getattr(config, "piggyback_hdr_block_min", 20.0) or 20.0))
+        out = []
+        for _ in range(n_main):
+            out += [take_of(s), *sg]
+        for _ in range(n_short):
+            out += [take_of(float(hdr["short_s"])), *sg]
+        return out
+
+    if segments and (len(segments) > 1 or segments[0].get("hdr")):
         # Piggy core 2026-10-14 (scheduler/piggy_length.py): one light loop
         # per run of equal Piggy lengths, in the RC16 target order, each
         # ending at the RC16 handoff of its last target (the PS-180 clock
@@ -1306,7 +1341,7 @@ def _osc_light_loop(config, segments: list | None = None) -> dict:
             if k:
                 inner_items += sg      # PS-27: a gate right before each loop
             inner_items.append(_seq_container(
-                OSC_LIGHT_LOOP_NAME, [take_of(s), *sg], conditions=conds,
+                OSC_LIGHT_LOOP_NAME, body_of(s, sg, seg.get("hdr")), conditions=conds,
                 triggers=_osc_af_triggers(config)))
         exp_s = float(segments[0]["exp_s"])
         settle = _osc_settle_gate(config, exp_s)
@@ -1335,8 +1370,7 @@ def _osc_light_loop(config, segments: list | None = None) -> dict:
          _autofocus(), *settle, *inner_items],
         conditions=[_safety_condition(), _loop_once(), _time_condition(*dawn)])
     # 2026-10-14: a mid-night closed roof fills the owed darks first
-    lengths = ([float(x["exp_s"]) for x in segments] if segments and len(segments) > 1
-               else [exp_s])
+    lengths = light_lengths_of(segments) or [exp_s]
     crd = _osc_closed_roof_darks(config, lengths)
     return _seq_container(
         OSC_LIGHTS_UNTIL_DAWN_NAME,
@@ -1348,6 +1382,28 @@ def _osc_light_loop(config, segments: list | None = None) -> dict:
          image_pass,
          _wait_for_timespan(OSC_PASS_PACE_S)],   # PS-149 pace
         conditions=[_time_condition(*dawn)])
+
+
+def light_lengths_of(segments) -> list[float]:
+    """Every light length the segments shoot (main and HDR short), in
+    order, once each; [] for no segments."""
+    out: list[float] = []
+    for x in segments or []:
+        for e in [x.get("exp_s"), (x.get("hdr") or {}).get("short_s")]:
+            if e and not any(abs(float(e) - o) < 0.5 for o in out):
+                out.append(float(e))
+    return out
+
+
+def segments_label(segments) -> str:
+    """'120/450s', with an HDR short set as '120+15s'."""
+    parts = []
+    for x in segments or []:
+        p = f"{float(x['exp_s']):g}"
+        if x.get("hdr"):
+            p += f"+{float(x['hdr']['short_s']):g}"
+        parts.append(p)
+    return "/".join(parts) + "s"
 
 
 def _osc_settle_gate(config, exp_s: float | None = None) -> list:
@@ -1579,7 +1635,8 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
     osc_segments (Piggy core 2026-10-14): the per-target Piggy lengths of
     tonight (piggy_length.companion_kwargs); two or more = one light loop
     per length until its RC16 handoff. A single length goes in through
-    config.piggyback_exposure_s instead.
+    config.piggyback_exposure_s instead, unless it carries an HDR short set
+    (Piggy HDR 2026-10-28: segment "hdr", see _osc_light_loop).
 
     dawn_flats (2026-10-21): False leaves out the OSC dawn sky flats (the
     armer passes False with flats_when=both when this evening's dusk flats
@@ -1731,11 +1788,11 @@ def generate_piggyback_companion_json(config, has_safety: bool = False,
         # window below instead of wedging in an unbounded WaitUntilSafe
         # (PS-36, 2026-09-26).
         target_items.append(_osc_wait_astro_dusk())
-        segs = osc_segments if osc_segments and len(osc_segments) > 1 else None
+        segs = (osc_segments if osc_segments and (
+            len(osc_segments) > 1 or osc_segments[0].get("hdr")) else None)
         target_items += _osc_roof_open_notice(
-            config, "/".join(f"{float(x['exp_s']):g}" for x in segs) + "s"
-            if segs else None,
-            light_lengths=[float(x["exp_s"]) for x in segs] if segs else None)
+            config, segments_label(segs) if segs else None,
+            light_lengths=light_lengths_of(segs) if segs else None)
         target_items.append(_osc_light_loop(config, segs))
         from photonscript.scheduler.nina_sequence_json import (
             _cooler_gate_spec, _cooler_gate_missing_notice)

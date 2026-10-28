@@ -36,6 +36,9 @@ def _store(tmp_path):
     Ha/OIII 6 h with HDR short subs, plus a 1 h OSC passenger plan."""
     cfg = _cfg(tmp_path)
     store = ProjectStore(cfg)
+    # the seeded M42 Piggy HDR goal (2026-10-28) is not part of this fixture
+    for pid in [k for k, p in store.projects.items() if p.target.catalog_id == "M 42"]:
+        store.delete(pid)
     m31 = store.add_from_target(M31, budget_hours=10)
     store.update(m31.id, osc_hours=6, drop_rc16=True, driving_rig="piggyback")
     cat = next(p for p in store.projects.values()

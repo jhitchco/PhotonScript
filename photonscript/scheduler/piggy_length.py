@@ -34,6 +34,16 @@ piggy_core_length: off | advise (default: the morning report and the
 target page say "Piggy M31 core clips at 300 s: set OSC to 120 s", nothing
 changes) | apply (the planner also shoots that length on that target's
 Piggy subs when the goal has no OSC override).
+
+Piggy HDR (2026-10-28): a goal whose OSC plan has an HDR short set
+(hdr {"OSC": 15}, hdr_fraction 0.10; project_store.osc_plan) that still
+owes shorts gets row["hdr"] = {"short_s", "fraction"}. Segments split on
+it too, and a segment with hdr makes the companion's light loop shoot
+hdr_block(main, short, fraction) = (n_main, n_short): n_main main subs
+(about piggyback_hdr_block_min minutes) then n_short short subs, over and
+over, so both sets share the night's conditions (120 s / 15 s / 0.10:
+10 x 120 s + 9 x 15 s). A single segment with hdr still goes to the
+companion as segments (one loop).
 """
 
 from __future__ import annotations
@@ -71,6 +81,64 @@ def _project_for(projects, name: str):
     return None
 
 
+def osc_hdr(project, config) -> dict | None:
+    """{"short_s", "fraction"} when the goal's Piggy OSC plan has an HDR
+    short set that still owes subs, else None (SimpleNamespace goals in
+    tests have no plans: None)."""
+    plans = (getattr(project, "exposure_plans", None) or []) if project else []
+    for e in plans:
+        if (getattr(e, "rig", "rc16") or "rc16") == "rc16":
+            continue
+        if getattr(getattr(e, "filter_type", None), "value", "") != "OSC":
+            continue
+        s = getattr(e, "hdr_short_seconds", None)
+        if not s or not getattr(e, "hdr_short_count", 0) or e.short_remaining() <= 0:
+            return None
+        from photonscript.scheduler.project_store import hdr_fraction_for
+        frac = hdr_fraction_for(project, config)
+        return {"short_s": float(s), "fraction": round(frac, 4)}
+    return None
+
+
+def hdr_block(main_s: float, short_s: float, fraction: float,
+              block_min: float = 20.0) -> tuple[int, int]:
+    """(main subs, short subs) per block of the HDR light loop: about
+    block_min minutes of main subs, then enough short subs that they hold
+    `fraction` of the block's exposure time. 120 / 15 / 0.10 / 20 min ->
+    (10, 9): 135 s of 1335 s = 10.1%."""
+    main_s, short_s = float(main_s), float(short_s)
+    f = min(max(float(fraction), 0.01), 0.5)
+    n_main = max(1, int(round(float(block_min or 20.0) * 60.0 / main_s)))
+    n_short = max(1, int(round(f * n_main * main_s / ((1.0 - f) * short_s))))
+    return n_main, n_short
+
+
+def _same_hdr(a, b) -> bool:
+    if not a or not b:
+        return not a and not b
+    return (abs(float(a["short_s"]) - float(b["short_s"])) < 0.5
+            and abs(float(a["fraction"]) - float(b["fraction"])) < 1e-6)
+
+
+def _segments(rows: list[dict]) -> list[dict]:
+    """Runs of equal (length, HDR) rows; the last one runs to astro dawn."""
+    segs: list[dict] = []
+    for r in rows:
+        if (segs and abs(segs[-1]["exp_s"] - float(r["exp_s"])) < 0.5
+                and _same_hdr(segs[-1].get("hdr"), r.get("hdr"))):
+            segs[-1]["until_utc"] = r.get("until_utc")
+            segs[-1]["targets"].append(r["target"])
+        else:
+            seg = {"exp_s": float(r["exp_s"]), "until_utc": r.get("until_utc"),
+                   "targets": [r["target"]]}
+            if r.get("hdr"):
+                seg["hdr"] = dict(r["hdr"])
+            segs.append(seg)
+    if segs:
+        segs[-1]["until_utc"] = None        # the last loop runs to astro dawn
+    return segs
+
+
 def _is_test(t) -> bool:
     return any(bool(getattr(t, k, False)) for k in
                ("focus_calibration", "tracking_test", "optics_test"))
@@ -105,27 +173,27 @@ def plan(config, targets, projects=None, *, cap_s: float | None = None,
             s, src = base, "default"
         if cap_s and s > cap_s + 0.5:
             s, src = float(cap_s), src + "+unguided cap"
-        rows.append({"target": name, "exp_s": float(s), "source": src,
-                     "until_utc": _iso(getattr(t, "handoff_utc", None))})
+        row = {"target": name, "exp_s": float(s), "source": src,
+               "until_utc": _iso(getattr(t, "handoff_utc", None))}
+        try:
+            hd = osc_hdr(proj, config)
+        except Exception as e:  # noqa: BLE001 - plan the main subs as before
+            logger.warning("Piggy HDR for %s skipped: %s", name, e)
+            hd = None
+        if hd and hd["short_s"] < float(s) - 0.5:
+            row["hdr"] = hd
+        rows.append(row)
         if getattr(t, "handoff_utc", None) is None:
             break       # this target keeps the mount to the loop end (PS-180)
-    segs: list[dict] = []
-    for r in rows:
-        if segs and abs(segs[-1]["exp_s"] - r["exp_s"]) < 0.5:
-            segs[-1]["until_utc"] = r["until_utc"]
-            segs[-1]["targets"].append(r["target"])
-        else:
-            segs.append({"exp_s": r["exp_s"], "until_utc": r["until_utc"],
-                         "targets": [r["target"]]})
-    if segs:
-        segs[-1]["until_utc"] = None        # the last loop runs to astro dawn
+    segs = _segments(rows)
     lengths = {round(s["exp_s"], 1) for s in segs}
+    any_hdr = any(s.get("hdr") for s in segs)
     eff_base = min(base, cap_s) if cap_s else base
-    changed = any(r["source"] != "default" and abs(r["exp_s"] - eff_base) >= 0.5
-                  for r in rows)
+    changed = any_hdr or any(r["source"] != "default" and abs(r["exp_s"] - eff_base) >= 0.5
+                             for r in rows)
     single = segs[0]["exp_s"] if len(lengths) == 1 and segs else None
     return {"base_s": base, "cap_s": cap_s, "core_mode": core_mode(config),
-            "targets": rows, "segments": segs if len(lengths) > 1 else [],
+            "targets": rows, "segments": segs if (len(lengths) > 1 or any_hdr) else [],
             "single_s": single, "changed": changed}
 
 
@@ -173,10 +241,13 @@ def companion_kwargs(rec: dict | None) -> dict:
         segs = []
         for s in rec["segments"]:
             u = s.get("until_utc")
-            segs.append({"exp_s": float(s["exp_s"]),
-                         "until_utc": (datetime.fromisoformat(str(u).rstrip("Z"))
-                                       if u else None),
-                         "targets": list(s.get("targets") or [])})
+            seg = {"exp_s": float(s["exp_s"]),
+                   "until_utc": (datetime.fromisoformat(str(u).rstrip("Z"))
+                                 if u else None),
+                   "targets": list(s.get("targets") or [])}
+            if s.get("hdr"):
+                seg["hdr"] = dict(s["hdr"])
+            segs.append(seg)
         return {"segments": segs}
     if rec.get("changed") and rec.get("single_s"):
         return {"exp_s": float(rec["single_s"])}
@@ -205,20 +276,14 @@ def with_target_length(rec: dict | None, target: str | None, exp_s: float,
     for r in hit or rows:
         r["exp_s"] = s
         r["source"] = "ladder"
-    segs: list[dict] = []
-    for r in rows:
-        if segs and abs(segs[-1]["exp_s"] - float(r["exp_s"])) < 0.5:
-            segs[-1]["until_utc"] = r.get("until_utc")
-            segs[-1]["targets"].append(r["target"])
-        else:
-            segs.append({"exp_s": float(r["exp_s"]), "until_utc": r.get("until_utc"),
-                         "targets": [r["target"]]})
-    if segs:
-        segs[-1]["until_utc"] = None
+        if r.get("hdr") and float(r["hdr"]["short_s"]) >= s - 0.5:
+            r.pop("hdr")        # the ladder went down to the short length
+    segs = _segments(rows)
     lengths = {round(x["exp_s"], 1) for x in segs}
+    any_hdr = any(x.get("hdr") for x in segs)
     base = float(rec.get("base_s") or base_s or 120.0)
     rec.update(base_s=base, targets=rows,
-               segments=segs if len(lengths) > 1 else [],
+               segments=segs if (len(lengths) > 1 or any_hdr) else [],
                single_s=segs[0]["exp_s"] if len(lengths) == 1 and segs else None,
                changed=True)
     return rec, s
@@ -231,6 +296,8 @@ def summary(rec: dict | None) -> str:
         return ""
     if rec.get("segments"):
         parts = [f"{'+'.join(s['targets'])} {s['exp_s']:g} s"
+                 + (f" + HDR {s['hdr']['short_s']:g} s ({s['hdr']['fraction'] * 100:.0f}%)"
+                    if s.get("hdr") else "")
                  + (f" until {s['until_utc'][11:16]}Z" if s.get("until_utc") else "")
                  for s in rec["segments"]]
         return "Piggy lengths: " + ", then ".join(parts)

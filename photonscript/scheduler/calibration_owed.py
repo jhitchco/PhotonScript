@@ -190,6 +190,37 @@ def light_dark_lengths(config, rig: str, lights: list | None = None, *,
     return [float(e) for e, _n in ranked[:cap]]
 
 
+def goal_hdr_dark_lengths(config, rig: str, projects=None) -> list[dict]:
+    """Piggy HDR (2026-10-28): the HDR short lengths of the rig's active
+    goals ([{"exp_s", "label"}], one per length, first goal's label), so a
+    15 s short set gets its darks owed and filled before (or while) its
+    lights come in. Only the Piggy-600: the RC16's HDR shorts reach the
+    owed view through tonight's plan rows. Never raises."""
+    if rig == "rc16":
+        return []
+    try:
+        if projects is None:
+            projects = _active_projects(config)
+        out: list[dict] = []
+        for p in projects or []:
+            if not getattr(p, "active", True):
+                continue
+            for e in getattr(p, "exposure_plans", None) or []:
+                if (getattr(e, "rig", "rc16") or "rc16") != rig:
+                    continue
+                s = getattr(e, "hdr_short_seconds", None)
+                if not s or not getattr(e, "hdr_short_count", 0):
+                    continue
+                s = round(float(s), 1)
+                if not any(_same_exp(s, x["exp_s"]) for x in out):
+                    out.append({"exp_s": s, "label": f"goal {p.target.name} "
+                                f"{e.filter_type.value} HDR short ({_fmt(s)} s)"})
+        return out
+    except Exception:  # noqa: BLE001 - never break the quota over this
+        logger.warning("goal HDR dark lengths failed", exc_info=True)
+        return []
+
+
 def used_filters(config, rig: str = "rc16", *,
                  now: datetime | None = None) -> set:
     """PS-160: canonical filters the rig's lights used in the owed lookback
@@ -405,7 +436,8 @@ def _config_list(config, rig: str) -> list[float]:
     return _floats(getattr(config, key, default))
 
 
-def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
+def _dark_items(config, view, rig, store, lights, planned,
+                projects=None) -> tuple[list, list]:
     """(dark items, config fixes)."""
     from photonscript.scheduler.calibration import (dark_epoch, dark_quota,
                                                     quota_exposures)
@@ -458,6 +490,16 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
                     "xbin": 1, "readout": ep["readout"]})
         b["quota_list"] = True
         b["from_lights"] = True
+    # Piggy HDR: the goals' short set lengths join the night quota (the
+    # same rule calibration.night_dark_exposures applies at generation)
+    for g in goal_hdr_dark_lengths(view, rig, projects):
+        b = bucket({"exp_s": g["exp_s"], "gain": ep["gain"],
+                    "offset": ep["offset"], "settemp": ep["setpoint"],
+                    "xbin": 1, "readout": ep["readout"]})
+        b["quota_list"] = True
+        b["from_goal_hdr"] = True
+        if g["label"] not in b["planned"]:
+            b["planned"].append(g["label"])
     for e in learned:
         b = bucket({"exp_s": round(float(e), 1), "gain": ep["gain"],
                     "offset": ep["offset"], "settemp": ep["setpoint"],
@@ -523,6 +565,7 @@ def _dark_items(config, view, rig, store, lights, planned) -> tuple[list, list]:
             "from_lights": bool(b.get("from_lights")),
             "always_wanted": bool(b.get("always_wanted")),
             "from_unguided_limits": bool(b.get("from_unguided_limits")),
+            "from_goal_hdr": bool(b.get("from_goal_hdr")),
             "newest": nd["newest"], "age_days": _age(nd["newest"], datetime.now()),
             "ccd_temp_c": nd["ccd_temp_c"],
             "ccd_temp_max_off_c": nd["ccd_temp_max_off_c"],
@@ -868,7 +911,7 @@ def owed_report(config, rig: str | None = None, *, projects=None,
         store = cq.load_store(config, rg)
         lights = collect_lights(config, rg, projects, days=days, now=now)
         planned = planned_lights(config, rg)
-        darks, fixes = _dark_items(config, view, rg, store, lights, planned)
+        darks, fixes = _dark_items(config, view, rg, store, lights, planned, projects)
         flats = _flat_items(config, rg, _flat_sessions(config, view, rg, store, ep),
                             lights, planned, now,
                             optics=_flat_optics(config, view, rg, store, ep))

@@ -682,6 +682,12 @@ class PhotonScriptConfig(BaseSettings):
                                  # failure keeps the single master as before
     integrate_osc_hdr_short_max_s: float = 180.0  # OSC subs at or under this
                                  # length are the short set of the core combine
+    integrate_osc_hdr_set_max_s: float = 30.0  # Piggy HDR (2026-10-28): OSC
+                                 # subs at or under this length, beside subs
+                                 # at least 4x longer, are an HDR short set:
+                                 # never stacked into master_OSC, integrated
+                                 # on their own (osc_hdr/master_OSC_short)
+                                 # whatever integrate_osc_hdr_core says
     integrate_pointing_check: str = "warn"  # integrate (desktop .env): each
                                  # light's header RA / DEC vs the target's
                                  # catalog position, its altitude and a mount
@@ -1653,6 +1659,13 @@ class PhotonScriptConfig(BaseSettings):
     piggyback_dark_e_s: float = 0.023   # 120 s dark at 0 C is +3.8 ADU over
                                         # bias (e-/s per pixel)
     piggyback_exposure_s: float = 120.0  # OSC default (DUAL_RIG.md §4.5)
+    piggyback_hdr_fraction: float = 0.10  # Piggy HDR (2026-10-28): share of a
+                                 # goal's OSC time in its HDR short set when
+                                 # the goal has hdr {"OSC": s} and no
+                                 # hdr_fraction of its own
+    piggyback_hdr_block_min: float = 20.0  # Piggy HDR: one block of short
+                                 # subs after about this many minutes of main
+                                 # subs inside NINA #2's light loop
     piggyback_focus_seed: int = 11045  # STATIC cold-start position for the OSC's
                                       # OWN focuser, used as the fallback before the
                                       # auto-harvester (piggyback_focus.py) has any

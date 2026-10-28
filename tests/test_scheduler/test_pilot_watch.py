@@ -618,7 +618,11 @@ def _named(root, name):
     return [n for n in _walk(root) if n.get("Name") == name]
 
 
-def test_companion_closed_roof_darks_450_first_gated_and_dawn_bounded(tmp_path):
+def test_companion_closed_roof_darks_450_first_gated_and_dawn_bounded(tmp_path, monkeypatch):
+    # no goal HDR short lengths (a store another test loaded may hold the
+    # seeded M42 15 s set)
+    from photonscript.scheduler import calibration_owed as co
+    monkeypatch.setattr(co, "goal_hdr_dark_lengths", lambda *a, **k: [])
     root = _companion(tmp_path)
     loop = _named(root, "OSC_LIGHTS_UNTIL_DAWN")[0]
     items = loop["Items"]["$values"] if isinstance(loop["Items"], dict) else loop["Items"]

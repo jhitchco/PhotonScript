@@ -208,6 +208,11 @@ class ImagingProject(BaseModel):
     # HDR short companion sub set on those filters (see ExposurePlan HDR fields).
     # None/{} = no HDR. This is the GENERIC "special plan per target" hook: a
     # target opts into HDR purely as data, no per-target code.
+    # Piggy HDR (2026-10-28): the "OSC" key gives the Piggy-600 OSC plan a
+    # short set (e.g. {"OSC": 15}) sized by hdr_fraction of the OSC time
+    # (project_store.osc_plan), shot in blocks inside NINA #2's light loop.
+    hdr_fraction: Optional[float] = None  # Piggy HDR: share of the OSC plan's
+    # time in the short set (0.10 = 10%); None = config piggyback_hdr_fraction
     exposure_overrides: Optional[dict] = None  # {filter_value: long_exposure_seconds}
     # — override the config default long-sub length for specific filters (else
     # config.nb_exposure_s / bb_exposure_s). None = use the global defaults.
