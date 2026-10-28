@@ -23,7 +23,17 @@ every 30 s tick and burned through the 10,000/mo Pushover cap):
                                 most once per pushover_daytime_title_window_h.
 
 Emergency messages (priority >= 2) bypass the hourly burst cap but still count
-toward (and are still stopped by) the monthly cap. Everything is best-effort:
+toward (and are still stopped by) the monthly cap.
+
+Cap-exempt pages (2026-10-28, "Alert on a NINA that is up but silent"): a
+caller passes cap_exempt="<family>:<key>" (the NINA watch: nina_watch:<rig>:
+<state>) for a page that must not lose to the global hourly cap (10-17
+03:06Z: NINA #2 UP BUT SILENT was held as hourly-cap). Such a page skips the
+hourly burst cap but has its own budget instead: at most
+pushover_cap_exempt_max_per_hour per key in any 60 minutes (excess:
+"exempt-cap"). Dedup, the monthly cap, the daytime gate, the once-per-fact
+rule and the PS-212 kind policy all still apply, and it still counts toward
+the hourly window that other pages see. Everything is best-effort:
 any limiter error falls through to sending. Set pushover_ratelimit_enabled
 False to restore the old unconditional behaviour.
 
@@ -70,6 +80,7 @@ _DEFAULTS = {
     "pushover_ratelimit_enabled": True,
     "pushover_dedup_window_s": 300,
     "pushover_max_per_hour": 20,
+    "pushover_cap_exempt_max_per_hour": 2,
     "pushover_monthly_cap": 9000,
     "pushover_quiet_daytime": True,
     "pushover_daytime_title_window_h": 4.0,
@@ -702,8 +713,13 @@ def _daytime_gate(state: dict, now: float, title: str, priority: int,
 
 
 def _gate(state: dict, now: float, month: str, key: str, priority: int,
-          dedup_window_s: int, max_per_hour: int, monthly_cap: int):
+          dedup_window_s: int, max_per_hour: int, monthly_cap: int,
+          exempt_key: str | None = None, exempt_max_per_hour: int = 2):
     """Pure decision function. Mutates `state`, returns (allow, reason, note).
+
+    exempt_key: a cap-exempt page (see the module docstring): it skips the
+    global hourly cap but at most exempt_max_per_hour pages per exempt_key
+    are sent in any 60 minutes ("exempt-cap" past that).
 
     `note` is text to append to an allowed message (e.g. suppression summary).
     Kept side-effect-free besides `state` so it is unit-testable.
@@ -730,9 +746,21 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
         state["suppressed"] = state.get("suppressed", 0) + 1
         return (False, "dedup", "")
 
-    # --- rolling hourly burst cap (priority>=2 bypasses) ---
+    # --- rolling hourly burst cap (priority>=2 and cap-exempt bypass) ---
     window = [t for t in state.get("hour_ts", []) if now - t < 3600]
-    if priority < 2 and len(window) >= max_per_hour:
+    exempt = None
+    if exempt_key:
+        by_key = state.setdefault("exempt_ts", {})
+        for k in list(by_key):
+            by_key[k] = [t for t in by_key[k] if now - t < 3600]
+            if not by_key[k]:
+                by_key.pop(k)
+        exempt = by_key.get(exempt_key, [])
+        if priority < 2 and len(exempt) >= max(0, int(exempt_max_per_hour)):
+            state["hour_ts"] = window
+            state["suppressed"] = state.get("suppressed", 0) + 1
+            return (False, "exempt-cap", "")
+    elif priority < 2 and len(window) >= max_per_hour:
         state["hour_ts"] = window
         state["suppressed"] = state.get("suppressed", 0) + 1
         return (False, "hourly-cap", "")
@@ -740,6 +768,8 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
     # --- allowed: record it ---
     window.append(now)
     state["hour_ts"] = window
+    if exempt is not None:
+        state["exempt_ts"][exempt_key] = exempt + [now]
     recent[key] = now
     # prune dedup map to keep the file small
     for k in [k for k, ts in recent.items() if now - ts > dedup_window_s * 4]:
@@ -756,7 +786,8 @@ def _gate(state: dict, now: float, month: str, key: str, priority: int,
 async def notify(config, message: str, title: str = "PhotonScript",
                  priority: int = 0, sound: str = "none", attachment=None,
                  kind: str | None = None, safety: bool = False,
-                 fact: str | None = None, thumb: str | None = None) -> bool:
+                 fact: str | None = None, thumb: str | None = None,
+                 cap_exempt: str | None = None) -> bool:
     """Send a Pushover notification, rate-limited. No-op (logged) if keys unset.
     attachment (PS-161): an image path to attach (desktop review JPG).
     Title and message go out as plain ASCII (ascii_text).
@@ -766,7 +797,9 @@ async def notify(config, message: str, title: str = "PhotonScript",
     and is never folded by the once-per-fact rule. fact: what the push
     states, for the once-per-night rule (default: the title and the
     message with digits masked). thumb: a dashboard URL of the image for
-    the storyline (the push itself carries attachment)."""
+    the storyline (the push itself carries attachment). cap_exempt: a key
+    ("nina_watch:<rig>:<state>") for a page that skips the global hourly cap
+    but keeps its own per-key budget (pushover_cap_exempt_max_per_hour)."""
     message, title = ascii_text(message), ascii_text(title)
     kind = norm_kind(kind)
     safety = bool(safety) and kind == ACT
@@ -831,6 +864,9 @@ async def notify(config, message: str, title: str = "PhotonScript",
                 int(_cfg(config, "pushover_dedup_window_s")),
                 int(_cfg(config, "pushover_max_per_hour")),
                 int(_cfg(config, "pushover_monthly_cap")),
+                exempt_key=cap_exempt or None,
+                exempt_max_per_hour=int(
+                    _cfg(config, "pushover_cap_exempt_max_per_hour")),
             )
             if allow and fkey:
                 _fact_mark(state, night, fkey, now)

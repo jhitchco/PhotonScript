@@ -164,7 +164,7 @@ safety act. Conditions are the code's own.
 | scheduler/night_pilot.py | advise, acted, optics reading, "worked", "did NOT help" without a human step | info |
 | scheduler/nina_offline.py | NINA down past the grace | act (act/safety for the RC16) |
 | scheduler/nina_offline.py | NINA back | info |
-| scheduler/nina_watchdog.py | not running / API down / silent / stuck / parked while armed | act (act/safety for the RC16 not running / API down); a known reason keeps silent / stuck / parked quiet |
+| scheduler/nina_watchdog.py | not running / API down / silent / stuck / parked while armed | act (act/safety for the RC16 not running / API down); a known reason keeps silent / stuck / parked quiet ; not running / silent pages skip the global hourly cap (own budget: pushover_cap_exempt_max_per_hour per rig and state, default 2) |
 | scheduler/nina_watchdog.py | outside an armed night, OK again | info |
 | scheduler/nina_validation.py | load validation | act/safety when fatal, else info |
 | scheduler/nina2_mount_check.py | NINA #2 holds mount items | act while in the loop and not replaced, else info |

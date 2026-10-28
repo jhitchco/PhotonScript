@@ -64,6 +64,12 @@ stays one page. 0 = the old once per (rig, state) per night. While the
 NINA offline watch owns a rig (an engaged outage, nina_offline.owned())
 the push is still only recorded, so one outage is never two pages.
 
+Cap-exempt pages (2026-10-28): a not_running or silent page skips the
+global Pushover hourly cap (10-17 03:06Z: NINA #2 UP BUT SILENT was held as
+hourly-cap while the NOT RUNNING pages got through). It still has the
+(rig, state) latch above plus its own Pushover budget per (rig, state)
+(pushover_cap_exempt_max_per_hour), dedup and the monthly cap.
+
 Observe only: this never starts, restarts, stops or commands NINA.
 """
 from __future__ import annotations
@@ -78,6 +84,15 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 MODES = ("alert", "panel", "off")
+
+# States whose page skips the global Pushover hourly cap (own budget instead).
+CAP_EXEMPT_STATES = ("not_running", "silent")
+
+
+def cap_exempt_key(rig: str, state: str) -> str | None:
+    """The Pushover cap_exempt key of a (rig, state) page, None when that
+    state's page stays under the global hourly cap."""
+    return f"nina_watch:{rig}:{state}" if state in CAP_EXEMPT_STATES else None
 BAD = ("api_down", "silent", "not_running", "stuck", "parked")
 TICK_S = 60
 CONFIRM_TICKS = 3
@@ -681,7 +696,8 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
                     await _push(cfg, msg, 1 if live else 0, notify,
                                 kind="act" if live else "info",
                                 safety=live and rig == "rc16"
-                                and res["state"] in ("not_running", "api_down"))
+                                and res["state"] in ("not_running", "api_down"),
+                                cap_exempt=cap_exempt_key(rig, res["state"]))
         elif res["recovered"]:
             msg = recovery_text(cfg, rig, res["prev"])
             _event(cfg, rig, "ok", msg, now)
@@ -724,15 +740,17 @@ def _held(cfg, msg: str, priority: int) -> None:
 
 
 async def _push(cfg, msg: str, priority: int, notify=None, kind: str = "act",
-                safety: bool = False) -> None:
+                safety: bool = False, cap_exempt: str | None = None) -> None:
     """PS-212: kind / safety go to notify() (an alert is an act; a
-    recovery is info)."""
+    recovery is info). cap_exempt: cap_exempt_key() of a not running / up
+    but silent page (skips the global hourly cap, keeps its own budget)."""
     if notify is None:
         from photonscript.shared.pushover import notify as _n
         notify = _n
+    extra = {"cap_exempt": cap_exempt} if cap_exempt else {}
     try:
         await notify(cfg, msg, title="PhotonScript NINA watch", priority=priority, kind=kind,
-                     safety=safety)
+                     safety=safety, **extra)
     except Exception as e:  # noqa: BLE001
         logger.warning("nina watch push failed: %s", e)
 

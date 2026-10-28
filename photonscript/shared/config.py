@@ -1565,6 +1565,8 @@ class PhotonScriptConfig(BaseSettings):
     pushover_ratelimit_enabled: bool = True   # False = old unthrottled behaviour
     pushover_dedup_window_s: int = 300        # drop identical (title,message) within this
     pushover_max_per_hour: int = 20           # rolling 1-hour burst cap (priority>=2 exempt)
+    pushover_cap_exempt_max_per_hour: int = 2  # cap-exempt pages (NINA watch): own budget
+                                              # per (rig, state) key in any 60 min
     pushover_monthly_cap: int = 9000          # hard stop/month (headroom under Pushover's 10k)
     pushover_quiet_daytime: bool = True        # sun up: no heartbeats, 1 per title per window
     pushover_daytime_title_window_h: float = 4.0
