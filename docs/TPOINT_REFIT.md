@@ -1,9 +1,11 @@
 # TPoint refit (after tpoint-autocal)
 
-Status (2026-10-18): BUILT, UNTESTED ON HARDWARE. On the remote CLI
-allowlist in its READ modes only: the dry run (no flag) and `--discover`
-(plus `--json`); `--go`, `--fit`, `--action` and `--test` are not listed
-(`photonscript remote -- tpoint-refit --discover`). Code:
+Status (2026-10-29): BUILT, UNTESTED ON HARDWARE. On the remote CLI
+allowlist: the dry run (no flag), `--discover` and `--judge` (read), and
+since 2026-10-29 (Jeremy approved) the remote steps `--backup` and
+`--judge --restore-if-bad` (write jobs, refused mid-night); see "Remote
+steps (2026-10-29)". `--go`, `--fit`, `--action` and `--test` (console
+input) are not listed. Code:
 `photonscript/telescope_agent/tpoint_refit.py`, CLI `photonscript
 tpoint-refit`, tests `tests/test_scheduler/test_tpoint_refit.py` (fakes
 only).
@@ -86,6 +88,35 @@ Options: `--min-samples` (default `tpoint_min_points` 50), `--max-rms`
 
 Never arms, never dispatches, never moves the mount, never syncs, never
 turns pointing corrections or ProTrack on or off.
+
+## Remote steps (2026-10-29)
+
+The remote job runner has no stdin, so `--go --fit console` cannot run
+there. The same refit as three non-interactive steps, with the fit done by
+hand in TPoint over Remote Desktop in between:
+
+1. `photonscript remote -- tpoint-refit --backup`: the `--go` preflight
+   (armer DISARMED via GET /api/arm, TPoint files found, the model before
+   read), every TPoint file copied to `C:\astro\tpoint_backup\<UTC stamp>\`
+   (as `--go`), and `refit_before.json` written there (files with size and
+   mtime, samples, sky RMS, terms, the full stats). Prints the backup
+   folder. Exit 0 when backed up.
+2. In TPoint (Remote Desktop): run Super Model, wait, File > Save. Leave
+   pointing corrections / ProTrack alone.
+3. `photonscript remote -- tpoint-refit --judge --restore-if-bad`: reads
+   the model now from TPoint's files, compares it with `refit_before.json`
+   using `judge()` and the same thresholds (`--min-samples`, `--max-rms`,
+   `--max-worse-pct`, samples per term), prints the verdict and the
+   numbers. A reject (armer DISARMED first) does the `--go` restore:
+   changed files to `<backup>\rejected\`, the backup copied back, files the
+   fit created moved to `<backup>\rejected\`; nothing is deleted. No new
+   model = `no_change`, nothing restored. Exit 0 only when kept.
+
+`--judge` alone only reports (read job; a bad fit is `bad_not_restored`).
+`--backup-dir <stamp>` picks a backup folder (only under the backup root);
+the default is the newest one holding `refit_before.json`. After a kept fit
+the manual steps below still apply; after a restore, reopen the restored
+model in TPoint before any save.
 
 ## What stays manual (every time, today)
 

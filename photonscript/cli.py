@@ -1503,6 +1503,20 @@ def tpoint_refit_cmd(
     discover: bool = typer.Option(False, "--discover", help="READ ONLY: list "
                                   "TheSkyXAction members that mention TPoint / "
                                   "model / fit / ProTrack; executes nothing"),
+    backup: bool = typer.Option(False, "--backup", help="Remote step 1 (no "
+                                "console input): the --go preflight, back up "
+                                "TPoint's files and record the model before in "
+                                "<backup>/refit_before.json"),
+    judge: bool = typer.Option(False, "--judge", help="Remote step 3 (no "
+                               "console input): judge the model now against "
+                               "refit_before.json; reports only unless "
+                               "--restore-if-bad"),
+    backup_dir: str = typer.Option("", "--backup-dir", help="With --judge: the "
+                                   "backup folder (a <UTC stamp> folder under the backup root; "
+                                   "default the newest with refit_before.json)"),
+    restore_if_bad: bool = typer.Option(False, "--restore-if-bad", help="With "
+                                        "--judge: on a reject, restore the "
+                                        "backup (armer DISARMED first)"),
     min_samples: Optional[int] = typer.Option(None, "--min-samples",
                                               help="default tpoint_min_points"),
     max_rms: Optional[float] = typer.Option(None, "--max-rms", help="arcsec, "
@@ -1524,6 +1538,8 @@ def tpoint_refit_cmd(
     photonscript tpoint-refit
     photonscript tpoint-refit --discover
     photonscript tpoint-refit --go --test
+    photonscript tpoint-refit --backup
+    photonscript tpoint-refit --judge --restore-if-bad
     """
     import json as _json
     from datetime import datetime as _dt
@@ -1531,8 +1547,13 @@ def tpoint_refit_cmd(
     if fit not in tr.FITS:
         console.print(f"--fit must be one of {', '.join(tr.FITS)}", markup=False)
         raise typer.Exit(2)
-    if discover and go:
-        console.print("pick one of --discover and --go", markup=False)
+    if sum((discover, go, backup, judge)) > 1:
+        console.print("pick one of --discover, --go, --backup and --judge",
+                      markup=False)
+        raise typer.Exit(2)
+    if (backup_dir or restore_if_bad) and not judge:
+        console.print("--backup-dir and --restore-if-bad go with --judge",
+                      markup=False)
         raise typer.Exit(2)
     cfg = _config_for_repo(Path(__file__).resolve().parents[1])
     say = lambda m: console.print(m, markup=False, highlight=False)  # noqa: E731
@@ -1555,6 +1576,20 @@ def tpoint_refit_cmd(
                    wait_s=float(wait_s if wait_s is not None else
                                 getattr(cfg, "tpoint_refit_wait_s", tr.DEFAULT_WAIT_S)),
                    th=tr.thresholds(cfg, min_samples, max_rms, max_worse_pct))
+    if backup or judge:
+        deps = tr.live_deps(cfg, url, need_sky=False, say=say)
+        if backup or not restore_if_bad:
+            deps.save_record = None   # refit_before.json is the backup's record;
+                                      # a report-only judge writes nothing
+        if backup:
+            res = tr.backup_only(deps, opts)
+            ok = res["status"] == "backed_up"
+        else:
+            res = tr.judge_only(deps, opts, backup_dir or None, restore_if_bad)
+            ok = res["status"] == "kept"
+        if as_json:
+            print(_json.dumps(res, indent=2, default=str))
+        raise typer.Exit(0 if ok else 1)
     if go:
         say("TPoint refit LIVE (" + fit + (", SUPERVISED TEST" if test else "")
             + "). It backs up TPoint's files first; it never arms, moves the "

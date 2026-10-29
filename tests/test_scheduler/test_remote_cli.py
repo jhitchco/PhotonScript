@@ -54,22 +54,31 @@ def test_tpoint_autocal_go_is_write_gated():
     assert allow.commands["tpoint-autocal"].write_flags == ("--go",)
 
 
-# tpoint-refit is listed READ ONLY: the dry run (no flag) and --discover
-# (one TheSky script that only enumerates TheSkyXAction member names). The
-# live refit flags are not on the list at all, not even as write flags.
+# tpoint-refit is listed READ for the dry run (no flag), --discover (one
+# TheSky script that only enumerates TheSkyXAction member names) and --judge
+# (report only). 2026-10-29 (Jeremy approved): --backup and --restore-if-bad
+# are write flags. The live refit flags (--go / --fit / --action / --test,
+# console input) are not on the list at all, not even as write flags.
 
-def test_tpoint_refit_only_read_flags():
+def test_tpoint_refit_read_flags_and_remote_steps():
     allow = rc.load_allowlist()
     r = allow.commands["tpoint-refit"]
     assert r.cls == "read"
-    assert set(r.flags) == {"--discover", "--json"}
-    assert r.write_flags == () and r.require == () and not r.night_safe
+    assert set(r.flags) == {"--discover", "--backup", "--judge", "--backup-dir",
+                            "--restore-if-bad", "--min-samples", "--max-rms",
+                            "--max-worse-pct", "--verbose", "--json"}
+    assert set(r.write_flags) == {"--backup", "--restore-if-bad"}
+    assert r.require == () and not r.night_safe
     for live in ("--go", "--fit", "--action", "--test"):
         assert live not in r.flags and live not in r.write_flags
     assert rc.validate(["tpoint-refit"], allow).cls == "read"
     assert rc.validate(["tpoint-refit", "--discover"], allow).cls == "read"
     assert rc.validate(["tpoint-refit", "--discover", "--json"], allow).cls == "read"
     assert rc.validate(["tpoint-refit", "--json"], allow).cls == "read"
+    assert rc.validate(["tpoint-refit", "--judge"], allow).cls == "read"
+    assert rc.validate(["tpoint-refit", "--backup"], allow).cls == "write"
+    assert rc.validate(["tpoint-refit", "--judge", "--restore-if-bad"],
+                       allow).cls == "write"
 
 
 @pytest.mark.parametrize("args", [

@@ -133,8 +133,22 @@ class = "read"                # dry run (no flag): the model now, the backup pla
                               # scripts; sends and copies nothing. --discover: one READ ONLY
                               # TheSky script (for..in over TheSkyXAction member names and
                               # typeof execute; calls nothing). --go / --fit / --action /
-                              # --test are never listed (a refit is a console step).
-flags = ["--discover", "--json"]
+                              # --test are never listed (they wait for console input).
+# 2026-10-29 (remote use approved by Jeremy 2026-10-29): the refit in three
+# non-interactive steps. --backup: the --go preflight (armer DISARMED, TPoint
+# files found), copies TPoint's files to C:\astro\tpoint_backup\<UTC stamp>\
+# and writes refit_before.json there. Then the Super Model fit and File > Save
+# by hand in TPoint over Remote Desktop. --judge: reads TPoint's files and
+# judges them against refit_before.json (report only; --backup-dir picks the
+# folder, a <UTC stamp> under the backup root only, default the newest).
+# --restore-if-bad: with --judge, on a reject (armer DISARMED first) copies the
+# changed files to <backup>\rejected\, copies the backup back and moves files
+# the fit created into <backup>\rejected\ (nothing is deleted). --min-samples /
+# --max-rms / --max-worse-pct only change the judge thresholds.
+flags = ["--discover", "--backup", "--judge", "--backup-dir", "--restore-if-bad",
+         "--min-samples", "--max-rms", "--max-worse-pct", "--verbose", "--json"]
+write_flags = ["--backup", "--restore-if-bad"]   # write TPoint backup / restore files;
+                                                 # not night_safe (refused mid-night)
 
 [commands.screen-snapshot]
 class = "read"                # READ ONLY desktop JPEG (no input, no clicks); writes

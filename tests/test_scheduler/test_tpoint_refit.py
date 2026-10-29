@@ -353,10 +353,167 @@ def test_cli_dry_run_sends_and_copies_nothing(tmp_path, monkeypatch):
     assert r.exit_code == 2
 
 
-def test_remote_allowlist_has_only_the_read_modes():
-    """Listed 2026-10-18 for the dry run and --discover only: the live refit
-    flags never appear in the TOML block (not even as write flags)."""
+def test_remote_allowlist_read_modes_and_the_remote_steps():
+    """2026-10-18: dry run and --discover. 2026-10-29 (Jeremy approved):
+    --backup / --judge / --restore-if-bad. --go, --fit, --action, --test
+    (console input) never appear."""
     from photonscript.scheduler import remote_cli as rc
-    r = rc.load_allowlist(ROOT / "config" / "remote_cli.toml").commands["tpoint-refit"]
-    assert r.cls == "read" and set(r.flags) == {"--discover", "--json"}
-    assert r.write_flags == ()
+    allow = rc.load_allowlist(ROOT / "config" / "remote_cli.toml")
+    r = allow.commands["tpoint-refit"]
+    assert r.cls == "read" and not r.night_safe
+    assert set(r.flags) == {"--discover", "--backup", "--judge", "--backup-dir",
+                            "--restore-if-bad", "--min-samples", "--max-rms",
+                            "--max-worse-pct", "--verbose", "--json"}
+    assert set(r.write_flags) == {"--backup", "--restore-if-bad"}
+    for bad in ("--go", "--fit", "--action", "--test", "--url", "--wait-s"):
+        assert bad not in r.flags
+    assert not [b for b in rc.check_allowlist(allow) if b.startswith("tpoint-refit")]
+
+    def cls(*a):
+        return rc.validate(["tpoint-refit", *a], allow).cls
+    assert cls("--discover") == "read" and cls("--json") == "read"
+    assert cls("--judge", "--json") == "read"
+    assert cls("--judge", "--max-rms", "20", "--min-samples", "40") == "read"
+    assert cls("--backup") == "write"
+    assert cls("--judge", "--restore-if-bad", "--backup-dir",
+               "20261029T040000Z") == "write"
+    for argv in (["--go"], ["--go", "--fit", "action"], ["--test"],
+                 ["--action", "X"]):
+        with pytest.raises(rc.Refused):
+            rc.validate(["tpoint-refit", *argv], allow)
+
+
+# ------------------------------------------------------------- remote steps
+
+def _no_ask(prompt):
+    raise AssertionError("asked " + prompt)
+
+
+def _backup(tmp_path, root, before=None, state="DISARMED"):
+    d, said, _a, _r = _deps(tmp_path, root, [before or _st(rms=15.8)], state=state)
+    d.ask = _no_ask
+    return tr.backup_only(d, _opts(tmp_path)), said
+
+
+def test_backup_writes_the_folder_and_refit_before(tmp_path):
+    import json
+    root = _tree(tmp_path)
+    res, said = _backup(tmp_path, root)
+    assert res["status"] == "backed_up", res["reason"]
+    bak = Path(res["backup"])
+    assert bak.parent == tmp_path / "backup" and bak.name == "20261018T040000Z"
+    assert (bak / "TPoint" / "Super Model Outmod.dat").read_text() == "OLD MODEL\n"
+    assert (bak / "TPoint" / "Super Model Indat.dat").read_text() == "OLD DATA\n"
+    rec = json.loads((bak / tr.BEFORE_NAME).read_text(encoding="utf-8"))
+    assert rec["samples"] == 233 and rec["sky_rms_arcsec"] == 15.8 and rec["terms"] == 22
+    assert {f["rel"] for f in rec["files"]} == {"TPoint\\Super Model Outmod.dat",
+                                               "TPoint\\Super Model Indat.dat"}
+    assert all(f["size"] and f["mtime"] for f in rec["files"])
+    assert any(str(bak) in s for s in said)
+
+
+def test_backup_refuses_unless_disarmed(tmp_path):
+    root = _tree(tmp_path)
+    res, _s = _backup(tmp_path, root, state="RUNNING")
+    assert res["status"] == "refused" and "armer idle" in res["reason"]
+    assert not (tmp_path / "backup").exists()
+
+
+def _judge(tmp_path, root, after, restore=False, state="DISARMED", backup_dir=None):
+    d, said, _a, rec = _deps(tmp_path, root, [after], state=state)
+    d.ask = _no_ask
+    return tr.judge_only(d, _opts(tmp_path), backup_dir, restore), said, rec
+
+
+def test_judge_keeps_a_good_fit_after_backup(tmp_path):
+    root = _tree(tmp_path)
+    b, _s = _backup(tmp_path, root)
+    (root / "Super Model Outmod.dat").write_text("NEW MODEL\n", encoding="ascii")
+    res, said, _r = _judge(tmp_path, root, _st(points=260, rms=14.0, mtime="new"),
+                           restore=True)
+    assert res["status"] == "kept", res["reason"]
+    assert res["backup"] == b["backup"] and res["restored"] is None
+    assert (root / "Super Model Outmod.dat").read_text() == "NEW MODEL\n"
+    assert any("before:" in s and "15.80" in s for s in said)
+    assert any("after:" in s and "14.00" in s for s in said)
+
+
+def test_judge_restore_if_bad_restores_and_deletes_nothing(tmp_path):
+    root = _tree(tmp_path)
+    b, _s = _backup(tmp_path, root)
+    (root / "Super Model Outmod.dat").write_text("BAD MODEL\n", encoding="ascii")
+    (root / "TPoint new run outmod.dat").write_text("NEW FILE\n", encoding="ascii")
+    res, _said, _r = _judge(tmp_path, root, _st(rms=40.0, mtime="new"), restore=True)
+    assert res["status"] == "rejected"
+    assert (root / "Super Model Outmod.dat").read_text() == "OLD MODEL\n"
+    assert (root / "Super Model Indat.dat").read_text() == "OLD DATA\n"
+    rej = Path(b["backup"]) / "rejected" / "TPoint"
+    assert (rej / "Super Model Outmod.dat").read_text() == "BAD MODEL\n"
+    assert (rej / "TPoint new run outmod.dat").read_text() == "NEW FILE\n"
+    bak = Path(b["backup"]) / "TPoint"
+    assert (bak / "Super Model Outmod.dat").read_text() == "OLD MODEL\n"
+    assert (bak / "Super Model Indat.dat").read_text() == "OLD DATA\n"
+    assert (Path(b["backup"]) / tr.BEFORE_NAME).is_file()
+    assert res["restored"]["errors"] == []
+
+
+def test_judge_without_restore_only_reports(tmp_path):
+    root = _tree(tmp_path)
+    _backup(tmp_path, root)
+    (root / "Super Model Outmod.dat").write_text("BAD MODEL\n", encoding="ascii")
+    res, _s, _r = _judge(tmp_path, root, _st(rms=40.0, mtime="new"), state=None)
+    assert res["status"] == "bad_not_restored" and res["restored"] is None
+    assert (root / "Super Model Outmod.dat").read_text() == "BAD MODEL\n"
+
+
+def test_judge_restore_refused_unless_disarmed(tmp_path):
+    root = _tree(tmp_path)
+    _backup(tmp_path, root)
+    (root / "Super Model Outmod.dat").write_text("BAD MODEL\n", encoding="ascii")
+    res, _s, _r = _judge(tmp_path, root, _st(rms=40.0, mtime="new"), restore=True,
+                         state="ARMED")
+    assert res["status"] == "refused" and "armer idle" in res["reason"]
+    assert (root / "Super Model Outmod.dat").read_text() == "BAD MODEL\n"
+
+
+def test_judge_no_change_restores_nothing(tmp_path):
+    root = _tree(tmp_path)
+    _backup(tmp_path, root)
+    res, _s, _r = _judge(tmp_path, root, _st(rms=15.8), restore=True)
+    assert res["status"] == "no_change" and res["restored"] is None
+    assert not (Path(res["backup"]) / "rejected").exists()
+
+
+def test_judge_picks_the_newest_backup_and_fences_backup_dir(tmp_path):
+    import json
+    root = _tree(tmp_path)
+    b, _s = _backup(tmp_path, root)
+    old = tmp_path / "backup" / "20261001T000000Z"
+    old.mkdir()
+    (old / tr.BEFORE_NAME).write_text(json.dumps({"files": [], "before": _st(rms=99.0)}))
+    (tmp_path / "backup" / "20991231T000000Z").mkdir()    # no refit_before.json
+    assert tr.latest_backup(str(tmp_path / "backup")) == Path(b["backup"])
+    res, _s, _r = _judge(tmp_path, root, _st(rms=15.8))
+    assert res["status"] == "no_change" and res["backup"] == b["backup"]
+    res, _s, _r = _judge(tmp_path, root, _st(rms=15.8), backup_dir="20261001T000000Z")
+    assert res["backup"] == str(old)
+    res, _s, _r = _judge(tmp_path, root, _st(), backup_dir=str(tmp_path))
+    assert res["status"] == "refused" and "not under" in res["reason"]
+    res, _s, _r = _judge(tmp_path, root, _st(), backup_dir="..")
+    assert res["status"] == "refused"
+
+
+def test_judge_refused_without_a_backup(tmp_path):
+    root = _tree(tmp_path)
+    res, _s, _r = _judge(tmp_path, root, _st())
+    assert res["status"] == "refused" and "--backup first" in res["reason"]
+
+
+def test_cli_remote_step_flag_checks(tmp_path, monkeypatch):
+    from typer.testing import CliRunner
+    from photonscript import cli
+    monkeypatch.setattr(cli, "_config_for_repo", lambda repo: _cfg(tmp_path))
+    for argv in (["--backup", "--judge"], ["--backup", "--go"],
+                 ["--restore-if-bad"], ["--backup", "--backup-dir", "x"]):
+        r = CliRunner().invoke(cli.app, ["tpoint-refit", *argv])
+        assert r.exit_code == 2, (argv, r.output)

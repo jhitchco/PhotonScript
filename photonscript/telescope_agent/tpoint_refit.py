@@ -348,6 +348,7 @@ class RefitRun:
         self.fit_reply: dict | None = None
         self.verdict: dict | None = None
         self.restored: dict | None = None
+        self.listing: dict | None = None
 
     def say(self, m: str):
         self.d.say(m)
@@ -359,10 +360,27 @@ class RefitRun:
             return False
         return str(a or "").strip().lower() == "yes"
 
+    def armer_check(self) -> dict:
+        """GET /api/arm reads DISARMED (unknown = no go)."""
+        arm = None
+        try:
+            arm = self.d.sched.arm() if self.d.sched is not None else None
+        except Exception as e:  # noqa: BLE001
+            self.say(f"  could not read the armer ({e})")
+        state = str((arm or {}).get("state") or "")
+        if not state:
+            return ta._check("armer idle", UNKNOWN, "GET /api/arm unreadable")
+        if state in ta.ARMER_OK_STATES:
+            return ta._check("armer idle", PASS, f"armer {state}")
+        return ta._check("armer idle", FAIL, f"armer {state}: a refit "
+                         "changes pointing mid-night; disarm first")
+
     # -- 1. preflight
-    def preflight(self) -> dict:
+    def preflight(self, fit_check: bool = True) -> dict:
         checks = []
-        if self.o.fit not in FITS:
+        if not fit_check:
+            pass
+        elif self.o.fit not in FITS:
             checks.append(ta._check("fit form", FAIL, f"--fit must be one of {FITS}"))
         elif self.o.fit == "action":
             why = action_ok(self.o.action)
@@ -382,22 +400,11 @@ class RefitRun:
         else:
             checks.append(ta._check("fit form", PASS, "console: Jeremy runs Super "
                                     "Model and saves in TPoint"))
-        arm = None
-        try:
-            arm = self.d.sched.arm() if self.d.sched is not None else None
-        except Exception as e:  # noqa: BLE001
-            self.say(f"  could not read the armer ({e})")
-        state = str((arm or {}).get("state") or "")
-        if not state:
-            checks.append(ta._check("armer idle", UNKNOWN, "GET /api/arm unreadable"))
-        elif state in ta.ARMER_OK_STATES:
-            checks.append(ta._check("armer idle", PASS, f"armer {state}"))
-        else:
-            checks.append(ta._check("armer idle", FAIL, f"armer {state}: a refit "
-                                    "changes pointing mid-night; disarm first"))
+        checks.append(self.armer_check())
         lst = None
         try:
             lst = self.d.list_files()
+            self.listing = lst
             self.backup = ta.backup_plan(lst, self.d.now(), self.o.backup_root)
         except Exception as e:  # noqa: BLE001
             self.say(f"  could not list TPoint's files ({e})")
@@ -557,7 +564,8 @@ class RefitRun:
                      "reopen the restored model (File > Open) or undo the fit, and do "
                      "not save before that (a save would overwrite the restore). "
                      "Leave pointing corrections / ProTrack as they were.")
-        if self.backup and status in ("kept", "rejected", "no_change"):
+        if self.backup and status in ("kept", "rejected", "no_change",
+                                      "bad_not_restored", "backed_up"):
             self.say(f"  Backup: {self.backup['dest']}")
         if self.d.save_record:
             try:
@@ -569,6 +577,143 @@ class RefitRun:
 
 def run_refit(deps: Deps, opts: Opts) -> dict:
     return RefitRun(deps, opts).run()
+
+
+# --------------------------------------------------------------- remote steps
+#
+# 2026-10-29: the refit in three non-interactive steps for the remote CLI
+# (no stdin there): ``--backup`` (preflight, backup, the model before in
+# refit_before.json), then the Super Model fit and save by hand in TPoint
+# (Remote Desktop), then ``--judge [--restore-if-bad]`` (the model now
+# against refit_before.json, judge(), and the same restore as --go).
+
+BEFORE_NAME = "refit_before.json"
+
+
+def write_before(dest: str, rec: dict) -> Path:
+    p = Path(dest) / BEFORE_NAME
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(rec, indent=2, default=str), encoding="utf-8")
+    return p
+
+
+def latest_backup(root: str) -> Path | None:
+    """The newest <root>/<UTC stamp> folder holding refit_before.json (the
+    stamps sort by time), else None."""
+    r = Path(root)
+    if not r.is_dir():
+        return None
+    dirs = sorted((d for d in r.iterdir() if (d / BEFORE_NAME).is_file()),
+                  key=lambda d: d.name)
+    return dirs[-1] if dirs else None
+
+
+def _under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def backup_only(deps: Deps, opts: Opts) -> dict:
+    """``tpoint-refit --backup``: the --go preflight (without the fit form),
+    the --go backup, and the model before in <backup>/refit_before.json.
+    Asks nothing."""
+    run = RefitRun(deps, opts)
+    run.say("Step 1: preflight (armer, TPoint files, the model now).")
+    pre = run.preflight(fit_check=False)
+    if not pre["go"]:
+        return run.summary("refused", "; ".join(pre["blockers"]), pre)
+    try:
+        run.do_backup()
+    except StopRefit as e:
+        return run.summary("stopped", str(e), pre)
+    files = {f.get("path"): f for f in (run.listing or {}).get("files") or []}
+    dest = run.backup["dest"]
+    copies = []
+    for c in run.backup["copies"]:
+        f = files.get(c["src"]) or {}
+        copies.append({"src": c["src"], "rel": _rel_of(c, dest),
+                       "size": f.get("size", c.get("size")), "mtime": f.get("mtime")})
+    rec = {"utc": deps.now().strftime("%Y-%m-%dT%H:%M:%SZ"), "backup_dir": dest,
+           "files": copies, "model": brief(run.before),
+           "samples": run.before.get("model_points"),
+           "sky_rms_arcsec": run.before.get("sky_rms_arcsec"),
+           "terms": run.before.get("fitted_terms"), "before": run.before}
+    try:
+        p = write_before(dest, rec)
+    except Exception as e:  # noqa: BLE001
+        return run.summary("stopped", f"could not write {BEFORE_NAME} ({e})", pre)
+    run.say("  model before: " + _fmt(brief(run.before)))
+    run.say(f"  wrote {p}")
+    run.say("Next: in TPoint (Remote Desktop) run Super Model and File > Save, "
+            "then photonscript tpoint-refit --judge --restore-if-bad")
+    s = run.summary("backed_up", f"{len(copies)} file(s) backed up", pre)
+    s["before_file"] = str(p)
+    return s
+
+
+def judge_only(deps: Deps, opts: Opts, backup_dir: str | None = None,
+               restore_if_bad: bool = False) -> dict:
+    """``tpoint-refit --judge``: the model now (TPoint's files, one read)
+    against <backup>/refit_before.json with judge(). Reports only, unless
+    restore_if_bad and the verdict is reject: then the --go restore (armer
+    DISARMED first). Asks nothing."""
+    run = RefitRun(deps, opts)
+    root = Path(opts.backup_root)
+    if backup_dir:
+        bdir = Path(backup_dir)
+        if not bdir.is_absolute():
+            bdir = root / bdir
+        if not _under(bdir, root):
+            return run.summary("refused", f"{bdir} is not under {root}")
+    else:
+        bdir = latest_backup(opts.backup_root)
+        if bdir is None:
+            return run.summary("refused", f"no backup with {BEFORE_NAME} under "
+                               f"{root}: run tpoint-refit --backup first")
+    try:
+        rec = json.loads((bdir / BEFORE_NAME).read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        return run.summary("refused", f"could not read {bdir / BEFORE_NAME} ({e})")
+    run.backup = {"dest": str(bdir), "copies": [
+        {"src": f["src"], "dst": str(bdir / PureWindowsPath(f["rel"])),
+         "size": f.get("size")} for f in rec.get("files") or []]}
+    run.before = rec.get("before") or {}
+    run.say(f"Backup: {bdir} (taken {rec.get('utc')})")
+    pre = None
+    if restore_if_bad:
+        c = run.armer_check()
+        run.say(f"  [{c['status'].upper():7}] {c['name']}: {c['detail']}")
+        pre = {"go": c["status"] == PASS, "checks": [c],
+               "blockers": [] if c["status"] == PASS else
+               [f"{c['name']}: {c['detail']}"]}
+        if not pre["go"]:
+            return run.summary("refused", "; ".join(pre["blockers"]), pre)
+    try:
+        run.after = deps.stats(deps.list_files())
+    except Exception as e:  # noqa: BLE001
+        run.after = {"ok": False, "note": str(e)}
+    run.verdict = judge(run.before, run.after, opts.th)
+    for c in run.verdict["checks"]:
+        run.say(f"  [{c['status'].upper():7}] {c['name']}: {c['detail']}")
+    v = run.verdict["verdict"]
+    if v == "keep":
+        return run.summary("kept", "the new fit passed every check", pre)
+    if v == "no_change":
+        return run.summary("no_change", "; ".join(run.verdict["reasons"]), pre)
+    if not restore_if_bad:
+        run.say("The fit is BAD; nothing restored (report only). To restore: "
+                "photonscript tpoint-refit --judge --restore-if-bad")
+        return run.summary("bad_not_restored", "; ".join(run.verdict["reasons"]), pre)
+    run.say("The fit is REJECTED: " + "; ".join(run.verdict["reasons"]))
+    run.say(f"  restoring the backup from {bdir} (the rejected files go to its "
+            "rejected folder).")
+    run.restored = run.restore()
+    for e in run.restored["errors"]:
+        run.say(f"  restore FAILED: {e}")
+    return run.summary("rejected", "; ".join(run.verdict["reasons"]), pre)
 
 
 # --------------------------------------------------------------- dry run
