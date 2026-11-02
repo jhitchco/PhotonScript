@@ -1966,7 +1966,10 @@ def format_release_check(rep: dict) -> str:
              f"  measured {rep['measured']} frames (all of the folder, up to "
              f"{rep['per_set']} per other set for context); dark model "
              f"{'on' if dm.get('enabled') else 'off'}, allowance "
-             f"{dm.get('allow_adu', 0):g} ADU + {dm.get('allow_frac', 0) * 100:g} %",
+             f"{dm.get('allow_adu', 0):g} ADU + the larger of "
+             f"{dm.get('allow_frac', 0) * 100:g} % of expected and "
+             f"{dm.get('rate_allow', 0):g} x the measured dark current x the "
+             "exposure",
              "", "  bias sessions (newest vs previous):"]
     for b in rep.get("bias_drift") or []:
         lines.append(f"    gain {b['gain']} offset {b['offset']} {b.get('readout') or '?'} "
