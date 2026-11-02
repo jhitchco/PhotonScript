@@ -218,7 +218,15 @@ class TestSeedFallback:
         # Ha's own two July points (5785 @ 20.3, 5853 @ 28.3)
         assert fs.seed_for("Ha", 24.3, cfg) == pytest.approx(5819, abs=2)
 
-    def test_ingested_af_and_expected_temp(self, tmp_path, fs):
+    def test_ingested_af_and_expected_temp(self, tmp_path, fs, monkeypatch):
+        # seed_for asks expected_temp() for "today": pin it to the day after
+        # the fixture night, or the 21-day age limit drops the AF temperature
+        # once the calendar passes 2026-10-26
+        class _DT(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return datetime(2026, 10, 6, 12, 0, tzinfo=tz)
+        monkeypatch.setattr(fm, "datetime", _DT)
         cfg = _cfg(tmp_path, nina_autofocus_reports_dir=str(
             _reports_dir(tmp_path)))
         fm.ingest_af_reports(cfg)
