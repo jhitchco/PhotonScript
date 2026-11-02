@@ -2195,6 +2195,15 @@ class PhotonScriptConfig(BaseSettings):
     astrobin_api_key: str = ""
     astrobin_api_secret: str = ""
 
+    # --- Campaign mirror to Notion (PS-32, scheduler/campaign_mirror.py) ---
+    # The default mirror is the Claude morning debrief reading
+    # /api/campaign/mirror. These are only for `campaign-mirror --push`.
+    campaign_mirror_enabled: bool = False  # off = --push stays a dry run
+    notion_token: str = ""  # Notion internal integration token; Jeremy sets
+                            # PS_NOTION_TOKEN in .env by hand, never via the
+                            # dashboard config editor
+    notion_campaigns_db: str = ""  # Notion database id of the Campaigns mirror
+
     def filter_name_map(self) -> dict:
         """Our filter class -> NINA profile filter name."""
         out = {}

@@ -2637,9 +2637,23 @@ async def api_campaign(days: int = 14):
             c["suggestions"] = suggest_targets(config, get_store(), c)
         except Exception:  # noqa: BLE001
             c["suggestions"] = []
+        # PS-32: latest integrated version + AstroBin page per goal
+        from photonscript.scheduler.campaign_mirror import attach_versions
+        attach_versions(config, c["goals"])
         return c
 
     return await asyncio.to_thread(_build)
+
+
+@app.get("/api/campaign/mirror")
+async def api_campaign_mirror(days: int = 14):
+    """PS-32: the Notion campaign mirror rows (one per goal, keyed by goal
+    id) for the morning debrief's upsert. Read only; nothing is sent."""
+    from photonscript.scheduler import campaign_mirror as cm
+    c = await api_campaign(days)
+    synced = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return {"rows": cm.mirror_rows(c, synced=synced), "schema": cm.DB_SCHEMA,
+            "push": cm.push_settings(get_config())}
 
 
 @app.post("/api/campaign/dismiss")

@@ -2528,6 +2528,28 @@ frame); the Targets page groups the panels under the mosaic. Code:
   suggestion (`/api/mosaics/suggest?name=M31`, then POST it with
   `dry_run: true` first).
 
+### Campaign mirror to Notion (PS-32)
+
+PhotonScript stays the source of truth for goals; Notion gets a read-only
+Campaigns database (one row per goal, keyed by Goal ID) for the Sunday
+planning session. One direction only: goals are edited on the dashboard.
+Code: `scheduler/campaign_mirror.py`.
+
+- **Rows.** `GET /api/campaign/mirror` returns the rows (target, status,
+  priority, rigs with done / goal h and filters, BB / NB / OSC remaining,
+  calibration, ETA, returns, visible hours, latest integrated version,
+  AstroBin link), the database schema (`DB_SCHEMA`) and the push settings.
+  `/api/campaign` goals now carry `latest_version` and `astrobin_url` from
+  the integration ledgers.
+- **Default (A).** The Claude morning debrief reads the rows and upserts them
+  with its own Notion connection: find the row by Goal ID, update it, else
+  create it. No secret on the scope PC.
+- **Optional direct push (B), off.** `photonscript campaign-mirror` prints
+  the rows (a dry run, nothing sent). `--push` upserts through the Notion
+  API only with `PS_CAMPAIGN_MIRROR_ENABLED=true`, `PS_NOTION_TOKEN` and
+  `PS_NOTION_CAMPAIGNS_DB` set by hand in `.env`; otherwise it stays a dry
+  run and says why. The token is never shown on the dashboard.
+
 ### Sky flats v2: windows by sun altitude, dusk and dawn (2026-10-24)
 
 No sky flat saved on any clear window from 09-09 to 10-23: fixed offsets
