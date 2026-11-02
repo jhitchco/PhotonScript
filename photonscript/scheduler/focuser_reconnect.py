@@ -263,7 +263,8 @@ def save_state(cfg, st: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".tmp")
         tmp.write_text(json.dumps(st, indent=1, default=str), encoding="utf-8")
-        tmp.replace(p)
+        from photonscript.shared.fileops import replace_retry
+        replace_retry(tmp, p)
     except Exception as e:  # noqa: BLE001
         logger.warning("focuser reconnect state not written: %s", e)
 
