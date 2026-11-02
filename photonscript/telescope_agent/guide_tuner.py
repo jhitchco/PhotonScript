@@ -105,17 +105,73 @@ class TuneCfg:
 NB_FILTERS = ("Ha", "OIII", "SII")   # 3 nm: the OAG behind the wheel sees little
 
 
-def tune_cfg(config, filt: str | None = None) -> TuneCfg:
-    """The tuner's band. PS-85: on a 3 nm filter (Ha / OIII / SII) the
-    exposure band is phd2_tune_exp_ms_nb (default 1 to 8 s) when set, so a
-    faint narrowband guide star gets longer exposures before PS-85 calls the
-    block not viable."""
-    hfd = _pair(getattr(config, "phd2_tune_hfd_px", "2,5"), (2.0, 5.0))
-    exp = _pair(getattr(config, "phd2_tune_exp_ms", "1000,4000"), (1000.0, 4000.0))
+EXP_DEFAULT = (1000.0, 4000.0)   # no explicit band and no camera row
+_ROW_TTL_S = 60.0
+_row_cache: dict = {}
+
+
+def _num(v):
+    try:
+        x = float(v)
+        return x if math.isfinite(x) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def camera_exposure_row(config) -> dict | None:
+    """PS-101: the exposure_ms row of the guide camera the newest PS-89
+    audit judged (its [camera.rows.exposure_ms] override on top), or None
+    when there is no audit yet or the desired file has no such row. Cached
+    for a minute (the tuner asks on every measurement)."""
+    key = (str(getattr(config, "data_dir", "")),
+           str(getattr(config, "phd2_desired_file", "")))
+    now = time.monotonic()
+    hit = _row_cache.get(key)
+    if hit and now - hit[0] < _ROW_TTL_S:
+        return hit[1]
+    row = None
+    try:
+        from photonscript.scheduler import phd2_audit as pa
+        audit = pa.load_latest(config)
+        if audit:
+            desired = pa.load_desired(config)
+            cam = pa.judged_camera(desired, audit)
+            row = next((r for r in pa.rows_for_camera(desired, cam)
+                        if r.get("id") == "exposure_ms"), None)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("tuner: camera exposure row unreadable: %s", e)
+    _row_cache[key] = (now, row)
+    return row
+
+
+def exposure_band(config, filt: str | None = None,
+                  row: dict | None = None) -> tuple[float, float]:
+    """(lo, hi) ms the tuner may pick. PS-101: one band source with the
+    PS-89 audit: phd2_tune_exp_ms when set explicitly, else the guide
+    camera's exposure_ms row (`row`, or the newest audit's camera row: 1.5
+    to 4 s on the ASI174MM Mini), else 1 to 4 s. PS-85: on a 3 nm filter
+    (Ha / OIII / SII) phd2_tune_exp_ms_nb (default 1 to 8 s) when set."""
+    text = str(getattr(config, "phd2_tune_exp_ms", "") or "").strip()
+    if text:
+        exp = _pair(text, EXP_DEFAULT)
+    else:
+        row = row if row is not None else camera_exposure_row(config)
+        lo, hi = _num((row or {}).get("min")), _num((row or {}).get("max"))
+        lo, hi = lo or EXP_DEFAULT[0], hi or EXP_DEFAULT[1]
+        exp = (min(lo, hi), max(lo, hi))
     if str(filt or "") in NB_FILTERS:
         nb = str(getattr(config, "phd2_tune_exp_ms_nb", "") or "").strip()
         if nb:
             exp = _pair(nb, exp)
+    return exp
+
+
+def tune_cfg(config, filt: str | None = None) -> TuneCfg:
+    """The tuner's band (exposures: exposure_band). PS-85: on a 3 nm filter
+    the exposure band is the narrowband one, so a faint narrowband guide
+    star gets longer exposures before PS-85 calls the block not viable."""
+    hfd = _pair(getattr(config, "phd2_tune_hfd_px", "2,5"), (2.0, 5.0))
+    exp = exposure_band(config, filt)
     return TuneCfg(peak_lo=float(getattr(config, "phd2_tune_peak_lo", 0.60) or 0.60),
                    peak_hi=float(getattr(config, "phd2_tune_peak_hi", 0.80) or 0.80),
                    snr_min=float(getattr(config, "phd2_tune_snr_min", 20.0) or 20.0),

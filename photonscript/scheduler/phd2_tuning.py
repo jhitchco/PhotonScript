@@ -141,6 +141,22 @@ def record_change(config, change: dict) -> dict:
     return rec
 
 
+def last_accepted(config) -> dict | None:
+    """PS-101: the tuner's newest measurement (its filter and target are the
+    ones guiding now) and the exposure it last accepted for that setup
+    (good_exposure_ms, None while no reading there was in band). None when
+    the tuner has no memory."""
+    ents = [e for e in load(config)["entries"].values() if e.get("t_utc")]
+    if not ents:
+        return None
+    e = max(ents, key=lambda x: str(x.get("t_utc")))
+    good = _num(e.get("good_exposure_ms"))
+    return {"filter": e.get("filter"), "target": e.get("target"),
+            "profile": e.get("profile"), "binning": e.get("binning"),
+            "gain": e.get("gain"), "t_utc": e.get("t_utc"),
+            "good_exposure_ms": int(good) if good else None}
+
+
 def night_records(config, night: str) -> list[dict]:
     return store.read_jsonl(night_log_path(config, night))
 

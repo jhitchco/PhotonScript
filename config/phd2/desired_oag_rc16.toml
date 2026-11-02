@@ -79,6 +79,7 @@ why = "PHD2 turns pixels into arcsec with this; the GP678C's 2.0 um left in the 
 fix = "Brain > Camera: pixel size 5.86 um (ASI174MM Mini)."
 
 [camera.rows.exposure_ms]
+computed = "guide_exposure"
 min = 1500
 max = 4000
 target = 2000
@@ -200,6 +201,10 @@ id = "exposure_ms"
 group = "Camera"
 label = "Guide exposure (ms)"
 sources = ["api", "profile", "log"]
+# PS-101: also PASS at the exposure the PS-90 tuner last accepted for the
+# filter guiding now (inside its band); the tuner's band is this row's
+# min / max unless phd2_tune_exp_ms is set, so the two cannot fight
+computed = "guide_exposure"
 min = 2000
 max = 4000
 target = 3000

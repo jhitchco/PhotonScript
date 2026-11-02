@@ -189,7 +189,7 @@ def test_router_and_config_fields(tmp_path, monkeypatch):
                                ("PS_PHD2_TUNE_PEAK_HI", "phd2_tune_peak_hi", 0.80),
                                ("PS_PHD2_TUNE_SNR_MIN", "phd2_tune_snr_min", 20.0),
                                ("PS_PHD2_TUNE_HFD_PX", "phd2_tune_hfd_px", "2,5"),
-                               ("PS_PHD2_TUNE_EXP_MS", "phd2_tune_exp_ms", "1000,4000"),
+                               ("PS_PHD2_TUNE_EXP_MS", "phd2_tune_exp_ms", ""),
                                ("PS_PHD2_GUIDE_FULL_SCALE_ADU", "phd2_guide_full_scale_adu",
                                 65535)):
         assert by_env[env][0] == attr

@@ -624,6 +624,8 @@ async def prep_tick(config, armer, now: datetime | None = None, *,
                                                  armer_state=str(getattr(armer, "state", ""))))
         res = await apply_fn()
         ok = bool((res or {}).get("ok"))
+        # PS-101: in tuner mode the apply leaves the exposure to the tuner
+        skipped = any(x.get("skipped") for x in (res or {}).get("results") or [])
         st["exposure_night"] = night
         st["exposure"] = {"t": store.iso_z(now), "ok": ok, "target_ms": fast["target_ms"],
                           "result": (res or {}).get("results")}
@@ -639,7 +641,10 @@ async def prep_tick(config, armer, now: datetime | None = None, *,
             from photonscript.shared import pushover
             await pushover.notify(
                 config,
-                (f"Guided prep: PHD2 guide exposure set to {fast['target_ms'] / 1000:g} s "
+                ("Guided prep: PHD2 guide exposure left to the PS-90 tuner "
+                 "(phd2_tune_mode=exposure; it picks only lengths the dark library has)."
+                 if ok and skipped else
+                 f"Guided prep: PHD2 guide exposure set to {fast['target_ms'] / 1000:g} s "
                  "(the dark library has it; clears the dark-library FAIL)." if ok else
                  f"Guided prep: setting the PHD2 guide exposure to "
                  f"{fast['target_ms'] / 1000:g} s failed: "

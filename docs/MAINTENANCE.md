@@ -342,8 +342,15 @@ poll. Agents in another process (scheduler / telescope modes) still need a
 restart, and the page says so.
 In `exposure` mode it steps down at once on a clipped star, otherwise only
 after 3 readings outside 55 to 85%, and picks the longest listed PHD2
-exposure not over the linear prediction, inside `phd2_tune_exp_ms` and only
-one the PHD2 dark library holds (no library = no change). Changes go under
+exposure not over the linear prediction, inside the tuner band and only
+one the PHD2 dark library holds (no library = no change). The band (PS-101)
+is `phd2_tune_exp_ms` when set, else the guide camera's `exposure_ms` row in
+the PS-89 desired file (1.5 to 4 s on the ASI174MM Mini, 2 to 4 s on the
+GP678C; 1 to 4 s before the first audit), and `phd2_tune_exp_ms_nb` (1 to
+8 s) on Ha / OIII / SII. The audit's exposure row reads PASS at the
+exposure the tuner last accepted for the filter guiding now (inside that
+band), and in `exposure` mode its Apply leaves the exposure to the tuner
+("left to the PS-90 tuner"). Changes go under
 `phd2_ops.hold("tuner")` and are logged to `<data_dir>\phd2\tune\<night>.jsonl`
 and the PS-89 `changes.jsonl`. Memory: `<data_dir>\phd2\tune.json`, one entry
 per profile / binning / gain / target / filter; a filter change applies the

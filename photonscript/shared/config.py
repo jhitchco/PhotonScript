@@ -1445,7 +1445,9 @@ class PhotonScriptConfig(BaseSettings):
     phd2_tune_peak_hi: float = 0.80  # fraction of full scale (aims at the middle)
     phd2_tune_snr_min: float = 20.0  # a guide star under this SNR is "faint"
     phd2_tune_hfd_px: str = "2,5"    # HFD target band (guide px at the binning)
-    phd2_tune_exp_ms: str = "1000,4000"  # exposures the tuner may pick (ms)
+    phd2_tune_exp_ms: str = ""   # exposures the tuner may pick (ms, lo,hi);
+                                 # "" = the guide camera's exposure_ms row in
+                                 # the PHD2 desired file (PS-101), else 1000,4000
     phd2_guide_full_scale_adu: int = 65535  # guide camera full scale (16-bit)
     phd2_tune_exp_ms_nb: str = "1000,8000"  # PS-85: the tuner's exposure band
                                  # on 3 nm Ha / OIII / SII (the OAG is behind

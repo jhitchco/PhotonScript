@@ -1039,7 +1039,7 @@ _CONFIG_FIELDS = [
     ("phd2_tune_peak_hi", "PS_PHD2_TUNE_PEAK_HI", "Auto-tune: guide star peak band, high (fraction of full scale)", "PHD2", "float", False, True),
     ("phd2_tune_snr_min", "PS_PHD2_TUNE_SNR_MIN", "Auto-tune: a guide star under this SNR is faint", "PHD2", "float", False, True),
     ("phd2_tune_hfd_px", "PS_PHD2_TUNE_HFD_PX", "Auto-tune: guide star HFD band (guide px, lo,hi)", "PHD2", "str", False, True),
-    ("phd2_tune_exp_ms", "PS_PHD2_TUNE_EXP_MS", "Auto-tune: guide exposures it may pick (ms, lo,hi)", "PHD2", "str", False, True),
+    ("phd2_tune_exp_ms", "PS_PHD2_TUNE_EXP_MS", "Auto-tune: guide exposures it may pick (ms, lo,hi; empty = the guide camera's exposure row in the PHD2 desired file, the same band the audit judges) (PS-101)", "PHD2", "str", False, True),
     ("phd2_guide_full_scale_adu", "PS_PHD2_GUIDE_FULL_SCALE_ADU", "Guide camera full scale (ADU): 65535 for 16-bit", "PHD2", "int", False, True),
     ("phd2_tune_exp_ms_nb", "PS_PHD2_TUNE_EXP_MS_NB", "Auto-tune on 3 nm Ha / OIII / SII: guide exposures it may pick (ms, lo,hi; empty = the band above) (PS-85)", "PHD2", "str", False, True),
     ("phd2_tune_bin_max_nb", "PS_PHD2_TUNE_BIN_MAX_NB", "Auto-tune next-night advice: guide binning up to N when NB is faint at gain 100 (advice only) (PS-85)", "PHD2", "int", False, False),
