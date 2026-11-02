@@ -1,6 +1,93 @@
 """Suite-wide fixtures."""
 
+import atexit
+import os
+import re
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
+
+# --- the machine the suite runs on stays out of it ----------------------------
+# 2026-11-02: the scope PC ran 112 failures against the desktop's handful,
+# all of them the machine leaking in: its .env (PS_PIGGYBACK_ENABLED,
+# PS_RC16_AF_POLICY, PS_LIBRARY_DIR, ...), its ~/.photonscript (QA store,
+# goals DB) and the deploy\*.cmd scripts and NINA folders the config points
+# at by absolute path. This runs at conftest import, before any test module
+# imports photonscript, so class-level defaults built from Path.home() land in
+# a throwaway home, and no PS_* variable of the shell reaches a test.
+_SUITE_HOME = Path(tempfile.mkdtemp(prefix="ps-test-home-"))
+atexit.register(shutil.rmtree, _SUITE_HOME, True)
+for _k in [k for k in os.environ if k.upper().startswith("PS_")]:
+    del os.environ[_k]
+os.environ["USERPROFILE"] = os.environ["HOME"] = str(_SUITE_HOME)
+# astropy keeps its download cache under the home too: the scope PC's has a
+# cached Leap_Second.dat, which astropy re-opens through download_file (seen
+# as a "download" by tests/test_health.py). Pin it to the suite home, so the
+# per-test home below does not move it.
+for _var, _sub in (("ASTROPY_CACHE_DIR", ".cache"), ("ASTROPY_CONFIG_DIR", ".config")):
+    (_SUITE_HOME / _sub / "astropy").mkdir(parents=True)   # must exist
+    os.environ[_var] = str(_SUITE_HOME / _sub / "astropy")
+
+from photonscript.shared import config as _cfgmod  # noqa: E402
+from photonscript.shared import envfile as _envfile  # noqa: E402
+
+# No .env at all (repo root or cwd); a test that wants one passes _env_file.
+_cfgmod.PhotonScriptConfig.model_config["env_file"] = None
+
+# Settings whose default is an absolute path on one of the two machines
+# (C:\astro\PhotonScript\deploy\*.cmd, C:\Users\jeremy\Documents\N.I.N.A,
+# C:\Users\sleep\ninashare\Library, ...): each test sees a path that does not
+# exist, so the scope PC and the desktop build the same sequences.
+_MACHINE_PATH_FIELDS = sorted(
+    n for n, f in _cfgmod.PhotonScriptConfig.model_fields.items()
+    if isinstance(f.default, str) and re.match(r"^[A-Za-z]:[\\/]", f.default))
+
+
+@pytest.fixture(autouse=True)
+def _machine_isolated(monkeypatch, tmp_path_factory):
+    """Per test: a fresh home and data_dir, no PS_* left over from another
+    test, machine paths pointed at nothing, and the .env writers
+    (envfile.env_path) aimed at a scratch file instead of the checkout's
+    .env. Defined first, so the fixtures below (and any test) can still set
+    their own PS_* on top. Its folders sit outside the test's tmp_path, which
+    stays the test's own."""
+    for k in [k for k in os.environ if k.upper().startswith("PS_")]:
+        monkeypatch.delenv(k)
+    tmp_path = tmp_path_factory.mktemp("machine")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PS_DATA_DIR", str(home / ".photonscript"))
+    monkeypatch.setenv("PS_DB_PATH", str(home / ".photonscript" / "photonscript.db"))
+    absent = tmp_path / "absent"
+    for name in _MACHINE_PATH_FIELDS:
+        monkeypatch.setenv(f"PS_{name.upper()}", str(absent / name))
+    real_env_path = _envfile.env_path
+    monkeypatch.setattr(_envfile, "env_path", lambda root=None: (
+        real_env_path(root) if root is not None else tmp_path / ".env"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pixinsight(monkeypatch):
+    """A test may never start the installed PixInsight (runner.run_script's
+    default exe is C:\\Program Files\\PixInsight\\bin\\PixInsight.exe, a module
+    constant no config redirect reaches). Fakes (a test popen, or a stand-in
+    exe under tmp_path) still run."""
+    import subprocess
+
+    from photonscript.integration import runner
+    real_start = runner._start
+    installed = os.path.normcase(os.path.abspath(runner.DEFAULT_EXE))
+
+    def guarded(popen, args, env):
+        if popen is subprocess.Popen and args and os.path.normcase(
+                os.path.abspath(str(args[0]))) == installed:
+            raise RuntimeError("a test tried to launch the installed PixInsight")
+        return real_start(popen, args, env)
+    monkeypatch.setattr(runner, "_start", guarded)
 
 
 @pytest.fixture(autouse=True)

@@ -14,6 +14,9 @@ from photonscript.shared.paths import expand_path, is_path_setting
 
 # The checkout this package runs from (photonscript/shared/config.py -> repo).
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# The .env files PhotonScriptConfig reads (tests/conftest.py turns them off so
+# the suite never sees a machine's real .env).
+ENV_FILES = (str(REPO_ROOT / ".env"), ".env")
 
 
 class PhotonScriptConfig(BaseSettings):
@@ -23,7 +26,7 @@ class PhotonScriptConfig(BaseSettings):
     # C:\Users\jeremy used to see code defaults: ecc 0.70 instead of 0.6).
     # A .env in the current directory still wins (pydantic: later file wins).
     model_config = {"env_prefix": "PS_",
-                    "env_file": (str(REPO_ROOT / ".env"), ".env"),
+                    "env_file": ENV_FILES,
                     "extra": "ignore"}
 
     # --- General ---

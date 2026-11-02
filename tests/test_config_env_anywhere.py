@@ -31,5 +31,7 @@ def test_cwd_env_overrides_repo_env(tmp_path, monkeypatch):
 
 
 def test_default_env_file_includes_repo_root():
-    files = cfgmod.PhotonScriptConfig.model_config["env_file"]
+    # tests/conftest.py sets model_config["env_file"] to None for the suite;
+    # ENV_FILES is what the class is defined with
+    files = cfgmod.ENV_FILES
     assert str(cfgmod.REPO_ROOT / ".env") in files and ".env" in files
