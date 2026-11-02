@@ -84,7 +84,20 @@ class _Armer:
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """A tick 30 min before sunset; RC16 B and G stale; roof open; NINA idle."""
-    now = datetime.utcnow().replace(microsecond=0)
+    return _env(tmp_path, monkeypatch, datetime.utcnow().replace(microsecond=0))
+
+
+@pytest.fixture
+def env_evening(tmp_path, monkeypatch):
+    """env at a fixed evening (17:00 MDT). With the real clock, a run between
+    about 11:00 and 12:00 local puts a tick and the window's end on two
+    different night keys (the night turns over at local noon), so a test that
+    ticks past the window sees a fresh state. The loop tests keep env: their
+    loop reads the real clock."""
+    return _env(tmp_path, monkeypatch, datetime(2026, 10, 24, 23, 0, 0))
+
+
+def _env(tmp_path, monkeypatch, now):
     sunset = now + timedelta(minutes=30)
     tw = {"sunset": sunset, "naut_dusk": sunset + timedelta(minutes=54),
           "astro_dusk": sunset + timedelta(minutes=83)}
@@ -215,7 +228,8 @@ def test_closed_roof_skips_then_dispatches_when_it_opens(env, tmp_path, caplog):
     assert [r["skip"] for r in _rows(cfg, env["now"])] == [df.SKIP_ROOF_CLOSED, None]
 
 
-def test_closed_roof_all_window_ends_with_a_line(env, tmp_path, caplog):
+def test_closed_roof_all_window_ends_with_a_line(env_evening, tmp_path, caplog):
+    env = env_evening
     cfg = _cfg(tmp_path, flats_dispatch_roof_closed=False)
     armer, fs = _Armer(), {}
     env["st"]["safe"] = False
