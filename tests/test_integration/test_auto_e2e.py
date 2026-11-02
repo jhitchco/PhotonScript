@@ -137,7 +137,7 @@ def test_scope_status_chip_uses_the_rc16_first_hour():
     assert not ready_to_process(_cand(pct=15, approved=1.2), thr)[0]
 
 
-def test_new_config_keys_defaults_and_system_page():
+def test_new_config_keys_defaults_and_system_page(machine_defaults):
     from photonscript.scheduler.app import _CONFIG_FIELDS
     from photonscript.shared.config import PhotonScriptConfig
     c = PhotonScriptConfig(_env_file=None)

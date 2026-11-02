@@ -437,7 +437,8 @@ def save(config, data: dict) -> None:
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
-    tmp.replace(p)
+    from photonscript.shared.fileops import replace_retry
+    replace_retry(tmp, p)
 
 
 def rig_fit(config, rig: str, model: dict | None = None) -> dict:

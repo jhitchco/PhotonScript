@@ -345,7 +345,8 @@ def save_plan(config, p: dict, **extra) -> None:
                           "saved": datetime.utcnow().isoformat(timespec="seconds")})
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
-        tmp.replace(path)
+        from photonscript.shared.fileops import replace_retry
+        replace_retry(tmp, path)
     except Exception as e:  # noqa: BLE001 - never break a dispatch on this
         logger.warning("flat plan save failed: %s", e)
 

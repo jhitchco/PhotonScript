@@ -90,6 +90,10 @@ def test_endpoint_output_unchanged(tmp_path, monkeypatch):
     cfg, lib, projects, _ = _fixture(tmp_path, monkeypatch)
     monkeypatch.setattr(app, "get_config", lambda: cfg)
     monkeypatch.setattr(app, "_projects", {p.id: p for p in projects})
+    # store "loaded": get_store() would otherwise build one from cfg and merge
+    # its goals into _projects (this test only passed while an earlier test
+    # had left app._store set)
+    monkeypatch.setattr(app, "_store", object())
     out = app.api_integration_readiness()
     if asyncio.iscoroutine(out):
         out = asyncio.run(out)

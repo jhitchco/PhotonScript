@@ -1,5 +1,6 @@
 """PS-34b: `photonscript monitor` helpers (parse, filter, colorize, follow)."""
 
+import os
 from datetime import datetime
 
 from photonscript.shared import logmonitor as lm
@@ -48,7 +49,10 @@ def test_markup_colors_and_escapes():
     assert "bold red" in m and r"\[x]" in m  # brackets escaped for rich
     assert "bold cyan" in lm.to_markup(lm.parse_line(L1))  # ARMED highlighted
     from rich.console import Console
-    Console(file=open("/dev/null", "w")).print(m)  # valid markup
+    # valid markup (os.devnull: "/dev/null" on Windows is C:\dev\null, a
+    # real file on the desktop and a FileNotFoundError on the scope PC)
+    with open(os.devnull, "w") as f:
+        Console(file=f).print(m)
 
 
 def test_last_lines(tmp_path):

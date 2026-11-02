@@ -1,6 +1,123 @@
 """Suite-wide fixtures."""
 
+import atexit
+import os
+import re
+import shutil
+import tempfile
+from pathlib import Path
+
 import pytest
+
+# --- the machine the suite runs on stays out of it ----------------------------
+# 2026-11-02: the scope PC ran 112 failures against the desktop's handful,
+# all of them the machine leaking in: its .env (PS_PIGGYBACK_ENABLED,
+# PS_RC16_AF_POLICY, PS_LIBRARY_DIR, ...), its ~/.photonscript (QA store,
+# goals DB) and the deploy\*.cmd scripts and NINA folders the config points
+# at by absolute path. This runs at conftest import, before any test module
+# imports photonscript, so class-level defaults built from Path.home() land in
+# a throwaway home, and no PS_* variable of the shell reaches a test.
+_SUITE_HOME = Path(tempfile.mkdtemp(prefix="ps-test-home-"))
+atexit.register(shutil.rmtree, _SUITE_HOME, True)
+for _k in [k for k in os.environ if k.upper().startswith("PS_")]:
+    del os.environ[_k]
+os.environ["USERPROFILE"] = os.environ["HOME"] = str(_SUITE_HOME)
+# astropy keeps its download cache under the home too: the scope PC's has a
+# cached Leap_Second.dat, which astropy re-opens through download_file (seen
+# as a "download" by tests/test_health.py). Pin it to the suite home, so the
+# per-test home below does not move it.
+for _var, _sub in (("ASTROPY_CACHE_DIR", ".cache"), ("ASTROPY_CONFIG_DIR", ".config")):
+    (_SUITE_HOME / _sub / "astropy").mkdir(parents=True)   # must exist
+    os.environ[_var] = str(_SUITE_HOME / _sub / "astropy")
+
+from photonscript.shared import config as _cfgmod  # noqa: E402
+from photonscript.shared import envfile as _envfile  # noqa: E402
+
+# No .env at all (repo root or cwd); a test that wants one passes _env_file.
+_cfgmod.PhotonScriptConfig.model_config["env_file"] = None
+
+# Settings whose default is an absolute path on one of the two machines
+# (C:\astro\PhotonScript\deploy\*.cmd, C:\Users\jeremy\Documents\N.I.N.A,
+# C:\Users\sleep\ninashare\Library, ...) default to the same path under a
+# folder that does not exist, so the scope PC and the desktop build the same
+# sequences. Only the default moves (an env var, a .env passed as _env_file
+# or a keyword still win), and the tail is kept (...\deploy\cooler-gate.cmd,
+# ...\NINA.exe) for the tests of the defaults' shape.
+_ABSENT = _SUITE_HOME / "absent"
+_MACHINE_DEFAULTS = {
+    n: f.default for n, f in _cfgmod.PhotonScriptConfig.model_fields.items()
+    if isinstance(f.default, str) and re.match(r"^[A-Za-z]:[\\/]", f.default)}
+_MACHINE_PATH_FIELDS = sorted(_MACHINE_DEFAULTS)
+
+
+def _set_defaults(values: dict) -> None:
+    for n, v in values.items():
+        _cfgmod.PhotonScriptConfig.model_fields[n].default = v
+    _cfgmod.PhotonScriptConfig.model_rebuild(force=True)
+
+
+_set_defaults({n: str(_ABSENT / v[3:]) for n, v in _MACHINE_DEFAULTS.items()})
+
+
+@pytest.fixture(autouse=True)
+def _machine_isolated(monkeypatch, tmp_path_factory):
+    """Per test: a fresh home, data_dir and db_path, and the .env writers
+    (envfile.env_path) aimed at a scratch file instead of the checkout's
+    .env. Its folders sit outside the test's tmp_path, which stays the
+    test's own. (Autouse fixtures run in name order, so this one must not
+    clear PS_* variables: the gate pins below may already be set.)"""
+    tmp_path = tmp_path_factory.mktemp("machine")
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PS_DATA_DIR", str(home / ".photonscript"))
+    monkeypatch.setenv("PS_DB_PATH", str(home / ".photonscript" / "photonscript.db"))
+    real_env_path = _envfile.env_path
+    monkeypatch.setattr(_envfile, "env_path", lambda root=None: (
+        real_env_path(root) if root is not None else tmp_path / ".env"))
+    # The dashboard app keeps its config and goal store in module globals,
+    # built by the first test that asks (app.get_config / get_store) and seen
+    # by every later one: calibration_plan.load_projects reads app._store
+    # first, so a goal of an earlier test (or of the real projects.json) put
+    # its 15 s HDR shorts into the owed darks of ps128 / ps188 /
+    # closed_roof_first_lights_darks, depending on the test order.
+    import sys
+    app = sys.modules.get("photonscript.scheduler.app")
+    if app is not None:
+        monkeypatch.setattr(app, "_config", None)
+        monkeypatch.setattr(app, "_store", None)
+
+
+@pytest.fixture
+def machine_defaults():
+    """For a test of the code defaults themselves: the real machine-path
+    defaults, for this one test."""
+    redirected = {n: _cfgmod.PhotonScriptConfig.model_fields[n].default
+                  for n in _MACHINE_PATH_FIELDS}
+    _set_defaults(_MACHINE_DEFAULTS)
+    yield
+    _set_defaults(redirected)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_pixinsight(monkeypatch):
+    """A test may never start the installed PixInsight (runner.run_script's
+    default exe is C:\\Program Files\\PixInsight\\bin\\PixInsight.exe, a module
+    constant no config redirect reaches). Fakes (a test popen, or a stand-in
+    exe under tmp_path) still run."""
+    import subprocess
+
+    from photonscript.integration import runner
+    real_start = runner._start
+    installed = os.path.normcase(os.path.abspath(runner.DEFAULT_EXE))
+
+    def guarded(popen, args, env):
+        if popen is subprocess.Popen and args and os.path.normcase(
+                os.path.abspath(str(args[0]))) == installed:
+            raise RuntimeError("a test tried to launch the installed PixInsight")
+        return real_start(popen, args, env)
+    monkeypatch.setattr(runner, "_start", guarded)
 
 
 @pytest.fixture(autouse=True)

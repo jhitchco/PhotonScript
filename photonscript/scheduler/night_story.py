@@ -150,7 +150,8 @@ def save_state(config, night: str, st: dict) -> None:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_text(json.dumps(allst, indent=1, default=str), encoding="utf-8")
-            tmp.replace(p)
+            from photonscript.shared.fileops import replace_retry
+            replace_retry(tmp, p)
         except OSError as e:
             logger.warning("night story state not saved: %s", e)
 
@@ -169,7 +170,8 @@ def _update(config, night: str, fn) -> dict:
             p.parent.mkdir(parents=True, exist_ok=True)
             tmp = p.with_suffix(".tmp")
             tmp.write_text(json.dumps(allst, indent=1, default=str), encoding="utf-8")
-            tmp.replace(p)
+            from photonscript.shared.fileops import replace_retry
+            replace_retry(tmp, p)
         except OSError as e:
             logger.warning("night story state not saved: %s", e)
         return st
