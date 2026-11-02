@@ -27,7 +27,9 @@ the fixes it safely can.
     evaluate(desired, observed, config)   pure: pass / warn / fail / unknown
                      / info per row, current vs desired, why, fix, target
     run_audit()      collect + evaluate + save <data_dir>/phd2_audit/<night>.json
-    apply()          Option B: API rows (exposure, RA min-move, Dec guide mode)
+    apply()          Option B: API rows (exposure, RA min-move, Dec guide mode;
+                     the exposure is left to the PS-90 tuner when
+                     phd2_tune_mode=exposure, PS-101)
                      only while PHD2 is Stopped or Looping, under
                      phd2_ops.hold("audit"); profile rows only with
                      phd2_audit_autofix, armer idle, phd2.exe closed, verified
@@ -539,6 +541,36 @@ def _c_guide_scale(row, val, observed, config, ctx):
     return (PASS if _within(v, want, tol) else row["severity"]), desired, None, None
 
 
+def _c_guide_exposure(row, val, observed, config, ctx):
+    """PS-101: the guide exposure follows the PS-90 tuner. PASS when it is
+    the exposure the tuner last accepted for the filter guiding now and is
+    inside the tuner's band for that filter (the narrowband band on Ha /
+    OIII / SII); otherwise judged against the camera row's band as before.
+    With phd2_tune_mode=exposure the row is never Apply-able: the tuner owns
+    the exposure, so Apply cannot put a tuned value back."""
+    from photonscript.telescope_agent.guide_tuner import exposure_band, tune_mode
+    band = _desired_text(row, None)
+    mode = tune_mode(config)
+    if mode == "exposure":
+        ctx["not_applicable"] = "left to the PS-90 tuner (phd2_tune_mode=exposure)"
+    v = _num(val)
+    if v is None:
+        return UNKNOWN, band, None, ctx.get("not_applicable")
+    tuned = observed.get("tuned") or {}
+    filt = tuned.get("filter")
+    lo, hi = exposure_band(config, filt, row)
+    good = _num(tuned.get("good_exposure_ms"))
+    if good is not None and abs(v - good) < 0.5 and lo - 1e-9 <= v <= hi + 1e-9:
+        who = "chosen by" if mode == "exposure" else "a star in band for"
+        return (PASS, f"{band}, or the PS-90 tuner's choice in {lo:g} to {hi:g}",
+                None, f"{who} the PS-90 tuner ({filt or 'filter ?'}, "
+                      f"{tuned.get('target') or 'target ?'})")
+    rlo, rhi = _num(row.get("min")), _num(row.get("max"))
+    ok = (rlo is None or v >= rlo - 1e-9) and (rhi is None or v <= rhi + 1e-9)
+    note = ctx.get("not_applicable") if not ok else None
+    return (PASS if ok else row["severity"]), band, None, note
+
+
 COMPUTED = {
     "guide_camera": _c_guide_camera,
     "guide_scale": _c_guide_scale,
@@ -555,6 +587,7 @@ COMPUTED = {
     "guide_speed": _c_guide_speed,
     "dark_library": _c_dark_library,
     "guide_gain": _c_guide_gain,
+    "guide_exposure": _c_guide_exposure,
 }
 
 
@@ -675,7 +708,8 @@ def evaluate_row(row: dict, observed: dict, config, scale) -> dict:
     out["status"] = status
     out["desired"] = desired
     out["applicable"] = bool(row.get("apply") in ("api", "profile")
-                             and status in (WARN, FAIL) and out["target"] is not None)
+                             and status in (WARN, FAIL) and out["target"] is not None
+                             and not ctx.get("not_applicable"))
     return out
 
 
@@ -779,6 +813,14 @@ def rows_for_camera(desired: dict, cam: dict | None) -> list[dict]:
             r.update(o)
         out.append(r)
     return out
+
+
+def judged_camera(desired: dict, audit: dict | None) -> dict | None:
+    """The [[camera]] a saved audit judged (its "camera" id), else the
+    default camera."""
+    cam_id = ((audit or {}).get("camera") or {}).get("id")
+    return next((c for c in cameras(desired) if c.get("id") == cam_id),
+                default_camera(desired))
 
 
 def camera_pixel_um(config, name) -> float | None:
@@ -1198,6 +1240,11 @@ async def collect(config, *, client=None, nina=None, raw: bool = False) -> dict:
         obs["tuning"] = await asyncio.to_thread(phd2_tuning.recommend, config)
     except Exception as e:  # noqa: BLE001
         obs["tuning"] = {"ok": False, "note": f"PS-90 tuning: {e}"}
+    try:
+        from photonscript.scheduler import phd2_tuning
+        obs["tuned"] = await asyncio.to_thread(phd2_tuning.last_accepted, config)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("PS-101 tuner memory unreadable: %s", e)
     obs["_sources"] = src
     return obs
 
@@ -1590,16 +1637,19 @@ async def apply(config, ids: list[str], *, dry_run: bool = True, client=None,
         audit = await run_audit(config, reason="apply")
     desired = load_desired(config)
     # PS-190: the rows (exposure range etc.) of the camera the audit judged
-    cam_id = (audit.get("camera") or {}).get("id")
-    cam = next((c for c in cameras(desired) if c.get("id") == cam_id),
-               default_camera(desired))
+    cam = judged_camera(desired, audit)
     desired_rows = {r.get("id"): r for r in rows_for_camera(desired, cam)}
     by_id = {r["id"]: r for r in audit.get("rows") or []}
+    from photonscript.telescope_agent.guide_tuner import tune_mode
     results, api_rows, prof_rows = [], [], []
     for rid in ids or []:
         r = by_id.get(rid)
         if r is None:
             results.append({"id": rid, "ok": False, "note": "no such audit row"})
+        elif rid == "exposure_ms" and tune_mode(config) == "exposure":
+            # PS-101: the tuner owns the exposure; Apply would undo it
+            results.append({"id": rid, "ok": True, "skipped": "tuner",
+                            "note": "left to the PS-90 tuner (phd2_tune_mode=exposure)"})
         elif r.get("status") == PASS:
             results.append({"id": rid, "ok": True, "note": "already as desired"})
         elif r.get("apply") not in ("api", "profile"):

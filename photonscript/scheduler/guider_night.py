@@ -483,7 +483,10 @@ async def pre_steps(config, armer, now: datetime | None = None, *,
                 if res.get("ok"):
                     to = next((x.get("to") for x in res.get("results") or []
                                if x.get("to") is not None), target)
+                    # PS-101: in tuner mode the apply leaves the exposure alone
+                    skipped = any(x.get("skipped") for x in res.get("results") or [])
                     await record(config, night, "exposure", OK,
+                                 notes if skipped else
                                  f"PHD2 guide exposure set to {float(to) / 1000:g} s "
                                  f"({why_t}) through the PS-89 audit apply",
                                  now=now, notify=notify, target_ms=target)
