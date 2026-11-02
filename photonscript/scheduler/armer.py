@@ -1674,7 +1674,7 @@ class Armer:
                             "re-asserting while that item runs; it waits until "
                             "the sensor is within 1 C of its target and may "
                             "never finish. Fix the sequence or skip the item.",
-                            title="PhotonScript cooler", priority=1, kind="act")
+                            title="PhotonScript cooler", priority=1, kind="act", safety=True)
                     continue
                 self._cooler_fight_alerted[rig] = False
                 # Re-assert the correct setpoint (idempotent; corrects a wrong one).
@@ -1690,7 +1690,7 @@ class Armer:
                             f"({(res or {}).get('detail', 'no response')}). Sensor "
                             f"{float(temp):.1f}°C, setpoint {setp:.0f}°C. Subs "
                             "are being shot warm.",
-                            title="PhotonScript cooler", priority=1, kind="act")
+                            title="PhotonScript cooler", priority=1, kind="act", safety=True)
                 else:
                     self._cooler_cmd_alerted[rig] = False
                 # Still warm this long into the window, cooler on or not: the
@@ -1706,7 +1706,7 @@ class Armer:
                         f"{stuck_min} min (setpoint {setp:.0f}°C, cooler "
                         f"{'ON' if on else 'OFF'}). Re-asserting isn't working; "
                         "subs above the limit are rejected at grading.",
-                        title="PhotonScript cooler", priority=1, kind="act")
+                        title="PhotonScript cooler", priority=1, kind="act", safety=True)
                 if not on and not self._cooler_alerted.get(rig):
                     self._cooler_alerted[rig] = True
                     await notify(
@@ -4305,13 +4305,14 @@ class Armer:
                         "on, re-dispatch when safe")
         logger.warning("PS-77 unsafe stop after %d min (%s): %s", mins, why,
                        report)
+        # NINA ignored an unsafe roof: a safety act even when the park was ok
         await notify(self.config,
                      f"SAFETY STOP: unsafe for {mins} min but NINA was still "
                      f"imaging ({why}). Armer stopped the sequence, stopped "
                      f"guiding and parked: {report}. Cooler kept at setpoint; "
                      "the remainder is re-dispatched once it has been safe "
                      f"for {int(getattr(self.config, 'safety_confirm_seconds', 120))} s.",
-                     title="PhotonScript SAFETY STOP", priority=1, kind="info" if "park ok" in report else "act", safety="park ok" not in report)
+                     title="PhotonScript SAFETY STOP", priority=1, kind="act", safety=True)
 
     async def _resume_after_safety_stop(self, now: datetime) -> None:
         """Safe again after an armer safety stop: nothing is running in NINA,

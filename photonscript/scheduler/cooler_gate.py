@@ -257,7 +257,8 @@ async def run_gate(cfg, rig: str, setpoint: float | None = None,
                 try:
                     await notify_fn(cfg, skip_message(name, label, temp, setpoint,
                                                       waited / 60, mode),
-                                    title="PhotonScript cooler gate", priority=1, kind="act")
+                                    title="PhotonScript cooler gate", priority=1, kind="act",
+                                    safety=True)
                 except Exception as e:  # noqa: BLE001
                     logger.warning("cooler gate notify failed: %s", e)
             LIVE[rig] = {"state": "skipped" if verdict == "SKIP" else "warned",

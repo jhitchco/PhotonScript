@@ -52,20 +52,24 @@ def test_notify_suppresses_daytime_heartbeat(tmp_path, monkeypatch):
     cfg = SimpleNamespace(data_dir=str(tmp_path), observatory_lat=LAT,
                           observatory_lon=LON)
     # PS-212: the limiter only sees pushed kinds (a story keeps priority -1;
-    # a safety act skips the once-per-fact rule)
+    # distinct facts skip the once-per-fact rule)
     asyncio.run(po.notify(cfg, "Nanny alive.", title="PhotonScript heartbeat",
                           priority=-1, kind="story"))
-    asyncio.run(po.notify(cfg, "Safety monitor DISCONNECTED for 32 min",
-                          title="PhotonScript NANNY", priority=1, kind="act",
-                          safety=True))
-    asyncio.run(po.notify(cfg, "Safety monitor DISCONNECTED for 62 min",
-                          title="PhotonScript NANNY", priority=1, kind="act",
-                          safety=True))
+    asyncio.run(po.notify(cfg, "Frame check: 32 min", title="PhotonScript NANNY",
+                          kind="story", fact="nanny:1"))
+    asyncio.run(po.notify(cfg, "Frame check: 62 min", title="PhotonScript NANNY",
+                          kind="story", fact="nanny:2"))
     assert [t for t, _m in sent] == ["PhotonScript NANNY"]
-    assert sent[0][1].startswith("Safety monitor DISCONNECTED for 32 min")
+    assert sent[0][1].startswith("Frame check: 32 min")
     # audit trail keeps the suppressed ones
     text = po._audit_path(cfg).read_text()
     assert text.count("quiet-daytime") == 2
+    # a safety act is never quieted by daylight (2026-11-02): both go out
+    for m in ("Safety monitor DISCONNECTED for 32 min",
+              "Safety monitor DISCONNECTED for 62 min"):
+        assert asyncio.run(po.notify(cfg, m, title="PhotonScript safety",
+                                     priority=1, kind="act", safety=True))
+    assert [t for t, _m in sent][-2:] == ["PhotonScript safety"] * 2
 
 
 def test_notify_night_unchanged(tmp_path, monkeypatch):

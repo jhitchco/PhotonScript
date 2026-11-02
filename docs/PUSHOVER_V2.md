@@ -14,9 +14,19 @@ Every `notify()` (shared/pushover.py) carries `kind=`:
 | kind  | what | pushed |
 |-------|------|--------|
 | `act` | needs Jeremy: a human could really help | before `pushover_act_cutoff_local` (00:00), priority >= 1, with "If you act: ... If not: ..." (ACT_CONSEQUENCES, per title) |
-| `act` + `safety=True` | unsafe while not parked, camera / cooler dead after recovery, disk / sync failure, arm / dispatch / deploy blocked, PhotonScript down, a test push | always, any hour, never folded |
+| `act` + `safety=True` | unsafe while not parked or still imaging (SAFETY STOP), roof gating blind while dark, a park failure, any cooling fault (command failed, still warm, gate skip, stall not recovered), disk / sync failure, arm / dispatch / deploy blocked, PhotonScript down, a test push | at once, any hour; never held, folded, capped or quieted by daylight (see below) |
 | `story` | the night's milestones | priority 0, once per fact per night |
 | `info` | everything else (per sub, waits, retries, recoveries that worked) | never: the storyline and the audit log only |
+
+Safety acts are never suppressed or batched (2026-11-02): they skip
+`pushover_kinds`, the cutoff, the plan heads-up fold, the once-per-fact rule,
+the daytime gate, the hourly cap, the cap-exempt budget and the monthly cap
+(they still count toward them), and a failed send is retried once after 5 s.
+The only exception is the byte-identical title and text already delivered
+inside `pushover_dedup_window_s` (300 s): the phone already shows it, and it
+keeps a flapping caller from burning the month. Any different text goes out.
+`tests/test_scheduler/test_ps212_safety_never_suppressed.py` proves it with
+every gate shut at once.
 
 No kind means `info` (opt in to noise, not out). From the cutoff until
 `pushover_act_resume_local` (08:00) a non-safety act is held: it stays in the
@@ -119,13 +129,13 @@ safety act. Conditions are the code's own.
 | scheduler/armer.py | apps not running (at arm, pre-config - 60), guider is Direct Guider on a guided arm, ProTrack not on (unguided arm), dispatch gate fallback, arm recipe fallback, Piggy companion not started (lint / NINA #2), pause / resume FAILED, PHD2 failed and the fallback is not allowed | act |
 | scheduler/armer.py | guiding: first "not guiding" warning, "STILL not guiding" escalation | act |
 | scheduler/armer.py | guiding: short loss, flap summary, auto-recovery restart | info |
-| scheduler/armer.py | cooler mismatch, cool command FAILED, still warm after N min | act |
+| scheduler/armer.py | cooler mismatch, cool command FAILED, still warm after N min | act/safety |
 | scheduler/armer.py | cooler was OFF, turned on | info |
 | scheduler/armer.py | safety monitor unreadable (watchdog, dropout past grace) | act/safety while dark, act after astro dawn |
 | scheduler/armer.py | safety monitor readable again | info |
 | scheduler/armer.py | safety cross-check (NINA #1 unsafe, NINA #2 safe) | act |
 | scheduler/armer.py | Dispatch FAILED (both paths), cooler STILL ON after the dawn check, watched night still running at dawn / park or cooler check failed / still imaging while unsafe | act/safety |
-| scheduler/armer.py | SAFETY STOP | info when the park was ok, else act/safety |
+| scheduler/armer.py | SAFETY STOP (NINA kept imaging while unsafe) | act/safety, park ok or not |
 | scheduler/armer.py | unsafe while paused by the operator | info when the park was ok, else act/safety |
 | scheduler/armer.py | TPoint preflight | act on a block, else info (the heads-up carries it) |
 | scheduler/armer.py | TPoint coverage, focus calibration note, recipe note, PHD2 calibration invalid (re-dispatched with a slot), unguided dithers off, Piggy started, OSC darks unconditional | info |
@@ -145,7 +155,7 @@ safety act. Conditions are the code's own.
 | scheduler/campaign.py | goal complete / only lacks calibration | story |
 | scheduler/calibration_capture.py | capture started, bias drift, capture complete / cancelled | info |
 | scheduler/calibration_capture.py | capture aborted | act |
-| scheduler/cooler_gate.py | not imaging, sensor off setpoint | act |
+| scheduler/cooler_gate.py | not imaging, sensor off setpoint | act/safety |
 | scheduler/cooler_gate.py | sensor back, imaging resumed | info |
 | scheduler/flat_cover.py | cover not open, image pass skipped | act |
 | scheduler/flat_cover.py | cover open again | info |
@@ -180,9 +190,9 @@ safety act. Conditions are the code's own.
 | scheduler/trends.py | trend alert | info |
 | scheduler/unguided_guard.py | guider connected and disconnected, guiding stopped by the guard | info |
 | scheduler/unguided_guard.py | could not stop / disconnect, policy alert, sequence alert | act |
-| shared/cooler_recovery.py | recovered, still stalled with a reconnect left | info |
-| shared/cooler_recovery.py | still stalled after the last reconnect, reconnect errored at the last attempt | act/safety, with the hours a power cycle saves |
-| shared/cooler_recovery.py | reconnect errored before the last attempt | act |
+| shared/cooler_recovery.py | recovered | info |
+| shared/cooler_recovery.py | still stalled with a reconnect left, reconnect errored | act/safety |
+| shared/cooler_recovery.py | still stalled after the last reconnect | act/safety, with the hours a power cycle saves |
 | shared/supervisor.py, shared/updater.py | PhotonScript is down / crashed, update refused, rolled back | act/safety |
 | telescope_agent/agent.py | NANNY severe | act (consecutive rejects: info while the night pilot is on, its push says it with the fix) |
 | telescope_agent/agent.py | NANNY non-severe, heartbeat | info |
