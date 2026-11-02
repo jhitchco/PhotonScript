@@ -442,3 +442,59 @@ def test_rearm_config_field():
     assert by_env["PS_NINA_WATCH_REARM_OK_MIN"][0] == "nina_watch_rearm_ok_min"
     assert nw.rearm_ok_min(PhotonScriptConfig(_env_file=None,
                                               nina_watch_rearm_ok_min=-3)) == 0.0
+
+
+# ------------------------------------------------------------- 6. safety flag (2026-11-02)
+
+def test_is_safety_rc16_silent_with_api_down():
+    hung = {"api_ok": False}
+    assert nw.is_safety("rc16", "silent", hung, True) is True
+    assert nw.is_safety("rc16", "api_down", hung, True) is True
+    assert nw.is_safety("rc16", "not_running", hung, True) is True
+    # the API answers (a leaf running too long): a plain act
+    assert nw.is_safety("rc16", "silent", {"api_ok": True}, True) is False
+    # NINA #2 does not own the mount; nothing armed: not safety
+    assert nw.is_safety("piggyback", "silent", hung, True) is False
+    assert nw.is_safety("rc16", "silent", hung, False) is False
+    assert nw.is_safety("rc16", "stuck", hung, True) is False
+
+
+def _silent_hung_read(log_quiet_min=30):
+    async def read(c, rig):
+        return {"api_ok": False, "api_error": "ReadTimeout", "process": True,
+                "pid": 13416, "log_file": "x.log",
+                "log_mtime": T0 - timedelta(minutes=log_quiet_min), "log_size": 5,
+                "closed_at": None, "seq_leaf": None, "seq_exposure_s": None}
+    return read
+
+
+def test_hung_nina1_silent_page_is_a_safety_act(tmp_path, monkeypatch):
+    cfg = _cfg(tmp_path)
+    monkeypatch.setattr("photonscript.scheduler.night_story.quiet_reason",
+                        lambda c, now: None)
+    calls = []
+
+    async def notify(c, msg, title="", priority=0, **kw):
+        calls.append((msg, kw))
+        return True
+
+    mon = nw.NinaWatch()
+    for i in range(5):
+        asyncio.run(nw.tick(cfg, "RUNNING", now=T0 + timedelta(minutes=i),
+                            read=_silent_hung_read(), notify=notify,
+                            window=True, monitor=mon))
+    rc = [kw for m, kw in calls if "NINA #1" in m]
+    pg = [kw for m, kw in calls if "NINA #2" in m]
+    assert rc and pg
+    assert rc[0]["kind"] == "act" and rc[0]["safety"] is True
+    assert rc[0]["cap_exempt"] == "nina_watch:rc16:silent"
+    assert pg[0]["kind"] == "act" and pg[0]["safety"] is False
+
+
+def test_silent_rc16_safety_page_passes_the_act_cutoff(tmp_path):
+    from photonscript.shared import pushover as po
+    cfg = _cfg(tmp_path, pushover_act_cutoff_local="00:00",
+               pushover_act_resume_local="08:00")
+    late = datetime(2026, 10, 5, 9, 0)   # 03:00 MDT, after the act cutoff
+    assert po.decide(cfg, "act", False, now_utc=late) == (False, "act-after-cutoff")
+    assert po.decide(cfg, "act", True, now_utc=late) == (True, "ok")
