@@ -85,3 +85,33 @@ def test_deploy_reports_scope_rollback_and_refusal():
     assert '$u.status -eq "rolled_back" -and $u.bad_sha -eq $head' in s
     assert '$u.status -eq "rejected" -and $u.target -eq $head' in s
     assert "ConvertFrom-Json).detail" in s    # 409 says why
+
+
+# --- PS-87: recovery after a reboot -----------------------------------------------
+
+def test_reboot_recovery_order_and_read_only_mount():
+    s = _read("reboot-recovery.ps1")
+    i_up = s.index("$upMin -gt $MaxUptimeMin -and -not $Force")
+    i_health = s.index('"$Api/api/health"')
+    i_sky = s.index("Start-Process -FilePath $TheSkyExe")
+    i_mount = s.index("$mount = Get-TheSkyMount")
+    i_apps = s.index(r'"deploy\observatory-apps.ps1"')
+    assert i_up < i_health < i_sky < i_mount < i_apps
+    assert '"-Start"' in s and 'if ($DryRun) { $appArgs += "-DryRun" }' in s
+    # never drives the mount: IsConnected only
+    assert "sky6RASCOMTele.IsConnected" in s
+    for verb in ("Connect()", ".Park", "SlewToRaDec", "FindHome"):
+        assert verb not in s
+
+
+def test_recovery_installer_interactive_and_no_credentials():
+    for name in ("install-reboot-recovery.ps1", "reboot-recovery.ps1"):
+        s = _read(name)
+        for bad in ("Get-Credential", "-Password", "DefaultPassword",
+                    "ConvertTo-SecureString", "Autologon64.exe -accepteula"):
+            assert bad not in s, (name, bad)
+    s = _read("install-reboot-recovery.ps1")
+    assert "-LogonType Interactive" in s and "S4U" not in s
+    assert s.count("New-ScheduledTaskTrigger -AtLogOn -User $account") == 2
+    assert 'user32.dll,LockWorkStation' in s
+    assert "if ($DryRun)" in s and "[switch]$Uninstall" in s
