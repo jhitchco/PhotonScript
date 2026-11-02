@@ -27,7 +27,10 @@ async def test_health_fields(app_env):
     d = await api_health()
     assert d["ok"] is True
     assert d["version"] == app_env.VERSION
-    assert len(d["commit"]) == 40            # full SHA of this checkout
+    # full SHA of this checkout; "" when the tree is not a git checkout (a
+    # `git archive` export, as the scope PC's clean-HEAD runs use)
+    from photonscript.shared.config import REPO_ROOT
+    assert len(d["commit"]) == (40 if (REPO_ROOT / ".git").exists() else 0)
     assert d["mode"] == "full" and d["uptime_s"] >= 0 and d["pid"] > 0
     assert d["armer"] == "ARMED"
     assert d["piggyback_enabled"] in (True, False)
