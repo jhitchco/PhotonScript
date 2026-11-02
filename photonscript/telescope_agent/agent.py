@@ -151,6 +151,9 @@ class TelescopeAgent:
         self.tuner = None                    # PS-90 guide-star tuner (RC16)
         self.viability = None                # PS-85 per-block guide-star check
         self._wheel_filter: str | None = None  # PS-90: NINA's filter (canonical)
+        # PS-99: latched copies of the LIVE_KEYS (see _live_sync)
+        self._live: dict = {}
+        self._guard_recovering = 0       # recoveries in flight
 
     async def start(self):
         """Start the telescope agent and begin monitoring."""
@@ -874,6 +877,10 @@ class TelescopeAgent:
         """Poll NINA for equipment state every few seconds."""
         while self._running:
             try:
+                self._live_sync()   # PS-99: pick up System page saves
+            except Exception as e:  # noqa: BLE001 - never stop the poll
+                logger.warning("PS-99 config sync failed: %s", e)
+            try:
                 # Get camera info
                 camera = await self.nina.get_camera_info()
                 self.state.camera_temp_c = _finite(camera.get("Temperature"))
@@ -1150,6 +1157,52 @@ class TelescopeAgent:
         self.tuner = GuideStarTuner(self.config, self.phd2, context_fn=self._tuner_context)
         self.tuner.attach()
 
+    # PS-99: agent-read keys a System page save applies live (the web app
+    # shares this config object in full mode). selftest_on_fail is read by
+    # pulse_selftest itself, latched per run there.
+    LIVE_KEYS = ("guard_auto_recover", "guard_on_fail", "phd2_tune_mode")
+
+    def _live_busy(self) -> str | None:
+        """Why a changed LIVE_KEY must wait (None = apply now): a guard
+        recovery or a pulse self-test is in progress."""
+        from photonscript.telescope_agent import phd2_ops
+        if getattr(self, "_guard_recovering", 0):
+            return "guard recovery"
+        owner = phd2_ops.owner()
+        if owner in ("guard", "selftest"):
+            return f"PHD2 held by {owner}"
+        return None
+
+    def _live_sync(self) -> None:
+        """PS-99: copy the LIVE_KEYS from the config into the latch, unless a
+        recovery or self-test is running (then the change applies at the
+        next sync after it finishes). Turning phd2_tune_mode on from off
+        builds the tuner that startup left out."""
+        if not hasattr(self, "_live"):
+            self._live = {}
+        if self._live and self._live_busy():
+            return
+        changed = []
+        for k in self.LIVE_KEYS:
+            v = getattr(self.config, k, None)
+            if k in self._live and self._live[k] != v:
+                changed.append(k)
+                logger.info("PS-99 config %s: %r -> %r (applied live)",
+                            k, self._live[k], v)
+            self._live[k] = v
+        if ("phd2_tune_mode" in changed and getattr(self, "tuner", None) is None
+                and getattr(self, "_running", False)):
+            self._tuner_setup()
+            if self.tuner is not None and getattr(self, "viability", None) is not None:
+                self.viability.tuner = self.tuner
+
+    def _live_get(self, key: str, default=None):
+        """A LIVE_KEY's latched value (the config's on first use)."""
+        if key not in getattr(self, "_live", {}):
+            self._live_sync()
+        v = self._live.get(key)
+        return default if v is None else v
+
     def _viability_setup(self) -> None:
         """PS-85: the per-block guide-star check runs in the RC16 agent only;
         guide_block_mode=off leaves it out entirely."""
@@ -1361,7 +1414,8 @@ class TelescopeAgent:
         now = datetime.utcnow()
         night = store.night_of(self.config, now)
         path = store.guard_path(self.config, night)
-        auto = bool(getattr(self.config, "guard_auto_recover", False))
+        self._live_sync()   # PS-99: no-op while a recovery is running
+        auto = bool(self._live_get("guard_auto_recover", False))
         for v in verdicts:
             if v.kind == PULSES:
                 await self._guard_pulses_not_moving(v, night)
@@ -1544,6 +1598,15 @@ class TelescopeAgent:
             logger.warning("PS-85 low-SNR switch failed: %s", e)
 
     async def _guard_recover(self, kind, vs, night, path) -> None:
+        """PS-99: holds the config latch for the whole recovery, so a
+        guard_on_fail saved mid-recovery applies to the next one."""
+        self._guard_recovering = getattr(self, "_guard_recovering", 0) + 1
+        try:
+            await self._guard_recover_step(kind, vs, night, path)
+        finally:
+            self._guard_recovering -= 1
+
+    async def _guard_recover_step(self, kind, vs, night, path) -> None:
         from photonscript.shared import phd2_store as store
         from photonscript.telescope_agent import guard_recovery as gr
         from photonscript.telescope_agent.guide_guard import IMPOSSIBLE
@@ -1576,7 +1639,7 @@ class TelescopeAgent:
                   + ", ".join(v.code for v in vs))
         await self._guard_alert(night, f"Guide guard: {reason}. Guiding is not "
                                 "on a real star; subs are marked guide_lock WARN.")
-        if str(getattr(self.config, "guard_on_fail", "alert")).lower() == "unguided":
+        if str(self._live_get("guard_on_fail", "alert")).lower() == "unguided":
             from photonscript.scheduler.armer import request_fallback_unguided
             await request_fallback_unguided(self.config, reason)
 

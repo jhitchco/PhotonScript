@@ -332,6 +332,14 @@ phd2_tune_mode = exposure    live exposure-only tuning (one change per settle at
 phd2_tune_mode = off         not started
 GET /api/phd2/tuning?date=   per filter, changes, last measurement, advice, bin 3 check
 ```
+PS-99: `phd2_tune_mode`, `guard_auto_recover`, `guard_on_fail` and
+`selftest_on_fail` apply live from the System page (no restart) when
+PhotonScript runs in full mode: the web app and the agents share one config
+object, the save answers "Applied live", and the RC16 agent latches the
+values so a change saved during a guard recovery or a pulse self-test applies
+after it finishes. Turning the tuner on from `off` builds it at the next NINA
+poll. Agents in another process (scheduler / telescope modes) still need a
+restart, and the page says so.
 In `exposure` mode it steps down at once on a clipped star, otherwise only
 after 3 readings outside 55 to 85%, and picks the longest listed PHD2
 exposure not over the linear prediction, inside `phd2_tune_exp_ms` and only

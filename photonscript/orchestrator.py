@@ -294,6 +294,11 @@ async def run_full(config: PhotonScriptConfig):
     """Run all agents together (development / single-machine mode)."""
     from photonscript.librarian.agent import Librarian
     from photonscript.image_processor.agent import ImageProcessor
+    # PS-99: one config object for the web app and the agents (set before
+    # anything calls get_config), so a System page save live-applies the
+    # agent keys (guard / self-test / tuner) to the RC16 agent
+    from photonscript.scheduler import app as scheduler_app
+    scheduler_app.set_config(config)
 
     telescopes = _telescope_agents(config)  # main + piggyback if enabled
     librarian = Librarian(config)

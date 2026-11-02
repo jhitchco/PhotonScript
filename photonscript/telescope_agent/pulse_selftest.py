@@ -143,6 +143,9 @@ async def run_selftest(config, context: str = "manual", slot: str = "manual", *,
     """Run (or skip) the self-test, record it, alert on FAIL. Never raises."""
     now = datetime.utcnow()
     night = store.night_of(config, now)
+    # PS-99: latch the FAIL action at the start, so a System page save made
+    # mid-test applies to the next run, not this one
+    on_fail = str(getattr(config, "selftest_on_fail", "alert"))
     if context == "nina" and not getattr(config, "phd2_selftest_enabled", False):
         return _result("SKIPPED", ["phd2_selftest_enabled is off"], cached=False)
     own_nina = nina is None
@@ -190,7 +193,7 @@ async def run_selftest(config, context: str = "manual", slot: str = "manual", *,
     logger.info("pulse self-test (%s/%s): %s %s", context, slot, res["verdict"],
                 "; ".join(res.get("reasons", [])))
     if res["verdict"] == "FAIL":
-        await _on_fail(config, night, rec)
+        await _on_fail(config, night, rec, on_fail=on_fail)
     return rec
 
 
@@ -343,7 +346,8 @@ async def _exit_state(client, slot, started, hotpix) -> None:
         logger.warning("self-test exit state (%s): %s", slot, e)
 
 
-async def _on_fail(config, night: str, rec: dict) -> None:
+async def _on_fail(config, night: str, rec: dict,
+                   on_fail: str | None = None) -> None:
     from photonscript.shared.pushover import notify, record
     causes = list(LIKELY_CAUSES)
     sp = rec.get("speeds") or {}
@@ -365,7 +369,9 @@ async def _on_fail(config, night: str, rec: dict) -> None:
     else:
         record(config, msg, title="PhotonScript pulse self-test", priority=1,
                reason="selftest-once-per-night")
-    if str(getattr(config, "selftest_on_fail", "alert")).lower() == "unguided":
+    if on_fail is None:
+        on_fail = str(getattr(config, "selftest_on_fail", "alert"))
+    if on_fail.lower() == "unguided":
         from photonscript.scheduler.armer import request_fallback_unguided
         await request_fallback_unguided(config, "pulse self-test FAIL")
 
