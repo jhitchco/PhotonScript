@@ -1881,6 +1881,54 @@ def ecc_scale_report(
     raise typer.Exit(0 if all(r["n_measured"] for r in reps) else 1)
 
 
+@app.command("campaign-mirror")
+def campaign_mirror_cmd(
+    url: str = typer.Option("", "--url", help="Scheduler (default integration_report_url)"),
+    push: bool = typer.Option(False, "--push",
+                              help="Upsert into Notion (needs PS_CAMPAIGN_MIRROR_ENABLED, "
+                                   "PS_NOTION_TOKEN, PS_NOTION_CAMPAIGNS_DB); default dry run"),
+    as_json: bool = typer.Option(False, "--json", help="Print the rows as JSON"),
+):
+    """PS-32: the campaign goals as Notion mirror rows (one per goal, keyed
+    by goal id), read from the scheduler's GET /api/campaign/mirror. A dry
+    run unless --push and the push is configured; one direction only.
+
+    photonscript campaign-mirror --json
+    """
+    import json as _json
+    import httpx
+    from photonscript.scheduler import campaign_mirror as cm
+    cfg = _config_for_repo(Path(__file__).resolve().parents[1])
+    base = (url or getattr(cfg, "integration_report_url", "")).rstrip("/")
+    try:
+        r = httpx.get(f"{base}/api/campaign/mirror", timeout=120)
+        r.raise_for_status()
+        rows = r.json()["rows"]
+    except Exception as e:  # noqa: BLE001
+        console.print(f"campaign mirror: cannot read {base}: {e}", markup=False)
+        raise typer.Exit(1)
+    res = cm.push(cfg, rows, dry_run=not push)
+    if as_json:
+        print(_json.dumps({"rows": rows, "result": res}, indent=1, default=str))
+    else:
+        for x in rows:
+            console.print(f"{x['Target']:<28} {x['Status']:<18} "
+                          f"{x['Hours done']:g}/{x['Hours goal']:g} h  "
+                          f"ETA {x['ETA'] or '-'}  {x['Latest version'] or ''}",
+                          markup=False, highlight=False)
+        if res["dry_run"]:
+            why = res["settings"]["why_not"] if push else "no --push"
+            console.print(f"dry run ({why}): {len(rows)} rows, nothing sent",
+                          markup=False)
+        else:
+            console.print(f"Notion: {len(res['created'])} created, "
+                          f"{len(res['updated'])} updated, "
+                          f"{len(res['errors'])} errors", markup=False)
+            for e in res["errors"]:
+                console.print(f"  {e}", markup=False)
+    raise typer.Exit(1 if res["errors"] else 0)
+
+
 @app.command("calibration-plan")
 def calibration_plan_cmd(
     rig: str = typer.Option("", "--rig", help="rc16 | piggyback (default: every rig)"),
