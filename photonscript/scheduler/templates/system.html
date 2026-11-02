@@ -769,7 +769,9 @@
             body: JSON.stringify(data),
         });
         const res = await r.json();
+        const live = (res.applied_live || []);
         st.textContent = r.ok ? ('Saved ' + res.updated + ' value(s).' +
+            (live.length ? ' Applied live: ' + live.join(', ') + '.' : '') +
             (res.restart_recommended ? ' Restart PhotonScript to apply everything.' : ''))
             : ('Error: ' + (res.detail || r.status));
         loadConfig();

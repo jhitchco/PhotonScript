@@ -82,6 +82,20 @@ def get_config() -> PhotonScriptConfig:
     return _config
 
 
+# PS-99: True once the orchestrator handed its own config object to this app
+# (full mode), so a System page save reaches the telescope agents too.
+_agents_share_config = False
+
+
+def set_config(config: PhotonScriptConfig) -> None:
+    """PS-99: share the orchestrator's config object with the web app (set
+    before uvicorn starts). The RC16 telescope agent holds the same object,
+    so POST /api/config live-applies the LIVE_AGENT_KEYS to it."""
+    global _config, _agents_share_config
+    _config = config
+    _agents_share_config = True
+
+
 def _stored_projects() -> dict[str, ImagingProject]:
     """PS-126: `_projects` with the project store loaded first. get_store()
     fills `_projects` lazily, so right after a restart a reader that came
@@ -708,6 +722,20 @@ async def startup():
 # System page: preflight + web config editor
 # ---------------------------------------------------------------------------
 
+# PS-99: agent-read keys that apply live when the agents share this app's
+# config object (full mode). The RC16 agent latches them so a change made
+# mid-recovery or mid-self-test applies after that step finishes. All four
+# are RC16-only (the Piggy-600 agent's rig_config copy never reads them).
+LIVE_AGENT_KEYS = frozenset({"guard_auto_recover", "guard_on_fail",
+                             "selftest_on_fail", "phd2_tune_mode"})
+
+
+def _needs_restart(attr: str, restart: bool) -> bool:
+    """A LIVE_AGENT_KEYS field needs a restart only when the agents run in
+    another process (scheduler / telescope modes)."""
+    return restart or (attr in LIVE_AGENT_KEYS and not _agents_share_config)
+
+
 # Curated editable config fields: (attr, env var, label, group, type, secret, needs_restart)
 _CONFIG_FIELDS = [
     ("observatory_name", "PS_OBSERVATORY_NAME", "Observatory name", "Observatory", "str", False, False),
@@ -936,8 +964,8 @@ _CONFIG_FIELDS = [
     ("guide_camera_pixel_um", "PS_GUIDE_CAMERA_PIXEL_UM", "Guide camera pixel size (um), OGMA GP678C = 2.0", "PHD2", "float", False, True),
     ("guide_focal_length_mm", "PS_GUIDE_FOCAL_LENGTH_MM", "Guide focal length (mm); 0 = derive from the imaging pixel scale (OAG on the RC16)", "PHD2", "float", False, True),
     ("guard_enabled", "PS_GUARD_ENABLED", "Non-star lock guard: watch PHD2 for hot-pixel / non-star locks and guiding a parked scope (PS-91)", "PHD2", "bool", False, True),
-    ("guard_auto_recover", "PS_GUARD_AUTO_RECOVER", "Guard auto-recovery: re-select a vetted star (off = observe-only)", "PHD2", "bool", False, True),
-    ("guard_on_fail", "PS_GUARD_ON_FAIL", "Guard recovery failed: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("guard_auto_recover", "PS_GUARD_AUTO_RECOVER", "Guard auto-recovery: re-select a vetted star (off = observe-only)", "PHD2", "bool", False, False),
+    ("guard_on_fail", "PS_GUARD_ON_FAIL", "Guard recovery failed: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, False),
     ("guide_min_star_hfd_px", "PS_GUIDE_MIN_STAR_HFD_PX", "Guard D1: guide star HFD below this (PHD2 px at bin 2) is checked for a one-pixel profile", "PHD2", "float", False, True),
     ("phd2_hotpix_max_age_days", "PS_PHD2_HOTPIX_MAX_AGE_DAYS", "Guide-camera hot-pixel map: rebuild after N days", "PHD2", "float", False, False),
     ("phd2_selftest_enabled", "PS_PHD2_SELFTEST_ENABLED", "Pulse-path self-test in the NINA sequence (twilight + before each guided target, PS-92)", "PHD2", "bool", False, False),
@@ -948,7 +976,7 @@ _CONFIG_FIELDS = [
     ("selftest_ratio_max", "PS_SELFTEST_RATIO_MAX", "Self-test: moved/expected above this = WARN (guide-rate mismatch)", "PHD2", "float", False, False),
     ("selftest_timeout_s", "PS_SELFTEST_TIMEOUT_S", "Self-test: hard timeout (s)", "PHD2", "int", False, False),
     ("guide_rate_sidereal", "PS_GUIDE_RATE_SIDEREAL", "Fallback guide speed (x sidereal) when NINA and the PHD2 log give none", "PHD2", "float", False, False),
-    ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, True),
+    ("selftest_on_fail", "PS_SELFTEST_ON_FAIL", "Self-test FAIL: alert | unguided (re-dispatch the rest unguided, capped)", "PHD2", "str", False, False),
     ("phd2_cal_mode", "PS_PHD2_CAL_MODE", "PHD2 calibration slot (PS-93): auto (only when needed) | always | never (PS-72 behavior)", "PHD2", "str", False, False),
     ("phd2_cal_max_age_days", "PS_PHD2_CAL_MAX_AGE_DAYS", "Recalibrate PHD2 after N days", "PHD2", "float", False, False),
     ("phd2_cal_max_abs_dec", "PS_PHD2_CAL_MAX_ABS_DEC", "PS-93 auto also recalibrates when the calibration on record was taken farther than this from Dec 0 (deg; 0 = off)", "PHD2", "float", False, False),
@@ -1006,7 +1034,7 @@ _CONFIG_FIELDS = [
     ("pointing_first_slew_fail_arcmin", "PS_POINTING_FIRST_SLEW_FAIL_ARCMIN", "NINA first-slew error: 14-night median above N arcmin = fail / rebuild", "PHD2", "float", False, False),
     ("thesky_manual_max_age_days", "PS_THESKY_MANUAL_MAX_AGE_DAYS", "Manual TPoint record older than N days reads unknown", "PHD2", "float", False, False),
     ("pe_owner", "PS_PE_OWNER", "Who corrects periodic error: protrack (PHD2 PPEC must be off) | phd2_ppec | none", "PHD2", "str", False, False),
-    ("phd2_tune_mode", "PS_PHD2_TUNE_MODE", "Guide-star auto-tune (PS-90): off | observe (measure and record, never change) | exposure (live exposure-only tuning)", "PHD2", "str", False, True),
+    ("phd2_tune_mode", "PS_PHD2_TUNE_MODE", "Guide-star auto-tune (PS-90): off | observe (measure and record, never change) | exposure (live exposure-only tuning)", "PHD2", "str", False, False),
     ("phd2_tune_peak_lo", "PS_PHD2_TUNE_PEAK_LO", "Auto-tune: guide star peak band, low (fraction of full scale)", "PHD2", "float", False, True),
     ("phd2_tune_peak_hi", "PS_PHD2_TUNE_PEAK_HI", "Auto-tune: guide star peak band, high (fraction of full scale)", "PHD2", "float", False, True),
     ("phd2_tune_snr_min", "PS_PHD2_TUNE_SNR_MIN", "Auto-tune: a guide star under this SNR is faint", "PHD2", "float", False, True),
@@ -1585,7 +1613,8 @@ async def api_get_config():
         value = _mask_secret(raw) if secret else str(raw)
         groups.setdefault(group, []).append({
             "env": env_var, "label": label, "type": ftype,
-            "secret": secret, "restart": restart, "value": value,
+            "secret": secret, "restart": _needs_restart(attr, restart),
+            "value": value,
         })
     return [{"group": g, "fields": f} for g, f in groups.items()]
 
@@ -1602,6 +1631,7 @@ async def api_update_config(request: Request):
 
     updates: dict[str, str] = {}
     restart_recommended = False
+    applied_live: list[str] = []
     for env_var, raw in body.items():
         field = by_env.get(env_var)
         if field is None:
@@ -1620,14 +1650,20 @@ async def api_update_config(request: Request):
                 "detail": f"{env_var}: '{raw}' is not a valid {ftype}"})
         updates[env_var] = raw
         setattr(config, attr, typed)  # live-apply where components re-read config
-        restart_recommended = restart_recommended or restart
+        restart_recommended = restart_recommended or _needs_restart(attr, restart)
+        if attr in LIVE_AGENT_KEYS and _agents_share_config:
+            applied_live.append(env_var)
 
     if updates:
         update_env(env_path(), updates)
         logger.info("Config updated via web UI: %s",
                     ", ".join(k for k in updates
                               if not by_env[k][5]) or "(secrets)")
-    return {"updated": len(updates), "restart_recommended": restart_recommended}
+    if applied_live:
+        logger.info("PS-99: applied live to the telescope agent: %s",
+                    ", ".join(applied_live))
+    return {"updated": len(updates), "restart_recommended": restart_recommended,
+            "applied_live": applied_live}
 
 
 @app.post("/api/pushover/test")
