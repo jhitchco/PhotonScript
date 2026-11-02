@@ -118,6 +118,9 @@ class Options:
     tailscale_url: str = DEFAULT_TAILSCALE_URL
     phd2: tuple = ("localhost", 4400)
     health_timeout: float = 10.0
+    # PS-87: logon tasks from deploy\install-reboot-recovery.ps1
+    recovery_tasks: tuple = ("PhotonScript Reboot Recovery",
+                             "PhotonScript Lock After Logon")
 
 
 # --- side effects (real implementations; tests pass fakes) ----------------------
@@ -388,6 +391,35 @@ def autologon_checks(env: Env, opts: Options) -> list[Check]:
         out.append(Check("autologon.count", WARN,
                          f"AutoLogonCount={wl['AutoLogonCount']}: auto-logon stops "
                          "after that many boots; remove the value"))
+    return out
+
+
+# --- reboot recovery (PS-87) ---------------------------------------------------------
+
+def recovery_checks(env: Env, opts: Options) -> list[Check]:
+    """The two logon tasks that bring TheSky, NINA x2 and PHD2 back and lock
+    the screen after a reboot. WARN only: the service runs without them."""
+    if not env.is_windows:
+        return [Check("recovery", SKIP, "not Windows")]
+    out = []
+    for name in opts.recovery_tasks:
+        key = "recovery.lock" if "Lock" in name else "recovery.task"
+        script = TASK_QUERY_PS.replace("__TASK__", name.replace("'", "''"))
+        try:
+            _rc, text, _err = env.powershell(script)
+            info = json.loads((text or "").strip() or "{}")
+        except Exception as e:  # noqa: BLE001
+            out.append(Check(key, WARN, f"could not query '{name}': "
+                                        f"{type(e).__name__}: {e}"))
+            continue
+        if not info.get("found"):
+            out.append(Check(key, WARN, f"no scheduled task '{name}': run "
+                                        "deploy\\install-reboot-recovery.ps1 "
+                                        "(elevated) so a reboot recovers by itself"))
+        elif not info.get("enabled", True) or info.get("state") == "Disabled":
+            out.append(Check(key, WARN, f"'{name}' is DISABLED"))
+        else:
+            out.append(Check(key, PASS, f"'{name}' is registered"))
     return out
 
 
@@ -753,6 +785,7 @@ def run_checks(env: Env, opts: Options) -> tuple[list[Check], Optional[dict]]:
     checks: list[Check] = []
     checks += task_checks(env, opts)
     checks += autologon_checks(env, opts)
+    checks += recovery_checks(env, opts)
     h, lat, err = get_health(env, opts)
     checks += health_checks(env, opts, h, lat, err)
     checks += process_checks(env, opts, h.get("pid") if h else None)

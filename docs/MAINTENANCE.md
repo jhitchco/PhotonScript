@@ -42,10 +42,62 @@ good / rejected / rolled_back, previous and last-good SHA). data_dir is
 Gotchas: the task has no console, so use `photonscript monitor` instead of
 watching a window. Running the wrapper by hand while the task is up just exits
 ("another supervisor is already running"). NINA and PHD2 are not started by
-PhotonScript and still need jeremy logged on after a reboot (auto-logon).
+PhotonScript; after a reboot they come back through auto-logon and the PS-87
+recovery task ("Recovery after a reboot" below).
 Signing out of jeremy's session stops an Interactive task; disconnect Remote
 Desktop instead of signing out. If an S4U task will not start with a logon
 error, re-run the installer with `-LogonType Password`.
+
+### Recovery after a reboot (PS-87)
+
+Goal: a power blip or a Windows Update restart brings back PhotonScript,
+TheSky, NINA #1, NINA #2 and PHD2 within 5 min with nobody remoting in, and
+the screen ends up locked. Order after boot: Windows auto-logon (jeremy) ->
+`PhotonScript` task (+30 s, the service) -> `PhotonScript Reboot Recovery`
+(+1 min: `deploy\reboot-recovery.ps1`: wait for /api/health, launch TheSky
+and wait for :3040 and the mount connected, read only, then
+`observatory-apps.ps1 -Start` for NINA #1 / #2 on their profiles and PHD2,
+then equipment connect + preflight) -> `PhotonScript Lock After Logon`
+(+2 min, locks the screen; the apps keep running). The recovery script acts
+only within 30 min of a boot (`-Force` by hand). Log:
+`<data_dir>\logs\reboot-recovery.log`.
+
+One-time setup on the scope PC (Jeremy; Claude never handles the password):
+
+1. Auto-logon: download Sysinternals Autologon from Microsoft
+   (learn.microsoft.com/sysinternals/downloads/autologon), run
+   `Autologon64.exe`, user `jeremy`, domain `TELES-FEB25`, type the password,
+   Enable. It stores the password encrypted as an LSA secret, not as
+   `DefaultPassword` in the registry. Undo: run it again and Disable. If
+   `photonscript autostart-check` shows `autologon.count`, remove
+   `AutoLogonCount` (auto-logon would stop after that many boots).
+2. TheSky: make it connect the mount when it starts (TheSky Telescope Setup:
+   the option to connect the telescope at startup), so step 2 of the recovery
+   finds the mount connected. Without it the script logs "mount is not
+   connected" and `observatory-apps.ps1 -Start` refuses with one page.
+   Check the TheSky64.exe path: the script finds the first one under
+   `Program Files\Software Bisque`; pass `-TheSkyExe` (edit the task's
+   arguments) if that is wrong.
+3. Tasks, elevated PowerShell:
+   `powershell -ExecutionPolicy Bypass -File C:\astro\PhotonScript\deploy\install-reboot-recovery.ps1 -DryRun`,
+   then without `-DryRun` (`-NoLock` skips the lock task, `-Uninstall`
+   removes both). The `PhotonScript` service task must already be installed
+   (`install-autostart.ps1`, Interactive).
+4. Windows Update: active hours about 18:00 to 08:00 (Settings > Windows
+   Update > Advanced options), or pause updates and apply them by hand in
+   daytime.
+5. BitLocker on the system drive (auto-logon means anyone who powers the PC
+   on gets a session until the 2-min lock): check `manage-bde -status C:`.
+6. Habit: disconnect Remote Desktop, never sign out (sign-out ends the
+   session and stops PhotonScript, NINA and PHD2).
+
+Reboot test (daytime, DISARMED, not an imaging night): `photonscript
+autostart-check` first, then restart Windows. Expect within 5 min (over 10 is
+a fail): PhotonScript answering with launcher `task-Interactive` and session
+not 0, TheSky with the mount connected, NINA #1 on :1888 (RC16), NINA #2 on
+:1889 (Piggy-600), PHD2 on :4400, screen locked. Then `photonscript
+autostart-check`: all PASS, including `autologon`, `recovery.task` and
+`recovery.lock`. Read `reboot-recovery.log` and `observatory-apps.log`.
 
 ### Deploying while paused (-AllowPaused, 2026-10-14)
 

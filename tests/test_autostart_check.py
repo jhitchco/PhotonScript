@@ -801,3 +801,24 @@ def test_task_query_script_runs_in_powershell(tmp_path, task, found):
     env.powershell = lambda s: (0, p.stdout, p.stderr)
     c = ac.task_checks(env, opts(tmp_path))
     assert all(x.status == ac.PASS for x in c), c
+
+
+# --- PS-87: reboot recovery tasks ---------------------------------------------------
+
+def test_recovery_tasks_pass_when_registered(tmp_path):
+    c = by_name(ac.recovery_checks(Fake(tmp_path).env(), opts(tmp_path)))
+    assert c["recovery.task"].status == ac.PASS
+    assert c["recovery.lock"].status == ac.PASS
+
+
+def test_recovery_tasks_missing_only_warn(tmp_path):
+    f = Fake(tmp_path, task=None)
+    c = by_name(ac.recovery_checks(f.env(), opts(tmp_path)))
+    assert c["recovery.task"].status == ac.WARN
+    assert "install-reboot-recovery.ps1" in c["recovery.task"].detail
+    assert c["recovery.lock"].status == ac.WARN
+
+
+def test_recovery_checks_skip_off_windows(tmp_path):
+    f = Fake(tmp_path, is_windows=False)
+    assert [x.status for x in ac.recovery_checks(f.env(), opts(tmp_path))] == [ac.SKIP]
