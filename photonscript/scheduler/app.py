@@ -488,6 +488,13 @@ def _tonight_sequence(now_mode: bool = False):
     """Tonight's Advanced Sequencer JSON exactly as the download builds
     it, before the lint: (name, json_text, guided, unguided_dither). The
     PS-123 sideload splices the tracking test into it."""
+    b = _tonight_sequence_build(now_mode)
+    return b["name"], b["content"], b["guided"], b["unguided_dither"]
+
+
+def _tonight_sequence_build(now_mode: bool = False) -> dict:
+    """_tonight_sequence plus the planned targets (PS-205 preview):
+    {"name", "content", "guided", "unguided_dither", "targets"}."""
     config = get_config()
     now = datetime.utcnow()
 
@@ -515,7 +522,8 @@ def _tonight_sequence(now_mode: bool = False):
     # Dusk/safety gating ON unless explicitly generating a daytime test
     sequence.wait_until_local = None if now_mode else "00:00:00"
     json_content = generate_nina_json(sequence, unguided_dither=preview_dither)
-    return sequence.name, json_content, preview_guided, preview_dither
+    return {"name": sequence.name, "content": json_content, "guided": preview_guided,
+            "unguided_dither": preview_dither, "targets": list(sequence.targets)}
 
 
 @app.get("/api/tonight/sequence.json")
@@ -540,6 +548,31 @@ async def api_tonight_sequence_json(now_mode: bool = False):
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename={name}.json"},
     )
+
+
+@app.get("/api/tonight/sequence-check")
+def api_tonight_sequence_check(now_mode: bool = False):
+    """PS-205: tonight's sequence for the CURRENT arm, checked, read only:
+    the same JSON GET /api/tonight/sequence.json builds, its sequence_lint
+    findings, the PS-197 dispatch gate verdict against the armed guiding
+    mode, and per target its window, filters / exposures and StartGuiding
+    count. Nothing is loaded, saved or sent (`photonscript sequence-preview`
+    prints it). A sync route: the planning runs in the worker pool, not on
+    the event loop."""
+    from photonscript.scheduler import sequence_preview as sp
+    try:
+        b = _tonight_sequence_build(now_mode)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("sequence check: build failed: %s", e)
+        return JSONResponse(status_code=500, content={
+            "ok": False, "error": f"tonight's sequence could not be built: {e}"})
+    try:
+        state = str(getattr(get_armer(), "state", "") or "")
+    except Exception:  # noqa: BLE001
+        state = ""
+    return sp.build(b["content"], b["targets"], guided=b["guided"],
+                    unguided_dither=b["unguided_dither"], name=b["name"],
+                    armer_state=state, now_mode=now_mode)
 
 
 @app.get("/api/seasonal/{month}")

@@ -72,6 +72,10 @@ flags = ["--night", "--at", "--diff", "--sub", "--full", "--json"]
 class = "read"
 flags = ["--json"]
 
+[commands.sequence-preview]
+class = "read"
+flags = ["--check", "--json", "--now"]   # PS-205: GET /api/tonight/sequence-check only
+
 [commands.guiding-report]
 class = "read"
 flags = ["--date", "--no-subs", "--json"]
