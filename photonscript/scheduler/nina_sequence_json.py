@@ -1748,6 +1748,13 @@ def _build_target_container(target: NinaSequenceTarget, min_altitude: float,
 
     def _moon_wrap(exp, blk):
         if exp.filter_type.value not in NB_SET and bb_condition is not None:
+            # PS-149: this container repeats until moonrise. A smart block
+            # (PS-176, no AF) holds only conditioned containers, so once its
+            # SmartExposure is done or skipped the loop spun (preflight lint
+            # loop-spin, 2026-11-02): pace it like the imaging loop.
+            from photonscript.scheduler.sequence_lint import _paces
+            if not any(_paces(i) for i in blk):
+                blk = blk + [_wait_for_timespan(TARGET_IMAGING_PACE_S)]
             return [_seq_container(
                 f"{exp.filter_type.value}{FILTER_UNTIL_MOONRISE_SUFFIX}", blk,
                 conditions=[copy.deepcopy(bb_condition)])]
