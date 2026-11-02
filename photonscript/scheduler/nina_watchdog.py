@@ -70,6 +70,11 @@ hourly-cap while the NOT RUNNING pages got through). It still has the
 (rig, state) latch above plus its own Pushover budget per (rig, state)
 (pushover_cap_exempt_max_per_hour), dedup and the monthly cap.
 
+Silent after midnight (2026-11-02): NINA #1 UP BUT SILENT with its API
+down is a PS-212 safety act like API DOWN (is_safety()), so the page is not
+held by pushover_act_cutoff_local. Before, an API DOWN whose log then went
+quiet turned into silent and lost the safety flag.
+
 Observe only: this never starts, restarts, stops or commands NINA.
 """
 from __future__ import annotations
@@ -93,6 +98,22 @@ def cap_exempt_key(rig: str, state: str) -> str | None:
     """The Pushover cap_exempt key of a (rig, state) page, None when that
     state's page stays under the global hourly cap."""
     return f"nina_watch:{rig}:{state}" if state in CAP_EXEMPT_STATES else None
+
+
+def is_safety(rig: str, state: str, reads: dict | None, live: bool) -> bool:
+    """PS-212 safety flag of an alert (a safety act is pushed at any hour;
+    other acts are held from pushover_act_cutoff_local to the resume time).
+    NINA #1 (it owns the mount) not running or its API down mid-night is
+    safety. So is NINA #1 UP BUT SILENT with the API down (PS-150,
+    2026-11-02): that is an API DOWN whose log also stopped, a hung NINA
+    that cannot park, and it used to lose the safety flag when api_down
+    turned into silent. Silent with the API answering (a leaf running too
+    long) stays a plain act."""
+    if not live or rig != "rc16":
+        return False
+    if state in ("not_running", "api_down"):
+        return True
+    return state == "silent" and not (reads or {}).get("api_ok")
 BAD = ("api_down", "silent", "not_running", "stuck", "parked")
 TICK_S = 60
 CONFIRM_TICKS = 3
@@ -695,8 +716,7 @@ async def tick(cfg, armer_state: str, now: datetime | None = None,
                     live = armer_state in LIVE
                     await _push(cfg, msg, 1 if live else 0, notify,
                                 kind="act" if live else "info",
-                                safety=live and rig == "rc16"
-                                and res["state"] in ("not_running", "api_down"),
+                                safety=is_safety(rig, res["state"], reads, live),
                                 cap_exempt=cap_exempt_key(rig, res["state"]))
         elif res["recovered"]:
             msg = recovery_text(cfg, rig, res["prev"])
