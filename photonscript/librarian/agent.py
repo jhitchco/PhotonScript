@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Optional
@@ -23,45 +22,21 @@ from photonscript.shared.models import (
     TransferJob, TransferWindow,
 )
 from photonscript.shared.messagebus import get_message_bus
+# PS-237: safe_component / UNKNOWN_DIR moved to shared.paths (still
+# importable from here)
+from photonscript.shared.paths import (  # noqa: F401
+    UNKNOWN_DIR, expand_path, refuse_save_root, safe_component,
+    save_root_problem,
+)
 
 logger = logging.getLogger(__name__)
-
-# Windows refuses these in a path component (WinError 123), plus control
-# characters; a trailing dot or space is silently dropped by Win32.
-_ILLEGAL = set('<>:"/\\|?*')
-_RESERVED = {"CON", "PRN", "AUX", "NUL",
-             *(f"COM{i}" for i in range(1, 10)),
-             *(f"LPT{i}" for i in range(1, 10))}
-UNKNOWN_DIR = "_unknown"
-
-
-def safe_component(name) -> str:
-    """One Windows-safe path component. Illegal characters become "_",
-    trailing dots / spaces go, reserved device names get a "_" prefix, and
-    a name with nothing left (or the "?" an unattributed sub carries)
-    becomes UNKNOWN_DIR."""
-    raw = str(name or "").strip()
-    if not raw or set(raw) <= {"?"}:
-        return UNKNOWN_DIR
-    out = "".join("_" if (c in _ILLEGAL or ord(c) < 32) else c for c in raw)
-    out = out.rstrip(" .")
-    if not out.strip("_ ."):
-        return UNKNOWN_DIR
-    if out.split(".")[0].upper() in _RESERVED:
-        out = "_" + out
-    return out
-
 
 def local_base_dir(value) -> Path:
     """config.local_image_dir with "~" and %VARS% / $VARS expanded (the
     scope's value, "~" plus a backslash, used to stay literal and land in
-    the process's working folder)."""
-    text = str(value or "").strip()
-    if not text:
-        return Path.home() / "Astrophotography"
-    if text == "~" or text[:2] in ("~/", "~\\"):
-        text = str(Path.home()) + text[1:]   # either separator, any OS
-    return Path(os.path.expandvars(os.path.expanduser(text)))
+    the process's working folder). Blank = ~/Astrophotography."""
+    text = expand_path(value)
+    return Path(text) if text else Path.home() / "Astrophotography"
 
 
 def transfer_dest(base: Path, image: CapturedImage) -> Path:
@@ -111,6 +86,13 @@ class Librarian:
     async def start(self):
         """Start the librarian agent."""
         self._running = True
+        if self._legacy_transfer:
+            # PS-237: never copy into a relative / "~" / in-repo root
+            why = save_root_problem(str(self._local_base))
+            if why:
+                self._legacy_transfer = False
+                await refuse_save_root(self.config, "PS_LOCAL_IMAGE_DIR", why,
+                                       "The Librarian's legacy transfer")
         if self._legacy_transfer:
             try:
                 await asyncio.to_thread(self._local_base.mkdir, parents=True,

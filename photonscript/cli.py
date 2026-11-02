@@ -58,6 +58,7 @@ Usage:
     photonscript notify "message"
     photonscript monitor [--url http://host:8100] [--grep cooler] [--level warning]
     photonscript remote [--url U] [--no-wait] [--confirm-write] -- <command> [flags]  # remote CLI
+    photonscript tilde-rescue [--source DIR] [--csv FILE] [--json] [--apply]  # PS-237 plan
 """
 
 from __future__ import annotations
@@ -3841,6 +3842,81 @@ def archive_library(
             console.print(f"  [red]{e}[/red]")
     else:
         console.print("[yellow]Dry run only. Add --apply to move.[/yellow]")
+
+
+@app.command("tilde-rescue")
+def tilde_rescue_cmd(
+    source: str = typer.Option(
+        r"C:\astro\PhotonScript\~\Astrophotography", "--source",
+        help="The literal ~ folder the legacy Librarian copy wrote to."),
+    csv_path: str = typer.Option(
+        r"C:\astro\PhotonScript-tilde-check.csv", "--csv",
+        help="Survey CSV of the frames found nowhere else."),
+    as_json: bool = typer.Option(False, "--json", help="Machine-readable plan."),
+    do_apply: bool = typer.Option(
+        False, "--apply", help="Copy the planned RC16 frames into NINA's "
+        "night folders (never overwrites, never deletes; refused while the "
+        "service runs). Omit for the plan only."),
+):
+    """PS-237: plan the rescue of frames that exist only under the repo's
+    literal ~ folder, through the normal ingest (NINA night folder -> night
+    backfill grade -> attribution -> Library build).
+
+    DRY RUN BY DEFAULT: reads the CSV, the FITS headers and the Library /
+    night folders, and prints per frame its rig, night, target, destination
+    and what grades it. Piggy-600 frames are held (graded live only).
+    Deleting the ~ folder stays a manual step.
+
+    Examples:
+        photonscript tilde-rescue
+        photonscript tilde-rescue --json
+        photonscript tilde-rescue --apply      # service stopped first
+    """
+    from photonscript.librarian import tilde_rescue as tr
+    from photonscript.shared.config import PhotonScriptConfig
+
+    config = PhotonScriptConfig()
+    try:
+        res = tr.plan(config, source, csv_path)
+    except (OSError, ValueError) as e:
+        console.print(f"tilde-rescue: {e}", markup=False)
+        raise typer.Exit(1)
+    if do_apply:
+        if tr.service_answers(config):
+            console.print("Refused: the PhotonScript service answers on this "
+                          "PC; its file watcher would take the copies for new "
+                          "captures. Stop it (photonscript stop), re-run, "
+                          "then start it.", markup=False)
+            raise typer.Exit(2)
+        res["dry_run"] = False
+        res["applied"] = tr.apply(config, res)
+    if as_json:
+        print(json.dumps(res, indent=2, default=str))
+        return
+    gb = {k: round(v / 1e9, 2) for k, v in res["bytes"].items()}
+    console.print(f"{res['csv_note']}", markup=False)
+    table = Table(title=("APPLIED" if do_apply else "DRY RUN")
+                  + f" tilde-rescue: {res['source']}")
+    for c in ("Action", "Rig", "Night", "Target", "Filter", "Exp", "File", "Why"):
+        table.add_column(c)
+    for it in res["items"]:
+        table.add_row(it["action"], it["rig"], it["night"], it["target"],
+                      it["filter"], f"{it['exp_s']:.0f}" if it["exp_s"] else "",
+                      it["name"], "; ".join([it["reason"], *it["notes"]]))
+    console.print(table)
+    c = res["counts"]
+    console.print(f"copy {c['copy']} ({gb['copy']} GB), hold {c['hold']} "
+                  f"({gb['hold']} GB), skip {c['skip']} ({gb['skip']} GB)",
+                  markup=False)
+    if do_apply:
+        a = res["applied"]
+        console.print(f"Copied {len(a['copied'])}, failed {len(a['failed'])}. "
+                      "Start the service and open each night on the Runs page "
+                      f"({', '.join(res['nights']) or 'none'}) so its backfill "
+                      "grades and files them.", markup=False)
+    else:
+        console.print("Dry run only: nothing copied. --apply copies the "
+                      "'copy' rows (service stopped).", markup=False)
 
 
 @app.command("prune-nights")

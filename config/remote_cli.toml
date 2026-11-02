@@ -124,6 +124,10 @@ flags = ["--date", "--unsafe"]
 class = "read"                # dry run only: --apply moves Library links (left off)
 flags = ["--date", "--dry-run", "--full"]
 
+[commands.tilde-rescue]
+class = "read"                # PS-237 plan only: --apply copies frames and --source / --csv take paths (left off)
+flags = ["--json"]
+
 [commands.report]
 class = "read"
 flags = ["--date"]

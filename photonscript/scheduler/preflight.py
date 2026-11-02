@@ -184,6 +184,35 @@ def _apps_check(config) -> dict:
         return _check("Observatory apps running", "warn", f"unreadable: {e}")
 
 
+def _nina_save_paths(config) -> dict:
+    """{rig: NINA profile image save path} for every rig ("" unreadable)."""
+    out = {}
+    try:
+        from photonscript.scheduler.frame_check import nina_save_path
+        from photonscript.shared.rigs import rig_ids
+        for rig in rig_ids(config):
+            out[rig] = nina_save_path(config, rig)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
+def save_roots_check(config, nina_paths: dict | None = None) -> dict:
+    """PS-237: every image save root (ours from config, NINA's from its
+    active profile) must be absolute, "~"-free and outside the checkout.
+    A refused one fails the preflight; nothing is created for it."""
+    from photonscript.shared.paths import image_root_problems, save_root_problem
+    bad = [f"{k}: {why}" for k, why in image_root_problems(config).items()]
+    for rig, path in (nina_paths or {}).items():
+        why = save_root_problem(path) if path else None
+        if why:
+            bad.append(f"NINA ({rig}) profile image path: {why}")
+    if bad:
+        return _check("Image save roots", "fail", "; ".join(bad))
+    return _check("Image save roots", "pass",
+                  "absolute, no ~, outside the checkout")
+
+
 async def run_preflight(config, test_push: bool = True) -> dict:
     """Run all checks. Returns {'ran_at', 'summary', 'checks': [...]}.
     test_push=False skips the Pushover test message (PS-170 daily launch)."""
@@ -199,14 +228,19 @@ async def run_preflight(config, test_push: bool = True) -> dict:
 
     # 2. Directories — create the ones we own, verify the ones NINA owns ---
     from photonscript.librarian.agent import local_base_dir  # "~" expanded
+    from photonscript.shared.paths import save_root_problem
     created, missing = [], []
     ours = {
         "data dir": Path(config.data_dir),
-        "local images": local_base_dir(config.local_image_dir),
-        "stacking output": Path(config.stacking_output_dir),
         "sequences": Path.cwd() / "sequences",
         "sequences/archive": Path.cwd() / "sequences" / "archive",
     }
+    # PS-237: the legacy per-sub copy's folder only when that copy is on,
+    # and never a refused root (the stacking output is made by a stack)
+    if getattr(config, "librarian_legacy_transfer", False):
+        local = local_base_dir(config.local_image_dir)
+        if not save_root_problem(str(local)):
+            ours["local images"] = local
     for label, p in ours.items():
         if not p.exists():
             try:
@@ -222,6 +256,9 @@ async def run_preflight(config, test_push: bool = True) -> dict:
                              f"Could not create: {'; '.join(missing)}"))
     else:
         checks.append(_check("Working directories", "pass", detail))
+
+    checks.append(save_roots_check(
+        config, await asyncio.to_thread(_nina_save_paths, config)))
 
     watch = Path(config.image_watch_dir)
     if watch.exists():
