@@ -15,6 +15,11 @@ POST /api/focus/model-move?filter=     model-driven focus: read the RC16
                                        "drive" and the filter drive-ready).
                                        NINA's ExternalScript reaches it
                                        through deploy\\focus-model-move.cmd
+GET  /api/focus/crib                   PS-213 the crib sheet: RC16 position
+                                       per filter at 0..25 C (by 5), slope,
+                                       offsets, newest AF per filter, trust;
+                                       no grid from an untrusted model
+GET  /focus                            PS-213 the printable crib sheet page
 
 GET /api/focus itself (the read-out) stays in app.py. The logic lives in
 scheduler/focus_model.py. Handlers lazily import get_config to avoid an
@@ -26,7 +31,8 @@ import asyncio
 import logging
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +97,22 @@ def api_focus_table(rig: str = "rc16", temp: Optional[float] = None,
         except Exception as e:  # noqa: BLE001
             out["payoff"] = {"error": str(e)}
     return out
+
+
+@router.get("/api/focus/crib")
+def api_focus_crib():
+    """PS-213: the focus crib sheet (focus_crib.build_crib). Read only; with
+    an untrusted RC16 model "grid" is None and trust_reasons say why."""
+    from photonscript.scheduler.focus_crib import build_crib
+    return build_crib(_cfg())
+
+
+@router.get("/focus", response_class=HTMLResponse)
+async def focus_page(request: Request):
+    """PS-213: the printable focus crib sheet (fills from /api/focus/crib)."""
+    from photonscript.scheduler import app as a
+    return a.templates.TemplateResponse(request, "focus.html", {
+        "version": a.VERSION, "observatory": a.get_config().get_observatory()})
 
 
 async def _nina_weather(base: str) -> dict:

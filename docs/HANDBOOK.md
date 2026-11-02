@@ -2060,6 +2060,22 @@ the step runs as before.
 Night test: `reentry_optimize=advise` first (decisions only), Pause +
 Resume mid-target and read `GET /api/reentry`; then af; then on.
 
+### Focus crib sheet: printable focuser positions (PS-213, 2026-11-02)
+
+For manual work: where RC16 focus should be per filter at 0, 5, 10, 15, 20
+and 25 C without running AF. Page `/focus` (Focus nav pill; Print gives one
+black-on-white page), data `GET /api/focus/crib`
+(`scheduler/focus_crib.py`). Each cell is the focus table's number
+(`GET /api/focus/table?temp=T`, position = intercept_L + slope x T +
+offset[filter]); under the grid: each filter's offset and its source,
+confidence, AF count and newest AF date. Rows outside the measured AF
+temperatures are greyed and marked "extrapolated". Gate: an untrusted model
+(focus_model.trust, the drive-mode gate) shows the reasons and NO table.
+The Piggy-600 gets one OSC row from its own model only when that model
+passes the same bar (8 AFs, a slope, scatter under half its median AF
+step). A collimation / tilt change moves the base positions: reprint after
+the model has re-learned.
+
 ### AF on HFR rise: per-rig trigger settings (2026-10-16)
 
 Every RC16 light SmartExposure (every_block, smart and focus-drive alike)
