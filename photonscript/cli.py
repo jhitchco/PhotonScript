@@ -30,6 +30,7 @@ Usage:
     photonscript settings-snapshot [--no-push] [--json]
     photonscript settings-backfill [--night D] [--apply] [--force] [--json]
     photonscript guiding-status [--json]                          # PS-119
+    photonscript sequence-preview [--check] [--json] [--now] [--url U]  # PS-205, read only
     photonscript guide-recover [--dry-run] [--yes] [--force]       # PS-167
     photonscript calibration-plan [--rig R] [--json]              # PS-113
     photonscript calibration-owed [--rig R] [--json]              # PS-122
@@ -3045,6 +3046,53 @@ def guiding_status_cmd(
         print(_json.dumps(s, indent=2, default=str))
     else:
         console.print(ga.format_text(s), markup=False, highlight=False)
+
+
+@app.command("sequence-preview")
+def sequence_preview_cmd(
+    check: bool = typer.Option(False, "--check",
+                               help="Also print the dispatch gate verdict for the "
+                                    "armed mode; exit 1 on ERROR"),
+    as_json: bool = typer.Option(False, "--json", help="Print the full JSON"),
+    now: bool = typer.Option(False, "--now", help="The daytime-test build (no dusk "
+                             "gate), as /api/tonight/sequence.json?now_mode=true"),
+    url: str = typer.Option("http://127.0.0.1:8100", "--url",
+                            help="The running PhotonScript service"),
+):
+    """PS-205: tonight's sequence for the CURRENT arm, before a restart:
+    targets with windows and per-filter exposures, StartGuiding / guider
+    connect counts, the dither mode and the sequence lint; --check adds the
+    PS-197 dispatch gate verdict the armer runs at load (exit 1 on ERROR).
+    Read only (GET /api/tonight/sequence-check): nothing is loaded, saved
+    or sent. Exit 2 when the service cannot be read.
+
+    photonscript sequence-preview --check
+    photonscript remote -- sequence-preview --check
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+    from photonscript.scheduler import sequence_preview as sp
+    u = url.rstrip("/") + "/api/tonight/sequence-check" + ("?now_mode=true" if now else "")
+    try:
+        with urllib.request.urlopen(u, timeout=170) as r:
+            d = _json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = _json.loads(e.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            body = {}
+        print(f"Could not build tonight's sequence ({e.code}): "
+              f"{body.get('error') or body.get('detail') or e.reason}")
+        raise typer.Exit(2)
+    except Exception as e:  # noqa: BLE001
+        print(f"Could not read {u}: {e}")
+        raise typer.Exit(2)
+    if as_json:
+        print(_json.dumps(d, indent=2, default=str))
+    else:
+        console.print(sp.format_text(d, check=check), markup=False, highlight=False)
+    raise typer.Exit(1 if check and not d.get("ok") else 0)
 
 
 @app.command("guide-recover")

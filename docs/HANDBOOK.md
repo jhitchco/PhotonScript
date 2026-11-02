@@ -2340,6 +2340,18 @@ Jeremy at the keyboard.
   `PS_THESKY_DOCPROP_*` for the refraction temperature sync
   (docs/DRIFT_SURVEY.md).
   `photonscript remote -- thesky-audit --discover-docprops`
+- **Sequence preview before a restart (PS-205, 2026-11-02):**
+  `sequence-preview` is a read command with `--check`, `--json` and
+  `--now`. It reads `GET /api/tonight/sequence-check` on the local service:
+  tonight's JSON built exactly as `/api/tonight/sequence.json` builds it for
+  the CURRENT arm (armed guiding mode and dither), its sequence_lint
+  findings, and per target the window (handoff, fill), the per-filter
+  exposures and the StartGuiding count, plus the guider connect and the
+  dither mode. `--check` adds the PS-197 dispatch gate verdict the armer
+  runs at load (lint ERRORs count) and exits 1 on ERROR; exit 2 = the
+  service could not be read. Nothing is loaded, saved or sent.
+  Code: `scheduler/sequence_preview.py`.
+  `photonscript remote -- sequence-preview --check`
 - **Adding a command:** read its code first; if it changes no hardware, sends
   nothing and deletes nothing, add a `[commands.<name>]` block with `class`,
   `flags` (and `write_flags`, `require`, `night_safe` when needed), run the
