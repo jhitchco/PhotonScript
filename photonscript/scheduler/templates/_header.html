@@ -1,6 +1,6 @@
 {# Shared page header — one source of truth so the nav/title/version never drift
    across pages. Callers set (all optional): page_subtitle, active_page
-   (dashboard|runs|targets|mosaic|calibration|guiding|disk|system, its own link is
+   (dashboard|runs|targets|mosaic|calibration|guiding|focus|disk|system, its own link is
    hidden), and
    show_status (renders the dashboard's live connection chip). version and
    observatory come from the render context. #}
@@ -21,6 +21,7 @@
         {% if _a != 'mosaic' %}<a href="/mosaic" class="nav-pill">&#129513; Mosaic</a>{% endif %}
         {% if _a != 'calibration' %}<a href="/calibration" class="nav-pill">&#127765; Calibration</a>{% endif %}
         {% if _a != 'guiding' %}<a href="/guiding" class="nav-pill">&#127919; Guiding</a>{% endif %}
+        {% if _a != 'focus' %}<a href="/focus" class="nav-pill" title="Focus crib sheet (printable)">&#128269; Focus</a>{% endif %}
         {% if _a != 'disk' %}<a href="/disk" class="nav-pill">&#128190; Disk</a>{% endif %}
         {% if _a != 'system' %}<a href="/system" class="nav-pill">&#9881;&#65039; System</a>{% endif %}
         {% if show_status %}<div class="connection-status" id="connectionStatus" style="margin-left:.6rem;">Connecting...</div>{% endif %}
