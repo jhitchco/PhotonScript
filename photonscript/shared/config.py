@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
 
 from photonscript.shared.models import ObservatoryLocation, TransferWindow
+from photonscript.shared.paths import expand_path, is_path_setting
 
 
 # The checkout this package runs from (photonscript/shared/config.py -> repo).
@@ -2214,6 +2215,17 @@ class PhotonScriptConfig(BaseSettings):
                 cls, name = pair.split(":", 1)
                 out[cls.strip()] = name.strip()
         return out
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _expand_path_settings(cls, v, info):
+        """PS-237: every path setting (name ending _dir / _path / _root /
+        _file) gets "~" and %VARS% / $VARS expanded here, once, so no
+        consumer ever sees a raw "~" (a literal "~\\Astrophotography"
+        resolved against the service's working folder, the repo)."""
+        if is_path_setting(info.field_name) and isinstance(v, (str, Path)):
+            return expand_path(v)
+        return v
 
     @field_validator("focus_model_drive", mode="before")
     @classmethod

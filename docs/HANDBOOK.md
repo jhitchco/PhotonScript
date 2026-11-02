@@ -3722,6 +3722,23 @@ open for a meaningful stretch but few/no good lights resulted.
   read the stack frames to attribute an exception.
 
 ### Failure modes seen in the field
+- **Subs saved under the repo's literal `~` folder** (2026-09-26 to 10-09,
+  PS-237): the scope's `.env` had `PS_LOCAL_IMAGE_DIR="~\Astrophotography"`
+  (config/example.env showed `~/...`). The Librarian's legacy per-sub copy
+  used `Path(local_image_dir)` raw, so it resolved against the service's
+  working folder: 438 FITS (22 GB) in `C:\astro\PhotonScript\~\Astrophotography`,
+  laid out `<target>\<filter>\<file>`, with "TPoint point 01/45 ..." nested
+  one level deeper. NINA itself was never pointed there (PhotonScript writes
+  no NINA save path). It stopped when c415d8c (2026-10-12) expanded `~` there
+  and turned the legacy copy off. Now: every `*_DIR` / `*_PATH` / `*_ROOT` /
+  `*_FILE` setting is expanded at config load (`shared/paths.py`), the
+  Librarian and image processor refuse a relative / `~` / in-repo save root
+  (log + Pushover "Image save path refused"), preflight's "Image save roots"
+  check also reads each NINA profile's save path, and target names never
+  nest folders. Rescue: `photonscript tilde-rescue` (dry run; `--json`, also
+  remote) plans the unique frames back through the RC16 night backfill;
+  `--apply` copies RC16 frames with the service stopped. Piggy-600 frames are
+  held (no offline grader). Deleting the `~` folder is a manual step.
 - **Missing NINA capture folder** (2026-07-26): every LIGHT `TakeExposure`
   fails validation with "The folder ... in Image File Settings ... was not
   found"; zero subs land. Fix: recreate the folder on the scope PC

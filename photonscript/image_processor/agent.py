@@ -18,6 +18,9 @@ from photonscript.shared.models import (
     AgentMessage, AgentRole, FilterType, ImageStatus,
 )
 from photonscript.shared.messagebus import get_message_bus
+from photonscript.shared.paths import (
+    expand_path, refuse_save_root, safe_component, save_root_problem,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -38,14 +41,23 @@ class ImageProcessor:
         self.bus = get_message_bus()
         self._running = False
         self._image_groups: dict[str, dict[str, list[str]]] = {}  # target -> filter -> [paths]
-        self._output_dir = Path(config.stacking_output_dir)
+        self._output_dir = Path(expand_path(config.stacking_output_dir))
+        self._output_ok = True
         self._processing_queue: asyncio.Queue[tuple[str, str]] = asyncio.Queue()
 
     async def start(self):
         """Start the image processor agent."""
         self._running = True
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("Image Processor started — output: %s", self._output_dir)
+        # PS-237: a relative / "~" / in-repo output root is refused (it
+        # used to be made under the service's working folder, the repo).
+        # The folder itself is made when a stack runs, not at every start.
+        why = save_root_problem(str(self._output_dir))
+        if why:
+            self._output_ok = False
+            await refuse_save_root(self.config, "PS_STACKING_OUTPUT_DIR", why,
+                                   "The image processor")
+        logger.info("Image Processor started, output: %s%s", self._output_dir,
+                    "" if self._output_ok else " (refused, no stacking)")
 
         self.bus.subscribe("transfer_complete", self._on_transfer_complete)
 
@@ -104,7 +116,7 @@ class ImageProcessor:
     async def _stack_filter(self, target_name: str, filter_name: str):
         """Stack all subs for a target/filter combination using Siril."""
         images = self._image_groups.get(target_name, {}).get(filter_name, [])
-        if len(images) < 3:
+        if len(images) < 3 or not self._output_ok:
             return
 
         logger.info(
@@ -112,7 +124,10 @@ class ImageProcessor:
             len(images), target_name, filter_name,
         )
 
-        output_dir = self._output_dir / target_name / filter_name
+        # PS-237: a "/" in a target name ("TPoint point 01/45 ...") must not
+        # nest folders
+        output_dir = (self._output_dir / safe_component(target_name)
+                      / safe_component(filter_name))
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate Siril processing script
@@ -132,7 +147,8 @@ class ImageProcessor:
 
             if result.returncode == 0:
                 logger.info("Stack complete: %s/%s", target_name, filter_name)
-                stacked_file = output_dir / f"{target_name}_{filter_name}_stacked.fit"
+                stacked_file = output_dir / (f"{safe_component(target_name)}_"
+                                             f"{safe_component(filter_name)}_stacked.fit")
 
                 await self.bus.publish(AgentMessage(
                     sender=AgentRole.PROCESSOR,
@@ -181,7 +197,8 @@ class ImageProcessor:
             for img_path in image_paths:
                 f.write(f"{img_path}\n")
 
-        stacked_name = f"{target_name}_{filter_name}_stacked"
+        stacked_name = (f"{safe_component(target_name)}_"
+                        f"{safe_component(filter_name)}_stacked")
 
         script = f"""# PhotonScript auto-generated Siril stacking script
 # Target: {target_name} | Filter: {filter_name} | Subs: {len(image_paths)}

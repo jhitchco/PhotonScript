@@ -1655,6 +1655,7 @@ async def api_get_config():
 @app.post("/api/config")
 async def api_update_config(request: Request):
     from photonscript.shared.envfile import env_path, update_env
+    from photonscript.shared.paths import expand_path, is_path_setting
 
     body = await request.json()
     config = get_config()
@@ -1681,6 +1682,8 @@ async def api_update_config(request: Request):
         except ValueError:
             return JSONResponse(status_code=400, content={
                 "detail": f"{env_var}: '{raw}' is not a valid {ftype}"})
+        if is_path_setting(attr) and isinstance(typed, str):
+            typed = expand_path(typed)  # PS-237: as at config load
         updates[env_var] = raw
         setattr(config, attr, typed)  # live-apply where components re-read config
         restart_recommended = restart_recommended or _needs_restart(attr, restart)
