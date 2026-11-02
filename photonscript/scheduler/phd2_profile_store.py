@@ -84,6 +84,28 @@ KEYS: dict[str, tuple[str, str | None, bool]] = {
     "dec_guide_mode_enum":    ("scope", "DecGuideMode", True),
     "ra_algorithm_enum":      ("scope", "XGuideAlgorithm", True),
     "dec_algorithm_enum":     ("scope", "YGuideAlgorithm", True),
+    # 2026-11-02: the rest of the Brain dialog, verified against the scope
+    # PC's profile 2 (docs/UI_SURVEY_NINA_PHD2.md has the UI path of each)
+    "noise_reduction_enum":   ("", "NoiseReductionMethod", True),
+    "auto_exp_min_ms":        ("auto_exp", "exposure_min", True),
+    "auto_exp_max_ms":        ("auto_exp", "exposure_max", True),
+    "auto_exp_target_snr":    ("auto_exp", "target_snr", True),
+    "camera_timeout_ms":      ("camera", "TimeoutMs", True),
+    "use_subframes":          ("camera", "UseSubframes", True),
+    "dither_mode_enum":       ("", "DitherMode", True),
+    "dither_scale":           ("", "DitherScaleFactor", True),
+    "dither_ra_only":         ("", "DitherRaOnly", True),
+    "max_hfd_px":             ("guider", "StarMaxHFD", True),
+    "tolerate_jumps":         ("guider/onestar", "TolerateJumpsEnabled", True),
+    "fast_recenter":          ("guider", "FastRecenter", True),
+    "scale_image":            ("guider", "ScaleImage", True),
+    "max_ra_duration_ms":     ("scope", "MaxRaDuration", True),
+    "max_dec_duration_ms":    ("scope", "MaxDecDuration", True),
+    "hires_encoders":         ("scope", "HiResEncoders", True),
+    "image_logging":          ("ImageLogger", "LoggingEnabled", True),
+    "image_log_rel_thresh":   ("ImageLogger", "ErrorThreshRel", True),
+    "image_log_px_thresh":    ("ImageLogger", "ErrorThreshPx", True),
+    "image_log_lost_star":    ("ImageLogger", "LogFramesDropped", True),
 }
 # Logical keys write() may change (behind phd2_audit_autofix, PHD2 closed and
 # a backup). Empty: reading is verified, writing is not enabled yet.
@@ -97,17 +119,22 @@ ALGORITHMS = {0: ("None", "None"), 1: ("Hysteresis", "Hysteresis"),
               5: ("Predictive PEC", "GaussianProcess"), 6: ("ZFilter", "ZFilter")}
 # PHD2 DEC_GUIDE_MODE enum
 DEC_MODES = {0: "Off", 1: "Auto", 2: "North", 3: "South"}
+# PHD2 NOISE_REDUCTION_METHOD and DITHER_MODE enums (Brain > Camera / Global)
+NOISE_REDUCTION = {0: "None", 1: "2x2 mean", 2: "3x3 median"}
+DITHER_MODES = {0: "Random", 1: "Spiral"}
 # PHD2 CalibrationIssueType (scope/calibration/last_issue)
 CAL_ISSUES = {0: None, 1: "too few steps", 2: "axes not orthogonal",
               3: "RA / Dec rates inconsistent", 4: "differs from the last calibration"}
 GA_PA_MAX_ARCMIN = 60.0   # a Guiding Assistant run with a larger polar error is bad
 # Software Bisque ASCOM telescope driver flags (HKLM, report only, never
-# written). Where the driver keeps them is unknown (ASCOM profile or its own
-# file): no candidate names yet, so these rows read as unknown.
+# written). The driver keeps them in its ASCOM profile as "True" / "False"
+# strings; names verified on the scope PC 2026-11-02 (UseDirectGuide False,
+# CanGetPierSide True; the same key also holds InhibitSync, PulseGuide,
+# UnparkOnConnect and the guide rates, see docs/UI_SURVEY_NINA_PHD2.md).
 ASCOM_DRIVER_KEY = r"SOFTWARE\WOW6432Node\ASCOM\Telescope Drivers\ASCOM.SoftwareBisque.Telescope"
 ASCOM_KEYS: dict[str, tuple[str, str | None, bool]] = {
-    "ascom_direct_guide":    (ASCOM_DRIVER_KEY, None, False),
-    "ascom_pointing_state":  (ASCOM_DRIVER_KEY, None, False),
+    "ascom_direct_guide":    (ASCOM_DRIVER_KEY, "UseDirectGuide", True),
+    "ascom_pointing_state":  (ASCOM_DRIVER_KEY, "CanGetPierSide", True),
 }
 
 
@@ -306,6 +333,12 @@ def derived(raw: dict, values: dict) -> dict:
         out["dec_guide_mode"] = DEC_MODES[int(val("dec_guide_mode_enum"))]
     except (TypeError, ValueError, KeyError):
         pass
+    for key, names, name_key in (("noise_reduction_enum", NOISE_REDUCTION, "noise_reduction"),
+                                 ("dither_mode_enum", DITHER_MODES, "dither_mode")):
+        try:
+            out[name_key] = names[int(val(key))]
+        except (TypeError, ValueError, KeyError):
+            pass
     exp = _fnum(val("exposure_ms"))
     if exp is not None:
         # PHD2 keeps a fixed exposure in ms; a negative value is "Auto"
@@ -399,6 +432,8 @@ def read_ascom() -> dict:
                     v = reg.QueryValueEx(h, name)[0]
             except OSError:
                 v = None
+        if isinstance(v, str) and v.strip().lower() in ("true", "false"):
+            v = v.strip().lower() == "true"
         out[logical] = {"value": v, "verified": bool(verified and name),
                         "location": f"HKLM\\{path}\\{name}" if name else None}
     return out
