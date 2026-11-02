@@ -38,23 +38,34 @@ _cfgmod.PhotonScriptConfig.model_config["env_file"] = None
 
 # Settings whose default is an absolute path on one of the two machines
 # (C:\astro\PhotonScript\deploy\*.cmd, C:\Users\jeremy\Documents\N.I.N.A,
-# C:\Users\sleep\ninashare\Library, ...): each test sees a path that does not
-# exist, so the scope PC and the desktop build the same sequences.
-_MACHINE_PATH_FIELDS = sorted(
-    n for n, f in _cfgmod.PhotonScriptConfig.model_fields.items()
-    if isinstance(f.default, str) and re.match(r"^[A-Za-z]:[\\/]", f.default))
+# C:\Users\sleep\ninashare\Library, ...) default to the same path under a
+# folder that does not exist, so the scope PC and the desktop build the same
+# sequences. Only the default moves (an env var, a .env passed as _env_file
+# or a keyword still win), and the tail is kept (...\deploy\cooler-gate.cmd,
+# ...\NINA.exe) for the tests of the defaults' shape.
+_ABSENT = _SUITE_HOME / "absent"
+_MACHINE_DEFAULTS = {
+    n: f.default for n, f in _cfgmod.PhotonScriptConfig.model_fields.items()
+    if isinstance(f.default, str) and re.match(r"^[A-Za-z]:[\\/]", f.default)}
+_MACHINE_PATH_FIELDS = sorted(_MACHINE_DEFAULTS)
+
+
+def _set_defaults(values: dict) -> None:
+    for n, v in values.items():
+        _cfgmod.PhotonScriptConfig.model_fields[n].default = v
+    _cfgmod.PhotonScriptConfig.model_rebuild(force=True)
+
+
+_set_defaults({n: str(_ABSENT / v[3:]) for n, v in _MACHINE_DEFAULTS.items()})
 
 
 @pytest.fixture(autouse=True)
 def _machine_isolated(monkeypatch, tmp_path_factory):
-    """Per test: a fresh home and data_dir, no PS_* left over from another
-    test, machine paths pointed at nothing, and the .env writers
+    """Per test: a fresh home, data_dir and db_path, and the .env writers
     (envfile.env_path) aimed at a scratch file instead of the checkout's
-    .env. Defined first, so the fixtures below (and any test) can still set
-    their own PS_* on top. Its folders sit outside the test's tmp_path, which
-    stays the test's own."""
-    for k in [k for k in os.environ if k.upper().startswith("PS_")]:
-        monkeypatch.delenv(k)
+    .env. Its folders sit outside the test's tmp_path, which stays the
+    test's own. (Autouse fixtures run in name order, so this one must not
+    clear PS_* variables: the gate pins below may already be set.)"""
     tmp_path = tmp_path_factory.mktemp("machine")
     home = tmp_path / "home"
     home.mkdir()
@@ -62,12 +73,31 @@ def _machine_isolated(monkeypatch, tmp_path_factory):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PS_DATA_DIR", str(home / ".photonscript"))
     monkeypatch.setenv("PS_DB_PATH", str(home / ".photonscript" / "photonscript.db"))
-    absent = tmp_path / "absent"
-    for name in _MACHINE_PATH_FIELDS:
-        monkeypatch.setenv(f"PS_{name.upper()}", str(absent / name))
     real_env_path = _envfile.env_path
     monkeypatch.setattr(_envfile, "env_path", lambda root=None: (
         real_env_path(root) if root is not None else tmp_path / ".env"))
+    # The dashboard app keeps its config and goal store in module globals,
+    # built by the first test that asks (app.get_config / get_store) and seen
+    # by every later one: calibration_plan.load_projects reads app._store
+    # first, so a goal of an earlier test (or of the real projects.json) put
+    # its 15 s HDR shorts into the owed darks of ps128 / ps188 /
+    # closed_roof_first_lights_darks, depending on the test order.
+    import sys
+    app = sys.modules.get("photonscript.scheduler.app")
+    if app is not None:
+        monkeypatch.setattr(app, "_config", None)
+        monkeypatch.setattr(app, "_store", None)
+
+
+@pytest.fixture
+def machine_defaults():
+    """For a test of the code defaults themselves: the real machine-path
+    defaults, for this one test."""
+    redirected = {n: _cfgmod.PhotonScriptConfig.model_fields[n].default
+                  for n in _MACHINE_PATH_FIELDS}
+    _set_defaults(_MACHINE_DEFAULTS)
+    yield
+    _set_defaults(redirected)
 
 
 @pytest.fixture(autouse=True)
