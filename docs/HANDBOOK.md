@@ -3053,6 +3053,16 @@ Details: OSC_INTEGRATION.md "Fast scratch disk".
   The in-app uvicorn TLS listener (:8443, `provision-tls.ps1`) was REMOVED: the
   service runs as `jeremy`, and tailscaled refuses `tailscale cert` from a
   non-owner account, so it never came up. Direct `http://...:8100` still works.
+- LAN BLOCK FOR :8100 (PS-60): the API has no auth on its write routes and
+  binds 0.0.0.0, so `deploy\firewall-8100.ps1` scopes inbound TCP 8100 on the
+  scope PC to localhost and Tailscale (100.64.0.0/10, fd7a:115c:a1e0::/48)
+  and blocks every other source. Run with no switches for a dry run (prints
+  the current rules and the plan), `-Apply` from an elevated PowerShell to
+  create the two rules ("PhotonScript 8100 allow tailnet" / "... block LAN"),
+  `-Remove` to undo. The dashboard, tailscale serve, deploy.ps1 and
+  `photonscript remote` keep working; outbound traffic (AARO power switch
+  192.168.23.50, NINA, PHD2, TheSky, Syncthing) is not touched. A device on
+  the AARO LAN that used the dashboard directly would need Tailscale.
 - DASHBOARD ACCESS (RESOLVED 2026-09-24): the canonical remote URL is the
   Tailscale HTTPS hostname `https://teles-feb25.lobster-bleak.ts.net/`
   (`serve` -> `127.0.0.1:8100` on the scope PC). Verified end-to-end: a live

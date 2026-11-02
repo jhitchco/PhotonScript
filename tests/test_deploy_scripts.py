@@ -85,3 +85,63 @@ def test_deploy_reports_scope_rollback_and_refusal():
     assert '$u.status -eq "rolled_back" -and $u.bad_sha -eq $head' in s
     assert '$u.status -eq "rejected" -and $u.target -eq $head' in s
     assert "ConvertFrom-Json).detail" in s    # 409 says why
+
+
+# --- PS-60: :8100 from Tailscale and localhost only ----------------------------
+
+def _ps_array(s: str, name: str) -> list[str]:
+    import re
+    block = s[s.index(f"${name} = @("):]
+    block = block[:block.index(")")]
+    return re.findall(r'"([^"]+)"', block)
+
+
+def _nets(items):
+    import ipaddress
+    out = []
+    for it in items:
+        if "-" in it:
+            a, b = (ipaddress.ip_address(x) for x in it.split("-"))
+            out.append((int(a), int(b), a.version))
+        else:
+            n = ipaddress.ip_network(it)
+            out.append((int(n.network_address), int(n.broadcast_address), n.version))
+    return out
+
+
+def _covered(nets, ip) -> bool:
+    import ipaddress
+    a = ipaddress.ip_address(ip)
+    return any(lo <= int(a) <= hi and v == a.version for lo, hi, v in nets)
+
+
+def test_firewall_block_is_the_exact_complement_of_allow():
+    s = _read("firewall-8100.ps1")
+    allow, block = _nets(_ps_array(s, "AllowRemote")), _nets(_ps_array(s, "BlockRemote"))
+    for v, top in ((4, 2**32 - 1), (6, 2**128 - 1)):
+        spans = sorted((lo, hi) for lo, hi, ver in allow + block if ver == v)
+        start = 0 if v == 4 else 1           # IPv6 "::" is never a source
+        for lo, hi in spans:
+            assert lo == start, f"gap or overlap at {lo} (IPv{v})"
+            start = hi + 1
+        assert start == top + 1
+
+
+def test_firewall_keeps_tailnet_and_localhost_and_blocks_the_lan():
+    s = _read("firewall-8100.ps1")
+    allow, block = _nets(_ps_array(s, "AllowRemote")), _nets(_ps_array(s, "BlockRemote"))
+    for ip in ("100.94.189.77", "100.64.0.1", "127.0.0.1", "::1",
+               "fd7a:115c:a1e0::1234"):
+        assert _covered(allow, ip) and not _covered(block, ip), ip
+    for ip in ("192.168.23.50", "192.168.23.10", "10.0.0.5", "172.16.1.1",
+               "fe80::1", "8.8.8.8"):
+        assert _covered(block, ip) and not _covered(allow, ip), ip
+
+
+def test_firewall_script_is_a_dry_run_unless_asked():
+    s = _read("firewall-8100.ps1")
+    assert "[switch]$Apply" in s and "[switch]$Remove" in s
+    i_dry = s.index("if (-not $Apply)")
+    assert s.index("New-NetFirewallRule") > i_dry
+    assert "-Direction Inbound" in s and "-LocalPort $Port" in s
+    assert "Outbound" not in s.replace("Outbound traffic is not touched", "")
